@@ -6,20 +6,23 @@
 //!
 //! - **`Exec`** — spawns a command via `tokio::process::Command`,
 //!   substitutes `{{exec}}` with the tool's executable path (passed in
-//!   by the IPC facade) and `{{value:field_key}}` with the cleartext
-//!   value of each declared field. Stdout + stderr are matched
-//!   against `ok_regex` / `fail_regex`.
+//!   by the [`ExecResolver`] callback) and `{{value:field_key}}` with
+//!   the cleartext value of each declared field. Stdout + stderr are
+//!   matched against `ok_regex` / `fail_regex`.
 //! - **`Http`** — issues a `reqwest` request, with the same
 //!   `{{value:field_key}}` substitution applied to URL and header
 //!   templates. Status code is compared against the inclusive
 //!   `ok_status_range`.
-//! - **`Builtin`** — returns
-//!   [`crate::types::HealthStatus::Unknown`] with a note explaining
-//!   the caller must wire up the provider's own `test_connection`.
-//!   The IPC facade is responsible for dispatching builtin tests
-//!   directly to the `IntelProvider` registry.
+//! - **`Builtin`** — when a [`BuiltinDispatcher`] has been wired in
+//!   (via [`DefaultTester::with_builtin_dispatcher`]) the call is
+//!   forwarded to it; otherwise the tester returns
+//!   [`crate::types::HealthStatus::Unknown`] with the legacy
+//!   "builtin test path: …" hint. The dispatcher lives in the IPC
+//!   facade so this crate stays free of any `IntelProvider`
+//!   knowledge.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -33,6 +36,33 @@ use crate::types::{HealthStatus, IntegrationHealth};
 /// executable. Returns `None` when the tool is not installed.
 pub type ExecResolver = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
+/// Dispatcher for [`TestKind::Builtin`] — handed in by the IPC facade
+/// so this crate stays free of `IntelProvider` (or any other
+/// provider-registry) knowledge.
+///
+/// Implementations are expected to:
+/// 1. Look up `tool_id` in their registry.
+/// 2. Read the right credential field out of `cleartext_fields`
+///    (typically the first declared `secret_text` field in the
+///    group).
+/// 3. Call the provider's own `test_connection` (or equivalent) and
+///    map the result back to an [`IntegrationHealth`].
+///
+/// Returning an error here surfaces as a `500`-class
+/// [`crate::IntegrationError`] via the caller. Use
+/// [`IntegrationHealth::invalid`] / `unknown` when the provider
+/// rejected the credential but the dispatch itself worked.
+#[async_trait]
+pub trait BuiltinDispatcher: Send + Sync {
+    async fn dispatch(
+        &self,
+        tool_id: &str,
+        group_id: &str,
+        schema: &IntegrationSchema,
+        cleartext_fields: &HashMap<String, String>,
+    ) -> IntegrationResult<IntegrationHealth>;
+}
+
 /// Default tester. Holds an executable-resolver callback so each
 /// schema can declare `{{exec}}` in its test command without this
 /// crate knowing about the tool-manager.
@@ -43,6 +73,11 @@ pub struct DefaultTester {
     /// [`HealthStatus::Unknown`].
     exec_resolver: ExecResolver,
     http_client: reqwest::Client,
+    /// Optional dispatcher for [`TestKind::Builtin`]. `None` keeps
+    /// the legacy "return Unknown with a hint" behaviour so the
+    /// existing 0.zone / FOFA / etc. tests stay green until the
+    /// facade wires a real dispatcher in.
+    builtin_dispatcher: Option<Arc<dyn BuiltinDispatcher>>,
 }
 
 impl DefaultTester {
@@ -54,7 +89,15 @@ impl DefaultTester {
         Ok(Self {
             exec_resolver,
             http_client,
+            builtin_dispatcher: None,
         })
+    }
+
+    /// Attach a [`BuiltinDispatcher`]. When set, the tester forwards
+    /// `TestKind::Builtin` to it instead of returning Unknown.
+    pub fn with_builtin_dispatcher(mut self, dispatcher: Arc<dyn BuiltinDispatcher>) -> Self {
+        self.builtin_dispatcher = Some(dispatcher);
+        self
     }
 
     fn group<'s>(
@@ -110,9 +153,12 @@ impl Tester for DefaultTester {
             ));
         };
         match test {
-            TestKind::Builtin => Ok(IntegrationHealth::unknown(
-                "builtin test path: IPC facade must dispatch to the provider's test_connection",
-            )),
+            TestKind::Builtin => match &self.builtin_dispatcher {
+                Some(d) => d.dispatch(tool_id, group_id, schema, cleartext_fields).await,
+                None => Ok(IntegrationHealth::unknown(
+                    "builtin test path: IPC facade must dispatch to the provider's test_connection",
+                )),
+            },
 
             TestKind::Exec {
                 cmd,
@@ -285,6 +331,35 @@ mod tests {
             .unwrap();
         assert_eq!(h.status, HealthStatus::Unknown);
         assert!(h.message.contains("builtin"));
+    }
+
+    #[tokio::test]
+    async fn builtin_routed_to_dispatcher_when_attached() {
+        struct FakeDispatcher;
+
+        #[async_trait::async_trait]
+        impl BuiltinDispatcher for FakeDispatcher {
+            async fn dispatch(
+                &self,
+                tool_id: &str,
+                _group_id: &str,
+                _schema: &IntegrationSchema,
+                _cleartext_fields: &HashMap<String, String>,
+            ) -> IntegrationResult<IntegrationHealth> {
+                Ok(IntegrationHealth::healthy(format!(
+                    "fake healthy for {tool_id}"
+                )))
+            }
+        }
+
+        let t = tester().with_builtin_dispatcher(Arc::new(FakeDispatcher));
+        let schema = schema_with_test(Some(TestKind::Builtin));
+        let h = t
+            .test("0.zone", "default", &schema, &HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(h.status, HealthStatus::Healthy);
+        assert!(h.message.contains("fake healthy for 0.zone"));
     }
 
     #[tokio::test]

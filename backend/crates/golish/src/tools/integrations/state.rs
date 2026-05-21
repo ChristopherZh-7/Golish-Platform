@@ -5,19 +5,23 @@
 //! [`pick_backend`] because vault needs the `PgPool` (only available
 //! from `DbState`) and settings needs the shared `SettingsManager`.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use serde::Deserialize;
 use sqlx::PgPool;
 
 use golish_integrations::storage::{ExternalFileBackend, SettingsBackend, VaultBackend};
-use golish_integrations::tester::DefaultTester;
+use golish_integrations::tester::{BuiltinDispatcher, DefaultTester, ExecResolver};
 use golish_integrations::traits::ResolvedIntegration;
 use golish_integrations::{
     DefaultSchemaResolver, IntegrationError, IntegrationResult, IntegrationSchema, SchemaResolver,
     Storage, StorageBackend,
 };
+use golish_integrations::{Field, IntegrationGroup, IntegrationHealth};
+use golish_intel_providers::types::ConnectionStatus;
 use golish_intel_providers::{
     fofa::FofaProvider, hunter::HunterProvider, quake::QuakeProvider, shodan::ShodanProvider,
     zone::ZoneProvider, IntelProvider,
@@ -35,6 +39,11 @@ use golish_settings::SettingsManager;
 ///    implementations (one per provider that opts into Integrations).
 /// 3. Pass an `Arc<SettingsManager>` so the `SettingsBackend` can
 ///    read / write `network.github_token` etc.
+/// 4. Pass a real [`ExecResolver`] (resolves `{{exec}}` in
+///    `TestKind::Exec` recipes) and optional
+///    [`BuiltinDispatcher`] (routes `TestKind::Builtin` to the
+///    matching `IntelProvider::test_connection`). Both default to a
+///    no-op for the test constructor.
 ///
 /// The schema resolver caches its result; calls after the first one
 /// are essentially free.
@@ -45,21 +54,21 @@ pub struct IntegrationsState {
 }
 
 impl IntegrationsState {
-    /// Build an [`IntegrationsState`] ready to serve IPC.
-    ///
-    /// `toolsconfig_dir` is `None` only in tests where no on-disk
-    /// schemas are needed.
+    /// Low-level constructor. Tests use this with a no-op
+    /// `exec_resolver` and no builtin dispatcher;
+    /// [`Self::build_default`] is what production code calls.
     pub fn new<P: AsRef<Path>>(
         toolsconfig_dir: Option<P>,
         in_code_schemas: Vec<ResolvedIntegration>,
         settings_mgr: Arc<SettingsManager>,
+        exec_resolver: ExecResolver,
+        builtin_dispatcher: Option<Arc<dyn BuiltinDispatcher>>,
     ) -> Self {
         let resolver = Arc::new(DefaultSchemaResolver::new(toolsconfig_dir, in_code_schemas));
-        // Exec resolver: Phase 3 ships a no-op; Phase 5 will wire this
-        // to the pentest ConfigManager so `{{exec}}` templates resolve
-        // to the installed tool's absolute path.
-        let tester =
-            DefaultTester::new(Box::new(|_tool_id: &str| None)).expect("DefaultTester init");
+        let mut tester = DefaultTester::new(exec_resolver).expect("DefaultTester init");
+        if let Some(d) = builtin_dispatcher {
+            tester = tester.with_builtin_dispatcher(d);
+        }
         Self {
             resolver,
             tester: Arc::new(tester),
@@ -67,14 +76,64 @@ impl IntegrationsState {
         }
     }
 
-    /// Production constructor: collect the standard in-code schemas
-    /// (one per `IntelProvider` impl + the bundled `core.json`) and
-    /// hand them to the resolver alongside the toolsconfig directory.
-    pub fn build_default(settings_mgr: Arc<SettingsManager>) -> Self {
+    /// Production constructor.
+    ///
+    /// `tools_dir` and `toolsconfig_dir` come from the pentest
+    /// `ConfigManager`; the caller is responsible for awaiting them
+    /// once at startup (they're `PathBuf` values, not `&Path`, so the
+    /// closure can move-own a snapshot). New tools installed at
+    /// runtime require a Golish restart to surface here — acceptable
+    /// for the Test Connection path, which only runs when the user
+    /// clicks the button.
+    pub fn build_default(
+        settings_mgr: Arc<SettingsManager>,
+        tools_dir: PathBuf,
+        toolsconfig_dir: PathBuf,
+    ) -> Self {
+        // 1. Snapshot every ToolConfig in `toolsconfig_dir`. Used by
+        //    both the exec resolver (to look up `executable` /
+        //    `runtime`) and any future per-tool lookups.
+        let scan = golish_pentest::scan_toolsconfig(&toolsconfig_dir);
+        if !scan.success {
+            tracing::warn!(
+                "[integrations] toolsconfig scan failed at {}: {}",
+                toolsconfig_dir.display(),
+                scan.error.as_deref().unwrap_or("<unknown>")
+            );
+        }
+        let configs = Arc::new(scan.tools);
+        let tools_dir_arc = Arc::new(tools_dir);
+
+        // 2. Real exec resolver: closure moves the snapshot in so the
+        //    integrations tester crate doesn't need to depend on
+        //    `golish-pentest`. Closure is sync — works because the
+        //    underlying helper just does `which_executable` + path
+        //    joins, no IO awaits.
+        let configs_for_resolver = configs.clone();
+        let tools_dir_for_resolver = tools_dir_arc.clone();
+        let exec_resolver: ExecResolver = Box::new(move |tool_id: &str| {
+            golish_pentest::resolve_tool_executable(
+                tool_id,
+                &configs_for_resolver,
+                &tools_dir_for_resolver,
+            )
+        });
+
+        // 3. Real builtin dispatcher: routes `TestKind::Builtin` to
+        //    the matching `IntelProvider::test_connection`. The
+        //    provider registry is built once here and lives inside
+        //    the dispatcher's `Arc`.
+        let (in_code_schemas, providers) = collect_in_code_schemas_and_providers();
+        let dispatcher: Arc<dyn BuiltinDispatcher> = Arc::new(IntelBuiltinDispatcher {
+            providers: Arc::new(providers),
+        });
+
         Self::new(
-            golish_core::paths::toolsconfig_dir(),
-            collect_in_code_schemas(),
+            Some(toolsconfig_dir),
+            in_code_schemas,
             settings_mgr,
+            exec_resolver,
+            Some(dispatcher),
         )
     }
 
@@ -161,20 +220,13 @@ struct CoreIntegrationsFile {
     integrations: Vec<ResolvedIntegration>,
 }
 
-/// Gather every schema that ships with the binary:
-///
-/// 1. Every `IntelProvider` impl that declared
-///    `integration_schema: Some(_)` in its [`ProviderMeta`].
-/// 2. The JSON entries inside `resources/integrations/core.json`
-///    (GitHub Token, future bundled built-ins).
-///
-/// Returned list is what we feed to `DefaultSchemaResolver` as the
-/// `in_code` set. Errors loading the JSON file are logged and the
-/// loop continues — a corrupted bundle file mustn't block startup.
-fn collect_in_code_schemas() -> Vec<ResolvedIntegration> {
-    let mut out: Vec<ResolvedIntegration> = Vec::new();
-
-    // -- 1. Intel providers -------------------------------------------------
+/// Build the in-code schema list **and** the provider registry used
+/// by [`IntelBuiltinDispatcher`]. The two are computed together so we
+/// don't construct the five `IntelProvider` instances twice.
+fn collect_in_code_schemas_and_providers() -> (
+    Vec<ResolvedIntegration>,
+    HashMap<String, Arc<dyn IntelProvider>>,
+) {
     let providers: Vec<Arc<dyn IntelProvider>> = vec![
         Arc::new(ZoneProvider::default()),
         Arc::new(FofaProvider::default()),
@@ -182,36 +234,306 @@ fn collect_in_code_schemas() -> Vec<ResolvedIntegration> {
         Arc::new(HunterProvider::default()),
         Arc::new(ShodanProvider::default()),
     ];
-    for p in providers {
+
+    let mut schemas: Vec<ResolvedIntegration> = Vec::new();
+    let mut registry: HashMap<String, Arc<dyn IntelProvider>> = HashMap::new();
+
+    for p in &providers {
         let meta = p.meta();
         if let Some(schema) = meta.integration_schema {
-            out.push(ResolvedIntegration {
-                tool_id: meta.id,
+            schemas.push(ResolvedIntegration {
+                tool_id: meta.id.clone(),
                 schema,
             });
         }
+        registry.insert(meta.id, p.clone());
     }
 
-    // -- 2. Bundled core.json ----------------------------------------------
+    // -- Bundled core.json (no providers behind it) ------------------------
     if let Some(path) = golish_core::paths::integrations_core_file() {
         match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str::<CoreIntegrationsFile>(&text) {
-                Ok(file) => out.extend(file.integrations),
+                Ok(file) => schemas.extend(file.integrations),
                 Err(e) => tracing::warn!("[integrations] failed to parse {}: {e}", path.display()),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Bundle file optional in tests / packaging stages
-                // where resources aren't laid out yet.
                 tracing::debug!("[integrations] no core.json at {}", path.display());
             }
             Err(e) => tracing::warn!("[integrations] reading {}: {e}", path.display()),
         }
     }
 
-    out
+    (schemas, registry)
+}
+
+/// `BuiltinDispatcher` impl backed by the `IntelProvider` registry.
+///
+/// Strategy:
+/// - Find the registered provider for `tool_id`. Missing id → Unknown
+///   with explanatory message (legacy callers without a registry
+///   never reach this path — they pass `None` to `IntegrationsState`).
+/// - Pick the first secret field declared in the matching group as
+///   the credential. The five intel providers all use a single
+///   `api_key` field today; if a future schema declares multiple
+///   secret fields we'll need a dedicated `credential_field` hint on
+///   `TestKind::Builtin`.
+/// - Call `provider.test_connection(key)` and map [`ConnectionStatus`]
+///   onto [`crate::IntegrationHealth`].
+struct IntelBuiltinDispatcher {
+    providers: Arc<HashMap<String, Arc<dyn IntelProvider>>>,
+}
+
+#[async_trait]
+impl BuiltinDispatcher for IntelBuiltinDispatcher {
+    async fn dispatch(
+        &self,
+        tool_id: &str,
+        group_id: &str,
+        schema: &IntegrationSchema,
+        cleartext_fields: &HashMap<String, String>,
+    ) -> IntegrationResult<IntegrationHealth> {
+        let Some(provider) = self.providers.get(tool_id) else {
+            return Ok(IntegrationHealth::unknown(format!(
+                "no IntelProvider registered for '{tool_id}' — builtin test cannot run"
+            )));
+        };
+
+        let group = schema
+            .groups
+            .iter()
+            .find(|g| g.id == group_id)
+            .ok_or_else(|| {
+                IntegrationError::Validation(format!(
+                    "builtin dispatch: group '{group_id}' not in schema"
+                ))
+            })?;
+
+        let key = pick_credential_value(group, cleartext_fields)
+            .unwrap_or_default();
+
+        match provider.test_connection(&key).await {
+            Ok(status) => Ok(connection_status_to_health(status)),
+            Err(e) => Ok(IntegrationHealth::unknown(format!(
+                "provider error: {e}"
+            ))),
+        }
+    }
+}
+
+/// Pull out the value for the first declared `secret_text` /
+/// `secret_textarea` field. Falls back to the first field overall if
+/// no secret is declared (defensive — wouldn't be a sane builtin
+/// schema, but better than panicking).
+fn pick_credential_value(
+    group: &IntegrationGroup,
+    cleartext: &HashMap<String, String>,
+) -> Option<String> {
+    let first_secret = group
+        .fields
+        .iter()
+        .find(|f: &&Field| f.field_type.is_secret());
+    let field = first_secret.or_else(|| group.fields.first())?;
+    cleartext.get(&field.key).cloned()
+}
+
+fn connection_status_to_health(s: ConnectionStatus) -> IntegrationHealth {
+    match s {
+        ConnectionStatus::Ok {
+            message,
+            quota_remaining,
+            quota_total,
+        } => {
+            let mut msg = message;
+            if let (Some(remaining), Some(total)) = (quota_remaining, quota_total) {
+                msg.push_str(&format!(" · quota {remaining}/{total}"));
+            } else if let Some(remaining) = quota_remaining {
+                msg.push_str(&format!(" · quota_remaining {remaining}"));
+            }
+            IntegrationHealth::healthy(msg)
+        }
+        ConnectionStatus::AuthFailed { message } => IntegrationHealth::invalid(message),
+        ConnectionStatus::QuotaExhausted { message } => IntegrationHealth {
+            status: golish_integrations::HealthStatus::RateLimited,
+            message,
+            tested_at: chrono::Utc::now(),
+        },
+        ConnectionStatus::NetworkError { message } => IntegrationHealth::unknown(message),
+    }
 }
 
 // Allow constructing IntegrationSchema bare in case someone wants to
 // extend the schema in code without a JSON file.
 #[allow(dead_code)]
 fn _api_key_schema_placeholder_does_not_warn(_s: IntegrationSchema) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use golish_integrations::schema::{
+        Field, FieldType, IntegrationGroup, IntegrationSchema, Storage, TestKind, VaultStorage,
+    };
+    use std::collections::HashMap;
+
+    fn fake_schema_one_secret() -> IntegrationSchema {
+        IntegrationSchema {
+            category: "asm".into(),
+            display_name: "demo".into(),
+            description: None,
+            help_url: None,
+            storage: Storage::Vault {
+                vault: VaultStorage::default(),
+            },
+            groups: vec![IntegrationGroup {
+                id: "default".into(),
+                name: "API Key".into(),
+                description: None,
+                icon: None,
+                help_url: None,
+                test: Some(TestKind::Builtin),
+                capture: None,
+                fields: vec![Field {
+                    key: "api_key".into(),
+                    label: "API Key".into(),
+                    field_type: FieldType::SecretText,
+                    placeholder: None,
+                    required: true,
+                    rows: None,
+                    options: vec![],
+                    pattern: None,
+                }],
+            }],
+        }
+    }
+
+    fn pick_value_test_group() -> IntegrationGroup {
+        IntegrationGroup {
+            id: "default".into(),
+            name: "x".into(),
+            description: None,
+            icon: None,
+            help_url: None,
+            test: None,
+            capture: None,
+            fields: vec![
+                Field {
+                    key: "label_only".into(),
+                    label: "Label".into(),
+                    field_type: FieldType::Text,
+                    placeholder: None,
+                    required: false,
+                    rows: None,
+                    options: vec![],
+                    pattern: None,
+                },
+                Field {
+                    key: "api_key".into(),
+                    label: "API Key".into(),
+                    field_type: FieldType::SecretText,
+                    placeholder: None,
+                    required: true,
+                    rows: None,
+                    options: vec![],
+                    pattern: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn pick_credential_prefers_secret_field_over_first_field() {
+        let group = pick_value_test_group();
+        let mut cleartext = HashMap::new();
+        cleartext.insert("label_only".into(), "ignored-label".into());
+        cleartext.insert("api_key".into(), "real-secret".into());
+        let v = pick_credential_value(&group, &cleartext);
+        assert_eq!(v.as_deref(), Some("real-secret"));
+    }
+
+    #[test]
+    fn pick_credential_returns_none_when_secret_missing_from_cleartext() {
+        let group = pick_value_test_group();
+        let cleartext = HashMap::new();
+        let v = pick_credential_value(&group, &cleartext);
+        assert!(v.is_none(), "no cleartext entry → None, not empty string");
+    }
+
+    #[test]
+    fn connection_status_ok_with_quota_appended_to_message() {
+        let s = ConnectionStatus::Ok {
+            message: "0.zone validated".into(),
+            quota_remaining: Some(42),
+            quota_total: Some(100),
+        };
+        let h = connection_status_to_health(s);
+        assert_eq!(h.status, golish_integrations::HealthStatus::Healthy);
+        assert!(h.message.contains("0.zone validated"));
+        assert!(h.message.contains("42/100"));
+    }
+
+    #[test]
+    fn connection_status_auth_failed_maps_to_invalid() {
+        let s = ConnectionStatus::AuthFailed {
+            message: "bad key".into(),
+        };
+        let h = connection_status_to_health(s);
+        assert_eq!(h.status, golish_integrations::HealthStatus::Invalid);
+        assert_eq!(h.message, "bad key");
+    }
+
+    #[test]
+    fn connection_status_quota_exhausted_maps_to_rate_limited() {
+        let s = ConnectionStatus::QuotaExhausted {
+            message: "quota out".into(),
+        };
+        let h = connection_status_to_health(s);
+        assert_eq!(h.status, golish_integrations::HealthStatus::RateLimited);
+        assert_eq!(h.message, "quota out");
+    }
+
+    #[test]
+    fn connection_status_network_error_maps_to_unknown() {
+        let s = ConnectionStatus::NetworkError {
+            message: "dns failure".into(),
+        };
+        let h = connection_status_to_health(s);
+        assert_eq!(h.status, golish_integrations::HealthStatus::Unknown);
+        assert_eq!(h.message, "dns failure");
+    }
+
+    #[tokio::test]
+    async fn intel_dispatcher_unknown_tool_returns_unknown_health() {
+        let dispatcher = IntelBuiltinDispatcher {
+            providers: Arc::new(HashMap::new()),
+        };
+        let schema = fake_schema_one_secret();
+        let cleartext = HashMap::new();
+        let h = dispatcher
+            .dispatch("missing-id", "default", &schema, &cleartext)
+            .await
+            .unwrap();
+        assert_eq!(h.status, golish_integrations::HealthStatus::Unknown);
+        assert!(h.message.contains("missing-id"));
+    }
+
+    #[tokio::test]
+    async fn intel_dispatcher_bad_group_returns_validation_error() {
+        // Register a real provider so the dispatcher gets past the
+        // "missing-id" early return and reaches the group lookup.
+        let p: Arc<dyn IntelProvider> = Arc::new(ZoneProvider::default());
+        let mut providers = HashMap::new();
+        providers.insert("0.zone".to_string(), p);
+        let dispatcher = IntelBuiltinDispatcher {
+            providers: Arc::new(providers),
+        };
+        let schema = fake_schema_one_secret();
+        let cleartext = HashMap::new();
+        let err = dispatcher
+            .dispatch("0.zone", "nonexistent", &schema, &cleartext)
+            .await
+            .unwrap_err();
+        match err {
+            IntegrationError::Validation(m) => assert!(m.contains("nonexistent")),
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+}

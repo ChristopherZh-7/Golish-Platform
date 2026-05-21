@@ -45,5 +45,6 @@ pub use schema::{
     ExternalFileFormat, ExternalFileStorage, Field, FieldType, IntegrationGroup, IntegrationSchema,
     SettingsStorage, Storage, TestKind, VaultStorage,
 };
+pub use tester::{BuiltinDispatcher, DefaultTester, ExecResolver};
 pub use traits::{ResolvedIntegration, SchemaResolver, StorageBackend, Tester};
 pub use types::{FieldValue, HealthStatus, IntegrationHealth};

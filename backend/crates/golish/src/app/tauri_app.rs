@@ -33,7 +33,20 @@ pub(crate) fn configure_builder(
     let pentest_cfg = app_state.pentest_config_manager.clone();
     // Integrations: schema resolver + tester + bundled in-code schemas
     // (intel providers + `resources/integrations/core.json`).
-    let integrations_state = IntegrationsState::build_default(settings_mgr.clone());
+    //
+    // Snapshot tools_dir + toolsconfig_dir once at startup so the
+    // `{{exec}}` resolver embedded in the tester can run sync. The
+    // resulting `ExecResolver` closure captures the snapshot; new
+    // tools installed at runtime require a Golish restart to surface
+    // in the Test Connection button (acceptable trade-off).
+    let (pentest_tools_dir, pentest_toolsconfig_dir) = tauri::async_runtime::block_on(async {
+        (pentest_cfg.tools_dir().await, pentest_cfg.toolsconfig_dir().await)
+    });
+    let integrations_state = IntegrationsState::build_default(
+        settings_mgr.clone(),
+        pentest_tools_dir,
+        pentest_toolsconfig_dir,
+    );
     // Credential Capture Engine. Tauri-managed as `Arc<...>` so the
     // setup hook can clone an owning handle for the TTL watcher
     // background task without lifetime headaches.
