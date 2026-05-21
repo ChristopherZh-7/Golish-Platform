@@ -17,7 +17,7 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | 凭据抓取器 Phase 1 + Phase 2 + Phase 3 **代码部分均已 commit 完毕**（HEAD `da1ffea`），下一步 Phase 4 前端 UX（3-4 小时，~6 个 task）：i18n keys + useCaptureSession hook + CaptureButton / CaptureConfirmDialog / CaptureStatusToast 3 个组件 + 集成进 IntegrationGroup.tsx + 单测。Phase 3 T3.3 是手动 devtools 验证（`just dev` 后跑 `await window.__TAURI_INTERNALS__.invoke("integrations_capture_start", { args: { tool_id, group_id } })` 看弹窗），需用户做 |
+| **当前最高优先级** | 凭据抓取器 Phase 1 + Phase 2 + Phase 3 + Phase 4 **代码部分均已 commit 完毕**（HEAD `7d4d163`），下一步 **Phase 5**（~90 分钟）：加 ENScan AQC capture recipe + 手动 E2E + 反向 6 case + just precommit 全绿，做完即可把 capture-engine 切 passing。Phase 3 T3.3 / Phase 4 Review 都需要用户手动验证 |
 | **当前 blocker** | 整 monorepo 的 `just precommit` 因 preexisting biome 警告 + 8 个 preexisting `failure_kind` PlanStep struct literal 编译错（M2 cherry-pick 遗留）fail，与 capture/integrations 改动无关。capture Phase 1+2 自己引入的代码 cargo check / cargo nextest lib / ReadLints 全绿 |
 | **未提交的半成品** | git status 仍挂着 ~30 个 preexisting 文件改动（pty / agent-kit / kg / planner / llm-providers / pentest / `golish/tests/ai_events_characterization/` 等），与本轮 capture-engine 无关；本轮新增 commit `11f4aaa` + `6dc8303` + `92d94ad` + `e3d5963` 范围干净 |
 
@@ -26,6 +26,40 @@
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-21 · 凭据抓取器 Phase 4 前端 UX（T4.1-T4.5 单 commit）
+
+- **本轮目标**：用户指令"推 Phase 4 前端 UX"。按计划 Phase 4 把 i18n + useCaptureSession hook + 3 个 UI 组件 + 集成进 IntegrationGroup.tsx 一次性落地。计划上 T4.1-T4.5 分了 5 个 commit，但 hook ↔ 组件 ↔ IntegrationGroup 集成是紧耦合（类型签名互相依赖），单 commit 避免中间 broken。T4.6 计划测试我聚焦在 CaptureButton 组件级（4 case），集成级"点击→对话→IPC"覆盖在 hook + Phase 5 手动 E2E。
+- **已完成（commit `7d4d163`，单 commit +730 行 / 8 个文件）**：
+  - **i18n**：`en.json` + `zh-CN.json` 各 +28 行。新增 `integrations.capture.button.{label,tooltip}` / `dialog.{title,description,start,cancel}` / `toast.{waitingLogin,navigating,extracting,captured,partial,timeout,failed,cancelled}` / `errors.{noRecipe,alreadyRunning,webviewFailed,unknown}`。description / toast 用 `{{url}}` / `{{fields}}` / `{{ttl}}` / `{{remaining}}` / `{{count}}` / `{{captured}}` / `{{failed}}` 插值占位
+  - **`hooks/useCaptureSession.ts`** (+216 行)：自管 confirm dialog 状态 / pendingRequest / live session / lastEvent / startError；1Hz countdown 由 `session.expires_at` 推驱；`@tauri-apps/api/event` `listen("integration-capture")` 全局订阅一次（用 `sessionIdRef` 过滤非本 session 事件）；接收 `onTerminalSuccess?: () => void` 回调，在 `captured` / `partial` 触发，让父组件 refresh 自己的 snapshot（避开本项目无 react-query 的现实）
+  - **`CaptureButton.tsx`** (+62 行)：`group.capture` 不存在 → 返 `null`；Wand2 icon + 琥珀色 pill 风格匹配 toolbar；用现有 `@/components/ui/tooltip`
+  - **`CaptureButton.test.tsx`** (+109 行)：4 case（hidden when no capture / shown when present / onStart 传 toolId+groupId / disabled 时不 fire）
+  - **`CaptureConfirmDialog.tsx`** (+91 行)：用现有 `@/components/ui/dialog`（Radix Dialog）替代不存在的 alert-dialog——节省一个 `@radix-ui/react-alert-dialog` 依赖。渲染 recipe.login_url + 提取字段列表 + TTL + 可选 instructions
+  - **`CaptureStatusToast.tsx`** (+158 行)：8 状态可视化（spinner+countdown / green / yellow / red X / clock / gray X）；in-flight 状态 inline Cancel button；`failed` 状态原样展示 `session.error_message` 让 `[CAPTURE_*]` prefix 可见；当没有 session 但有 startError 时单独渲染（处理 CAPTURE_NO_RECIPE / CAPTURE_ALREADY_RUNNING 等启动错误）
+  - **`IntegrationGroup.tsx`** (+38 行)：① 取 `useIntegrationGroup` 暴露的 `reload`（非 `refresh`，跟 hook 实际 API 一致）② 用 `useCaptureSession({ onTerminalSuccess: () => void reload() })` ③ Toolbar 在 Clear 和 flex-1 spacer 之间插入 CaptureButton（与写入操作同组、Test 仍 pin 右）④ 在 toolbar 上方渲染 CaptureStatusToast（session 或 startError 时才渲）⑤ 组件根挂载 CaptureConfirmDialog
+- **运行过的验证**：
+  - `pnpm exec tsc --noEmit`（全前端）→ exit 0（10.1s）
+  - `pnpm exec vitest run frontend/components/Settings/IntegrationsSettings/` → **21/21 passed**（既有 17 + CaptureButton 4 个新）
+  - `pnpm exec vitest run frontend/components/Settings/` → **72/72 passed**（既有 68 + 新 4）→ 整 Settings 模块零回归
+  - `pnpm exec biome check`（24 个 IntegrationsSettings 文件 + 2 个 i18n）→ No fixes applied（一次自动修：长 import 折单行 + captureCancel/captureStart sort）
+  - `ReadLints` 8 个改动文件 → No linter errors found
+- **已记录证据**：
+  - 21/21 + 72/72 + 24 文件 biome 干净 + 0 lint error
+  - vitest.config.ts 第 23 行 `@tauri-apps/api/event` alias 到 `frontend/test/mocks/tauri-event.ts`——这是 useCaptureSession 能在 jsdom 下 silent-noop 的原因；测试不需要为 listen() 写额外 mock
+- **提交记录**：`7d4d163`，feat/asm-intel-providers 分支，未 push
+- **已知风险或未解决问题**：
+  - **真实运行验证（T3.3 + Phase 4 Review Checkpoint）未跑**：需要 `just dev` 启动后，手动 ① 看 Settings → Integrations → ENScan_GO → AQC 是否多了 ⚡ 按钮 ② 点击 ⚡ 看是否弹出 confirm dialog ③ 点 "打开浏览器并登录" 看是否弹出独立 webview ④ Toast 在 3 状态下的视觉。其中 ② / ③ 受 Phase 5 AQC capture recipe 是否加进 enscan-go.json 影响——现在 group.capture 为空，⚡ 按钮直接**不渲染**，所以点击连 dialog 都看不到。Phase 5 加完 recipe 后 ⚡ 才出现
+  - **`useCaptureSession` listen() 在生产 Tauri 环境的真实表现**：测试用 mock；真实环境第一次见 `integration-capture` 事件如果接收延迟或漏接，UI 会卡在 waiting_login。可以加一个兜底 timer 每 5s 调一次 `captureStatus`，但 P1 MVP 简化没做
+  - **CaptureConfirmDialog 用 Radix Dialog**：跟计划上的 AlertDialog 视觉略不同（多了一个右上角 X 关闭，AlertDialog 没有）。UX 上更友好；不算 deviation
+  - **CaptureStatusToast `failed` 状态原样显示 error_message**：包含 `[CAPTURE_*]` prefix 字符串——对用户不够友好，但对 debug 极佳。P2 可加 i18n mapping
+  - **新增 4 个 CaptureButton 测试**：覆盖了组件级行为，但**没**测 hook + dialog 集成（"点 ⚡ 弹 dialog 点 start 发 IPC"完整 flow）。这种集成测试在本项目通常落在 Playwright E2E，Phase 5 之后可补
+- **下一步最佳动作**：
+  1. **Phase 5** 启动（~90 分钟，4 个 task）：① T5.1 `resources/toolsconfig/enscan-go.json` 给 AQC group 加 `capture` 段（cookies.aqc → BDUSS cookie）② T5.2 手动 E2E（just dev + Settings → Integrations → ENScan AQC ⚡ → 真实登录爱企查 → 看 toast 变绿 + cookie 写入 + enscan -n 小米 -type aqc 真实跑通）③ T5.3 反向 6 case（超时 / 取消 / 409 / 手动关窗 / data_dir 清干净 / GC 后 404）④ T5.4 just precommit 全绿 + feature_list.json 切 passing
+  2. 或者用户希望先做 T3.3 / Phase 4 review，把 Phase 5 AQC recipe 加上之后再做真实 E2E
+  3. 或者先 push 本轮所有 commit 到远端
 
 ---
 
