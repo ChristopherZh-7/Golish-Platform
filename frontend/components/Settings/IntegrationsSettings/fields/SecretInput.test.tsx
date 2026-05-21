@@ -77,4 +77,17 @@ describe("SecretInput", () => {
     const input = screen.getByPlaceholderText("•••• (configured)");
     expect(input).toBeInTheDocument();
   });
+
+  it("uses a success visual state when an existing secret is configured", () => {
+    render(
+      <SecretInput
+        value=""
+        onChange={vi.fn()}
+        placeholderForExistingSecret="•••• (configured)"
+        hasExistingSecret
+      />
+    );
+    const input = screen.getByPlaceholderText("•••• (configured)");
+    expect(input).toHaveClass("border-emerald-400/45");
+  });
 });

@@ -407,11 +407,11 @@ fn default_capture_timeout() -> u32 {
 /// [`Field::key`] in the parent group (cross-validated at
 /// schema-load time by `resolver::validate_capture`).
 ///
-/// P1 MVP supports only [`CaptureRule::Cookie`]. The remaining
-/// variants are accepted by the schema parser but the engine
-/// returns an `IntegrationError::CaptureRuleFailed` with reason
-/// "rule type not yet implemented in P1 MVP" when it encounters
-/// them (P2 will fill these in).
+/// The capture engine supports cookie extraction plus JSON-driven
+/// page/URL/storage extraction. Request-header capture is intentionally
+/// not modelled here yet because Tauri/Wry does not expose a portable
+/// external-HTTPS request interception API; that needs a separate
+/// script-injection bridge.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CaptureRule {
@@ -433,6 +433,15 @@ pub enum CaptureRule {
     /// Pull multiple cookies, format each via `fmt`, then join with
     /// `sep`. Used by sites that expect a manually-joined
     /// `name1=v1; name2=v2` cookie header (e.g. ENScan TYC).
+    ///
+    /// `required_names` is the **login-state proof set**: if any name in
+    /// it is missing from the live cookie jar the rule fails (the
+    /// capture engine surfaces it as a soft failure and waits for the
+    /// next navigation rather than persisting an incomplete header).
+    /// Used when `success_url_pattern` is necessarily loose (e.g. baidu
+    /// drops the user back on `aiqicha.baidu.com/` root after two-factor
+    /// auth) and we need an independent signal that the user actually
+    /// finished logging in. Defaults to empty = no enforcement.
     CookieJoined {
         domain: String,
         names: Vec<String>,
@@ -443,6 +452,8 @@ pub enum CaptureRule {
         target_field: String,
         #[serde(default = "default_true_capture")]
         required: bool,
+        #[serde(default)]
+        required_names: Vec<String>,
     },
 
     /// Read `localStorage[key]` via `WebviewWindow::eval_with_callback`.
@@ -481,6 +492,19 @@ pub enum CaptureRule {
         #[serde(default = "default_true_capture")]
         required: bool,
     },
+
+    /// Read a JavaScript-set request header observed by the capture
+    /// webview's injected fetch/XMLHttpRequest monitor. `url_pattern`
+    /// is an optional regex applied to the request URL; when absent the
+    /// most recent matching header by name is used.
+    RequestHeader {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url_pattern: Option<String>,
+        target_field: String,
+        #[serde(default = "default_true_capture")]
+        required: bool,
+    },
 }
 
 fn default_true_capture() -> bool {
@@ -508,7 +532,8 @@ impl CaptureRule {
             | Self::LocalStorage { target_field, .. }
             | Self::SessionStorage { target_field, .. }
             | Self::PageContent { target_field, .. }
-            | Self::UrlQuery { target_field, .. } => target_field,
+            | Self::UrlQuery { target_field, .. }
+            | Self::RequestHeader { target_field, .. } => target_field,
         }
     }
 
@@ -520,7 +545,8 @@ impl CaptureRule {
             | Self::LocalStorage { required, .. }
             | Self::SessionStorage { required, .. }
             | Self::PageContent { required, .. }
-            | Self::UrlQuery { required, .. } => *required,
+            | Self::UrlQuery { required, .. }
+            | Self::RequestHeader { required, .. } => *required,
         }
     }
 
@@ -534,6 +560,7 @@ impl CaptureRule {
             Self::SessionStorage { .. } => "session_storage",
             Self::PageContent { .. } => "page_content",
             Self::UrlQuery { .. } => "url_query",
+            Self::RequestHeader { .. } => "request_header",
         }
     }
 }
@@ -761,6 +788,7 @@ mod tests {
             fmt: "{name}={value}".into(),
             target_field: "f.b".into(),
             required: false,
+            required_names: vec![],
         };
         assert_eq!(cookie_joined.target_field(), "f.b");
         assert!(!cookie_joined.required());

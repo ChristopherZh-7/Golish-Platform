@@ -14,6 +14,7 @@ const getMock = vi.fn();
 const setMock = vi.fn();
 const clearMock = vi.fn();
 const testMock = vi.fn();
+const captureClearProfileMock = vi.fn();
 vi.mock("@/lib/api", () => ({
   integrations: {
     listSchemas: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock("@/lib/api", () => ({
     set: (...args: unknown[]) => setMock(...args),
     clear: (...args: unknown[]) => clearMock(...args),
     test: (...args: unknown[]) => testMock(...args),
+    captureClearProfile: (...args: unknown[]) => captureClearProfileMock(...args),
   },
 }));
 vi.mock("@/lib/notify", () => ({
@@ -71,12 +73,17 @@ describe("IntegrationGroupForm", () => {
     setMock.mockReset();
     clearMock.mockReset();
     testMock.mockReset();
+    captureClearProfileMock.mockReset();
     getMock.mockResolvedValue(EMPTY_SNAPSHOT);
     setMock.mockResolvedValue(undefined);
+    captureClearProfileMock.mockResolvedValue(undefined);
+    vi.stubGlobal("confirm", vi.fn(() => true));
   });
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("renders exactly one input per declared field", async () => {
@@ -144,6 +151,29 @@ describe("IntegrationGroupForm", () => {
     render(<IntegrationGroupForm toolId="enscan-go" group={noTest} />);
     await waitFor(() => expect(screen.getByText("Cookie")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: /integrations\.testButton/i })).toBeNull();
+  });
+
+  it("clears the capture browser login profile without clearing stored credentials", async () => {
+    const user = userEvent.setup();
+    const group: IntegrationGroupSchema = {
+      ...TYC_GROUP,
+      capture: {
+        login_url: "https://example.com/login",
+        timeout_secs: 300,
+        rules: [],
+      },
+    };
+    render(<IntegrationGroupForm toolId="enscan-go" group={group} />);
+    await waitFor(() => expect(screen.getByText("Cookie")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: /integrations\.capture\.clearProfile\.label/i }));
+
+    await waitFor(() => expect(captureClearProfileMock).toHaveBeenCalledTimes(1));
+    expect(captureClearProfileMock).toHaveBeenCalledWith({
+      toolId: "enscan-go",
+      groupId: "tyc",
+    });
+    expect(clearMock).not.toHaveBeenCalled();
   });
 
   it("surfaces an error banner when integrations_get rejects", async () => {

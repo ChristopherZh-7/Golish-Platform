@@ -22,7 +22,7 @@
         {
           "id": "aqc",
           "name": "爱企查 (AQC)",
-          "description": "Log in to aiqicha.baidu.com, then click the ⚡ button to harvest the full baidu.com Cookie header automatically (BDUSS alone is rejected by AQC's safety wall — the engine joins every cookie on .baidu.com into a `name=value; name=value` header). Manual paste of the same header also works.",
+          "description": "Log in to aiqicha.baidu.com (Baidu may redirect post-login to qiye.baidu.com — both domains are recognised), then click the ⚡ button to harvest the full baidu.com Cookie header automatically (BDUSS alone is rejected by AQC's safety wall — the engine joins every cookie on .baidu.com into a `name=value; name=value` header). Manual paste of the same header also works.",
           "help_url": "https://github.com/wgpsec/ENScan_GO#aqc",
           "fields": [
             {
@@ -43,9 +43,9 @@
           },
           "capture": {
             "login_url": "https://aiqicha.baidu.com/",
-            "success_url_pattern": "aiqicha\\.baidu\\.com/(home|company|usercenter|user|s)",
+            "success_url_pattern": "(aiqicha|qiye)\\.baidu\\.com/($|\\?|#|home\\b|usercenter\\b|user/|personalcenter\\b)",
             "timeout_secs": 300,
-            "instructions": "登录爱企查账号后，Golish 自动提取 .baidu.com 域所有 cookie 拼成完整 Cookie header 写入 cookies.aiqicha 字段（BDUSS 单值会触发安全验证，必须发完整 header）。",
+            "instructions": "登录爱企查账号后（如百度要求手机二次验证，请完成绿码/短信验证直到跳回 aiqicha.baidu.com 首页 或 百度企业 qiye.baidu.com/usercenter 个人中心），Golish 自动提取 .baidu.com 域所有 cookie 拼成完整 Cookie header 写入 cookies.aiqicha 字段。capture 引擎会等到 BDUSS 出现才算登录成功（避免抓未登录态 cookie）。",
             "rules": [
               {
                 "type": "cookie_joined",
@@ -54,7 +54,8 @@
                 "sep": "; ",
                 "fmt": "{name}={value}",
                 "target_field": "cookies.aiqicha",
-                "required": true
+                "required": true,
+                "required_names": ["BDUSS"]
               }
             ]
           }
@@ -75,6 +76,37 @@
             "ok_regex": "(?i)company_name|company\\s*name|icp",
             "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed|安全验证",
             "timeout_secs": 60
+          },
+          "capture": {
+            "login_url": "https://www.tianyancha.com/",
+            "success_url_pattern": "tianyancha\\.com",
+            "timeout_secs": 300,
+            "instructions": "登录天眼查后，Golish 会自动提取完整 Cookie，并监听页面请求中显式设置的 X-Tycid / Authorization 头，分别写入 cookies.tianyancha / cookies.tycid / cookies.auth_token。",
+            "rules": [
+              {
+                "type": "cookie_joined",
+                "domain": ".tianyancha.com",
+                "names": [],
+                "sep": "; ",
+                "fmt": "{name}={value}",
+                "target_field": "cookies.tianyancha",
+                "required": true
+              },
+              {
+                "type": "request_header",
+                "name": "X-Tycid",
+                "url_pattern": "tianyancha\\.com",
+                "target_field": "cookies.tycid",
+                "required": true
+              },
+              {
+                "type": "request_header",
+                "name": "Authorization",
+                "url_pattern": "tianyancha\\.com",
+                "target_field": "cookies.auth_token",
+                "required": true
+              }
+            ]
           }
         },
         {
@@ -96,6 +128,23 @@
             "ok_regex": "(?i)company_name|company\\s*name|icp",
             "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed|安全验证",
             "timeout_secs": 60
+          },
+          "capture": {
+            "login_url": "https://www.qimai.cn/",
+            "success_url_pattern": "qimai\\.cn",
+            "timeout_secs": 300,
+            "instructions": "登录七麦数据后，Golish 会自动提取 qimai.cn 相关 Cookie 并写入 cookies.qimai 字段。",
+            "rules": [
+              {
+                "type": "cookie_joined",
+                "domain": ".qimai.cn",
+                "names": [],
+                "sep": "; ",
+                "fmt": "{name}={value}",
+                "target_field": "cookies.qimai",
+                "required": true
+              }
+            ]
           }
         },
         {
@@ -117,6 +166,23 @@
             "ok_regex": "(?i)company_name|company\\s*name|icp",
             "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed|安全验证",
             "timeout_secs": 60
+          },
+          "capture": {
+            "login_url": "https://www.riskbird.com/",
+            "success_url_pattern": "riskbird\\.com",
+            "timeout_secs": 300,
+            "instructions": "登录风鸟 RiskBird 后，Golish 会自动提取 riskbird.com 相关 Cookie 并写入 cookies.risk_bird 字段。",
+            "rules": [
+              {
+                "type": "cookie_joined",
+                "domain": ".riskbird.com",
+                "names": [],
+                "sep": "; ",
+                "fmt": "{name}={value}",
+                "target_field": "cookies.risk_bird",
+                "required": true
+              }
+            ]
           }
         },
         {

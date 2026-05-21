@@ -13,9 +13,10 @@
  *   [Save] [Clear]    [Test]   <HealthPill>
  */
 
-import { ExternalLink, Loader2, Save, Trash2 } from "lucide-react";
+import { ExternalLink, Loader2, Save, ShieldX, Trash2 } from "lucide-react";
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
+import { integrations } from "@/lib/api";
 import type { IntegrationGroup as IntegrationGroupSchema } from "@/lib/api/integrations";
 import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";
@@ -84,6 +85,21 @@ export function IntegrationGroupForm({ toolId, group, fallbackHelpUrl }: Integra
     if (!ok) return;
     await clear();
     if (status !== "error") notify.success(t("integrations.cleared"));
+  };
+
+  const handleClearCaptureProfile = async () => {
+    const ok = confirm(t("integrations.capture.clearProfile.confirm", { groupName: group.name }));
+    if (!ok) return;
+    try {
+      await integrations.captureClearProfile({ toolId, groupId: group.id });
+      notify.success(t("integrations.capture.clearProfile.success"));
+    } catch (err) {
+      notify.error(
+        t("integrations.capture.clearProfile.failed", {
+          message: err instanceof Error ? err.message : String(err),
+        })
+      );
+    }
   };
 
   return (
@@ -196,6 +212,22 @@ export function IntegrationGroupForm({ toolId, group, fallbackHelpUrl }: Integra
           disabled={busy || captureInflight}
           onStart={capture.start}
         />
+        {group.capture && (
+          <button
+            type="button"
+            onClick={handleClearCaptureProfile}
+            disabled={busy || captureInflight}
+            className={cn(
+              "px-2.5 py-1 text-[11px] rounded-md transition-colors inline-flex items-center gap-1",
+              "bg-muted/30 text-foreground/60 hover:bg-muted/50",
+              "disabled:opacity-40 disabled:cursor-not-allowed"
+            )}
+            title={t("integrations.capture.clearProfile.tooltip")}
+          >
+            <ShieldX className="w-2.5 h-2.5" />
+            {t("integrations.capture.clearProfile.label")}
+          </button>
+        )}
         <div className="flex-1" />
         <TestButton
           onClick={test}

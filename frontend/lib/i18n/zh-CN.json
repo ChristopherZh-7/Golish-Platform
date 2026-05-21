@@ -907,6 +907,13 @@
         "label": "自动抓取",
         "tooltip": "打开浏览器窗口自动获取凭据"
       },
+      "clearProfile": {
+        "label": "清除登录态",
+        "tooltip": "清除自动抓取浏览器保存的网页登录态",
+        "confirm": "清除 {{groupName}} 的自动抓取浏览器登录态？这不会删除已经保存的凭据。",
+        "success": "已清除抓取浏览器登录态",
+        "failed": "清除抓取浏览器登录态失败：{{message}}"
+      },
       "dialog": {
         "title": "自动抓取凭据",
         "description": "Golish 将在独立窗口中打开 {{url}}。登录后会自动提取以下字段：{{fields}}。窗口会在 {{ttl}} 秒后自动关闭。",

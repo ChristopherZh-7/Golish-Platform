@@ -12,13 +12,14 @@
 //! - `integrations_capture_status`   · poll one session (event-channel
 //!                                     fallback for reconnect)
 //! - `integrations_capture_cancel`   · cancel an in-flight session
+//! - `integrations_capture_clear_profile` · clear saved capture browser login state
 //!
 //! See `docs/design/2026-05-21-integrations.md` for the data model
 //! and `docs/design/2026-05-21-credential-capture-engine.md` for the
 //! capture-specific architecture.
 
 pub use crate::tools::integrations::{
-    integrations_capture_cancel, integrations_capture_start, integrations_capture_status,
-    integrations_clear, integrations_get, integrations_list_schemas, integrations_set,
-    integrations_test,
+    integrations_capture_cancel, integrations_capture_clear_profile, integrations_capture_start,
+    integrations_capture_status, integrations_clear, integrations_get, integrations_list_schemas,
+    integrations_set, integrations_test,
 };

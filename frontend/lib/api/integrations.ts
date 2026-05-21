@@ -227,6 +227,8 @@ export type CaptureRule =
       fmt?: string;
       target_field: string;
       required?: boolean;
+      /** Cookie names that must be present before the capture is accepted. */
+      required_names?: string[];
     }
   | {
       type: "local_storage";
@@ -254,6 +256,14 @@ export type CaptureRule =
   | {
       type: "url_query";
       name: string;
+      target_field: string;
+      required?: boolean;
+    }
+  | {
+      type: "request_header";
+      name: string;
+      /** Optional regex matched against the request URL. */
+      url_pattern?: string;
       target_field: string;
       required?: boolean;
     };
@@ -413,9 +423,9 @@ export async function test(args: { toolId: string; groupId: string }): Promise<I
 // Capture IPC wrappers (Phase 3 T3.2)
 //
 // Backend command surface lives in `backend/crates/golish/src/tools/
-// integrations/capture_commands.rs`. All three accept an `args:` object
+// integrations/capture_commands.rs`. All commands accept an `args:` object
 // payload to match the Rust `#[derive(Deserialize)] CaptureStartArgs /
-// CaptureSessionArgs` wrappers.
+// CaptureSessionArgs / CaptureProfileArgs` wrappers.
 //
 // Error contract — every error message preserves a [PREFIX] so callers
 // can map without parsing the whole string:
@@ -478,5 +488,19 @@ export async function captureStatus(args: { sessionId: string }): Promise<Captur
 export async function captureCancel(args: { sessionId: string }): Promise<void> {
   return invoke<void>("integrations_capture_cancel", {
     args: { session_id: args.sessionId },
+  });
+}
+
+/**
+ * Clear only the browser login state used by future auto-capture
+ * windows for `(toolId, groupId)`. This does not remove the integration
+ * credential already stored by [`set`] / capture extraction.
+ */
+export async function captureClearProfile(args: {
+  toolId: string;
+  groupId: string;
+}): Promise<void> {
+  return invoke<void>("integrations_capture_clear_profile", {
+    args: { tool_id: args.toolId, group_id: args.groupId },
   });
 }

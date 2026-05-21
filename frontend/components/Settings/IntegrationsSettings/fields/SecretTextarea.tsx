@@ -20,6 +20,7 @@ interface SecretTextareaProps {
   disabled?: boolean;
   rows?: number;
   placeholderForExistingSecret?: string;
+  hasExistingSecret?: boolean;
   toggleLabel?: string;
   id?: string;
 }
@@ -31,6 +32,7 @@ export function SecretTextarea({
   disabled,
   rows = 4,
   placeholderForExistingSecret,
+  hasExistingSecret,
   toggleLabel = "Toggle visibility",
   id,
 }: SecretTextareaProps) {
@@ -58,6 +60,7 @@ export function SecretTextarea({
   }, [revealed, value]);
 
   const showWatermark = !revealed && value === "" && Boolean(placeholderForExistingSecret);
+  const showConfiguredState = showWatermark || Boolean(hasExistingSecret && value === "");
 
   return (
     <div className="relative w-full">
@@ -75,6 +78,8 @@ export function SecretTextarea({
           "border-border/40 focus:border-accent outline-none transition-colors",
           "font-mono leading-relaxed resize-y",
           "disabled:opacity-50",
+          showConfiguredState &&
+            "border-emerald-400/45 bg-emerald-500/10 text-emerald-100 placeholder:text-emerald-200/80",
           // Mask the rendered value when not revealed. This keeps line
           // breaks visible (helpful for cookie blobs) while keeping the
           // glyphs unreadable from a distance.

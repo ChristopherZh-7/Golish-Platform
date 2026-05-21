@@ -24,7 +24,8 @@ pub mod commands;
 pub mod state;
 
 pub use capture_commands::{
-    integrations_capture_cancel, integrations_capture_start, integrations_capture_status,
+    integrations_capture_cancel, integrations_capture_clear_profile, integrations_capture_start,
+    integrations_capture_status,
 };
 pub use commands::{
     integrations_clear, integrations_get, integrations_list_schemas, integrations_set,

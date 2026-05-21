@@ -38,6 +38,9 @@ export function FieldRenderer({
     serverValue?.has_value && (field.type === "secret_text" || field.type === "secret_textarea")
       ? serverValue.display_hint || "•••• (configured)"
       : undefined;
+  const hasExistingSecret =
+    Boolean(serverValue?.has_value) &&
+    (field.type === "secret_text" || field.type === "secret_textarea");
 
   switch (field.type) {
     case "secret_text":
@@ -49,6 +52,7 @@ export function FieldRenderer({
           placeholder={field.placeholder}
           disabled={disabled}
           placeholderForExistingSecret={placeholderForExisting}
+          hasExistingSecret={hasExistingSecret}
         />
       );
     case "secret_textarea":
@@ -61,6 +65,7 @@ export function FieldRenderer({
           disabled={disabled}
           rows={field.rows}
           placeholderForExistingSecret={placeholderForExisting}
+          hasExistingSecret={hasExistingSecret}
         />
       );
     case "url":

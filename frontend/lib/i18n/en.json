@@ -907,6 +907,13 @@
         "label": "Auto-capture",
         "tooltip": "Open a browser window to harvest credentials automatically"
       },
+      "clearProfile": {
+        "label": "Clear login state",
+        "tooltip": "Clear the saved browser login state used by auto-capture",
+        "confirm": "Clear the saved auto-capture browser login state for {{groupName}}? This does not remove the stored credential.",
+        "success": "Capture browser login state cleared",
+        "failed": "Failed to clear capture browser login state: {{message}}"
+      },
       "dialog": {
         "title": "Auto-capture credentials",
         "description": "Golish will open {{url}} in a separate window. After you sign in, the following fields will be extracted: {{fields}}. The window auto-closes after {{ttl}} seconds.",

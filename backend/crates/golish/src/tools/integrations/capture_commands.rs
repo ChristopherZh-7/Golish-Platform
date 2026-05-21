@@ -7,6 +7,7 @@
 //! | [`integrations_capture_start`]   | ⚡ "Auto Capture" → confirm → start |
 //! | [`integrations_capture_status`]  | (fallback poll for reconnect)       |
 //! | [`integrations_capture_cancel`]  | Cancel button on the status toast   |
+//! | [`integrations_capture_clear_profile`] | Clear saved browser login state |
 //!
 //! All three accept a single `args:` object payload so the wire format
 //! stays uniform with `integrations_set` / `integrations_clear` and
@@ -42,6 +43,12 @@ pub struct CaptureStartArgs {
 #[derive(Debug, Deserialize)]
 pub struct CaptureSessionArgs {
     pub session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CaptureProfileArgs {
+    pub tool_id: String,
+    pub group_id: String,
 }
 
 /// Open a credential-capture session.
@@ -168,4 +175,39 @@ pub async fn integrations_capture_cancel(
         let _ = win.close();
     }
     Ok(())
+}
+
+/// Clear the browser login state used by future auto-capture windows.
+///
+/// This intentionally does **not** clear the credential value already
+/// stored by `integrations_set` / capture extraction. It only resets
+/// the persistent webview profile, so users can switch accounts or
+/// recover from a corrupted upstream login session without losing the
+/// working ENScan cookie currently on disk.
+#[tauri::command]
+pub async fn integrations_capture_clear_profile(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, IntegrationsState>,
+    engine: tauri::State<'_, Arc<CaptureEngine>>,
+    args: CaptureProfileArgs,
+) -> Result<(), GolishError> {
+    let CaptureProfileArgs { tool_id, group_id } = args;
+    let resolved = state.resolver().get(&tool_id).await.map_err(map_err)?;
+    let group = resolved
+        .schema
+        .groups
+        .iter()
+        .find(|g| g.id == group_id)
+        .ok_or_else(|| {
+            map_err(IntegrationError::SchemaNotFound(format!(
+                "{tool_id}/{group_id}"
+            )))
+        })?;
+    if group.capture.is_none() {
+        return Err(map_err(IntegrationError::CaptureNoRecipe));
+    }
+    engine
+        .clear_profile(&app, &tool_id, &group_id)
+        .await
+        .map_err(map_err)
 }

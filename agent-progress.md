@@ -17,7 +17,7 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | ① capture-engine Phase 1-5 代码全 push（HEAD `a5f1964`），待用户手动 E2E（T5.2 正向 + T5.3 反向 6 case）通过后切 passing ② integrations Test connection 修复刚完成（HEAD `7a2a5c6`）：ENScan exec + 5 intel provider builtin 两条路径都能真实跑了 |
+| **当前最高优先级** | ① capture-engine Phase 1-5 代码全 push（HEAD `a5f1964`），待用户手动 E2E 通过后切 passing ② integrations Test connection wiring 修复完成（commit `7a2a5c6` push 上 `2ea820a`） ③ **ENScan 三层 bug 链修复刚完成（HEAD `1547073`）**：path 错位 + 5 group field 名错位 + 单 BDUSS 不够 → 全部对齐 ENScan v2.0.5 真实期望 + 升级 CookieJoined 抓完整 baidu.com header。待用户重新 just dev → ⚡ AQC → 真实跑 enscan 验证 |
 | **当前 blocker** | 整 monorepo 的 `just precommit` 因 preexisting biome 警告 + 8 个 preexisting `failure_kind` PlanStep struct literal 编译错（M2 cherry-pick 遗留）fail，与 capture/integrations 改动无关。本轮新增 commit 范围内 cargo check / cargo nextest lib / ReadLints 全绿 |
 | **未提交的半成品** | git status 仍挂着 ~30 个 preexisting 文件改动（pty / agent-kit / kg / planner / llm-providers / pentest / `golish/tests/ai_events_characterization/` 等），与本轮 capture-engine / integrations Test wiring 都无关；本轮新增 commit `7a2a5c6` 范围干净 |
 
@@ -26,6 +26,133 @@
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-21 · ENScan TYC Auto-capture JSON 补齐
+
+- **本轮目标**：用户反馈天眼查前端仍没有 Auto-capture，询问是否缺 JSON。
+- **已完成**：
+  - **`resources/toolsconfig/enscan-go.json`**：给 `tyc` group 增加 `capture` 段。
+  - TYC 规则组合：
+    - `cookie_joined` 抓 `.tianyancha.com` 完整 Cookie → `cookies.tianyancha`
+    - `request_header` 抓 `X-Tycid` → `cookies.tycid`
+    - `request_header` 抓 `Authorization` → `cookies.auth_token`
+  - 前端会因 group.capture 存在自动显示 `Auto-capture` / `清除登录态`。
+- **运行过的验证**：
+  - `python3 -m json.tool resources/toolsconfig/enscan-go.json >/dev/null` → **exit 0**
+  - `cargo nextest run -p golish-integrations -E 'test(fixture_enscan_aqc_capture_recipe_loads)' --status-level fail` → **exit 0 / 1 passed, 72 skipped**
+  - `ReadLints`（`enscan-go.json`）→ **No linter errors found**
+- **已知风险或未解决问题**：
+  - TYC 是否能一次抓全 3 项需要真实 E2E：如果天眼查不通过 fetch/XHR 显式设置 `X-Tycid` / `Authorization`，`request_header` 会提示未观察到 header，需要再根据实际页面行为改 JSON 规则（比如 local_storage / page_content）。
+
+---
+
+### 2026-05-21 · 通用 Capture Rule 扩展（JSON-only 方向）
+
+- **本轮目标**：用户要求补一轮通用抓取能力，目标是未来换工具尽量只改 JSON，不改前后端代码。
+- **已完成**：
+  - **`golish-integrations/src/schema.rs`**：`CaptureRule` 新增 `request_header` variant；更新注释，明确当前 schema 覆盖 cookie / storage / page / URL / JS request header。
+  - **`golish-integrations/src/resolver.rs`**：capture target field 校验覆盖 `request_header`。
+  - **`capture/engine.rs`**：
+    - 已实现 `local_storage`：读取 `window.localStorage[key]`。
+    - 已实现 `session_storage`：读取 `window.sessionStorage[key]`。
+    - 已实现 `page_content`：等待 selector，读取 `textContent` 或 attribute。
+    - 已实现 `url_query`：从当前 URL 读取 query 参数。
+    - 新增 `request_header`：通过初始化 JS 监听页面 `fetch` / `XMLHttpRequest` 显式设置的 request headers，再由 JSON rule 按 header name + 可选 `url_pattern` 提取。
+    - JS 取值通过临时 document title bridge 回传，Rust 用 nonce + base64 解码，不把 secret 写进日志。
+  - **`frontend/lib/api/integrations.ts`**：TS union 同步新增 `required_names` / `request_header`。
+  - **`resources/toolsconfig/enscan-go.json`**：给 KC/Qimai 与 RB/RiskBird 增加 `capture` 段（cookie_joined），因此前端会显示 Auto-capture；TYC/MIIT 保留待真实站点行为验证后再配 request_header/page/storage 组合。
+- **运行过的验证**：
+  - `cargo nextest run -p golish --lib -E 'test(tools::integrations::capture)' --status-level fail` → **exit 0 / 31 passed, 204 skipped**
+  - `cargo nextest run -p golish-integrations -E 'test(schema::tests::capture) | test(fixture_enscan_aqc_capture_recipe_loads)' --status-level fail` → **exit 0 / 4 passed, 69 skipped**
+  - `pnpm exec tsc --noEmit` → **exit 0**
+  - `pnpm exec biome check frontend/lib/api/integrations.ts` → **exit 0 / No fixes applied**
+  - `python3 -m json.tool resources/toolsconfig/enscan-go.json >/dev/null && python3 -m json.tool feature_list.json >/dev/null` → **exit 0**
+  - `git diff --check -- <本轮相关文件>` → **exit 0**
+  - `ReadLints`（本轮相关文件）→ **No linter errors found**
+- **已知风险或未解决问题**：
+  - `request_header` 能抓页面 JS 显式设置的 fetch/XHR header；不能抓浏览器自动附加的 Cookie header（Cookie 已由 cookie/cookie_joined 规则覆盖）。
+  - TYC/MIIT 需要真实站点 E2E 后确认 token/header 来源，再仅通过 JSON 配规则；本轮没有假装未实测来源已经完成。
+  - `resources/toolsconfig/enscan-go.json` 整文件 biome format 仍会触发既有格式差异；本轮只保证 JSON 语法合法和 schema fixture 通过，未做整文件重排。
+
+---
+
+### 2026-05-21 · Secret 已配置态视觉增强
+
+- **本轮目标**：用户指出 AQC Cookie 字段显示 `•••• (configured)` 但视觉上像没凭证，希望样式更明确。
+- **已完成**：
+  - **`SecretInput.tsx` / `SecretTextarea.tsx`**：当后端 `has_value=true` 且本地输入为空时，使用 emerald 成功态边框/背景/placeholder 颜色，明确表示“已有凭证”。
+  - **`FieldRenderer.tsx`**：把 secret 字段的 `hasExistingSecret` 状态传入具体输入组件。
+  - **`SecretInput.test.tsx`**：新增已配置态样式断言。
+- **运行过的验证**：
+  - `pnpm exec vitest run frontend/components/Settings/IntegrationsSettings/fields/SecretInput.test.tsx frontend/components/Settings/IntegrationsSettings/IntegrationGroup.test.tsx` → **exit 0 / 12 passed**
+  - `pnpm exec tsc --noEmit` → **exit 0**
+  - `pnpm exec biome check frontend/components/Settings/IntegrationsSettings/fields/SecretInput.tsx frontend/components/Settings/IntegrationsSettings/fields/SecretTextarea.tsx frontend/components/Settings/IntegrationsSettings/fields/FieldRenderer.tsx frontend/components/Settings/IntegrationsSettings/fields/SecretInput.test.tsx` → **exit 0 / No fixes applied**
+  - `ReadLints`（secret field 相关文件）→ **No linter errors found**
+
+---
+
+### 2026-05-21 · Capture webview 登录态持久化 + 清除登录态按钮
+
+- **本轮目标**：用户确认 AQC 抓取和 ENScan 实测已通后，提出每次重启/再次 Auto-capture 都要重新登录，体验差；希望保留 Auto-capture 浏览器网页登录态。
+- **设计决策**：
+  - 把 capture webview 存储从“每次 session_id 独立”改成“按 `(tool_id, group_id)` 稳定 profile”，例如 `enscan-go__aqc`。
+  - 新增“清除登录态”按钮，只清 Auto-capture webview 的网页登录态，不清 `cookies.aiqicha` 已写入的 ENScan 配置。
+- **已完成**：
+  - **后端 profile 存储**：`capture/data_dir.rs` 新增 `profile_key/profile_dir/cleanup_profile_dir`；`webview_isolation.rs` 的 macOS `data_store_identifier` 改为从稳定 profile key 派生；`engine.rs::start_webview` 改用 profile dir/key。
+  - **后端 IPC**：新增 `integrations_capture_clear_profile`，通过隐藏 webview 绑定同一 profile 调 `clear_all_browsing_data`，再清 profile dir；已接入 `tools/integrations/mod.rs`、`commands_facade/integrations.rs`、`commands_registry.rs`。
+  - **前端 UI/API**：`frontend/lib/api/integrations.ts` 新增 `captureClearProfile`；`IntegrationGroup.tsx` 在有 capture recipe 的 group 上渲染“清除登录态”按钮；中英文 i18n 已补；`IntegrationGroup.test.tsx` 覆盖“清登录态不调用 integrations.clear”。
+- **运行过的验证**：
+  - `cargo nextest run -p golish --lib -E 'test(profile_key_is_stable_and_path_safe) | test(profile_dir_is_stable_for_tool_group) | test(macos_data_store_id_uses_profile_key_not_session_uuid_identity)' --status-level fail` → **exit 0 / 3 passed, 230 skipped**
+  - `cargo nextest run -p golish --lib -E 'test(tools::integrations::capture)' --status-level fail` → **exit 0 / 29 passed, 204 skipped**
+  - `pnpm exec vitest run frontend/components/Settings/IntegrationsSettings/IntegrationGroup.test.tsx` → **exit 0 / 6 passed**
+  - `pnpm exec vitest run frontend/components/Settings/IntegrationsSettings/ frontend/components/Settings/IntegrationsSettings/IntegrationGroup.test.tsx` → **exit 0 / 22 passed**
+  - `pnpm exec tsc --noEmit` → **exit 0**
+  - `python3 -m json.tool feature_list.json >/dev/null && python3 -m json.tool frontend/lib/i18n/en.json >/dev/null && python3 -m json.tool frontend/lib/i18n/zh-CN.json >/dev/null` → **exit 0**
+  - `git diff --check -- <本轮相关文件>` → **exit 0**
+  - `ReadLints`（本轮改动文件）→ **No linter errors found**
+- **已知风险或未解决问题**：
+  - 需要用户手动 E2E：重启 Golish 后再次点 ENScan AQC ⚡，观察是否无需重新登录或至少保留百度已登录态；点击“清除登录态”后再点 ⚡ 应回到未登录状态。
+  - 未跑整仓 `just precommit`；当前仓库仍有既有 blocker（见“当前 blocker”），本轮只验证 capture/integrations 范围。
+
+---
+
+### 2026-05-21 · ENScan AQC 软重试状态机修复
+
+- **本轮目标**：用户贴出新日志：`success_url_pattern matched` 已出现，但第一次在 `https://aiqicha.baidu.com/` 抽取时 `raw_count=0`，随后第二次 pattern 仍匹配却看不到后续 cookie fetch，说明 qiye pattern 修复不是最终根因。
+- **根因结论**：`try_extract` 进入 `Extracting` 后，如果 `CookieJoined.required_names=["BDUSS"]` 缺失会返回 `[SOFT_RETRY]`，但原代码只清理 `failed_rules/captured_fields`，没有把 session state 从 `Extracting` 改回可重试状态；后续导航触发 `try_extract` 会被幂等 guard 直接 no-op。
+- **已完成**：
+  - **`backend/crates/golish/src/tools/integrations/capture/engine.rs`**：新增 `rearm_after_soft_retry`，软重试时清空临时失败/捕获字段并 transition 回 `WaitingLogin`，让下一次匹配导航可以重新抽取 cookie。
+  - 新增回归测试 `soft_retry_rearms_waiting_login_after_empty_cookie_attempt`，锁住“软重试后不能卡在 Extracting”的行为。
+- **运行过的验证**：
+  - `cargo nextest run -p golish --lib -E 'test(soft_retry_rearms_waiting_login_after_empty_cookie_attempt)' --status-level fail` → **exit 0 / 1 passed, 230 skipped**
+  - `cargo nextest run -p golish --lib -E 'test(tools::integrations::capture)' --status-level fail` → **exit 0 / 27 passed, 204 skipped**
+  - `ENScan_GO/enscan-v2.0.5-darwin-amd64 -n 小米 -type aqc -field icp`（在本机 tools 目录运行，使用刚抓取写入的配置）→ **exit 0**；返回小米企业信息 + 3 页网站备案数据，并导出 `outs/小米-2026-05-21--1779374086.xlsx`。
+  - `python3 -m json.tool feature_list.json >/dev/null` → **exit 0**
+  - `ReadLints`（`engine.rs`）→ **No linter errors found**
+- **已知风险或未解决问题**：
+  - 用户已重新 `just dev` 实测 AQC ⚡：UI 显示 `Captured 1 field(s) successfully` 且 Cookie 字段 `(configured)`；后端日志第二次 fetch `raw_count=28` 且包含 `BDUSS`；ENScan AQC 真实查询已通过。
+  - `cargo fmt --package golish --check` → **exit 1**，输出包含既有 `tauri_app.rs`、`capture/data_dir.rs`、`capture/session.rs`、`tools/integrations/state.rs` 等格式差异；未做整包格式化以避免改动无关文件。
+  - 未跑整仓 `just precommit`；当前仓库存在既有 blocker（见“当前 blocker”），本轮只验证 capture 范围。
+
+---
+
+### 2026-05-21 · ENScan AQC 登录后跳 qiye.baidu.com pattern 修复
+
+- **本轮目标**：用户报告 AQC 自动抓取登录后 webview 一直挂着不关；MCP-7 已定位到爱企查登录完成后会跳到 `https://qiye.baidu.com/usercenter/personalcenter?fr=c1009`，旧 `success_url_pattern` 只覆盖 `aiqicha.baidu.com`，导致 `try_extract` 不再触发。
+- **已完成**：
+  - **`resources/toolsconfig/enscan-go.json`**：AQC `success_url_pattern` 扩展为同时匹配 `aiqicha.baidu.com` 和 `qiye.baidu.com`，并覆盖根路径、query/hash、`home`、`usercenter`、`user/`、`personalcenter`；说明文案同步提醒百度企业跳转。
+  - **`resources/toolsconfig/enscan-go.json`**：AQC capture rule 保持 `cookie_joined` 写 `cookies.aiqicha`，并加 `required_names: ["BDUSS"]`，避免在未登录根页面提前抓匿名 cookie header。
+  - **`backend/crates/golish-integrations/src/resolver.rs`**：fixture `fixture_enscan_aqc_capture_recipe_loads` 新增断言，真实加载 `resources/toolsconfig/enscan-go.json` 后编译 `success_url_pattern`，并验证能匹配 `https://qiye.baidu.com/usercenter/personalcenter?fr=c1009`。
+- **运行过的验证**：
+  - `python3 -c 'import json; json.load(open("resources/toolsconfig/enscan-go.json")); print("VALID JSON")'` → **exit 0 / VALID JSON**
+  - `cargo nextest run -p golish-integrations -E 'test(fixture_enscan_aqc_capture_recipe_loads)' --status-level fail` → **exit 0 / 1 test run: 1 passed, 72 skipped**
+  - `ReadLints`（`resolver.rs` + `enscan-go.json`）→ **No linter errors found**
+  - `cargo fmt --package golish-integrations --check` → **exit 1**，包内已有格式差异（`resolver.rs` 既有片段、`storage/external_file.rs`、`tester.rs`、`types.rs`），未做无关格式化。
+- **已知风险或未解决问题**：
+  - 未做真实手动 E2E；仍需用户 `just dev` → Settings → Integrations → ENScan_GO → AQC ⚡ → 完成百度验证后确认 webview 自动关闭、toast 变绿、`cookies.aiqicha` 已配置。
+  - `just precommit` 仍受既有 monorepo 问题阻塞，详见上方当前 blocker。
 
 ---
 

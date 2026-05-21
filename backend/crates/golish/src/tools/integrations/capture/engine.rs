@@ -28,10 +28,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::{engine::general_purpose, Engine};
 use golish_integrations::error::{IntegrationError, IntegrationResult};
 use golish_integrations::schema::{CaptureRecipe, CaptureRule};
 use golish_integrations::types::{CaptureEventPayload, CaptureState, FailedRule};
-use tokio::sync::RwLock;
+use tokio::sync::{oneshot, RwLock};
 use uuid::Uuid;
 
 use super::data_dir;
@@ -43,6 +44,62 @@ use super::session::{CaptureSession, CaptureSessionHandle};
 /// after GC merely returns `CAPTURE_SESSION_NOT_FOUND` (handled by
 /// the IPC layer as a 404).
 const GC_RETENTION_MS: i64 = 3600 * 1000;
+const JS_VALUE_TITLE_PREFIX: &str = "__GOLISH_CAPTURE_VALUE__:";
+const CAPTURE_REQUEST_INIT_SCRIPT: &str = r#"
+(() => {
+  if (window.__GOLISH_CAPTURE_REQUEST_MONITOR__) return;
+  Object.defineProperty(window, "__GOLISH_CAPTURE_REQUEST_MONITOR__", { value: true });
+  const records = [];
+  Object.defineProperty(window, "__GOLISH_CAPTURE_REQUESTS__", { value: records });
+  const toHeaders = (input) => {
+    const out = {};
+    if (!input) return out;
+    try {
+      if (input instanceof Headers) {
+        input.forEach((value, key) => { out[String(key).toLowerCase()] = String(value); });
+      } else if (Array.isArray(input)) {
+        for (const pair of input) {
+          if (pair && pair.length >= 2) out[String(pair[0]).toLowerCase()] = String(pair[1]);
+        }
+      } else if (typeof input === "object") {
+        for (const key of Object.keys(input)) out[String(key).toLowerCase()] = String(input[key]);
+      }
+    } catch (_) {}
+    return out;
+  };
+  const remember = (url, headers) => {
+    records.push({ url: String(url || window.location.href), headers: headers || {}, at: Date.now() });
+    if (records.length > 200) records.splice(0, records.length - 200);
+  };
+  if (typeof window.fetch === "function") {
+    const originalFetch = window.fetch;
+    window.fetch = function(input, init) {
+      const url = typeof input === "string" ? input : (input && input.url) || window.location.href;
+      remember(url, { ...toHeaders(input && input.headers), ...toHeaders(init && init.headers) });
+      return originalFetch.apply(this, arguments);
+    };
+  }
+  if (window.XMLHttpRequest) {
+    const proto = window.XMLHttpRequest.prototype;
+    const originalOpen = proto.open;
+    const originalSetRequestHeader = proto.setRequestHeader;
+    const originalSend = proto.send;
+    proto.open = function(method, url) {
+      this.__golishCaptureUrl = url;
+      this.__golishCaptureHeaders = {};
+      return originalOpen.apply(this, arguments);
+    };
+    proto.setRequestHeader = function(name, value) {
+      this.__golishCaptureHeaders[String(name).toLowerCase()] = String(value);
+      return originalSetRequestHeader.apply(this, arguments);
+    };
+    proto.send = function() {
+      remember(this.__golishCaptureUrl || window.location.href, this.__golishCaptureHeaders || {});
+      return originalSend.apply(this, arguments);
+    };
+  }
+})();
+"#;
 
 /// Tauri-managed singleton (`tauri::State<Arc<CaptureEngine>>`).
 ///
@@ -51,12 +108,14 @@ const GC_RETENTION_MS: i64 = 3600 * 1000;
 /// (which is correct: their webviews are gone anyway).
 pub struct CaptureEngine {
     sessions: RwLock<HashMap<String, CaptureSessionHandle>>,
+    js_value_waiters: RwLock<HashMap<String, oneshot::Sender<Result<String, String>>>>,
 }
 
 impl Default for CaptureEngine {
     fn default() -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
+            js_value_waiters: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -217,11 +276,30 @@ impl CaptureEngine {
         Ok(())
     }
 
+    /// Re-arm a session after a required rule explicitly asked for a
+    /// soft retry. This is the "still mid-login" path: stale extraction
+    /// details must be cleared and the state must become retryable again
+    /// so the next matching navigation can run `try_extract`.
+    async fn rearm_after_soft_retry(&self, handle: &CaptureSessionHandle) {
+        let mut s = handle.inner.write().await;
+        s.failed_rules.clear();
+        s.captured_fields.clear();
+        s.error_message = None;
+        s.transition(CaptureState::WaitingLogin);
+    }
+
+    async fn deliver_js_value(&self, nonce: &str, value: Result<String, String>) {
+        let sender = self.js_value_waiters.write().await.remove(nonce);
+        if let Some(sender) = sender {
+            let _ = sender.send(value);
+        }
+    }
+
     /// Build the Tauri WebviewWindow for an already-registered session
     /// and wire its `on_navigation` callback to fire extraction when
     /// `success_url_pattern` matches.
     ///
-    /// The webview's data store is isolated per-session
+    /// The webview's data store is isolated per `(tool_id, group_id)`
     /// (see [`super::webview_isolation::apply_isolation`]). A failure
     /// here returns `WebviewCreateFailed`; the caller is responsible
     /// for transitioning the session into `Failed`.
@@ -233,19 +311,22 @@ impl CaptureEngine {
         use tauri::{WebviewUrl, WebviewWindowBuilder};
 
         // 1. Snapshot what we need from the session under a short read lock.
-        let (sid, login_url, recipe) = {
+        let (sid, tool_id, group_id, login_url, recipe) = {
             let s = handle.inner.read().await;
             (
                 s.session_id.clone(),
+                s.tool_id.clone(),
+                s.group_id.clone(),
                 s.recipe.login_url.clone(),
                 s.recipe.clone(),
             )
         };
 
-        // 2. Reserve the per-session data directory (used on Linux /
-        //    Windows for `data_directory`; on macOS we use
-        //    `data_store_identifier` and the dir is empty / cleanup-only).
-        let per_session_dir = data_dir::session_dir(&sid)?;
+        // 2. Reserve the persistent per-tool/group profile directory.
+        //    Linux / Windows use this as `data_directory`; macOS uses
+        //    a stable `data_store_identifier` derived from the same key.
+        let profile_key = data_dir::profile_key(&tool_id, &group_id);
+        let profile_dir = data_dir::profile_dir(&tool_id, &group_id)?;
 
         // 3. Parse the URL (already schema-validated, but the builder
         //    needs an actual `url::Url`).
@@ -262,14 +343,27 @@ impl CaptureEngine {
         let app_for_cb = app.clone();
         let sid_for_cb = sid.clone();
         let recipe_for_cb = recipe.clone();
+        let app_for_title_cb = app.clone();
 
         let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
             .title(format!("Golish · 凭据抓取: {host_for_title}"))
             .inner_size(900.0, 700.0)
             .center()
             .focused(true)
-            .visible(true);
-        let builder = super::webview_isolation::apply_isolation(builder, &sid, &per_session_dir);
+            .visible(true)
+            .initialization_script(CAPTURE_REQUEST_INIT_SCRIPT);
+        let builder =
+            super::webview_isolation::apply_isolation(builder, &profile_key, &profile_dir);
+        let builder = builder.on_document_title_changed(move |_win, title| {
+            if let Some((nonce, value)) = parse_js_value_title(&title) {
+                let app = app_for_title_cb.clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Manager;
+                    let engine = app.state::<Arc<CaptureEngine>>();
+                    engine.deliver_js_value(&nonce, value).await;
+                });
+            }
+        });
         let builder = builder.on_navigation(move |new_url: &url::Url| {
             let app = app_for_cb.clone();
             let sid = sid_for_cb.clone();
@@ -288,6 +382,35 @@ impl CaptureEngine {
             .build()
             .map_err(|e| IntegrationError::WebviewCreateFailed(e.to_string()))?;
 
+        Ok(())
+    }
+
+    /// Clear the persisted browser login state for one capture profile.
+    /// This does not clear the credential already written to the
+    /// integration storage backend; it only resets the next ⚡ webview.
+    pub async fn clear_profile(
+        &self,
+        app: &tauri::AppHandle,
+        tool_id: &str,
+        group_id: &str,
+    ) -> IntegrationResult<()> {
+        use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+        let profile_key = data_dir::profile_key(tool_id, group_id);
+        let profile_dir = data_dir::profile_dir(tool_id, group_id)?;
+        let label = format!("capture-clear-{}", Uuid::new_v4());
+        let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+            .title("Golish · Clear capture login state")
+            .visible(false);
+        let builder =
+            super::webview_isolation::apply_isolation(builder, &profile_key, &profile_dir);
+        let win = builder
+            .build()
+            .map_err(|e| IntegrationError::WebviewCreateFailed(e.to_string()))?;
+        win.clear_all_browsing_data()
+            .map_err(|e| IntegrationError::WebviewCreateFailed(e.to_string()))?;
+        let _ = win.close();
+        data_dir::cleanup_profile_dir(tool_id, group_id);
         Ok(())
     }
 
@@ -314,7 +437,11 @@ impl CaptureEngine {
             if s.state.is_terminal() || s.state == CaptureState::Extracting {
                 return Ok(());
             }
-            (s.recipe.rules.clone(), s.tool_id.clone(), s.group_id.clone())
+            (
+                s.recipe.rules.clone(),
+                s.tool_id.clone(),
+                s.group_id.clone(),
+            )
         };
         self.transition_and_emit(app, session_id, CaptureState::Extracting, None)
             .await?;
@@ -329,10 +456,7 @@ impl CaptureEngine {
                     app,
                     session_id,
                     CaptureState::Failed,
-                    Some(
-                        "[WEBVIEW_CREATE_FAILED] webview window vanished mid-extract"
-                            .to_string(),
-                    ),
+                    Some("[WEBVIEW_CREATE_FAILED] webview window vanished mid-extract".to_string()),
                 )
                 .await?;
                 return Ok(());
@@ -371,13 +495,30 @@ impl CaptureEngine {
             s.failed_rules = failed.clone();
         }
 
-        // Required failure short-circuit.
+        // Required failure short-circuit — UNLESS the rule asked us
+        // to soft-retry on the next navigation (e.g. CookieJoined
+        // declared `required_names` but the cookie jar doesn't have
+        // them yet because the user is still mid-login). In that case
+        // the webview stays open and the navigation handler will fire
+        // try_extract again the next time the URL changes.
         if let Some((idx, reason)) = required_failure {
+            if reason.starts_with("[SOFT_RETRY]") {
+                tracing::info!(
+                    session_id = %session_id,
+                    rule_index = idx,
+                    reason = %reason,
+                    "capture: required rule signalled soft-retry; webview stays open"
+                );
+                self.rearm_after_soft_retry(&handle).await;
+                return Ok(());
+            }
             self.transition_and_emit(
                 app,
                 session_id,
                 CaptureState::Failed,
-                Some(format!("[CAPTURE_RULE_FAILED] required rule #{idx}: {reason}")),
+                Some(format!(
+                    "[CAPTURE_RULE_FAILED] required rule #{idx}: {reason}"
+                )),
             )
             .await?;
             let _ = win.close();
@@ -410,7 +551,8 @@ impl CaptureEngine {
         } else {
             CaptureState::Partial
         };
-        self.transition_and_emit(app, session_id, next, None).await?;
+        self.transition_and_emit(app, session_id, next, None)
+            .await?;
         let _ = win.close();
         Ok(())
     }
@@ -474,7 +616,8 @@ fn rule_is_required(rule: &CaptureRule) -> bool {
         | CaptureRule::LocalStorage { required, .. }
         | CaptureRule::SessionStorage { required, .. }
         | CaptureRule::PageContent { required, .. }
-        | CaptureRule::UrlQuery { required, .. } => *required,
+        | CaptureRule::UrlQuery { required, .. }
+        | CaptureRule::RequestHeader { required, .. } => *required,
     }
 }
 
@@ -527,12 +670,6 @@ async fn on_navigation_event(
 
 /// Run one extraction rule against the live webview. Returns
 /// `(target_field, value)` on success or `Err(reason)` otherwise.
-///
-/// P1 MVP supports `Cookie` (single cookie value) and `CookieJoined`
-/// (the more common "ENScan-style full Cookie header" pattern — see
-/// the AQC capture recipe in `enscan-go.json`). The remaining rule
-/// kinds bail with a "not yet implemented" reason so the UI surfaces
-/// the gap clearly rather than silently succeeding.
 async fn extract_one(
     win: &tauri::WebviewWindow,
     rule: &CaptureRule,
@@ -559,6 +696,7 @@ async fn extract_one(
             sep,
             fmt,
             target_field,
+            required_names,
             ..
         } => {
             // `names = []` means "all cookies belonging to this domain
@@ -568,6 +706,36 @@ async fn extract_one(
             // + H_PS_PSSID + 等 一起) the user typically wants every
             // baidu.com-domain cookie.
             let cookies = fetch_domain_cookies(win, domain).await?;
+
+            // Login-state proof check: when the rule declares
+            // `required_names`, every one of those cookies must be
+            // present in the live jar before we count this navigation
+            // as "login succeeded". Used to keep the loose AQC
+            // `success_url_pattern` (which must also fire on the root
+            // path the user is redirected back to after two-factor
+            // verification) from latching onto the pre-login load
+            // and persisting an anonymous Cookie header. Returning Err
+            // here is treated as a soft retry by the caller — capture
+            // engine simply waits for the next navigation.
+            if !required_names.is_empty() {
+                let have: std::collections::HashSet<&str> =
+                    cookies.iter().map(|(n, _)| n.as_str()).collect();
+                let missing: Vec<&String> = required_names
+                    .iter()
+                    .filter(|n| !have.contains(n.as_str()))
+                    .collect();
+                if !missing.is_empty() {
+                    // Prefixed `[SOFT_RETRY]` so the caller (try_extract)
+                    // re-arms instead of marking the whole session
+                    // Failed — the webview stays open for the user to
+                    // finish login on the next navigation.
+                    return Err(format!(
+                        "[SOFT_RETRY] required cookies not yet present on '{domain}' (missing {missing:?}) — \
+                         likely still mid-login, waiting for next navigation"
+                    ));
+                }
+            }
+
             let parts = format_joined_cookies(names, fmt, &cookies);
             if parts.is_empty() {
                 let want_summary = if names.is_empty() {
@@ -583,22 +751,214 @@ async fn extract_one(
             Ok((target_field.clone(), value))
         }
 
-        // P2 rules: schema parser accepts them so a forward-compatible
-        // JSON config doesn't break, but the engine refuses to silently
-        // succeed.
-        CaptureRule::LocalStorage { .. }
-        | CaptureRule::SessionStorage { .. }
-        | CaptureRule::PageContent { .. }
-        | CaptureRule::UrlQuery { .. } => {
-            Err("rule type not yet implemented in P1 MVP".to_string())
+        CaptureRule::LocalStorage {
+            key, target_field, ..
+        } => {
+            let key_js = serde_json::to_string(key).map_err(|e| e.to_string())?;
+            let value = eval_js_value(win, &format!("window.localStorage.getItem({key_js})"), 3000)
+                .await
+                .map_err(|e| format!("localStorage key '{key}' not found: {e}"))?;
+            Ok((target_field.clone(), value))
+        }
+
+        CaptureRule::SessionStorage {
+            key, target_field, ..
+        } => {
+            let key_js = serde_json::to_string(key).map_err(|e| e.to_string())?;
+            let value = eval_js_value(
+                win,
+                &format!("window.sessionStorage.getItem({key_js})"),
+                3000,
+            )
+            .await
+            .map_err(|e| format!("sessionStorage key '{key}' not found: {e}"))?;
+            Ok((target_field.clone(), value))
+        }
+
+        CaptureRule::PageContent {
+            selector,
+            attribute,
+            wait_ms,
+            target_field,
+            ..
+        } => {
+            let selector_js = serde_json::to_string(selector).map_err(|e| e.to_string())?;
+            let attribute_js = match attribute {
+                Some(attr) => serde_json::to_string(attr).map_err(|e| e.to_string())?,
+                None => "null".to_string(),
+            };
+            let wait_ms = (*wait_ms).max(100);
+            let expression = format!(
+                r#"
+                (async () => {{
+                  const selector = {selector_js};
+                  const attribute = {attribute_js};
+                  const deadline = Date.now() + {wait_ms};
+                  while (Date.now() <= deadline) {{
+                    const el = document.querySelector(selector);
+                    if (el) {{
+                      return attribute ? el.getAttribute(attribute) : (el.textContent || "");
+                    }}
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                  }}
+                  throw new Error(`selector not found: ${{selector}}`);
+                }})()
+                "#
+            );
+            let value = eval_js_value(win, &expression, wait_ms + 1000).await?;
+            Ok((target_field.clone(), value))
+        }
+
+        CaptureRule::UrlQuery {
+            name, target_field, ..
+        } => {
+            let url = win
+                .url()
+                .map_err(|e| format!("read current URL failed: {e}"))?;
+            let value = url
+                .query_pairs()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.into_owned())
+                .ok_or_else(|| format!("query parameter '{name}' not found in {url}"))?;
+            Ok((target_field.clone(), value))
+        }
+
+        CaptureRule::RequestHeader {
+            name,
+            url_pattern,
+            target_field,
+            ..
+        } => {
+            let name_js =
+                serde_json::to_string(&name.to_ascii_lowercase()).map_err(|e| e.to_string())?;
+            let pattern_js = match url_pattern {
+                Some(pattern) => serde_json::to_string(pattern).map_err(|e| e.to_string())?,
+                None => "null".to_string(),
+            };
+            let expression = format!(
+                r#"
+                (() => {{
+                  const headerName = {name_js};
+                  const patternText = {pattern_js};
+                  const pattern = patternText ? new RegExp(patternText) : null;
+                  const records = window.__GOLISH_CAPTURE_REQUESTS__ || [];
+                  for (let i = records.length - 1; i >= 0; i--) {{
+                    const record = records[i] || {{}};
+                    if (pattern && !pattern.test(String(record.url || ""))) continue;
+                    const headers = record.headers || {{}};
+                    if (headers[headerName]) return headers[headerName];
+                    for (const key of Object.keys(headers)) {{
+                      if (String(key).toLowerCase() === headerName) return headers[key];
+                    }}
+                  }}
+                  return null;
+                }})()
+                "#
+            );
+            let value = eval_js_value(win, &expression, 3000)
+                .await
+                .map_err(|e| format!("request header '{name}' not observed: {e}"))?;
+            Ok((target_field.clone(), value))
         }
     }
 }
 
+async fn eval_js_value(
+    win: &tauri::WebviewWindow,
+    expression: &str,
+    timeout_ms: u32,
+) -> Result<String, String> {
+    use tauri::Manager;
+
+    let nonce = Uuid::new_v4().to_string();
+    let (tx, rx) = oneshot::channel();
+    let app = win.app_handle();
+    let engine = app.state::<Arc<CaptureEngine>>();
+    engine
+        .js_value_waiters
+        .write()
+        .await
+        .insert(nonce.clone(), tx);
+
+    let nonce_js = serde_json::to_string(&nonce).map_err(|e| e.to_string())?;
+    let prefix_js = serde_json::to_string(JS_VALUE_TITLE_PREFIX).map_err(|e| e.to_string())?;
+    let script = format!(
+        r#"
+        (async () => {{
+          const __nonce = {nonce_js};
+          const __prefix = {prefix_js};
+          const __send = (status, value) => {{
+            const text = value == null ? "" : String(value);
+            const b64 = btoa(unescape(encodeURIComponent(text)));
+            document.title = `${{__prefix}}${{__nonce}}:${{status}}:${{b64}}`;
+          }};
+          try {{
+            const value = await (async () => {{ return {expression}; }})();
+            if (value == null || String(value) === "") {{
+              __send("err", "value was empty");
+            }} else {{
+              __send("ok", value);
+            }}
+          }} catch (err) {{
+            __send("err", err && err.message ? err.message : String(err));
+          }}
+        }})();
+        "#
+    );
+
+    if let Err(e) = win.eval(script) {
+        engine.js_value_waiters.write().await.remove(&nonce);
+        return Err(format!("eval failed: {e}"));
+    }
+
+    match tokio::time::timeout(Duration::from_millis(timeout_ms as u64), rx).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(_)) => Err("JavaScript value channel closed".to_string()),
+        Err(_) => {
+            engine.js_value_waiters.write().await.remove(&nonce);
+            Err("timed out waiting for JavaScript value".to_string())
+        }
+    }
+}
+
+fn parse_js_value_title(title: &str) -> Option<(String, Result<String, String>)> {
+    let rest = title.strip_prefix(JS_VALUE_TITLE_PREFIX)?;
+    let mut parts = rest.splitn(3, ':');
+    let nonce = parts.next()?.to_string();
+    let status = parts.next()?;
+    let b64 = parts.next()?;
+    let decoded = general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| e.to_string());
+    let text = decoded.and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string()));
+    Some((
+        nonce,
+        match status {
+            "ok" => text,
+            "err" => Err(text.unwrap_or_else(|e| e)),
+            other => Err(format!("unknown JS value status '{other}'")),
+        },
+    ))
+}
+
 /// Fetch every cookie scoped to `domain` (or any matching parent /
 /// child suffix) from the live webview. Routes through
-/// `spawn_blocking` because Tauri's `cookies_for_url` is sync and can
+/// `spawn_blocking` because Tauri's cookie API is sync and can
 /// deadlock when called from an event handler on Windows.
+///
+/// **Why we don't use `cookies_for_url`**: wry 0.54's `cookies_for_url`
+/// filters cookies with `cookie.domain() == url.domain()` (string
+/// equality). `NSHTTPCookie.domain` for a cross-subdomain SSO cookie
+/// like `BDUSS` is `".baidu.com"` (leading dot), but `url.domain()`
+/// for `https://baidu.com/` is `"baidu.com"` (no dot) — so every
+/// `.baidu.com` cookie is silently dropped. We bypass that by fetching
+/// the full cookie list via `win.cookies()` and applying RFC 6265
+/// domain-match semantics ourselves.
+///
+/// Per-tool/group isolation (`data_store_identifier` on macOS,
+/// `data_directory` on Linux/Windows) means `cookies()` only returns
+/// cookies produced for that capture profile, so the broader scope
+/// doesn't leak credentials into the main Golish window.
 ///
 /// Returns `Vec<(name, value)>` so callers can `.into_iter().find(...)`
 /// without depending on Tauri's `Cookie` type (also keeps the joined
@@ -607,20 +967,74 @@ async fn fetch_domain_cookies(
     win: &tauri::WebviewWindow,
     domain: &str,
 ) -> Result<Vec<(String, String)>, String> {
-    let host = domain.trim_start_matches('.').to_string();
-    let url_str = format!("https://{host}/");
-    let url = url_str
-        .parse::<url::Url>()
-        .map_err(|e| format!("invalid synthesized cookie URL {url_str}: {e}"))?;
+    let target_host = domain.trim_start_matches('.').to_ascii_lowercase();
+    if target_host.is_empty() {
+        return Err(format!("capture rule has empty cookie domain ('{domain}')"));
+    }
+    let webview_current_url = win.url().ok().map(|u| u.to_string());
     let win_clone = win.clone();
-    let cookies = tokio::task::spawn_blocking(move || win_clone.cookies_for_url(url))
+    let cookies = tokio::task::spawn_blocking(move || win_clone.cookies())
         .await
         .map_err(|e| format!("spawn_blocking join failed: {e}"))?
-        .map_err(|e| format!("cookies_for_url failed: {e}"))?;
-    Ok(cookies
+        .map_err(|e| format!("cookies() failed: {e}"))?;
+    let raw_count = cookies.len();
+    let raw_domains: Vec<String> = cookies
+        .iter()
+        .map(|c| c.domain().unwrap_or("").to_string())
+        .collect();
+    let pairs: Vec<(String, String)> = cookies
         .into_iter()
+        .filter(|c| cookie_domain_matches(c.domain().unwrap_or(""), &target_host))
         .map(|c| (c.name().to_string(), c.value().to_string()))
-        .collect())
+        .collect();
+
+    // Diagnostic logging: emit cookie NAME list (NEVER value) plus
+    // raw_count so we can distinguish "store actually empty" from
+    // "everything filtered out". Once production runs consistently
+    // show `BDUSS` etc. it's safe to drop this log to `debug!`.
+    let names: Vec<&str> = pairs.iter().map(|(n, _)| n.as_str()).collect();
+    tracing::info!(
+        domain = %domain,
+        target_host = %target_host,
+        webview_url = ?webview_current_url,
+        raw_count,
+        raw_domains = ?raw_domains,
+        cookie_count = pairs.len(),
+        cookie_names = ?names,
+        "capture: fetched cookies for domain (names only, values redacted)"
+    );
+
+    Ok(pairs)
+}
+
+/// RFC 6265 §5.1.3 domain-match semantics, slightly loosened to also
+/// accept the cookie's domain attribute when wry hands us back the
+/// leading-dot form (`".baidu.com"`).
+///
+/// Returns `true` when the cookie can legitimately be sent to a request
+/// targeting `target_host`. Match cases:
+/// - `cookie_domain` (with leading dot stripped, lowercased) equals
+///   `target_host`
+/// - `cookie_domain` is a sub-domain of `target_host`
+///   (e.g. cookie domain `aiqicha.baidu.com` for target `baidu.com`).
+///   Strictly speaking RFC 6265 only allows the reverse direction
+///   (parent-domain cookie sent to child), but for capture-time
+///   "give me every credential the user has on this site" semantics
+///   we want both: a `.baidu.com` cookie for an `aiqicha.baidu.com`
+///   target AND any host-only `aiqicha.baidu.com` cookie when the
+///   capture rule was scoped to `.baidu.com`.
+fn cookie_domain_matches(cookie_domain: &str, target_host: &str) -> bool {
+    if target_host.is_empty() {
+        return false;
+    }
+    let normalized = cookie_domain
+        .trim_start_matches('.')
+        .trim()
+        .to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    normalized == target_host || normalized.ends_with(&format!(".{target_host}"))
 }
 
 /// Filter + format cookies into the `name=value` parts the
@@ -630,11 +1044,7 @@ async fn fetch_domain_cookies(
 /// full Cookie header" use). Otherwise only cookies whose name
 /// appears in `names`. `fmt` supports `{name}` and `{value}`
 /// substitution (defaults to `{name}={value}`).
-fn format_joined_cookies(
-    names: &[String],
-    fmt: &str,
-    cookies: &[(String, String)],
-) -> Vec<String> {
+fn format_joined_cookies(names: &[String], fmt: &str, cookies: &[(String, String)]) -> Vec<String> {
     let want_all = names.is_empty();
     cookies
         .iter()
@@ -767,7 +1177,10 @@ mod tests {
         .unwrap();
         let s = h.inner.read().await;
         assert_eq!(s.state, CaptureState::Captured);
-        assert!(s.error_message.is_none(), "error must not be stamped post-terminal");
+        assert!(
+            s.error_message.is_none(),
+            "error must not be stamped post-terminal"
+        );
     }
 
     #[tokio::test]
@@ -788,6 +1201,32 @@ mod tests {
         let s = h.inner.read().await;
         assert_eq!(s.state, CaptureState::Cancelled);
         assert!(s.state.is_terminal());
+    }
+
+    #[tokio::test]
+    async fn soft_retry_rearms_waiting_login_after_empty_cookie_attempt() {
+        let eng = CaptureEngine::new();
+        let h = eng
+            .register("t".into(), "g".into(), aqc_recipe())
+            .await
+            .unwrap();
+
+        {
+            let mut s = h.inner.write().await;
+            s.transition(CaptureState::Extracting);
+            s.failed_rules.push(FailedRule {
+                rule_index: 0,
+                reason: "[SOFT_RETRY] required cookies not yet present".into(),
+            });
+            s.captured_fields.push("cookies.aqc".into());
+        }
+
+        eng.rearm_after_soft_retry(&h).await;
+
+        let s = h.inner.read().await;
+        assert_eq!(s.state, CaptureState::WaitingLogin);
+        assert!(s.failed_rules.is_empty());
+        assert!(s.captured_fields.is_empty());
     }
 
     #[test]
@@ -831,6 +1270,65 @@ mod tests {
     fn format_joined_cookies_empty_input_returns_empty() {
         let parts = format_joined_cookies(&[], "{name}={value}", &[]);
         assert!(parts.is_empty());
+    }
+
+    #[test]
+    fn cookie_domain_matches_exact_host() {
+        assert!(cookie_domain_matches("baidu.com", "baidu.com"));
+        assert!(cookie_domain_matches("BAIDU.COM", "baidu.com"));
+    }
+
+    #[test]
+    fn cookie_domain_matches_strips_leading_dot() {
+        // This is the case that wry 0.54's `cookies_for_url` botches:
+        // NSHTTPCookie hands back `.baidu.com`, url.domain() returns
+        // `baidu.com`, wry compares with `==` and drops every cookie.
+        assert!(cookie_domain_matches(".baidu.com", "baidu.com"));
+        assert!(cookie_domain_matches(".BAIDU.COM", "baidu.com"));
+    }
+
+    #[test]
+    fn cookie_domain_matches_subdomain_under_target() {
+        // Captures aiqicha-host-only cookies when the rule asks for
+        // ".baidu.com" — needed because AQC sets some session cookies
+        // host-only on aiqicha.baidu.com that ENScan_GO still needs.
+        assert!(cookie_domain_matches("aiqicha.baidu.com", "baidu.com"));
+        assert!(cookie_domain_matches(".aiqicha.baidu.com", "baidu.com"));
+    }
+
+    #[test]
+    fn cookie_domain_matches_rejects_unrelated() {
+        // Guardrail: a baidubcd.com cookie must NOT match baidu.com
+        // (suffix match must be on a `.` boundary, not raw substring).
+        assert!(!cookie_domain_matches("baidubcd.com", "baidu.com"));
+        assert!(!cookie_domain_matches("evilbaidu.com", "baidu.com"));
+        assert!(!cookie_domain_matches("notbaidu.com", "baidu.com"));
+        assert!(!cookie_domain_matches("baidu.com.evil.com", "baidu.com"));
+    }
+
+    #[test]
+    fn cookie_domain_matches_empty_inputs_return_false() {
+        assert!(!cookie_domain_matches("", "baidu.com"));
+        assert!(!cookie_domain_matches(".", "baidu.com"));
+        assert!(!cookie_domain_matches("baidu.com", ""));
+    }
+
+    #[test]
+    fn parse_js_value_title_decodes_ok_payload() {
+        let payload = general_purpose::STANDARD.encode("secret-token");
+        let title = format!("{JS_VALUE_TITLE_PREFIX}nonce-1:ok:{payload}");
+        let (nonce, value) = parse_js_value_title(&title).expect("capture title should parse");
+        assert_eq!(nonce, "nonce-1");
+        assert_eq!(value.unwrap(), "secret-token");
+    }
+
+    #[test]
+    fn parse_js_value_title_decodes_error_payload() {
+        let payload = general_purpose::STANDARD.encode("missing selector");
+        let title = format!("{JS_VALUE_TITLE_PREFIX}nonce-2:err:{payload}");
+        let (nonce, value) = parse_js_value_title(&title).expect("capture title should parse");
+        assert_eq!(nonce, "nonce-2");
+        assert_eq!(value.unwrap_err(), "missing selector");
     }
 
     #[tokio::test]

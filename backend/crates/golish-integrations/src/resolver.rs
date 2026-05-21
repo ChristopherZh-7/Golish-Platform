@@ -38,9 +38,8 @@ fn validate_capture(group: &IntegrationGroup) -> IntegrationResult<()> {
     };
 
     // 1. login_url scheme whitelist
-    let parsed = url::Url::parse(&recipe.login_url).map_err(|e| {
-        IntegrationError::CaptureInvalidUrl(format!("{}: {e}", recipe.login_url))
-    })?;
+    let parsed = url::Url::parse(&recipe.login_url)
+        .map_err(|e| IntegrationError::CaptureInvalidUrl(format!("{}: {e}", recipe.login_url)))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(IntegrationError::CaptureInvalidUrl(format!(
             "{} (scheme must be http or https, got {})",
@@ -59,7 +58,8 @@ fn validate_capture(group: &IntegrationGroup) -> IntegrationResult<()> {
             | CaptureRule::LocalStorage { target_field, .. }
             | CaptureRule::SessionStorage { target_field, .. }
             | CaptureRule::PageContent { target_field, .. }
-            | CaptureRule::UrlQuery { target_field, .. } => target_field.as_str(),
+            | CaptureRule::UrlQuery { target_field, .. }
+            | CaptureRule::RequestHeader { target_field, .. } => target_field.as_str(),
         };
         if !known.contains(tf) {
             return Err(IntegrationError::CaptureInvalidTargetField {
@@ -385,10 +385,7 @@ mod tests {
     // validate_capture tests (Phase 1 T1.4)
     // ────────────────────────────────────────────────────────────────
 
-    fn group_with_capture(
-        target_field: &str,
-        login_url: &str,
-    ) -> IntegrationGroup {
+    fn group_with_capture(target_field: &str, login_url: &str) -> IntegrationGroup {
         use crate::schema::{CaptureRecipe, CaptureRule};
         IntegrationGroup {
             id: "default".into(),
@@ -509,6 +506,17 @@ mod tests {
             recipe.login_url.starts_with("https://aiqicha.baidu.com"),
             "login_url should target aiqicha.baidu.com, got {}",
             recipe.login_url
+        );
+        let success_url_pattern = recipe
+            .success_url_pattern
+            .as_ref()
+            .expect("AQC capture should trigger on login success URLs");
+        let success_url_re =
+            regex::Regex::new(success_url_pattern).expect("AQC success_url_pattern should compile");
+        assert!(
+            success_url_re.is_match("https://qiye.baidu.com/usercenter/personalcenter?fr=c1009"),
+            "AQC success_url_pattern should match Baidu Enterprise post-login redirect, got {}",
+            success_url_pattern
         );
         assert!(
             recipe.timeout_secs >= 30 && recipe.timeout_secs <= 900,

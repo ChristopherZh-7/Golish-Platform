@@ -25,6 +25,7 @@ interface SecretInputProps {
   /** When provided, rendered as a watermark when value is empty AND
    * the backend reports the field as already configured. */
   placeholderForExistingSecret?: string;
+  hasExistingSecret?: boolean;
   /** Aria-label / accessible name for the toggle button. */
   toggleLabel?: string;
   id?: string;
@@ -36,6 +37,7 @@ export function SecretInput({
   placeholder,
   disabled,
   placeholderForExistingSecret,
+  hasExistingSecret,
   toggleLabel = "Toggle visibility",
   id,
 }: SecretInputProps) {
@@ -66,6 +68,7 @@ export function SecretInput({
   }, [revealed, value]);
 
   const showWatermark = !revealed && value === "" && Boolean(placeholderForExistingSecret);
+  const showConfiguredState = showWatermark || Boolean(hasExistingSecret && value === "");
 
   return (
     <div className="relative w-full">
@@ -79,7 +82,9 @@ export function SecretInput({
         className={cn(
           "w-full px-2.5 py-1.5 pr-8 text-[11px] rounded-md border bg-background",
           "border-border/40 focus:border-accent outline-none transition-colors",
-          "font-mono disabled:opacity-50"
+          "font-mono disabled:opacity-50",
+          showConfiguredState &&
+            "border-emerald-400/45 bg-emerald-500/10 text-emerald-100 placeholder:text-emerald-200/80"
         )}
       />
       <button

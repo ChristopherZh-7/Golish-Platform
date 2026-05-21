@@ -10,10 +10,10 @@
 //! [`apply_isolation`] entry point so the rest of the engine doesn't
 //! need to repeat the `cfg` dance.
 //!
-//! For non-UUID session ids we derive a stable `[u8; 16]` via
-//! `uuid::Uuid::new_v5(NAMESPACE_OID, session_id)` rather than pulling
+//! We derive a stable `[u8; 16]` via
+//! `uuid::Uuid::new_v5(NAMESPACE_OID, profile_key)` rather than pulling
 //! a fresh hashing crate (`blake3`) — the security property required
-//! here is "stable per session_id, unique across sessions", which
+//! here is "stable per capture profile, unique across profiles", which
 //! UUID v5 satisfies trivially.
 
 use std::path::Path;
@@ -27,17 +27,20 @@ use tauri::{webview::WebviewWindowBuilder, Wry};
 /// to refuse to start there from a higher layer.
 pub(crate) fn apply_isolation<'a>(
     builder: WebviewWindowBuilder<'a, Wry, tauri::AppHandle<Wry>>,
-    _session_id: &str,
-    _per_session_dir: &Path,
+    _profile_key: &str,
+    _profile_dir: &Path,
 ) -> WebviewWindowBuilder<'a, Wry, tauri::AppHandle<Wry>> {
     #[cfg(target_os = "macos")]
     {
-        let bytes = derive_macos_data_store_id(_session_id);
+        let bytes = derive_macos_data_store_id(_profile_key);
         return builder.data_store_identifier(bytes);
     }
-    #[cfg(all(not(target_os = "macos"), not(any(target_os = "android", target_os = "ios"))))]
+    #[cfg(all(
+        not(target_os = "macos"),
+        not(any(target_os = "android", target_os = "ios"))
+    ))]
     {
-        return builder.data_directory(_per_session_dir.to_path_buf());
+        return builder.data_directory(_profile_dir.to_path_buf());
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
@@ -47,15 +50,10 @@ pub(crate) fn apply_isolation<'a>(
     }
 }
 
-/// Stable `[u8; 16]` derived from a session id. Direct UUID v4 parse
-/// shortcut for normal session ids; v5(NAMESPACE_OID, session_id) for
-/// anything that doesn't parse as a UUID (e.g. test fixtures).
+/// Stable `[u8; 16]` derived from the capture profile key.
 #[cfg(target_os = "macos")]
-fn derive_macos_data_store_id(session_id: &str) -> [u8; 16] {
-    if let Ok(u) = uuid::Uuid::parse_str(session_id) {
-        return *u.as_bytes();
-    }
-    let derived = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, session_id.as_bytes());
+fn derive_macos_data_store_id(profile_key: &str) -> [u8; 16] {
+    let derived = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, profile_key.as_bytes());
     *derived.as_bytes()
 }
 
@@ -82,10 +80,14 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_data_store_id_for_uuid_input_round_trips() {
+    fn macos_data_store_id_uses_profile_key_not_session_uuid_identity() {
         use super::derive_macos_data_store_id;
         let u = uuid::Uuid::new_v4();
         let bytes = derive_macos_data_store_id(&u.to_string());
-        assert_eq!(bytes, *u.as_bytes(), "uuid input is identity-mapped");
+        assert_ne!(
+            bytes,
+            *u.as_bytes(),
+            "profile storage must derive from the stable profile key, not reuse per-session UUID bytes"
+        );
     }
 }
