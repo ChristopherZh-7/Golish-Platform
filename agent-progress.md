@@ -17,15 +17,52 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | 两项并行：① 用户手动验 Integrations T5.7（0.zone read alias / ENScan 5 group / GitHub Token）；② 用户审核新出的 `docs/superpowers/plans/2026-05-21-credential-capture-engine.md`（凭据抓取器 P1 MVP 实施计划，5 Phase + Phase 0 spike），审完决定何时把 `integrations` 切 passing、`capture-engine` 切 in_progress |
-| **当前 blocker** | 整 monorepo 的 `just precommit` 因 preexisting biome 警告 fail（pty.ts / useTaskPlanState.ts / App.tsx 等非本轮文件的格式 / lint info），与 Phase 1-5 改动无关。本轮自己引入的代码 biome + tsc + nextest + vitest 全绿（见 2026-05-21 会话记录证据段） |
-| **未提交的半成品** | 本轮 Integrations 相关改动 + 之前残留的 KG/dispatch/planner/pty 等 ~70 个 preexisting 文件改动都未 commit；建议下一轮先把 Phase 1-5 单独 commit。本轮新增 `docs/design/2026-05-21-credential-capture-engine.md`（前一轮已写）+ `docs/superpowers/plans/2026-05-21-credential-capture-engine.md`（本轮新增）+ `feature_list.json` 加 capture-engine 条目（同时未 commit）。建议把这 3 个文档/JSON 改动单独 commit 一次 |
+| **当前最高优先级** | 凭据抓取器 Phase 1 (T1.1-T1.6) **已 commit 完毕**（HEAD `6dc8303`），下一步是 Phase 2 CaptureEngine 核心实现（4-5 小时，6 个 task），落 `golish/src/tools/integrations/capture/` 模块 + 5 个 state machine transition 单测 |
+| **当前 blocker** | 整 monorepo 的 `just precommit` 因 preexisting biome 警告 fail（pty.ts / useTaskPlanState.ts / App.tsx 等非本轮文件的格式 / lint info），与 capture/integrations 改动无关。capture-engine Phase 1 自己引入的代码 biome + tsc + nextest + ReadLints 全绿 |
+| **未提交的半成品** | git status 仍挂着 ~30 个 preexisting 文件改动（pty / agent-kit / kg / planner / llm-providers / pentest 等），与本轮 capture-engine Phase 1 无关；本轮新增 commit `11f4aaa` + `6dc8303` 已 push 范围之内，git status 中 capture/integrations 范围干净 |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-21 · 凭据抓取器 Phase 1 完结（T1.2-T1.6 落地 + 2 个 commit）
+
+- **本轮目标**：从 MCP-1 接力上下文，按 `docs/superpowers/plans/2026-05-21-credential-capture-engine.md` Phase 1 推 T1.2-T1.6，把上轮 T1.1 之后已写但未 commit 的代码（types / error / resolver / Cargo.toml / frontend ts mirror）跑全套验证后落盘。
+- **已完成**：
+  - **审计现状**：用户问"你看到哪里了"——先用 `get_session_summary(MCP-1)` 接回完整上下文 + 读 `agent-progress.md` / git log / 计划文档 / 四个候选文件，发现 T1.2 / T1.3 / T1.4 / T1.5 **代码已经写好且测试齐全**，仅差跑验证 + commit
+  - **T1.6 验证**（关键发现 Phase 1 已完成）：
+    - `cargo nextest run -p golish-integrations --status-level fail` → **69 tests run: 69 passed, 0 skipped**（前轮 T1.1 后是 49，本批 +20：T1.2 类型 5 个 + T1.3 error 5 个 + T1.4 validate_capture 5 个 + 余 5 个为既有 schema 测试更新）
+    - `cargo check -p golish-integrations -p golish` → exit 0（0.62s 增量，意味着只加字段没破坏既有签名）
+    - `pnpm exec tsc --noEmit`（全前端 typecheck）→ exit 0（10.4s）
+    - `pnpm exec biome check frontend/lib/api/integrations.ts` → No fixes applied
+    - `ReadLints` 5 个改动文件 → No linter errors found
+  - **commit `11f4aaa`**：Backend 三件套（T1.2-T1.4）
+    - `types.rs` +191 行：`CaptureState` enum（8 variant + `is_terminal()`）+ `FailedRule` + `CaptureSessionInfo`（Unix-ms 时间戳）+ `CaptureEventPayload` + 5 个单测
+    - `error.rs` +92 行：8 个 capture-specific `IntegrationError` variant（`[CAPTURE_*]` / `[WEBVIEW_*]` 前缀让前端 `mapErr()` 直接基于前缀分发）+ 5 个 Display 渲染测
+    - `resolver.rs` +170 行：`validate_capture()` per-group（login_url 必须 http(s)、target_field 必须存在于 group.fields）+ `validate_schema_captures()` per-schema fanout + 在 `DefaultSchemaResolver::collect()` 中集成调用（typo schema 在第一次 IPC 就 fail-fast 而非运行时静默 no-op）+ 5 个 case（accept-valid / reject-unknown-field / reject-javascript-url / reject-file-url / skip-when-none）
+    - `Cargo.toml` +1 行：`url = { workspace = true }`（T1.4 依赖，workspace 早已声明）
+  - **commit `6dc8303`**：Frontend ts mirror（T1.5）
+    - `frontend/lib/api/integrations.ts` +160 行：`IntegrationGroup.capture?: CaptureRecipe`（absent ⇒ 无 ⚡ 按钮）+ `CaptureRecipe` + `CaptureRule` 区分 union（6 variant：cookie / cookie_joined / local_storage / session_storage / page_content / url_query）+ `CaptureState` string union（8 状态）+ `FailedRule` / `CaptureSessionInfo` / `CaptureEventPayload`
+    - **注意**：本 commit 仅类型 mirror，**未**加 captureStart / captureStatus / captureCancel IPC wrapper（Phase 3 才加）
+- **运行过的验证**：见上方 T1.6 段，5 个命令全部 exit 0 / 69/69 passed
+- **已记录证据**：
+  - `git log -3 --oneline` → `6dc8303 ... T1.5` / `11f4aaa ... T1.2-T1.4` / `14f21ea ... T1.1`
+  - 后端 nextest 数：49（T1.1 后）→ 69（T1.6 后）+20
+  - 计划 `docs/superpowers/plans/2026-05-21-credential-capture-engine.md` T1.1-T1.6 6 个 task 全完成
+- **提交记录**：`11f4aaa` + `6dc8303`，本轮 2 个 commit，均在 `feat/asm-intel-providers` 分支；未 push
+- **已知风险或未解决问题**：
+  - Phase 0 spike 是文档化验证（不是真跑 `cargo run --example capture_spike`）；Phase 2 真写 Tauri webview builder 时若发现 docs.rs 描述的签名与本地锁定版本不一致，会在编译阶段立即暴露
+  - `validate_capture` 限制 login_url **仅 http/https**，但允许 IPv4 字面量 / IP-only（如 `http://192.168.1.1`）——这是预期行为（自托管 enterprise intel 服务可能用 IP 直连），但若后续 P2 要加 SSRF 防护需在 engine 层做白名单
+  - frontend ts mirror 是**手写**（违反 I5「ts-rs derive」）；P1 MVP 接受手写，P2 / P3 可考虑给 `golish-integrations` 加 `ts-rs` derive 收敛
+  - `CaptureSessionInfo.expires_at` 使用 Unix-ms `Option<i64>`（不是 chrono `DateTime<Utc>`）——刻意选 i64 让前端 `Date.now()` 可直接比较，避免 RFC3339 反解析；与 `IntegrationHealth.tested_at` 不一致是预期的（前者实时倒计时，后者审计日志展示）
+- **下一步最佳动作**：
+  1. **Phase 2** 启动（4-5 小时，6 个 task）：在 `backend/crates/golish/src/tools/integrations/capture/` 新建 5 个文件（mod / engine / session / data_dir / webview_isolation），把 `CaptureEngine` 状态机 + per-session data_dir + webview navigation handler + Cookie rule 提取 + 写 vault + TTL watcher + event emit 全链路打通；P2 rule 类型（CookieJoined / LocalStorage / SessionStorage / PageContent / UrlQuery）先 stub 返 "not yet implemented in P1 MVP"。详见计划 §Phase 2 T2.1-T2.6
+  2. 或者用户希望先把整 monorepo 的 preexisting biome 警告清掉让 `just precommit` 整体绿，再继续 Phase 2 —— 也合理
+  3. 不建议把 ~30 个 preexisting 改动一并 commit；它们跨 ~10 个 crate，属于上一轮的残留游离
 
 ---
 

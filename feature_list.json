@@ -24,8 +24,15 @@
         "手动反向 6 case：超时 / 取消 / 409 / 手动关窗 / data_dir 清干净 / status 在 gc 后返 CAPTURE_SESSION_NOT_FOUND",
         "just precommit 全绿（capture 引入的所有文件 biome 干净）"
       ],
-      "evidence": null,
-      "notes": "设计文档：docs/design/2026-05-21-credential-capture-engine.md（14 小节、~620 行、Draft，已交付）。实施计划：docs/superpowers/plans/2026-05-21-credential-capture-engine.md（5 Phase + Phase 0 spike，每步 2-5 分钟带完整代码块）。是 integrations P3 扩展，与 integrations 共享 IntegrationsState / vault backend。在 integrations 切 passing 后启动本条目；启动时切 in_progress 并把 integrations 切 passing。"
+      "evidence": {
+        "phase_0_spike": "用 WebFetch 查 docs.rs 验证 Tauri 2 关键 API（WebviewWindowBuilder::data_directory / WebviewWindow::cookies_for_url / WebviewWindowBuilder::on_navigation）真实签名，发现 3 个偏差（macOS data_store_identifier / on_navigation 签名是 Fn(&Url) / cookies_for_url 是同步方法）+ 3 个 Bonus（eval_with_callback / clear_all_browsing_data / on_page_load）。计划已写入修订（commit 80124ba）。",
+        "phase_1_t1_1": "schema.rs +CaptureRecipe + CaptureRule（6 variant：cookie / cookie_joined / local_storage / session_storage / page_content / url_query）+ IntegrationGroup.capture 字段。commit 14f21ea。",
+        "phase_1_t1_2_to_t1_4": "Backend 三件套：types.rs +CaptureState(8 variant + is_terminal) + FailedRule + CaptureSessionInfo + CaptureEventPayload（5 测）；error.rs +8 个 capture-specific IntegrationError variant（[CAPTURE_*] / [WEBVIEW_*] prefix 让前端 mapErr 基于 prefix dispatch）（5 测）；resolver.rs +validate_capture per-group（login_url http/https + target_field cross-ref）+ validate_schema_captures fanout + 集成进 DefaultSchemaResolver::collect()（5 测）；Cargo.toml +url workspace dep。commit 11f4aaa。",
+        "phase_1_t1_5": "frontend/lib/api/integrations.ts +160 行 capture types：IntegrationGroup.capture? + CaptureRecipe + CaptureRule(6 variant 区分 union 匹配 Rust serde tag/snake_case) + CaptureState(8 status string union) + FailedRule + CaptureSessionInfo + CaptureEventPayload。仅类型 mirror，未加 IPC wrapper（Phase 3 才加）。commit 6dc8303。",
+        "phase_1_t1_6_verification": "cargo nextest run -p golish-integrations → 69 tests run: 69 passed, 0 skipped（T1.1 后 49 → T1.6 后 69，+20）；cargo check -p golish-integrations -p golish → exit 0（0.62s 增量，证明只加字段没破坏既有签名）；pnpm exec tsc --noEmit → exit 0（10.4s）；pnpm exec biome check frontend/lib/api/integrations.ts → No fixes applied；ReadLints 5 个改动文件 → No linter errors found。",
+        "outstanding_phase_2_to_5": "Phase 2 CaptureEngine 核心实现（4-5 小时）+ Phase 3 三个 Tauri command + Phase 4 i18n / hooks / 3 UI 组件 / 集成进 IntegrationGroup.tsx + Phase 5 ENScan AQC capture 段 + 手动 E2E + 反向 6 case 全部 P1 MVP 范围内未完成，待下一轮接力推进。"
+      },
+      "notes": "设计文档：docs/design/2026-05-21-credential-capture-engine.md（14 小节、~620 行、Draft，已交付）。实施计划：docs/superpowers/plans/2026-05-21-credential-capture-engine.md（5 Phase + Phase 0 spike，每步 2-5 分钟带完整代码块）。是 integrations P3 扩展，与 integrations 共享 IntegrationsState / vault backend。2026-05-21 Phase 0 + Phase 1 已完成（commits 9286058 / 80124ba / 14f21ea / 11f4aaa / 6dc8303）；下一步 Phase 2 CaptureEngine 核心实现。"
     },
     {
       "id": "integrations",
