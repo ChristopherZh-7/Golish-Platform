@@ -75,6 +75,13 @@ export interface IntegrationGroup {
   help_url?: string;
   fields: Field[];
   test?: TestKind;
+  /**
+   * Optional auto-capture recipe. When present, the Settings UI renders
+   * a ⚡ "Auto-fill" button next to the group header that opens an
+   * isolated webview and harvests credentials after the user logs in.
+   * Absent (the default) ⇒ no ⚡ button; the user fills the form by hand.
+   */
+  capture?: CaptureRecipe;
 }
 
 /**
@@ -159,6 +166,159 @@ export interface IntegrationHealth {
   /** Human-readable message (never includes the credential value). */
   message: string;
   tested_at: string;
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Capture (mirrors golish-integrations/src/schema.rs CaptureRecipe +
+//          src/types.rs CaptureState / CaptureSessionInfo)
+//
+// Wire-format snake_case to match serde defaults. Internal-tag
+// `type` discriminator on CaptureRule matches Rust's
+// `#[serde(tag = "type", rename_all = "snake_case")]`.
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Schema-declared recipe describing how to harvest credentials after
+ * the user logs in. One per [`IntegrationGroup`]; absent ⇒ feature off.
+ */
+export interface CaptureRecipe {
+  /** First URL loaded in the capture webview (typically the login page). */
+  login_url: string;
+  /**
+   * Regex; when the webview navigates to a URL matching this pattern
+   * the engine treats login as complete and proceeds to extraction.
+   * If unset the user must click "Capture now" manually.
+   */
+  success_url_pattern?: string;
+  /**
+   * Optional URL to navigate to *after* success but before extraction
+   * (e.g. open a dashboard page that sets the cookie of interest).
+   */
+  visit_url?: string;
+  /** Markdown shown above the webview to guide the user. */
+  instructions?: string;
+  /** Hard timeout for the whole session. Engine clamps to [30, 900]. */
+  timeout_secs: number;
+  /** Ordered list of extraction rules. */
+  rules: CaptureRule[];
+}
+
+/**
+ * Single extraction step. Each variant has its own input shape but
+ * always writes to one target field via `target_field`. `required`
+ * defaults to false on the wire (serde `default`); the UI surfaces
+ * required failures as "session failed" but tolerates optional ones.
+ */
+export type CaptureRule =
+  | {
+      type: "cookie";
+      domain: string;
+      name: string;
+      target_field: string;
+      required?: boolean;
+    }
+  | {
+      type: "cookie_joined";
+      domain: string;
+      names: string[];
+      /** Separator between joined values; default `; `. */
+      sep?: string;
+      /** Per-name format string; default `"{name}={value}"`. */
+      fmt?: string;
+      target_field: string;
+      required?: boolean;
+    }
+  | {
+      type: "local_storage";
+      key: string;
+      target_field: string;
+      required?: boolean;
+    }
+  | {
+      type: "session_storage";
+      key: string;
+      target_field: string;
+      required?: boolean;
+    }
+  | {
+      type: "page_content";
+      /** CSS selector (e.g. `meta[name=csrf-token]`). */
+      selector: string;
+      /** When set, read this attribute instead of `textContent`. */
+      attribute?: string;
+      /** Wait this many ms for the node to appear before failing. */
+      wait_ms?: number;
+      target_field: string;
+      required?: boolean;
+    }
+  | {
+      type: "url_query";
+      name: string;
+      target_field: string;
+      required?: boolean;
+    };
+
+/**
+ * State of a capture session. Mirrors `CaptureState` in
+ * `golish-integrations/src/types.rs`. Terminal states (Rust:
+ * `CaptureState::is_terminal`):
+ *   captured, partial, failed, timeout, cancelled.
+ */
+export type CaptureState =
+  | "waiting_login"
+  | "navigating"
+  | "extracting"
+  | "captured"
+  | "partial"
+  | "failed"
+  | "timeout"
+  | "cancelled";
+
+/** Per-rule failure detail; `rule_index` is 0-based. */
+export interface FailedRule {
+  rule_index: number;
+  reason: string;
+}
+
+/**
+ * Snapshot of a capture session — returned by
+ * `integrations_capture_start` / `_status` and emitted (minus
+ * `expires_at`) on the `"integration-capture"` event channel as
+ * [`CaptureEventPayload`]. Timestamps are Unix milliseconds so the UI
+ * countdown can compare against `Date.now()` directly.
+ */
+export interface CaptureSessionInfo {
+  session_id: string;
+  tool_id: string;
+  group_id: string;
+  state: CaptureState;
+  login_url: string;
+  /** `target_field` values from the recipe rules, in declaration order. */
+  expected_fields: string[];
+  /** Subset of `expected_fields` actually written to vault. */
+  captured_fields?: string[];
+  failed_rules?: FailedRule[];
+  error_message?: string;
+  /** Unix milliseconds; absent for already-terminal sessions. */
+  expires_at?: number;
+  /** Unix milliseconds when state last transitioned. */
+  updated_at: number;
+}
+
+/**
+ * Payload emitted on the `"integration-capture"` Tauri event channel.
+ * Subset of [`CaptureSessionInfo`] — the frontend already has
+ * `expires_at` + `login_url` from the `_start` response and doesn't
+ * need them re-delivered on every transition.
+ */
+export interface CaptureEventPayload {
+  session_id: string;
+  tool_id: string;
+  group_id: string;
+  state: CaptureState;
+  captured_fields?: string[];
+  failed_rules?: FailedRule[];
+  error_message?: string;
 }
 
 // ────────────────────────────────────────────────────────────────────────
