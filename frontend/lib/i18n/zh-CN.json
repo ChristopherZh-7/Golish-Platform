@@ -902,6 +902,34 @@
       "rate_limited": "限流中",
       "unknown": "未知"
     },
+    "capture": {
+      "button": {
+        "label": "自动抓取",
+        "tooltip": "打开浏览器窗口自动获取凭据"
+      },
+      "dialog": {
+        "title": "自动抓取凭据",
+        "description": "Golish 将在独立窗口中打开 {{url}}。登录后会自动提取以下字段：{{fields}}。窗口会在 {{ttl}} 秒后自动关闭。",
+        "start": "打开浏览器并登录",
+        "cancel": "取消"
+      },
+      "toast": {
+        "waitingLogin": "等待登录 · 剩 {{remaining}} 秒",
+        "navigating": "正在加载登录后页面…",
+        "extracting": "正在提取凭据…",
+        "captured": "成功抓取 {{count}} 个字段",
+        "partial": "部分抓取 · {{captured}} 成功 / {{failed}} 缺失",
+        "timeout": "登录超时未完成抓取",
+        "failed": "抓取失败",
+        "cancelled": "已取消抓取"
+      },
+      "errors": {
+        "noRecipe": "该集成不支持自动抓取",
+        "alreadyRunning": "已有抓取任务进行中——请先取消",
+        "webviewFailed": "无法打开浏览器窗口——请检查 Golish 权限",
+        "unknown": "抓取失败：{{message}}"
+      }
+    },
     "tool": {
       "0_zone": {
         "display_name": "0.zone（零零信安）",

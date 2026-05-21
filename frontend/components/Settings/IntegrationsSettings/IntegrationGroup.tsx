@@ -14,11 +14,16 @@
  */
 
 import { ExternalLink, Loader2, Save, Trash2 } from "lucide-react";
+import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import type { IntegrationGroup as IntegrationGroupSchema } from "@/lib/api/integrations";
 import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";
+import { CaptureButton } from "./CaptureButton";
+import { CaptureConfirmDialog } from "./CaptureConfirmDialog";
+import { CaptureStatusToast } from "./CaptureStatusToast";
 import { FieldRenderer } from "./fields/FieldRenderer";
+import { useCaptureSession } from "./hooks/useCaptureSession";
 import { useIntegrationGroup } from "./hooks/useIntegrationGroup";
 import { TestButton } from "./TestButton";
 import { safeI18nId, tWithDefault } from "./utils";
@@ -53,7 +58,18 @@ export function IntegrationGroupForm({ toolId, group, fallbackHelpUrl }: Integra
     save,
     clear,
     test,
+    reload,
   } = useIntegrationGroup({ toolId, groupId: group.id, fields: group.fields });
+
+  const onCaptureTerminalSuccess = useCallback(() => {
+    void reload();
+  }, [reload]);
+
+  const capture = useCaptureSession({ onTerminalSuccess: onCaptureTerminalSuccess });
+  const captureInflight =
+    capture.state === "waiting_login" ||
+    capture.state === "navigating" ||
+    capture.state === "extracting";
 
   const busy =
     status === "loading" || status === "saving" || status === "clearing" || status === "testing";
@@ -140,6 +156,15 @@ export function IntegrationGroupForm({ toolId, group, fallbackHelpUrl }: Integra
         </div>
       )}
 
+      {(capture.session || capture.startError) && (
+        <CaptureStatusToast
+          session={capture.session}
+          remainingSecs={capture.remainingSecs}
+          startError={capture.startError}
+          onCancel={capture.cancel}
+        />
+      )}
+
       <div className="flex items-center gap-2 pt-2 border-t border-border/15 flex-wrap">
         <button
           type="button"
@@ -165,6 +190,12 @@ export function IntegrationGroupForm({ toolId, group, fallbackHelpUrl }: Integra
         >
           <Trash2 className="w-2.5 h-2.5" /> {t("integrations.clear")}
         </button>
+        <CaptureButton
+          toolId={toolId}
+          group={group}
+          disabled={busy || captureInflight}
+          onStart={capture.start}
+        />
         <div className="flex-1" />
         <TestButton
           onClick={test}
@@ -174,6 +205,13 @@ export function IntegrationGroupForm({ toolId, group, fallbackHelpUrl }: Integra
           disabled={busy && status !== "testing"}
         />
       </div>
+
+      <CaptureConfirmDialog
+        open={capture.confirmOpen}
+        onOpenChange={capture.setConfirmOpen}
+        recipe={group.capture ?? null}
+        onConfirm={capture.proceedAfterConfirm}
+      />
     </div>
   );
 }

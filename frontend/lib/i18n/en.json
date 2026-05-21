@@ -902,6 +902,34 @@
       "rate_limited": "Rate-limited",
       "unknown": "Unknown"
     },
+    "capture": {
+      "button": {
+        "label": "Auto-capture",
+        "tooltip": "Open a browser window to harvest credentials automatically"
+      },
+      "dialog": {
+        "title": "Auto-capture credentials",
+        "description": "Golish will open {{url}} in a separate window. After you sign in, the following fields will be extracted: {{fields}}. The window auto-closes after {{ttl}} seconds.",
+        "start": "Open browser & sign in",
+        "cancel": "Cancel"
+      },
+      "toast": {
+        "waitingLogin": "Waiting for sign-in · {{remaining}}s left",
+        "navigating": "Loading post-login page…",
+        "extracting": "Extracting credentials…",
+        "captured": "Captured {{count}} field(s) successfully",
+        "partial": "Partial capture · {{captured}} captured, {{failed}} missing",
+        "timeout": "Capture timed out without sign-in",
+        "failed": "Capture failed",
+        "cancelled": "Capture cancelled"
+      },
+      "errors": {
+        "noRecipe": "This integration does not support auto-capture",
+        "alreadyRunning": "Capture already in progress — cancel first",
+        "webviewFailed": "Cannot open browser window — check Golish permissions",
+        "unknown": "Capture failed: {{message}}"
+      }
+    },
     "tool": {
       "0_zone": {
         "display_name": "0.zone (Anonymous Security)",
