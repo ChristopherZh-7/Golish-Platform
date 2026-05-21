@@ -130,6 +130,26 @@ pub fn map_err(e: IntegrationError) -> crate::error::GolishError {
         IntegrationError::Yaml(e) => crate::error::GolishError::Internal(format!("yaml: {e}")),
         IntegrationError::Json(e) => crate::error::GolishError::Json(e),
         IntegrationError::Internal(m) => crate::error::GolishError::Internal(m),
+
+        // -- Capture engine errors ---------------------------------------------
+        // The `[CAPTURE_*]` / `[WEBVIEW_*]` prefix in each Display is preserved
+        // so the frontend `mapErr()` can dispatch on prefix alone. The chosen
+        // GolishError variant only affects HTTP-style status grouping
+        // (validation vs not-found vs internal).
+        e @ (IntegrationError::CaptureNoRecipe
+        | IntegrationError::CaptureAlreadyRunning { .. }
+        | IntegrationError::CaptureInvalidUrl(_)
+        | IntegrationError::CaptureInvalidTargetField { .. }) => {
+            crate::error::GolishError::Validation(e.to_string())
+        }
+        e @ IntegrationError::CaptureSessionNotFound(_) => {
+            crate::error::GolishError::NotFound(e.to_string())
+        }
+        e @ (IntegrationError::WebviewCreateFailed(_)
+        | IntegrationError::CaptureTimeout { .. }
+        | IntegrationError::CaptureRuleFailed { .. }) => {
+            crate::error::GolishError::Internal(e.to_string())
+        }
     }
 }
 

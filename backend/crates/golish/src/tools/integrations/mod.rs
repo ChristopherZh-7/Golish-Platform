@@ -18,6 +18,7 @@
 //! [`StorageBackend`]: golish_integrations::StorageBackend
 //! [`Tester`]: golish_integrations::Tester
 
+pub mod capture;
 pub mod commands;
 pub mod state;
 

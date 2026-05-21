@@ -6,12 +6,14 @@
 
 use std::sync::Arc;
 
+use tauri::Manager;
 use tokio::sync::RwLock;
 
 use crate::commands::FileWatcherState;
 use crate::history::HistoryManager;
 use crate::state::AppState;
 use crate::tools;
+use crate::tools::integrations::capture::CaptureEngine;
 use crate::tools::integrations::IntegrationsState;
 
 /// Apply plugins, managed state and lifecycle hooks to the given Tauri
@@ -32,6 +34,10 @@ pub(crate) fn configure_builder(
     // Integrations: schema resolver + tester + bundled in-code schemas
     // (intel providers + `resources/integrations/core.json`).
     let integrations_state = IntegrationsState::build_default(settings_mgr.clone());
+    // Credential Capture Engine. Tauri-managed as `Arc<...>` so the
+    // setup hook can clone an owning handle for the TTL watcher
+    // background task without lifetime headaches.
+    let capture_engine: Arc<CaptureEngine> = Arc::new(CaptureEngine::new());
 
     builder
         .plugin(tauri_plugin_dialog::init())
@@ -49,8 +55,19 @@ pub(crate) fn configure_builder(
         .manage(Arc::new(FileWatcherState::new()))
         .manage(tools::pentest::PentestState::new())
         .manage(integrations_state)
+        .manage(capture_engine)
         .on_window_event(|window, event| {
             crate::app::window_lifecycle::handle_window_event(window, event);
         })
-        .setup(|app| crate::app::bootstrap::setup_subsystems(app))
+        .setup(|app| {
+            crate::app::bootstrap::setup_subsystems(app)?;
+            // Kick off the capture-session TTL watcher. The watcher
+            // ticks every 10s, transitions any sessions past their
+            // recipe-declared TTL to `Timeout`, then GCs terminal
+            // sessions older than 1h.
+            let engine: tauri::State<Arc<CaptureEngine>> = app.state();
+            let engine = engine.inner().clone();
+            engine.spawn_ttl_watcher(app.handle().clone());
+            Ok(())
+        })
 }
