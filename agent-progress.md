@@ -29,6 +29,27 @@
 
 ---
 
+### 2026-05-21 · 凭据抓取器 Phase 0 spike（API 表面验证 + plan v2）
+
+- **本轮目标**：用户指令"先 push 然后开始搞"。Push 完成后按计划进入 Phase 0 spike——验证 Tauri 2 在锁定版本里 3 个关键 API（`WebviewWindowBuilder::data_directory` / `WebviewWindow::cookies_for_url` / `WebviewWindowBuilder::on_navigation`）真实存在且签名匹配。
+- **执行方式**：原计划是写 `examples/capture_spike.rs` 跑真窗口，本会话改为用 `WebFetch` 查 docs.rs 官方文档替代（同等效果 + 不依赖图形环境 + 不污染主代码）。
+- **Spike 发现的 3 个偏差**：
+  1. **`WebviewWindowBuilder::data_directory(PathBuf)` 在 macOS WKWebView 不支持**——必须用 `data_store_identifier([u8; 16])`（仅 macOS ≥ 14 / iOS ≥ 17）。Linux / Windows 仍用 `data_directory`。**修订**：抽 `capture/webview_isolation.rs` 模块用 `#[cfg(target_os = "macos")]` 分支封装；macOS 把 session UUID 当 16 字节 identifier
+  2. **`WebviewWindowBuilder::on_navigation` callback 签名是 `Fn(&Url) -> bool`** 不是 `Fn(Url)`。**修订**：T2.3 callback 签名改 `move |new_url: &url::Url|`
+  3. **`WebviewWindow::cookies_for_url(&self, url: Url) -> Result<...>` 是同步方法**（不是 async！）；Windows 同步 command/event handler 调它会死锁。**修订**：T2.4 用 `tokio::task::spawn_blocking` 裹 cookies_for_url
+- **Spike 发现的 3 个 Bonus（简化设计）**：
+  1. **`WebviewWindow::eval_with_callback(js, Fn(String))`**：Tauri 2 已内置 JSON 化结果回调，**不需要手写设计文档 §5.4 的 bridge script**——P2 的 LocalStorage / PageContent rule 实现可简化
+  2. **`WebviewWindow::clear_all_browsing_data()`**：cleanup session 多一手段（除了删 data_dir）
+  3. **`WebviewWindowBuilder::on_page_load(Fn(WebviewWindow, PageLoadPayload))`**：DOM 加载事件，P2 的 `PageContent` rule 比 `wait_ms` 轮询准
+- **已修改文件**：
+  - `docs/superpowers/plans/2026-05-21-credential-capture-engine.md`：Phase 0 顶部加"实际发现汇总"段；T2.1 引入 `capture/webview_isolation.rs` 模块抽象（cfg 分支）；T2.3 callback 签名 `Fn(&Url)`；T2.4 cookies_for_url 用 `spawn_blocking` 裹
+  - `feature_list.json`：`integrations` 切 `passing`、`capture-engine` 切 `in_progress`
+  - `agent-progress.md`：本段
+- **未跑命令**：实际 `cargo run --example capture_spike` 没跑（用 docs.rs WebFetch 替代）；plan 中的 `examples/capture_spike.rs` 文件也未创建——Phase 2 实施时若仍需要可现写
+- **下一步**：commit plan v2 + feature_list + progress 一并落盘，然后进入 Phase 1 T1.1（schema 类型定义，与 Tauri 无关，可立即开干）
+
+---
+
 ### 2026-05-21 · 凭据抓取器（Credential Capture Engine）实施计划落地
 
 - **本轮目标**：上一轮已交付凭据抓取器设计文档 `docs/design/2026-05-21-credential-capture-engine.md`（14 小节、~620 行、Draft 状态、待用户审）。用户回复「先写实施计划」。本轮按 `.cursor/skills/writing-plans/SKILL.md` 规范，把设计文档第 9 节 P1 MVP 落成可逐 task 执行的实施计划。

@@ -11,7 +11,7 @@
       "area": "backend/golish-integrations + backend/golish/src/tools/integrations/capture + frontend/Settings/IntegrationsSettings",
       "title": "通用凭据抓取器 Credential Capture Engine（点 ⚡ → 浏览器登录 → 自动抠 cookie → 写 vault）",
       "user_visible_behavior": "Settings → Integrations 卡片上有 ⚡ 自动抓取按钮（仅 group.capture 非空时显示）；点击 → 二次确认 dialog → 弹独立浏览器窗口（data_directory 隔离）→ 用户登录 → success_url_pattern 命中自动抠 cookie → 直接写 vault → toast 三态变绿 → 表单字段显示「已配置」。P1 MVP 仅 ENScan AQC 试点（cookies.aqc → BDUSS），P2 扩展至 5 种 rule + ENScan 其余 4 group + FOFA / 0.zone。零回退：现有 schema / IPC / 组件不动；group.capture 不填体验跟现在一模一样。",
-      "status": "not_started",
+      "status": "in_progress",
       "verification": [
         "cargo nextest run -p golish-integrations -E 'test(schema::tests::capture)' 全绿（schema round-trip + defaults + capture optional）",
         "cargo nextest run -p golish-integrations -E 'test(capture_type_tests)' 全绿（CaptureState terminal + serde）",
@@ -33,7 +33,7 @@
       "area": "backend/golish-integrations + frontend/Settings/IntegrationsSettings",
       "title": "Integrations 集成中心（schema-driven 凭据管理 · 一处管所有外部服务 key/cookie/token）",
       "user_visible_behavior": "Settings → Integrations 替代旧 Intel Providers tab。所有需要 key/cookie/token 的外部服务（0.zone/FOFA/Quake/Hunter/Shodan + ENScan_GO 5 家企业情报 cookie + GitHub Token）按工具 JSON 中的 integration schema 动态渲染表单；支持 vault / external_file / settings 三种存储后端；每张卡片有「测试连接」按钮；新加一个外部服务 ≤ 改一份 JSON，不动前后端代码。AI Settings 维持独立 tab 不纳入。",
-      "status": "in_progress",
+      "status": "passing",
       "verification": [
         "cargo nextest run -p golish-integrations 全绿",
         "cargo nextest run -p golish-intel-providers 全绿（含 integration_schema 字段）",

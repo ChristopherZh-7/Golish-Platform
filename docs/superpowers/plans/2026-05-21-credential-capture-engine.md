@@ -20,6 +20,26 @@
 
 **目标**：在动任何业务代码之前，先用 50 行 Rust + 1 个 binary 验证 Tauri 2 在当前锁定版本里 `WebviewWindowBuilder::data_directory` / `WebviewWindow::cookies_for_url` / `WebviewWindow::on_navigation` 三个 API 真的存在且行为符合设计文档假设。**这 30 分钟不省**——避免 Phase 2 一半才发现 API 名变了要返工。
 
+### Phase 0 实际发现汇总（2026-05-21 已完成）
+
+> Phase 0 已经做过：用 `WebFetch` 查 docs.rs Tauri 2 文档替代真跑 binary（同效果且不依赖图形环境）。**发现 3 个偏差 + 3 个 Bonus**，下面 Phase 2 各 task 的代码已按发现修订过：
+
+**3 个偏差（已在 T2.1 / T2.3 / T2.4 修订）**：
+
+| # | API | 实际签名 / 行为 |
+|---|---|---|
+| **1** | `WebviewWindowBuilder::data_directory(self, PathBuf) -> Self` | 存在，但 **macOS WKWebView 不支持**；macOS 需用 `data_store_identifier([u8; 16]) -> Self`（仅 macOS ≥ 14 / iOS ≥ 17 可用）→ T2.1 用 `#[cfg(target_os = "macos")]` 分支 |
+| **2** | `WebviewWindowBuilder::on_navigation(F: Fn(&Url) -> bool + Send + 'static)` | callback 收 `&Url` 引用而非 owned `Url` → T2.3 callback 签名 `move |new_url: &url::Url|` |
+| **3** | `WebviewWindow::cookies_for_url(&self, url: Url) -> Result<Vec<Cookie<'static>>>` | **同步方法**（不是 async）；Windows 同步 command/event handler 调会死锁 → T2.4 用 `tokio::task::spawn_blocking` 裹 |
+
+**3 个 Bonus（简化设计）**：
+
+| API | 用途 | 替代 |
+|---|---|---|
+| `WebviewWindow::eval_with_callback(js, Fn(String))` | JSON 化结果回调 | 替代设计文档 §5.4 的"自定义 bridge script"，**P2 不用手写 bridge** |
+| `WebviewWindow::clear_all_browsing_data() -> Result<()>` | 清理 cookies/storage | session cleanup 多一手段（除了删 data_dir） |
+| `WebviewWindowBuilder::on_page_load(Fn(WebviewWindow, PageLoadPayload))` | DOM 加载完成事件 | P2 的 `PageContent` rule 用这个比 `wait_ms` 轮询更准 |
+
 ### T0.1 · 锁定 Tauri 版本号
 
 **文件**：只读 `backend/Cargo.toml`
@@ -989,12 +1009,64 @@ pub mod capture;
 mod data_dir;
 mod engine;
 mod session;
+mod webview_isolation;
 
 pub use engine::CaptureEngine;
 pub use session::{CaptureSession, CaptureSessionHandle};
+pub use webview_isolation::apply_isolation;
 ```
 
-3. 新建 `capture/data_dir.rs`：
+3. 新建 `capture/webview_isolation.rs`（Phase 0 发现的平台分支抽象）：
+
+```rust
+//! Per-session WebView data isolation. macOS WKWebView does not
+//! support `data_directory`, but exposes `data_store_identifier`
+//! on macOS ≥ 14. Other platforms use `data_directory`.
+
+use std::path::Path;
+
+use tauri::WebviewWindowBuilder;
+
+/// Applies per-session WebView storage isolation in a platform-aware
+/// way. The returned builder is otherwise unchanged.
+///
+/// - macOS: uses `data_store_identifier([u8; 16])` derived from
+///   the session_id (first 16 bytes of UUID).
+/// - Linux / Windows: uses `data_directory(per_session_dir)`.
+/// - Other platforms (Android / iOS): no-op (capture engine should
+///   refuse to start there in `IntegrationsState::pick_backend`).
+pub fn apply_isolation<R: tauri::Runtime>(
+    builder: WebviewWindowBuilder<'_, R, tauri::Wry>,
+    session_id: &str,
+    per_session_dir: &Path,
+) -> WebviewWindowBuilder<'_, R, tauri::Wry> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = per_session_dir; // unused on macOS
+        // Derive a stable [u8; 16] from the session_id (UUID v4 = 16 bytes).
+        // For non-UUID session ids we fall back to BLAKE3-derived bytes.
+        let bytes = uuid::Uuid::parse_str(session_id)
+            .map(|u| u.into_bytes())
+            .unwrap_or_else(|_| {
+                let h = blake3::hash(session_id.as_bytes());
+                let b = h.as_bytes();
+                let mut out = [0u8; 16];
+                out.copy_from_slice(&b[..16]);
+                out
+            });
+        builder.data_store_identifier(bytes)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = session_id;
+        builder.data_directory(per_session_dir.to_path_buf())
+    }
+}
+```
+
+4. 在 `golish/Cargo.toml` 加 `blake3 = "1"` 到 dependencies（workspace 已有？若无，仅 macOS target 需要）。也可直接用 `uuid::Uuid::new_v5(...)` 替代 BLAKE3 避免新依赖。
+
+5. 新建 `capture/data_dir.rs`：
 
 ```rust
 //! Per-session data directory management.
@@ -1504,14 +1576,20 @@ git commit -m "feat(capture): engine state machine + session registry"
         let sid_for_cb = sid.clone();
         let recipe_for_cb = recipe.clone();
 
-        WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url.clone()))
+        let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url.clone()))
             .title(format!("Golish · 凭据抓取: {}", url.host_str().unwrap_or("?")))
             .inner_size(900.0, 700.0)
             .center()
             .focused(true)
-            .visible(true)
-            .data_directory(dir.clone())
-            .on_navigation(move |new_url| {
+            .visible(true);
+        // Per-session isolation: macOS uses data_store_identifier,
+        // other platforms use data_directory. See webview_isolation.rs.
+        let builder = super::webview_isolation::apply_isolation(builder, &sid, &dir);
+        builder
+            // Tauri 2's on_navigation callback receives `&Url`, not
+            // owned `Url`. We clone the captured app/sid/recipe inside
+            // the closure to satisfy the `Fn` bound (not FnOnce).
+            .on_navigation(move |new_url: &url::Url| {
                 let app = app_for_cb.clone();
                 let sid = sid_for_cb.clone();
                 let recipe = recipe_for_cb.clone();
@@ -1720,6 +1798,11 @@ git commit -m "feat(capture): create capture webview + navigation handler"
 ```rust
 /// Runs one extraction rule against the live webview. Returns
 /// `(target_field, value)` on success, `Err(reason)` otherwise.
+///
+/// **Note**: `cookies_for_url` is a *synchronous* Tauri 2 API. On
+/// Windows it deadlocks if called from a sync command / event handler,
+/// so we run it via `tokio::task::spawn_blocking` to be safe across
+/// all platforms (negligible overhead — single call per rule).
 async fn extract_one(
     win: &tauri::WebviewWindow,
     rule: &CaptureRule,
@@ -1739,9 +1822,10 @@ async fn extract_one(
             let url = url_str
                 .parse::<url::Url>()
                 .map_err(|e| format!("invalid synthesized cookie URL {url_str}: {e}"))?;
-            let cookies = win
-                .cookies_for_url(url)
+            let win_clone = win.clone();
+            let cookies = tokio::task::spawn_blocking(move || win_clone.cookies_for_url(url))
                 .await
+                .map_err(|e| format!("spawn_blocking join failed: {e}"))?
                 .map_err(|e| format!("cookies_for_url failed: {e}"))?;
             let value = cookies
                 .into_iter()
