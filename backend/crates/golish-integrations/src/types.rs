@@ -296,11 +296,7 @@ impl CaptureState {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Captured
-                | Self::Partial
-                | Self::Failed
-                | Self::Timeout
-                | Self::Cancelled
+            Self::Captured | Self::Partial | Self::Failed | Self::Timeout | Self::Cancelled
         )
     }
 }

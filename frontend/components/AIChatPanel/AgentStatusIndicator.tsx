@@ -56,12 +56,7 @@ const VOCABULARY: Record<AgentStatusPhase, string[]> = {
     "composing answer",
     "laying down rounds",
   ],
-  tool: [
-    "running {detail}",
-    "executing {detail}",
-    "deploying {detail}",
-    "spawning {detail}",
-  ],
+  tool: ["running {detail}", "executing {detail}", "deploying {detail}", "spawning {detail}"],
   delegating: [
     "relaying to {detail}",
     "dispatching to {detail}",
@@ -104,10 +99,7 @@ export const AgentStatusIndicator = memo(function AgentStatusIndicator({
   className,
 }: AgentStatusIndicatorProps) {
   const phrases = useMemo(
-    () =>
-      VOCABULARY[phase]
-        .map((tpl) => fill(tpl, detail))
-        .filter((p) => p.length > 0),
+    () => VOCABULARY[phase].map((tpl) => fill(tpl, detail)).filter((p) => p.length > 0),
     [phase, detail]
   );
 

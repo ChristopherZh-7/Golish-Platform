@@ -154,7 +154,10 @@ impl Tester for DefaultTester {
         };
         match test {
             TestKind::Builtin => match &self.builtin_dispatcher {
-                Some(d) => d.dispatch(tool_id, group_id, schema, cleartext_fields).await,
+                Some(d) => {
+                    d.dispatch(tool_id, group_id, schema, cleartext_fields)
+                        .await
+                }
                 None => Ok(IntegrationHealth::unknown(
                     "builtin test path: IPC facade must dispatch to the provider's test_connection",
                 )),

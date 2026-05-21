@@ -76,7 +76,11 @@ export function WikiSidebar({
   navigateToWikiPage,
 }: WikiSidebarProps) {
   const displayTree =
-    searchQuery && !searchResults.length ? filterTree(fullTree, searchQuery) : browseAll ? fullTree : [];
+    searchQuery && !searchResults.length
+      ? filterTree(fullTree, searchQuery)
+      : browseAll
+        ? fullTree
+        : [];
 
   const renderTreeNode = (node: WikiTreeNode, depth = 0): React.ReactNode => {
     if (node.is_dir) {

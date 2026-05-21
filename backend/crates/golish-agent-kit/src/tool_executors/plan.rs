@@ -173,7 +173,12 @@ mod patch_tool_tests {
 
         let event = rx.try_recv().expect("must emit PlanUpdated");
         match event {
-            AiEvent::PlanUpdated { version, summary, steps, .. } => {
+            AiEvent::PlanUpdated {
+                version,
+                summary,
+                steps,
+                ..
+            } => {
                 assert_eq!(version, snapshot.version);
                 assert_eq!(summary.total, 2);
                 assert_eq!(steps.len(), 2);

@@ -184,7 +184,11 @@ mod tests {
 
     #[test]
     fn rgb_packs_into_u32() {
-        let c = Color::from(Rgb { r: 0x12, g: 0x34, b: 0x56 });
+        let c = Color::from(Rgb {
+            r: 0x12,
+            g: 0x34,
+            b: 0x56,
+        });
         assert_eq!(c, Color::Rgb { value: 0x123456 });
     }
 

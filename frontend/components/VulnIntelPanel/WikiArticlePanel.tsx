@@ -191,9 +191,7 @@ export function WikiArticlePanel({
             <Markdown content={selectedBody} />
           </div>
         ) : (
-          <div className="text-[10px] text-muted-foreground/20 py-8 text-center">
-            Empty article
-          </div>
+          <div className="text-[10px] text-muted-foreground/20 py-8 text-center">Empty article</div>
         )}
 
         {/* Backlinks */}

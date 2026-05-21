@@ -7,7 +7,13 @@ interface VulnFeedsConfigProps {
   showAddFeed: boolean;
   setShowAddFeed: (v: boolean) => void;
   newFeed: { name: string; feed_type: string; url: string };
-  setNewFeed: (updater: (f: { name: string; feed_type: string; url: string }) => { name: string; feed_type: string; url: string }) => void;
+  setNewFeed: (
+    updater: (f: { name: string; feed_type: string; url: string }) => {
+      name: string;
+      feed_type: string;
+      url: string;
+    }
+  ) => void;
   handleToggleFeed: (id: string, enabled: boolean) => void;
   handleDeleteFeed: (id: string) => void;
   handleAddFeed: () => void;

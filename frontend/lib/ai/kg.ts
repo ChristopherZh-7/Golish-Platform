@@ -108,9 +108,7 @@ export async function kgGetNeighbors(
  * Group a flat list of entities by `entity_type`. Useful for rendering
  * KG snapshots as collapsible sections in panels.
  */
-export function groupEntitiesByType(
-  entities: KgEntity[]
-): Record<string, KgEntity[]> {
+export function groupEntitiesByType(entities: KgEntity[]): Record<string, KgEntity[]> {
   const map: Record<string, KgEntity[]> = {};
   for (const ent of entities) {
     const key = String(ent.entity_type);

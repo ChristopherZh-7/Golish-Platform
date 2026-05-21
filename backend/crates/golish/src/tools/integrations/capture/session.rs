@@ -48,7 +48,9 @@ impl CaptureSession {
         recipe: CaptureRecipe,
     ) -> Self {
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let timeout_secs = recipe.timeout_secs.clamp(TIMEOUT_MIN_SECS, TIMEOUT_MAX_SECS);
+        let timeout_secs = recipe
+            .timeout_secs
+            .clamp(TIMEOUT_MIN_SECS, TIMEOUT_MAX_SECS);
         Self {
             session_id,
             tool_id,
@@ -162,12 +164,7 @@ mod tests {
 
     #[test]
     fn transition_updates_state_and_timestamp() {
-        let mut s = CaptureSession::new(
-            "sid".into(),
-            "t".into(),
-            "g".into(),
-            aqc_recipe(60),
-        );
+        let mut s = CaptureSession::new("sid".into(), "t".into(), "g".into(), aqc_recipe(60));
         let t0 = s.updated_at_ms;
         std::thread::sleep(std::time::Duration::from_millis(5));
         s.transition(CaptureState::Extracting);
@@ -177,12 +174,7 @@ mod tests {
 
     #[test]
     fn info_omits_expires_at_when_terminal() {
-        let mut s = CaptureSession::new(
-            "sid".into(),
-            "t".into(),
-            "g".into(),
-            aqc_recipe(60),
-        );
+        let mut s = CaptureSession::new("sid".into(), "t".into(), "g".into(), aqc_recipe(60));
         let info = s.info();
         assert!(info.expires_at.is_some(), "non-terminal has expires_at");
         s.transition(CaptureState::Captured);
@@ -192,12 +184,7 @@ mod tests {
 
     #[test]
     fn info_expected_fields_uses_target_field_helper() {
-        let s = CaptureSession::new(
-            "sid".into(),
-            "t".into(),
-            "g".into(),
-            aqc_recipe(60),
-        );
+        let s = CaptureSession::new("sid".into(), "t".into(), "g".into(), aqc_recipe(60));
         let info = s.info();
         assert_eq!(info.expected_fields, vec!["cookies.aqc".to_string()]);
     }

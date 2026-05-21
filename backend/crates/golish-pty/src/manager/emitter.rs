@@ -254,7 +254,10 @@ impl PtyEventEmitter for RuntimeEmitter {
         // expects `{ session_id, rev, cols, ... }` as one flat object.
         let payload = match serde_json::to_value(update) {
             Ok(serde_json::Value::Object(mut map)) => {
-                map.insert("session_id".to_string(), serde_json::Value::String(session_id.to_string()));
+                map.insert(
+                    "session_id".to_string(),
+                    serde_json::Value::String(session_id.to_string()),
+                );
                 serde_json::Value::Object(map)
             }
             Ok(other) => {

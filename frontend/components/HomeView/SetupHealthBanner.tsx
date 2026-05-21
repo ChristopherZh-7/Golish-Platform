@@ -134,7 +134,8 @@ export function SetupHealthBanner() {
       setInstallingRuntime(runtimeKey);
       try {
         const appSettings = await getSettings().catch(() => null);
-        const proxyUrl = (appSettings as { network?: { proxy_url?: string } })?.network?.proxy_url || undefined;
+        const proxyUrl =
+          (appSettings as { network?: { proxy_url?: string } })?.network?.proxy_url || undefined;
         const result = await installRuntime(runtimeKey, proxyUrl);
         if (result.success && mountedRef.current) {
           setRuntimeDone((prev) => new Set(prev).add(runtimeKey));

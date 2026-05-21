@@ -223,8 +223,11 @@ where
                             let ws = ctx.workspace.read().await;
                             let pp = ws.to_string_lossy().to_string();
                             drop(ws);
-                            let pid_opt =
-                                if pp == "." || pp.is_empty() { None } else { Some(pp) };
+                            let pid_opt = if pp == "." || pp.is_empty() {
+                                None
+                            } else {
+                                Some(pp)
+                            };
                             tokio::spawn(async move {
                                 let inserted = extract_and_upsert_entities(
                                     graph.as_ref(),
@@ -529,12 +532,9 @@ where
                 let response_text = result.response.clone();
                 let pid = project_id_opt.clone();
                 tokio::spawn(async move {
-                    let inserted = extract_and_upsert_entities(
-                        graph.as_ref(),
-                        &response_text,
-                        pid.as_deref(),
-                    )
-                    .await;
+                    let inserted =
+                        extract_and_upsert_entities(graph.as_ref(), &response_text, pid.as_deref())
+                            .await;
                     if inserted > 0 {
                         tracing::info!(
                             inserted,

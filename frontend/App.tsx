@@ -120,10 +120,7 @@ export function App() {
     [activeSessionId]
   );
 
-  const handleOpenHistory = useCallback(
-    () => useStore.getState().setSessionBrowserOpen(true),
-    []
-  );
+  const handleOpenHistory = useCallback(() => useStore.getState().setSessionBrowserOpen(true), []);
 
   // Panel onOpenChange callbacks (open via specific opener, close via shared closePanels)
   const handleGitPanelOpenChange = useCallback(

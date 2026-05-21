@@ -986,9 +986,11 @@ cookies:
         // must contain the unexpanded token.
         if let Ok(()) = res {
             assert!(
-                std::fs::read_dir(dir.path())
+                std::fs::read_dir(dir.path()).unwrap().any(|e| e
                     .unwrap()
-                    .any(|e| e.unwrap().file_name().to_string_lossy().contains("{{")),
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("{{")),
                 "without tools_dir hint, template stays literal"
             );
         }

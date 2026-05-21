@@ -37,6 +37,11 @@ pub fn map_site(row: HunterRow, raw: serde_json::Value) -> ProviderRecord {
     insert_if_present(&mut fields, "os", row.os.as_ref());
     insert_if_present(&mut fields, "isp", row.isp.as_ref());
     insert_if_present(&mut fields, "country", row.country.as_ref());
+    insert_if_present(&mut fields, "asn_org", row.as_org.as_ref());
+    insert_if_present(&mut fields, "base_protocol", row.base_protocol.as_ref());
+    insert_if_present(&mut fields, "cert", row.ssl_certificate.as_ref());
+    insert_if_present(&mut fields, "cert_sha256", row.cert_sha256.as_ref());
+    insert_if_present(&mut fields, "beian", row.icp_number.as_ref());
 
     // Pick the first component as the canonical webserver fingerprint.
     if let Some(first) = row.component.first() {
@@ -49,6 +54,9 @@ pub fn map_site(row: HunterRow, raw: serde_json::Value) -> ProviderRecord {
                 fields.insert("webserver".into(), value);
             }
         }
+    }
+    if !fields.contains_key("webserver") {
+        insert_if_present(&mut fields, "webserver", row.header_server.as_ref());
     }
 
     ProviderRecord::new(PROVIDER, QueryType::Site, fields, raw)
@@ -84,6 +92,12 @@ mod tests {
             company: Some("Acme Corp".into()),
             isp: Some("ChinaTelecom".into()),
             updated_at: None,
+            header_server: None,
+            as_org: None,
+            base_protocol: None,
+            ssl_certificate: None,
+            cert_sha256: None,
+            icp_number: None,
         };
         let rec = map_site(row, raw_object());
         assert_eq!(rec.provider, "hunter");
@@ -119,6 +133,54 @@ mod tests {
         };
         let rec = map_site(row, raw_object());
         assert!(!rec.fields.contains_key("webserver"));
+    }
+
+    #[test]
+    fn site_mapper_uses_real_hunter_extra_fields() {
+        let row = HunterRow {
+            url: Some("https://vpn.baidu.com".into()),
+            ip: Some("111.45.11.188".into()),
+            port: Some(443),
+            domain: Some("vpn.baidu.com".into()),
+            protocol: Some("https".into()),
+            web_title: Some("VPN".into()),
+            status_code: Some(200),
+            component: vec![],
+            os: Some("Linux".into()),
+            country: Some("中国".into()),
+            province: Some("广东省".into()),
+            city: Some("广州市".into()),
+            company: Some("北京百度网讯科技有限公司".into()),
+            isp: Some("中国移动".into()),
+            updated_at: Some("2026-05-21".into()),
+            header_server: Some("nginx".into()),
+            as_org: Some("China Mobile communications corporation".into()),
+            base_protocol: Some("tcp".into()),
+            ssl_certificate: Some("Subject: CN=vpn.baidu.com".into()),
+            cert_sha256: Some("abc123".into()),
+            icp_number: Some("京ICP证030173号".into()),
+        };
+        let rec = map_site(row, raw_object());
+        assert_eq!(
+            rec.fields.get("webserver").map(String::as_str),
+            Some("nginx")
+        );
+        assert_eq!(
+            rec.fields.get("asn_org").map(String::as_str),
+            Some("China Mobile communications corporation")
+        );
+        assert_eq!(
+            rec.fields.get("cert").map(String::as_str),
+            Some("Subject: CN=vpn.baidu.com")
+        );
+        assert_eq!(
+            rec.fields.get("beian").map(String::as_str),
+            Some("京ICP证030173号")
+        );
+        assert_eq!(
+            rec.fields.get("base_protocol").map(String::as_str),
+            Some("tcp")
+        );
     }
 
     #[test]

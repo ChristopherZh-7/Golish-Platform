@@ -295,11 +295,7 @@ mod tests {
 
     #[test]
     fn nvidia_deepseek_r1_default_is_standard() {
-        let q = resolve_stream_quirks(
-            "nvidia",
-            "deepseek-ai/deepseek-r1-distill-qwen-32b",
-            None,
-        );
+        let q = resolve_stream_quirks("nvidia", "deepseek-ai/deepseek-r1-distill-qwen-32b", None);
         assert_eq!(q.reasoning_handling, ReasoningHandling::Standard);
     }
 

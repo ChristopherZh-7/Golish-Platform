@@ -351,7 +351,8 @@ mod load_from_db_tests {
     use super::*;
     use crate::db_traits::{
         AgentType, DbRepoProvider, ExecutionPlanView, MessageChainView, NewExecutionPlan, NewTask,
-        NewWikiChangelog, NewWikiPage, PlanStatus, SubtaskStatus, SubtaskView, TaskStatus, TaskView,
+        NewWikiChangelog, NewWikiPage, PlanStatus, SubtaskStatus, SubtaskView, TaskStatus,
+        TaskView,
     };
     use crate::planner::{PlanEventEmitter, SharedPlanEventEmitter};
     use async_trait::async_trait;
@@ -426,10 +427,7 @@ mod load_from_db_tests {
             unimplemented!("plan_update_steps not used by load_from_db tests")
         }
 
-        async fn plan_create(
-            &self,
-            _plan: NewExecutionPlan,
-        ) -> anyhow::Result<ExecutionPlanView> {
+        async fn plan_create(&self, _plan: NewExecutionPlan) -> anyhow::Result<ExecutionPlanView> {
             unimplemented!("plan_create not used by load_from_db tests")
         }
 
@@ -630,11 +628,7 @@ mod load_from_db_tests {
         async fn task_get(&self, _id: Uuid) -> anyhow::Result<Option<TaskView>> {
             unimplemented!()
         }
-        async fn task_update_status(
-            &self,
-            _id: Uuid,
-            _status: TaskStatus,
-        ) -> anyhow::Result<()> {
+        async fn task_update_status(&self, _id: Uuid, _status: TaskStatus) -> anyhow::Result<()> {
             unimplemented!()
         }
         async fn task_set_result(&self, _id: Uuid, _result: &str) -> anyhow::Result<()> {
@@ -666,10 +660,7 @@ mod load_from_db_tests {
         ) -> anyhow::Result<Option<SubtaskView>> {
             unimplemented!()
         }
-        async fn subtask_list_by_task(
-            &self,
-            _task_id: Uuid,
-        ) -> anyhow::Result<Vec<SubtaskView>> {
+        async fn subtask_list_by_task(&self, _task_id: Uuid) -> anyhow::Result<Vec<SubtaskView>> {
             unimplemented!()
         }
         async fn subtask_delete_pending(&self, _task_id: Uuid) -> anyhow::Result<()> {
@@ -727,18 +718,23 @@ mod load_from_db_tests {
 
     #[tokio::test]
     async fn load_from_db_emits_plan_updated_with_restored_snapshot() {
-        let mut manager = PlanManager::new().with_db_repo(
-            Some(Uuid::new_v4()),
-            Some("/tmp/proj".to_string()),
-        );
+        let mut manager =
+            PlanManager::new().with_db_repo(Some(Uuid::new_v4()), Some("/tmp/proj".to_string()));
         manager.set_repo(Arc::new(StubRepo::with_plan(make_demo_plan())));
 
         let (emitter, shared) = CapturingEmitter::shared();
         manager.set_event_emitter(shared);
 
         let loaded = manager.load_from_db().await;
-        assert!(loaded, "load_from_db should report success when DB has a plan");
-        assert_eq!(emitter.len(), 1, "emit_plan_updated should fire exactly once");
+        assert!(
+            loaded,
+            "load_from_db should report success when DB has a plan"
+        );
+        assert_eq!(
+            emitter.len(),
+            1,
+            "emit_plan_updated should fire exactly once"
+        );
 
         let events = emitter.events.lock().unwrap();
         let (version, summary, steps, explanation) = events.last().unwrap();
@@ -757,10 +753,8 @@ mod load_from_db_tests {
 
     #[tokio::test]
     async fn load_from_db_does_not_emit_when_empty() {
-        let mut manager = PlanManager::new().with_db_repo(
-            Some(Uuid::new_v4()),
-            Some("/tmp/proj".to_string()),
-        );
+        let mut manager =
+            PlanManager::new().with_db_repo(Some(Uuid::new_v4()), Some("/tmp/proj".to_string()));
         manager.set_repo(Arc::new(StubRepo::empty()));
 
         let (emitter, shared) = CapturingEmitter::shared();

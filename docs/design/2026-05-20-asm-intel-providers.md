@@ -25,9 +25,12 @@ Golish 现状（来自 baseline §0 / §4-§6）：
 | 决策 | 选项 A（推荐 · 已选）| 选项 B | 选项 C |
 |---|---|---|---|
 | 1 · 代码分布 | **新 crate `golish-intel-providers`** | 塞进 `golish-pentest` | - |
-| 2 · API Key 存储 | **复用 `vault_entries` 表**（entry_type=ApiKey + tags=["intel-provider", "{name}"]）| 新表 `intel_provider_keys` | `settings.json` 明文 |
-| 3 · Settings 入口 | **新增 NAV_ITEMS section "intel"**（Intel Providers）| 合并到现有 Providers（AI + ASM 混）| - |
+| 2 · API Key 存储 | **复用 `vault_entries` 表**（entry_type=ApiKey + tags=["data-source", "{name}"]；兼容旧 tag `intel-provider`）| 新表 `intel_provider_keys` | `settings.json` 明文 |
+| 3 · Settings 入口 | **新增 NAV_ITEMS section "data_sources"**（Data Sources / 数据源）| 保留旧名 Intel Providers | 合并到现有 Providers（AI + ASM 混）|
 | 4 · db_action 设计 | **单一 `organization_update`**（按 fields key 路由列）| 细粒度 `organization_update_domains/network/...` | - |
+
+> 命名修订（2026-05-21）：面向用户的 Settings 文案统一改为 **Data Sources / 数据源**。
+> `IntelProvider` / `golish-intel-providers` 可作为内部实现名短期保留，避免在本分支做大规模重命名。
 
 ### 1A · 为什么新 crate
 
@@ -43,12 +46,12 @@ Golish 现状（来自 baseline §0 / §4-§6）：
 - 已有加密设计（如果 vault crate 内启用）
 - 零 schema 迁移 = 零回滚风险
 
-### 1C · 为什么独立 Settings section
+### 1C · 为什么独立 Data Sources section
 
 - AI provider 关心 model / temperature / context_window
-- ASM provider 关心 quota / rate_limit / query_type 选择
+- 外部数据源关心 credential / quota / rate_limit / query_type / 本地工具安装状态
 - 两者数据模型完全不同，混在一起会让 UI 极度复杂
-- 独立 section 也方便未来扩展 quota 监控、调用历史等
+- 独立 section 也方便未来扩展 quota 监控、凭据健康、调用历史等
 
 ### 1D · 为什么单一 db_action
 
@@ -62,9 +65,10 @@ Golish 现状（来自 baseline §0 / §4-§6）：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ Frontend · Settings → Intel Providers section                │
-│   - ProviderCard（每家一张：name/key/quota/test/enable）      │
-│   - KeyEditor（接 vault.entry CRUD）                          │
+│ Frontend · Settings → Data Sources section                   │
+│   - DataSourceCard（每家一张：name/credential/quota/test）     │
+│   - CredentialEditor（接 vault.entry CRUD）                    │
+│   - CredentialHealth（valid/expired/rate_limited/needs input） │
 └─────────────────────┬───────────────────────────────────────┘
                       │ IPC (Tauri command)
                       ↓
@@ -122,11 +126,11 @@ Golish 现状（来自 baseline §0 / §4-§6）：
 ### 3.1 配置 API Key 的流程
 
 ```
-User → Settings → Intel Providers → ProviderCard("0.zone") → KeyEditor
+User → Settings → Data Sources → DataSourceCard("0.zone") → CredentialEditor
   → IPC: vault.create({name:"zone_key_id", value:"xxx", entry_type:"api_key",
-                       tags:["intel-provider","0.zone"]})
+                       tags:["data-source","0.zone"]})
   → vault_entries 表写入
-  → KeyEditor 显示已配置 ✅
+  → CredentialHealth 显示已配置 ✅
 ```
 
 ### 3.2 调用 ASM API 的流程
@@ -157,6 +161,137 @@ pub struct ProviderRecord {
     pub fetched_at: DateTime<Utc>,
 }
 ```
+
+### 3.4 公司名驱动的递归 ASM 流程
+
+用户输入公司名（例如“平安”）时，系统不能直接把所有搜索结果写进 `targets`。正确流程是先建立组织画像与授权范围，再把确认属于范围内的资产转成 `targets`。
+
+```text
+公司名输入
+  → 工商/企业画像解析（企查查 / 天眼查 / 启信宝 / 0.zone org）
+  → 根 organization
+  → 子公司 / 分支机构 / 曾用名 / 关联公司候选
+  → scope 判定（授权 + 股权 + 证据置信度）
+  → in-scope organizations
+  → ASM provider 查询（0.zone / FOFA / Quake / ICP / amass / subfinder）
+  → organizations 字段补全
+  → 确认资产写入 targets（带 organization_id）
+  → 技术 recon 继续扩展，新增证据反哺 organizations
+```
+
+#### 3.4.1 工商数据源职责
+
+企查查 / 天眼查 / 启信宝这类 provider 主要负责“组织关系”，不直接负责技术资产：
+
+| 数据 | 写入位置 | 用途 |
+|---|---|---|
+| 统一社会信用代码 | `organizations.credit_code` | 消歧，避免同名公司误合并 |
+| 法定名称 / 曾用名 / 英文名 | `organizations.name` / `aliases` | 搜索扩展与归并 |
+| 行业 / 法人 / 注册地址 / 注册资本 | `organizations.industry` / `intel.records[]` | 画像与风险排序 |
+| 子公司 / 分公司 / 控股公司 | `organizations.parent_id` / `subsidiaries` | 建组织树 |
+| 股权比例 / 控制关系 | `organizations.intel.records[]` + scope evidence | 判定是否纳入探查 |
+| 官网 / 邮箱 / 联系方式 | `domains` / `email_domains` / `contacts` | 后续 ASM 种子 |
+
+#### 3.4.2 scope 判定规则
+
+默认规则应保守，避免把不在授权内的公司误加入攻击面：
+
+| 候选关系 | 默认动作 | 原因 |
+|---|---|---|
+| 全资子公司 / 分公司 | 标记 `in_scope_candidate` | 组织归属明确 |
+| 控股比例 `>= 50%` | 标记 `in_scope_candidate` | 控制权强，符合用户提到的 50% 规则 |
+| 控股比例 `< 50%` | 标记 `needs_confirmation` | 参股不等于授权可测 |
+| 曾投资 / 历史关联 / 已注销 | 标记 `out_of_scope_candidate` | 不自动进入技术探查 |
+| 0.zone `group` / ICP / 证书主体与根组织强一致 | 提升置信度 | 可作为补充证据 |
+
+scope 最终状态不应只靠 provider 自信判断，必须保留证据：来源、时间、字段、原始响应摘要、置信度、判定理由。
+
+#### 3.4.3 organizations 与 targets 的边界
+
+`organizations` 是组织树和情报仓库，`targets` 是实际测试对象。二者关系如下：
+
+- 子公司、分公司、参股公司先写 `organizations`，通过 `parent_id` 形成树。
+- 域名、邮箱域、ASN、证书、GitHub org 等先补到 `organizations.*`。
+- 只有当资产满足 `in_scope` 且有足够证据时，才生成 `targets`。
+- 生成的 `targets` 必须带 `organization_id`，并记录 `source`（如 `0.zone:site` / `icp` / `amass`）。
+- 技术扫描发现的新域名/IP 如果反查到新公司，应先回写 organizations，再走 scope 判定。
+
+#### 3.4.4 递归停止条件
+
+递归探查必须有边界：
+
+- 最大组织树深度默认 2：根公司 → 子公司 → 孙公司；更深需用户确认。
+- 默认只自动探查 `in_scope_candidate`，`needs_confirmation` 不进入 active recon。
+- 每个 provider 有 quota/rate_limit；0.zone 等付费 API 按 provider 配额调度。
+- 同一组织/资产的重复证据做幂等合并，不重复写入。
+- active scan 前必须再次确认授权范围，不能仅凭工商关系触发高风险扫描。
+
+### 3.5 ENScan_GO 低成本企业画像数据源
+
+ENScan_GO 适合作为低成本的 **Enterprise Intelligence / 企业情报** 数据源：它通过用户自己的登录态 Cookie / token 调用爱企查、天眼查、快查、风鸟、MIIT ICP 等来源，能补齐公司、子公司、控股关系、ICP备案、APP、小程序、公众号、招聘、软件著作权等数据。
+
+#### 3.5.1 接入位置
+
+推荐 **Tool Manager 优先，Golish MCP 包装其次**：
+
+```text
+Tool Manager 管 ENScan_GO 安装 / 启动 / 配置 / 运行
+  → EnscanDataSource 调 REST API 或 CLI JSON 输出拿结构化结果
+  → mapper 写 organizations / targets / evidence
+  → Golish 再把规范化后的 enscan_query 暴露成 MCP tool 给 AI 使用
+```
+
+不建议把 ENScan_GO 自带 MCP server 作为主数据管道：它返回的是 tool result text 中的 JSON，适合 AI 临时问答；而 Golish 的落库、幂等、scope gate、evidence ledger 更适合走 Tool Manager + REST/CLI 受控路径。
+
+#### 3.5.2 Tool Manager 运行模式
+
+| 模式 | 命令 | 用途 | 推荐级别 |
+|---|---|---|---|
+| API server | `enscan -api` / `enscan --api` | Golish 后端调用 `/api/info`，返回结构化 JSON | P0 推荐 |
+| CLI JSON | `enscan -n <公司> -json -out-dir <dir>` | 离线任务、人工下载结果 | P1 |
+| MCP server | `enscan -mcp` / `enscan --mcp` | AI 客户端临时查询、prompt 工作流 | P2 |
+
+第一版推荐调用：
+
+```text
+GET /api/info?name=<company>&type=aqc&field=icp,app,wx_app,wechat&invest=51&branch=true&depth=2
+```
+
+#### 3.5.3 输出映射
+
+| ENScan 输出 | Golish 写入 |
+|---|---|
+| `enterprise_info` | 根 `organizations`，补 `name`、`credit_code`、`contacts/intel` |
+| `invest` | 子 `organizations`，记录 `parent_id`、持股比例 evidence、scope 候选状态 |
+| `holds` | 控股企业，优先标记 `in_scope_candidate` |
+| `branch` | 分支机构，优先标记 `in_scope_candidate`，但 active recon 前仍需授权确认 |
+| `partner` | 股东信息，进入 `organizations.intel.records[]`，不直接生成 targets |
+| `icp` | `organizations.domains`，作为域名归属强证据 |
+| `app` / `wx_app` | `organizations.business_systems` |
+| `wechat` / `weibo` | `organizations.social_accounts` |
+| `supplier` | `organizations.intel.records[]`，默认不进入攻击面 |
+| `job` / `copyright` | `organizations.intel.records[]`，用于画像和线索 |
+
+#### 3.5.4 凭据健康与刷新流程
+
+ENScan_GO 的登录态 Cookie/token 可能失效或触发风控，因此凭据刷新必须 human-in-the-loop：
+
+```text
+运行前 health check
+  → valid：继续任务
+  → expired / captcha_required / rate_limited：暂停任务
+  → UI/AI 提示用户到 Settings → Data Sources → ENScan_GO 更新凭据
+  → 用户在 CredentialEditor 粘贴新 Cookie/token
+  → vault 保存 + mask 日志
+  → health check 通过后恢复任务
+```
+
+约束：
+
+- AI 只负责发现凭据失效、解释原因、引导用户刷新、恢复任务。
+- AI 不获取浏览器 Cookie，不把 Cookie/token 放进聊天上下文。
+- Cookie/token 只进 `vault_entries`，日志和错误消息必须 mask。
+- ENScan_GO 默认 delay 不低于 3 秒，或使用随机 1-5 秒，降低账号异常风险。
 
 ---
 

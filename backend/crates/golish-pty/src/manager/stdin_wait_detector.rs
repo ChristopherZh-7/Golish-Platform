@@ -17,8 +17,7 @@ use std::time::Duration;
 pub const STDIN_WAIT_IDLE_THRESHOLD_MS: u64 = 300;
 
 /// Convenience [`Duration`] form of [`STDIN_WAIT_IDLE_THRESHOLD_MS`].
-pub const STDIN_WAIT_IDLE_THRESHOLD: Duration =
-    Duration::from_millis(STDIN_WAIT_IDLE_THRESHOLD_MS);
+pub const STDIN_WAIT_IDLE_THRESHOLD: Duration = Duration::from_millis(STDIN_WAIT_IDLE_THRESHOLD_MS);
 
 /// Maximum number of trailing bytes the detector inspects. Most prompt
 /// markers we care about fit comfortably inside this window; longer
@@ -237,9 +236,10 @@ fn count_short_bracket_options(lower: &str) -> usize {
 fn matches_password(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     if (lower.ends_with(':') || lower.ends_with(": "))
-        && (lower.contains("password") || lower.contains("passphrase")) {
-            return true;
-        }
+        && (lower.contains("password") || lower.contains("passphrase"))
+    {
+        return true;
+    }
     // SSH-style: "user@host's password:"
     if lower.contains("password:") || lower.contains("passphrase:") {
         return true;
@@ -287,9 +287,7 @@ fn matches_generic_prompt(text: &str) -> bool {
     chars.next();
     let prev = chars.next();
     let prev_ok = match (last, prev) {
-        ('>', Some(c)) => {
-            c.is_alphanumeric() || c == ')' || c == ']' || c == '\n' || c == '\r'
-        }
+        ('>', Some(c)) => c.is_alphanumeric() || c == ')' || c == ']' || c == '\n' || c == '\r',
         ('>', None) => true,
         (_, Some(c)) => c.is_alphanumeric() || c == ')' || c == ']',
         (_, None) => false,
@@ -590,7 +588,10 @@ mod tests {
         let mut parser = TerminalParser::new();
         parser.parse_filtered(b"\x1b]133;A\x07\x1b]133;B\x07");
         let r = parser.parse_filtered(b"1) Yes\n2) No\n#? ");
-        assert_eq!(r.output, b"", "timeline output should stay empty in Input region");
+        assert_eq!(
+            r.output, b"",
+            "timeline output should stay empty in Input region"
+        );
         assert!(
             r.prompt_visible.windows(3).any(|w| w == b"#? "),
             "prompt_visible should expose PS3 even from Input region; got {:?}",

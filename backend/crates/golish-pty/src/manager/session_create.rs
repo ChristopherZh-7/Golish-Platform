@@ -34,9 +34,7 @@ use crate::shell::{detect_shell, ShellIntegration};
 
 use super::core::{ActiveSession, PtyManager, PtySession};
 use super::emitter::PtyEventEmitter;
-use super::stdin_wait_detector::{
-    append_to_tail, detect_stdin_wait, STDIN_WAIT_IDLE_THRESHOLD,
-};
+use super::stdin_wait_detector::{append_to_tail, detect_stdin_wait, STDIN_WAIT_IDLE_THRESHOLD};
 use super::utf8::{process_utf8_with_buffer, OutputMessage, Utf8IncompleteBuffer};
 
 /// Cap how often the emitter thread ships a `terminal_grid_update`
@@ -531,7 +529,10 @@ impl PtyManager {
 
             loop {
                 match output_rx.recv_timeout(timeout) {
-                    Ok(OutputMessage::Data { output, prompt_visible }) => {
+                    Ok(OutputMessage::Data {
+                        output,
+                        prompt_visible,
+                    }) => {
                         coalesce_buf.extend_from_slice(&output);
                         prompt_visible_buf.extend_from_slice(&prompt_visible);
 
@@ -540,7 +541,10 @@ impl PtyManager {
                         // call.
                         loop {
                             match output_rx.try_recv() {
-                                Ok(OutputMessage::Data { output, prompt_visible }) => {
+                                Ok(OutputMessage::Data {
+                                    output,
+                                    prompt_visible,
+                                }) => {
                                     coalesce_buf.extend_from_slice(&output);
                                     prompt_visible_buf.extend_from_slice(&prompt_visible);
                                 }
@@ -582,13 +586,11 @@ impl PtyManager {
                         // Emit the coalesced batch.
                         let output = process_utf8_with_buffer(&mut utf8_buffer, &coalesce_buf);
                         if !output.is_empty() {
-                            if pty_dump_emit_enabled
-                                && pty_dump_emits_counter < pty_dump_emit_cap
-                            {
+                            if pty_dump_emit_enabled && pty_dump_emits_counter < pty_dump_emit_cap {
                                 pty_dump_emits_counter += 1;
                                 const MAX_DUMP: usize = 512;
-                                let preview = &output.as_bytes()
-                                    [..output.as_bytes().len().min(MAX_DUMP)];
+                                let preview =
+                                    &output.as_bytes()[..output.as_bytes().len().min(MAX_DUMP)];
                                 tracing::info!(
                                     session_id = %output_session_id,
                                     emit_seq = pty_dump_emits_counter,
@@ -608,9 +610,7 @@ impl PtyManager {
                             // tick if the 60 ms quota has elapsed, or
                             // on the next Timeout poll).
                             if emitter_alt_screen.load(Ordering::Acquire) {
-                                if let Some(grid) =
-                                    emitter_grid_manager.get(&output_session_id)
-                                {
+                                if let Some(grid) = emitter_grid_manager.get(&output_session_id) {
                                     grid.lock().write(output.as_bytes());
                                     grid_pending_emit = true;
                                 }
@@ -647,10 +647,8 @@ impl PtyManager {
                             && !stdin_wait_tail.is_empty()
                         {
                             if let Some(kind) = detect_stdin_wait(&stdin_wait_tail) {
-                                emitter_for_output.emit_stdin_wait(
-                                    &output_session_id,
-                                    kind.as_event_str(),
-                                );
+                                emitter_for_output
+                                    .emit_stdin_wait(&output_session_id, kind.as_event_str());
                                 stdin_wait_emitted_for_idle_window = true;
                             }
                         }
@@ -664,8 +662,7 @@ impl PtyManager {
                         if alt_now && !last_seen_alt_screen {
                             if let Some(grid) = emitter_grid_manager.get(&output_session_id) {
                                 let snapshot = grid.lock().snapshot_full();
-                                emitter_for_output
-                                    .emit_grid_update(&output_session_id, &snapshot);
+                                emitter_for_output.emit_grid_update(&output_session_id, &snapshot);
                                 grid_last_emit_at = std::time::Instant::now();
                                 grid_pending_emit = false;
                             }

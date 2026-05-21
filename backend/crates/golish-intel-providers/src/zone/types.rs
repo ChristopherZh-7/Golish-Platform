@@ -31,6 +31,26 @@ impl ZoneEnvelope {
     }
 }
 
+/// String-or-integer value from 0.zone. Some fields (`status_code`, `port`)
+/// are documented as numbers but observed as strings in production responses.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum StringOrNumber {
+    String(String),
+    I64(i64),
+    U64(u64),
+}
+
+impl StringOrNumber {
+    pub fn into_string(self) -> String {
+        match self {
+            Self::String(s) => s,
+            Self::I64(n) => n.to_string(),
+            Self::U64(n) => n.to_string(),
+        }
+    }
+}
+
 /// `query_type=site` — 信息系统.
 #[derive(Debug, Deserialize, Default)]
 pub struct SiteEntry {
@@ -41,13 +61,49 @@ pub struct SiteEntry {
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
-    pub status_code: Option<i32>,
+    pub status_code: Option<StringOrNumber>,
+    #[serde(default)]
+    pub port: Option<StringOrNumber>,
     #[serde(default)]
     pub group: Option<String>,
+    #[serde(default)]
+    pub company: Option<String>,
     #[serde(default)]
     pub operator: Option<String>,
     #[serde(default)]
     pub cms: Option<String>,
+    #[serde(default)]
+    pub component: Option<String>,
+    #[serde(default)]
+    pub versions: Option<String>,
+    #[serde(default)]
+    pub server_name: Option<String>,
+    #[serde(default)]
+    pub server_version: Option<String>,
+    #[serde(default)]
+    pub os: Option<String>,
+    #[serde(default)]
+    pub protocol: Option<String>,
+    #[serde(default)]
+    pub service: Option<String>,
+    #[serde(default)]
+    pub asn: Option<String>,
+    #[serde(default)]
+    pub asn_org: Option<String>,
+    #[serde(default)]
+    pub ssl_certificate: Option<String>,
+    #[serde(default)]
+    pub is_cdn: Option<StringOrNumber>,
+    #[serde(default)]
+    pub beian: Option<String>,
+    #[serde(default)]
+    pub cname: Option<String>,
+    #[serde(default)]
+    pub country: Option<String>,
+    #[serde(default)]
+    pub province: Option<String>,
+    #[serde(default)]
+    pub city: Option<String>,
 }
 
 /// `query_type=domain` — 子域名.
@@ -57,6 +113,8 @@ pub struct SiteEntry {
 #[derive(Debug, Deserialize, Default)]
 pub struct DomainEntry {
     #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
     pub host: Option<String>,
@@ -64,6 +122,10 @@ pub struct DomainEntry {
     pub title: Option<String>,
     #[serde(default)]
     pub group: Option<String>,
+    #[serde(default)]
+    pub company: Option<String>,
+    #[serde(default)]
+    pub root_domain: Option<String>,
 }
 
 /// `query_type=email` — 邮箱.
@@ -72,9 +134,17 @@ pub struct EmailEntry {
     #[serde(default)]
     pub email: Option<String>,
     #[serde(default)]
+    pub mail_domain: Option<String>,
+    #[serde(default)]
     pub email_type: Option<String>,
     #[serde(default)]
     pub group: Option<String>,
+    #[serde(default)]
+    pub company: Option<String>,
+    #[serde(default)]
+    pub leakage_num: Option<StringOrNumber>,
+    #[serde(default)]
+    pub leakage_time: Option<String>,
 }
 
 /// `query_type=apk` — 移动端应用.
@@ -85,7 +155,14 @@ pub struct ApkEntry {
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
+    #[serde(rename = "type")]
+    pub app_type: Option<String>,
+    #[serde(default)]
+    pub company: Option<String>,
+    #[serde(default)]
     pub group: Option<String>,
+    #[serde(default)]
+    pub icp: Option<String>,
     /// Nested object containing WeChat info etc.
     #[serde(default)]
     pub msg: Option<ApkMsg>,
@@ -99,19 +176,12 @@ pub struct ApkMsg {
     pub icon_url: Option<String>,
     #[serde(default)]
     pub code: Option<String>,
-}
-
-/// `query_type=sensitive` — 敏感目录.
-#[derive(Debug, Deserialize, Default)]
-pub struct SensitiveEntry {
     #[serde(default)]
-    pub url: Option<String>,
+    pub app_url: Option<String>,
     #[serde(default)]
-    pub title: Option<String>,
+    pub app_id: Option<String>,
     #[serde(default)]
-    pub group: Option<String>,
-    #[serde(default)]
-    pub device_type: Option<String>,
+    pub introduction: Option<String>,
 }
 
 /// `query_type=code` — 代码/文档泄漏.
@@ -120,13 +190,27 @@ pub struct CodeEntry {
     #[serde(default)]
     pub code_url: Option<String>,
     #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
-    pub keyword: Option<String>,
+    pub keyword: Option<serde_json::Value>,
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
     pub group: Option<String>,
+    #[serde(default)]
+    pub company: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub owner: Option<serde_json::Value>,
+    #[serde(default)]
+    pub repository: Option<serde_json::Value>,
+    #[serde(default)]
+    pub file_extension: Option<String>,
+    #[serde(default)]
+    pub code_detail: Option<String>,
 }
 
 /// `query_type=member` — 人员.
@@ -138,6 +222,57 @@ pub struct MemberEntry {
     pub group: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
+}
+
+/// `query_type=org` — 企业画像.
+#[derive(Debug, Deserialize, Default)]
+pub struct OrgEntry {
+    #[serde(default)]
+    pub name_cn: Option<String>,
+    #[serde(default)]
+    pub name_en: Option<String>,
+    #[serde(default)]
+    pub name_home: Option<String>,
+    #[serde(default)]
+    pub org_parent: Option<String>,
+    #[serde(default)]
+    pub parent_company: Option<String>,
+    #[serde(default)]
+    pub company: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub msg: Option<OrgMsg>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct OrgMsg {
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub industry: Option<String>,
+    #[serde(default)]
+    pub contact_number: Option<String>,
+    #[serde(default)]
+    pub legal_person: Option<String>,
+    #[serde(default)]
+    pub reg_address: Option<String>,
+    #[serde(default)]
+    pub capital: Option<String>,
+    #[serde(default)]
+    pub business: Option<String>,
+    #[serde(default)]
+    pub website: Vec<String>,
+    #[serde(default)]
+    pub relation_company: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub name_before: Vec<String>,
+    #[serde(default)]
+    pub email: Vec<String>,
+    #[serde(default)]
+    pub ip: Vec<String>,
 }
 
 #[cfg(test)]

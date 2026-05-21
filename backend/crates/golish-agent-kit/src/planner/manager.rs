@@ -134,9 +134,7 @@ impl PlanManager {
                         snapshot_steps,
                         snapshot_explanation,
                     );
-                    tracing::debug!(
-                        "[PlanManager] Emitted PlanUpdated after load_from_db restore"
-                    );
+                    tracing::debug!("[PlanManager] Emitted PlanUpdated after load_from_db restore");
                 }
 
                 true
@@ -462,8 +460,9 @@ impl PlanManager {
                     status,
                     failure_kind,
                 } => {
-                    if let Some(step) =
-                        steps.iter_mut().find(|s| s.id.as_deref() == Some(id.as_str()))
+                    if let Some(step) = steps
+                        .iter_mut()
+                        .find(|s| s.id.as_deref() == Some(id.as_str()))
                     {
                         if let Some(t) = title {
                             let trimmed = t.trim();
@@ -480,8 +479,9 @@ impl PlanManager {
                     }
                 }
                 super::PlanPatchOp::Reorder { id, after_id } => {
-                    if let Some(idx) =
-                        steps.iter().position(|s| s.id.as_deref() == Some(id.as_str()))
+                    if let Some(idx) = steps
+                        .iter()
+                        .position(|s| s.id.as_deref() == Some(id.as_str()))
                     {
                         let step = steps.remove(idx);
                         let new_pos = match after_id.as_deref() {

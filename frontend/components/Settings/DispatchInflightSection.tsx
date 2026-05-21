@@ -13,10 +13,7 @@
 
 import { Activity, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import {
-  listRunningSubAgentDispatches,
-  type RunningSubAgentDispatch,
-} from "@/lib/ai";
+import { listRunningSubAgentDispatches, type RunningSubAgentDispatch } from "@/lib/ai";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 
@@ -36,10 +33,7 @@ function formatRelative(iso: string): string {
   return `${Math.floor(deltaSec / 3600)}h ago`;
 }
 
-export function DispatchInflightSection({
-  sessionId,
-  className,
-}: DispatchInflightSectionProps) {
+export function DispatchInflightSection({ sessionId, className }: DispatchInflightSectionProps) {
   const activeAiSessionId = useStore((s) => {
     if (sessionId !== undefined) return sessionId;
     if (!s.activeConversationId) return null;
@@ -116,23 +110,16 @@ export function DispatchInflightSection({
         </p>
       ) : rows.length === 0 && !loading ? (
         <p className="text-xs text-muted-foreground/70">
-          No mid-flight sub-agent dispatches. Anything stuck &gt; 24h gets
-          auto-cancelled by the backend on the next read.
+          No mid-flight sub-agent dispatches. Anything stuck &gt; 24h gets auto-cancelled by the
+          backend on the next read.
         </p>
       ) : (
         <ul className="space-y-1.5">
           {rows.map((row) => (
-            <li
-              key={row.id}
-              className="flex items-baseline gap-2 text-xs text-foreground/80"
-            >
-              <span className="font-mono text-[11px] uppercase text-accent">
-                {row.agent_id}
-              </span>
+            <li key={row.id} className="flex items-baseline gap-2 text-xs text-foreground/80">
+              <span className="font-mono text-[11px] uppercase text-accent">{row.agent_id}</span>
               {row.depth > 0 && (
-                <span className="text-[10px] text-muted-foreground/60">
-                  depth={row.depth}
-                </span>
+                <span className="text-[10px] text-muted-foreground/60">depth={row.depth}</span>
               )}
               <span className="text-[10px] text-muted-foreground/60 ml-auto">
                 started {formatRelative(row.started_at)}

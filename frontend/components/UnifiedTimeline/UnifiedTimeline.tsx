@@ -287,9 +287,7 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
       )
     : 0;
   const trackUsable = Math.max(0, trackHeight - thumbHeight);
-  const thumbTop = showScrollbar
-    ? (clampedScrollPosition / maxScroll) * trackUsable
-    : 0;
+  const thumbTop = showScrollbar ? (clampedScrollPosition / maxScroll) * trackUsable : 0;
 
   // Drag state — local to the handler so React doesn't re-render
   // every pointer move. We still need the closure to see live

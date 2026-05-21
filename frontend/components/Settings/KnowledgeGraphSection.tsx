@@ -40,20 +40,9 @@ const TYPE_LABEL: Record<string, string> = {
   endpoint: "Endpoints",
 };
 
-const TYPE_ORDER = [
-  "host",
-  "service",
-  "vulnerability",
-  "credential",
-  "technique",
-  "endpoint",
-];
+const TYPE_ORDER = ["host", "service", "vulnerability", "credential", "technique", "endpoint"];
 
-export function KnowledgeGraphSection({
-  projectId,
-  limit,
-  className,
-}: KnowledgeGraphSectionProps) {
+export function KnowledgeGraphSection({ projectId, limit, className }: KnowledgeGraphSectionProps) {
   const [entities, setEntities] = useState<KgEntity[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -140,9 +129,7 @@ export function KnowledgeGraphSection({
               <li key={type} className="space-y-1">
                 <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
                   <span>{TYPE_LABEL[type] ?? type}</span>
-                  <span className="text-[10px] text-muted-foreground/60">
-                    ({rows.length})
-                  </span>
+                  <span className="text-[10px] text-muted-foreground/60">({rows.length})</span>
                 </div>
                 <ul className="space-y-0.5 pl-3">
                   {rows.slice(0, 8).map((ent) => (
@@ -150,9 +137,7 @@ export function KnowledgeGraphSection({
                       key={ent.id}
                       className="flex items-baseline gap-2 text-xs text-foreground/80"
                     >
-                      <span className="font-mono text-[11px] truncate">
-                        {ent.name}
-                      </span>
+                      <span className="font-mono text-[11px] truncate">{ent.name}</span>
                       <span className="text-[10px] text-muted-foreground/60">
                         updated {new Date(ent.updated_at).toLocaleString()}
                       </span>

@@ -12,7 +12,7 @@ mod tests;
 pub use capabilities::ModelCapabilities;
 pub use helpers::{model_supports_temperature, openai_supports_web_search};
 pub use quirks::{
-    ModelOverride, ProviderStreamQuirks, ReasoningHandling, ThinkingDisableField,
-    resolve_stream_quirks,
+    resolve_stream_quirks, ModelOverride, ProviderStreamQuirks, ReasoningHandling,
+    ThinkingDisableField,
 };
 pub use vision::VisionCapabilities;

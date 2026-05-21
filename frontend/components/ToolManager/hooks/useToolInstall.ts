@@ -379,7 +379,11 @@ export function useToolInstall(
               release.assets.find((a) => !isSkippable(a.name) && isArchive(a.name)) ||
               null;
           } catch (releaseErr) {
-            if (String(releaseErr).includes("403")) throw new Error(t("install.githubRateLimit"));
+            const message = String(releaseErr);
+            if (message.includes("rate limit")) {
+              throw new Error(t("install.githubRateLimit"));
+            }
+            throw releaseErr;
           }
 
           if (binaryAsset) {

@@ -241,11 +241,8 @@ where
 
         let supports_thinking_history = caps.supports_thinking_history;
 
-        let quirks = golish_llm_providers::resolve_stream_quirks(
-            ctx.provider_name,
-            ctx.model_name,
-            None,
-        );
+        let quirks =
+            golish_llm_providers::resolve_stream_quirks(ctx.provider_name, ctx.model_name, None);
         tracing::debug!(
             "[sub-agent quirks] provider={} model={} reasoning_handling={:?}",
             ctx.provider_name,

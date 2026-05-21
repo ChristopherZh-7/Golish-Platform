@@ -37,8 +37,8 @@ pub fn extract_kg_candidates(text: &str) -> Vec<(String, String)> {
         )
         .expect("static ipv4 regex compiles")
     });
-    let cve = CVE_RE
-        .get_or_init(|| regex::Regex::new(r"(?i)\bCVE-\d{4}-\d{4,7}\b").expect("cve regex"));
+    let cve =
+        CVE_RE.get_or_init(|| regex::Regex::new(r"(?i)\bCVE-\d{4}-\d{4,7}\b").expect("cve regex"));
     let url = URL_RE.get_or_init(|| {
         regex::Regex::new(r#"https?://[^\s<>\\"']+[^\s<>\\"'.,;:!?]"#).expect("url regex")
     });

@@ -23,12 +23,7 @@ interface UseChatSessionInitOptions {
 }
 
 export function useChatSessionInit(opts: UseChatSessionInitOptions) {
-  const {
-    selectedModel,
-    chatExecutionModeRef,
-    setChatExecutionMode,
-    updateConv,
-  } = opts;
+  const { selectedModel, chatExecutionModeRef, setChatExecutionMode, updateConv } = opts;
 
   const generateTitleRef = useRef<((convId: string, firstMsg: string) => void) | null>(null);
 
@@ -126,12 +121,7 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
         return false;
       }
     },
-    [
-      selectedModel,
-      updateConv,
-      chatExecutionModeRef,
-      setChatExecutionMode,
-    ]
+    [selectedModel, updateConv, chatExecutionModeRef, setChatExecutionMode]
   );
 
   return { initializeSession, generateTitle, generateTitleRef };

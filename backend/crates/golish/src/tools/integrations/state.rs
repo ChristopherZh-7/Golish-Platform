@@ -321,14 +321,11 @@ impl BuiltinDispatcher for IntelBuiltinDispatcher {
                 ))
             })?;
 
-        let key = pick_credential_value(group, cleartext_fields)
-            .unwrap_or_default();
+        let key = pick_credential_value(group, cleartext_fields).unwrap_or_default();
 
         match provider.test_connection(&key).await {
             Ok(status) => Ok(connection_status_to_health(status)),
-            Err(e) => Ok(IntegrationHealth::unknown(format!(
-                "provider error: {e}"
-            ))),
+            Err(e) => Ok(IntegrationHealth::unknown(format!("provider error: {e}"))),
         }
     }
 }

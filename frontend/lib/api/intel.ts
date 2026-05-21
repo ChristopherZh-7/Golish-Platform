@@ -23,6 +23,9 @@ export type QueryType =
   | "sensitive"
   | "code"
   | "member"
+  | "org"
+  | "branch"
+  | "darknet"
   | "cert"
   | "asn"
   | "cidr";
@@ -60,6 +63,11 @@ export interface IntelQueryResult {
   records: ProviderRecord[];
   /** How many records were persisted into `organizations`. */
   persisted: number;
+  /**
+   * How many records also produced an asset row in the `targets` table
+   * (records lacking any host/ip/url/domain key are skipped).
+   */
+  targets_written: number;
   /** Per-record persistence errors (non-fatal). */
   errors: string[];
 }

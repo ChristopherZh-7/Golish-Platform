@@ -161,11 +161,13 @@ fn test_all_events_roundtrip() {
                     id: Some("step-x".into()),
                     step: "Step 1".to_string(),
                     status: StepStatus::InProgress,
+                    failure_kind: None,
                 },
                 PlanStep {
                     id: Some("step-y".into()),
                     step: "Step 2".to_string(),
                     status: StepStatus::Pending,
+                    failure_kind: None,
                 },
             ],
             explanation: None,

@@ -6,12 +6,12 @@
 //! (e.g. switching from `alacritty_terminal` to `vt100-ctt` as a
 //! fallback) don't ripple out through the entire emitter pipeline.
 
-use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event, EventListener, VoidListener};
 use alacritty_terminal::grid::{Dimensions, Indexed};
 use alacritty_terminal::index::{Column, Line, Point};
-use alacritty_terminal::term::{Config, TermMode, test::TermSize};
+use alacritty_terminal::term::{test::TermSize, Config, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
+use alacritty_terminal::Term;
 
 use super::cell::{Cell, CellAttrs, Color, Cursor, CursorStyle};
 use super::snapshot::{GridUpdate, RowUpdate};
@@ -204,7 +204,12 @@ impl GridTerminal {
             CursorShape::HollowBlock => CursorStyle::Block,
             CursorShape::Hidden => CursorStyle::Block,
         };
-        Cursor { x, y, visible, style }
+        Cursor {
+            x,
+            y,
+            visible,
+            style,
+        }
     }
 
     fn row_cells(&self, y: u16) -> Vec<Cell> {
@@ -260,5 +265,8 @@ fn _assert_void_listener_compat() {
     let v = VoidListener;
     _take(&v);
     let _ = Event::Wakeup;
-    let _: Indexed<&char> = Indexed { point: Point::new(Line(0), Column(0)), cell: &'x' };
+    let _: Indexed<&char> = Indexed {
+        point: Point::new(Line(0), Column(0)),
+        cell: &'x',
+    };
 }

@@ -53,11 +53,7 @@ impl GridManager {
     /// `dims.cols × dims.rows`; callers should call
     /// [`GridTerminal::resize`] later when the frontend reports a new
     /// viewport size.
-    pub fn get_or_create(
-        &self,
-        session_id: &str,
-        dims: GridDims,
-    ) -> Arc<Mutex<GridTerminal>> {
+    pub fn get_or_create(&self, session_id: &str, dims: GridDims) -> Arc<Mutex<GridTerminal>> {
         let mut sessions = self.sessions.lock();
         sessions
             .entry(session_id.to_string())

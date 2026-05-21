@@ -40,7 +40,10 @@ pub(crate) fn configure_builder(
     // tools installed at runtime require a Golish restart to surface
     // in the Test Connection button (acceptable trade-off).
     let (pentest_tools_dir, pentest_toolsconfig_dir) = tauri::async_runtime::block_on(async {
-        (pentest_cfg.tools_dir().await, pentest_cfg.toolsconfig_dir().await)
+        (
+            pentest_cfg.tools_dir().await,
+            pentest_cfg.toolsconfig_dir().await,
+        )
     });
     let integrations_state = IntegrationsState::build_default(
         settings_mgr.clone(),

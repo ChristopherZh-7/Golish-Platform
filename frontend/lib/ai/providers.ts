@@ -69,11 +69,7 @@ export async function buildProviderConfig(
 ): Promise<ProviderConfig> {
   const default_provider = overrides?.provider ?? settings.ai.default_provider;
   const default_model = overrides?.model ?? settings.ai.default_model;
-  const model_override = resolveProviderOverride(
-    settings,
-    default_provider,
-    default_model
-  );
+  const model_override = resolveProviderOverride(settings, default_provider, default_model);
 
   switch (default_provider) {
     case "vertex_ai": {

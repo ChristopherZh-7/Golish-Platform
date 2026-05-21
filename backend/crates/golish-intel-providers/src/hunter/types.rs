@@ -4,6 +4,14 @@
 
 use serde::Deserialize;
 
+fn null_to_default_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Common envelope from `https://hunter.qianxin.com/openApi/search`.
 #[derive(Debug, Deserialize, Default)]
 pub struct HunterEnvelope {
@@ -65,7 +73,7 @@ pub struct HunterRow {
     pub web_title: Option<String>,
     #[serde(default)]
     pub status_code: Option<i32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default_vec")]
     pub component: Vec<HunterComponent>,
     #[serde(default)]
     pub os: Option<String>,
@@ -82,6 +90,18 @@ pub struct HunterRow {
     pub isp: Option<String>,
     #[serde(default)]
     pub updated_at: Option<String>,
+    #[serde(default)]
+    pub header_server: Option<String>,
+    #[serde(default)]
+    pub as_org: Option<String>,
+    #[serde(default)]
+    pub base_protocol: Option<String>,
+    #[serde(default)]
+    pub ssl_certificate: Option<String>,
+    #[serde(default)]
+    pub cert_sha256: Option<String>,
+    #[serde(default, rename = "number")]
+    pub icp_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -146,6 +166,24 @@ mod tests {
         assert!(row.ip.is_none());
         assert!(row.company.is_none());
         assert!(row.component.is_empty());
+    }
+
+    #[test]
+    fn row_accepts_real_null_component() {
+        let json = r#"{
+            "ip": "1.1.1.1",
+            "component": null,
+            "header_server": "cloudflare",
+            "as_org": "CLOUDFLARENET",
+            "number": "京ICP证030173号",
+            "ssl_certificate": "Subject: CN=example.com",
+            "cert_sha256": "abc123"
+        }"#;
+        let row: HunterRow = serde_json::from_str(json).unwrap();
+        assert!(row.component.is_empty());
+        assert_eq!(row.header_server.as_deref(), Some("cloudflare"));
+        assert_eq!(row.as_org.as_deref(), Some("CLOUDFLARENET"));
+        assert_eq!(row.icp_number.as_deref(), Some("京ICP证030173号"));
     }
 
     #[test]

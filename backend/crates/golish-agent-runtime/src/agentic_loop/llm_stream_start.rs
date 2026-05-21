@@ -288,8 +288,7 @@ fn build_additional_params(ctx: &AgenticLoopContext<'_>) -> Option<serde_json::V
                     ctx.llm.provider_name,
                     ctx.llm.model_name
                 );
-                additional_params_json
-                    .insert("enable_thinking".to_string(), json!(thinking_value));
+                additional_params_json.insert("enable_thinking".to_string(), json!(thinking_value));
             }
             ThinkingDisableField::OpenRouterReasoningExclude => {
                 // OpenRouter inverts the convention: `reasoning.exclude=true`

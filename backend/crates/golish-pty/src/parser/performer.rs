@@ -152,7 +152,11 @@ impl OscPerformer {
                             buf.push_str(s);
                         }
                     }
-                    if buf.is_empty() { None } else { Some(buf) }
+                    if buf.is_empty() {
+                        None
+                    } else {
+                        Some(buf)
+                    }
                 } else {
                     None
                 };
@@ -286,7 +290,8 @@ impl Perform for OscPerformer {
         // Always record into `prompt_visible_bytes` (used by stdin_wait
         // detector) — regardless of region — so that PS1/PS2/PS3
         // prompts in Prompt/Input regions are visible to the detector.
-        self.prompt_visible_bytes.extend_from_slice(encoded.as_bytes());
+        self.prompt_visible_bytes
+            .extend_from_slice(encoded.as_bytes());
 
         if self.current_region == TerminalRegion::Output {
             self.visible_bytes.extend_from_slice(encoded.as_bytes());

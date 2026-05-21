@@ -60,7 +60,10 @@ mode = "redteam"
             root_path: PathBuf::from("/tmp/src"),
         };
         let s = toml::to_string(&cfg).expect("serialize");
-        assert!(!s.contains("mode"), "Schema E must not emit a mode field: {s}");
+        assert!(
+            !s.contains("mode"),
+            "Schema E must not emit a mode field: {s}"
+        );
         let back: ProjectConfig = toml::from_str(&s).expect("parse");
         assert_eq!(back.name, "SRC");
     }

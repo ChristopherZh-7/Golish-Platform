@@ -206,9 +206,7 @@ pub async fn execute_sub_agent_with_client(
 /// avoiding unnecessary prompt inflation.
 pub(crate) async fn build_sub_agent_briefing(
     db_tracker: Option<&golish_agent_kit::db_tracking::DbTracker>,
-    graph_backend: Option<
-        &dyn golish_agent_kit::tool_executors::graph_trait::GraphKnowledgeBase,
-    >,
+    graph_backend: Option<&dyn golish_agent_kit::tool_executors::graph_trait::GraphKnowledgeBase>,
     project_id: Option<&str>,
     agent_id: &str,
     task_description: &str,
@@ -301,12 +299,14 @@ pub(crate) async fn build_sub_agent_briefing(
     }
 
     if has_kg {
-        briefing.push_str(
-            "\n### Known Entities in Knowledge Graph (avoid re-discovering)\n",
-        );
+        briefing.push_str("\n### Known Entities in Knowledge Graph (avoid re-discovering)\n");
         for ent in &kg_entities {
             let props_hint = if ent.properties.is_object()
-                && !ent.properties.as_object().map(|o| o.is_empty()).unwrap_or(true)
+                && !ent
+                    .properties
+                    .as_object()
+                    .map(|o| o.is_empty())
+                    .unwrap_or(true)
             {
                 let preview: String = ent
                     .properties

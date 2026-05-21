@@ -119,7 +119,6 @@ fn test_parse_filtered_prompt_visible_captures_bash_ps3() {
     assert_eq!(result.prompt_visible, b"1) Yes\n2) No\n#? ");
 }
 
-
 #[test]
 fn test_parse_filtered_suppresses_user_input() {
     let mut parser = TerminalParser::new();

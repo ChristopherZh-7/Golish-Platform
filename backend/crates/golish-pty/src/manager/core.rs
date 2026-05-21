@@ -247,9 +247,7 @@ impl PtyManager {
         drop(parser);
 
         for event in result.events {
-            if let Some((event_name, mut block_event)) =
-                event.to_command_block_event(session_id)
-            {
+            if let Some((event_name, mut block_event)) = event.to_command_block_event(session_id) {
                 // Backfill the command text — to_command_block_event
                 // only sets `command` when the event was constructed
                 // with it, but parser.parse_filtered may yield
@@ -412,13 +410,17 @@ mod tests {
 
     #[test]
     fn synthetic_command_start_only_for_powershell() {
-        assert!(PtyManager::needs_synthetic_command_start(ShellType::PowerShell));
+        assert!(PtyManager::needs_synthetic_command_start(
+            ShellType::PowerShell
+        ));
         assert!(!PtyManager::needs_synthetic_command_start(ShellType::Zsh));
         assert!(!PtyManager::needs_synthetic_command_start(ShellType::Bash));
         assert!(!PtyManager::needs_synthetic_command_start(ShellType::Fish));
         assert!(!PtyManager::needs_synthetic_command_start(ShellType::Sh));
         assert!(!PtyManager::needs_synthetic_command_start(ShellType::Cmd));
-        assert!(!PtyManager::needs_synthetic_command_start(ShellType::Unknown));
+        assert!(!PtyManager::needs_synthetic_command_start(
+            ShellType::Unknown
+        ));
     }
 
     #[test]
@@ -504,7 +506,9 @@ mod tests {
 
     #[test]
     fn lf_to_cr_translation_only_for_windows_shells() {
-        assert!(PtyManager::needs_lf_to_cr_translation(ShellType::PowerShell));
+        assert!(PtyManager::needs_lf_to_cr_translation(
+            ShellType::PowerShell
+        ));
         assert!(PtyManager::needs_lf_to_cr_translation(ShellType::Cmd));
         assert!(!PtyManager::needs_lf_to_cr_translation(ShellType::Zsh));
         assert!(!PtyManager::needs_lf_to_cr_translation(ShellType::Bash));
@@ -515,7 +519,10 @@ mod tests {
 
     #[test]
     fn translate_lf_to_cr_rewrites_bare_lf() {
-        assert_eq!(translate_lf_to_cr_for_powershell(b"dir\n"), Some(b"dir\r".to_vec()));
+        assert_eq!(
+            translate_lf_to_cr_for_powershell(b"dir\n"),
+            Some(b"dir\r".to_vec())
+        );
     }
 
     #[test]
@@ -530,7 +537,10 @@ mod tests {
     fn translate_lf_to_cr_returns_none_when_no_change_needed() {
         assert_eq!(translate_lf_to_cr_for_powershell(b"ls"), None);
         assert_eq!(translate_lf_to_cr_for_powershell(b""), None);
-        assert_eq!(translate_lf_to_cr_for_powershell(b"already\rterminated"), None);
+        assert_eq!(
+            translate_lf_to_cr_for_powershell(b"already\rterminated"),
+            None
+        );
     }
 
     #[test]
