@@ -408,3 +408,75 @@ export async function test(args: { toolId: string; groupId: string }): Promise<I
     groupId: args.groupId,
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// Capture IPC wrappers (Phase 3 T3.2)
+//
+// Backend command surface lives in `backend/crates/golish/src/tools/
+// integrations/capture_commands.rs`. All three accept an `args:` object
+// payload to match the Rust `#[derive(Deserialize)] CaptureStartArgs /
+// CaptureSessionArgs` wrappers.
+//
+// Error contract — every error message preserves a [PREFIX] so callers
+// can map without parsing the whole string:
+//   - [CAPTURE_NO_RECIPE]      schema has no `capture` field
+//   - [CAPTURE_ALREADY_RUNNING] cancel first before re-starting
+//   - [CAPTURE_SESSION_NOT_FOUND] expired / GC'd / typoed id
+//   - [WEBVIEW_CREATE_FAILED]  Tauri couldn't open the window
+//   - [CAPTURE_INVALID_URL]    login_url failed scheme allowlist
+//   - [CAPTURE_INVALID_TARGET_FIELD] schema typo
+//   - [CAPTURE_TIMEOUT] / [CAPTURE_RULE_FAILED] also surface here
+//     when reported via the integration-capture event payload.
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Start an auto-capture session for `(toolId, groupId)`.
+ *
+ * Opens an isolated Tauri webview window pointed at the recipe's
+ * `login_url`. The returned snapshot already contains `expires_at`
+ * (Unix ms) so the UI can drive a countdown without polling. Live
+ * state transitions are pushed via the `"integration-capture"`
+ * Tauri event channel; use [`captureStatus`] only as a reconnect
+ * fallback.
+ *
+ * Throws an `ApiError` with one of the `[CAPTURE_*]` /
+ * `[WEBVIEW_*]` prefixed messages above on failure.
+ */
+export async function captureStart(args: {
+  toolId: string;
+  groupId: string;
+}): Promise<CaptureSessionInfo> {
+  return invoke<CaptureSessionInfo>("integrations_capture_start", {
+    args: { tool_id: args.toolId, group_id: args.groupId },
+  });
+}
+
+/**
+ * Read one capture session's current snapshot. Prefer the
+ * `"integration-capture"` event listener for live updates; this is
+ * the fallback for rehydrate / reconnect scenarios where the listener
+ * may have missed transitions.
+ *
+ * Returns `[CAPTURE_SESSION_NOT_FOUND]` (mapped server-side to a
+ * 404-style `NotFound` `GolishError`) when the id was already GC'd
+ * (>1h post-terminal) or never registered.
+ */
+export async function captureStatus(args: { sessionId: string }): Promise<CaptureSessionInfo> {
+  return invoke<CaptureSessionInfo>("integrations_capture_status", {
+    args: { session_id: args.sessionId },
+  });
+}
+
+/**
+ * Cancel an in-flight session.
+ *
+ * Idempotent — calling cancel on an already-terminal session is a
+ * no-op (Ok with no UI side-effect). The backend also closes any
+ * lingering webview window and emits one final
+ * `"integration-capture"` event with `state: "cancelled"`.
+ */
+export async function captureCancel(args: { sessionId: string }): Promise<void> {
+  return invoke<void>("integrations_capture_cancel", {
+    args: { session_id: args.sessionId },
+  });
+}
