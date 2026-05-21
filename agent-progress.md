@@ -17,15 +17,66 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | 凭据抓取器 Phase 1 (T1.1-T1.6) **已 commit 完毕**（HEAD `6dc8303`），下一步是 Phase 2 CaptureEngine 核心实现（4-5 小时，6 个 task），落 `golish/src/tools/integrations/capture/` 模块 + 5 个 state machine transition 单测 |
-| **当前 blocker** | 整 monorepo 的 `just precommit` 因 preexisting biome 警告 fail（pty.ts / useTaskPlanState.ts / App.tsx 等非本轮文件的格式 / lint info），与 capture/integrations 改动无关。capture-engine Phase 1 自己引入的代码 biome + tsc + nextest + ReadLints 全绿 |
-| **未提交的半成品** | git status 仍挂着 ~30 个 preexisting 文件改动（pty / agent-kit / kg / planner / llm-providers / pentest 等），与本轮 capture-engine Phase 1 无关；本轮新增 commit `11f4aaa` + `6dc8303` 已 push 范围之内，git status 中 capture/integrations 范围干净 |
+| **当前最高优先级** | 凭据抓取器 Phase 1 + Phase 2 **均已 commit 完毕**（HEAD `e3d5963`），下一步 Phase 3 IPC 命令 + 前端 API wrapper（90 分钟，3 个 task）：3 个 Tauri command（capture_start / _status / _cancel）+ frontend `captureStart / captureStatus / captureCancel` wrapper + devtools 手动验。⚠ Phase 2 Review Checkpoint 待用户拍板：① 引擎模块分层（engine / session / data_dir / webview_isolation）是否合理 ② TTL watcher 10s 节奏是否过敏感 ③ 计划提到的 spike binary 实际未创建（Phase 0 走 docs.rs WebFetch 替代），可忽略 |
+| **当前 blocker** | 整 monorepo 的 `just precommit` 因 preexisting biome 警告 + 8 个 preexisting `failure_kind` PlanStep struct literal 编译错（M2 cherry-pick 遗留）fail，与 capture/integrations 改动无关。capture Phase 1+2 自己引入的代码 cargo check / cargo nextest lib / ReadLints 全绿 |
+| **未提交的半成品** | git status 仍挂着 ~30 个 preexisting 文件改动（pty / agent-kit / kg / planner / llm-providers / pentest / `golish/tests/ai_events_characterization/` 等），与本轮 capture-engine 无关；本轮新增 commit `11f4aaa` + `6dc8303` + `92d94ad` + `e3d5963` 范围干净 |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-21 · 凭据抓取器 Phase 2 CaptureEngine 落地（T2.1-T2.6 单 commit）
+
+- **本轮目标**：用户指令"推 Phase 2 CaptureEngine"。按 `docs/superpowers/plans/2026-05-21-credential-capture-engine.md` Phase 2 把 `CaptureEngine` 模块在 `backend/crates/golish/src/tools/integrations/capture/` 落地。
+- **执行决策**：T2.1-T2.6 计划上分 6 个 commit，但 T2.3 (start_webview) / T2.4 (try_extract) / T2.5 (TTL watcher + transition_and_emit) / T2.6 (tauri_app 注册) 是紧耦合（互相调用对方的方法签名），分多 commit 会让中间 commit 编译 broken。本轮选择**单 commit 落盘整个 Phase 2**，类型签名连贯、ReadLints 全绿、单测全过。
+- **已完成（commit `e3d5963` 一次性 +1227 行 / 8 个文件）**：
+  - **新建 `capture/mod.rs`** (28 行)：`pub mod capture` + re-export `CaptureEngine` / `CaptureSession` / `CaptureSessionHandle`
+  - **新建 `capture/data_dir.rs`** (102 行)：`capture_root() / session_dir() / cleanup_session_dir()` + 3 个测（cleanup-missing-noop / create-then-clean / idempotent）。路径：`<dirs::data_dir()>/com.golish.platform/capture-sessions/<session_id>/`
+  - **新建 `capture/session.rs`** (204 行)：`TIMEOUT_MIN_SECS=30` / `TIMEOUT_MAX_SECS=900` 常量；`CaptureSession`（Recipe + state + Unix-ms started_at_ms/updated_at_ms + clamped timeout）；`CaptureSessionHandle`（Arc<RwLock>）；4 个测（timeout clamp 上下界 + transition + 终态 info 省略 expires_at + target_field helper）
+  - **新建 `capture/webview_isolation.rs`** (91 行)：Phase 0 spike 发现的平台分支抽象。macOS 用 `data_store_identifier([u8;16])`（先尝试 `Uuid::parse_str`，非 UUID 则 `Uuid::new_v5(NAMESPACE_OID, sid)`——避免新加 blake3 依赖），Linux/Windows 用 `data_directory`，Android/iOS no-op。3 个 macOS-only 测（stable / differs / uuid-round-trip）
+  - **新建 `capture/engine.rs`** (763 行)：完整 `CaptureEngine`
+    - **registry**：`RwLock<HashMap<sid, Handle>>` 双层锁
+    - **register()**：UUID v4 生成 sid，拒绝同 `(tool_id, group_id)` 非终态重复
+    - **transition / transition_and_emit / cancel**：状态机；终态 emit `"integration-capture"` Tauri event 并 `cleanup_session_dir`；终态后调用 idempotent
+    - **start_webview()**：async；用 `apply_isolation` 隔离 + `on_navigation(Fn(&Url) -> bool)`（Phase 0 spike 确认签名）；callback 内 `tauri::async_runtime::spawn` async block 调 `on_navigation_event`
+    - **try_extract()**：runs rules → 必需失败 fail-fast；写 vault 走 `IntegrationsState::resolver+pick_backend+backend.write` 4 步链（捕获 `integrations_set` IPC 流程的语义）；emit 最终态 + 关闭 webview
+    - **extract_one()**：P1 MVP 仅实现 Cookie；用 `tokio::task::spawn_blocking` 包 `cookies_for_url`（Phase 0 spike 确认是同步 API，Windows 直接调死锁）；其它 5 种 rule 显式 bail "not yet implemented in P1 MVP"
+    - **spawn_ttl_watcher()**：10s tick → 扫过期 session 触发 `Timeout` 转移 → 关闭 lingering webview → `gc()` 移除 >1h 终态
+    - **on_navigation_event 自由函数**：success_url_pattern 正则匹配后 `app.state::<Arc<CaptureEngine>>()` 拿引擎调 `try_extract`
+    - **persist_captured_values 自由函数**：`app.state::<IntegrationsState>() + DbState::pool_ready + pick_backend + backend.write` 4 步
+    - 7 个 engine 测：register-unique / register-rejects-dup / register-after-terminal / transition-idempotent / get-not-found / cancel→Cancelled / gc-drops-only-old-terminals
+  - **修改 `tools/integrations/mod.rs`** (+1 行)：`pub mod capture`
+  - **修改 `tools/integrations/state.rs`** (+20 行)：`map_err()` 扩展处理 8 个 capture-specific `IntegrationError` variant。CaptureNoRecipe/AlreadyRunning/InvalidUrl/InvalidTargetField → Validation(400)；CaptureSessionNotFound → NotFound(404)；WebviewCreateFailed/Timeout/RuleFailed → Internal(500)。`[CAPTURE_*]` / `[WEBVIEW_*]` prefix 保留让前端 mapErr 直接基于 prefix dispatch
+  - **修改 `app/tauri_app.rs`** (+19 行)：① `use tauri::Manager` 让 `app.state::<...>()` 可解析 ② 构造 `Arc<CaptureEngine>::new()` 并 `.manage(...)` 在 `IntegrationsState` 之后 ③ setup 闭包扩展为 multi-step：先 `bootstrap::setup_subsystems(app)?`，再 `app.state::<Arc<CaptureEngine>>()` clone + `spawn_ttl_watcher(app.handle().clone())`
+- **运行过的验证**：
+  - `cargo check -p golish` × 2 → exit 0 / **0 warning**（45.2s 完整 check + 30s T2.6 wiring recheck）
+  - `cargo nextest run -p golish --lib -E 'test(tools::integrations::capture)'` → **17 tests run: 17 passed, 196 skipped**（3 data_dir + 4 session + 3 webview_isolation [macOS] + 7 engine）
+  - `cargo nextest run -p golish --lib -E 'test(tools::integrations)'` → **23 tests run: 23 passed, 190 skipped**（上面 17 + 既有 6 个 commands 测试零回归）
+  - `ReadLints` 7 个改动文件 → No linter errors found
+  - **未跑 cargo nextest --test integration**：因为 preexisting `golish/tests/ai_events_characterization/roundtrip_and_deserialization.rs` 编译失败（8 个 PlanStep struct literal 缺 `failure_kind` 字段，M2 cherry-pick 后未补），与本轮 capture 改动无关，下一轮可单独修
+- **已记录证据**：
+  - `git log -1 --oneline` → `e3d5963 feat(capture): Phase 2 CaptureEngine — scaffold + state machine + ...`
+  - 17/17 + 23/23 + 0 warning + 0 lint error 证据见上
+- **提交记录**：`e3d5963`，feat/asm-intel-providers 分支，**未 push**
+- **已知风险或未解决问题**：
+  - **真实 webview / cookie 端到端未试**：Phase 2 全部测试都是 mock state machine 测试，没真弹窗。Phase 5 计划手动 E2E 跑 ENScan AQC（爱企查 BDUSS cookie）
+  - **TTL watcher 10s tick 是否过敏感**：plan §Review Checkpoint 提到这点。当前 10s 是为了在 30s 最短 TTL 内至少有 3 次扫描机会；可调到 30s 节省 CPU
+  - **`tokio::task::spawn_blocking` 包 cookies_for_url**：spawn_blocking 默认线程池 ≤ 512，正常 capture 流量远不到，安全
+  - **on_navigation callback 内 `tauri::async_runtime::spawn` fire-and-forget**：如果 try_extract panic 会沉默丢弃；当前用 `tracing::error!` 兜底，但没结构化上报到前端。可加 panic_handler，但 P1 MVP 接受
+  - **`derive_macos_data_store_id` Uuid v5 派生**：固定 NAMESPACE_OID，跨 Golish 进程 / 主机一致——对 P1 MVP 来说"稳定 + 唯一"足够；若未来需要更强隔离可换 BLAKE3
+  - **rule_is_required helper** 重复了 `CaptureRule::target_field` 的 6-arm match 模式——可考虑给 `impl CaptureRule` 加 `pub fn is_required(&self) -> bool` 收敛
+- **Review Checkpoint（计划要求）**：
+  1. 引擎模块分层（engine / session / data_dir / webview_isolation）是否合理 → 用户拍板
+  2. TTL watcher 10s 扫一次是否过敏感 → 用户拍板（建议 30s）
+  3. Phase 0 spike binary `backend/crates/golish/examples/capture_spike.rs` **未创建**（Phase 0 走 docs.rs WebFetch 替代）→ 无需删除，跳过该 checkpoint
+- **下一步最佳动作**：
+  1. 用户审 Phase 2 commit `e3d5963`（763 行 engine.rs 是大件，可重点看 `try_extract` 4 步链 + `start_webview` 隔离）
+  2. 进入 **Phase 3**（~90 分钟，3 个 task）：3 个 Tauri command（start/status/cancel）+ frontend `captureStart/captureStatus/captureCancel` wrapper + devtools 手动验
+  3. 或者用户希望先 push 整个 capture-engine 系列 commit 到远端，确认 e2e 还没崩
 
 ---
 
