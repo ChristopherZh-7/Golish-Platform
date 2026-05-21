@@ -17,7 +17,7 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | 凭据抓取器 Phase 1 + Phase 2 **均已 commit 完毕**（HEAD `e3d5963`），下一步 Phase 3 IPC 命令 + 前端 API wrapper（90 分钟，3 个 task）：3 个 Tauri command（capture_start / _status / _cancel）+ frontend `captureStart / captureStatus / captureCancel` wrapper + devtools 手动验。⚠ Phase 2 Review Checkpoint 待用户拍板：① 引擎模块分层（engine / session / data_dir / webview_isolation）是否合理 ② TTL watcher 10s 节奏是否过敏感 ③ 计划提到的 spike binary 实际未创建（Phase 0 走 docs.rs WebFetch 替代），可忽略 |
+| **当前最高优先级** | 凭据抓取器 Phase 1 + Phase 2 + Phase 3 **代码部分均已 commit 完毕**（HEAD `da1ffea`），下一步 Phase 4 前端 UX（3-4 小时，~6 个 task）：i18n keys + useCaptureSession hook + CaptureButton / CaptureConfirmDialog / CaptureStatusToast 3 个组件 + 集成进 IntegrationGroup.tsx + 单测。Phase 3 T3.3 是手动 devtools 验证（`just dev` 后跑 `await window.__TAURI_INTERNALS__.invoke("integrations_capture_start", { args: { tool_id, group_id } })` 看弹窗），需用户做 |
 | **当前 blocker** | 整 monorepo 的 `just precommit` 因 preexisting biome 警告 + 8 个 preexisting `failure_kind` PlanStep struct literal 编译错（M2 cherry-pick 遗留）fail，与 capture/integrations 改动无关。capture Phase 1+2 自己引入的代码 cargo check / cargo nextest lib / ReadLints 全绿 |
 | **未提交的半成品** | git status 仍挂着 ~30 个 preexisting 文件改动（pty / agent-kit / kg / planner / llm-providers / pentest / `golish/tests/ai_events_characterization/` 等），与本轮 capture-engine 无关；本轮新增 commit `11f4aaa` + `6dc8303` + `92d94ad` + `e3d5963` 范围干净 |
 
@@ -26,6 +26,40 @@
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-21 · 凭据抓取器 Phase 3 IPC 命令 + 前端 wrappers（T3.1-T3.2 两个 commit）
+
+- **本轮目标**：用户指令"推 Phase 3 IPC 命令"。按 `docs/superpowers/plans/2026-05-21-credential-capture-engine.md` Phase 3 把 3 个 Tauri command 和 3 个 frontend wrapper 接起来。T3.3 是手动 devtools 验证（用户跑 `just dev` 后做），不属于代码工作。
+- **已完成**：
+  - **新建 `backend/crates/golish/src/tools/integrations/capture_commands.rs`** (+171 行)：
+    - `CaptureStartArgs / CaptureSessionArgs` 新 type wrapper 让 IPC 走 `{ args: { tool_id, group_id } }` / `{ args: { session_id } }` 与 `integrations_set` / `_clear` 风格一致
+    - `integrations_capture_start`：4 步链 ① `resolver().get(tool_id)` ② 找 group ③ 提 recipe（CAPTURE_NO_RECIPE 错误）④ `engine.register()` + `engine.start_webview()`；start_webview 失败时**回滚 session**：fire-and-forget `transition_and_emit(Failed, [WEBVIEW_CREATE_FAILED])` 让 UI 不留 orphan WaitingLogin
+    - `integrations_capture_status`：read-only poll，CAPTURE_SESSION_NOT_FOUND → NotFound(404)（GC > 1h 后）
+    - `integrations_capture_cancel`：幂等（engine.transition 已终态时 no-op）+ 关闭 lingering webview（best-effort）
+  - **修改 `tools/integrations/mod.rs`** (+4)：`pub mod capture_commands` + 3 个命令名 pub use
+  - **修改 `commands_facade/integrations.rs`** (+13 / -5)：doc comment 列出 3 个新命令；pub use 列表加 3 个新命令
+  - **修改 `commands_registry.rs`** (+2)：`tauri::generate_handler![]` 列表加 3 个新命令名
+  - **修改 `frontend/lib/api/integrations.ts`** (+72)：3 个 IPC wrapper（`captureStart` / `captureStatus` / `captureCancel`），doc 显式列出 8 个 `[PREFIX]` 错误约定让前端 mapErr 能 typed dispatch 不需 parse 字符串
+- **运行过的验证**：
+  - `cargo check -p golish --message-format=short` → exit 0 / **0 warning**（82s 增量）
+  - `cargo nextest run -p golish --lib -E 'test(tools::integrations)'` → **23 tests run: 23 passed, 190 skipped**（含 Phase 2 的 17 + 既有 6 commands；零回归）
+  - `pnpm exec tsc --noEmit`（全前端） → exit 0（10.1s）
+  - `pnpm exec biome check frontend/lib/api/integrations.ts` → No fixes（首跑因 captureStatus 签名换行报 1 format error，已 collapse 修一次）
+  - `ReadLints` 5 个改动文件 → No linter errors found
+- **已记录证据**：
+  - 23/23 nextest + 0 warning + 0 lint 详见上面
+  - 2 个新 commit：`191cbab` (backend +190) + `da1ffea` (frontend +72)
+- **提交记录**：`191cbab` / `da1ffea`，feat/asm-intel-providers 分支，未 push
+- **已知风险或未解决问题**：
+  - **devtools 手动验证未跑**：T3.3 计划上要 `just dev` + 在 devtools console 跑 `invoke("integrations_capture_start", { args: { tool_id: "enscan-go", group_id: "aqc" } })` 看真弹窗。ENScan AQC `capture` recipe 在 Phase 5 才加，所以现在跑会返 `[CAPTURE_NO_RECIPE]`——这是预期行为。可以临时给某个 group 加个 mock capture 来跑验证，但用户决定
+  - **start_webview 失败的回滚是 fire-and-forget**：用 `tauri::async_runtime::spawn` 跑 `transition_and_emit`，不 await。如果回滚本身 fail 会沉默到日志（tracing::error）。生产环境若需要可改成 await 但要权衡用户响应延迟
+  - **`CAPTURE_ALREADY_RUNNING` 错误的 UI 处理待 Phase 4 实现**：现在后端会返这个错误，前端 wrapper 会把它 throw 出来，但 hook / dialog 还没有针对这个错误的特殊提示（计划上是"先取消才能重启"）
+- **下一步最佳动作**：
+  1. **Phase 4** 启动（3-4 小时，~6 task）：i18n keys + useCaptureSession hook（订阅 `integration-capture` 事件 + 倒计时 + react-query invalidate）+ CaptureButton / CaptureConfirmDialog / CaptureStatusToast 3 个组件 + 集成进 IntegrationGroup.tsx + 单测
+  2. 或者先做 T3.3 手动验证：临时给 `enscan-go` 的 aqc group 加个 mock capture 段（或者给 `core.json` 里的 github 加个 mock），跑 `just dev` 看弹窗能否打开
+  3. 或者先 push 本轮 7 个 commit 到远端
 
 ---
 
