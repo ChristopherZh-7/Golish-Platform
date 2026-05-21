@@ -17,7 +17,7 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | 凭据抓取器 Phase 1 + Phase 2 + Phase 3 + Phase 4 **代码部分均已 commit 完毕**（HEAD `7d4d163`），下一步 **Phase 5**（~90 分钟）：加 ENScan AQC capture recipe + 手动 E2E + 反向 6 case + just precommit 全绿，做完即可把 capture-engine 切 passing。Phase 3 T3.3 / Phase 4 Review 都需要用户手动验证 |
+| **当前最高优先级** | 凭据抓取器 Phase 1-5 **代码部分均已 commit 完毕**（HEAD `308eddf`）。剩余只是用户手动 E2E：① `just dev` 启动 → Settings → Integrations → ENScan_GO → AQC 应出现 ⚡ 按钮 ② 点击 → confirm dialog → "打开浏览器并登录" → 真实弹窗到 aiqicha.baidu.com ③ 登录后 success_url 命中 → 自动抠 BDUSS cookie → toast 变绿 → cookies.aqc 显示已配置 ④ `enscan -n 小米 -type aqc -field icp` 真实跑通。+ 反向 6 case（超时 / 取消 / 409 / 手动关窗 / data_dir 清干净 / GC 后 404）。用户跑完后把 capture-engine 切 passing |
 | **当前 blocker** | 整 monorepo 的 `just precommit` 因 preexisting biome 警告 + 8 个 preexisting `failure_kind` PlanStep struct literal 编译错（M2 cherry-pick 遗留）fail，与 capture/integrations 改动无关。capture Phase 1+2 自己引入的代码 cargo check / cargo nextest lib / ReadLints 全绿 |
 | **未提交的半成品** | git status 仍挂着 ~30 个 preexisting 文件改动（pty / agent-kit / kg / planner / llm-providers / pentest / `golish/tests/ai_events_characterization/` 等），与本轮 capture-engine 无关；本轮新增 commit `11f4aaa` + `6dc8303` + `92d94ad` + `e3d5963` 范围干净 |
 
@@ -26,6 +26,59 @@
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-21 · 凭据抓取器 Phase 5 T5.1 ENScan AQC capture recipe + fixture 测试
+
+- **本轮目标**：用户指令"推 Phase 5 AQC recipe + E2E"。Phase 5 范围：T5.1 加 capture recipe → T5.2 手动 E2E → T5.3 反向 6 case → T5.4 just precommit 全绿 + 切 passing。我能落代码的是 T5.1 + 一个 fixture smoke 测试；T5.2 / T5.3 必须 `just dev` + 真实登录爱企查 → 只能由用户做；T5.4 因 preexisting 编译错（M2 cherry-pick 后 PlanStep failure_kind 字段缺失 + biome 警告）无法整体 green，本轮逐项跑了能跑的验证
+- **已完成（commit `308eddf`，+79 / -1 \u00b7 2 个文件）**：
+  - **`resources/toolsconfig/enscan-go.json`** aqc group 新增 `capture` 段：
+    - `login_url`: `https://aiqicha.baidu.com/`
+    - `success_url_pattern`: `aiqicha\\.baidu\\.com/(home|company|usercenter|user|s)` — 覆盖爱企查登录后的几条常见 landing 路径
+    - `timeout_secs`: 300（在 engine clamp 窗口内）
+    - 单条 Cookie rule：`domain=.baidu.com / name=BDUSS / target_field=cookies.aqc / required=true`
+    - `description` / `instructions` 加注意事项：ENScan 期望 `cookies.aqc` 是完整 Cookie header，但 P1 MVP 引擎写的是单个 BDUSS 值；若 ENScan 拒绝则用户可手动补完整 header（CookieJoined 是 P2 scope）
+  - **`backend/crates/golish-integrations/src/resolver.rs`** 新增 fixture smoke 测试 `fixture_enscan_aqc_capture_recipe_loads`：
+    - 从 `CARGO_MANIFEST_DIR` 向上走 3 级到 repo root，定位 `resources/toolsconfig/`，用真实 `DefaultSchemaResolver::get("enscan-go")` 加载
+    - 4 个断言：login_url 形如 https://aiqicha.baidu.com / timeout 在 [30,900] / 至少 1 rule / 必有 Cookie rule 写 BDUSS → cookies.aqc
+    - 不存在 toolsconfig 目录时 silently skip（不在 git checkout 环境时不强求跑）
+- **运行过的验证**：
+  - `python3 -m json.tool resources/toolsconfig/enscan-go.json` → VALID JSON
+  - `cargo nextest run -p golish-integrations --status-level fail` → **70 tests run: 70 passed, 0 skipped**（前轮 69 → +1 fixture smoke）
+  - `cargo nextest run -p golish --lib -E 'test(tools::integrations)'` → **23 tests run: 23 passed, 190 skipped**（含 Phase 2 17 + Phase 3 6 commands；零回归）
+  - `ReadLints`（enscan-go.json + resolver.rs）→ No linter errors found
+  - **未跑** `just precommit`（preexisting biome 警告 + 8 个 `ai_events_characterization` PlanStep struct literal 编译错，M2 cherry-pick 遗留，与 capture 无关）
+- **已记录证据**：见上方 4 个验证结果；commit `308eddf` HEAD 已就位
+- **提交记录**：`308eddf`，feat/asm-intel-providers 分支，未 push
+- **已知风险或未解决问题**：
+  - **BDUSS 单值 vs 完整 Cookie header**：plan v2 已标记这是 P1 实施阶段实测拍板项。如果 `enscan -n 小米 -type aqc -field icp` 拿到只含 BDUSS 的 cookies.aqc 仍工作 → P1 收工；否则需要：① 用户手动复制完整 header 覆盖 ② 后续把 engine 升级到 CookieJoined rule（~30 行额外代码，P2 范围）
+  - **success_url_pattern 实测可能需要调整**：列了 5 条 path（home / company / usercenter / user / s），但爱企查可能 login 后跳到其它页面（如 search-result 直接跳 `/s/xxx`）。如果 pattern miss 则用户登录后 toast 不跳到 extracting，会一直在 waiting_login 直到 5 分钟 timeout
+  - **真实手动 E2E 完全没做**：本会话内的 Rust 单测最多验证到"schema 解析合法 + Tauri command 编译通过"；真实弹窗 / 真实 cookie 抓取 / 真实 vault 写入 / 真实 ENScan 调用 → 全部依赖 `just dev` + 用户真账号登录爱企查。这是 P1 MVP 的最后一公里
+  - **T5.4 `just precommit` 不能跑绿**：preexisting `golish/tests/ai_events_characterization/roundtrip_and_deserialization.rs` 8 个 PlanStep 字面量缺 `failure_kind` 字段。修这个 = 另外的 task，跟 capture 无关
+  - **CaptureStatusToast 错误显示**：现在显示 `[CAPTURE_*]` 前缀的原始字符串，对开发者友好对用户不友好；P2 可加 i18n mapping（计划已记录）
+- **T5.2 / T5.3 手动 E2E checklist（用户做）**：
+  1. **T5.2 正向 E2E**：
+     - `just dev` 启动 Tauri 应用
+     - Settings → Integrations → ENScan_GO → aqc group → 应出现 ⚡ "自动抓取" 按钮
+     - 点击 ⚡ → confirm dialog 弹出（标题"自动抓取凭据" + 描述含 login_url 和 timeout）
+     - 点击"打开浏览器并登录" → 应弹出独立的 Tauri webview window 打开 aiqicha.baidu.com
+     - 在弹窗内用真实账号登录爱企查
+     - 登录后 success_url_pattern 命中 → 1-2s 内 webview 自动关闭 → toast 变绿"成功抓取 1 个字段" → cookies.aqc 字段显示"已配置 badge"
+     - 终端跑 `enscan -n 小米 -type aqc -field icp` → 应返回小米的 ICP 数据
+     - 截屏发回 + 记录 enscan 输出关键行
+  2. **T5.3 反向 6 case**：
+     - case 1：点 ⚡ → confirm 后 5 分钟不操作 → toast 变红"登录超时未完成抓取"，cookies.aqc 字段无变化
+     - case 2：点 ⚡ → confirm → 弹窗出现后 toast 上点 "Cancel" → 弹窗立即关闭，toast 显示"已取消抓取"
+     - case 3：同一 aqc group 已经在抓取中（state=waiting_login） → 再点 ⚡ → toast 顶部立刻显示 `[CAPTURE_ALREADY_RUNNING] session already in-flight for enscan-go/aqc`（startError 路径）
+     - case 4：抓取过程中**手动关闭弹窗（点窗口右上 X）** → 当前 P1 没有 on_close handler，会等到 TTL timeout（5 分钟）才转移到 Timeout —— 这是 P2 增强；现在可以接受
+     - case 5：成功抓取后查看 `~/Library/Application\ Support/com.golish.platform/capture-sessions/` 目录 → 应该是空的（cleanup_session_dir 已删除）
+     - case 6：成功抓取 1 小时后调 `await window.__TAURI_INTERNALS__.invoke("integrations_capture_status", { args: { session_id: "<刚才的id>" } })` → 应返 `[CAPTURE_SESSION_NOT_FOUND]`（GC 已清）
+- **下一步最佳动作**：
+  1. **用户跑 T5.2 + T5.3 E2E**，截屏 + 记录关键现象给我
+  2. 全过 → 我把 `feature_list.json` 的 `capture-engine` 切 `passing` + commit metadata
+  3. 不过/部分过 → 视具体失败模式决定：a) BDUSS 单值不够 ENScan → 把 engine 升级 CookieJoined（~30 行）b) success_url_pattern 漏 path → 改 enscan-go.json 加 path c) 其它 P2 增强（手动关窗 → on_close handler / CAPTURE_ALREADY_RUNNING UX 优化）
+  4. 或者先 push 本轮 11 个 commit 到远端再做 E2E
 
 ---
 
