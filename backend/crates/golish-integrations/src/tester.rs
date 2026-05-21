@@ -248,6 +248,7 @@ mod tests {
                 icon: None,
                 help_url: None,
                 test,
+                capture: None,
                 fields: vec![Field {
                     key: "api_key".into(),
                     label: "API Key".into(),

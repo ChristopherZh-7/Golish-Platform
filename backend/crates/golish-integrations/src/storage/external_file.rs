@@ -479,6 +479,7 @@ mod tests {
                 icon: None,
                 help_url: None,
                 test: None,
+                capture: None,
                 fields: vec![
                     Field {
                         key: "cookies.tyc".into(),
@@ -536,6 +537,7 @@ mod tests {
                 icon: None,
                 help_url: None,
                 test: None,
+                capture: None,
                 fields: vec![Field {
                     key: "cookies.aqc".into(),
                     label: "Cookie".into(),

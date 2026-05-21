@@ -204,6 +204,7 @@ mod tests {
                 icon: None,
                 help_url: None,
                 test: Some(TestKind::Builtin),
+                capture: None,
                 fields: vec![Field {
                     key: "api_key".into(),
                     label: "API Key".into(),
@@ -239,6 +240,7 @@ mod tests {
                 icon: None,
                 help_url: None,
                 test: None,
+                capture: None,
                 fields: vec![Field {
                     key: "cookies.aqc".into(),
                     label: "Cookie".into(),
@@ -271,6 +273,7 @@ mod tests {
                 icon: None,
                 help_url: None,
                 test: None,
+                capture: None,
                 fields: vec![Field {
                     key: "token".into(),
                     label: "Token".into(),

@@ -220,6 +220,7 @@ mod tests {
                 icon: None,
                 help_url: None,
                 test: None,
+                capture: None,
                 fields: vec![Field {
                     key: "token".into(),
                     label: "Token".into(),

@@ -49,6 +49,7 @@ pub fn api_key_integration_schema(
             icon: None,
             help_url: signup_url.map(|s| s.to_string()),
             test: Some(TestKind::Builtin),
+            capture: None,
             fields: vec![Field {
                 key: "api_key".into(),
                 label: "API Key".into(),

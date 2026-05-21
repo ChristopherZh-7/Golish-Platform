@@ -112,6 +112,14 @@ pub struct IntegrationGroup {
     /// Optional connectivity-test recipe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test: Option<TestKind>,
+
+    /// Optional auto-capture recipe ("click ⚡ to harvest from
+    /// browser"). When `None`, the frontend hides the ⚡ button and
+    /// the user must fill the form manually.
+    ///
+    /// See `docs/design/2026-05-21-credential-capture-engine.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<CaptureRecipe>,
 }
 
 /// Single form field.
@@ -338,6 +346,198 @@ fn default_ok_range() -> (u16, u16) {
     (200, 299)
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// CaptureRecipe — "click ⚡ to harvest creds from a browser session"
+//
+// Architecture: docs/design/2026-05-21-credential-capture-engine.md
+// ────────────────────────────────────────────────────────────────────────
+
+/// A single capture recipe describing *how* Golish opens a webview,
+/// detects login success, and extracts credentials into the schema's
+/// declared fields.
+///
+/// Attached as [`IntegrationGroup::capture`]. When `None`, the
+/// frontend does not render the ⚡ button and the user fills the form
+/// manually (unchanged from pre-capture behavior).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CaptureRecipe {
+    /// HTTPS URL to navigate to in the capture webview. Must parse as
+    /// `http://` or `https://` (validated server-side at schema load,
+    /// see `resolver::validate_capture`).
+    pub login_url: String,
+
+    /// Regex applied to every navigation target URL. On match the
+    /// engine triggers rule extraction. When `None`, extraction only
+    /// runs when the user clicks the manual "complete" button.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success_url_pattern: Option<String>,
+
+    /// Optional URL to navigate to *after* `success_url_pattern`
+    /// matches but *before* running rules. Useful for sites that
+    /// only show the API key on a settings page distinct from the
+    /// login-success landing page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visit_url: Option<String>,
+
+    /// Short Markdown / plain text shown in the confirm dialog. The
+    /// frontend may fall back to the i18n key
+    /// `integrations.capture.<tool>.<group>.hint` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+
+    /// Hard timeout. Default 300 (5 min), max 900 (15 min). Values
+    /// outside `[30, 900]` are clamped engine-side at session creation.
+    #[serde(default = "default_capture_timeout")]
+    pub timeout_secs: u32,
+
+    /// Ordered list of extraction rules. Each rule writes into one
+    /// `target_field` declared in the parent group's [`Field::key`].
+    /// Order matters: a `PageContent` rule with `wait_ms` must come
+    /// before any rule that depends on its DOM state.
+    pub rules: Vec<CaptureRule>,
+}
+
+fn default_capture_timeout() -> u32 {
+    300
+}
+
+/// One extraction action.
+///
+/// All variants reference a `target_field` that **must** match a
+/// [`Field::key`] in the parent group (cross-validated at
+/// schema-load time by `resolver::validate_capture`).
+///
+/// P1 MVP supports only [`CaptureRule::Cookie`]. The remaining
+/// variants are accepted by the schema parser but the engine
+/// returns an `IntegrationError::CaptureRuleFailed` with reason
+/// "rule type not yet implemented in P1 MVP" when it encounters
+/// them (P2 will fill these in).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CaptureRule {
+    /// Pull a single cookie from the webview's cookie store.
+    Cookie {
+        /// Cookie domain (with or without leading dot, e.g.
+        /// `.aiqicha.baidu.com` or `aiqicha.baidu.com`).
+        domain: String,
+        /// Cookie name (exact match, case-sensitive).
+        name: String,
+        /// [`Field::key`] to write into.
+        target_field: String,
+        /// When `true` and the cookie is missing, the whole capture
+        /// is marked `Failed`; otherwise it's marked `Partial`.
+        #[serde(default = "default_true_capture")]
+        required: bool,
+    },
+
+    /// Pull multiple cookies, format each via `fmt`, then join with
+    /// `sep`. Used by sites that expect a manually-joined
+    /// `name1=v1; name2=v2` cookie header (e.g. ENScan TYC).
+    CookieJoined {
+        domain: String,
+        names: Vec<String>,
+        #[serde(default = "default_cookie_sep")]
+        sep: String,
+        #[serde(default = "default_cookie_fmt")]
+        fmt: String,
+        target_field: String,
+        #[serde(default = "default_true_capture")]
+        required: bool,
+    },
+
+    /// Read `localStorage[key]` via `WebviewWindow::eval_with_callback`.
+    LocalStorage {
+        key: String,
+        target_field: String,
+        #[serde(default = "default_true_capture")]
+        required: bool,
+    },
+
+    /// Read `sessionStorage[key]` via `WebviewWindow::eval_with_callback`.
+    SessionStorage {
+        key: String,
+        target_field: String,
+        #[serde(default = "default_true_capture")]
+        required: bool,
+    },
+
+    /// Read `document.querySelector(selector).textContent` (or the
+    /// `attribute` value when set).
+    PageContent {
+        selector: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attribute: Option<String>,
+        #[serde(default = "default_wait_ms")]
+        wait_ms: u32,
+        target_field: String,
+        #[serde(default = "default_true_capture")]
+        required: bool,
+    },
+
+    /// Read the named query parameter from the current page URL.
+    UrlQuery {
+        name: String,
+        target_field: String,
+        #[serde(default = "default_true_capture")]
+        required: bool,
+    },
+}
+
+fn default_true_capture() -> bool {
+    true
+}
+
+fn default_cookie_sep() -> String {
+    "; ".to_string()
+}
+
+fn default_cookie_fmt() -> String {
+    "{name}={value}".to_string()
+}
+
+fn default_wait_ms() -> u32 {
+    3000
+}
+
+impl CaptureRule {
+    /// Returns the `target_field` this rule writes into.
+    pub fn target_field(&self) -> &str {
+        match self {
+            Self::Cookie { target_field, .. }
+            | Self::CookieJoined { target_field, .. }
+            | Self::LocalStorage { target_field, .. }
+            | Self::SessionStorage { target_field, .. }
+            | Self::PageContent { target_field, .. }
+            | Self::UrlQuery { target_field, .. } => target_field,
+        }
+    }
+
+    /// Whether this rule's failure is fatal to the capture session.
+    pub fn required(&self) -> bool {
+        match self {
+            Self::Cookie { required, .. }
+            | Self::CookieJoined { required, .. }
+            | Self::LocalStorage { required, .. }
+            | Self::SessionStorage { required, .. }
+            | Self::PageContent { required, .. }
+            | Self::UrlQuery { required, .. } => *required,
+        }
+    }
+
+    /// Short identifier for logging / error reporting (e.g.
+    /// `"cookie"` / `"page_content"`).
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Cookie { .. } => "cookie",
+            Self::CookieJoined { .. } => "cookie_joined",
+            Self::LocalStorage { .. } => "local_storage",
+            Self::SessionStorage { .. } => "session_storage",
+            Self::PageContent { .. } => "page_content",
+            Self::UrlQuery { .. } => "url_query",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +566,7 @@ mod tests {
                     pattern: None,
                 }],
                 test: Some(TestKind::Builtin),
+                capture: None,
             }],
             help_url: None,
         };
@@ -477,5 +678,174 @@ mod tests {
         assert!(!FieldType::Text.is_secret());
         assert!(!FieldType::Url.is_secret());
         assert!(!FieldType::Boolean.is_secret());
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // CaptureRecipe / CaptureRule tests (Phase 1 T1.1)
+    // ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn capture_recipe_round_trip_cookie_rule() {
+        let raw = r#"{
+            "login_url": "https://aiqicha.baidu.com",
+            "success_url_pattern": "aiqicha\\.baidu\\.com/(home|company)",
+            "timeout_secs": 300,
+            "rules": [
+                { "type": "cookie", "domain": ".aiqicha.baidu.com",
+                  "name": "BDUSS", "target_field": "cookies.aqc" }
+            ]
+        }"#;
+        let r: CaptureRecipe = serde_json::from_str(raw).unwrap();
+        assert_eq!(r.login_url, "https://aiqicha.baidu.com");
+        assert_eq!(r.timeout_secs, 300);
+        assert_eq!(r.rules.len(), 1);
+        match &r.rules[0] {
+            CaptureRule::Cookie {
+                domain,
+                name,
+                target_field,
+                required,
+            } => {
+                assert_eq!(domain, ".aiqicha.baidu.com");
+                assert_eq!(name, "BDUSS");
+                assert_eq!(target_field, "cookies.aqc");
+                assert!(*required);
+            }
+            other => panic!("expected Cookie, got {other:?}"),
+        }
+        let back: CaptureRecipe =
+            serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(r, back);
+    }
+
+    #[test]
+    fn capture_recipe_defaults() {
+        // Need r##"..."## because the JSON contains `#api-key` which
+        // would otherwise close the r#"..."# delimiter at the `"#`.
+        let raw = r##"{
+            "login_url": "https://fofa.info",
+            "rules": [
+                { "type": "page_content", "selector": "#api-key",
+                  "target_field": "api_key" }
+            ]
+        }"##;
+        let r: CaptureRecipe = serde_json::from_str(raw).unwrap();
+        assert_eq!(r.timeout_secs, 300, "default timeout_secs is 300");
+        match &r.rules[0] {
+            CaptureRule::PageContent {
+                wait_ms, required, ..
+            } => {
+                assert_eq!(*wait_ms, 3000, "default wait_ms is 3000");
+                assert!(*required, "default required is true");
+            }
+            other => panic!("expected PageContent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capture_rule_helper_methods() {
+        let cookie = CaptureRule::Cookie {
+            domain: ".x.com".into(),
+            name: "Y".into(),
+            target_field: "f.a".into(),
+            required: true,
+        };
+        assert_eq!(cookie.target_field(), "f.a");
+        assert!(cookie.required());
+        assert_eq!(cookie.kind_name(), "cookie");
+
+        let cookie_joined = CaptureRule::CookieJoined {
+            domain: ".x.com".into(),
+            names: vec!["a".into(), "b".into()],
+            sep: "; ".into(),
+            fmt: "{name}={value}".into(),
+            target_field: "f.b".into(),
+            required: false,
+        };
+        assert_eq!(cookie_joined.target_field(), "f.b");
+        assert!(!cookie_joined.required());
+        assert_eq!(cookie_joined.kind_name(), "cookie_joined");
+
+        let ls = CaptureRule::LocalStorage {
+            key: "k".into(),
+            target_field: "f.c".into(),
+            required: true,
+        };
+        assert_eq!(ls.kind_name(), "local_storage");
+
+        let ss = CaptureRule::SessionStorage {
+            key: "k".into(),
+            target_field: "f.d".into(),
+            required: true,
+        };
+        assert_eq!(ss.kind_name(), "session_storage");
+
+        let pc = CaptureRule::PageContent {
+            selector: "#x".into(),
+            attribute: Some("data-token".into()),
+            wait_ms: 1000,
+            target_field: "f.e".into(),
+            required: true,
+        };
+        assert_eq!(pc.kind_name(), "page_content");
+
+        let uq = CaptureRule::UrlQuery {
+            name: "code".into(),
+            target_field: "f.f".into(),
+            required: true,
+        };
+        assert_eq!(uq.kind_name(), "url_query");
+    }
+
+    #[test]
+    fn integration_group_capture_defaults_to_none() {
+        let raw = r#"{
+            "id": "default",
+            "name": "API Key",
+            "fields": [
+                { "key": "api_key", "label": "API Key", "type": "secret_text" }
+            ]
+        }"#;
+        let g: IntegrationGroup = serde_json::from_str(raw).unwrap();
+        assert!(g.capture.is_none(), "capture defaults to None when absent");
+        assert!(g.test.is_none(), "(sanity) test also still optional");
+    }
+
+    #[test]
+    fn integration_group_with_capture_round_trip() {
+        let g = IntegrationGroup {
+            id: "aqc".into(),
+            name: "爱企查".into(),
+            description: None,
+            icon: None,
+            help_url: None,
+            fields: vec![Field {
+                key: "cookies.aqc".into(),
+                label: "Cookie".into(),
+                field_type: FieldType::SecretTextarea,
+                placeholder: None,
+                required: true,
+                rows: None,
+                options: vec![],
+                pattern: None,
+            }],
+            test: None,
+            capture: Some(CaptureRecipe {
+                login_url: "https://aiqicha.baidu.com".into(),
+                success_url_pattern: Some(r"aiqicha\.baidu\.com".into()),
+                visit_url: None,
+                instructions: None,
+                timeout_secs: 300,
+                rules: vec![CaptureRule::Cookie {
+                    domain: ".aiqicha.baidu.com".into(),
+                    name: "BDUSS".into(),
+                    target_field: "cookies.aqc".into(),
+                    required: true,
+                }],
+            }),
+        };
+        let json = serde_json::to_string(&g).unwrap();
+        let back: IntegrationGroup = serde_json::from_str(&json).unwrap();
+        assert_eq!(g, back);
     }
 }
