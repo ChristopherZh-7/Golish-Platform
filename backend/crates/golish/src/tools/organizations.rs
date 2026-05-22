@@ -22,6 +22,7 @@ use crate::state::DbState;
 use golish_db::repo::organizations::ProfilePatch;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -61,6 +62,40 @@ pub struct Organization {
     pub updated_at: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum OrganizationCandidateKind {
+    Organization,
+    Target,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrganizationCandidate {
+    #[serde(default)]
+    pub id: String,
+    pub kind: OrganizationCandidateKind,
+    pub label: String,
+    pub value: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub confidence: f64,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub evidence: Value,
+    #[serde(default)]
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OrganizationCandidates {
+    pub organizations: Vec<OrganizationCandidate>,
+    pub targets: Vec<OrganizationCandidate>,
+}
+
 fn to_org(o: golish_db::models::Organization) -> Organization {
     Organization {
         id: o.id.to_string(),
@@ -92,6 +127,76 @@ fn to_org(o: golish_db::models::Organization) -> Organization {
         created_at: o.created_at.timestamp() as u64,
         updated_at: o.updated_at.timestamp() as u64,
     }
+}
+
+fn now_millis() -> u64 {
+    chrono::Utc::now().timestamp_millis().max(0) as u64
+}
+
+fn normalize_candidate(mut candidate: OrganizationCandidate) -> OrganizationCandidate {
+    if candidate.id.trim().is_empty() {
+        candidate.id = format!(
+            "{}:{}:{}",
+            match candidate.kind {
+                OrganizationCandidateKind::Organization => "org",
+                OrganizationCandidateKind::Target => "target",
+            },
+            candidate.source.trim(),
+            candidate.value.trim()
+        );
+    }
+    if candidate.status.trim().is_empty() {
+        candidate.status = "needs_review".to_string();
+    }
+    if candidate.source.trim().is_empty() {
+        candidate.source = "manual".to_string();
+    }
+    if candidate.created_at == 0 {
+        candidate.created_at = now_millis();
+    }
+    candidate
+}
+
+fn read_candidates_from_intel(intel: &Value) -> OrganizationCandidates {
+    let candidates = intel
+        .get("engagement")
+        .and_then(|v| v.get("candidates"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    serde_json::from_value(candidates).unwrap_or_default()
+}
+
+fn upsert_candidates_into_intel(
+    mut intel: Value,
+    incoming: Vec<OrganizationCandidate>,
+) -> Result<Value, GolishError> {
+    if !intel.is_object() {
+        intel = json!({});
+    }
+    let mut store = read_candidates_from_intel(&intel);
+    for candidate in incoming.into_iter().map(normalize_candidate) {
+        let bucket = match candidate.kind {
+            OrganizationCandidateKind::Organization => &mut store.organizations,
+            OrganizationCandidateKind::Target => &mut store.targets,
+        };
+        if let Some(existing) = bucket.iter_mut().find(|item| item.id == candidate.id) {
+            *existing = candidate;
+        } else {
+            bucket.push(candidate);
+        }
+    }
+
+    let root = intel.as_object_mut().ok_or_else(|| {
+        GolishError::Internal("organization intel must be a JSON object".to_string())
+    })?;
+    let engagement = root.entry("engagement").or_insert_with(|| json!({}));
+    if !engagement.is_object() {
+        *engagement = json!({});
+    }
+    if let Some(map) = engagement.as_object_mut() {
+        map.insert("candidates".to_string(), serde_json::to_value(store)?);
+    }
+    Ok(intel)
 }
 
 #[tauri::command]
@@ -448,6 +553,41 @@ pub async fn organization_update_profile(
     Ok(to_org(row))
 }
 
+#[tauri::command]
+pub async fn organization_candidates_list(
+    state: tauri::State<'_, DbState>,
+    id: String,
+) -> Result<OrganizationCandidates, GolishError> {
+    let pool = state.pool_ready().await?;
+    let uid: Uuid = id.parse()?;
+    let row = golish_db::repo::organizations::get_one(pool, uid)
+        .await?
+        .ok_or_else(|| GolishError::NotFound(format!("organization {id}")))?;
+    Ok(read_candidates_from_intel(&row.intel))
+}
+
+#[tauri::command]
+pub async fn organization_candidates_upsert(
+    state: tauri::State<'_, DbState>,
+    id: String,
+    candidates: Vec<OrganizationCandidate>,
+) -> Result<OrganizationCandidates, GolishError> {
+    let pool = state.pool_ready().await?;
+    let uid: Uuid = id.parse()?;
+    let row = golish_db::repo::organizations::get_one(pool, uid)
+        .await?
+        .ok_or_else(|| GolishError::NotFound(format!("organization {id}")))?;
+    let intel = upsert_candidates_into_intel(row.intel, candidates)?;
+    let patch = ProfilePatch {
+        intel: Some(intel.clone()),
+        ..Default::default()
+    };
+    golish_db::repo::organizations::update_profile(pool, uid, &patch)
+        .await?
+        .ok_or_else(|| GolishError::NotFound(format!("organization {id}")))?;
+    Ok(read_candidates_from_intel(&intel))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,5 +671,67 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_profile_patch(&p).is_empty());
+    }
+
+    #[test]
+    fn candidate_upsert_dedupes_by_id_and_preserves_engagement() {
+        let intel = serde_json::json!({
+            "engagement": {
+                "mode": "discover_assets",
+                "candidates": {
+                    "targets": [
+                        {
+                            "id": "target:seed:old.example.com",
+                            "kind": "target",
+                            "label": "old",
+                            "value": "old.example.com",
+                            "source": "seed",
+                            "confidence": 0.5,
+                            "status": "needs_review",
+                            "evidence": {},
+                            "createdAt": 1
+                        }
+                    ]
+                }
+            }
+        });
+        let updated = upsert_candidates_into_intel(
+            intel,
+            vec![
+                OrganizationCandidate {
+                    id: "target:seed:old.example.com".into(),
+                    kind: OrganizationCandidateKind::Target,
+                    label: "old updated".into(),
+                    value: "old.example.com".into(),
+                    source: "seed".into(),
+                    confidence: 0.9,
+                    status: "approved".into(),
+                    evidence: serde_json::json!({"reason": "customer confirmed"}),
+                    created_at: 2,
+                },
+                OrganizationCandidate {
+                    id: "".into(),
+                    kind: OrganizationCandidateKind::Organization,
+                    label: "Subsidiary A".into(),
+                    value: "Subsidiary A".into(),
+                    source: "enscan".into(),
+                    confidence: 0.8,
+                    status: "".into(),
+                    evidence: serde_json::json!({"ownership": 51}),
+                    created_at: 0,
+                },
+            ],
+        )
+        .expect("candidate upsert should succeed");
+        let store = read_candidates_from_intel(&updated);
+        assert_eq!(
+            updated["engagement"]["mode"],
+            serde_json::Value::String("discover_assets".into())
+        );
+        assert_eq!(store.targets.len(), 1);
+        assert_eq!(store.targets[0].label, "old updated");
+        assert_eq!(store.organizations.len(), 1);
+        assert_eq!(store.organizations[0].status, "needs_review");
+        assert!(store.organizations[0].id.starts_with("org:enscan:"));
     }
 }

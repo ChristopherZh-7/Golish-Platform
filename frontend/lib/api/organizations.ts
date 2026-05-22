@@ -107,6 +107,25 @@ export interface OrganizationProfilePatch {
   contacts?: unknown[];
 }
 
+export type OrganizationCandidateKind = "organization" | "target";
+
+export interface OrganizationCandidate {
+  id?: string;
+  kind: OrganizationCandidateKind;
+  label: string;
+  value: string;
+  source?: string;
+  confidence?: number;
+  status?: string;
+  evidence?: unknown;
+  createdAt?: number;
+}
+
+export interface OrganizationCandidates {
+  organizations: OrganizationCandidate[];
+  targets: OrganizationCandidate[];
+}
+
 export async function listOrganizations(projectPath: string | null): Promise<Organization[]> {
   return invoke<Organization[]>("organization_list", { projectPath });
 }
@@ -145,6 +164,17 @@ export async function updateOrganizationProfile(
   patch: OrganizationProfilePatch
 ): Promise<Organization> {
   return invoke<Organization>("organization_update_profile", { id, patch });
+}
+
+export async function listOrganizationCandidates(id: string): Promise<OrganizationCandidates> {
+  return invoke<OrganizationCandidates>("organization_candidates_list", { id });
+}
+
+export async function upsertOrganizationCandidates(
+  id: string,
+  candidates: OrganizationCandidate[]
+): Promise<OrganizationCandidates> {
+  return invoke<OrganizationCandidates>("organization_candidates_upsert", { id, candidates });
 }
 
 export async function moveOrganization(params: {

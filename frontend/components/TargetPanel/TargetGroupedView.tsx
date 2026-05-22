@@ -53,15 +53,15 @@ import type { Organization } from "@/lib/api/organizations";
 import type { Target, TargetStatus } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
 import { cn } from "@/lib/utils";
-import { OrgProfileDrawer } from "./OrgProfileDrawer";
+import { type EngagementMode, NewEngagementDialog } from "./NewEngagementDialog";
 import { TargetDetailView } from "./TargetDetail";
 
 const TYPE_ICONS: Record<string, React.ReactNode> = {
-  domain: <Globe className="w-3.5 h-3.5 text-blue-400" />,
-  ip: <Hash className="w-3.5 h-3.5 text-green-400" />,
-  cidr: <Network className="w-3.5 h-3.5 text-yellow-400" />,
-  url: <Globe className="w-3.5 h-3.5 text-purple-400" />,
-  wildcard: <Crosshair className="w-3.5 h-3.5 text-orange-400" />,
+  domain: <Globe className="w-3 h-3 text-blue-400" />,
+  ip: <Hash className="w-3 h-3 text-green-400" />,
+  cidr: <Network className="w-3 h-3 text-yellow-400" />,
+  url: <Globe className="w-3 h-3 text-purple-400" />,
+  wildcard: <Crosshair className="w-3 h-3 text-orange-400" />,
 };
 
 const STATUS_CONFIG: Record<TargetStatus, { label: string; color: string; bg: string }> = {
@@ -74,6 +74,241 @@ const STATUS_CONFIG: Record<TargetStatus, { label: string; color: string; bg: st
 
 const UNASSIGNED_KEY = "__unassigned__";
 const ROOT_PARENT_KEY = "__root__";
+
+const ENGAGEMENT_BADGES = {
+  customer_targets: {
+    label: "customer scope",
+    className: "bg-green-500/10 text-green-400",
+  },
+  discover_assets: {
+    label: "discovery",
+    className: "bg-blue-500/10 text-blue-400",
+  },
+  profile_only: {
+    label: "profile",
+    className: "bg-muted/40 text-muted-foreground",
+  },
+} as const;
+
+type OrgActionKind =
+  | "import_targets"
+  | "hydrate_intel"
+  | "choose_next_step"
+  | "review_scope"
+  | "add_child";
+
+interface OrgActionItem {
+  kind: OrgActionKind;
+  label: string;
+}
+
+export function getOrgActionModel(mode: EngagementMode | null): {
+  primary: OrgActionItem;
+  secondary?: OrgActionItem;
+} {
+  if (mode === "customer_targets") {
+    return {
+      primary: { kind: "import_targets", label: "Import targets" },
+      secondary: { kind: "review_scope", label: "Review scope" },
+    };
+  }
+  if (mode === "discover_assets") {
+    return {
+      primary: { kind: "hydrate_intel", label: "Hydrate intel" },
+      secondary: { kind: "add_child", label: "Add child org" },
+    };
+  }
+  return {
+    primary: { kind: "choose_next_step", label: "Choose next step" },
+    secondary: { kind: "import_targets", label: "Import targets" },
+  };
+}
+
+export function getWorkspaceModel(mode: EngagementMode | null): {
+  title: string;
+  eyebrow: string;
+  description: string;
+} {
+  if (mode === "customer_targets") {
+    return {
+      title: "Targets & Testing",
+      eyebrow: "Customer provided scope",
+      description: "Review the customer-provided target list, confirm scope, then start recon.",
+    };
+  }
+  if (mode === "discover_assets") {
+    return {
+      title: "Scope & Intel",
+      eyebrow: "Asset discovery workspace",
+      description:
+        "Hydrate company intel, review discovered candidates, then promote approved assets.",
+    };
+  }
+  return {
+    title: "Overview",
+    eyebrow: "Organization profile",
+    description:
+      "This org is a customer record. Choose whether to import targets or discover assets.",
+  };
+}
+
+type EngagementRecord = Record<string, unknown>;
+
+export function getEngagementDetails(
+  engagement: EngagementRecord | null | undefined
+): Array<[string, string]> {
+  if (!engagement) return [];
+  const mode = engagement.mode;
+  if (mode === "discover_assets") {
+    const details: Array<[string, string]> = [];
+    const ownership = String(engagement.min_ownership_percent ?? "").trim();
+    if (ownership) details.push(["Min ownership", `${ownership}%`]);
+    const depth = String(engagement.depth ?? "").trim();
+    if (depth) details.push(["Depth", depth]);
+    if (typeof engagement.include_branches === "boolean") {
+      details.push(["Branches", engagement.include_branches ? "included" : "excluded"]);
+    }
+    if (typeof engagement.create_candidates === "boolean") {
+      details.push(["Candidates", engagement.create_candidates ? "review first" : "disabled"]);
+    }
+    return details;
+  }
+  if (mode === "customer_targets") {
+    const details: Array<[string, string]> = [];
+    const source = String(engagement.source ?? "").trim();
+    if (source) details.push(["Source", source]);
+    if (typeof engagement.target_count === "number") {
+      details.push(["Imported targets", String(engagement.target_count)]);
+    }
+    return details;
+  }
+  return [];
+}
+
+export function getCandidateCounts(engagement: EngagementRecord | null | undefined): {
+  organizations: number;
+  targets: number;
+} {
+  const candidates = engagement?.candidates;
+  if (!candidates || typeof candidates !== "object" || Array.isArray(candidates)) {
+    return { organizations: 0, targets: 0 };
+  }
+  const record = candidates as { organizations?: unknown; targets?: unknown };
+  return {
+    organizations: Array.isArray(record.organizations) ? record.organizations.length : 0,
+    targets: Array.isArray(record.targets) ? record.targets.length : 0,
+  };
+}
+
+type WorkspaceTab = "overview" | "fields" | "scope" | "targets" | "candidates" | "activity";
+
+interface OrgFieldInput {
+  aliases?: unknown[];
+  industry?: string;
+  tier?: string;
+  credit_code?: string;
+  domains?: unknown[];
+  ip_ranges?: unknown[];
+  asns?: unknown[];
+  email_domains?: unknown[];
+  scope_rules?: unknown;
+  intel?: Record<string, unknown>;
+  notes?: string;
+  certificates?: unknown[];
+  subsidiaries?: unknown[];
+  business_systems?: unknown[];
+  cloud_assets?: unknown[];
+  github_orgs?: unknown[];
+  social_accounts?: unknown[];
+  historical_vulns?: unknown[];
+  contacts?: unknown[];
+}
+
+interface OrgFieldView {
+  key: string;
+  label: string;
+  value: string;
+  filled: boolean;
+}
+
+interface OrgFieldGroup {
+  title: string;
+  fields: OrgFieldView[];
+}
+
+function displayAtom(value: unknown): string {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    return String(record.domain ?? record.name ?? record.value ?? record.id ?? "").trim();
+  }
+  return String(value ?? "").trim();
+}
+
+export function formatFieldValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "—";
+    const samples = value.map(displayAtom).filter(Boolean);
+    if (samples.length === 0) return `${value.length} item(s)`;
+    const shown = samples.slice(0, 3).join(", ");
+    const rest = samples.length - 3;
+    return rest > 0 ? `${shown} +${rest}` : shown;
+  }
+  if (value && typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>).length > 0 ? "configured" : "—";
+  }
+  const text = String(value ?? "").trim();
+  return text || "—";
+}
+
+function field(key: string, label: string, value: unknown): OrgFieldView {
+  const formatted = formatFieldValue(value);
+  return { key, label, value: formatted, filled: formatted !== "—" };
+}
+
+export function getOrgFieldGroups(org: OrgFieldInput): OrgFieldGroup[] {
+  return [
+    {
+      title: "Basic",
+      fields: [
+        field("aliases", "Aliases", org.aliases),
+        field("industry", "Industry", org.industry),
+        field("tier", "Priority", org.tier),
+        field("credit_code", "Unified social credit code", org.credit_code),
+      ],
+    },
+    {
+      title: "Domains",
+      fields: [field("domains", "Domains", org.domains)],
+    },
+    {
+      title: "Network",
+      fields: [
+        field("ip_ranges", "IP ranges", org.ip_ranges),
+        field("asns", "ASNs", org.asns),
+        field("email_domains", "Email domains", org.email_domains),
+      ],
+    },
+    {
+      title: "Scope",
+      fields: [field("scope_rules", "Scope rules", org.scope_rules)],
+    },
+    {
+      title: "Other",
+      fields: [
+        field("intel", "Intel records", org.intel),
+        field("notes", "Notes", org.notes),
+        field("certificates", "Certificates", org.certificates),
+        field("subsidiaries", "Subsidiaries", org.subsidiaries),
+        field("business_systems", "Business systems", org.business_systems),
+        field("cloud_assets", "Cloud assets", org.cloud_assets),
+        field("github_orgs", "GitHub orgs", org.github_orgs),
+        field("social_accounts", "Social accounts", org.social_accounts),
+        field("historical_vulns", "Historical vulns", org.historical_vulns),
+        field("contacts", "Contacts", org.contacts),
+      ],
+    },
+  ];
+}
 
 interface OrgTreeNode {
   id: string;
@@ -159,6 +394,22 @@ function countAllTargets(node: OrgTreeNode): { total: number; inScope: number } 
   return { total, inScope };
 }
 
+function getEngagementMode(org?: Organization): EngagementMode | null {
+  const engagement = org?.intel?.engagement;
+  if (!engagement || typeof engagement !== "object" || Array.isArray(engagement)) return null;
+  const mode = (engagement as { mode?: unknown }).mode;
+  if (mode === "customer_targets" || mode === "discover_assets" || mode === "profile_only") {
+    return mode;
+  }
+  return null;
+}
+
+function getEngagementRecord(org?: Organization): EngagementRecord | null {
+  const engagement = org?.intel?.engagement;
+  if (!engagement || typeof engagement !== "object" || Array.isArray(engagement)) return null;
+  return engagement as EngagementRecord;
+}
+
 interface AddTargetForm {
   name: string;
   value: string;
@@ -175,6 +426,12 @@ interface TargetGroupedViewProps {
   targets: Target[];
   t: (key: string) => string;
   onAdd: (form: AddTargetForm) => Promise<string | null>;
+  onBatchAdd: (
+    values: string,
+    grp: string,
+    organizationId?: string,
+    source?: string
+  ) => Promise<Target[]>;
   onDelete: (id: string) => Promise<void>;
   onToggleScope: (target: Target) => Promise<void>;
   onUpdateNotes: (id: string, notes: string) => void;
@@ -185,6 +442,7 @@ export function TargetGroupedView({
   targets,
   t,
   onAdd,
+  onBatchAdd,
   onDelete,
   onToggleScope,
   onUpdateNotes,
@@ -195,12 +453,10 @@ export function TargetGroupedView({
   const [orgError, setOrgError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [editingTargetId, setEditingTargetId] = useState<string | null>(null);
-
-  const [profileOrgId, setProfileOrgId] = useState<string | null>(null);
-  const profileOrgName = useMemo(
-    () => orgs.find((o) => o.id === profileOrgId)?.name,
-    [orgs, profileOrgId]
-  );
+  const [newEngagementOpen, setNewEngagementOpen] = useState(false);
+  const [newEngagementMode, setNewEngagementMode] = useState<EngagementMode>("customer_targets");
+  const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("overview");
 
   // Inline editor / creator state — only one can be open at a time. `ROOT_PARENT_KEY`
   // is used by `addingChildTo` to mean "creating a new top-level org".
@@ -240,6 +496,26 @@ export function TargetGroupedView({
     () => buildOrgTree(orgs, targets, unassignedLabel),
     [orgs, targets, unassignedLabel]
   );
+  const selectedOrg = useMemo(
+    () => orgs.find((o) => o.id === selectedOrgId) ?? orgs[0] ?? null,
+    [orgs, selectedOrgId]
+  );
+  const selectedMode = getEngagementMode(selectedOrg ?? undefined);
+  const selectedTargets = useMemo(
+    () =>
+      selectedOrg ? targets.filter((target) => target.organization_id === selectedOrg.id) : [],
+    [selectedOrg, targets]
+  );
+
+  useEffect(() => {
+    if (!selectedOrgId && orgs.length > 0) {
+      setSelectedOrgId(orgs[0].id);
+      return;
+    }
+    if (selectedOrgId && !orgs.some((org) => org.id === selectedOrgId)) {
+      setSelectedOrgId(orgs[0]?.id ?? null);
+    }
+  }, [orgs, selectedOrgId]);
 
   const toggleCollapse = useCallback((id: string) => {
     setCollapsed((prev) => {
@@ -274,10 +550,340 @@ export function TargetGroupedView({
     [closeAllEditors]
   );
 
+  const handleCreateEngagementOrg = useCallback(
+    async (params: { name: string; owner: string; description: string }) =>
+      orgsApi.createOrganization({
+        projectPath: getProjectPath(),
+        name: params.name,
+        owner: params.owner || undefined,
+        description: params.description || undefined,
+      }),
+    []
+  );
+
+  const handleUpdateEngagementProfile = useCallback(
+    (id: string, patch: Parameters<typeof orgsApi.updateOrganizationProfile>[1]) =>
+      orgsApi.updateOrganizationProfile(id, patch),
+    []
+  );
+
+  const renderOrgActionButton = (action: OrgActionItem, node: OrgTreeNode) => {
+    const runAction = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      switch (action.kind) {
+        case "import_targets":
+          handleStartAddTarget(node.id);
+          break;
+        case "hydrate_intel":
+          setSelectedOrgId(node.id);
+          setWorkspaceTab("activity");
+          break;
+        case "choose_next_step":
+          setSelectedOrgId(node.id);
+          setWorkspaceTab("overview");
+          break;
+        case "review_scope":
+          setSelectedOrgId(node.id);
+          setWorkspaceTab("candidates");
+          break;
+        case "add_child":
+          handleStartAddChild(node.id);
+          break;
+      }
+    };
+
+    const icon =
+      action.kind === "hydrate_intel" ? (
+        <Network className="w-3 h-3" />
+      ) : action.kind === "add_child" ? (
+        <Building2 className="w-3 h-3" />
+      ) : action.kind === "review_scope" ? (
+        <Shield className="w-3 h-3" />
+      ) : action.kind === "choose_next_step" ? (
+        <Info className="w-3 h-3" />
+      ) : (
+        <Crosshair className="w-3 h-3" />
+      );
+
+    return (
+      <button
+        key={action.kind}
+        type="button"
+        className={cn(
+          "p-1 rounded hover:bg-muted/50 text-muted-foreground transition-colors",
+          action.kind === "hydrate_intel" && "hover:text-blue-400",
+          action.kind === "import_targets" && "hover:text-green-400",
+          action.kind === "review_scope" && "hover:text-amber-400",
+          action.kind === "choose_next_step" && "hover:text-accent",
+          action.kind === "add_child" && "hover:text-accent"
+        )}
+        onClick={runAction}
+        title={action.label}
+      >
+        {icon}
+      </button>
+    );
+  };
+
+  const renderWorkspacePanel = () => {
+    if (!selectedOrg) {
+      return (
+        <div className="h-full flex items-center justify-center text-center text-muted-foreground px-8">
+          <div>
+            <Building2 className="w-8 h-8 mx-auto mb-2 opacity-30" />
+            <p className="text-xs">Select or create an organization to start.</p>
+          </div>
+        </div>
+      );
+    }
+
+    const workspace = getWorkspaceModel(selectedMode);
+    const engagementRecord = getEngagementRecord(selectedOrg);
+    const engagementDetails = getEngagementDetails(engagementRecord);
+    const candidateCounts = getCandidateCounts(engagementRecord);
+    const inScopeCount = selectedTargets.filter((target) => target.scope === "in").length;
+    const outScopeCount = selectedTargets.filter((target) => target.scope === "out").length;
+    const badge = selectedMode ? ENGAGEMENT_BADGES[selectedMode] : null;
+    const fieldGroups = getOrgFieldGroups(selectedOrg);
+
+    return (
+      <div className="h-full overflow-y-auto p-3 space-y-3">
+        <section className="border-b border-border/30 pb-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[9px] uppercase tracking-wide text-muted-foreground/55">
+                {workspace.eyebrow}
+              </p>
+              <div className="mt-1 flex items-center gap-1.5 min-w-0">
+                <Building2 className="w-3 h-3 text-accent/80 flex-shrink-0" />
+                <h3 className="text-[12px] font-medium text-foreground truncate">
+                  {selectedOrg.name}
+                </h3>
+                {badge && (
+                  <span className={cn("text-[9px] px-1.5 py-0.5 rounded", badge.className)}>
+                    {badge.label}
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-[10px] text-muted-foreground/70 leading-relaxed">
+                {workspace.description}
+              </p>
+              {engagementDetails.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {engagementDetails.map(([label, value]) => (
+                    <span
+                      key={`${label}:${value}`}
+                      className="rounded border border-border/35 bg-background/40 px-1.5 py-0.5 text-[9px] text-muted-foreground"
+                    >
+                      {label}: <span className="text-foreground/80">{value}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span className="rounded bg-muted/20 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              Targets <span className="text-foreground">{selectedTargets.length}</span>
+            </span>
+            <span className="rounded bg-green-500/10 px-1.5 py-0.5 text-[10px] text-green-400">
+              In <span className="text-green-300">{inScopeCount}</span>
+            </span>
+            <span className="rounded bg-muted/20 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              Out <span className="text-foreground/75">{outScopeCount}</span>
+            </span>
+          </div>
+        </section>
+
+        <nav className="flex items-center gap-1 border-b border-border/30 pb-2">
+          {[
+            ["overview", "Overview"],
+            ["fields", "Fields"],
+            ["scope", "Scope"],
+            ["targets", "Targets"],
+            ["candidates", "Candidates"],
+            ["activity", "Activity"],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={cn(
+                "px-2 py-1 rounded text-[10px] transition-colors",
+                workspaceTab === id
+                  ? "bg-accent/15 text-accent"
+                  : "text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+              )}
+              onClick={() => setWorkspaceTab(id as WorkspaceTab)}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+
+        {workspaceTab === "activity" && (
+          <section className="rounded border border-border/35 bg-muted/5 p-3">
+            <h4 className="text-xs font-medium text-foreground">Activity</h4>
+            <p className="mt-1 text-[10px] text-muted-foreground/70">
+              Import, hydrate, candidate review, and recon runs will appear here.
+            </p>
+            <div className="mt-3 rounded border border-dashed border-border/35 p-3 text-center">
+              <p className="text-[11px] text-muted-foreground">No activity yet.</p>
+            </div>
+          </section>
+        )}
+
+        {workspaceTab === "fields" && (
+          <section className="rounded border border-border/35 bg-muted/5 p-3">
+            <h4 className="text-xs font-medium text-foreground">Intel fields</h4>
+            <p className="mt-1 text-[10px] text-muted-foreground/70">
+              Field coverage by group. Editing will be a separate compact mode.
+            </p>
+            <div className="mt-3 space-y-2">
+              {fieldGroups.map((group) => (
+                <div
+                  key={group.title}
+                  className="rounded border border-border/30 bg-background/35 p-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="text-[11px] font-medium text-foreground">{group.title}</p>
+                    <span className="text-[10px] text-muted-foreground">
+                      {group.fields.filter((item) => item.filled).length}/{group.fields.length}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 grid grid-cols-2 gap-1">
+                    {group.fields.map((item) => (
+                      <div
+                        key={item.key}
+                        className="flex items-center justify-between gap-2 text-[10px]"
+                      >
+                        <span className="text-muted-foreground truncate">{item.label}</span>
+                        <span
+                          className={cn(
+                            "truncate",
+                            item.filled ? "text-foreground" : "text-muted-foreground/50"
+                          )}
+                        >
+                          {item.value}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {(workspaceTab === "overview" || workspaceTab === "targets") && (
+          <section className="rounded border border-border/35 bg-muted/5 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h4 className="text-xs font-medium text-foreground">{workspace.title}</h4>
+                <p className="text-[10px] text-muted-foreground/70 mt-1">
+                  Mode-aware workspace skeleton. Backend orchestration and coverage panels come
+                  next.
+                </p>
+              </div>
+            </div>
+
+            {selectedTargets.length === 0 ? (
+              <div className="mt-3 rounded border border-dashed border-border/35 p-3 text-center">
+                <Crosshair className="w-5 h-5 mx-auto text-muted-foreground/35 mb-1.5" />
+                <p className="text-[11px] text-muted-foreground">
+                  No targets linked to this organization yet.
+                </p>
+              </div>
+            ) : (
+              <div className="mt-3 space-y-1">
+                {selectedTargets.slice(0, 8).map((target) => (
+                  <button
+                    key={target.id}
+                    type="button"
+                    className="w-full flex items-center gap-2 rounded px-2 py-1 text-left hover:bg-muted/30"
+                    onClick={() => setEditingTargetId(target.id)}
+                  >
+                    {TYPE_ICONS[target.type] || <Globe className="w-3.5 h-3.5" />}
+                    <span className="text-xs font-mono text-foreground truncate flex-1">
+                      {target.value}
+                    </span>
+                    <span
+                      className={cn(
+                        "text-[9px] px-1.5 py-0.5 rounded",
+                        target.scope === "in"
+                          ? "bg-green-500/10 text-green-400"
+                          : "bg-muted/40 text-muted-foreground"
+                      )}
+                    >
+                      {target.scope}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {workspaceTab === "candidates" && (
+          <section
+            className={cn(
+              "rounded border p-3",
+              candidateCounts.organizations + candidateCounts.targets > 0
+                ? "border-amber-500/30 bg-amber-500/5"
+                : "border-border/40 bg-muted/5"
+            )}
+          >
+            <h4 className="text-xs font-medium text-foreground">Discovery candidates</h4>
+            <p className="text-[10px] text-muted-foreground/70 mt-1">
+              Candidate review is the next backend phase. Discovered subsidiaries and assets should
+              land here before they become in-scope targets.
+            </p>
+            <div className="mt-3 grid grid-cols-2 gap-1.5">
+              <div className="rounded border border-dashed border-border/40 p-2.5">
+                <p className="text-[10px] text-muted-foreground/60">Organization candidates</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {candidateCounts.organizations > 0
+                    ? `${candidateCounts.organizations} candidate(s) waiting for review`
+                    : "No candidates yet."}
+                </p>
+              </div>
+              <div className="rounded border border-dashed border-border/40 p-2.5">
+                <p className="text-[10px] text-muted-foreground/60">Target candidates</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {candidateCounts.targets > 0
+                    ? `${candidateCounts.targets} candidate(s) waiting for review`
+                    : "No candidates yet."}
+                </p>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {workspaceTab === "scope" && (
+          <section className="rounded border border-border/35 bg-muted/5 p-3">
+            <h4 className="text-xs font-medium text-foreground">Scope</h4>
+            <p className="mt-1 text-[10px] text-muted-foreground/70">
+              Scope rules and authorization windows will be edited here.
+            </p>
+          </section>
+        )}
+      </div>
+    );
+  };
+
   const handleStartAddTarget = useCallback(
     (orgId: string) => {
       closeAllEditors();
       setAddingTargetTo(orgId);
+    },
+    [closeAllEditors]
+  );
+
+  const openNewEngagement = useCallback(
+    (mode: EngagementMode) => {
+      closeAllEditors();
+      setNewEngagementMode(mode);
+      setNewEngagementOpen(true);
     },
     [closeAllEditors]
   );
@@ -392,14 +998,14 @@ export function TargetGroupedView({
       <div
         key={target.id}
         className={cn(
-          "px-3 py-1.5 hover:bg-muted/30 transition-colors group cursor-pointer rounded",
+          "px-2 py-1 hover:bg-muted/30 transition-colors group cursor-pointer rounded",
           target.scope === "out" && "opacity-50",
           isEditing && "bg-muted/20"
         )}
         onClick={() => setEditingTargetId(isEditing ? null : target.id)}
       >
         <div className="flex items-center gap-2">
-          {TYPE_ICONS[target.type] || <Globe className="w-3.5 h-3.5" />}
+          {TYPE_ICONS[target.type] || <Globe className="w-3 h-3" />}
           <button
             type="button"
             className={cn(
@@ -415,12 +1021,14 @@ export function TargetGroupedView({
             title={target.scope === "in" ? t("targets.inScope") : t("targets.outOfScope")}
           >
             {target.scope === "in" ? (
-              <Shield className="w-3 h-3" />
+              <Shield className="w-2.5 h-2.5" />
             ) : (
-              <ShieldOff className="w-3 h-3" />
+              <ShieldOff className="w-2.5 h-2.5" />
             )}
           </button>
-          <span className="text-xs font-mono text-foreground flex-1 truncate">{target.value}</span>
+          <span className="text-[11px] font-mono text-foreground flex-1 truncate">
+            {target.value}
+          </span>
           {cfg && target.status !== "new" && (
             <span
               className={cn("text-[10px] px-1.5 py-0.5 rounded font-medium", cfg.color, cfg.bg)}
@@ -445,7 +1053,7 @@ export function TargetGroupedView({
               onDelete(target.id);
             }}
           >
-            <Trash2 className="w-3 h-3" />
+            <Trash2 className="w-2.5 h-2.5" />
           </button>
         </div>
         {isEditing && (
@@ -596,6 +1204,10 @@ export function TargetGroupedView({
     const counts = countAllTargets(node);
     const isUnassigned = node.id === UNASSIGNED_KEY;
     const isEditingThis = editingOrgId === node.id;
+    const orgRow = orgs.find((o) => o.id === node.id);
+    const engagementMode = getEngagementMode(orgRow);
+    const badge = engagementMode ? ENGAGEMENT_BADGES[engagementMode] : null;
+    const actionModel = getOrgActionModel(engagementMode);
 
     return (
       <div key={node.id}>
@@ -603,12 +1215,18 @@ export function TargetGroupedView({
           renderOrgEditForm(depth)
         ) : (
           <div
-            className="flex items-center gap-1 px-2 py-1.5 hover:bg-muted/20 transition-colors group rounded"
+            className={cn(
+              "flex items-center gap-1 px-2 py-1 hover:bg-muted/20 transition-colors group rounded",
+              selectedOrgId === node.id && !isUnassigned && "bg-muted/15"
+            )}
             style={{ paddingLeft: `${8 + depth * 16}px` }}
           >
             <button
               type="button"
-              onClick={() => toggleCollapse(node.id)}
+              onClick={() => {
+                if (!isUnassigned) setSelectedOrgId(node.id);
+                toggleCollapse(node.id);
+              }}
               className="flex items-center gap-2 flex-1 text-left min-w-0"
             >
               <ChevronDown
@@ -618,17 +1236,22 @@ export function TargetGroupedView({
                 )}
               />
               {isUnassigned ? (
-                <FolderOpen className="w-3.5 h-3.5 text-muted-foreground/60 flex-shrink-0" />
+                <FolderOpen className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" />
               ) : (
-                <Building2 className="w-3.5 h-3.5 text-accent/70 flex-shrink-0" />
+                <Building2 className="w-3 h-3 text-accent/70 flex-shrink-0" />
               )}
-              <span className="text-xs font-medium text-foreground truncate">{node.name}</span>
+              <span className="text-[11px] font-medium text-foreground truncate">{node.name}</span>
               <span className="text-[10px] text-muted-foreground/60 tabular-nums">
                 {counts.total}
               </span>
               {counts.inScope > 0 && (
-                <span className="text-[9px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-400">
+                <span className="text-[9px] px-1 py-0.5 rounded bg-green-500/10 text-green-400">
                   {counts.inScope} in
+                </span>
+              )}
+              {badge && (
+                <span className={cn("text-[9px] px-1 py-0.5 rounded", badge.className)}>
+                  {badge.label}
                 </span>
               )}
               {!isUnassigned && node.children.length > 0 && (
@@ -639,28 +1262,31 @@ export function TargetGroupedView({
             </button>
 
             <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-              <button
-                type="button"
-                className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-accent"
-                onClick={() => handleStartAddTarget(node.id)}
-                title={t("targets.addTarget")}
-              >
-                <Crosshair className="w-3 h-3" />
-              </button>
+              {isUnassigned ? (
+                <button
+                  type="button"
+                  className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-accent"
+                  onClick={() => handleStartAddTarget(node.id)}
+                  title={t("targets.addTarget")}
+                >
+                  <Crosshair className="w-3 h-3" />
+                </button>
+              ) : (
+                <>
+                  {renderOrgActionButton(actionModel.primary, node)}
+                  {actionModel.secondary && renderOrgActionButton(actionModel.secondary, node)}
+                </>
+              )}
               {!isUnassigned && (
                 <>
-                  <button
-                    type="button"
-                    className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-accent"
-                    onClick={() => handleStartAddChild(node.id)}
-                    title={t("organizations.create")}
-                  >
-                    <Building2 className="w-3 h-3" />
-                  </button>
+                  <div className="w-px h-3 bg-border/40 mx-0.5" />
                   <button
                     type="button"
                     className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-blue-400"
-                    onClick={() => setProfileOrgId(node.id)}
+                    onClick={() => {
+                      setSelectedOrgId(node.id);
+                      setWorkspaceTab("fields");
+                    }}
                     title={t("organizations.profile.openButton")}
                   >
                     <Info className="w-3 h-3" />
@@ -726,10 +1352,18 @@ export function TargetGroupedView({
         <button
           type="button"
           className="flex items-center gap-1.5 px-2 py-1 text-xs rounded bg-accent/10 hover:bg-accent/20 text-accent transition-colors"
-          onClick={() => handleStartAddChild(null)}
+          onClick={() => openNewEngagement("customer_targets")}
         >
           <Plus className="w-3 h-3" />
-          {t("organizations.create")}
+          New Engagement
+        </button>
+        <button
+          type="button"
+          className="flex items-center gap-1.5 px-2 py-1 text-xs rounded hover:bg-muted/40 text-muted-foreground hover:text-foreground transition-colors"
+          onClick={() => handleStartAddChild(null)}
+        >
+          <Building2 className="w-3 h-3" />
+          Quick org
         </button>
         <span className="text-[10px] text-muted-foreground/60 tabular-nums">
           {orgs.length} orgs · {targets.length} targets
@@ -743,25 +1377,59 @@ export function TargetGroupedView({
           <Building2 className="w-8 h-8 mb-2 opacity-30" />
           <p className="text-xs">{t("targets.treeEmpty")}</p>
           <p className="text-[10px] text-muted-foreground/60 mt-1">{t("targets.treeEmptyHint")}</p>
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2 w-full max-w-2xl">
+            <button
+              type="button"
+              className="rounded-lg border border-border/40 bg-muted/10 px-3 py-3 text-left hover:bg-muted/20 transition-colors"
+              onClick={() => openNewEngagement("customer_targets")}
+            >
+              <Shield className="w-4 h-4 text-green-400 mb-2" />
+              <p className="text-xs text-foreground">Import targets</p>
+              <p className="text-[10px] text-muted-foreground/70 mt-1">
+                Customer provided scope list.
+              </p>
+            </button>
+            <button
+              type="button"
+              className="rounded-lg border border-border/40 bg-muted/10 px-3 py-3 text-left hover:bg-muted/20 transition-colors"
+              onClick={() => openNewEngagement("discover_assets")}
+            >
+              <Network className="w-4 h-4 text-accent mb-2" />
+              <p className="text-xs text-foreground">Discover assets</p>
+              <p className="text-[10px] text-muted-foreground/70 mt-1">
+                Create org and prepare ASM flow.
+              </p>
+            </button>
+            <button
+              type="button"
+              className="rounded-lg border border-border/40 bg-muted/10 px-3 py-3 text-left hover:bg-muted/20 transition-colors"
+              onClick={() => handleStartAddChild(null)}
+            >
+              <Building2 className="w-4 h-4 text-muted-foreground mb-2" />
+              <p className="text-xs text-foreground">Org profile only</p>
+              <p className="text-[10px] text-muted-foreground/70 mt-1">Create a customer record.</p>
+            </button>
+          </div>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto py-2 px-1 space-y-px">
-          {roots.map((node) => renderNode(node, 0))}
+        <div className="flex-1 min-h-0 grid grid-cols-[minmax(280px,0.9fr)_minmax(360px,1.1fr)]">
+          <div className="min-h-0 overflow-y-auto py-2 px-1 space-y-px border-r border-border/30">
+            {roots.map((node) => renderNode(node, 0))}
+          </div>
+          <div className="min-h-0 overflow-hidden bg-background/40">{renderWorkspacePanel()}</div>
         </div>
       )}
 
-      <OrgProfileDrawer
-        orgId={profileOrgId}
-        orgName={profileOrgName}
-        open={profileOrgId !== null}
-        onClose={() => {
-          setProfileOrgId(null);
-          // Refresh the flat list — name / metadata may have changed and
-          // the tree pulls labels straight from the row, so a stale name
-          // would otherwise linger until the next remount.
-          void refreshOrgs();
-        }}
-        t={t}
+      <NewEngagementDialog
+        open={newEngagementOpen}
+        onOpenChange={setNewEngagementOpen}
+        initialMode={newEngagementMode}
+        onCreateOrganization={handleCreateEngagementOrg}
+        onUpdateOrganizationProfile={handleUpdateEngagementProfile}
+        onBatchAddTargets={(values, organizationId, source) =>
+          onBatchAdd(values, "customer_provided", organizationId, source)
+        }
+        onCreated={refreshOrgs}
       />
     </div>
   );

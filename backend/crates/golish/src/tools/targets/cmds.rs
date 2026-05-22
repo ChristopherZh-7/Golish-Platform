@@ -110,6 +110,8 @@ pub async fn target_batch_add(
     state: tauri::State<'_, DbState>,
     values: String,
     grp: Option<String>,
+    organization_id: Option<String>,
+    source: Option<String>,
     project_path: Option<String>,
 ) -> Result<Vec<Target>, GolishError> {
     let pool = state.pool_ready().await?;
@@ -118,8 +120,19 @@ pub async fn target_batch_add(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "default".to_string());
+    let src = source
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "imported".to_string());
+    let org_id: Option<Uuid> = organization_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse())
+        .transpose()
+        .map_err(|e: uuid::Error| e.to_string())?;
 
-    let existing: Vec<String> =
+    let mut existing: Vec<String> =
         sqlx::query_scalar("SELECT value FROM targets WHERE project_path = $1")
             .bind(project_path.as_deref())
             .fetch_all(pool)
@@ -134,10 +147,11 @@ pub async fn target_batch_add(
         if existing.iter().any(|e| e == v) {
             continue;
         }
+        existing.push(v.to_string());
         let tt = detect_type(v);
         let row = sqlx::query_as::<_, TargetRow>(
-            r#"INSERT INTO targets (name, target_type, value, tags, scope, grp, project_path)
-               VALUES ($1, $2::target_type, $3, '[]', 'in'::scope_type, $4, $5)
+            r#"INSERT INTO targets (name, target_type, value, tags, scope, grp, organization_id, project_path, source)
+               VALUES ($1, $2::target_type, $3, '[]', 'in'::scope_type, $4, $5, $6, $7)
                RETURNING id, name, target_type::text, value, tags, notes, scope::text,
                          status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
@@ -147,7 +161,9 @@ pub async fn target_batch_add(
         .bind(tt.as_str())
         .bind(v)
         .bind(&g)
+        .bind(org_id)
         .bind(project_path.as_deref())
+        .bind(&src)
         .fetch_one(pool)
         .await?;
         added.push(Target::from(row));

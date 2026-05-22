@@ -34,8 +34,15 @@ export function TargetPanel() {
   const [viewMode, setViewMode] = useState<TargetViewMode>("tree");
   const [scanTarget, setScanTarget] = useState<{ id: string; value: string } | null>(null);
 
-  const { safeTargets, stats, handleAdd, handleDelete, handleToggleScope, handleUpdateNotes } =
-    useTargetData();
+  const {
+    safeTargets,
+    stats,
+    handleAdd,
+    handleBatchAdd,
+    handleDelete,
+    handleToggleScope,
+    handleUpdateNotes,
+  } = useTargetData();
 
   const openScanTools = useCallback((target: { id: string; value: string }) => {
     setScanTarget({ id: target.id, value: target.value });
@@ -121,6 +128,7 @@ export function TargetPanel() {
             targets={safeTargets}
             t={t}
             onAdd={handleAdd}
+            onBatchAdd={handleBatchAdd}
             onDelete={handleDelete}
             onToggleScope={handleToggleScope}
             onUpdateNotes={handleUpdateNotes}

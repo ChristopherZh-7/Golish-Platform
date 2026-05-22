@@ -25,6 +25,10 @@ export async function addTarget(params: {
 export async function batchAddTargets(params: {
   values: string;
   grp: string;
+  /** Optional org anchor for red-team / engagement workflows. */
+  organizationId?: string;
+  /** Target lineage: customer_provided, imported, discovered, manual, etc. */
+  source?: string;
   projectPath: string | null;
 }): Promise<Target[]> {
   return invoke<Target[]>("target_batch_add", params);

@@ -152,7 +152,8 @@ fn install_handlers(
         stat_workspace_file, read_file_as_base64, watch_file, unwatch_file, unwatch_all_files,
         target_list, target_add, target_batch_add, target_update, target_update_status, target_delete, target_clear_all,
         organization_list, organization_get, organization_create, organization_update,
-        organization_update_profile, organization_move, organization_delete,
+        organization_update_profile, organization_candidates_list, organization_candidates_upsert,
+        organization_move, organization_delete,
         vault_list, vault_add, vault_get_value, vault_update, vault_delete, vault_resolve, vault_validate, vault_update_status,
         project_export, project_import,
         // ── intel_providers (ASM platforms · 0.zone / FOFA / Quake / ...) ─

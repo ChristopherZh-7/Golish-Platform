@@ -100,12 +100,14 @@ export function useTargetData() {
   );
 
   const handleBatchAdd = useCallback(
-    async (batchInput: string, grp = "") => {
-      if (!batchInput.trim()) return;
+    async (batchInput: string, grp = "", organizationId?: string, source?: string) => {
+      if (!batchInput.trim()) return [];
       try {
         const added = await targets.batchAddTargets({
           values: batchInput,
           grp,
+          organizationId,
+          source,
           projectPath: getProjectPath(),
         });
         loadTargets();
@@ -118,8 +120,10 @@ export function useTargetData() {
           category: "targets",
           details: `已添加 ${count} 个目标`,
         });
+        return added;
       } catch (e) {
         console.error("Failed to batch add:", e);
+        return [];
       }
     },
     [loadTargets]
