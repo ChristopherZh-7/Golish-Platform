@@ -229,6 +229,8 @@ export type CaptureRule =
       required?: boolean;
       /** Cookie names that must be present before the capture is accepted. */
       required_names?: string[];
+      /** Minimum selected cookie count before the capture is accepted. */
+      min_count?: number;
     }
   | {
       type: "local_storage";

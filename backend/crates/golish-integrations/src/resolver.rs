@@ -544,6 +544,144 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn fixture_enscan_tyc_capture_uses_search_probe_url() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let toolsconfig_dir = std::path::PathBuf::from(manifest_dir)
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("resources")
+            .join("toolsconfig");
+        if !toolsconfig_dir.exists() {
+            eprintln!(
+                "fixture skipped: toolsconfig dir not found at {}",
+                toolsconfig_dir.display()
+            );
+            return;
+        }
+        let resolver = DefaultSchemaResolver::new(Some(toolsconfig_dir), vec![]);
+        let resolved = resolver
+            .get("enscan-go")
+            .await
+            .expect("enscan-go integration should load");
+        let tyc = resolved
+            .schema
+            .groups
+            .iter()
+            .find(|g| g.id == "tyc")
+            .expect("tyc group should exist");
+        let recipe = tyc
+            .capture
+            .as_ref()
+            .expect("tyc group should declare a capture recipe");
+
+        assert!(
+            recipe.login_url.starts_with("https://www.tianyancha.com/search?"),
+            "TYC capture should open a search probe URL so a logged-in session emits auth headers, got {}",
+            recipe.login_url
+        );
+        for expected_key in ["cookies.tyc", "tyc.tycid", "tyc.auth_token"] {
+            assert!(
+                tyc.fields.iter().any(|field| field.key == expected_key),
+                "TYC group should declare ENScan config key {expected_key}"
+            );
+            assert!(
+                recipe
+                    .rules
+                    .iter()
+                    .any(|rule| rule.target_field() == expected_key),
+                "TYC capture should write into ENScan config key {expected_key}"
+            );
+        }
+        assert!(
+            recipe.rules.iter().any(|r| matches!(
+                r,
+                crate::schema::CaptureRule::Cookie { domain, name, target_field, .. }
+                    if domain == ".tianyancha.com"
+                        && name == "TYCID"
+                        && target_field == "tyc.tycid"
+            )),
+            "TYC capture should read tycid from the TYCID cookie"
+        );
+        assert!(
+            recipe.rules.iter().any(|r| matches!(
+                r,
+                crate::schema::CaptureRule::Cookie { domain, name, target_field, .. }
+                    if domain == ".tianyancha.com"
+                        && name == "auth_token"
+                        && target_field == "tyc.auth_token"
+            )),
+            "TYC capture should read auth_token from the auth_token cookie"
+        );
+    }
+
+    #[tokio::test]
+    async fn fixture_enscan_kc_and_rb_require_login_state_proof() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let toolsconfig_dir = std::path::PathBuf::from(manifest_dir)
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("resources")
+            .join("toolsconfig");
+        if !toolsconfig_dir.exists() {
+            eprintln!(
+                "fixture skipped: toolsconfig dir not found at {}",
+                toolsconfig_dir.display()
+            );
+            return;
+        }
+        let resolver = DefaultSchemaResolver::new(Some(toolsconfig_dir), vec![]);
+        let resolved = resolver
+            .get("enscan-go")
+            .await
+            .expect("enscan-go integration should load");
+
+        let assert_min_count = |group_id: &str, expected_min_count: usize| {
+            let group = resolved
+                .schema
+                .groups
+                .iter()
+                .find(|g| g.id == group_id)
+                .unwrap_or_else(|| panic!("{group_id} group should exist"));
+            let recipe = group
+                .capture
+                .as_ref()
+                .unwrap_or_else(|| panic!("{group_id} group should declare capture"));
+            assert!(
+                recipe.rules.iter().any(|r| matches!(
+                    r,
+                    crate::schema::CaptureRule::CookieJoined { min_count, .. }
+                        if *min_count == expected_min_count
+                )),
+                "{group_id} should require at least {expected_min_count} cookies before capture succeeds"
+            );
+        };
+
+        assert_min_count("kc", 2);
+        assert_min_count("rb", 3);
+
+        let kc = resolved
+            .schema
+            .groups
+            .iter()
+            .find(|g| g.id == "kc")
+            .expect("kc group should exist");
+        let kc_recipe = kc
+            .capture
+            .as_ref()
+            .expect("kc group should declare capture");
+        assert!(
+            kc_recipe.rules.iter().any(|r| matches!(
+                r,
+                crate::schema::CaptureRule::CookieJoined { required_names, .. }
+                    if required_names == &vec!["USERINFO".to_string(), "aso_ucenter".to_string()]
+            )),
+            "Qimai capture should require login-only cookies, not just anonymous synct/syncd/qm_check/PHPSESSID"
+        );
+    }
+
     // ────────────────────────────────────────────────────────────────
     // Pre-existing tests below
     // ────────────────────────────────────────────────────────────────

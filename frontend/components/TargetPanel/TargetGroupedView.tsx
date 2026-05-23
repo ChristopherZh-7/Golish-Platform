@@ -48,8 +48,19 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { organizations as orgsApi } from "@/lib/api";
-import type { Organization } from "@/lib/api/organizations";
+import { assetIntel, organizations as orgsApi } from "@/lib/api";
+import type {
+  AssetIntelHydrateConfig,
+  AssetIntelProviderRunStatus,
+  AssetIntelProviderRuntimeKind,
+  AssetIntelRun,
+  AssetIntelStreamEvent,
+} from "@/lib/api/asset-intel";
+import type {
+  Organization,
+  OrganizationCandidate,
+  OrganizationCandidates,
+} from "@/lib/api/organizations";
 import type { Target, TargetStatus } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
 import { cn } from "@/lib/utils";
@@ -92,17 +103,33 @@ const ENGAGEMENT_BADGES = {
 
 type OrgActionKind =
   | "import_targets"
-  | "hydrate_intel"
+  | "hydrate_subsidiaries"
+  | "enrich_organization"
   | "choose_next_step"
   | "review_scope"
   | "add_child";
+
+type AssetIntelOrgActionKind = "hydrate_subsidiaries" | "enrich_organization";
 
 interface OrgActionItem {
   kind: OrgActionKind;
   label: string;
 }
 
-export function getOrgActionModel(mode: EngagementMode | null): {
+function isAssetIntelOrgAction(kind: OrgActionKind): kind is AssetIntelOrgActionKind {
+  return kind === "hydrate_subsidiaries" || kind === "enrich_organization";
+}
+
+function isAssetIntelOrgActionItem(
+  action: OrgActionItem | undefined
+): action is OrgActionItem & { kind: AssetIntelOrgActionKind } {
+  return Boolean(action && isAssetIntelOrgAction(action.kind));
+}
+
+export function getOrgActionModel(
+  mode: EngagementMode | null,
+  options: { isChild?: boolean } = {}
+): {
   primary: OrgActionItem;
   secondary?: OrgActionItem;
 } {
@@ -113,9 +140,14 @@ export function getOrgActionModel(mode: EngagementMode | null): {
     };
   }
   if (mode === "discover_assets") {
+    if (options.isChild) {
+      return {
+        primary: { kind: "enrich_organization", label: "补字段" },
+      };
+    }
     return {
-      primary: { kind: "hydrate_intel", label: "Hydrate intel" },
-      secondary: { kind: "add_child", label: "Add child org" },
+      primary: { kind: "hydrate_subsidiaries", label: "查子公司" },
+      secondary: { kind: "enrich_organization", label: "补字段" },
     };
   }
   return {
@@ -185,7 +217,10 @@ export function getEngagementDetails(
   return [];
 }
 
-export function getCandidateCounts(engagement: EngagementRecord | null | undefined): {
+export function getCandidateCounts(
+  engagement: EngagementRecord | null | undefined,
+  allowedSources?: ReadonlySet<string>
+): {
   organizations: number;
   targets: number;
 } {
@@ -194,10 +229,309 @@ export function getCandidateCounts(engagement: EngagementRecord | null | undefin
     return { organizations: 0, targets: 0 };
   }
   const record = candidates as { organizations?: unknown; targets?: unknown };
+  if (allowedSources) {
+    return {
+      organizations: getCandidateItems(engagement, "organizations", allowedSources).length,
+      targets: getCandidateItems(engagement, "targets", allowedSources).length,
+    };
+  }
   return {
     organizations: Array.isArray(record.organizations) ? record.organizations.length : 0,
     targets: Array.isArray(record.targets) ? record.targets.length : 0,
   };
+}
+
+function normalizeCandidateSource(source: unknown): string {
+  return typeof source === "string" ? source.trim().toLowerCase() : "";
+}
+
+export function getCandidateItems(
+  engagement: EngagementRecord | null | undefined,
+  kind: "organizations" | "targets",
+  allowedSources?: ReadonlySet<string>
+): OrganizationCandidate[] {
+  const candidates = engagement?.candidates;
+  if (!candidates || typeof candidates !== "object" || Array.isArray(candidates)) return [];
+  const items = (candidates as Record<string, unknown>)[kind];
+  if (!Array.isArray(items)) return [];
+  const typed = items as OrganizationCandidate[];
+  if (!allowedSources) return typed;
+  return typed.filter((item) => {
+    const source = normalizeCandidateSource(item.source);
+    return !source || allowedSources.has(source);
+  });
+}
+
+export function getCandidateSourceFilter(
+  providers: assetIntel.AssetIntelProviderDescriptor[],
+  phase: "discovery" | "enrichment" | null
+): ReadonlySet<string> | undefined {
+  if (!phase) return undefined;
+  const sources = new Set<string>();
+  for (const provider of providers) {
+    const isDiscovery = provider.capabilities.includes("subsidiaries");
+    if ((phase === "discovery" && isDiscovery) || (phase === "enrichment" && !isDiscovery)) {
+      sources.add(provider.id.trim().toLowerCase());
+      sources.add(provider.displayName.trim().toLowerCase());
+    }
+  }
+  return sources.size > 0 ? sources : undefined;
+}
+
+export function getVisibleCandidateBuckets(
+  engagement: EngagementRecord | null | undefined,
+  phase: "discovery" | "enrichment" | null,
+  allowedSources?: ReadonlySet<string>
+): OrganizationCandidates {
+  return {
+    organizations: getCandidateItems(engagement, "organizations", allowedSources),
+    targets: phase === "discovery" ? [] : getCandidateItems(engagement, "targets", allowedSources),
+  };
+}
+
+export function getNextWorkspaceTabAfterAssetIntelRun(
+  action: AssetIntelOrgActionKind,
+  run: AssetIntelRun
+): WorkspaceTab | null {
+  if (action !== "hydrate_subsidiaries") return null;
+  if (run.status !== "completed") return "activity";
+  const candidateCount =
+    (run.candidates.organizations?.length ?? 0) + (run.candidates.targets?.length ?? 0);
+  return candidateCount > 0 ? "candidates" : "activity";
+}
+
+/**
+ * Per-provider state accumulated from streaming events while a hydrate run is
+ * in flight. Indexed by `providerId` inside `HydrateActivity.providers`.
+ */
+export interface HydrateProviderActivity {
+  displayName: string;
+  runtime: AssetIntelProviderRuntimeKind | null;
+  recentMessages: string[];
+  batchCount: number;
+  candidateCount: number;
+  state: "running" | "completed";
+  status?: AssetIntelProviderRunStatus;
+}
+
+/**
+ * Streaming view of an in-flight hydrate run.
+ *
+ * Stored in `hydrateActivity[orgId]`. Reset every time the user starts an
+ * asset-intel discovery/enrichment run. Cleared once a fresh `AssetIntelRun` is
+ * persisted into `hydrateRuns[orgId]`, so the Activity panel always shows
+ * either the live stream or the final summary, never both.
+ */
+export interface HydrateActivity {
+  runId: string | null;
+  providers: Record<string, HydrateProviderActivity>;
+  providerOrder: string[];
+}
+
+const HYDRATE_RECENT_MESSAGES_LIMIT = 8;
+
+/**
+ * Apply a single streaming event to a hydrate activity snapshot, returning
+ * a new snapshot. Pure / immutable so it can be plugged into a `useState`
+ * setter callback.
+ */
+export function applyStreamEvent(
+  current: HydrateActivity,
+  event: AssetIntelStreamEvent
+): HydrateActivity {
+  switch (event.kind) {
+    case "provider_started": {
+      const provider: HydrateProviderActivity = {
+        displayName: event.displayName,
+        runtime: event.runtime,
+        recentMessages: [],
+        batchCount: 0,
+        candidateCount: 0,
+        state: "running",
+      };
+      return {
+        runId: event.runId,
+        providers: {
+          ...current.providers,
+          [event.providerId]: provider,
+        },
+        providerOrder: current.providerOrder.includes(event.providerId)
+          ? current.providerOrder
+          : [...current.providerOrder, event.providerId],
+      };
+    }
+    case "provider_progress": {
+      const existing = current.providers[event.providerId];
+      if (!existing) return current;
+      const recent = [...existing.recentMessages, event.message].slice(
+        -HYDRATE_RECENT_MESSAGES_LIMIT
+      );
+      return {
+        ...current,
+        providers: {
+          ...current.providers,
+          [event.providerId]: { ...existing, recentMessages: recent },
+        },
+      };
+    }
+    case "provider_batch": {
+      const existing = current.providers[event.providerId];
+      if (!existing) return current;
+      const orgs = Array.isArray(event.candidates?.organizations)
+        ? event.candidates.organizations.length
+        : 0;
+      const targets = Array.isArray(event.candidates?.targets)
+        ? event.candidates.targets.length
+        : 0;
+      const added = orgs + targets;
+      return {
+        ...current,
+        providers: {
+          ...current.providers,
+          [event.providerId]: {
+            ...existing,
+            batchCount: existing.batchCount + 1,
+            candidateCount: existing.candidateCount + added,
+          },
+        },
+      };
+    }
+    case "provider_completed": {
+      const existing = current.providers[event.providerId];
+      if (!existing) return current;
+      return {
+        ...current,
+        providers: {
+          ...current.providers,
+          [event.providerId]: {
+            ...existing,
+            state: "completed",
+            status: event.status,
+            candidateCount: event.candidateCount,
+          },
+        },
+      };
+    }
+    default:
+      return current;
+  }
+}
+
+export function buildHydrateConfigFromEngagement(
+  engagement: EngagementRecord | null | undefined
+): AssetIntelHydrateConfig {
+  const minOwnership =
+    typeof engagement?.min_ownership_percent === "string" ? engagement.min_ownership_percent : null;
+  const depth = typeof engagement?.depth === "string" ? engagement.depth : null;
+  const includeBranches =
+    typeof engagement?.include_branches === "boolean" ? engagement.include_branches : null;
+  const isLegacyHeavyDefault = minOwnership === "51" && depth === "2" && includeBranches === true;
+
+  return {
+    minOwnershipPercent: isLegacyHeavyDefault ? null : minOwnership,
+    depth: isLegacyHeavyDefault ? null : depth,
+    includeBranches: isLegacyHeavyDefault ? null : includeBranches,
+    createCandidates:
+      typeof engagement?.create_candidates === "boolean" ? engagement.create_candidates : true,
+  };
+}
+
+export function buildDiscoveryHydrateConfigFromEngagement(
+  engagement: EngagementRecord | null | undefined
+): AssetIntelHydrateConfig {
+  const minOwnership =
+    typeof engagement?.min_ownership_percent === "string" && engagement.min_ownership_percent.trim()
+      ? engagement.min_ownership_percent
+      : "51";
+  const depth =
+    typeof engagement?.depth === "string" && engagement.depth.trim() ? engagement.depth : "1";
+  const includeBranches =
+    typeof engagement?.include_branches === "boolean" ? engagement.include_branches : false;
+
+  return {
+    minOwnershipPercent: minOwnership,
+    depth,
+    includeBranches,
+    createCandidates:
+      typeof engagement?.create_candidates === "boolean" ? engagement.create_candidates : true,
+  };
+}
+
+export function getProviderStatusClass(status: string): string {
+  if (status === "completed") return "border-green-500/30 bg-green-500/5 text-green-300";
+  if (status === "checked_empty") return "border-blue-500/30 bg-blue-500/5 text-blue-300";
+  if (status === "failed" || status === "unavailable") {
+    return "border-red-500/30 bg-red-500/5 text-red-300";
+  }
+  return "border-border/40 bg-muted/10 text-muted-foreground";
+}
+
+/**
+ * Keys we surface from `candidate.evidence.raw` in the inline "Details" panel.
+ * Picked from ENScan_GO + 0.zone common output shapes so the user can sanity
+ * check why a row was promoted to a candidate (e.g. invest scale, registration
+ * code, address, legal rep, ICP info, app store link). Anything else is hidden
+ * to keep the panel scannable; full raw JSON is still on disk via evidence.run.
+ */
+const EVIDENCE_RAW_KEY_WHITELIST: Array<{ field: string; label: string }> = [
+  { field: "name", label: "Name" },
+  { field: "company_name", label: "Company" },
+  { field: "reg_code", label: "Credit code" },
+  { field: "credit_code", label: "Credit code" },
+  { field: "scale", label: "Ownership %" },
+  { field: "pid", label: "Provider company id" },
+  { field: "legal", label: "Legal representative" },
+  { field: "legal_person", label: "Legal representative" },
+  { field: "industry", label: "Industry" },
+  { field: "addr", label: "Address" },
+  { field: "address", label: "Address" },
+  { field: "reg_date", label: "Registered at" },
+  { field: "establish_date", label: "Established" },
+  { field: "phone", label: "Phone" },
+  { field: "email", label: "Email" },
+  { field: "domain", label: "Domain" },
+  { field: "url", label: "URL" },
+  { field: "link", label: "App URL" },
+  { field: "app_id", label: "App id" },
+  { field: "app_url", label: "App URL" },
+  { field: "type", label: "Type" },
+  { field: "entity_type", label: "Entity type" },
+  { field: "status", label: "Status" },
+];
+
+export interface EvidenceRawRow {
+  field: string;
+  label: string;
+  value: string;
+}
+
+/**
+ * Extract a flat (field, label, value) list from a candidate's evidence.raw
+ * payload, keeping only the curated keys above. Returns [] when raw is
+ * missing / not an object — callers should treat that as "no details to show".
+ */
+export function getEvidenceRawRows(evidence: unknown): EvidenceRawRow[] {
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) return [];
+  const raw = (evidence as { raw?: unknown }).raw;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  const record = raw as Record<string, unknown>;
+  const seen = new Set<string>();
+  const out: EvidenceRawRow[] = [];
+  for (const entry of EVIDENCE_RAW_KEY_WHITELIST) {
+    if (seen.has(entry.label)) continue;
+    const value = record[entry.field];
+    if (value === null || value === undefined) continue;
+    const text =
+      typeof value === "string"
+        ? value.trim()
+        : typeof value === "number" || typeof value === "boolean"
+          ? String(value)
+          : null;
+    if (!text) continue;
+    seen.add(entry.label);
+    out.push({ field: entry.field, label: entry.label, value: text });
+  }
+  return out;
 }
 
 type WorkspaceTab = "overview" | "fields" | "scope" | "targets" | "candidates" | "activity";
@@ -229,6 +563,7 @@ interface OrgFieldView {
   label: string;
   value: string;
   filled: boolean;
+  raw?: unknown;
 }
 
 interface OrgFieldGroup {
@@ -242,6 +577,200 @@ function displayAtom(value: unknown): string {
     return String(record.domain ?? record.name ?? record.value ?? record.id ?? "").trim();
   }
   return String(value ?? "").trim();
+}
+
+const INTEL_FIELD_LABELS: Record<string, string> = {
+  legal_representative: "Legal",
+  registered_address: "Address",
+  registered_at: "Registered",
+  registered_capital: "Capital",
+  business_status: "Status",
+  business_scope: "Scope",
+  aqc_pid: "AQC PID",
+  icp_records: "ICP",
+  asn_org: "ASN org",
+  cname: "CNAME",
+  operator: "Operator",
+  cms: "CMS",
+  component: "Component",
+  server_name: "Server",
+  server_version: "Server version",
+  service: "Service",
+  protocol: "Protocol",
+  exposed_emails: "Exposed emails",
+  code_leaks: "Code leaks",
+};
+
+const INTEL_DISPLAY_ORDER = [
+  "legal_representative",
+  "registered_capital",
+  "business_status",
+  "registered_at",
+  "registered_address",
+  "business_scope",
+  "icp_records",
+  "operator",
+  "cms",
+  "component",
+  "server_name",
+  "service",
+  "asn_org",
+  "exposed_emails",
+  "code_leaks",
+];
+
+function formatIntelValue(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return formatFieldValue(value);
+  const record = value as Record<string, unknown>;
+  const keys = INTEL_DISPLAY_ORDER.filter((key) => displayAtom(record[key]));
+  if (keys.length === 0) return "—";
+  const shown = keys.slice(0, 3).map((key) => {
+    const raw = record[key];
+    const text = Array.isArray(raw) ? formatFieldValue(raw) : displayAtom(raw);
+    return `${INTEL_FIELD_LABELS[key] ?? key}: ${text}`;
+  });
+  const rest = keys.length - shown.length;
+  return rest > 0 ? `${shown.join(", ")} +${rest}` : shown.join(", ");
+}
+
+type OrgFieldDisplayKind = "atom" | "chips" | "records";
+
+function getOrgFieldDisplayKind(fieldView: OrgFieldView): OrgFieldDisplayKind {
+  if (
+    fieldView.key === "intel" &&
+    fieldView.raw &&
+    typeof fieldView.raw === "object" &&
+    !Array.isArray(fieldView.raw)
+  ) {
+    return "records";
+  }
+  if (Array.isArray(fieldView.raw) && fieldView.raw.length > 0) {
+    return "chips";
+  }
+  return "atom";
+}
+
+function getOrgFieldChips(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(displayAtom).filter((value) => value.length > 0);
+}
+
+const INTEL_RECORD_LABELS: Record<string, string> = {
+  legal_representative: "Legal representative",
+  registered_capital: "Registered capital",
+  business_status: "Business status",
+  registered_at: "Registered at",
+  registered_address: "Registered address",
+  business_scope: "Business scope",
+  icp_records: "ICP records",
+  aqc_pid: "AQC PID",
+  asn_org: "ASN org",
+  cname: "CNAME",
+  operator: "Operator",
+  cms: "CMS",
+  component: "Component",
+  server_name: "Server",
+  server_version: "Server version",
+  service: "Service",
+  protocol: "Protocol",
+  exposed_emails: "Exposed emails",
+  code_leaks: "Code leaks",
+};
+
+function getOrgFieldIntelRecords(raw: unknown): { key: string; label: string; value: string }[] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  const record = raw as Record<string, unknown>;
+  return INTEL_DISPLAY_ORDER.filter((key) => displayAtom(record[key])).map((key) => {
+    const value = record[key];
+    const formatted = Array.isArray(value)
+      ? value.map(displayAtom).filter(Boolean).join(", ")
+      : displayAtom(value);
+    return {
+      key,
+      label: INTEL_RECORD_LABELS[key] ?? key,
+      value: formatted,
+    };
+  });
+}
+
+const ORG_FIELD_CHIP_INLINE_LIMIT = 24;
+
+function OrgFieldRow({ field }: { field: OrgFieldView }) {
+  if (!field.filled) {
+    return (
+      <div className="flex items-start justify-between gap-2 text-[10px]">
+        <span className="text-muted-foreground/70">{field.label}</span>
+        <span className="text-muted-foreground/40">—</span>
+      </div>
+    );
+  }
+
+  const kind = getOrgFieldDisplayKind(field);
+
+  if (kind === "chips") {
+    const chips = getOrgFieldChips(field.raw);
+    const inline = chips.slice(0, ORG_FIELD_CHIP_INLINE_LIMIT);
+    const more = chips.length - inline.length;
+    return (
+      <div className="text-[10px]">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-muted-foreground">{field.label}</span>
+          <span className="text-muted-foreground/60">{chips.length}</span>
+        </div>
+        <div className="mt-1 flex flex-wrap gap-1">
+          {inline.map((chip, idx) => (
+            <span
+              key={`${field.key}-${idx}-${chip}`}
+              className="rounded bg-muted/40 px-1.5 py-0.5 text-foreground break-all"
+              title={chip}
+            >
+              {chip}
+            </span>
+          ))}
+          {more > 0 && (
+            <span className="rounded bg-muted/20 px-1.5 py-0.5 text-muted-foreground">
+              +{more} more
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (kind === "records") {
+    const records = getOrgFieldIntelRecords(field.raw);
+    if (records.length === 0) {
+      return (
+        <div className="flex items-start justify-between gap-2 text-[10px]">
+          <span className="text-muted-foreground/70">{field.label}</span>
+          <span className="text-muted-foreground/40">—</span>
+        </div>
+      );
+    }
+    return (
+      <div className="text-[10px]">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-muted-foreground">{field.label}</span>
+          <span className="text-muted-foreground/60">{records.length}</span>
+        </div>
+        <div className="mt-1 space-y-0.5">
+          {records.map((entry) => (
+            <div key={entry.key} className="flex items-start gap-2">
+              <span className="text-muted-foreground/80 shrink-0 w-28">{entry.label}</span>
+              <span className="text-foreground break-all">{entry.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-start justify-between gap-2 text-[10px]">
+      <span className="text-muted-foreground shrink-0">{field.label}</span>
+      <span className="text-foreground text-right break-all">{field.value}</span>
+    </div>
+  );
 }
 
 export function formatFieldValue(value: unknown): string {
@@ -261,8 +790,8 @@ export function formatFieldValue(value: unknown): string {
 }
 
 function field(key: string, label: string, value: unknown): OrgFieldView {
-  const formatted = formatFieldValue(value);
-  return { key, label, value: formatted, filled: formatted !== "—" };
+  const formatted = key === "intel" ? formatIntelValue(value) : formatFieldValue(value);
+  return { key, label, value: formatted, filled: formatted !== "—", raw: value };
 }
 
 export function getOrgFieldGroups(org: OrgFieldInput): OrgFieldGroup[] {
@@ -293,18 +822,28 @@ export function getOrgFieldGroups(org: OrgFieldInput): OrgFieldGroup[] {
       fields: [field("scope_rules", "Scope rules", org.scope_rules)],
     },
     {
-      title: "Other",
+      title: "Identity",
       fields: [
         field("intel", "Intel records", org.intel),
-        field("notes", "Notes", org.notes),
-        field("certificates", "Certificates", org.certificates),
         field("subsidiaries", "Subsidiaries", org.subsidiaries),
+      ],
+    },
+    {
+      title: "Surfaces",
+      fields: [
         field("business_systems", "Business systems", org.business_systems),
         field("cloud_assets", "Cloud assets", org.cloud_assets),
         field("github_orgs", "GitHub orgs", org.github_orgs),
         field("social_accounts", "Social accounts", org.social_accounts),
+      ],
+    },
+    {
+      title: "Risk & Notes",
+      fields: [
+        field("certificates", "Certificates", org.certificates),
         field("historical_vulns", "Historical vulns", org.historical_vulns),
         field("contacts", "Contacts", org.contacts),
+        field("notes", "Notes", org.notes),
       ],
     },
   ];
@@ -404,6 +943,22 @@ function getEngagementMode(org?: Organization): EngagementMode | null {
   return null;
 }
 
+function getEffectiveEngagementMode(
+  org: Organization | undefined,
+  orgs: Organization[]
+): EngagementMode | null {
+  let current = org;
+  const seen = new Set<string>();
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    const mode = getEngagementMode(current);
+    if (mode) return mode;
+    const parentId = current.parent_id;
+    current = parentId ? orgs.find((item) => item.id === parentId) : undefined;
+  }
+  return null;
+}
+
 function getEngagementRecord(org?: Organization): EngagementRecord | null {
   const engagement = org?.intel?.engagement;
   if (!engagement || typeof engagement !== "object" || Array.isArray(engagement)) return null;
@@ -471,6 +1026,17 @@ export function TargetGroupedView({
   const [targetFormName, setTargetFormName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [inlineError, setInlineError] = useState<string | null>(null);
+  const [hydratingOrgId, setHydratingOrgId] = useState<string | null>(null);
+  const [hydratingAction, setHydratingAction] = useState<AssetIntelOrgActionKind | null>(null);
+  const [hydrateRuns, setHydrateRuns] = useState<Record<string, AssetIntelRun>>({});
+  const [hydrateErrors, setHydrateErrors] = useState<Record<string, string>>({});
+  const [hydrateActivity, setHydrateActivity] = useState<Record<string, HydrateActivity>>({});
+  const [assetProviders, setAssetProviders] = useState<assetIntel.AssetIntelProviderDescriptor[]>(
+    []
+  );
+  const [candidateUpdatingId, setCandidateUpdatingId] = useState<string | null>(null);
+  const [candidatePromotingId, setCandidatePromotingId] = useState<string | null>(null);
+  const [expandedCandidateIds, setExpandedCandidateIds] = useState<Set<string>>(new Set());
 
   const refreshOrgs = useCallback(async () => {
     setOrgLoading(true);
@@ -491,6 +1057,21 @@ export function TargetGroupedView({
     refreshOrgs();
   }, [refreshOrgs, targets.length]);
 
+  useEffect(() => {
+    let cancelled = false;
+    assetIntel
+      .listProviders()
+      .then((providers) => {
+        if (!cancelled) setAssetProviders(providers);
+      })
+      .catch(() => {
+        if (!cancelled) setAssetProviders([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const unassignedLabel = t("targets.unassigned");
   const roots = useMemo(
     () => buildOrgTree(orgs, targets, unassignedLabel),
@@ -500,7 +1081,7 @@ export function TargetGroupedView({
     () => orgs.find((o) => o.id === selectedOrgId) ?? orgs[0] ?? null,
     [orgs, selectedOrgId]
   );
-  const selectedMode = getEngagementMode(selectedOrg ?? undefined);
+  const selectedMode = getEffectiveEngagementMode(selectedOrg ?? undefined, orgs);
   const selectedTargets = useMemo(
     () =>
       selectedOrg ? targets.filter((target) => target.organization_id === selectedOrg.id) : [],
@@ -567,6 +1148,136 @@ export function TargetGroupedView({
     []
   );
 
+  const handleRunAssetIntel = useCallback(
+    async (org: Organization, action: AssetIntelOrgActionKind) => {
+      const engagement = getEngagementRecord(org);
+      setSelectedOrgId(org.id);
+      setWorkspaceTab("activity");
+      setHydratingOrgId(org.id);
+      setHydratingAction(action);
+      setHydrateErrors((prev) => {
+        const next = { ...prev };
+        delete next[org.id];
+        return next;
+      });
+      setHydrateActivity((prev) => ({
+        ...prev,
+        [org.id]: { runId: null, providers: {}, providerOrder: [] },
+      }));
+
+      // Subscribe to streaming events before kicking off asset intel so we
+      // don't miss the first `provider_started` payload. Updates are routed
+      // into `hydrateActivity[org.id]` so the Activity panel can render the
+      // run as it progresses, not just when the IPC promise resolves.
+      const unlisten = await assetIntel.listenStream((event) => {
+        setHydrateActivity((prev) => {
+          const current = prev[org.id] ?? {
+            runId: null,
+            providers: {},
+            providerOrder: [],
+          };
+          const next = applyStreamEvent(current, event);
+          return { ...prev, [org.id]: next };
+        });
+      });
+
+      try {
+        const config =
+          action === "hydrate_subsidiaries"
+            ? buildDiscoveryHydrateConfigFromEngagement(engagement)
+            : buildHydrateConfigFromEngagement(engagement);
+        let run: AssetIntelRun | null = null;
+        let nextTab: WorkspaceTab | null = null;
+
+        if (action === "hydrate_subsidiaries") {
+          run = await assetIntel.hydrateSubsidiaries({
+            organizationId: org.id,
+            companyName: org.name,
+            config,
+          });
+          nextTab = getNextWorkspaceTabAfterAssetIntelRun(action, run);
+        } else {
+          run = await assetIntel.enrichOrganization({
+            organizationId: org.id,
+            config,
+          });
+          nextTab = getNextWorkspaceTabAfterAssetIntelRun(action, run);
+        }
+
+        if (run) {
+          setHydrateRuns((prev) => ({ ...prev, [org.id]: run }));
+        }
+        setHydrateActivity((prev) => {
+          if (!prev[org.id]) return prev;
+          const next = { ...prev };
+          delete next[org.id];
+          return next;
+        });
+        await refreshOrgs();
+        if (nextTab !== null) {
+          setWorkspaceTab(nextTab);
+        }
+      } catch (error) {
+        setHydrateErrors((prev) => ({ ...prev, [org.id]: String(error) }));
+      } finally {
+        unlisten();
+        setHydratingOrgId(null);
+        setHydratingAction(null);
+      }
+    },
+    [refreshOrgs]
+  );
+
+  const handleCandidateStatus = useCallback(
+    async (candidate: OrganizationCandidate, status: "approved" | "rejected") => {
+      if (!selectedOrg) return;
+      const candidateKey =
+        candidate.id ?? `${candidate.kind}:${candidate.source}:${candidate.value}`;
+      setCandidateUpdatingId(candidateKey);
+      try {
+        await orgsApi.upsertOrganizationCandidates(selectedOrg.id, [{ ...candidate, status }]);
+        await refreshOrgs();
+      } catch (error) {
+        setInlineError(String(error));
+      } finally {
+        setCandidateUpdatingId(null);
+      }
+    },
+    [refreshOrgs, selectedOrg]
+  );
+
+  const handlePromoteCandidate = useCallback(
+    async (candidate: OrganizationCandidate) => {
+      if (!selectedOrg) return;
+      const candidateKey =
+        candidate.id ?? `${candidate.kind}:${candidate.source}:${candidate.value}`;
+      setCandidatePromotingId(candidateKey);
+      try {
+        if (candidate.kind === "organization") {
+          await orgsApi.createOrganization({
+            projectPath: getProjectPath(),
+            parentId: selectedOrg.id,
+            name: candidate.label || candidate.value,
+            description: `Promoted from ${candidate.source || "asset intel"} candidate`,
+          });
+          await refreshOrgs();
+        } else {
+          await onBatchAdd(
+            candidate.value,
+            selectedOrg.name,
+            selectedOrg.id,
+            candidate.source || "asset_intel"
+          );
+        }
+      } catch (error) {
+        setInlineError(String(error));
+      } finally {
+        setCandidatePromotingId(null);
+      }
+    },
+    [onBatchAdd, refreshOrgs, selectedOrg]
+  );
+
   const renderOrgActionButton = (action: OrgActionItem, node: OrgTreeNode) => {
     const runAction = (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -574,9 +1285,12 @@ export function TargetGroupedView({
         case "import_targets":
           handleStartAddTarget(node.id);
           break;
-        case "hydrate_intel":
-          setSelectedOrgId(node.id);
-          setWorkspaceTab("activity");
+        case "hydrate_subsidiaries":
+        case "enrich_organization":
+          {
+            const org = orgs.find((item) => item.id === node.id);
+            if (org && hydratingOrgId !== node.id) void handleRunAssetIntel(org, action.kind);
+          }
           break;
         case "choose_next_step":
           setSelectedOrgId(node.id);
@@ -592,18 +1306,24 @@ export function TargetGroupedView({
       }
     };
 
-    const icon =
-      action.kind === "hydrate_intel" ? (
-        <Network className="w-3 h-3" />
-      ) : action.kind === "add_child" ? (
-        <Building2 className="w-3 h-3" />
-      ) : action.kind === "review_scope" ? (
-        <Shield className="w-3 h-3" />
-      ) : action.kind === "choose_next_step" ? (
-        <Info className="w-3 h-3" />
-      ) : (
-        <Crosshair className="w-3 h-3" />
-      );
+    const isAssetIntelAction = isAssetIntelOrgAction(action.kind);
+    const isAnyAssetIntelRunOnNode = isAssetIntelAction && hydratingOrgId === node.id;
+    const isHydrating = isAnyAssetIntelRunOnNode && hydratingAction === action.kind;
+    const icon = isHydrating ? (
+      <Loader2 className="w-3 h-3 animate-spin" />
+    ) : action.kind === "hydrate_subsidiaries" ? (
+      <Network className="w-3 h-3" />
+    ) : action.kind === "enrich_organization" ? (
+      <Wifi className="w-3 h-3" />
+    ) : action.kind === "add_child" ? (
+      <Building2 className="w-3 h-3" />
+    ) : action.kind === "review_scope" ? (
+      <Shield className="w-3 h-3" />
+    ) : action.kind === "choose_next_step" ? (
+      <Info className="w-3 h-3" />
+    ) : (
+      <Crosshair className="w-3 h-3" />
+    );
 
     return (
       <button
@@ -611,13 +1331,15 @@ export function TargetGroupedView({
         type="button"
         className={cn(
           "p-1 rounded hover:bg-muted/50 text-muted-foreground transition-colors",
-          action.kind === "hydrate_intel" && "hover:text-blue-400",
+          action.kind === "hydrate_subsidiaries" && "hover:text-blue-400",
+          action.kind === "enrich_organization" && "hover:text-cyan-400",
           action.kind === "import_targets" && "hover:text-green-400",
           action.kind === "review_scope" && "hover:text-amber-400",
           action.kind === "choose_next_step" && "hover:text-accent",
           action.kind === "add_child" && "hover:text-accent"
         )}
         onClick={runAction}
+        disabled={isAnyAssetIntelRunOnNode}
         title={action.label}
       >
         {icon}
@@ -640,11 +1362,32 @@ export function TargetGroupedView({
     const workspace = getWorkspaceModel(selectedMode);
     const engagementRecord = getEngagementRecord(selectedOrg);
     const engagementDetails = getEngagementDetails(engagementRecord);
-    const candidateCounts = getCandidateCounts(engagementRecord);
+    const hydrateRun = hydrateRuns[selectedOrg.id];
+    const hydrateError = hydrateErrors[selectedOrg.id];
+    const selectedActivity = hydrateActivity[selectedOrg.id];
+    const isHydratingSelected = hydratingOrgId === selectedOrg.id;
+    const selectedOrgIsChild = Boolean(selectedOrg.parent_id);
+    const candidatePhase =
+      selectedMode === "discover_assets" ? (selectedOrgIsChild ? "enrichment" : "discovery") : null;
+    const candidateSourceFilter = getCandidateSourceFilter(assetProviders, candidatePhase);
+    const visibleCandidates = getVisibleCandidateBuckets(
+      engagementRecord,
+      candidatePhase,
+      candidateSourceFilter
+    );
+    const organizationCandidates = visibleCandidates.organizations;
+    const targetCandidates = visibleCandidates.targets;
+    const candidateCounts = {
+      organizations: organizationCandidates.length,
+      targets: targetCandidates.length,
+    };
     const inScopeCount = selectedTargets.filter((target) => target.scope === "in").length;
     const outScopeCount = selectedTargets.filter((target) => target.scope === "out").length;
     const badge = selectedMode ? ENGAGEMENT_BADGES[selectedMode] : null;
     const fieldGroups = getOrgFieldGroups(selectedOrg);
+    const selectedOrgActions = getOrgActionModel(selectedMode, {
+      isChild: selectedOrgIsChild,
+    });
 
     return (
       <div className="h-full overflow-y-auto p-3 space-y-3">
@@ -723,12 +1466,153 @@ export function TargetGroupedView({
 
         {workspaceTab === "activity" && (
           <section className="rounded border border-border/35 bg-muted/5 p-3">
-            <h4 className="text-xs font-medium text-foreground">Activity</h4>
-            <p className="mt-1 text-[10px] text-muted-foreground/70">
-              Import, hydrate, candidate review, and recon runs will appear here.
-            </p>
-            <div className="mt-3 rounded border border-dashed border-border/35 p-3 text-center">
-              <p className="text-[11px] text-muted-foreground">No activity yet.</p>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h4 className="text-xs font-medium text-foreground">Asset intel activity</h4>
+                <p className="mt-1 text-[10px] text-muted-foreground/70">
+                  Discover subsidiaries first, then enrich approved organizations with asset fields.
+                </p>
+              </div>
+              {selectedMode === "discover_assets" && (
+                <div className="flex flex-wrap justify-end gap-1">
+                  {[selectedOrgActions.primary, selectedOrgActions.secondary]
+                    .filter(isAssetIntelOrgActionItem)
+                    .map((action) => (
+                      <button
+                        key={`activity:${action.kind}`}
+                        type="button"
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded border px-2 py-1 text-[10px]",
+                          action.kind === "hydrate_subsidiaries"
+                            ? "border-blue-500/30 bg-blue-500/10 text-blue-300 hover:bg-blue-500/15"
+                            : "border-cyan-500/30 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/15",
+                          isHydratingSelected && "opacity-70"
+                        )}
+                        disabled={isHydratingSelected}
+                        onClick={() => void handleRunAssetIntel(selectedOrg, action.kind)}
+                      >
+                        {isHydratingSelected && hydratingAction === action.kind ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : action.kind === "hydrate_subsidiaries" ? (
+                          <Network className="w-3 h-3" />
+                        ) : (
+                          <Wifi className="w-3 h-3" />
+                        )}
+                        {action.label}
+                      </button>
+                    ))}
+                </div>
+              )}
+            </div>
+
+            {hydrateError && (
+              <div className="mt-3 rounded border border-red-500/30 bg-red-500/5 p-2 text-[11px] text-red-300">
+                {hydrateError}
+              </div>
+            )}
+
+            {isHydratingSelected && (
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center gap-2 rounded border border-blue-500/25 bg-blue-500/5 p-2 text-[11px] text-blue-300">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Running asset intel providers
+                  {selectedActivity?.runId && (
+                    <span className="ml-auto text-[9px] uppercase tracking-wide text-blue-300/70">
+                      run {selectedActivity.runId.slice(0, 8)}
+                    </span>
+                  )}
+                </div>
+                {selectedActivity?.providerOrder.map((providerId) => {
+                  const activity = selectedActivity.providers[providerId];
+                  if (!activity) return null;
+                  return (
+                    <div
+                      key={`activity:${providerId}`}
+                      className={cn(
+                        "rounded border bg-background/40 p-2",
+                        activity.state === "completed" && activity.status
+                          ? getProviderStatusClass(activity.status.status)
+                          : "border-blue-500/25"
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="font-medium">{activity.displayName}</span>
+                        <span className="text-[10px] uppercase tracking-wide opacity-75">
+                          {activity.state === "running"
+                            ? (activity.runtime ?? "running")
+                            : (activity.status?.status ?? "completed")}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center gap-3 text-[10px] text-muted-foreground">
+                        <span>{activity.candidateCount} candidates</span>
+                        <span>{activity.batchCount} batches</span>
+                      </div>
+                      {activity.recentMessages.length > 0 && (
+                        <ul className="mt-1 space-y-0.5 text-[10px] text-muted-foreground/90 max-h-32 overflow-auto">
+                          {activity.recentMessages.map((line, idx) => (
+                            <li
+                              key={`${providerId}:msg:${idx}`}
+                              className="font-mono whitespace-pre-wrap break-words"
+                            >
+                              {line}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {!isHydratingSelected && !hydrateRun && !hydrateError && (
+              <div className="mt-3 rounded border border-dashed border-border/35 p-3 text-center">
+                <p className="text-[11px] text-muted-foreground">No asset intel run yet.</p>
+              </div>
+            )}
+
+            {assetProviders.length > 0 && (
+              <div className="mt-3 rounded border border-border/30 bg-background/25 p-2">
+                <p className="text-[10px] font-medium text-muted-foreground">Available providers</p>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {assetProviders.map((provider) => (
+                    <span
+                      key={provider.id}
+                      className="rounded border border-border/35 bg-muted/10 px-1.5 py-0.5 text-[9px] text-muted-foreground"
+                    >
+                      {provider.displayName}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {hydrateRun && (
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between rounded border border-border/30 bg-background/35 p-2">
+                  <span className="text-[10px] text-muted-foreground">Last run</span>
+                  <span className="text-[10px] text-foreground">{hydrateRun.status}</span>
+                </div>
+                {hydrateRun.providerStatus.map((provider) => (
+                  <div
+                    key={`${hydrateRun.runId}:${provider.providerId}`}
+                    className={cn(
+                      "rounded border p-2 text-[11px]",
+                      getProviderStatusClass(provider.status)
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">{provider.providerId}</span>
+                      <span>{provider.status}</span>
+                    </div>
+                    <p className="mt-1 text-[10px] opacity-80">{provider.message}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="mt-3 rounded border border-border/30 bg-background/25 p-2 text-[10px] text-muted-foreground">
+              Candidates from asset intel runs stay out of active scan scope until approved and
+              promoted.
             </div>
           </section>
         )}
@@ -743,7 +1627,7 @@ export function TargetGroupedView({
               {fieldGroups.map((group) => (
                 <div
                   key={group.title}
-                  className="rounded border border-border/30 bg-background/35 p-2"
+                  className="rounded border border-border/30 bg-background/35 p-2.5"
                 >
                   <div className="flex items-center justify-between">
                     <p className="text-[11px] font-medium text-foreground">{group.title}</p>
@@ -751,22 +1635,9 @@ export function TargetGroupedView({
                       {group.fields.filter((item) => item.filled).length}/{group.fields.length}
                     </span>
                   </div>
-                  <div className="mt-1.5 grid grid-cols-2 gap-1">
+                  <div className="mt-2 space-y-2">
                     {group.fields.map((item) => (
-                      <div
-                        key={item.key}
-                        className="flex items-center justify-between gap-2 text-[10px]"
-                      >
-                        <span className="text-muted-foreground truncate">{item.label}</span>
-                        <span
-                          className={cn(
-                            "truncate",
-                            item.filled ? "text-foreground" : "text-muted-foreground/50"
-                          )}
-                        >
-                          {item.value}
-                        </span>
-                      </div>
+                      <OrgFieldRow key={item.key} field={item} />
                     ))}
                   </div>
                 </div>
@@ -835,8 +1706,7 @@ export function TargetGroupedView({
           >
             <h4 className="text-xs font-medium text-foreground">Discovery candidates</h4>
             <p className="text-[10px] text-muted-foreground/70 mt-1">
-              Candidate review is the next backend phase. Discovered subsidiaries and assets should
-              land here before they become in-scope targets.
+              Review discovered subsidiaries and assets before they become in-scope targets.
             </p>
             <div className="mt-3 grid grid-cols-2 gap-1.5">
               <div className="rounded border border-dashed border-border/40 p-2.5">
@@ -856,6 +1726,123 @@ export function TargetGroupedView({
                 </p>
               </div>
             </div>
+            {organizationCandidates.length + targetCandidates.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {[
+                  ["Organizations", organizationCandidates],
+                  ["Targets", targetCandidates],
+                ].map(([title, items]) => (
+                  <div key={title as string} className="space-y-1">
+                    <p className="text-[10px] font-medium text-muted-foreground">
+                      {title as string}
+                    </p>
+                    {(items as OrganizationCandidate[]).slice(0, 6).map((candidate) => {
+                      const candidateKey =
+                        candidate.id ?? `${candidate.kind}:${candidate.source}:${candidate.value}`;
+                      const updating = candidateUpdatingId === candidateKey;
+                      const promoting = candidatePromotingId === candidateKey;
+                      const evidenceRows = getEvidenceRawRows(candidate.evidence);
+                      const isExpanded = expandedCandidateIds.has(candidateKey);
+                      return (
+                        <div
+                          key={candidateKey}
+                          className="rounded border border-border/30 bg-background/35 p-2"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-[11px] text-foreground">
+                                {candidate.label || candidate.value}
+                              </p>
+                              <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                                {candidate.value}
+                              </p>
+                            </div>
+                            <span
+                              className={cn(
+                                "rounded px-1.5 py-0.5 text-[9px]",
+                                candidate.status === "approved"
+                                  ? "bg-green-500/10 text-green-300"
+                                  : candidate.status === "rejected"
+                                    ? "bg-red-500/10 text-red-300"
+                                    : "bg-amber-500/10 text-amber-300"
+                              )}
+                            >
+                              {candidate.status || "needs_review"}
+                            </span>
+                          </div>
+                          <div className="mt-2 flex items-center justify-between gap-2">
+                            <span className="text-[10px] text-muted-foreground">
+                              {candidate.source || "provider"} ·{" "}
+                              {Math.round((candidate.confidence ?? 0) * 100)}%
+                            </span>
+                            <div className="flex items-center gap-1">
+                              {evidenceRows.length > 0 && (
+                                <button
+                                  type="button"
+                                  aria-expanded={isExpanded}
+                                  className={cn(
+                                    "rounded border border-border/40 px-1.5 py-0.5 text-[9px] text-muted-foreground hover:bg-muted/30",
+                                    isExpanded && "border-accent/40 text-accent"
+                                  )}
+                                  onClick={() => {
+                                    setExpandedCandidateIds((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(candidateKey)) next.delete(candidateKey);
+                                      else next.add(candidateKey);
+                                      return next;
+                                    });
+                                  }}
+                                >
+                                  {isExpanded ? "Hide" : "Details"}
+                                </button>
+                              )}
+                              {candidate.status === "approved" && (
+                                <button
+                                  type="button"
+                                  className="rounded border border-blue-500/25 px-1.5 py-0.5 text-[9px] text-blue-300 hover:bg-blue-500/10 disabled:opacity-50"
+                                  disabled={promoting}
+                                  onClick={() => void handlePromoteCandidate(candidate)}
+                                >
+                                  {promoting ? "Promoting" : "Promote"}
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="rounded border border-green-500/25 px-1.5 py-0.5 text-[9px] text-green-300 hover:bg-green-500/10 disabled:opacity-50"
+                                disabled={updating || candidate.status === "approved"}
+                                onClick={() => void handleCandidateStatus(candidate, "approved")}
+                              >
+                                Approve
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded border border-red-500/25 px-1.5 py-0.5 text-[9px] text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                                disabled={updating || candidate.status === "rejected"}
+                                onClick={() => void handleCandidateStatus(candidate, "rejected")}
+                              >
+                                Reject
+                              </button>
+                            </div>
+                          </div>
+                          {isExpanded && evidenceRows.length > 0 && (
+                            <dl className="mt-2 grid grid-cols-[120px_1fr] gap-x-2 gap-y-1 rounded border border-dashed border-border/40 bg-muted/10 p-2 text-[10px]">
+                              {evidenceRows.map((row) => (
+                                <div key={`${candidateKey}:${row.field}`} className="contents">
+                                  <dt className="text-muted-foreground">{row.label}</dt>
+                                  <dd className="break-all text-foreground/85 font-mono">
+                                    {row.value}
+                                  </dd>
+                                </div>
+                              ))}
+                            </dl>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
         )}
 
@@ -1205,9 +2192,11 @@ export function TargetGroupedView({
     const isUnassigned = node.id === UNASSIGNED_KEY;
     const isEditingThis = editingOrgId === node.id;
     const orgRow = orgs.find((o) => o.id === node.id);
-    const engagementMode = getEngagementMode(orgRow);
+    const engagementMode = getEffectiveEngagementMode(orgRow, orgs);
     const badge = engagementMode ? ENGAGEMENT_BADGES[engagementMode] : null;
-    const actionModel = getOrgActionModel(engagementMode);
+    const actionModel = getOrgActionModel(engagementMode, {
+      isChild: Boolean(orgRow?.parent_id),
+    });
 
     return (
       <div key={node.id}>

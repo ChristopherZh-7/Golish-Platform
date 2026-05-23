@@ -1,5 +1,5 @@
-import { invoke } from "./client";
 import type { TerminalGridUpdatePayload } from "@/lib/events/payloads";
+import { invoke } from "./client";
 
 export interface PtySession {
   id: string;

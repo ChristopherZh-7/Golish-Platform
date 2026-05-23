@@ -442,6 +442,12 @@ pub enum CaptureRule {
     /// drops the user back on `aiqicha.baidu.com/` root after two-factor
     /// auth) and we need an independent signal that the user actually
     /// finished logging in. Defaults to empty = no enforcement.
+    ///
+    /// `min_count` is a looser login-state proof for providers whose
+    /// stable login cookie names are not known yet. It counts the
+    /// cookies selected by `names` (or all domain cookies when
+    /// `names=[]`) and lets capture soft-retry until enough cookies are
+    /// present. Defaults to 0 = no minimum.
     CookieJoined {
         domain: String,
         names: Vec<String>,
@@ -454,6 +460,8 @@ pub enum CaptureRule {
         required: bool,
         #[serde(default)]
         required_names: Vec<String>,
+        #[serde(default)]
+        min_count: usize,
     },
 
     /// Read `localStorage[key]` via `WebviewWindow::eval_with_callback`.
@@ -789,6 +797,7 @@ mod tests {
             target_field: "f.b".into(),
             required: false,
             required_names: vec![],
+            min_count: 0,
         };
         assert_eq!(cookie_joined.target_field(), "f.b");
         assert!(!cookie_joined.required());

@@ -1,5 +1,5 @@
-import { ChevronDown, MessageSquare, Search, Users, Zap } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { ChevronDown, MessageSquare, Search, Users, Zap } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import {
   DropdownMenu,
@@ -7,7 +7,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { listExecutionModes, type AgentMode, type ExecutionModeDescriptor } from "@/lib/ai";
+import { type AgentMode, type ExecutionModeDescriptor, listExecutionModes } from "@/lib/ai";
 import { cn } from "@/lib/utils";
 
 const ICON_MAP: Record<string, LucideIcon> = {

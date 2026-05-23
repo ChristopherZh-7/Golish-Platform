@@ -63,12 +63,12 @@
         {
           "id": "tyc",
           "name": "天眼查 (TYC)",
-          "description": "TYC needs three values together: full Cookie, the X-Tycid header, and the Auth token. All three can be captured from a logged-in tianyancha.com session.",
+          "description": "TYC needs three values together: full Cookie, the TYCID cookie, and the auth_token cookie. All three can be captured from a logged-in tianyancha.com session.",
           "help_url": "https://github.com/wgpsec/ENScan_GO#tyc",
           "fields": [
-            { "key": "cookies.tianyancha", "label": "Cookie", "type": "secret_textarea", "required": true, "rows": 4 },
-            { "key": "cookies.tycid", "label": "tycid", "type": "secret_text", "required": true, "placeholder": "X-Tycid value" },
-            { "key": "cookies.auth_token", "label": "auth_token", "type": "secret_text", "required": true, "placeholder": "Authorization header value" }
+            { "key": "cookies.tyc", "label": "Cookie", "type": "secret_textarea", "required": true, "rows": 4 },
+            { "key": "tyc.tycid", "label": "tycid", "type": "secret_text", "required": true, "placeholder": "TYCID cookie value" },
+            { "key": "tyc.auth_token", "label": "auth_token", "type": "secret_text", "required": true, "placeholder": "auth_token cookie value" }
           ],
           "test": {
             "kind": "exec",
@@ -78,10 +78,10 @@
             "timeout_secs": 60
           },
           "capture": {
-            "login_url": "https://www.tianyancha.com/",
+            "login_url": "https://www.tianyancha.com/search?key=%E5%B0%8F%E7%B1%B3",
             "success_url_pattern": "tianyancha\\.com",
             "timeout_secs": 300,
-            "instructions": "登录天眼查后，Golish 会自动提取完整 Cookie，并监听页面请求中显式设置的 X-Tycid / Authorization 头，分别写入 cookies.tianyancha / cookies.tycid / cookies.auth_token。",
+            "instructions": "登录天眼查后，Golish 会打开搜索探针页以确认登录态，并自动提取完整 Cookie、TYCID cookie 和 auth_token cookie，分别写入 cookies.tyc / tyc.tycid / tyc.auth_token。",
             "rules": [
               {
                 "type": "cookie_joined",
@@ -89,21 +89,21 @@
                 "names": [],
                 "sep": "; ",
                 "fmt": "{name}={value}",
-                "target_field": "cookies.tianyancha",
+                "target_field": "cookies.tyc",
                 "required": true
               },
               {
-                "type": "request_header",
-                "name": "X-Tycid",
-                "url_pattern": "tianyancha\\.com",
-                "target_field": "cookies.tycid",
+                "type": "cookie",
+                "domain": ".tianyancha.com",
+                "name": "TYCID",
+                "target_field": "tyc.tycid",
                 "required": true
               },
               {
-                "type": "request_header",
-                "name": "Authorization",
-                "url_pattern": "tianyancha\\.com",
-                "target_field": "cookies.auth_token",
+                "type": "cookie",
+                "domain": ".tianyancha.com",
+                "name": "auth_token",
+                "target_field": "tyc.auth_token",
                 "required": true
               }
             ]
@@ -133,7 +133,7 @@
             "login_url": "https://www.qimai.cn/",
             "success_url_pattern": "qimai\\.cn",
             "timeout_secs": 300,
-            "instructions": "登录七麦数据后，Golish 会自动提取 qimai.cn 相关 Cookie 并写入 cookies.qimai 字段。",
+            "instructions": "登录七麦数据后，Golish 会等到 USERINFO 和 aso_ucenter 这两个登录态 cookie 出现，再自动提取 qimai.cn 相关 Cookie 并写入 cookies.qimai 字段。若只看到 synct/syncd/qm_check/PHPSESSID，说明还没真正登录成功，窗口会继续等待。",
             "rules": [
               {
                 "type": "cookie_joined",
@@ -142,7 +142,9 @@
                 "sep": "; ",
                 "fmt": "{name}={value}",
                 "target_field": "cookies.qimai",
-                "required": true
+                "required": true,
+                "required_names": ["USERINFO", "aso_ucenter"],
+                "min_count": 2
               }
             ]
           }
@@ -180,7 +182,8 @@
                 "sep": "; ",
                 "fmt": "{name}={value}",
                 "target_field": "cookies.risk_bird",
-                "required": true
+                "required": true,
+                "min_count": 3
               }
             ]
           }
@@ -252,6 +255,252 @@
         "intel"
       ]
     },
+    "asset_intel_providers": [
+      {
+        "enabled": true,
+        "provider_id": "enscan-go",
+        "display_name": "ENScan_GO",
+        "capabilities": ["subsidiaries"],
+        "requires_integration": {
+          "tool_id": "enscan-go",
+          "group_ids": ["aqc"]
+        },
+        "auto": {
+          "default": true,
+          "priority": 100
+        },
+        "discovery": {
+          "auto_promote": true,
+          "promote_when": [
+            { "field": "scale", "op": "gte", "value": "51" },
+            { "field": "status", "op": "contains", "value": "开业" }
+          ],
+          "ownership_field": "scale",
+          "dedupe_by": ["pid", "name"]
+        },
+        "runtime": {
+          "kind": "cli_json",
+          "skill_id": "company-default-json",
+          "timeout_secs": 180,
+          "artifact_globs": ["**/*.json"],
+          "arg_bindings": {
+            "min_ownership_percent": "-invest {{config.min_ownership_percent}}",
+            "depth": "-deep {{config.depth}}",
+            "include_branches": "-branch"
+          }
+        },
+        "lookup": {
+          "enabled": true,
+          "skill_id": "company-lookup-json",
+          "timeout_secs": 60,
+          "normalize": {
+            "path": "$..enterprise_info[*]",
+            "name": "name",
+            "credit_code": "reg_code",
+            "legal_representative": "legal_person",
+            "address": "address",
+            "registered_at": "incorporation_date",
+            "default_confidence": 0.68
+          }
+        },
+        "normalize": {
+          "organization": [
+            { "path": "$..invest[*]", "label": "name", "value": "name", "confidence": 0.82 },
+            { "path": "$..holds[*]", "label": "name", "value": "name", "confidence": 0.82 },
+            { "path": "$..branch[*]", "label": "name", "value": "name", "confidence": 0.78 }
+          ],
+          "target": [
+            { "path": "$..icp[*]", "label": "domain", "value": "domain", "confidence": 0.78 },
+            { "path": "$..app[*]", "label": "name", "value": ["link", "app_url", "name"], "confidence": 0.68 },
+            { "path": "$..wx_app[*]", "label": "name", "value": ["app_id", "name"], "confidence": 0.68 },
+            { "path": "$..wechat[*]", "label": "name", "value": ["wechat_id", "id", "name"], "confidence": 0.62 },
+            { "path": "$..weibo[*]", "label": "name", "value": ["weibo_id", "id", "name"], "confidence": 0.62 }
+          ],
+          "profile_fields": [
+            { "path": "$..enterprise_info[*]", "source_field": "reg_code", "target_field": "credit_code", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "legal_person", "target_field": "legal_representative", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "address", "target_field": "registered_address", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "incorporation_date", "target_field": "registered_at", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "registered_capital", "target_field": "registered_capital", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "status", "target_field": "business_status", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "pid", "target_field": "aqc_pid", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "email", "target_field": "email", "target_kind": "contact", "transform": "lower", "when": [{ "field": "email", "op": "ne", "value": "-" }] },
+            { "path": "$..enterprise_info[*]", "source_field": "phone", "target_field": "phone", "target_kind": "contact", "transform": "trim", "when": [{ "field": "phone", "op": "ne", "value": "-" }] }
+          ]
+        }
+      },
+      {
+        "enabled": true,
+        "provider_id": "enscan-go-enrichment",
+        "display_name": "ENScan_GO · AQC Enrichment",
+        "capabilities": ["domains", "icp", "apps", "mini_programs", "social_accounts", "contacts"],
+        "requires_integration": {
+          "tool_id": "enscan-go",
+          "group_ids": ["aqc"]
+        },
+        "auto": {
+          "default": true,
+          "priority": 80
+        },
+        "runtime": {
+          "kind": "cli_json",
+          "skill_id": "company-enrichment-json",
+          "timeout_secs": 180,
+          "artifact_globs": ["**/*.json"]
+        },
+        "normalize": {
+          "target": [
+            { "path": "$..icp[*]", "label": "domain", "value": "domain", "confidence": 0.78 },
+            { "path": "$..app[*]", "label": "name", "value": ["link", "app_url", "name"], "confidence": 0.68 },
+            { "path": "$..wx_app[*]", "label": "name", "value": ["app_id", "name"], "confidence": 0.68 },
+            { "path": "$..wechat[*]", "label": "name", "value": ["wechat_id", "id", "name"], "confidence": 0.62 },
+            { "path": "$..weibo[*]", "label": "name", "value": ["weibo_id", "id", "name"], "confidence": 0.62 }
+          ],
+          "profile_fields": [
+            { "path": "$..enterprise_info[*]", "source_field": "reg_code", "target_field": "credit_code", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "legal_person", "target_field": "legal_representative", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "address", "target_field": "registered_address", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "incorporation_date", "target_field": "registered_at", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "registered_capital", "target_field": "registered_capital", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "status", "target_field": "business_status", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "scope", "target_field": "business_scope", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "pid", "target_field": "aqc_pid", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..enterprise_info[*]", "source_field": "email", "target_field": "email", "target_kind": "contact", "transform": "lower", "when": [{ "field": "email", "op": "ne", "value": "-" }] },
+            { "path": "$..enterprise_info[*]", "source_field": "phone", "target_field": "phone", "target_kind": "contact", "transform": "trim", "when": [{ "field": "phone", "op": "ne", "value": "-" }] },
+            { "path": "$..icp[*]", "source_field": "domain", "target_field": "domains", "transform": "lower" },
+            { "path": "$..icp[*]", "source_field": "website", "target_field": "business_systems", "transform": "lower" },
+            { "path": "$..icp[*]", "source_field": "icp", "target_field": "icp_records", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..app[*]", "source_field": ["name", "link", "app_url"], "target_field": "business_systems", "transform": "trim" },
+            { "path": "$..wx_app[*]", "source_field": ["name", "app_id"], "target_field": "business_systems", "transform": "trim" },
+            { "path": "$..wechat[*]", "source_field": ["wechat_id", "id", "name"], "target_field": "social_accounts", "transform": "trim" },
+            { "path": "$..weibo[*]", "source_field": ["profile_url", "weibo_id", "id", "name"], "target_field": "social_accounts", "transform": "trim" }
+          ]
+        }
+      },
+      {
+        "enabled": true,
+        "provider_id": "enscan-go-tyc-discovery",
+        "display_name": "ENScan_GO · TYC Discovery",
+        "capabilities": ["subsidiaries"],
+        "requires_integration": {
+          "tool_id": "enscan-go",
+          "group_ids": ["tyc"]
+        },
+        "auto": {
+          "default": false,
+          "priority": 95
+        },
+        "discovery": {
+          "auto_promote": true,
+          "promote_when": [
+            { "field": "scale", "op": "gte", "value": "51" },
+            { "field": "status", "op": "contains", "value": "开业" }
+          ],
+          "ownership_field": "scale",
+          "dedupe_by": ["pid", "name"]
+        },
+        "runtime": {
+          "kind": "cli_json",
+          "skill_id": "company-default-json-tyc",
+          "timeout_secs": 180,
+          "artifact_globs": ["**/*.json"],
+          "arg_bindings": {
+            "min_ownership_percent": "-invest {{config.min_ownership_percent}}",
+            "depth": "-deep {{config.depth}}",
+            "include_branches": "-branch"
+          }
+        },
+        "normalize": {
+          "organization": [
+            { "path": "$..invest[*]", "label": "name", "value": "name", "confidence": 0.82 },
+            { "path": "$..holds[*]", "label": "name", "value": "name", "confidence": 0.82 },
+            { "path": "$..branch[*]", "label": "name", "value": "name", "confidence": 0.78 }
+          ]
+        }
+      },
+      {
+        "enabled": true,
+        "provider_id": "enscan-go-kc-discovery",
+        "display_name": "ENScan_GO · KC Discovery",
+        "capabilities": ["subsidiaries"],
+        "requires_integration": {
+          "tool_id": "enscan-go",
+          "group_ids": ["kc"]
+        },
+        "auto": {
+          "default": true,
+          "priority": 90
+        },
+        "discovery": {
+          "auto_promote": true,
+          "promote_when": [
+            { "field": "scale", "op": "gte", "value": "51" },
+            { "field": "status", "op": "contains", "value": "开业" }
+          ],
+          "ownership_field": "scale",
+          "dedupe_by": ["pid", "name"]
+        },
+        "runtime": {
+          "kind": "cli_json",
+          "skill_id": "company-default-json-kc",
+          "timeout_secs": 180,
+          "artifact_globs": ["**/*.json"],
+          "arg_bindings": {
+            "min_ownership_percent": "-invest {{config.min_ownership_percent}}",
+            "depth": "-deep {{config.depth}}",
+            "include_branches": "-branch"
+          }
+        },
+        "normalize": {
+          "organization": [
+            { "path": "$..invest[*]", "label": "name", "value": "name", "confidence": 0.82 },
+            { "path": "$..holds[*]", "label": "name", "value": "name", "confidence": 0.82 },
+            { "path": "$..branch[*]", "label": "name", "value": "name", "confidence": 0.78 }
+          ]
+        }
+      },
+      {
+        "enabled": true,
+        "provider_id": "enscan-go-rb-discovery",
+        "display_name": "ENScan_GO · RB Discovery",
+        "capabilities": ["subsidiaries"],
+        "requires_integration": {
+          "tool_id": "enscan-go",
+          "group_ids": ["rb"]
+        },
+        "auto": {
+          "default": true,
+          "priority": 85
+        },
+        "discovery": {
+          "auto_promote": true,
+          "promote_when": [
+            { "field": "scale", "op": "gte", "value": "51" },
+            { "field": "status", "op": "contains", "value": "开业" }
+          ],
+          "ownership_field": "scale",
+          "dedupe_by": ["pid", "name"]
+        },
+        "runtime": {
+          "kind": "cli_json",
+          "skill_id": "company-default-json-rb",
+          "timeout_secs": 180,
+          "artifact_globs": ["**/*.json"],
+          "arg_bindings": {
+            "min_ownership_percent": "-invest {{config.min_ownership_percent}}",
+            "depth": "-deep {{config.depth}}",
+            "include_branches": "-branch"
+          }
+        },
+        "normalize": {
+          "organization": [
+            { "path": "$..invest[*]", "label": "name", "value": "name", "confidence": 0.82 },
+            { "path": "$..holds[*]", "label": "name", "value": "name", "confidence": 0.82 },
+            { "path": "$..branch[*]", "label": "name", "value": "name", "confidence": 0.78 }
+          ]
+        }
+      }
+    ],
     "params": [
       {
         "description": "Company keyword or full legal name",
@@ -408,14 +657,54 @@
         ]
       },
       {
-        "args": "-n \"{{org}}\" -type aqc -field icp,app,wx_app,wechat -delay 3 -json -out-dir enscan-output",
-        "description": "Collect default enterprise intelligence as JSON: ICP, apps, mini-programs, and WeChat accounts.",
+        "args": "-n \"{{org}}\" -type aqc -field invest -delay 3 -json -out-dir \"{{out_dir}}\"",
+        "description": "Collect child-company discovery data as JSON: investments by default, with optional branch data when -branch is enabled by config.",
         "id": "company-default-json",
         "name": "Company profile JSON",
         "tags": [
           "enterprise",
           "json",
           "default"
+        ]
+      },
+      {
+        "args": "-n \"{{org}}\" -type aqc -field icp,app,wx_app,wechat,weibo -delay 3 -json -out-dir \"{{out_dir}}\"",
+        "description": "Collect profile enrichment fields for one approved organization: ICP domains, apps, mini programs, and social accounts.",
+        "id": "company-enrichment-json",
+        "name": "Company enrichment JSON",
+        "tags": ["enterprise", "json", "enrichment"]
+      },
+      {
+        "args": "-n \"{{org}}\" -type tyc -field invest -delay 3 -json -out-dir \"{{out_dir}}\"",
+        "description": "Collect Tianyancha child-company discovery data as JSON: investments by default, with optional branch data when -branch is enabled by config.",
+        "id": "company-default-json-tyc",
+        "name": "TYC company investment JSON",
+        "tags": ["enterprise", "json", "tyc", "subsidiary"]
+      },
+      {
+        "args": "-n \"{{org}}\" -type kc -field invest -delay 3 -json -out-dir \"{{out_dir}}\"",
+        "description": "Collect KC/Qimai child-company discovery data as JSON: investments by default, with optional branch data when -branch is enabled by config.",
+        "id": "company-default-json-kc",
+        "name": "KC company investment JSON",
+        "tags": ["enterprise", "json", "kc", "qimai", "subsidiary"]
+      },
+      {
+        "args": "-n \"{{org}}\" -type rb -field invest -delay 3 -json -out-dir \"{{out_dir}}\"",
+        "description": "Collect RiskBird child-company discovery data as JSON: investments by default, with optional branch data when -branch is enabled by config.",
+        "id": "company-default-json-rb",
+        "name": "RB company investment JSON",
+        "tags": ["enterprise", "json", "rb", "riskbird", "subsidiary"]
+      },
+      {
+        "args": "-n \"{{keyword}}\" -type aqc -field icp -delay 3 -json -out-dir \"{{out_dir}}\"",
+        "description": "Lightweight company lookup for disambiguation. Only fetches enterprise_info via ICP query so the UI can list canonical matches before a full hydrate.",
+        "id": "company-lookup-json",
+        "name": "Company lookup",
+        "tags": [
+          "enterprise",
+          "json",
+          "lookup",
+          "disambiguation"
         ]
       },
       {

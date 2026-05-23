@@ -9,10 +9,10 @@ import {
   Search,
   X,
 } from "lucide-react";
-import type { WikiPageInfo, WikiTreeNode } from "@/lib/wiki";
 import { cn } from "@/lib/utils";
-import { CATEGORY_ICONS, CATEGORY_ORDER, filterTree, STATUS_COLORS } from "./useWikiTab";
+import type { WikiPageInfo, WikiTreeNode } from "@/lib/wiki";
 import type { VulnLink } from "./types";
+import { CATEGORY_ICONS, CATEGORY_ORDER, filterTree, STATUS_COLORS } from "./useWikiTab";
 
 interface WikiSidebarProps {
   link: VulnLink;

@@ -589,8 +589,7 @@ impl PtyManager {
                             if pty_dump_emit_enabled && pty_dump_emits_counter < pty_dump_emit_cap {
                                 pty_dump_emits_counter += 1;
                                 const MAX_DUMP: usize = 512;
-                                let preview =
-                                    &output.as_bytes()[..output.as_bytes().len().min(MAX_DUMP)];
+                                let preview = &output.as_bytes()[..output.len().min(MAX_DUMP)];
                                 tracing::info!(
                                     session_id = %output_session_id,
                                     emit_seq = pty_dump_emits_counter,

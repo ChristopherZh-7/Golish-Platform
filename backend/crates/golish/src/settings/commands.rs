@@ -100,12 +100,20 @@ pub async fn save_window_state(
     y: Option<i32>,
     maximized: bool,
 ) -> Result<(), GolishError> {
+    let normalized = crate::window_state::normalize_persisted_window_state(
+        width as f64,
+        height as f64,
+        x.map(|x| x as f64),
+        y.map(|y| y as f64),
+        maximized,
+    );
+
     let mut settings = state.settings_manager.get().await;
-    settings.ui.window.width = width;
-    settings.ui.window.height = height;
-    settings.ui.window.x = x;
-    settings.ui.window.y = y;
-    settings.ui.window.maximized = maximized;
+    settings.ui.window.width = normalized.width;
+    settings.ui.window.height = normalized.height;
+    settings.ui.window.x = normalized.x;
+    settings.ui.window.y = normalized.y;
+    settings.ui.window.maximized = normalized.maximized;
 
     state
         .settings_manager

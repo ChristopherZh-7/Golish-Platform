@@ -288,6 +288,22 @@ impl CaptureEngine {
         s.transition(CaptureState::WaitingLogin);
     }
 
+    fn spawn_soft_retry_probe(app: tauri::AppHandle, session_id: String) {
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            use tauri::Manager;
+            let engine = app.state::<Arc<CaptureEngine>>();
+            let engine = engine.inner().clone();
+            if let Err(e) = engine.try_extract(&app, &session_id).await {
+                tracing::debug!(
+                    session_id = %session_id,
+                    error = %e,
+                    "capture: delayed soft-retry probe could not extract yet"
+                );
+            }
+        });
+    }
+
     async fn deliver_js_value(&self, nonce: &str, value: Result<String, String>) {
         let sender = self.js_value_waiters.write().await.remove(nonce);
         if let Some(sender) = sender {
@@ -510,6 +526,7 @@ impl CaptureEngine {
                     "capture: required rule signalled soft-retry; webview stays open"
                 );
                 self.rearm_after_soft_retry(&handle).await;
+                Self::spawn_soft_retry_probe(app.clone(), session_id.to_string());
                 return Ok(());
             }
             self.transition_and_emit(
@@ -679,13 +696,13 @@ async fn extract_one(
             domain,
             name,
             target_field,
-            ..
+            required,
         } => {
             let cookies = fetch_domain_cookies(win, domain).await?;
             let value = cookies
                 .into_iter()
                 .find(|(n, _)| n == name)
-                .ok_or_else(|| format!("cookie '{name}' not found in domain '{domain}'"))?
+                .ok_or_else(|| cookie_failure_reason(domain, name, *required))?
                 .1;
             Ok((target_field.clone(), value))
         }
@@ -697,7 +714,8 @@ async fn extract_one(
             fmt,
             target_field,
             required_names,
-            ..
+            required,
+            min_count,
         } => {
             // `names = []` means "all cookies belonging to this domain
             // (or any subdomain) — wanted format = full Cookie header".
@@ -737,15 +755,16 @@ async fn extract_one(
             }
 
             let parts = format_joined_cookies(names, fmt, &cookies);
-            if parts.is_empty() {
-                let want_summary = if names.is_empty() {
-                    "<all>".to_string()
-                } else {
-                    format!("{names:?}")
-                };
-                return Err(format!(
-                    "no cookies matched for domain '{domain}' (wanted {want_summary})"
+            if *min_count > 0 && parts.len() < *min_count {
+                return Err(cookie_joined_min_count_failure_reason(
+                    domain,
+                    parts.len(),
+                    *min_count,
+                    *required,
                 ));
+            }
+            if parts.is_empty() {
+                return Err(cookie_joined_failure_reason(domain, names, *required));
             }
             let value = parts.join(sep);
             Ok((target_field.clone(), value))
@@ -827,7 +846,7 @@ async fn extract_one(
             name,
             url_pattern,
             target_field,
-            ..
+            required,
         } => {
             let name_js =
                 serde_json::to_string(&name.to_ascii_lowercase()).map_err(|e| e.to_string())?;
@@ -857,9 +876,59 @@ async fn extract_one(
             );
             let value = eval_js_value(win, &expression, 3000)
                 .await
-                .map_err(|e| format!("request header '{name}' not observed: {e}"))?;
+                .map_err(|e| request_header_failure_reason(name, &e, *required))?;
             Ok((target_field.clone(), value))
         }
+    }
+}
+
+fn request_header_failure_reason(name: &str, reason: &str, required: bool) -> String {
+    let message = format!("request header '{name}' not observed: {reason}");
+    if required && reason == "value was empty" {
+        format!(
+            "[SOFT_RETRY] {message} — likely still mid-login or no matching API request yet, waiting for next navigation"
+        )
+    } else {
+        message
+    }
+}
+
+fn cookie_failure_reason(domain: &str, name: &str, required: bool) -> String {
+    let message = format!("cookie '{name}' not found in domain '{domain}'");
+    if required {
+        format!("[SOFT_RETRY] {message} — likely still mid-login, waiting for next navigation")
+    } else {
+        message
+    }
+}
+
+fn cookie_joined_failure_reason(domain: &str, names: &[String], required: bool) -> String {
+    let want_summary = if names.is_empty() {
+        "<all>".to_string()
+    } else {
+        format!("{names:?}")
+    };
+    let message = format!("no cookies matched for domain '{domain}' (wanted {want_summary})");
+    if required {
+        format!("[SOFT_RETRY] {message} — likely still mid-login, waiting for next navigation")
+    } else {
+        message
+    }
+}
+
+fn cookie_joined_min_count_failure_reason(
+    domain: &str,
+    actual: usize,
+    expected: usize,
+    required: bool,
+) -> String {
+    let message = format!(
+        "not enough cookies matched for domain '{domain}' (got {actual}, need at least {expected})"
+    );
+    if required {
+        format!("[SOFT_RETRY] {message} — likely still mid-login, waiting for next navigation")
+    } else {
+        message
     }
 }
 
@@ -1227,6 +1296,50 @@ mod tests {
         assert_eq!(s.state, CaptureState::WaitingLogin);
         assert!(s.failed_rules.is_empty());
         assert!(s.captured_fields.is_empty());
+    }
+
+    #[test]
+    fn required_request_header_failures_are_soft_retryable() {
+        let reason = request_header_failure_reason("X-Tycid", "value was empty", true);
+
+        assert!(
+            reason.starts_with("[SOFT_RETRY]"),
+            "missing required request headers should keep the capture window open"
+        );
+        assert!(reason.contains("request header 'X-Tycid' not observed"));
+    }
+
+    #[test]
+    fn required_cookie_failures_are_soft_retryable() {
+        let reason = cookie_failure_reason(".qimai.cn", "QIMOSESSID", true);
+
+        assert!(
+            reason.starts_with("[SOFT_RETRY]"),
+            "missing required cookies should keep the capture window open"
+        );
+        assert!(reason.contains("cookie 'QIMOSESSID' not found"));
+    }
+
+    #[test]
+    fn required_cookie_joined_empty_matches_are_soft_retryable() {
+        let reason = cookie_joined_failure_reason(".riskbird.com", &[], true);
+
+        assert!(
+            reason.starts_with("[SOFT_RETRY]"),
+            "empty required cookie joins should keep the capture window open"
+        );
+        assert!(reason.contains("no cookies matched for domain '.riskbird.com'"));
+    }
+
+    #[test]
+    fn required_cookie_joined_min_count_failures_are_soft_retryable() {
+        let reason = cookie_joined_min_count_failure_reason(".qimai.cn", 1, 2, true);
+
+        assert!(
+            reason.starts_with("[SOFT_RETRY]"),
+            "anonymous cookie sets should keep the capture window open"
+        );
+        assert!(reason.contains("got 1, need at least 2"));
     }
 
     #[test]

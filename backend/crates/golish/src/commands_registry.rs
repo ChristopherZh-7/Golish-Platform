@@ -11,6 +11,7 @@
 // facade file. Keep this block alphabetical.
 
 use commands_facade::ai::*;
+use commands_facade::asset_intel::*;
 use commands_facade::findings::*;
 use commands_facade::git_pty::*;
 use commands_facade::indexer::*;
@@ -156,6 +157,9 @@ fn install_handlers(
         organization_move, organization_delete,
         vault_list, vault_add, vault_get_value, vault_update, vault_delete, vault_resolve, vault_validate, vault_update_status,
         project_export, project_import,
+        // ── asset_intel (Discover Assets provider abstraction) ─
+        asset_intel_list_providers, asset_intel_lookup_company, asset_intel_hydrate,
+        asset_intel_hydrate_subsidiaries, asset_intel_enrich_organization, asset_intel_enrich_batch,
         // ── intel_providers (ASM platforms · 0.zone / FOFA / Quake / ...) ─
         intel_list_providers, intel_test_connection, intel_query_provider,
         // ── integrations (schema-driven external-service credentials) ─

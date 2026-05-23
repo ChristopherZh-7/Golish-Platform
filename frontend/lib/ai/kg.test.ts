@@ -10,8 +10,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as client from "@/lib/api/client";
 import {
   groupEntitiesByType,
-  kgGetNeighbors,
   type KgEntity,
+  kgGetNeighbors,
   kgListEntities,
   kgSearchEntities,
 } from "./kg";

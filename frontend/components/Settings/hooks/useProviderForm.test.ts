@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_SETTINGS, type AiSettings } from "@/lib/settings";
+import { type AiSettings, DEFAULT_SETTINGS } from "@/lib/settings";
 import { useProviderForm } from "./useProviderForm";
 
 vi.mock("@/lib/model-registry", () => ({

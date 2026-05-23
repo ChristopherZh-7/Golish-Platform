@@ -6,11 +6,11 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Switch } from "@/components/ui/switch";
 import { shutdownAiSession } from "@/lib/ai";
 import { notifyModelOverrideChanged } from "@/lib/ai/model-overrides";
-import { getSettingsCached, updateSettings } from "@/lib/settings";
 import type { ModelOverride } from "@/lib/settings";
+import { getSettingsCached, updateSettings } from "@/lib/settings";
+import { cn } from "@/lib/utils";
 import { setStreamDebugEnabled } from "@/services/ai-events";
 import { useStore } from "@/store";
-import { cn } from "@/lib/utils";
 
 import { modelOverrideKey } from "./providerConfig";
 

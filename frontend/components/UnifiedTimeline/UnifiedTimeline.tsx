@@ -112,7 +112,6 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
       cancelAnimationFrame(id);
       ro?.disconnect();
     };
-    // biome-ignore lint/correctness/useExhaustiveDependencies: re-run on session change
   }, [sessionId]);
 
   // -- Mount snap-to-bottom on session change ----------------------

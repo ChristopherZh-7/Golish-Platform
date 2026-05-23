@@ -1,11 +1,11 @@
 import { Crosshair, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { PipelineLauncher } from "@/components/TargetPanel/PipelineLauncher";
 import { getProjectPath } from "@/lib/projects";
 import { securityApi } from "@/lib/security";
 import { NucleiSection } from "./NucleiSection";
 import { ScanTimeline } from "./ScanTimeline";
 import { StyledSelect } from "./shared";
-import { PipelineLauncher } from "@/components/TargetPanel/PipelineLauncher";
 
 interface TargetOption {
   id: string;

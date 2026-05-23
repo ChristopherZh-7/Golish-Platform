@@ -1,5 +1,8 @@
 use golish_settings::WindowSettings;
 
+pub const MIN_WINDOW_WIDTH: u32 = 640;
+pub const MIN_WINDOW_HEIGHT: u32 = 480;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NormalizedWindowState {
     pub width: u32,
@@ -35,8 +38,8 @@ pub fn normalize_persisted_window_state(
     y: Option<f64>,
     maximized: bool,
 ) -> NormalizedWindowState {
-    let width = width.round().max(1.0) as u32;
-    let height = height.round().max(1.0) as u32;
+    let width = width.round().max(MIN_WINDOW_WIDTH as f64) as u32;
+    let height = height.round().max(MIN_WINDOW_HEIGHT as f64) as u32;
 
     NormalizedWindowState {
         width,
@@ -64,8 +67,12 @@ pub fn compute_restore_action(
             let mut width = ws.width as f64;
             let mut height = ws.height as f64;
 
-            width = width.min(monitor.width).max(1.0);
-            height = height.min(monitor.height).max(1.0);
+            width = width
+                .min(monitor.width)
+                .max(MIN_WINDOW_WIDTH.min(monitor.width as u32) as f64);
+            height = height
+                .min(monitor.height)
+                .max(MIN_WINDOW_HEIGHT.min(monitor.height as u32) as f64);
 
             let (x, y) = match (ws.x, ws.y) {
                 (Some(x), Some(y)) => {
@@ -88,8 +95,8 @@ pub fn compute_restore_action(
             })
         }
         None => Some(RestoreAction::Bounds {
-            width: ws.width as f64,
-            height: ws.height as f64,
+            width: (ws.width.max(MIN_WINDOW_WIDTH)) as f64,
+            height: (ws.height.max(MIN_WINDOW_HEIGHT)) as f64,
             x: ws.x.map(|x| x as f64),
             y: ws.y.map(|y| y as f64),
         }),
@@ -104,10 +111,20 @@ mod tests {
     fn normalize_persisted_window_state_rounds_and_clamps_size() {
         let s = normalize_persisted_window_state(800.6, 0.4, Some(10.2), Some(-20.8), false);
         assert_eq!(s.width, 801);
-        assert_eq!(s.height, 1);
+        assert_eq!(s.height, MIN_WINDOW_HEIGHT);
         assert_eq!(s.x, Some(10));
         assert_eq!(s.y, Some(-21));
         assert!(!s.maximized);
+    }
+
+    #[test]
+    fn normalize_persisted_window_state_rejects_invisible_sizes() {
+        let s = normalize_persisted_window_state(1.0, 1.0, Some(155.0), Some(51.0), false);
+
+        assert_eq!(s.width, MIN_WINDOW_WIDTH);
+        assert_eq!(s.height, MIN_WINDOW_HEIGHT);
+        assert_eq!(s.x, Some(155));
+        assert_eq!(s.y, Some(51));
     }
 
     #[test]
@@ -129,6 +146,27 @@ mod tests {
             maximized: false,
         };
         assert_eq!(compute_restore_action(&ws, None), None);
+    }
+
+    #[test]
+    fn compute_restore_action_clamps_tiny_saved_sizes_to_visible_minimum() {
+        let ws = WindowSettings {
+            width: 1,
+            height: 1,
+            x: Some(155),
+            y: Some(51),
+            maximized: false,
+        };
+
+        assert_eq!(
+            compute_restore_action(&ws, None),
+            Some(RestoreAction::Bounds {
+                width: MIN_WINDOW_WIDTH as f64,
+                height: MIN_WINDOW_HEIGHT as f64,
+                x: Some(155.0),
+                y: Some(51.0),
+            })
+        );
     }
 
     #[test]

@@ -44,7 +44,7 @@ export function useTaskPlanState(
   // newer plan that arrived via the `plan_updated` event in flight.
   useEffect(() => {
     if (!activeAiSessionId) return;
-    if (storePlan && storePlan.steps && storePlan.steps.length > 0) return;
+    if (storePlan?.steps && storePlan.steps.length > 0) return;
 
     let cancelled = false;
     const sid = activeAiSessionId;
@@ -55,7 +55,7 @@ export function useTaskPlanState(
           return;
         }
         const current = useStore.getState().sessions[sid]?.plan;
-        if (current && current.steps && current.steps.length > 0) {
+        if (current?.steps && current.steps.length > 0) {
           // Event handler already populated it; honour the newer copy.
           return;
         }

@@ -1,4 +1,4 @@
-import { Building2, Check, Loader2, Search, Shield } from "lucide-react";
+import { Building2, Check, Loader2, Search, Shield, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   Dialog,
@@ -8,6 +8,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { assetIntel } from "@/lib/api";
+import type { LookupCompanyMatch } from "@/lib/api/asset-intel";
 import type { Organization, OrganizationProfilePatch } from "@/lib/api/organizations";
 import type { Target } from "@/lib/pentest/types";
 import { cn } from "@/lib/utils";
@@ -83,12 +85,16 @@ export function NewEngagementDialog({
   const [owner, setOwner] = useState("");
   const [description, setDescription] = useState("");
   const [targetsRaw, setTargetsRaw] = useState("");
-  const [minOwnership, setMinOwnership] = useState("51");
-  const [depth, setDepth] = useState("2");
-  const [includeBranches, setIncludeBranches] = useState(true);
+  const [minOwnership, setMinOwnership] = useState("");
+  const [depth, setDepth] = useState("");
+  const [includeBranches, setIncludeBranches] = useState(false);
   const [createCandidates, setCreateCandidates] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lookupRunning, setLookupRunning] = useState(false);
+  const [lookupError, setLookupError] = useState<string | null>(null);
+  const [lookupMatches, setLookupMatches] = useState<LookupCompanyMatch[] | null>(null);
+  const [selectedMatch, setSelectedMatch] = useState<LookupCompanyMatch | null>(null);
 
   const parsedTargets = useMemo(() => parseTargets(targetsRaw), [targetsRaw]);
   const canSubmit =
@@ -104,11 +110,57 @@ export function NewEngagementDialog({
     setOwner("");
     setDescription("");
     setTargetsRaw("");
-    setMinOwnership("51");
-    setDepth("2");
-    setIncludeBranches(true);
+    setMinOwnership("");
+    setDepth("");
+    setIncludeBranches(false);
     setCreateCandidates(true);
     setError(null);
+    setLookupRunning(false);
+    setLookupError(null);
+    setLookupMatches(null);
+    setSelectedMatch(null);
+  };
+
+  /**
+   * Run a disambiguation lookup using whatever's currently in the
+   * `orgName` field as the keyword. Hidden when no `enabled` lookup
+   * descriptor is registered backend-side (`lookupCompany` will throw
+   * a validation error in that case and we surface it inline).
+   */
+  const handleLookup = async () => {
+    const keyword = orgName.trim();
+    if (!keyword || lookupRunning) return;
+    setLookupRunning(true);
+    setLookupError(null);
+    setLookupMatches(null);
+    setSelectedMatch(null);
+    try {
+      const result = await assetIntel.lookupCompany({ keyword });
+      setLookupMatches(result.matches);
+      if (result.matches.length === 0) {
+        // Per-provider statuses surface here so the user can see *why*
+        // we got nothing (auth expired, no descriptor enabled, …).
+        const summary = result.providerStatus
+          .map((status) => `${status.providerId}: ${status.message}`)
+          .join(" / ");
+        setLookupError(summary || "No matches.");
+      }
+    } catch (e) {
+      setLookupError(String(e));
+    } finally {
+      setLookupRunning(false);
+    }
+  };
+
+  const handleSelectMatch = (match: LookupCompanyMatch) => {
+    setSelectedMatch(match);
+    setOrgName(match.name);
+  };
+
+  const handleClearMatch = () => {
+    setSelectedMatch(null);
+    setLookupMatches(null);
+    setLookupError(null);
   };
 
   const handleSubmit = async () => {
@@ -121,7 +173,11 @@ export function NewEngagementDialog({
         owner: owner.trim(),
         description: description.trim(),
       });
-      await onUpdateOrganizationProfile(org.id, {
+      // Build the profile patch. The intel.engagement block is always
+      // present; canonical fields (credit_code / industry) only land when
+      // the user committed a selectedMatch via lookup — keeps random
+      // user-typed orgs from picking up stray master record data.
+      const patch: OrganizationProfilePatch = {
         intel: {
           ...(org.intel ?? {}),
           engagement: {
@@ -133,9 +189,27 @@ export function NewEngagementDialog({
             include_branches: mode === "discover_assets" ? includeBranches : undefined,
             create_candidates: mode === "discover_assets" ? createCandidates : undefined,
             created_at: Date.now(),
+            lookup_match: selectedMatch
+              ? {
+                  provider_id: selectedMatch.providerId,
+                  name: selectedMatch.name,
+                  credit_code: selectedMatch.creditCode ?? null,
+                  industry: selectedMatch.industry ?? null,
+                  legal_representative: selectedMatch.legalRepresentative ?? null,
+                  address: selectedMatch.address ?? null,
+                  registered_at: selectedMatch.registeredAt ?? null,
+                }
+              : undefined,
           },
         },
-      });
+      };
+      if (selectedMatch?.creditCode) {
+        patch.credit_code = selectedMatch.creditCode;
+      }
+      if (selectedMatch?.industry) {
+        patch.industry = selectedMatch.industry;
+      }
+      await onUpdateOrganizationProfile(org.id, patch);
       if (mode === "customer_targets") {
         await onBatchAddTargets(parsedTargets.join("\n"), org.id, "customer_provided");
       }
@@ -195,16 +269,50 @@ export function NewEngagementDialog({
           <section className="space-y-2">
             <p className="text-[11px] font-medium text-muted-foreground">2. Organization</p>
             <div className="grid grid-cols-[1fr_180px] gap-2">
-              <label className="space-y-1">
-                <span className="text-[10px] text-muted-foreground">Organization name *</span>
-                <input
-                  aria-label="Organization name"
-                  className="w-full text-xs bg-background border border-border/50 rounded px-2 py-1.5 outline-none focus:border-accent"
-                  placeholder="中国平安 / Acme Corp"
-                  value={orgName}
-                  onChange={(e) => setOrgName(e.target.value)}
-                />
-              </label>
+              <div className="space-y-1">
+                <label
+                  htmlFor="engagement-org-name"
+                  className="block text-[10px] text-muted-foreground"
+                >
+                  Organization name *
+                </label>
+                <div className="flex items-center gap-1">
+                  <input
+                    id="engagement-org-name"
+                    aria-label="Organization name"
+                    className="flex-1 text-xs bg-background border border-border/50 rounded px-2 py-1.5 outline-none focus:border-accent"
+                    placeholder="中国平安 / Acme Corp"
+                    value={orgName}
+                    onChange={(e) => {
+                      setOrgName(e.target.value);
+                      if (selectedMatch && e.target.value !== selectedMatch.name) {
+                        setSelectedMatch(null);
+                      }
+                    }}
+                  />
+                  {mode === "discover_assets" && (
+                    <button
+                      type="button"
+                      title="Look up company canonical name + credit code before hydrate"
+                      aria-label="Look up company"
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded border px-2 py-1 text-[10px]",
+                        "border-accent/40 bg-accent/10 text-accent hover:bg-accent/20",
+                        (!orgName.trim() || lookupRunning) && "opacity-50 cursor-not-allowed"
+                      )}
+                      disabled={!orgName.trim() || lookupRunning}
+                      onClick={() => void handleLookup()}
+                    >
+                      {lookupRunning ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3 h-3" />
+                      )}
+                      Look up
+                    </button>
+                  )}
+                </div>
+              </div>
               <label className="space-y-1">
                 <span className="text-[10px] text-muted-foreground">Owner</span>
                 <input
@@ -215,6 +323,78 @@ export function NewEngagementDialog({
                 />
               </label>
             </div>
+
+            {selectedMatch && (
+              <div className="flex items-start justify-between gap-2 rounded border border-emerald-500/30 bg-emerald-500/5 p-2 text-[10px] text-emerald-200">
+                <div className="min-w-0 space-y-0.5">
+                  <p className="truncate font-medium text-emerald-100">{selectedMatch.name}</p>
+                  <p className="text-emerald-200/80">
+                    {selectedMatch.creditCode
+                      ? `Credit: ${selectedMatch.creditCode}`
+                      : "no credit code"}
+                    {selectedMatch.industry ? ` · ${selectedMatch.industry}` : ""}
+                    {selectedMatch.legalRepresentative
+                      ? ` · 法人 ${selectedMatch.legalRepresentative}`
+                      : ""}
+                  </p>
+                  {selectedMatch.address && (
+                    <p className="truncate text-emerald-200/70">{selectedMatch.address}</p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="rounded border border-emerald-500/30 px-1.5 py-0.5 text-[9px] text-emerald-100/90 hover:bg-emerald-500/15"
+                  onClick={handleClearMatch}
+                >
+                  Clear
+                </button>
+              </div>
+            )}
+
+            {lookupError && !lookupRunning && (
+              <p className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                {lookupError}
+              </p>
+            )}
+
+            {!selectedMatch && lookupMatches && lookupMatches.length > 0 && (
+              <div className="space-y-1 rounded border border-border/40 bg-muted/10 p-2">
+                <p className="text-[10px] font-medium text-muted-foreground">
+                  Pick the canonical company (top {lookupMatches.length})
+                </p>
+                {lookupMatches.map((match) => {
+                  const matchKey =
+                    match.creditCode?.trim() ||
+                    `${match.providerId}:${match.name.trim().toLowerCase()}`;
+                  return (
+                    <button
+                      key={matchKey}
+                      type="button"
+                      className="block w-full rounded border border-border/30 bg-background/50 p-2 text-left hover:border-accent/40 hover:bg-accent/5"
+                      onClick={() => handleSelectMatch(match)}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="truncate text-[11px] text-foreground">{match.name}</p>
+                        <span className="text-[9px] text-muted-foreground">
+                          {Math.round(match.confidence * 100)}%
+                        </span>
+                      </div>
+                      <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                        {match.creditCode ? match.creditCode : "no credit code"}
+                        {match.industry ? ` · ${match.industry}` : ""}
+                        {match.legalRepresentative ? ` · 法人 ${match.legalRepresentative}` : ""}
+                      </p>
+                      {match.address && (
+                        <p className="truncate text-[10px] text-muted-foreground/70">
+                          {match.address}
+                        </p>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             <textarea
               className="w-full min-h-16 text-xs bg-background border border-border/50 rounded px-2 py-1.5 outline-none focus:border-accent resize-y"
               placeholder="Notes / engagement description"

@@ -123,6 +123,7 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
         role="separator"
         aria-orientation="horizontal"
         aria-label="Resize command input"
+        aria-valuenow={0}
         title="Drag to resize · double-click to reset"
         className="h-1 -mt-px cursor-ns-resize bg-transparent hover:bg-accent/40 active:bg-accent/60 transition-colors titlebar-no-drag"
         onPointerDown={handlePointerDown}

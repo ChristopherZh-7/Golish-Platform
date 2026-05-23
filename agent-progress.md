@@ -17,15 +17,466 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | ① capture-engine Phase 1-5 代码全 push（HEAD `a5f1964`），待用户手动 E2E 通过后切 passing ② integrations Test connection wiring 修复完成（commit `7a2a5c6` push 上 `2ea820a`） ③ **ENScan 三层 bug 链修复刚完成（HEAD `1547073`）**：path 错位 + 5 group field 名错位 + 单 BDUSS 不够 → 全部对齐 ENScan v2.0.5 真实期望 + 升级 CookieJoined 抓完整 baidu.com header。待用户重新 just dev → ⚡ AQC → 真实跑 enscan 验证 |
-| **当前 blocker** | 整 monorepo 的 `just precommit` 因 preexisting biome 警告 + 8 个 preexisting `failure_kind` PlanStep struct literal 编译错（M2 cherry-pick 遗留）fail，与 capture/integrations 改动无关。本轮新增 commit 范围内 cargo check / cargo nextest lib / ReadLints 全绿 |
-| **未提交的半成品** | git status 仍挂着 ~30 个 preexisting 文件改动（pty / agent-kit / kg / planner / llm-providers / pentest / `golish/tests/ai_events_characterization/` 等），与本轮 capture-engine / integrations Test wiring 都无关；本轮新增 commit `7a2a5c6` 范围干净 |
+| **当前最高优先级** | **Asset Intel providers flat 完成**：ENScan_GO 4 个 JSON 合并为 1 个主 `enscan-go.json` 的 `asset_intel_providers: [aqc, tyc, kc, rb]` 数组；新增 `expand_provider_tools()` fan-out；`select_*` 改 owned `Vec<ToolConfig>`；3 个 child JSON 删除。35 asset_intel + 62 golish-pentest 单测全绿，fixture 转绿。**TYC 仍 `default=false` 等上游 PR #221**。 |
+| **当前 blocker** | 本轮新增改动范围内 cargo check / nextest / vitest / tsc / biome / ReadLints 全绿。整 monorepo `just precommit` 仍因 preexisting biome 警告 + 8 个 preexisting `failure_kind` PlanStep struct literal 编译错（M2 cherry-pick 遗留）fail，与本轮无关 |
+| **未提交的半成品** | git status 挂着累积改动（本轮新增/改动：`backend/crates/golish-pentest/src/{models,parsers,scanner,search,command_builder/tests}.rs` + `backend/crates/golish/src/tools/asset_intel.rs` + `resources/toolsconfig/enscan-go.json` 改写为多 provider + 删除 `resources/toolsconfig/enscan-go-{tyc,kc,rb}-discovery.json` + `docs/design/2026-05-23-asset-intel-providers-flat.md` + `docs/superpowers/plans/2026-05-23-asset-intel-providers-flat.md`；累积前几轮：`commands_facade/asset_intel.rs` + `commands_registry.rs` + 前端 TargetPanel/asset-intel.ts + `feature_list.json` + 本文件）+ ~30 个 preexisting 不相关游离改动 |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-23 · Asset Intel providers flat：4 个 JSON 合并为 1 个多 provider
+
+- **本轮目标**：用户提出「ENScan_GO 的 3 个 child discovery JSON + 主 JSON 4 个 tool entry 重复且 UX 误导」，拍板走 A 方案——把 3 个 child 合并进主 `enscan-go.json` 的新 `asset_intel_providers: []` 数组字段。
+- **设计文档**：`docs/design/2026-05-23-asset-intel-providers-flat.md`（问题、JSON 契约、Rust 改造点、向后兼容、影响面、验证）。
+- **实现计划**：`docs/superpowers/plans/2026-05-23-asset-intel-providers-flat.md`（9 task TDD 小步骤，每 task 单 commit）。
+- **已完成（按 Task）**：
+  - **Task 1**：`ToolConfig` 加 `asset_intel_providers: Option<Vec<AssetIntelToolConfig>>` 字段（与现有 `asset_intel` 互斥，rename `asset_intel_providers`），加 2 个 schema 单测（`tool_config_accepts_asset_intel_providers_array` / `tool_config_round_trips_asset_intel_providers`）。同步补 `search.rs` + `command_builder/tests.rs` 两处 full struct literal。
+  - **Task 2**：`parsers::parse_tool_config` 加互斥校验——同时声明 `asset_intel` 与 `asset_intel_providers` 的 tool 被 `walk_json_files` 的现有 `warn!` 路径 silent skip；新测 `scan_skips_tool_declaring_both_asset_intel_and_providers` 绿。
+  - **Task 3**：`asset_intel.rs` 新增 `expand_provider_tools(tools: &[ToolConfig]) -> Vec<ToolConfig>` fan-out 工具——多 provider tool clone 出 N 个 virtual ToolConfig（保留 executable / install / runtime 等元数据，每个 virtual `asset_intel = Some(provider)`，`asset_intel_providers = None`，跳过 disabled）；单 provider tool 1:1 透传；其它 tool 不出现。加 3 单测（fan-out / pass-through / disabled-skip）。
+  - **Task 4**：`provider_descriptors_from_tools` 第一行 `let expanded = expand_provider_tools(tools);` 接入；新测 `provider_descriptors_from_tools_unpacks_multi_provider_tool` 验证多 provider tool 展开成 N 个 descriptor，老的 1 tool 1 descriptor 测试仍绿。
+  - **Task 5**：`select_asset_intel_providers` / `select_subsidiary_providers` / `select_enrichment_providers` 三件套：移除 `<'a>` 生命周期参数，改返回 owned `Vec<ToolConfig>`；`select_asset_intel_providers` 内 `let mut providers = expand_provider_tools(tools).into_iter()...`；显式 `requested` 分支用 `.find().clone()` 而非 `.copied()`。`run_providers_for_org` 把 `providers: Vec<&ToolConfig>` 改 owned `Vec<ToolConfig>`，循环改 `for tool in &providers`。所有 hydrate/enrich command 调用方无需改（owned 比 borrowed 更宽松）。加 2 新测（`select_subsidiary_providers_expands_multi_provider_tool` / `select_asset_intel_providers_treats_multi_provider_tool_as_single_pool`），验证 fan-out + 跨 tool 按 priority 混合排序。
+  - **Task 6**：主 `resources/toolsconfig/enscan-go.json` 把 `tool.asset_intel: { ... }` 整段重写为 `tool.asset_intel_providers: [aqc, tyc, kc, rb]`（4 项）；AQC 保留完整 lookup + 9 条 profile_fields + organization/target/profile_fields 全套 normalize；TYC/KC/RB 各自只带 organization normalize + 独立 `requires_integration.group_ids` + 独立 `runtime.skill_id`；TYC `auto.default=false`（上游 PR #221 未合）。同步在 `tool.skills` 数组里加 3 个独立 skill（`company-default-json-tyc` / `company-default-json-kc` / `company-default-json-rb`），避免 4 个 provider 共享 `company-default-json` 引起的 `-type aqc` 串源。
+  - **Task 7**：删 3 个 child JSON——`enscan-go-tyc-discovery.json` / `enscan-go-kc-discovery.json` / `enscan-go-rb-discovery.json`（用户聊天里二次确认后才删，符合 AGENTS.md §2.7）。中间态证据：删之前 fixture 红灯 `left=[..., kc, kc, rb, rb]` ≠ `right=[..., kc, rb]`，说明主 JSON + child JSON 各自展开出同名 provider 导致重复。
+  - **Task 8**：全套验证（见下）。
+  - **Task 9**：本轮 progress 段 + feature_list 一条（在另一段 commit 里）。
+- **运行过的验证**：
+  - `cargo nextest run -p golish-pentest -E 'test(tool_config_accepts_asset_intel_providers_array)+test(tool_config_round_trips_asset_intel_providers)' --status-level fail` → **红 (E0609 unknown field)** → 加字段 → **红 (E0063 missing field in initializer @ search.rs:103)** → 补 search 字段 → **红 (同 E0063 @ command_builder/tests.rs:17)** → 补 command_builder 字段 → **exit 0 / 2 passed**。
+  - `cargo nextest run -p golish-pentest -E 'test(scan_skips_tool_declaring_both_asset_intel_and_providers)' --status-level fail` → 加测试 **红 (left=1, right=0)** → 加 `parse_tool_config` 互斥校验 → **exit 0 / 1 passed**。
+  - `cargo nextest run -p golish --lib -E 'test(expand_provider_tools)' --status-level fail` → 加 3 测试 + helper → **红 (cannot find function)** → 加 `expand_provider_tools` → **exit 0 / 3 passed**。
+  - `cargo nextest run -p golish --lib -E 'test(provider_descriptors_from_tools_unpacks_multi_provider_tool)' --status-level fail` → 加测试 **红 (left=0, right=2)** → 改 `provider_descriptors_from_tools` 第一行接入 expand → **exit 0**。
+  - `cargo nextest run -p golish --lib -E 'test(provider_descriptors_from_tools)+test(asset_intel_provider_descriptors_load_from_tool_configs)' --status-level fail` → **exit 0 / 2 passed**（确认既有 single provider 测试仍绿）。
+  - `cargo nextest run -p golish --lib -E 'test(select_) and test(asset_intel)' --status-level fail` → **exit 0 / 7 passed**（含 select_* 全套 + 新加 2 个 multi-provider/cross-pool 测试）。
+  - `cargo nextest run -p golish --lib -E 'test(asset_intel)' --status-level fail` → **exit 0 / 35 passed**（之前 29 + 本轮 6 个新）。
+  - `cargo nextest run -p golish --lib -E 'test(fixture_discovery_auto_defaults_skip_tyc_until_upstream_is_stable)' --status-level fail` → 主 JSON 改写但 child JSON 未删时 **exit 101**（KC/RB 各重复一次）→ 删 child JSON → **exit 0 / 1 passed**。
+  - `cargo nextest run -p golish-pentest --status-level fail` → **exit 0 / 62 passed, 7 skipped**。
+  - `cargo fmt --package golish --package golish-pentest` → 自动格式化，复查 `--check` → **exit 0**。
+  - `cargo check -p golish` → **exit 0**，仅 preexisting `capture/data_dir.rs::session_dir` dead_code warning。
+  - `pnpm exec tsc --noEmit` → **exit 0**。
+  - `pnpm exec biome check frontend/components/TargetPanel/TargetGroupedView.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts frontend/lib/api/asset-intel.ts` → **exit 1**，但报错落在 `asset-intel.ts` 中一段 `hydrateSubsidiaries` 函数签名换行 formatting，是上一轮 untracked 文件遗留 preexisting，本轮 0 改动前端文件，不在 scope。
+  - `pnpm vitest run frontend/components/TargetPanel/TargetGroupedView.actions.test.ts` → **exit 0 / 33 passed**。
+  - `python3 -m json.tool resources/toolsconfig/enscan-go.json >/dev/null` → **exit 0**。
+  - `ReadLints` 9 个改动文件（5 个 Rust + 1 JSON + 2 docs + agent-progress） → **No linter errors found**。
+- **已知风险或未解决问题**：
+  - 工具管理面板从 4 行变 1 行的视觉效果**需要用户在 `just dev` 下手动复测一次**（本轮没起 dev binary 验证 UI）。
+  - TYC 仍保持 `auto.default=false`，等 `wgpsec/ENScan_GO PR #221` 合并并发布新 ENScan 版本后改回 `true` 并把 fixture 名改回 `defaults_to_all_enscan_sources`。
+  - `frontend/lib/api/asset-intel.ts` 的 biome formatting 错是 preexisting；如果后续要让整仓 `just precommit` 全绿，需要单独 commit 修这一行（不在本轮 scope）。
+  - 没跑整仓 `just precommit`；仓库仍有已记录的 preexisting blocker（biome 警告 + `failure_kind` PlanStep struct 编译错），与本轮无关。
+
+---
+
+### 2026-05-23 · 临时关闭 TYC discovery 默认勾选（等上游 PR #221）
+
+- **本轮目标**：用户要求把 ENScan_GO TYC discovery 默认源临时关掉，因为 v2.0.5 上游 `tianyancha.go:124 searchBaseInfo` 仍 panic（wgpsec/ENScan_GO#221 仍 open），让 Activity 不再每次都标红一条 TYC failed。
+- **根因 / 现状**：
+  - 上一轮已经把 fixture 改名为 `fixture_discovery_auto_defaults_skip_tyc_until_upstream_is_stable` 并断言默认源应是 `[enscan-go, enscan-go-kc-discovery, enscan-go-rb-discovery]`（无 TYC），但 `resources/toolsconfig/enscan-go-tyc-discovery.json` 的 `asset_intel.auto.default` 还停在 `true`，本轮一跑就红。
+  - JSON-driven provider 抽象的一贯设定：是否默认参与 discovery 由 `asset_intel.auto.default` 决定，Rust 端没有任何 TYC 硬编码白名单。所以这是纯 JSON 改动。
+- **已完成**：
+  - `resources/toolsconfig/enscan-go-tyc-discovery.json` 的 `asset_intel.auto.default` 改为 `false`（保留 `priority=95`，用户在 Asset Intel 配置里手动勾选时仍按原优先级排序）。
+  - 三个 provider 的语义说明：
+    - 默认 discovery 现在只跑 `enscan-go`（AQC）+ `enscan-go-kc-discovery`（KC/Qimai）+ `enscan-go-rb-discovery`（RB/RiskBird），不再带 TYC。
+    - TYC 仍可用：用户在 Asset Intel 配置面板手动勾上 TYC discovery 即可单独跑（凭证、capture、normalize 链路都没改）。
+  - 工具管理面板仍会显示 4 个 ENScan_GO 入口（`enscan-go` + 3 个 `*-discovery`），共享同一可执行文件，安装/卸载一次生效；这是 §5 设计文档锁定的多 provider 抽象，本轮不动。
+- **运行过的验证**：
+  - `cargo test -p golish fixture_discovery_auto_defaults_skip_tyc_until_upstream_is_stable --lib` → 改 JSON 前 **exit 101**，断言 `left=[enscan-go, tyc, kc, rb]` ≠ `right=[enscan-go, kc, rb]`；改 JSON 后转绿。
+  - `cargo nextest run -p golish --lib -E 'test(asset_intel)' --status-level fail` → **exit 0 / 29 passed, 242 skipped**。
+  - `cargo nextest run -p golish-pentest -E 'test(asset_intel)' --status-level fail` → **exit 0 / 7 passed, 59 skipped**（schema 层 round-trip 仍通过）。
+  - `python3 -m json.tool resources/toolsconfig/enscan-go-tyc-discovery.json >/dev/null` → **exit 0**。
+  - `ReadLints`（`enscan-go-tyc-discovery.json`）→ **No linter errors found**。
+- **已知风险或未解决问题**：
+  - 这是临时措施，**等 wgpsec/ENScan_GO PR #221 合并并发布新 ENScan 版本后必须把 `default` 改回 `true`，并把 fixture 名改回 `defaults_to_all_enscan_sources` 断言四源全跑**。这条放进 feature_list 的 `notes` 里跟踪。
+  - 没跑整仓 `just precommit`；本仓既有 preexisting blocker（biome 警告 + `failure_kind` PlanStep struct 编译错）仍在，与本轮无关。
+  - 没真实复跑 `enscan -type tyc -field invest` 外部命令——因为 TYC 上游 panic 是已确认事实，再跑一次只是重复花时间；如果上游 PR merge 后要恢复 default=true，那次必须真实验证一次。
+
+---
+
+### 2026-05-23 · 查子公司失败半截候选不再跳 Candidates
+
+- **本轮目标**：用户反馈 Target 里“查子公司”仍出现 ENScan_GO 天眼查 `getInfoById/processTask` panic，同时前端点完后直接跳到 `candidates`，这不符合“自动创建子公司 / 失败留在 Activity 看 provider 状态”的预期。
+- **根因**：
+  - 后端 `run_cli_json_provider` 在 CLI 退出失败时仍返回 watcher 已解析出的半截 candidates/profile_entries；`run_providers_for_org` 不区分 provider terminal state，继续把这些失败 provider 输出合并到 run。
+  - 前端 `getNextWorkspaceTabAfterAssetIntelRun` 只看候选数量；partial/failed run 只要含半截候选就自动切到 `candidates`。
+- **已完成**：
+  - `backend/crates/golish/src/tools/asset_intel.rs` 新增 `provider_output_is_trusted`，只有 `Completed` / `CheckedEmpty` provider 输出会被合并；`Failed` / `Unavailable` 的半截 stdout/artifact 不再进入候选、profile patch 或自动提升链路。
+  - `frontend/components/TargetPanel/TargetGroupedView.tsx` 修改 discovery 完成后跳转逻辑：只有 `run.status === completed` 且确有 reviewable candidates 时才切到 `candidates`；partial/failed 留在 `activity`，让用户看到 TYC/KC/RB 哪个 provider 标红及错误摘要。
+  - `TargetGroupedView.actions.test.ts` 增加 partial/failed discovery 带候选时仍停留 Activity 的红绿回归；`asset_intel.rs` 增加 provider 输出信任边界单测。
+- **运行过的验证**：
+  - `pnpm vitest run frontend/components/TargetPanel/TargetGroupedView.actions.test.ts`：修复前 **1 failed**（partial run 收到 `candidates`），修复后 **exit 0 / 33 passed**。
+  - `cargo test -p golish provider_output_is_trusted_only_for_successful_terminal_states --lib`：修复前 **exit 101**（函数不存在红灯），修复后 **exit 0 / 1 passed**。
+  - `cargo test -p golish asset_intel --lib` → **exit 0 / 29 passed**。
+  - `cargo fmt --package golish --check` → **exit 0**。
+  - `pnpm exec biome check frontend/components/TargetPanel/TargetGroupedView.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts` → **exit 0 / No fixes applied**。
+  - `ReadLints`（`asset_intel.rs` + 两个 TargetGroupedView 文件）→ **No linter errors found**。
+- **已知风险或未解决问题**：
+  - 这次修的是 Golish 对失败 provider 的处理与前端跳转；ENScan_GO v2.0.5 的 TYC `getInfoById/searchBaseInfo` panic 仍属于上游解析问题。当前 UI 预期会把 TYC 标红留在 Activity，而不是把半截候选当成功结果。
+  - 未跑整仓 `just precommit`；仓库仍有已记录的 preexisting blocker。
+
+---
+
+### 2026-05-23 · 查子公司 TYC 报错根因复盘
+
+- **本轮目标**：用户反馈 Target 里“查子公司”功能触发天眼查报错，并澄清 TYC/KC/RB 多源默认一起跑、去重合并是预期行为。
+- **根因判断**：多源默认运行不是 bug；上一轮把 TYC/KC/RB 改成非默认的方向已撤销。现有证据指向 ENScan_GO v2.0.5 的 TYC 模块问题：此前本机运行 `ENScan_GO/enscan-v2.0.5-darwin-amd64 -n 小米 -type tyc -field icp` 显示 TYC 已认证并返回 22 个企业候选，随后在上游 `tianyancha.go:124` panic。公开上游 PR wgpsec/ENScan_GO#221 也说明 `searchBaseInfo` 在天眼查返回页缺 `__NEXT_DATA__` 或数组为空时会 nil deref / 越界，通常由 cookie 失效、风控页或页面结构变化触发。
+- **已完成**：
+  - 恢复 `resources/toolsconfig/enscan-go-tyc-discovery.json`、`enscan-go-kc-discovery.json`、`enscan-go-rb-discovery.json` 的 `asset_intel.auto.default=true`，保留“默认多源一起跑”语义。
+  - 将上一轮错误方向的测试改为 `fixture_discovery_auto_defaults_to_all_enscan_sources`，锁住默认 discovery 会选择 AQC + TYC + KC + RB 四个 ENScan-backed sources。
+  - 复核公开上游资料：wgpsec/ENScan_GO#221 是针对 TYC `searchBaseInfo` nil pointer / empty array panic 的修复 PR（截至查询时仍 open/draft）。
+- **运行过的验证**：
+  - `cargo test -p golish fixture_discovery_auto_defaults_to_all_enscan_sources --lib` → **exit 0 / 1 passed**。
+  - `cargo test -p golish asset_intel --lib` → **exit 0 / 28 passed**。
+  - `python3 -m json.tool` 校验 3 个 discovery JSON → **exit 0**。
+- **已知风险或未解决问题**：
+  - 还未跑整仓 `just precommit`；本仓当前仍有既有 precommit blocker（见“当前已验证状态”）。
+  - 还未复跑真实 `-type tyc -field invest` 外部命令；当前结论基于上一轮真实 `-type tyc -field icp` panic 证据 + 上游 PR。下一步建议用户或本机在可用 ENScan binary/凭据环境中复跑 discovery 同款命令确认：`-n <公司> -type tyc -field invest -invest 51 -deep 1 -delay 3 -json -out-dir <tmp>`。
+
+---
+
+### 2026-05-23 · Qimai/KC 未登录匿名 cookie 误判修复
+
+- **本轮目标**：用户确认 TYC 已搞定，但 Qimai/KC 未登录时打开 `https://www.qimai.cn/` 就显示 capture 成功；日志显示只抓到 `synct` / `syncd` / `qm_check` / `PHPSESSID` 四个 cookie。
+- **根因**：上一轮给 KC 只加了 `min_count=2`，但 Qimai 未登录首页本身就会下发 4 个匿名/风控 cookie；`success_url_pattern="qimai\\.cn"` 又会在首页立即触发提取，所以数量门槛不足以证明登录态。
+- **已完成**：
+  - `resources/toolsconfig/enscan-go.json` 的 KC/Qimai capture 规则新增 `required_names=["USERINFO","aso_ucenter"]`，只有出现这两个登录态 cookie 才写入 `cookies.qimai`。
+  - KC/Qimai instructions 明确说明只看到 `synct/syncd/qm_check/PHPSESSID` 时仍会继续等待，不算登录成功。
+  - `backend/crates/golish-integrations/src/resolver.rs` 回归 fixture 从“数量门槛”升级为“登录态证明”，防止后续退回匿名 cookie 误判。
+- **运行过的验证**：
+  - `python3 -m json.tool resources/toolsconfig/enscan-go.json >/dev/null` → **exit 0**
+  - `CARGO_TARGET_DIR=backend/target/qimai-capture-check cargo nextest run -p golish-integrations -E 'test(fixture_enscan_kc_and_rb_require_login_state_proof)' --status-level fail` → **exit 0 / 1 passed, 74 skipped**
+  - `cargo nextest run -p golish-integrations -E 'test(fixture_enscan_kc_and_rb_require_login_state_proof)' --status-level fail` → **exit 0 / 1 passed, 74 skipped**（原 target 等待 Cargo lock 后通过）
+  - `cargo fmt --package golish-integrations --check` → **exit 0**
+  - `CARGO_TARGET_DIR=backend/target/qimai-capture-check cargo nextest run -p golish-integrations -E 'test(capture)' --status-level fail` → **exit 0 / 21 passed, 54 skipped**
+  - `ReadLints`（`resolver.rs` + `enscan-go.json`）→ **No linter errors found**
+- **已知风险或未解决问题**：
+  - `USERINFO` / `aso_ucenter` 来自公开 Qimai 登录 cookie 样例，符合“登录态证明”用途；仍建议用户重启 dev binary 后手动复测一次真实登录流程，确认当前 Qimai 账号实际也会下发这两个 cookie。
+
+### 2026-05-22 · TYC Auto-capture 未登录误触发修复
+
+- **本轮目标**：用户反馈 Settings → Integrations → ENScan_GO → TianYanCha Auto-capture 在还没登录时就触发抓取，并报 `[CAPTURE_RULE_FAILED] required rule #1: request header 'X-Tycid' not observed: value was empty`。
+- **根因**：
+  - TYC 的 `success_url_pattern` 是泛匹配 `tianyancha.com`，打开登录页自身就会触发 `try_extract`。
+  - AQC 之所以没问题，是 `cookie_joined.required_names=["BDUSS"]` 缺失时走 `[SOFT_RETRY]` 重新回到 `WaitingLogin`；TYC 的必填 `request_header` 缺失此前直接被当成 fatal failure，导致窗口关闭 / toast 报错。
+  - 用户继续复测后仍不行，进一步定位到 TYC JSON 的字段键写错：`resources/toolsconfig/enscan-go.json` 声明 / capture 写入的是 `cookies.tianyancha`、`cookies.tycid`、`cookies.auth_token`，但既有设计、外部文件后端和 ENScan 配置结构使用的是 `cookies.tyc`、`tyc.tycid`、`tyc.auth_token`；即使抓到了也会写到 ENScan 不读取的位置。
+  - 用户最新日志显示 `.tianyancha.com` cookie jar 已有 `TYCID` 和 `auth_token`，但 `request_header` 仍持续 `value was empty`；说明 TYC 当前可用凭据来源是 cookie，不是显式 fetch/XHR request header。
+  - 用户确认 TYC 已抓到后，继续反馈 KC/RB 报 `no cookies matched`；这类 `cookie_joined names=[] required=true` 规则在根页尚未登录 / 尚无该域 cookie 时也不应 fatal，应 soft retry 等登录完成。
+  - 用户随后指出未登录 KC/RB 也提示“抓到了”；本机检查已保存配置只含匿名 cookie：KC 只有 `synct`，RB 只有 `app-uuid` / `app-device`。根因是 `names=[]` 只要任意匿名 cookie 存在就会成功，缺少“cookie 数量门槛 / 登录态证明”。
+- **已完成**：
+  - `backend/crates/golish/src/tools/integrations/capture/engine.rs` 新增 `request_header_failure_reason`，当必填 request header 因 `value was empty` 暂未观察到时返回 `[SOFT_RETRY]`，让 capture session 保持打开并等待后续导航 / API 请求出现。
+  - 用户复测可登录但仍抓不到内容后，补充 `spawn_soft_retry_probe`：软重试后每 2 秒延迟探测一次当前页面的已记录 request headers，解决 TYC 登录后后台 XHR/fetch 出现 header 但没有新页面导航时不会再次提取的问题。
+  - 用户进一步确认“已经是登录态，点 Auto-capture 只开 webview 没反应”后，把 `resources/toolsconfig/enscan-go.json` 的 TYC `login_url` 从首页改为搜索探针页 `https://www.tianyancha.com/search?key=%E5%B0%8F%E7%B1%B3`，让已登录态打开后主动产生站内业务请求，从而稳定暴露 `X-Tycid` / `Authorization`。
+  - `golish-integrations/src/resolver.rs` 新增 fixture `fixture_enscan_tyc_capture_uses_search_probe_url`，防止 TYC capture 入口退回只打开首页。
+  - 同一 fixture 继续断言 TYC group 和 capture rules 必须使用 ENScan 配置键 `cookies.tyc`、`tyc.tycid`、`tyc.auth_token`，并且 `tyc.tycid` / `tyc.auth_token` 必须分别来自 `TYCID` / `auth_token` cookie；`enscan-go.json` 已把字段声明、target_field 和提示文案同步改回这些键与 cookie 来源。
+  - 新增回归测试 `required_request_header_failures_are_soft_retryable` 覆盖 TYC 这类 header 暂缺场景。
+  - 新增 `cookie_failure_reason` / `cookie_joined_failure_reason`：必填单 cookie 缺失或必填 cookie_joined 匹配为空时返回 `[SOFT_RETRY]`，避免 KC/Qimai、RB/RiskBird 在用户还未完成登录时立即失败关窗。
+  - `golish-integrations::CaptureRule::CookieJoined` 新增 JSON 字段 `min_count`（默认 0，向后兼容）；capture engine 在格式化后的 cookie 数少于 `min_count` 时 soft retry，不写入凭据。前端 `CaptureRule` 类型同步新增 `min_count?: number`。
+  - `resources/toolsconfig/enscan-go.json` 给 KC 设置 `min_count=2`（匿名态只有 `synct`），给 RB 设置 `min_count=3`（匿名态只有 `app-uuid` / `app-device`）。新增 fixture `fixture_enscan_kc_and_rb_require_more_than_anonymous_cookies` 防回归。
+  - 本机跑 ENScan TYC 轻量查询验证刚抓到的凭据：TYC 能查到“小米”22 个企业结果；随后 ENScan v2.0.5 自身在 `searchBaseInfo` 空数组处 panic，说明凭据已被接受但上游工具有解析 bug。
+  - `backend/crates/golish-pentest/src/models.rs` 给 `AssetIntelNormalizeFilter` 补 `Eq` derive，修复当前工作树中 `AssetIntelDiscoveryConfig: Eq` 编译阻塞，便于后端测试继续跑。
+- **运行过的验证**：
+  - `cargo test -p golish required_request_header_failures_are_soft_retryable --lib` → **exit 0**
+  - `cargo nextest run -p golish --lib -E 'test(tools::integrations::capture)' --status-level fail` → **exit 0 / 32 passed, 232 skipped**
+  - `cargo nextest run -p golish-integrations -E 'test(fixture_enscan_tyc_capture_uses_search_probe_url)' --status-level fail` → **exit 0 / 1 passed, 73 skipped**（修复前红灯：TYC login_url 仍是首页）
+  - `cargo nextest run -p golish-integrations -E 'test(fixture_enscan_tyc_capture_uses_search_probe_url)' --status-level fail` → **修字段名前 exit 100**，红灯落在 `TYC group should declare ENScan config key cookies.tyc`；字段修复后 **exit 0 / 1 passed, 73 skipped**
+  - `cargo nextest run -p golish-integrations -E 'test(fixture_enscan_tyc_capture_uses_search_probe_url)' --status-level fail` → **exit 0 / 1 passed, 73 skipped**（fixture 已覆盖 `TYCID` / `auth_token` cookie 来源；本次因 Cargo 锁等待期间 JSON 已修复，未单独捕获 cookie-source 红灯）
+  - `cargo nextest run -p golish-integrations -E 'test(capture)' --status-level fail` → **exit 0 / 21 passed, 53 skipped**
+  - `cargo test -p golish required_cookie --lib` → **修复前 exit 101**（单 cookie 分支未解构 `required` 编译失败，证明新增测试命中）；`min_count` 修复后 **exit 0 / 3 passed**
+  - `cargo nextest run -p golish-integrations -E 'test(fixture_enscan_kc_and_rb_require_more_than_anonymous_cookies)' --status-level fail` → **exit 0 / 1 passed, 74 skipped**
+  - `cargo nextest run -p golish --lib -E 'test(tools::integrations::capture)' --status-level fail` → **exit 0 / 35 passed, 232 skipped**
+  - `cargo nextest run -p golish-integrations -E 'test(capture)' --status-level fail` → **exit 0 / 21 passed, 54 skipped**
+  - `pnpm exec tsc --noEmit` → **exit 0**
+  - `pnpm exec biome check frontend/lib/api/integrations.ts` → **exit 0 / No fixes applied**
+  - `ENScan_GO/enscan-v2.0.5-darwin-amd64 -n 小米 -type tyc -field icp` → **exit 2**；输出显示 TYC 已认证并返回 22 个企业候选，随后上游 `tianyancha.go:124` panic。
+  - `cargo nextest run -p golish-pentest --lib -E 'test(asset_intel)' --status-level fail` → **exit 0 / 7 passed, 55 skipped**
+  - `python3 -m json.tool resources/toolsconfig/enscan-go.json >/dev/null` → **exit 0**
+  - `cargo fmt --package golish-integrations --check` → **exit 0**
+  - `rustfmt --edition 2021 --check crates/golish/src/tools/integrations/capture/engine.rs crates/golish-pentest/src/models.rs` → **exit 0**
+  - `cargo fmt --package golish --package golish-pentest --check` → **exit 1**，被当前工作树中既有 `backend/crates/golish/src/tools/asset_intel.rs` 格式 diff 阻塞，非本次 TYC touched file。
+  - `ReadLints`（`engine.rs` + `models.rs` + `resolver.rs` + `enscan-go.json`）→ **No linter errors found**
+- **已知风险或未解决问题**：
+  - TYC capture 已由用户确认抓到；ENScan TYC key 可用性验证到“能返回企业候选”，但 `-field icp` 后续被 ENScan v2.0.5 上游 panic 中断。
+  - KC/RB 仍需用户重启 dev binary 后真实复测；预期未登录态不会再提示“抓到了”，而是在 cookie 数低于门槛时保持窗口 soft retry。若登录后仍无法抓到，需要根据新日志里的 `raw_domains` / `cookie_names` 调整登录 URL、cookie domain 或 `min_count`。
+  - `cargo test -p golish --lib -E ...` 是误用命令，exit 1 未执行测试；已用 `cargo nextest` 正确重跑并通过。
+
+---
+
+### 2026-05-22 · Asset Intel 两阶段 UI 收口（Hydrate intel → 查子公司 / 补字段）
+
+- **本轮目标**：用户确认继续改 UI，把 Target 面板旧的单按钮 Hydrate intel 从主流程撤掉，接到已实现的两阶段后端命令，避免 0.zone 继续拿主公司名和 enscan-go 同时跑。
+- **已完成**：
+  - `TargetGroupedView.tsx` 的 discover_assets action model 改为两阶段：主公司显示「查子公司」+「批量补字段」，promoted 子公司显示「补字段」。
+  - 子公司若自身没有 `intel.engagement`，会向上继承父公司的 discover_assets 语义，因此 promote 出来的「平安银行 / 平安证券」这类 child org 也会显示「补字段」。
+  - 旧 UI 入口不再调用 `assetIntel.hydrate()`；三种 action 分别调用 `assetIntel.hydrateSubsidiaries()` / `assetIntel.enrichBatch()` / `assetIntel.enrichOrganization()`。
+  - Activity 面板同步展示同一组两阶段按钮，不再显示旧文案 Hydrate intel。
+  - `TargetGroupedView.actions.test.ts` 新增 2 个 action model 测试：主公司两按钮、子公司单按钮且不显示 batch。
+  - 针对用户实测反馈补修：运行态从 org 级别细化为 org+action，避免点击「查子公司」时「批量补字段」按钮也一起转圈；Candidates 面板按阶段过滤 provider source，主公司 discovery 视图只展示 enscan-go 这类 subsidiaries provider 候选，旧 run 留下的 0.zone 候选不再污染「查子公司」结果。
+  - 针对用户第二轮反馈补修：`查子公司` 使用 discovery 专用 config（默认 `minOwnership=51` / `depth=1` / `includeBranches=true`），不再沿用轻量 target-only hydrate；Candidates 的 discovery 视图隐藏 target bucket，只展示 organization candidates，避免 enscan-go 的 ICP/APP 域名结果冒充子公司。
+  - 手动验证 ENScan_GO v2.0.5 参数：`-field invest,branch -invest 51 -deep 1 -branch` 会输出 `invest/branch/partner/enterprise_info`，不再输出 ICP/APP target；`-field invest -invest 51 -deep 1` 输出更干净，只含 `invest/partner/enterprise_info`。据此把 `resources/toolsconfig/enscan-go.json` 的 `company-default-json` skill 改成 `-field invest`，默认 discovery 不再抓 ICP/APP，也不默认抓分支机构（分支需用户显式 include branches）。
+  - 按用户拍板把“查子公司”改成自动创建正式子公司：`asset_intel_hydrate_subsidiaries` 跑完 discovery 后不写 review candidates，而是按 `scale >= minOwnership`（默认 51）+ `status=开业/存续` + child name 未重复过滤后直接 `organizations::create(parent_id=master)`；created/skipped 明细写入 `AssetIntelRun.evidence`。低比例参股、注销/吊销、重复 child 跳过。
+  - 按用户要求把自动提升策略 JSON 化：`AssetIntelToolConfig.discovery` 新增 `auto_promote / promote_when / ownership_field / dedupe_by`；`enscan-go.json` 现在声明 `auto_promote=true`、`promote_when=[scale>=51,status contains 开业]`、`dedupe_by=[pid,name]`。Rust 只执行 JSON policy，不再硬编码阈值和状态。
+  - 针对旧 candidates 残留补修：自动创建子公司后清理父组织 `intel.engagement.candidates`，保留 `mode`、`lookup_match`、contacts 等其它 metadata，避免 UI 继续显示历史 `needs_review` 列表。
+  - 按用户要求落地第一版多源 discovery：新增 `resources/toolsconfig/enscan-go-tyc-discovery.json`（provider_id=`enscan-go-tyc-discovery`，`-type tyc -field invest`，只依赖 TYC 凭证）。继续按同一 JSON 模板新增 `enscan-go-kc-discovery.json`（`-type kc -field invest`，只依赖 KC/Qimai 凭证）和 `enscan-go-rb-discovery.json`（`-type rb -field invest`，只依赖 RB/RiskBird 凭证）。AQC 主配置的 asset-intel capabilities 收窄为 `subsidiaries` 且只依赖 AQC。后端 candidate merge 在同值去重时合并 evidence.sources，避免同一子公司被多源重复创建但保留来源证据。
+- **运行过的验证**：
+  - `pnpm vitest run frontend/components/TargetPanel/TargetGroupedView.actions.test.ts` → **exit 0 / 30 passed**
+  - `pnpm vitest run frontend/components/TargetPanel/` → **exit 0 / 35 passed**
+  - `cargo test -p golish auto_promote_child_decisions_only_promote_active_controlled_investments --lib` → **exit 0 / 1 passed**
+  - `cargo test -p golish clear_engagement_candidates_preserves_engagement_metadata --lib` → **exit 0 / 1 passed**
+  - `cargo test -p golish asset_intel --lib` → **exit 0 / 27 passed**
+  - `cargo test -p golish-pentest tool_config_accepts_asset_intel_descriptor --lib` → **exit 0 / 1 passed**
+  - `cargo fmt --package golish --package golish-pentest --check` → **exit 0**
+  - `pnpm exec tsc --noEmit` → **exit 0**
+  - `pnpm exec biome check frontend/components/TargetPanel/TargetGroupedView.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts` → **exit 0 / No fixes applied**
+  - `python3 -m json.tool resources/toolsconfig/enscan-go.json resources/toolsconfig/enscan-go-tyc-discovery.json resources/toolsconfig/enscan-go-kc-discovery.json resources/toolsconfig/enscan-go-rb-discovery.json feature_list.json` → **exit 0**
+  - `ReadLints`（2 个改动文件）→ **No linter errors found**
+  - `rg 'assetIntel\\.hydrate\\(|hydrate_intel|Hydrate intel' frontend/components/TargetPanel` → **No matches found**
+  - `python3 -m json.tool resources/toolsconfig/enscan-go.json feature_list.json` → **exit 0**
+  - 手动 ENScan：`.../enscan-v2.0.5-darwin-amd64 -n "中国平安" -type aqc -field invest -invest 51 -deep 1 -delay 1 -json -out-dir /tmp/golish-enscan-field-invest-only-*` → **exit 0**，导出 JSON 只含 `invest/partner/enterprise_info`，无 `icp/app/wx_app/wechat`。
+- **已知风险或未解决问题**：
+  - `enrichBatch` 返回的是多次 per-org run；当前 UI 仍只把第一条 run 放进 selected org 的 Last run 摘要，streaming activity 会显示整批过程但不会把每个子公司的最终摘要拆成独立卡片。可作为后续 polish。
+  - 未跑真实 0.zone 外部 E2E；需要用户在 just dev 下配置 0.zone key 后验证「批量补字段」是否按子公司名逐个查询。
+
+---
+
+### 2026-05-22 · Hydrate Intel disambiguation + 主档案 + evidence 三件套（A 轻量 + B + C 一次到位）
+
+- **本轮目标**：用户报告 hydrate intel 数据"乱七八糟"，写错子公司也抓不到对的。诊断 6 根因（R1 无公司主体核验 / R2 normalize 不过滤股权 / R3 enterprise_info 没写主档案 / R4 invest 方向不分 / R5 candidate 缺 evidence 上下文 / R6 输入错名字静默错查）。用户同意推荐组合 A 轻量 + B + C 同步落地。
+- **已完成（按 milestone）**：
+  - **C · normalize when filter + evidence 展开**：
+    - `golish-pentest::models` 新增 `AssetIntelNormalizeFilter` + `AssetIntelNormalizeFilterOp`（9 variant: eq/ne/gte/gt/lte/lt/exists/missing/contains），并加在 `AssetIntelNormalizeRule.when` 字段（向后兼容 `#[serde(default)]`）。
+    - `asset_intel.rs` 新增 `filter_passes` + `apply_filter_op`：数值优先 f64 比较，fallback 字符串 ordering（保证日期类比较仍能工作）。
+    - 前端 `TargetGroupedView.tsx` 加 `getEvidenceRawRows` 提取 24 字段白名单（name/credit_code/scale/legal/legal_person/industry/addr/address/reg_date/establish_date/phone/email/domain/url/link/app_id/app_url/...），candidate 卡片新增 Details 按钮 toggle 展开。
+  - **B · profile_fields 写主档案**：
+    - `models.rs` 新增 `AssetIntelProfileFieldRule` + `AssetIntelProfileFieldTarget`（Scalar/Intel/Contact 3 bucket）+ `AssetIntelProfileFieldTransform`（None/Trim/Lower/Upper 4 transform）+ `AssetIntelNormalizeConfig.profile_fields`。
+    - `asset_intel.rs` 新增 `ProfileFieldEntry` + `extract_profile_field_entries`，把 `normalize_json_with_descriptor` 返回值改为元组 `(candidates, profile_entries)`，`CliJsonStreamShared` 多一个 `profile_entries: TokioMutex<Vec<ProfileFieldEntry>>` 让 stdout / artifact / http_json 三路 normalize 都同时收集。`run_cli_json_provider` + `run_http_json_provider` 函数签名扩到 4 元组返回 `profile_entries`，hydrate 顶层 fold + `build_profile_patch_from_entries`（first-wins for scalar/intel keys + contact list lowercase-trim dedupe + 保留 existing intel 如 engagement metadata）→ 单次 `update_profile`，patch 空时跳过 DB roundtrip。
+    - `resources/toolsconfig/enscan-go.json` `normalize.profile_fields` 加 7 条 enterprise_info 规则：reg_code→credit_code(scalar trim) / industry→industry / legal_person·legal→legal_representative(intel trim) / reg_address·addr·address→registered_address(intel) / reg_date·establish_date·founded_at→registered_at(intel) / email→email(contact lower) / phone→phone(contact trim)。
+  - **A · lookup_company disambiguation 流程**：
+    - `models.rs` 新增 `AssetIntelLookupConfig` + `AssetIntelLookupNormalize`（path + name + 6 个 optional FieldRef + default_confidence），加在 `AssetIntelToolConfig.lookup: Option<...>`。
+    - `asset_intel.rs` 新增 `LookupCompanyMatch` + `AssetIntelLookupRequest` + `AssetIntelLookupResult` + `extract_lookup_matches` + `run_lookup_cli_provider`（轻量同步 `tokio::Command::output()` + timeout，比 hydrate cli_json 简单一截）+ `dedupe_lookup_matches`（credit_code 优先，回落 name lowercase-trim）+ `asset_intel_lookup_company` Tauri command（顶层 dedupe + 按 confidence 降序 + `LOOKUP_RESULTS_HARD_CAP=25` 兜底）。注册到 `commands_facade::asset_intel` + `commands_registry::generate_handler`。
+    - `enscan-go.json` 加 `asset_intel.lookup`（skill_id=company-lookup-json + timeout 60s + normalize.path $..enterprise_info[*] + 7 字段映射 + default_confidence 0.68）+ 新 skill `company-lookup-json` 跑 `-n {{keyword}} -type aqc -field icp -delay 3 -json -out-dir {{out_dir}}`（轻量查询，只拿 enterprise_info 不抓 invest/branch/app）。
+    - 前端 `frontend/lib/api/asset-intel.ts` +`LookupCompanyMatch`/`AssetIntelLookupRequest`/`AssetIntelLookupResult` + `lookupCompany` IPC wrapper。
+    - 前端 `NewEngagementDialog.tsx` +Look up button（仅 `discover_assets` 模式渲染）+ 候选列表渲染（confidence% + credit/industry/legal/address）+ selectedMatch badge（emerald 成功态显示已选公司全部字段）+ Clear 按钮 + 自动清 stale match（orgName 编辑时）+ 改 organization name 用显式 `htmlFor` 避免 testing library nested-label 二义；submit 时把 `selectedMatch.creditCode` / `industry` 写到 `OrganizationProfilePatch.credit_code` / `industry`，并把全套 lookup match snapshot 存到 `intel.engagement.lookup_match`。
+- **运行过的验证**：
+  - 修复前：cargo nextest `golish-pentest` → exit 101（schema 缺字段，先红）
+  - `cargo nextest run -p golish-pentest --status-level fail` → **exit 0 / 59 passed, 7 skipped**（含 5 个 asset_intel schema round-trip + when filter + profile_fields + lookup config 新测）
+  - `cargo nextest run -p golish --lib -E 'test(asset_intel)'` → **exit 0 / 18 passed, 236 skipped**（含 3 when filter + 3 profile_fields + 2 lookup matches/dedupe 新增）
+  - `cargo check -p golish` → **exit 0**，仅 preexisting `capture/data_dir.rs::session_dir` dead_code warning
+  - `cargo fmt --package golish --package golish-pentest --check` → **exit 0**
+  - `pnpm vitest run frontend/components/TargetPanel/` → **exit 0 / 27 passed**（22 actions + 5 dialog，含 getEvidenceRawRows 4 + lookup flow 3 新增 + 1 hides outside discover_assets）
+  - `pnpm exec tsc --noEmit` → **exit 0 / 10.4s**
+  - `pnpm exec biome check` 5 改动文件 → **No fixes applied**（1 次自动修：NewEngagementDialog 三元运算符断行）
+  - `ReadLints` 10 改动文件 → **No linter errors found**
+  - `python3 -m json.tool resources/toolsconfig/enscan-go.json` → **VALID JSON**
+  - `python3 -m json.tool feature_list.json` → **VALID JSON**
+- **已记录证据**：见以上验证段；77 个 Rust 测试 + 27 个 vitest 全过，覆盖 schema round-trip / when filter 3 op 实测 / profile field 3 bucket × 4 transform / scalar+contact dedupe / 全空 entries 返 None / lookup matches 含 FirstOf fallback / 跨 provider credit_code 大小写不敏感去重 / non-discover 隐藏 Look up button / discover 选择后 submit patch 含 credit_code+industry / no matches 显式提示。
+- **提交记录**：**待用户授权 commit**。建议 commit message：`feat(asset-intel): disambiguation lookup + profile_fields master record + when filter & evidence expansion`，文件清单：
+  - 后端：`backend/crates/golish-pentest/src/models.rs`、`backend/crates/golish/src/tools/asset_intel.rs`、`backend/crates/golish/src/commands_facade/asset_intel.rs`、`backend/crates/golish/src/commands_registry.rs`
+  - 前端：`frontend/lib/api/asset-intel.ts`、`frontend/components/TargetPanel/NewEngagementDialog.tsx`、`frontend/components/TargetPanel/NewEngagementDialog.test.tsx`、`frontend/components/TargetPanel/TargetGroupedView.tsx`、`frontend/components/TargetPanel/TargetGroupedView.actions.test.ts`
+  - 资源 / 元数据：`resources/toolsconfig/enscan-go.json`、`feature_list.json`、`agent-progress.md`
+- **已知风险或未解决问题**：
+  - **未真实跑 ENScan E2E**：lookup 流程依赖 ENScan `-n <keyword> -type aqc -field icp -json` 输出的 enterprise_info 实际字段名（`reg_code` / `industry` / `legal_person` / `reg_address` / `reg_date`）。enscan-go.json normalize 配置用 FirstOf fallback 覆盖了几种常见名称（如 `legal_person` 或 `legal`、`reg_address` 或 `addr`），但 ENScan v2.0.5 的真实字段名需要用户跑一次 lookup 截图给我，必要时再调 JSON。
+  - **A 轻量版假设 ENScan 单源 lookup 足够**：当前 `lookupCompany` 只跑有 `asset_intel.lookup` 配置的 provider。如果未来加 0.zone 等其它 provider，0.zone 需要 HTTP 版 lookup（当前 `run_lookup_cli_provider` 拒绝 http_json provider，返 unavailable），P2 可以扩展 `run_lookup_http_provider`。
+  - **profile_fields 主档案写入是 first-wins**：多 provider 给同一字段（如 credit_code）冲突时静默丢弃后者，没有提示 UI；正常场景下 enterprise_info.reg_code 全网唯一，问题不大。
+  - **frontend lookup 没缓存**：用户每次输入新 keyword + Look up 都会重新打 ENScan。考虑用户主动触发的按钮，可接受不缓存。
+  - **未跑真实 hydrate 验证 profile_fields 落库**：unit test 覆盖了纯函数提取 + patch fold + dedupe，但没起完整 Postgres 跑 update_profile。需要用户在 just dev 下点 Hydrate intel 后用 SQL 查 organizations.credit_code/intel.contacts。
+  - **未 commit**：等用户授权。
+- **下一步最佳动作**：
+  1. **用户授权后整批 commit**（11 个改动文件）+ push
+  2. **用户跑 just dev 真实 E2E**：① Settings → Integrations → ENScan AQC 确保 cookie 有效 ② 新建 Discover Assets engagement → 输入"小米" → 点 ⚡ Look up → 应弹候选列表 ③ 选定一家 → 看 orgName 自动填 + emerald badge 显示 credit_code/industry ④ Create & Prepare Discovery → SQL 查 organizations.credit_code/industry 已写入 ⑤ Hydrate intel → 候选 Details 按钮展开看 ENScan 原始字段 ⑥ 验证 organizations.intel.contacts.email/phone 已填
+  3. **如 lookup 拿不到候选**：很可能是 ENScan enterprise_info 字段名跟我猜的不一致（如实际是 `creditCode` 不是 `reg_code`），需要根据用户截图调 enscan-go.json 里的 FieldRef
+  4. **后续 polish**：① 候选列表加 industry 图标 ② Look up 加 keyword recently used 缓存 ③ 接入 0.zone http_json lookup runtime
+
+---
+
+### 2026-05-22 · Asset Intel CLI 输出目录隔离修复
+
+- **本轮目标**：修复 Asset Intel `cli_json` provider 运行 ENScan 等 CLI 工具时继承开发 cwd，导致工具相对路径副产物可能写入项目根/开发目录的问题；同时修复 Discover Assets 默认参数过重导致用户误以为后端卡住的问题。
+- **已完成**：
+  - `run_cli_json_provider` 改为基于 organization 的 `project_path` 构造输出目录：`{project_root}/.golish/tool-output/asset-intel/{run_id}/{provider_id}`。
+  - CLI 子进程启动时显式 `current_dir(&out_dir)`，即使工具忽略 `-out-dir` 或写相对路径，也只会写入本次 provider 输出目录。
+  - CLI 子进程设置 `kill_on_drop(true)`，让 timeout 路径更稳地回收 ENScan 进程。
+  - `cli_json` / `http_json` provider 增加开始、失败、超时、完成日志，避免后端日志只停在 toolsconfig scan 让用户无法判断进度。
+  - 保留 evidence 中的 `outDir`，现在指向项目 `.golish/tool-output/asset-intel/...`。
+  - `NewEngagementDialog` 的 Discover Assets 默认值改成轻量 hydrate：不再默认传 `-invest 51 -deep 2 -branch`；需要股权/分支时用户再显式填写。
+  - `buildHydrateConfigFromEngagement` 兼容已有组织里旧默认污染值：`51 + depth 2 + include branches` 会按轻量 hydrate 处理，避免老记录继续触发重 ENScan 查询。
+- **运行过的验证**：
+  - 修复前 `cargo test -p golish cli_json_runtime_runs_in_provider_output_dir --lib` → **exit 101 / failed**，失败原因为 CLI cwd 未进入期望输出目录。
+  - 修复前 `pnpm vitest run frontend/components/TargetPanel/NewEngagementDialog.test.tsx` → **exit 1 / 1 failed**，失败证明 Discover Assets 默认仍是 `51 / 2 / include branches`。
+  - 修复前 `pnpm vitest run frontend/components/TargetPanel/TargetGroupedView.actions.test.ts` → **exit 1 / 1 failed**，失败证明已有组织的旧默认重参数仍会传给 hydrate。
+  - `cargo fmt --package golish --check` → **exit 0**。
+  - `cargo test -p golish cli_json_runtime_runs_in_project_tool_output_dir --lib` → **exit 0 / 1 passed**。
+  - `cargo test -p golish asset_intel --lib` → **exit 0 / 9 passed, 236 filtered out**。
+  - `cargo check -p golish` → **exit 0**，仅既有 `capture/data_dir.rs::session_dir` dead_code warning。
+  - `pnpm vitest run frontend/components/TargetPanel/NewEngagementDialog.test.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts` → **exit 0 / 15 passed**。
+  - `pnpm exec tsc --noEmit` → **exit 0**。
+  - `pnpm exec biome check frontend/components/TargetPanel/NewEngagementDialog.tsx frontend/components/TargetPanel/NewEngagementDialog.test.tsx frontend/components/TargetPanel/TargetGroupedView.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts` → **exit 0 / No fixes applied**。
+  - `git diff --check -- backend/crates/golish/src/tools/asset_intel.rs frontend/components/TargetPanel/NewEngagementDialog.tsx frontend/components/TargetPanel/NewEngagementDialog.test.tsx agent-progress.md` → **exit 0**。
+  - `ReadLints`（本轮相关文件）→ **No linter errors found**。
+- **已知风险或未解决问题**：
+  - 未跑真实 ENScan/0.zone 外部 E2E；本轮修复覆盖的是输出目录隔离、轻量默认参数、provider 日志与自动化测试路径。
+
+---
+
+### 2026-05-22 · Asset Intel HTTP JSON Runtime
+
+- **本轮目标**：补齐 `http_json` runtime，让 0.zone / 后续 HTTP API provider 也能通过 JSON descriptor 接入 Asset Intel，不再需要 Rust 专属 adapter。
+- **已完成**：
+  - `golish-pentest::models::AssetIntelRuntimeConfig` 新增 `HttpJson { requests }` variant，request 支持 method/url/headers/form/json/timeout。
+  - `asset_intel.rs` 新增 generic `http_json` runtime：渲染 `{{company_name}}` / `{{secret:<field>}}`，从 vault 读取 integration secret，发送 HTTP JSON 或 form 请求，把响应 JSON 交给同一套 descriptor normalizer。
+  - 新增 `resources/toolsconfig/0-zone.json`，用 JSON 声明 0.zone provider、3 个 POST request（domain/site/apk）、`api_key` secret、auto priority、organization/target normalize mapping。
+  - `asset_intel_hydrate` runtime dispatch 现在支持 `cli_json` 与 `http_json` 两类 provider。
+- **运行过的验证**：
+  - `cargo test -p golish-pentest tool_config_accepts_asset_intel_http_json_runtime --lib` → **exit 0 / 1 passed, 56 filtered out**。
+  - `python3 -m json.tool resources/toolsconfig/0-zone.json >/dev/null && python3 -m json.tool resources/toolsconfig/enscan-go.json >/dev/null` → **exit 0**。
+  - `cargo fmt --package golish --package golish-pentest` → **exit 0**。
+  - `cargo test -p golish asset_intel --lib` → **exit 0 / 8 passed, 236 filtered out**。新增覆盖：fake CLI/HTTP JSON 数据跨 provider 去重；本地 TCP fake HTTP server 收到 `http_json` POST，返回假 JSON 后 normalize 出 2 个 target candidates。
+  - `cargo check -p golish` → **exit 0**，仅报告既有 `capture/data_dir.rs::session_dir` dead_code warning。
+  - `pnpm vitest run frontend/components/TargetPanel/TargetGroupedView.actions.test.ts` → **exit 0 / 12 passed**。
+  - `pnpm exec tsc --noEmit` → **exit 0**。
+  - `pnpm exec biome check frontend/components/TargetPanel/TargetGroupedView.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts frontend/lib/api/asset-intel.ts frontend/lib/api/index.ts` → **exit 0 / No fixes applied**。
+  - `rg 'ENSCAN_PROVIDER_ID|ZONE_PROVIDER_ID|ZoneProvider|QueryType|run_zone_provider|run_enscan_go_provider|build_enscan_command_plan|parse_enscan_json_records' backend/crates/golish/src/tools/asset_intel.rs` → **No matches found**。
+  - `git diff --check -- <本轮相关文件>` → **exit 0**。
+  - `ReadLints`（本轮相关文件）→ **No linter errors found**。
+- **已知风险或未解决问题**：
+  - 未跑真实 0.zone 外部 API E2E；需要用户在 Integrations 中配置可用 `0.zone/default/api_key`（或旧 vault alias `name='0.zone', entry_type='api_key'`）后再跑真实 hydrate。
+  - `http_json` 当前只支持简单模板替换和单页请求；分页、响应 envelope 错误码判定（如 `code != 0`）可继续 JSON 化扩展。
+
+---
+
+### 2026-05-22 · Asset Intel JSON-driven Provider 实现
+
+- **本轮目标**：按新计划把 Asset Intel provider 从 Rust 硬编码分支改为 toolsconfig JSON 驱动，保留现有 Target UI / IPC 契约。
+- **已完成**：
+  - `golish-pentest::models::ToolConfig` 新增 `asset_intel` descriptor schema，支持 provider metadata、capabilities、integration requirement、auto priority、`cli_json` runtime、normalize mapping。
+  - `resources/toolsconfig/enscan-go.json` 新增 `tool.asset_intel`，把 ENScan provider id、capabilities、auto mode、skill runtime、artifact JSON、organization/target normalize mappings 外置到 JSON。
+  - `asset_intel_list_providers` 改为扫描 toolsconfig descriptor；`asset_intel_hydrate` 改为 JSON auto selector + generic `cli_json` runtime + generic JSON normalizer。
+  - 删除 Asset Intel 内 ENScan_GO / 0.zone 专属 provider 常量、`ZoneProvider` 调用、专属命令构建和专属 normalize 分支；0.zone 等后续 provider 需要通过 JSON descriptor 接入。
+  - 保持前端 API / TargetPanel 行为不变。
+- **运行过的验证**：
+  - `cargo test -p golish-pentest tool_config_accepts_asset_intel_descriptor --lib` → **exit 0 / 1 passed, 55 filtered out**。
+  - `python3 -m json.tool resources/toolsconfig/enscan-go.json >/dev/null` → **exit 0**。
+  - `cargo fmt --package golish --package golish-pentest` → **exit 0**。
+  - `cargo test -p golish asset_intel --lib` → **exit 0 / 6 passed, 236 filtered out**。
+  - `cargo check -p golish` → **exit 0**，仅报告既有 `capture/data_dir.rs::session_dir` dead_code warning。
+  - `pnpm vitest run frontend/components/TargetPanel/TargetGroupedView.actions.test.ts` → **exit 0 / 12 passed**。
+  - `pnpm exec tsc --noEmit` → **exit 0**。
+  - `pnpm exec biome check frontend/components/TargetPanel/TargetGroupedView.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts frontend/lib/api/asset-intel.ts frontend/lib/api/index.ts` → **exit 0 / No fixes applied**。
+  - `rg 'ENSCAN_PROVIDER_ID|ZONE_PROVIDER_ID|ZoneProvider|QueryType|run_zone_provider|run_enscan_go_provider|build_enscan_command_plan|parse_enscan_json_records' backend/crates/golish/src/tools/asset_intel.rs` → **No matches found**。
+  - `git diff --check -- <本轮相关文件>` → **exit 0**。
+  - `ReadLints`（本轮相关文件）→ **No linter errors found**。
+- **已知风险或未解决问题**：
+  - 第一版 `cli_json` arg splitting 只支持简单双引号分组，适合当前 ENScan skill；如果未来工具参数需要复杂 shell quoting，需要扩展 descriptor 或使用 wrapper skill。
+  - `http_json` runtime 尚未实现；因此 0.zone 暂时不会作为 Asset Intel provider 出现在 auto mode，需后续用 JSON HTTP descriptor 接回。
+
+---
+
+### 2026-05-22 · Asset Intel JSON-driven Provider 方案修订
+
+- **本轮目标**：响应用户指出的 provider adapter 方向问题，停止沿 Rust 硬编码 provider 分支扩展，改写为“后续新增/替换工具优先只改外部 JSON”的新方案。
+- **已完成**：
+  - 新增 `docs/design/2026-05-22-asset-intel-json-driven-providers.md`，明确 Asset Intel provider registry / runtime / normalize 应由 `tool.asset_intel` JSON descriptor 驱动。
+  - 新增 `docs/superpowers/plans/2026-05-22-asset-intel-json-driven-providers.md`，拆出 schema、ENScan JSON descriptor、generic normalizer、generic `cli_json` runtime、auto selector、移除 0.zone Rust 分支、前端回归验证等任务。
+  - 在旧设计与旧计划顶部标记 superseded，避免后续继续执行硬编码 Phase 4。
+- **运行过的验证**：
+  - `ReadLints`（4 个新/改文档）→ **No linter errors found**。
+  - `git diff --check -- docs/design/2026-05-22-asset-intel-json-driven-providers.md docs/superpowers/plans/2026-05-22-asset-intel-json-driven-providers.md docs/design/2026-05-22-asset-intel-provider-abstraction.md docs/superpowers/plans/2026-05-22-asset-intel-provider-abstraction.md agent-progress.md` → **exit 0**。
+- **已知风险或未解决问题**：
+  - 本轮只写新方案，尚未改 Rust/JSON 实现；当前 `asset_intel.rs` 仍保留 ENScan_GO / 0.zone 专属逻辑，需按新计划重构。
+
+---
+
+### 2026-05-22 · Asset Intel Provider Abstraction Phase 4
+
+- **本轮目标**：实现多 provider / auto mode，让 Asset Intel Service 在 Target UI 不变的前提下同时编排 ENScan_GO 和 0.zone，并合并去重 candidates。
+- **已完成**：
+  - `provider_descriptors()` 新增 `0.zone（零零信安）`，capabilities 覆盖 domains / apps / contacts，integration 指向 `0.zone/default`。
+  - `asset_intel_hydrate` auto mode 从单 ENScan_GO 改为默认尝试 `enscan-go` + `0.zone`；显式 `providerIds` 仍只跑指定 provider。
+  - 新增 0.zone adapter：复用 `golish_intel_providers::zone::ZoneProvider`，从 `vault_entries` 读取 `0.zone` API key，查询 Domain / Site / Apk。
+  - 0.zone 未配置 key 时返回 `unavailable` provider status，不阻塞 ENScan_GO。
+  - 多 provider candidates 按 `kind + value(lowercase)` 去重，保留先返回候选及其 evidence。
+  - Activity tab 显示 `asset_intel_list_providers` 返回的 available provider chips。
+  - 更新 Phase 4 实施计划：`docs/superpowers/plans/2026-05-22-asset-intel-provider-abstraction.md`。
+- **运行过的验证**：
+  - `cargo test -p golish asset_intel --lib` → **exit 0 / 7 passed, 236 filtered out**。
+  - `cargo check -p golish` → **exit 0**，仅报告既有 `capture/data_dir.rs::session_dir` dead_code warning。
+  - `pnpm vitest run frontend/components/TargetPanel/TargetGroupedView.actions.test.ts` → **exit 0 / 12 passed**。
+  - `pnpm exec tsc --noEmit` → **exit 0**。
+  - `pnpm exec biome check frontend/components/TargetPanel/TargetGroupedView.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts frontend/lib/api/asset-intel.ts frontend/lib/api/index.ts` → 初次格式 fail，修复后 **exit 0 / No fixes applied**。
+  - `ReadLints`（本轮相关文件）→ **No linter errors found**。
+- **已知风险或未解决问题**：
+  - 未跑真实 0.zone 外部 API E2E；没有 API key 时预期只显示 provider `unavailable`。
+  - 多 provider 去重当前按 normalized candidate value；后续可增加 evidence merge，让重复候选保留多个 source。
+
+---
+
+### 2026-05-22 · Asset Intel Provider Abstraction Phase 3
+
+- **本轮目标**：把 Target / Discover Assets workspace 接入统一 Asset Intel API，完成 hydrate → provider status → candidate review → explicit promote 前端闭环。
+- **已完成**：
+  - `TargetGroupedView` 引入 `assetIntel.hydrate()`，`Hydrate intel` action 现在会真实触发 hydrate IPC。
+  - Activity tab 增加 hydrate loading、error、last run status、provider status、checked-empty/completed/failed/unavailable 视觉状态。
+  - Candidates tab 从仅显示计数升级为展示 organization / target candidate 列表。
+  - Candidate 支持 `Approve` / `Reject`，复用现有 `organization_candidates_upsert` 更新状态。
+  - Candidate 支持显式 `Promote`：organization candidate 创建 child org；target candidate 走现有 `onBatchAdd` 创建 target。
+  - 新增/更新纯 helper：`buildHydrateConfigFromEngagement`、`getCandidateItems`、`getProviderStatusClass`，并补充单测。
+  - 更新 Phase 3 实施计划：`docs/superpowers/plans/2026-05-22-asset-intel-provider-abstraction.md`。
+- **运行过的验证**：
+  - `pnpm vitest run frontend/components/TargetPanel/TargetGroupedView.actions.test.ts` → **exit 0 / 12 passed**。
+  - `pnpm exec tsc --noEmit` → **exit 0**。
+  - `pnpm exec biome check frontend/components/TargetPanel/TargetGroupedView.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts frontend/lib/api/asset-intel.ts frontend/lib/api/index.ts` → **exit 0 / No fixes applied**。
+- **已知风险或未解决问题**：
+  - 尚未跑 `just dev` 真实 UI E2E；需要用户有可用 ENScan_GO cookie 后手动点击 Hydrate 验证真实 provider run。
+  - Promote target 复用现有 `onBatchAdd` 行为；若后续需要“approved candidate 批量 promote”，可追加批量选择 UI。
+  - Phase 4 多 provider / auto merge 去重尚未实现。
+
+---
+
+### 2026-05-22 · Asset Intel Provider Abstraction Phase 2
+
+- **本轮目标**：把 Phase 1 的 `enscan-go` skeleton 升级为真实 ENScan_GO adapter 执行路径，仍保持 Target / Engagement UI 只依赖统一 Asset Intel 契约。
+- **已完成**：
+  - `asset_intel_hydrate` 注入 `PentestState`，通过 `ConfigManager` 读取 `toolsconfig_dir` / `tools_dir`。
+  - 使用 `golish_pentest::scan_toolsconfig` + `resolve_tool_executable("enscan-go", ...)` 定位 ENScan_GO 可执行文件。
+  - 新增 `build_enscan_command_plan`：生成只读 JSON 导出命令，默认 `-type aqc -field icp,app,wx_app,wechat -json -out-dir <tmp>`，并按 discovery config 追加 `-invest` / `-deep` / `-branch`。
+  - 新增 ENScan JSON normalize：`invest` / `holds` / `branch` → organization candidates；`icp` / `app` / `wx_app` / `wechat` / `weibo` → target candidates。
+  - 新增真实执行路径：`tokio::process::Command` + 180s timeout，解析 stdout 和 out_dir 下 `.json` artifacts，并映射 `completed` / `checked_empty` / `unavailable` / `failed` provider status。
+- **运行过的验证**：
+  - `cargo fmt --package golish` → **exit 0**。
+  - `cargo test -p golish asset_intel --lib` → **exit 0 / 4 passed, 236 filtered out**。
+  - `cargo test -p golish candidate_upsert --lib` → **exit 0 / 1 passed, 239 filtered out**。
+  - `cargo check -p golish` → **exit 0**，仅报告既有 `capture/data_dir.rs::session_dir` dead_code warning。
+  - `pnpm exec tsc --noEmit` → **exit 0**。
+  - `pnpm exec biome check frontend/lib/api/asset-intel.ts frontend/lib/api/index.ts` → **exit 0 / No fixes applied**。
+  - `ReadLints`（本轮相关文件）→ **No linter errors found**。
+  - `git diff --check -- <本轮相关文件>` → **exit 0**。
+- **已知风险或未解决问题**：
+  - 尚未做真实 ENScan_GO 外部请求 E2E；单测覆盖的是命令构建和 JSON normalize，避免测试阶段触发外部站点访问。
+  - 当前默认 provider source 是 `aqc`；多 source/auto mode 合并去重可作为后续 Phase 4 多 provider / 多 source 扩展。
+  - 发现结果仍只写 candidates，不自动进入 active scan scope，符合授权边界。
+
+---
+
+### 2026-05-22 · Asset Intel Provider Abstraction Phase 1
+
+- **本轮目标**：开始实现 `docs/design/2026-05-22-asset-intel-provider-abstraction.md` 的 Phase 1 服务抽象，让 Discover Assets 先接统一 provider / hydrate 契约，而不是绑定 ENScan_GO。
+- **已完成**：
+  - 新增 `docs/superpowers/plans/2026-05-22-asset-intel-provider-abstraction.md` Phase 1 实施计划。
+  - 新增 `backend/crates/golish/src/tools/asset_intel.rs`：provider descriptor、hydrate request/result、provider status、ENScan_GO skeleton descriptor、normalize provider records 纯函数、`asset_intel_list_providers` / `asset_intel_hydrate` IPC。
+  - 新增 `backend/crates/golish/src/commands_facade/asset_intel.rs`，并注册到 `commands_facade/mod.rs` 与 `commands_registry.rs`。
+  - `organizations.rs` 抽出 `upsert_organization_candidates_for_org` helper，供 Asset Intel service 复用现有 candidates 写入路径。
+  - 新增 `frontend/lib/api/asset-intel.ts` typed wrapper，并从 `frontend/lib/api/index.ts` 导出 `assetIntel` namespace。
+- **运行过的验证**：
+  - `cargo test -p golish asset_intel --lib` → **先红后绿**：红灯 `0 passed / 2 failed`；实现后 `2 passed / 0 failed`。
+  - `cargo test -p golish candidate_upsert --lib` → **exit 0 / 1 passed, 237 filtered out**。
+  - `cargo check -p golish` → **exit 0**，仅报告既有 `capture/data_dir.rs::session_dir` dead_code warning。
+  - `cargo fmt --package golish` → **exit 0**。
+  - `pnpm exec tsc --noEmit` → **exit 0**。
+  - `pnpm exec biome check frontend/lib/api/asset-intel.ts frontend/lib/api/index.ts` → 初次 import order fail；修复后 **exit 0 / No fixes applied**。
+  - `ReadLints`（本轮新增/改动文件）→ **No linter errors found**。
+- **已知风险或未解决问题**：
+  - Phase 1 当前是 provider skeleton：`asset_intel_hydrate` 会返回 `checked_empty` evidence，不调用真实 ENScan_GO CLI；真实 CLI 接入属于 Phase 2。
+  - `./init.sh` 暴露既有 `check-fe` Biome 问题与 `golish-pty` clippy 问题，和本轮新增文件无关；本轮没有改动那些历史文件。
 
 ---
 

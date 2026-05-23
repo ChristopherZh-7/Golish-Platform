@@ -14,6 +14,7 @@
 export { ApiError, getInflightCommands, invoke } from "./client";
 
 import * as ai from "./ai";
+import * as assetIntel from "./asset-intel";
 import * as auditLog from "./audit-log";
 import * as context from "./context";
 import * as conversationDb from "./conversation-db";
@@ -50,6 +51,7 @@ import * as wordlist from "./wordlist";
 
 export {
   pty,
+  assetIntel,
   git,
   shell,
   files,
@@ -87,6 +89,7 @@ export {
 
 export const api = {
   pty,
+  assetIntel,
   git,
   shell,
   files,

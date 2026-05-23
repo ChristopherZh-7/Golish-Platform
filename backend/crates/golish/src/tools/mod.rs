@@ -88,5 +88,8 @@ pub mod sensitive_scan;
 // ASM intel providers (0.zone, FOFA, Quake, ...) — Settings UI + agent
 pub mod intel_providers;
 
+// Business-level asset intelligence providers for Discover Assets engagements
+pub mod asset_intel;
+
 // Schema-driven external-service credential management (Integrations)
 pub mod integrations;

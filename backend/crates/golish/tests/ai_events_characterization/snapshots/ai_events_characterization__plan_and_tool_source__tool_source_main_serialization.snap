@@ -1,0 +1,8 @@
+---
+source: crates/golish/tests/ai_events_characterization/plan_and_tool_source.rs
+assertion_line: 86
+expression: json
+---
+{
+  "type": "main"
+}

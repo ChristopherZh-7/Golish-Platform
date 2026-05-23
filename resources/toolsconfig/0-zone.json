@@ -1,0 +1,382 @@
+{
+  "tool": {
+    "id": "0.zone",
+    "name": "0.zone（零零信安）",
+    "description": "Chinese cyberspace mapping and threat intelligence provider exposed to Asset Intel through a JSON-declared HTTP runtime.",
+    "executable": "",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tags": ["recon", "osint", "asm", "http-json", "credential-required"],
+    "pentestPhase": ["recon"],
+    "tier": "recommended",
+    "asset_intel": {
+      "enabled": true,
+      "provider_id": "0.zone",
+      "display_name": "0.zone（零零信安）",
+      "capabilities": ["domains", "apps", "contacts"],
+      "requires_integration": {
+        "tool_id": "0.zone",
+        "group_ids": ["default"]
+      },
+      "auto": {
+        "default": true,
+        "priority": 90
+      },
+      "runtime": {
+        "kind": "http_json",
+        "requests": [
+          {
+            "id": "domain",
+            "method": "POST",
+            "url": "https://0.zone/api/data/",
+            "headers": {
+              "User-Agent": "Golish Asset Intel"
+            },
+            "form": {
+              "query": "{{company_name}}",
+              "query_type": "domain",
+              "page": "1",
+              "pagesize": "40",
+              "zone_key_id": "{{secret:api_key}}"
+            },
+            "timeout_secs": 30
+          },
+          {
+            "id": "site",
+            "method": "POST",
+            "url": "https://0.zone/api/data/",
+            "headers": {
+              "User-Agent": "Golish Asset Intel"
+            },
+            "form": {
+              "query": "{{company_name}}",
+              "query_type": "site",
+              "page": "1",
+              "pagesize": "40",
+              "zone_key_id": "{{secret:api_key}}"
+            },
+            "timeout_secs": 30
+          },
+          {
+            "id": "apk",
+            "method": "POST",
+            "url": "https://0.zone/api/data/",
+            "headers": {
+              "User-Agent": "Golish Asset Intel"
+            },
+            "form": {
+              "query": "{{company_name}}",
+              "query_type": "apk",
+              "page": "1",
+              "pagesize": "40",
+              "zone_key_id": "{{secret:api_key}}"
+            },
+            "timeout_secs": 30
+          },
+          {
+            "id": "org",
+            "method": "POST",
+            "url": "https://0.zone/api/data/",
+            "headers": {
+              "User-Agent": "Golish Asset Intel"
+            },
+            "form": {
+              "query": "{{company_name}}",
+              "query_type": "org",
+              "page": "1",
+              "pagesize": "20",
+              "zone_key_id": "{{secret:api_key}}"
+            },
+            "timeout_secs": 30
+          }
+        ]
+      },
+      "normalize": {
+        "organization": [
+          {
+            "path": "$..data[*]",
+            "label": ["company", "group"],
+            "value": ["company", "group"],
+            "confidence": 0.64
+          }
+        ],
+        "target": [
+          {
+            "path": "$..data[*]",
+            "label": ["title", "domain", "url", "host", "ip"],
+            "value": ["domain", "url", "host", "ip"],
+            "confidence": 0.72
+          },
+          {
+            "path": "$..data[*]",
+            "label": ["title", "msg.app_id"],
+            "value": ["msg.app_url", "msg.app_id", "title"],
+            "confidence": 0.66
+          }
+        ],
+        "profile_fields": [
+          {
+            "path": "$..data[*]",
+            "source_field": "domain",
+            "target_field": "domains",
+            "transform": "lower",
+            "when": [{ "field": "domain", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "url",
+            "target_field": "domains",
+            "transform": "lower",
+            "when": [{ "field": "url", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "root_domain",
+            "target_field": "domains",
+            "transform": "lower",
+            "when": [{ "field": "root_domain", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.ip",
+            "target_field": "ip_ranges",
+            "transform": "trim",
+            "when": [{ "field": "msg.ip", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "ip",
+            "target_field": "ip_ranges",
+            "transform": "trim",
+            "when": [{ "field": "ip", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "ip_addr",
+            "target_field": "ip_ranges",
+            "transform": "trim",
+            "when": [{ "field": "ip_addr", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "asn",
+            "target_field": "asns",
+            "transform": "trim",
+            "when": [{ "field": "asn", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": ["url", "domain", "host", "redirect_url"],
+            "target_field": "business_systems",
+            "transform": "trim",
+            "when": [{ "field": "url", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": ["msg.app_url", "msg.app_id"],
+            "target_field": "business_systems",
+            "transform": "trim",
+            "when": [{ "field": "msg.app_url", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.code",
+            "target_field": "credit_code",
+            "transform": "trim",
+            "when": [
+              { "field": "msg.code", "op": "exists", "value": "" },
+              { "field": "name_cn", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.industry",
+            "target_field": "industry",
+            "transform": "trim",
+            "when": [
+              { "field": "msg.industry", "op": "exists", "value": "" },
+              { "field": "name_cn", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.legal_person",
+            "target_field": "legal_representative",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [
+              { "field": "msg.legal_person", "op": "exists", "value": "" },
+              { "field": "name_cn", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.reg_address",
+            "target_field": "registered_address",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [
+              { "field": "msg.reg_address", "op": "exists", "value": "" },
+              { "field": "name_cn", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.reg_time",
+            "target_field": "registered_at",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [
+              { "field": "msg.reg_time", "op": "exists", "value": "" },
+              { "field": "name_cn", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.capital",
+            "target_field": "registered_capital",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [
+              { "field": "msg.capital", "op": "exists", "value": "" },
+              { "field": "name_cn", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.business",
+            "target_field": "business_scope",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [
+              { "field": "msg.business", "op": "exists", "value": "" },
+              { "field": "name_cn", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.email[0]",
+            "target_field": "email",
+            "target_kind": "contact",
+            "transform": "lower",
+            "when": [
+              { "field": "msg.email[0]", "op": "exists", "value": "" },
+              { "field": "name_cn", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.website[0]",
+            "target_field": "domains",
+            "transform": "lower",
+            "when": [
+              { "field": "msg.website[0]", "op": "exists", "value": "" },
+              { "field": "name_cn", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.contact_number",
+            "target_field": "phone",
+            "target_kind": "contact",
+            "transform": "trim",
+            "when": [
+              { "field": "msg.contact_number", "op": "exists", "value": "" },
+              { "field": "name_cn", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "beian",
+            "target_field": "icp_records",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "beian", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.beian",
+            "target_field": "icp_records",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "msg.beian", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "cname",
+            "target_field": "cname",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "cname", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "operator",
+            "target_field": "operator",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "operator", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "cms",
+            "target_field": "cms",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "cms", "op": "ne", "value": "unknown" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "component",
+            "target_field": "component",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "component", "op": "ne", "value": "unknown" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "server_name",
+            "target_field": "server_name",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "server_name", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "server_version",
+            "target_field": "server_version",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "server_version", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "service",
+            "target_field": "service",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "service", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "protocol",
+            "target_field": "protocol",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "protocol", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "asn_org",
+            "target_field": "asn_org",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "asn_org", "op": "exists", "value": "" }]
+          }
+        ]
+      }
+    }
+  }
+}

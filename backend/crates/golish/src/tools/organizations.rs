@@ -199,6 +199,25 @@ fn upsert_candidates_into_intel(
     Ok(intel)
 }
 
+pub(crate) async fn upsert_organization_candidates_for_org(
+    pool: &sqlx::PgPool,
+    id: Uuid,
+    candidates: Vec<OrganizationCandidate>,
+) -> Result<OrganizationCandidates, GolishError> {
+    let row = golish_db::repo::organizations::get_one(pool, id)
+        .await?
+        .ok_or_else(|| GolishError::NotFound(format!("organization {id}")))?;
+    let intel = upsert_candidates_into_intel(row.intel, candidates)?;
+    let patch = ProfilePatch {
+        intel: Some(intel.clone()),
+        ..Default::default()
+    };
+    golish_db::repo::organizations::update_profile(pool, id, &patch)
+        .await?
+        .ok_or_else(|| GolishError::NotFound(format!("organization {id}")))?;
+    Ok(read_candidates_from_intel(&intel))
+}
+
 #[tauri::command]
 pub async fn organization_list(
     state: tauri::State<'_, DbState>,
@@ -574,18 +593,7 @@ pub async fn organization_candidates_upsert(
 ) -> Result<OrganizationCandidates, GolishError> {
     let pool = state.pool_ready().await?;
     let uid: Uuid = id.parse()?;
-    let row = golish_db::repo::organizations::get_one(pool, uid)
-        .await?
-        .ok_or_else(|| GolishError::NotFound(format!("organization {id}")))?;
-    let intel = upsert_candidates_into_intel(row.intel, candidates)?;
-    let patch = ProfilePatch {
-        intel: Some(intel.clone()),
-        ..Default::default()
-    };
-    golish_db::repo::organizations::update_profile(pool, uid, &patch)
-        .await?
-        .ok_or_else(|| GolishError::NotFound(format!("organization {id}")))?;
-    Ok(read_candidates_from_intel(&intel))
+    upsert_organization_candidates_for_org(pool, uid, candidates).await
 }
 
 #[cfg(test)]

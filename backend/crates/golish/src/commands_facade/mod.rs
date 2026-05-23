@@ -32,6 +32,7 @@
 //! See also: `docs/development.md#adding-a-new-tauri-command-ipc`.
 
 pub mod ai;
+pub mod asset_intel;
 pub mod findings;
 pub mod git_pty;
 pub mod indexer;
