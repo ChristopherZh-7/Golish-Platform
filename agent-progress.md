@@ -17,7 +17,7 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | **Asset Intel providers flat 完成**：ENScan_GO 4 个 JSON 合并为 1 个主 `enscan-go.json` 的 `asset_intel_providers: [aqc, tyc, kc, rb]` 数组；新增 `expand_provider_tools()` fan-out；`select_*` 改 owned `Vec<ToolConfig>`；3 个 child JSON 删除。35 asset_intel + 62 golish-pentest 单测全绿，fixture 转绿。**TYC 仍 `default=false` 等上游 PR #221**。 |
+| **当前最高优先级** | **0.zone 扩展查询类型完成**：0-zone.json 新启用 email/code/member 三类 query_type + 9 条 normalize.profile_fields 规则把 P0+ 字段（HIBP 风格邮箱泄漏 / 代码 leak AK / 关联企业品牌 / MX 记录）映射到 organizations.intel 与 organizations.subsidiaries/aliases 等列；前端 TargetGroupedView.tsx INTEL labels 三个 map 各补 3 个新 intel key。**0 Rust 代码改动 · 0 DB 改动**，39 个 asset_intel + 62 个 golish-pentest + 36 个 TargetPanel vitest 全绿。 |
 | **当前 blocker** | 本轮新增改动范围内 cargo check / nextest / vitest / tsc / biome / ReadLints 全绿。整 monorepo `just precommit` 仍因 preexisting biome 警告 + 8 个 preexisting `failure_kind` PlanStep struct literal 编译错（M2 cherry-pick 遗留）fail，与本轮无关 |
 | **未提交的半成品** | git status 挂着累积改动（本轮新增/改动：`backend/crates/golish-pentest/src/{models,parsers,scanner,search,command_builder/tests}.rs` + `backend/crates/golish/src/tools/asset_intel.rs` + `resources/toolsconfig/enscan-go.json` 改写为多 provider + 删除 `resources/toolsconfig/enscan-go-{tyc,kc,rb}-discovery.json` + `docs/design/2026-05-23-asset-intel-providers-flat.md` + `docs/superpowers/plans/2026-05-23-asset-intel-providers-flat.md`；累积前几轮：`commands_facade/asset_intel.rs` + `commands_registry.rs` + 前端 TargetPanel/asset-intel.ts + `feature_list.json` + 本文件）+ ~30 个 preexisting 不相关游离改动 |
 
@@ -26,6 +26,32 @@
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-24 · 0.zone 扩展查询类型：email/code/member 三类启用 + 9 条 normalize 规则
+
+- **本轮目标**：用户询问 quake 类网络空间测绘平台无 API 时怎么抓数据，对话顺势调研到「Golish target 表还缺什么字段、0.zone / ENScan_GO 能补什么」。用户明确「不是所有字段都该记录」，让我按 P0/P1/P2/P3 分级精选字段，然后让我「自己跑一下 0.zone 试试看」。最终拍板「动手 Phase 1 + 2」。
+- **实测探针**：写了 `/tmp/golish_zone_probe.py`——连本机 embedded PG (port 15432, db=golish) 读 `vault_entries` 0.zone API key、XOR 反混淆（golish-core/src/vault.rs::derive_key 逻辑 Python 复刻）、按 7 个 query_type 各拉 10 条小米相关 records；原始 JSON dump 在 `/tmp/golish_zone_dump/{site,domain,apk,org,email,code,member}.json`。**关键发现**：① types.rs 的 SiteEntry 只 deserialize 24 字段，但 0.zone 实际返回 70 个字段（漏 banner/framework/leak/device_type/protection/ssl_hostname/icon_md5_base64/risk_score 等 P0+ 字段）；② domain.msg.ip = A 记录 / msg.mx_list = MX 记录已现成；③ apk.msg.domain_list = APK 反编译出的后台域名列表（红队金矿）；④ org.msg.related_brands/related_enterprises = 0.zone 独家品牌穿透字段；⑤ email.leakage_account = HIBP 风格数据；⑥ code.detail_parsing = 已解析的 AK/SK Token。
+- **scope 设计取舍**（重要）：用户提醒后我**主动收窄**——不全接 70 字段做 catch-all（避免数据保留癖污染 organizations 主档案）。只接进 organizations.intel/subsidiaries/aliases 三个 bucket 的 P0+ 字段；site 的 framework_name/leak/app_name 等单 IP 属性留在 candidates.raw_evidence 由 TargetDetail 渲染层处理（不动 Rust 不动 schema）；member 暂不映射 contacts schema（避免破坏 {name,phone,email,title} 分桶）。
+- **9 条新 normalize.profile_fields 规则**（resources/toolsconfig/0-zone.json）：① email→intel.exposed_emails(lower)+contact filter ② mail_domain→email_domains(scalar lower) ③ leakage_num→intel.email_leakage_total(trim) ④ url→intel.code_leaks(trim, when keyword+source exists) ⑤ detail_parsing→intel.code_leak_secrets ⑥ msg.related_brands→subsidiaries(scalar, when name_cn exists) ⑦ msg.related_enterprises→subsidiaries ⑧ msg.name_before→aliases ⑨ msg.mx_list→intel.mail_mx。注意 ⑥⑦⑧ 都加了 `name_cn exists` when 过滤防止 apk/site 的 msg 嵌套字段误入 org 主档案，符合 asset_intel.rs 行 4843 测试断言的语义。
+- **runtime.requests 加 3 个**：email / code / member 各一个 POST，与现有 4 个并列；pagesize=40 同口径。
+- **前端改动**：frontend/components/TargetPanel/TargetGroupedView.tsx 的 INTEL_FIELD_LABELS / INTEL_DISPLAY_ORDER / INTEL_RECORD_LABELS 三个 map 各补 3 个新 intel key（email_leakage_total / code_leak_secrets / mail_mx）。exposed_emails 和 code_leaks 上游已就位、本轮即用即看。
+- **运行过的验证**：
+  - `python3 -m json.tool resources/toolsconfig/0-zone.json` → exit 0
+  - `cargo nextest run -p golish --lib -E 'test(asset_intel)' --status-level fail` → **exit 0 / 39 passed**（包含 4843 行硬断言 `0.zone msg.code -> credit_code must require name_cn presence to avoid pulling apk/site/domain msg.code values` 通过——证明我的新 P0 规则没破坏 org-only 字段隔离）
+  - `cargo nextest run -p golish-pentest --status-level fail` → **exit 0 / 62 passed**
+  - `cargo check -p golish` → exit 0 / 仅 preexisting `capture/data_dir.rs::session_dir` dead_code warning（M2 cherry-pick 遗留 · 上轮 progress 已记）
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/TargetPanel/TargetGroupedView.tsx` → No fixes applied
+  - `pnpm vitest run frontend/components/TargetPanel/TargetGroupedView.actions.test.ts --reporter dot` → **exit 0 / 36 passed**
+  - `ReadLints` 全部改动文件 → 0 errors
+  - `python3 /tmp/golish_zone_probe.py 小米` → 7/7 query_type 都 code=0 有数据，证明 0.zone API key 凭据可用
+- **未提交的半成品**：累积前几轮所有改动（见上轮 progress）+ 本轮新增：`resources/toolsconfig/0-zone.json` + `frontend/components/TargetPanel/TargetGroupedView.tsx` + `feature_list.json` + 本文件。
+- **scope 之外**：手动 E2E（用户实跑 just dev → 配 0.zone API key → hydrate 真实公司 → 看 organizations.intel 里是否冒出 exposed_emails / code_leaks / mail_mx 条目）留给用户做。
+- **Phase 3 动手（同一轮追加）**：用户看完报告后要求「独立 UI group」，不要把 leakage / mail_mx 沉在 Intel records 一行里。动了 frontend/components/TargetPanel/TargetGroupedView.tsx 三处：① INTEL_FIELD_LABELS / INTEL_RECORD_LABELS 两个 map 各加 4 个新 intel key 的人话 label，② INTEL_DISPLAY_ORDER 移除这 4 个 key（避免重复显示），③ getOrgFieldGroups 加 2 个新 OrgFieldGroup：'Leakage Intel'（3 字段）+ 'DNS'（1 字段），通过新 helper `intelGet(org, key)` 从 org.intel.{key} 嵌套取值。同步改 vitest fixture：intel = {exposed_emails, email_leakage_total, code_leaks, mail_mx} + 加 4 个新断言。
+- **Hotfix（用户截图反馈 `Leaked secrets (AK/Token)` 显示成 `{"domain_list":[],...}` JSON 对象）**：根因是 0.zone `detail_parsing` 实际返回的是结构化对象（含 6 个 list 子字段）而非字符串，`golish-core::utils::resolve_json_path` 行 164 对 Object 类型 fallback 到 `.to_string()` JSON 序列化导致整 JSON 进了 intel.code_leak_secrets。修复：撤销 detail_parsing→code_leak_secrets normalize 规则（9→8 条）+ 前端 LEAKAGE_INTEL_KEYS 去掉 code_leak_secrets（4→3 字段）+ INTEL_FIELD_LABELS / INTEL_RECORD_LABELS 清掉 code_leak_secrets label + 测试 fixture 去掉 code_leak_secrets 数据。这条字段需要 Phase 4 扩 Rust is_intel_array_profile_field 白名单或 split 它内部 6 个 list 分别映射，才能正确展示。跑验证：pnpm vitest 36 passed · tsc exit 0 · biome 0 fixes · cargo nextest asset_intel 39 passed · ReadLints 0 errors。
+- **下一步**：用户实测验证 hotfix 后 Leaked secrets 行消失、其他 4 个 chip 字段正常。如果要 Phase 4 展开 detail_parsing 内部 6 list（domain/email/ip/phone/telegram/wangpan），需要改 ROUTED_KEYS / is_intel_array_profile_field / extract_profile_field_entries / OutputStore writer ——超出本轮 scope。
 
 ---
 

@@ -90,6 +90,54 @@
               "zone_key_id": "{{secret:api_key}}"
             },
             "timeout_secs": 30
+          },
+          {
+            "id": "email",
+            "method": "POST",
+            "url": "https://0.zone/api/data/",
+            "headers": {
+              "User-Agent": "Golish Asset Intel"
+            },
+            "form": {
+              "query": "{{company_name}}",
+              "query_type": "email",
+              "page": "1",
+              "pagesize": "40",
+              "zone_key_id": "{{secret:api_key}}"
+            },
+            "timeout_secs": 30
+          },
+          {
+            "id": "code",
+            "method": "POST",
+            "url": "https://0.zone/api/data/",
+            "headers": {
+              "User-Agent": "Golish Asset Intel"
+            },
+            "form": {
+              "query": "{{company_name}}",
+              "query_type": "code",
+              "page": "1",
+              "pagesize": "40",
+              "zone_key_id": "{{secret:api_key}}"
+            },
+            "timeout_secs": 30
+          },
+          {
+            "id": "member",
+            "method": "POST",
+            "url": "https://0.zone/api/data/",
+            "headers": {
+              "User-Agent": "Golish Asset Intel"
+            },
+            "form": {
+              "query": "{{company_name}}",
+              "query_type": "member",
+              "page": "1",
+              "pagesize": "40",
+              "zone_key_id": "{{secret:api_key}}"
+            },
+            "timeout_secs": 30
           }
         ]
       },
@@ -374,6 +422,91 @@
             "target_kind": "intel",
             "transform": "trim",
             "when": [{ "field": "asn_org", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "email",
+            "target_field": "exposed_emails",
+            "target_kind": "intel",
+            "transform": "lower",
+            "when": [
+              { "field": "email", "op": "exists", "value": "" },
+              { "field": "email_type", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "mail_domain",
+            "target_field": "email_domains",
+            "transform": "lower",
+            "when": [
+              { "field": "mail_domain", "op": "exists", "value": "" },
+              { "field": "email_type", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "leakage_num",
+            "target_field": "email_leakage_total",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [
+              { "field": "leakage_num", "op": "exists", "value": "" },
+              { "field": "email_type", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "url",
+            "target_field": "code_leaks",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [
+              { "field": "url", "op": "exists", "value": "" },
+              { "field": "keyword", "op": "exists", "value": "" },
+              { "field": "source", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.related_brands",
+            "target_field": "subsidiaries",
+            "transform": "trim",
+            "when": [
+              { "field": "msg.related_brands", "op": "exists", "value": "" },
+              { "field": "name_cn", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.related_enterprises",
+            "target_field": "subsidiaries",
+            "transform": "trim",
+            "when": [
+              { "field": "msg.related_enterprises", "op": "exists", "value": "" },
+              { "field": "name_cn", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.name_before",
+            "target_field": "aliases",
+            "transform": "trim",
+            "when": [
+              { "field": "msg.name_before", "op": "exists", "value": "" },
+              { "field": "name_cn", "op": "exists", "value": "" }
+            ]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.mx_list",
+            "target_field": "mail_mx",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [
+              { "field": "msg.mx_list", "op": "exists", "value": "" },
+              { "field": "domain", "op": "exists", "value": "" }
+            ]
           }
         ]
       }

@@ -1,10 +1,42 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
-  "version": "0.1.2",
-  "last_updated": "2026-05-23",
+  "version": "0.1.3",
+  "last_updated": "2026-05-24",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": ["not_started", "in_progress", "blocked", "passing"],
   "features": [
+    {
+      "id": "zone-extended-query-types",
+      "priority": 0,
+      "area": "resources/toolsconfig/0-zone.json + frontend/components/TargetPanel/TargetGroupedView.tsx",
+      "title": "0.zone: 启用 email/code/member 三类查询 + 9 条新 normalize 规则 + 前端 intel label 补 3 个",
+      "user_visible_behavior": "对接 0.zone 凭证后，点击 hydrate 会一并查询 email/code/member 三类 query_type（原本只查 site/domain/apk/org），并把 `email/mail_domain → intel.exposed_emails + email_domains`、`leakage_num → intel.email_leakage_total`、`code url+source+keyword → intel.code_leaks`、`org msg.related_brands/related_enterprises → subsidiaries`、`org msg.name_before → aliases`、`domain msg.mx_list → intel.mail_mx` 映射到 organization 主档案。Organization 详情面板新增 2 个独立 group：**Leakage Intel** 显示 Exposed emails / Pwned hits / Code leak URLs 三个 chip 列；**DNS** 显示 MX records。这两个 group 从原本压在 Identity → Intel records 一栏的 JSON 块里提升为独立可见的 chips。",
+      "status": "passing",
+      "verification": [
+        "cargo nextest run -p golish --lib -E 'test(asset_intel)' --status-level fail → 39 passed",
+        "cargo nextest run -p golish-pentest --status-level fail → 62 passed",
+        "cargo check -p golish → exit 0 / 仅 preexisting capture/data_dir.rs::session_dir dead_code warning",
+        "python3 -m json.tool resources/toolsconfig/0-zone.json → exit 0",
+        "python3 -m json.tool feature_list.json → exit 0",
+        "pnpm exec tsc --noEmit → exit 0",
+        "pnpm exec biome check frontend/components/TargetPanel/TargetGroupedView.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts → 0 fixes",
+        "pnpm vitest run frontend/components/TargetPanel/TargetGroupedView.actions.test.ts → 36 passed（含新断言：groups.title 含 'Leakage Intel' + 'DNS'，Leakage 4 字段全 filled，DNS mail_mx filled）",
+        "ReadLints 全部改动文件 → 0 errors",
+        "手动 E2E (用户做)：在 Settings → Asset Intel 配好 0.zone API key 后，新建 engagement → 输入公司名 → hydrate → 检查 organization 详情：Leakage Intel group 是否出现 Exposed emails / Pwned hits / Code leak URLs / Leaked secrets chips；DNS group 是否出现 MX records；subsidiaries 是否含 related_brands 内容"
+      ],
+      "evidence": {
+        "rust_zero_changes": "本 PR 只动 JSON + TSX 两个文件，0 Rust 代码改动，0 DB schema 改动；现有 39 个 asset_intel 单测 + 62 个 pentest 单测全部不变并继续通过",
+        "json_changes": "resources/toolsconfig/0-zone.json runtime.requests 数组加 3 个 entry（email/code/member，都是 POST https://0.zone/api/data/ 带 query_type 区分，pagesize 40）；normalize.profile_fields 数组末尾追加 8 条规则：① email→exposed_emails(Intel, lower, when email+email_type exists) ② mail_domain→email_domains(Scalar, lower, when mail_domain+email_type exists) ③ leakage_num→email_leakage_total(Intel, trim, when leakage_num+email_type exists) ④ url→code_leaks(Intel, trim, when url+keyword+source exists, 仅 code record 触发) ⑤ msg.related_brands→subsidiaries(Scalar, trim, when name_cn exists) ⑥ msg.related_enterprises→subsidiaries(Scalar, trim, when name_cn exists) ⑦ msg.name_before→aliases(Scalar, trim, when name_cn exists) ⑧ msg.mx_list→mail_mx(Intel, trim, when domain exists)。**注**：detail_parsing 字段原计划映射到 intel.code_leak_secrets，实测 0.zone 返回的是 `{domain_list, email_list, ip_list, phone_list, telegram_list, wangpan_list}` 结构化对象（不是字符串），resolve_json_path 会 stringify 它进 intel 失去可读性，已撤销；如需展开 detail_parsing 内部 6 个 list，需要 Phase 4 扩 Rust is_intel_array_profile_field 白名单或 split intel json 列。",
+        "frontend_changes": "frontend/components/TargetPanel/TargetGroupedView.tsx 三处改动：① INTEL_FIELD_LABELS / INTEL_RECORD_LABELS 两个 map 各加 4 个新 intel key 的人话 label（exposed_emails 与 code_leaks 早已就位 + email_leakage_total / mail_mx 新加）② INTEL_DISPLAY_ORDER 移除这 4 个 key（避免与新独立 group 重复显示，老 Intel records 行只保留 legal/cms/operator 等传统字段）③ getOrgFieldGroups 新增 2 个 OrgFieldGroup：'Leakage Intel'（exposed_emails / email_leakage_total / code_leaks）+ 'DNS'（mail_mx），通过新 helper intelGet(org, key) 从 org.intel.{key} 嵌套取值。配套 vitest 加 1 个新断言：groups.title 含 'Leakage Intel' + 'DNS' + 各 fields 在带 intel 数据时都 filled",
+        "real_data_probe": "用 /tmp/golish_zone_probe.py（probe Python 脚本）直接调 0.zone API 拿 query=小米 的 7 类返回（dump 在 /tmp/golish_zone_dump/{site,domain,apk,org,email,code,member}.json），实测：email 类含 leakage_account 数组（HIBP 样本）+ email_source / mail_domain；code 类含 detail_parsing（已解析的 AK/SK）+ keyword/url/source（github 来源）+ repository/path；member 类含 msg.position + msg.introduction；org 类含 msg.related_brands + msg.related_enterprises + msg.name_before 等本 PR 启用的字段全部存在",
+        "scope_decisions": "明确不做（控制范围避免 schema 膨胀）：① site 类 70 字段中 framework_name/leak/app_name 等不进 organizations profile（它们是单 IP 属性，应留在 candidates.raw_evidence + TargetDetail 渲染层）② member 类不映射到 contacts schema（避免破坏现有 contacts schema 的 {name,phone,email,title} 分桶语义）③ 不引入新的 is_intel_array_profile_field key（避免改 Rust 硬编码白名单）"
+      },
+      "notes": "用户聊天中明确：『不是所有字段都该记录』。本 PR 按 P0/P1/P2/P3 分级，只引入 9 条 P0+ 字段映射，其余 site 字段已通过 candidates.raw_evidence 在 UI Details 中可见。下一阶段（Phase 3）若要把 leakage_account / detail_parsing 等做成独立 UI group（而非 Intel records 行），需要扩 organizations.intel 数组字段白名单或新建 schema 列——超出本轮 scope，等用户实测决定优先级。",
+      "completion": {
+        "completed_at": "2026-05-24",
+        "outcome": "passing"
+      }
+    },
     {
       "id": "asset-intel-providers-flat",
       "priority": 0,

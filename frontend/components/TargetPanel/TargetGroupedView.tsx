@@ -598,7 +598,9 @@ const INTEL_FIELD_LABELS: Record<string, string> = {
   service: "Service",
   protocol: "Protocol",
   exposed_emails: "Exposed emails",
+  email_leakage_total: "Pwned hits",
   code_leaks: "Code leaks",
+  mail_mx: "MX records",
 };
 
 const INTEL_DISPLAY_ORDER = [
@@ -615,9 +617,17 @@ const INTEL_DISPLAY_ORDER = [
   "server_name",
   "service",
   "asn_org",
-  "exposed_emails",
-  "code_leaks",
 ];
+
+const LEAKAGE_INTEL_KEYS = ["exposed_emails", "email_leakage_total", "code_leaks"] as const;
+
+const DNS_INTEL_KEYS = ["mail_mx"] as const;
+
+function intelGet(org: OrgFieldInput, key: string): unknown {
+  const intel = org.intel;
+  if (!intel || typeof intel !== "object" || Array.isArray(intel)) return undefined;
+  return (intel as Record<string, unknown>)[key];
+}
 
 function formatIntelValue(value: unknown): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) return formatFieldValue(value);
@@ -674,7 +684,9 @@ const INTEL_RECORD_LABELS: Record<string, string> = {
   service: "Service",
   protocol: "Protocol",
   exposed_emails: "Exposed emails",
-  code_leaks: "Code leaks",
+  email_leakage_total: "Pwned hits (HIBP-style)",
+  code_leaks: "Code leaks (URLs)",
+  mail_mx: "MX records",
 };
 
 function getOrgFieldIntelRecords(raw: unknown): { key: string; label: string; value: string }[] {
@@ -836,6 +848,18 @@ export function getOrgFieldGroups(org: OrgFieldInput): OrgFieldGroup[] {
         field("github_orgs", "GitHub orgs", org.github_orgs),
         field("social_accounts", "Social accounts", org.social_accounts),
       ],
+    },
+    {
+      title: "Leakage Intel",
+      fields: LEAKAGE_INTEL_KEYS.map((key) =>
+        field(key, INTEL_RECORD_LABELS[key] ?? key, intelGet(org, key))
+      ),
+    },
+    {
+      title: "DNS",
+      fields: DNS_INTEL_KEYS.map((key) =>
+        field(key, INTEL_RECORD_LABELS[key] ?? key, intelGet(org, key))
+      ),
     },
     {
       title: "Risk & Notes",

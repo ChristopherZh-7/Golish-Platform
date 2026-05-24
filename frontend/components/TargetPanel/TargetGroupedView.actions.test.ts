@@ -356,7 +356,13 @@ describe("getOrgFieldGroups", () => {
       asns: ["AS123"],
       email_domains: ["example.com"],
       scope_rules: { in: ["example.com"] },
-      intel: { records: [] },
+      intel: {
+        records: [],
+        exposed_emails: ["alice@example.com"],
+        email_leakage_total: "2",
+        code_leaks: ["https://github.com/acme/leak.txt"],
+        mail_mx: ["mx1.example.com"],
+      },
       notes: "note",
       certificates: [],
       subsidiaries: [],
@@ -374,8 +380,22 @@ describe("getOrgFieldGroups", () => {
       "Scope",
       "Identity",
       "Surfaces",
+      "Leakage Intel",
+      "DNS",
       "Risk & Notes",
     ]);
+
+    const leakage = groups.find((group) => group.title === "Leakage Intel");
+    expect(leakage?.fields.map((field) => field.key)).toEqual([
+      "exposed_emails",
+      "email_leakage_total",
+      "code_leaks",
+    ]);
+    expect(leakage?.fields.every((field) => field.filled)).toBe(true);
+
+    const dns = groups.find((group) => group.title === "DNS");
+    expect(dns?.fields.map((field) => field.key)).toEqual(["mail_mx"]);
+    expect(dns?.fields[0]?.filled).toBe(true);
     expect(groups[0].fields.map((field) => field.key)).toEqual([
       "aliases",
       "industry",
