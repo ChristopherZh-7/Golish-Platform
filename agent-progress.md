@@ -17,15 +17,178 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | **0.zone 扩展查询类型完成**：0-zone.json 新启用 email/code/member 三类 query_type + 9 条 normalize.profile_fields 规则把 P0+ 字段（HIBP 风格邮箱泄漏 / 代码 leak AK / 关联企业品牌 / MX 记录）映射到 organizations.intel 与 organizations.subsidiaries/aliases 等列；前端 TargetGroupedView.tsx INTEL labels 三个 map 各补 3 个新 intel key。**0 Rust 代码改动 · 0 DB 改动**，39 个 asset_intel + 62 个 golish-pentest + 36 个 TargetPanel vitest 全绿。 |
-| **当前 blocker** | 本轮新增改动范围内 cargo check / nextest / vitest / tsc / biome / ReadLints 全绿。整 monorepo `just precommit` 仍因 preexisting biome 警告 + 8 个 preexisting `failure_kind` PlanStep struct literal 编译错（M2 cherry-pick 遗留）fail，与本轮无关 |
-| **未提交的半成品** | git status 挂着累积改动（本轮新增/改动：`backend/crates/golish-pentest/src/{models,parsers,scanner,search,command_builder/tests}.rs` + `backend/crates/golish/src/tools/asset_intel.rs` + `resources/toolsconfig/enscan-go.json` 改写为多 provider + 删除 `resources/toolsconfig/enscan-go-{tyc,kc,rb}-discovery.json` + `docs/design/2026-05-23-asset-intel-providers-flat.md` + `docs/superpowers/plans/2026-05-23-asset-intel-providers-flat.md`；累积前几轮：`commands_facade/asset_intel.rs` + `commands_registry.rs` + 前端 TargetPanel/asset-intel.ts + `feature_list.json` + 本文件）+ ~30 个 preexisting 不相关游离改动 |
+| **当前最高优先级** | **Target/Asset Intel 主档案补全仍在 in_progress**：本轮补了 `asns` profile_fields 的 `asn` transform（`4134` / `as4134` / `AS4134` → `AS4134`，非法值丢弃）并把 0.zone 的 `asn → organizations.asns` 规则接到该 transform；0.zone 现有 `/tmp/golish_zone_dump` 样本显示 `site.json` 有 `asn` key 但 10/10 为空，其他 query_type 无 `asn` key，所以当前 UI 没 ASN 主要是 provider 样本没给有效值。 |
+| **当前 blocker** | 本轮新增改动 focused 验证全绿；整 monorepo `just precommit` 仍 exit 1：`lint-rust` 有 5 个既有 clippy warning-as-error（`session_dir` dead_code、asset_intel explicit_auto_deref×2、webview_isolation needless_return、integrations facade doc indent）；`test-rust-all` 仍有 `window_state::compute_restore_action_supports_negative_monitor_origins` bounds 断言失败；第二轮 `test-rust` 另有 `golish-agent-runtime::test_behavioral_equivalence_error_handling` policy denial 断言失败。 |
+| **未提交的半成品** | git status 挂着累积改动；本轮新增/改动：`backend/crates/golish-pentest/src/models.rs`、`backend/crates/golish/src/tools/asset_intel.rs`、`resources/toolsconfig/0-zone.json`、`agent-progress.md`、`feature_list.json`。另有此前累计 docs / feature_list / AGENTS 等游离改动，未在本轮回滚。 |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-25 · 中文适配第一批：Home / Appearance / Target workspace / Settings 高频页
+
+- **本轮目标**：用户反馈中文适配很差，要求全面处理；本轮先做高频设置页和当前 Target 工作区的第一批可验证中文化。
+- **已完成**：
+  - `frontend/lib/i18n/en.json` / `zh-CN.json`：新增 `appearancePanel`、`targetWorkspace`、`editorSettings`、`notificationsPanel` 翻译段；修正 `settings.title`、`settings.terminal/editor/mcp/codebases/network/notifications/appearance/advanced` 等 zh-CN 导航仍为英文的问题。
+  - `frontend/components/HomeView/HomeView.tsx`：启动页 / 项目首页的副标题、Open Project、New Project、Recent Projects、Active/Loading、删除项目弹窗、空态、worktree 删除提示接入 i18n。
+  - `frontend/components/Settings/AppearanceSettings.tsx`：Theme / Language / UI Scale / Input Caret / UI Customization 全部改为 i18n key。
+  - `frontend/components/TargetPanel/TargetGroupedView.tsx`：Fields tab 的分组和字段名、顶部 Targets/In/Out、workspace tabs、Activity/Fields/Candidates/Scope/空态卡片等主要可见文案接入 i18n。
+  - `frontend/components/Settings/EditorSettings.tsx`：编辑器设置页 General / Word Wrap / Line Numbers / Vim Mode 等接入 i18n。
+  - `frontend/components/Settings/NotificationsSettings.tsx`：通知设置页和测试通知文案接入 i18n。
+  - `frontend/components/Settings/TerminalSettings.tsx`：Shell / Font / Scrollback 等接入 i18n。
+  - `frontend/components/Settings/AdvancedSettings.tsx`：Log Level / Experimental / LLM API Logs / Privacy / Version 等接入 i18n。
+  - `frontend/components/Settings/AiSettings.tsx`：AI Keys、Tavily/Brave 搜索说明、Commit Synthesis Backend、Backend 下拉和 Template backend 说明接入 i18n。
+  - `frontend/components/Settings/ProviderSettings/index.tsx`：Provider 通用字段（API Key / Base URL / Credentials Path / Project ID / Location / Web Search / Search Context 等）接入 i18n。
+  - `frontend/components/Settings/AgentSettings.tsx`：General / Agents / Skills / Rules tab、Session Persistence、Pattern Learning、Approval Threshold、Tools、Web Search 等接入 i18n。
+  - `frontend/components/Settings/SubAgentSettings/index.tsx` / `ModelOverrides.tsx`：Agent 列表页 Global/Project Agents、New、system、tool count、Model/Max iter/Timeout/Idle、Allowed Tools、Runtime Model Override、Edit/Delete、空态、通知文案接入 i18n。
+  - `frontend/components/Settings/McpSettings.tsx`：MCP Servers 页面标题、说明、状态、Connect/Disconnect、Browse servers、空态、配置路径提示、工具数等接入 i18n，并合并到既有 `mcp` 翻译段避免重复 key。
+  - `frontend/components/Settings/CodebasesSettings.tsx`：Indexed folders、Index new folder、状态、Memory file、Re-index/Remove、空态和通知文案接入 i18n。
+  - `frontend/components/Settings/IntegrationsSettings/**`：快速审计未发现明显直接渲染的硬编码英文；主体和子组件基本已通过 `integrations.*`/schema i18n 走翻译。
+  - `frontend/components/Settings/AppearanceSettings.test.tsx`：补语言选择器测试，并为新 i18n key mock 翻译。
+- **运行过的验证 / 已记录证据**：
+  - `python3 -m json.tool frontend/lib/i18n/en.json >/dev/null && python3 -m json.tool frontend/lib/i18n/zh-CN.json >/dev/null` → exit 0。
+  - i18n parity audit → `missing_keys 0`；`same_string_keys 35`，剩余主要是 IP/CIDR/URL/API Key/品牌名/技术名等可保留英文的术语。
+  - `pnpm vitest run frontend/components/HomeView/HomeView.test.tsx --reporter dot` → exit 0；1 passed / 3 skipped（测试仍输出既有 `list_project_configs` mock warning 与 React error log，但 exit 0，非本轮新增失败）。
+  - `pnpm exec tsc --noEmit && pnpm exec biome check frontend/components/Settings/EditorSettings.tsx frontend/components/Settings/NotificationsSettings.tsx frontend/components/Settings/AppearanceSettings.tsx frontend/components/Settings/AppearanceSettings.test.tsx frontend/components/TargetPanel/TargetGroupedView.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts frontend/lib/i18n/index.ts frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json && pnpm vitest run frontend/components/TargetPanel/TargetGroupedView.actions.test.ts frontend/components/Settings/AppearanceSettings.test.tsx --reporter dot` → exit 0；biome 0 fixes；2 files / 70 tests passed。
+  - `pnpm exec tsc --noEmit && pnpm exec biome check frontend/components/HomeView/HomeView.tsx frontend/components/Settings/EditorSettings.tsx frontend/components/Settings/NotificationsSettings.tsx frontend/components/Settings/AppearanceSettings.tsx frontend/components/TargetPanel/TargetGroupedView.tsx frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json` → exit 0。
+  - `pnpm exec tsc --noEmit && pnpm exec biome check frontend/components/Settings/ProviderSettings/index.tsx frontend/components/Settings/TerminalSettings.tsx frontend/components/Settings/AdvancedSettings.tsx frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json` → exit 0。
+  - `pnpm exec tsc --noEmit && pnpm exec biome check frontend/components/Settings/AiSettings.tsx frontend/components/Settings/ProviderSettings/index.tsx frontend/components/Settings/TerminalSettings.tsx frontend/components/Settings/AdvancedSettings.tsx frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json` → exit 0；`missing_keys 0`。
+  - `pnpm exec tsc --noEmit && pnpm exec biome check frontend/components/Settings/CodebasesSettings.tsx frontend/components/Settings/McpSettings.tsx frontend/components/Settings/AgentSettings.tsx frontend/components/Settings/AiSettings.tsx frontend/components/Settings/ProviderSettings/index.tsx frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json` → exit 0；`missing_keys 0`。
+  - `pnpm exec tsc --noEmit && pnpm exec biome check frontend/components/Settings/SubAgentSettings/index.tsx frontend/components/Settings/SubAgentSettings/ModelOverrides.tsx frontend/components/Settings/AgentSettings.tsx frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json` → exit 0；`missing_keys 0`。
+  - `ReadLints` on changed files → 0 errors。
+- **提交记录**：未 commit。
+- **已知风险或未解决问题**：
+  - 这不是全前端 300+ 组件的最终完整中文化；本轮完成的是首页、Settings 大部分高频页、Target workspace 第一批。剩余硬编码主要集中在 Integrations schema 字段来源、PentestEnv 子页、SubAgent 编辑器细节、VulnIntel、SecurityView 等区域，建议后续按模块继续扫。
+
+---
+
+### 2026-05-25 · Appearance 增加语言选择器
+
+- **本轮目标**：用户问 Settings 里改语言的前端位置，并要求把语言选择加到 Appearance。
+- **已完成**：
+  - `frontend/lib/i18n/index.ts` 新增 `AppLanguage`、`LANGUAGE_OPTIONS`、`getStoredAppLanguage()`、`applyAppLanguage()`；语言写入 `localStorage` key `golish.language`，启动时 i18next detector 优先读取该 key。
+  - `frontend/components/Settings/AppearanceSettings.tsx` 在 Theme 与 UI Scale 之间新增 `Language` select，支持 `System default` / `English` / `简体中文`；选择后立即 `i18n.changeLanguage()`。
+  - `frontend/components/Settings/AppearanceSettings.test.tsx` 增加语言选择器测试。
+- **运行过的验证 / 已记录证据**：
+  - `pnpm vitest run frontend/components/Settings/AppearanceSettings.test.tsx --reporter dot` → 先红灯（找不到 Language），实现后 exit 0 / 34 passed。
+  - `pnpm exec tsc --noEmit && pnpm exec biome check frontend/components/Settings/AppearanceSettings.tsx frontend/components/Settings/AppearanceSettings.test.tsx frontend/lib/i18n/index.ts && pnpm vitest run frontend/components/Settings/AppearanceSettings.test.tsx --reporter dot` → exit 0；biome 0 fixes；34 passed。
+  - `ReadLints` on changed files → 0 errors。
+- **提交记录**：未 commit。
+- **已知风险或未解决问题**：语言偏好目前存在前端 `localStorage`，未写入后端 `settings.toml`；如果后续需要跨设备同步，再扩后端 settings schema。
+
+---
+
+### 2026-05-25 · App / 小程序独立分组：mobile_apps / mini_programs / app_domains
+
+- **本轮目标**：用户确认要给 app / 小程序数据加独立分组，不再混在 Business systems。
+- **已完成**：
+  - `backend/crates/golish/src/tools/asset_intel.rs`：把 `mobile_apps` / `mini_programs` / `app_domains` 加入 intel array profile 字段白名单，保证多值去重并落到 `organizations.intel`。
+  - `resources/toolsconfig/0-zone.json`：0.zone `apk` 的 `msg.app_url/msg.app_id` 改写入 `intel.mobile_apps`；`msg.domain_list[0]` 写入 `intel.app_domains`。
+  - `resources/toolsconfig/enscan-go.json`：ENScan enrichment 的 `app[*]` 改写入 `intel.mobile_apps`，`wx_app[*]` 改写入 `intel.mini_programs`；`wechat/weibo` 仍写入 `social_accounts`。
+  - `frontend/components/TargetPanel/TargetGroupedView.tsx`：新增 `Apps & Mini Programs` 独立 UI group，显示 Mobile apps / Mini programs / App domains 三组 chips。
+  - `frontend/components/TargetPanel/TargetGroupedView.actions.test.ts`：补断言覆盖新 group 顺序、字段 key 和 filled 状态。
+- **运行过的验证 / 已记录证据**：
+  - `pnpm vitest run frontend/components/TargetPanel/TargetGroupedView.actions.test.ts --reporter dot`：先红灯（缺 `Apps & Mini Programs` group），实现后 exit 0 / 36 passed。
+  - `cargo nextest run -p golish --lib -E 'test(build_profile_patch_dedupes_app_intel_array_fields)' --status-level fail`：先红灯（`mobile_apps` 被当单值 String），实现后纳入 scoped 4 测通过。
+  - `cargo fmt --package golish --check && cargo check -p golish && cargo nextest run -p golish --lib -E 'test(build_profile_patch_dedupes_app_intel_array_fields) or test(fixture_enrichment_profile_fields_cover_observed_provider_keys) or test(team_cymru_asn_lookup_builds_profile_entries_from_public_ips) or test(extract_profile_fields_normalizes_asn_values)' --status-level fail` → exit 0；4 tests passed；仅既有 `capture/data_dir.rs::session_dir` dead_code warning。
+  - `pnpm exec tsc --noEmit && pnpm exec biome check frontend/components/TargetPanel/TargetGroupedView.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts && pnpm vitest run frontend/components/TargetPanel/TargetGroupedView.actions.test.ts --reporter dot` → exit 0；biome 0 fixes；36 tests passed。
+  - `python3 -m json.tool resources/toolsconfig/0-zone.json >/dev/null && python3 -m json.tool resources/toolsconfig/enscan-go.json >/dev/null` → exit 0。
+  - `ReadLints` on changed files → 0 errors。
+- **提交记录**：未 commit。
+- **已知风险或未解决问题**：
+  - 目前 `app_domains` 只取 `msg.domain_list[0]`，因为现有 JSON path resolver 不支持把数组全量 split 成多条 profile entry；如要完整保留 domain_list，需要后续扩 profile_fields 的 array fan-out 能力。
+  - 全仓 `just precommit` 仍受既有 blockers 影响，未在本轮解决。
+
+---
+
+### 2026-05-25 · App / 小程序数据源探针：ENScan vs 0.zone
+
+- **本轮目标**：用户问 app、小程序等数据 ENScan / 0.zone 是否能抓、前端是否有字段，并要求先把两个工具真实跑一下看数据。
+- **已完成 / 观察结果**：
+  - 0.zone：`python3 /tmp/golish_zone_probe.py 小米` 成功跑 7 个 query_type；其中 `apk` 返回 `code=0`、`total=7344`、当前页 10/10 都有 `msg.app_url` 与 `msg.app_id`，1/10 有 `msg.domain_list`。样本包括 `小米实况麻将`、`远程遥控开空调`、`亲笔信`、`新旧手机搬家`、`爱评估` 等，类型均为 `安卓APK`。
+  - ENScan：实际可执行文件位于 `~/Library/Application Support/golish-platform/tools/ENScan_GO/enscan-v2.0.5-darwin-amd64` 并可启动；但本轮跑 `aqc -field icp,app,wx_app,wechat,weibo` 对 `小米科技有限责任公司` / `小米` / `中国平安` 都返回 `没有查询到关键词`，导出 JSON 只有 `{"enterprise_info":null}`。
+  - ENScan 其它源：`kc -field app` 对 `小米` 先出现 kuaicha365 EOF 后返回无结果；`tyc -field app,wx_app,wechat` 对 `小米` 返回 TYC 419 后无结果；导出 JSON 也均只有 `enterprise_info:null`。
+  - 前端现状：`TargetGroupedView` 的 `Surfaces` group 已有 `Business systems` / `Social accounts`；ENScan `app/wx_app` 与 0.zone `apk` 当前都会混写到 `business_systems`，没有独立 `Apps` / `Mini programs` group。
+- **运行过的验证 / 已记录证据**：
+  - `python3 /tmp/golish_zone_probe.py 小米` → exit 0，raw dump 在 `/tmp/golish_zone_dump/*.json`。
+  - ENScan AQC：`.../enscan-v2.0.5-darwin-amd64 -n 小米 -type aqc -field icp,app,wx_app,wechat,weibo ...` → exit 0，但日志为 AQC no keyword；JSON `enterprise_info:null`。
+  - ENScan KC：`... -n 小米 -type kc -field app ...` → exit 0，但 kuaicha365 EOF + no keyword；JSON `enterprise_info:null`。
+  - ENScan TYC：`... -n 小米 -type tyc -field app,wx_app,wechat ...` → exit 0，但 TYC 419 + no keyword；JSON `enterprise_info:null`。
+- **提交记录**：未 commit。
+- **下一步最佳动作**：优先把 0.zone `apk` 的 app 数据提升为独立 `intel.apps` / `intel.app_domains` UI group；ENScan 需先刷新/复测 AQC/TYC/KC 凭据或换可稳定返回 app 字段的源，否则当前实测不可作为 app 数据主来源。
+
+---
+
+### 2026-05-25 · Target ASNs 补全：0.zone IP → Team Cymru ASN 派生
+
+- **本轮目标**：用户反馈 Target 里的 ASN 字段靠 0.zone 补不上，要求想别的办法。
+- **已完成**：
+  - 保留既有 `asn` transform：provider 直接返回 `4134/as4134/AS4134` 时仍标准化为 `AS4134` 写入 `organizations.asns`。
+  - 在 `backend/crates/golish/src/tools/asset_intel.rs` 给 0.zone 增加兜底：当 0.zone 没返回有效 `asn`、但 profile_entries 已有公网 `ip_ranges` 时，最多取 40 个公网 IP 走 Team Cymru whois IP→ASN 批量查询，把结果派生为 `organizations.asns`。
+  - 私网、loopback、link-local、文档网段、组播等 IP 会跳过；派生失败只写 provider evidence，不中断 0.zone hydrate。
+- **运行过的验证 / 已记录证据**：
+  - `cargo nextest run -p golish --lib -E 'test(team_cymru_asn_lookup_builds_profile_entries_from_public_ips)' --status-level fail` → 先红灯（3 个 helper 未实现）后绿灯（1 passed）。
+  - `cargo nextest run -p golish --lib -E 'test(team_cymru_asn_lookup_builds_profile_entries_from_public_ips) or test(extract_profile_fields_normalizes_asn_values)' --status-level fail` → exit 0 / 2 passed。
+  - `cargo fmt --package golish --check && cargo check -p golish` → exit 0；仅既有 `capture/data_dir.rs::session_dir` dead_code warning。
+  - `ReadLints backend/crates/golish/src/tools/asset_intel.rs` → 0 errors。
+  - `cargo nextest run -p golish --lib -E 'test(asset_intel)' --status-level fail` 与包含 `http_json_runtime_posts_fake_data_and_normalizes_candidates` 的 focused 组合均在启动测试后无输出超过 180s，已手动停止；本轮未把它们作为通过证据。
+- **提交记录**：未 commit。
+- **已知风险或未解决问题**：
+  - 新兜底会在 0.zone hydrate 后对 Team Cymru whois 发起 IP→ASN 查询；若用户环境不允许出站 43/tcp，会记录失败 evidence，但不会阻断 hydrate。
+  - 全仓 `just precommit` 仍受既有 blockers 影响，未在本轮解决。
+- **下一步最佳动作**：用真实 0.zone hydrate 一个含公网 IP 的目标，确认 UI 的 ASNs chip 由 Team Cymru 派生值填上；如需完全离线，可后续改成 MaxMind ASN DB / 本地 ip2asn 库 provider。
+
+---
+
+### 2026-05-25 · Target ASNs 补全：新增 `asn` transform + 复核 0.zone 返回
+
+- **本轮目标**：用户问 Target 面板里的 `asns` 字段怎么补全，并要求检查 0.zone 是否真的返回 ASN 数据；随后确认让我动手改。
+- **已完成**：
+  - 确认 `asns` 的真实落点是 `organizations.asns`（organization profile 字段），不是 `targets` 表字段；Target 面板 Network → ASNs 已经会渲染该字段。
+  - `backend/crates/golish-pentest/src/models.rs` 给 `AssetIntelProfileFieldTransform` 新增 `Asn`，JSON 写法为 `"transform": "asn"`。
+  - `backend/crates/golish/src/tools/asset_intel.rs` 新增 `normalize_asn`：trim + uppercase；裸数字补 `AS`；只接受 1-10 位数字；非法值返回空串并被既有 profile extraction 跳过。
+  - `resources/toolsconfig/0-zone.json` 的 `source_field=asn → target_field=asns` 规则从 `"trim"` 改成 `"asn"`。
+  - 用现有 `/tmp/golish_zone_dump/*.json` 复核 0.zone 样本：`site.json` 有 10 条对象含 `asn` key，但 nonempty=0；`domain/apk/org/email/code/member` 样本里 `with_asn_key=0`。因此当前 UI 没显示 ASN 的直接原因是这批 0.zone 返回没有有效 ASN 值。
+- **运行过的验证 / 已记录证据**：
+  - `python3 -m json.tool resources/toolsconfig/0-zone.json >/dev/null` → exit 0。
+  - `jq -r '.. | objects | select(.target_field? == "asns")' resources/toolsconfig/0-zone.json` → exit 0，输出规则含 `"transform": "asn"`。
+  - `cargo nextest run -p golish-pentest -E 'test(asset_intel_profile_field_transform_accepts_asn)' --status-level fail` → exit 0 / 1 passed。
+  - `cargo nextest run -p golish --lib -E 'test(extract_profile_fields_normalizes_asn_values)' --status-level fail` → exit 0 / 1 passed；断言 `{asn: 4134}` 与 `{asn: " as37963 "}` 落为 `["AS4134","AS37963"]`，`not-an-asn` 被丢弃。
+  - `cargo nextest run -p golish --lib -E 'test(asset_intel)' --status-level fail` → exit 0 / 40 passed。
+  - `cargo nextest run -p golish-pentest --status-level fail` → exit 0 / 63 passed, 7 skipped。
+  - `cargo fmt --package golish --package golish-pentest --check` → exit 0。
+  - `just precommit` → exit 1；fmt/check-fe/test-fe passed，随后命中上方记录的既有 Rust lint/test blockers。
+  - 2026-05-25 用户要求实时复跑 0.zone ASN：用本机 vault 中 0.zone API key 对 `小米` / `qq.com` / `baidu.com` 各跑 7 个 query_type（site/domain/apk/org/email/code/member，pagesize=20，共 21 个 POST 到 `https://0.zone/api/data/`）→ 全部 HTTP 200 / code=0；结果：3 个 query 的 `site` 类型均有 `asn` 与 `asn_org` key，但 `nonempty=0/20`；其他 query_type 的 `asn/asn_org/as_number/asname/isp` key 均为 0 或 nonempty=0。结论：0.zone schema 里有 ASN 占位字段，但当前返回数据没有有效 ASN 值。
+  - 替代链路实测：对旧 0.zone dump 里的 IP 跑 Team Cymru DNS IP→ASN：`202.69.26.81 -> AS23848`、`183.62.123.10 -> AS4134`、`182.92.121.121 -> AS37963`、`124.196.77.48 -> AS23848`。说明可通过“0.zone IP 结果 → IP→ASN enrichment → organizations.asns”补齐 ASN。
+  - 2026-05-25 用户要求试 Hunter API key：本机 vault 找到 `hunter.default.api_key`。旧仓库 endpoint `https://hunter.qianxin.com/openApi/search` 对 `ip="1.1.1.1"` / `domain="qq.com"` / `domain="baidu.com"` 均返回 HTTP 403 nginx HTML；按当前公开 Hunter Search API 文档改试 `https://api.hunter.how/search`（带 `query/start_time/end_time/fields=...,asn,as_org,as_name,...`）→ HTTP 200 但 JSON `code=401, message="Token expired"`。结论：当前 key 已被 Hunter 业务层识别但过期，暂时无法取数据；新 API 文档显示 response fields 支持 `asn/as_org/as_name`。
+  - 2026-05-25 用户临时提供另一枚 Hunter key 后再次验证（未写入文件，未记录明文 key）：`https://api.hunter.how/search` 对 `ip="1.1.1.1"` / `domain="qq.com"` / `domain="baidu.com"` 均 HTTP 200 + JSON `code=401, message="Token expired"`；旧 `https://hunter.qianxin.com/openApi/search` 对 `ip="1.1.1.1"` 返回 TLS `UNEXPECTED_EOF_WHILE_READING`。结论不变：当前 key 不可用，需用户在 Hunter 控制台重新生成有效 API key 后再验证字段。
+  - 用户贴出奇安信 Hunter 旧 `/openApi/search` 文档后，按文档参数重试旧 endpoint：`api-key` + `search`(RFC4648 base64url) + `page=1&page_size=10&is_web=1&start_time=2026-04-25&end_time=2026-05-25&fields=...`，Python TLS 返回 `UNEXPECTED_EOF_WHILE_READING`；`curl -k` 同 URL 返回 `LibreSSL SSL_connect: SSL_ERROR_SYSCALL` / HTTP_CODE=000。另：用户贴出的旧接口 `fields` 枚举没有 `asn`，只有 `as_org`，因此即使旧 endpoint 可通，也只能补 ASN organization 名称，不能直接补 `organizations.asns` 的 AS 编号。
+- **提交记录**：未 commit。
+- **已知风险或未解决问题**：
+  - 本轮只保证 provider 一旦返回有效 ASN 就能标准化落到 `organizations.asns`；不能凭空从 IP 推 ASN。若 0.zone 持续不给 ASN，需要新增本地/第三方 IP→ASN enrichment provider（如 Team Cymru / RDAP / MaxMind ASN DB）并落 evidence。
+  - Hunter 现有仓库实现可能已过期：旧 endpoint 403，当前公开文档使用 `api.hunter.how/search` + `query` 参数 + `start_time/end_time` + `fields`。需要用户刷新 Hunter API key 后再改 provider，否则无法做真实绿灯验证。
+  - `just precommit` 未绿，feature 不能切 `passing`。
+- **下一步最佳动作**：修复或隔离全仓 precommit blockers；然后如需实时确认 0.zone，可在用户允许外部请求后复跑小样本 API probe，并用一个有公网域名/网站记录的目标查看是否返回非空 `asn`。
+
+---
+
+### 2026-05-24 · 文档清理：删除旧 implementation plan + 标注 deferred/superseded
+
+- **本轮目标**：用户指出 harness 工程应等信息收集闭环和工具包装完善后再推进，并要求清理废弃文档。
+- **已完成**：
+  - 删除 3 个旧 implementation plan：`docs/superpowers/plans/2026-05-20-asm-intel-providers.md`、`docs/superpowers/plans/2026-05-20-golish-agent-harness.md`、`docs/superpowers/plans/2026-05-22-asset-intel-provider-abstraction.md`。
+  - `docs/design/2026-05-20-asm-intel-providers.md` 标为 superseded by Integrations。
+  - `docs/design/2026-05-20-agent-harness-strategy.md` 和 `docs/superpowers/plans/2026-05-20-golish-agent-harness-architecture.md` 标为 deferred，明确当前优先级是信息收集闭环 / tool output schema / evidence 契约。
+  - 修掉当前文档入口里的坏引用：AGENTS 的 missing harness MVP 链接、docs README 的 missing benchmark plan、architecture 的 missing `.cursor/rules/*` 链接、development 的旧 `golish-ai` 工具路径。
+  - `feature_list.json` 的 domain/recon harness notes 改为 deferred，不再指向已删除或缺失的旧 plan。
+- **运行过的验证**：
+  - `python3 -m json.tool feature_list.json >/dev/null` → exit 0。
+  - 本地 markdown 链接检查（docs + AGENTS + README，相对链接存在性）→ `missing=0`。
+- **未运行**：未跑 `just precommit` / `./init.sh` / 前后端测试；本轮是 docs-only 清理，且用户明确不需要跑重验证。
 
 ---
 

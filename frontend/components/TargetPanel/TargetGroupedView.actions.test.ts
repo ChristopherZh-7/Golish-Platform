@@ -358,6 +358,9 @@ describe("getOrgFieldGroups", () => {
       scope_rules: { in: ["example.com"] },
       intel: {
         records: [],
+        mobile_apps: ["小米实况麻将"],
+        mini_programs: ["小米商城"],
+        app_domains: ["https://com.dfwe"],
         exposed_emails: ["alice@example.com"],
         email_leakage_total: "2",
         code_leaks: ["https://github.com/acme/leak.txt"],
@@ -375,6 +378,7 @@ describe("getOrgFieldGroups", () => {
     });
     expect(groups.map((group) => group.title)).toEqual([
       "Basic",
+      "Apps & Mini Programs",
       "Domains",
       "Network",
       "Scope",
@@ -402,7 +406,7 @@ describe("getOrgFieldGroups", () => {
       "tier",
       "credit_code",
     ]);
-    expect(groups[2].fields.map((field) => field.key)).toEqual([
+    expect(groups[3].fields.map((field) => field.key)).toEqual([
       "ip_ranges",
       "asns",
       "email_domains",
@@ -418,6 +422,14 @@ describe("getOrgFieldGroups", () => {
       "github_orgs",
       "social_accounts",
     ]);
+
+    const apps = groups.find((group) => group.title === "Apps & Mini Programs");
+    expect(apps?.fields.map((field) => field.key)).toEqual([
+      "mobile_apps",
+      "mini_programs",
+      "app_domains",
+    ]);
+    expect(apps?.fields.every((field) => field.filled)).toBe(true);
 
     const risk = groups.find((group) => group.title === "Risk & Notes");
     expect(risk?.fields.map((field) => field.key)).toEqual([

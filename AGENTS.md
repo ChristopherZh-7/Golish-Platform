@@ -79,7 +79,7 @@
 - 任何 Recon / Vuln / Verify 阶段的产物必须能落进 evidence ledger，**不能只是自然语言总结**
 - gate validator 是确定性规则，不要把"agent 自信说完成"当成 gate 通过
 - 新增高风险扫描能力（active scan / exploit）必须先在 `docs/design/` 写授权与 scope 边界
-- 详见 `docs/design/2026-05-20-agent-harness-architecture-mvp.md`、`docs/design/2026-05-20-agent-harness-strategy.md`
+- 详见 `docs/design/2026-05-20-agent-harness-strategy.md`、`docs/superpowers/plans/2026-05-20-golish-agent-harness-architecture.md`。注意：domain harness 当前 deferred，先补齐信息收集闭环与工具 evidence 契约。
 
 ### 2.6 提交前
 
@@ -168,11 +168,10 @@ just precommit   # = just check + just test
 
 ## 6. 与已有体系的关系
 
-- `.cursor/rules/private-mcp.mdc`：定义**多 agent 之间**怎么通过 private-MCP 通道协作。AGENTS.md 定义**单个 agent**在本仓库怎么工作。两者互补，不冲突。
 - `.cursor/rules/global-enforcement.mdc`：定义铁律（先读后改、证据优先、修改与验证、高风险先确认、输出极简）和技能加载体系。AGENTS.md 是这些铁律在 Golish 项目语境下的具体化。
 - `.cursor/skills/`：是 harness 的子模块（brainstorming / writing-plans / verification-before-completion / test-driven-development / systematic-debugging / executing-plans / tool-installation）。AGENTS.md 把它们串成完整 loop。
 - `docs/superpowers/plans/`：当你接到需要分步实现的复杂任务时，**先**用 `writing-plans` skill 写一份计划放到这里，**再**用 `executing-plans` skill 按计划执行。
-- 内层 domain harness（Rust 代码里跑的 stage gate / evidence ledger / Recon barrier）由 `docs/design/2026-05-20-agent-harness-architecture-mvp.md` 等设计文档约束，本 AGENTS.md 是**外层 meta harness**——约束的是开发 Golish 的 agent，不是 Golish 内部运行的 pentest agent。
+- 内层 domain harness（Rust 代码里跑的 stage gate / evidence ledger / Recon barrier）由 `docs/design/2026-05-20-agent-harness-strategy.md` 和 `docs/superpowers/plans/2026-05-20-golish-agent-harness-architecture.md` 跟踪；当前 deferred，等待信息收集闭环和工具 evidence 契约稳定。本 AGENTS.md 是**外层 meta harness**——约束的是开发 Golish 的 agent，不是 Golish 内部运行的 pentest agent。
 
 ---
 
@@ -198,9 +197,8 @@ just kill                    清掉残留进程（占用 1420 端口时用）
 | 项目整体架构 | `docs/architecture.md` |
 | 上手开发 | `docs/development.md` |
 | 一阶段 pentest 平台规划 | `docs/PHASE1_PENTEST_PLATFORM.md` |
-| 内层 agent harness 架构 | `docs/design/2026-05-20-agent-harness-architecture-mvp.md` |
+| 内层 agent harness 架构 | `docs/design/2026-05-20-agent-harness-strategy.md`（deferred） |
 | 内层 harness 实现计划 | `docs/superpowers/plans/2026-05-20-golish-agent-harness-architecture.md` |
-| 多 agent 协作协议 | `.cursor/rules/private-mcp.mdc` |
 
 ---
 

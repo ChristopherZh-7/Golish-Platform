@@ -48,6 +48,19 @@
     "terminal": "Terminal",
     "settings": "Settings"
   },
+  "home": {
+    "subtitle": "Penetration Testing Platform",
+    "openProject": "Open Project",
+    "newProject": "New Project",
+    "recentProjects": "Recent Projects",
+    "active": "Active",
+    "noProjects": "No projects yet. Create one to get started.",
+    "deleteProjectTitle": "Delete Project",
+    "deleteProjectPrefix": "Remove",
+    "deleteProjectSuffix": "from Golish? This deletes the project configuration but won't delete any files.",
+    "deleteWorktreeConfirm": "Are you sure you want to delete worktree \"{{branch}}\"?",
+    "deleteWorktreeFailed": "Failed to delete worktree: {{error}}"
+  },
   "targets": {
     "title": "Target Manager",
     "addTarget": "Add Target",
@@ -96,6 +109,104 @@
     "listView": "List View",
     "treeView": "Org Tree View",
     "graphView": "Graph View"
+  },
+  "targetWorkspace": {
+    "tabs": {
+      "overview": "Overview",
+      "fields": "Fields",
+      "scope": "Scope",
+      "targets": "Targets",
+      "candidates": "Candidates",
+      "activity": "Activity"
+    },
+    "metrics": {
+      "targets": "Targets",
+      "in": "In",
+      "out": "Out",
+      "orgTargetCount": "{{orgs}} orgs · {{targets}} targets"
+    },
+    "actions": {
+      "newEngagement": "New Engagement",
+      "quickOrg": "Quick org"
+    },
+    "empty": {
+      "selectOrg": "Select or create an organization to start.",
+      "importTargets": "Import targets",
+      "importTargetsDesc": "Customer provided scope list.",
+      "discoverAssets": "Discover assets",
+      "discoverAssetsDesc": "Create org and prepare ASM flow.",
+      "profileOnly": "Org profile only",
+      "profileOnlyDesc": "Create a customer record."
+    },
+    "activity": {
+      "title": "Asset intel activity",
+      "description": "Discover subsidiaries first, then enrich approved organizations with asset fields.",
+      "runningProviders": "Running asset intel providers",
+      "noRun": "No asset intel run yet.",
+      "availableProviders": "Available providers",
+      "lastRun": "Last run",
+      "candidateScopeHint": "Candidates from asset intel runs stay out of active scan scope until approved and promoted."
+    },
+    "fieldsPanel": {
+      "title": "Intel fields",
+      "description": "Field coverage by group. Editing will be a separate compact mode."
+    },
+    "overview": {
+      "placeholder": "Mode-aware workspace skeleton. Backend orchestration and coverage panels come next.",
+      "noTargets": "No targets linked to this organization yet."
+    },
+    "candidates": {
+      "title": "Discovery candidates",
+      "description": "Review discovered subsidiaries and assets before they become in-scope targets.",
+      "organizations": "Organization candidates",
+      "targets": "Target candidates",
+      "waiting": "{{count}} candidate(s) waiting for review",
+      "empty": "No candidates yet."
+    },
+    "scope": {
+      "title": "Scope",
+      "description": "Scope rules and authorization windows will be edited here."
+    },
+    "fieldGroups": {
+      "basic": "Basic",
+      "apps": "Apps & Mini Programs",
+      "domains": "Domains",
+      "network": "Network",
+      "scope": "Scope",
+      "identity": "Identity",
+      "surfaces": "Surfaces",
+      "leakage": "Leakage Intel",
+      "dns": "DNS",
+      "risk": "Risk & Notes"
+    },
+    "fields": {
+      "aliases": "Aliases",
+      "industry": "Industry",
+      "tier": "Priority",
+      "credit_code": "Unified social credit code",
+      "mobile_apps": "Mobile apps",
+      "mini_programs": "Mini programs",
+      "app_domains": "App domains",
+      "domains": "Domains",
+      "ip_ranges": "IP ranges",
+      "asns": "ASNs",
+      "email_domains": "Email domains",
+      "scope_rules": "Scope rules",
+      "intel": "Intel records",
+      "subsidiaries": "Subsidiaries",
+      "business_systems": "Business systems",
+      "cloud_assets": "Cloud assets",
+      "github_orgs": "GitHub orgs",
+      "social_accounts": "Social accounts",
+      "exposed_emails": "Exposed emails",
+      "email_leakage_total": "Pwned hits (HIBP-style)",
+      "code_leaks": "Code leaks (URLs)",
+      "mail_mx": "MX records",
+      "certificates": "Certificates",
+      "historical_vulns": "Historical vulns",
+      "contacts": "Contacts",
+      "notes": "Notes"
+    }
   },
   "organizations": {
     "title": "Organizations",
@@ -344,6 +455,100 @@
     "appearance": "Appearance",
     "advanced": "Advanced"
   },
+  "appearancePanel": {
+    "theme": {
+      "title": "Theme"
+    },
+    "language": {
+      "title": "Language",
+      "description": "Choose the app language. System default follows your OS/browser locale."
+    },
+    "uiScale": {
+      "title": "UI Scale",
+      "zoomLevel": "Zoom Level",
+      "description": "Scale the entire UI (75% – 150%). Useful if text or buttons feel too small.",
+      "reset": "Reset to 110%"
+    },
+    "caret": {
+      "title": "Input Caret",
+      "style": "Style",
+      "styleDefault": "Default",
+      "styleBlock": "Block",
+      "styleDescription": "Default uses the native browser text caret. Block renders a customizable overlay.",
+      "width": "Width",
+      "widthDescription": "Caret width in character units (0.1–3.0)",
+      "color": "Color",
+      "resetColor": "Reset to theme default",
+      "pickColor": "Pick caret color",
+      "themeDefault": "Theme default",
+      "colorDescription": "Hex color for the caret. Leave empty to use the theme foreground color.",
+      "blinkSpeed": "Blink Speed",
+      "noBlink": "No blink",
+      "blinkDescription": "Blink cycle duration in milliseconds. Set to 0 to disable blinking.",
+      "opacity": "Opacity",
+      "opacityDescription": "Caret opacity (0%–100%)"
+    },
+    "customization": {
+      "title": "UI Customization",
+      "description": "Fine-grained customization of UI elements and components",
+      "general": "General",
+      "hideAiSettings": "Hide AI Settings in Shell Mode",
+      "hideAiSettingsDesc": "Hide token usage and MCP badge when in shell mode",
+      "tabBar": "Tab Bar",
+      "homeTab": "Home Tab",
+      "homeTabDesc": "Show the home tab in the tab bar",
+      "contextBar": "Context Bar",
+      "contextBarDesc": "Show context information above the terminal input",
+      "workingDirectory": "Working Directory",
+      "workingDirectoryDesc": "Show the current working directory path badge",
+      "statusIndicators": "Status Indicators",
+      "inputModeToggle": "Input Mode Toggle",
+      "inputModeToggleDesc": "Show the full Terminal / AI segmented toggle instead of collapsing it",
+      "tokenUsage": "Token Usage",
+      "tokenUsageDesc": "Show the context window / token usage percentage badge",
+      "mcpBadge": "MCP Servers Badge",
+      "mcpBadgeDesc": "Show the MCP servers connected indicator",
+      "quickActionsHint": "Choose which UI elements are visible.",
+      "showAll": "Show all",
+      "hideAll": "Hide all",
+      "resetDefaults": "Reset to defaults"
+    }
+  },
+  "editorSettings": {
+    "general": "General",
+    "wordWrap": "Word Wrap",
+    "wordWrapDesc": "Wrap long lines to fit the editor width",
+    "lineNumbers": "Line Numbers",
+    "lineNumbersDesc": "Show line numbers in the gutter",
+    "relativeLineNumbers": "Relative Line Numbers",
+    "relativeLineNumbersDesc": "Show line numbers relative to the cursor position (useful for Vim)",
+    "vimMode": "Vim Mode",
+    "enableVimMode": "Enable Vim Mode",
+    "enableVimModeDesc": "Use Vim keybindings for editing"
+  },
+  "notificationsPanel": {
+    "inAppSounds": "In-App Notification Sounds",
+    "inAppSoundsDesc": "Play a sound when agent or command completes while the app is in the background",
+    "testSound": "Test Sound",
+    "play": "Play",
+    "nativeNotifications": "Native System Notifications",
+    "nativeNotificationsDesc": "Show OS notifications for agent and command completion when the app is in the background",
+    "systemSoundName": "System Sound Name",
+    "systemSoundPlaceholder": "Default (Blow on macOS)",
+    "systemSoundDescPrefix": "macOS system sound names like",
+    "or": "or",
+    "systemSoundDescSuffix": "leave blank to use default",
+    "permissionGranted": "Notification permission granted",
+    "permissionDenied": "Permission denied. Enable in system settings.",
+    "testNative": "Test Native Notifications",
+    "testNativeDesc": "Send test notifications to verify your system notification settings are working correctly.",
+    "agentCompletion": "Agent Completion",
+    "commandCompletion": "Command Completion",
+    "sendTest": "Send Test",
+    "agentCompletedTitle": "Agent Completed",
+    "agentCompletedBody": "This is a test notification for agent completion.",
+    "commandCompletedTitle": "Command Completed"
+  },
   "network": {
     "proxyUrl": "Proxy URL",
     "proxyPlaceholder": "http://127.0.0.1:7890",
@@ -410,7 +615,30 @@
     "showInSelectorDesc": "When enabled, this provider will appear in the model picker",
     "selectProvider": "← Select a provider to configure",
     "defaultModel": "Default Model",
-    "defaultModelDesc": "Default model for new conversations"
+    "defaultModelDesc": "Default model for new conversations",
+    "active": "Active",
+    "available": "Available",
+    "credentialsPath": "Credentials Path",
+    "googleServiceAccountHint": "Google Cloud service account JSON file",
+    "projectId": "Project ID",
+    "location": "Location",
+    "regionHintVertex": "Region (e.g., us-east5, europe-west1)",
+    "regionHintGemini": "Region (e.g., us-central1, europe-west1)",
+    "apiKey": "API Key",
+    "baseUrl": "Base URL",
+    "optional": "optional",
+    "from": "From",
+    "openAiCompatibleEndpoint": "Custom endpoint for OpenAI-compatible APIs",
+    "webSearch": "Web Search",
+    "nativeWebSearchTool": "Native web search tool",
+    "searchContextSize": "Search Context Size",
+    "searchContext": {
+      "low": "Low (faster)",
+      "medium": "Medium (balanced)",
+      "high": "High (thorough)"
+    },
+    "ollamaEndpoint": "Ollama server endpoint",
+    "deepSeekEndpoint": "OpenAI-compatible DeepSeek endpoint"
   },
   "browser": {
     "back": "Back",
@@ -500,6 +728,110 @@
       }
     }
   },
+  "aiSettings": {
+    "apiKeys": "API Keys",
+    "tavily": "Tavily (Web Search)",
+    "tavilyEnvHint": "Use $TAVILY_API_KEY to reference an environment variable",
+    "braveSearchApi": "Brave Search API",
+    "braveKeyPrefix": "Get your API key from",
+    "commitSynthesisBackend": "Commit Synthesis Backend",
+    "commitSynthesisDesc": "Choose the AI backend for generating commit messages and session summaries",
+    "backend": "Backend",
+    "backendSetTo": "Set to {{backend}}",
+    "switching": "Switching backend...",
+    "backends": {
+      "local": "Local LLM",
+      "vertexAnthropic": "Vertex AI (Anthropic)",
+      "templateBased": "Template-based",
+      "localQwen": "Local (Qwen via mistral.rs)",
+      "vertexClaude": "Vertex AI (Claude)",
+      "templateOnly": "Template Only (No LLM)"
+    },
+    "templateFacts": {
+      "simple": "Uses simple templates without LLM enhancement",
+      "offline": "Fastest option, works offline",
+      "basic": "Basic commit messages based on file changes"
+    }
+  },
+  "agentSettings": {
+    "tabs": {
+      "general": "General",
+      "agents": "Agents",
+      "skills": "Skills",
+      "rules": "Rules"
+    },
+    "sessionPersistence": "Session Persistence",
+    "sessionPersistenceDesc": "Auto-save conversations to disk",
+    "sessionRetention": "Session Retention (days)",
+    "sessionRetentionDesc": "How long to keep saved sessions (0 = forever)",
+    "patternLearning": "Pattern Learning",
+    "patternLearningDesc": "Learn from approvals for auto-approval",
+    "minimumApprovals": "Minimum Approvals",
+    "minimumApprovalsDesc": "Minimum approvals before a tool can be auto-approved",
+    "approvalThreshold": "Approval Threshold: {{value}}%",
+    "approvalThresholdDesc": "Required approval rate for auto-approval",
+    "tools": "Tools",
+    "webSearch": "Web Search (Tavily)",
+    "webSearchDesc": "Enable web search, extract, crawl, and map tools. Requires TAVILY_API_KEY."
+  },
+  "subAgentSettings": {
+    "globalAgents": "Global Agents",
+    "projectAgents": "Project Agents",
+    "new": "New",
+    "system": "system",
+    "toolCount": "{{count}} tools",
+    "modelOverride": "model override",
+    "model": "Model",
+    "maxIter": "Max iter",
+    "timeout": "Timeout",
+    "idle": "Idle",
+    "inherit": "inherit",
+    "allowedTools": "Allowed Tools",
+    "runtimeModelOverride": "Runtime Model Override",
+    "useDefault": "Use default",
+    "enterModelName": "Enter model name",
+    "selectProviderFirst": "Select provider first",
+    "runtimeOverride": "Runtime override: {{provider}} / {{model}}",
+    "editDefinition": "Edit Definition",
+    "noGlobalAgents": "No global agents. Click \"New\" or restart to seed defaults.",
+    "noProjectAgentsPrefix": "No project-specific agents. These are stored in your project's",
+    "noProjectAgentsSuffix": "directory.",
+    "global": "Global",
+    "project": "Project",
+    "globalDesc": "agents are available across all projects.",
+    "projectDesc": "agents are scoped to the current workspace and override global agents with the same ID. System agents can be edited but not deleted.",
+    "loadFailed": "Failed to load agent definitions",
+    "agentIdRequired": "Agent ID is required",
+    "agentNameRequired": "Agent name is required",
+    "agentSaved": "Agent \"{{name}}\" saved",
+    "agentSaveFailed": "Failed to save agent: {{error}}",
+    "systemDeleteDenied": "System agents cannot be deleted",
+    "agentDeleted": "Agent \"{{name}}\" deleted",
+    "agentDeleteFailed": "Failed to delete: {{error}}"
+  },
+  "codebases": {
+    "indexedFolders": "Indexed folders",
+    "description": "Manage codebases indexed for AI context and code search",
+    "indexNewFolder": "Index new folder",
+    "selectFolder": "Select folder to index",
+    "empty": "No codebases indexed yet. Click \"Index new folder\" to add one.",
+    "memoryFile": "Memory file",
+    "reindex": "Re-index",
+    "remove": "Remove",
+    "fileCount": "({{count}} files)",
+    "added": "Added {{path}}",
+    "addFailed": "Failed to add codebase",
+    "reindexed": "Re-indexed {{path}}",
+    "reindexFailed": "Failed to reindex",
+    "removed": "Removed {{path}}",
+    "removeFailed": "Failed to remove codebase",
+    "memoryFileUpdateFailed": "Failed to update memory file",
+    "status": {
+      "synced": "Synced",
+      "notIndexed": "Not indexed",
+      "indexing": "Indexing..."
+    }
+  },
   "input": {
     "searchToolName": "Search tool name...",
     "enterCommand": "Enter command...",
@@ -510,12 +842,38 @@
   },
   "terminal": {
     "shell": "Shell",
+    "shellPlaceholder": "Auto-detect from environment",
     "shellDesc": "Override default shell. Leave empty for auto-detect.",
     "fontFamily": "Font Family",
+    "fontFamilyDesc": "Monospace font for the terminal",
     "fontSize": "Font Size",
     "fontSizeDesc": "Font size (8-32 pixels)",
     "scrollback": "Scrollback",
+    "scrollbackLines": "Scrollback Lines",
     "scrollbackDesc": "Number of lines retained in scrollback buffer"
+  },
+  "advancedSettings": {
+    "logLevel": "Log Level",
+    "logLevelDesc": "Verbosity of debug logging",
+    "logLevels": {
+      "error": "Error",
+      "warn": "Warn",
+      "info": "Info",
+      "debug": "Debug",
+      "trace": "Trace"
+    },
+    "experimental": "Experimental Features",
+    "experimentalDesc": "Enable experimental functionality",
+    "llmApiLogs": "LLM API Logs",
+    "llmApiLogsDesc": "Log raw API request/response to ./logs/api/",
+    "extractRawSse": "Extract Raw SSE Property",
+    "extractRawSseDesc": "Parse SSE chunks as JSON objects instead of escaped strings",
+    "privacy": "Privacy",
+    "usageStats": "Usage Statistics",
+    "usageStatsDesc": "Send anonymous usage data",
+    "logPrompts": "Log Prompts",
+    "logPromptsDesc": "Save prompts locally for debugging",
+    "version": "Version"
   },
   "wiki": {
     "title": "Wiki",
@@ -797,10 +1155,40 @@
     "recheck": "Recheck"
   },
   "mcp": {
+    "title": "MCP Servers",
+    "description": "Model Context Protocol servers provide additional tools to the AI agent",
+    "browseServers": "Browse servers",
+    "configPrefix": "Configure servers in",
+    "configMiddle": "(global) or",
+    "configSuffix": "(project-specific).",
+    "empty": "No MCP servers configured.",
+    "emptyHintPrefix": "Create",
+    "emptyHintSuffix": "to add servers.",
     "nodeRequired": "Some built-in servers require Node.js. Install it in Settings > Environment first.",
     "needsNode": "Needs Node.js",
     "setupComplete": "{{name}} setup complete",
-    "setupInProgress": "Setting up..."
+    "setupInProgress": "Setting up...",
+    "setupFailed": "Setup failed for {{name}}",
+    "loadFailed": "Failed to load MCP servers",
+    "connectedTo": "Connected to {{name}}",
+    "connectFailed": "Failed to connect to {{name}}",
+    "disconnectedFrom": "Disconnected from {{name}}",
+    "disconnectFailed": "Failed to disconnect from {{name}}",
+    "connect": "Connect",
+    "disconnect": "Disconnect",
+    "availableTools": "Available Tools",
+    "toolCount": "{{count}} tool(s)",
+    "source": {
+      "builtin": "built-in",
+      "project": "project"
+    },
+    "status": {
+      "connected": "Connected",
+      "connecting": "Connecting...",
+      "disconnected": "Disconnected",
+      "disabled": "disabled",
+      "connectionError": "Connection error"
+    }
   },
   "projectSetup": {
     "title": "New Project",

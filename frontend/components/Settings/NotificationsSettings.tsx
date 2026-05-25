@@ -1,6 +1,7 @@
 import { sendNotification as doSendNotification } from "@tauri-apps/plugin-notification";
 import { AlertCircle, Bell, CheckCircle, Terminal, Volume2 } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -14,6 +15,7 @@ interface NotificationsSettingsProps {
 }
 
 export function NotificationsSettings({ settings, onChange }: NotificationsSettingsProps) {
+  const { t } = useTranslation();
   const [permissionStatus, setPermissionStatus] = useState<"unknown" | "granted" | "denied">(
     "unknown"
   );
@@ -85,13 +87,13 @@ export function NotificationsSettings({ settings, onChange }: NotificationsSetti
 
       if (type === "agent") {
         doSendNotification({
-          title: "Agent Completed",
-          body: "This is a test notification for agent completion.",
+          title: t("notificationsPanel.agentCompletedTitle"),
+          body: t("notificationsPanel.agentCompletedBody"),
           sound,
         });
       } else {
         doSendNotification({
-          title: "Command Completed",
+          title: t("notificationsPanel.commandCompletedTitle"),
           body: "✓ echo 'Hello, World!'",
           sound,
         });
@@ -130,11 +132,9 @@ export function NotificationsSettings({ settings, onChange }: NotificationsSetti
             htmlFor="notifications-sound-enabled"
             className="text-sm font-medium text-foreground cursor-pointer"
           >
-            In-App Notification Sounds
+            {t("notificationsPanel.inAppSounds")}
           </label>
-          <p className="text-xs text-muted-foreground">
-            Play a sound when agent or command completes while the app is in the background
-          </p>
+          <p className="text-xs text-muted-foreground">{t("notificationsPanel.inAppSoundsDesc")}</p>
         </div>
         <Switch
           id="notifications-sound-enabled"
@@ -148,12 +148,12 @@ export function NotificationsSettings({ settings, onChange }: NotificationsSetti
         <div className="flex items-center justify-between pl-4 border-l-2 border-[var(--border-medium)]">
           <div className="flex items-center gap-2">
             <Volume2 className="w-4 h-4 text-muted-foreground" />
-            <span className="text-sm text-foreground">Test Sound</span>
+            <span className="text-sm text-foreground">{t("notificationsPanel.testSound")}</span>
             {testStatus.sound === "success" && <CheckCircle className="w-4 h-4 text-green-500" />}
             {testStatus.sound === "error" && <AlertCircle className="w-4 h-4 text-red-500" />}
           </div>
           <Button variant="outline" size="sm" onClick={handleTestSound}>
-            Play
+            {t("notificationsPanel.play")}
           </Button>
         </div>
       )}
@@ -168,10 +168,10 @@ export function NotificationsSettings({ settings, onChange }: NotificationsSetti
             htmlFor="notifications-native"
             className="text-sm font-medium text-foreground cursor-pointer"
           >
-            Native System Notifications
+            {t("notificationsPanel.nativeNotifications")}
           </label>
           <p className="text-xs text-muted-foreground">
-            Show OS notifications for agent and command completion when the app is in the background
+            {t("notificationsPanel.nativeNotificationsDesc")}
           </p>
         </div>
         <Switch
@@ -185,19 +185,20 @@ export function NotificationsSettings({ settings, onChange }: NotificationsSetti
       {settings.native_enabled && (
         <div className="space-y-2 pl-4 border-l-2 border-[var(--border-medium)]">
           <label htmlFor="notifications-sound" className="text-sm font-medium text-foreground">
-            System Sound Name
+            {t("notificationsPanel.systemSoundName")}
           </label>
           <Input
             id="notifications-sound"
             type="text"
-            placeholder="Default (Blow on macOS)"
+            placeholder={t("notificationsPanel.systemSoundPlaceholder")}
             value={settings.sound ?? ""}
             onChange={(e) => handleSoundNameChange(e.target.value)}
             className="max-w-md"
           />
           <p className="text-xs text-muted-foreground">
-            macOS system sound names like <span className="font-mono">Ping</span> or{" "}
-            <span className="font-mono">Blow</span>; leave blank to use default
+            {t("notificationsPanel.systemSoundDescPrefix")} <span className="font-mono">Ping</span>{" "}
+            {t("notificationsPanel.or")} <span className="font-mono">Blow</span>;{" "}
+            {t("notificationsPanel.systemSoundDescSuffix")}
           </p>
         </div>
       )}
@@ -208,13 +209,15 @@ export function NotificationsSettings({ settings, onChange }: NotificationsSetti
           {permissionStatus === "granted" ? (
             <>
               <CheckCircle className="w-4 h-4 text-green-500" />
-              <span className="text-muted-foreground">Notification permission granted</span>
+              <span className="text-muted-foreground">
+                {t("notificationsPanel.permissionGranted")}
+              </span>
             </>
           ) : permissionStatus === "denied" ? (
             <>
               <AlertCircle className="w-4 h-4 text-yellow-500" />
               <span className="text-muted-foreground">
-                Permission denied. Enable in system settings.
+                {t("notificationsPanel.permissionDenied")}
               </span>
             </>
           ) : null}
@@ -224,25 +227,24 @@ export function NotificationsSettings({ settings, onChange }: NotificationsSetti
       {/* Test Native Notifications Section */}
       {settings.native_enabled && (
         <div className="space-y-4 p-4 rounded-lg bg-muted border border-[var(--border-medium)]">
-          <h4 className="text-sm font-medium text-accent">Test Native Notifications</h4>
-          <p className="text-xs text-muted-foreground">
-            Send test notifications to verify your system notification settings are working
-            correctly.
-          </p>
+          <h4 className="text-sm font-medium text-accent">{t("notificationsPanel.testNative")}</h4>
+          <p className="text-xs text-muted-foreground">{t("notificationsPanel.testNativeDesc")}</p>
 
           <div className="space-y-3">
             {/* Agent Completion Test */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Bell className="w-4 h-4 text-muted-foreground" />
-                <span className="text-sm text-foreground">Agent Completion</span>
+                <span className="text-sm text-foreground">
+                  {t("notificationsPanel.agentCompletion")}
+                </span>
                 {testStatus.agent === "success" && (
                   <CheckCircle className="w-4 h-4 text-green-500" />
                 )}
                 {testStatus.agent === "error" && <AlertCircle className="w-4 h-4 text-red-500" />}
               </div>
               <Button variant="outline" size="sm" onClick={() => sendTestNotification("agent")}>
-                Send Test
+                {t("notificationsPanel.sendTest")}
               </Button>
             </div>
 
@@ -250,14 +252,16 @@ export function NotificationsSettings({ settings, onChange }: NotificationsSetti
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Terminal className="w-4 h-4 text-muted-foreground" />
-                <span className="text-sm text-foreground">Command Completion</span>
+                <span className="text-sm text-foreground">
+                  {t("notificationsPanel.commandCompletion")}
+                </span>
                 {testStatus.command === "success" && (
                   <CheckCircle className="w-4 h-4 text-green-500" />
                 )}
                 {testStatus.command === "error" && <AlertCircle className="w-4 h-4 text-red-500" />}
               </div>
               <Button variant="outline" size="sm" onClick={() => sendTestNotification("command")}>
-                Send Test
+                {t("notificationsPanel.sendTest")}
               </Button>
             </div>
           </div>

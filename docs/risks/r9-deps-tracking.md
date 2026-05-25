@@ -77,4 +77,4 @@ auto-update.
 
 - `package.json` — frontend deps
 - `backend/Cargo.toml:97-263` — backend deps
-- Architecture eval R1-R10 — `.cursor/rules/architecture-evaluation.mdc`
+- Architecture eval R1-R10 — legacy architecture review; source review file may no longer be present

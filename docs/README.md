@@ -39,5 +39,4 @@ This directory contains Golish’s user guides, integrations, developer docs, an
 - [SWE-bench](swebench.md)
 - [SWE-bench docs](swebench/README.md)
 - [PR check evals](pr-check-evals.md)
-- [Benchmark integration plan](benchmark-integration-plan.md)
 - [Graph-flow integration](graph-flow-integration.md)

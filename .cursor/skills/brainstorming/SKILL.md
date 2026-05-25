@@ -104,7 +104,3 @@ description: "在任何创造性工作之前必须使用此技能——创建功
 - **探索替代方案** — 在做决定之前始终提出 2-3 种方案
 - **增量验证** — 展示设计，获得批准后再继续
 - **保持灵活** — 有不明确的地方就回头澄清
-
-## private-MCP 集成说明
-
-本 skill 被 private-MCP 主控中心在任务分发时使用。当主控派发需求分析类任务给 product_mgr / fullstack_dev 时，会附带 `[SKILL: brainstorming]` 指引，接收方应按本 skill 流程执行。

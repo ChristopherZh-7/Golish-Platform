@@ -129,7 +129,3 @@ description: 在宣称工作完成、已修复或测试通过之前使用，在�
 运行命令。阅读输出。然后才能宣称结果。
 
 这没有商量余地。
-
-## private-MCP 集成说明
-
-本 skill 被 private-MCP 所有执行角色在通过 `send_to_session(messageType:"result")` 回报结果之前使用。主控汇总结果时会检查是否附带了验证证据。

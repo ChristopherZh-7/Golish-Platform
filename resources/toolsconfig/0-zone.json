@@ -211,7 +211,7 @@
             "path": "$..data[*]",
             "source_field": "asn",
             "target_field": "asns",
-            "transform": "trim",
+            "transform": "asn",
             "when": [{ "field": "asn", "op": "exists", "value": "" }]
           },
           {
@@ -224,9 +224,18 @@
           {
             "path": "$..data[*]",
             "source_field": ["msg.app_url", "msg.app_id"],
-            "target_field": "business_systems",
+            "target_field": "mobile_apps",
+            "target_kind": "intel",
             "transform": "trim",
             "when": [{ "field": "msg.app_url", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "msg.domain_list[0]",
+            "target_field": "app_domains",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "msg.domain_list[0]", "op": "exists", "value": "" }]
           },
           {
             "path": "$..data[*]",

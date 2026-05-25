@@ -10,6 +10,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,6 +32,7 @@ interface SubAgentSettingsProps {
 }
 
 export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsProps) {
+  const { t } = useTranslation();
   const [agents, setAgents] = useState<AgentFileInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -46,7 +48,7 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
       setAgents(list);
     } catch (err) {
       console.error("Failed to load agents:", err);
-      notify.error("Failed to load agent definitions");
+      notify.error(t("subAgentSettings.loadFailed"));
     } finally {
       setLoading(false);
     }
@@ -107,11 +109,11 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
   const handleSave = async () => {
     if (!editingAgent) return;
     if (!editingAgent.id.trim()) {
-      notify.error("Agent ID is required");
+      notify.error(t("subAgentSettings.agentIdRequired"));
       return;
     }
     if (!editingAgent.name.trim()) {
-      notify.error("Agent name is required");
+      notify.error(t("subAgentSettings.agentNameRequired"));
       return;
     }
 
@@ -134,13 +136,13 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
         topP: editingAgent.topP ?? undefined,
         scope: editingAgent.scope,
       });
-      notify.success(`Agent "${editingAgent.name}" saved`);
+      notify.success(t("subAgentSettings.agentSaved", { name: editingAgent.name }));
       setEditingAgent(null);
       setToolInput("");
       await loadAgents();
     } catch (err) {
       console.error("Failed to save agent:", err);
-      notify.error(`Failed to save agent: ${err}`);
+      notify.error(t("subAgentSettings.agentSaveFailed", { error: String(err) }));
     } finally {
       setSavingId(null);
     }
@@ -148,16 +150,16 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
 
   const handleDelete = async (agent: AgentFileInfo) => {
     if (agent.is_system) {
-      notify.error("System agents cannot be deleted");
+      notify.error(t("subAgentSettings.systemDeleteDenied"));
       return;
     }
     try {
       await deleteAgentDefinition(agent.id);
-      notify.success(`Agent "${agent.name}" deleted`);
+      notify.success(t("subAgentSettings.agentDeleted", { name: agent.name }));
       await loadAgents();
     } catch (err) {
       console.error("Failed to delete agent:", err);
-      notify.error(`Failed to delete: ${err}`);
+      notify.error(t("subAgentSettings.agentDeleteFailed", { error: String(err) }));
     }
   };
 
@@ -228,7 +230,7 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
               <span className="text-[10px] font-mono text-muted-foreground/60">{agent.id}</span>
               {agent.is_system && (
                 <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4">
-                  <Lock className="w-2.5 h-2.5 mr-0.5" /> system
+                  <Lock className="w-2.5 h-2.5 mr-0.5" /> {t("subAgentSettings.system")}
                 </Badge>
               )}
             </div>
@@ -237,11 +239,11 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
 
           <div className="flex items-center gap-2 flex-shrink-0">
             <span className="text-[10px] text-muted-foreground">
-              {agent.allowed_tools.length} tools
+              {t("subAgentSettings.toolCount", { count: agent.allowed_tools.length })}
             </span>
             {hasOverride && (
               <Badge variant="secondary" className="text-[9px]">
-                model override
+                {t("subAgentSettings.modelOverride")}
               </Badge>
             )}
           </div>
@@ -251,26 +253,27 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
           <div className="px-4 pb-4 pt-1 border-t border-[var(--border-medium)] space-y-4">
             <div className="grid grid-cols-4 gap-3 text-xs">
               <div>
-                <span className="text-muted-foreground">Model:</span>{" "}
-                <span className="font-mono">{agent.model || "inherit"}</span>
+                <span className="text-muted-foreground">{t("subAgentSettings.model")}:</span>{" "}
+                <span className="font-mono">{agent.model || t("subAgentSettings.inherit")}</span>
               </div>
               <div>
-                <span className="text-muted-foreground">Max iter:</span> {agent.max_iterations}
+                <span className="text-muted-foreground">{t("subAgentSettings.maxIter")}:</span>{" "}
+                {agent.max_iterations}
               </div>
               <div>
-                <span className="text-muted-foreground">Timeout:</span>{" "}
-                {agent.timeout_secs ? `${agent.timeout_secs}s` : "none"}
+                <span className="text-muted-foreground">{t("subAgentSettings.timeout")}:</span>{" "}
+                {agent.timeout_secs ? `${agent.timeout_secs}s` : t("common.none")}
               </div>
               <div>
-                <span className="text-muted-foreground">Idle:</span>{" "}
-                {agent.idle_timeout_secs ? `${agent.idle_timeout_secs}s` : "none"}
+                <span className="text-muted-foreground">{t("subAgentSettings.idle")}:</span>{" "}
+                {agent.idle_timeout_secs ? `${agent.idle_timeout_secs}s` : t("common.none")}
               </div>
             </div>
 
             {agent.allowed_tools.length > 0 && (
               <div className="space-y-1">
                 <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                  Allowed Tools
+                  {t("subAgentSettings.allowedTools")}
                 </span>
                 <div className="flex flex-wrap gap-1">
                   {agent.allowed_tools.map((tool) => (
@@ -326,7 +329,7 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
                 onClick={() => startEditing(agent)}
                 className="h-7 text-xs"
               >
-                <Edit3 className="w-3 h-3 mr-1" /> Edit Definition
+                <Edit3 className="w-3 h-3 mr-1" /> {t("subAgentSettings.editDefinition")}
               </Button>
               {!agent.is_system && (
                 <Button
@@ -335,7 +338,7 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
                   onClick={() => handleDelete(agent)}
                   className="h-7 text-xs text-muted-foreground hover:text-destructive"
                 >
-                  <Trash2 className="w-3 h-3 mr-1" /> Delete
+                  <Trash2 className="w-3 h-3 mr-1" /> {t("common.delete")}
                 </Button>
               )}
             </div>
@@ -352,7 +355,9 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Globe className="w-4 h-4 text-accent" />
-            <h4 className="text-sm font-medium text-accent">Global Agents</h4>
+            <h4 className="text-sm font-medium text-accent">
+              {t("subAgentSettings.globalAgents")}
+            </h4>
             <span className="text-[10px] text-muted-foreground">~/.golish/agents/</span>
           </div>
           <Button
@@ -360,14 +365,14 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
             onClick={() => startCreating("global")}
             className="bg-accent text-accent-foreground hover:bg-accent/90 h-7"
           >
-            <Plus className="w-3.5 h-3.5 mr-1" /> New
+            <Plus className="w-3.5 h-3.5 mr-1" /> {t("subAgentSettings.new")}
           </Button>
         </div>
         <div className="space-y-2">
           {globalAgents.map(renderAgentCard)}
           {globalAgents.length === 0 && (
             <p className="text-xs text-muted-foreground italic py-3 text-center">
-              No global agents. Click &quot;New&quot; or restart to seed defaults.
+              {t("subAgentSettings.noGlobalAgents")}
             </p>
           )}
         </div>
@@ -380,7 +385,9 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <FolderOpen className="w-4 h-4 text-accent" />
-            <h4 className="text-sm font-medium text-accent">Project Agents</h4>
+            <h4 className="text-sm font-medium text-accent">
+              {t("subAgentSettings.projectAgents")}
+            </h4>
             <span className="text-[10px] text-muted-foreground">.golish/agents/</span>
           </div>
           <Button
@@ -388,15 +395,15 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
             onClick={() => startCreating("project")}
             className="bg-accent text-accent-foreground hover:bg-accent/90 h-7"
           >
-            <Plus className="w-3.5 h-3.5 mr-1" /> New
+            <Plus className="w-3.5 h-3.5 mr-1" /> {t("subAgentSettings.new")}
           </Button>
         </div>
         <div className="space-y-2">
           {projectAgents.map(renderAgentCard)}
           {projectAgents.length === 0 && (
             <p className="text-xs text-muted-foreground italic py-3 text-center">
-              No project-specific agents. These are stored in your project&apos;s{" "}
-              <code>.golish/agents/</code> directory.
+              {t("subAgentSettings.noProjectAgentsPrefix")} <code>.golish/agents/</code>{" "}
+              {t("subAgentSettings.noProjectAgentsSuffix")}
             </p>
           )}
         </div>
@@ -404,9 +411,8 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
 
       <div className="text-xs text-muted-foreground border-t border-[var(--border-medium)] pt-4">
         <p>
-          <strong>Global</strong> agents are available across all projects. <strong>Project</strong>{" "}
-          agents are scoped to the current workspace and override global agents with the same ID.
-          System agents (Worker, Memorist, Reflector) can be edited but not deleted.
+          <strong>{t("subAgentSettings.global")}</strong> {t("subAgentSettings.globalDesc")}{" "}
+          <strong>{t("subAgentSettings.project")}</strong> {t("subAgentSettings.projectDesc")}
         </p>
       </div>
     </div>

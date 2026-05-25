@@ -1,9 +1,12 @@
 # ASM 多 Provider 集成 · 架构设计文档
 
+> Superseded by `docs/design/2026-05-21-integrations.md`.
+> 保留本文仅作历史决策记录；当前凭据/外部情报源入口以 Settings → Integrations 和 `docs/design/2026-05-21-integrations.md` 为准。
+
 > 日期：2026-05-20
-> 状态：Draft → Approved（用户确认 4 个决策点全选推荐项）
+> 状态：Superseded（原 Draft → Approved；用户确认 4 个决策点全选推荐项）
 > 关联 baseline：`docs/design/2026-05-20-pentest-fields-tool-mapping.md`
-> 实施计划：`docs/superpowers/plans/2026-05-20-asm-intel-providers.md`
+> 旧实施计划：`docs/superpowers/plans/2026-05-20-asm-intel-providers.md`（已删除；由 Integrations 方案取代）
 > 分支：`feat/asm-intel-providers`
 
 ---
@@ -373,5 +376,5 @@ ENScan_GO 的登录态 Cookie/token 可能失效或触发风控，因此凭据�
 
 ---
 
-**作者**：MCP-2 主控中心（private-mcp-agent-2-sukoeliv，豁免态执行）
+**作者**：架构组
 **审阅**：用户已批准 4 个决策点

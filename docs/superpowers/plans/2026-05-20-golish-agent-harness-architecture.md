@@ -1,5 +1,8 @@
 # Golish Agent Harness Architecture 实现计划
 
+> Deferred until the information-collection loop and tool-output/evidence contracts are stable.
+> 当前不应按本文直接实施；优先级在 Asset Intel / Recon data loop / evidence ledger / tool output schema 之后。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。
 
 **目标：** 按 Anthropic 的 `gather context -> take action -> verify work -> repeat` 思路，在 Golish 现有 task orchestrator 旁边补上一层通用 agent harness runtime。  
@@ -53,7 +56,7 @@
 | `backend/crates/golish-agent-kit/src/task_orchestrator/types.rs` | 给 `PlannedSubtask` 增加 optional `harness_stage` |
 | `backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs` | 执行后解析 deliverable、运行 gate、写回 recovery |
 | `backend/crates/golish-core/src/events/event.rs` | 增加 harness timeline 事件 |
-| `docs/design/2026-05-20-agent-harness-architecture-mvp.md` | 架构设计 |
+| `docs/design/2026-05-20-agent-harness-strategy.md` | 当前 deferred 的策略记录 |
 
 ## API Contract
 
@@ -744,23 +747,12 @@ Expected: prompt changes compile; tests do not regress.
 
 ### Task 11: 更新文档链接和旧 Recon 草案状态
 
-**Files:** `docs/design/harness-recon-mvp.md`, `docs/superpowers/plans/2026-05-20-golish-agent-harness.md`
+**Status:** deferred cleanup already applied in 2026-05-24 docs pass.
 
-**Steps:**
-
-1. 在 `docs/design/harness-recon-mvp.md` 顶部加状态提示：
-
-```markdown
-> Superseded as the primary architecture by `docs/design/2026-05-20-agent-harness-architecture-mvp.md`.
-> This document is now a candidate Recon demo/gate draft, not the harness foundation.
-```
-
-2. 在旧实现计划顶部加状态提示：
-
-```markdown
-> Superseded by `docs/superpowers/plans/2026-05-20-golish-agent-harness-architecture.md`.
-> Do not implement the recon-first plan until the generic harness runtime exists.
-```
+The old recon-first implementation plan has been deleted, and the missing
+`harness-recon-mvp.md` draft should not be treated as canonical. When the
+information-collection loop is stable, write a fresh Recon deliverable / gate
+design instead of reviving those files.
 
 **Verification:**
 

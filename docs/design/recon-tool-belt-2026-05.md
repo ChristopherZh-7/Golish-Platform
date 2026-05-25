@@ -158,7 +158,7 @@ agent 现在"完成"是靠 LLM 自己说一句话。需要新增 `submit_recon_d
 
 ## 5. Recon Deliverable 字段全集（补充版）
 
-之前 [`harness-recon-mvp.md`](harness-recon-mvp.md) §5 的版本基础上**新增 3 个字段**（之前漏的）。
+这是基于旧 `harness-recon-mvp.md` 草案扩展出的字段全集；该旧草案已移除，本文只保留工具盘点和字段参考价值。
 
 ```rust
 struct ReconDeliverable {
@@ -188,7 +188,7 @@ struct ReconDeliverable {
 }
 ```
 
-每个子字段的具体 schema 见 [`harness-recon-mvp.md`](harness-recon-mvp.md) §5。新增字段的 schema：
+下面补充旧草案遗漏字段的 schema：
 
 ```rust
 struct Subdomain {
@@ -261,9 +261,9 @@ struct CtEntry {
 
 ```text
 2026-05-20-agent-harness-strategy.md     ← 总策略
-    ├── harness-recon-mvp.md             ← Recon 设计草案（Phase Charter 雏形）
+    ├── <future recon deliverable design> ← 待信息收集闭环稳定后重写
     ├── recon-tool-belt-2026-05.md       ← 本文档：工具盘点 / 流程 / 字段补全
-    └── plans/2026-05-20-golish-agent-harness.md  ← Recon 9-Task 实现计划
+    └── <future harness plan>             ← 旧 recon-first 计划已删除
 ```
 
 ---

@@ -370,8 +370,8 @@
             { "path": "$..icp[*]", "source_field": "domain", "target_field": "domains", "transform": "lower" },
             { "path": "$..icp[*]", "source_field": "website", "target_field": "business_systems", "transform": "lower" },
             { "path": "$..icp[*]", "source_field": "icp", "target_field": "icp_records", "target_kind": "intel", "transform": "trim" },
-            { "path": "$..app[*]", "source_field": ["name", "link", "app_url"], "target_field": "business_systems", "transform": "trim" },
-            { "path": "$..wx_app[*]", "source_field": ["name", "app_id"], "target_field": "business_systems", "transform": "trim" },
+            { "path": "$..app[*]", "source_field": ["name", "link", "app_url"], "target_field": "mobile_apps", "target_kind": "intel", "transform": "trim" },
+            { "path": "$..wx_app[*]", "source_field": ["name", "app_id"], "target_field": "mini_programs", "target_kind": "intel", "transform": "trim" },
             { "path": "$..wechat[*]", "source_field": ["wechat_id", "id", "name"], "target_field": "social_accounts", "transform": "trim" },
             { "path": "$..weibo[*]", "source_field": ["profile_url", "weibo_id", "id", "name"], "target_field": "social_accounts", "transform": "trim" }
           ]

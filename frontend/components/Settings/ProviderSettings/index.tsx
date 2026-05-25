@@ -48,7 +48,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
           <div className="space-y-3.5">
             <div className="space-y-1.5">
               <label htmlFor="vertex-credentials" className={fieldLabel}>
-                Credentials Path
+                {t("provider.credentialsPath")}
               </label>
               <Input
                 id="vertex-credentials"
@@ -57,11 +57,11 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
                 placeholder="/path/to/service-account.json"
                 className={cn(fieldInput, "font-mono")}
               />
-              <p className={fieldHint}>Google Cloud service account JSON file</p>
+              <p className={fieldHint}>{t("provider.googleServiceAccountHint")}</p>
             </div>
             <div className="space-y-1.5">
               <label htmlFor="vertex-project" className={fieldLabel}>
-                Project ID
+                {t("provider.projectId")}
               </label>
               <Input
                 id="vertex-project"
@@ -73,7 +73,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
             </div>
             <div className="space-y-1.5">
               <label htmlFor="vertex-location" className={fieldLabel}>
-                Location
+                {t("provider.location")}
               </label>
               <Input
                 id="vertex-location"
@@ -82,7 +82,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
                 placeholder="us-east5"
                 className={fieldInput}
               />
-              <p className={fieldHint}>Region (e.g., us-east5, europe-west1)</p>
+              <p className={fieldHint}>{t("provider.regionHintVertex")}</p>
             </div>
           </div>
         );
@@ -92,7 +92,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
           <div className="space-y-3.5">
             <div className="space-y-1.5">
               <label htmlFor="vertex-gemini-credentials" className={fieldLabel}>
-                Credentials Path
+                {t("provider.credentialsPath")}
               </label>
               <Input
                 id="vertex-gemini-credentials"
@@ -103,11 +103,11 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
                 placeholder="/path/to/service-account.json"
                 className={cn(fieldInput, "font-mono")}
               />
-              <p className={fieldHint}>Google Cloud service account JSON file</p>
+              <p className={fieldHint}>{t("provider.googleServiceAccountHint")}</p>
             </div>
             <div className="space-y-1.5">
               <label htmlFor="vertex-gemini-project" className={fieldLabel}>
-                Project ID
+                {t("provider.projectId")}
               </label>
               <Input
                 id="vertex-gemini-project"
@@ -119,7 +119,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
             </div>
             <div className="space-y-1.5">
               <label htmlFor="vertex-gemini-location" className={fieldLabel}>
-                Location
+                {t("provider.location")}
               </label>
               <Input
                 id="vertex-gemini-location"
@@ -128,7 +128,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
                 placeholder="us-central1"
                 className={fieldInput}
               />
-              <p className={fieldHint}>Region (e.g., us-central1, europe-west1)</p>
+              <p className={fieldHint}>{t("provider.regionHintGemini")}</p>
             </div>
           </div>
         );
@@ -137,7 +137,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
         return (
           <div className="space-y-1.5">
             <label htmlFor="anthropic-key" className={fieldLabel}>
-              API Key
+              {t("provider.apiKey")}
             </label>
             <PasswordInput
               id="anthropic-key"
@@ -146,7 +146,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
               placeholder="sk-ant-api03-..."
             />
             <p className={fieldHint}>
-              From{" "}
+              {t("provider.from")}{" "}
               <a
                 href="https://console.anthropic.com"
                 target="_blank"
@@ -164,7 +164,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
           <div className="space-y-3.5">
             <div className="space-y-1.5">
               <label htmlFor="openai-key" className={fieldLabel}>
-                API Key
+                {t("provider.apiKey")}
               </label>
               <PasswordInput
                 id="openai-key"
@@ -175,7 +175,10 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
             </div>
             <div className="space-y-1.5">
               <label htmlFor="openai-base" className={fieldLabel}>
-                Base URL <span className="text-muted-foreground/30 font-normal">(optional)</span>
+                {t("provider.baseUrl")}{" "}
+                <span className="text-muted-foreground/30 font-normal">
+                  ({t("provider.optional")})
+                </span>
               </label>
               <Input
                 id="openai-base"
@@ -184,12 +187,16 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
                 placeholder="https://api.openai.com/v1"
                 className={fieldInput}
               />
-              <p className={fieldHint}>Custom endpoint for OpenAI-compatible APIs</p>
+              <p className={fieldHint}>{t("provider.openAiCompatibleEndpoint")}</p>
             </div>
             <div className="flex items-center justify-between py-2.5 border-t border-foreground/[0.04]">
               <div>
-                <div className="text-[12px] font-medium text-foreground/80">Web Search</div>
-                <div className="text-[10px] text-muted-foreground/35">Native web search tool</div>
+                <div className="text-[12px] font-medium text-foreground/80">
+                  {t("provider.webSearch")}
+                </div>
+                <div className="text-[10px] text-muted-foreground/35">
+                  {t("provider.nativeWebSearchTool")}
+                </div>
               </div>
               <Switch
                 checked={settings.openai.enable_web_search}
@@ -201,7 +208,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
             {settings.openai.enable_web_search && (
               <div className="space-y-1.5">
                 <label htmlFor="openai-search-context" className={fieldLabel}>
-                  Search Context Size
+                  {t("provider.searchContextSize")}
                 </label>
                 <Select
                   value={settings.openai.web_search_context_size}
@@ -213,9 +220,9 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="low">Low (faster)</SelectItem>
-                    <SelectItem value="medium">Medium (balanced)</SelectItem>
-                    <SelectItem value="high">High (thorough)</SelectItem>
+                    <SelectItem value="low">{t("provider.searchContext.low")}</SelectItem>
+                    <SelectItem value="medium">{t("provider.searchContext.medium")}</SelectItem>
+                    <SelectItem value="high">{t("provider.searchContext.high")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -228,7 +235,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
           <div className="space-y-3.5">
             <div className="space-y-1.5">
               <label htmlFor="openrouter-key" className={fieldLabel}>
-                API Key
+                {t("provider.apiKey")}
               </label>
               <PasswordInput
                 id="openrouter-key"
@@ -237,7 +244,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
                 placeholder="sk-or-v1-..."
               />
               <p className={fieldHint}>
-                From{" "}
+                {t("provider.from")}{" "}
                 <a
                   href="https://openrouter.ai"
                   target="_blank"
@@ -260,7 +267,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
         return (
           <div className="space-y-1.5">
             <label htmlFor="ollama-url" className={fieldLabel}>
-              Base URL
+              {t("provider.baseUrl")}
             </label>
             <Input
               id="ollama-url"
@@ -269,7 +276,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
               placeholder="http://localhost:11434"
               className={cn(fieldInput, "font-mono")}
             />
-            <p className={fieldHint}>Ollama server endpoint</p>
+            <p className={fieldHint}>{t("provider.ollamaEndpoint")}</p>
           </div>
         );
 
@@ -277,7 +284,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
         return (
           <div className="space-y-1.5">
             <label htmlFor="gemini-key" className={fieldLabel}>
-              API Key
+              {t("provider.apiKey")}
             </label>
             <PasswordInput
               id="gemini-key"
@@ -286,7 +293,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
               placeholder="AIza..."
             />
             <p className={fieldHint}>
-              From{" "}
+              {t("provider.from")}{" "}
               <a
                 href="https://aistudio.google.com"
                 target="_blank"
@@ -303,7 +310,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
         return (
           <div className="space-y-1.5">
             <label htmlFor="groq-key" className={fieldLabel}>
-              API Key
+              {t("provider.apiKey")}
             </label>
             <PasswordInput
               id="groq-key"
@@ -312,7 +319,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
               placeholder="gsk_..."
             />
             <p className={fieldHint}>
-              From{" "}
+              {t("provider.from")}{" "}
               <a
                 href="https://console.groq.com"
                 target="_blank"
@@ -329,7 +336,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
         return (
           <div className="space-y-1.5">
             <label htmlFor="xai-key" className={fieldLabel}>
-              API Key
+              {t("provider.apiKey")}
             </label>
             <PasswordInput
               id="xai-key"
@@ -338,7 +345,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
               placeholder="xai-..."
             />
             <p className={fieldHint}>
-              From{" "}
+              {t("provider.from")}{" "}
               <a
                 href="https://x.ai"
                 target="_blank"
@@ -356,7 +363,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
           <div className="space-y-3.5">
             <div className="space-y-1.5">
               <label htmlFor="z-ai-sdk-key" className={fieldLabel}>
-                API Key
+                {t("provider.apiKey")}
               </label>
               <PasswordInput
                 id="z-ai-sdk-key"
@@ -365,7 +372,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
                 placeholder="your-zai-api-key"
               />
               <p className={fieldHint}>
-                From{" "}
+                {t("provider.from")}{" "}
                 <a
                   href="https://open.bigmodel.cn"
                   target="_blank"
@@ -378,7 +385,10 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
             </div>
             <div className="space-y-1.5">
               <label htmlFor="z-ai-sdk-base" className={fieldLabel}>
-                Base URL <span className="text-muted-foreground/30 font-normal">(optional)</span>
+                {t("provider.baseUrl")}{" "}
+                <span className="text-muted-foreground/30 font-normal">
+                  ({t("provider.optional")})
+                </span>
               </label>
               <Input
                 id="z-ai-sdk-base"
@@ -396,7 +406,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
           <div className="space-y-3.5">
             <div className="space-y-1.5">
               <label htmlFor="nvidia-key" className={fieldLabel}>
-                API Key
+                {t("provider.apiKey")}
               </label>
               <PasswordInput
                 id="nvidia-key"
@@ -405,7 +415,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
                 placeholder="nvapi-..."
               />
               <p className={fieldHint}>
-                From{" "}
+                {t("provider.from")}{" "}
                 <a
                   href="https://build.nvidia.com"
                   target="_blank"
@@ -418,7 +428,10 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
             </div>
             <div className="space-y-1.5">
               <label htmlFor="nvidia-base" className={fieldLabel}>
-                Base URL <span className="text-muted-foreground/30 font-normal">(optional)</span>
+                {t("provider.baseUrl")}{" "}
+                <span className="text-muted-foreground/30 font-normal">
+                  ({t("provider.optional")})
+                </span>
               </label>
               <Input
                 id="nvidia-base"
@@ -436,7 +449,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
           <div className="space-y-3.5">
             <div className="space-y-1.5">
               <label htmlFor="deepseek-key" className={fieldLabel}>
-                API Key
+                {t("provider.apiKey")}
               </label>
               <PasswordInput
                 id="deepseek-key"
@@ -445,7 +458,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
                 placeholder="sk-..."
               />
               <p className={fieldHint}>
-                From{" "}
+                {t("provider.from")}{" "}
                 <a
                   href="https://platform.deepseek.com/api_keys"
                   target="_blank"
@@ -458,7 +471,10 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
             </div>
             <div className="space-y-1.5">
               <label htmlFor="deepseek-base" className={fieldLabel}>
-                Base URL <span className="text-muted-foreground/30 font-normal">(optional)</span>
+                {t("provider.baseUrl")}{" "}
+                <span className="text-muted-foreground/30 font-normal">
+                  ({t("provider.optional")})
+                </span>
               </label>
               <Input
                 id="deepseek-base"
@@ -467,7 +483,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
                 placeholder="https://api.deepseek.com"
                 className={cn(fieldInput, "font-mono")}
               />
-              <p className={fieldHint}>OpenAI-compatible DeepSeek endpoint</p>
+              <p className={fieldHint}>{t("provider.deepSeekEndpoint")}</p>
             </div>
           </div>
         );

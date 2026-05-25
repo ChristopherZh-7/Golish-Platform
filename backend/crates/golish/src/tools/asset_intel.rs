@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -13,7 +14,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::AsyncBufReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
@@ -818,6 +819,219 @@ fn apply_profile_transform(
         T::Trim => raw.trim().to_string(),
         T::Lower => raw.trim().to_lowercase(),
         T::Upper => raw.trim().to_uppercase(),
+        T::Asn => normalize_asn(raw),
+    }
+}
+
+fn normalize_asn(raw: &str) -> String {
+    let upper = raw.trim().to_uppercase();
+    let digits = upper.strip_prefix("AS").unwrap_or(&upper).trim();
+    if digits.is_empty() || digits.len() > 10 || !digits.chars().all(|ch| ch.is_ascii_digit()) {
+        return String::new();
+    }
+    format!("AS{digits}")
+}
+
+const TEAM_CYMRU_WHOIS_ADDR: &str = "whois.cymru.com:43";
+const TEAM_CYMRU_ASN_LOOKUP_TIMEOUT_SECS: u64 = 8;
+const TEAM_CYMRU_ASN_LOOKUP_IP_LIMIT: usize = 40;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IpAsnMapping {
+    asn: String,
+}
+
+fn parse_ip_for_asn_lookup(raw: &str) -> Option<IpAddr> {
+    let without_cidr = raw.trim().split_once('/').map_or(raw.trim(), |(ip, _)| ip);
+    without_cidr.parse::<IpAddr>().ok()
+}
+
+fn is_public_ipv4_for_asn_lookup(ip: &Ipv4Addr) -> bool {
+    let [a, b, c, _d] = ip.octets();
+    !matches!(
+        (a, b, c),
+        (0, _, _)
+            | (10, _, _)
+            | (100, 64..=127, _)
+            | (127, _, _)
+            | (169, 254, _)
+            | (172, 16..=31, _)
+            | (192, 0, 0)
+            | (192, 0, 2)
+            | (192, 168, _)
+            | (198, 18..=19, _)
+            | (198, 51, 100)
+            | (203, 0, 113)
+            | (224..=255, _, _)
+    )
+}
+
+fn is_public_ipv6_for_asn_lookup(ip: &Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    let first = segments[0];
+    if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() {
+        return false;
+    }
+    if (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80 {
+        return false;
+    }
+    segments[0] != 0x2001 || segments[1] != 0x0db8
+}
+
+fn is_public_ip_for_asn_lookup(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_public_ipv4_for_asn_lookup(ip),
+        IpAddr::V6(ip) => is_public_ipv6_for_asn_lookup(ip),
+    }
+}
+
+fn collect_public_ips_for_asn_lookup(entries: &[ProfileFieldEntry]) -> Vec<IpAddr> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for entry in entries {
+        if entry.target_kind != golish_pentest::models::AssetIntelProfileFieldTarget::Scalar
+            || entry.target_field != "ip_ranges"
+        {
+            continue;
+        }
+        let Some(ip) = parse_ip_for_asn_lookup(&entry.value) else {
+            continue;
+        };
+        if !is_public_ip_for_asn_lookup(&ip) || !seen.insert(ip) {
+            continue;
+        }
+        out.push(ip);
+        if out.len() >= TEAM_CYMRU_ASN_LOOKUP_IP_LIMIT {
+            break;
+        }
+    }
+    out
+}
+
+fn parse_team_cymru_asn_response(raw: &str) -> Vec<IpAsnMapping> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for line in raw.lines() {
+        let mut cols = line.split('|').map(str::trim);
+        let Some(asn_raw) = cols.next() else {
+            continue;
+        };
+        let Some(ip_raw) = cols.next() else {
+            continue;
+        };
+        if asn_raw.eq_ignore_ascii_case("as") {
+            continue;
+        }
+        let asn = normalize_asn(asn_raw);
+        let Some(ip) = parse_ip_for_asn_lookup(ip_raw) else {
+            continue;
+        };
+        if asn.is_empty() || !seen.insert((ip, asn.clone())) {
+            continue;
+        }
+        out.push(IpAsnMapping { asn });
+    }
+    out
+}
+
+fn profile_asn_entries_from_mappings(mappings: &[IpAsnMapping]) -> Vec<ProfileFieldEntry> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for mapping in mappings {
+        if seen.insert(mapping.asn.to_ascii_uppercase()) {
+            out.push(ProfileFieldEntry {
+                target_kind: golish_pentest::models::AssetIntelProfileFieldTarget::Scalar,
+                target_field: "asns".into(),
+                value: mapping.asn.clone(),
+            });
+        }
+    }
+    out
+}
+
+async fn lookup_team_cymru_asns(ips: &[IpAddr]) -> Result<Vec<IpAsnMapping>, String> {
+    if ips.is_empty() {
+        return Ok(Vec::new());
+    }
+    let timeout = Duration::from_secs(TEAM_CYMRU_ASN_LOOKUP_TIMEOUT_SECS);
+    let mut stream = tokio::time::timeout(
+        timeout,
+        tokio::net::TcpStream::connect(TEAM_CYMRU_WHOIS_ADDR),
+    )
+    .await
+    .map_err(|_| "timed out connecting to Team Cymru whois".to_string())?
+    .map_err(|err| format!("connect failed: {err}"))?;
+    let query = format!(
+        "begin\nverbose\n{}\nend\n",
+        ips.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    tokio::time::timeout(timeout, stream.write_all(query.as_bytes()))
+        .await
+        .map_err(|_| "timed out writing Team Cymru query".to_string())?
+        .map_err(|err| format!("write failed: {err}"))?;
+    let mut response = String::new();
+    tokio::time::timeout(timeout, stream.read_to_string(&mut response))
+        .await
+        .map_err(|_| "timed out reading Team Cymru response".to_string())?
+        .map_err(|err| format!("read failed: {err}"))?;
+    Ok(parse_team_cymru_asn_response(&response))
+}
+
+async fn enrich_0zone_asns_from_ip_ranges(
+    provider_id: &str,
+    run_id: &str,
+    profile_entries: &mut Vec<ProfileFieldEntry>,
+    sink: Option<&EventEmitterHandle>,
+) -> Option<Value> {
+    if provider_id != "0.zone"
+        || profile_entries
+            .iter()
+            .any(|entry| entry.target_field == "asns" && !entry.value.trim().is_empty())
+    {
+        return None;
+    }
+    let ips = collect_public_ips_for_asn_lookup(profile_entries);
+    if ips.is_empty() {
+        return None;
+    }
+    emit_event(
+        sink,
+        AssetIntelStreamEvent::ProviderProgress {
+            run_id: run_id.to_string(),
+            provider_id: provider_id.to_string(),
+            message: format!("deriving ASN from {} public IP(s)", ips.len()),
+            stream: AssetIntelStreamSource::System,
+        },
+    );
+    match lookup_team_cymru_asns(&ips).await {
+        Ok(mappings) => {
+            let derived = profile_asn_entries_from_mappings(&mappings);
+            let asn_count = derived.len();
+            profile_entries.extend(derived);
+            Some(serde_json::json!({
+                "requestId": "team-cymru-ip-to-asn",
+                "state": if asn_count == 0 { "checked_empty" } else { "completed" },
+                "queriedIpCount": ips.len(),
+                "asnCount": asn_count,
+            }))
+        }
+        Err(error) => {
+            tracing::warn!(
+                provider = %provider_id,
+                run_id,
+                error,
+                "asset_intel derived ASN lookup failed"
+            );
+            Some(serde_json::json!({
+                "requestId": "team-cymru-ip-to-asn",
+                "state": "failed",
+                "queriedIpCount": ips.len(),
+                "error": error,
+            }))
+        }
     }
 }
 
@@ -1771,6 +1985,12 @@ async fn run_http_json_provider(
             "requestId": request.id,
             "status": http_status.as_u16(),
         }));
+    }
+
+    if let Some(evidence) =
+        enrich_0zone_asns_from_ip_ranges(&provider_id, run_id, &mut profile_entries, sink).await
+    {
+        request_evidence.push(evidence);
     }
 
     let total = candidates.organizations.len() + candidates.targets.len();
@@ -3518,7 +3738,13 @@ fn build_profile_patch_from_entries(
     fn is_intel_array_profile_field(field: &str) -> bool {
         matches!(
             field,
-            "icp_records" | "exposed_emails" | "code_leaks" | "mail_mx"
+            "icp_records"
+                | "mobile_apps"
+                | "mini_programs"
+                | "app_domains"
+                | "exposed_emails"
+                | "code_leaks"
+                | "mail_mx"
         )
     }
 
@@ -4902,18 +5128,18 @@ esac
             .profile_fields
             .iter()
             .find(|rule| {
-                rule.target_field == "business_systems"
+                rule.target_field == "mobile_apps"
                     && matches!(
                         &rule.source_field,
                         golish_pentest::models::AssetIntelFieldRef::FirstOf(items)
                             if items.iter().any(|s| s == "msg.app_url")
                     )
             })
-            .expect("0.zone apk -> business_systems rule must exist");
+            .expect("0.zone apk -> mobile_apps rule must exist");
         if let golish_pentest::models::AssetIntelFieldRef::FirstOf(items) = &apk_rule.source_field {
             assert!(
                 !items.iter().any(|s| s == "title"),
-                "0.zone apk -> business_systems must NOT fall back to `title` \
+                "0.zone apk -> mobile_apps must NOT fall back to `title` \
                  (网页 SEO 标题被误塞进 business systems 是上轮发现的 bug)"
             );
         }
@@ -5329,6 +5555,44 @@ esac
     }
 
     #[test]
+    fn build_profile_patch_dedupes_app_intel_array_fields() {
+        let entries = vec![
+            ProfileFieldEntry {
+                target_kind: golish_pentest::models::AssetIntelProfileFieldTarget::Intel,
+                target_field: "mobile_apps".into(),
+                value: "小米实况麻将".into(),
+            },
+            ProfileFieldEntry {
+                target_kind: golish_pentest::models::AssetIntelProfileFieldTarget::Intel,
+                target_field: "mobile_apps".into(),
+                value: "小米实况麻将".into(),
+            },
+            ProfileFieldEntry {
+                target_kind: golish_pentest::models::AssetIntelProfileFieldTarget::Intel,
+                target_field: "mini_programs".into(),
+                value: "小米商城".into(),
+            },
+            ProfileFieldEntry {
+                target_kind: golish_pentest::models::AssetIntelProfileFieldTarget::Intel,
+                target_field: "app_domains".into(),
+                value: "https://com.dfwe".into(),
+            },
+        ];
+
+        let patch = build_profile_patch_from_entries(&serde_json::json!({}), &entries)
+            .expect("patch build ok")
+            .expect("app intel entries should produce a patch");
+        let intel = patch.intel.expect("intel patched");
+
+        assert_eq!(intel["mobile_apps"], serde_json::json!(["小米实况麻将"]));
+        assert_eq!(intel["mini_programs"], serde_json::json!(["小米商城"]));
+        assert_eq!(
+            intel["app_domains"],
+            serde_json::json!(["https://com.dfwe"])
+        );
+    }
+
+    #[test]
     fn build_profile_patch_writes_visible_profile_array_fields() {
         let entries = vec![
             ProfileFieldEntry {
@@ -5381,6 +5645,71 @@ esac
             Some(serde_json::json!(["wechat:example"]))
         );
         assert_eq!(patch.contacts, Some(serde_json::json!(["ir@example.com"])));
+    }
+
+    #[test]
+    fn extract_profile_fields_normalizes_asn_values() {
+        let rules = vec![golish_pentest::models::AssetIntelProfileFieldRule {
+            path: "$..data[*]".into(),
+            source_field: golish_pentest::models::AssetIntelFieldRef::Field("asn".into()),
+            target_field: "asns".into(),
+            target_kind: golish_pentest::models::AssetIntelProfileFieldTarget::Scalar,
+            transform: golish_pentest::models::AssetIntelProfileFieldTransform::Asn,
+            when: vec![],
+        }];
+        let raw = serde_json::json!({
+            "data": [
+                { "asn": 4134 },
+                { "asn": " as37963 " },
+                { "asn": "not-an-asn" }
+            ]
+        });
+
+        let entries = extract_profile_field_entries(&rules, &raw);
+        let patch = build_profile_patch_from_entries(&serde_json::json!({}), &entries)
+            .expect("patch build ok")
+            .expect("asn entries should produce a patch");
+
+        assert_eq!(patch.asns, Some(serde_json::json!(["AS4134", "AS37963"])));
+    }
+
+    #[test]
+    fn team_cymru_asn_lookup_builds_profile_entries_from_public_ips() {
+        let entries = vec![
+            ProfileFieldEntry {
+                target_kind: golish_pentest::models::AssetIntelProfileFieldTarget::Scalar,
+                target_field: "ip_ranges".into(),
+                value: "183.62.123.10".into(),
+            },
+            ProfileFieldEntry {
+                target_kind: golish_pentest::models::AssetIntelProfileFieldTarget::Scalar,
+                target_field: "ip_ranges".into(),
+                value: "182.92.121.121".into(),
+            },
+            ProfileFieldEntry {
+                target_kind: golish_pentest::models::AssetIntelProfileFieldTarget::Scalar,
+                target_field: "ip_ranges".into(),
+                value: "10.0.0.1".into(),
+            },
+        ];
+        let response = "\
+AS      | IP               | BGP Prefix          | CC | Registry | Allocated  | AS Name
+4134    | 183.62.123.10    | 183.56.0.0/13       | CN | apnic    | 2009-09-29 | CHINANET-BACKBONE
+37963   | 182.92.121.121   | 182.92.0.0/16       | CN | apnic    | 2013-08-16 | ALIBABA-CN-NET
+";
+
+        let ips = collect_public_ips_for_asn_lookup(&entries);
+        let mappings = parse_team_cymru_asn_response(response);
+        let derived = profile_asn_entries_from_mappings(&mappings);
+        let patch = build_profile_patch_from_entries(&serde_json::json!({}), &derived)
+            .expect("patch build ok")
+            .expect("derived ASN entries should produce a patch");
+
+        assert_eq!(
+            ips.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            vec!["183.62.123.10", "182.92.121.121"]
+        );
+        assert_eq!(patch.asns, Some(serde_json::json!(["AS4134", "AS37963"])));
     }
 
     #[test]

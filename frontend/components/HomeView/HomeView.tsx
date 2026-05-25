@@ -3,6 +3,7 @@ import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { FolderGit2, Loader2, Plus, X } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -44,6 +45,7 @@ export const HOME_VIEW_FOCUS_DEBOUNCE_MS = 100;
 export const HOME_VIEW_FOCUS_MIN_INTERVAL_MS = 2000;
 
 export const HomeView = memo(function HomeView() {
+  const { t } = useTranslation();
   const { createTerminalTab } = useCreateTerminalTab();
   const [, setProjects] = useState<ProjectInfo[]>([]);
   const [savedProjects, setSavedProjects] = useState<ProjectData[]>([]);
@@ -178,7 +180,11 @@ export const HomeView = memo(function HomeView() {
   const handleDeleteWorktree = useCallback(async () => {
     if (worktreeContextMenu) {
       if (
-        confirm(`Are you sure you want to delete worktree "${worktreeContextMenu.branchName}"?`)
+        confirm(
+          t("home.deleteWorktreeConfirm", {
+            branch: worktreeContextMenu.branchName,
+          })
+        )
       ) {
         try {
           await deleteWorktree(
@@ -189,11 +195,11 @@ export const HomeView = memo(function HomeView() {
           fetchData(false);
         } catch (error) {
           logger.error("Failed to delete worktree:", error);
-          alert(`Failed to delete worktree: ${error}`);
+          alert(t("home.deleteWorktreeFailed", { error: String(error) }));
         }
       }
     }
-  }, [worktreeContextMenu, fetchData]);
+  }, [worktreeContextMenu, fetchData, t]);
 
   const handleWorktreeCreated = useCallback(
     (worktreePath: string) => {
@@ -240,7 +246,7 @@ export const HomeView = memo(function HomeView() {
   if (isLoading) {
     return (
       <div className="h-full flex items-center justify-center text-muted-foreground">
-        Loading...
+        {t("common.loading")}
       </div>
     );
   }
@@ -256,15 +262,16 @@ export const HomeView = memo(function HomeView() {
       <Dialog open={!!deleteConfirm} onOpenChange={() => setDeleteConfirm(null)}>
         <DialogContent className="bg-card border-border text-foreground/80 max-w-sm">
           <DialogHeader>
-            <DialogTitle>Delete Project</DialogTitle>
+            <DialogTitle>{t("home.deleteProjectTitle")}</DialogTitle>
             <DialogDescription>
-              Remove <span className="text-foreground font-medium">{deleteConfirm?.name}</span> from
-              Golish? This deletes the project configuration but won't delete any files.
+              {t("home.deleteProjectPrefix")}{" "}
+              <span className="text-foreground font-medium">{deleteConfirm?.name}</span>{" "}
+              {t("home.deleteProjectSuffix")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2">
             <Button variant="outline" onClick={() => setDeleteConfirm(null)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button
               variant="destructive"
@@ -284,7 +291,7 @@ export const HomeView = memo(function HomeView() {
                 fetchData(false);
               }}
             >
-              Delete
+              {t("common.delete")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -326,7 +333,7 @@ export const HomeView = memo(function HomeView() {
         <div className="flex flex-col items-center justify-center min-h-full py-16 px-8">
           <div className="text-center mb-10">
             <h1 className="text-3xl font-bold text-foreground tracking-tight mb-1">Golish</h1>
-            <p className="text-sm text-muted-foreground">Penetration Testing Platform</p>
+            <p className="text-sm text-muted-foreground">{t("home.subtitle")}</p>
           </div>
 
           <div className="flex items-center gap-3 mb-12">
@@ -336,7 +343,7 @@ export const HomeView = memo(function HomeView() {
               className="flex items-center gap-2 px-5 py-2.5 bg-card border border-border rounded-lg hover:bg-muted hover:border-border/70 transition-colors text-sm text-foreground/90"
             >
               <FolderGit2 size={16} className="text-muted-foreground" />
-              Open Project
+              {t("home.openProject")}
             </button>
             <button
               type="button"
@@ -344,7 +351,7 @@ export const HomeView = memo(function HomeView() {
               className="flex items-center gap-2 px-5 py-2.5 bg-card border border-border rounded-lg hover:bg-muted hover:border-border/70 transition-colors text-sm text-foreground/90"
             >
               <Plus size={16} className="text-muted-foreground" />
-              New Project
+              {t("home.newProject")}
             </button>
           </div>
 
@@ -353,7 +360,7 @@ export const HomeView = memo(function HomeView() {
               <div className="mb-8">
                 <div className="flex items-center justify-between mb-3">
                   <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Recent projects
+                    {t("home.recentProjects")}
                   </h2>
                 </div>
                 <div className="space-y-0.5">
@@ -386,12 +393,12 @@ export const HomeView = memo(function HomeView() {
                           <span className="text-sm text-foreground/90">{proj.name}</span>
                           {proj.name === currentProjectName && !isOpening && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary">
-                              Active
+                              {t("home.active")}
                             </span>
                           )}
                           {isOpening && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent">
-                              Loading...
+                              {t("common.loading")}
                             </span>
                           )}
                         </div>
@@ -407,7 +414,7 @@ export const HomeView = memo(function HomeView() {
                                 setDeleteConfirm({ name: proj.name, path: proj.rootPath });
                               }}
                               className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-muted transition-all"
-                              title="Delete project"
+                              title={t("home.deleteProjectTitle")}
                             >
                               <X size={12} className="text-muted-foreground" />
                             </button>
@@ -422,7 +429,7 @@ export const HomeView = memo(function HomeView() {
 
             {savedProjects.length === 0 && (
               <div className="text-center text-muted-foreground text-sm">
-                No projects yet. Create one to get started.
+                {t("home.noProjects")}
               </div>
             )}
           </div>

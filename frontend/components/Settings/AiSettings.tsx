@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { CustomSelect } from "@/components/ui/custom-select";
 import { Input } from "@/components/ui/input";
 import type { ApiKeysSettings, SidecarSettings, SynthesisBackendType } from "@/lib/settings";
@@ -29,6 +30,7 @@ export function AiSettings({
   onApiKeysChange,
   onSidecarChange,
 }: AiSettingsProps) {
+  const { t } = useTranslation();
   const [synthesisStatus, setSynthesisStatus] = useState<string>("");
   const [isChangingBackend, setIsChangingBackend] = useState(false);
 
@@ -39,13 +41,13 @@ export function AiSettings({
     onSidecarChange({ ...sidecarSettings, synthesis_backend: value as SynthesisBackendType });
 
     const backendNames: Record<string, string> = {
-      local: "Local LLM",
-      vertex_anthropic: "Vertex AI (Anthropic)",
+      local: t("aiSettings.backends.local"),
+      vertex_anthropic: t("aiSettings.backends.vertexAnthropic"),
       openai: "OpenAI",
       grok: "Grok",
-      template: "Template-based",
+      template: t("aiSettings.backends.templateBased"),
     };
-    setSynthesisStatus(`Set to ${backendNames[value] || value}`);
+    setSynthesisStatus(t("aiSettings.backendSetTo", { backend: backendNames[value] || value }));
     setIsChangingBackend(false);
   };
 
@@ -53,11 +55,11 @@ export function AiSettings({
     <div className="space-y-6">
       {/* API Keys */}
       <div className="space-y-4 p-4 rounded-lg bg-muted border border-[var(--border-medium)]">
-        <h4 className="text-sm font-medium text-accent">API Keys</h4>
+        <h4 className="text-sm font-medium text-accent">{t("aiSettings.apiKeys")}</h4>
 
         <div className="space-y-2">
           <label htmlFor="api-key-tavily" className="text-sm text-foreground">
-            Tavily (Web Search)
+            {t("aiSettings.tavily")}
           </label>
           <Input
             id="api-key-tavily"
@@ -67,14 +69,12 @@ export function AiSettings({
             placeholder="tvly-..."
             className="bg-background border-border text-foreground"
           />
-          <p className="text-xs text-muted-foreground">
-            Use $TAVILY_API_KEY to reference an environment variable
-          </p>
+          <p className="text-xs text-muted-foreground">{t("aiSettings.tavilyEnvHint")}</p>
         </div>
 
         <div className="space-y-2">
           <label htmlFor="api-key-brave" className="text-sm text-foreground">
-            Brave Search API
+            {t("aiSettings.braveSearchApi")}
           </label>
           <Input
             id="api-key-brave"
@@ -85,7 +85,7 @@ export function AiSettings({
             className="bg-background border-border text-foreground"
           />
           <p className="text-xs text-muted-foreground">
-            Get your API key from{" "}
+            {t("aiSettings.braveKeyPrefix")}{" "}
             <a
               href="https://brave.com/search/api/"
               target="_blank"
@@ -100,28 +100,28 @@ export function AiSettings({
 
       {/* Synthesis Backend (Sidecar) */}
       <div className="space-y-4 p-4 rounded-lg bg-muted border border-[var(--border-medium)]">
-        <h4 className="text-sm font-medium text-accent">Commit Synthesis Backend</h4>
-        <p className="text-xs text-muted-foreground">
-          Choose the AI backend for generating commit messages and session summaries
-        </p>
+        <h4 className="text-sm font-medium text-accent">
+          {t("aiSettings.commitSynthesisBackend")}
+        </h4>
+        <p className="text-xs text-muted-foreground">{t("aiSettings.commitSynthesisDesc")}</p>
 
         <div className="space-y-2">
           <label htmlFor="synthesis-backend" className="text-sm text-foreground">
-            Backend
+            {t("aiSettings.backend")}
           </label>
           <SimpleSelect
             id="synthesis-backend"
             value={sidecarSettings.synthesis_backend}
             onValueChange={handleSynthesisBackendChange}
             options={[
-              { value: "local", label: "Local (Qwen via mistral.rs)" },
-              { value: "vertex_anthropic", label: "Vertex AI (Claude)" },
+              { value: "local", label: t("aiSettings.backends.localQwen") },
+              { value: "vertex_anthropic", label: t("aiSettings.backends.vertexClaude") },
               { value: "openai", label: "OpenAI" },
               { value: "grok", label: "xAI Grok" },
-              { value: "template", label: "Template Only (No LLM)" },
+              { value: "template", label: t("aiSettings.backends.templateOnly") },
             ]}
           />
-          {isChangingBackend && <p className="text-xs text-accent">Switching backend...</p>}
+          {isChangingBackend && <p className="text-xs text-accent">{t("aiSettings.switching")}</p>}
           {synthesisStatus && <p className="text-xs text-[var(--success)]">{synthesisStatus}</p>}
         </div>
 
@@ -331,9 +331,9 @@ export function AiSettings({
 
         {sidecarSettings.synthesis_backend === "template" && (
           <div className="text-xs text-muted-foreground space-y-1">
-            <p>• Uses simple templates without LLM enhancement</p>
-            <p>• Fastest option, works offline</p>
-            <p>• Basic commit messages based on file changes</p>
+            <p>• {t("aiSettings.templateFacts.simple")}</p>
+            <p>• {t("aiSettings.templateFacts.offline")}</p>
+            <p>• {t("aiSettings.templateFacts.basic")}</p>
           </div>
         )}
       </div>

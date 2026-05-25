@@ -56,7 +56,7 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
       }
     } catch (err) {
       logger.error("Failed to load MCP servers:", err);
-      notify.error("Failed to load MCP servers");
+      notify.error(t("mcp.loadFailed"));
     } finally {
       setIsLoading(false);
     }
@@ -87,11 +87,13 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
       setConnectingServers((prev) => new Set(prev).add(serverName));
       try {
         await mcp.connect(serverName);
-        notify.success(`Connected to ${serverName}`);
+        notify.success(t("mcp.connectedTo", { name: serverName }));
         await loadData();
       } catch (err) {
         logger.error(`Failed to connect to ${serverName}:`, err);
-        notify.error(err instanceof Error ? err.message : `Failed to connect to ${serverName}`);
+        notify.error(
+          err instanceof Error ? err.message : t("mcp.connectFailed", { name: serverName })
+        );
       } finally {
         setConnectingServers((prev) => {
           const next = new Set(prev);
@@ -109,12 +111,12 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
       setDisconnectingServers((prev) => new Set(prev).add(serverName));
       try {
         await mcp.disconnect(serverName);
-        notify.success(`Disconnected from ${serverName}`);
+        notify.success(t("mcp.disconnectedFrom", { name: serverName }));
         await loadData();
       } catch (err) {
         logger.error(`Failed to disconnect from ${serverName}:`, err);
         notify.error(
-          err instanceof Error ? err.message : `Failed to disconnect from ${serverName}`
+          err instanceof Error ? err.message : t("mcp.disconnectFailed", { name: serverName })
         );
       } finally {
         setDisconnectingServers((prev) => {
@@ -140,7 +142,9 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
         }
       } catch (err) {
         logger.error(`Failed to setup ${serverName}:`, err);
-        notify.error(err instanceof Error ? err.message : `Setup failed for ${serverName}`);
+        notify.error(
+          err instanceof Error ? err.message : t("mcp.setupFailed", { name: serverName })
+        );
       } finally {
         setSettingUpServers((prev) => {
           const next = new Set(prev);
@@ -180,28 +184,33 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
         return (
           <div className="flex items-center gap-1.5">
             <Check className="w-3.5 h-3.5 text-green-500" />
-            <span className="text-xs text-green-600">Connected</span>
+            <span className="text-xs text-green-600">{t("mcp.status.connected")}</span>
           </div>
         );
       case "connecting":
         return (
           <div className="flex items-center gap-1.5">
             <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />
-            <span className="text-xs text-blue-600">Connecting...</span>
+            <span className="text-xs text-blue-600">{t("mcp.status.connecting")}</span>
           </div>
         );
       case "error":
         return (
-          <div className="flex items-center gap-1.5" title={error || "Connection error"}>
+          <div
+            className="flex items-center gap-1.5"
+            title={error || t("mcp.status.connectionError")}
+          >
             <AlertCircle className="w-3.5 h-3.5 text-red-500" />
-            <span className="text-xs text-red-600 truncate max-w-[150px]">{error || "Error"}</span>
+            <span className="text-xs text-red-600 truncate max-w-[150px]">
+              {error || t("common.error")}
+            </span>
           </div>
         );
       default:
         return (
           <div className="flex items-center gap-1.5">
             <div className="w-2 h-2 rounded-full bg-muted-foreground/50" />
-            <span className="text-xs text-muted-foreground">Disconnected</span>
+            <span className="text-xs text-muted-foreground">{t("mcp.status.disconnected")}</span>
           </div>
         );
     }
@@ -220,13 +229,11 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="space-y-1">
-          <h3 className="text-sm font-medium text-foreground">MCP Servers</h3>
-          <p className="text-xs text-muted-foreground">
-            Model Context Protocol servers provide additional tools to the AI agent
-          </p>
+          <h3 className="text-sm font-medium text-foreground">{t("mcp.title")}</h3>
+          <p className="text-xs text-muted-foreground">{t("mcp.description")}</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={loadData} title="Refresh">
+          <Button variant="ghost" size="sm" onClick={loadData} title={t("common.refresh")}>
             <RefreshCw className="w-4 h-4" />
           </Button>
           <Button
@@ -235,7 +242,7 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
             onClick={() => open("https://modelcontextprotocol.io/servers")}
           >
             <ExternalLink className="w-4 h-4 mr-2" />
-            Browse servers
+            {t("mcp.browseServers")}
           </Button>
         </div>
       </div>
@@ -243,8 +250,10 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
       {/* Config location info */}
       <div className="text-xs text-muted-foreground bg-[var(--bg-secondary)] rounded-md px-3 py-2 border border-[var(--border-subtle)]">
         <p>
-          Configure servers in <code className="text-accent">~/.golish/mcp.json</code> (global) or{" "}
-          <code className="text-accent">&lt;project&gt;/.golish/mcp.json</code> (project-specific).
+          {t("mcp.configPrefix")} <code className="text-accent">~/.golish/mcp.json</code>{" "}
+          {t("mcp.configMiddle")}{" "}
+          <code className="text-accent">&lt;project&gt;/.golish/mcp.json</code>{" "}
+          {t("mcp.configSuffix")}
         </p>
       </div>
 
@@ -262,9 +271,9 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
       {servers.length === 0 ? (
         <div className="text-center py-8 text-muted-foreground text-sm">
           <Server className="w-8 h-8 mx-auto mb-3 opacity-50" />
-          <p>No MCP servers configured.</p>
+          <p>{t("mcp.empty")}</p>
           <p className="mt-1 text-xs">
-            Create <code>~/.golish/mcp.json</code> to add servers.
+            {t("mcp.emptyHintPrefix")} <code>~/.golish/mcp.json</code> {t("mcp.emptyHintSuffix")}
           </p>
         </div>
       ) : (
@@ -320,17 +329,17 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
                             variant="secondary"
                             className="text-[10px] px-1.5 py-0 bg-blue-500/15 text-blue-400 border-blue-500/30"
                           >
-                            built-in
+                            {t("mcp.source.builtin")}
                           </Badge>
                         )}
                         {server.source === "project" && (
                           <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                            project
+                            {t("mcp.source.project")}
                           </Badge>
                         )}
                         {isDisabled && (
                           <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                            disabled
+                            {t("mcp.status.disabled")}
                           </Badge>
                         )}
                       </div>
@@ -338,7 +347,7 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
                         {renderStatus(server.status, server.error)}
                         {isConnected && serverTools.length > 0 && (
                           <span className="text-xs text-muted-foreground">
-                            {serverTools.length} tool{serverTools.length !== 1 ? "s" : ""}
+                            {t("mcp.toolCount", { count: serverTools.length })}
                           </span>
                         )}
                       </div>
@@ -360,7 +369,7 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
                         ) : (
                           <Plug className="w-4 h-4" />
                         )}
-                        <span className="ml-2">Disconnect</span>
+                        <span className="ml-2">{t("mcp.disconnect")}</span>
                       </Button>
                     ) : (server as mcp.McpServerInfo & { setupStatus?: string }).setupStatus ===
                       "needs_build" ? (
@@ -397,7 +406,7 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
                         ) : (
                           <PlugZap className="w-4 h-4" />
                         )}
-                        <span className="ml-2">Connect</span>
+                        <span className="ml-2">{t("mcp.connect")}</span>
                       </Button>
                     )}
                   </div>
@@ -410,7 +419,7 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
                       <div className="border-t border-[var(--border-subtle)] px-4 py-3 bg-[var(--bg-primary)]">
                         <div className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1.5">
                           <Wrench className="w-3.5 h-3.5" />
-                          Available Tools
+                          {t("mcp.availableTools")}
                         </div>
                         <div className="space-y-1.5">
                           {serverTools.map((tool) => (

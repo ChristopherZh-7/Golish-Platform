@@ -1,4 +1,5 @@
 import { Trash2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { CustomSelect } from "@/components/ui/custom-select";
 import { Input } from "@/components/ui/input";
@@ -71,11 +72,12 @@ export function ModelOverridePanel({
   hasOverride,
   onUpdate,
 }: ModelOverridePanelProps) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-2 p-3 rounded bg-background border border-[var(--border-medium)]">
       <div className="flex items-center justify-between">
         <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
-          Runtime Model Override
+          {t("subAgentSettings.runtimeModelOverride")}
         </span>
         {hasOverride && (
           <Button
@@ -99,14 +101,14 @@ export function ModelOverridePanel({
             })
           }
           options={PROVIDER_OPTIONS}
-          placeholder="Use default"
+          placeholder={t("subAgentSettings.useDefault")}
         />
         {modelConfig.provider ? (
           <div className="relative">
             <Input
               value={modelConfig.model || ""}
               onChange={(e) => onUpdate({ ...modelConfig, model: e.target.value })}
-              placeholder="Enter model name"
+              placeholder={t("subAgentSettings.enterModelName")}
               list={`override-${agentId}-models`}
               className="bg-background border-border h-9 text-xs"
             />
@@ -119,14 +121,17 @@ export function ModelOverridePanel({
         ) : (
           <Input
             disabled
-            placeholder="Select provider first"
+            placeholder={t("subAgentSettings.selectProviderFirst")}
             className="bg-muted border-border h-9 text-xs"
           />
         )}
       </div>
       {hasOverride && (
         <p className="text-[10px] text-[var(--success)]">
-          Runtime override: {modelConfig.provider} / {modelConfig.model}
+          {t("subAgentSettings.runtimeOverride", {
+            provider: modelConfig.provider,
+            model: modelConfig.model,
+          })}
         </p>
       )}
     </div>

@@ -48,6 +48,19 @@
     "terminal": "终端",
     "settings": "设置"
   },
+  "home": {
+    "subtitle": "渗透测试平台",
+    "openProject": "打开项目",
+    "newProject": "新建项目",
+    "recentProjects": "最近项目",
+    "active": "当前",
+    "noProjects": "还没有项目，创建一个开始使用。",
+    "deleteProjectTitle": "删除项目",
+    "deleteProjectPrefix": "是否从 Golish 移除",
+    "deleteProjectSuffix": "？这只会删除项目配置，不会删除任何文件。",
+    "deleteWorktreeConfirm": "确定删除 worktree「{{branch}}」吗？",
+    "deleteWorktreeFailed": "删除 worktree 失败：{{error}}"
+  },
   "targets": {
     "title": "目标管理",
     "addTarget": "添加目标",
@@ -96,6 +109,104 @@
     "listView": "列表视图",
     "treeView": "组织树视图",
     "graphView": "图谱视图"
+  },
+  "targetWorkspace": {
+    "tabs": {
+      "overview": "总览",
+      "fields": "字段",
+      "scope": "范围",
+      "targets": "目标",
+      "candidates": "候选项",
+      "activity": "活动"
+    },
+    "metrics": {
+      "targets": "目标",
+      "in": "范围内",
+      "out": "范围外",
+      "orgTargetCount": "{{orgs}} 个组织 · {{targets}} 个目标"
+    },
+    "actions": {
+      "newEngagement": "新建任务",
+      "quickOrg": "快速建组织"
+    },
+    "empty": {
+      "selectOrg": "请选择或创建一个组织开始。",
+      "importTargets": "导入目标",
+      "importTargetsDesc": "客户提供的授权目标清单。",
+      "discoverAssets": "发现资产",
+      "discoverAssetsDesc": "创建组织并准备 ASM 流程。",
+      "profileOnly": "仅组织档案",
+      "profileOnlyDesc": "创建一个客户记录。"
+    },
+    "activity": {
+      "title": "资产情报活动",
+      "description": "先查子公司，再为已确认的组织补齐资产字段。",
+      "runningProviders": "正在运行资产情报源",
+      "noRun": "还没有运行资产情报。",
+      "availableProviders": "可用情报源",
+      "lastRun": "上次运行",
+      "candidateScopeHint": "资产情报发现的候选项在审批和提升前不会进入主动扫描范围。"
+    },
+    "fieldsPanel": {
+      "title": "情报字段",
+      "description": "按分组查看字段覆盖率。编辑模式会单独做成轻量面板。"
+    },
+    "overview": {
+      "placeholder": "按模式展示的工作区骨架。后续会接入后端编排和覆盖率面板。",
+      "noTargets": "该组织下还没有关联目标。"
+    },
+    "candidates": {
+      "title": "发现候选项",
+      "description": "子公司和资产在进入授权范围前需要先审核。",
+      "organizations": "组织候选项",
+      "targets": "目标候选项",
+      "waiting": "{{count}} 个候选项待审核",
+      "empty": "暂无候选项。"
+    },
+    "scope": {
+      "title": "范围",
+      "description": "范围规则和授权时间窗会在这里编辑。"
+    },
+    "fieldGroups": {
+      "basic": "基础",
+      "apps": "App 与小程序",
+      "domains": "域名",
+      "network": "网络",
+      "scope": "范围",
+      "identity": "身份信息",
+      "surfaces": "暴露面",
+      "leakage": "泄露情报",
+      "dns": "DNS",
+      "risk": "风险与备注"
+    },
+    "fields": {
+      "aliases": "别名",
+      "industry": "行业",
+      "tier": "优先级",
+      "credit_code": "统一社会信用代码",
+      "mobile_apps": "移动 App",
+      "mini_programs": "小程序",
+      "app_domains": "App 域名",
+      "domains": "域名",
+      "ip_ranges": "IP 段",
+      "asns": "ASN",
+      "email_domains": "邮箱域",
+      "scope_rules": "范围规则",
+      "intel": "情报记录",
+      "subsidiaries": "子公司",
+      "business_systems": "业务系统",
+      "cloud_assets": "云资产",
+      "github_orgs": "GitHub 组织",
+      "social_accounts": "社交账号",
+      "exposed_emails": "泄露邮箱",
+      "email_leakage_total": "泄露命中数（HIBP 风格）",
+      "code_leaks": "代码泄露 URL",
+      "mail_mx": "MX 记录",
+      "certificates": "证书",
+      "historical_vulns": "历史漏洞",
+      "contacts": "联系人",
+      "notes": "备注"
+    }
   },
   "organizations": {
     "title": "组织管理",
@@ -321,28 +432,122 @@
     "notInstalledWarning": "{{name}} 未安装，请先在工具管理中安装"
   },
   "settings": {
-    "title": "Settings",
+    "title": "设置",
     "environment": "环境配置",
     "envDescription": "Python / Java / Node.js 运行环境",
     "vault": "凭证保险箱",
     "vaultDesc": "加密存储密码、Token、SSH Key",
-    "providers": "Providers",
+    "providers": "提供商",
     "providersDesc": "配置 AI 提供商凭证",
-    "integrations": "集成 / Integrations",
+    "integrations": "集成",
     "integrationsDesc": "统一管理所有外部服务的凭据（API key / cookie / token）",
     "intelProviders": "情报源（旧版）",
     "intelProvidersDesc": "旧版面板 · 待 Integrations 完成迁移后移除",
-    "aiModels": "AI & Models",
+    "aiModels": "AI 与模型",
     "aiModelsDesc": "默认提供商和合成设置",
-    "terminal": "Terminal",
-    "editor": "Editor",
+    "terminal": "终端",
+    "editor": "编辑器",
     "agent": "Agent",
-    "mcp": "MCP Servers",
-    "codebases": "Codebases",
-    "network": "Network",
-    "notifications": "Notifications",
-    "appearance": "Appearance",
-    "advanced": "Advanced"
+    "mcp": "MCP 服务器",
+    "codebases": "代码库",
+    "network": "网络",
+    "notifications": "通知",
+    "appearance": "外观",
+    "advanced": "高级"
+  },
+  "appearancePanel": {
+    "theme": {
+      "title": "主题"
+    },
+    "language": {
+      "title": "语言",
+      "description": "选择应用语言。系统默认会跟随操作系统或浏览器语言。"
+    },
+    "uiScale": {
+      "title": "界面缩放",
+      "zoomLevel": "缩放比例",
+      "description": "缩放整个界面（75%–150%）。当文字或按钮偏小时可以调整。",
+      "reset": "重置为 110%"
+    },
+    "caret": {
+      "title": "输入光标",
+      "style": "样式",
+      "styleDefault": "默认",
+      "styleBlock": "块状",
+      "styleDescription": "默认使用浏览器原生文本光标；块状光标会渲染一个可自定义的覆盖层。",
+      "width": "宽度",
+      "widthDescription": "光标宽度，单位为字符宽度（0.1–3.0）",
+      "color": "颜色",
+      "resetColor": "重置为主题默认",
+      "pickColor": "选择光标颜色",
+      "themeDefault": "主题默认",
+      "colorDescription": "光标的十六进制颜色。留空则使用主题前景色。",
+      "blinkSpeed": "闪烁速度",
+      "noBlink": "不闪烁",
+      "blinkDescription": "闪烁周期，单位毫秒。设为 0 可禁用闪烁。",
+      "opacity": "不透明度",
+      "opacityDescription": "光标不透明度（0%–100%）"
+    },
+    "customization": {
+      "title": "界面自定义",
+      "description": "细粒度控制界面元素和组件的显示方式",
+      "general": "通用",
+      "hideAiSettings": "Shell 模式隐藏 AI 设置",
+      "hideAiSettingsDesc": "在 Shell 模式下隐藏 Token 用量和 MCP 徽标",
+      "tabBar": "标签栏",
+      "homeTab": "主页标签",
+      "homeTabDesc": "在标签栏显示主页标签",
+      "contextBar": "上下文栏",
+      "contextBarDesc": "在终端输入框上方显示上下文信息",
+      "workingDirectory": "工作目录",
+      "workingDirectoryDesc": "显示当前工作目录路径徽标",
+      "statusIndicators": "状态指示器",
+      "inputModeToggle": "输入模式切换",
+      "inputModeToggleDesc": "显示完整的 Terminal / AI 分段切换，而不是折叠成单个图标",
+      "tokenUsage": "Token 用量",
+      "tokenUsageDesc": "显示上下文窗口 / Token 用量百分比徽标",
+      "mcpBadge": "MCP 服务器徽标",
+      "mcpBadgeDesc": "显示 MCP 服务器连接状态指示器",
+      "quickActionsHint": "选择要显示的界面元素。",
+      "showAll": "全部显示",
+      "hideAll": "全部隐藏",
+      "resetDefaults": "恢复默认"
+    }
+  },
+  "editorSettings": {
+    "general": "通用",
+    "wordWrap": "自动换行",
+    "wordWrapDesc": "长行自动换行以适配编辑器宽度",
+    "lineNumbers": "行号",
+    "lineNumbersDesc": "在行号栏显示行号",
+    "relativeLineNumbers": "相对行号",
+    "relativeLineNumbersDesc": "显示相对光标位置的行号（适合 Vim 操作）",
+    "vimMode": "Vim 模式",
+    "enableVimMode": "启用 Vim 模式",
+    "enableVimModeDesc": "使用 Vim 按键绑定编辑"
+  },
+  "notificationsPanel": {
+    "inAppSounds": "应用内通知音效",
+    "inAppSoundsDesc": "当 Agent 或命令在后台完成时播放提示音",
+    "testSound": "测试音效",
+    "play": "播放",
+    "nativeNotifications": "系统原生通知",
+    "nativeNotificationsDesc": "应用在后台时，通过系统通知提示 Agent 和命令完成",
+    "systemSoundName": "系统音效名称",
+    "systemSoundPlaceholder": "默认（macOS 为 Blow）",
+    "systemSoundDescPrefix": "macOS 系统音效名称，例如",
+    "or": "或",
+    "systemSoundDescSuffix": "留空则使用默认值",
+    "permissionGranted": "已获得通知权限",
+    "permissionDenied": "通知权限被拒绝，请到系统设置中开启。",
+    "testNative": "测试系统通知",
+    "testNativeDesc": "发送测试通知，确认系统通知配置是否正常。",
+    "agentCompletion": "Agent 完成",
+    "commandCompletion": "命令完成",
+    "sendTest": "发送测试",
+    "agentCompletedTitle": "Agent 已完成",
+    "agentCompletedBody": "这是一条用于测试 Agent 完成事件的通知。",
+    "commandCompletedTitle": "命令已完成"
   },
   "network": {
     "proxyUrl": "Proxy URL",
@@ -410,7 +615,30 @@
     "showInSelectorDesc": "启用后可在模型列表中选择此供应商",
     "selectProvider": "← 选择一个供应商进行配置",
     "defaultModel": "默认模型",
-    "defaultModelDesc": "新对话默认使用的模型"
+    "defaultModelDesc": "新对话默认使用的模型",
+    "active": "已启用",
+    "available": "可用",
+    "credentialsPath": "凭据路径",
+    "googleServiceAccountHint": "Google Cloud 服务账号 JSON 文件",
+    "projectId": "项目 ID",
+    "location": "区域",
+    "regionHintVertex": "区域（如 us-east5、europe-west1）",
+    "regionHintGemini": "区域（如 us-central1、europe-west1）",
+    "apiKey": "API Key",
+    "baseUrl": "Base URL",
+    "optional": "可选",
+    "from": "来自",
+    "openAiCompatibleEndpoint": "OpenAI 兼容 API 的自定义端点",
+    "webSearch": "Web 搜索",
+    "nativeWebSearchTool": "原生 Web 搜索工具",
+    "searchContextSize": "搜索上下文大小",
+    "searchContext": {
+      "low": "低（更快）",
+      "medium": "中（均衡）",
+      "high": "高（更完整）"
+    },
+    "ollamaEndpoint": "Ollama 服务端点",
+    "deepSeekEndpoint": "OpenAI 兼容的 DeepSeek 端点"
   },
   "browser": {
     "back": "后退",
@@ -500,6 +728,110 @@
       }
     }
   },
+  "aiSettings": {
+    "apiKeys": "API Keys",
+    "tavily": "Tavily（Web 搜索）",
+    "tavilyEnvHint": "可使用 $TAVILY_API_KEY 引用环境变量",
+    "braveSearchApi": "Brave 搜索 API",
+    "braveKeyPrefix": "从这里获取 API Key：",
+    "commitSynthesisBackend": "提交摘要后端",
+    "commitSynthesisDesc": "选择用于生成 commit message 和会话摘要的 AI 后端",
+    "backend": "后端",
+    "backendSetTo": "已切换到 {{backend}}",
+    "switching": "正在切换后端...",
+    "backends": {
+      "local": "本地 LLM",
+      "vertexAnthropic": "Vertex AI（Anthropic）",
+      "templateBased": "模板生成",
+      "localQwen": "本地（Qwen via mistral.rs）",
+      "vertexClaude": "Vertex AI（Claude）",
+      "templateOnly": "仅模板（不使用 LLM）"
+    },
+    "templateFacts": {
+      "simple": "使用简单模板，不做 LLM 增强",
+      "offline": "速度最快，可离线工作",
+      "basic": "基于文件变更生成基础 commit message"
+    }
+  },
+  "agentSettings": {
+    "tabs": {
+      "general": "通用",
+      "agents": "Agents",
+      "skills": "技能",
+      "rules": "规则"
+    },
+    "sessionPersistence": "会话持久化",
+    "sessionPersistenceDesc": "自动将对话保存到磁盘",
+    "sessionRetention": "会话保留时间（天）",
+    "sessionRetentionDesc": "保存会话的时长（0 = 永久）",
+    "patternLearning": "模式学习",
+    "patternLearningDesc": "从审批记录中学习，用于自动审批",
+    "minimumApprovals": "最少审批次数",
+    "minimumApprovalsDesc": "工具可自动审批前需要的最少审批次数",
+    "approvalThreshold": "审批阈值：{{value}}%",
+    "approvalThresholdDesc": "自动审批所需的通过率",
+    "tools": "工具",
+    "webSearch": "Web 搜索（Tavily）",
+    "webSearchDesc": "启用 web search、extract、crawl、map 等工具。需要配置 TAVILY_API_KEY。"
+  },
+  "subAgentSettings": {
+    "globalAgents": "全局 Agents",
+    "projectAgents": "项目 Agents",
+    "new": "新建",
+    "system": "系统",
+    "toolCount": "{{count}} 个工具",
+    "modelOverride": "模型覆盖",
+    "model": "模型",
+    "maxIter": "最大迭代",
+    "timeout": "超时",
+    "idle": "空闲",
+    "inherit": "继承",
+    "allowedTools": "允许的工具",
+    "runtimeModelOverride": "运行时模型覆盖",
+    "useDefault": "使用默认",
+    "enterModelName": "输入模型名称",
+    "selectProviderFirst": "请先选择提供商",
+    "runtimeOverride": "运行时覆盖：{{provider}} / {{model}}",
+    "editDefinition": "编辑定义",
+    "noGlobalAgents": "暂无全局 Agent。点击“新建”或重启以初始化默认项。",
+    "noProjectAgentsPrefix": "暂无项目专属 Agent。它们会保存在当前项目的",
+    "noProjectAgentsSuffix": "目录中。",
+    "global": "全局",
+    "project": "项目",
+    "globalDesc": "Agent 可在所有项目中使用。",
+    "projectDesc": "Agent 仅作用于当前工作区，并会覆盖同 ID 的全局 Agent。系统 Agent 可编辑但不可删除。",
+    "loadFailed": "加载 Agent 定义失败",
+    "agentIdRequired": "Agent ID 不能为空",
+    "agentNameRequired": "Agent 名称不能为空",
+    "agentSaved": "Agent「{{name}}」已保存",
+    "agentSaveFailed": "保存 Agent 失败：{{error}}",
+    "systemDeleteDenied": "系统 Agent 不能删除",
+    "agentDeleted": "Agent「{{name}}」已删除",
+    "agentDeleteFailed": "删除失败：{{error}}"
+  },
+  "codebases": {
+    "indexedFolders": "已索引文件夹",
+    "description": "管理用于 AI 上下文和代码搜索的代码库索引",
+    "indexNewFolder": "索引新文件夹",
+    "selectFolder": "选择要索引的文件夹",
+    "empty": "还没有索引任何代码库。点击“索引新文件夹”添加一个。",
+    "memoryFile": "记忆文件",
+    "reindex": "重新索引",
+    "remove": "移除",
+    "fileCount": "（{{count}} 个文件）",
+    "added": "已添加 {{path}}",
+    "addFailed": "添加代码库失败",
+    "reindexed": "已重新索引 {{path}}",
+    "reindexFailed": "重新索引失败",
+    "removed": "已移除 {{path}}",
+    "removeFailed": "移除代码库失败",
+    "memoryFileUpdateFailed": "更新记忆文件失败",
+    "status": {
+      "synced": "已同步",
+      "notIndexed": "未索引",
+      "indexing": "索引中..."
+    }
+  },
   "input": {
     "searchToolName": "搜索工具名称...",
     "enterCommand": "输入命令...",
@@ -510,12 +842,38 @@
   },
   "terminal": {
     "shell": "Shell",
+    "shellPlaceholder": "从环境自动检测",
     "shellDesc": "覆盖默认 Shell。留空自动检测。",
     "fontFamily": "字体",
+    "fontFamilyDesc": "终端使用的等宽字体",
     "fontSize": "字号",
     "fontSizeDesc": "字号大小（8-32 像素）",
     "scrollback": "回滚行数",
+    "scrollbackLines": "回滚行数",
     "scrollbackDesc": "回滚缓冲区保留的行数"
+  },
+  "advancedSettings": {
+    "logLevel": "日志级别",
+    "logLevelDesc": "调试日志的详细程度",
+    "logLevels": {
+      "error": "错误",
+      "warn": "警告",
+      "info": "信息",
+      "debug": "调试",
+      "trace": "追踪"
+    },
+    "experimental": "实验功能",
+    "experimentalDesc": "启用实验性功能",
+    "llmApiLogs": "LLM API 日志",
+    "llmApiLogsDesc": "将原始 API 请求/响应记录到 ./logs/api/",
+    "extractRawSse": "提取原始 SSE 字段",
+    "extractRawSseDesc": "将 SSE 分块解析为 JSON 对象，而不是转义字符串",
+    "privacy": "隐私",
+    "usageStats": "使用统计",
+    "usageStatsDesc": "发送匿名使用数据",
+    "logPrompts": "记录 Prompt",
+    "logPromptsDesc": "将 Prompt 保存到本地用于调试",
+    "version": "版本"
   },
   "wiki": {
     "title": "知识库",
@@ -797,10 +1155,40 @@
     "recheck": "重新检测"
   },
   "mcp": {
+    "title": "MCP 服务器",
+    "description": "Model Context Protocol 服务器会为 AI Agent 提供额外工具",
+    "browseServers": "浏览服务器",
+    "configPrefix": "可在",
+    "configMiddle": "（全局）或",
+    "configSuffix": "（项目级）中配置服务器。",
+    "empty": "尚未配置 MCP 服务器。",
+    "emptyHintPrefix": "创建",
+    "emptyHintSuffix": "即可添加服务器。",
     "nodeRequired": "部分内置服务需要 Node.js，请先在设置 > 环境中安装。",
     "needsNode": "需要 Node.js",
     "setupComplete": "{{name}} 配置完成",
-    "setupInProgress": "正在配置..."
+    "setupInProgress": "正在配置...",
+    "setupFailed": "{{name}} 设置失败",
+    "loadFailed": "加载 MCP 服务器失败",
+    "connectedTo": "已连接到 {{name}}",
+    "connectFailed": "连接 {{name}} 失败",
+    "disconnectedFrom": "已断开 {{name}}",
+    "disconnectFailed": "断开 {{name}} 失败",
+    "connect": "连接",
+    "disconnect": "断开",
+    "availableTools": "可用工具",
+    "toolCount": "{{count}} 个工具",
+    "source": {
+      "builtin": "内置",
+      "project": "项目"
+    },
+    "status": {
+      "connected": "已连接",
+      "connecting": "连接中...",
+      "disconnected": "未连接",
+      "disabled": "已禁用",
+      "connectionError": "连接错误"
+    }
   },
   "projectSetup": {
     "title": "新建项目",

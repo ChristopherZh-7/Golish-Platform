@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { Check, FolderPlus, Loader2, RefreshCw, Trash2, XCircle } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -28,6 +29,7 @@ const MEMORY_FILE_OPTIONS = [
 ] as const;
 
 export function CodebasesSettings() {
+  const { t } = useTranslation();
   const [codebases, setCodebases] = useState<CodebaseInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
@@ -78,7 +80,7 @@ export function CodebasesSettings() {
       const selected = await open({
         directory: true,
         multiple: false,
-        title: "Select folder to index",
+        title: t("codebases.selectFolder"),
       });
 
       if (!selected) {
@@ -100,10 +102,10 @@ export function CodebasesSettings() {
       }
 
       setCodebases((prev) => [...prev, result]);
-      notify.success(`Added ${result.path}`);
+      notify.success(t("codebases.added", { path: result.path }));
     } catch (err) {
       logger.error("Failed to add codebase:", err);
-      notify.error(err instanceof Error ? err.message : "Failed to add codebase");
+      notify.error(err instanceof Error ? err.message : t("codebases.addFailed"));
     } finally {
       setIsAdding(false);
     }
@@ -115,10 +117,10 @@ export function CodebasesSettings() {
     try {
       const result = await reindexCodebase(path);
       setCodebases((prev) => prev.map((cb) => (cb.path === path ? result : cb)));
-      notify.success(`Re-indexed ${path}`);
+      notify.success(t("codebases.reindexed", { path }));
     } catch (err) {
       logger.error("Failed to reindex:", err);
-      notify.error(err instanceof Error ? err.message : "Failed to reindex");
+      notify.error(err instanceof Error ? err.message : t("codebases.reindexFailed"));
     } finally {
       setReindexingPaths((prev) => {
         const next = new Set(prev);
@@ -134,10 +136,10 @@ export function CodebasesSettings() {
     try {
       await removeIndexedCodebase(path);
       setCodebases((prev) => prev.filter((cb) => cb.path !== path));
-      notify.success(`Removed ${path}`);
+      notify.success(t("codebases.removed", { path }));
     } catch (err) {
       logger.error("Failed to remove codebase:", err);
-      notify.error(err instanceof Error ? err.message : "Failed to remove codebase");
+      notify.error(err instanceof Error ? err.message : t("codebases.removeFailed"));
     } finally {
       setRemovingPaths((prev) => {
         const next = new Set(prev);
@@ -158,7 +160,7 @@ export function CodebasesSettings() {
       );
     } catch (err) {
       logger.error("Failed to update memory file:", err);
-      notify.error(err instanceof Error ? err.message : "Failed to update memory file");
+      notify.error(err instanceof Error ? err.message : t("codebases.memoryFileUpdateFailed"));
     } finally {
       setUpdatingMemoryFilePaths((prev) => {
         const next = new Set(prev);
@@ -181,10 +183,8 @@ export function CodebasesSettings() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="space-y-1">
-          <h3 className="text-sm font-medium text-foreground">Indexed folders</h3>
-          <p className="text-xs text-muted-foreground">
-            Manage codebases indexed for AI context and code search
-          </p>
+          <h3 className="text-sm font-medium text-foreground">{t("codebases.indexedFolders")}</h3>
+          <p className="text-xs text-muted-foreground">{t("codebases.description")}</p>
         </div>
         <Button variant="outline" size="sm" onClick={handleAddCodebase} disabled={isAdding}>
           {isAdding ? (
@@ -192,15 +192,13 @@ export function CodebasesSettings() {
           ) : (
             <FolderPlus className="w-4 h-4 mr-2" />
           )}
-          Index new folder
+          {t("codebases.indexNewFolder")}
         </Button>
       </div>
 
       {/* Codebase list */}
       {codebases.length === 0 ? (
-        <div className="text-center py-8 text-muted-foreground text-sm">
-          No codebases indexed yet. Click "Index new folder" to add one.
-        </div>
+        <div className="text-center py-8 text-muted-foreground text-sm">{t("codebases.empty")}</div>
       ) : (
         <div className="space-y-2">
           {codebases.map((codebase) => {
@@ -222,30 +220,40 @@ export function CodebasesSettings() {
                     {codebase.status === "synced" && (
                       <>
                         <Check className="w-3 h-3 text-green-500" />
-                        <span className="text-xs text-green-600">Synced</span>
+                        <span className="text-xs text-green-600">
+                          {t("codebases.status.synced")}
+                        </span>
                       </>
                     )}
                     {codebase.status === "not_indexed" && (
                       <>
                         <XCircle className="w-3 h-3 text-amber-500" />
-                        <span className="text-xs text-amber-600">Not indexed</span>
+                        <span className="text-xs text-amber-600">
+                          {t("codebases.status.notIndexed")}
+                        </span>
                       </>
                     )}
                     {codebase.status === "indexing" && (
                       <>
                         <Loader2 className="w-3 h-3 text-blue-500 animate-spin" />
-                        <span className="text-xs text-blue-600">Indexing...</span>
+                        <span className="text-xs text-blue-600">
+                          {t("codebases.status.indexing")}
+                        </span>
                       </>
                     )}
                     {codebase.status === "error" && (
                       <>
                         <XCircle className="w-3 h-3 text-red-500" />
-                        <span className="text-xs text-red-600">{codebase.error || "Error"}</span>
+                        <span className="text-xs text-red-600">
+                          {codebase.error || t("common.error")}
+                        </span>
                       </>
                     )}
                     {codebase.file_count > 0 && (
                       <span className="text-xs text-muted-foreground">
-                        ({codebase.file_count.toLocaleString()} files)
+                        {t("codebases.fileCount", {
+                          count: codebase.file_count.toLocaleString(),
+                        })}
                       </span>
                     )}
                   </div>
@@ -262,7 +270,7 @@ export function CodebasesSettings() {
                       {isUpdatingMemoryFile ? (
                         <Loader2 className="w-3 h-3 animate-spin" />
                       ) : (
-                        <SelectValue placeholder="Memory file" />
+                        <SelectValue placeholder={t("codebases.memoryFile")} />
                       )}
                     </SelectTrigger>
                     <SelectContent>
@@ -282,7 +290,7 @@ export function CodebasesSettings() {
                     className="h-8 w-8"
                     onClick={() => handleReindex(codebase.path)}
                     disabled={isDisabled}
-                    title="Re-index"
+                    title={t("codebases.reindex")}
                   >
                     {isReindexing ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
@@ -296,7 +304,7 @@ export function CodebasesSettings() {
                     className="h-8 w-8 text-destructive hover:text-destructive"
                     onClick={() => handleRemove(codebase.path)}
                     disabled={isDisabled}
-                    title="Remove"
+                    title={t("codebases.remove")}
                   >
                     {isRemoving ? (
                       <Loader2 className="w-4 h-4 animate-spin" />

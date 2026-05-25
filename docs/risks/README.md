@@ -1,9 +1,9 @@
 # Risk-Analysis Docs
 
 This directory captures architectural risks identified by the
-2026-05-02 architecture review (see also
-`docs/architecture.md` and the legacy
-`.cursor/rules/architecture-evaluation.mdc`).
+2026-05-02 architecture review. Some source review files lived under
+`.cursor/rules/` in earlier snapshots and may no longer be present; treat the
+risk docs here and `docs/architecture.md` as the current references.
 
 Each file follows the template:
 

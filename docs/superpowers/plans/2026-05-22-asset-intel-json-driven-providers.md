@@ -12,7 +12,7 @@
 - `backend/crates/golish/src/tools/asset_intel.rs`：删除 provider 专属常量和分支，改为 descriptor loader、selector、generic runtime、generic normalizer。
 - `resources/toolsconfig/enscan-go.json`：新增 `tool.asset_intel`，把 provider metadata、auto mode、CLI skill、artifact globs、normalize mappings 放入 JSON。
 - `docs/design/2026-05-22-asset-intel-provider-abstraction.md`：标记被新设计取代。
-- `docs/superpowers/plans/2026-05-22-asset-intel-provider-abstraction.md`：标记被本计划取代，避免后续 agent 继续执行硬编码 Phase 4。
+- 旧 `docs/superpowers/plans/2026-05-22-asset-intel-provider-abstraction.md`：后续已删除，避免后续 agent 继续执行硬编码 Phase 4。
 - `frontend/lib/api/asset-intel.ts`：原则上不变；只在 Rust IPC 类型变更时同步。
 - `frontend/components/TargetPanel/TargetGroupedView.tsx`：原则上不变；只跑回归验证。
 
@@ -366,7 +366,7 @@ pnpm exec biome check frontend/components/TargetPanel/TargetGroupedView.tsx fron
 
 ## 任务 9：文档和进度收尾
 
-**文件：** `agent-progress.md`、`docs/design/2026-05-22-asset-intel-provider-abstraction.md`、`docs/superpowers/plans/2026-05-22-asset-intel-provider-abstraction.md`
+**文件：** `agent-progress.md`、`docs/design/2026-05-22-asset-intel-provider-abstraction.md`
 
 1. 旧设计文档顶部增加：
 
@@ -374,11 +374,7 @@ pnpm exec biome check frontend/components/TargetPanel/TargetGroupedView.tsx fron
 > Superseded by `docs/design/2026-05-22-asset-intel-json-driven-providers.md`.
 ```
 
-2. 旧计划文档顶部增加：
-
-```markdown
-> Superseded by `docs/superpowers/plans/2026-05-22-asset-intel-json-driven-providers.md`.
-```
+2. 旧计划文档后续已删除，避免后续 agent 继续执行硬编码 Phase 4。
 
 3. `agent-progress.md` 新增一条记录，说明本次发现的硬编码问题、替代方案、运行过的验证命令。
 

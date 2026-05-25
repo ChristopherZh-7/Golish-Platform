@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
   "version": "0.1.3",
-  "last_updated": "2026-05-24",
+  "last_updated": "2026-05-25",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": ["not_started", "in_progress", "blocked", "passing"],
   "features": [
@@ -31,7 +31,7 @@
         "real_data_probe": "用 /tmp/golish_zone_probe.py（probe Python 脚本）直接调 0.zone API 拿 query=小米 的 7 类返回（dump 在 /tmp/golish_zone_dump/{site,domain,apk,org,email,code,member}.json），实测：email 类含 leakage_account 数组（HIBP 样本）+ email_source / mail_domain；code 类含 detail_parsing（已解析的 AK/SK）+ keyword/url/source（github 来源）+ repository/path；member 类含 msg.position + msg.introduction；org 类含 msg.related_brands + msg.related_enterprises + msg.name_before 等本 PR 启用的字段全部存在",
         "scope_decisions": "明确不做（控制范围避免 schema 膨胀）：① site 类 70 字段中 framework_name/leak/app_name 等不进 organizations profile（它们是单 IP 属性，应留在 candidates.raw_evidence + TargetDetail 渲染层）② member 类不映射到 contacts schema（避免破坏现有 contacts schema 的 {name,phone,email,title} 分桶语义）③ 不引入新的 is_intel_array_profile_field key（避免改 Rust 硬编码白名单）"
       },
-      "notes": "用户聊天中明确：『不是所有字段都该记录』。本 PR 按 P0/P1/P2/P3 分级，只引入 9 条 P0+ 字段映射，其余 site 字段已通过 candidates.raw_evidence 在 UI Details 中可见。下一阶段（Phase 3）若要把 leakage_account / detail_parsing 等做成独立 UI group（而非 Intel records 行），需要扩 organizations.intel 数组字段白名单或新建 schema 列——超出本轮 scope，等用户实测决定优先级。",
+      "notes": "用户聊天中明确：『不是所有字段都该记录』。本 PR 按 P0/P1/P2/P3 分级，只引入 P0+ 字段映射，其余 site 字段已通过 candidates.raw_evidence 在 UI Details 中可见。2026-05-25 follow-up：为 `asn → organizations.asns` 规则新增 Rust `asn` transform，标准化 `4134/as4134/AS4134` 为 `AS4134`，非法值丢弃；现有 0.zone dump 显示 site 样本有 `asn` key 但全为空，其他 query_type 样本无 `asn` key。下一阶段若要把 leakage_account / detail_parsing 等做成独立 UI group（而非 Intel records 行），需要扩 organizations.intel 数组字段白名单或新建 schema 列——超出本轮 scope，等用户实测决定优先级。",
       "completion": {
         "completed_at": "2026-05-24",
         "outcome": "passing"
@@ -102,7 +102,7 @@
         "D_two_phase_ui": "TargetGroupedView.tsx 撤掉旧 `assetIntel.hydrate()` UI 入口：主公司 action model 显示「查子公司」+「批量补字段」，子公司（含继承 discover_assets 父级语义的 promoted child）显示「补字段」；activity 面板按钮复用同一 action model。三个按钮分别调用 hydrateSubsidiaries / enrichBatch / enrichOrganization，后端旧 asset_intel_hydrate 仅保留兼容不再由 UI 调用。运行态从 org 级别细化为 org+action，避免点「查子公司」时「批量补字段」也一起转圈。查子公司使用 discovery 专用 config：默认 minOwnership=51、depth=1、includeBranches=false，不再沿用轻量 target-only hydrate 配置；enscan-go `company-default-json` 经手动验证后改为 `-field invest`，默认只抓投资子公司，不抓 ICP/APP target，也不默认抓分支机构。`AssetIntelToolConfig.discovery` JSON policy 控制自动提升：`auto_promote=true`、`promote_when=[scale>=51,status contains 开业]`、`ownership_field=scale`、`dedupe_by=[pid,name]`；后端 discovery 按该 policy 自动创建 child organizations，把 created/skipped 写入 run.evidence，并清理父组织旧 `engagement.candidates` 以免 UI 继续显示历史 needs_review。新增 TYC/KC/RB discovery provider（`enscan-go-tyc-discovery` / `enscan-go-kc-discovery` / `enscan-go-rb-discovery`，分别 `-type tyc|kc|rb -field invest`，各自只依赖对应凭证），后端同值 candidate 去重时合并 evidence.sources，做到多源命中但只创建一个 child org。8 个 vitest + 2 个 Rust 单测覆盖主公司/子公司 action model、source filter、stale candidate 过滤、discovery config、visible bucket、自动提升规则和旧 candidates 清理。",
         "Z_full_validation": "cargo nextest run -p golish-pentest -p golish --lib 相关 test 全绿（pentest 59/59 + golish asset_intel 18/18 = 77 全过）；cargo test -p golish asset_intel --lib → 27/27 passed；cargo test -p golish-pentest tool_config_accepts_asset_intel_descriptor --lib → 1/1 passed；cargo fmt --package golish --package golish-pentest --check exit 0；pnpm exec tsc --noEmit exit 0；pnpm exec biome check 5 改动文件 No fixes applied；pnpm vitest run TargetPanel/ → 35/35 passed；ReadLints 全套改动文件 0 errors；python3 -m json.tool enscan-go + enscan-go-tyc/kc/rb-discovery + feature_list exit 0；手动 ENScan `-field invest -invest 51 -deep 1` 验证导出 JSON 只含 invest/partner/enterprise_info。"
       },
-      "notes": "用户痛点：'写的子公司有问题也抓不到对的，数据乱七八糟'。诊断 6 根因（R1 无公司主体核验 / R2 normalize 不过滤股权 / R3 enterprise_info 没写主档案 / R4 invest 方向不分 / R5 candidate 缺 evidence 上下文 / R6 输入错名字静默错查）。本 PR 同时落 A 轻量 + B + C 三件套：A 通过 lookup 流程解决 R1+R4+R6（用户先选 canonical 再 hydrate） / B 通过 profile_fields 主档案绑定解决 R3 / C 通过 when filter + Details 展开解决 R2+R5。设计文档 + 本会话进度详见 agent-progress.md 2026-05-22 段。"
+      "notes": "用户痛点：'写的子公司有问题也抓不到对的，数据乱七八糟'。诊断 6 根因（R1 无公司主体核验 / R2 normalize 不过滤股权 / R3 enterprise_info 没写主档案 / R4 invest 方向不分 / R5 candidate 缺 evidence 上下文 / R6 输入错名字静默错查）。本 PR 同时落 A 轻量 + B + C 三件套：A 通过 lookup 流程解决 R1+R4+R6（用户先选 canonical 再 hydrate） / B 通过 profile_fields 主档案绑定解决 R3 / C 通过 when filter + Details 展开解决 R2+R5。2026-05-25 追加 Target ASNs 补全小补丁：`AssetIntelProfileFieldTransform::Asn` + 0.zone `asn` 规则改用 transform=asn；focused 验证见 agent-progress.md 2026-05-25 段。设计文档 + 本会话进度详见 agent-progress.md 2026-05-22 段。"
     },
     {
       "id": "capture-engine",
@@ -185,80 +185,18 @@
       "notes": "2026-05-21 完成 Phase 1-5 代码。整批改动未 commit（等用户跑 just dev 真试 + 截图后整批 commit）。设计文档：docs/design/2026-05-21-integrations.md。实施计划：docs/superpowers/plans/2026-05-21-integrations.md。覆盖范围包含且超过原 asm-intel-providers（已置回 not_started + superseded notes）。⚠ 仍存在历史游离 in_progress（meta-harness-scaffold / chat-model-selector-tests / provider-form-tests）；本轮聚焦 integrations，那 3 个不动留待后续清理。"
     },
     {
-      "id": "asm-intel-providers",
-      "priority": 50,
-      "area": "backend/golish-intel-providers + frontend/Settings",
-      "title": "[Superseded] ASM 多 Provider 集成（合并至 integrations）",
-      "user_visible_behavior": "[已被 integrations 覆盖] Settings → Intel Providers 能配置各家 ASM 平台（0.zone 优先）的 API key；调用后 organizations 表的 domains / ip_ranges / asns / certificates / email_domains / github_orgs / contacts 等字段能从 ASM 平台自动补全。",
-      "status": "not_started",
-      "verification": [
-        "[此条目已 superseded，验收以 integrations 为准]",
-        "cargo nextest run -p golish-intel-providers 全绿（含 7 个 query_type mapper 单测）",
-        "cargo nextest run -p golish-pentest output_store::organizations 全绿"
-      ],
-      "evidence": null,
-      "notes": "Superseded by `integrations` (2026-05-21)。原设计 docs/design/2026-05-20-asm-intel-providers.md 已被新设计 docs/design/2026-05-21-integrations.md 取代；Phase 5 ENScan_GO 已被 integrations 吸收。本条目保留做历史追溯，不再单独推进。"
-    },
-    {
-      "id": "meta-harness-scaffold",
-      "priority": 1,
-      "area": "harness",
-      "title": "外层 Meta-Harness 文件铺设",
-      "user_visible_behavior": "项目根目录有 AGENTS.md / agent-progress.md / feature_list.json / init.sh / clean-state-checklist.md；.cursor/rules/ 多一个 agents-bridge.mdc；任何 AI agent 进入仓库都能在 60 秒内读完 AGENTS.md 并知道开工流程和验证命令。",
-      "status": "in_progress",
-      "verification": [
-        "ls AGENTS.md agent-progress.md feature_list.json init.sh clean-state-checklist.md 不报错",
-        "ls .cursor/rules/agents-bridge.mdc 不报错",
-        "bash init.sh 退出码为 0",
-        "AGENTS.md 引用的命令在 justfile / package.json 中都真实存在"
-      ],
-      "evidence": null,
-      "notes": "本轮任务。完成后切换为 passing，并把内层 Rust harness 推到 priority 2。"
-    },
-    {
-      "id": "domain-harness-runtime",
-      "priority": 2,
-      "area": "backend/golish-agent-kit",
-      "title": "内层 Domain-Harness Runtime（agent loop + tool policy + evidence ledger + gate decision）",
-      "user_visible_behavior": "Golish 跑起来后，pentest agent 不能只靠自然语言声称'完成 Recon'；必须提交结构化 deliverable，由 gate validator 判定 allowed/blocked，未通过时生成 recovery actions。",
-      "status": "not_started",
-      "verification": [
-        "cargo nextest run -p golish-agent-kit harness::recon 全绿",
-        "至少 1 个 gate 单测覆盖 'domain 无 DNS 结果应阻断' 场景",
-        "至少 1 个 gate 单测覆盖 'open port 无 service fingerprint 应阻断' 场景",
-        "task_orchestrator 接入 gate 后现有测试不回退"
-      ],
-      "evidence": null,
-      "notes": "已有完整设计与实现计划：docs/design/2026-05-20-agent-harness-architecture-mvp.md 和 docs/superpowers/plans/2026-05-20-golish-agent-harness-architecture.md。按 superpowers:executing-plans skill 逐 task 推进。"
-    },
-    {
-      "id": "recon-harness-demo-stage",
-      "priority": 3,
-      "area": "backend/golish-agent-kit",
-      "title": "Recon Demo Stage（attack-surface snapshot + ReconDeliverable + ReconGateDecision）",
-      "user_visible_behavior": "Recon 子任务结束后，agent 必须返回结构化 ReconDeliverable JSON；gate 验证后 UI 能看到 allowed/blocking_reasons/recovery_actions；不通过时不会自动进入 Vulnerability Matching 阶段。",
-      "status": "not_started",
-      "verification": [
-        "cargo nextest run -p golish-agent-kit harness::recon 全绿",
-        "前端 timeline 出现 ReconGateEvaluated 事件",
-        "用 mock agent 跑一轮 recon，gate 阻断时确实生成 recovery action"
-      ],
-      "evidence": null,
-      "notes": "依赖 domain-harness-runtime。设计在 docs/design/harness-recon-mvp.md（已 superseded 为候选草案）和 docs/superpowers/plans/2026-05-20-golish-agent-harness.md。"
-    },
-    {
       "id": "chat-model-selector-tests",
       "priority": 5,
       "area": "frontend/AIChatPanel",
       "title": "ChatModelSelector 单测补齐",
       "user_visible_behavior": "ChatModelSelector 组件的关键交互（切换 provider、切换 model、显示当前选中状态）有覆盖；vitest 跑过且证据落地。",
-      "status": "in_progress",
+      "status": "not_started",
       "verification": [
         "pnpm vitest run frontend/components/AIChatPanel/ChatModelSelector.test.ts 全绿",
         "覆盖率不低于现有同类组件平均水平"
       ],
       "evidence": null,
-      "notes": "git status 显示 ChatModelSelector.tsx 和 ChatModelSelector.test.ts 已有改动，不在本轮 meta-harness 任务范围；下一轮会话可以拾起。⚠ 注意：feature_list 同一时间只允许一个 in_progress——本轮 meta-harness 结束后切换该条目为 not_started 或先把它切到 in_progress 再处理。"
+      "notes": "2026-05-25 修正：之前误标 in_progress，但 evidence 为 null 且本轮内无人推进，本质是历史 git status 游离改动，不构成真正的 in_progress。复位为 not_started 让 §2.1 一致性恢复（用户在 2026-05-25 §B 方案中确认）。"
     },
     {
       "id": "provider-form-tests",
@@ -266,40 +204,37 @@
       "area": "frontend/Settings",
       "title": "useProviderForm Hook 单测",
       "user_visible_behavior": "Provider 配置表单的核心逻辑（validation / dirty state / submit / reset）有单测覆盖。",
-      "status": "in_progress",
+      "status": "not_started",
       "verification": [
         "pnpm vitest run frontend/components/Settings/hooks/useProviderForm.test.ts 全绿"
       ],
       "evidence": null,
-      "notes": "同上，游离在 git status 中。"
+      "notes": "2026-05-25 修正同上：复位为 not_started。"
     },
     {
-      "id": "evaluator-rubric",
-      "priority": 10,
-      "area": "harness",
-      "title": "评审评分表（evaluator-rubric.md）",
-      "user_visible_behavior": "项目根目录有 evaluator-rubric.md，列出六维度（正确性 / 验证 / 范围纪律 / 可靠性 / 可维护性 / 交接准备度）打分规则；agent 自评与人评对比，校准 3-5 轮。",
+      "id": "extract-golish-asset-intel-crate",
+      "priority": 4,
+      "area": "backend/crates/golish/src/tools/asset_intel.rs + backend/crates/golish-asset-intel (new) + backend/crates/golish-pentest-domain::asset_intel (new module)",
+      "title": "P0-1 解耦：抽出 L2 crate `golish-asset-intel` + L1 DTO 上移（byte-equal 行为零回归 refactor）",
+      "user_visible_behavior": "无对外可见行为变化。Tauri command 名/签名/事件 payload 与 frontend/lib/generated/ ts-rs 输出 byte-equal；前端、JSON schema、数据库均零改动。开发侧可见：L6 `golish` crate 从 52,743 行减重至 ~48,200 行（asset_intel 业务下沉 L2），违反 500 行预算的最大 Rust 业务文件（5,578 行）消失。",
       "status": "not_started",
       "verification": [
-        "evaluator-rubric.md 存在",
-        "已用它给至少一轮历史会话打分并记录差异"
+        "cargo nextest run -p golish-asset-intel --status-level fail 全绿（L2 新 crate 30+ test）",
+        "cargo nextest run -p golish --lib -E 'test(asset_intel)' --status-level fail 全绿（≥ 35 passed，与 baseline 持平）",
+        "cargo nextest run -p golish-pentest --status-level fail 全绿（62 passed 不回归）",
+        "cargo nextest run -p golish-pentest-domain --status-level fail 全绿（新增 ≥ 5 个 round-trip test）",
+        "cargo check -p golish-asset-intel -p golish-pentest-domain -p golish exit 0",
+        "cargo fmt --check exit 0",
+        "just lint-rust exit 0（clippy 零 warning）",
+        "python3 scripts/check_dag.py exit 0（golish-asset-intel 被识别为 L2）",
+        "pnpm exec tsc --noEmit exit 0（frontend/lib/generated 未漂移）",
+        "git diff --stat frontend/lib/generated/ 为空或仅 trivial 顺序差异",
+        "pnpm vitest run frontend/components/TargetPanel/ 全绿（前端零改动）",
+        "just precommit 全绿",
+        "手动 E2E（用户做）：just dev → Discover Assets → Look up → Hydrate Subsidiaries → Enrich，UI 与事件行为 byte-equal 于 refactor 前"
       ],
       "evidence": null,
-      "notes": "Meta-harness 第二批。项目复杂度上来再做。"
-    },
-    {
-      "id": "session-handoff",
-      "priority": 11,
-      "area": "harness",
-      "title": "会话交接摘要模板（session-handoff.md）",
-      "user_visible_behavior": "长会话或并行会话场景下，可以用 session-handoff.md 一页纸交接给下一位 agent。",
-      "status": "not_started",
-      "verification": [
-        "session-handoff.md 存在",
-        "至少做过一次真实交接演练"
-      ],
-      "evidence": null,
-      "notes": "Meta-harness 第二批。"
+      "notes": "设计文档：docs/design/2026-05-25-extract-golish-asset-intel-crate.md（346 行）。实施计划：docs/superpowers/plans/2026-05-25-extract-golish-asset-intel-crate.md（1,289 行 · 11 个 TDD task · 中途 4 个断点 A-D）。**启动前提**：① feature_list.json 中 `asset-intel-hydrate-disambiguation` 必须先从 in_progress 切走（否则两者会在同一文件上并行改动，git 冲突极痛，详见计划文档第 11 行『前置条件 MUST CHECK』）；② git status 干净。priority=4 表示比 hydrate-disambiguation/capture-engine/meta-harness-scaffold 慢，比 chat-model-selector-tests/provider-form-tests 快——纯属解耦 refactor 没有用户可见价值，慎插队。"
     }
   ]
 }

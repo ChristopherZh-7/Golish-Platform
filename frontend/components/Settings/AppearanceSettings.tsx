@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { HexColorPicker } from "react-colorful";
+import { useTranslation } from "react-i18next";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -11,6 +12,12 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import {
+  type AppLanguage,
+  applyAppLanguage,
+  getStoredAppLanguage,
+  LANGUAGE_OPTIONS,
+} from "@/lib/i18n";
 import {
   type CaretSettings,
   DEFAULT_CARET_SETTINGS,
@@ -64,6 +71,7 @@ export function AppearanceSettings({
   terminalSettings,
   onTerminalChange,
 }: AppearanceSettingsProps) {
+  const { t } = useTranslation();
   const displaySettings = useStore(selectDisplaySettings);
   const setDisplaySettings = useStore((state) => state.setDisplaySettings);
 
@@ -87,9 +95,15 @@ export function AppearanceSettings({
   );
 
   const [showColorPicker, setShowColorPicker] = useState(false);
+  const [language, setLanguage] = useState<AppLanguage>(() => getStoredAppLanguage());
 
   const update = (patch: Partial<DisplaySettings>) => {
     setDisplaySettings({ ...displaySettings, ...patch });
+  };
+
+  const updateLanguage = (value: AppLanguage) => {
+    setLanguage(value);
+    applyAppLanguage(value);
   };
 
   // Only flags that drive a real UI element are listed here. Defunct toggles
@@ -115,8 +129,33 @@ export function AppearanceSettings({
     <div className="space-y-8">
       {/* Theme */}
       <div className="space-y-2">
-        <h3 className="text-sm font-medium text-foreground mb-4">Theme</h3>
+        <h3 className="text-sm font-medium text-foreground mb-4">
+          {t("appearancePanel.theme.title")}
+        </h3>
         <ThemePicker />
+      </div>
+
+      {/* Divider */}
+      <div className="border-t border-[var(--border-medium)]" />
+
+      {/* Language */}
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium text-foreground">
+          {t("appearancePanel.language.title")}
+        </h3>
+        <Select value={language} onValueChange={(value) => updateLanguage(value as AppLanguage)}>
+          <SelectTrigger aria-label={t("appearancePanel.language.title")} className="w-48">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {LANGUAGE_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">{t("appearancePanel.language.description")}</p>
       </div>
 
       {/* Divider */}
@@ -124,10 +163,14 @@ export function AppearanceSettings({
 
       {/* UI Scale */}
       <div className="space-y-4">
-        <h3 className="text-sm font-medium text-foreground">UI Scale</h3>
+        <h3 className="text-sm font-medium text-foreground">
+          {t("appearancePanel.uiScale.title")}
+        </h3>
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-foreground">Zoom Level</span>
+            <span className="text-sm font-medium text-foreground">
+              {t("appearancePanel.uiScale.zoomLevel")}
+            </span>
             <span className="text-xs text-muted-foreground tabular-nums">
               {Math.round((displaySettings.uiScale ?? 1.1) * 100)}%
             </span>
@@ -142,7 +185,7 @@ export function AppearanceSettings({
           />
           <div className="flex items-center justify-between">
             <p className="text-xs text-muted-foreground">
-              Scale the entire UI (75% – 150%). Useful if text or buttons feel too small.
+              {t("appearancePanel.uiScale.description")}
             </p>
             {(displaySettings.uiScale ?? 1.1) !== 1.1 && (
               <button
@@ -150,7 +193,7 @@ export function AppearanceSettings({
                 className="text-xs text-accent hover:underline"
                 onClick={() => update({ uiScale: 1.1 })}
               >
-                Reset to 110%
+                {t("appearancePanel.uiScale.reset")}
               </button>
             )}
           </div>
@@ -162,14 +205,16 @@ export function AppearanceSettings({
 
       {/* Input Caret */}
       <div className="space-y-4">
-        <h3 className="text-sm font-medium text-foreground">Input Caret</h3>
+        <h3 className="text-sm font-medium text-foreground">{t("appearancePanel.caret.title")}</h3>
 
         {/* Preview */}
         <CaretPreview settings={caret} />
 
         {/* Style selector */}
         <div className="space-y-2">
-          <span className="text-sm font-medium text-foreground">Style</span>
+          <span className="text-sm font-medium text-foreground">
+            {t("appearancePanel.caret.style")}
+          </span>
           <Select
             value={caret.style}
             onValueChange={(value: "block" | "default") => updateCaret("style", value)}
@@ -178,12 +223,12 @@ export function AppearanceSettings({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="default">Default</SelectItem>
-              <SelectItem value="block">Block</SelectItem>
+              <SelectItem value="default">{t("appearancePanel.caret.styleDefault")}</SelectItem>
+              <SelectItem value="block">{t("appearancePanel.caret.styleBlock")}</SelectItem>
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            Default uses the native browser text caret. Block renders a customizable overlay.
+            {t("appearancePanel.caret.styleDescription")}
           </p>
         </div>
 
@@ -193,7 +238,9 @@ export function AppearanceSettings({
             {/* Width */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-foreground">Width</span>
+                <span className="text-sm font-medium text-foreground">
+                  {t("appearancePanel.caret.width")}
+                </span>
                 <span className="text-xs text-muted-foreground tabular-nums">
                   {caret.width.toFixed(1)}ch
                 </span>
@@ -207,21 +254,23 @@ export function AppearanceSettings({
                 className="w-full"
               />
               <p className="text-xs text-muted-foreground">
-                Caret width in character units (0.1–3.0)
+                {t("appearancePanel.caret.widthDescription")}
               </p>
             </div>
 
             {/* Color */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-foreground">Color</span>
+                <span className="text-sm font-medium text-foreground">
+                  {t("appearancePanel.caret.color")}
+                </span>
                 {caret.color && (
                   <button
                     type="button"
                     className="text-xs text-accent hover:underline"
                     onClick={() => updateCaret("color", null)}
                   >
-                    Reset to theme default
+                    {t("appearancePanel.caret.resetColor")}
                   </button>
                 )}
               </div>
@@ -232,7 +281,7 @@ export function AppearanceSettings({
                       type="button"
                       className="h-8 w-8 rounded-md border border-[var(--border-subtle)] shrink-0"
                       style={{ backgroundColor: caret.color ?? "var(--foreground)" }}
-                      aria-label="Pick caret color"
+                      aria-label={t("appearancePanel.caret.pickColor")}
                     />
                   </PopoverTrigger>
                   <PopoverContent align="start" className="w-auto p-3">
@@ -252,21 +301,25 @@ export function AppearanceSettings({
                       updateCaret("color", val);
                     }
                   }}
-                  placeholder="Theme default"
+                  placeholder={t("appearancePanel.caret.themeDefault")}
                   className="w-32 font-mono text-xs"
                 />
               </div>
               <p className="text-xs text-muted-foreground">
-                Hex color for the caret. Leave empty to use the theme foreground color.
+                {t("appearancePanel.caret.colorDescription")}
               </p>
             </div>
 
             {/* Blink Speed */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-foreground">Blink Speed</span>
+                <span className="text-sm font-medium text-foreground">
+                  {t("appearancePanel.caret.blinkSpeed")}
+                </span>
                 <span className="text-xs text-muted-foreground tabular-nums">
-                  {caret.blink_speed === 0 ? "No blink" : `${caret.blink_speed}ms`}
+                  {caret.blink_speed === 0
+                    ? t("appearancePanel.caret.noBlink")
+                    : `${caret.blink_speed}ms`}
                 </span>
               </div>
               <Slider
@@ -280,14 +333,16 @@ export function AppearanceSettings({
                 className="w-full"
               />
               <p className="text-xs text-muted-foreground">
-                Blink cycle duration in milliseconds. Set to 0 to disable blinking.
+                {t("appearancePanel.caret.blinkDescription")}
               </p>
             </div>
 
             {/* Opacity */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-foreground">Opacity</span>
+                <span className="text-sm font-medium text-foreground">
+                  {t("appearancePanel.caret.opacity")}
+                </span>
                 <span className="text-xs text-muted-foreground tabular-nums">
                   {Math.round(caret.opacity * 100)}%
                 </span>
@@ -300,7 +355,9 @@ export function AppearanceSettings({
                 step={0.01}
                 className="w-full"
               />
-              <p className="text-xs text-muted-foreground">Caret opacity (0%–100%)</p>
+              <p className="text-xs text-muted-foreground">
+                {t("appearancePanel.caret.opacityDescription")}
+              </p>
             </div>
           </div>
         )}
@@ -311,19 +368,23 @@ export function AppearanceSettings({
 
       {/* Section header */}
       <div className="space-y-1">
-        <h2 className="text-base font-semibold text-foreground">UI Customization</h2>
+        <h2 className="text-base font-semibold text-foreground">
+          {t("appearancePanel.customization.title")}
+        </h2>
         <p className="text-sm text-muted-foreground">
-          Fine-grained customization of UI elements and components
+          {t("appearancePanel.customization.description")}
         </p>
       </div>
 
       {/* General */}
       <div className="space-y-4">
-        <h3 className="text-sm font-medium text-foreground">General</h3>
+        <h3 className="text-sm font-medium text-foreground">
+          {t("appearancePanel.customization.general")}
+        </h3>
         <ToggleRow
           id="hide-ai-settings-in-shell-mode"
-          label="Hide AI Settings in Shell Mode"
-          description="Hide token usage and MCP badge when in shell mode"
+          label={t("appearancePanel.customization.hideAiSettings")}
+          description={t("appearancePanel.customization.hideAiSettingsDesc")}
           checked={displaySettings.hideAiSettingsInShellMode}
           onCheckedChange={(checked) => update({ hideAiSettingsInShellMode: checked })}
         />
@@ -334,11 +395,13 @@ export function AppearanceSettings({
 
       {/* Tab Bar */}
       <div className="space-y-4">
-        <h3 className="text-sm font-medium text-foreground">Tab Bar</h3>
+        <h3 className="text-sm font-medium text-foreground">
+          {t("appearancePanel.customization.tabBar")}
+        </h3>
         <ToggleRow
           id="show-home-tab"
-          label="Home Tab"
-          description="Show the home tab in the tab bar"
+          label={t("appearancePanel.customization.homeTab")}
+          description={t("appearancePanel.customization.homeTabDesc")}
           checked={displaySettings.showHomeTab}
           onCheckedChange={(checked) => update({ showHomeTab: checked })}
         />
@@ -351,8 +414,8 @@ export function AppearanceSettings({
       <div className="space-y-4">
         <ToggleRow
           id="show-terminal-context"
-          label="Context Bar"
-          description="Show context information above the terminal input"
+          label={t("appearancePanel.customization.contextBar")}
+          description={t("appearancePanel.customization.contextBarDesc")}
           checked={contextBarParentOn}
           onCheckedChange={(checked) => {
             if (checked) {
@@ -373,8 +436,8 @@ export function AppearanceSettings({
         >
           <ToggleRow
             id="show-working-directory"
-            label="Working Directory"
-            description="Show the current working directory path badge"
+            label={t("appearancePanel.customization.workingDirectory")}
+            description={t("appearancePanel.customization.workingDirectoryDesc")}
             checked={displaySettings.showWorkingDirectory}
             onCheckedChange={(checked) => update({ showWorkingDirectory: checked })}
           />
@@ -386,25 +449,27 @@ export function AppearanceSettings({
 
       {/* Input Status Indicators */}
       <div className="space-y-4">
-        <h3 className="text-sm font-medium text-foreground">Status Indicators</h3>
+        <h3 className="text-sm font-medium text-foreground">
+          {t("appearancePanel.customization.statusIndicators")}
+        </h3>
         <ToggleRow
           id="show-input-mode-toggle"
-          label="Input Mode Toggle"
-          description="Show the full Terminal / AI segmented toggle instead of collapsing it"
+          label={t("appearancePanel.customization.inputModeToggle")}
+          description={t("appearancePanel.customization.inputModeToggleDesc")}
           checked={displaySettings.showInputModeToggle}
           onCheckedChange={(checked) => update({ showInputModeToggle: checked })}
         />
         <ToggleRow
           id="show-context-usage"
-          label="Token Usage"
-          description="Show the context window / token usage percentage badge"
+          label={t("appearancePanel.customization.tokenUsage")}
+          description={t("appearancePanel.customization.tokenUsageDesc")}
           checked={displaySettings.showContextUsage}
           onCheckedChange={(checked) => update({ showContextUsage: checked })}
         />
         <ToggleRow
           id="show-mcp-badge"
-          label="MCP Servers Badge"
-          description="Show the MCP servers connected indicator"
+          label={t("appearancePanel.customization.mcpBadge")}
+          description={t("appearancePanel.customization.mcpBadgeDesc")}
           checked={displaySettings.showMcpBadge}
           onCheckedChange={(checked) => update({ showMcpBadge: checked })}
         />
@@ -412,7 +477,9 @@ export function AppearanceSettings({
 
       {/* Quick actions */}
       <div className="flex items-center gap-3">
-        <p className="text-xs text-muted-foreground">Choose which UI elements are visible.</p>
+        <p className="text-xs text-muted-foreground">
+          {t("appearancePanel.customization.quickActionsHint")}
+        </p>
         <span className="text-xs text-muted-foreground/50">·</span>
         <button
           type="button"
@@ -431,7 +498,7 @@ export function AppearanceSettings({
           }
           className="text-xs text-accent hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"
         >
-          Show all
+          {t("appearancePanel.customization.showAll")}
         </button>
         <span className="text-xs text-muted-foreground/50">·</span>
         <button
@@ -451,7 +518,7 @@ export function AppearanceSettings({
           }
           className="text-xs text-accent hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"
         >
-          Hide all
+          {t("appearancePanel.customization.hideAll")}
         </button>
         <span className="text-xs text-muted-foreground/50">·</span>
         <button
@@ -459,7 +526,7 @@ export function AppearanceSettings({
           onClick={() => setDisplaySettings({ ...defaultDisplaySettings })}
           className="text-xs text-accent hover:underline"
         >
-          Reset to defaults
+          {t("appearancePanel.customization.resetDefaults")}
         </button>
       </div>
     </div>

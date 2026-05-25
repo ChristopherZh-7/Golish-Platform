@@ -1,6 +1,6 @@
 # Architecture
 
-> Updated 2026-05-02 after the A1–A4 architecture cleanup. This document
+> Updated 2026-05-24 after the Integrations / Asset Intel docs cleanup. This document
 > reflects the **real** dependency graph (verified by `Cargo.toml` scan),
 > not aspirational text. If you change any `Cargo.toml` dependency,
 > update this file and the corresponding layer assertions.
@@ -10,7 +10,7 @@
 | Layer | Choice |
 |---|---|
 | Desktop shell | Tauri 2 |
-| Backend | Rust 2021 (44 crates, ~177K LOC) |
+| Backend | Rust 2021 (48 crates, ~177K LOC) |
 | Frontend | React 19 + TypeScript 6 + Vite 8 |
 | State mgmt | Zustand + Immer (14 slices) |
 | UI kit | Radix primitives + Tailwind 4 |
@@ -35,7 +35,7 @@ golish-platform/
 │   └── services/              # client-side service layer
 ├── backend/
 │   ├── Cargo.toml             # workspace root
-│   └── crates/                # 44 Rust crates (see layer table below)
+│   └── crates/                # 48 Rust crates (see layer table below)
 ├── e2e/                       # 20 Playwright spec files
 ├── docs/                      # this documentation
 └── .github/workflows/         # CI (incl. arch-check.yml DAG guard)
@@ -277,8 +277,6 @@ narrow sub-state over `AppState`.
 
 ## Related docs
 
-- [Refactor history + future work](../.cursor/rules/refactor-execution.mdc) — executable roadmap (A1–A4 done · C1 pending)
-- [Independent architecture evaluation](../.cursor/rules/architecture-evaluation.mdc) — third-party assessment
 - [Planning system](planning-system.md)
 - [System hooks](system-hooks.md)
 - [Tool use](tool-use.md)

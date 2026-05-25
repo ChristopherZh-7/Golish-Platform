@@ -1,5 +1,6 @@
 import { BookOpen, Bot, FileText, Settings2 } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import type {
@@ -38,6 +39,7 @@ export function AgentSettings({
   onToolsChange,
   onSubAgentModelsChange,
 }: AgentSettingsProps) {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<AgentTab>("general");
 
   const updateField = <K extends keyof AgentSettingsType>(key: K, value: AgentSettingsType[K]) => {
@@ -65,7 +67,7 @@ export function AgentSettings({
             )}
           >
             {tab.icon}
-            {tab.label}
+            {t(`agentSettings.tabs.${tab.id}`, { defaultValue: tab.label })}
           </button>
         ))}
       </div>
@@ -79,9 +81,11 @@ export function AgentSettings({
                 htmlFor="agent-session-persistence"
                 className="text-sm font-medium text-foreground"
               >
-                Session Persistence
+                {t("agentSettings.sessionPersistence")}
               </label>
-              <p className="text-xs text-muted-foreground">Auto-save conversations to disk</p>
+              <p className="text-xs text-muted-foreground">
+                {t("agentSettings.sessionPersistenceDesc")}
+              </p>
             </div>
             <Switch
               id="agent-session-persistence"
@@ -95,7 +99,7 @@ export function AgentSettings({
               htmlFor="agent-session-retention"
               className="text-sm font-medium text-foreground"
             >
-              Session Retention (days)
+              {t("agentSettings.sessionRetention")}
             </label>
             <Input
               id="agent-session-retention"
@@ -109,7 +113,7 @@ export function AgentSettings({
               className="w-24"
             />
             <p className="text-xs text-muted-foreground">
-              How long to keep saved sessions (0 = forever)
+              {t("agentSettings.sessionRetentionDesc")}
             </p>
           </div>
 
@@ -119,10 +123,10 @@ export function AgentSettings({
                 htmlFor="agent-pattern-learning"
                 className="text-sm font-medium text-foreground"
               >
-                Pattern Learning
+                {t("agentSettings.patternLearning")}
               </label>
               <p className="text-xs text-muted-foreground">
-                Learn from approvals for auto-approval
+                {t("agentSettings.patternLearningDesc")}
               </p>
             </div>
             <Switch
@@ -134,7 +138,7 @@ export function AgentSettings({
 
           <div className="space-y-2">
             <label htmlFor="agent-min-approvals" className="text-sm font-medium text-foreground">
-              Minimum Approvals
+              {t("agentSettings.minimumApprovals")}
             </label>
             <Input
               id="agent-min-approvals"
@@ -148,7 +152,7 @@ export function AgentSettings({
               className="w-24"
             />
             <p className="text-xs text-muted-foreground">
-              Minimum approvals before a tool can be auto-approved
+              {t("agentSettings.minimumApprovalsDesc")}
             </p>
           </div>
 
@@ -157,7 +161,9 @@ export function AgentSettings({
               htmlFor="agent-approval-threshold"
               className="text-sm font-medium text-foreground"
             >
-              Approval Threshold: {(settings.approval_threshold * 100).toFixed(0)}%
+              {t("agentSettings.approvalThreshold", {
+                value: (settings.approval_threshold * 100).toFixed(0),
+              })}
             </label>
             <input
               id="agent-approval-threshold"
@@ -171,22 +177,20 @@ export function AgentSettings({
               className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-accent"
             />
             <p className="text-xs text-muted-foreground">
-              Required approval rate for auto-approval
+              {t("agentSettings.approvalThresholdDesc")}
             </p>
           </div>
 
           <div className="border-t border-[var(--border-medium)]" />
 
           <div className="space-y-4">
-            <h3 className="text-sm font-medium text-foreground">Tools</h3>
+            <h3 className="text-sm font-medium text-foreground">{t("agentSettings.tools")}</h3>
             <div className="flex items-center justify-between">
               <div className="space-y-1">
                 <label htmlFor="tools-web-search" className="text-sm font-medium text-foreground">
-                  Web Search (Tavily)
+                  {t("agentSettings.webSearch")}
                 </label>
-                <p className="text-xs text-muted-foreground">
-                  Enable web search, extract, crawl, and map tools. Requires TAVILY_API_KEY.
-                </p>
+                <p className="text-xs text-muted-foreground">{t("agentSettings.webSearchDesc")}</p>
               </div>
               <Switch
                 id="tools-web-search"

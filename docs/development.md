@@ -24,7 +24,7 @@ This starts Vite with a mock Tauri environment (useful for rapid UI iteration wi
 
 ## Faster local Rust builds (sccache)
 
-The 44-crate Rust workspace takes ~1m 20s for a clean
+The 48-crate Rust workspace takes ~1m 20s for a clean
 `cargo check -p golish` on an M-series Mac. CI already wires
 [`sccache`](https://github.com/mozilla/sccache) via
 [mozilla-actions/sccache-action](https://github.com/mozilla-actions/sccache-action)
@@ -60,10 +60,13 @@ Typical local incremental check after warm-up: 5–15s instead of
 
 ## Adding a new tool
 
-1. Define schema in `backend/crates/golish-ai/src/tool_definitions.rs`
-2. Implement executor in `backend/crates/golish-ai/src/tool_executors.rs`
-3. Register in the tool registry
-4. Add event handler in `frontend/hooks/useAiEvents.ts`
+Agent tools are split across the post-`golish-ai` crates:
+
+1. Define or update schemas in `backend/crates/golish-agent-kit/src/tool_definitions/`.
+2. Implement executors in `backend/crates/golish-agent-kit/src/tool_executors/` or the domain crate that owns the capability.
+3. Wire dispatch through `backend/crates/golish-agent-kit/src/tool_execution/` and, when needed, the runtime loop in `backend/crates/golish-agent-runtime/src/agentic_loop/`.
+4. Add prompt contribution changes in `backend/crates/golish-prompts/src/` if the agent must learn when to use the tool.
+5. Add frontend event handling only when the tool emits new UI-visible events.
 
 ## Adding a new Tauri command (IPC)
 

@@ -1,5 +1,6 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { CustomSelect } from "@/components/ui/custom-select";
 import { Switch } from "@/components/ui/switch";
 import type { AdvancedSettings as AdvancedSettingsType, PrivacySettings } from "@/lib/settings";
@@ -32,6 +33,7 @@ export function AdvancedSettings({
   onChange,
   onPrivacyChange,
 }: AdvancedSettingsProps) {
+  const { t } = useTranslation();
   const [version, setVersion] = useState<string>("...");
 
   useEffect(() => {
@@ -45,11 +47,11 @@ export function AdvancedSettings({
   }, []);
 
   const logLevelOptions = [
-    { value: "error", label: "Error" },
-    { value: "warn", label: "Warn" },
-    { value: "info", label: "Info" },
-    { value: "debug", label: "Debug" },
-    { value: "trace", label: "Trace" },
+    { value: "error", label: t("advancedSettings.logLevels.error") },
+    { value: "warn", label: t("advancedSettings.logLevels.warn") },
+    { value: "info", label: t("advancedSettings.logLevels.info") },
+    { value: "debug", label: t("advancedSettings.logLevels.debug") },
+    { value: "trace", label: t("advancedSettings.logLevels.trace") },
   ];
 
   return (
@@ -57,7 +59,7 @@ export function AdvancedSettings({
       {/* Log Level */}
       <div className="space-y-2">
         <label htmlFor="advanced-log-level" className="text-sm font-medium text-foreground">
-          Log Level
+          {t("advancedSettings.logLevel")}
         </label>
         <SimpleSelect
           id="advanced-log-level"
@@ -67,16 +69,16 @@ export function AdvancedSettings({
           }
           options={logLevelOptions}
         />
-        <p className="text-xs text-muted-foreground">Verbosity of debug logging</p>
+        <p className="text-xs text-muted-foreground">{t("advancedSettings.logLevelDesc")}</p>
       </div>
 
       {/* Experimental Features */}
       <div className="flex items-center justify-between">
         <div className="space-y-1">
           <label htmlFor="advanced-experimental" className="text-sm font-medium text-foreground">
-            Experimental Features
+            {t("advancedSettings.experimental")}
           </label>
-          <p className="text-xs text-muted-foreground">Enable experimental functionality</p>
+          <p className="text-xs text-muted-foreground">{t("advancedSettings.experimentalDesc")}</p>
         </div>
         <Switch
           id="advanced-experimental"
@@ -89,11 +91,9 @@ export function AdvancedSettings({
       <div className="flex items-center justify-between">
         <div className="space-y-1">
           <label htmlFor="advanced-llm-api-logs" className="text-sm font-medium text-foreground">
-            LLM API Logs
+            {t("advancedSettings.llmApiLogs")}
           </label>
-          <p className="text-xs text-muted-foreground">
-            Log raw API request/response to ./logs/api/
-          </p>
+          <p className="text-xs text-muted-foreground">{t("advancedSettings.llmApiLogsDesc")}</p>
         </div>
         <Switch
           id="advanced-llm-api-logs"
@@ -106,11 +106,9 @@ export function AdvancedSettings({
       <div className="flex items-center justify-between">
         <div className="space-y-1">
           <label htmlFor="advanced-extract-raw-sse" className="text-sm font-medium text-foreground">
-            Extract Raw SSE Property
+            {t("advancedSettings.extractRawSse")}
           </label>
-          <p className="text-xs text-muted-foreground">
-            Parse SSE chunks as JSON objects instead of escaped strings
-          </p>
+          <p className="text-xs text-muted-foreground">{t("advancedSettings.extractRawSseDesc")}</p>
         </div>
         <Switch
           id="advanced-extract-raw-sse"
@@ -121,15 +119,15 @@ export function AdvancedSettings({
 
       {/* Privacy Section */}
       <div className="space-y-4 p-4 rounded-lg bg-muted border border-[var(--border-medium)]">
-        <h4 className="text-sm font-medium text-accent">Privacy</h4>
+        <h4 className="text-sm font-medium text-accent">{t("advancedSettings.privacy")}</h4>
 
         {/* Usage Statistics */}
         <div className="flex items-center justify-between">
           <div className="space-y-1">
             <label htmlFor="privacy-usage-stats" className="text-sm text-foreground">
-              Usage Statistics
+              {t("advancedSettings.usageStats")}
             </label>
-            <p className="text-xs text-muted-foreground">Send anonymous usage data</p>
+            <p className="text-xs text-muted-foreground">{t("advancedSettings.usageStatsDesc")}</p>
           </div>
           <Switch
             id="privacy-usage-stats"
@@ -144,9 +142,9 @@ export function AdvancedSettings({
         <div className="flex items-center justify-between">
           <div className="space-y-1">
             <label htmlFor="privacy-log-prompts" className="text-sm text-foreground">
-              Log Prompts
+              {t("advancedSettings.logPrompts")}
             </label>
-            <p className="text-xs text-muted-foreground">Save prompts locally for debugging</p>
+            <p className="text-xs text-muted-foreground">{t("advancedSettings.logPromptsDesc")}</p>
           </div>
           <Switch
             id="privacy-log-prompts"
@@ -169,7 +167,7 @@ export function AdvancedSettings({
       {/* Version */}
       <div className="pt-4 border-t border-[var(--border-medium)]">
         <div className="flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">Version</span>
+          <span className="text-sm text-muted-foreground">{t("advancedSettings.version")}</span>
           <span className="text-sm font-mono text-muted-foreground">{version}</span>
         </div>
       </div>

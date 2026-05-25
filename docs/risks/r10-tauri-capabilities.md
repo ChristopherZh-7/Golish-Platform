@@ -91,4 +91,4 @@ Result: detached windows lose access to `dialog:*`,
 ## References
 
 - Tauri 2 capabilities docs: <https://v2.tauri.app/reference/acl/capability/>
-- R2 (CSP null) — see `.cursor/rules/architecture-evaluation.mdc`
+- R2 (CSP null) — from the legacy architecture review; source review file may no longer be present

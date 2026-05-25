@@ -5,7 +5,7 @@
 -- 18 个新字段：MVP 10 个进 5-tab UI（基础/域名/网络/范围/其他），剩余 8 个
 -- 二期补 UI（先打基础避免后续重复 schema 变动）。
 --
--- 设计来源：会话 private-mcp-agent-2-sukoeliv 中按「中国平安 HVV」场景倒推。
+-- 设计来源：按「中国平安 HVV」场景倒推。
 -- 配合 `docs/design/2026-05-17-targets-organization-grouping.md` 补充节。
 --
 -- 字段语义：

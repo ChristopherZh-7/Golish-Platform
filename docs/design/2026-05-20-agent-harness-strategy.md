@@ -1,10 +1,12 @@
 # Golish Agent Harness 改造策略文档
 
-- **作者**: MCP-1（全栈工程师，private-MCP）
+- **作者**: 架构组
 - **日期**: 2026-05-20
-- **状态**: Draft（策略级，非实现规范）
+- **状态**: Deferred（策略级，非当前实现规范）
 - **读者**: Golish 平台后续的任何工程师 / AI agent
 - **目的**: 把当前 task 模式 agent 自动化从「抄了 PentAGI 但不知道下一步」转型为「Anthropic harness 思想下的渗透测试专用流水线」。本文档自包含——读完不需要再做调研。
+
+> 当前暂停原因（2026-05-24）：信息收集闭环和工具包装契约还没有稳定。先完成 provider/tool → normalized record → evidence → UI 的闭环，再回到 domain harness / gate validator。否则 harness 只能验证自然语言，不能可靠验证证据。
 
 ---
 
@@ -205,7 +207,7 @@ PentAGI orchestrator 拆这个阶段为 N 个 subtask
 | # | 问 | 答 |
 |---|---|---|
 | 1 | 输入 schema | `{ scope: [...], known_assets: [...] }` |
-| 2 | 输出 schema | `ReconDeliverable`（见 [`docs/design/harness-recon-mvp.md`](harness-recon-mvp.md) §5） |
+| 2 | 输出 schema | `ReconDeliverable`（原 `docs/design/harness-recon-mvp.md` 草案已移除；当前仅保留概念参考） |
 | 3 | 允许工具 | `dns_resolve, subdomain_enum_passive, whois_lookup, http_fingerprint_passive, shodan_query, fofa_query` 等被动 / 半被动工具 |
 | 4 | done 判定 | `validate_recon_gate(deliverable).allowed == true`（硬规则函数，见同上文件 §6） |
 | 5 | 失败 / 越界 | 发现 out-of-scope target 写 `skipped_checks` 且转人工确认；工具失败必须留 evidence trace |
@@ -307,7 +309,7 @@ You are done ONLY when:
 
 **目标**：把 Recon 这个阶段的 4 件套全部装上。
 
-**交付物**：基本对应上一份计划 [`docs/superpowers/plans/2026-05-20-golish-agent-harness.md`](../superpowers/plans/2026-05-20-golish-agent-harness.md) 中的 9 个 Task：
+**交付物**：旧 recon-first 计划已删除；如果后续重启，应在信息收集闭环稳定后重新写计划，大致覆盖这些任务：
 1. `harness::recon` 模块骨架
 2. `ReconDeliverable` 等 DTO
 3. Gate 失败测试（TDD 红）
@@ -316,7 +318,7 @@ You are done ONLY when:
 6. `PlannedSubtask.harness_phase` 标记
 7. `execute_single_subtask` 接入 gate
 8. `ReconGateEvaluated` 事件
-9. 更新 `harness-recon-mvp.md` 文档
+9. 写新的 Recon deliverable / gate 设计文档
 
 但 **加上前 4 个阶段做铺垫后再做这件事，难度会显著降低**——因为你已经手上有 Charter、Tool Belt、Evaluator 钩子、acceptance criteria。
 
@@ -359,8 +361,8 @@ You are done ONLY when:
 
 | 文件 | 作用 |
 |---|---|
-| `docs/design/harness-recon-mvp.md` | Recon 阶段的设计草案（Phase Charter 的雏形） |
-| `docs/superpowers/plans/2026-05-20-golish-agent-harness.md` | Recon harness 的 9-Task 实现计划（对应本文阶段 5） |
+| `docs/design/harness-recon-mvp.md` | 已移除的旧 Recon 阶段草案；重启 harness 前应重写 |
+| `docs/superpowers/plans/2026-05-20-golish-agent-harness.md` | 已删除的旧 recon-first 计划；当前不再执行 |
 | `docs/design/2026-05-20-agent-harness-strategy.md` | **本文档**——总策略 |
 
 ---
@@ -384,8 +386,8 @@ You are done ONLY when:
 如果你是后续接手本话题的 AI，请按以下顺序读：
 
 1. 本文档（全策略图景）
-2. `docs/design/harness-recon-mvp.md`（Recon 阶段细节）
-3. `docs/superpowers/plans/2026-05-20-golish-agent-harness.md`（Recon 阶段 9 Task 计划）
+2. 当前信息收集闭环相关文档（Asset Intel / Integrations / evidence 路径）
+3. 重新写出的 Recon deliverable / gate 设计文档（如果已有）
 4. 代码：
    - `backend/crates/golish-agent-kit/src/task_orchestrator/mod.rs`
    - `backend/crates/golish-agent-kit/src/task_orchestrator/types.rs`（看 `AgentExecutor` trait）

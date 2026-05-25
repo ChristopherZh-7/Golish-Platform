@@ -8,6 +8,10 @@ import {
 import { useStore } from "@/store";
 import { defaultDisplaySettings } from "@/store/slices";
 
+const { changeLanguage } = vi.hoisted(() => ({
+  changeLanguage: vi.fn(),
+}));
+
 // Mock ThemePicker since it depends on Tauri/theme hooks
 vi.mock("./ThemePicker", () => ({
   ThemePicker: () => <div data-testid="theme-picker">ThemePicker</div>,
@@ -18,6 +22,86 @@ vi.mock("react-colorful", () => ({
   HexColorPicker: ({ color, onChange }: { color: string; onChange: (c: string) => void }) => (
     <input data-testid="hex-color-picker" data-color={color} onChange={() => onChange("#00ff00")} />
   ),
+}));
+
+vi.mock("@/lib/i18n", () => ({
+  LANGUAGE_OPTIONS: [
+    { value: "system", label: "System default" },
+    { value: "en", label: "English" },
+    { value: "zh-CN", label: "简体中文" },
+  ],
+  applyAppLanguage: changeLanguage,
+  getStoredAppLanguage: () => "system",
+}));
+
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string) =>
+      (
+        {
+          "appearancePanel.theme.title": "Theme",
+          "appearancePanel.language.title": "Language",
+          "appearancePanel.language.description":
+            "Choose the app language. System default follows your OS/browser locale.",
+          "appearancePanel.uiScale.title": "UI Scale",
+          "appearancePanel.uiScale.zoomLevel": "Zoom Level",
+          "appearancePanel.uiScale.description":
+            "Scale the entire UI (75% – 150%). Useful if text or buttons feel too small.",
+          "appearancePanel.uiScale.reset": "Reset to 110%",
+          "appearancePanel.caret.title": "Input Caret",
+          "appearancePanel.caret.style": "Style",
+          "appearancePanel.caret.styleDefault": "Default",
+          "appearancePanel.caret.styleBlock": "Block",
+          "appearancePanel.caret.styleDescription":
+            "Default uses the native browser text caret. Block renders a customizable overlay.",
+          "appearancePanel.caret.width": "Width",
+          "appearancePanel.caret.widthDescription": "Caret width in character units (0.1–3.0)",
+          "appearancePanel.caret.color": "Color",
+          "appearancePanel.caret.resetColor": "Reset to theme default",
+          "appearancePanel.caret.pickColor": "Pick caret color",
+          "appearancePanel.caret.themeDefault": "Theme default",
+          "appearancePanel.caret.colorDescription":
+            "Hex color for the caret. Leave empty to use the theme foreground color.",
+          "appearancePanel.caret.blinkSpeed": "Blink Speed",
+          "appearancePanel.caret.noBlink": "No blink",
+          "appearancePanel.caret.blinkDescription":
+            "Blink cycle duration in milliseconds. Set to 0 to disable blinking.",
+          "appearancePanel.caret.opacity": "Opacity",
+          "appearancePanel.caret.opacityDescription": "Caret opacity (0%–100%)",
+          "appearancePanel.customization.title": "UI Customization",
+          "appearancePanel.customization.description":
+            "Fine-grained customization of UI elements and components",
+          "appearancePanel.customization.general": "General",
+          "appearancePanel.customization.hideAiSettings": "Hide AI Settings in Shell Mode",
+          "appearancePanel.customization.hideAiSettingsDesc":
+            "Hide token usage and MCP badge when in shell mode",
+          "appearancePanel.customization.tabBar": "Tab Bar",
+          "appearancePanel.customization.homeTab": "Home Tab",
+          "appearancePanel.customization.homeTabDesc": "Show the home tab in the tab bar",
+          "appearancePanel.customization.contextBar": "Context Bar",
+          "appearancePanel.customization.contextBarDesc":
+            "Show context information above the terminal input",
+          "appearancePanel.customization.workingDirectory": "Working Directory",
+          "appearancePanel.customization.workingDirectoryDesc":
+            "Show the current working directory path badge",
+          "appearancePanel.customization.statusIndicators": "Status Indicators",
+          "appearancePanel.customization.inputModeToggle": "Input Mode Toggle",
+          "appearancePanel.customization.inputModeToggleDesc":
+            "Show the full Terminal / AI segmented toggle instead of collapsing it",
+          "appearancePanel.customization.tokenUsage": "Token Usage",
+          "appearancePanel.customization.tokenUsageDesc":
+            "Show the context window / token usage percentage badge",
+          "appearancePanel.customization.mcpBadge": "MCP Servers Badge",
+          "appearancePanel.customization.mcpBadgeDesc":
+            "Show the MCP servers connected indicator",
+          "appearancePanel.customization.quickActionsHint":
+            "Choose which UI elements are visible.",
+          "appearancePanel.customization.showAll": "Show all",
+          "appearancePanel.customization.hideAll": "Hide all",
+          "appearancePanel.customization.resetDefaults": "Reset to defaults",
+        } as Record<string, string>
+      )[key] ?? key,
+  }),
 }));
 
 // Import after mocks
@@ -46,6 +130,7 @@ const blockCaretTerminalSettings: TerminalSettingsType = {
 describe("AppearanceSettings", () => {
   beforeEach(() => {
     // Reset display settings to defaults before each test
+    changeLanguage.mockReset();
     useStore.getState().setDisplaySettings({ ...defaultDisplaySettings });
   });
 
@@ -58,6 +143,19 @@ describe("AppearanceSettings", () => {
     it("should render the ThemePicker component", () => {
       render(<AppearanceSettings />);
       expect(screen.getByTestId("theme-picker")).toBeInTheDocument();
+    });
+
+    it("should render a language selector in Appearance", async () => {
+      const user = userEvent.setup();
+      render(<AppearanceSettings />);
+
+      expect(screen.getByText("Language")).toBeInTheDocument();
+      expect(screen.getByText("System default")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("combobox", { name: /language/i }));
+      await user.click(await screen.findByText("简体中文"));
+
+      expect(changeLanguage).toHaveBeenCalledWith("zh-CN");
     });
   });
 

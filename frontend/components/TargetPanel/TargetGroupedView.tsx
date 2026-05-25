@@ -567,6 +567,7 @@ interface OrgFieldView {
 }
 
 interface OrgFieldGroup {
+  key?: string;
   title: string;
   fields: OrgFieldView[];
 }
@@ -601,6 +602,9 @@ const INTEL_FIELD_LABELS: Record<string, string> = {
   email_leakage_total: "Pwned hits",
   code_leaks: "Code leaks",
   mail_mx: "MX records",
+  mobile_apps: "Mobile apps",
+  mini_programs: "Mini programs",
+  app_domains: "App domains",
 };
 
 const INTEL_DISPLAY_ORDER = [
@@ -622,6 +626,8 @@ const INTEL_DISPLAY_ORDER = [
 const LEAKAGE_INTEL_KEYS = ["exposed_emails", "email_leakage_total", "code_leaks"] as const;
 
 const DNS_INTEL_KEYS = ["mail_mx"] as const;
+
+const APP_INTEL_KEYS = ["mobile_apps", "mini_programs", "app_domains"] as const;
 
 function intelGet(org: OrgFieldInput, key: string): unknown {
   const intel = org.intel;
@@ -687,6 +693,9 @@ const INTEL_RECORD_LABELS: Record<string, string> = {
   email_leakage_total: "Pwned hits (HIBP-style)",
   code_leaks: "Code leaks (URLs)",
   mail_mx: "MX records",
+  mobile_apps: "Mobile apps",
+  mini_programs: "Mini programs",
+  app_domains: "App domains",
 };
 
 function getOrgFieldIntelRecords(raw: unknown): { key: string; label: string; value: string }[] {
@@ -806,9 +815,31 @@ function field(key: string, label: string, value: unknown): OrgFieldView {
   return { key, label, value: formatted, filled: formatted !== "—", raw: value };
 }
 
+function translateWithFallback(t: (key: string) => string, key: string, fallback: string): string {
+  const translated = t(key);
+  return translated === key ? fallback : translated;
+}
+
+function translateOrgFieldGroups(
+  groups: OrgFieldGroup[],
+  t: (key: string) => string
+): OrgFieldGroup[] {
+  return groups.map((group) => ({
+    ...group,
+    title: group.key
+      ? translateWithFallback(t, `targetWorkspace.fieldGroups.${group.key}`, group.title)
+      : group.title,
+    fields: group.fields.map((item) => ({
+      ...item,
+      label: translateWithFallback(t, `targetWorkspace.fields.${item.key}`, item.label),
+    })),
+  }));
+}
+
 export function getOrgFieldGroups(org: OrgFieldInput): OrgFieldGroup[] {
   return [
     {
+      key: "basic",
       title: "Basic",
       fields: [
         field("aliases", "Aliases", org.aliases),
@@ -818,10 +849,19 @@ export function getOrgFieldGroups(org: OrgFieldInput): OrgFieldGroup[] {
       ],
     },
     {
+      key: "apps",
+      title: "Apps & Mini Programs",
+      fields: APP_INTEL_KEYS.map((key) =>
+        field(key, INTEL_RECORD_LABELS[key] ?? key, intelGet(org, key))
+      ),
+    },
+    {
+      key: "domains",
       title: "Domains",
       fields: [field("domains", "Domains", org.domains)],
     },
     {
+      key: "network",
       title: "Network",
       fields: [
         field("ip_ranges", "IP ranges", org.ip_ranges),
@@ -830,10 +870,12 @@ export function getOrgFieldGroups(org: OrgFieldInput): OrgFieldGroup[] {
       ],
     },
     {
+      key: "scope",
       title: "Scope",
       fields: [field("scope_rules", "Scope rules", org.scope_rules)],
     },
     {
+      key: "identity",
       title: "Identity",
       fields: [
         field("intel", "Intel records", org.intel),
@@ -841,6 +883,7 @@ export function getOrgFieldGroups(org: OrgFieldInput): OrgFieldGroup[] {
       ],
     },
     {
+      key: "surfaces",
       title: "Surfaces",
       fields: [
         field("business_systems", "Business systems", org.business_systems),
@@ -850,18 +893,21 @@ export function getOrgFieldGroups(org: OrgFieldInput): OrgFieldGroup[] {
       ],
     },
     {
+      key: "leakage",
       title: "Leakage Intel",
       fields: LEAKAGE_INTEL_KEYS.map((key) =>
         field(key, INTEL_RECORD_LABELS[key] ?? key, intelGet(org, key))
       ),
     },
     {
+      key: "dns",
       title: "DNS",
       fields: DNS_INTEL_KEYS.map((key) =>
         field(key, INTEL_RECORD_LABELS[key] ?? key, intelGet(org, key))
       ),
     },
     {
+      key: "risk",
       title: "Risk & Notes",
       fields: [
         field("certificates", "Certificates", org.certificates),
@@ -1377,7 +1423,13 @@ export function TargetGroupedView({
         <div className="h-full flex items-center justify-center text-center text-muted-foreground px-8">
           <div>
             <Building2 className="w-8 h-8 mx-auto mb-2 opacity-30" />
-            <p className="text-xs">Select or create an organization to start.</p>
+            <p className="text-xs">
+              {translateWithFallback(
+                t,
+                "targetWorkspace.empty.selectOrg",
+                "Select or create an organization to start."
+              )}
+            </p>
           </div>
         </div>
       );
@@ -1408,7 +1460,7 @@ export function TargetGroupedView({
     const inScopeCount = selectedTargets.filter((target) => target.scope === "in").length;
     const outScopeCount = selectedTargets.filter((target) => target.scope === "out").length;
     const badge = selectedMode ? ENGAGEMENT_BADGES[selectedMode] : null;
-    const fieldGroups = getOrgFieldGroups(selectedOrg);
+    const fieldGroups = translateOrgFieldGroups(getOrgFieldGroups(selectedOrg), t);
     const selectedOrgActions = getOrgActionModel(selectedMode, {
       isChild: selectedOrgIsChild,
     });
@@ -1452,25 +1504,31 @@ export function TargetGroupedView({
 
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             <span className="rounded bg-muted/20 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-              Targets <span className="text-foreground">{selectedTargets.length}</span>
+              {translateWithFallback(t, "targetWorkspace.metrics.targets", "Targets")}{" "}
+              <span className="text-foreground">{selectedTargets.length}</span>
             </span>
             <span className="rounded bg-green-500/10 px-1.5 py-0.5 text-[10px] text-green-400">
-              In <span className="text-green-300">{inScopeCount}</span>
+              {translateWithFallback(t, "targetWorkspace.metrics.in", "In")}{" "}
+              <span className="text-green-300">{inScopeCount}</span>
             </span>
             <span className="rounded bg-muted/20 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-              Out <span className="text-foreground/75">{outScopeCount}</span>
+              {translateWithFallback(t, "targetWorkspace.metrics.out", "Out")}{" "}
+              <span className="text-foreground/75">{outScopeCount}</span>
             </span>
           </div>
         </section>
 
         <nav className="flex items-center gap-1 border-b border-border/30 pb-2">
           {[
-            ["overview", "Overview"],
-            ["fields", "Fields"],
-            ["scope", "Scope"],
-            ["targets", "Targets"],
-            ["candidates", "Candidates"],
-            ["activity", "Activity"],
+            ["overview", translateWithFallback(t, "targetWorkspace.tabs.overview", "Overview")],
+            ["fields", translateWithFallback(t, "targetWorkspace.tabs.fields", "Fields")],
+            ["scope", translateWithFallback(t, "targetWorkspace.tabs.scope", "Scope")],
+            ["targets", translateWithFallback(t, "targetWorkspace.tabs.targets", "Targets")],
+            [
+              "candidates",
+              translateWithFallback(t, "targetWorkspace.tabs.candidates", "Candidates"),
+            ],
+            ["activity", translateWithFallback(t, "targetWorkspace.tabs.activity", "Activity")],
           ].map(([id, label]) => (
             <button
               key={id}
@@ -1492,9 +1550,19 @@ export function TargetGroupedView({
           <section className="rounded border border-border/35 bg-muted/5 p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h4 className="text-xs font-medium text-foreground">Asset intel activity</h4>
+                <h4 className="text-xs font-medium text-foreground">
+                  {translateWithFallback(
+                    t,
+                    "targetWorkspace.activity.title",
+                    "Asset intel activity"
+                  )}
+                </h4>
                 <p className="mt-1 text-[10px] text-muted-foreground/70">
-                  Discover subsidiaries first, then enrich approved organizations with asset fields.
+                  {translateWithFallback(
+                    t,
+                    "targetWorkspace.activity.description",
+                    "Discover subsidiaries first, then enrich approved organizations with asset fields."
+                  )}
                 </p>
               </div>
               {selectedMode === "discover_assets" && (
@@ -1539,7 +1607,11 @@ export function TargetGroupedView({
               <div className="mt-3 space-y-2">
                 <div className="flex items-center gap-2 rounded border border-blue-500/25 bg-blue-500/5 p-2 text-[11px] text-blue-300">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  Running asset intel providers
+                  {translateWithFallback(
+                    t,
+                    "targetWorkspace.activity.runningProviders",
+                    "Running asset intel providers"
+                  )}
                   {selectedActivity?.runId && (
                     <span className="ml-auto text-[9px] uppercase tracking-wide text-blue-300/70">
                       run {selectedActivity.runId.slice(0, 8)}
@@ -1591,13 +1663,25 @@ export function TargetGroupedView({
 
             {!isHydratingSelected && !hydrateRun && !hydrateError && (
               <div className="mt-3 rounded border border-dashed border-border/35 p-3 text-center">
-                <p className="text-[11px] text-muted-foreground">No asset intel run yet.</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {translateWithFallback(
+                    t,
+                    "targetWorkspace.activity.noRun",
+                    "No asset intel run yet."
+                  )}
+                </p>
               </div>
             )}
 
             {assetProviders.length > 0 && (
               <div className="mt-3 rounded border border-border/30 bg-background/25 p-2">
-                <p className="text-[10px] font-medium text-muted-foreground">Available providers</p>
+                <p className="text-[10px] font-medium text-muted-foreground">
+                  {translateWithFallback(
+                    t,
+                    "targetWorkspace.activity.availableProviders",
+                    "Available providers"
+                  )}
+                </p>
                 <div className="mt-1 flex flex-wrap gap-1">
                   {assetProviders.map((provider) => (
                     <span
@@ -1614,7 +1698,9 @@ export function TargetGroupedView({
             {hydrateRun && (
               <div className="mt-3 space-y-2">
                 <div className="flex items-center justify-between rounded border border-border/30 bg-background/35 p-2">
-                  <span className="text-[10px] text-muted-foreground">Last run</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {translateWithFallback(t, "targetWorkspace.activity.lastRun", "Last run")}
+                  </span>
                   <span className="text-[10px] text-foreground">{hydrateRun.status}</span>
                 </div>
                 {hydrateRun.providerStatus.map((provider) => (
@@ -1635,17 +1721,26 @@ export function TargetGroupedView({
               </div>
             )}
             <div className="mt-3 rounded border border-border/30 bg-background/25 p-2 text-[10px] text-muted-foreground">
-              Candidates from asset intel runs stay out of active scan scope until approved and
-              promoted.
+              {translateWithFallback(
+                t,
+                "targetWorkspace.activity.candidateScopeHint",
+                "Candidates from asset intel runs stay out of active scan scope until approved and promoted."
+              )}
             </div>
           </section>
         )}
 
         {workspaceTab === "fields" && (
           <section className="rounded border border-border/35 bg-muted/5 p-3">
-            <h4 className="text-xs font-medium text-foreground">Intel fields</h4>
+            <h4 className="text-xs font-medium text-foreground">
+              {translateWithFallback(t, "targetWorkspace.fieldsPanel.title", "Intel fields")}
+            </h4>
             <p className="mt-1 text-[10px] text-muted-foreground/70">
-              Field coverage by group. Editing will be a separate compact mode.
+              {translateWithFallback(
+                t,
+                "targetWorkspace.fieldsPanel.description",
+                "Field coverage by group. Editing will be a separate compact mode."
+              )}
             </p>
             <div className="mt-3 space-y-2">
               {fieldGroups.map((group) => (
@@ -1676,8 +1771,11 @@ export function TargetGroupedView({
               <div>
                 <h4 className="text-xs font-medium text-foreground">{workspace.title}</h4>
                 <p className="text-[10px] text-muted-foreground/70 mt-1">
-                  Mode-aware workspace skeleton. Backend orchestration and coverage panels come
-                  next.
+                  {translateWithFallback(
+                    t,
+                    "targetWorkspace.overview.placeholder",
+                    "Mode-aware workspace skeleton. Backend orchestration and coverage panels come next."
+                  )}
                 </p>
               </div>
             </div>
@@ -1686,7 +1784,11 @@ export function TargetGroupedView({
               <div className="mt-3 rounded border border-dashed border-border/35 p-3 text-center">
                 <Crosshair className="w-5 h-5 mx-auto text-muted-foreground/35 mb-1.5" />
                 <p className="text-[11px] text-muted-foreground">
-                  No targets linked to this organization yet.
+                  {translateWithFallback(
+                    t,
+                    "targetWorkspace.overview.noTargets",
+                    "No targets linked to this organization yet."
+                  )}
                 </p>
               </div>
             ) : (
@@ -1728,25 +1830,59 @@ export function TargetGroupedView({
                 : "border-border/40 bg-muted/5"
             )}
           >
-            <h4 className="text-xs font-medium text-foreground">Discovery candidates</h4>
+            <h4 className="text-xs font-medium text-foreground">
+              {translateWithFallback(t, "targetWorkspace.candidates.title", "Discovery candidates")}
+            </h4>
             <p className="text-[10px] text-muted-foreground/70 mt-1">
-              Review discovered subsidiaries and assets before they become in-scope targets.
+              {translateWithFallback(
+                t,
+                "targetWorkspace.candidates.description",
+                "Review discovered subsidiaries and assets before they become in-scope targets."
+              )}
             </p>
             <div className="mt-3 grid grid-cols-2 gap-1.5">
               <div className="rounded border border-dashed border-border/40 p-2.5">
-                <p className="text-[10px] text-muted-foreground/60">Organization candidates</p>
+                <p className="text-[10px] text-muted-foreground/60">
+                  {translateWithFallback(
+                    t,
+                    "targetWorkspace.candidates.organizations",
+                    "Organization candidates"
+                  )}
+                </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {candidateCounts.organizations > 0
-                    ? `${candidateCounts.organizations} candidate(s) waiting for review`
-                    : "No candidates yet."}
+                    ? translateWithFallback(
+                        t,
+                        "targetWorkspace.candidates.waiting",
+                        "{{count}} candidate(s) waiting for review"
+                      ).replace("{{count}}", String(candidateCounts.organizations))
+                    : translateWithFallback(
+                        t,
+                        "targetWorkspace.candidates.empty",
+                        "No candidates yet."
+                      )}
                 </p>
               </div>
               <div className="rounded border border-dashed border-border/40 p-2.5">
-                <p className="text-[10px] text-muted-foreground/60">Target candidates</p>
+                <p className="text-[10px] text-muted-foreground/60">
+                  {translateWithFallback(
+                    t,
+                    "targetWorkspace.candidates.targets",
+                    "Target candidates"
+                  )}
+                </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {candidateCounts.targets > 0
-                    ? `${candidateCounts.targets} candidate(s) waiting for review`
-                    : "No candidates yet."}
+                    ? translateWithFallback(
+                        t,
+                        "targetWorkspace.candidates.waiting",
+                        "{{count}} candidate(s) waiting for review"
+                      ).replace("{{count}}", String(candidateCounts.targets))
+                    : translateWithFallback(
+                        t,
+                        "targetWorkspace.candidates.empty",
+                        "No candidates yet."
+                      )}
                 </p>
               </div>
             </div>
@@ -1872,9 +2008,15 @@ export function TargetGroupedView({
 
         {workspaceTab === "scope" && (
           <section className="rounded border border-border/35 bg-muted/5 p-3">
-            <h4 className="text-xs font-medium text-foreground">Scope</h4>
+            <h4 className="text-xs font-medium text-foreground">
+              {translateWithFallback(t, "targetWorkspace.scope.title", "Scope")}
+            </h4>
             <p className="mt-1 text-[10px] text-muted-foreground/70">
-              Scope rules and authorization windows will be edited here.
+              {translateWithFallback(
+                t,
+                "targetWorkspace.scope.description",
+                "Scope rules and authorization windows will be edited here."
+              )}
             </p>
           </section>
         )}
@@ -2368,7 +2510,7 @@ export function TargetGroupedView({
           onClick={() => openNewEngagement("customer_targets")}
         >
           <Plus className="w-3 h-3" />
-          New Engagement
+          {translateWithFallback(t, "targetWorkspace.actions.newEngagement", "New Engagement")}
         </button>
         <button
           type="button"
@@ -2376,10 +2518,16 @@ export function TargetGroupedView({
           onClick={() => handleStartAddChild(null)}
         >
           <Building2 className="w-3 h-3" />
-          Quick org
+          {translateWithFallback(t, "targetWorkspace.actions.quickOrg", "Quick org")}
         </button>
         <span className="text-[10px] text-muted-foreground/60 tabular-nums">
-          {orgs.length} orgs · {targets.length} targets
+          {translateWithFallback(
+            t,
+            "targetWorkspace.metrics.orgTargetCount",
+            "{{orgs}} orgs · {{targets}} targets"
+          )
+            .replace("{{orgs}}", String(orgs.length))
+            .replace("{{targets}}", String(targets.length))}
         </span>
       </div>
 
@@ -2397,9 +2545,15 @@ export function TargetGroupedView({
               onClick={() => openNewEngagement("customer_targets")}
             >
               <Shield className="w-4 h-4 text-green-400 mb-2" />
-              <p className="text-xs text-foreground">Import targets</p>
+              <p className="text-xs text-foreground">
+                {translateWithFallback(t, "targetWorkspace.empty.importTargets", "Import targets")}
+              </p>
               <p className="text-[10px] text-muted-foreground/70 mt-1">
-                Customer provided scope list.
+                {translateWithFallback(
+                  t,
+                  "targetWorkspace.empty.importTargetsDesc",
+                  "Customer provided scope list."
+                )}
               </p>
             </button>
             <button
@@ -2408,9 +2562,19 @@ export function TargetGroupedView({
               onClick={() => openNewEngagement("discover_assets")}
             >
               <Network className="w-4 h-4 text-accent mb-2" />
-              <p className="text-xs text-foreground">Discover assets</p>
+              <p className="text-xs text-foreground">
+                {translateWithFallback(
+                  t,
+                  "targetWorkspace.empty.discoverAssets",
+                  "Discover assets"
+                )}
+              </p>
               <p className="text-[10px] text-muted-foreground/70 mt-1">
-                Create org and prepare ASM flow.
+                {translateWithFallback(
+                  t,
+                  "targetWorkspace.empty.discoverAssetsDesc",
+                  "Create org and prepare ASM flow."
+                )}
               </p>
             </button>
             <button
@@ -2419,8 +2583,16 @@ export function TargetGroupedView({
               onClick={() => handleStartAddChild(null)}
             >
               <Building2 className="w-4 h-4 text-muted-foreground mb-2" />
-              <p className="text-xs text-foreground">Org profile only</p>
-              <p className="text-[10px] text-muted-foreground/70 mt-1">Create a customer record.</p>
+              <p className="text-xs text-foreground">
+                {translateWithFallback(t, "targetWorkspace.empty.profileOnly", "Org profile only")}
+              </p>
+              <p className="text-[10px] text-muted-foreground/70 mt-1">
+                {translateWithFallback(
+                  t,
+                  "targetWorkspace.empty.profileOnlyDesc",
+                  "Create a customer record."
+                )}
+              </p>
             </button>
           </div>
         </div>

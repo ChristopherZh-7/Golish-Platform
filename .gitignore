@@ -143,6 +143,10 @@ resources/wordlists/*
 .cursor/**/*.bak*
 .cursor/**/*.bak-*
 
+# Per-machine MCP server artifacts (never push to remote)
+.cursor/rules/*-mcp.mdc
+**/.cursor/mcp.json
+
 # Stray vite build artifacts at repo root (build output should land in
 # `dist/` only; this catches the rare cases where vite drops a hashed
 # bundle next to `index.html`).
