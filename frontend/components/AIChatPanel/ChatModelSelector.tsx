@@ -57,13 +57,15 @@ function modelIsThinkingByDefault(provider: string, model: string): boolean {
   }
   if (provider === "nvidia" || provider === "openrouter" || provider === "zai_sdk") {
     return (
-      m.includes("kimi-k2-thinking") ||
+      m.includes("kimi-k2.6") ||
+      m.includes("kimi-k2-6") ||
       m.includes("deepseek-r1") ||
-      m.includes("deepseek-v3.2") ||
-      m.includes("phi-4-mini-flash-reasoning") ||
+      m.includes("deepseek-v4") ||
+      m.includes("deepseek-v3.1-terminus") ||
+      m.includes("nemotron-3-nano-omni") ||
       m.includes("step-3.5-flash") ||
-      m.includes("qwq") ||
       (m.includes("qwen3") && m.includes("thinking")) ||
+      m.includes("glm-5.1") ||
       m.includes("glm-4.7")
     );
   }

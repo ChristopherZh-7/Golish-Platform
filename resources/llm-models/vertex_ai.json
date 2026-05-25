@@ -1,0 +1,10 @@
+{
+  "provider": "vertex_ai",
+  "models": [
+    { "id": "claude-opus-4-6@default", "display_name": "Claude Opus 4.6", "capabilities": { "base": "anthropic_opus_4_6" }, "aliases": [] },
+    { "id": "claude-sonnet-4-6@default", "display_name": "Claude Sonnet 4.6", "capabilities": { "base": "anthropic_sonnet_4_6" }, "aliases": [] },
+    { "id": "claude-opus-4-5@20251101", "display_name": "Claude Opus 4.5", "capabilities": { "base": "anthropic_defaults" }, "aliases": [] },
+    { "id": "claude-sonnet-4-5@20250929", "display_name": "Claude Sonnet 4.5", "capabilities": { "base": "anthropic_defaults" }, "aliases": [] },
+    { "id": "claude-haiku-4-5@20251001", "display_name": "Claude Haiku 4.5", "capabilities": { "base": "anthropic_defaults", "max_output_tokens": 4096 }, "aliases": [] }
+  ]
+}

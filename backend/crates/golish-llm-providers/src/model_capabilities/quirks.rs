@@ -229,12 +229,14 @@ fn default_quirks_for(provider: &str, model: &str) -> ProviderStreamQuirks {
 /// fall through to `AlwaysContent + ChatTemplateKwargs` for everything else
 /// that might have the misroute bug.
 fn nvidia_default_quirks(model_lower: &str) -> ProviderStreamQuirks {
-    let is_explicit_thinking_model = model_lower.contains("kimi-k2-thinking")
+    let is_explicit_thinking_model = model_lower.contains("kimi-k2.6")
+        || model_lower.contains("kimi-k2-6")
         || model_lower.contains("deepseek-r1")
-        || model_lower.contains("deepseek-v3.2")
-        || model_lower.contains("phi-4-mini-flash-reasoning")
+        || model_lower.contains("deepseek-v4")
+        || model_lower.contains("deepseek-v3.1-terminus")
+        || model_lower.contains("nemotron-3-nano-omni")
         || model_lower.contains("step-3.5-flash")
-        || model_lower.contains("qwq")
+        || model_lower.contains("glm-5.1")
         || (model_lower.contains("qwen3") && model_lower.contains("thinking"));
 
     if is_explicit_thinking_model {
@@ -286,8 +288,8 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_kimi_k2_thinking_default_is_standard() {
-        let q = resolve_stream_quirks("nvidia", "moonshotai/kimi-k2-thinking", None);
+    fn nvidia_kimi_k2_6_default_is_standard() {
+        let q = resolve_stream_quirks("nvidia", "moonshotai/kimi-k2.6", None);
         assert_eq!(q.reasoning_handling, ReasoningHandling::Standard);
         assert!(!q.force_disable_thinking_kwargs);
         assert_eq!(q.thinking_kwargs_value, None);
@@ -320,12 +322,12 @@ mod tests {
     }
 
     #[test]
-    fn user_disables_thinking_on_kimi_k2_routes_to_always_content() {
+    fn user_disables_thinking_on_kimi_k2_6_routes_to_always_content() {
         let over = ModelOverride {
             thinking: Some(false),
             ..ModelOverride::default()
         };
-        let q = resolve_stream_quirks("nvidia", "moonshotai/kimi-k2-thinking", Some(&over));
+        let q = resolve_stream_quirks("nvidia", "moonshotai/kimi-k2.6", Some(&over));
         assert_eq!(q.reasoning_handling, ReasoningHandling::AlwaysContent);
         assert!(q.force_disable_thinking_kwargs);
         assert_eq!(q.thinking_kwargs_value, Some(false));

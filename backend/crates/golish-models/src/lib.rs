@@ -34,10 +34,15 @@
 //! ```
 
 mod capabilities;
+pub mod descriptors;
 mod providers;
 mod registry;
 
 pub use capabilities::*;
+pub use descriptors::{
+    embedded_defaults_for, load_provider_models, merge_capabilities, resolve_capabilities_base,
+    CapabilitiesDescriptor, ModelDescriptor, ProviderModelsFile,
+};
 pub use providers::*;
 pub use registry::*;
 

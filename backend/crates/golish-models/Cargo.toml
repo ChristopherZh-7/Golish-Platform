@@ -11,5 +11,11 @@ golish-settings = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
+serde_json = { workspace = true }
 # For LazyLock
 once_cell = "1.21"
+# Structured logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,15 @@
+{
+  "provider": "gemini",
+  "models": [
+    { "id": "gemini-3-pro-preview", "display_name": "Gemini 3 Pro Preview", "capabilities": { "base": "gemini_defaults" }, "aliases": [] },
+    { "id": "gemini-2.5-pro", "display_name": "Gemini 2.5 Pro", "capabilities": { "base": "gemini_defaults" }, "aliases": [] },
+    { "id": "gemini-2.5-flash", "display_name": "Gemini 2.5 Flash", "capabilities": { "base": "gemini_defaults" }, "aliases": [] },
+    { "id": "gemini-2.5-flash-lite", "display_name": "Gemini 2.5 Flash Lite", "capabilities": { "base": "gemini_defaults" }, "aliases": [] },
+    {
+      "id": "gemini-2.0-flash-thinking-exp",
+      "display_name": "Gemini 2.0 Flash Thinking",
+      "capabilities": { "base": "gemini_defaults", "supports_thinking_history": true },
+      "aliases": []
+    }
+  ]
+}

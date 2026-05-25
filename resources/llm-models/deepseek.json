@@ -1,0 +1,18 @@
+{
+  "provider": "deepseek",
+  "default_capabilities_base": "deepseek_defaults",
+  "models": [
+    {
+      "id": "deepseek-v4-flash",
+      "display_name": "DeepSeek V4 Flash",
+      "capabilities": { "base": "deepseek_defaults" },
+      "aliases": ["deepseek-chat", "deepseek-reasoner"]
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "display_name": "DeepSeek V4 Pro",
+      "capabilities": { "base": "deepseek_defaults" },
+      "aliases": []
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "provider": "groq",
+  "default_capabilities_base": "groq_defaults",
+  "models": [
+    { "id": "meta-llama/llama-4-scout-17b-16e-instruct", "display_name": "Llama 4 Scout 17B", "capabilities": { "base": "groq_defaults" }, "aliases": ["llama-4-scout"] },
+    { "id": "meta-llama/llama-4-maverick-17b-128e-instruct", "display_name": "Llama 4 Maverick 17B", "capabilities": { "base": "groq_defaults" }, "aliases": ["llama-4-maverick"] },
+    { "id": "llama-3.3-70b-versatile", "display_name": "Llama 3.3 70B", "capabilities": { "base": "groq_defaults" }, "aliases": [] },
+    { "id": "llama-3.1-8b-instant", "display_name": "Llama 3.1 8B Instant", "capabilities": { "base": "groq_defaults" }, "aliases": [] },
+    { "id": "openai/gpt-oss-120b", "display_name": "GPT OSS 120B", "capabilities": { "base": "groq_defaults" }, "aliases": ["gpt-oss-120b"] },
+    { "id": "openai/gpt-oss-20b", "display_name": "GPT OSS 20B", "capabilities": { "base": "groq_defaults" }, "aliases": ["gpt-oss-20b"] }
+  ]
+}

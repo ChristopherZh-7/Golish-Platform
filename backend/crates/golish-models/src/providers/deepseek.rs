@@ -1,26 +1,14 @@
-//! DeepSeek model definitions.
+//! DeepSeek model definitions, loaded from `resources/llm-models/deepseek.json`.
+//!
+//! See `docs/design/2026-05-25-llm-models-json-driven.md` for the migration
+//! rationale. To add / remove / update models, edit the JSON file.
 
 use golish_settings::schema::AiProvider;
 
-use crate::capabilities::ModelCapabilities;
+use crate::descriptors::embedded_defaults_for;
 use crate::registry::ModelDefinition;
 
 /// DeepSeek direct API model definitions.
 pub fn deepseek_models() -> Vec<ModelDefinition> {
-    vec![
-        ModelDefinition {
-            id: "deepseek-v4-flash",
-            display_name: "DeepSeek V4 Flash",
-            provider: AiProvider::Deepseek,
-            capabilities: ModelCapabilities::deepseek_defaults(),
-            aliases: &["deepseek-chat", "deepseek-reasoner"],
-        },
-        ModelDefinition {
-            id: "deepseek-v4-pro",
-            display_name: "DeepSeek V4 Pro",
-            provider: AiProvider::Deepseek,
-            capabilities: ModelCapabilities::deepseek_defaults(),
-            aliases: &[],
-        },
-    ]
+    embedded_defaults_for(AiProvider::Deepseek)
 }

@@ -1,0 +1,36 @@
+{
+  "provider": "xai",
+  "default_capabilities_base": "xai_defaults",
+  "models": [
+    {
+      "id": "grok-4-1-fast-reasoning",
+      "display_name": "Grok 4.1 Fast (Reasoning)",
+      "capabilities": { "base": "xai_defaults", "supports_thinking_history": true },
+      "aliases": []
+    },
+    {
+      "id": "grok-4-1-fast-non-reasoning",
+      "display_name": "Grok 4.1 Fast",
+      "capabilities": { "base": "xai_defaults" },
+      "aliases": []
+    },
+    {
+      "id": "grok-4-fast-reasoning",
+      "display_name": "Grok 4 (Reasoning)",
+      "capabilities": { "base": "xai_defaults", "supports_thinking_history": true },
+      "aliases": []
+    },
+    {
+      "id": "grok-4-fast-non-reasoning",
+      "display_name": "Grok 4",
+      "capabilities": { "base": "xai_defaults" },
+      "aliases": []
+    },
+    {
+      "id": "grok-code-fast-1",
+      "display_name": "Grok Code",
+      "capabilities": { "base": "xai_defaults" },
+      "aliases": []
+    }
+  ]
+}

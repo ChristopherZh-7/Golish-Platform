@@ -2997,6 +2997,9 @@ dependencies = [
  "golish-settings",
  "once_cell",
  "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

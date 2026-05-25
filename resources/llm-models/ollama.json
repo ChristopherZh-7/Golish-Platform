@@ -1,0 +1,11 @@
+{
+  "provider": "ollama",
+  "default_capabilities_base": "ollama_defaults",
+  "models": [
+    { "id": "llama3.2", "display_name": "Llama 3.2", "capabilities": { "base": "ollama_defaults" }, "aliases": ["llama3.2:latest"] },
+    { "id": "llama3.1", "display_name": "Llama 3.1", "capabilities": { "base": "ollama_defaults" }, "aliases": ["llama3.1:latest"] },
+    { "id": "qwen2.5", "display_name": "Qwen 2.5", "capabilities": { "base": "ollama_defaults" }, "aliases": ["qwen2.5:latest"] },
+    { "id": "mistral", "display_name": "Mistral", "capabilities": { "base": "ollama_defaults" }, "aliases": ["mistral:latest"] },
+    { "id": "codellama", "display_name": "CodeLlama", "capabilities": { "base": "ollama_defaults" }, "aliases": ["codellama:latest"] }
+  ]
+}
