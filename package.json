@@ -4,6 +4,12 @@
   "version": "0.2.43",
   "type": "module",
   "scripts": {
+    "generate:models": "node frontend/scripts/generate-model-constants.mjs",
+    "predev": "pnpm generate:models",
+    "prebuild": "pnpm generate:models",
+    "pretest": "pnpm generate:models",
+    "pretest:run": "pnpm generate:models",
+    "pretypecheck": "pnpm generate:models",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
