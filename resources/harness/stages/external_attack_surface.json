@@ -1,0 +1,63 @@
+{
+  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$comment": "Stage spec: external_attack_surface (Doc 3 §4.1). MVP stage. Doc 3 §4.2 5 个问题: input/output/allowed_tools/done_judgement/failure-out_of_scope.",
+
+  "id": "external_attack_surface",
+  "kind": "external_attack_surface",
+  "risk_level": "medium",
+
+  "requires_stages": ["scoping", "target_intel"],
+  "allowed_next_stages": ["enumeration", "reporting"],
+
+  "allowed_tools": [
+    "query_target_data",
+    "dns_resolve",
+    "subdomain_enum_passive",
+    "http_probe",
+    "fingerprint_target",
+    "shodan_query",
+    "log_operation",
+    "log_scan_result",
+    "submit_external_attack_surface_deliverable"
+  ],
+
+  "forbidden_tools": [
+    "metasploit",
+    "sqlmap",
+    "credential_attack",
+    "destructive_action",
+    "exploit_validation"
+  ],
+
+  "deliverable_schema": "ExternalAttackSurfaceDeliverable",
+  "gate_validator": "validate_external_attack_surface_gate",
+
+  "required_checks": [
+    "scope_status_present",
+    "evidence_non_empty",
+    "unchecked_distinct_from_checked_empty",
+    "out_of_scope_targets_excluded",
+    "min_tool_invocations_per_check"
+  ],
+
+  "min_invocations": {
+    "dns_resolve": 1,
+    "http_probe": 1,
+    "subdomain_enum_passive": 1
+  },
+
+  "max_other_skips": 2,
+
+  "human_approval": {
+    "required_before": ["active_scan", "exploit_validation"]
+  },
+
+  "agent_continuity": "single_session",
+
+  "inherits_evidence_from": [
+    {
+      "stage_kind": "target_intel",
+      "evidence_kinds": ["dns_a", "asn", "whois"]
+    }
+  ]
+}

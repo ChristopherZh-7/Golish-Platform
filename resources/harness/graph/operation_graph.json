@@ -1,0 +1,35 @@
+{
+  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#3.1",
+  "$comment": "Base Operation DAG. Doc 3 §3.1. profile.allowed_stage_kinds 投影后即 Profile 可达 stage 子图.",
+
+  "nodes": [
+    "scoping",
+    "target_intel",
+    "external_attack_surface",
+    "enumeration",
+    "vuln_triage",
+    "verification",
+    "access_validation",
+    "internal_discovery",
+    "objective_pathing",
+    "objective_simulation",
+    "reporting",
+    "cleanup"
+  ],
+
+  "edges": [
+    { "from": "scoping", "to": "target_intel" },
+    { "from": "target_intel", "to": "external_attack_surface" },
+    { "from": "external_attack_surface", "to": "enumeration" },
+    { "from": "external_attack_surface", "to": "reporting" },
+    { "from": "enumeration", "to": "reporting" },
+    { "from": "enumeration", "to": "vuln_triage" },
+    { "from": "vuln_triage", "to": "verification" },
+    { "from": "verification", "to": "access_validation" },
+    { "from": "access_validation", "to": "internal_discovery" },
+    { "from": "internal_discovery", "to": "objective_pathing" },
+    { "from": "objective_pathing", "to": "objective_simulation" },
+    { "from": "objective_simulation", "to": "cleanup" },
+    { "from": "cleanup", "to": "reporting" }
+  ]
+}

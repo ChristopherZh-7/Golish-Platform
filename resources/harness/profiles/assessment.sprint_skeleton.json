@@ -1,0 +1,25 @@
+{
+  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#7.1",
+  "$comment": "Sprint skeleton for the assessment profile (Doc 3 §7.1). Static骨架 + planner LLM 填 specific_target_context / expected_count_range / time_budget_minutes. v0 同厂商 fallback, v1 强制 cross-vendor.",
+
+  "external_attack_surface": {
+    "expected_findings": [
+      {
+        "kind": "subdomain",
+        "expected_count_range": [1, 200],
+        "required_evidence_kinds": ["dns_a", "ct_log"]
+      },
+      {
+        "kind": "http_service",
+        "expected_count_range": [0, 50],
+        "required_evidence_kinds": ["http_probe"]
+      }
+    ],
+    "time_budget_minutes": 30,
+    "min_tool_invocations": {
+      "dns_resolve": 1,
+      "http_probe": 1,
+      "subdomain_enum_passive": 1
+    }
+  }
+}

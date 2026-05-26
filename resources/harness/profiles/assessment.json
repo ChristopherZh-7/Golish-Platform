@@ -1,0 +1,34 @@
+{
+  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#2",
+  "$comment": "Profile: Security Assessment. Doc 3 §2.1. MVP scope: profile + DAG projection only; pentest / red_team profiles 推 Phase 3+. max_authorization=L2 active_recon (低风险探测).",
+
+  "id": "assessment",
+  "display_name": "Security Assessment",
+  "max_authorization": "active_recon",
+
+  "allowed_stage_kinds": [
+    "scoping",
+    "target_intel",
+    "external_attack_surface",
+    "enumeration",
+    "reporting"
+  ],
+
+  "forbidden_stage_kinds": [
+    "vuln_triage",
+    "verification",
+    "access_validation",
+    "internal_discovery",
+    "objective_pathing",
+    "objective_simulation",
+    "cleanup"
+  ],
+
+  "approval_policy": {
+    "before_active_scan": true,
+    "before_scope_expansion": true
+  },
+
+  "cleanup_required": false,
+  "evidence_required": true
+}
