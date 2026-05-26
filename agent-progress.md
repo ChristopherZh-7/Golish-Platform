@@ -29,7 +29,43 @@
 
 ---
 
-### 2026-05-25 · 中文适配第一批：Home / Appearance / Target workspace / Settings 高频页
+### 2026-05-26 · NVIDIA NIM model registry: 清理 15 个不存在的假 ID + 加 Go-default-404 错误改写
+
+- **本轮目标**：用户上报 `mistralai/devstral-2-123b-instruct-2512` 触发 `404 page not found` 导致 main-agent / memory-gatekeeper 同时 stream 失败；排查根因后清理整个 NVIDIA NIM model 注册表，并加上对 NVIDIA NIM Go-default 404 的错误信息改写。
+- **诊断过程（证据）**：
+  - 用 curl 直接打 `https://integrate.api.nvidia.com/v1/chat/completions` 五个不同样本（无 key、错路径、假 key、无 auth、错 model），全部回 `404 page not found\n`——确认这是 NVIDIA NIM 网关（Go 写的）的默认 `http.NotFound` 输出。
+  - 拿 settings.toml 里真实 API key（`nvapi-HN4pm9RME_e5Zk-...`，已脱敏）实测 4 个 model：`qwen/qwen3.5-122b-a10b` 200 / `qwen/qwen3.5-122b` 404 / `mistralai/devstral-2-123b-instruct-2512` 404 / `meta/llama-3.1-8b-instruct` 200。证明 API key 完全可用，404 是因为部分 model ID 在 NVIDIA NIM 上根本未部署。
+  - 拉 `/v1/models` 实际列表（123 个）逐项对照 `frontend/lib/ai/models.generated.ts` 的 `NVIDIA_MODELS`（29 个）—— 15 个不在 NVIDIA NIM 实际部署中，疑似从 build.nvidia.com 的 "即将上架" 页面或 AI 自动列表抄进来的。
+- **改动**（按 §AGENTS.md §2.2-§2.3 + §G2 走 codebase 改动 + §G5 默认补 `code-audit` / `test-engineering`）：
+  - `resources/llm-models/nvidia.json`：从 29 个 model 删到 14 个（保留：Nemotron Ultra 253B、Qwen 4 个、Mistral 3 个、DeepSeek V4 Flash/Pro、Kimi K2.6、GLM 5.1、MiniMax M2.7、Step 3.5 Flash）。
+  - `frontend/scripts/model-const-keys.json`：同步删除 15 个 const-key entry。
+  - `frontend/lib/ai/models.generated.ts`：跑 `node frontend/scripts/generate-model-constants.mjs` 重新生成，NVIDIA_MODELS 现在 14 个。
+  - `frontend/lib/models/nvidia.ts`：清理 selector 平铺 + nested 分组，删除被删常量的引用。
+  - `frontend/components/Settings/SubAgentSettings/ModelOverrides.tsx`：硬编码的 `nvidia` 模型推荐列表换成 14 个真实部署的。
+  - `backend/crates/golish-models/src/descriptors/loader.rs`：guard test `nvidia_registry_contains_required_flagship_models` 的 required 列表里 3 个 fake ID 换成真实部署的（`deepseek-v4-pro` / `llama-3.1-nemotron-ultra-253b-v1` / `qwen3.5-122b-a10b`）。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/stream_retry.rs`：在 `classify_stream_start_error` 新增分支——当错误信息包含 `"404 page not found"` 时改写为 `"The selected model is not deployed on the NVIDIA NIM endpoint. Pick a different model..."` + 新增单测 `classify_nvidia_nim_go_default_404_is_model_unavailable`。
+- **已记录证据**：
+  - `cd backend && cargo test -p golish-agent-runtime --lib classify_nvidia_nim_go_default_404_is_model_unavailable` → `1 passed; 0 failed; 0 ignored; 0 measured`
+  - `cd backend && cargo test -p golish-models --lib nvidia_registry_contains_required_flagship_models` → `1 passed; 0 failed`
+  - `pnpm tsc --noEmit` → exit 0（前端 typecheck 全绿）
+  - `pnpm vitest run frontend/lib/ai/models.generated.test.ts` → `Tests 23 passed (23)`（const-key ↔ JSON ↔ models.generated 三方同步断言通过）
+- **未引入的 baseline 失败**（stash 验证后确认全是预先存在）：
+  - `just test-fe`：2 failed files / 6 failed tests（`TerminalSettings.test.tsx` 4 个 + `HomeView.memo.test.tsx` 2 个）——与本任务无关。
+  - `just lint-rust`：5 个 clippy errors（`session_dir` dead_code、`asset_intel.rs` explicit_auto_deref ×2、`webview_isolation.rs` needless_return、`integrations.rs` doc 缩进）——与本任务无关。
+  - `just check-fe`：`frontend/lib/ai/models.generated.test.ts:13` biome `organizeImports` FIXABLE——与本任务无关。
+- **后续顺手清死代码**（用户同意后补充）：
+  - `backend/crates/golish-llm-providers/src/model_capabilities/quirks.rs::nvidia_default_quirks`：删除 `deepseek-v3.1-terminus` / `nemotron-3-nano-omni` 两条字符串 match（函数 scope 锁死 NVIDIA，删除该 model 后 100% 死代码）。`cargo test -p golish-llm-providers --lib model_capabilities` → `30 passed; 0 failed`。
+  - `frontend/components/AIChatPanel/ChatModelSelector.tsx::modelIsThinkingByDefault`：**未删** `deepseek-v3.1-terminus` / `nemotron-3-nano-omni`——该函数对 NVIDIA + OpenRouter + Z.AI SDK 三个 provider 生效，OpenRouter 是 transparent passthrough，用户可能填这些 model ID，删除会让真实模型默认关 thinking，保留以充当安全网。
+- **commit 记录**：本轮未 commit；用户尚未指示。
+- **风险**：
+  - 用户可能依赖某个被删的 model（如 Devstral 2 123B）做某项实验——但即使保留也是 404，所以删除不影响**实际功能**，只影响**UI 可选项**。
+  - 如果未来 NVIDIA NIM 上线这些 model（如 Devstral 2 123B），需要按本轮路径重新加回 `nvidia.json` + `model-const-keys.json`，并跑 `node frontend/scripts/generate-model-constants.mjs`。
+- **下一步建议**：
+  1. 用户验证：在 IDE 中切到 `Qwen 3.5 122B`（已知可用）发一条消息，应当不再 404；切到任何剩下的 14 个 model 也应该全部可用。
+  2. 顺手任务（可选）：清理 quirks.rs 和 ChatModelSelector.tsx 的死代码字符串 match。
+  3. 顺手任务（可选）：考虑在 `generate-model-constants.mjs` 加一个 CI step——对每个 provider 调实际 `/v1/models` API 校验 nvidia.json 中 ID 都真实存在（避免再次出现 fake ID 漂移）。
+
+---
 
 - **本轮目标**：用户反馈中文适配很差，要求全面处理；本轮先做高频设置页和当前 Target 工作区的第一批可验证中文化。
 - **已完成**：

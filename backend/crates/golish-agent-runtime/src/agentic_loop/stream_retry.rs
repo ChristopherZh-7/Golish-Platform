@@ -71,6 +71,20 @@ pub(super) fn classify_stream_start_error(error_str: &str) -> StreamStartErrorCl
         };
     }
 
+    // NVIDIA NIM gateway emits Go's default `http.NotFound` body when the requested
+    // model is not actually deployed (and also for any other unrouted request).
+    // Without this branch the user sees the bare "404 page not found" SSE error,
+    // which is impossible to act on. Map it to a concrete, actionable message.
+    if lower.contains("404 page not found") {
+        return StreamStartErrorClassification {
+            error_type: "model_unavailable",
+            user_message:
+                "The selected model is not deployed on the NVIDIA NIM endpoint. Pick a different model from the selector, or verify the model ID in `resources/llm-models/nvidia.json` matches `/v1/models` from https://integrate.api.nvidia.com."
+                    .to_string(),
+            retriable: false,
+        };
+    }
+
     let looks_transient = lower.contains("connection")
         || lower.contains("network")
         || lower.contains("temporar")
@@ -157,6 +171,23 @@ mod tests {
     use tokio::sync::RwLock;
 
     use rig::completion::Message;
+
+    #[test]
+    fn classify_nvidia_nim_go_default_404_is_model_unavailable() {
+        // Real-world sample from NVIDIA NIM gateway when the requested model ID
+        // is not actually deployed (e.g. `mistralai/devstral-2-123b-instruct-2512`
+        // back when it was only present in the docs but not in `/v1/models`).
+        let raw =
+            "ProviderError: Invalid status code 404 Not Found with message: 404 page not found\n";
+        let classification = classify_stream_start_error(raw);
+        assert_eq!(classification.error_type, "model_unavailable");
+        assert!(
+            classification.user_message.contains("NVIDIA NIM"),
+            "user message should mention NVIDIA NIM: {}",
+            classification.user_message
+        );
+        assert!(!classification.retriable);
+    }
 
     #[derive(Debug, Clone)]
     enum StreamStartAttempt {

@@ -3,67 +3,12 @@
   "default_capabilities_base": "nvidia_defaults",
   "models": [
     {
-      "id": "nvidia/nemotron-3-super-120b-a12b",
-      "display_name": "Nemotron 3 Super 120B",
-      "capabilities": {
-        "base": "nvidia_large_defaults",
-        "context_window": 1000000,
-        "max_output_tokens": 8192
-      },
-      "aliases": ["nemotron-120b", "nemotron-super"]
-    },
-    {
-      "id": "nvidia/nemotron-3-nano-30b-a3b",
-      "display_name": "Nemotron 3 Nano 30B",
-      "capabilities": {
-        "base": "nvidia_defaults",
-        "context_window": 1000000
-      },
-      "aliases": ["nemotron-nano", "nemotron-30b"]
-    },
-    {
-      "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-      "display_name": "Nemotron 3 Nano Omni Reasoning",
-      "capabilities": {
-        "base": "nvidia_defaults",
-        "context_window": 1000000,
-        "supports_vision": true,
-        "supports_thinking_history": true
-      },
-      "aliases": ["nemotron-3-nano-omni", "nemotron-omni"],
-      "thinking_quirks": "explicit_thinking"
-    },
-    {
-      "id": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-      "display_name": "Nemotron Super 49B",
-      "capabilities": {
-        "base": "nvidia_defaults"
-      },
-      "aliases": ["nemotron-49b", "nemotron-super-49b"]
-    },
-    {
       "id": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
       "display_name": "Nemotron Ultra 253B",
       "capabilities": {
         "base": "nvidia_large_defaults"
       },
       "aliases": ["nemotron-ultra", "nemotron-253b"]
-    },
-    {
-      "id": "nvidia/nvidia-nemotron-nano-9b-v2",
-      "display_name": "Nemotron Nano 9B",
-      "capabilities": {
-        "base": "nvidia_small_defaults"
-      },
-      "aliases": ["nemotron-9b"]
-    },
-    {
-      "id": "nvidia/llama-3.1-nemotron-nano-4b-v1.1",
-      "display_name": "Nemotron Nano 4B",
-      "capabilities": {
-        "base": "nvidia_small_defaults"
-      },
-      "aliases": ["nemotron-4b"]
     },
     {
       "id": "qwen/qwen3-coder-480b-a35b-instruct",
@@ -110,16 +55,6 @@
       "aliases": ["mistral-large-3"]
     },
     {
-      "id": "mistralai/mistral-small-4-119b-2603",
-      "display_name": "Mistral Small 4 119B",
-      "capabilities": {
-        "base": "nvidia_defaults",
-        "context_window": 256000,
-        "supports_vision": true
-      },
-      "aliases": ["mistral-small-4"]
-    },
-    {
       "id": "mistralai/mistral-medium-3.5-128b",
       "display_name": "Mistral Medium 3.5 128B",
       "capabilities": {
@@ -130,29 +65,12 @@
       "aliases": ["mistral-medium-3.5"]
     },
     {
-      "id": "mistralai/devstral-2-123b-instruct-2512",
-      "display_name": "Devstral 2 123B",
-      "capabilities": {
-        "base": "nvidia_large_defaults",
-        "context_window": 256000
-      },
-      "aliases": ["devstral-2", "devstral"]
-    },
-    {
       "id": "mistralai/mistral-nemotron",
       "display_name": "Mistral Nemotron",
       "capabilities": {
         "base": "nvidia_defaults"
       },
       "aliases": ["mistral-nemotron"]
-    },
-    {
-      "id": "mistralai/magistral-small-2506",
-      "display_name": "Magistral Small",
-      "capabilities": {
-        "base": "nvidia_defaults"
-      },
-      "aliases": ["magistral-small"]
     },
     {
       "id": "deepseek-ai/deepseek-v4-flash",
@@ -177,17 +95,6 @@
       "thinking_quirks": "explicit_thinking"
     },
     {
-      "id": "deepseek-ai/deepseek-v3.1-terminus",
-      "display_name": "DeepSeek V3.1 Terminus",
-      "capabilities": {
-        "base": "nvidia_large_defaults",
-        "context_window": 128000,
-        "supports_thinking_history": true
-      },
-      "aliases": ["deepseek-v3.1-terminus"],
-      "thinking_quirks": "explicit_thinking"
-    },
-    {
       "id": "moonshotai/kimi-k2.6",
       "display_name": "Kimi K2.6",
       "capabilities": {
@@ -197,15 +104,6 @@
       },
       "aliases": ["kimi-k2.6", "kimi-k2-6"],
       "thinking_quirks": "explicit_thinking"
-    },
-    {
-      "id": "moonshotai/kimi-k2-instruct-0905",
-      "display_name": "Kimi K2 Instruct 0905",
-      "capabilities": {
-        "base": "nvidia_defaults",
-        "context_window": 256000
-      },
-      "aliases": ["kimi-k2-instruct-0905"]
     },
     {
       "id": "z-ai/glm-5.1",
@@ -218,37 +116,12 @@
       "thinking_quirks": "explicit_thinking"
     },
     {
-      "id": "z-ai/glm-4.7",
-      "display_name": "GLM 4.7",
-      "capabilities": {
-        "base": "nvidia_defaults"
-      },
-      "aliases": ["glm-4.7"]
-    },
-    {
       "id": "minimaxai/minimax-m2.7",
       "display_name": "MiniMax M2.7",
       "capabilities": {
         "base": "nvidia_large_defaults"
       },
       "aliases": ["minimax-m2.7"]
-    },
-    {
-      "id": "meta/llama-3.1-405b-instruct",
-      "display_name": "Llama 3.1 405B",
-      "capabilities": {
-        "base": "nvidia_large_defaults"
-      },
-      "aliases": ["llama-405b"]
-    },
-    {
-      "id": "meta/llama-4-maverick-17b-128e-instruct",
-      "display_name": "Llama 4 Maverick 17B",
-      "capabilities": {
-        "base": "nvidia_defaults",
-        "supports_vision": true
-      },
-      "aliases": ["llama-4-maverick"]
     },
     {
       "id": "stepfun-ai/step-3.5-flash",
@@ -259,14 +132,6 @@
       },
       "aliases": ["step-3.5-flash"],
       "thinking_quirks": "explicit_thinking"
-    },
-    {
-      "id": "google/gemma-4-31b-it",
-      "display_name": "Gemma 4 31B",
-      "capabilities": {
-        "base": "nvidia_defaults"
-      },
-      "aliases": ["gemma-4-31b"]
     }
   ]
 }

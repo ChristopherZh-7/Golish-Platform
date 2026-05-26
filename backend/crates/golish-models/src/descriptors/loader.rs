@@ -235,13 +235,13 @@ mod tests {
         let required = [
             "moonshotai/kimi-k2.6",
             "deepseek-ai/deepseek-v4-flash",
-            "deepseek-ai/deepseek-v3.1-terminus",
+            "deepseek-ai/deepseek-v4-pro",
             "z-ai/glm-5.1",
             "minimaxai/minimax-m2.7",
             "mistralai/mistral-medium-3.5-128b",
-            "nvidia/nemotron-3-super-120b-a12b",
+            "nvidia/llama-3.1-nemotron-ultra-253b-v1",
             "qwen/qwen3-coder-480b-a35b-instruct",
-            "google/gemma-4-31b-it",
+            "qwen/qwen3.5-122b-a10b",
         ];
         for id in required {
             assert!(

@@ -233,8 +233,6 @@ fn nvidia_default_quirks(model_lower: &str) -> ProviderStreamQuirks {
         || model_lower.contains("kimi-k2-6")
         || model_lower.contains("deepseek-r1")
         || model_lower.contains("deepseek-v4")
-        || model_lower.contains("deepseek-v3.1-terminus")
-        || model_lower.contains("nemotron-3-nano-omni")
         || model_lower.contains("step-3.5-flash")
         || model_lower.contains("glm-5.1")
         || (model_lower.contains("qwen3") && model_lower.contains("thinking"));
