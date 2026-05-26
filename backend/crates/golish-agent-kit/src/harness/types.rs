@@ -1,0 +1,274 @@
+//! Harness shared DTO 类型 (Doc 3 §2 / §4 / §6 / §11).
+//!
+//! 本文件**只**放 cross-module 的 newtype / enum / struct, 不做 IO / 不带 trait
+//! impl 块; 实施在各 module 里.
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use golish_pentest::evidence_ledger::EvidenceAuditId;
+
+/// Stage 种类 · 与 resources/harness/graph/operation_graph.json 的 nodes 一致.
+///
+/// Phase 1c MVP 仅实现 `ExternalAttackSurface`; 其它 stage 占位, 推 Phase 2-4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StageKind {
+    Scoping,
+    TargetIntel,
+    ExternalAttackSurface,
+    Enumeration,
+    VulnTriage,
+    Verification,
+    AccessValidation,
+    InternalDiscovery,
+    ObjectivePathing,
+    ObjectiveSimulation,
+    Reporting,
+    Cleanup,
+}
+
+impl StageKind {
+    /// JSON / config 字符串映射. 仅 lossless 双向.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Scoping => "scoping",
+            Self::TargetIntel => "target_intel",
+            Self::ExternalAttackSurface => "external_attack_surface",
+            Self::Enumeration => "enumeration",
+            Self::VulnTriage => "vuln_triage",
+            Self::Verification => "verification",
+            Self::AccessValidation => "access_validation",
+            Self::InternalDiscovery => "internal_discovery",
+            Self::ObjectivePathing => "objective_pathing",
+            Self::ObjectiveSimulation => "objective_simulation",
+            Self::Reporting => "reporting",
+            Self::Cleanup => "cleanup",
+        }
+    }
+
+    /// 名为 `try_parse` 而非 `from_str` 以避免与 `std::str::FromStr::from_str` 重名;
+    /// 调用方写 `StageKind::try_parse(...)` 即可.
+    pub fn try_parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "scoping" => Self::Scoping,
+            "target_intel" => Self::TargetIntel,
+            "external_attack_surface" => Self::ExternalAttackSurface,
+            "enumeration" => Self::Enumeration,
+            "vuln_triage" => Self::VulnTriage,
+            "verification" => Self::Verification,
+            "access_validation" => Self::AccessValidation,
+            "internal_discovery" => Self::InternalDiscovery,
+            "objective_pathing" => Self::ObjectivePathing,
+            "objective_simulation" => Self::ObjectiveSimulation,
+            "reporting" => Self::Reporting,
+            "cleanup" => Self::Cleanup,
+            _ => return None,
+        })
+    }
+}
+
+/// Stage risk level · stage_spec.json 字段映射.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskLevel {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// IntentAxis · 用户意图四档 (Doc 3 §6.1).
+///
+/// gate 验证时读 (Doc 3 §2.3 effective_tool_allow_set 投影), agent 看不到.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntentAxis {
+    PassiveObserve,
+    ActiveProbe,
+    VulnValidation,
+    ExploitValidation,
+}
+
+/// Agent continuity 二值 (Doc 3 §10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentContinuity {
+    SingleSession,
+    MultiSessionRelay,
+}
+
+/// Doc 3 §4.3 Finding severity (与 golish-pentest::models::Severity 同语义但独立类型,
+/// 不创依赖循环).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingSeverity {
+    Info,
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// Doc 3 §4.3 StageClaim · 每个 claim 必有 evidence_refs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageClaim {
+    pub kind: String,
+    pub subject: String,
+    pub summary: String,
+    pub evidence_ids: Vec<EvidenceAuditId>,
+}
+
+/// Doc 3 §4.3 SkippedCheckRecord · reason 引用 Doc 1 §4.6 强制枚举 SkipReason.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkippedCheckRecord {
+    pub check: String,
+    pub reason: golish_pentest::evidence_ledger::SkipReason,
+}
+
+/// Doc 3 §4.3 Finding · 结构化交付.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Finding {
+    pub finding_id: Uuid,
+    pub kind: String,
+    pub subject: String,
+    pub severity: FindingSeverity,
+    pub evidence_refs: Vec<EvidenceAuditId>,
+}
+
+/// Doc 3 §4.3 ExternalAttackSurfaceDeliverable.
+///
+/// agent 提交给 gate 的输入 contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalAttackSurfaceDeliverable {
+    pub stage_id: String,
+    pub stage_run_id: Uuid,
+    pub claims: Vec<StageClaim>,
+    pub evidence_refs: Vec<EvidenceAuditId>,
+    #[serde(default)]
+    pub skipped_checks: Vec<SkippedCheckRecord>,
+    pub findings: Vec<Finding>,
+    /// **app-level hint**, gate 用 StageSpec.required_checks 为准.
+    #[serde(default)]
+    pub required_checks_done: Vec<String>,
+}
+
+/// HarnessStageHint · 嵌入到 PlannedSubtask, Task 1c.6 在 task_orchestrator 用.
+///
+/// 用 newtype 包 StageKind 是为了在 PlannedSubtask 末尾 ts-rs 友好扩字段 +
+/// serde(default) 后向兼容; 不直接放裸 StageKind.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HarnessStageHint {
+    pub stage_kind: StageKind,
+}
+
+impl HarnessStageHint {
+    pub fn new(stage_kind: StageKind) -> Self {
+        Self { stage_kind }
+    }
+}
+
+/// Doc 3 §8 GateResult 配套 · recovery_actions 喂回 refiner 用.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HarnessRecoveryActions {
+    /// 自然语言 hint, refiner 拼到 system prompt.
+    pub hints: Vec<String>,
+    /// 期望补跑的 tool calls.
+    pub repair_tool_calls: Vec<String>,
+    /// 期望补 evidence 的 kind (与 evidence_kinds.json 一致).
+    pub missing_evidence_kinds: Vec<String>,
+}
+
+impl HarnessRecoveryActions {
+    pub fn is_empty(&self) -> bool {
+        self.hints.is_empty()
+            && self.repair_tool_calls.is_empty()
+            && self.missing_evidence_kinds.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stage_kind_serde_snake_case_roundtrip() {
+        for kind in [
+            StageKind::Scoping,
+            StageKind::TargetIntel,
+            StageKind::ExternalAttackSurface,
+            StageKind::Enumeration,
+            StageKind::VulnTriage,
+            StageKind::Verification,
+            StageKind::Cleanup,
+        ] {
+            let s = serde_json::to_string(&kind).unwrap();
+            let back: StageKind = serde_json::from_str(&s).unwrap();
+            assert_eq!(kind, back);
+            // as_str / try_parse 双向也要一致
+            assert_eq!(StageKind::try_parse(kind.as_str()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn stage_kind_try_parse_unknown_returns_none() {
+        assert_eq!(StageKind::try_parse("garbage"), None);
+        assert_eq!(StageKind::try_parse(""), None);
+    }
+
+    #[test]
+    fn risk_level_serde() {
+        let r = serde_json::to_string(&RiskLevel::Medium).unwrap();
+        assert_eq!(r, "\"medium\"");
+    }
+
+    #[test]
+    fn intent_axis_four_variants_serde() {
+        for v in [
+            IntentAxis::PassiveObserve,
+            IntentAxis::ActiveProbe,
+            IntentAxis::VulnValidation,
+            IntentAxis::ExploitValidation,
+        ] {
+            let s = serde_json::to_string(&v).unwrap();
+            let back: IntentAxis = serde_json::from_str(&s).unwrap();
+            assert_eq!(v, back);
+        }
+    }
+
+    #[test]
+    fn harness_recovery_actions_is_empty_when_default() {
+        let r = HarnessRecoveryActions::default();
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn harness_recovery_actions_not_empty_with_hint() {
+        let mut r = HarnessRecoveryActions::default();
+        r.hints.push("补一个 DNS 解析".to_string());
+        assert!(!r.is_empty());
+    }
+
+    #[test]
+    fn deliverable_serde_roundtrip() {
+        let d = ExternalAttackSurfaceDeliverable {
+            stage_id: "external_attack_surface".to_string(),
+            stage_run_id: Uuid::new_v4(),
+            claims: vec![],
+            evidence_refs: vec![EvidenceAuditId::new(1), EvidenceAuditId::new(2)],
+            skipped_checks: vec![],
+            findings: vec![],
+            required_checks_done: vec!["scope_status_present".to_string()],
+        };
+        let s = serde_json::to_string(&d).unwrap();
+        let back: ExternalAttackSurfaceDeliverable = serde_json::from_str(&s).unwrap();
+        assert_eq!(d.evidence_refs.len(), back.evidence_refs.len());
+        assert_eq!(d.stage_id, back.stage_id);
+    }
+
+    #[test]
+    fn harness_stage_hint_constructor() {
+        let h = HarnessStageHint::new(StageKind::ExternalAttackSurface);
+        assert_eq!(h.stage_kind, StageKind::ExternalAttackSurface);
+    }
+}

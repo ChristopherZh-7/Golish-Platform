@@ -50,6 +50,7 @@ pub mod db_shim;
 pub mod db_tracking;
 pub mod db_traits;
 pub mod execution_mode;
+pub mod harness;
 pub mod hitl;
 pub mod llm_client;
 pub mod loop_detection;

@@ -19,6 +19,9 @@ golish-llm-providers = { workspace = true }
 golish-sub-agents = { workspace = true }
 golish-prompts = { workspace = true }
 
+# Evidence Ledger types + sanitizer (Phase 1c stage harness gate)
+golish-pentest = { workspace = true }
+
 # JSON repair for malformed LLM output
 golish-json-repair = { path = "../golish-json-repair" }
 
