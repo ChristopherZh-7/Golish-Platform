@@ -56,6 +56,7 @@ mod single_tool_call;
 mod stream_processor;
 mod stream_retry;
 pub mod sub_agent_dispatch;
+pub mod tool_classifier;
 mod tool_dispatch;
 mod tool_execution;
 mod tool_list;

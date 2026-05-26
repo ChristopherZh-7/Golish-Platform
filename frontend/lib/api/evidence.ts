@@ -63,6 +63,5 @@ export interface EvidenceSummary {
  *   - `Database` on connection / SQL failure (auto-wrapped by `GolishError`).
  */
 export const evidenceApi = {
-  read: (request: ReadEvidenceRequest) =>
-    invoke<EvidenceSummary>("evidence_read", { request }),
+  read: (request: ReadEvidenceRequest) => invoke<EvidenceSummary>("evidence_read", { request }),
 };
