@@ -1,0 +1,13 @@
+{
+  "$schema": "../../docs/design/2026-05-26-evidence-ledger-on-existing-audit-log.md#6.1",
+  "$comment": "Evidence kind aging registry (Doc 1 §6.1). Phase 1a static config. Stage spec can override max_evidence_age_for_finding per stage; gate调用顺序: stage_spec.override -> evidence_kinds.json default -> 7 days fallback. 改阈值 = 改 PR (走 git 版本化, 不入 DB).",
+
+  "dns_a": { "default_max_age_secs": 86400 },
+  "dns_aaaa": { "default_max_age_secs": 86400 },
+  "ct_log": { "default_max_age_secs": 604800 },
+  "cve_feed": { "default_max_age_secs": 86400 },
+  "nmap": { "default_max_age_secs": 259200 },
+  "http_probe": { "default_max_age_secs": 21600 },
+  "shodan_query": { "default_max_age_secs": 3600 },
+  "whois": { "default_max_age_secs": 2592000 }
+}
