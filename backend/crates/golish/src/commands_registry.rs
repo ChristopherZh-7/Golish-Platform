@@ -12,6 +12,7 @@
 
 use commands_facade::ai::*;
 use commands_facade::asset_intel::*;
+use commands_facade::evidence::*;
 use commands_facade::findings::*;
 use commands_facade::git_pty::*;
 use commands_facade::indexer::*;
@@ -214,5 +215,7 @@ fn install_handlers(
         sensitive_scan_clear, sensitive_scan_confirm, sensitive_scan_default_paths, sensitive_scan_apply_verdicts,
         mcp_list_servers, mcp_list_tools, mcp_get_config, mcp_is_project_trusted, mcp_trust_project_config,
         mcp_has_project_config, mcp_connect, mcp_disconnect, mcp_setup_builtin,
+        // ── evidence (Phase 1b · Doc 2 §3 Evidence Ledger MCP resource) ──
+        evidence_read,
     ])
 }

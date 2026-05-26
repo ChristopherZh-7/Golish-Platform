@@ -33,6 +33,7 @@
 
 pub mod ai;
 pub mod asset_intel;
+pub mod evidence;
 pub mod findings;
 pub mod git_pty;
 pub mod indexer;

@@ -55,6 +55,9 @@ pub mod organizations;
 // Audit log
 pub mod audit;
 
+// Evidence Ledger Tauri command (Doc 2 §3 · Phase 1b Task 1b.2)
+pub mod evidence;
+
 // Wordlist manager
 pub mod wordlists;
 
