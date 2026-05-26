@@ -1,8 +1,20 @@
 //! Doc 3 §8.2 freshness_check · evidence as_of_timestamp + max_age 比较.
 //!
-//! Phase 1c.2 skeleton · evidence_refs 仅做 count 检查 (Task 1c.5 完整加入
-//! per-evidence freshness lookup via evidence_kinds.json registry +
-//! evidence_classifications.valid_from).
+//! Phase 1c.5 完整版:
+//!   1. Sanity: claim/finding 引用的 evidence_id 必须在 deliverable.evidence_refs
+//!   2. Freshness: 调用方可传 `evidence_ages` 映射 (eid → age via Utc::now -
+//!      as_of_timestamp); freshness_check 用 `EvidenceKindRegistry` 配 `evidence_kinds`
+//!      Doc 1 §6.1 默认 + 7 days fallback 比较.
+//!
+//! Phase 1 MVP `run()` 单参版仍保留 sanity-only path; `run_with_freshness()`
+//! 接受额外 `evidence_kinds + evidence_ages` 启用真 max_age 比较.
+
+use std::collections::HashMap;
+use std::time::Duration as StdDuration;
+
+use chrono::Duration;
+use golish_pentest::evidence_kinds::EvidenceKindRegistry;
+use golish_pentest::evidence_ledger::EvidenceAuditId;
 
 use super::super::stage_spec::StageSpec;
 use super::super::types::{ExternalAttackSurfaceDeliverable, HarnessRecoveryActions};
@@ -46,6 +58,88 @@ pub fn run(
         recovery
             .hints
             .push("add all claim/finding-referenced evidence ids to deliverable.evidence_refs".to_string());
+        GateCheckOutcome::Block { reasons, recovery }
+    }
+}
+
+/// 完整版本: 额外接受 `evidence_kinds + evidence_ages` 启用 max_age 比较.
+///
+/// `evidence_kinds[eid]` 给 evidence kind 字符串 (用于查 EvidenceKindRegistry);
+/// `evidence_ages[eid]` 给 evidence 已存在多久 (Utc::now - as_of_timestamp).
+/// stage_spec 不提供 override; 用 evidence_kinds.json default + 7 days fallback.
+pub fn run_with_freshness(
+    deliverable: &ExternalAttackSurfaceDeliverable,
+    spec: &StageSpec,
+    evidence_kinds: &HashMap<EvidenceAuditId, String>,
+    evidence_ages: &HashMap<EvidenceAuditId, StdDuration>,
+) -> GateCheckOutcome {
+    // 1. 先跑 sanity (eid 引用一致性)
+    let sanity = run(deliverable, spec);
+    let registry = EvidenceKindRegistry::instance();
+
+    let mut reasons = Vec::new();
+    let mut recovery = HarnessRecoveryActions::default();
+
+    if let GateCheckOutcome::Block {
+        reasons: r,
+        recovery: rec,
+    } = sanity
+    {
+        reasons.extend(r);
+        recovery.hints.extend(rec.hints);
+        recovery
+            .repair_tool_calls
+            .extend(rec.repair_tool_calls);
+        recovery
+            .missing_evidence_kinds
+            .extend(rec.missing_evidence_kinds);
+    }
+
+    // 2. 对 deliverable.evidence_refs 中每条 eid 做 freshness 检查
+    for eid in &deliverable.evidence_refs {
+        let kind = match evidence_kinds.get(eid) {
+            Some(k) => k.as_str(),
+            None => continue, // 未提供 kind 信息 → 跳过 (gate 仍能放过)
+        };
+        let age = match evidence_ages.get(eid).copied() {
+            Some(a) => a,
+            None => continue,
+        };
+        let max_age_std = registry.max_age_with_default(kind);
+        let max_age = Duration::from_std(max_age_std).unwrap_or_else(|_| Duration::days(7));
+        let age_chrono =
+            Duration::from_std(age).unwrap_or_else(|_| Duration::seconds(0));
+        // age >= 2 * max → hard expired (block); age >= max → soft stale (block 但软)
+        if age_chrono >= max_age * 2 {
+            reasons.push(format!(
+                "evidence eid={} kind={} hard-expired (age={}s, max={}s)",
+                eid.as_i64(),
+                kind,
+                age.as_secs(),
+                max_age_std.as_secs()
+            ));
+            recovery.missing_evidence_kinds.push(kind.to_string());
+            recovery.repair_tool_calls.push(format!(
+                "re-acquire fresh {} evidence",
+                kind
+            ));
+        } else if age_chrono >= max_age {
+            reasons.push(format!(
+                "evidence eid={} kind={} stale (age={}s, max={}s)",
+                eid.as_i64(),
+                kind,
+                age.as_secs(),
+                max_age_std.as_secs()
+            ));
+            recovery
+                .hints
+                .push(format!("consider re-checking stale {} evidence", kind));
+        }
+    }
+
+    if reasons.is_empty() {
+        GateCheckOutcome::Pass
+    } else {
         GateCheckOutcome::Block { reasons, recovery }
     }
 }
@@ -137,5 +231,106 @@ mod tests {
             }
             _ => panic!("expected Block"),
         }
+    }
+
+    #[test]
+    fn run_with_freshness_pass_when_evidence_fresh() {
+        let spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
+        let mut d = empty_deliverable();
+        let eid = EvidenceAuditId::new(1);
+        d.evidence_refs = vec![eid];
+        d.findings.push(Finding {
+            finding_id: Uuid::new_v4(),
+            kind: "subdomain".to_string(),
+            subject: "x.example.com".to_string(),
+            severity: FindingSeverity::Info,
+            evidence_refs: vec![eid],
+        });
+        let mut kinds = std::collections::HashMap::new();
+        kinds.insert(eid, "dns_a".to_string()); // 86400s max
+        let mut ages = std::collections::HashMap::new();
+        ages.insert(eid, std::time::Duration::from_secs(60)); // 1 min - 极新
+        assert!(matches!(
+            run_with_freshness(&d, &spec, &kinds, &ages),
+            GateCheckOutcome::Pass
+        ));
+    }
+
+    #[test]
+    fn run_with_freshness_stale_blocks_softly() {
+        let spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
+        let mut d = empty_deliverable();
+        let eid = EvidenceAuditId::new(1);
+        d.evidence_refs = vec![eid];
+        d.findings.push(Finding {
+            finding_id: Uuid::new_v4(),
+            kind: "subdomain".to_string(),
+            subject: "x.example.com".to_string(),
+            severity: FindingSeverity::Info,
+            evidence_refs: vec![eid],
+        });
+        let mut kinds = std::collections::HashMap::new();
+        kinds.insert(eid, "http_probe".to_string()); // 21600s max (6h)
+        let mut ages = std::collections::HashMap::new();
+        // age = 8h (between 6h and 12h) → Stale (block)
+        ages.insert(eid, std::time::Duration::from_secs(8 * 3600));
+        match run_with_freshness(&d, &spec, &kinds, &ages) {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons.iter().any(|r| r.contains("stale")));
+            }
+            _ => panic!("expected Block (stale)"),
+        }
+    }
+
+    #[test]
+    fn run_with_freshness_hard_expired_blocks_with_repair() {
+        let spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
+        let mut d = empty_deliverable();
+        let eid = EvidenceAuditId::new(1);
+        d.evidence_refs = vec![eid];
+        d.findings.push(Finding {
+            finding_id: Uuid::new_v4(),
+            kind: "subdomain".to_string(),
+            subject: "x.example.com".to_string(),
+            severity: FindingSeverity::Info,
+            evidence_refs: vec![eid],
+        });
+        let mut kinds = std::collections::HashMap::new();
+        kinds.insert(eid, "http_probe".to_string());
+        let mut ages = std::collections::HashMap::new();
+        // age = 24h (> 2 * 6h) → hard expired (block + repair tool call)
+        ages.insert(eid, std::time::Duration::from_secs(24 * 3600));
+        match run_with_freshness(&d, &spec, &kinds, &ages) {
+            GateCheckOutcome::Block { reasons, recovery } => {
+                assert!(reasons.iter().any(|r| r.contains("hard-expired")));
+                assert!(recovery
+                    .repair_tool_calls
+                    .iter()
+                    .any(|c| c.contains("re-acquire fresh http_probe")));
+            }
+            _ => panic!("expected Block (hard-expired)"),
+        }
+    }
+
+    #[test]
+    fn run_with_freshness_missing_kind_skipped() {
+        let spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
+        let mut d = empty_deliverable();
+        let eid = EvidenceAuditId::new(1);
+        d.evidence_refs = vec![eid];
+        d.findings.push(Finding {
+            finding_id: Uuid::new_v4(),
+            kind: "subdomain".to_string(),
+            subject: "x.example.com".to_string(),
+            severity: FindingSeverity::Info,
+            evidence_refs: vec![eid],
+        });
+        // 不提供 kind / age → 跳过 freshness 检查仅做 sanity → Pass
+        let kinds = std::collections::HashMap::new();
+        let ages = std::collections::HashMap::new();
+        assert!(matches!(
+            run_with_freshness(&d, &spec, &kinds, &ages),
+            GateCheckOutcome::Pass
+        ));
     }
 }
