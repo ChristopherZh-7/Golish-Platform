@@ -369,14 +369,17 @@ impl AgentBridge {
     /// Used when reopening an existing conversation to give the AI context.
     pub async fn restore_conversation_history(&self, messages: Vec<(String, String)>) {
         let mut history = Vec::new();
+        let mut estimated_tokens: usize = 0;
         for (role, content) in messages {
             match role.as_str() {
                 "user" => {
+                    estimated_tokens += tokenx_rs::estimate_token_count(&content);
                     history.push(Message::User {
                         content: OneOrMany::one(UserContent::Text(Text { text: content })),
                     });
                 }
                 "assistant" => {
+                    estimated_tokens += tokenx_rs::estimate_token_count(&content);
                     history.push(Message::Assistant {
                         id: None,
                         content: OneOrMany::one(AssistantContent::Text(Text { text: content })),
@@ -388,12 +391,26 @@ impl AgentBridge {
             }
         }
         let count = history.len();
-        let mut guard = self.session.conversation_history.write().await;
-        *guard = history;
+        {
+            let mut guard = self.session.conversation_history.write().await;
+            *guard = history;
+        }
         tracing::info!(
-            "[restore] Restored {} messages to conversation history",
-            count
+            "[restore] Restored {} messages to conversation history (estimated ~{} tokens)",
+            count,
+            estimated_tokens
         );
+
+        if count > 0 {
+            let model_config = golish_context::TokenBudgetConfig::for_model(&self.llm.model_name);
+            let max_tokens = model_config.max_context_tokens;
+            let utilization = estimated_tokens as f64 / max_tokens as f64;
+            self.emit_event(AiEvent::ContextWarning {
+                utilization,
+                total_tokens: estimated_tokens,
+                max_tokens,
+            });
+        }
     }
 
     pub(super) async fn persist_terminal_error_state(&self, terminal_state: &TerminalErrorState) {

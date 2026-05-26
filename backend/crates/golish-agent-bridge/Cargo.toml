@@ -42,6 +42,7 @@ tracing = { workspace = true }
 dirs = { workspace = true }
 parking_lot = { workspace = true }
 regex = { workspace = true }
+tokenx-rs = { workspace = true }
 
 # LLM via rig
 rig-core = { workspace = true }

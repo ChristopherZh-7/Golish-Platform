@@ -95,10 +95,7 @@ pub fn embedded_defaults_for(provider: AiProvider) -> Vec<ModelDefinition> {
     file_into_definitions(file, provider)
 }
 
-fn file_into_definitions(
-    file: ProviderModelsFile,
-    provider: AiProvider,
-) -> Vec<ModelDefinition> {
+fn file_into_definitions(file: ProviderModelsFile, provider: AiProvider) -> Vec<ModelDefinition> {
     let default_base = file.default_capabilities_base.clone();
     file.models
         .into_iter()
@@ -111,11 +108,7 @@ fn descriptor_into_definition(
     provider: AiProvider,
     default_base: Option<&str>,
 ) -> ModelDefinition {
-    let base_name = desc
-        .capabilities
-        .base
-        .as_deref()
-        .or(default_base);
+    let base_name = desc.capabilities.base.as_deref().or(default_base);
     let base = resolve_capabilities_base(base_name);
     let capabilities = merge_capabilities(base, &desc.capabilities);
 

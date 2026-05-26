@@ -21,26 +21,26 @@ export const ContextUsageRing = memo(function ContextUsageRing({
           r="8"
           fill="none"
           stroke="currentColor"
-          strokeWidth="2"
-          className="text-muted-foreground/20"
+          strokeWidth="2.5"
+          className="text-muted-foreground/40"
         />
         <circle
           cx="10"
           cy="10"
           r="8"
           fill="none"
-          strokeWidth="2"
+          strokeWidth="2.5"
           strokeLinecap="round"
           strokeDasharray={`${(contextUsage?.utilization ?? 0) * 50.27} 50.27`}
           className={cn(
             "transition-all duration-300",
             !contextUsage
-              ? "text-muted-foreground/30"
-              : contextUsage.utilization > 0.9
+              ? "text-muted-foreground/40"
+              : contextUsage.utilization > 0.85
                 ? "text-red-400"
-                : contextUsage.utilization > 0.7
+                : contextUsage.utilization > 0.6
                   ? "text-[#e0af68]"
-                  : "text-accent"
+                  : "text-success"
           )}
           stroke="currentColor"
         />

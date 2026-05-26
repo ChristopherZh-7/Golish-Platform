@@ -101,7 +101,10 @@ mod tests {
         let m = &parsed.models[0];
         assert_eq!(m.id, "moonshotai/kimi-k2.6");
         assert_eq!(m.display_name, "Kimi K2.6");
-        assert_eq!(m.capabilities.base.as_deref(), Some("nvidia_large_defaults"));
+        assert_eq!(
+            m.capabilities.base.as_deref(),
+            Some("nvidia_large_defaults")
+        );
         assert_eq!(m.capabilities.context_window, Some(256_000));
         assert_eq!(m.capabilities.supports_thinking_history, Some(true));
         assert_eq!(m.aliases, vec!["kimi-k2.6", "kimi-k2-6"]);
