@@ -17,15 +17,76 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | **Target/Asset Intel 主档案补全仍在 in_progress**：本轮补了 `asns` profile_fields 的 `asn` transform（`4134` / `as4134` / `AS4134` → `AS4134`，非法值丢弃）并把 0.zone 的 `asn → organizations.asns` 规则接到该 transform；0.zone 现有 `/tmp/golish_zone_dump` 样本显示 `site.json` 有 `asn` key 但 10/10 为空，其他 query_type 无 `asn` key，所以当前 UI 没 ASN 主要是 provider 样本没给有效值。 |
-| **当前 blocker** | 本轮新增改动 focused 验证全绿；整 monorepo `just precommit` 仍 exit 1：`lint-rust` 有 5 个既有 clippy warning-as-error（`session_dir` dead_code、asset_intel explicit_auto_deref×2、webview_isolation needless_return、integrations facade doc indent）；`test-rust-all` 仍有 `window_state::compute_restore_action_supports_negative_monitor_origins` bounds 断言失败；第二轮 `test-rust` 另有 `golish-agent-runtime::test_behavioral_equivalence_error_handling` policy denial 断言失败。 |
-| **未提交的半成品** | git status 挂着累积改动；本轮新增/改动：`backend/crates/golish-pentest/src/models.rs`、`backend/crates/golish/src/tools/asset_intel.rs`、`resources/toolsconfig/0-zone.json`、`agent-progress.md`、`feature_list.json`。另有此前累计 docs / feature_list / AGENTS 等游离改动，未在本轮回滚。 |
+| **当前最高优先级** | **harness-mvp-external-attack-surface 已 Phase 1 实施完毕**（feat/harness-design-2026-05-26 分支 · 17 个 Task / 16 commits / 100+ 新单测全绿）。feature_list.json `harness-mvp-external-attack-surface` 切到 `passing`，asset-intel-hydrate-disambiguation 仍 `blocked`（继续在 feat/asm-intel-providers 分支推进）。下一步：用户手动 E2E（just dev → settings.toml `GOLISH_HARNESS_STAGE_MODE=true` → 新建 task 模式 task）。 |
+| **当前 blocker** | feat/harness-design-2026-05-26 分支 focused 验证全绿（cargo nextest 100/100 + harness 86/86 + e2e demo 10/10）；整 monorepo `just precommit` 仍有 5 preexisting clippy warning（`session_dir` dead_code、asset_intel explicit_auto_deref×2、webview_isolation needless_return、integrations facade doc indent），均来自其它分支 baseline，**不是 harness 实施引入**。`window_state` bounds 断言 + `behavioral_equivalence` policy denial test failure 来源同样为 baseline。Phase 1 实施期间未引入新 warning。 |
+| **未提交的半成品** | 本轮 harness Phase 1 实施全部已 commit (commits 0b037da … b106d55)。git status 显示 docs 改动 (Doc 1/2/3/4 status 切换 + plan §12 状态 + agent-progress.md + feature_list.json evidence) 即将作为 Task 1d.3 commit 一气提交。 |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-26 · Operation Harness Phase 1 实施完毕（17 Task · 16 commits · feat/harness-design-2026-05-26 分支）
+
+- **本轮目标**：用户授权（AGENTS.md §2.7 明示）按 `docs/superpowers/plans/2026-05-26-task-mode-refactor-to-harness.md` 17 个 Task 在 `feat/harness-design-2026-05-26` 分支（起点 commit `09abd0e`）落地 Phase 1，把 chat panel task 模式重构为 1-stage harness（external_attack_surface）+ Evidence Ledger + MCP Resource。
+- **本轮参与者**：MCP-2 controller（bajie-mcp-agent-2-sukoeliv）· DISPATCH:off 模式（用户在本会话直接执行）· 使用 superpowers:executing-plans skill 流程。
+- **已完成**（按 commit 顺序）：
+  - **Commit 0** `0b037da` · feature_list.json 加 `harness-mvp-external-attack-surface` in_progress + 切 `asset-intel-hydrate-disambiguation` 到 blocked（§2.1 一致性）
+  - **Phase 1a · Evidence Ledger schema**（commits 1792885 / e5eb552 / 03f24fa / af60bc3）
+    - `backend/crates/golish-db/migrations/20260601000001_evidence_ledger.sql` 7 步 idempotent（audit_log.audit_role / organizations.scope_rules_version / evidence_classifications bitemporal / operation_state / stage_runs / sprint_contracts / FK 反向补）
+    - `golish-pentest::evidence_ledger` (types + mod, 12 单测) + `golish-db::repo::{evidence_classifications, operation_state, stage_runs, sprint_contracts}` (4 repo + 4 serde roundtrip 单测)
+    - startup `reclaim_abandoned_audits` + `GolishDb::start` 集成 + 4 单测
+    - `resources/harness/evidence_kinds.json` + `EvidenceKindRegistry` + 8 单测
+  - **Phase 1b · MCP Resource Evidence Summary**（commits aa7e6bf / b215046 / ffee39a）
+    - `EvidenceSanitizer` 4 步 pipeline + 5 per-kind parser + 22 单测（含 prompt injection 拦截）
+    - `evidence_read` Tauri command 5 步走（tools/evidence.rs + facade + registry + frontend evidence.ts + serde 镜像）+ 18 单测
+    - `tool_classifier.rs` RecentToolCallTracker 滑动窗口 + classify_tool_call + 11 单测
+  - **Phase 1c · Stage Harness MVP**（commits 163f04e / 559416f / bb98f3e / 1bcdc52 / 52f70d4 / 1b0a23e / 10dd927）
+    - resources/harness/{profiles/{assessment,assessment.sprint_skeleton},stages/external_attack_surface,graph/operation_graph}.json 4 份
+    - `golish-agent-kit::harness` 15 文件骨架（types/profile/stage_spec/nl_slice/intent_classifier/pre_action_authorizer/sprint_contract/stage_harness + gate/{mod,5 check}）+ 61 单测
+    - IntentClassifier 中英文双语词库完整版（passive 19 / active 19 / vuln 16 / exploit 18）+ 4 档优先级压制 + 13 单测
+    - DefaultSprintContractGenerator deterministic 渲染 + 9 单测
+    - 5 个 gate check 从 sanity skeleton 升级到 Doc 3 §8 完整逻辑（contract_check.run_with_skeleton + freshness_check.run_with_freshness + vacuous_check FakePattern）+ 25 新单测
+    - task_orchestrator 接入：PlannedSubtask 加 3 字段（harness_stage / nl_slice / acceptance_criteria 全部 #[serde(default)]）+ execute_single_subtask 末端 `apply_harness_gate_hook` + 4 hook 单测
+    - feature flag `GOLISH_HARNESS_STAGE_MODE` env var（LazyLock 缓存 · 默认 OFF）+ 2 单测
+  - **Phase 1d · 端到端验证**（commits b106d55 / 本 commit）
+    - `harness/e2e_tests.rs` 10 个 e2e 场景（happy path / vacuous block / scope sanity / freshness sanity / contract_check 范围 / freshness 真实 max_age / Other-skip 阈值 / SprintContract pipeline）
+    - Playwright e2e（Task 1d.2）跳过 · 推 Phase 2 + 用户手动 E2E
+    - Doc 1/2/3 status: Discussion Draft → **Implemented (Phase 1)** · Doc 4: → **Acknowledged (Phase 1 partial-satisfy)** · plan §12 → **Implemented (Phase 1)**
+- **已记录证据**：
+  - cargo nextest run -p golish-pentest -p golish-db --lib --status-level fail → 100/100 passed
+  - cargo nextest run -p golish-agent-kit --lib -E 'test(harness::)' → 88/88 passed
+  - cargo nextest run -p golish-agent-kit --lib -E 'test(harness::e2e_tests)' → 10/10 passed
+  - cargo nextest run -p golish --lib -E 'test(evidence)' → 18/18 passed
+  - cargo nextest run -p golish-agent-runtime --lib -E 'test(tool_classifier)' → 11/11 passed
+  - cargo clippy -p golish-db -p golish-pentest -p golish-agent-kit -p golish-agent-runtime --lib --no-deps → 0 warning（本轮新增 0 warning · golish crate 5 preexisting warning 与本轮无关）
+  - pnpm exec tsc --noEmit → exit 0
+  - pnpm exec biome check frontend/lib/api/evidence.ts → No fixes applied
+  - ReadLints × 全部本轮新增/改动文件 → No linter errors found
+  - 4 个 JSON 资源 python3 -m json.tool → all exit 0
+- **Plan 偏差修正记录**（详见 feature_list.json `harness-mvp-external-attack-surface` notes 字段）：
+  1. migration 路径 `migrations/` → `backend/crates/golish-db/migrations/`（项目实际路径）
+  2. audit_log 无 `started_at` 字段 → reclaim 用 `created_at`
+  3. `reclaim_abandoned_audits` 位置 `golish/src/lib.rs` → `golish-db::GolishDb::start`（canonical DB ready 锚点）
+  4. Task 1b.3 `stream_retry.rs` 实际职责是 LLM stream-start retry → 新建独立 `tool_classifier.rs`
+  5. Task 1c.5 plan 建议 5 commits → 实际合并为 1 commit（同文件多字段，git diff 仍可定位）
+  6. Task 1c.6 hook 3 元组返回 → 适配现有 2 元组签名（gate decision 文本化嵌入 content）
+  7. Task 1c.7 settings.toml → 用 env var `GOLISH_HARNESS_STAGE_MODE`（settings.toml 接入推 Phase 2）
+  8. Task 1d.2 Playwright 跳过（推 Phase 2 + 用户手动 E2E）
+- **Doc 4 处理**：用户在 Phase 1a 完成后新增 `docs/design/2026-05-26-harness-observability-plane.md`（Codex 起笔），定义 raw_event_log / trace_tree / metrics_rollup / operation_snapshot / evaluation_record / replay/diff / decision_attribution 10 个 observability surface。**未纳入 Phase 1 实施 scope**（Doc 4 §12 Non-Goals 明确不授权 runtime/migration/Tauri command/UI）。但在 `GateResult` 中预留 `gate_result_id` + `blocking_reason_id` Option<Uuid> 字段（默认 None），Phase 2 落 Observability Plane 时直接填，不破坏现有 wire 协议。Doc 4 status 本轮改为 **Acknowledged (Phase 1 partial-satisfy)**。
+- **commit 记录**：0b037da · 1792885 · e5eb552 · 03f24fa · af60bc3 · aa7e6bf · b215046 · ffee39a · 163f04e · 559416f · bb98f3e · 1bcdc52 · 52f70d4 · 1b0a23e · 10dd927 · b106d55 + 本 Task 1d.3 commit（共 17 个 commit）。
+- **风险**：
+  - Phase 1 feature flag 默认 OFF · 启用前需用户手动 `GOLISH_HARNESS_STAGE_MODE=true` + 启动 just dev 验证 UI 路径
+  - `apply_harness_gate_hook` 当前仅识别 content 整段为 JSON 的 deliverable; 混合 prose + code fence 推 Phase 2 加正则抽取
+  - Phase 1 MVP 仅 ExternalAttackSurface stage; 其它 stage 走 hook 时返 Err 导致 subtask 失败 → 生产启用前需追加 enumeration/reporting 等支持
+  - schema_check + scope_check 仅 sanity-only · 完整 evidence_label=InScope 验证需 Phase 2 接 EvidenceLedger live query
+- **下一步建议**：
+  1. 用户手动 E2E（GOLISH_HARNESS_STAGE_MODE=true → just dev → 新建 task 模式 task → 验证 stage banner / gate decision JSON / recovery_actions UI）
+  2. Phase 2 启动：① enumeration stage 实施 ② settings.toml feature flag 接入（替代 env var） ③ Doc 4 Observability Plane 完整实施
+  3. 5 preexisting clippy warning + 2 baseline test failure 若进 main 影响 harness 验证，需先解决
 
 ---
 

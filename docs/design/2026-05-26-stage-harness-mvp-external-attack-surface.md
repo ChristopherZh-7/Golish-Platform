@@ -2,7 +2,7 @@
 
 - **Author**: MCP-1 (代笔 MCP-2 owner 内容)
 - **Date**: 2026-05-26
-- **Status**: Discussion Draft (Phase 0 design only · 不动 task_orchestrator)
+- **Status**: Implemented (Phase 1 · 见 commits 163f04e / 559416f / bb98f3e / 1bcdc52 / 52f70d4 / 1b0a23e / 10dd927 / b106d55)
 - **Source of truth**: `docs/design/2026-05-26-operation-harness-profile-dag-lab.md` §21
 - **Depends on**: Doc 1 (evidence ledger) + Doc 2 (mcp resource)
 

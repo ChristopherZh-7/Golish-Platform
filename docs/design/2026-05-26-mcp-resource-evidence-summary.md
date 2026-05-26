@@ -2,7 +2,7 @@
 
 - **Author**: MCP-1 (代笔 MCP-4 owner 内容)
 - **Date**: 2026-05-26
-- **Status**: Discussion Draft (Phase 0 design only · 不动 schema 不动 commands_facade)
+- **Status**: Implemented (Phase 1 · 见 commits aa7e6bf / b215046 / ffee39a)
 - **Source of truth**: `docs/design/2026-05-26-operation-harness-profile-dag-lab.md` §21
 - **Depends on**: `docs/design/2026-05-26-evidence-ledger-on-existing-audit-log.md`（Doc 1）
 

@@ -2,7 +2,7 @@
 
 - **Author**: MCP-1
 - **Date**: 2026-05-26
-- **Status**: Discussion Draft (Phase 0 design only · 不动 schema 不出 migration)
+- **Status**: Implemented (Phase 1 · 见 commits 1792885 / e5eb552 / 03f24fa / af60bc3)
 - **Source of truth**: `docs/design/2026-05-26-operation-harness-profile-dag-lab.md` §21
 - **Audience**: 后续起草 Doc 2 / Doc 3 / implementation plan 的 agent + 后续 Phase 1 实施者
 

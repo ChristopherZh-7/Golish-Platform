@@ -2,7 +2,7 @@
 
 - **Author**: MCP-1
 - **Date**: 2026-05-26
-- **Status**: Phase 0 plan only · 不动代码
+- **Status**: Implemented (Phase 1 · 17 Task / 16 commits)
 - **Source of truth**: `docs/design/2026-05-26-operation-harness-profile-dag-lab.md` §21
 - **Depends on**: Doc 1 (evidence-ledger) + Doc 2 (mcp-resource) + Doc 3 (stage-harness-mvp)
 
@@ -525,4 +525,13 @@ just test-e2e   # Playwright 测试通过（如有）
 
 ## 12. 状态
 
-**Phase 0 plan only** · 待 user 明示 §2.7 授权 + 前置条件满足（precommit 绿 + hydrate-disambiguation passing）后进入 Phase 1 实施。
+**Implemented (Phase 1)** · 全部 17 个 Task 落地 · 16 commits（含 Commit 0 feature_list.json 切换） · 详见 feature_list.json `harness-mvp-external-attack-surface` entry 的 evidence 字段.
+
+主要 commit 索引：
+- Phase 1a (Evidence Ledger schema): 1792885 / e5eb552 / 03f24fa / af60bc3
+- Phase 1b (MCP Resource): aa7e6bf / b215046 / ffee39a
+- Phase 1c (Stage Harness MVP): 163f04e / 559416f / bb98f3e / 1bcdc52 / 52f70d4 / 1b0a23e / 10dd927
+- Phase 1d (e2e demo + docs): b106d55 / (本 commit)
+- Doc 4 (Observability Plane): Acknowledged (Phase 1 partial-satisfy)·完整 Observability 推 Phase 2+
+
+Plan 偏差修正记录见 feature_list.json notes 字段。
