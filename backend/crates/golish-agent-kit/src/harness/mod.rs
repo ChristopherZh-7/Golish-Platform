@@ -52,7 +52,8 @@ pub use profile::{
     load_profile_from_json, ApprovalPolicy, AuthorizationLevel, Profile, ProfileLoadError,
 };
 pub use sprint_contract::{
-    ExpectedFinding, SprintContract, SprintContractGenerator, SprintSkeleton,
+    DefaultSprintContractGenerator, ExpectedFinding, SprintContract,
+    SprintContractGenerator, SprintSkeleton,
 };
 pub use stage_harness::StageHarness;
 pub use stage_spec::{
