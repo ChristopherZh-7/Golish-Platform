@@ -42,6 +42,9 @@ pub mod stage_harness;
 pub mod stage_spec;
 pub mod types;
 
+#[cfg(test)]
+mod e2e_tests;
+
 pub use gate::{
     validate_external_attack_surface_gate, GateCheckOutcome, GateResult,
 };
