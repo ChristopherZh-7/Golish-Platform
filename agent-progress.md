@@ -29,6 +29,53 @@
 
 ---
 
+### 2026-05-26 · Operation Harness Profile + DAG + Lab 设计文档多 agent 评审（MCP-1 + MCP-4 + MCP-2 三方 6 轮）
+
+- **本轮目标**：用户要求评估 Codex 起草的 `docs/design/2026-05-26-operation-harness-profile-dag-lab.md` 设计合理性；后续要求与其他 MCP agent 多轮讨论，"上网搜论文也可以"。最终从单人评审升级为三方 6 轮交叉验证 + 文档增补。
+- **讨论参与者**：
+  - MCP-1（bajie-mcp-agent-1-gniytpco · 本会话）：论文整合 / 改进提案者
+  - MCP-4（bajie-mcp-agent-4-bs4en72s · group 成员）：架构反驳 / 范式校准
+  - MCP-2（bajie-mcp-agent-2-sukoeliv · controller）：项目代码证据 / schema 提议
+- **已完成**（按 §G1.1 先读后改 + §G2 按动词加载 project-learning 技能 + 论文检索）：
+  - 4 篇 2026 arxiv 论文集成（AHE 2604.25850 / PCAS 2602.16708 / OAP 2603.20953 / PAuth 2603.17170）
+  - `docs/design/2026-05-26-operation-harness-profile-dag-lab.md` 在原 §1-§12（Codex 草稿）之上新增 §13-§22（共 10 节）
+  - §13 Round 1-3 评审结果 · §14 Round 4 MCP-2 三让步 + MCP-4 四盲点（α/β/γ/δ）· §15 Round 5 收敛信号 + 拆三个 design doc · §16 Round 5 O1-O4 + O6 + O7 详答 · §17-§18 Round 5 MCP-4 迟到回复 + 投 A · §19 Round 6 触发条件（3 项冲突待解）· §20 Round 6 收敛（MCP-4 O4 让步 + O7 妥协）· §21 Final Consolidated Decisions（single source of truth）· §22 Reader Guide + Cross-Reference Matrix
+  - 6 处 superseded 指针：§13.6.1 / §13.6.3 / §13.6.5 / §15.3 / §16.6 / §20.4 加 cross-link 到 §21 / §14 / §17 / §18
+  - §13.12 表加 Final 位置 + Final 立场两列
+  - `docs/design/2026-05-20-agent-harness-strategy.md` 顶部加 Superseded 指针 → 2026-05-26
+  - `docs/superpowers/plans/2026-05-20-golish-agent-harness-architecture.md` 顶部加 Superseded 指针 → 2026-05-26 §21.9
+  - 创建 group `grp-2182a9cc 'harness-design-review'` 用于 MCP-1 + MCP-2 + MCP-4 三方讨论
+- **关键决议**（详见 §21）：
+  - MVP 严格限定为 `assessment` profile + L2 active_recon + 1 stage `external_attack_surface`
+  - 不造 `operations` 表（与用户 2026-05-17 删除 engagements 表的决定一致）
+  - audit_log 加 `audit_role` 第四值 'approval'（不新建 user_approvals 表）
+  - evidence_classifications 走 bitemporal `(valid_from, valid_to)` schema + supersedes 链
+  - NlSlice 终态 4 字段：`{subtask_id, stage_kind, sealed_origin_session, deliverable_schema_id}`，intent_axis 走 Operation.user_intent_constraints 顶层
+  - evidence_kind_aging 走 `resources/harness/evidence_kinds.json` 静态资源（不入 DB）
+  - 三份 Phase 0 design only doc 拆分：Doc 1 evidence ledger（MCP-1）→ (Doc 2 mcp-resource by MCP-4 ∥ Doc 3 stage-harness MVP by MCP-2)
+  - 不引 saga 框架（PentestAudit 天然 saga-friendly）
+  - 不重构 task_orchestrator
+  - 不新增 4 个 crate
+- **运行过的验证 / 已记录证据**：
+  - `ReadLints docs/design/2026-05-26-operation-harness-profile-dag-lab.md` → 0 errors
+  - `wc -l docs/design/2026-05-26-operation-harness-profile-dag-lab.md` → 2627 行（初始 816 行 + §13-§22 累计 +1811 行）
+  - `Grep "pub struct NlSlice"` → 三处引用全部 4 字段一致（line 894/1210/2310）
+  - `sed -n '2595,2605p'` 验证 §22.3 supersedence 矩阵 line 2599 = 4 字段
+  - 三人独立 Read 验证：MCP-2 用 `wc -l` + Read line 2310-2315 / MCP-4 用 `Grep "NlSlice 4 字段"` 全文 / MCP-1 完成 6 处 superseded 指针 + §22 cross-ref 矩阵
+- **commit 记录**：本轮在新分支 `feat/harness-design-2026-05-26` 上 commit 3 个文件（2 个 superseded 指针 + 本进度记录）+ 1 个新设计文档作为新分支首个 commit
+- **分支策略**：从 `feat/asm-intel-providers` HEAD `33917a9 feat(ai-chat): emit ContextWarning on history restore` 拉出新分支 `feat/harness-design-2026-05-26`，用于装本轮三方讨论产出。原分支保留以继续 asset-intel-hydrate-disambiguation 与 precommit 修复。
+- **已知风险或未解决问题**：
+  - `just precommit` 仍 exit 1（5 clippy + 2 baseline test failure，与本轮无关）
+  - `asset-intel-hydrate-disambiguation` 仍 in_progress（feature_list.json line 80）
+  - 三份 Phase 0 design only doc（Doc 1/2/3）**未启动**，等 precommit 切绿 + asset-intel-hydrate 切 passing + 用户明示 §2.7 授权 schema migration 设计
+  - `harness lab bench fixtures 成本` + `vacuous detector 二阶 LLM` 由 §18.2 决定 defer 到 Phase 1+
+- **下一步建议**：
+  1. 在原 `feat/asm-intel-providers` 分支修 precommit 红灯（5 clippy + 2 test failure）
+  2. 修 `asset-intel-hydrate-disambiguation` 切 passing
+  3. 全部修完合回 main 后，回到 `feat/harness-design-2026-05-26` 分支，等用户明示 §2.7 授权后启动 Doc 1 起草
+
+---
+
 ### 2026-05-26 · NVIDIA NIM model registry: 清理 15 个不存在的假 ID + 加 Go-default-404 错误改写
 
 - **本轮目标**：用户上报 `mistralai/devstral-2-123b-instruct-2512` 触发 `404 page not found` 导致 main-agent / memory-gatekeeper 同时 stream 失败；排查根因后清理整个 NVIDIA NIM model 注册表，并加上对 NVIDIA NIM Go-default 404 的错误信息改写。

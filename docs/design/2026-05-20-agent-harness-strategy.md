@@ -1,8 +1,10 @@
 # Golish Agent Harness 改造策略文档
 
+> **Superseded by [docs/design/2026-05-26-operation-harness-profile-dag-lab.md](2026-05-26-operation-harness-profile-dag-lab.md)** —— 2026-05-26 三方 agent 评审产出新设计文档，从 Profile + DAG + Stage Harness + Lab 四件套出发完整重订。本文件作 Round 1-3 演进史保留，后人请以新文档 §21 Final Consolidated Decisions 为准。
+
 - **作者**: 架构组
 - **日期**: 2026-05-20
-- **状态**: Deferred（策略级，非当前实现规范）
+- **状态**: Superseded（被 2026-05-26 新设计覆盖；原 Deferred 状态在新文档中明确解封）
 - **读者**: Golish 平台后续的任何工程师 / AI agent
 - **目的**: 把当前 task 模式 agent 自动化从「抄了 PentAGI 但不知道下一步」转型为「Anthropic harness 思想下的渗透测试专用流水线」。本文档自包含——读完不需要再做调研。
 

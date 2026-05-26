@@ -1,5 +1,7 @@
 # Golish Agent Harness Architecture 实现计划
 
+> **Superseded by [docs/design/2026-05-26-operation-harness-profile-dag-lab.md](../../design/2026-05-26-operation-harness-profile-dag-lab.md) §21.9** —— 2026-05-26 三方 agent 评审产出新拆分方案：Doc 1 (evidence-ledger-on-existing-audit-log) + Doc 2 (mcp-resource-evidence-summary) + Doc 3 (stage-harness-mvp-external-attack-surface)。本计划作 Round 1-3 演进史保留，后人请以新文档 §21 Final Consolidated Decisions + §21.9 三 doc 拆分为准。
+
 > Deferred until the information-collection loop and tool-output/evidence contracts are stable.
 > 当前不应按本文直接实施；优先级在 Asset Intel / Recon data loop / evidence ledger / tool output schema 之后。
 
