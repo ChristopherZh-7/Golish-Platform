@@ -36,12 +36,14 @@ pub mod pool;
 pub mod repo;
 
 use anyhow::Result;
+use chrono::Duration;
 use sqlx::PgPool;
 
 pub use config::DbConfig;
 pub use golish_core::DbReadyGate;
 pub use models::*;
 pub use pool::create_lazy_pool;
+pub use repo::audit::{reclaim_abandoned_audits, DEFAULT_RECLAIM_THRESHOLD_HOURS};
 
 /// Top-level database handle. Owns the embedded PG server and connection pool.
 pub struct GolishDb {
@@ -52,9 +54,30 @@ pub struct GolishDb {
 
 impl GolishDb {
     /// Start the embedded PostgreSQL server, run migrations, and return a ready handle.
+    ///
+    /// After migrations land, reclaim any abandoned `audit_log` rows (status='started'
+    /// but older than `DEFAULT_RECLAIM_THRESHOLD_HOURS` hours). Reclaim failure is
+    /// logged but does NOT abort startup — the platform must come up even if the
+    /// audit table has a transient issue (Doc 1 §5.3 fire-and-forget semantics).
     pub async fn start(config: DbConfig) -> Result<Self> {
         let embedded = embedded::EmbeddedPg::start(config).await?;
         let info = pool::create_pool(&embedded.connection_string()).await?;
+
+        match reclaim_abandoned_audits(
+            &info.pool,
+            Duration::hours(DEFAULT_RECLAIM_THRESHOLD_HOURS),
+        )
+        .await
+        {
+            Ok(n) if n > 0 => {
+                tracing::info!(reclaimed = n, "Reclaimed abandoned audit_log rows on startup");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to reclaim abandoned audit_log rows on startup");
+            }
+        }
+
         Ok(Self {
             embedded,
             pool: info.pool,

@@ -1,11 +1,47 @@
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::models::AuditEntry;
+
+/// 默认 startup reclaim 阈值: 超过 1 小时未到终态的 `status='started'` 行被
+/// 视为 abandoned (process crash / OOM / wait_message timeout 导致的孤儿行).
+///
+/// Doc 1 §5.3 fire-and-forget reclaim 规则.
+pub const DEFAULT_RECLAIM_THRESHOLD_HOURS: i64 = 1;
+
+/// 把 audit_log 中超过 `threshold` 仍处于 `status='started'` 的孤儿行标 'abandoned'.
+///
+/// 防止后续 evidence_classifications 误引用 abandoned 行 (§5.3 不补的后果).
+///
+/// 返回被 reclaim 的行数. 失败时通过 anyhow::Error 暴露, 调用方决定是否
+/// fatal (`GolishDb::start` 选 log + continue, 不 panic).
+///
+/// audit_log 没有 started_at 字段, 用 created_at (insert 时间) 做时间锚.
+pub async fn reclaim_abandoned_audits(pool: &PgPool, threshold: Duration) -> Result<u64> {
+    let cutoff = reclaim_cutoff(threshold);
+    let result = sqlx::query(
+        r#"UPDATE audit_log
+           SET status = 'abandoned'
+           WHERE status = 'started'
+             AND created_at < $1"#,
+    )
+    .bind(cutoff)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// 计算 reclaim cutoff 时间锚: NOW() - threshold.
+///
+/// 抽出来纯函数方便单元测试; 真正的 DB-aware reclaim 需 pg-embed 跑集成测试
+/// (推 Phase 2 加).
+pub(crate) fn reclaim_cutoff(threshold: Duration) -> DateTime<Utc> {
+    Utc::now() - threshold
+}
 
 pub async fn log(
     pool: &PgPool,
@@ -521,4 +557,47 @@ pub async fn target_timeline(
     .fetch_all(pool)
     .await?;
     Ok(rows)
+}
+
+#[cfg(test)]
+mod reclaim_tests {
+    use super::*;
+
+    #[test]
+    fn default_reclaim_threshold_is_one_hour() {
+        assert_eq!(DEFAULT_RECLAIM_THRESHOLD_HOURS, 1);
+    }
+
+    #[test]
+    fn reclaim_cutoff_one_hour_back_in_range() {
+        let now_before = Utc::now();
+        let cutoff = reclaim_cutoff(Duration::hours(1));
+        let now_after = Utc::now();
+
+        // cutoff 必须落在 (now_before - 1h, now_after - 1h] 区间内
+        let lower = now_before - Duration::hours(1) - Duration::seconds(1);
+        let upper = now_after - Duration::hours(1) + Duration::seconds(1);
+        assert!(cutoff > lower, "cutoff {} < {} (lower bound)", cutoff, lower);
+        assert!(cutoff < upper, "cutoff {} > {} (upper bound)", cutoff, upper);
+    }
+
+    #[test]
+    fn reclaim_cutoff_zero_duration_is_now() {
+        let before = Utc::now();
+        let cutoff = reclaim_cutoff(Duration::zero());
+        let after = Utc::now();
+        assert!(cutoff >= before - Duration::milliseconds(1));
+        assert!(cutoff <= after + Duration::milliseconds(1));
+    }
+
+    #[test]
+    fn reclaim_cutoff_large_duration_far_in_past() {
+        let cutoff = reclaim_cutoff(Duration::days(365));
+        let one_year_ago_roughly = Utc::now() - Duration::days(364);
+        assert!(
+            cutoff < one_year_ago_roughly,
+            "cutoff {} should be more than 364 days ago",
+            cutoff
+        );
+    }
 }
