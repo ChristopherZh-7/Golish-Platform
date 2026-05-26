@@ -163,6 +163,11 @@ impl TaskOrchestrator {
                 title: s.title.clone().unwrap_or_default(),
                 description: s.description.clone().unwrap_or_default(),
                 agent: s.agent.map(|a| format!("{:?}", a).to_lowercase()),
+                // Phase 1 MVP: 旧路径恢复时不带 harness 信息. harness_stage=None
+                // 等同于走旧 task_orchestrator 行为 (feature flag OFF).
+                harness_stage: None,
+                nl_slice: None,
+                acceptance_criteria: Vec::new(),
             })
             .collect();
 

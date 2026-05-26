@@ -24,6 +24,18 @@ pub struct PlannedSubtask {
     /// Which specialist should handle this (e.g. "pentester", "coder").
     /// The primary agent uses this as guidance, not a hard constraint.
     pub agent: Option<String>,
+    /// Doc 3 §5.2 stage harness hint · 当 subtask 归属某 stage 时填入.
+    /// `None` → 旧 task_orchestrator 路径 (默认, Phase 1 MVP feature flag OFF).
+    /// `Some(_)` + `harness::stage_mode_enabled()=true` → execute_single_subtask
+    /// 末端 hook 走 StageHarness validate_gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_stage: Option<crate::harness::HarnessStageHint>,
+    /// Doc 3 §6 NlSlice (终态 4 字段) · stage 内 inner loop 用.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nl_slice: Option<crate::harness::NlSlice>,
+    /// 自由文本验收标准 · gate validator 之外的 soft acceptance.
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
 }
 
 /// The generator's response — a list of subtasks.
