@@ -58,7 +58,7 @@ function AgentOutputBlock({ text }: { text: string }) {
           Agent Output
         </span>
       </div>
-      <div className="text-[12.5px] text-foreground leading-[1.7] [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_pre]:my-2 [&_blockquote]:my-2 [&_h1]:mt-3 [&_h2]:mt-2.5 [&_h3]:mt-2">
+      <div className="overflow-hidden break-words text-[12.5px] text-foreground leading-[1.7] [overflow-wrap:anywhere] [&_blockquote]:my-2 [&_code]:break-words [&_h1]:mt-3 [&_h2]:mt-2.5 [&_h3]:mt-2 [&_ol]:my-1.5 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_pre]:my-2 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:my-2 [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_td]:break-words [&_th]:break-words [&_ul]:my-1.5">
         <Markdown content={cleaned} />
       </div>
     </div>
@@ -466,47 +466,6 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
               ? subAgent.toolCalls.map((tool) => <AgentToolCallBlock key={tool.id} tool={tool} />)
               : null}
         </div>
-
-        {/* Streaming text (live AI output while running) */}
-        {isRunning && subAgent.streamingText && (
-          <div className="px-4 py-3 bg-accent/[0.04] border-l-2 border-accent/50">
-            <div className="text-[12.5px] text-foreground leading-[1.7] [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_pre]:my-2">
-              <Markdown content={stripAgentXmlTags(subAgent.streamingText)} />
-            </div>
-            <div className="mt-2.5 flex items-center gap-1.5">
-              <Loader2 className="w-3 h-3 animate-spin text-accent" />
-              <span className="text-[10px] text-accent/70 font-medium">
-                {t("ai.subAgentDetail.liveOutput")}
-              </span>
-            </div>
-          </div>
-        )}
-
-        {/* Final response */}
-        {subAgent.response && (
-          <div className="px-4 py-3 bg-[var(--success-dim)]/30 border-t border-[var(--success)]/15">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] font-semibold text-[var(--success)] uppercase tracking-wider flex items-center gap-1.5">
-                <CheckCircle2 className="w-3 h-3" />
-                {t("ai.subAgentDetail.response")}
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => handleCopy(subAgent.response ?? "", "response")}
-                className="h-5 text-[10px] px-1.5 opacity-60 hover:opacity-100 transition-opacity"
-              >
-                <Copy className="w-2.5 h-2.5 mr-0.5" />
-                {copiedSection === "response"
-                  ? t("ai.subAgentDetail.copied")
-                  : t("ai.subAgentDetail.copy")}
-              </Button>
-            </div>
-            <div className="text-[12.5px] text-foreground leading-[1.7] [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_pre]:my-2 [&_blockquote]:my-2">
-              <Markdown content={stripAgentXmlTags(subAgent.response)} />
-            </div>
-          </div>
-        )}
 
         {/* Error */}
         {subAgent.error && (

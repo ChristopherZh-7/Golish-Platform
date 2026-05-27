@@ -23,11 +23,13 @@ import { SubAgentInlineCard } from "./SubAgentInlineCard";
  */
 function stripToolCallXml(text: string): string {
   let cleaned = text
+    .replace(/<tool_call\b[^>]*>[\s\S]*?<\/tool_call>/g, "")
     .replace(/<execute>[\s\S]*?<\/execute>/g, "")
     .replace(/<function=[^>]*>[\s\S]*?<\/function>/g, "")
+    .replace(/<\/?tool_call\b[^>]*>/g, "")
     .replace(/<\/function>/g, "");
 
-  const incompleteIdx = cleaned.search(/<(?:execute|function[=\s]|parameter[=\s])/);
+  const incompleteIdx = cleaned.search(/<(?:tool_call\b|execute|function[=\s]|parameter[=\s])/);
   if (incompleteIdx !== -1) {
     cleaned = cleaned.slice(0, incompleteIdx);
   }
@@ -68,7 +70,7 @@ export const MessageBlock = memo(function MessageBlock({
       {!isUser && message.thinking && (
         <ThinkingBlock
           content={message.thinking}
-          isActive={!!message.isStreaming && !message.content}
+          isActive={!!message.isStreaming && !message.content && !(message.toolCalls?.length ?? 0)}
           startedAt={message.thinkingStartedAt}
           endedAt={message.thinkingEndedAt}
         />
@@ -91,16 +93,22 @@ export const MessageBlock = memo(function MessageBlock({
 
         const isSubAgentCall = (tc: ChatToolCall) => tc.name.startsWith("sub_agent_");
 
+        const isPendingApprovalCall = (tc: ChatToolCall) =>
+          pendingApproval != null &&
+          (tc.requestId
+            ? tc.requestId === pendingApproval.requestId
+            : tc.name === pendingApproval.toolName);
+
         const isVisibleCall = (tc: ChatToolCall) =>
           tc.name !== "update_plan" &&
           !isSubAgentCall(tc) &&
           !nestedIds.has(tc.requestId ?? "") &&
-          (tc.success !== undefined || (pendingApproval == null && tc.success === undefined));
+          (tc.success !== undefined || !isPendingApprovalCall(tc));
 
         const pendingCalls =
           (hasToolCalls && pendingApproval
             ? message.toolCalls?.filter(
-                (tc) => tc.name === pendingApproval.toolName && tc.success === undefined
+                (tc) => isPendingApprovalCall(tc) && tc.success === undefined
               )
             : []) ?? [];
 
@@ -109,7 +117,7 @@ export const MessageBlock = memo(function MessageBlock({
             <div className="mt-2 space-y-1.5">
               {pendingCalls.map((tc, i) => (
                 <CollapsibleToolCall
-                  key={`${tc.name}-${i}`}
+                  key={tc.requestId ?? `${tc.name}-${i}`}
                   tc={tc}
                   approval={pendingApproval}
                   onApprove={onApprove}
