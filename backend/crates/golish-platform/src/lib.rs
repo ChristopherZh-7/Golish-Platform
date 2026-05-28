@@ -32,7 +32,6 @@
 //!   [`package_manager::PackageManager`]
 //! - [`postgres`] — embedded PostgreSQL / pgvector platform helpers
 //! - [`system_proxy`] — desktop system proxy control helpers
-//! - [`zap`] — OWASP ZAP platform paths / certificate helpers
 
 pub mod detect;
 pub mod fs_perms;
@@ -43,7 +42,6 @@ pub mod postgres;
 pub mod process;
 pub mod shell;
 pub mod system_proxy;
-pub mod zap;
 
 pub use detect::{Arch, Platform, PlatformKind};
 pub use package_manager::PackageManager;

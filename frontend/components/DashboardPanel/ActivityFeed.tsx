@@ -11,7 +11,6 @@ export function eventLabel(type: string): string {
     pipeline_executed: "Pipeline Executed",
     finding_created: "Finding Reported",
     scan_completed: "Scan Complete",
-    zap_scan_completed: "ZAP Scan Done",
     credential_added: "Credential Added",
   };
   return map[type] || type.replace(/_/g, " ");

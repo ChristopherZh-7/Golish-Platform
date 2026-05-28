@@ -84,7 +84,7 @@
 | `methodology_projects` | 方法论项目实例(JSON) | data, project_path | 前端 | 前端 |
 | `pipelines` | 自动化管道(JSON) | data, project_path | 前端 | 前端 |
 | `recordings` | 终端录屏 | title, session_id, events(JSON), duration_ms | 前端 | 前端 |
-| `scan_queue` | ZAP 扫描队列 | url, scan_id, progress, status, alerts | ZAP 集成 | 前端 UI |
+| `scan_queue` | 扫描队列（active/passive） | url, scan_id, progress, status, alerts | 扫描调度 | 前端 UI |
 | `custom_passive_rules` | 自定义被动规则 | name, pattern, scope, severity, enabled | 前端 UI | 后端扫描 |
 | `prompt_templates` | 提示词模板覆盖 | template_name, content, is_active | 前端 UI | 后端 AI |
 | `screenshots` | 浏览器截图 | url, file_path, size_bytes | 后端 | 前端 UI |

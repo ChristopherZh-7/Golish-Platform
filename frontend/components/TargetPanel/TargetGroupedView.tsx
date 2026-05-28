@@ -1060,7 +1060,6 @@ interface TargetGroupedViewProps {
   onDelete: (id: string) => Promise<void>;
   onToggleScope: (target: Target) => Promise<void>;
   onUpdateNotes: (id: string, notes: string) => void;
-  onScan: (target: Target) => void;
 }
 
 export function TargetGroupedView({
@@ -1071,7 +1070,6 @@ export function TargetGroupedView({
   onDelete,
   onToggleScope,
   onUpdateNotes,
-  onScan,
 }: TargetGroupedViewProps) {
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [orgLoading, setOrgLoading] = useState(true);
@@ -2209,9 +2207,7 @@ export function TargetGroupedView({
             <Trash2 className="w-2.5 h-2.5" />
           </button>
         </div>
-        {isEditing && (
-          <TargetDetailView target={target} t={t} onUpdateNotes={onUpdateNotes} onScan={onScan} />
-        )}
+        {isEditing && <TargetDetailView target={target} t={t} onUpdateNotes={onUpdateNotes} />}
       </div>
     );
   };

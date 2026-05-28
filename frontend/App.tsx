@@ -80,8 +80,6 @@ export function App() {
     handleSplitPane,
     handleClosePane,
     handleNavigatePane,
-    openBrowserTab: () => activityControls.toggleView("targets"),
-    openSecurityTab: () => activityControls.toggleView("targets"),
     toggleToolManager: () => activityControls.toggleView("toolManage"),
     toggleWiki: () => activityControls.toggleView("wiki"),
     toggleBottomTerminal: activityControls.toggleBottomTerminal,

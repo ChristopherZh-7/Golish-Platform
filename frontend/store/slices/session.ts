@@ -135,8 +135,6 @@ export interface SessionActions {
   // Tab/pane bridge actions
   openSettingsTab: () => void;
   openHomeTab: () => void;
-  openBrowserTab: (url?: string) => void;
-  openSecurityTab: () => void;
   getTabSessionIds: (tabId: string) => string[];
   closeTab: (tabId: string) => void;
   markTabNewActivityBySession: (sessionId: string) => void;

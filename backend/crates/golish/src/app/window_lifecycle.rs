@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::{Emitter, Manager};
 
 use crate::state::AppState;
-use crate::tools;
 use crate::window_state;
 
 pub(crate) async fn persist_window_state_from_window(window: &tauri::Window) {
@@ -180,7 +179,7 @@ pub(crate) async fn persist_window_state_on_exit(app_handle: &tauri::AppHandle) 
 
 /// `tauri::Builder::on_window_event` handler. Persists window bounds on
 /// move/resize and gracefully handles `CloseRequested` (flush frontend state,
-/// stop ZAP, persist bounds, then destroy the window).
+/// persist bounds, then destroy the window).
 pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     static SAVE_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -203,13 +202,8 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
             }
             api.prevent_close();
             let w = window.clone();
-            let app_handle = window.app_handle().clone();
             let _ = window.emit("flush-state", ());
             tauri::async_runtime::spawn(async move {
-                if let Some(pentest) = app_handle.try_state::<tools::pentest::PentestState>() {
-                    tracing::info!("[AppClose] Stopping ZAP before exit");
-                    let _ = pentest.zap_manager.stop().await;
-                }
                 tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                 persist_window_state_from_window(&w).await;
                 w.destroy().ok();

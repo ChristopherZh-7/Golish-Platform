@@ -1,4 +1,4 @@
--- Scan queue (ZAP active scan endpoints) and custom passive rules
+-- Scan queue (active scan endpoints) and custom passive rules
 -- Previously stored in localStorage, now migrated to PostgreSQL
 
 CREATE TABLE scan_queue (

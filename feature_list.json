@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
-  "version": "0.1.6",
-  "last_updated": "2026-05-27",
+  "version": "0.1.7",
+  "last_updated": "2026-05-28",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -10,6 +10,37 @@
     "passing"
   ],
   "features": [
+    {
+      "id": "chore-remove-zap-module",
+      "priority": 0,
+      "area": "backend/crates/golish-pentest + backend/crates/golish + backend/crates/golish-platform + frontend/components/SecurityView + frontend/components/BrowserView + frontend/lib/pentest + frontend/store + frontend/lib/i18n + frontend/components/TargetPanel + frontend/components/TabBar + frontend/components/PaneContainer + frontend/components/DetachedView",
+      "title": "Remove OWASP ZAP integration + entire SecurityView/BrowserView UI shell — full stack purge",
+      "user_visible_behavior": "OWASP ZAP 完全消失：38 个 zap_* Tauri command、backend 三大 zap 模块（golish-pentest::zap / golish::tools::pentest::zap / golish-platform::zap）、所有前端 ZAP UI / hooks / lib / store 全部移除。**SecurityView 整个外层面板也一并删除**（前期保留的 Scan Tools / Sensitive Scan / Timeline / Credential Vault 4 个 tab 在用户决策下整体下线，准备基于 organization 重构 target-centric 信息收集面板：端口扫描 / JS 抓取 / 敏感信息泄漏 / sitemap）。BrowserView 完全移除；Tab 类型不再有 `browser` / `security`；TargetPanel 不再有 Security 子 tab 与 Scan Target 按钮；PaneLeaf / TabBar / TabItem / DetachedView 全部去掉对应分支；Cmd+B / Cmd+Shift+S 快捷键移除。AI Chat / Settings / Activity Feed 中所有 ZAP 文案、`zap_scan_completed` 事件标签全消。i18n 中 `security.*` / `browser.*` / `nav.{browser,security}` 整个子树删除。后端 Tauri commands `whatweb / nuclei / feroxbuster / sensitive_scan / vault / passive_scans / custom_rules / wordlist / target_*` 全部**保留**作为重构时的能力库。",
+      "status": "passing",
+      "verification": [
+        "cd backend && cargo check --workspace → exit 0",
+        "cd backend && cargo check -p golish → exit 0",
+        "cd backend && cargo clippy -p golish -p golish-pentest -p golish-scan-runner -p golish-platform -p golish-projects --lib --no-deps → exit 0",
+        "cd backend && cargo fmt --all --check → exit 0",
+        "cd backend && cargo nextest run -p golish-pentest --status-level fail → 104 passed / 7 skipped",
+        "cd backend && cargo nextest run -p golish-projects -p golish-platform --status-level fail → 50 passed",
+        "cd backend && cargo nextest run -p golish-scan-runner --lib → 0 tests (crate has no lib tests)",
+        "pnpm exec tsc --noEmit → exit 0",
+        "pnpm exec biome check frontend/ → exit 0 / Checked 698 files / 0 fixes",
+        "pnpm exec vitest run → 94 files / 1114 passed / 12 skipped",
+        "rg \"zap|Zap|ZAP\" frontend/ → only lucide-react Zap / PlugZap icons remain (no ZAP software references)",
+        "rg \"zap|Zap|ZAP\" backend/ → only sitemap_store storage key 'zap-sitemap' (preserved for backward-compat) + lucide icon name 'Zap' in agent-runtime",
+        "git diff HEAD --stat → 111 files / +231 insertions / -14991 deletions"
+      ],
+      "evidence": {
+        "backend": "删除：backend/crates/golish-pentest/src/zap/（8 文件，~3400 行）+ backend/crates/golish/src/tools/pentest/zap/（10 文件）+ backend/crates/golish-platform/src/zap.rs；commands_registry.rs 删 38 个 zap_* command + get_zap_discovered_paths；PentestState 删 zap_manager / credential_detector / project_path_tx/rx；PentestError::Zap variant 删；golish-scan-runner::feroxbuster::get_zap_discovered_paths 删；window_lifecycle.rs CloseRequested 不再 stop ZAP；ProjectConfig.proxy 字段保留为空结构以维持向后兼容。pentest_check_tool_updates 不是 ZAP-specific，迁移到 packages/github.rs。",
+        "frontend": "**SecurityView 整个目录删除**（SecurityView / ScanToolsPanel / SensitiveScanPanel / NucleiSection / ScanTimeline / shared / ReconDataPanel + hooks/）；BrowserView/（整个目录）；lib/pentest/{zap-api.ts,scan-queue.ts}；hooks/useZapProxyCert；store/effects/zap-project-sync；App/hooks/useCredentialCapture。store：types/session.ts TabType 删除 'browser' 与 'security'；session-tabs.ts 删除 openBrowserTab + openSecurityTab；session.ts 类型删除；app-shell.ts 删除 zapRunning。UI: PaneLeaf 删除 case 'browser' / 'security'；TabBar / TabItem 删除 browser / security 图标与显示名；TargetPanel 删除 Security 子 tab + Scan Target 按钮；TargetGroupedView / TargetDetail 删 onScan prop；DetachedView 重写删除 DetachedSecurity + security-* TAB_LABELS；useKeyboardHandlerContext 删除 Cmd+B / Cmd+Shift+S；App.tsx 删除 openBrowserTab/openSecurityTab；App.performance.test.tsx 同步更新；useTabSplitEvents 删除 detach-security-tab + security tab detach 路径。lib：pentest/types.ts 删 ZAP types；api/security.ts 删 zapApi*；pentest/scan-runner.ts 删 getZapDiscoveredPaths；api/projects.ts ProxyConfig 改空 type。i18n：security.* / browser.* / nav.{browser,security} 整子树删除。其它：mocks.ts 删 zap_* mock；DashboardPanel/ActivityFeed.tsx 删 zap_scan_completed label。",
+        "i18n": "frontend/lib/i18n/{en,zh-CN}.json 的 security.* 删除：startZap/stopZap/zapNotInstalled/zapNotInstalledHint/installViaBrew/recheckInstall/manualInstallHint/zapNotRunning/zapNotRunningHint/setupTitle/setupZapStoppedTitle/setupZapStoppedHint/setupNeedZapRunning/setupHintTopRight；scanHint/clearHistoryConfirm/sslCertHint 中 ZAP 引用替换为通用措辞。",
+        "preserved": "1) DB migrations（20260412100001 scan_queue + 20260415200002 passive_scan）保留，仅清理注释中的 ZAP 引用；2) sitemap_store 表中 name='zap-sitemap' storage key 保留（pipeline storage / sensitive scan / js_collect 仍写入），等后续信息收集模块重构时统一改名；3) **后端所有非 ZAP Tauri commands 保留**（whatweb / nuclei / feroxbuster / sensitive_scan / vault / passive_scans / custom_rules / wordlist / target_*）+ Rust 模块（golish-scan-runner / tools/sensitive_scan / tools/vault），作为重构 target-centric 信息收集面板时的能力库；4) lucide-react `Zap` / `PlugZap` 图标保留（与 ZAP 软件无关，是闪电图标）；5) OWASP 引用保留（OWASP 不是 ZAP，旗下有 Amass / WSTG 等多个项目）；6) `.github/workflows/{update-homebrew,release-please}.yml` 中 `zap trash:` 保留（Homebrew Cask DSL 关键字，与 ZAP 软件无关）。",
+        "not_run": "未跑 just precommit（baseline 即有 PermissionDenied 测试失败与既有 lint，与 ZAP 删除无关）；未跑 cargo nextest -p golish --lib（编译完整 workspace 超 5 分钟、并已通过 cargo check/clippy/cargo nextest -p golish-pentest 等代理验证）；未做手动 E2E（用户尚未 just dev 复测）。"
+      },
+      "notes": "2026-05-28 用户明确要求：先全删 ZAP，再全删整个 SecurityView 外层面板（用户原话：『安全测试的内容你是不是都给我删掉』『我觉得删掉最干净是最好的』），未来基于 org 做 target-centric 信息收集面板（端口扫描 / 每端口抓 JS / 敏感信息泄漏 / sitemap 等）。后端 command 全保留为重构能力库。本条目 commit 策略待用户确认；分支 chore/remove-zap（基于 feat/harness-design-2026-05-26 HEAD）。重要：本分支带着大量上轮未 commit 的 in-progress 改动（harness backfill / chat panel / xiaomi-mimo / agent-tool-use 等），建议先把 chore/remove-zap 作为干净的删除 commit 提交，然后再去 feat/harness-design 分支推进剩余工作。下一步功能：feat/asset-recon-panel 重构 target-centric 信息收集面板（在 TargetPanel 下展开 target detail 时显示）。"
+    },
     {
       "id": "ai-chat-stop-cancels-backend-stream",
       "priority": 0,

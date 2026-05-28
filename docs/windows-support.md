@@ -163,9 +163,6 @@ compilation regressions are caught early.
 - `golish-pentest::handlers::homebrew` and a few other Unix-only
   install helpers return early on Windows. Use the manual
   installation table above.
-- ZAP port-conflict cleanup uses `pkill` on Unix; on Windows the
-  conflicting process is reported and the user must terminate it via
-  `taskkill /F /PID <pid>` (we plan to wrap this transparently).
 
 ## Reporting Windows-specific bugs
 

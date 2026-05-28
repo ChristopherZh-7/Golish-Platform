@@ -102,7 +102,7 @@ fn install_handlers(
         sidecar_get_pending_artifacts, sidecar_get_applied_artifacts, sidecar_get_artifact,
         sidecar_discard_artifact, sidecar_preview_artifact, sidecar_get_current_pending_artifacts,
         sidecar_apply_artifact, sidecar_apply_all_artifacts, sidecar_regenerate_artifacts,
-        // ── pentest / ZAP ────────────────────────────────────────
+        // ── pentest ──────────────────────────────────────────────
         pentest_scan_tools, pentest_launch_tool, pentest_kill_tool, pentest_kill_all_tools,
         pentest_search_tools, pentest_get_command, pentest_build_command, pentest_check_runtime,
         pentest_check_tool_executable_permission, pentest_check_tools_executable_permissions,
@@ -135,13 +135,6 @@ fn install_handlers(
         pentest_list_python_envs, pentest_list_available_python, pentest_create_python_env, pentest_delete_python_env,
         create_detached_window, close_detached_window,
         pentest_list_skills, pentest_read_skill, pentest_write_skill, pentest_delete_skill,
-        zap_start, zap_stop, zap_status, zap_update_project, zap_detect_path, zap_set_path,
-        zap_get_history, zap_get_history_count, zap_get_message,
-        zap_start_scan, zap_scan_progress, zap_scan_message_count, zap_stop_scan, zap_pause_scan, zap_resume_scan,
-        zap_list_scan_policies, zap_batch_scan, zap_get_alerts, zap_get_scanners,
-        zap_set_scanners_enabled, zap_get_alert_count, zap_start_spider, zap_spider_progress, zap_stop_spider,
-        zap_send_request, zap_get_hosts, zap_new_session, zap_save_session,
-        zap_sync_to_db, zap_get_sitemap_data, zap_download_root_cert, zap_install_root_cert, zap_api_call,
         // ── workspace (targets / wiki / vault / findings / …) ───
         save_project, delete_project_config, list_project_configs, get_project_config,
         save_project_workspace, load_project_workspace,
@@ -210,7 +203,7 @@ fn install_handlers(
         target_assets_list, api_endpoints_list, api_endpoints_untested,
         fingerprints_list, js_analysis_list,
         passive_scans_list, passive_scans_by_url, passive_scans_vulnerable, passive_scans_stats, target_security_overview,
-        scan_whatweb, match_pocs_for_target, scan_nuclei_targeted, nuclei_cancel, scan_feroxbuster, get_zap_discovered_paths,
+        scan_whatweb, match_pocs_for_target, scan_nuclei_targeted, nuclei_cancel, scan_feroxbuster,
         sensitive_scan_start, sensitive_scan_stop, sensitive_scan_status, sensitive_scan_results,
         sensitive_scan_clear, sensitive_scan_confirm, sensitive_scan_default_paths, sensitive_scan_apply_verdicts,
         mcp_list_servers, mcp_list_tools, mcp_get_config, mcp_is_project_trusted, mcp_trust_project_config,

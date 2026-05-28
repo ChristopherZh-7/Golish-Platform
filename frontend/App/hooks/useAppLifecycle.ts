@@ -22,7 +22,6 @@ import {
 import { useStore } from "../../store";
 import { useFileEditorSidebarStore } from "../../store/file-editor-sidebar";
 import { createNewConversation } from "../../store/slices/conversation";
-import { useCredentialCapture } from "./useCredentialCapture";
 import { useTabSplitEvents } from "./useTabSplitEvents";
 
 interface UseAppLifecycleProps {
@@ -72,9 +71,6 @@ export function useAppLifecycle({
 
   // Tab split/detach/tool-output/recording events
   useTabSplitEvents({ setRightPanelTabs, setRightActiveTab, setShowSplitDropZone });
-
-  // Auto-capture credentials detected by ZAP proxy
-  useCredentialCapture();
 
   useEffect(() => {
     const root = document.documentElement;

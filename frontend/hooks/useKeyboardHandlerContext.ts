@@ -37,8 +37,6 @@ export interface KeyboardHandlerContext {
   handleNavigatePane: (direction: "up" | "down" | "left" | "right") => void;
 
   // Panel switching callbacks
-  openBrowserTab: () => void;
-  openSecurityTab: () => void;
   toggleToolManager: () => void;
   toggleWiki: () => void;
   toggleBottomTerminal: () => void;
@@ -63,8 +61,6 @@ const defaultContext: KeyboardHandlerContext = {
   handleSplitPane: async () => {},
   handleClosePane: async () => {},
   handleNavigatePane: () => {},
-  openBrowserTab: () => {},
-  openSecurityTab: () => {},
   toggleToolManager: () => {},
   toggleWiki: () => {},
   toggleBottomTerminal: () => {},
@@ -284,20 +280,6 @@ export function createKeyboardHandler(
         ctx.handleNavigatePane(direction);
         return;
       }
-    }
-
-    // Cmd+B: Open Browser
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key === "b") {
-      e.preventDefault();
-      ctx.openBrowserTab();
-      return;
-    }
-
-    // Cmd+Shift+S: Open Security
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "s") {
-      e.preventDefault();
-      ctx.openSecurityTab();
-      return;
     }
 
     // Cmd+Shift+M: Toggle Tool Manager

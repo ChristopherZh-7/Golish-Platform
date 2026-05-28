@@ -292,9 +292,9 @@ async fn lookup_run_id(pool: &PgPool, parent_id: i64) -> Result<Option<Uuid>> {
 impl PentestAudit {
     /// Look up a previously-inserted `started` row by matching a key/value
     /// inside its `detail` JSONB. Used by fire-and-forget async pipelines
-    /// (e.g. ZAP active scan / spider) where `started` and `completed` are
-    /// emitted from different functions and we only have an external
-    /// correlation id (e.g. ZAP's scan_id) to bridge them.
+    /// where `started` and `completed` are emitted from different functions
+    /// and we only have an external correlation id (e.g. a scan_id) to
+    /// bridge them.
     ///
     /// Returns the most recent matching row's `id` (newest wins) or `None`.
     pub async fn lookup_parent_by_detail_kv(

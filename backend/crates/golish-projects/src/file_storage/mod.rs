@@ -57,12 +57,7 @@ pub struct ScopeConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ProxyConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zap_api_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zap_api_key: Option<String>,
-}
+pub struct ProxyConfig {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureConfig {

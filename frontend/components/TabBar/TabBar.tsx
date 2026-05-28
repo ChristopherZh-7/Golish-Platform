@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Bot, Globe, Home, Plus, Settings, Shield, Terminal } from "lucide-react";
+import { Bot, Home, Plus, Settings, Terminal } from "lucide-react";
 import React from "react";
 import { createPortal } from "react-dom";
 import { TerminalRecordingControls } from "@/components/Terminal/TerminalRecordingControls";
@@ -472,17 +472,11 @@ export const TabBar = React.memo(function TabBar({
               ? Home
               : draggedTab.tabType === "settings"
                 ? Settings
-                : draggedTab.tabType === "browser"
-                  ? Globe
-                  : draggedTab.tabType === "security"
-                    ? Shield
-                    : draggedTab.mode === "agent"
-                      ? Bot
-                      : Terminal;
+                : draggedTab.mode === "agent"
+                  ? Bot
+                  : Terminal;
           const label =
             draggedTab.customName ||
-            (draggedTab.tabType === "browser" ? "Browser" : null) ||
-            (draggedTab.tabType === "security" ? "Security" : null) ||
             (draggedTab.tabType === "settings" ? draggedTab.name || "Settings" : null) ||
             draggedTab.processName ||
             draggedTab.workingDirectory.split(/[/\\]/).pop() ||

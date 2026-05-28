@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "detached",
-  "description": "Minimal capability for floating tab windows (label = detached-*). Only the surface needed by DetachedView (Terminal / SecurityView panels) and the WebLinksAddon URL handler. Excludes dialog, notification, and any sensitive plugin permissions to reduce blast radius if the renderer is compromised. See docs/risks/r10-tauri-capabilities.md for context.",
+  "description": "Minimal capability for floating tab windows (label = detached-*). Only the surface needed by DetachedView (Terminal) and the WebLinksAddon URL handler. Excludes dialog, notification, and any sensitive plugin permissions to reduce blast radius if the renderer is compromised. See docs/risks/r10-tauri-capabilities.md for context.",
   "windows": ["detached-*"],
   "permissions": [
     "core:event:allow-emit",

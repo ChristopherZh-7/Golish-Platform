@@ -9,7 +9,6 @@ import {
   Server,
   Shield,
   Wifi,
-  Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { QuickNotes } from "@/components/QuickNotes/QuickNotes";
@@ -32,12 +31,10 @@ export function TargetDetailView({
   target,
   t,
   onUpdateNotes,
-  onScan,
 }: {
   target: Target;
   t: (key: string) => string;
   onUpdateNotes: (id: string, notes: string) => void;
-  onScan?: (target: Target) => void;
 }) {
   const [secData, setSecData] = useState<{
     assets: TargetAsset[];
@@ -231,18 +228,6 @@ export function TargetDetailView({
             ))}
           </div>
         </div>
-      )}
-
-      {/* Scan shortcut */}
-      {(target.type === "url" || target.type === "domain" || target.type === "ip") && onScan && (
-        <button
-          type="button"
-          onClick={() => onScan(target)}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium rounded-md border border-blue-500/25 bg-blue-500/[0.06] text-blue-300 hover:bg-blue-500/15 transition-colors w-fit"
-        >
-          <Zap className="w-3 h-3" />
-          Scan Target
-        </button>
       )}
 
       {/* Services (per-port, expandable with HTTP metadata) */}

@@ -17,7 +17,7 @@ export {
   selectIsAgentResponding,
   selectIsAgentThinking,
 } from "./ai";
-// App-shell slice (root-level app state: focus, project, chat-panel, ZAP flag…)
+// App-shell slice (root-level app state: focus, project, chat-panel…)
 export {
   type AppShellActions,
   type AppShellSlice,

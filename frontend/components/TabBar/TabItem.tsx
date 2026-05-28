@@ -5,12 +5,10 @@ import {
   Columns,
   Copy,
   ExternalLink,
-  Globe,
   Home,
   Loader2,
   PanelLeft,
   Settings,
-  Shield,
   Terminal,
   X,
 } from "lucide-react";
@@ -90,24 +88,6 @@ export const TabItem = React.memo(function TabItem({
       };
     }
 
-    if (tabType === "browser") {
-      return {
-        displayName: tab.customName || "Browser",
-        dirName: "Browser",
-        isCustomName: !!tab.customName,
-        isProcessName: false,
-      };
-    }
-
-    if (tabType === "security") {
-      return {
-        displayName: tab.customName || "Security",
-        dirName: "Security",
-        isCustomName: !!tab.customName,
-        isProcessName: false,
-      };
-    }
-
     const dir = tab.workingDirectory.split(/[/\\]/).pop() || "Terminal";
     const name = tab.customName || tab.processName || dir;
     return {
@@ -161,10 +141,6 @@ export const TabItem = React.memo(function TabItem({
         return Home;
       case "settings":
         return Settings;
-      case "browser":
-        return Globe;
-      case "security":
-        return Shield;
       default:
         return tab.mode === "agent" ? Bot : Terminal;
     }
@@ -330,7 +306,7 @@ export const TabItem = React.memo(function TabItem({
               Convert to Pane
             </ContextMenuItem>
           )}
-          {(tabType === "terminal" || tabType === "security") && (
+          {tabType === "terminal" && (
             <ContextMenuItem
               onClick={() => {
                 window.dispatchEvent(

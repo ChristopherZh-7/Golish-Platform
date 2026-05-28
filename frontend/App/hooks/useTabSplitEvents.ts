@@ -101,25 +101,6 @@ export function useTabSplitEvents({
       if (!session) return;
       const tabType = session.tabType ?? "terminal";
 
-      if (tabType === "security") {
-        const pseudoId = `security-all-${Date.now()}`;
-        try {
-          await createDetached({
-            sessionId: pseudoId,
-            tabType: "security-all",
-            title: "Security — Detached",
-            x: screenX - 50,
-            y: screenY - 20,
-            width: 1000.0,
-            height: 700.0,
-          });
-          notify.info("Security detached to floating window");
-        } catch (err) {
-          logger.error("[App] detach security tab failed:", err);
-        }
-        return;
-      }
-
       if (tabType !== "terminal") return;
 
       const title =
@@ -156,39 +137,6 @@ export function useTabSplitEvents({
       }
     };
 
-    const handleDetachSecurityTab = async (e: Event) => {
-      const { tabId, screenX, screenY } = (
-        e as CustomEvent<{ tabId: string; screenX: number; screenY: number }>
-      ).detail;
-      const tabLabels: Record<string, string> = {
-        history: "HTTP History",
-        sitemap: "Site Map",
-        scanner: "Scanner",
-        repeater: "Repeater",
-        alerts: "Alerts",
-        audit: "Audit Log",
-        passive: "Passive Scan",
-        vault: "Credential Vault",
-      };
-      const title = tabLabels[tabId] || tabId;
-      const pseudoId = `security-${tabId}-${Date.now()}`;
-
-      try {
-        await createDetached({
-          sessionId: pseudoId,
-          tabType: `security-${tabId}`,
-          title: `${title} — Detached`,
-          x: screenX - 50,
-          y: screenY - 20,
-          width: 900.0,
-          height: 600.0,
-        });
-        notify.info(`"${title}" detached to floating window`);
-      } catch (err) {
-        logger.error("[App] detach security tab failed:", err);
-      }
-    };
-
     const handleRecordingSaved = () => {
       notify.success("Terminal recording saved");
     };
@@ -197,7 +145,6 @@ export function useTabSplitEvents({
     window.addEventListener("unsplit-tab", handleUnsplitTab);
     window.addEventListener("tab-drag-split-hint", handleDragHint);
     window.addEventListener("detach-tab", handleDetachTab);
-    window.addEventListener("detach-security-tab", handleDetachSecurityTab);
     window.addEventListener("tool-output-completed", handleToolOutput);
     window.addEventListener("recording-saved", handleRecordingSaved);
 
@@ -220,7 +167,6 @@ export function useTabSplitEvents({
       window.removeEventListener("unsplit-tab", handleUnsplitTab);
       window.removeEventListener("tab-drag-split-hint", handleDragHint);
       window.removeEventListener("detach-tab", handleDetachTab);
-      window.removeEventListener("detach-security-tab", handleDetachSecurityTab);
       window.removeEventListener("tool-output-completed", handleToolOutput);
       window.removeEventListener("recording-saved", handleRecordingSaved);
       unlistenDetachedClose?.();

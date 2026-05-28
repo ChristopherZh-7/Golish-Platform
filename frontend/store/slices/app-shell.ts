@@ -3,8 +3,8 @@
  *
  * Holds root-level state that doesn't belong to a specific domain slice but
  * needs to be globally reachable: app focus / visibility, workspace bootstrap
- * status, ZAP running flag, the chat-panel toggle, the deferred terminal
- * restore payload, and the current project name/path.
+ * status, the chat-panel toggle, the deferred terminal restore payload, and
+ * the current project name/path.
  *
  * Centralizing this here lets `store/index.ts` stay slim (~60 lines) and
  * matches the slice composition pattern used by `dialog.ts`, `git.ts`, etc.
@@ -20,7 +20,6 @@ export interface AppShellState {
   appIsVisible: boolean;
   terminalRestoreInProgress: boolean;
   workspaceDataReady: boolean;
-  zapRunning: boolean;
   pendingTerminalRestoreData: PendingTerminalRestoreMap;
   chatPanelVisible: boolean;
   currentProjectName: string | null;
@@ -32,7 +31,6 @@ export interface AppShellActions {
   setAppIsVisible: (visible: boolean) => void;
   setTerminalRestoreInProgress: (inProgress: boolean) => void;
   setWorkspaceDataReady: (ready: boolean) => void;
-  setZapRunning: (running: boolean) => void;
   setPendingTerminalRestoreData: (data: PendingTerminalRestoreMap) => void;
   setChatPanelVisible: (visible: boolean) => void;
   toggleChatPanel: () => void;
@@ -46,7 +44,6 @@ export const initialAppShellState: AppShellState = {
   appIsVisible: true,
   terminalRestoreInProgress: false,
   workspaceDataReady: false,
-  zapRunning: false,
   pendingTerminalRestoreData: null,
   chatPanelVisible: true,
   currentProjectName: null,
@@ -71,10 +68,6 @@ export const createAppShellSlice: SliceCreator<AppShellSlice> = (set) => ({
   setWorkspaceDataReady: (ready) =>
     set((state) => {
       state.workspaceDataReady = ready;
-    }),
-  setZapRunning: (running) =>
-    set((state) => {
-      state.zapRunning = running;
     }),
   setPendingTerminalRestoreData: (data) =>
     set((state) => {

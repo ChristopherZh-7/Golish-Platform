@@ -3963,12 +3963,6 @@ export function setupMocks(): void {
       case "pentest_git_clone_tool":
       case "pentest_rename_tool_dir":
         return undefined;
-      case "zap_api_call":
-        return {};
-      case "zap_status":
-        return { status: "stopped", port: 8090 };
-      case "zap_detect_path":
-        return null;
       case "check_recon_tools_cmd":
         return { tools: [] };
       case "wordlist_list":

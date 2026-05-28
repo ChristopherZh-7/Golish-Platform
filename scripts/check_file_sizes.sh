@@ -26,7 +26,6 @@ ts_baseline() {
         #   - frontend/components/ToolManager/ToolManager.tsx (was 1044, now < 800 via QW5 split)
         #   - frontend/components/ProjectOverview/ProjectOverview.tsx (was 838, now < 800 via QW5 split)
         "frontend/components/VulnIntelPanel/WikiTab.tsx") echo 891 ;;
-        "frontend/components/SecurityView/ScanToolsPanel.tsx") echo 843 ;;
         "frontend/components/VulnIntelPanel/VulnIntelPanel.tsx") echo 819 ;;
         *) echo "" ;;
     esac

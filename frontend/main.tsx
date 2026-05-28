@@ -23,9 +23,6 @@ async function initApp(): Promise<void> {
   const { setupGlobalErrorHandlers, ErrorBoundary } = await import("./components/ErrorBoundary");
   setupGlobalErrorHandlers();
 
-  const { installZapProjectSync } = await import("./store/effects/zap-project-sync");
-  installZapProjectSync();
-
   const detached = getDetachedParams();
 
   if (detached) {

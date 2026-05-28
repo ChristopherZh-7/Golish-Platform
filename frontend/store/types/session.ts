@@ -5,7 +5,7 @@ export type SessionMode = "terminal" | "agent";
 export type InputMode = "terminal" | "agent" | "auto";
 export type RenderMode = "timeline" | "fullterm";
 export type AiStatus = "disconnected" | "initializing" | "ready" | "error";
-export type TabType = "terminal" | "settings" | "home" | "browser" | "security";
+export type TabType = "terminal" | "settings" | "home";
 export type AgentMode = "default" | "auto-approve" | "planning";
 /**
  * Execution mode id matching one of the policies registered in the

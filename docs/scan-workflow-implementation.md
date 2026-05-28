@@ -1,5 +1,12 @@
 # Scan Workflow Implementation
 
+> **Partially outdated (2026-05-28)**: This document describes a workflow that relied on
+> OWASP ZAP for the sitemap / discovered-path source. ZAP was fully removed in
+> `chore/remove-zap` — all `zap_*` commands and the `get_zap_discovered_paths` adapter
+> no longer exist. feroxbuster now accepts caller-supplied seed paths only. The
+> WhatWeb / Nuclei / feroxbuster commands themselves are intact. The "信息收集面板"
+> rebuild based on organization will supersede this document.
+
 Full-stack implementation of the PoC-first penetration testing workflow: WhatWeb fingerprinting, targeted Nuclei scanning, and feroxbuster directory brute-forcing.
 
 ## Architecture Overview

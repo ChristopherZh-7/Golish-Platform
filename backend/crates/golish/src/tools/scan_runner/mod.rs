@@ -144,12 +144,3 @@ pub async fn scan_feroxbuster(
     )
     .await?)
 }
-
-#[tauri::command]
-pub async fn get_zap_discovered_paths(
-    state: tauri::State<'_, DbState>,
-    target_host: String,
-) -> Result<Vec<String>, GolishError> {
-    let pool = state.pool_ready().await?;
-    Ok(runner::get_zap_discovered_paths(pool, &target_host).await?)
-}

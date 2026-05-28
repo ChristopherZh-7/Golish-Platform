@@ -1,7 +1,5 @@
 import { invoke } from "@/lib/api/client";
 
-type ZapJson = Record<string, unknown>;
-
 type VaultEntryType =
   | "password"
   | "token"
@@ -81,22 +79,6 @@ export const securityApi = {
   // Runtime install
   installRuntime: (runtimeType: string, proxyUrl?: string) =>
     invoke("pentest_install_runtime", { runtimeType, proxyUrl }),
-
-  // ZAP API
-  zapApiCall: <T = ZapJson>(
-    component: string,
-    actionType: string,
-    method: string,
-    params: Record<string, unknown>
-  ) => invoke<T>("zap_api_call", { component, actionType, method, params }),
-  zapListScanPolicies: () => invoke<string[]>("zap_list_scan_policies"),
-  zapGetScanners: () =>
-    invoke<Array<{ id: string; name: string; enabled: boolean; quality: string }>>(
-      "zap_get_scanners"
-    ),
-  zapSetScannersEnabled: (ids: string[], enabled: boolean) =>
-    invoke("zap_set_scanners_enabled", { ids, enabled }),
-  zapScanMessageCount: (scanId: string) => invoke<number>("zap_scan_message_count", { scanId }),
 
   // Vault
   vaultList: (projectPath: string | null) =>

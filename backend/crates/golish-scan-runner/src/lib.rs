@@ -15,7 +15,7 @@
 //! - [`helpers`]     — shared progress emission, audit logging, command lookup.
 //! - [`whatweb`]     — WhatWeb fingerprinting.
 //! - [`nuclei`]      — Nuclei targeted scan + fingerprint→PoC matching engine.
-//! - [`feroxbuster`] — directory busting over ZAP-discovered paths.
+//! - [`feroxbuster`] — directory busting over seed paths supplied by callers.
 
 pub mod error;
 pub mod feroxbuster;
@@ -26,7 +26,7 @@ pub mod types;
 pub mod whatweb;
 
 pub use error::{ScanRunnerError, ScanRunnerResult};
-pub use feroxbuster::{get_zap_discovered_paths, run_feroxbuster, FeroxScanOptions};
+pub use feroxbuster::{run_feroxbuster, FeroxScanOptions};
 pub use helpers::NUCLEI_CANCELLED;
 pub use nuclei::{match_pocs_for_target, run_nuclei_targeted, NucleiScanOptions};
 pub use storage::ScanStorage;

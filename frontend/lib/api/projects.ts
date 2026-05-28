@@ -39,10 +39,7 @@ export interface ScopeConfig {
   outOfScope: string[];
 }
 
-export interface ProxyConfig {
-  zapApiUrl?: string;
-  zapApiKey?: string;
-}
+export type ProxyConfig = Record<string, never>;
 
 export interface CaptureConfig {
   autoSaveJs: boolean;

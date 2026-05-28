@@ -1,4 +1,4 @@
-//! feroxbuster (directory busting) over ZAP-discovered paths.
+//! feroxbuster (directory busting) over caller-supplied seed paths.
 
 use golish_core::EventEmitterHandle;
 use serde::{Deserialize, Serialize};
@@ -298,39 +298,6 @@ pub async fn run_feroxbuster(
     .await;
 
     Ok(result)
-}
-
-/// Get ZAP-discovered paths for feroxbuster seed URLs.
-pub async fn get_zap_discovered_paths(
-    pool: &sqlx::PgPool,
-    target_host: &str,
-) -> crate::ScanRunnerResult<Vec<String>> {
-    let rows = sqlx::query_scalar::<_, String>(
-        r#"SELECT DISTINCT url FROM (
-            SELECT unnest(urls) as url FROM sitemap_store WHERE name = 'zap-sitemap'
-        ) sub
-        WHERE url LIKE $1
-        ORDER BY url"#,
-    )
-    .bind(format!("%{}%", target_host))
-    .fetch_all(pool)
-    .await?;
-
-    let paths: Vec<String> = rows
-        .iter()
-        .filter_map(|url| {
-            url.find("://")
-                .and_then(|i| url[i + 3..].find('/'))
-                .map(|i| {
-                    let start = url.find("://").unwrap() + 3 + i;
-                    url[start..].to_string()
-                })
-        })
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    Ok(paths)
 }
 
 fn is_sensitive_path(url: &str) -> bool {

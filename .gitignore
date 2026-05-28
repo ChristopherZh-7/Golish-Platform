@@ -125,8 +125,6 @@ golish-go-testbed/
 nmap_scan*.txt
 nmap_scan*.xml
 *.nmap
-zap_report*.html
-zap_report*.json
 nuclei_*.json
 nuclei_*.txt
 

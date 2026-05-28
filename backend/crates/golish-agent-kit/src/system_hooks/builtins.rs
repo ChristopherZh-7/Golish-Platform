@@ -96,7 +96,6 @@ fn security_tool_redirect_hook() -> ToolHook {
                 "dirsearch",
                 "nuclei",
                 "burpsuite",
-                "zap",
                 "metasploit",
                 "msfconsole",
                 "hashcat",

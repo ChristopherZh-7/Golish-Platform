@@ -152,7 +152,7 @@ the same layer are OK; cluster grouping does not add edges.
 |---|---|---|
 | `golish-pentest` | core, db, pentest-domain | Pentest engine |
 | `golish-vuln-intel` | core, db, vuln-intel-domain | Vuln intel client + sploitus |
-| `golish-scan-runner` | core, db | External scanner adapters (nuclei, whatweb, nmap, zap) |
+| `golish-scan-runner` | core, db | External scanner adapters (nuclei, whatweb, feroxbuster) |
 | `golish-pentest-mcp` | core | Pentest-specific MCP tools |
 
 ##### L2.assets (6) — skills / synthesis / output / tools
@@ -249,7 +249,7 @@ to the legacy `AppState`:
 | Sub-state | Used by commands |
 |---|---|
 | `AppState` | Cross-domain commands (AI init, MCP refresh, sidecar apply-patch) |
-| `DbState` | `sensitive_scan` · `zap/*` (+10 commands) |
+| `DbState` | `sensitive_scan` (+10 commands) |
 | `TelemetryState` | `is_langfuse_active` · `get_telemetry_stats` |
 | `McpManaged` | `mcp_list_servers` · `mcp_list_tools` |
 | `PtyState` | All 7 `commands/proc/pty.rs` commands |
