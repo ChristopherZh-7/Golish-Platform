@@ -52,6 +52,8 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
                 ));
             }
 
+            AiEvent::ToolIntentObservation { .. } => {}
+
             AiEvent::ToolResult {
                 tool_name,
                 result,
@@ -169,6 +171,7 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
             AiEvent::PromptGenerationStarted { .. } => {} // Internal sub-agent detail
             AiEvent::PromptGenerationCompleted { .. } => {} // Internal sub-agent detail
             AiEvent::SubAgentTextDelta { .. } => {} // Streaming delta, not needed for summarization
+            AiEvent::SubAgentReasoning { .. } => {} // Streaming reasoning, not needed for summarization
             AiEvent::AskHumanRequest {
                 question,
                 input_type,

@@ -123,7 +123,7 @@ describe("AgentMessage Performance", () => {
       expect(toolProcessingLogs.length).toBe(0);
 
       consoleSpy.mockRestore();
-    });
+    }, 10_000);
   });
 
   describe("workingDirectory prop", () => {

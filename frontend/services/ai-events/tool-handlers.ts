@@ -9,7 +9,50 @@ import type { ApprovalPattern, RiskLevel, ToolSource } from "@/lib/ai";
 import { respondToToolApproval } from "@/lib/ai";
 import { logger } from "@/lib/logger";
 import type { JsonValue } from "@/lib/serde_json/JsonValue";
+import type { AiToolExecution } from "@/store";
 import type { EventHandler } from "./types";
+
+type ToolIntentSource = NonNullable<AiToolExecution["toolIntent"]>["source"];
+type ToolIntentDecision = NonNullable<AiToolExecution["toolIntent"]>["decision"];
+
+function normalizeToolIntentSource(source: string): ToolIntentSource {
+  return source === "textual_xml" ||
+    source === "textual_json" ||
+    source === "recovered" ||
+    source === "native_tool_call"
+    ? source
+    : "recovered";
+}
+
+function normalizeToolIntentDecision(decision: string): ToolIntentDecision {
+  return decision === "allow" ||
+    decision === "require_approval" ||
+    decision === "require_human_answer" ||
+    decision === "reject"
+    ? decision
+    : "reject";
+}
+
+export const handleToolIntentObservation: EventHandler<{
+  type: "tool_intent_observation";
+  request_id: string;
+  tool_name: string;
+  source: string;
+  decision: string;
+  reason: string | null;
+  raw_preview: string | null;
+  session_id: string;
+  seq?: number;
+}> = (event, ctx) => {
+  ctx.getState().recordToolIntentObservation(ctx.sessionId, {
+    requestId: event.request_id,
+    modelWanted: event.tool_name,
+    source: normalizeToolIntentSource(event.source),
+    decision: normalizeToolIntentDecision(event.decision),
+    reason: event.reason ?? undefined,
+    rawPreview: event.raw_preview ?? undefined,
+  });
+};
 
 /**
  * Handle tool request event.

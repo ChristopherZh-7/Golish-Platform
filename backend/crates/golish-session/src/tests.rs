@@ -141,9 +141,15 @@ fn test_golish_message_to_rig_assistant() {
 }
 
 #[test]
-fn test_golish_message_to_rig_system_returns_none() {
+fn test_golish_message_to_rig_system() {
     let golish_msg = GolishSessionMessage::system("System prompt");
-    assert!(golish_msg.to_rig_message().is_none());
+    let rig_msg = golish_msg.to_rig_message();
+
+    assert!(rig_msg.is_some());
+    match rig_msg.unwrap() {
+        Message::System { content } => assert_eq!(content, "System prompt"),
+        _ => panic!("Expected System message"),
+    }
 }
 
 #[test]

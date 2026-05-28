@@ -101,7 +101,9 @@ pub fn validate_external_attack_surface_gate(
             reasons.extend(r);
             recovery.hints.extend(rec.hints);
             recovery.repair_tool_calls.extend(rec.repair_tool_calls);
-            recovery.missing_evidence_kinds.extend(rec.missing_evidence_kinds);
+            recovery
+                .missing_evidence_kinds
+                .extend(rec.missing_evidence_kinds);
         }
     }
 

@@ -134,6 +134,154 @@ impl EventCoordinator {
         }
     }
 
+    fn transcript_path_for_log(&self) -> Option<String> {
+        self.transcript_writer
+            .as_ref()
+            .map(|writer| writer.path().display().to_string())
+    }
+
+    fn preview_text(value: &str, max_chars: usize) -> String {
+        let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut preview = compact.chars().take(max_chars).collect::<String>();
+        if compact.chars().count() > max_chars {
+            preview.push_str("...");
+        }
+        preview
+    }
+
+    fn preview_json(value: &serde_json::Value, max_chars: usize) -> String {
+        serde_json::to_string(value)
+            .map(|s| Self::preview_text(&s, max_chars))
+            .unwrap_or_else(|_| "<unserializable>".to_string())
+    }
+
+    fn log_observable_event(&self, event: &AiEvent) {
+        match event {
+            AiEvent::Completed {
+                response,
+                input_tokens,
+                output_tokens,
+                duration_ms,
+                ..
+            } => {
+                tracing::debug!(
+                    session_id = %self.session_id,
+                    response_chars = response.len(),
+                    response_preview = %Self::preview_text(response, 500),
+                    input_tokens = ?input_tokens,
+                    output_tokens = ?output_tokens,
+                    duration_ms = ?duration_ms,
+                    transcript_path = ?self.transcript_path_for_log(),
+                    "[agent-observe] Turn completed"
+                );
+
+                if response.contains("<tool_call") || response.contains("<function=") {
+                    tracing::warn!(
+                        session_id = %self.session_id,
+                        response_preview = %Self::preview_text(response, 500),
+                        transcript_path = ?self.transcript_path_for_log(),
+                        "[agent-observe] Completed response contains textual tool-call markup"
+                    );
+                }
+            }
+            AiEvent::ToolApprovalRequest {
+                request_id,
+                tool_name,
+                args,
+                risk_level,
+                ..
+            } => {
+                tracing::info!(
+                    session_id = %self.session_id,
+                    request_id = %request_id,
+                    tool_name = %tool_name,
+                    risk_level = ?risk_level,
+                    "[agent-observe] Tool approval requested"
+                );
+                tracing::debug!(
+                    session_id = %self.session_id,
+                    request_id = %request_id,
+                    tool_name = %tool_name,
+                    args_preview = %Self::preview_json(args, 500),
+                    "[agent-observe] Tool approval args"
+                );
+            }
+            AiEvent::ToolIntentObservation {
+                request_id,
+                tool_name,
+                source,
+                decision,
+                reason,
+                raw_preview,
+            } => {
+                tracing::info!(
+                    session_id = %self.session_id,
+                    request_id = %request_id,
+                    tool_name = %tool_name,
+                    source = %source,
+                    decision = %decision,
+                    reason = ?reason,
+                    "[agent-observe] Tool intent observed"
+                );
+                if let Some(raw_preview) = raw_preview {
+                    tracing::debug!(
+                        session_id = %self.session_id,
+                        request_id = %request_id,
+                        raw_preview = %Self::preview_text(raw_preview, 500),
+                        "[agent-observe] Tool intent raw preview"
+                    );
+                }
+            }
+            AiEvent::AskHumanRequest {
+                request_id,
+                question,
+                input_type,
+                context,
+                ..
+            } => {
+                tracing::info!(
+                    session_id = %self.session_id,
+                    request_id = %request_id,
+                    input_type = %input_type,
+                    question_preview = %Self::preview_text(question, 240),
+                    "[agent-observe] ask_human requested"
+                );
+                if !context.trim().is_empty() {
+                    tracing::debug!(
+                        session_id = %self.session_id,
+                        request_id = %request_id,
+                        context_preview = %Self::preview_text(context, 500),
+                        "[agent-observe] ask_human context"
+                    );
+                }
+            }
+            AiEvent::ToolResult {
+                request_id,
+                tool_name,
+                result,
+                success,
+                ..
+            } => {
+                tracing::info!(
+                    session_id = %self.session_id,
+                    request_id = %request_id,
+                    tool_name = %tool_name,
+                    success = %success,
+                    result_chars = serde_json::to_string(result).map(|s| s.len()).unwrap_or(0),
+                    "[agent-observe] Tool result"
+                );
+                tracing::debug!(
+                    session_id = %self.session_id,
+                    request_id = %request_id,
+                    tool_name = %tool_name,
+                    result_preview = %Self::preview_json(result, 700),
+                    "[agent-observe] Tool result preview"
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// Emit an envelope to the frontend via the runtime.
     fn emit_envelope(&self, envelope: AiEventEnvelope) {
         tracing::debug!(
@@ -153,6 +301,8 @@ impl EventCoordinator {
 
     /// Handle EmitEvent command.
     async fn handle_emit_event(&mut self, event: AiEvent) {
+        self.log_observable_event(&event);
+
         // Write to transcript
         self.write_to_transcript(&event).await;
 

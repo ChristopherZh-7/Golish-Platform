@@ -31,11 +31,13 @@
 
 pub mod prompts;
 
+pub mod harness_backfill;
 mod helpers;
 mod orchestrator;
 mod subtask_phases;
 mod types;
 
+pub use harness_backfill::{backfill_harness_stage, infer_harness_stage};
 pub use orchestrator::TaskOrchestrator;
 pub use types::{
     AgentExecutor, AgentResult, AgentTokenUsage, ExecutionContext, GeneratorOutput, PlannedSubtask,

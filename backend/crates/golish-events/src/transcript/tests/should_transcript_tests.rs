@@ -37,6 +37,17 @@ fn all_variants() -> Vec<(AiEvent, bool)> {
             true,
         ),
         (
+            AiEvent::ToolIntentObservation {
+                request_id: "r".into(),
+                tool_name: "t".into(),
+                source: "textual_xml".into(),
+                decision: "require_human_answer".into(),
+                reason: Some("needs user".into()),
+                raw_preview: None,
+            },
+            true,
+        ),
+        (
             AiEvent::ToolApprovalRequest {
                 request_id: "r".into(),
                 tool_name: "t".into(),
@@ -151,6 +162,15 @@ fn all_variants() -> Vec<(AiEvent, bool)> {
                 parent_request_id: "p".into(),
             },
             true,
+        ),
+        (
+            AiEvent::SubAgentReasoning {
+                agent_id: "a".into(),
+                delta: "think".into(),
+                accumulated: "think".into(),
+                parent_request_id: "p".into(),
+            },
+            false,
         ),
         (
             AiEvent::SubAgentError {
@@ -386,6 +406,7 @@ fn all_variants() -> Vec<(AiEvent, bool)> {
             | AiEvent::SystemHooksInjected { .. }
             | AiEvent::TextDelta { .. }
             | AiEvent::ToolRequest { .. }
+            | AiEvent::ToolIntentObservation { .. }
             | AiEvent::ToolApprovalRequest { .. }
             | AiEvent::ToolAutoApproved { .. }
             | AiEvent::ToolDenied { .. }
@@ -398,6 +419,7 @@ fn all_variants() -> Vec<(AiEvent, bool)> {
             | AiEvent::SubAgentToolRequest { .. }
             | AiEvent::SubAgentToolResult { .. }
             | AiEvent::SubAgentTextDelta { .. }
+            | AiEvent::SubAgentReasoning { .. }
             | AiEvent::SubAgentCompleted { .. }
             | AiEvent::SubAgentError { .. }
             | AiEvent::ContextWarning { .. }
@@ -484,6 +506,12 @@ fn test_filtered_events() {
             success: true,
             result: serde_json::json!(null),
             request_id: "r".into(),
+            parent_request_id: "p".into(),
+        },
+        AiEvent::SubAgentReasoning {
+            agent_id: "a".into(),
+            delta: "think".into(),
+            accumulated: "think".into(),
             parent_request_id: "p".into(),
         },
     ];

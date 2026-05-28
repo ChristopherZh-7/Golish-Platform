@@ -644,6 +644,58 @@ async fn test_hitl_approval_request_emitted() {
 }
 
 #[tokio::test]
+async fn test_ask_human_bypasses_tool_approval_and_emits_human_request() {
+    let test_ctx = TestContextBuilder::new().build().await;
+
+    let client = test_llm_client();
+    let ctx = test_ctx.as_agentic_context_with_client(&client);
+    let capture_ctx = test_ctx.create_capture_context();
+    let model = MockCompletionModel::with_text("Done");
+    let sub_ctx = test_sub_agent_context();
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        execute_with_hitl_generic(
+            "ask_human",
+            &serde_json::json!({
+                "question": "Target example.com is not registered. Add it?",
+                "input_type": "confirmation",
+                "options": [],
+                "context": "Target verification"
+            }),
+            "ask-human-tool-id",
+            &ctx,
+            &capture_ctx,
+            &model,
+            &sub_ctx,
+        ),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "ask_human should wait for a human response"
+    );
+
+    let mut test_ctx = test_ctx;
+    let events = test_ctx.collect_events();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AiEvent::AskHumanRequest { question, .. }
+                if question.contains("example.com"))),
+        "ask_human should emit AskHumanRequest directly"
+    );
+    assert!(
+        !events.iter().any(
+            |e| matches!(e, AiEvent::ToolApprovalRequest { tool_name, .. }
+                if tool_name == "ask_human")
+        ),
+        "ask_human must not be wrapped in generic tool approval"
+    );
+}
+
+#[tokio::test]
 async fn test_hitl_approval_timeout() {
     // When approval times out, the tool should fail with timeout error
     // Note: We use a custom short timeout for testing

@@ -284,34 +284,49 @@ impl TaskOrchestrator {
 const ASSESSMENT_PROFILE_JSON: &str =
     include_str!("../../../../../../resources/harness/profiles/assessment.json");
 
-const EXTERNAL_ATTACK_SURFACE_SPEC_JSON: &str = include_str!(
-    "../../../../../../resources/harness/stages/external_attack_surface.json"
-);
+const EXTERNAL_ATTACK_SURFACE_SPEC_JSON: &str =
+    include_str!("../../../../../../resources/harness/stages/external_attack_surface.json");
 
 fn apply_harness_gate_hook(planned: &PlannedSubtask, content: String) -> String {
     if !crate::harness::stage_mode_enabled() {
         return content;
     }
     let Some(stage_hint) = planned.harness_stage.as_ref() else {
+        tracing::debug!(
+            target: "harness::hook",
+            "skip: stage_mode enabled but planned.harness_stage is None"
+        );
         return content;
     };
     // Phase 1 MVP 仅支持 ExternalAttackSurface
     if stage_hint.stage_kind != crate::harness::StageKind::ExternalAttackSurface {
+        tracing::debug!(
+            target: "harness::hook",
+            stage_kind = ?stage_hint.stage_kind,
+            "skip: Phase 1 MVP supports only ExternalAttackSurface"
+        );
         return content;
     }
+
+    tracing::info!(
+        target: "harness::hook",
+        stage_kind = ?stage_hint.stage_kind,
+        subtask_title = %planned.title,
+        content_len = content.len(),
+        "harness gate hook entered"
+    );
 
     let profile = match crate::harness::load_profile_from_json(ASSESSMENT_PROFILE_JSON) {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(error = %e, "[harness] failed to load assessment profile JSON");
+            tracing::warn!(target: "harness::hook", error = %e, "[harness] failed to load assessment profile JSON");
             return content;
         }
     };
-    let spec = match crate::harness::load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_SPEC_JSON)
-    {
+    let spec = match crate::harness::load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_SPEC_JSON) {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!(error = %e, "[harness] failed to load external_attack_surface spec JSON");
+            tracing::warn!(target: "harness::hook", error = %e, "[harness] failed to load external_attack_surface spec JSON");
             return content;
         }
     };
@@ -322,7 +337,7 @@ fn apply_harness_gate_hook(planned: &PlannedSubtask, content: String) -> String 
     ) {
         Ok(h) => h,
         Err(e) => {
-            tracing::warn!(error = %e, "[harness] StageHarness::for_stage failed");
+            tracing::warn!(target: "harness::hook", error = %e, "[harness] StageHarness::for_stage failed");
             return content;
         }
     };
@@ -330,13 +345,51 @@ fn apply_harness_gate_hook(planned: &PlannedSubtask, content: String) -> String 
     let Some(deliverable) = parse_deliverable_from_content(&content) else {
         // Phase 1 MVP: 找不到 deliverable 时不强制 block; debug-log 留痕.
         tracing::debug!(
-            "[harness] no ExternalAttackSurfaceDeliverable JSON found in agent content (len={}), skipping gate",
-            content.len()
+            target: "harness::hook",
+            content_len = content.len(),
+            "no ExternalAttackSurfaceDeliverable JSON found in agent content, skipping gate"
         );
         return content;
     };
 
+    tracing::info!(
+        target: "harness::hook",
+        stage_id = %deliverable.stage_id,
+        stage_run_id = %deliverable.stage_run_id,
+        claims = deliverable.claims.len(),
+        findings = deliverable.findings.len(),
+        skipped_checks = deliverable.skipped_checks.len(),
+        evidence_refs = deliverable.evidence_refs.len(),
+        "deliverable parsed, running gate validation"
+    );
+
     let decision = harness.validate_gate(&deliverable, None);
+
+    if decision.allowed {
+        tracing::info!(
+            target: "harness::hook",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            allowed = true,
+            reasons_count = decision.reasons.len(),
+            "gate decision: PASS"
+        );
+    } else {
+        let recovery = decision.recovery_actions.as_ref();
+        tracing::warn!(
+            target: "harness::hook",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            allowed = false,
+            reasons_count = decision.reasons.len(),
+            first_reason = decision.reasons.first().map(|s| s.as_str()).unwrap_or("<none>"),
+            recovery_hints = recovery.map(|r| r.hints.len()).unwrap_or(0),
+            recovery_repair_tool_calls = recovery.map(|r| r.repair_tool_calls.len()).unwrap_or(0),
+            recovery_missing_evidence_kinds = recovery.map(|r| r.missing_evidence_kinds.len()).unwrap_or(0),
+            "gate decision: BLOCK"
+        );
+    }
+
     let decision_json = serde_json::to_string_pretty(&decision)
         .unwrap_or_else(|_| "{\"error\":\"failed to serialize gate decision\"}".to_string());
 

@@ -32,6 +32,7 @@ import {
   handlePromptGenerationStarted,
   handleSubAgentCompleted,
   handleSubAgentError,
+  handleSubAgentReasoning,
   handleSubAgentStarted,
   handleSubAgentTextDelta,
   handleSubAgentToolRequest,
@@ -51,6 +52,7 @@ import {
   handleAskHumanResponse,
   handleToolApprovalRequest,
   handleToolAutoApproved,
+  handleToolIntentObservation,
   handleToolOutputChunk,
   handleToolRequest,
   handleToolResult,
@@ -79,6 +81,7 @@ export const eventHandlerRegistry: EventHandlerRegistry = {
 
   // Tool events
   tool_request: handleToolRequest,
+  tool_intent_observation: handleToolIntentObservation,
   tool_approval_request: handleToolApprovalRequest,
   tool_auto_approved: handleToolAutoApproved,
   tool_result: handleToolResult,
@@ -102,6 +105,7 @@ export const eventHandlerRegistry: EventHandlerRegistry = {
   sub_agent_tool_request: handleSubAgentToolRequest,
   sub_agent_tool_result: handleSubAgentToolResult,
   sub_agent_text_delta: handleSubAgentTextDelta,
+  sub_agent_reasoning: handleSubAgentReasoning,
   sub_agent_completed: handleSubAgentCompleted,
   sub_agent_error: handleSubAgentError,
 

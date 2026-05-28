@@ -42,6 +42,8 @@ pub fn resolve_capabilities_base(name: Option<&str>) -> ModelCapabilities {
         Some("nvidia_small_defaults") => ModelCapabilities::nvidia_small_defaults(),
         // DeepSeek direct
         Some("deepseek_defaults") => ModelCapabilities::deepseek_defaults(),
+        // Xiaomi MiMo
+        Some("xiaomi_defaults") => ModelCapabilities::xiaomi_defaults(),
         // Ollama
         Some("ollama_defaults") => ModelCapabilities::ollama_defaults(),
         // Anything else: warn-and-fallback.

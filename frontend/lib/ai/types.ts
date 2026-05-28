@@ -18,7 +18,8 @@ export type AiProvider =
   | "xai"
   | "zai_sdk"
   | "nvidia"
-  | "deepseek";
+  | "deepseek"
+  | "xiaomi";
 
 /**
  * Reasoning effort level for models that support it (e.g., OpenAI o-series, GPT-5).
@@ -161,6 +162,16 @@ export type ProviderConfig = ProviderConfigBase &
         api_key: string;
         base_url?: string;
       }
+    | {
+        provider: "xiaomi";
+        workspace: string;
+        model: string;
+        api_key: string;
+        region?: string;
+        default_protocol?: string;
+        base_url?: string;
+        anthropic_base_url?: string;
+      }
   );
 
 import type { JsonValue } from "@/lib/serde_json/JsonValue";
@@ -217,6 +228,15 @@ export type GeneratedAiEvent =
       args: JsonValue;
       request_id: string;
       source: ToolSource;
+    }
+  | {
+      type: "tool_intent_observation";
+      request_id: string;
+      tool_name: string;
+      source: "native_tool_call" | "textual_xml" | "textual_json" | "recovered" | string;
+      decision: "allow" | "require_approval" | "require_human_answer" | "reject" | string;
+      reason: string | null;
+      raw_preview: string | null;
     }
   | {
       type: "tool_approval_request";
@@ -312,6 +332,13 @@ export type GeneratedAiEvent =
     }
   | {
       type: "sub_agent_text_delta";
+      agent_id: string;
+      delta: string;
+      accumulated: string;
+      parent_request_id: string;
+    }
+  | {
+      type: "sub_agent_reasoning";
       agent_id: string;
       delta: string;
       accumulated: string;

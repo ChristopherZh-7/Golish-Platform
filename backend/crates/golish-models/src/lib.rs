@@ -37,6 +37,7 @@ mod capabilities;
 pub mod descriptors;
 mod providers;
 mod registry;
+mod tool_use_profile;
 
 pub use capabilities::*;
 pub use descriptors::{
@@ -45,6 +46,7 @@ pub use descriptors::{
 };
 pub use providers::*;
 pub use registry::*;
+pub use tool_use_profile::*;
 
 // Re-export AiProvider for convenience
 pub use golish_settings::schema::AiProvider;

@@ -94,8 +94,29 @@ pub fn run_with_skeleton(
     }
 
     if reasons.is_empty() {
+        tracing::info!(
+            target: "harness::gate::contract_check",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            has_contract = contract.is_some(),
+            has_skeleton = skeleton.is_some(),
+            evidence_refs = deliverable.evidence_refs.len(),
+            outcome = "pass",
+            "contract_check pass"
+        );
         GateCheckOutcome::Pass
     } else {
+        tracing::info!(
+            target: "harness::gate::contract_check",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            has_contract = contract.is_some(),
+            has_skeleton = skeleton.is_some(),
+            outcome = "block",
+            reasons_count = reasons.len(),
+            first_reason = %reasons[0],
+            "contract_check block"
+        );
         GateCheckOutcome::Block { reasons, recovery }
     }
 }
@@ -110,9 +131,11 @@ fn count_findings_by_kind(d: &ExternalAttackSurfaceDeliverable) -> HashMap<Strin
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::super::sprint_contract::{SprintContract, SprintSkeleton, StageSkeleton, ExpectedFinding};
+    use super::super::super::sprint_contract::{
+        ExpectedFinding, SprintContract, SprintSkeleton, StageSkeleton,
+    };
     use super::super::super::types::{ExternalAttackSurfaceDeliverable, Finding, FindingSeverity};
+    use super::*;
     use golish_pentest::evidence_ledger::EvidenceAuditId;
     use uuid::Uuid;
 
@@ -132,7 +155,11 @@ mod tests {
         }
     }
 
-    fn deliverable_with_findings(subdomain_count: u32, http_count: u32, evidence_count: u32) -> ExternalAttackSurfaceDeliverable {
+    fn deliverable_with_findings(
+        subdomain_count: u32,
+        http_count: u32,
+        evidence_count: u32,
+    ) -> ExternalAttackSurfaceDeliverable {
         let mut d = empty_deliverable();
         for i in 0..subdomain_count {
             d.findings.push(Finding {
@@ -152,7 +179,9 @@ mod tests {
                 evidence_refs: vec![EvidenceAuditId::new(i as i64 + 100)],
             });
         }
-        d.evidence_refs = (1..=(evidence_count as i64)).map(EvidenceAuditId::new).collect();
+        d.evidence_refs = (1..=(evidence_count as i64))
+            .map(EvidenceAuditId::new)
+            .collect();
         d
     }
 
@@ -166,7 +195,10 @@ mod tests {
 
     #[test]
     fn no_contract_passes() {
-        assert!(matches!(run(&empty_deliverable(), None), GateCheckOutcome::Pass));
+        assert!(matches!(
+            run(&empty_deliverable(), None),
+            GateCheckOutcome::Pass
+        ));
     }
 
     #[test]
@@ -176,7 +208,10 @@ mod tests {
             "contract text".to_string(),
             "openai:gpt-4o".to_string(),
         );
-        assert!(matches!(run(&empty_deliverable(), Some(&c)), GateCheckOutcome::Pass));
+        assert!(matches!(
+            run(&empty_deliverable(), Some(&c)),
+            GateCheckOutcome::Pass
+        ));
     }
 
     #[test]
@@ -203,7 +238,9 @@ mod tests {
         let outcome = run_with_skeleton(&d, None, Some(&sk));
         match outcome {
             GateCheckOutcome::Block { reasons, recovery } => {
-                assert!(reasons.iter().any(|r| r.contains("subdomain") && r.contains("below contract minimum")));
+                assert!(reasons
+                    .iter()
+                    .any(|r| r.contains("subdomain") && r.contains("below contract minimum")));
                 assert!(recovery
                     .missing_evidence_kinds
                     .iter()
@@ -220,7 +257,9 @@ mod tests {
         let d = deliverable_with_findings(1, 60, 100);
         match run_with_skeleton(&d, None, Some(&sk)) {
             GateCheckOutcome::Block { reasons, .. } => {
-                assert!(reasons.iter().any(|r| r.contains("http_service") && r.contains("exceeds contract maximum")));
+                assert!(reasons
+                    .iter()
+                    .any(|r| r.contains("http_service") && r.contains("exceeds contract maximum")));
             }
             _ => panic!("expected Block"),
         }
@@ -231,7 +270,10 @@ mod tests {
         let sk = skeleton();
         // 1 subdomain + 1 http_service + 至少 3 evidence (满足 min_tool_invocations=3)
         let d = deliverable_with_findings(1, 1, 5);
-        assert!(matches!(run_with_skeleton(&d, None, Some(&sk)), GateCheckOutcome::Pass));
+        assert!(matches!(
+            run_with_skeleton(&d, None, Some(&sk)),
+            GateCheckOutcome::Pass
+        ));
     }
 
     #[test]
@@ -260,6 +302,9 @@ mod tests {
             min_tool_invocations: std::collections::HashMap::new(),
         };
         let d = deliverable_with_findings(0, 0, 0);
-        assert!(matches!(run_with_skeleton(&d, None, Some(&sk)), GateCheckOutcome::Pass));
+        assert!(matches!(
+            run_with_skeleton(&d, None, Some(&sk)),
+            GateCheckOutcome::Pass
+        ));
     }
 }

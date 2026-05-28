@@ -28,6 +28,7 @@ describe("eventHandlerRegistry", () => {
 
   it("contains handlers for all tool events", () => {
     expect(eventHandlerRegistry.tool_request).toBeDefined();
+    expect(eventHandlerRegistry.tool_intent_observation).toBeDefined();
     expect(eventHandlerRegistry.tool_approval_request).toBeDefined();
     expect(eventHandlerRegistry.tool_auto_approved).toBeDefined();
     expect(eventHandlerRegistry.tool_result).toBeDefined();
@@ -45,6 +46,7 @@ describe("eventHandlerRegistry", () => {
     expect(eventHandlerRegistry.sub_agent_started).toBeDefined();
     expect(eventHandlerRegistry.sub_agent_tool_request).toBeDefined();
     expect(eventHandlerRegistry.sub_agent_tool_result).toBeDefined();
+    expect(eventHandlerRegistry.sub_agent_reasoning).toBeDefined();
     expect(eventHandlerRegistry.sub_agent_completed).toBeDefined();
     expect(eventHandlerRegistry.sub_agent_error).toBeDefined();
   });
@@ -64,11 +66,11 @@ describe("eventHandlerRegistry", () => {
     expect(eventHandlerRegistry.web_fetch_result).toBeDefined();
   });
 
-  it("has exactly 42 registered handlers", () => {
+  it("has exactly 43 registered handlers", () => {
     const registeredHandlers = Object.keys(eventHandlerRegistry).filter(
       (key) => eventHandlerRegistry[key as keyof EventHandlerRegistry] !== undefined
     );
-    expect(registeredHandlers.length).toBe(42);
+    expect(registeredHandlers.length).toBe(44);
   });
 });
 
@@ -86,6 +88,7 @@ describe("dispatchEvent", () => {
       appendThinkingContent: vi.fn(),
       addStreamingSystemHooksBlock: vi.fn(),
       addSystemHookBlock: vi.fn(),
+      recordToolIntentObservation: vi.fn(),
     };
 
     mockCtx = {
@@ -142,6 +145,29 @@ describe("dispatchEvent", () => {
 
     expect(mockCtx.batchTextDelta).toHaveBeenCalledWith("test-session", "Hello");
     expect(mockState.setAgentThinking).toHaveBeenCalledWith("test-session", false);
+  });
+
+  it("dispatches tool_intent_observation event to correct handler", () => {
+    const event = {
+      type: "tool_intent_observation" as const,
+      request_id: "req-1",
+      tool_name: "ask_human",
+      source: "textual_xml",
+      decision: "require_human_answer",
+      reason: "needs user",
+      raw_preview: null,
+      session_id: "test-session",
+    };
+    dispatchEvent(event, mockCtx);
+
+    expect(mockState.recordToolIntentObservation).toHaveBeenCalledWith("test-session", {
+      requestId: "req-1",
+      modelWanted: "ask_human",
+      source: "textual_xml",
+      decision: "require_human_answer",
+      reason: "needs user",
+      rawPreview: undefined,
+    });
   });
 
   it("dispatches reasoning event to correct handler", () => {

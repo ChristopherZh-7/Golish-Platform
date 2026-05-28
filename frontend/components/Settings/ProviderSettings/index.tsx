@@ -488,6 +488,110 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
           </div>
         );
 
+      case "xiaomi":
+        return (
+          <div className="space-y-3.5">
+            <div className="space-y-1.5">
+              <label htmlFor="xiaomi-key" className={fieldLabel}>
+                {t("provider.apiKey")}
+              </label>
+              <PasswordInput
+                id="xiaomi-key"
+                value={settings.xiaomi?.api_key || ""}
+                onChange={(value) => updateProvider("xiaomi", "api_key", value)}
+                placeholder="tp-... (Token Plan)  |  sk-... (Pay-as-you-go)"
+              />
+              <p className={fieldHint}>
+                {t("provider.from")}{" "}
+                <a
+                  href="https://platform.xiaomimimo.com/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={fieldLink}
+                >
+                  platform.xiaomimimo.com <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="xiaomi-region" className={fieldLabel}>
+                Region
+              </label>
+              <Select
+                value={settings.xiaomi?.region || "cn"}
+                onValueChange={(value) => updateProvider("xiaomi", "region", value)}
+              >
+                <SelectTrigger id="xiaomi-region" className={fieldInput}>
+                  <SelectValue placeholder="cn" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cn">Token Plan · 中国 (cn)</SelectItem>
+                  <SelectItem value="sgp">Token Plan · 新加坡 (sgp)</SelectItem>
+                  <SelectItem value="ams">Token Plan · 欧洲 (ams)</SelectItem>
+                  <SelectItem value="payg">按量付费 (api.xiaomimimo.com)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className={fieldHint}>
+                Token Plan key (tp-) 选对应区域；按量付费 key (sk-) 选「按量付费」自动指向
+                api.xiaomimimo.com。
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="xiaomi-protocol" className={fieldLabel}>
+                Default protocol
+              </label>
+              <Select
+                value={settings.xiaomi?.default_protocol || "auto"}
+                onValueChange={(value) => updateProvider("xiaomi", "default_protocol", value)}
+              >
+                <SelectTrigger id="xiaomi-protocol" className={fieldInput}>
+                  <SelectValue placeholder="auto" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Auto (按模型 ID 后缀决定)</SelectItem>
+                  <SelectItem value="openai">OpenAI 兼容 (Chat Completions)</SelectItem>
+                  <SelectItem value="anthropic">Anthropic 兼容 (Messages)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className={fieldHint}>
+                model id 加 `@anthropic` / `@openai` 后缀可强制切换协议（如
+                `mimo-v2.5-pro@anthropic`）。
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="xiaomi-openai-base" className={fieldLabel}>
+                {t("provider.baseUrl")} (OpenAI){" "}
+                <span className="text-muted-foreground/30 font-normal">
+                  ({t("provider.optional")})
+                </span>
+              </label>
+              <Input
+                id="xiaomi-openai-base"
+                value={settings.xiaomi?.openai_base_url || ""}
+                onChange={(e) => updateProvider("xiaomi", "openai_base_url", e.target.value)}
+                placeholder="https://token-plan-cn.xiaomimimo.com/v1"
+                className={cn(fieldInput, "font-mono")}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="xiaomi-anthropic-base" className={fieldLabel}>
+                {t("provider.baseUrl")} (Anthropic){" "}
+                <span className="text-muted-foreground/30 font-normal">
+                  ({t("provider.optional")})
+                </span>
+              </label>
+              <Input
+                id="xiaomi-anthropic-base"
+                value={settings.xiaomi?.anthropic_base_url || ""}
+                onChange={(e) => updateProvider("xiaomi", "anthropic_base_url", e.target.value)}
+                placeholder="https://token-plan-cn.xiaomimimo.com/anthropic"
+                className={cn(fieldInput, "font-mono")}
+              />
+              <p className={fieldHint}>留空时按 Region 自动推导；前缀到 `/anthropic` 即可。</p>
+            </div>
+          </div>
+        );
+
       default:
         return null;
     }

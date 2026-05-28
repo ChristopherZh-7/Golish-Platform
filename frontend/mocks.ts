@@ -444,6 +444,14 @@ let mockSettings = {
       base_url: null,
       show_in_selector: true,
     },
+    xiaomi: {
+      api_key: null,
+      region: null,
+      default_protocol: null,
+      openai_base_url: null,
+      anthropic_base_url: null,
+      show_in_selector: true,
+    },
   },
   api_keys: {
     tavily: null,
@@ -2319,7 +2327,8 @@ export function setMockProviderVisibility(
     | "xai"
     | "zai_sdk"
     | "nvidia"
-    | "deepseek",
+    | "deepseek"
+    | "xiaomi",
   visible: boolean
 ): void {
   mockSettings.ai[provider].show_in_selector = visible;

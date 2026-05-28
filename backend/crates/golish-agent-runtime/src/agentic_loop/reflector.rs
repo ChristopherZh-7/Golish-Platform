@@ -27,6 +27,35 @@ pub(crate) enum ReflectorOutcome {
     Skipped,
 }
 
+/// Some providers occasionally emit tool calls as literal XML-like text
+/// instead of using the structured function-calling channel.
+pub(crate) fn looks_like_unstructured_tool_attempt(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("<tool_call")
+        || lower.contains("</tool_call>")
+        || lower.contains("<execute")
+        || lower.contains("</execute>")
+        || lower.contains("<function=")
+        || lower.contains("</function>")
+}
+
+fn tool_list_for_reflector(
+    config: &AgenticLoopConfig,
+    tools: &[rig::completion::ToolDefinition],
+) -> String {
+    config
+        .tool_names_for_reflector
+        .as_ref()
+        .map(|names| names.join(", "))
+        .unwrap_or_else(|| {
+            tools
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+}
+
 /// If the agent produced text without tool calls and reflection budget remains,
 /// invoke the reflector sub-agent and append a corrective user message.
 ///
@@ -42,14 +71,41 @@ pub(crate) async fn maybe_run_reflector(
     reflector_active: bool,
     tools: &[rig::completion::ToolDefinition],
 ) -> ReflectorOutcome {
+    let unstructured_tool_attempt = looks_like_unstructured_tool_attempt(text_content);
     let should_reflect = consecutive_no_tool_turns <= 3
         && *total_reflector_nudges < 3
         && !text_content.trim().is_empty()
         && config.enable_reflector
-        && reflector_active;
+        && (reflector_active || (unstructured_tool_attempt && !tools.is_empty()));
 
     if !should_reflect {
         return ReflectorOutcome::Skipped;
+    }
+
+    let tool_list = tool_list_for_reflector(config, tools);
+
+    if unstructured_tool_attempt {
+        *total_reflector_nudges += 1;
+        tracing::warn!(
+            attempt = consecutive_no_tool_turns,
+            total_nudges = *total_reflector_nudges,
+            text_len = text_content.len(),
+            "[reflector] Agent emitted textual tool-call markup, injecting structured-tool retry nudge"
+        );
+
+        chat_history.push(Message::User {
+            content: OneOrMany::one(UserContent::Text(Text {
+                text: format!(
+                    "[System: Your previous response wrote a textual <tool_call> tag. \
+                     Golish cannot execute XML/text tool tags. Do not print <tool_call>, \
+                     <function>, or <execute>. Use the native structured tool/function-calling \
+                     channel to call one available tool. Available tools: {}. Attempt {}/3]",
+                    tool_list, *total_reflector_nudges
+                ),
+            })),
+        });
+
+        return ReflectorOutcome::Injected;
     }
 
     let reflector_def = {
@@ -71,18 +127,6 @@ pub(crate) async fn maybe_run_reflector(
 
     // Build a diagnostic prompt for the reflector with the agent's response and
     // available tool names so it can suggest specific tools.
-    let tool_list = config
-        .tool_names_for_reflector
-        .as_ref()
-        .map(|names| names.join(", "))
-        .unwrap_or_else(|| {
-            tools
-                .iter()
-                .map(|t| t.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        });
-
     let reflector_prompt = format!(
         "The agent was given a task and responded with text instead of using tools.\n\n\
          ## Agent's text response (attempt {}/3):\n```\n{}\n```\n\n\

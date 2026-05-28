@@ -15,6 +15,7 @@ mod openrouter;
 mod vertex_anthropic;
 mod vertex_gemini;
 mod xai;
+mod xiaomi;
 mod zai_sdk;
 
 pub use anthropic::create_anthropic_components;
@@ -28,4 +29,5 @@ pub use openrouter::create_openrouter_components;
 pub use vertex_anthropic::create_vertex_components;
 pub use vertex_gemini::create_vertex_gemini_components;
 pub use xai::create_xai_components;
+pub use xiaomi::create_xiaomi_components;
 pub use zai_sdk::create_zai_sdk_components;

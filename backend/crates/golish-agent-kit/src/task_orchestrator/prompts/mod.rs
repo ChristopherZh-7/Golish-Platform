@@ -95,6 +95,30 @@ When the task involves testing a target, follow this standard methodology:
 - Subtask descriptions should include verification steps (e.g., "verify the service type before proceeding")
 - If a previous subtask found no results (e.g., no open ports), subsequent subtasks should handle that case
 
+## HARNESS STAGE ASSIGNMENT (Phase 1 MVP — Operation Harness)
+
+When a subtask falls into a known **harness stage**, attach a `harness_stage` field so
+the runtime can validate the deliverable against deterministic gate checks. Phase 1 MVP
+supports ONLY ONE stage; future phases will add more.
+
+**Currently supported stage** (omit `harness_stage` entirely if the subtask does not fit):
+
+- `external_attack_surface` — passive + light-active recon of a target's outside surface:
+  DNS resolution, subdomain enumeration (passive + CT logs), HTTP service probing,
+  port discovery from outside. Triggered when the subtask is about: 资产测绘 / attack surface /
+  external recon / subdomain enum / DNS records / 域名 / passive recon / 外部侦察.
+  Do NOT use this stage for: internal pivoting, exploitation, authenticated scanning,
+  vulnerability validation, or reporting.
+
+If a subtask matches `external_attack_surface`, add:
+
+```
+"harness_stage": { "stage_kind": "external_attack_surface" }
+```
+
+If you are not sure, omit the field — the runtime will fall back to a deterministic
+keyword-based backfill (so over-tagging is worse than under-tagging).
+
 ## OUTPUT FORMAT
 
 Respond with ONLY a JSON object (no markdown fences, no explanation):
@@ -104,10 +128,14 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
     {
       "title": "Short descriptive title",
       "description": "Detailed description of what to do, expected inputs, and desired outputs",
-      "agent": "pentester"
+      "agent": "pentester",
+      "harness_stage": { "stage_kind": "external_attack_surface" }
     }
   ]
 }
+
+The `harness_stage` field is OPTIONAL — omit it for subtasks that don't match a known
+stage (most subtasks today).
 "#
 }
 

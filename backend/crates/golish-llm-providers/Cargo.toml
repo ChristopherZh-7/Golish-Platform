@@ -33,3 +33,8 @@ async-trait = { workspace = true }
 # Error handling and logging
 anyhow = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+# Used by examples/xiaomi_live_probe.rs and other dev probes that need a Tokio
+# runtime; the library itself stays runtime-agnostic.
+tokio = { workspace = true }

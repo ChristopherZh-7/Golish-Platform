@@ -14,6 +14,7 @@ mod openrouter;
 mod vertex_ai;
 mod vertex_gemini;
 mod xai;
+mod xiaomi;
 mod zai_sdk;
 
 pub use anthropic::anthropic_models;
@@ -27,6 +28,7 @@ pub use openrouter::openrouter_models;
 pub use vertex_ai::vertex_ai_models;
 pub use vertex_gemini::vertex_gemini_models;
 pub use xai::xai_models;
+pub use xiaomi::xiaomi_models;
 pub use zai_sdk::zai_sdk_models;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +114,12 @@ pub fn get_provider_info(provider: AiProvider) -> ProviderInfo {
             icon: "🧠",
             description: "DeepSeek direct API",
         },
+        AiProvider::Xiaomi => ProviderInfo {
+            provider,
+            name: "Xiaomi MiMo",
+            icon: "🟠",
+            description: "Xiaomi MiMo Token Plan (OpenAI + Anthropic dual-compatible)",
+        },
     }
 }
 
@@ -130,5 +138,6 @@ pub fn get_all_provider_info() -> Vec<ProviderInfo> {
         get_provider_info(AiProvider::Openrouter),
         get_provider_info(AiProvider::Nvidia),
         get_provider_info(AiProvider::Deepseek),
+        get_provider_info(AiProvider::Xiaomi),
     ]
 }

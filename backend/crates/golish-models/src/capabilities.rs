@@ -9,6 +9,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::tool_use_profile::ToolUseProfile;
+
 /// Capabilities that vary across LLM models.
 ///
 /// This struct provides explicit metadata about what a model supports,
@@ -57,6 +59,10 @@ pub struct ModelCapabilities {
     /// Maximum output tokens.
     #[serde(default)]
     pub max_output_tokens: u32,
+
+    /// Explicit metadata for how this model/provider family should use tools.
+    #[serde(default)]
+    pub tool_use_profile: ToolUseProfile,
 }
 
 fn default_true() -> bool {
@@ -83,6 +89,7 @@ impl ModelCapabilities {
             supports_thinking_history: true,
             supports_vision: true,
             supports_web_search: true,
+            tool_use_profile: ToolUseProfile::native_reliable(),
             context_window: 200_000,
             max_output_tokens: 8_192,
             ..Default::default()
@@ -96,6 +103,7 @@ impl ModelCapabilities {
             supports_thinking_history: true,
             supports_vision: true,
             supports_web_search: true,
+            tool_use_profile: ToolUseProfile::native_reliable(),
             context_window: 1_000_000,  // 1M context (beta)
             max_output_tokens: 128_000, // 128k output
             ..Default::default()
@@ -109,6 +117,7 @@ impl ModelCapabilities {
             supports_thinking_history: true,
             supports_vision: true,
             supports_web_search: true,
+            tool_use_profile: ToolUseProfile::native_reliable(),
             context_window: 1_000_000,  // 1M context (beta)
             max_output_tokens: 128_000, // 128k output
             ..Default::default()
@@ -121,6 +130,7 @@ impl ModelCapabilities {
             supports_temperature: true,
             supports_vision: true,
             supports_web_search: true,
+            tool_use_profile: ToolUseProfile::native_reliable(),
             context_window: 128_000,
             max_output_tokens: 16_384,
             ..Default::default()
@@ -135,6 +145,7 @@ impl ModelCapabilities {
             supports_vision: true,
             supports_web_search: true,
             is_reasoning_model: true,
+            tool_use_profile: ToolUseProfile::native_reliable(),
             context_window: 400_000, // GPT-5 series has 400k context
             max_output_tokens: 128_000,
             ..Default::default()
@@ -149,6 +160,7 @@ impl ModelCapabilities {
             supports_vision: true,
             supports_web_search: true,
             is_reasoning_model: true,
+            tool_use_profile: ToolUseProfile::native_reliable(),
             context_window: 200_000, // o-series has 200k context
             max_output_tokens: 100_000,
             ..Default::default()
@@ -164,6 +176,7 @@ impl ModelCapabilities {
             supports_web_search: false,
             is_reasoning_model: true,
             is_codex_model: true,
+            tool_use_profile: ToolUseProfile::native_reliable(),
             context_window: 192_000, // Codex has 192k context
             max_output_tokens: 100_000,
         }
@@ -283,8 +296,30 @@ impl ModelCapabilities {
             supports_temperature: true,
             supports_thinking_history: true,
             supports_vision: false,
+            tool_use_profile: ToolUseProfile::native_best_effort(),
             context_window: 128_000,
             max_output_tokens: 8_192,
+            ..Default::default()
+        }
+    }
+
+    /// Create capabilities for Xiaomi MiMo models.
+    ///
+    /// Defaults match the V2.5 line (1M context, 128K max output, deep
+    /// thinking + function call + structured output + web search per the
+    /// official spec at <https://platform.xiaomimimo.com/docs/en-US/quick-start/model>,
+    /// 2026-05-27). Per-model overrides for omni / older series live in
+    /// `resources/llm-models/xiaomi.json` via
+    /// [`crate::descriptors::merge_capabilities`].
+    pub fn xiaomi_defaults() -> Self {
+        Self {
+            supports_temperature: true,
+            supports_thinking_history: true,
+            supports_vision: false,
+            supports_web_search: true,
+            tool_use_profile: ToolUseProfile::needs_textual_xml_adapter(),
+            context_window: 1_000_000,
+            max_output_tokens: 128_000,
             ..Default::default()
         }
     }
@@ -323,6 +358,7 @@ mod tests {
         assert!(caps.supports_vision);
         assert!(caps.supports_web_search);
         assert!(!caps.is_reasoning_model);
+        assert_eq!(caps.tool_use_profile, ToolUseProfile::native_reliable());
     }
 
     #[test]
@@ -334,6 +370,7 @@ mod tests {
         assert!(!caps.is_codex_model);
         assert_eq!(caps.context_window, 400_000);
         assert_eq!(caps.max_output_tokens, 128_000);
+        assert_eq!(caps.tool_use_profile, ToolUseProfile::native_reliable());
     }
 
     #[test]
@@ -345,6 +382,7 @@ mod tests {
         assert!(!caps.is_codex_model);
         assert_eq!(caps.context_window, 200_000);
         assert_eq!(caps.max_output_tokens, 100_000);
+        assert_eq!(caps.tool_use_profile, ToolUseProfile::native_reliable());
     }
 
     #[test]
@@ -353,6 +391,7 @@ mod tests {
         assert!(!caps.supports_temperature);
         assert!(caps.is_reasoning_model);
         assert!(caps.is_codex_model);
+        assert_eq!(caps.tool_use_profile, ToolUseProfile::native_reliable());
     }
 
     #[test]
@@ -373,5 +412,15 @@ mod tests {
         assert!(!caps.is_reasoning_model);
         assert_eq!(caps.context_window, 1_048_576);
         assert_eq!(caps.max_output_tokens, 8_192);
+    }
+
+    #[test]
+    fn test_xiaomi_defaults_need_textual_xml_adapter() {
+        let caps = ModelCapabilities::xiaomi_defaults();
+        assert_eq!(
+            caps.tool_use_profile,
+            ToolUseProfile::needs_textual_xml_adapter()
+        );
+        assert_eq!(caps.tool_use_profile.max_tool_calls_per_turn, 1);
     }
 }

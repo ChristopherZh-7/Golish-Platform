@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { type AiEvent, onAiEvent, signalFrontendReady } from "@/lib/ai";
+import { type AiEvent, isTitleGenSessionId, onAiEvent, signalFrontendReady } from "@/lib/ai";
 import {
   pendingTextBatches,
   runTextBatchFlush,
@@ -8,59 +8,28 @@ import {
 } from "@/lib/ai/streaming-buffer";
 import { logger } from "@/lib/logger";
 import { dispatchEvent, type EventHandlerContext } from "@/services/ai-events";
+import {
+  getLastSeenSequence,
+  getLastSignaledAt,
+  setLastSeenSequence,
+  setLastSignaledAt,
+} from "@/services/ai-events/session-sequence";
 import { useStore } from "@/store";
 
 export {
   discardAllPendingBatchedDeltas,
   discardPendingBatchedDeltasForAiSession,
 } from "@/lib/ai/streaming-buffer";
+export {
+  getSessionSequenceCount,
+  resetAllSequences,
+  resetLastSignaledAt,
+  resetSessionSequence,
+} from "@/services/ai-events/session-sequence";
 
 import { convertToolSource } from "@/lib/ai/tool-source";
 
-/**
- * Track last seen sequence number per session for deduplication.
- * This is module-level to persist across hook re-renders but within the same app lifecycle.
- */
-const lastSeenSeq = new Map<string, number>();
-
-/**
- * Throttle signal_frontend_ready calls to prevent HMR-induced spam.
- * Tracks the last signal time per session; ignores calls within the cooldown window.
- */
-const lastSignaledAt = new Map<string, number>();
 const SIGNAL_COOLDOWN_MS = 3000;
-
-/**
- * Reset sequence tracking for a session.
- * Called when a session is removed or when the app needs to reset state.
- */
-export function resetSessionSequence(sessionId: string): void {
-  lastSeenSeq.delete(sessionId);
-}
-
-/**
- * Reset all sequence tracking. Useful for testing.
- */
-export function resetAllSequences(): void {
-  lastSeenSeq.clear();
-}
-
-/**
- * Reset signal_frontend_ready cooldown tracking. Tests rely on this so each
- * test can re-trigger signalFrontendReady without being throttled by prior
- * tests in the same module.
- */
-export function resetLastSignaledAt(): void {
-  lastSignaledAt.clear();
-}
-
-/**
- * Get the number of sessions being tracked.
- * Useful for testing and debugging memory management.
- */
-export function getSessionSequenceCount(): number {
-  return lastSeenSeq.size;
-}
 
 /**
  * Hook to subscribe to AI events from the Tauri backend
@@ -107,6 +76,14 @@ export function useAiEvents() {
       const state = useStore.getState();
       let sessionId = event.session_id;
 
+      if (isTitleGenSessionId(sessionId)) {
+        logger.debug("Ignoring title-generation AI event:", {
+          sessionId,
+          eventType: event.type,
+        });
+        return;
+      }
+
       // Fall back to activeSessionId if session_id is unknown (shouldn't happen in normal operation)
       if (!sessionId || sessionId === "unknown") {
         logger.warn("AI event received with unknown session_id, falling back to activeSessionId");
@@ -146,18 +123,6 @@ export function useAiEvents() {
           }
         }
 
-        // Last resort: if the active PTY session exists, use it directly.
-        // This keeps events flowing even when conversation state is inconsistent.
-        if (!resolved && state.activeSessionId && state.sessions[state.activeSessionId]) {
-          logger.debug("AI event routed to active session as fallback:", {
-            originalSessionId: sessionId,
-            activeSessionId: state.activeSessionId,
-            eventType: event.type,
-          });
-          sessionId = state.activeSessionId;
-          resolved = true;
-        }
-
         if (!resolved) {
           logger.warn("AI event dropped for unknown session:", {
             sessionId,
@@ -170,7 +135,7 @@ export function useAiEvents() {
 
       // Deduplication: check sequence number if present
       if (event.seq !== undefined) {
-        const lastSeq = lastSeenSeq.get(sessionId) ?? -1;
+        const lastSeq = getLastSeenSequence(sessionId);
 
         // Skip duplicate or out-of-order events
         if (event.seq <= lastSeq) {
@@ -188,7 +153,7 @@ export function useAiEvents() {
         }
 
         // Update last seen sequence
-        lastSeenSeq.set(sessionId, event.seq);
+        setLastSeenSequence(sessionId, event.seq);
       }
 
       // Create handler context
@@ -221,9 +186,9 @@ export function useAiEvents() {
           const now = Date.now();
           const sessions = Object.keys(useStore.getState().sessions);
           for (const sessionId of sessions) {
-            const last = lastSignaledAt.get(sessionId) ?? 0;
+            const last = getLastSignaledAt(sessionId);
             if (now - last < SIGNAL_COOLDOWN_MS) continue;
-            lastSignaledAt.set(sessionId, now);
+            setLastSignaledAt(sessionId, now);
             signalFrontendReady(sessionId).catch((err) => {
               logger.debug("Failed to signal frontend ready:", err);
             });

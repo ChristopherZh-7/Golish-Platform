@@ -35,11 +35,15 @@ use super::stream_retry::classify_stream_start_error;
 
 mod encrypted;
 mod span;
+mod textual_tool_calls;
 mod usage;
 
 use self::encrypted::extract_openai_reasoning_encrypted_content;
 use self::span::{record_completion_for_span, record_reasoning_for_span};
+use self::textual_tool_calls::{extract_textual_tool_call, strip_textual_tool_call_markup};
 use self::usage::record_token_usage;
+
+const CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Per-iteration accumulated stream state, returned to the agentic loop after
 /// the stream has been fully consumed (and any trailing pending tool call has
@@ -106,7 +110,28 @@ where
     let mut current_tool_name: Option<String> = None;
     let mut current_tool_args = String::new();
 
-    while let Some(chunk_result) = stream.next().await {
+    loop {
+        let chunk_result = tokio::select! {
+            biased;
+            _ = wait_for_cancelled(ctx) => {
+                tracing::info!(
+                    "Agent cancelled while waiting for stream chunk (chunk {})",
+                    chunk_count
+                );
+                drop(stream);
+                let _ = ctx.events.event_tx.send(AiEvent::Error {
+                    message: "Agent stopped by user".to_string(),
+                    error_type: "cancelled".to_string(),
+                });
+                return Err(anyhow::anyhow!("Agent stopped by user"));
+            }
+            chunk = stream.next() => chunk,
+        };
+
+        let Some(chunk_result) = chunk_result else {
+            break;
+        };
+
         if is_cancelled(ctx) {
             tracing::info!(
                 "Agent cancelled during stream processing (chunk {})",
@@ -361,9 +386,11 @@ where
                         current_tool_args.clear();
                     }
 
-                    // Empty-args case `{}` means we're streaming, wait for deltas.
-                    let has_complete_args = !tool_call.function.arguments.is_null()
-                        && tool_call.function.arguments != serde_json::json!({});
+                    // Empty args and string args mean the provider is still streaming
+                    // function arguments. Some OpenAI-compatible providers send the
+                    // first partial JSON fragment as a string; treating that as complete
+                    // causes duplicate approval prompts with malformed args.
+                    let has_complete_args = has_complete_tool_args(&tool_call.function.arguments);
 
                     if has_complete_args {
                         let mut tool_call = tool_call;
@@ -375,11 +402,8 @@ where
                         current_tool_id = Some(tool_call.id.clone());
                         current_tool_call_id = tool_call.call_id.clone();
                         current_tool_name = Some(tool_call.function.name.clone());
-                        if !tool_call.function.arguments.is_null()
-                            && tool_call.function.arguments != serde_json::json!({})
-                        {
-                            current_tool_args = tool_call.function.arguments.to_string();
-                        }
+                        current_tool_args =
+                            initial_tool_args_fragment(&tool_call.function.arguments);
                     }
                 }
                 StreamedAssistantContent::ToolCallDelta { id, content, .. } => {
@@ -443,6 +467,26 @@ where
         has_tool_calls = true;
     }
 
+    if tool_calls_to_execute.is_empty() {
+        if let Some(tool_call) = extract_textual_tool_call(&text_content, iteration) {
+            let tool_name = tool_call.function.name.clone();
+            let cleaned_text = strip_textual_tool_call_markup(&text_content);
+            let cleaned_accumulated = strip_textual_tool_call_markup(accumulated_response);
+
+            tracing::warn!(
+                iteration,
+                tool_name = %tool_name,
+                text_len = text_content.len(),
+                "[tool-adapter] Converted textual XML-style tool call into structured tool call"
+            );
+
+            text_content = cleaned_text;
+            *accumulated_response = cleaned_accumulated;
+            tool_calls_to_execute.push(tool_call);
+            has_tool_calls = true;
+        }
+    }
+
     // No usable content + chunk errors observed: surface the error and break.
     if text_content.is_empty() && thinking_content.is_empty() && tool_calls_to_execute.is_empty() {
         if let Some(ref err_msg) = last_stream_chunk_error {
@@ -487,4 +531,60 @@ where
         thinking_signature,
         thinking_id,
     }))
+}
+
+async fn wait_for_cancelled(ctx: &AgenticLoopContext<'_>) {
+    loop {
+        if is_cancelled(ctx) {
+            return;
+        }
+        tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
+    }
+}
+
+fn has_complete_tool_args(args: &serde_json::Value) -> bool {
+    match args {
+        serde_json::Value::Null => false,
+        serde_json::Value::Object(map) if map.is_empty() => false,
+        serde_json::Value::String(_) => false,
+        _ => true,
+    }
+}
+
+fn initial_tool_args_fragment(args: &serde_json::Value) -> String {
+    match args {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::Object(map) if map.is_empty() => String::new(),
+        serde_json::Value::String(value) => value.clone(),
+        value => value.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{has_complete_tool_args, initial_tool_args_fragment};
+
+    #[test]
+    fn string_tool_args_are_treated_as_streaming_fragments() {
+        let args = json!("{\"command\":\"dig example.com A +short\", \"cwd\":");
+
+        assert!(!has_complete_tool_args(&args));
+        assert_eq!(
+            initial_tool_args_fragment(&args),
+            "{\"command\":\"dig example.com A +short\", \"cwd\":"
+        );
+    }
+
+    #[test]
+    fn object_tool_args_are_complete() {
+        let args = json!({"command": "dig example.com A +short", "cwd": ""});
+
+        assert!(has_complete_tool_args(&args));
+        assert_eq!(
+            initial_tool_args_fragment(&args),
+            "{\"command\":\"dig example.com A +short\",\"cwd\":\"\"}"
+        );
+    }
 }

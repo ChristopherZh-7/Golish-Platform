@@ -1,6 +1,7 @@
 import { useCallback, useRef } from "react";
 import {
   type AgentMode,
+  cancelAiGeneration,
   initAiSession,
   restoreAiConversation,
   sendPromptSession,
@@ -14,6 +15,8 @@ import { useStore } from "@/store";
 import { buildProviderConfig } from "../providerConfig";
 
 type SelectedModel = { model: string; provider: string } | null;
+
+const TITLE_GENERATION_TIMEOUT_MS = 8_000;
 
 interface UseChatSessionInitOptions {
   selectedModel: SelectedModel;
@@ -31,6 +34,7 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
     async (convId: string, firstMessage: string) => {
       if (!selectedModel?.model || !selectedModel?.provider) return;
       const titleSessionId = titleGenSessionId(convId);
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
       try {
         const settings = await getSettings();
         const titleWorkspace = useStore.getState().currentProjectPath || ".";
@@ -42,10 +46,15 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
         );
         if (!providerConfig) return;
         await initAiSession(titleSessionId, providerConfig);
-        const title = await sendPromptSession(
-          titleSessionId,
-          `Generate a concise 3-5 word title for this chat message. Output ONLY the title, nothing else. No quotes, no punctuation at the end.\n\nMessage: "${firstMessage.slice(0, 200)}"`
-        );
+        const titlePrompt = `Generate a concise 3-5 word title for this chat message. Output ONLY the title, nothing else. No quotes, no punctuation at the end.\n\nMessage: "${firstMessage.slice(0, 200)}"`;
+        const titlePromise = sendPromptSession(titleSessionId, titlePrompt);
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(() => {
+            cancelAiGeneration(titleSessionId).catch(() => {});
+            reject(new Error("Title generation timed out"));
+          }, TITLE_GENERATION_TIMEOUT_MS);
+        });
+        const title = await Promise.race([titlePromise, timeoutPromise]);
         const cleaned = title
           .trim()
           .replace(/^["']|["']$/g, "")
@@ -56,6 +65,7 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
       } catch {
         // Title generation failed silently
       } finally {
+        if (timeoutId) clearTimeout(timeoutId);
         shutdownAiSession(titleSessionId).catch(() => {});
       }
     },

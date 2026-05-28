@@ -1,10 +1,13 @@
 import { type MutableRefObject, useCallback } from "react";
 import {
   cancelAiGeneration,
+  clearGenerationSuppressForAiSession,
   createTextPayload,
+  discardPendingBatchedDeltasForAiSession,
   sendPromptSession,
   sendPromptWithAttachments,
   setExecutionMode as setExecutionModeBackend,
+  suppressGenerationForAiSession,
 } from "@/lib/ai";
 import { type ChatMessage, useStore } from "@/store";
 
@@ -133,6 +136,7 @@ export function useChatSend(opts: UseChatSendOptions) {
     }
 
     try {
+      clearGenerationSuppressForAiSession(conv.aiSessionId);
       useStore.getState().setConversationStreaming(conv.id, true);
       const isTaskMode = chatExecutionModeRef.current === "task";
       if (isTaskMode) taskInProgressRef.current = true;
@@ -212,6 +216,8 @@ export function useChatSend(opts: UseChatSendOptions) {
     const conv = useStore.getState().conversations[activeConvId];
     if (!conv) return;
     taskInProgressRef.current = false;
+    suppressGenerationForAiSession(conv.aiSessionId);
+    discardPendingBatchedDeltasForAiSession(conv.aiSessionId);
     cancelAiGeneration(conv.aiSessionId).catch(() => {});
     streamingMsgRef.current = null;
     const store = useStore.getState();

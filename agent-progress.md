@@ -17,15 +17,581 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | **harness-mvp-external-attack-surface 已 Phase 1 实施完毕**（feat/harness-design-2026-05-26 分支 · 17 个 Task / 16 commits / 100+ 新单测全绿）。feature_list.json `harness-mvp-external-attack-surface` 切到 `passing`，asset-intel-hydrate-disambiguation 仍 `blocked`（继续在 feat/asm-intel-providers 分支推进）。下一步：用户手动 E2E（just dev → settings.toml `GOLISH_HARNESS_STAGE_MODE=true` → 新建 task 模式 task）。 |
-| **当前 blocker** | feat/harness-design-2026-05-26 分支 focused 验证全绿（cargo nextest 100/100 + harness 86/86 + e2e demo 10/10）；整 monorepo `just precommit` 仍有 5 preexisting clippy warning（`session_dir` dead_code、asset_intel explicit_auto_deref×2、webview_isolation needless_return、integrations facade doc indent），均来自其它分支 baseline，**不是 harness 实施引入**。`window_state` bounds 断言 + `behavioral_equivalence` policy denial test failure 来源同样为 baseline。Phase 1 实施期间未引入新 warning。 |
-| **未提交的半成品** | 本轮 harness Phase 1 实施全部已 commit (commits 0b037da … b106d55)。git status 显示 docs 改动 (Doc 1/2/3/4 status 切换 + plan §12 状态 + agent-progress.md + feature_list.json evidence) 即将作为 Task 1d.3 commit 一气提交。 |
+| **当前最高优先级** | **agent-tool-use-compatibility-layer**（2026-05-27 新拆出 · 当前唯一 `in_progress`）。原因：MiMo 复测暴露 runtime 架构问题，模型会把 `ask_human` / `manage_targets add` 写成文本 `<tool_call>`，没有真实弹确认；需要 Provider Adapter → ToolIntent Normalizer → Safety Gate → Approval Barrier → Tool Executor → Observation 的正式链路。设计：`docs/design/2026-05-27-agent-tool-use-compatibility-layer.md`；计划：`docs/superpowers/plans/2026-05-27-agent-tool-use-compatibility-layer.md`。 |
+| **当前 blocker** | `xiaomi-mimo-provider` 已从 `in_progress` 切 `blocked`，等待 tool-use compatibility layer 与真实 MiMo E2E 后再决定 passing。2026-05-27 复测发现 `ask_human` 被误包成普通 ToolApprovalRequest；已修为直接发 `AskHumanRequest`，但需重启 dev app 后真实复测。`just precommit` 仍未全绿：Rust clippy 有既有 warnings-as-errors；`test-rust`/`test-rust-all` 在 sandbox 下有 PermissionDenied baseline failures（`golish-pentest sploitus::client::tests::surfaces_api_error_status` / `golish tools::asset_intel::tests::http_json_runtime_posts_fake_data_and_normalizes_candidates`）。 |
+| **未提交的半成品** | 2026-05-27 至少**五段**未 commit 改动：① harness Phase 1 tracing 补全 ② chat panel harness backfill ③ chat.rs lazy session create 修 baseline task mode FK violation ④ xiaomi-mimo-provider 全栈接入 + 展示/context 修正 ⑤ **agent tool-use compatibility 初步补强与架构文档**（MessageBlock XML 清洗、runtime textual parser/adapter、reflector nudge、agent-observe 日志、2 个新设计/计划文档、feature/progress 状态切换）。等待用户决定 commit 策略；建议后续拆为 tracing / backfill / fix(task-mode) / feat(xiaomi) / feat(tool-compat) 至少 5 个 commit。其它 baseline preexisting 改动：backend/Cargo.lock + docs/design/2026-05-26-operation-harness-profile-dag-lab.md + resources/toolsconfig/amass.json 与本轮无关。 |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-27 · Sub-Agent Nested Delegation 与 Thinking UI 重构
+
+- **本轮目标**：按用户要求先写计划再改：nested sub-agent 不再在主 ChatPanel 平铺；父 sub-agent detail 内显示嵌套委托卡片；sub-agent thinking/reasoning 不再闪一下消失，而是进入 sub-agent 自己的状态与 detail UI。
+- **计划文档**：
+  - `docs/superpowers/plans/2026-05-27-sub-agent-nested-thinking-ui.md`
+- **已完成**：
+  - 后端新增 `AiEvent::SubAgentReasoning { agent_id, delta, accumulated, parent_request_id }`，CLI JSON 输出为 `sub_agent_reasoning`；terminal/transcript/summarizer/sidecar 对该流式 reasoning 做对应过滤或忽略。
+  - `golish-sub-agents` streaming processor 在标准 reasoning/fallback reasoning 路径发送 `SubAgentReasoning`；`AlwaysContent` quirk 仍按原逻辑 reroute 到 `SubAgentTextDelta`。
+  - 前端 `ActiveSubAgent` 增加 `thinking` / `thinkingStartedAt` / `thinkingEndedAt`，workflow store 增加 `updateSubAgentThinking` 并同步回 timeline。
+  - 前端 AI event registry 增加 `sub_agent_reasoning` handler。
+  - `SubAgentDetailView` 复用 `ThinkingBlock` 展示 sub-agent thinking；运行中且还没有 entries 时展开，后续出现 text/tool/nested delegation 后自动折叠。
+  - `SubAgentDetailView` 对 `sub_agent_*` tool call 优先查找 child sub-agent，并渲染 compact nested delegation card；点击会进入 child sub-agent detail。
+  - `extractSubAgentBlocks` fallback 过滤 nested child，避免 child sub-agent 因状态 race 被追加到主 ChatPanel 顶层。
+- **已记录证据**：
+  - `cd backend && cargo check -p golish-core -p golish-cli-output -p golish-sub-agents -p golish-events -p golish-sidecar` → exit 0
+  - `cd backend && cargo fmt --package golish-core --package golish-cli-output --package golish-sub-agents --package golish-events --package golish-sidecar --check` → exit 0
+  - `cd backend && cargo test -p golish-core events::tests --lib` → 34 passed / 0 failed
+  - `cd backend && cargo test -p golish-cli-output sub_agent_reasoning_event_has_correct_format --lib` → 1 passed / 0 failed
+  - `cd backend && cargo test -p golish-events should_transcript --lib` → 2 passed / 0 failed
+  - `pnpm exec biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/lib/timeline/subAgentExtraction.ts frontend/lib/timeline/subAgentExtraction.test.ts frontend/lib/ai/types.ts frontend/store/types/sub-agent.ts frontend/store/slices/workflow/types.ts frontend/store/slices/workflow/sub-agent.ts frontend/services/ai-events/sub-agent-handlers.ts frontend/services/ai-events/registry.ts frontend/services/ai-events/registry.test.ts` → exit 0 / No fixes applied
+  - `pnpm vitest run frontend/lib/timeline/subAgentExtraction.test.ts frontend/services/ai-events/registry.test.ts` → 30 passed / 0 failed
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `git diff --check -- <touched files>` → exit 0
+  - Mock visual check: `pnpm dev` 启动 Vite（未跑 `init.sh`），Playwright 注入 mocked parent/child sub-agent state 并截图：
+    - `.codex-screenshots/subagent-parent-nested-thinking.png`：父 `Pentester` detail 显示 collapsed Thinking + nested `Installer` delegation card + 普通工具块。
+    - `.codex-screenshots/subagent-child-thinking.png`：点击 nested card 后进入 child `Installer` detail，显示 child 自己的 active Thinking。
+  - Mock Vite dev server 已停止。
+  - Nested card visual follow-up：把父 detail 里的 nested delegation card 从单行压缩样式调为两行卡片（主行 status/agent/tools/chevron，副行 task，running 时显示 child thinking preview）。重新 mock 截图：
+    - `.codex-screenshots/subagent-parent-nested-card-v2.png`
+  - `pnpm exec biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx` → exit 0 / No fixes applied
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `git diff --check -- frontend/components/SubAgentDetailView/SubAgentDetailView.tsx` → exit 0
+- **未跑 / 原因**：
+  - 未跑 `./init.sh`：用户明确要求不要启动。
+  - 未跑 `just precommit`：当前仓库仍有大量既有未提交改动与 baseline 验证问题；本轮只跑 targeted 验证。
+- **提交记录**：未 commit。
+- **已修改但未提交（本轮 scope）**：
+  - `docs/superpowers/plans/2026-05-27-sub-agent-nested-thinking-ui.md`
+  - `backend/crates/golish-core/src/events/event.rs`
+  - `backend/crates/golish-core/src/events/event_dispatch.rs`
+  - `backend/crates/golish-core/src/events/tests/json_serialization.rs`
+  - `backend/crates/golish-core/src/events/tests/roundtrip.rs`
+  - `backend/crates/golish-cli-output/src/cli_json/{mod.rs,sub_agent.rs}`
+  - `backend/crates/golish-cli-output/src/{terminal.rs,tests.rs}`
+  - `backend/crates/golish-sub-agents/src/executor/stream_processing.rs`
+  - `backend/crates/golish-events/src/transcript/{mod.rs,summarizer.rs,tests/should_transcript_tests.rs}`
+  - `backend/crates/golish-sidecar/src/capture/context.rs`
+  - `frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`
+  - `frontend/lib/{ai/types.ts,timeline/subAgentExtraction.ts,timeline/subAgentExtraction.test.ts}`
+  - `frontend/services/ai-events/{registry.ts,registry.test.ts,sub-agent-handlers.ts}`
+  - `frontend/store/{types/sub-agent.ts,slices/workflow/types.ts,slices/workflow/sub-agent.ts}`
+
+---
+
+### 2026-05-27 · ChatPanel Thinking 与 Sub-Agent 卡片状态边界修正（小改动）
+
+- **本轮目标**：用户指出模型在 Thinking 文本后调用 subagent 时，UI 仍显示为 active Thinking，且 sub-agent detail 里同一段输出会在 Agent Output / 实时输出 / 底部响应区域重复出现，希望理清原因并修 UI 状态边界。
+- **定位结论**：
+  - 最新 session：`/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1779891265351-1/transcript.json`。
+  - 后端确实在同一轮模型响应里先收到 reasoning，再执行 `sub_agent_pentester`；不是前端凭空调用。问题在 `MessageBlock` 的 `ThinkingBlock.isActive` 只看 `message.isStreaming && !message.content`，没把 tool/subagent call 视为 reasoning 阶段结束。
+- **已完成**：
+  - `frontend/components/AIChatPanel/MessageBlock.tsx`：`ThinkingBlock.isActive` 现在要求当前 assistant message 仍在 streaming、没有正文、且没有 `toolCalls`。一旦 tool/subagent 卡片出现，Thinking 自动从 active spinner 变为 settled/collapsed 的 `Thought for ...`。
+  - `frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`：删除底部单独渲染 `subAgent.streamingText` 的实时输出正文块。`updateSubAgentStreamingText` 已经把同一段实时文本写进 `subAgent.entries` 的最后一个 text entry，保留两处会造成 sub-agent detail 里同一句 “Agent Output” / “实时输出” 重复显示。
+  - `frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`：移除底部 final response 正文块。`subAgent.response` 是 sub-agent 返回给主 agent 的工具结果/交接内容，不应在 sub-agent detail 面板里作为另一段正文展示；detail 只保留任务、过程输出、工具调用和错误。
+  - `frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`：给 sub-agent markdown 输出容器补充 `break-words` / `overflow-wrap:anywhere` / table 与 pre 的 max-width/overflow 约束，避免表格、长 inline code 或代码块把 detail 面板撑出黑块/空白区域。
+- **已记录证据**：
+  - `pnpm exec biome check frontend/components/AIChatPanel/MessageBlock.tsx` → exit 0 / No fixes applied
+  - `git diff --check -- frontend/components/AIChatPanel/MessageBlock.tsx` → exit 0
+  - `pnpm exec biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx` → exit 0 / No fixes applied
+  - `git diff --check -- frontend/components/SubAgentDetailView/SubAgentDetailView.tsx` → exit 0
+  - `pnpm exec biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx` → exit 0 / No fixes applied（删除实时输出重复块后复跑）
+  - `git diff --check -- frontend/components/SubAgentDetailView/SubAgentDetailView.tsx` → exit 0（同上）
+  - `pnpm exec biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/lib/i18n/zh-CN.json frontend/lib/i18n/en.json` → exit 0 / No fixes applied（移除 final response 块后复跑；i18n 文件已还原，无最终 diff）
+  - `git diff --check -- frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/lib/i18n/zh-CN.json frontend/lib/i18n/en.json` → exit 0
+- **未跑 / 原因**：
+  - 未跑 `./init.sh`：用户明确要求不要启动。
+  - 未跑 `just precommit`：本轮是单行前端 UI 状态小修，且当前仓库 baseline 仍有大量未提交半成品与既有验证问题。
+- **提交记录**：`b2a90f1 fix(chat): tighten sub-agent panel rendering`（仅包含 `MessageBlock.tsx` + `SubAgentDetailView.tsx`；`agent-progress.md` 未随本 commit 提交，避免混入历史大段未提交记录）。
+- **已修改但未提交（本轮 scope）**：
+  - `frontend/components/AIChatPanel/MessageBlock.tsx`
+  - `frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`
+  - `agent-progress.md`
+
+---
+
+### 2026-05-27 · Agent Tool-Use Compatibility Layer 设计与计划（本轮进行中）
+
+- **本轮目标**：用户复测 MiMo 后确认问题不只是单个 provider bug：模型把 `ask_human` / `manage_targets add` 写成文本 `<tool_call>`，没有真实弹窗；日志看不到 AI 到底发了什么、Golish 解析/拒绝/执行了什么，可观测性不足。用户同意把这一块做架构调整。
+- **定位结论**：
+  - 这是“模型差异 + runtime 边界缺失”的组合问题。Mistral 小模型没复现不代表代码没问题；MiMo 暴露的是 Golish 缺少 provider tool-use capability 分级、ToolIntent 归一化、安全 gate、以及可观察 trace。
+  - 正确形态应是：LLM Provider → Provider Adapter → Tool Intent Normalizer → Policy/Safety Gate → Approval/ask_human Barrier → Tool Executor → Observation/Trace → LLM Continuation。
+- **已完成**：
+  - 新增设计文档 `docs/design/2026-05-27-agent-tool-use-compatibility-layer.md`，明确目标/非目标、当前问题、目标架构、ToolUseProfile、ToolIntent、ToolGate、MiMo 策略、观测字段、成功标准。
+  - 新增实施计划 `docs/superpowers/plans/2026-05-27-agent-tool-use-compatibility-layer.md`，按 writing-plans 技能拆成 8 个任务：ToolUseProfile → ToolIntent normalizer → ToolGate → dispatch 前 gate → events/logs → 前端 Details → MiMo replay test → final verification。
+  - `feature_list.json` 新增 `agent-tool-use-compatibility-layer` 并置为唯一 `in_progress`。
+  - `feature_list.json` 把 `xiaomi-mimo-provider` 从 `in_progress` 切到 `blocked`：Xiaomi 展示/context/provider 接入已做完 targeted 验证，但真实 MiMo 工具调用 E2E 需要等 compatibility layer 收敛后再切 passing。
+  - `backend/crates/golish-models/src/tool_use_profile.rs`：新增 `ToolUseProfile` / `ToolCallMode` / `ToolCallReliability`，并把 `ModelCapabilities` 接上 `tool_use_profile`。OpenAI/Anthropic 默认 native reliable，DeepSeek 先标 native best effort，Xiaomi MiMo 标 `TextualXmlFallback + NeedsAdapter + max_tool_calls_per_turn=1`。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_intent.rs`：新增 normalized `ToolIntent`，支持 native tool call 与 recovered textual XML intent 互转。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/stream_processor/textual_tool_calls.rs`：临时 XML parser 升级为先产出 `ToolIntent`，再转 `ToolCall` 兼容现有执行路径；新增 MiMo replay 测试，覆盖同一 `<tool_call>` 块里 `ask_human` + `manage_targets add` 时优先 human barrier。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_gate.rs`：新增 deterministic gate，覆盖 `ask_human` hard barrier、recovered `manage_targets add` requires approval、unregistered `run_pipeline` reject 的策略单测。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/turn/phases/tool_dispatch.rs`：dispatch 前接入 gate classification；`textual-tool-call-*` 会按 recovered XML 来源识别，`agent-observe` 日志记录 requires approval / requires human answer / rejected。
+  - `backend/crates/golish-core/src/events/event.rs` + `backend/crates/golish-core/src/events/event_dispatch.rs`：新增 `ToolIntentObservation` / `tool_intent_observation` 事件，记录 request_id、tool_name、source、decision、reason、raw_preview。
+  - `backend/crates/golish-events/src/event_coordinator/coordinator.rs` + transcript tests：`agent-observe` 能打出 tool intent gate decision；transcript summarizer 不把 observation 当成对话内容污染总结。
+  - `frontend/lib/ai/types.ts` + `frontend/services/ai-events/{registry.ts,tool-handlers.ts}` + `frontend/store/{types/message.ts,slices/ai.ts}`：前端事件流支持 `tool_intent_observation`，timeline tool execution 增加 `toolIntent` 元数据；如果 observation 先到，会先缓存，tool card 出现后回填。
+  - `frontend/components/AIChatPanel/hooks/useAiChatEvents.ts` + legacy `frontend/components/AIChatPanel/useChatAiEvents.ts`：直接监听 AI event 的 chat hooks 也消费 `tool_intent_observation`，避免两条事件路径状态不一致。
+  - `frontend/components/ToolCallDetailView/ToolCallDetailView.tsx`：Details 面板显示 Intent 区域（Model wanted / Source / Golish decision / Reason）。没有专用 observation event 时，也能根据 `textual-tool-call-*` request id 推断 recovered XML intent。
+  - 真实 app 复测 `pentest-chat-1779875360223-1`：transcript 第 9 行显示 `ask_human` 被发成 `tool_approval_request`，没有后续 `tool_auto_approved` / `ask_human_request` / `ask_human_response`，解释了用户“点 Yes 仍卡在 Running ask_human”的现象。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/hitl.rs`：`ask_human` 现在绕过 generic HITL tool approval，直接进入 `execute_ask_human_tool`，避免“允许运行 ask_human”和“回答 ask_human 问题”双重确认混淆。
+  - `backend/crates/golish-agent-runtime/src/test_utils_tests.rs`：新增回归测试 `test_ask_human_bypasses_tool_approval_and_emits_human_request`，断言 `ask_human` 会发 `AskHumanRequest` 且不会发 `ToolApprovalRequest(ask_human)`。
+  - 真实 app 复测 `pentest-chat-1779877954838-1`：同一个 `run_command` request_id `call_1601ac44800945cbb03de7d7` 先收到一条半截 string args 的 `tool_approval_request`，后收到一条 object args 的重复 `tool_approval_request`；右侧因此连续显示两张 Run/Deny，左侧 Details 因把 string args 传给 `Object.entries` 被拆成 0/1/2... 字符行。
+  - 同一 transcript 后续显示 `run_command` 实际成功（line 22），但下一轮 provider 报 `500 Can only get item pairs from a mapping`；根因是历史里已经写入了 string/partial tool args（如 line 18 `pentest_run` 与 line 20 `run_command` 的 string args），Xiaomi OpenAI-compatible 服务端要求 `tool_calls.function.arguments` 是 mapping/object，遇到 string 会 500。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/stream_processor/mod.rs`：provider 原生 tool call 的 string arguments 现在按 streaming fragment 处理，等 delta/final 后再 `parse_tool_args`，不再把半截 JSON 字符串立即派发/审批。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/assistant_message.rs`：写入下一轮 `chat_history` 前再次 normalize tool call arguments；如果仍有 provider/legacy path 漏出 string args，会先用 `golish_json_repair::parse_tool_args` 转成 object，避免 Xiaomi 在下一轮 history replay 时因 string args 500。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/turn/phases/assistant_push.rs`：新增回归测试覆盖 string tool args 在 history push 前归一化为 object。
+  - `frontend/store/slices/conversation.ts`：`addMessageToolCall` 按 `requestId` 去重，后到的同 ID 工具事件更新 args 而不是新增第二张卡。
+  - `frontend/components/AIChatPanel/MessageBlock.tsx`：pending approval 匹配从“同名工具”收紧为优先按 `requestId`，避免多个 `run_command` 同时都被画成待审批。
+  - `frontend/components/ToolCallDetailView/ToolCallDetailView.tsx`：Input 支持 `unknown` args；string 先尝试 JSON.parse，失败则整段 raw 显示，避免字符拆表。
+  - 真实 app 复测 Task 模式 `pentest-chat-1779889022674-2`：transcript 显示 task generator 前端消息内容是整段 `[System Context]... [User Message]...`，而不是纯用户输入；后端 intent classifier 会抽 `[User Message]`，但 `execute_task_mode` / generator 没抽，导致 task planner 拿系统提示词当任务输入并报 `Generator failed`。
+  - `backend/crates/golish/src/ai/commands/core/chat.rs`：Task 模式入口新增 `extract_user_message_from_wrapped_prompt`，session title、UserMessage event、orchestrator.run 全部使用纯用户输入；task error emission 和 Tauri command error 改用 `{:#}` 展示 anyhow cause chain，避免前端只看到顶层 `Generator failed`。
+- **已记录证据**：
+  - `python3 -m json.tool feature_list.json >/dev/null` → exit 0
+  - `git diff --check` → exit 0
+  - `python3 - <<'PY' ...` 检查 in_progress 列表 → `['agent-tool-use-compatibility-layer']`；`xiaomi-mimo-provider blocked`
+  - `./init.sh` → exit 0；内部仍显示 baseline failures：`test-fe` 7 failed（TerminalSettings ×4 + HomeView.memo/useFileIndex 类既有失败）、`lint-rust` 5 个 pre-existing clippy/dead_code/doc lint、`test-rust-all` 1 个 `window_state::tests::compute_restore_action_supports_negative_monitor_origins` failure；脚本末尾仍打印 OK。该命令不作为本功能 passing 证据。
+  - `cd backend && cargo fmt --package golish-models --package golish-agent-runtime --package golish-events --check` → exit 0
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-models-target cargo test -p golish-models tool_use_profile --lib` → 3/3 passed
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-agent-runtime-target cargo test -p golish-agent-runtime tool_intent --lib` → 2/2 passed
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-agent-runtime-target cargo test -p golish-agent-runtime textual_tool_calls --lib` → 4/4 passed（含 `mimo_textual_tool_call_prioritizes_human_barrier_over_follow_up_add`）
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-agent-runtime-target cargo test -p golish-agent-runtime tool_gate --lib` → 4/4 passed
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-agent-runtime-target cargo test -p golish-agent-runtime tool_dispatch --lib` → 5/5 passed（含 `textual_ask_human_emits_tool_intent_observation_before_filtering`，确认 recovered ask_human 在 allow-list 过滤前发出 `ToolIntentObservation`）
+  - `cd backend && cargo test -p golish-agent-runtime test_behavioral_equivalence_error_handling --lib` → 1/1 passed（确认 allow-list 前置过滤时仍会为 policy deny / planning restriction / constraint violation 发 `ToolDenied`）
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-core-target cargo test -p golish-core events::tests --lib` → 33/33 passed
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-core-target cargo test -p golish-core tool_intent_observation_event_json_format --lib` → 1/1 passed
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-core-target cargo test -p golish-core all_event_types_roundtrip --lib` → 1/1 passed
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-events-target cargo test -p golish-events transcript --lib` → 33/33 passed
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-events-target cargo test -p golish-events should_transcript --lib` → 2/2 passed
+  - `cd backend && cargo fmt --package golish-core --package golish-events --package golish-agent-runtime --check` → exit 0
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/lib/ai/types.ts frontend/store/types/message.ts frontend/store/slices/ai.ts frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/services/ai-events/registry.ts frontend/services/ai-events/registry.test.ts frontend/services/ai-events/tool-handlers.ts frontend/components/AIChatPanel/hooks/useAiChatEvents.ts frontend/components/AIChatPanel/useChatAiEvents.ts` → exit 0 / No fixes applied
+  - `pnpm vitest run frontend/services/ai-events/registry.test.ts` → 14/14 passed
+  - `just check-fe` → exit 0（`generate-model-constants` 重写 `frontend/lib/ai/models.generated.ts`，保持 Xiaomi constants）
+  - `cd backend && cargo nextest run -p golish-agent-runtime -p golish-events --status-level fail` → 233/233 passed
+  - `cd backend && cargo nextest run -p golish-agent-runtime -p golish-events -p golish-models --status-level fail` → 257 passed, 1 failed（baseline `golish-models descriptors::loader::tests::embedded_nvidia_has_expected_count`: expected substantial NVIDIA registry, got 14；11 tests not run due fail-fast）
+  - `cd backend && cargo test -p golish-agent-runtime test_ask_human_bypasses_tool_approval_and_emits_human_request --lib` → 1/1 passed
+  - `cd backend && cargo fmt --package golish-agent-runtime --check` → exit 0
+  - `cd backend && cargo test -p golish-agent-runtime stream_processor::tests --lib` → 2/2 passed（string tool args treated as streaming fragments；object tool args complete）
+  - `cd backend && cargo test -p golish-agent-runtime string_tool_arguments_are_normalized_before_history_push --lib` → 1/1 passed
+  - `cd backend && cargo fmt --package golish-agent-runtime --check` → exit 0
+  - `git diff --check` → exit 0
+  - `cd backend && cargo fmt --package golish --check` → exit 0
+  - `cd backend && cargo test -p golish chat_title_tests --lib` → 7/7 passed（含 task mode wrapped prompt extraction）
+  - `pnpm exec biome check frontend/components/AIChatPanel/MessageBlock.tsx frontend/store/slices/conversation.ts frontend/components/ToolCallDetailView/ToolCallDetailView.tsx` → exit 0 / No fixes applied
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `just test-fe` → exit 0（前端 baseline test fixes 后全量通过）
+  - `just precommit` → exit 1；已过 `fmt` / `check-fe` / `test-fe`，但 `lint-rust` 仍报既有 `golish` clippy/dead_code/doc lint；`test-rust-all`/`test-rust` 在 sandbox 中触发 PermissionDenied baseline failures（`asset_intel` / `sploitus` 测试创建本地 mock server 时 OS 拒绝）
+- **未跑 / 原因**：
+  - 未跑 `just precommit` 到全绿：当前仓库 baseline 仍有上方 `./init.sh` 记录的 frontend/Rust failures。
+  - 未做修复后的真实 MiMo E2E：需要重启 `just dev` / Tauri 后复测 example.com 未注册目标场景，确认 UI 出现真正 `AskHumanRequest` 的 Confirm/Skip/Abort，而不是 `ToolApprovalRequest(ask_human)`。
+- **提交记录**：未 commit。
+- **已修改但未提交（本轮 scope）**：
+  - `docs/design/2026-05-27-agent-tool-use-compatibility-layer.md`
+  - `docs/superpowers/plans/2026-05-27-agent-tool-use-compatibility-layer.md`
+  - `backend/crates/golish-models/src/tool_use_profile.rs`
+  - `backend/crates/golish-models/src/lib.rs`
+  - `backend/crates/golish-models/src/capabilities.rs`
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_intent.rs`
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_gate.rs`
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/mod.rs`
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/stream_processor/textual_tool_calls.rs`
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/turn/phases/tool_dispatch.rs`
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/hitl.rs`
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/stream_processor/mod.rs`
+  - `backend/crates/golish-agent-runtime/src/test_utils_tests.rs`
+  - `frontend/store/slices/conversation.ts`
+  - `backend/crates/golish-core/src/events/event.rs`
+  - `backend/crates/golish-core/src/events/event_dispatch.rs`
+  - `backend/crates/golish-core/src/events/tests/json_serialization.rs`
+  - `backend/crates/golish-core/src/events/tests/roundtrip.rs`
+  - `backend/crates/golish-events/src/event_coordinator/coordinator.rs`
+  - `backend/crates/golish-events/src/transcript/summarizer.rs`
+  - `backend/crates/golish-events/src/transcript/tests/should_transcript_tests.rs`
+  - `frontend/lib/ai/types.ts`
+  - `frontend/services/ai-events/registry.ts`
+  - `frontend/services/ai-events/registry.test.ts`
+  - `frontend/services/ai-events/tool-handlers.ts`
+  - `frontend/components/AIChatPanel/hooks/useAiChatEvents.ts`
+  - `frontend/components/AIChatPanel/useChatAiEvents.ts`
+  - `frontend/store/types/message.ts`
+  - `frontend/store/slices/ai.ts`
+  - `frontend/components/ToolCallDetailView/ToolCallDetailView.tsx`
+  - `feature_list.json`
+  - `agent-progress.md`
+- **风险 / 下一步最佳动作**：
+  - 已完成计划 Task 1-7 的核心代码与 targeted 验证：模型能力画像、ToolIntent、textual normalizer、ToolGate、dispatch 前 gate、专用 observation event、前端 Details、MiMo replay 单测都已落地。新增 `tool_dispatch` observation 与 `ask_human` bypass 单测后，事件链路已有后端单测保护。剩余缺口：重启 app 后真实 MiMo E2E 尚未完成；`just precommit` 仍受既有 Rust lint / sandbox PermissionDenied baseline failures 阻挡。真实 MiMo E2E 与 fresh precommit/baseline 证据前，不应把 Xiaomi provider 或本条目切 passing。
+
+---
+
+### 2026-05-27 · AI Chat 工具调用可观测性补强（本轮进行中）
+
+- **本轮目标**：用户指出控制台日志只能看到事件类型和 `tool_calls=0`，看不到 AI 具体输出/为什么没有弹 `ask_human`，排障可观测性差。
+- **定位结果**：
+  - 这次真实 session `pentest-chat-1779867794561-1` 的 `transcript.json` 能看到完整原因：`manage_targets list` 真实执行成功；随后模型把 `ask_human` 和多次 `manage_targets add` 写成 `<tool_call><function=...>` 文本，backend 仍记录 `tool_calls=0`，所以没有弹 `ask_human`，也没有执行 add。
+  - 控制台日志之前只打 `Stream completed ... text_chars=... tool_calls=0`，没有 response preview，也没有指向 transcript 路径，导致必须手动翻 transcript。
+- **已完成**：
+  - `backend/crates/golish-events/src/event_coordinator/coordinator.rs`：新增 `agent-observe` 日志层。
+  - `completed` event 在 DEBUG 打响应长度、500 字符预览、tokens、duration、transcript path；如果 completed 响应里含 `<tool_call` / `<function=`，额外 WARN。
+  - `tool_approval_request` / `ask_human_request` / `tool_result` 在 INFO 打关键事件；参数/结果只在 DEBUG 打截断预览，降低日志泄露面。
+  - 顺手补了前面定位时的前端 raw `<tool_call>` 清洗和后端 textual tool-call retry nudge；随后根据用户复测日志继续补 deterministic XML tool-call adapter。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/stream_processor/textual_tool_calls.rs`：新增 MiMo XML-style tool call parser。stream 结束时若 `tool_calls=0` 但正文含 `<function=...>`，后端会转换为真正的 `ToolCall`；如果同段中同时含 `ask_human` 和后续 `manage_targets add`，优先只执行 `ask_human`，避免绕过用户确认。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/stream_processor/mod.rs`：接入 adapter，并在转换时打 `[tool-adapter] Converted textual XML-style tool call into structured tool call`。
+- **已记录证据**：
+  - `cd backend && cargo fmt --package golish-events --package golish-agent-runtime --check` → exit 0
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-events-target cargo test -p golish-events transcript --lib` → 33/33 passed
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-agent-runtime-target cargo test -p golish-agent-runtime textual_tool_calls --lib` → 3/3 passed
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-agent-runtime-target cargo test -p golish-agent-runtime textual_tool_call_markup_retries_even_when_reflector_is_inactive --lib` → 1/1 passed
+  - `pnpm exec biome check frontend/components/AIChatPanel/MessageBlock.tsx` → exit 0 / No fixes applied
+  - `git diff --check` → exit 0
+- **未跑 / 原因**：
+  - 未跑 `just precommit`：当前 baseline 仍有前文记录的既有失败。
+- **提交记录**：未 commit。
+- **已修改但未提交（本轮 scope）**：
+  - `backend/crates/golish-events/src/event_coordinator/coordinator.rs`
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/reflector.rs`
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/turn/phases/reflector_or_break.rs`
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/stream_processor/mod.rs`
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/stream_processor/textual_tool_calls.rs`
+  - `frontend/components/AIChatPanel/MessageBlock.tsx`
+  - `agent-progress.md`
+- **风险 / 下一步最佳动作**：
+  - 现在 adapter 已能把 XML-style tool call 转成结构化调用；仍需用户用真实 MiMo 流手动复测：目标不存在时应看到真正的 `ask_human` 确认弹窗，确认后才允许后续 add/pipeline。
+
+---
+
+### 2026-05-27 · AI Chat 等待态样式改为阶段状态（本轮进行中）
+
+- **本轮目标**：用户觉得等待时的 `...` + `> loading the toolkit` 样式不合理，希望参考 Cursor/Windsurf 一类更清晰的阶段状态。
+- **上下文检查**：
+  - 上一轮已按开工流程读上下文并跑过 `./init.sh`；本轮是同一问题链路上的小型前端 UI 调整。
+  - 当前 `feature_list.json` 仍只有 `xiaomi-mimo-provider` 一个 `in_progress`；本轮等待态属于简单改动，不新增复杂 feature 条目。
+- **已完成**：
+  - `frontend/components/AIChatPanel/AgentStatusIndicator.tsx`：移除旧的“伪终端”提示符、monospace 绿字、block cursor 和抽象短语轮播；改为稳定阶段文案：`Preparing context` / `Planning next step` / `Writing response` / `Running <tool>` / `Delegating to <agent>` / `Compacting context`。
+  - 同文件：工具名/detail 做空白清理和 48 字符截断，避免长命令把输入区撑开。
+  - `frontend/index.css`：删除旧 caret/text cycle keyframes，换成轻量 dot pulse 动画。
+  - 用 Browser 打开 `http://localhost:1420/` 并进入 recent project，确认 dev 页面可启动；未触发真实 provider 流式回复。
+- **已记录证据**：
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/AIChatPanel/AgentStatusIndicator.tsx frontend/index.css` → exit 0 / No fixes applied
+  - `git diff --check` → exit 0
+- **未跑 / 原因**：
+  - 未跑 `just precommit`：当前仓库 baseline 仍有前一轮记录的 frontend/Rust failures，不能作为本轮有效 passing 证据。
+  - 未用真实模型触发流式等待态：需要外部 provider key/request，留给用户在 `just dev` 中手动确认视觉效果。
+- **提交记录**：未 commit。
+- **已修改但未提交（本轮 scope）**：
+  - `frontend/components/AIChatPanel/AgentStatusIndicator.tsx`
+  - `frontend/index.css`
+  - `agent-progress.md`
+- **风险 / 下一步最佳动作**：
+  - 视觉最终观感仍需用户用真实 chat 流复测；如果觉得 pill 太像 badge，可以下一步改成无边框 inline row，只保留 pulsing dot + 文案。
+
+---
+
+### 2026-05-27 · Xiaomi MiMo 模型名与 context usage 显示修正（本轮进行中）
+
+- **本轮目标**：用户指出 ChatModelSelector 里每个 MiMo 模型名后面的 `1M ctx` / `256K` 不应塞在模型名里；输入区下方 context usage 又对所有 MiMo 模型都显示 `128K context used`。本轮聚焦展示层与 runtime context window 取值不一致的问题。
+- **上下文检查**：
+  - 已读 `agent-progress.md` / `feature_list.json` / `clean-state-checklist.md`。
+  - `./init.sh` 已按开工流程执行；脚本 exit 0 且最终打印 OK，但内部仍出现 baseline failures：frontend vitest 6 failed（TerminalSettings ×4 + HomeView.memo ×2）/ Rust clippy 5 个既有 warning-as-error / test-rust-all 1 个 `window_state::tests::compute_restore_action_supports_negative_monitor_origins` failure。它们与本轮 5 文件小修无关。
+  - §2.1 状态已切换：`ai-chat-stop-cancels-backend-stream` 置 `blocked`（等待用户真实 E2E），`xiaomi-mimo-provider` 置 `in_progress`。
+- **已完成**：
+  - `frontend/lib/models/xiaomi.ts`：去掉 Xiaomi 模型名中的 context window 标签；现在显示 `MiMo V2.5 Pro` / `MiMo V2.5 (multimodal)` / `MiMo V2 Pro` / `MiMo V2 Omni (multimodal)`。
+  - `backend/crates/golish-context/src/token_budget/{limits.rs,config.rs}`：给 `TokenBudgetConfig::for_model` 增加 MiMo context limits；`mimo-v2.5-pro` / `mimo-v2.5` / `mimo-v2-pro` 为 1,000,000，`mimo-v2-omni` 为 256,000。这样 `AiEvent::ContextWarning.max_tokens` 不再落回默认 128K。
+  - `backend/crates/golish-context/src/token_budget/tests.rs`：新增 MiMo context limit 回归测试，覆盖 `@anthropic` 后缀。
+  - `frontend/components/AIChatPanel/ContextUsageRing.tsx`：统一 tooltip 文案 formatter；1,000,000 显示为 `1M`，256,000 显示为 `256K`，避免 `1000K`。
+  - `feature_list.json`：同步 Xiaomi 条目的用户可见行为、验证证据、风险说明；保持当前唯一 `in_progress`。
+- **已记录证据**：
+  - `./init.sh` → exit 0，但内部输出含 baseline failures（见上方“上下文检查”）；不作为本轮 passing 证据。
+  - `cd backend && cargo fmt --package golish-context --check` → exit 0
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-context-target cargo test -p golish-context test_model_context_limits_xiaomi_mimo --lib` → 1/1 passed
+  - `pnpm exec biome check frontend/lib/models/xiaomi.ts frontend/components/AIChatPanel/ContextUsageRing.tsx` → exit 0 / No fixes applied
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `python3 -m json.tool feature_list.json >/dev/null` → exit 0
+- **未跑 / 原因**：
+  - 未跑 `just precommit` 到全绿：当前仓库 baseline 仍有上面列出的既有失败，直接跑不会形成有效 passing 证据。
+  - 未做真实 Xiaomi LLM E2E：会触发外部 provider 请求，仍留给用户在本地 `just dev` 中用自己的 key 复测。
+- **提交记录**：未 commit。
+- **已修改但未提交（本轮 scope）**：
+  - `frontend/lib/models/xiaomi.ts`
+  - `frontend/components/AIChatPanel/ContextUsageRing.tsx`
+  - `backend/crates/golish-context/src/token_budget/config.rs`
+  - `backend/crates/golish-context/src/token_budget/limits.rs`
+  - `backend/crates/golish-context/src/token_budget/tests.rs`
+  - `feature_list.json`
+  - `agent-progress.md`
+- **风险 / 下一步最佳动作**：
+  - runtime context window 现在在 `golish-context` 里显式维护一份 MiMo 表；未来新增 MiMo 模型时要同步这里，或后续改成从 `golish-models` registry 读取，减少双表风险。
+  - 用户下一步：重启或等待 `just dev` 热更新后，打开 Xiaomi MiMo 下拉，应不再看到模型名后面的 `1M ctx` / `256K`；选前三个模型时 context usage 应显示 `/ 1M context used`，选 Omni 时显示 `/ 256K context used`。
+
+---
+
+### 2026-05-27 · AI Chat Stop/Pause 后端取消修复（本轮进行中）
+
+- **本轮目标**：用户报告“暂停之后后端还在一直输出内容，只是前端看不到”。本轮聚焦 Stop/Pause 是否只停止前端渲染而没有真正取消后端 LLM stream / task phase。
+- **上下文检查**：
+  - 已读 `agent-progress.md` / `feature_list.json`；进入本轮前 `feature_list.json` 无 `in_progress` 条目。
+  - 已新增 `ai-chat-stop-cancels-backend-stream` 并标为 `in_progress`。
+  - `./init.sh` 曾按开工流程启动，但用户随后明确说“先别跑init.sh”；已停止对应 `init.sh`/`just check`/`vitest` 进程。已完成的前置输出：install、fmt、check-fe 通过，进入 test-fe 时中止；本轮后续不再跑 init/precommit，改跑定向验证。
+- **初步判断**：
+  - 前端 `handleStop` 会调用 `cancel_ai_generation`，后端 `AgentBridge::cancel()` 会置位 `cancelled`。
+  - 后端已有取消检查，但主要在 loop pre-flight、LLM call 前、stream chunk 返回后；如果正在等待 LLM 建流、等待下一块 chunk、或 task one-shot phase，取消不够及时。
+  - 前端已有 `generation-suppress.ts` / `streaming-buffer.ts` 工具，但当前 Stop 路径未使用。
+- **已完成**：
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/llm_stream_start.rs`：等待 `model.stream(request)` 建立 stream 时增加 `tokio::select!` cancellation branch；用户 Stop 后不再最多等 180s timeout。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/stream_processor/mod.rs`：等待 `stream.next()` 下一块 chunk 时增加 cancellation branch；Stop 后立即 drop stream，避免后端继续消费上游 token。
+  - `backend/crates/golish-agent-bridge/src/bridge_executor/mod.rs`：Task mode generator/refiner/reporter/enricher/planner/monitor 这类 one-shot phase 在 completion await 期间可被 cancel 打断。
+  - `frontend/components/AIChatPanel/hooks/useChatSend.ts`：Stop 时同步 `suppressGenerationForAiSession` + `discardPendingBatchedDeltasForAiSession`，再调 `cancel_ai_generation`；下一次发送 prompt 前 clear suppression。
+  - `frontend/components/AIChatPanel/hooks/useAiChatEvents.ts` 与 legacy `frontend/components/AIChatPanel/useChatAiEvents.ts`：suppressed session 的旧 `ai-event` 直接忽略。
+  - `frontend/lib/ai/generation-suppress.test.ts`：新增 2 个纯单测钉住 suppression 状态机。
+  - 复盘用户新日志：主会话 `pentest-chat-1779853283322-1` 在 `06:45:22` 已 completed；后续持续输出的是隐藏 `title-gen-pentest-chat-1779853283322-1` 标题生成会话，且其 `ToolPreset::None` 仍被 chat policy 注入 `run_command` / `ask_human`。
+  - `backend/crates/golish-agent-kit/src/tool_definitions/config.rs` + `backend/crates/golish-agent-runtime/src/execution_mode/selection_apply.rs`：让 `ToolPreset::None` 成为真正 no-tools，直接短路所有 policy-level aliases / registry tools。
+  - `frontend/components/AIChatPanel/hooks/useChatSessionInit.ts`：隐藏 title generation 增加 8s timeout；超时会调用 `cancel_ai_generation(titleSessionId)`，finally 仍 shutdown session，避免标题生成卡住后后台无限 reasoning。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_list.rs` + `test_utils/context.rs`：新增 no-tools 回归测试，防止 title-gen 这类静默 session 重新暴露工具。
+  - 用户二次真实模型复测显示：title-gen 已在 8s 后 cancel，且 no-tools 生效，但 cancel 后的 `title-gen-*` error event 被全局 `frontend/hooks/useAiEvents.ts` 的 unknown-session fallback 路由到当前 active session，导致 UI 显示错误。
+  - `frontend/hooks/useAiEvents.ts`：在全局 AI event 入口直接忽略 `title-gen-*` session，防止隐藏标题生成的 started/error/reasoning 进入 active terminal/chat fallback。
+  - `frontend/hooks/useAiEvents.ts`：进一步收紧 unknown-session fallback；如果 event 带明确 session_id 但无法解析到 terminal/conversation，就直接 drop，不再兜底路由到 active session。这样其它隐藏 session 的 `reasoning` 也不会进入当前 Thought 区域。
+  - `frontend/components/AIChatPanel/hooks/useAiChatEvents.ts` 与 legacy `frontend/components/AIChatPanel/useChatAiEvents.ts`：同样在 hook 入口过滤 title-gen event，形成双层隔离。
+  - `frontend/hooks/useAiEvents.test.ts`：新增回归测试，确认 `title-gen-*` error 不会污染 active session timeline；确认已知但无法解析的其它 session `reasoning` 不会污染 active session thinking。
+- **已记录证据**：
+  - `cd backend && cargo fmt --package golish-agent-kit --package golish-agent-runtime --package golish-agent-bridge --package golish --check` → exit 0
+  - `cd backend && cargo check -p golish-agent-kit -p golish-agent-runtime -p golish-agent-bridge` → exit 0
+  - `cd backend && cargo test -p golish-agent-runtime none_tool_preset_exposes_no_tools_even_in_chat_mode --lib` → 1/1 passed
+  - `cargo test -p golish-agent-runtime cancellation --lib` → 3/3 passed
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/AIChatPanel/hooks/useChatSessionInit.ts frontend/components/AIChatPanel/hooks/useChatSend.ts frontend/components/AIChatPanel/hooks/useAiChatEvents.ts frontend/components/AIChatPanel/useChatAiEvents.ts frontend/lib/ai/generation-suppress.test.ts` → exit 0 / No fixes applied
+  - `pnpm vitest run frontend/lib/ai/generation-suppress.test.ts` → 2/2 passed
+  - `pnpm exec biome check frontend/hooks/useAiEvents.ts frontend/hooks/useAiEvents.test.ts frontend/components/AIChatPanel/hooks/useAiChatEvents.ts frontend/components/AIChatPanel/useChatAiEvents.ts frontend/components/AIChatPanel/hooks/useChatSessionInit.ts` → exit 0 / No fixes applied
+  - `pnpm vitest run frontend/hooks/useAiEvents.test.ts frontend/lib/ai/generation-suppress.test.ts` → 22/22 passed
+- **未跑 / 原因**：
+  - 未跑 `./init.sh` / `just precommit`：用户明确说“先别跑init.sh”，本轮已停止已启动的 init/test-fe 进程，后续只跑 targeted 验证。
+  - 未做真实 LLM 手动 E2E：需要对外部 provider 发真实请求；留给用户在本地 `just dev` 中用自己的模型复现。
+- **当前状态**：`feature_list.json` 条目 `ai-chat-stop-cancels-backend-stream` 保持 `in_progress`，不是 `passing`，因为缺 `just precommit` 与真实手动 E2E 证据。
+- **已修改但未提交（本轮 scope）**：
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/llm_stream_start.rs`
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/stream_processor/mod.rs`
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_list.rs`
+  - `backend/crates/golish-agent-runtime/src/execution_mode/selection_apply.rs`
+  - `backend/crates/golish-agent-runtime/src/test_utils/context.rs`
+  - `backend/crates/golish-agent-kit/src/tool_definitions/config.rs`
+  - `backend/crates/golish-agent-bridge/src/bridge_executor/mod.rs`
+  - `frontend/components/AIChatPanel/hooks/useChatSessionInit.ts`
+  - `frontend/components/AIChatPanel/hooks/useChatSend.ts`
+  - `frontend/components/AIChatPanel/hooks/useAiChatEvents.ts`
+  - `frontend/components/AIChatPanel/useChatAiEvents.ts`
+  - `frontend/hooks/useAiEvents.ts`
+  - `frontend/hooks/useAiEvents.test.ts`
+  - `frontend/lib/ai/generation-suppress.test.ts`
+  - `feature_list.json`
+  - `agent-progress.md`
+- **风险 / 下一步最佳动作**：
+  - 如果用户的 provider SDK 在 dropped future 后仍由底层 HTTP 客户端继续打印低层日志，需要再下钻 rig/reqwest cancellation；目前代码已经在 Golish 层 drop stream/completion future。
+  - 标题生成现在 8s 后会放弃，不会阻塞主聊天；如果用户希望保留更高质量标题，可以后续改成“先本地 title，后台成功后再替换”的非阻塞策略。
+  - 用户下一步：重启 `just dev`，发送长回复/Task 模式任务，点击 Stop，观察后端日志是否在 1s 内停止该轮输出；再观察完成主回复后 title-gen cancel 是否不再在 UI 显示错误。确认后再跑 `just precommit` 并把 feature 切 `passing`。
+
+---
+
+### 2026-05-27 · Xiaomi MiMo Provider 第三轮修正：context window 改 1M + max_output 改 128K + 删 mimo-v2-flash
+
+- **本轮目标**：用户在 chat panel 看到所有模型都显示 `128K context used`，质疑 "怎么每个模型都是显示的上下文这么大 这个对吗"。我之前用 `xiaomi_defaults { context_window: 128_000, max_output_tokens: 8_192 }` **远低于实际**——按 platform.xiaomimimo.com 官方 quick-start/model 表 + devtk.ai 模型介绍页：
+  - mimo-v2.5-pro / mimo-v2.5 / mimo-v2-pro：**1M context · 128K max output**
+  - mimo-v2-omni：**256K context · 128K max output**
+- **修正**：
+  - `xiaomi_defaults`: context_window 128k → **1,000,000**；max_output_tokens 8,192 → **128,000**；新加 supports_web_search=true（小米所有 chat 模型都支持 web search）；is_reasoning_model 不在 defaults（per-model override）
+  - `resources/llm-models/xiaomi.json`：每个模型加 capabilities override：
+    - mimo-v2.5-pro / mimo-v2.5：is_reasoning_model=true（有 Deep Thinking）
+    - mimo-v2.5 / mimo-v2-omni：supports_vision=true（Full-modal Understanding）
+    - mimo-v2-omni：context_window=256000（小于其它模型）
+  - **删 mimo-v2-flash**：之前从 platform.xiaomimimo.com/docs/en-US/quick-start/model 抄了 Flash，但实测 `cargo run --example xiaomi_live_probe -p golish-llm-providers XIAOMI_MODEL=mimo-v2-flash` → HTTP 400 `Not supported model mimo-v2-flash`，Token Plan 端点暂不支持。从 4 个文件移除（xiaomi.json / model-const-keys.json / xiaomi.ts / ModelOverrides.tsx）+ 加注释说明原因。
+- **已记录证据**：
+  - 4/4 模型 live probe 全过：
+    - mimo-v2.5-pro: "我是人工智能助手，可以为您解答各类问题并提供帮助和服务。"
+    - mimo-v2.5: "我是一个乐于助人的AI助手，随时准备回答你的各种问题！😊"
+    - mimo-v2-pro: "我是小米自研的AI助手MiMo，很高兴为你提供帮助！"
+    - mimo-v2-omni: "我是乐于助人的AI助手，随时准备回答你的问题。"
+  - mimo-v2-flash 上游 400 Not supported model 已确认（Token Plan 暂不含 Flash）
+  - cargo nextest run -p golish-llm-providers -p golish-models -p golish-settings --no-fail-fast → 144/145 PASS（1 pre-existing nvidia baseline failure 与本轮无关）
+  - just check-fe → exit 0（含 generate-model-constants 自动重生 12 constants 含 4 个 xiaomi）
+- **下一步（用户视角）**：
+  1. 重启 just dev → chat panel 现在应该显示 `0.1% · 0.1K / 1000K context used`（mimo-v2.5-pro/v2.5/v2-pro）或 `0.1K / 256K`（mimo-v2-omni）
+  2. 大文档场景可用 mimo-v2.5-pro 100 万 token 上下文处理长文档
+  3. 多模态场景用 mimo-v2.5 或 mimo-v2-omni（supports_vision=true）
+  4. 编程场景用 mimo-v2.5-pro is_reasoning_model + Deep Thinking
+- **风险**：
+  - rig-core 0.36 的 OpenAI Chat Completions client 接受 1M context 是上游 OpenAI 协议 spec 允许的；小米服务端是否对单 request 完整接受 1M token 需要联调（很多服务在实际工程上 cap 到 ~256k 后会 429/413）。若用户发现 200k+ 长 prompt 失败，回退到 256k cap。
+  - mimo-v2-omni 标 supports_vision=true 是按官方"Full-modal Understanding"描述，但具体上传格式（base64 / url / data uri）需联调
+  - mimo-v2.5-pro 标 is_reasoning_model=true，可能导致 rig-core 走 reasoning event 分离路径——若上游响应不含 reasoning channel 可能影响 UX；联调时观察 thinking event 是否出现
+
+---
+
+### 2026-05-27 · Xiaomi MiMo Provider 修正：补 ProviderConfig::Xiaomi + 真实模型列表 + 协议改为 Settings 全局
+
+- **本轮目标**：用户首次到 chat panel 试用，发现 ① 报"请先选择模型"（虽然选了 MiMo）② 下拉显示 `MiMo V2.5 Pro (OpenAI)` + `MiMo V2.5 Pro (Anthropic)` 两个变体令人困惑 ③ 模型列表只有 1 个 mimo-v2.5-pro，没有真实小米其它模型。要求："你这里面不应该加模型，怎么加的是按照哪个的方式兼容呢"。我承认设计偏离，根据 https://platform.xiaomimimo.com/docs/zh-CN/price/tokenplan/subscription 全面修正。
+- **修正 1/4 · backend ProviderConfig::Xiaomi（"请先选择模型" bug 根因）**：之前漏改 `golish-llm-providers/src/provider_config.rs` 的 `ProviderConfig` enum + 4 个方法 + `agent_bridge/constructors/mod.rs` 的 ProviderConfig match。前端发出 `{ provider: "xiaomi", ... }` 后 IPC serde tag deserialize 失败 → init_ai_agent 抛错 → useChatSessionInit::initializeSession catch 返回 false → "请先选择模型". 修：加 `XiaomiClientConfig` struct + `ProviderConfig::Xiaomi` 变体 + workspace/model/provider_name/model_override 4 arm + ProviderConfig::Xiaomi match in constructors/mod.rs + `agent_bridge::new_xiaomi_with_shared_config` + `golish-agent-kit/src/llm_client/providers/xiaomi.rs::create_xiaomi_components` + `pub use XiaomiClientConfig` 在 llm_client/mod.rs。
+- **修正 2/4 · 真实模型列表**：删 `mimo-v2.5-pro@anthropic` 协议变体。`resources/llm-models/xiaomi.json` 重写为 4 个真实小米模型：① mimo-v2.5-pro（旗舰）② mimo-v2.5（标准）③ mimo-v2-pro（V2 旗舰）④ mimo-v2-omni（多模态 · supports_vision=true）。TTS 系列（4 款）不在 chat panel scope，留到未来音频模块。
+- **修正 3/4 · 前端模型选择器去协议变体**：`frontend/lib/models/xiaomi.ts` 平铺 4 个真实模型 + 删除 ProviderGroupNested 的 "MiMo V2.5 Pro" 父级（之前 nested 含 OpenAI/Anthropic 子菜单令人困惑）。`frontend/scripts/model-const-keys.json` + `frontend/lib/ai/models.generated.ts` 同步 4 个新常量（generator 自动重生）。`frontend/components/Settings/SubAgentSettings/ModelOverrides.tsx::MODEL_SUGGESTIONS.xiaomi` 改为 4 个真实 id。
+- **修正 4/4 · 协议改为 Settings 全局选项**：Settings → Xiaomi MiMo → Default protocol（auto/openai/anthropic）就是用户**唯一**该感知到的协议入口。后端 `resolve_protocol` 路径保留 `@anthropic` / `@openai` 后缀支持，但**不暴露**到 ChatModelSelector / model 列表 / sub-agent overrides。高级用户仍可在 settings.default_model 手动填 `mimo-v2.5-pro@anthropic` 强制覆盖。
+- **已记录证据**：
+  - cargo check --workspace → exit 0 / 0 new warning
+  - cargo nextest run -p golish-llm-providers → **59/59 PASS**（比之前 +1，源于 ProviderConfig 加变体后单测覆盖率提升）
+  - cargo nextest run -p golish-agent-bridge → 4/4 PASS
+  - cargo nextest run -p golish-models → 31/32 PASS（baseline `embedded_nvidia_has_expected_count` 失败与本轮无关）
+  - xiaomi_live_probe × 3 场景全过：
+    - `mimo-v2.5-pro` + Auto → RigXiaomi → "我是一个智能AI助手，可以为你提供各种帮助和解答。"
+    - `mimo-v2.5` + Auto → RigXiaomi → "我是MiMo，小米公司基于自研大模型开发的AI助手，随时为您提供关于小米产品和服务的帮助。"（**新模型工作**）
+    - `mimo-v2.5-pro` + Anthropic（settings 全局选）→ RigXiaomiAnthropic → "我是MiMo，小米官方AI助手，随时为您解答疑问、提供帮助！"（**协议切换在 settings 层完成，模型 id 干净**）
+  - frontend tsc exit 0 + check-fe 含 generate-model-constants 自动重生 (12 constants 含 4 个 xiaomi)
+- **下一步（用户视角）**：
+  1. 重启 just dev（前端会重新加载 12 个模型常量 + 新 4 个 xiaomi 模型）
+  2. Settings → AI providers → Xiaomi MiMo → 填 tp- key（或 sk- key 选 Region=PayAsYouGo）→ Default protocol 选 Auto（默认 OpenAI）或 Anthropic（如果想让所有 mimo 模型走 Anthropic Messages 接口）
+  3. ChatModelSelector → Xiaomi MiMo → 选 4 个真实模型之一（MiMo V2.5 Pro / V2.5 / V2 Pro / V2 Omni）
+  4. 发任意 prompt → 应直接拿回中文回复（**不再报"请先选择模型"**）
+- **风险**：
+  - mimo-v2-omni capabilities 标 supports_vision=true 是基于官方"多模态"描述，但具体 image input 格式（base64 / url / data uri）需联调实测——若失败需调整 capabilities 或 prompt format
+  - 后端 resolve_protocol fallback 链是「@suffix → settings default_protocol → Auto fallback to OpenAI」。如果用户切到 Anthropic 全局，并选了一个 mimo-v2-omni 这种多模态模型，Anthropic Messages API 对 vision 的支持是否完整需联调（Anthropic 协议下小米实际是否真支持 vision，文档未明确）
+  - "请先选择模型" 修复后，下一个潜在问题：mimo-v2.5-pro 在 task 模式下是否能拿到 stage harness 接管的 prompt（Phase 1 task 模式经过 generator_prompt → backfill stage 路径，若 mimo 不擅长某些 reasoning 模式可能 stage gate fail）
+
+---
+
+### 2026-05-27 · Xiaomi MiMo Provider 全栈接入 + 联调验证（OpenAI + Anthropic 双协议 · 拿到真实 token）
+
+- **本轮目标**：用户先在另一会话写了 `docs/design/2026-05-27-add-xiaomi-mimo-provider.md`（OpenAI + Anthropic 双协议兼容设计 + 风险 §6.1 / §6.2 / §6.3 / §6.4），叫"按照那个继续搞"。`[DISPATCH:off]`，作为唯一执行者按 5 个 Phase 推进。
+- **完成清单（Phase 1-5）**：
+  - **Phase 1 · settings schema**（4 文件）：`AiProvider::Xiaomi` 变体（含 Display + FromStr aliases `xiaomi`/`xiaomi_mimo`/`mimo`/`xiaomi_token_plan`）+ `XiaomiSettings { api_key, region, default_protocol, openai_base_url, anthropic_base_url, show_in_selector }` + `AiSettings.xiaomi` 字段。`cargo check -p golish-settings` 绿，54/54 单测 PASS。
+  - **Phase 2 · 模型注册**（5 文件 + 1 新 JSON）：`ModelCapabilities::xiaomi_defaults()`（128k ctx / 8192 max_output / 支持 thinking history） + `resources/llm-models/xiaomi.json`（mimo-v2.5-pro 与 mimo-v2.5-pro@anthropic） + `xiaomi_models()` + `ProviderInfo { icon "🟠" }` + `embedded_defaults_for` + `provider_slug` + `get_model_capabilities` 全部分支补齐。`cargo check -p golish-models` 绿。
+  - **Phase 3 · LlmClient + Provider impl**（5 文件 + 2 新文件 + 1 example）：`LlmClient::RigXiaomi(rig_openai)` + `LlmClient::RigXiaomiAnthropic(rig_anthropic)` 两个变体 + `dispatch_llm_client!` / `dispatch_llm_client_split!` 各加 2 arm + `provider_name()` / `is_openai()` / `is_anthropic()` 全部更新 + `golish-llm-providers/src/xiaomi/mod.rs`（`XiaomiRegion` enum: Cn/Sgp/Ams/PayAsYouGo + `XiaomiProtocol` enum + `resolve_protocol()` + `strip_protocol_suffix()`） + `provider_trait/xiaomi.rs::XiaomiProviderImpl` + `ProviderExtraSettings` 扩 3 个 xiaomi 字段 + `create_provider` / `extract_provider_settings` 加 Xiaomi 分支 + `sub_agent_dispatch.rs` 与 `bridge_executor/mod.rs` 两处零散 match arm 补齐。**风险 A 化解**（Bearer header 纯兼容，curl + Rust 双向验证）+ **风险 B 化解**（rig-core 0.36 anthropic Client builder 支持 `.base_url()`）。`cargo check --workspace` 绿，golish-llm-providers 58/58 单测 PASS（含新 8 个 xiaomi 模块测 + 4 个 XiaomiProviderImpl 测 + `pay_as_you_go_region_uses_api_xiaomimimo_endpoint` 回路防护）。
+  - **Phase 3 联调（最关键）**：`examples/xiaomi_live_probe.rs` 端到端跑两条路径，环境变量驱动。用户先给 `sk-...` (按量付费) key → curl 4 种组合 (Token Plan endpoint × api-key / Bearer) 全 401，独立 endpoint `api.xiaomimimo.com` Bearer 命中 **HTTP 402 余额不足**（认证通过）→ 加 `XiaomiRegion::PayAsYouGo` 别名 `payg`/`pay_as_you_go`/`direct`/`global` 让 sk- 用户零配置走通。用户再给 `tp-...` (Token Plan) key → default region=cn 直接跑，**两条路径都拿到真实 mimo-v2.5-pro 回复**：
+    - OpenAI 路径 `LlmClient::RigXiaomi` → `https://token-plan-cn.xiaomimimo.com/v1/chat/completions` → `"我是MiMo，小米公司基于自研大模型开发的AI助手，很高兴为你提供帮助！"`
+    - Anthropic 路径 `LlmClient::RigXiaomiAnthropic` → `https://token-plan-cn.xiaomimimo.com/anthropic/v1/messages` → `"我是MiMo，由小米大模型Core团队研发的智能助手，随时准备为你解答问题、提供帮助。"`（model id `mimo-v2.5-pro@anthropic` 后缀正确剥离）
+  - **Phase 4 · 前端 settings UI**（17 文件改动）：`frontend/lib/settings/types.ts` 加 `XiaomiSettings` + `AiSettings.xiaomi` + `AiProvider "xiaomi"` + `ProviderVisibility.xiaomi`；`frontend/lib/settings/defaults.ts` + `frontend/mocks.ts` + `frontend/lib/settings/api.ts::buildProviderVisibility` 加 xiaomi 默认值；`frontend/lib/ai/types.ts::AiProvider` + `ProviderConfig` union + `frontend/lib/api/model-registry.ts::AiProvider` 同步；`frontend/lib/ai/models.generated.ts` 加 `XIAOMI_MODELS` 常量 + `frontend/scripts/model-const-keys.json` 加 xiaomi key 映射（自动重生绿）；`frontend/lib/models/xiaomi.ts` 新建 `ProviderGroup` + nested + `frontend/lib/models/index.ts` + `frontend/lib/models/groups.ts` 加 xiaomi import / nest；`frontend/lib/ai/providers.ts::buildProviderConfig` + `frontend/components/AIChatPanel/providerConfig.ts::buildProviderConfig / getConfiguredProviders` + `frontend/components/AIChatPanel/hooks/useAiChatInit.ts` 加 xiaomi 分支；`frontend/hooks/useProviderSettings.ts` `ProviderEnabledState` + `ProviderApiKeys` + 默认值 + state 推导 全部加 xiaomi 字段；`frontend/components/Settings/hooks/useProviderForm.ts` 加 ProviderSettingsKey + isProviderConfigured + providerToSettingsKey + defaultProviderSettings + FALLBACK_PROVIDERS + PROVIDER_COLORS（橙色 `#FF6700`）；`frontend/components/Settings/ProviderSettings/index.tsx` 加 case "xiaomi" 渲染 API key 输入 + Region Select(cn/sgp/ams/payg) + Protocol Select(auto/openai/anthropic) + OpenAI base url override + Anthropic base url override 五字段；`frontend/components/Settings/ModelSelector.tsx::isProviderAvailable` + `frontend/components/Settings/SubAgentSettings/ModelOverrides.tsx::PROVIDER_OPTIONS` + `MODEL_SUGGESTIONS` 加 xiaomi；`frontend/lib/ui-state/settings.viewmodel.ts::deriveProviderCards` 加 xiaomi entry。
+  - **Phase 5 · 验证**：`pnpm exec tsc --noEmit` exit 0 / `just check-fe` 绿 / `just test-fe` 与 baseline 同样 6 个 pre-existing failures（验证方法：git stash xiaomi changes → 同样 6 failed → git stash pop → 同样 6 failed，**xiaomi 改动未引入新失败**）。
+- **已记录证据**：
+  - `cargo check --workspace` → exit 0 / 0 new warning（仅 baseline `session_dir` dead_code）
+  - `cargo nextest run -p golish-llm-providers` → 58/58 PASS（含 8 xiaomi 模块测 + 4 XiaomiProviderImpl 测 + 1 pay_as_you_go 回路防护测）
+  - `cargo nextest run -p golish-settings` → 54/54 PASS
+  - `cargo run --example xiaomi_live_probe -p golish-llm-providers` × 4 次（payg+openai → 402 / token-plan-cn+openai → 200 / token-plan-cn+anthropic → 200 / payg+anthropic → 402）
+  - 真实小米 MiMo 回复内容（见上面 phase 3 联调段引号内）
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `just check-fe` → exit 0（含 generate-model-constants 重生 + biome auto-fix 2 文件）
+  - `just test-fe` → 6 failed / 1099 passed（与 baseline `git stash` 后跑 6 failed / 1097 passed 同样的 6 个失败文件名 / 行号；本轮 +2 passed 是 xiaomi 测试自身）
+  - `ReadLints` 全部改动文件 → 0 errors
+- **下一步**：
+  1. 用户决定 commit 策略（建议 4 个 commit：tracing / backfill / fix(task-mode) / **feat(xiaomi-mimo)**）。后者可分两段：`feat(xiaomi-mimo): backend provider scaffold + live probe` + `feat(xiaomi-mimo): frontend settings UI + selector integration`。
+  2. 用户接入 `just dev` → Settings → AI providers → Xiaomi MiMo → 填 tp- 或 sk- key（sk- 需手动选 Region=PayAsYouGo）→ 在 ChatModelSelector 选 MiMo 模型 → 发 prompt → 应该立刻拿到中文回复
+  3. 联调 todo（推 Phase 2 完整观察 capabilities）：① reasoning 流（thinking content channel）是否分离 ② tool calling JSON schema 是否上游兼容 ③ vision input 是否支持（capabilities 当前 supports_vision=false 保守）
+- **风险**：
+  - 当前 capabilities `xiaomi_defaults` 保守（128k ctx / 8192 max_output / 不支持 vision），实际 mimo-v2.5-pro 极可能有更大窗口；推 Phase 2 联调实测后调整
+  - rig-core 0.36 `normalize_anthropic_base_url` 会剥 `/v1/messages` / `/messages` / `/v1` 三种尾缀但不剥裸 `/anthropic`——本设计 base url 形如 `https://token-plan-cn.xiaomimimo.com/anthropic`，client 请求时再拼 `/v1/messages`，验证通过；如未来 rig-core 升级修改 normalize 逻辑可能需要回归
+  - 用户给的 sk- key 实际余额为 0；用户用 tp- key 重新联调（用 tp- key 跑成功）
+  - 设计文档 §6.3 风险 C 模型注册体系：当前 `xiaomi.json` 只有 2 个 model entry（`mimo-v2.5-pro` + `mimo-v2.5-pro@anthropic`），新模型来时只需追加 JSON 即可（不动 Rust 代码）
+
+---
+
+### 2026-05-27 · 修 baseline task mode FK violation（chat.rs lazy session create · 用户手动 E2E 立刻能跑后启动）
+
+- **本轮目标**：用户第一次 just dev → task panel 发"评估 example.com 外部 attack surface"→ UI 立刻 `Failed to create task`。诊断后是 baseline 已知 bug，与今日 tracing/backfill 全无关，但阻塞用户手动 E2E。用户授权 P1 修复方案。
+- **根因**：`backend/crates/golish/src/ai/commands/core/chat.rs::execute_task_mode` 第 118 行 `let uuid_session_id = uuid::Uuid::new_v4();` 直接生成一个新 UUID 作为 TaskOrchestrator 的 session_id，但 **从未在 sessions 表 INSERT 过这个 UUID**。`tasks.session_id UUID NOT NULL REFERENCES sessions(id)` FK 触发 → INSERT INTO tasks 失败 → `Failed to create task`。chat panel 传入的字符串 session_id (e.g. `pentest-chat-1779845856078-1`) 被 `_session_id: &str` 忽略，且字符串无法直接当 UUID 也不在 sessions 表里。`git log -- chat.rs` 最近改是 90be3ee/b16bb41 等 refactor commit，与 Phase 1 实施无关，是更早就埋下的。
+- **修复（P1 方案 · chat.rs 单文件 +66 行）**：
+  - `execute_task_mode` 顶部加 `sessions::create(&state.db_pool, NewSession { title, model, provider, ... })`，用返回的 `session_row.id` 替换原 `new_v4()`，让 DB 自己生成 UUID 并保证 sessions 表有对应行。`tasks.session_id` FK 因此满足。
+  - title 由用户 prompt 前 80 字节（UTF-8 char-boundary 安全）派生，model/provider 从 `bridge.model_name()` / `bridge.provider_name()` 取，其它字段 None（workspace 等推 Phase 2 时与 chat panel session 共享）。
+  - 新增 `tracing::info!(target: "harness::task_mode", ...)` 记录 session_db_id + chat_session_id 关系。
+  - 新增 `truncate_for_title(s, max_bytes)` helper 函数 + 5 个单测（ascii under/over limit · 中文 char-boundary · empty · limit=0），全在 `chat_title_tests` mod 里。
+  - 副作用：每次发 task 在 sessions 表多一行 task-only session；未来可优化为复用 chat panel session（需要 schema 加 chat panel session_id ↔ UUID 映射，超出今日 scope）。
+- **已记录证据**：
+  - `cargo check -p golish` → exit 0（1m 24s · 仅 1 个 preexisting `session_dir` dead_code warning · 0 new warning）
+  - `cargo nextest run -p golish --lib -E 'test(chat_title_tests) | test(evidence)' --status-level fail` → **23/23 passed**（5 chat_title 新 + 18 evidence baseline · 0 回归）
+  - `cargo clippy -p golish --lib --no-deps` → 5 preexisting baseline warning（`session_dir` dead_code / asset_intel explicit_auto_deref ×2 / webview_isolation needless_return / integrations facade doc indent）· **0 new warning**
+  - `ReadLints chat.rs` → No linter errors found
+- **下一步**：
+  1. 用户重启 `just dev`（带相同 RUST_LOG + GOLISH_HARNESS_STAGE_MODE env vars）→ chat panel Task 模式重发 ①号 case，**应该不再 Failed to create task**，stderr 现在能看到完整 harness::* 链
+  2. 如果仍 fail，stderr 里 `harness::task_mode: task mode session row created` 不出来 → 说明 sessions::create 自身失败（需要查 DB log）
+- **风险**：
+  - 每个 task 在 sessions 表多一行，长期跑后 sessions 表膨胀 → Phase 2 加 cleanup 或共享 chat session row
+  - 如果用户 sessions 表里手动改过 schema (e.g. 加 trigger / 加 NOT NULL 列)，sessions::create 当前 6 字段 + DEFAULT 可能不够 → 推 Phase 2 时跟随 schema 演进
+  - **本修复不在原本 in_progress 的 harness 实施 scope 里**（属于 baseline bugfix），但是 §2.7 用户授权后做的；commit 时建议拆为 `fix(task-mode): lazy session create to satisfy tasks.session_id FK`
+
+---
+
+### 2026-05-27 · Operation Harness Phase 1 接 chat panel · generator_prompt + harness_backfill（C 方案 + 之前 B 一起做完）
+
+- **本轮目标**：用户选 C "一次做全套"。在前一段 tracing 补全后，发现 chat panel → task 模式还有个 gap：`generator_prompt()` 没告诉 LLM 填 `harness_stage`，导致 `apply_harness_gate_hook` 永远 skip。本段补两件事：① generator_prompt 加 HARNESS STAGE ASSIGNMENT 章节 + JSON 示例字段；② 新建 `task_orchestrator/harness_backfill.rs` deterministic keyword 兜底，BridgeAgentExecutor::generate_subtasks 末端调用。LLM 偷懒不填时也能强制接上 stage harness。
+- **已完成**（在前一段 tracing 补全 10 文件基础上 +4 文件）：
+  - `task_orchestrator/prompts/mod.rs` · `generator_prompt()` 加 `## HARNESS STAGE ASSIGNMENT (Phase 1 MVP — Operation Harness)` 一节 + OUTPUT FORMAT JSON 示例加 `harness_stage` 字段（标 OPTIONAL · 含 trigger keywords 清单 · 中英双语）
+  - `task_orchestrator/harness_backfill.rs` (新文件 · 263 行)：`infer_harness_stage(text)` deterministic 关键词匹配（13 个 positive English + 9 个 positive 中文 + 11 个 anti-trigger）+ `backfill_harness_stage(subtasks)` 兜底；11 个单测覆盖 happy path / 中英文 / 大小写 / 反触发抑制 / preserve LLM-supplied value / empty slice。
+  - `task_orchestrator/mod.rs` · `pub mod harness_backfill;` + `pub use harness_backfill::{backfill_harness_stage, infer_harness_stage};`
+  - `golish-agent-bridge/src/bridge_executor/trait_impl.rs` · `generate_subtasks` 反序列化完 GeneratorOutput 后立即调 `backfill_harness_stage(&mut output.subtasks)`；LLM 已填 `Some(_)` 时跳过（never overwrite）。
+- **已记录证据**：
+  - `cargo nextest run -p golish-agent-kit --lib -E 'test(task_orchestrator::harness_backfill) | test(harness::)' --status-level fail` → **109/109 passed**（baseline 98 + 11 个 backfill 新增 = 109，与预期完全契合，0 回归）
+  - `cargo check -p golish-agent-bridge -p golish-agent-kit` → exit 0
+  - `cargo clippy -p golish-agent-kit -p golish-agent-bridge --lib --no-deps` → 0 warning
+  - `ReadLints × 4 改动文件` → No linter errors found
+- **设计决策**：
+  1. **prompt 引导 + deterministic 兜底双保险**：LLM 接 prompt 能力不可靠（特别中文场景），关键词 backfill 不依赖 LLM compliance。LLM-supplied 值永远不被覆盖（LLM > backfill）。
+  2. **关键词列表保守取召回**：13 positive English keywords + 9 中文（包括 "资产测绘 / 攻击面 / 外部侦察 / 子域名 / 被动 recon / DNS resolution / subfinder / ct log / asn discovery / certificate transparency"）。Anti-trigger 11 条（"exploit / metasploit / sqlmap / internal pivot / 横向移动 / 漏洞利用 / final report / 最终报告 / 修复建议"），命中即抑制。
+  3. **错抓比漏抓代价低**：anti-trigger 优先于 positive；漏抓时 hook 直接 skip（debug log + 不阻断流程），错抓可能让无关 subtask 被强制走 gate。
+  4. **接入点选 BridgeAgentExecutor 而非 TaskOrchestrator**：BridgeAgentExecutor 是 LLM 响应解析的唯一边界，把 backfill 放这里能保证未来其它 AgentExecutor impl（mock / test）也能选择性接入。TaskOrchestrator 是纯 orchestration 层，不应感知 LLM JSON 细节。
+  5. **5 个 tracing target**：新增 `harness::backfill` target，per-subtask info + summary info（filled / total）。`RUST_LOG=harness::backfill=info` 即可监控 backfill 命中率。
+- **未做**：
+  - 没改 `feature_list.json`（同 tracing 补全段说明：本 patch 是 harness-mvp-external-attack-surface 的接入完善，不是新 feature）
+  - IntentClassifier 没接 backfill（Phase 2 当多 stage 落地时，统一走 `harness::IntentClassifier` 或新建 stage_keyword_router）
+  - 没在 task_orchestrator 层加 backfill 接入点单测（targeted 集成测推 Phase 2 · 当前 11 个 unit test 覆盖纯函数逻辑足够）
+- **下一步建议（用户手动验证）**：
+  1. `RUST_LOG=harness=info,golish=info,golish_agent_kit=info,golish_agent_bridge=info GOLISH_HARNESS_STAGE_MODE=true just dev`
+  2. chat panel 左下角 `ExecutionModePicker` 切 **Task**（闪电图标 magenta）
+  3. 输入框输 `评估 example.com 的外部 attack surface` 或英文 `Map external attack surface of example.com` → 发送
+  4. stderr **应该** 出现：
+     - `INFO [TaskMode/Generator] Decomposing task into subtasks` （pre-existing）
+     - `INFO harness::backfill: harness_stage backfilled by keyword matcher subtask_title="..."`（如果 LLM 没填 + keyword 命中）
+     - `INFO harness::sprint_contract: sprint contract generate (deterministic) ...`（每个 subtask 进 harness 时）
+     - `INFO harness::stage_harness: validate_gate entered (5-check pipeline) ...`
+     - `INFO harness::gate::{schema|scope|contract|vacuous|freshness}_check: ... outcome=pass|block`
+     - `INFO harness::hook: gate decision: PASS|BLOCK ...`
+  5. **反向 case**：发任意 task → agent 不调任何工具就交答 → stderr 应看 `WARN harness::hook: gate decision: BLOCK ... first_reason="deliverable vacuous: ..."`
+- **风险**：
+  - LLM 可能不按 prompt 格式输出（漏字段、写错 stage_kind 拼写、用未支持的 stage 名）→ backfill 兜不住 typo（如 `external attack_surface`）；Phase 2 加 enum validation 时再补
+  - keyword 兜底有假阳性可能（如 "DNS resolution" 字面也含在内部排查任务中）→ 实测后按需收紧 anti-trigger
+  - `apply_harness_gate_hook` 仅解析 content 整段为 JSON 的 deliverable · 当前 deliverable 解析路径不强 · 大概率走 debug skip 路径（即 `harness gate hook entered` 出但 deliverable parsed 不出）→ Phase 2 加正则 fence 抽取
+
+---
+
+### 2026-05-27 · Operation Harness Phase 1 tracing 补全（10 文件 · 0 行为改动 · 用户问"流程现在会有日志吗"后立刻动手）
+
+- **本轮目标**：用户在 §5.9 分发关闭模式下问"我的流程现在会有日志吗"。grep 后实情：harness 5 个 gate check / sprint_contract / intent_classifier / stage_harness / evidence_read / evidence_ledger 全部 0 处 tracing；唯一日志在 `apply_harness_gate_hook` 的 4 行 warn/debug（仅 profile/spec/Harness 加载失败时出）。Doc 4 Observability Plane 是 Phase 2 才落，但即便不实施 Doc 4，关键路径 8-10 处 tracing 是 30 分钟可干完的 patch。用户在 ABC 三方案中选 B → 立刻动手。
+- **本轮参与者**：MCP-4 controller（bajie-mcp-agent-4-bs4en72s）· DISPATCH:off 模式 · 本会话直接执行（§5.9 非分发模式全能执行规则）。
+- **已完成**（10 文件 / 0 commit，等用户决定是否合并）：
+  - **5 个 gate check** 各加 1-2 行 `tracing::info!`（target=`harness::gate::<check_name>`，含 stage_id / stage_run_id + 对应业务字段 + outcome=pass|block + reasons_count + first_reason）：
+    - `harness/gate/schema_check.rs` · `harness/gate/scope_check.rs` · `harness/gate/contract_check.rs` · `harness/gate/vacuous_check.rs` · `harness/gate/freshness_check.rs`（run 与 run_with_freshness 两个 path 都覆盖）
+  - **`apply_harness_gate_hook`**（`task_orchestrator/subtask_phases/execute.rs`）：补全 5 处 tracing —— stage_hint=None skip 时 debug / stage_kind 不 MVP 支持 skip 时 debug / hook entered info（stage_kind + subtask_title + content_len）/ deliverable 解析成功 info（claims+findings+evidence_refs） / decision allowed→info 而 decision blocked→warn（含 first_reason + 3 类 recovery_actions 长度）；保留原 4 处 warn/debug 兼容。
+  - **`StageHarness::validate_gate`**（`harness/stage_harness.rs`）：入口 + 出口各 1 行 info，含 stage_kind / has_contract / allowed / reasons_count。
+  - **`DefaultSprintContractGenerator::generate`**（`harness/sprint_contract.rs`）：进入打 stage_run_id + stage_kind + scope_context_len + expected_findings + time_budget + min_tool_invocation_kinds + generator="deterministic-default"；生成完打 contract_id + status + contract_text_len。
+  - **`evidence_read`**（`golish/src/tools/evidence.rs`）：command 入口（evidence_audit_id + summary_level）/ NotFound 路径 warn / Ok 路径打 kind + subject + scope_label + freshness + headline_len + structured_present + raw_present + raw_len。
+  - **`classify_tool_call`**（`golish-agent-runtime/src/agentic_loop/tool_classifier.rs`）：阈值触发时加 `tracing::warn!`（target=`harness::tool_classifier`，含 session_id + count_per_minute + threshold）。
+- **已记录证据**：
+  - `cd backend && cargo check -p golish-agent-kit -p golish -p golish-agent-runtime` → exit 0（1m 40s · 仅 1 个 preexisting `session_dir` dead_code warning）
+  - `cargo nextest run -p golish-agent-kit --lib -E 'test(harness::)' --status-level fail` → **98/98 passed**（baseline 88/88 已含 e2e_tests 10 个；本轮 tracing 补全后仍 0 回归）
+  - `cargo nextest run -p golish-agent-runtime --lib -E 'test(tool_classifier)' --status-level fail` → **11/11 passed**
+  - `cargo nextest run -p golish --lib -E 'test(evidence)' --status-level fail` → **18/18 passed**
+  - `cargo clippy -p golish-agent-kit -p golish-agent-runtime --lib --no-deps` → 0 warning
+  - `cargo clippy -p golish --lib --no-deps` → 5 preexisting baseline warning（`session_dir` dead_code / asset_intel explicit_auto_deref ×2 / webview_isolation needless_return / integrations facade doc indent），**0 new warning**
+  - `ReadLints` × 10 个改动文件 → No linter errors found
+- **设计决策**：
+  1. **target 命名约定**：用 `harness::<scope>` 前缀（`harness::gate::<check_name>` / `harness::hook` / `harness::stage_harness` / `harness::sprint_contract` / `harness::evidence_read` / `harness::tool_classifier`），让 RUST_LOG 可精细过滤：`RUST_LOG=harness::gate=debug,harness::hook=info just dev` 仅出 gate 内部 + hook 入口；`RUST_LOG=harness=info` 出全 harness 流程。
+  2. **level 分配**：pass/正常路径=info（默认就出，让用户能看到流程），block/异常路径=warn（hook 末端 decision blocked），加载失败=warn，skip/无 deliverable=debug（默认不出，避免噪音）。
+  3. **0 业务逻辑改动**：每处 tracing 都是新增独立 statement，不改任何 if/else 分支、return 值、struct 字段。所有 88+11+18=117 个相关单测 0 回归证明语义不动。
+  4. **不接 Doc 4 Observability Plane**：Phase 1 GateResult.gate_result_id / blocking_reason_id 仍 None；tracing event 走 stderr，Phase 2 Doc 4 落地后可由 raw_event_log 采集器统一收（tracing event 自带 structured fields，符合 `serde_json::Value`-able 约束）。
+- **未做**：
+  - 没 commit（等用户确认是否一并打 commit · 推荐 `chore(harness): add structured tracing across Phase 1 hot path`）
+  - 没改 `feature_list.json`（本 patch 不是新 feature · 是 harness-mvp-external-attack-surface 的 instrumentation 完善 · 可以在 evidence 段加一行注释或下次 commit 时一起更新）
+  - 没改 `RUST_LOG` 默认值（仍是 `golish=debug` fallback only · 用户用 `RUST_LOG=harness=info` 启动才能看到本轮新增日志）
+- **下一步建议**：
+  1. **用户手动验证日志**：`RUST_LOG=harness=info,golish=info,golish_agent_kit=info GOLISH_HARNESS_STAGE_MODE=true just dev` 启动 → 新建 task 模式 task → stderr 应出现：sprint contract generate / validate_gate entered / 5 个 check 各自 outcome / hook decision pass|BLOCK。
+  2. 构造反向 case：让 agent 不调任何工具就交答 → stderr 应看 `vacuous_check block reasons_count=N first_reason="deliverable vacuous: ..."` + hook 末端 `gate decision: BLOCK ... recovery_missing_evidence_kinds=2`。
+  3. 若 user 满意 → 一并 commit；若想再加 IntentClassifier / nl_slice / PreActionAuthorizer 日志，再来一轮。
+- **风险**：
+  - tracing event 不持久化（stderr only）· 用户开新会话或关 Tauri 就丢 · Phase 2 Doc 4 raw_event_log 才解决持久化
+  - 若 `just dev` 默认 RUST_LOG 未设 → 新增 info 不出 · 用户必须显式设 `RUST_LOG=harness=info` 或更宽
 
 ---
 

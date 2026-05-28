@@ -4,6 +4,7 @@ import { convDelete } from "@/lib/conversation-db";
 import { logger } from "@/lib/logger";
 import { getAllLeafPanes } from "@/lib/pane-utils";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
+import { resetSessionSequence } from "@/services/ai-events/session-sequence";
 import { useStore } from "@/store";
 import { createNewConversation } from "@/store/slices/conversation";
 
@@ -44,9 +45,7 @@ export function useChatConversationOps(createTerminalTab: CreateTerminalFn) {
       for (const sid of allSessionIds) ptyDestroy(sid).catch(() => {});
     });
     for (const sid of allSessionIds) TerminalInstanceManager.dispose(sid);
-    import("@/hooks/useAiEvents").then(({ resetSessionSequence }) => {
-      for (const sid of allSessionIds) resetSessionSequence(sid);
-    });
+    for (const sid of allSessionIds) resetSessionSequence(sid);
 
     const remainingOrder = storeBefore.conversationOrder.filter((id) => id !== convId);
     let nextActiveSessionId: string | null = null;

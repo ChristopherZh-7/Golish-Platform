@@ -46,8 +46,9 @@ pub fn join_workspace(path_str: &str, workspace: &Path) -> PathBuf {
 /// verifies that ancestor is within the workspace.
 pub fn resolve_path_checked(path_str: &str, workspace: &Path) -> Result<PathBuf, String> {
     let resolved = join_workspace(path_str, workspace);
+    let input_path = Path::new(path_str);
 
-    if is_in_temp_dir(&resolved) {
+    if input_path.is_absolute() && is_in_temp_dir(&resolved) {
         if resolved.exists() {
             return resolved
                 .canonicalize()

@@ -44,6 +44,7 @@ export interface ProviderEnabledState {
   zai_sdk: boolean;
   nvidia: boolean;
   deepseek: boolean;
+  xiaomi: boolean;
   vertex_ai: boolean;
   vertex_gemini: boolean;
 }
@@ -61,6 +62,7 @@ export interface ProviderApiKeys {
   zai_sdk: string | null;
   nvidia: string | null;
   deepseek: string | null;
+  xiaomi: string | null;
 }
 
 /**
@@ -98,6 +100,7 @@ const DEFAULT_ENABLED: ProviderEnabledState = {
   zai_sdk: false,
   nvidia: false,
   deepseek: false,
+  xiaomi: false,
   vertex_ai: false,
   vertex_gemini: false,
 };
@@ -112,6 +115,7 @@ const DEFAULT_API_KEYS: ProviderApiKeys = {
   zai_sdk: null,
   nvidia: null,
   deepseek: null,
+  xiaomi: null,
 };
 
 const DEFAULT_VISIBILITY: ProviderVisibility = {
@@ -127,6 +131,7 @@ const DEFAULT_VISIBILITY: ProviderVisibility = {
   zai_sdk: true,
   nvidia: true,
   deepseek: true,
+  xiaomi: true,
 };
 
 const DEFAULT_STATE: ProviderSettingsState = {
@@ -178,6 +183,7 @@ export function useProviderSettings(): [ProviderSettingsState, () => Promise<voi
         zai_sdk: !!settings.ai.zai_sdk?.api_key,
         nvidia: !!settings.ai.nvidia?.api_key,
         deepseek: !!settings.ai.deepseek?.api_key,
+        xiaomi: !!settings.ai.xiaomi?.api_key,
         vertex_ai: !!(settings.ai.vertex_ai.credentials_path || settings.ai.vertex_ai.project_id),
         vertex_gemini: !!(
           settings.ai.vertex_gemini?.credentials_path || settings.ai.vertex_gemini?.project_id
@@ -195,6 +201,7 @@ export function useProviderSettings(): [ProviderSettingsState, () => Promise<voi
         zai_sdk: settings.ai.zai_sdk?.api_key ?? null,
         nvidia: settings.ai.nvidia?.api_key ?? null,
         deepseek: settings.ai.deepseek?.api_key ?? null,
+        xiaomi: settings.ai.xiaomi?.api_key ?? null,
       };
 
       // Extract Vertex credentials

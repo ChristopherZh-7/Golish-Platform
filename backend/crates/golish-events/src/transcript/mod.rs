@@ -29,6 +29,7 @@ pub fn should_transcript(event: &AiEvent) -> bool {
             | AiEvent::SubAgentToolRequest { .. }
             | AiEvent::SubAgentToolResult { .. }
             | AiEvent::SubAgentTextDelta { .. }
+            | AiEvent::SubAgentReasoning { .. }
     )
 }
 

@@ -26,5 +26,6 @@ export {
   VERTEX_AI_MODELS,
   VERTEX_GEMINI_MODELS,
   XAI_MODELS,
+  XIAOMI_MODELS,
   ZAI_SDK_MODELS,
 } from "./models.generated";

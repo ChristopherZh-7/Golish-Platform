@@ -330,6 +330,44 @@ pub struct DeepSeekSettings {
     pub show_in_selector: bool,
 }
 
+/// Xiaomi MiMo Token Plan settings.
+///
+/// Provides OpenAI-compatible and Anthropic-compatible endpoints sharing one
+/// API key. Region selects the cluster (cn / sgp / ams); explicit base URLs
+/// override the per-region defaults when set.
+///
+/// See `docs/design/2026-05-27-add-xiaomi-mimo-provider.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct XiaomiSettings {
+    /// Xiaomi Token Plan API key (`tp-xxxxx` for token plan, `sk-xxxxx` for pay-as-you-go).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+
+    /// Cluster region: `"cn"` (default), `"sgp"`, or `"ams"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+
+    /// Preferred protocol when both are available: `"openai"`, `"anthropic"`, or `"auto"`.
+    ///
+    /// `"auto"` (default) lets the model registry's transport hint decide,
+    /// falling back to OpenAI-compatible when neither is hinted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_protocol: Option<String>,
+
+    /// Custom OpenAI-compatible base URL (defaults to region-derived URL).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_base_url: Option<String>,
+
+    /// Custom Anthropic-compatible base URL (defaults to region-derived URL).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anthropic_base_url: Option<String>,
+
+    /// Whether to show this provider's models in the model selector.
+    #[serde(default = "default_true")]
+    pub show_in_selector: bool,
+}
+
 impl Default for VertexAiSettings {
     fn default() -> Self {
         Self {
@@ -447,6 +485,19 @@ impl Default for DeepSeekSettings {
         Self {
             api_key: None,
             base_url: None,
+            show_in_selector: true,
+        }
+    }
+}
+
+impl Default for XiaomiSettings {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            region: None,
+            default_protocol: None,
+            openai_base_url: None,
+            anthropic_base_url: None,
             show_in_selector: true,
         }
     }

@@ -22,6 +22,7 @@ import {
   updatePaneRatio,
 } from "@/lib/pane-utils";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
+import { resetSessionSequence } from "@/services/ai-events/session-sequence";
 import type { Session } from "../store-types";
 import type { SliceCreator } from "./types";
 
@@ -163,9 +164,7 @@ export const createPaneSlice: SliceCreator<PaneSlice, PaneStoreDraft> = (set, ge
 
     TerminalInstanceManager.dispose(sessionIdToRemove);
 
-    import("@/hooks/useAiEvents").then(({ resetSessionSequence }) => {
-      resetSessionSequence(sessionIdToRemove);
-    });
+    resetSessionSequence(sessionIdToRemove);
 
     set((state) => {
       const layout = state.tabLayouts[tabId];

@@ -28,6 +28,11 @@ impl ToolConfig {
         }
     }
 
+    /// Returns true when this config explicitly disables all tools.
+    pub fn is_none_preset(&self) -> bool {
+        self.preset == ToolPreset::None
+    }
+
     /// Create the default tool config for the main agent.
     ///
     /// This is the recommended configuration for golish's primary AI agent.

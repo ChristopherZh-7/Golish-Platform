@@ -20,25 +20,25 @@ describe("TerminalSettings", () => {
   it("should render shell input", () => {
     const onChange = vi.fn();
     render(<TerminalSettings settings={baseSettings} onChange={onChange} />);
-    expect(screen.getByLabelText("Shell")).toBeInTheDocument();
+    expect(screen.getByLabelText("terminal.shell")).toBeInTheDocument();
   });
 
   it("should render font family input", () => {
     const onChange = vi.fn();
     render(<TerminalSettings settings={baseSettings} onChange={onChange} />);
-    expect(screen.getByLabelText("Font Family")).toBeInTheDocument();
+    expect(screen.getByLabelText("terminal.fontFamily")).toBeInTheDocument();
   });
 
   it("should render font size input", () => {
     const onChange = vi.fn();
     render(<TerminalSettings settings={baseSettings} onChange={onChange} />);
-    expect(screen.getByLabelText("Font Size")).toBeInTheDocument();
+    expect(screen.getByLabelText("terminal.fontSize")).toBeInTheDocument();
   });
 
   it("should render scrollback input", () => {
     const onChange = vi.fn();
     render(<TerminalSettings settings={baseSettings} onChange={onChange} />);
-    expect(screen.getByLabelText("Scrollback Lines")).toBeInTheDocument();
+    expect(screen.getByLabelText("terminal.scrollbackLines")).toBeInTheDocument();
   });
 
   it("should not render theme or caret settings", () => {

@@ -19,4 +19,5 @@ export * from "./openrouter";
 export * from "./types";
 export * from "./vertex";
 export * from "./xai";
+export * from "./xiaomi";
 export * from "./zai";

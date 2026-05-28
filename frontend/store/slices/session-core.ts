@@ -4,6 +4,7 @@
 
 import { logger } from "@/lib/logger";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
+import { resetSessionSequence } from "@/services/ai-events/session-sequence";
 import type {
   AgentMode,
   DetailViewMode,
@@ -122,9 +123,7 @@ export function createSessionCoreActions(
       TerminalInstanceManager.dispose(sessionId);
       deleteOutputBuffer(sessionId);
 
-      import("@/hooks/useAiEvents").then(({ resetSessionSequence }) => {
-        resetSessionSequence(sessionId);
-      });
+      resetSessionSequence(sessionId);
 
       set((state) => {
         purgeSessionStateInDraft(state, sessionId);

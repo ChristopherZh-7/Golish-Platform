@@ -11,8 +11,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import keysFile from "../../scripts/model-const-keys.json";
 import * as models from "@/lib/ai/models";
+import keysFile from "../../scripts/model-const-keys.json";
 
 interface ProviderModelsFile {
   provider: string;

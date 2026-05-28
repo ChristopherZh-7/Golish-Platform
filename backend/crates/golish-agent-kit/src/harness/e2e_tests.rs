@@ -36,9 +36,8 @@ const ASSESSMENT_PROFILE_JSON: &str =
     include_str!("../../../../../resources/harness/profiles/assessment.json");
 const ASSESSMENT_SKELETON_JSON: &str =
     include_str!("../../../../../resources/harness/profiles/assessment.sprint_skeleton.json");
-const STAGE_JSON: &str = include_str!(
-    "../../../../../resources/harness/stages/external_attack_surface.json"
-);
+const STAGE_JSON: &str =
+    include_str!("../../../../../resources/harness/stages/external_attack_surface.json");
 
 fn build_harness() -> StageHarness {
     let profile = load_profile_from_json(ASSESSMENT_PROFILE_JSON).expect("profile");
@@ -135,7 +134,10 @@ fn e2e_finding_missing_evidence_refs_blocks_via_scope_and_freshness() {
     d.findings[0].evidence_refs.clear();
     let decision = harness.validate_gate(&d, None);
     assert!(!decision.allowed);
-    assert!(decision.reasons.iter().any(|r| r.contains("empty evidence_refs")));
+    assert!(decision
+        .reasons
+        .iter()
+        .any(|r| r.contains("empty evidence_refs")));
 }
 
 #[test]
@@ -152,7 +154,10 @@ fn e2e_finding_references_unknown_evidence_blocks_via_freshness_sanity() {
     });
     let decision = harness.validate_gate(&d, None);
     assert!(!decision.allowed);
-    assert!(decision.reasons.iter().any(|r| r.contains("evidence_audit_id=9999")));
+    assert!(decision
+        .reasons
+        .iter()
+        .any(|r| r.contains("evidence_audit_id=9999")));
 }
 
 #[test]
@@ -180,8 +185,9 @@ fn e2e_contract_check_below_min_subdomain_blocks() {
     let outcome = contract_check_with_skeleton(&d, None, Some(stage_sk));
     match outcome {
         GateCheckOutcome::Block { reasons, recovery } => {
-            assert!(reasons.iter().any(|r| r.contains("subdomain")
-                && r.contains("below contract minimum")));
+            assert!(reasons
+                .iter()
+                .any(|r| r.contains("subdomain") && r.contains("below contract minimum")));
             assert!(!recovery.missing_evidence_kinds.is_empty());
         }
         _ => panic!("expected Block"),
@@ -201,8 +207,7 @@ fn e2e_freshness_check_with_real_evidence_kinds_fresh_passes() {
     ages.insert(EvidenceAuditId::new(2), StdDuration::from_secs(300)); // 5 min
     ages.insert(EvidenceAuditId::new(3), StdDuration::from_secs(3600)); // 1 hour
 
-    let outcome =
-        freshness_check_with_freshness(&d, &harness.stage_spec, &kinds, &ages);
+    let outcome = freshness_check_with_freshness(&d, &harness.stage_spec, &kinds, &ages);
     assert!(matches!(outcome, GateCheckOutcome::Pass));
 }
 
@@ -220,11 +225,12 @@ fn e2e_freshness_check_one_expired_blocks_with_repair() {
     ages.insert(EvidenceAuditId::new(2), StdDuration::from_secs(24 * 3600));
     ages.insert(EvidenceAuditId::new(3), StdDuration::from_secs(3600));
 
-    let outcome =
-        freshness_check_with_freshness(&d, &harness.stage_spec, &kinds, &ages);
+    let outcome = freshness_check_with_freshness(&d, &harness.stage_spec, &kinds, &ages);
     match outcome {
         GateCheckOutcome::Block { reasons, recovery } => {
-            assert!(reasons.iter().any(|r| r.contains("hard-expired") && r.contains("http_probe")));
+            assert!(reasons
+                .iter()
+                .any(|r| r.contains("hard-expired") && r.contains("http_probe")));
             assert!(recovery
                 .repair_tool_calls
                 .iter()

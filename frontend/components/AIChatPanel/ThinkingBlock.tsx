@@ -67,7 +67,7 @@ export function ThinkingBlock({ content, isActive, startedAt, endedAt }: Thinkin
         type="button"
         onClick={handleToggle}
         className={cn(
-          "flex items-center gap-1.5 text-[11px] text-muted-foreground/60 hover:text-muted-foreground transition-colors",
+          "flex items-center gap-1.5 text-[11px] text-foreground/60 hover:text-foreground/80 transition-colors",
           "focus:outline-none"
         )}
         aria-expanded={expanded}
@@ -83,7 +83,7 @@ export function ThinkingBlock({ content, isActive, startedAt, endedAt }: Thinkin
       </button>
 
       {expanded && content && (
-        <div className="mt-1.5 ml-1.5 pl-3 border-l-2 border-muted-foreground/15 text-[12px] text-muted-foreground/70 leading-[1.6] whitespace-pre-wrap">
+        <div className="mt-1.5 ml-1.5 pl-3 border-l-2 border-foreground/20 text-[12px] text-foreground/70 leading-[1.6] whitespace-pre-wrap">
           {content}
         </div>
       )}

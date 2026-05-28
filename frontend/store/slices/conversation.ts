@@ -249,6 +249,14 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
         if (!last.toolCallOffsets) {
           last.toolCallOffsets = [];
         }
+        if (toolCall.requestId) {
+          const existing = last.toolCalls.find((tc) => tc.requestId === toolCall.requestId);
+          if (existing) {
+            existing.name = toolCall.name;
+            existing.args = toolCall.args;
+            return;
+          }
+        }
         last.toolCallOffsets.push(last.content.length);
         last.toolCalls.push(toolCall);
       }

@@ -55,6 +55,27 @@ fn tool_request_event_json_format() {
 }
 
 #[test]
+fn tool_intent_observation_event_json_format() {
+    let event = AiEvent::ToolIntentObservation {
+        request_id: "req-intent-1".to_string(),
+        tool_name: "ask_human".to_string(),
+        source: "textual_xml".to_string(),
+        decision: "require_human_answer".to_string(),
+        reason: Some("user confirmation required".to_string()),
+        raw_preview: None,
+    };
+    let json = serde_json::to_value(&event).unwrap();
+
+    assert_eq!(json["type"], "tool_intent_observation");
+    assert_eq!(json["request_id"], "req-intent-1");
+    assert_eq!(json["tool_name"], "ask_human");
+    assert_eq!(json["source"], "textual_xml");
+    assert_eq!(json["decision"], "require_human_answer");
+    assert_eq!(json["reason"], "user confirmation required");
+    assert!(json.get("raw_preview").is_none());
+}
+
+#[test]
 fn tool_approval_request_event_json_format() {
     use crate::hitl::{ApprovalPattern, RiskLevel};
     use chrono::{DateTime, Utc};
@@ -249,6 +270,23 @@ fn sub_agent_completed_event_json_format() {
     assert_eq!(json["agent_id"], "agent-001");
     assert_eq!(json["response"], "Analysis complete");
     assert_eq!(json["duration_ms"], 5000);
+    assert_eq!(json["parent_request_id"], "parent-req-001");
+}
+
+#[test]
+fn sub_agent_reasoning_event_json_format() {
+    let event = AiEvent::SubAgentReasoning {
+        agent_id: "agent-001".to_string(),
+        delta: "checking constraints".to_string(),
+        accumulated: "checking constraints".to_string(),
+        parent_request_id: "parent-req-001".to_string(),
+    };
+    let json = serde_json::to_value(&event).unwrap();
+
+    assert_eq!(json["type"], "sub_agent_reasoning");
+    assert_eq!(json["agent_id"], "agent-001");
+    assert_eq!(json["delta"], "checking constraints");
+    assert_eq!(json["accumulated"], "checking constraints");
     assert_eq!(json["parent_request_id"], "parent-req-001");
 }
 

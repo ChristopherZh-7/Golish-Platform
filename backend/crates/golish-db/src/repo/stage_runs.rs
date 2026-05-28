@@ -25,12 +25,7 @@ pub struct StageRunRow {
 }
 
 /// 创建一个新 stage_run · 调用方负责生成 UUID 并保证唯一.
-pub async fn insert(
-    pool: &PgPool,
-    id: Uuid,
-    operation_id: Uuid,
-    stage_kind: &str,
-) -> Result<()> {
+pub async fn insert(pool: &PgPool, id: Uuid, operation_id: Uuid, stage_kind: &str) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO stage_runs (id, operation_id, stage_kind)
            VALUES ($1, $2, $3)"#,
@@ -58,10 +53,7 @@ pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<StageRunRow>> {
 }
 
 /// 列出某 operation 全部 stage_runs (按 started_at 升序 · 含 retry 多行).
-pub async fn list_for_operation(
-    pool: &PgPool,
-    operation_id: Uuid,
-) -> Result<Vec<StageRunRow>> {
+pub async fn list_for_operation(pool: &PgPool, operation_id: Uuid) -> Result<Vec<StageRunRow>> {
     let rows = sqlx::query_as::<_, StageRunRow>(
         r#"SELECT id, operation_id, stage_kind, started_at, completed_at,
                   status, active_sprint_contract_id
@@ -76,11 +68,7 @@ pub async fn list_for_operation(
 }
 
 /// stage 结束 (status + completed_at NOW()) · 终态: completed / failed / paused_needs_user.
-pub async fn mark_terminal(
-    pool: &PgPool,
-    id: Uuid,
-    new_status: &str,
-) -> Result<()> {
+pub async fn mark_terminal(pool: &PgPool, id: Uuid, new_status: &str) -> Result<()> {
     sqlx::query(
         r#"UPDATE stage_runs
            SET status = $2,

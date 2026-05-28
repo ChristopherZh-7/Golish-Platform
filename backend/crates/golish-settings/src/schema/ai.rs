@@ -11,7 +11,7 @@ use super::enums::{AiProvider, ReasoningEffort};
 use super::llm::{
     AnthropicSettings, DeepSeekSettings, GeminiSettings, GroqSettings, NvidiaSettings,
     OllamaSettings, OpenAiSettings, OpenRouterSettings, VertexAiSettings, VertexGeminiSettings,
-    XaiSettings, ZaiSdkSettings,
+    XaiSettings, XiaomiSettings, ZaiSdkSettings,
 };
 use serde::{Deserialize, Serialize};
 
@@ -180,6 +180,9 @@ pub struct AiSettings {
 
     /// DeepSeek direct API settings.
     pub deepseek: DeepSeekSettings,
+
+    /// Xiaomi MiMo Token Plan settings (OpenAI + Anthropic dual-compatible).
+    pub xiaomi: XiaomiSettings,
 }
 
 impl Default for AiSettings {
@@ -205,6 +208,7 @@ impl Default for AiSettings {
             zai_sdk: ZaiSdkSettings::default(),
             nvidia: NvidiaSettings::default(),
             deepseek: DeepSeekSettings::default(),
+            xiaomi: XiaomiSettings::default(),
         }
     }
 }

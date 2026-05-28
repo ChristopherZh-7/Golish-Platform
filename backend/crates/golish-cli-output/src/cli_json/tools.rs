@@ -18,6 +18,24 @@ pub(super) fn tool_request(
     })
 }
 
+pub(super) fn tool_intent_observation(
+    request_id: &str,
+    tool_name: &str,
+    source: &str,
+    decision: &str,
+    reason: &Option<String>,
+    raw_preview: &Option<String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "request_id": request_id,
+        "tool_name": tool_name,
+        "source": source,
+        "decision": decision,
+        "reason": reason,
+        "raw_preview": raw_preview
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tool_approval_request(
     request_id: &str,

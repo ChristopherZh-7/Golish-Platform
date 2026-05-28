@@ -156,7 +156,12 @@ impl IntentClassifier {
     ///   ExploitValidation > VulnValidation > ActiveProbe > PassiveObserve.
     pub fn classify(&self, user_intent: &str, stage_kind: StageKind) -> IntentAxis {
         let lower = user_intent.to_lowercase();
-        if self.config.exploit_keywords.iter().any(|k| lower.contains(k)) {
+        if self
+            .config
+            .exploit_keywords
+            .iter()
+            .any(|k| lower.contains(k))
+        {
             return IntentAxis::ExploitValidation;
         }
         if self
@@ -175,14 +180,19 @@ impl IntentClassifier {
         {
             return IntentAxis::ActiveProbe;
         }
-        if self.config.passive_keywords.iter().any(|k| lower.contains(k)) {
+        if self
+            .config
+            .passive_keywords
+            .iter()
+            .any(|k| lower.contains(k))
+        {
             return IntentAxis::PassiveObserve;
         }
         // 默认按 stage_kind (Doc 3 §6.1 match 子句末)
         match stage_kind {
-            StageKind::Scoping
-            | StageKind::TargetIntel
-            | StageKind::ExternalAttackSurface => IntentAxis::PassiveObserve,
+            StageKind::Scoping | StageKind::TargetIntel | StageKind::ExternalAttackSurface => {
+                IntentAxis::PassiveObserve
+            }
             StageKind::Enumeration => IntentAxis::ActiveProbe,
             _ => IntentAxis::PassiveObserve,
         }

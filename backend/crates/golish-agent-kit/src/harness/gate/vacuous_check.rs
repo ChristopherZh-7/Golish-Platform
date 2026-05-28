@@ -17,10 +17,7 @@ use super::super::stage_spec::StageSpec;
 use super::super::types::{ExternalAttackSurfaceDeliverable, HarnessRecoveryActions};
 use super::GateCheckOutcome;
 
-pub fn run(
-    deliverable: &ExternalAttackSurfaceDeliverable,
-    spec: &StageSpec,
-) -> GateCheckOutcome {
+pub fn run(deliverable: &ExternalAttackSurfaceDeliverable, spec: &StageSpec) -> GateCheckOutcome {
     let mut reasons = Vec::new();
     let mut missing_kinds = Vec::new();
 
@@ -29,9 +26,7 @@ pub fn run(
         && deliverable.findings.is_empty()
         && deliverable.skipped_checks.is_empty()
     {
-        reasons.push(
-            "deliverable vacuous: no claims, no findings, no skipped_checks".to_string(),
-        );
+        reasons.push("deliverable vacuous: no claims, no findings, no skipped_checks".to_string());
         missing_kinds.push("dns_a".to_string());
         missing_kinds.push("http_probe".to_string());
     }
@@ -69,12 +64,37 @@ pub fn run(
     }
 
     if reasons.is_empty() {
+        tracing::info!(
+            target: "harness::gate::vacuous_check",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            claims = deliverable.claims.len(),
+            findings = deliverable.findings.len(),
+            skipped_checks = deliverable.skipped_checks.len(),
+            evidence_refs = deliverable.evidence_refs.len(),
+            outcome = "pass",
+            "vacuous_check pass"
+        );
         GateCheckOutcome::Pass
     } else {
+        tracing::info!(
+            target: "harness::gate::vacuous_check",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            claims = deliverable.claims.len(),
+            findings = deliverable.findings.len(),
+            skipped_checks = deliverable.skipped_checks.len(),
+            evidence_refs = deliverable.evidence_refs.len(),
+            outcome = "block",
+            reasons_count = reasons.len(),
+            first_reason = %reasons[0],
+            "vacuous_check block"
+        );
         let mut recovery = HarnessRecoveryActions::default();
-        recovery
-            .hints
-            .push("invoke at least one tool from stage_spec.allowed_tools and submit findings".to_string());
+        recovery.hints.push(
+            "invoke at least one tool from stage_spec.allowed_tools and submit findings"
+                .to_string(),
+        );
         for kind in missing_kinds {
             recovery.missing_evidence_kinds.push(kind);
         }
@@ -84,17 +104,16 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::super::stage_spec::load_stage_spec_from_json;
     use super::super::super::types::{
         ExternalAttackSurfaceDeliverable, Finding, FindingSeverity, SkippedCheckRecord, StageClaim,
     };
+    use super::*;
     use golish_pentest::evidence_ledger::EvidenceAuditId;
     use uuid::Uuid;
 
-    const STAGE_JSON: &str = include_str!(
-        "../../../../../../resources/harness/stages/external_attack_surface.json"
-    );
+    const STAGE_JSON: &str =
+        include_str!("../../../../../../resources/harness/stages/external_attack_surface.json");
 
     fn empty_deliverable() -> ExternalAttackSurfaceDeliverable {
         ExternalAttackSurfaceDeliverable {
@@ -115,7 +134,9 @@ mod tests {
         match run(&d, &spec) {
             GateCheckOutcome::Block { reasons, recovery } => {
                 assert!(reasons[0].contains("vacuous"));
-                assert!(recovery.missing_evidence_kinds.contains(&"dns_a".to_string()));
+                assert!(recovery
+                    .missing_evidence_kinds
+                    .contains(&"dns_a".to_string()));
             }
             _ => panic!("expected Block"),
         }
@@ -204,7 +225,9 @@ mod tests {
                 assert!(recovery
                     .missing_evidence_kinds
                     .iter()
-                    .any(|k| k == "dns_resolve" || k == "http_probe" || k == "subdomain_enum_passive"));
+                    .any(|k| k == "dns_resolve"
+                        || k == "http_probe"
+                        || k == "subdomain_enum_passive"));
             }
             _ => panic!("expected Block"),
         }

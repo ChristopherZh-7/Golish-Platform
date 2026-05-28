@@ -96,7 +96,11 @@ impl RecentToolCallTracker {
         };
         let count = map
             .get(session_id)
-            .map(|q| q.iter().filter(|t| now.saturating_duration_since(**t) <= EVIDENCE_READ_WINDOW).count())
+            .map(|q| {
+                q.iter()
+                    .filter(|t| now.saturating_duration_since(**t) <= EVIDENCE_READ_WINDOW)
+                    .count()
+            })
             .unwrap_or(0);
         u32::try_from(count).unwrap_or(u32::MAX)
     }
@@ -144,6 +148,13 @@ pub fn classify_tool_call(
 
     let count = tracker.count_recent_evidence_reads(call.session_id);
     if count > EVIDENCE_READ_THRESHOLD_PER_MINUTE {
+        tracing::warn!(
+            target: "harness::tool_classifier",
+            session_id = %call.session_id,
+            count_per_minute = count,
+            threshold = EVIDENCE_READ_THRESHOLD_PER_MINUTE,
+            "evidence_read flooding detected"
+        );
         Some(ToolCallWarning::EvidenceReadFlooding {
             count_per_minute: count,
             threshold: EVIDENCE_READ_THRESHOLD_PER_MINUTE,

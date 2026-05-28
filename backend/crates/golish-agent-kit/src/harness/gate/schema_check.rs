@@ -7,10 +7,7 @@ use super::super::stage_spec::StageSpec;
 use super::super::types::{ExternalAttackSurfaceDeliverable, HarnessRecoveryActions};
 use super::GateCheckOutcome;
 
-pub fn run(
-    deliverable: &ExternalAttackSurfaceDeliverable,
-    spec: &StageSpec,
-) -> GateCheckOutcome {
+pub fn run(deliverable: &ExternalAttackSurfaceDeliverable, spec: &StageSpec) -> GateCheckOutcome {
     let mut reasons = Vec::new();
 
     if deliverable.stage_id.trim().is_empty() {
@@ -27,26 +24,42 @@ pub fn run(
     }
 
     if reasons.is_empty() {
+        tracing::info!(
+            target: "harness::gate::schema_check",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            outcome = "pass",
+            "schema_check pass"
+        );
         GateCheckOutcome::Pass
     } else {
+        tracing::info!(
+            target: "harness::gate::schema_check",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            outcome = "block",
+            reasons_count = reasons.len(),
+            first_reason = %reasons[0],
+            "schema_check block"
+        );
         let mut recovery = HarnessRecoveryActions::default();
-        recovery
-            .hints
-            .push("rebuild deliverable with non-empty stage_id, valid stage_run_id and matching schema".to_string());
+        recovery.hints.push(
+            "rebuild deliverable with non-empty stage_id, valid stage_run_id and matching schema"
+                .to_string(),
+        );
         GateCheckOutcome::Block { reasons, recovery }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::super::stage_spec::load_stage_spec_from_json;
     use super::super::super::types::{ExternalAttackSurfaceDeliverable, StageClaim};
+    use super::*;
     use uuid::Uuid;
 
-    const STAGE_JSON: &str = include_str!(
-        "../../../../../../resources/harness/stages/external_attack_surface.json"
-    );
+    const STAGE_JSON: &str =
+        include_str!("../../../../../../resources/harness/stages/external_attack_surface.json");
 
     fn make_deliverable(stage_id: &str) -> ExternalAttackSurfaceDeliverable {
         ExternalAttackSurfaceDeliverable {

@@ -85,11 +85,7 @@ pub async fn advance_cursor(
 }
 
 /// 切换 current_stage + 写新 stage_started_at = NOW().
-pub async fn advance_stage(
-    pool: &PgPool,
-    operation_id: Uuid,
-    new_stage: &str,
-) -> Result<()> {
+pub async fn advance_stage(pool: &PgPool, operation_id: Uuid, new_stage: &str) -> Result<()> {
     sqlx::query(
         r#"UPDATE operation_state
            SET current_stage = $2,

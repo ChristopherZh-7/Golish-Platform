@@ -33,7 +33,7 @@ pub(crate) fn apply_isolation<'a>(
     #[cfg(target_os = "macos")]
     {
         let bytes = derive_macos_data_store_id(_profile_key);
-        return builder.data_store_identifier(bytes);
+        builder.data_store_identifier(bytes)
     }
     #[cfg(all(
         not(target_os = "macos"),

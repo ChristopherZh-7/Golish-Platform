@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type AiEvent, onAiEvent, respondToToolApproval } from "@/lib/ai";
+import {
+  type AiEvent,
+  isGenerationSuppressedForAiSession,
+  isTitleGenSessionId,
+  onAiEvent,
+  respondToToolApproval,
+} from "@/lib/ai";
 import { type ChatMessage, useStore } from "@/store";
 import type { AskHumanState, WorkflowRunSnapshot } from "./ChatSubComponents";
 
@@ -104,6 +110,7 @@ export function useChatAiEvents({
       try {
         const dispose = await onAiEvent((event: AiEvent) => {
           if (!mounted) return;
+          if (isTitleGenSessionId(event.session_id)) return;
 
           console.debug(
             "[AIChatPanel] AI event received:",
@@ -130,6 +137,10 @@ export function useChatAiEvents({
           }
           const convId = conv.id;
 
+          if (isGenerationSuppressedForAiSession(event.session_id)) {
+            return;
+          }
+
           switch (event.type) {
             case "started": {
               // Reset plan text offset for new turn
@@ -149,6 +160,30 @@ export function useChatAiEvents({
 
             case "text_delta": {
               store.appendMessageDelta(convId, event.delta);
+              break;
+            }
+
+            case "tool_intent_observation": {
+              store.recordToolIntentObservation(event.session_id, {
+                requestId: event.request_id,
+                modelWanted: event.tool_name,
+                source:
+                  event.source === "native_tool_call" ||
+                  event.source === "textual_xml" ||
+                  event.source === "textual_json" ||
+                  event.source === "recovered"
+                    ? event.source
+                    : "recovered",
+                decision:
+                  event.decision === "allow" ||
+                  event.decision === "require_approval" ||
+                  event.decision === "require_human_answer" ||
+                  event.decision === "reject"
+                    ? event.decision
+                    : "reject",
+                reason: event.reason ?? undefined,
+                rawPreview: event.raw_preview ?? undefined,
+              });
               break;
             }
 

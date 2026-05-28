@@ -419,6 +419,50 @@ describe("useAiEvents", () => {
       expect(state.isAgentThinking["test-session"]).toBe(false);
       expect(state.isAgentResponding["test-session"]).toBe(false);
     });
+
+    it("drops title-generation errors instead of routing them to the active session", async () => {
+      useStore.setState({ activeSessionId: "test-session" });
+      renderHook(() => useAiEvents());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+
+      act(() => {
+        emitMockEvent("ai-event", {
+          type: "error",
+          session_id: "title-gen-pentest-chat-1",
+          message: "Agent stopped by user",
+          error_type: "cancelled",
+        });
+      });
+
+      const state = useStore.getState();
+      expect(state.timelines["test-session"] ?? []).toHaveLength(0);
+      expect(state.isAgentThinking["test-session"]).toBe(false);
+      expect(state.isAgentResponding["test-session"]).toBe(false);
+    });
+
+    it("drops known-but-unresolved session reasoning instead of routing it to the active session", async () => {
+      useStore.setState({ activeSessionId: "test-session" });
+      renderHook(() => useAiEvents());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+
+      act(() => {
+        emitMockEvent("ai-event", {
+          type: "reasoning",
+          session_id: "some-other-ai-session",
+          content: "hidden thinking",
+        });
+      });
+
+      const state = useStore.getState();
+      expect(state.thinkingContent["test-session"]).toBe("");
+      expect(state.timelines["test-session"] ?? []).toHaveLength(0);
+    });
   });
 
   describe("signalFrontendReady", () => {

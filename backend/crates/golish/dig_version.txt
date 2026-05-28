@@ -1,0 +1,18 @@
+
+; <<>> DiG 9.10.6 <<>>
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: REFUSED, id: 42020
+;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+;; WARNING: recursion requested but not available
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 1232
+;; QUESTION SECTION:
+;.				IN	NS
+
+;; Query time: 13 msec
+;; SERVER: fe80::1#53(fe80::1%11)
+;; WHEN: Thu May 28 00:51:09 CST 2026
+;; MSG SIZE  rcvd: 28
+

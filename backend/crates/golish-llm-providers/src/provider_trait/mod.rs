@@ -77,6 +77,15 @@ pub struct ProviderExtraSettings {
     // OpenRouter specific
     /// Provider preferences JSON for routing and filtering.
     pub provider_preferences: Option<serde_json::Value>,
+
+    // Xiaomi MiMo specific
+    /// Cluster region (`cn` / `sgp` / `ams`); unset means `cn`.
+    pub xiaomi_region: Option<String>,
+    /// Default wire protocol (`openai` / `anthropic` / `auto`); unset means `auto`.
+    pub xiaomi_default_protocol: Option<String>,
+    /// Optional Anthropic-compatible base URL override (OpenAI side reuses
+    /// the top-level [`ProviderSettings::base_url`] field).
+    pub xiaomi_anthropic_base_url: Option<String>,
 }
 
 impl Default for ProviderSettings {
@@ -103,6 +112,7 @@ mod openrouter;
 mod vertex_ai;
 mod vertex_gemini;
 mod xai;
+mod xiaomi;
 mod zai_sdk;
 
 pub use anthropic::AnthropicProviderImpl;
@@ -116,6 +126,7 @@ pub use openrouter::OpenRouterProviderImpl;
 pub use vertex_ai::VertexAiProviderImpl;
 pub use vertex_gemini::VertexGeminiProviderImpl;
 pub use xai::XaiProviderImpl;
+pub use xiaomi::XiaomiProviderImpl;
 pub use zai_sdk::ZaiSdkProviderImpl;
 
 // =============================================================================
@@ -248,6 +259,24 @@ pub fn create_provider(
                 base_url: settings.base_url.clone(),
             }))
         }
+        AiProvider::Xiaomi => {
+            let api_key = settings
+                .api_key
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("Xiaomi MiMo API key required"))?;
+            let region =
+                crate::xiaomi::XiaomiRegion::from_settings(settings.extra.xiaomi_region.as_deref());
+            let default_protocol = crate::xiaomi::XiaomiProtocol::from_settings(
+                settings.extra.xiaomi_default_protocol.as_deref(),
+            );
+            Ok(Box::new(XiaomiProviderImpl {
+                api_key,
+                region,
+                default_protocol,
+                openai_base_url: settings.base_url.clone(),
+                anthropic_base_url: settings.extra.xiaomi_anthropic_base_url.clone(),
+            }))
+        }
     }
 }
 
@@ -336,6 +365,16 @@ pub fn extract_provider_settings(
             api_key: settings.ai.deepseek.api_key.clone(),
             base_url: settings.ai.deepseek.base_url.clone(),
             ..Default::default()
+        },
+        AiProvider::Xiaomi => ProviderSettings {
+            api_key: settings.ai.xiaomi.api_key.clone(),
+            base_url: settings.ai.xiaomi.openai_base_url.clone(),
+            extra: ProviderExtraSettings {
+                xiaomi_region: settings.ai.xiaomi.region.clone(),
+                xiaomi_default_protocol: settings.ai.xiaomi.default_protocol.clone(),
+                xiaomi_anthropic_base_url: settings.ai.xiaomi.anthropic_base_url.clone(),
+                ..Default::default()
+            },
         },
     }
 }

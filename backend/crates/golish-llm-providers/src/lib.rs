@@ -24,6 +24,7 @@ mod openai_config;
 mod provider_config;
 mod provider_trait;
 mod reasoning_models;
+pub mod xiaomi;
 
 pub use deepseek::*;
 pub use model_capabilities::*;
@@ -31,6 +32,7 @@ pub use openai_config::*;
 pub use provider_config::*;
 pub use provider_trait::*;
 pub use reasoning_models::*;
+pub use xiaomi::*;
 
 use rig::providers::anthropic as rig_anthropic;
 use rig::providers::gemini as rig_gemini;
@@ -170,6 +172,10 @@ pub enum LlmClient {
     RigNvidia(rig_openai::completion::CompletionModel),
     /// DeepSeek via OpenAI-compatible Chat Completions API
     RigDeepSeek(rig_openai::completion::CompletionModel),
+    /// Xiaomi MiMo via OpenAI-compatible Chat Completions API
+    RigXiaomi(rig_openai::completion::CompletionModel),
+    /// Xiaomi MiMo via Anthropic-compatible Messages API
+    RigXiaomiAnthropic(rig_anthropic::completion::CompletionModel),
     /// Mock client for testing (doesn't require credentials)
     /// This variant is always available for integration testing across crates.
     Mock,
@@ -205,6 +211,8 @@ macro_rules! dispatch_llm_client {
             $crate::LlmClient::RigZaiSdk($model) => $body,
             $crate::LlmClient::RigNvidia($model) => $body,
             $crate::LlmClient::RigDeepSeek($model) => $body,
+            $crate::LlmClient::RigXiaomi($model) => $body,
+            $crate::LlmClient::RigXiaomiAnthropic($model) => $body,
             $crate::LlmClient::Mock => $mock_body,
         }
     };
@@ -245,6 +253,8 @@ macro_rules! dispatch_llm_client_split {
             $crate::LlmClient::RigZaiSdk($g) => $g_body,
             $crate::LlmClient::RigNvidia($g) => $g_body,
             $crate::LlmClient::RigDeepSeek($g) => $g_body,
+            $crate::LlmClient::RigXiaomi($g) => $g_body,
+            $crate::LlmClient::RigXiaomiAnthropic($g) => $g_body,
             $crate::LlmClient::Mock => $mock_body,
         }
     };
@@ -330,14 +340,16 @@ impl LlmClient {
     pub fn supports_thinking(&self) -> bool {
         matches!(self, Self::VertexAnthropic(_))
     }
-    /// Check if this client uses an Anthropic model (Vertex AI, direct API, or Z.AI Anthropic).
+    /// Check if this client uses an Anthropic model (Vertex AI, direct API, or Xiaomi Anthropic-compatible).
     ///
     /// Returns true for providers that support Anthropic-specific features
     /// like extended thinking and native web tools.
     pub fn is_anthropic(&self) -> bool {
         matches!(
             self,
-            LlmClient::VertexAnthropic(_) | LlmClient::RigAnthropic(_)
+            LlmClient::VertexAnthropic(_)
+                | LlmClient::RigAnthropic(_)
+                | LlmClient::RigXiaomiAnthropic(_)
         )
     }
 
@@ -371,6 +383,8 @@ impl LlmClient {
             LlmClient::RigZaiSdk(_) => "zai_sdk",
             LlmClient::RigNvidia(_) => "nvidia",
             LlmClient::RigDeepSeek(_) => "deepseek",
+            LlmClient::RigXiaomi(_) => "xiaomi",
+            LlmClient::RigXiaomiAnthropic(_) => "xiaomi_anthropic",
             LlmClient::Mock => "mock",
         }
     }
@@ -383,6 +397,9 @@ impl LlmClient {
     /// Check if this client is an OpenAI provider.
     ///
     /// Returns true for Chat Completions API, Responses API, and reasoning model variants.
+    /// `RigDeepSeek` and `RigXiaomi` count as OpenAI-compatible because they speak
+    /// the same wire protocol; OpenAI server-side features (e.g. native web search)
+    /// are gated separately by [`Self::supports_openai_web_search`].
     pub fn is_openai(&self) -> bool {
         matches!(
             self,
@@ -390,6 +407,7 @@ impl LlmClient {
                 | LlmClient::RigOpenAiResponses(_)
                 | LlmClient::OpenAiReasoning(_)
                 | LlmClient::RigDeepSeek(_)
+                | LlmClient::RigXiaomi(_)
         )
     }
 

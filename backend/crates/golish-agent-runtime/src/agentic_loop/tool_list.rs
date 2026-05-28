@@ -52,6 +52,7 @@ mod tests {
     use super::*;
     use crate::test_utils::TestContextBuilder;
     use golish_agent_kit::execution_mode::ExecutionMode;
+    use golish_agent_kit::tool_definitions::{ToolConfig, ToolPreset};
     use golish_llm_providers::LlmClient;
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -84,6 +85,31 @@ mod tests {
         assert!(
             names.iter().all(|n| !n.starts_with("sub_agent_")),
             "chat mode must NOT expose sub_agent_* dispatchers"
+        );
+    }
+
+    /// ToolPreset::None is used by silent utility sessions such as
+    /// title generation. It must suppress policy-level aliases too.
+    #[tokio::test]
+    async fn none_tool_preset_exposes_no_tools_even_in_chat_mode() {
+        let test_ctx = TestContextBuilder::new()
+            .execution_mode(ExecutionMode::Chat)
+            .tool_config(ToolConfig::with_preset(ToolPreset::None))
+            .build()
+            .await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+
+        let names: Vec<String> = build_tool_list(&ctx, &SubAgentContext::default())
+            .await
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+
+        assert!(
+            names.is_empty(),
+            "ToolPreset::None must expose no tools; got: {:?}",
+            names
         );
     }
 

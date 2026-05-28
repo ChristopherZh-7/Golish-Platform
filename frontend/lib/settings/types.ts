@@ -83,6 +83,7 @@ export interface AiSettings {
   zai_sdk: ZaiSdkSettings;
   nvidia: NvidiaSettings;
   deepseek: DeepSeekSettings;
+  xiaomi: XiaomiSettings;
 }
 
 /**
@@ -104,7 +105,8 @@ export type AiProvider =
   | "xai"
   | "zai_sdk"
   | "nvidia"
-  | "deepseek";
+  | "deepseek"
+  | "xiaomi";
 
 export interface VertexAiSettings {
   credentials_path: string | null;
@@ -193,6 +195,26 @@ export interface NvidiaSettings {
 export interface DeepSeekSettings {
   api_key: string | null;
   base_url: string | null;
+  show_in_selector: boolean;
+}
+
+/**
+ * Xiaomi MiMo Token Plan settings (OpenAI + Anthropic dual-compatible).
+ *
+ * `region`: `"cn"` (default) / `"sgp"` / `"ams"` for Token Plan clusters,
+ * or `"payg"` (alias `"pay_as_you_go"` / `"direct"` / `"global"`) for the
+ * pay-as-you-go endpoint at `api.xiaomimimo.com`.
+ *
+ * `default_protocol`: `"openai"` / `"anthropic"` / `"auto"`.
+ *
+ * Mirror of `backend/crates/golish-settings/src/schema/llm.rs::XiaomiSettings`.
+ */
+export interface XiaomiSettings {
+  api_key: string | null;
+  region: string | null;
+  default_protocol: string | null;
+  openai_base_url: string | null;
+  anthropic_base_url: string | null;
   show_in_selector: boolean;
 }
 
@@ -338,4 +360,5 @@ export interface ProviderVisibility {
   zai_sdk: boolean;
   nvidia: boolean;
   deepseek: boolean;
+  xiaomi: boolean;
 }

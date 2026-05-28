@@ -102,6 +102,18 @@ export function buildProviderConfig(
         base_url: settings.ai.deepseek?.base_url || undefined,
         model_override,
       };
+    case "xiaomi":
+      return {
+        provider: "xiaomi",
+        workspace,
+        model,
+        api_key: settings.ai.xiaomi?.api_key || "",
+        region: settings.ai.xiaomi?.region || undefined,
+        default_protocol: settings.ai.xiaomi?.default_protocol || undefined,
+        base_url: settings.ai.xiaomi?.openai_base_url || undefined,
+        anthropic_base_url: settings.ai.xiaomi?.anthropic_base_url || undefined,
+        model_override,
+      };
     case "vertex_ai":
       return {
         provider: "vertex_ai",
@@ -149,6 +161,7 @@ export function getConfiguredProviders(settings: GolishSettings): Set<string> {
   if (ai.zai_sdk?.api_key) configured.add("zai_sdk");
   if (ai.nvidia?.api_key) configured.add("nvidia");
   if (ai.deepseek?.api_key) configured.add("deepseek");
+  if (ai.xiaomi?.api_key) configured.add("xiaomi");
   if (ai.vertex_ai?.credentials_path || ai.vertex_ai?.project_id) {
     configured.add("vertex_ai");
   }

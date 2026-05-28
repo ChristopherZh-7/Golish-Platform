@@ -126,6 +126,24 @@ pub fn convert_to_cli_json(event: &AiEvent) -> CliJsonEvent {
             "tool_call",
             tools::tool_request(tool_name, args, request_id, source),
         ),
+        AiEvent::ToolIntentObservation {
+            request_id,
+            tool_name,
+            source,
+            decision,
+            reason,
+            raw_preview,
+        } => CliJsonEvent::new(
+            "tool_intent_observation",
+            tools::tool_intent_observation(
+                request_id,
+                tool_name,
+                source,
+                decision,
+                reason,
+                raw_preview,
+            ),
+        ),
         AiEvent::ToolApprovalRequest {
             request_id,
             tool_name,
@@ -266,6 +284,15 @@ pub fn convert_to_cli_json(event: &AiEvent) -> CliJsonEvent {
         } => CliJsonEvent::new(
             "sub_agent_text_delta",
             sub_agent::sub_agent_text_delta(agent_id, delta, accumulated, parent_request_id),
+        ),
+        AiEvent::SubAgentReasoning {
+            agent_id,
+            delta,
+            accumulated,
+            parent_request_id,
+        } => CliJsonEvent::new(
+            "sub_agent_reasoning",
+            sub_agent::sub_agent_reasoning(agent_id, delta, accumulated, parent_request_id),
         ),
         AiEvent::SubAgentCompleted {
             agent_id,

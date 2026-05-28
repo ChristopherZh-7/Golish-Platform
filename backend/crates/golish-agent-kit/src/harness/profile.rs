@@ -98,9 +98,8 @@ mod tests {
     use super::*;
 
     /// assessment.json 内联 (与 resources/harness/profiles/assessment.json 一致).
-    const ASSESSMENT_JSON: &str = include_str!(
-        "../../../../../resources/harness/profiles/assessment.json"
-    );
+    const ASSESSMENT_JSON: &str =
+        include_str!("../../../../../resources/harness/profiles/assessment.json");
 
     #[test]
     fn load_assessment_profile_basic_shape() {

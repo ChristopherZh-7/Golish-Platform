@@ -59,12 +59,7 @@ mod tests {
     #[test]
     fn nl_slice_constructor_assigns_fields() {
         let id = Uuid::new_v4();
-        let s = NlSlice::new(
-            id,
-            StageKind::TargetIntel,
-            "sess",
-            "TargetIntelDeliverable",
-        );
+        let s = NlSlice::new(id, StageKind::TargetIntel, "sess", "TargetIntelDeliverable");
         assert_eq!(s.subtask_id, id);
         assert_eq!(s.stage_kind, StageKind::TargetIntel);
         assert_eq!(s.sealed_origin_session, "sess");

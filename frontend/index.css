@@ -317,42 +317,25 @@
 }
 
 /* ---------------------------------------------------------------------------
- * Agent status indicator (terminal cursor style)
+ * Agent status indicator
  * ------------------------------------------------------------------------- */
-@keyframes agent-status-caret-blink {
-  0%,
-  60% {
-    opacity: 1;
-  }
-  61%,
-  100% {
-    opacity: 0;
-  }
-}
-
-@keyframes agent-status-text-cycle {
+@keyframes agent-status-dot-pulse {
   0% {
-    opacity: 0;
-    transform: translateY(2px);
+    opacity: 0.65;
+    transform: scale(0.9);
   }
-  10%,
-  90% {
-    opacity: 1;
-    transform: translateY(0);
+  70% {
+    opacity: 0;
+    transform: scale(2.35);
   }
   100% {
     opacity: 0;
-    transform: translateY(-2px);
+    transform: scale(2.35);
   }
 }
 
-.agent-status-caret {
-  animation: agent-status-caret-blink 1.05s steps(1, end) infinite;
-  border-radius: 1px;
-}
-
-.agent-status-text {
-  animation: agent-status-text-cycle 2200ms ease-in-out infinite;
+.agent-status-dot {
+  animation: agent-status-dot-pulse 1.55s ease-out infinite;
 }
 
 /* Toast close button - force visibility */
@@ -681,4 +664,3 @@
 .milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-attributeValue { color: #98c379; }
 .milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-qualifier { color: #e5c07b; }
 .milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-special { color: #56b6c2; }
-

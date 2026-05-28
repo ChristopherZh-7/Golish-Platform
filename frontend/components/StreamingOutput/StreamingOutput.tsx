@@ -44,7 +44,7 @@ export function StreamingOutput({
       ref={containerRef}
       style={containerStyle}
       className={cn(
-        "ansi-output text-[11px] text-[var(--ansi-cyan)] bg-background rounded p-2",
+        "ansi-output text-[11px] text-muted-foreground bg-background rounded p-2",
         "whitespace-pre-wrap break-all",
         "overflow-y-auto overflow-x-auto",
         className

@@ -1,0 +1,44 @@
+{
+  "$comment": "Xiaomi MiMo chat models — Token Plan supported. Sources: https://platform.xiaomimimo.com/docs/en-US/quick-start/model (capability matrix) + platform.xiaomimimo.com/docs/zh-CN/price/tokenplan/subscription (Token Plan 8-model list) + live probe (2026-05-27). The 4 chat models below are confirmed callable on Token Plan endpoints. mimo-v2-flash is in the general API catalog but NOT yet on Token Plan (live probe returned 400 `Not supported model mimo-v2-flash`) — removed to avoid false hope. TTS series (4 models) skipped — not chat models, belong in a future audio module. Wire protocol (OpenAI vs Anthropic) is a provider-wide setting (Settings → Xiaomi MiMo → Default protocol), not a per-model variant. Capability matrix: mimo-v2.5-pro = Text + Deep Thinking + Function Call + Web Search. mimo-v2.5 + mimo-v2-omni = also Full-modal Understanding (image/audio/video).",
+  "provider": "xiaomi",
+  "default_capabilities_base": "xiaomi_defaults",
+  "models": [
+    {
+      "id": "mimo-v2.5-pro",
+      "display_name": "Xiaomi MiMo V2.5 Pro",
+      "capabilities": {
+        "base": "xiaomi_defaults",
+        "is_reasoning_model": true
+      },
+      "aliases": ["MiMo-V2.5-Pro", "mimo"]
+    },
+    {
+      "id": "mimo-v2.5",
+      "display_name": "Xiaomi MiMo V2.5 (multimodal)",
+      "capabilities": {
+        "base": "xiaomi_defaults",
+        "supports_vision": true,
+        "is_reasoning_model": true
+      },
+      "aliases": ["MiMo-V2.5"]
+    },
+    {
+      "id": "mimo-v2-pro",
+      "display_name": "Xiaomi MiMo V2 Pro",
+      "capabilities": {
+        "base": "xiaomi_defaults"
+      },
+      "aliases": ["MiMo-V2-Pro"]
+    },
+    {
+      "id": "mimo-v2-omni",
+      "display_name": "Xiaomi MiMo V2 Omni (multimodal)",
+      "capabilities": {
+        "base": "xiaomi_defaults",
+        "supports_vision": true,
+        "context_window": 256000
+      },
+      "aliases": ["MiMo-V2-Omni"]
+    }
+  ]
+}

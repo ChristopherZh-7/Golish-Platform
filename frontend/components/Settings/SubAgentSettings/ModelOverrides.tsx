@@ -18,6 +18,7 @@ export const PROVIDER_OPTIONS: { value: AiProvider; label: string }[] = [
   { value: "zai_sdk", label: "Z.AI SDK" },
   { value: "nvidia", label: "NVIDIA NIM" },
   { value: "deepseek", label: "DeepSeek" },
+  { value: "xiaomi", label: "Xiaomi MiMo" },
 ];
 
 export const MODEL_SUGGESTIONS: Record<AiProvider, string[]> = {
@@ -62,6 +63,7 @@ export const MODEL_SUGGESTIONS: Record<AiProvider, string[]> = {
     "stepfun-ai/step-3.5-flash",
   ],
   deepseek: ["deepseek-v4-flash", "deepseek-v4-pro"],
+  xiaomi: ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni"],
 };
 
 interface ModelOverridePanelProps {

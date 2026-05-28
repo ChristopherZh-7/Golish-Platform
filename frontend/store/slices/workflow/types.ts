@@ -90,6 +90,7 @@ export interface WorkflowActions {
   ) => void;
   failSubAgent: (sessionId: string, parentRequestId: string, error: string) => void;
   updateSubAgentStreamingText: (sessionId: string, parentRequestId: string, text: string) => void;
+  updateSubAgentThinking: (sessionId: string, parentRequestId: string, text: string) => void;
   appendSubAgentToolOutput: (sessionId: string, toolId: string, chunk: string) => void;
   clearActiveSubAgents: (sessionId: string) => void;
 

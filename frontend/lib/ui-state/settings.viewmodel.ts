@@ -44,6 +44,12 @@ export function deriveProviderCards(
       configured: !!settings.ai.deepseek?.api_key,
     },
     {
+      id: "xiaomi",
+      label: "Xiaomi MiMo",
+      enabled: visibility.xiaomi,
+      configured: !!settings.ai.xiaomi?.api_key,
+    },
+    {
       id: "vertex_ai",
       label: "Vertex AI (Claude)",
       enabled: visibility.vertex_ai,

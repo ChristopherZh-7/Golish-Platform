@@ -3,8 +3,8 @@
 use anyhow::{Context, Result};
 
 use golish_agent_kit::task_orchestrator::{
-    prompts, AgentExecutor, AgentResult, AgentTokenUsage, ExecutionContext, GeneratorOutput,
-    PlannedSubtask, RefinerOutput,
+    backfill_harness_stage, prompts, AgentExecutor, AgentResult, AgentTokenUsage, ExecutionContext,
+    GeneratorOutput, PlannedSubtask, RefinerOutput,
 };
 
 use super::{extract_json_from_response, truncate_to_char_boundary, BridgeAgentExecutor};
@@ -23,10 +23,18 @@ impl AgentExecutor for BridgeAgentExecutor {
             .context("Generator LLM call failed")?;
 
         let json_str = extract_json_from_response(&response);
-        serde_json::from_str::<GeneratorOutput>(json_str).context(format!(
+        let mut output: GeneratorOutput = serde_json::from_str(json_str).context(format!(
             "Failed to parse generator JSON. Raw response:\n{}",
             truncate_to_char_boundary(&response, 500)
-        ))
+        ))?;
+
+        // Phase 1 MVP · Operation Harness:
+        // LLM may omit `harness_stage` even when subtask matches a known stage.
+        // Run deterministic keyword-based backfill as a safety net. LLM-supplied
+        // values are preserved (backfill only fills `None` slots).
+        let _filled = backfill_harness_stage(&mut output.subtasks);
+
+        Ok(output)
     }
 
     async fn execute_subtask(

@@ -42,7 +42,7 @@ pub use golish_llm_providers::{
     rig_gemini_vertex, rig_zai_sdk, AnthropicClientConfig, DeepSeekClientConfig,
     GeminiClientConfig, GroqClientConfig, LlmClient, NvidiaClientConfig, OllamaClientConfig,
     OpenAiClientConfig, OpenRouterClientConfig, ProviderConfig, VertexAnthropicClientConfig,
-    VertexGeminiClientConfig, XaiClientConfig, ZaiSdkClientConfig,
+    VertexGeminiClientConfig, XaiClientConfig, XiaomiClientConfig, ZaiSdkClientConfig,
 };
 
 // Re-export ContextManagerConfig for convenience (also used internally)

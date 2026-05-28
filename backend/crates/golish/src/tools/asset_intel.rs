@@ -2156,7 +2156,7 @@ async fn handle_stdout_line(
     for item in next.targets.iter() {
         delta.targets.push(item.clone());
     }
-    merge_candidates(&mut *guard, next);
+    merge_candidates(&mut guard, next);
     drop(guard);
     emit_event(
         sink,
@@ -2223,7 +2223,7 @@ async fn scan_new_artifacts(
             delta.targets.push(item.clone());
         }
         let mut guard = shared.candidates.lock().await;
-        merge_candidates(&mut *guard, next);
+        merge_candidates(&mut guard, next);
         drop(guard);
         emit_event(
             sink,

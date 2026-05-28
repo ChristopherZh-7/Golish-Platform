@@ -110,6 +110,8 @@ where
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            let nested_request_id = tool_call.id.clone();
+            let nested_args = tool_call.function.arguments.clone();
 
             tracing::info!(
                 "[sub-agent:{}] Nested delegation to '{}': {}",
@@ -117,6 +119,25 @@ where
                 delegate_id,
                 truncate_str(&delegate_task, 100)
             );
+
+            let tool_request_event = AiEvent::SubAgentToolRequest {
+                agent_id: agent_id.to_string(),
+                tool_name: tool_name.to_string(),
+                args: nested_args.clone(),
+                request_id: nested_request_id.clone(),
+                parent_request_id: parent_request_id.to_string(),
+            };
+            let _ = ctx.event_tx.send(tool_request_event.clone());
+
+            if let Some(ref writer) = transcript_writer {
+                let writer = Arc::clone(writer);
+                let event = tool_request_event;
+                tokio::spawn(async move {
+                    if let Err(e) = writer.append(&event).await {
+                        tracing::warn!("Failed to write to sub-agent transcript: {}", e);
+                    }
+                });
+            }
 
             let delegate_result = if let Some(registry) = ctx.sub_agent_registry {
                 let reg = registry.read().await;
@@ -142,12 +163,12 @@ where
                     };
                     match Box::pin(super::execute_sub_agent(
                         &delegate_def,
-                        &tool_call.function.arguments,
+                        &nested_args,
                         sub_context,
                         model,
                         nested_ctx,
                         tool_provider,
-                        parent_request_id,
+                        &nested_request_id,
                     ))
                     .await
                     {
@@ -170,6 +191,30 @@ where
                     "error": "Sub-agent registry not available for nested delegation",
                 })
             };
+
+            let delegate_success = delegate_result
+                .get("success")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let tool_result_event = AiEvent::SubAgentToolResult {
+                agent_id: agent_id.to_string(),
+                tool_name: tool_name.to_string(),
+                success: delegate_success,
+                result: delegate_result.clone(),
+                request_id: nested_request_id,
+                parent_request_id: parent_request_id.to_string(),
+            };
+            let _ = ctx.event_tx.send(tool_result_event.clone());
+
+            if let Some(ref writer) = transcript_writer {
+                let writer = Arc::clone(writer);
+                let event = tool_result_event;
+                tokio::spawn(async move {
+                    if let Err(e) = writer.append(&event).await {
+                        tracing::warn!("Failed to write to sub-agent transcript: {}", e);
+                    }
+                });
+            }
 
             let tool_id = tool_call.id.clone();
             let tool_call_id = tool_call

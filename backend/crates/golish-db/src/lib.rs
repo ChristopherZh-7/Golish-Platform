@@ -63,14 +63,14 @@ impl GolishDb {
         let embedded = embedded::EmbeddedPg::start(config).await?;
         let info = pool::create_pool(&embedded.connection_string()).await?;
 
-        match reclaim_abandoned_audits(
-            &info.pool,
-            Duration::hours(DEFAULT_RECLAIM_THRESHOLD_HOURS),
-        )
-        .await
+        match reclaim_abandoned_audits(&info.pool, Duration::hours(DEFAULT_RECLAIM_THRESHOLD_HOURS))
+            .await
         {
             Ok(n) if n > 0 => {
-                tracing::info!(reclaimed = n, "Reclaimed abandoned audit_log rows on startup");
+                tracing::info!(
+                    reclaimed = n,
+                    "Reclaimed abandoned audit_log rows on startup"
+                );
             }
             Ok(_) => {}
             Err(e) => {

@@ -17,8 +17,9 @@ use golish_core::runtime::GolishRuntime;
 
 use crate::llm_client::{
     create_deepseek_components, create_nvidia_components, create_openai_components,
-    create_openrouter_components, DeepSeekClientConfig, NvidiaClientConfig, OpenAiClientConfig,
-    OpenRouterClientConfig, SharedComponentsConfig,
+    create_openrouter_components, create_xiaomi_components, DeepSeekClientConfig,
+    NvidiaClientConfig, OpenAiClientConfig, OpenRouterClientConfig, SharedComponentsConfig,
+    XiaomiClientConfig,
 };
 
 use super::super::AgentBridge;
@@ -185,6 +186,36 @@ impl AgentBridge {
             base_url,
         };
         let components = create_deepseek_components(config, shared_config).await?;
+        Ok(Self::from_components_with_runtime(
+            components,
+            runtime,
+            event_session_id.to_string(),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_xiaomi_with_shared_config(
+        workspace: PathBuf,
+        model: &str,
+        api_key: &str,
+        region: Option<&str>,
+        default_protocol: Option<&str>,
+        openai_base_url: Option<&str>,
+        anthropic_base_url: Option<&str>,
+        shared_config: SharedComponentsConfig,
+        runtime: Arc<dyn GolishRuntime>,
+        event_session_id: &str,
+    ) -> Result<Self> {
+        let config = XiaomiClientConfig {
+            workspace,
+            model,
+            api_key,
+            region,
+            default_protocol,
+            openai_base_url,
+            anthropic_base_url,
+        };
+        let components = create_xiaomi_components(config, shared_config).await?;
         Ok(Self::from_components_with_runtime(
             components,
             runtime,

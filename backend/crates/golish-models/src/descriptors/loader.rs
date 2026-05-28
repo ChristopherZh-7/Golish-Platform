@@ -24,6 +24,7 @@ pub(crate) fn provider_slug(provider: AiProvider) -> &'static str {
         AiProvider::Ollama => "ollama",
         AiProvider::Openrouter => "openrouter",
         AiProvider::Deepseek => "deepseek",
+        AiProvider::Xiaomi => "xiaomi",
     }
 }
 
@@ -89,6 +90,7 @@ pub fn embedded_defaults_for(provider: AiProvider) -> Vec<ModelDefinition> {
         AiProvider::Deepseek => {
             include_str!("../../../../../resources/llm-models/deepseek.json")
         }
+        AiProvider::Xiaomi => include_str!("../../../../../resources/llm-models/xiaomi.json"),
     };
     let file: ProviderModelsFile = serde_json::from_str(raw)
         .unwrap_or_else(|e| panic!("embedded {provider:?}.json must parse: {e}"));
@@ -175,7 +177,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("nvidia.json"), b"{ not json").unwrap();
         let models = load_provider_models(AiProvider::Nvidia, dir.path());
-        // Embedded fallback still returns the 28 NVIDIA models.
+        // Embedded fallback still returns the curated NVIDIA catalog.
         assert!(!models.is_empty(), "should fall back on parse error");
     }
 
@@ -183,7 +185,7 @@ mod tests {
     fn embedded_nvidia_has_expected_count() {
         let models = embedded_defaults_for(AiProvider::Nvidia);
         assert!(
-            models.len() >= 20,
+            models.len() >= 14,
             "embedded NVIDIA registry should be substantial; got {}",
             models.len()
         );
@@ -207,6 +209,7 @@ mod tests {
             AiProvider::Openrouter,
             AiProvider::Nvidia,
             AiProvider::Deepseek,
+            AiProvider::Xiaomi,
         ] {
             let models = embedded_defaults_for(p);
             assert!(

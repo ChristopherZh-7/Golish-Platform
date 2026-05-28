@@ -26,6 +26,8 @@ pub enum AiProvider {
     Nvidia,
     /// DeepSeek direct API (OpenAI-compatible)
     Deepseek,
+    /// Xiaomi MiMo Token Plan (OpenAI + Anthropic dual-compatible)
+    Xiaomi,
 }
 
 impl fmt::Display for AiProvider {
@@ -43,6 +45,7 @@ impl fmt::Display for AiProvider {
             AiProvider::ZaiSdk => "zai_sdk",
             AiProvider::Nvidia => "nvidia",
             AiProvider::Deepseek => "deepseek",
+            AiProvider::Xiaomi => "xiaomi",
         };
         write!(f, "{}", s)
     }
@@ -65,6 +68,7 @@ impl std::str::FromStr for AiProvider {
             "z_ai_sdk" | "zai_sdk" | "zai" | "z_ai" | "zhipu" => Ok(AiProvider::ZaiSdk),
             "nvidia" | "nvidia_nim" | "nim" => Ok(AiProvider::Nvidia),
             "deepseek" | "deepseek_api" => Ok(AiProvider::Deepseek),
+            "xiaomi" | "xiaomi_mimo" | "mimo" | "xiaomi_token_plan" => Ok(AiProvider::Xiaomi),
             _ => Err(format!("Invalid AI provider: {}", s)),
         }
     }

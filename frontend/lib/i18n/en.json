@@ -708,6 +708,7 @@
     },
     "subAgentDetail": {
       "notFound": "Sub-agent not found",
+      "backToParent": "Back to Parent Agent",
       "task": "Task",
       "toolCalls": "Tool Calls",
       "response": "Response",

@@ -28,6 +28,9 @@ pub struct ModelContextLimits {
     // Google models
     pub gemini_pro: usize,
     pub gemini_flash: usize,
+    // Xiaomi MiMo models
+    pub xiaomi_mimo: usize,
+    pub xiaomi_mimo_omni: usize,
 }
 
 impl Default for ModelContextLimits {
@@ -56,6 +59,9 @@ impl Default for ModelContextLimits {
             // Google models: 1M context
             gemini_pro: 1_000_000,
             gemini_flash: 1_000_000,
+            // Xiaomi MiMo models
+            xiaomi_mimo: 1_000_000,
+            xiaomi_mimo_omni: 256_000,
         }
     }
 }

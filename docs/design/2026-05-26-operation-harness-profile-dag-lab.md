@@ -2503,15 +2503,18 @@ async fn reclaim_abandoned_audits(pool: &PgPool, threshold: Duration) -> Result<
 
 threshold 默认 1h。
 
-### 21.9 三份 design doc 拆分（最终顺序）
+### 21.9 四份 design doc 拆分（最终顺序）
 
 | # | 文档 | 主笔 | 依赖 |
 |---|---|---|---|
 | 1 | `docs/design/2026-05-26-evidence-ledger-on-existing-audit-log.md` | MCP-1 | 无 |
 | 2 | `docs/design/2026-05-26-mcp-resource-evidence-summary.md` | MCP-4 | Doc 1 完成 |
 | 3 | `docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md` | MCP-2 (controller) | Doc 1 完成 |
+| 4 | `docs/design/2026-05-26-harness-observability-plane.md` | Codex / observability owner | Doc 1 evidence identity + Doc 3 stage lifecycle |
 
-**顺序**：Doc 1 → (Doc 2 并发 Doc 3)。Doc 3 内 evidence 进 LLM 上下文走 v0/v1 两种描述。
+**顺序**：Doc 1 → (Doc 2 并发 Doc 3 并发 Doc 4)。Doc 3 内 evidence 进 LLM 上下文走 v0/v1 两种描述；Doc 4 只定义观测模型，不启动运行时实现。
+
+**Doc 4 边界**：把 raw logs、metrics rollup、trace tree、task state、operation snapshot、evaluation record、replay/diff、decision attribution 明确成 Observability Plane。它不替代 Evidence Ledger；Evidence Ledger 证明"发现是真的"，Observability Plane 证明"过程可解释、可回放、可比较、可归因"。
 
 ### 21.10 未进 Phase 0 决策的项
 
@@ -2522,8 +2525,8 @@ threshold 默认 1h。
 
 待用户回答（仍然有效）：
 
-1. **Q1 拍 A/B/C**：A = 三份拆分；B = 调整拆分；C = 继续讨论
-2. **Q3 §2.7 授权**：明示授权 MCP-1 + MCP-4 + MCP-2 进入豁免态分别动手写 Doc 1 + Doc 2 + Doc 3
+1. **Q1 拍 A/B/C**：A = 四份拆分；B = 调整拆分；C = 继续讨论
+2. **Q3 §2.7 授权**：明示授权 MCP-1 + MCP-4 + MCP-2 + observability owner 仅进入 Phase 0 文档起草，不授权代码 / migration / resources 配置落地
 3. **Q4 收敛优先 vs 边写边拍**：A = 先解决冲突再起草；B = 起草中拍
 
 **MCP-1 推荐**：Q1=A + Q3=是 + Q4=B（O2 / O7 已在本节 §21.5/§21.7 final，不需再 Round 7）
@@ -2560,7 +2563,7 @@ MCP-2 在 Round 6 末尾 broadcast 提出 10 项「冲突 / 漏写」需三人�
 
 | 你是谁 | 读什么 |
 |---|---|
-| 想 5 分钟懂决议、不关心讨论过程 | §21 Final Consolidated Decisions（仅此一节足够起草 Doc 1） |
+| 想 5 分钟懂决议、不关心讨论过程 | §21 Final Consolidated Decisions（仅此一节足够起草 Doc 1/2/3/4） |
 | Codex 原作 / 架构理解 | §1-§12（原始设计提案） |
 | 想看演进史 / 决策推理 | §13-§20（6 轮讨论） |
 | 想看版本演进矩阵 | 本节 §22.2 |
@@ -2578,7 +2581,7 @@ MCP-2 在 Round 6 末尾 broadcast 提出 10 项「冲突 / 漏写」需三人�
 | §16.2 O2 走 user_approvals 表 | §19.2 (MCP-4 反驳) + §20.2 (audit_role 提议) | §21.5.6 |
 | §16.4 O4 stage-scoped + carry_over | §19.3 + §20.1 (MCP-4 认错让步) | §21.7.4（无变化） |
 | §16.6 O7 三态 EvidenceFreshness | §19.5 + §20.4 (MCP-4 反驳) | §21.5.7 + §21.7.7 |
-| §17.3 严格 1→2→3 串行 | §18.1 Doc 1 → (Doc 2 ‖ Doc 3) | §21.9 |
+| §17.3 严格 1→2→3 串行 | §18.1 Doc 1 → (Doc 2 ‖ Doc 3)，后续补 Doc 4 Observability Plane | §21.9 |
 | §20.4 evidence_kind_aging SQL 表 | §22 (MCP-2 微调) | §21.5.7 (JSON 静态资源) |
 
 ### 22.3 §21 与中间章节的对应关系
@@ -2614,14 +2617,13 @@ MCP-2 在 Round 6 末尾 broadcast 提出 10 项「冲突 / 漏写」需三人�
 | §21.8.2 Pre-Action Auth | 分档 | §13.6.4 |
 | §21.8.3 Prompt injection | A + D | §13.7 |
 | §21.8.4 startup reclaim | β 盲点 | §14.4.2 |
-| §21.9 Doc 拆分顺序 | Doc 1 → (Doc 2 ‖ Doc 3) | §17.3 + §18.1 |
+| §21.9 Doc 拆分顺序 | Doc 1 → (Doc 2 ‖ Doc 3 ‖ Doc 4) | §17.3 + §18.1 + 用户提出 Observability Plane 缺口 |
 | §21.10 不进 Phase 0 | fixtures + 二阶 LLM | §18.2 |
 | §21.11 用户拍板 | A/B/C + Q3 + Q4 | §17.8 + §18.5 + §19.8 |
 
 ### 22.4 最终状态
 
-文档 = §1-§22。状态：**Fully Locked**。等用户在 §21.11 拍板后启动 Doc 1。
-
+文档 = §1-§22。状态：**Fully Locked**。等用户在 §21.11 拍板后启动 Doc 1/2/3/4。
 
 
 

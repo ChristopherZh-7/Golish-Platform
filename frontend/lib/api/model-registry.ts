@@ -30,7 +30,8 @@ export type AiProvider =
   | "xai"
   | "zai_sdk"
   | "nvidia"
-  | "deepseek";
+  | "deepseek"
+  | "xiaomi";
 
 /**
  * Capabilities that vary across LLM models.

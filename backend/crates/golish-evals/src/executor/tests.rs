@@ -93,7 +93,7 @@ fn test_eval_prompt_contains_core_sections() {
         "Prompt must contain tool reference section"
     );
     assert!(
-        prompt.contains("# Sub-Agent Delegation"),
+        prompt.contains("### Concurrent Sub-Agents"),
         "Prompt must contain sub-agent delegation section"
     );
     assert!(

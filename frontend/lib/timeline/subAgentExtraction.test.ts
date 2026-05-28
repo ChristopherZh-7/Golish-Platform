@@ -480,5 +480,42 @@ describe("extractSubAgentBlocks", () => {
         toolCall: { id: "tool-2", name: "read_file", args: {}, status: "completed" },
       });
     });
+
+    it("should not append nested sub-agents as top-level fallback blocks", () => {
+      const parent: ActiveSubAgent = {
+        agentId: "agent-1",
+        agentName: "pentester",
+        parentRequestId: "tool-sub-parent",
+        task: "parent task",
+        depth: 1,
+        status: "running",
+        toolCalls: [
+          {
+            id: "tool-sub-child",
+            name: "sub_agent_installer",
+            args: {},
+            status: "running",
+            startedAt: "2024-01-01T00:00:00Z",
+          },
+        ],
+        entries: [],
+        startedAt: "2024-01-01T00:00:00Z",
+      };
+      const child: ActiveSubAgent = {
+        agentId: "agent-2",
+        agentName: "installer",
+        parentRequestId: "tool-sub-child",
+        task: "child task",
+        depth: 2,
+        status: "running",
+        toolCalls: [],
+        entries: [],
+        startedAt: "2024-01-01T00:00:00Z",
+      };
+
+      const result = extractSubAgentBlocks([], [parent, child]);
+
+      expect(result.contentBlocks).toEqual([{ type: "sub_agent", subAgent: parent }]);
+    });
   });
 });

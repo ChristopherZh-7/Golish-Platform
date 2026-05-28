@@ -129,6 +129,9 @@ pub(super) fn handle_ai_event_terminal(event: &AiEvent) -> Result<()> {
         AiEvent::SubAgentTextDelta { .. } => {
             // Streaming delta — not shown in terminal mode
         }
+        AiEvent::SubAgentReasoning { .. } => {
+            // Streaming reasoning — not shown in terminal mode
+        }
         AiEvent::SubAgentCompleted {
             response,
             duration_ms,

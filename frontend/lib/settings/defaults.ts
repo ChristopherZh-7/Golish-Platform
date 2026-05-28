@@ -67,6 +67,14 @@ export const DEFAULT_SETTINGS: GolishSettings = {
       base_url: null,
       show_in_selector: true,
     },
+    xiaomi: {
+      api_key: null,
+      region: null,
+      default_protocol: null,
+      openai_base_url: null,
+      anthropic_base_url: null,
+      show_in_selector: true,
+    },
   },
   api_keys: {
     tavily: null,

@@ -146,6 +146,12 @@ where
                                             text.len()
                                         );
                                         thinking_text.push_str(text);
+                                        let _ = event_tx.send(AiEvent::SubAgentReasoning {
+                                            agent_id: agent_id.to_string(),
+                                            delta: text.clone(),
+                                            accumulated: thinking_text.clone(),
+                                            parent_request_id: parent_request_id.to_string(),
+                                        });
                                     }
                                     if signature.is_some() && thinking_signature.is_none() {
                                         thinking_signature = signature.clone();
@@ -178,6 +184,12 @@ where
                         ReasoningHandling::Standard | ReasoningHandling::FallbackToContent => {
                             if !reasoning.is_empty() {
                                 thinking_text.push_str(&reasoning);
+                                let _ = event_tx.send(AiEvent::SubAgentReasoning {
+                                    agent_id: agent_id.to_string(),
+                                    delta: reasoning.clone(),
+                                    accumulated: thinking_text.clone(),
+                                    parent_request_id: parent_request_id.to_string(),
+                                });
                             }
                             if id.is_some() && thinking_id.is_none() {
                                 thinking_id = id;

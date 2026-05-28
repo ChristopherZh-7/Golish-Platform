@@ -45,9 +45,7 @@ pub mod types;
 #[cfg(test)]
 mod e2e_tests;
 
-pub use gate::{
-    validate_external_attack_surface_gate, GateCheckOutcome, GateResult,
-};
+pub use gate::{validate_external_attack_surface_gate, GateCheckOutcome, GateResult};
 pub use intent_classifier::{IntentClassifier, IntentClassifierConfig};
 pub use nl_slice::NlSlice;
 pub use pre_action_authorizer::{AuthorizationError, PreActionAuthorizer};
@@ -55,8 +53,8 @@ pub use profile::{
     load_profile_from_json, ApprovalPolicy, AuthorizationLevel, Profile, ProfileLoadError,
 };
 pub use sprint_contract::{
-    DefaultSprintContractGenerator, ExpectedFinding, SprintContract,
-    SprintContractGenerator, SprintSkeleton,
+    DefaultSprintContractGenerator, ExpectedFinding, SprintContract, SprintContractGenerator,
+    SprintSkeleton,
 };
 pub use stage_harness::StageHarness;
 pub use stage_spec::{

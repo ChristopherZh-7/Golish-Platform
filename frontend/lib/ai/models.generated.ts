@@ -111,6 +111,13 @@ export const XAI_MODELS = {
   GROK_4_FAST_NON_REASONING: "grok-4-fast-non-reasoning",
 } as const;
 
+export const XIAOMI_MODELS = {
+  MIMO_V2_5_PRO: "mimo-v2.5-pro",
+  MIMO_V2_5: "mimo-v2.5",
+  MIMO_V2_PRO: "mimo-v2-pro",
+  MIMO_V2_OMNI: "mimo-v2-omni",
+} as const;
+
 export const ZAI_SDK_MODELS = {
   GLM_5: "glm-5",
   GLM_4_7: "glm-4.7",

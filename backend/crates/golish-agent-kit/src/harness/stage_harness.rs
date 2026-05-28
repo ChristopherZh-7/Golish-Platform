@@ -22,7 +22,10 @@ pub struct StageHarness {
 
 impl StageHarness {
     pub fn new(profile: Profile, stage_spec: StageSpec) -> Self {
-        Self { profile, stage_spec }
+        Self {
+            profile,
+            stage_spec,
+        }
     }
 
     /// 按 StageKind 选 stage_spec.
@@ -59,25 +62,38 @@ impl StageHarness {
         deliverable: &ExternalAttackSurfaceDeliverable,
         sprint_contract: Option<&SprintContract>,
     ) -> GateResult {
-        validate_external_attack_surface_gate(
-            deliverable,
-            &self.stage_spec,
-            sprint_contract,
-        )
+        tracing::info!(
+            target: "harness::stage_harness",
+            stage_kind = ?self.stage_spec.kind,
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            has_contract = sprint_contract.is_some(),
+            "validate_gate entered (5-check pipeline)"
+        );
+        let result =
+            validate_external_attack_surface_gate(deliverable, &self.stage_spec, sprint_contract);
+        tracing::info!(
+            target: "harness::stage_harness",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            allowed = result.allowed,
+            reasons_count = result.reasons.len(),
+            "validate_gate completed"
+        );
+        result
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::profile::load_profile_from_json;
     use super::super::stage_spec::load_stage_spec_from_json;
+    use super::*;
 
     const ASSESSMENT_JSON: &str =
         include_str!("../../../../../resources/harness/profiles/assessment.json");
-    const STAGE_JSON: &str = include_str!(
-        "../../../../../resources/harness/stages/external_attack_surface.json"
-    );
+    const STAGE_JSON: &str =
+        include_str!("../../../../../resources/harness/stages/external_attack_surface.json");
 
     #[test]
     fn for_stage_accepts_external_attack_surface() {

@@ -59,6 +59,8 @@ pub mod sub_agent_dispatch;
 pub mod tool_classifier;
 mod tool_dispatch;
 mod tool_execution;
+mod tool_gate;
+mod tool_intent;
 mod tool_list;
 pub mod toolcall_fixer;
 mod turn;

@@ -341,6 +341,36 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         }
       }),
 
+    updateSubAgentThinking: (sessionId: string, parentRequestId: string, text: string) =>
+      set((state) => {
+        const agents = state.activeSubAgents[sessionId];
+        if (!agents) return;
+        const agent = agents.find((a) => a.parentRequestId === parentRequestId);
+        if (agent) {
+          const now = Date.now();
+          agent.thinking = text;
+          agent.thinkingStartedAt ??= now;
+          agent.thinkingEndedAt = now;
+          const lastEntry = agent.entries[agent.entries.length - 1];
+          if (lastEntry?.kind === "thinking") {
+            lastEntry.text = text;
+            lastEntry.startedAt ??= now;
+            lastEntry.endedAt = now;
+          } else {
+            agent.entries.push({
+              kind: "thinking",
+              text,
+              startedAt: now,
+              endedAt: now,
+            });
+          }
+        }
+        const timeline = state.timelines[sessionId];
+        if (timeline && agent) {
+          syncSubAgentToTimeline(state.subAgentPipelineMap, timeline, parentRequestId, agent);
+        }
+      }),
+
     appendSubAgentToolOutput: (sessionId: string, toolId: string, chunk: string) =>
       set((state) => {
         const agents = state.activeSubAgents[sessionId];

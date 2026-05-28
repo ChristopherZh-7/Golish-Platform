@@ -182,6 +182,30 @@ pub async fn execute_sub_agent_with_client(
             )
             .await
         }
+        LlmClient::RigXiaomi(model) => {
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
+        }
+        LlmClient::RigXiaomiAnthropic(model) => {
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
+        }
         LlmClient::VertexGemini(model) => {
             execute_sub_agent(
                 agent_def,

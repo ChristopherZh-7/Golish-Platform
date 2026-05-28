@@ -150,4 +150,40 @@ mod tests {
         assert!(has_text, "text content must be present");
         assert!(has_tool_call, "tool call must be present");
     }
+
+    #[tokio::test]
+    async fn string_tool_arguments_are_normalized_before_history_push() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let mut history: Vec<Message> = vec![];
+        let mut tool_call = make_tool_call("run_command");
+        tool_call.function.arguments =
+            json!("{\"command\":\"dig example.com A +short\",\"cwd\":\"\"}");
+
+        run(
+            &mut history,
+            "Running DNS check.",
+            "",
+            &None,
+            &None,
+            &[tool_call],
+            true,
+            false,
+            &ctx,
+        );
+
+        let Message::Assistant { content, .. } = &history[0] else {
+            panic!("expected Assistant message");
+        };
+        let tool_call_args = content.iter().find_map(|content| match content {
+            AssistantContent::ToolCall(call) => Some(&call.function.arguments),
+            _ => None,
+        });
+
+        assert_eq!(
+            tool_call_args,
+            Some(&json!({"command": "dig example.com A +short", "cwd": ""}))
+        );
+    }
 }

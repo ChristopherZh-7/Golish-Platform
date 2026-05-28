@@ -238,6 +238,29 @@ impl AgentBridge {
                 )
                 .await
             }
+            ProviderConfig::Xiaomi {
+                model,
+                api_key,
+                region,
+                default_protocol,
+                base_url,
+                anthropic_base_url,
+                ..
+            } => {
+                Self::new_xiaomi_with_shared_config(
+                    workspace_path,
+                    &model,
+                    &api_key,
+                    region.as_deref(),
+                    default_protocol.as_deref(),
+                    base_url.as_deref(),
+                    anthropic_base_url.as_deref(),
+                    shared_config,
+                    runtime,
+                    event_session_id,
+                )
+                .await
+            }
             ProviderConfig::VertexGemini {
                 model,
                 credentials_path,

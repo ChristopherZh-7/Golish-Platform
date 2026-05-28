@@ -20,10 +20,7 @@ use super::super::stage_spec::StageSpec;
 use super::super::types::{ExternalAttackSurfaceDeliverable, HarnessRecoveryActions};
 use super::GateCheckOutcome;
 
-pub fn run(
-    deliverable: &ExternalAttackSurfaceDeliverable,
-    _spec: &StageSpec,
-) -> GateCheckOutcome {
+pub fn run(deliverable: &ExternalAttackSurfaceDeliverable, _spec: &StageSpec) -> GateCheckOutcome {
     // Phase 1c.2 skeleton: 不做真 freshness 查 (需要 EvidenceLedger). 只做
     // sanity: evidence_refs 数量 vs claims/findings 引用 evidence_ids 一致性.
     let referenced_eids: std::collections::HashSet<_> = deliverable
@@ -52,12 +49,31 @@ pub fn run(
     }
 
     if reasons.is_empty() {
+        tracing::info!(
+            target: "harness::gate::freshness_check",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            referenced_eids = referenced_eids.len(),
+            registered_eids = registered_eids.len(),
+            outcome = "pass",
+            "freshness_check sanity pass"
+        );
         GateCheckOutcome::Pass
     } else {
+        tracing::info!(
+            target: "harness::gate::freshness_check",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            outcome = "block",
+            reasons_count = reasons.len(),
+            first_reason = %reasons[0],
+            "freshness_check sanity block"
+        );
         let mut recovery = HarnessRecoveryActions::default();
-        recovery
-            .hints
-            .push("add all claim/finding-referenced evidence ids to deliverable.evidence_refs".to_string());
+        recovery.hints.push(
+            "add all claim/finding-referenced evidence ids to deliverable.evidence_refs"
+                .to_string(),
+        );
         GateCheckOutcome::Block { reasons, recovery }
     }
 }
@@ -87,9 +103,7 @@ pub fn run_with_freshness(
     {
         reasons.extend(r);
         recovery.hints.extend(rec.hints);
-        recovery
-            .repair_tool_calls
-            .extend(rec.repair_tool_calls);
+        recovery.repair_tool_calls.extend(rec.repair_tool_calls);
         recovery
             .missing_evidence_kinds
             .extend(rec.missing_evidence_kinds);
@@ -107,8 +121,7 @@ pub fn run_with_freshness(
         };
         let max_age_std = registry.max_age_with_default(kind);
         let max_age = Duration::from_std(max_age_std).unwrap_or_else(|_| Duration::days(7));
-        let age_chrono =
-            Duration::from_std(age).unwrap_or_else(|_| Duration::seconds(0));
+        let age_chrono = Duration::from_std(age).unwrap_or_else(|_| Duration::seconds(0));
         // age >= 2 * max → hard expired (block); age >= max → soft stale (block 但软)
         if age_chrono >= max_age * 2 {
             reasons.push(format!(
@@ -119,10 +132,9 @@ pub fn run_with_freshness(
                 max_age_std.as_secs()
             ));
             recovery.missing_evidence_kinds.push(kind.to_string());
-            recovery.repair_tool_calls.push(format!(
-                "re-acquire fresh {} evidence",
-                kind
-            ));
+            recovery
+                .repair_tool_calls
+                .push(format!("re-acquire fresh {} evidence", kind));
         } else if age_chrono >= max_age {
             reasons.push(format!(
                 "evidence eid={} kind={} stale (age={}s, max={}s)",
@@ -138,25 +150,44 @@ pub fn run_with_freshness(
     }
 
     if reasons.is_empty() {
+        tracing::info!(
+            target: "harness::gate::freshness_check",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            evidence_refs = deliverable.evidence_refs.len(),
+            evidence_kinds_known = evidence_kinds.len(),
+            evidence_ages_known = evidence_ages.len(),
+            outcome = "pass",
+            "freshness_check (with max_age) pass"
+        );
         GateCheckOutcome::Pass
     } else {
+        tracing::info!(
+            target: "harness::gate::freshness_check",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            evidence_refs = deliverable.evidence_refs.len(),
+            outcome = "block",
+            reasons_count = reasons.len(),
+            first_reason = %reasons[0],
+            "freshness_check (with max_age) block"
+        );
         GateCheckOutcome::Block { reasons, recovery }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::super::stage_spec::load_stage_spec_from_json;
     use super::super::super::types::{
         ExternalAttackSurfaceDeliverable, Finding, FindingSeverity, StageClaim,
     };
+    use super::*;
     use golish_pentest::evidence_ledger::EvidenceAuditId;
     use uuid::Uuid;
 
-    const STAGE_JSON: &str = include_str!(
-        "../../../../../../resources/harness/stages/external_attack_surface.json"
-    );
+    const STAGE_JSON: &str =
+        include_str!("../../../../../../resources/harness/stages/external_attack_surface.json");
 
     fn empty_deliverable() -> ExternalAttackSurfaceDeliverable {
         ExternalAttackSurfaceDeliverable {

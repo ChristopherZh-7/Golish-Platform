@@ -1,203 +1,256 @@
 {
   "tool": {
-    "id": "amass",
-    "pentestPhase": ["recon", "enum"],
-    "name": "amass",
+    "category": "recon",
     "description": "OWASP Amass - in-depth attack surface mapping and asset discovery (passive + active subdomain enum, ASN, ports)",
     "executable": "amass",
-    "runtime": "native",
-    "launchMode": "cli",
-    "category": "recon",
-    "subcategory": "subdomain",
-    "tier": "recommended",
-    "tags": ["recon", "subdomain", "osint", "asn"],
+    "id": "amass",
     "install": {
+      "linux": {
+        "method": "github",
+        "source": "owasp-amass/amass"
+      },
       "method": "homebrew",
       "source": "amass",
-      "windows": { "method": "github", "source": "owasp-amass/amass" },
-      "linux": { "method": "github", "source": "owasp-amass/amass" }
+      "windows": {
+        "method": "github",
+        "source": "owasp-amass/amass"
+      }
+    },
+    "launchMode": "cli",
+    "name": "amass",
+    "output": {
+      "db_action": "host_add",
+      "detect": "amass|^[\\w\\-]+(\\.[\\w\\-]+)+",
+      "format": "text",
+      "patterns": [
+        {
+          "fields": {
+            "1": "hostname"
+          },
+          "regex": "^([a-zA-Z0-9_\\-\\.]+\\.[a-zA-Z]{2,})$",
+          "type": "subdomain"
+        }
+      ],
+      "produces": [
+        "host",
+        "subdomain",
+        "info"
+      ]
     },
     "params": [
       {
-        "label": "Mode",
-        "flag": "",
-        "type": "select",
-        "required": true,
         "description": "Sub-command",
+        "flag": "",
+        "label": "Mode",
         "options": [
-          { "value": "enum", "label": "enum - subdomain enumeration" },
-          { "value": "intel", "label": "intel - org/ASN/whois recon" },
-          { "value": "track", "label": "track - delta between scans" },
-          { "value": "viz", "label": "viz - generate graph viz" },
-          { "value": "db", "label": "db - manage DB" }
+          {
+            "label": "enum - subdomain enumeration",
+            "value": "enum"
+          },
+          {
+            "label": "intel - org/ASN/whois recon",
+            "value": "intel"
+          },
+          {
+            "label": "track - delta between scans",
+            "value": "track"
+          },
+          {
+            "label": "viz - generate graph viz",
+            "value": "viz"
+          },
+          {
+            "label": "db - manage DB",
+            "value": "db"
+          }
+        ],
+        "required": true,
+        "type": "select"
+      },
+      {
+        "description": "Target domain (enum mode)",
+        "flag": "-d",
+        "label": "Domain",
+        "placeholder": "target.com",
+        "type": "string"
+      },
+      {
+        "description": "File with domains",
+        "flag": "-df",
+        "label": "Domain List",
+        "placeholder": "domains.txt",
+        "type": "string"
+      },
+      {
+        "description": "Enable active recon (DNS brute, cert grab) - noisier",
+        "flag": "-active",
+        "label": "Active",
+        "type": "boolean"
+      },
+      {
+        "description": "Passive only (no DNS resolution)",
+        "flag": "-passive",
+        "label": "Passive",
+        "type": "boolean"
+      },
+      {
+        "description": "Enable subdomain brute force",
+        "flag": "-brute",
+        "label": "Brute",
+        "type": "boolean"
+      },
+      {
+        "description": "Brute wordlist",
+        "flag": "-w",
+        "label": "Wordlist",
+        "placeholder": "subdomains.txt",
+        "type": "string"
+      },
+      {
+        "description": "Custom DNS resolvers (comma list)",
+        "flag": "-r",
+        "label": "Resolvers",
+        "placeholder": "1.1.1.1,8.8.8.8",
+        "type": "string"
+      },
+      {
+        "description": "ASN to query (intel mode)",
+        "flag": "-asn",
+        "label": "ASN",
+        "placeholder": "13335",
+        "type": "string"
+      },
+      {
+        "description": "CIDR to enumerate (intel mode)",
+        "flag": "-cidr",
+        "label": "CIDR",
+        "placeholder": "10.0.0.0/16",
+        "type": "string"
+      },
+      {
+        "description": "(intel) include reverse whois",
+        "flag": "-whois",
+        "label": "Whois",
+        "type": "boolean"
+      },
+      {
+        "description": "(intel) organization name to whois",
+        "flag": "-org",
+        "label": "Org",
+        "placeholder": "Cloudflare",
+        "type": "string"
+      },
+      {
+        "description": "Output JSONL file",
+        "flag": "-json",
+        "label": "Output JSON",
+        "placeholder": "amass.jsonl",
+        "type": "string"
+      },
+      {
+        "description": "Plain output file",
+        "flag": "-o",
+        "label": "Output File",
+        "placeholder": "subs.txt",
+        "type": "string"
+      },
+      {
+        "description": "Config YAML (API keys, sources)",
+        "flag": "-config",
+        "label": "Config",
+        "placeholder": "~/.config/amass/config.yaml",
+        "type": "string"
+      },
+      {
+        "description": "Show only result (silent)",
+        "flag": "-silent",
+        "label": "Quiet",
+        "type": "boolean"
+      }
+    ],
+    "pentestPhase": [
+      "recon",
+      "enum"
+    ],
+    "runtime": "native",
+    "skills": [
+      {
+        "args": "enum -d {{domain}} -passive -silent",
+        "description": "Use only public sources, no DNS resolve",
+        "id": "passive-enum",
+        "name": "Passive subdomain enum",
+        "tags": [
+          "passive"
         ]
       },
       {
-        "label": "Domain",
-        "flag": "-d",
-        "type": "string",
-        "description": "Target domain (enum mode)",
-        "placeholder": "target.com"
-      },
-      {
-        "label": "Domain List",
-        "flag": "-df",
-        "type": "string",
-        "description": "File with domains",
-        "placeholder": "domains.txt"
-      },
-      {
-        "label": "Active",
-        "flag": "-active",
-        "type": "boolean",
-        "description": "Enable active recon (DNS brute, cert grab) - noisier"
-      },
-      {
-        "label": "Passive",
-        "flag": "-passive",
-        "type": "boolean",
-        "description": "Passive only (no DNS resolution)"
-      },
-      {
-        "label": "Brute",
-        "flag": "-brute",
-        "type": "boolean",
-        "description": "Enable subdomain brute force"
-      },
-      {
-        "label": "Wordlist",
-        "flag": "-w",
-        "type": "string",
-        "description": "Brute wordlist",
-        "placeholder": "subdomains.txt"
-      },
-      {
-        "label": "Resolvers",
-        "flag": "-r",
-        "type": "string",
-        "description": "Custom DNS resolvers (comma list)",
-        "placeholder": "1.1.1.1,8.8.8.8"
-      },
-      {
-        "label": "ASN",
-        "flag": "-asn",
-        "type": "string",
-        "description": "ASN to query (intel mode)",
-        "placeholder": "13335"
-      },
-      {
-        "label": "CIDR",
-        "flag": "-cidr",
-        "type": "string",
-        "description": "CIDR to enumerate (intel mode)",
-        "placeholder": "10.0.0.0/16"
-      },
-      {
-        "label": "Whois",
-        "flag": "-whois",
-        "type": "boolean",
-        "description": "(intel) include reverse whois"
-      },
-      {
-        "label": "Org",
-        "flag": "-org",
-        "type": "string",
-        "description": "(intel) organization name to whois",
-        "placeholder": "Cloudflare"
-      },
-      {
-        "label": "Output JSON",
-        "flag": "-json",
-        "type": "string",
-        "description": "Output JSONL file",
-        "placeholder": "amass.jsonl"
-      },
-      {
-        "label": "Output File",
-        "flag": "-o",
-        "type": "string",
-        "description": "Plain output file",
-        "placeholder": "subs.txt"
-      },
-      {
-        "label": "Config",
-        "flag": "-config",
-        "type": "string",
-        "description": "Config YAML (API keys, sources)",
-        "placeholder": "~/.config/amass/config.yaml"
-      },
-      {
-        "label": "Quiet",
-        "flag": "-silent",
-        "type": "boolean",
-        "description": "Show only result (silent)"
-      }
-    ],
-    "skills": [
-      {
-        "id": "passive-enum",
-        "name": "Passive subdomain enum",
-        "description": "Use only public sources, no DNS resolve",
-        "args": "enum -d {{domain}} -passive -silent",
-        "tags": ["passive"]
-      },
-      {
+        "args": "enum -d {{domain}} -active -silent",
+        "description": "Active mode (cert grab, DNS attacks)",
         "id": "active-enum",
         "name": "Active subdomain enum",
-        "description": "Active mode (cert grab, DNS attacks)",
-        "args": "enum -d {{domain}} -active -silent",
-        "tags": ["active"]
+        "tags": [
+          "active"
+        ]
       },
       {
+        "args": "enum -d {{domain}} -brute -w {{wordlist}} -silent",
+        "description": "Add wordlist brute on top of OSINT",
         "id": "brute-enum",
         "name": "Brute force subdomains",
-        "description": "Add wordlist brute on top of OSINT",
-        "args": "enum -d {{domain}} -brute -w {{wordlist}} -silent",
-        "tags": ["brute"]
+        "tags": [
+          "brute"
+        ]
       },
       {
+        "args": "intel -org \"{{org}}\" -whois",
+        "description": "Reverse whois on org name",
         "id": "intel-org",
         "name": "Intel by organization",
-        "description": "Reverse whois on org name",
-        "args": "intel -org \"{{org}}\" -whois",
-        "tags": ["intel", "osint"]
+        "tags": [
+          "intel",
+          "osint"
+        ]
       },
       {
+        "args": "intel -asn {{asn}}",
+        "description": "Find domains hosted on ASN",
         "id": "intel-asn",
         "name": "Intel by ASN",
-        "description": "Find domains hosted on ASN",
-        "args": "intel -asn {{asn}}",
-        "tags": ["intel", "asn"]
+        "tags": [
+          "intel",
+          "asn"
+        ]
       },
       {
+        "args": "enum -d {{domain}} -json amass.jsonl",
+        "description": "Full JSONL with sources / IPs",
         "id": "json-pipeline",
         "name": "JSONL for pipeline",
-        "description": "Full JSONL with sources / IPs",
-        "args": "enum -d {{domain}} -json amass.jsonl",
-        "tags": ["pipeline"]
+        "tags": [
+          "pipeline"
+        ]
       },
       {
+        "args": "enum -d {{domain}} -passive -silent | httpx -silent",
+        "description": "Direct subfinder-style pipeline",
         "id": "to-httpx",
         "name": "Pipe to httpx",
-        "description": "Direct subfinder-style pipeline",
-        "args": "enum -d {{domain}} -passive -silent | httpx -silent",
-        "tags": ["pipeline"]
+        "tags": [
+          "pipeline"
+        ]
       }
     ],
-    "output": {
-      "format": "text",
-      "produces": ["host", "subdomain", "info"],
-      "detect": "amass|^[\\w\\-]+(\\.[\\w\\-]+)+",
-      "db_action": "host_add",
-      "patterns": [
-        {
-          "type": "subdomain",
-          "regex": "^([a-zA-Z0-9_\\-\\.]+\\.[a-zA-Z]{2,})$",
-          "fields": {
-            "1": "hostname"
-          }
-        }
-      ]
+    "subcategory": "subdomain",
+    "tags": [
+      "recon",
+      "subdomain",
+      "osint",
+      "asn"
+    ],
+    "tier": "recommended",
+    "updateInfo": {
+      "lastUpdated": "2026-05-27",
+      "version": "5.1.1"
     }
   }
 }

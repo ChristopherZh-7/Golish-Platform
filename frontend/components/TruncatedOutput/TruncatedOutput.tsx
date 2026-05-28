@@ -33,7 +33,7 @@ export function TruncatedOutput({ content, maxLines = 10, className }: Truncated
     <div className={cn("space-y-1", className)}>
       <pre
         className={cn(
-          "ansi-output text-[11px] text-[var(--ansi-cyan)] bg-background rounded p-2",
+          "ansi-output text-[11px] text-muted-foreground bg-background rounded p-2",
           "whitespace-pre-wrap break-all",
           "overflow-x-auto"
         )}

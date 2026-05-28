@@ -11,6 +11,7 @@ import type {
   AgentMessage,
   AiConfig,
   AiStatus,
+  AiToolExecution,
   Session,
   StreamingBlock,
   TaskPlan,
@@ -29,6 +30,41 @@ interface AiStoreDraft extends AiState {
   streamingBlocks: Record<string, StreamingBlock[]>;
   streamingTextOffset: Record<string, number>;
   sessionTokenUsage?: Record<string, { input: number; output: number }>;
+}
+
+function inferToolIntent(
+  requestId: string,
+  toolName: string,
+  args: Record<string, unknown>
+): AiToolExecution["toolIntent"] {
+  const isRecoveredTextual = requestId.startsWith("textual-tool-call-");
+  if (!isRecoveredTextual) {
+    return {
+      modelWanted: toolName,
+      source: "native_tool_call",
+      decision: "allow",
+    };
+  }
+
+  const action = typeof args.action === "string" ? args.action : null;
+  const decision =
+    toolName === "ask_human"
+      ? "require_human_answer"
+      : toolName === "manage_targets" && action === "add"
+        ? "require_approval"
+        : "allow";
+
+  return {
+    modelWanted: toolName,
+    source: "textual_xml",
+    decision,
+    reason:
+      decision === "require_human_answer"
+        ? "Recovered textual tool intent must become a real human prompt before continuation."
+        : decision === "require_approval"
+          ? "Recovered textual side-effecting tool intent requires explicit approval."
+          : undefined,
+  };
 }
 
 export interface AiState {
@@ -54,6 +90,11 @@ export interface AiState {
   activeToolCalls: Record<string, ActiveToolCall[]>;
   /** Per-session set of request IDs already processed (dedup). */
   processedToolRequests: Record<string, Set<string>>;
+  /** Tool intent observations that arrived before the timeline card exists. */
+  pendingToolIntentObservations: Record<
+    string,
+    Record<string, NonNullable<AiToolExecution["toolIntent"]>>
+  >;
 }
 
 export interface AiActions {
@@ -110,10 +151,15 @@ export interface AiActions {
       requestId: string;
       toolName: string;
       args: Record<string, unknown>;
+      toolIntent?: AiToolExecution["toolIntent"];
       autoApproved?: boolean;
       riskLevel?: string;
       source?: ToolCallSource;
     }
+  ) => void;
+  recordToolIntentObservation: (
+    sessionId: string,
+    observation: NonNullable<AiToolExecution["toolIntent"]> & { requestId: string }
   ) => void;
   completeToolExecutionBlock: (
     sessionId: string,
@@ -143,6 +189,7 @@ export const initialAiState: AiState = {
   isThinkingExpanded: {},
   activeToolCalls: {},
   processedToolRequests: {},
+  pendingToolIntentObservations: {},
 };
 
 export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => ({
@@ -376,10 +423,19 @@ export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => 
         state.timelines[sessionId] = [];
       }
       const timeline = state.timelines[sessionId];
+      const observedIntent = state.pendingToolIntentObservations[sessionId]?.[execution.requestId];
       const exists = timeline.some(
         (b) => b.type === "ai_tool_execution" && b.data.requestId === execution.requestId
       );
-      if (exists) return;
+      if (exists) {
+        if (observedIntent) {
+          const block = timeline.find(
+            (b) => b.type === "ai_tool_execution" && b.data.requestId === execution.requestId
+          );
+          if (block?.type === "ai_tool_execution") block.data.toolIntent = observedIntent;
+        }
+        return;
+      }
 
       let planStepIndex: number | undefined;
       let planStepId: string | undefined;
@@ -407,6 +463,10 @@ export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => 
           requestId: execution.requestId,
           toolName: execution.toolName,
           args: execution.args,
+          toolIntent:
+            observedIntent ??
+            execution.toolIntent ??
+            inferToolIntent(execution.requestId, execution.toolName, execution.args),
           status: "running",
           startedAt: new Date().toISOString(),
           autoApproved: execution.autoApproved,
@@ -416,6 +476,30 @@ export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => 
           planStepId,
         },
       });
+    }),
+
+  recordToolIntentObservation: (sessionId, observation) =>
+    set((state) => {
+      if (!state.pendingToolIntentObservations[sessionId]) {
+        state.pendingToolIntentObservations[sessionId] = {};
+      }
+      state.pendingToolIntentObservations[sessionId][observation.requestId] = {
+        modelWanted: observation.modelWanted,
+        source: observation.source,
+        decision: observation.decision,
+        reason: observation.reason,
+        rawPreview: observation.rawPreview,
+      };
+
+      const timeline = state.timelines[sessionId];
+      if (!timeline) return;
+      const block = timeline.find(
+        (b) => b.type === "ai_tool_execution" && b.data.requestId === observation.requestId
+      );
+      if (block?.type === "ai_tool_execution") {
+        block.data.toolIntent =
+          state.pendingToolIntentObservations[sessionId][observation.requestId];
+      }
     }),
 
   completeToolExecutionBlock: (sessionId, requestId, success, result) =>

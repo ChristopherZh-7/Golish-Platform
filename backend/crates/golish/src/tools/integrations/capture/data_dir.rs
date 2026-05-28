@@ -56,6 +56,7 @@ pub(crate) fn profile_root() -> IntegrationResult<PathBuf> {
 }
 
 /// Returns the per-session data dir, creating it if missing.
+#[allow(dead_code)]
 pub(crate) fn session_dir(session_id: &str) -> IntegrationResult<PathBuf> {
     let dir = capture_root()?.join(session_id);
     std::fs::create_dir_all(&dir).map_err(|e| {

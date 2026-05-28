@@ -79,6 +79,8 @@ mod tests {
     use std::sync::Arc;
 
     use golish_llm_providers::LlmClient;
+    use rig::completion::ToolDefinition;
+    use rig::message::UserContent;
     use tokio::sync::RwLock;
 
     use crate::test_utils::TestContextBuilder;
@@ -89,6 +91,18 @@ mod tests {
         let mut cfg = AgenticLoopConfig::main_agent_generic();
         cfg.enable_reflector = enabled;
         cfg
+    }
+
+    fn make_tool(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description: format!("Mock {name} tool"),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        }
     }
 
     #[tokio::test]
@@ -158,6 +172,49 @@ mod tests {
             state.total_reflector_nudges, 0,
             "nudge counter must NOT increment when reflector is skipped"
         );
+    }
+
+    #[tokio::test]
+    async fn textual_tool_call_markup_retries_even_when_reflector_is_inactive() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let mut state = TurnState {
+            reflector_active: false,
+            ..TurnState::default()
+        };
+        let mut history: Vec<Message> = vec![];
+        let sub_ctx = SubAgentContext::default();
+        let cfg = config_with_reflector(true);
+        let tools = vec![make_tool("manage_targets")];
+
+        let outcome = run(
+            &mut state,
+            &ctx,
+            &sub_ctx,
+            &cfg,
+            &mut history,
+            false,
+            "好的，我先检查目标。\n<tool_call>\n</tool_call>",
+            &tools,
+        )
+        .await;
+
+        assert!(matches!(outcome, ReflectorPhaseOutcome::Repeat));
+        assert_eq!(state.consecutive_no_tool_turns, 1);
+        assert_eq!(state.total_reflector_nudges, 1);
+        assert_eq!(history.len(), 1);
+
+        let Message::User { content } = &history[0] else {
+            panic!("expected injected correction as user message");
+        };
+        let Some(UserContent::Text(text)) = content.iter().next() else {
+            panic!("expected text correction");
+        };
+        assert!(text
+            .text
+            .contains("native structured tool/function-calling"));
+        assert!(text.text.contains("manage_targets"));
     }
 
     #[tokio::test]

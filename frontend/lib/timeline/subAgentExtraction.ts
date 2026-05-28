@@ -83,8 +83,14 @@ export function extractSubAgentBlocks(
 
   // Fallback: Add any remaining sub-agents that weren't matched to tool calls
   // This can happen if activeSubAgents state updates before streamingBlocks
+  const nestedParentIds = new Set(
+    subAgents.flatMap((subAgent) => subAgent.toolCalls.map((tool) => tool.id))
+  );
   for (const subAgent of subAgents) {
-    if (!matchedParentIds.has(subAgent.parentRequestId)) {
+    if (
+      !matchedParentIds.has(subAgent.parentRequestId) &&
+      !nestedParentIds.has(subAgent.parentRequestId)
+    ) {
       contentBlocks.push({ type: "sub_agent", subAgent });
     }
   }

@@ -708,6 +708,7 @@
     },
     "subAgentDetail": {
       "notFound": "未找到该 Sub-Agent",
+      "backToParent": "返回上级 Agent",
       "task": "任务",
       "toolCalls": "工具调用",
       "response": "响应",

@@ -115,6 +115,24 @@ pub struct DeepSeekClientConfig<'a> {
     pub base_url: Option<&'a str>,
 }
 
+/// Configuration for creating an AgentBridge with Xiaomi MiMo Token Plan.
+///
+/// Both OpenAI- and Anthropic-compatible wire protocols share the same API
+/// key; `region` + `default_protocol` decide which endpoint we hit per model.
+pub struct XiaomiClientConfig<'a> {
+    pub workspace: PathBuf,
+    pub model: &'a str,
+    pub api_key: &'a str,
+    /// Cluster region (`cn` / `sgp` / `ams` / `payg`); `None` falls back to `cn`.
+    pub region: Option<&'a str>,
+    /// Default wire protocol (`openai` / `anthropic` / `auto`); `None` falls back to `auto`.
+    pub default_protocol: Option<&'a str>,
+    /// Custom OpenAI-compatible base URL override.
+    pub openai_base_url: Option<&'a str>,
+    /// Custom Anthropic-compatible base URL override.
+    pub anthropic_base_url: Option<&'a str>,
+}
+
 fn default_web_search_context_size() -> String {
     "medium".to_string()
 }
@@ -244,6 +262,21 @@ pub enum ProviderConfig {
         #[serde(default)]
         model_override: Option<ModelOverride>,
     },
+    Xiaomi {
+        workspace: String,
+        model: String,
+        api_key: String,
+        #[serde(default)]
+        region: Option<String>,
+        #[serde(default)]
+        default_protocol: Option<String>,
+        #[serde(default)]
+        base_url: Option<String>,
+        #[serde(default)]
+        anthropic_base_url: Option<String>,
+        #[serde(default)]
+        model_override: Option<ModelOverride>,
+    },
 }
 
 #[allow(dead_code)]
@@ -262,6 +295,7 @@ impl ProviderConfig {
             Self::ZaiSdk { workspace, .. } => workspace,
             Self::Nvidia { workspace, .. } => workspace,
             Self::Deepseek { workspace, .. } => workspace,
+            Self::Xiaomi { workspace, .. } => workspace,
         }
     }
 
@@ -279,6 +313,7 @@ impl ProviderConfig {
             Self::ZaiSdk { model, .. } => model,
             Self::Nvidia { model, .. } => model,
             Self::Deepseek { model, .. } => model,
+            Self::Xiaomi { model, .. } => model,
         }
     }
 
@@ -296,6 +331,7 @@ impl ProviderConfig {
             Self::ZaiSdk { .. } => "zai_sdk",
             Self::Nvidia { .. } => "nvidia",
             Self::Deepseek { .. } => "deepseek",
+            Self::Xiaomi { .. } => "xiaomi",
         }
     }
 
@@ -313,7 +349,8 @@ impl ProviderConfig {
             | Self::Xai { model_override, .. }
             | Self::ZaiSdk { model_override, .. }
             | Self::Nvidia { model_override, .. }
-            | Self::Deepseek { model_override, .. } => model_override.as_ref(),
+            | Self::Deepseek { model_override, .. }
+            | Self::Xiaomi { model_override, .. } => model_override.as_ref(),
         }
     }
 }

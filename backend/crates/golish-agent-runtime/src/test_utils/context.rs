@@ -114,6 +114,7 @@ pub struct TestContextBuilder {
     denied_tools: Vec<String>,
     allowed_tools: Vec<String>,
     execution_mode: ExecutionMode,
+    tool_config: ToolConfig,
 }
 
 impl Default for TestContextBuilder {
@@ -132,12 +133,19 @@ impl TestContextBuilder {
             denied_tools: vec![],
             allowed_tools: vec![],
             execution_mode: ExecutionMode::default(),
+            tool_config: ToolConfig::default(),
         }
     }
 
     /// Override the execution mode for this test (defaults to `Chat`).
     pub fn execution_mode(mut self, mode: ExecutionMode) -> Self {
         self.execution_mode = mode;
+        self
+    }
+
+    /// Override the tool config for this test.
+    pub fn tool_config(mut self, config: ToolConfig) -> Self {
+        self.tool_config = config;
         self
     }
 
@@ -218,7 +226,7 @@ impl TestContextBuilder {
         let workspace = Arc::new(RwLock::new(workspace_path));
         let agent_mode = Arc::new(RwLock::new(self.agent_mode));
         let plan_manager = Arc::new(PlanManager::new());
-        let tool_config = ToolConfig::default();
+        let tool_config = self.tool_config;
 
         TestContext {
             event_tx,

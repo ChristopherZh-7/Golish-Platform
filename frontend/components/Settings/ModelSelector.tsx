@@ -56,6 +56,8 @@ function isProviderAvailable(settings: AiSettings, providerId: AiProvider): bool
       return settings.nvidia?.show_in_selector !== false && !!settings.nvidia?.api_key;
     case "deepseek":
       return settings.deepseek?.show_in_selector !== false && !!settings.deepseek?.api_key;
+    case "xiaomi":
+      return settings.xiaomi?.show_in_selector !== false && !!settings.xiaomi?.api_key;
     default:
       return false;
   }

@@ -44,6 +44,13 @@ export interface AiToolExecution {
   requestId: string;
   toolName: string;
   args: Record<string, unknown>;
+  toolIntent?: {
+    modelWanted: string;
+    source: "native_tool_call" | "textual_xml" | "textual_json" | "recovered";
+    decision: "allow" | "require_approval" | "require_human_answer" | "reject";
+    reason?: string;
+    rawPreview?: string;
+  };
   status: "running" | "completed" | "error" | "interrupted";
   result?: unknown;
   startedAt: string;

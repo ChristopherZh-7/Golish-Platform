@@ -30,8 +30,26 @@ pub fn run(deliverable: &ExternalAttackSurfaceDeliverable) -> GateCheckOutcome {
     }
 
     if reasons.is_empty() {
+        tracing::info!(
+            target: "harness::gate::scope_check",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            claims = deliverable.claims.len(),
+            findings = deliverable.findings.len(),
+            outcome = "pass",
+            "scope_check pass"
+        );
         GateCheckOutcome::Pass
     } else {
+        tracing::info!(
+            target: "harness::gate::scope_check",
+            stage_id = %deliverable.stage_id,
+            stage_run_id = %deliverable.stage_run_id,
+            outcome = "block",
+            reasons_count = reasons.len(),
+            first_reason = %reasons[0],
+            "scope_check block"
+        );
         let mut recovery = HarnessRecoveryActions::default();
         recovery
             .hints
@@ -42,10 +60,10 @@ pub fn run(deliverable: &ExternalAttackSurfaceDeliverable) -> GateCheckOutcome {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::super::types::{
         ExternalAttackSurfaceDeliverable, Finding, FindingSeverity, StageClaim,
     };
+    use super::*;
     use golish_pentest::evidence_ledger::EvidenceAuditId;
     use uuid::Uuid;
 

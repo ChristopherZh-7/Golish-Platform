@@ -87,12 +87,13 @@ pub async fn send_ai_prompt_session(
                 execute_task_mode(bridge, &session_id, &prompt, &state)
                     .await
                     .map_err(|e| {
+                        let error = format!("{:#}", e);
                         tracing::error!(
                             message = "[send_ai_prompt_session] Task execution error",
                             session_id = %session_id,
-                            error = %e,
+                            error = %error,
                         );
-                        GolishError::Internal(e.to_string())
+                        GolishError::Internal(error)
                     })
             }
         }
@@ -111,11 +112,40 @@ async fn execute_task_mode(
     prompt: &str,
     state: &AppState,
 ) -> anyhow::Result<String> {
+    use anyhow::Context;
     use golish_agent_bridge::bridge_executor::BridgeAgentExecutor;
     use golish_agent_kit::task_orchestrator::TaskOrchestrator;
     use golish_core::events::AiEvent;
+    use golish_db::{models::NewSession, repo::sessions};
 
-    let uuid_session_id = uuid::Uuid::new_v4();
+    let task_input = extract_user_message_from_wrapped_prompt(prompt);
+
+    // Lazy-create a `sessions` row so that `tasks.session_id` FK
+    // (UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE) is satisfied.
+    // The chat-panel-level string session id (`_session_id`) is not a UUID and
+    // is not currently mirrored into the `sessions` table; mapping it back
+    // requires a separate schema change. Phase 1 keeps task DB rows isolated
+    // per task invocation; future work can dedupe by chat session.
+    let session_row = sessions::create(
+        &state.db_pool,
+        NewSession {
+            title: Some(truncate_for_title(task_input, 80)),
+            workspace_path: None,
+            workspace_label: None,
+            model: Some(bridge.model_name().to_string()),
+            provider: Some(bridge.provider_name().to_string()),
+            project_path: None,
+        },
+    )
+    .await
+    .context("Failed to create session row for task mode (FK precondition for tasks)")?;
+    let uuid_session_id = session_row.id;
+    tracing::info!(
+        target: "harness::task_mode",
+        session_db_id = %uuid_session_id,
+        chat_session_id = %_session_id,
+        "task mode session row created"
+    );
 
     let event_tx = bridge.get_or_create_event_tx();
 
@@ -128,7 +158,7 @@ async fn execute_task_mode(
         .to_string();
     bridge.emit_event(AiEvent::Started { turn_id: init_turn });
     bridge.emit_event(AiEvent::UserMessage {
-        content: prompt.to_string(),
+        content: task_input.to_string(),
     });
     bridge.emit_event(AiEvent::TextDelta {
         delta: init_msg.clone(),
@@ -150,7 +180,7 @@ async fn execute_task_mode(
     let mut orchestrator = TaskOrchestrator::new(db_repo, uuid_session_id, event_tx);
     let executor = BridgeAgentExecutor::new(bridge.clone());
 
-    let result = orchestrator.run(prompt, &executor).await;
+    let result = orchestrator.run(task_input, &executor).await;
 
     let duration_ms = start_time.elapsed().as_millis() as u64;
 
@@ -180,13 +210,91 @@ async fn execute_task_mode(
         }
         Err(e) => {
             bridge.emit_event(AiEvent::Error {
-                message: e.to_string(),
+                message: format!("{:#}", e),
                 error_type: "task_orchestrator".to_string(),
             });
         }
     }
 
     result
+}
+
+fn extract_user_message_from_wrapped_prompt(prompt: &str) -> &str {
+    prompt
+        .find("[User Message]\n")
+        .map(|idx| &prompt[idx + "[User Message]\n".len()..])
+        .unwrap_or(prompt)
+        .trim()
+}
+
+/// Truncate a string to at most `max_bytes` bytes without splitting a
+/// multi-byte UTF-8 character. Used to derive a short session title from
+/// the user prompt; never panics on Chinese/emoji input.
+fn truncate_for_title(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+#[cfg(test)]
+mod chat_title_tests {
+    use super::{extract_user_message_from_wrapped_prompt, truncate_for_title};
+
+    #[test]
+    fn ascii_under_limit_returned_as_is() {
+        assert_eq!(truncate_for_title("hello world", 80), "hello world");
+    }
+
+    #[test]
+    fn ascii_over_limit_truncated_to_bytes() {
+        let s = "a".repeat(200);
+        let out = truncate_for_title(&s, 80);
+        assert_eq!(out.len(), 80);
+    }
+
+    #[test]
+    fn chinese_over_limit_truncated_on_char_boundary() {
+        // Each Chinese char is 3 bytes in UTF-8. 30 chars = 90 bytes.
+        let s = "评估外部攻击面共三十个字符的中文".repeat(2);
+        let out = truncate_for_title(&s, 80);
+        assert!(out.len() <= 80);
+        // Must still be valid UTF-8 (no panic on indexing); chars() succeeds.
+        let char_count = out.chars().count();
+        assert!(char_count > 0);
+    }
+
+    #[test]
+    fn empty_input_returns_empty() {
+        assert_eq!(truncate_for_title("", 80), "");
+    }
+
+    #[test]
+    fn limit_zero_returns_empty() {
+        assert_eq!(truncate_for_title("anything", 0), "");
+    }
+
+    #[test]
+    fn task_mode_extracts_user_message_from_wrapped_prompt() {
+        let prompt = "[System Context]\nlarge system prompt\n\n[User Message]\n帮我看看example.com";
+
+        assert_eq!(
+            extract_user_message_from_wrapped_prompt(prompt),
+            "帮我看看example.com"
+        );
+    }
+
+    #[test]
+    fn task_mode_uses_plain_prompt_when_not_wrapped() {
+        assert_eq!(
+            extract_user_message_from_wrapped_prompt("帮我看看example.com"),
+            "帮我看看example.com"
+        );
+    }
 }
 
 /// Get vision capabilities for the current model in a session.

@@ -5,12 +5,26 @@ interface ContextUsageRingProps {
   contextUsage: { utilization: number; totalTokens: number; maxTokens: number } | null;
 }
 
+export function formatContextTokens(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    const millions = tokens / 1_000_000;
+    return `${Number.isInteger(millions) ? millions.toFixed(0) : millions.toFixed(1)}M`;
+  }
+  if (tokens >= 1_000) {
+    const thousands = tokens / 1_000;
+    return `${Number.isInteger(thousands) ? thousands.toFixed(0) : thousands.toFixed(1)}K`;
+  }
+  return `${tokens}`;
+}
+
+function formatContextUsage(contextUsage: NonNullable<ContextUsageRingProps["contextUsage"]>) {
+  return `${(contextUsage.utilization * 100).toFixed(1)}% · ${formatContextTokens(contextUsage.totalTokens)} / ${formatContextTokens(contextUsage.maxTokens)} context used`;
+}
+
 export const ContextUsageRing = memo(function ContextUsageRing({
   contextUsage,
 }: ContextUsageRingProps) {
-  const title = contextUsage
-    ? `${(contextUsage.utilization * 100).toFixed(1)}% · ${(contextUsage.totalTokens / 1000).toFixed(1)}K / ${(contextUsage.maxTokens / 1000).toFixed(0)}K context used`
-    : "No context data";
+  const title = contextUsage ? formatContextUsage(contextUsage) : "No context data";
 
   return (
     <div className="relative group" title={title}>
@@ -46,9 +60,7 @@ export const ContextUsageRing = memo(function ContextUsageRing({
         />
       </svg>
       <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 rounded bg-popover border border-border/30 text-[10px] text-popover-foreground whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
-        {contextUsage
-          ? `${(contextUsage.utilization * 100).toFixed(1)}% · ${(contextUsage.totalTokens / 1000).toFixed(1)}K / ${(contextUsage.maxTokens / 1000).toFixed(0)}K context used`
-          : "Context usage unavailable"}
+        {contextUsage ? formatContextUsage(contextUsage) : "Context usage unavailable"}
       </div>
     </div>
   );

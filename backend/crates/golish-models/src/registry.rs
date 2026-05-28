@@ -91,6 +91,7 @@ static MODEL_REGISTRY: Lazy<Vec<ModelDefinition>> = Lazy::new(|| {
     models.extend(openrouter_models());
     models.extend(nvidia_models());
     models.extend(deepseek_models());
+    models.extend(xiaomi_models());
     models
 });
 
@@ -296,6 +297,7 @@ pub fn get_model_capabilities(provider: AiProvider, model: &str) -> ModelCapabil
         AiProvider::Openrouter => ModelCapabilities::conservative_defaults(),
         AiProvider::Nvidia => ModelCapabilities::nvidia_defaults(),
         AiProvider::Deepseek => ModelCapabilities::deepseek_defaults(),
+        AiProvider::Xiaomi => ModelCapabilities::xiaomi_defaults(),
     }
 }
 

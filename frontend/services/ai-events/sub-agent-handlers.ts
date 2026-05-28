@@ -135,6 +135,21 @@ export const handleSubAgentTextDelta: EventHandler<{
 };
 
 /**
+ * Handle sub-agent reasoning/thinking delta.
+ */
+export const handleSubAgentReasoning: EventHandler<{
+  type: "sub_agent_reasoning";
+  agent_id: string;
+  delta: string;
+  accumulated: string;
+  parent_request_id: string;
+  session_id: string;
+  seq?: number;
+}> = (event, ctx) => {
+  ctx.getState().updateSubAgentThinking(ctx.sessionId, event.parent_request_id, event.accumulated);
+};
+
+/**
  * Handle sub-agent completed event.
  */
 export const handleSubAgentCompleted: EventHandler<{

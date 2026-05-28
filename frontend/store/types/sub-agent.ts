@@ -10,9 +10,11 @@ export interface SubAgentToolCall {
 }
 
 export interface SubAgentEntry {
-  kind: "text" | "tool_call";
+  kind: "text" | "tool_call" | "thinking";
   text?: string;
   toolCallId?: string;
+  startedAt?: number;
+  endedAt?: number;
 }
 
 export interface ActiveSubAgent {
@@ -27,6 +29,9 @@ export interface ActiveSubAgent {
   response?: string;
   error?: string;
   streamingText?: string;
+  thinking?: string;
+  thinkingStartedAt?: number;
+  thinkingEndedAt?: number;
   startedAt: string;
   completedAt?: string;
   durationMs?: number;

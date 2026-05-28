@@ -229,6 +229,22 @@ export async function buildProviderConfig(
       };
     }
 
+    case "xiaomi": {
+      const apiKey = settings.ai.xiaomi?.api_key;
+      if (!apiKey) throw new Error("Xiaomi MiMo API key not configured");
+      return {
+        provider: "xiaomi",
+        workspace,
+        model: default_model,
+        api_key: apiKey,
+        region: settings.ai.xiaomi?.region || undefined,
+        default_protocol: settings.ai.xiaomi?.default_protocol || undefined,
+        base_url: settings.ai.xiaomi?.openai_base_url || undefined,
+        anthropic_base_url: settings.ai.xiaomi?.anthropic_base_url || undefined,
+        model_override,
+      };
+    }
+
     default:
       throw new Error(`Unknown provider: ${default_provider}`);
   }

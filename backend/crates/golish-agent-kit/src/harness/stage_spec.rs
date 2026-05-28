@@ -80,9 +80,8 @@ pub fn load_stage_spec_from_json(raw: &str) -> Result<StageSpec, StageSpecLoadEr
 mod tests {
     use super::*;
 
-    const EXTERNAL_ATTACK_SURFACE_JSON: &str = include_str!(
-        "../../../../../resources/harness/stages/external_attack_surface.json"
-    );
+    const EXTERNAL_ATTACK_SURFACE_JSON: &str =
+        include_str!("../../../../../resources/harness/stages/external_attack_surface.json");
 
     #[test]
     fn load_external_attack_surface_basic_shape() {
@@ -131,7 +130,9 @@ mod tests {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
         let ha = s.human_approval.expect("human_approval");
         assert!(ha.required_before.contains(&"active_scan".to_string()));
-        assert!(ha.required_before.contains(&"exploit_validation".to_string()));
+        assert!(ha
+            .required_before
+            .contains(&"exploit_validation".to_string()));
     }
 
     #[test]

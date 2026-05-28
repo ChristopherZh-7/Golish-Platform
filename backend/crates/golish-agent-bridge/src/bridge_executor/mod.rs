@@ -167,11 +167,15 @@ impl BridgeAgentExecutor {
         user_message: &str,
         phase_key: Option<&str>,
     ) -> Result<String> {
+        self.ensure_not_cancelled()?;
+
         let (phase_override, params) = if let Some(key) = phase_key {
             (self.phase_client(key).await, self.phase_params(key).await)
         } else {
             (None, LlmParamOverrides::default())
         };
+
+        self.ensure_not_cancelled()?;
 
         let request = build_one_shot_request(system_prompt, user_message, &params);
 
@@ -181,26 +185,38 @@ impl BridgeAgentExecutor {
             "[TaskMode] Starting one-shot completion"
         );
 
-        let result = if let Some(ref override_client) = phase_override {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(120),
-                complete_with_client(override_client, request),
-            )
-            .await
-        } else {
-            let client = {
-                let g = self.bridge.llm.client.read().await;
-                (*g).clone()
-            };
-            tokio::time::timeout(std::time::Duration::from_secs(120), async move {
+        let completion = async {
+            if let Some(ref override_client) = phase_override {
+                complete_with_client(override_client, request).await
+            } else {
+                let client = {
+                    let g = self.bridge.llm.client.read().await;
+                    (*g).clone()
+                };
                 complete_with_client(&client, request).await
-            })
-            .await
+            }
+        };
+
+        let result = tokio::select! {
+            biased;
+            _ = wait_for_bridge_cancelled(self.bridge.clone()) => {
+                tracing::info!(phase = ?phase_key, "[TaskMode] One-shot completion cancelled by user");
+                return Err(anyhow::anyhow!("Agent stopped by user"));
+            }
+            result = tokio::time::timeout(std::time::Duration::from_secs(120), completion) => result,
         };
 
         result.map_err(|_| {
             anyhow::anyhow!("LLM completion timed out (120s) for phase {:?}", phase_key)
         })?
+    }
+
+    fn ensure_not_cancelled(&self) -> Result<()> {
+        if self.bridge.is_cancelled() {
+            Err(anyhow::anyhow!("Agent stopped by user"))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -241,6 +257,8 @@ pub(crate) async fn complete_with_client(
         LlmClient::RigZaiSdk(m) => one_shot!(m),
         LlmClient::RigNvidia(m) => one_shot!(m),
         LlmClient::RigDeepSeek(m) => one_shot!(m),
+        LlmClient::RigXiaomi(m) => one_shot!(m),
+        LlmClient::RigXiaomiAnthropic(m) => one_shot!(m),
         LlmClient::Mock => Err(anyhow::anyhow!("Mock client cannot execute completions")),
     }
 }
@@ -296,4 +314,13 @@ pub(crate) fn extract_json_from_response(response: &str) -> &str {
         }
     }
     trimmed
+}
+
+async fn wait_for_bridge_cancelled(bridge: Arc<AgentBridge>) {
+    loop {
+        if bridge.is_cancelled() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }

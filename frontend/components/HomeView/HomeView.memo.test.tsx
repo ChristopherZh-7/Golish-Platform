@@ -68,11 +68,11 @@ describe("HomeView Memoization Tests", () => {
       // The HomeView re-design surfaces a `Recent projects` heading once
       // the saved-projects list resolves; we use that as the readiness
       // marker since the old `Projects` label has been removed.
-      await screen.findByText("Recent projects");
+      await screen.findByText("home.recentProjects");
 
       rerender(<HomeView />);
 
-      expect(screen.getByText("Recent projects")).toBeDefined();
+      expect(screen.getByText("home.recentProjects")).toBeDefined();
     });
   });
 
@@ -98,7 +98,7 @@ describe("HomeView Memoization Tests", () => {
       // Wait for the recent-projects section to mount, then both project
       // names should be visible (they're rendered as plain text inside the
       // saved-projects list).
-      await screen.findByText("Recent projects");
+      await screen.findByText("home.recentProjects");
 
       expect(screen.getByText("Project A")).toBeDefined();
       expect(screen.getByText("Project B")).toBeDefined();

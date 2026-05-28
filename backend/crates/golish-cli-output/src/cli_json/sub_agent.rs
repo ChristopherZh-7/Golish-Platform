@@ -64,6 +64,20 @@ pub(super) fn sub_agent_text_delta(
     })
 }
 
+pub(super) fn sub_agent_reasoning(
+    agent_id: &str,
+    delta: &str,
+    accumulated: &str,
+    parent_request_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "agent_id": agent_id,
+        "delta": delta,
+        "accumulated": accumulated,
+        "parent_request_id": parent_request_id
+    })
+}
+
 pub(super) fn sub_agent_completed(
     agent_id: &str,
     response: &str,

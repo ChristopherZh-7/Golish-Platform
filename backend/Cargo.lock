@@ -2639,6 +2639,7 @@ dependencies = [
  "golish-indexer",
  "golish-json-repair",
  "golish-llm-providers",
+ "golish-pentest",
  "golish-prompts",
  "golish-settings",
  "golish-sub-agents",
@@ -2960,6 +2961,7 @@ dependencies = [
  "rig-zai-sdk",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 

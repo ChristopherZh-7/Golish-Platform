@@ -74,6 +74,7 @@ export function useAiChatInit(createTerminalTab: CreateTerminalFn): UseAiChatIni
           if (ai.zai_sdk?.api_key && visible(ai.zai_sdk)) configured.add("zai_sdk");
           if (ai.nvidia?.api_key && visible(ai.nvidia)) configured.add("nvidia");
           if (ai.deepseek?.api_key && visible(ai.deepseek)) configured.add("deepseek");
+          if (ai.xiaomi?.api_key && visible(ai.xiaomi)) configured.add("xiaomi");
           if ((ai.vertex_ai?.credentials_path || ai.vertex_ai?.project_id) && visible(ai.vertex_ai))
             configured.add("vertex_ai");
           if (

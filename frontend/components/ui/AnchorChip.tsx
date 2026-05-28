@@ -33,9 +33,11 @@ function classifyAnchor(anchor: string | null | undefined): AnchorKind {
 }
 
 const KIND_CLASS: Record<AnchorKind, string> = {
-  agent: "bg-[var(--accent-dim)] text-accent/90",
-  pipeline: "bg-[var(--ansi-magenta)]/15 text-[var(--ansi-magenta)]/85",
-  tool: "bg-muted/40 text-muted-foreground/80",
+  agent:
+    "border-accent/35 bg-accent/20 text-foreground shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]",
+  pipeline:
+    "border-[var(--ansi-magenta)]/35 bg-[var(--ansi-magenta)]/18 text-foreground shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]",
+  tool: "border-border/50 bg-muted/60 text-foreground shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]",
 };
 
 export const AnchorChip = memo(function AnchorChip({
@@ -62,7 +64,7 @@ export const AnchorChip = memo(function AnchorChip({
   return (
     <span
       className={cn(
-        "text-[9.5px] font-mono font-medium tabular-nums px-1 py-px rounded flex-shrink-0",
+        "inline-flex min-w-[24px] items-center justify-center rounded border px-1 py-px text-[9.5px] font-mono font-bold tabular-nums flex-shrink-0",
         KIND_CLASS[kind],
         className
       )}

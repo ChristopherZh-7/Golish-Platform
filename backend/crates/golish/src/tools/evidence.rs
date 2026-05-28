@@ -111,6 +111,12 @@ pub async fn evidence_read(
     state: tauri::State<'_, DbState>,
     request: ReadEvidenceRequest,
 ) -> Result<EvidenceSummary, GolishError> {
+    tracing::info!(
+        target: "harness::evidence_read",
+        evidence_audit_id = request.evidence_audit_id,
+        summary_level = ?request.summary_level,
+        "evidence_read command entered"
+    );
     let pool = state.pool_ready().await?;
 
     // ── 1 + 2 + 3: 单 SQL 同时做 IDOR check + classification 拼接 ──────────────
@@ -144,6 +150,11 @@ pub async fn evidence_read(
     .await?;
 
     let row = row.ok_or_else(|| {
+        tracing::warn!(
+            target: "harness::evidence_read",
+            evidence_audit_id = request.evidence_audit_id,
+            "evidence_read NotFound: row missing, abandoned, or not audit_role='evidence'"
+        );
         GolishError::NotFound(format!(
             "evidence_audit_id={} not found or not in evidence role",
             request.evidence_audit_id
@@ -157,16 +168,14 @@ pub async fn evidence_read(
     let kind = derive_kind(&row);
     let registry = EvidenceKindRegistry::instance();
     let max_age = registry.max_age_with_default(&kind);
-    let max_age_chrono =
-        Duration::from_std(max_age).unwrap_or_else(|_| Duration::days(7));
+    let max_age_chrono = Duration::from_std(max_age).unwrap_or_else(|_| Duration::days(7));
     let age = Utc::now() - row.created_at;
     let freshness = EvidenceFreshness::from_age(age, max_age_chrono);
 
     // ── subject / headline ──────────────────────────────────────────────────
     let subject = derive_subject(&row);
     let headline_raw = build_headline(&row, &kind, &subject);
-    let headline =
-        EvidenceSanitizer::sanitize_for_llm(&headline_raw, row.id.into());
+    let headline = EvidenceSanitizer::sanitize_for_llm(&headline_raw, row.id.into());
 
     // ── structured (per-kind parser; Doc 2 §4.1 parse_structured) ───────────
     let raw_payload = extract_raw_payload(&row);
@@ -187,6 +196,20 @@ pub async fn evidence_read(
     };
 
     let _ = row.classification_scope_version; // 当前未直接用; 留作 Phase 2 scope_version snapshot validation 接入.
+
+    tracing::info!(
+        target: "harness::evidence_read",
+        evidence_audit_id = row.id,
+        kind = %kind,
+        subject = %subject,
+        scope_label = ?scope_label,
+        freshness = ?freshness,
+        headline_len = headline.len(),
+        structured_present = structured.is_some(),
+        raw_present = raw_truncated.is_some(),
+        raw_len = raw_truncated.as_ref().map(|s| s.len()).unwrap_or(0),
+        "evidence_read returning summary"
+    );
 
     Ok(EvidenceSummary {
         evidence_audit_id: row.id,
@@ -299,7 +322,10 @@ mod tests {
 
     #[test]
     fn parse_scope_label_three_known_variants() {
-        assert_eq!(parse_scope_label(Some("in_scope")), EvidenceScopeLabel::InScope);
+        assert_eq!(
+            parse_scope_label(Some("in_scope")),
+            EvidenceScopeLabel::InScope
+        );
         assert_eq!(
             parse_scope_label(Some("out_of_scope")),
             EvidenceScopeLabel::OutOfScope
@@ -346,10 +372,7 @@ mod tests {
 
     #[test]
     fn derive_subject_prefers_detail_subject() {
-        let row = mock_row(
-            json!({"subject": "api.example.com"}),
-            "evidence",
-        );
+        let row = mock_row(json!({"subject": "api.example.com"}), "evidence");
         assert_eq!(derive_subject(&row), "api.example.com");
     }
 

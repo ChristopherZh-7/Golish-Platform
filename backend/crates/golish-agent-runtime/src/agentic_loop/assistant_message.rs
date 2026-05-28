@@ -75,7 +75,9 @@ pub(crate) fn push_assistant_message(
     }
 
     for tool_call in tool_calls_to_execute {
-        assistant_content.push(AssistantContent::ToolCall(tool_call.clone()));
+        assistant_content.push(AssistantContent::ToolCall(normalize_tool_call_for_history(
+            tool_call,
+        )));
     }
 
     // ALWAYS add assistant message to history (even when no tool calls).
@@ -90,4 +92,12 @@ pub(crate) fn push_assistant_message(
             }),
         });
     }
+}
+
+fn normalize_tool_call_for_history(tool_call: &ToolCall) -> ToolCall {
+    let mut normalized = tool_call.clone();
+    if let serde_json::Value::String(args) = &normalized.function.arguments {
+        normalized.function.arguments = golish_json_repair::parse_tool_args(args);
+    }
+    normalized
 }

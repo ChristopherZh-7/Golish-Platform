@@ -241,14 +241,14 @@ mod tests {
             height: 900.0,
         };
 
-        // x clamps to left edge (-1440). y clamps to max allowed (900 - 400 = 500).
+        // Size clamps to the app minimum before position is clamped.
         assert_eq!(
             compute_restore_action(&ws, Some(monitor)),
             Some(RestoreAction::Bounds {
-                width: 500.0,
-                height: 400.0,
+                width: 640.0,
+                height: 480.0,
                 x: Some(-1440.0),
-                y: Some(500.0),
+                y: Some(420.0),
             })
         );
     }

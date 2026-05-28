@@ -24,6 +24,14 @@ pub async fn apply_tool_selection(
 ) -> Vec<rig::completion::ToolDefinition> {
     let mut tools: Vec<rig::completion::ToolDefinition> = Vec::new();
 
+    if ctx.tool_config.is_none_preset() {
+        tracing::debug!(
+            "[tool_list] ToolPreset::None active (depth={}): exposing no tools",
+            sub_agent_context.depth
+        );
+        return tools;
+    }
+
     // 1. Static tool groups via existing ToolConfig + ToolPreset filter.
     //    The Policy decides whether to include any static tools at all;
     //    the existing ToolConfig still narrows by tool name within the

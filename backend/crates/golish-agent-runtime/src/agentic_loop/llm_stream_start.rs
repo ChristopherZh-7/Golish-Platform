@@ -36,6 +36,7 @@ use super::MAX_COMPLETION_TOKENS;
 
 /// Wrap stream startup with a 3 minute timeout to prevent infinite hangs.
 const STREAM_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+const CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Build a `CompletionRequest` from the current iteration's state and start a
 /// streaming response, retrying transient failures up to
@@ -115,11 +116,26 @@ where
             .record_sent(ctx.llm.provider_name)
             .await;
 
-        let stream_result = tokio::time::timeout(
-            STREAM_START_TIMEOUT,
-            async { model.stream(request).await }.instrument(llm_span.clone()),
-        )
-        .await;
+        let stream_result = tokio::select! {
+            biased;
+            _ = wait_for_cancelled(ctx) => {
+                tracing::info!("Agent cancelled while starting LLM stream (attempt {})", attempt);
+                let _ = ctx.events.event_tx.send(AiEvent::Error {
+                    message: "Agent stopped by user".to_string(),
+                    error_type: "cancelled".to_string(),
+                });
+                return Err(TerminalErrorEmitted::with_partial_state(
+                    "Agent stopped by user",
+                    (!accumulated_response.is_empty()).then(|| accumulated_response.to_string()),
+                    Some(chat_history.to_vec()),
+                )
+                .into());
+            }
+            result = tokio::time::timeout(
+                STREAM_START_TIMEOUT,
+                async { model.stream(request).await }.instrument(llm_span.clone()),
+            ) => result,
+        };
 
         match stream_result {
             Ok(Ok(s)) => {
@@ -322,5 +338,14 @@ fn build_additional_params(ctx: &AgenticLoopContext<'_>) -> Option<serde_json::V
         None
     } else {
         Some(serde_json::Value::Object(additional_params_json))
+    }
+}
+
+async fn wait_for_cancelled(ctx: &AgenticLoopContext<'_>) {
+    loop {
+        if is_cancelled(ctx) {
+            return;
+        }
+        tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
     }
 }

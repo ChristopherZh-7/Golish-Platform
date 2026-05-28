@@ -6,6 +6,7 @@
 import { logger } from "@/lib/logger";
 import { countLeafPanes, getAllLeafPanes } from "@/lib/pane-utils";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
+import { resetSessionSequence } from "@/services/ai-events/session-sequence";
 import type { SessionStoreDraft } from "./session-draft-types";
 import { markTabNewActivityInDraft, purgeSessionStateInDraft } from "./session-helpers";
 import type { ImmerSet, StateGet } from "./types";
@@ -188,11 +189,9 @@ export function createSessionTabActions(
         TerminalInstanceManager.dispose(sessionId);
       }
 
-      import("@/hooks/useAiEvents").then(({ resetSessionSequence }) => {
-        for (const sessionId of sessionIdsToClean) {
-          resetSessionSequence(sessionId);
-        }
-      });
+      for (const sessionId of sessionIdsToClean) {
+        resetSessionSequence(sessionId);
+      }
 
       set((state) => {
         const layout = state.tabLayouts?.[tabId];

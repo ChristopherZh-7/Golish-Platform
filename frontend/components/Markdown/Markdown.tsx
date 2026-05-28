@@ -60,6 +60,7 @@ interface MarkdownContextValue {
   sessionId?: string;
   workingDirectory?: string;
   fileIndex?: FileIndex;
+  streaming?: boolean;
 }
 
 const MarkdownContext = createContext<MarkdownContextValue>({});
@@ -256,9 +257,13 @@ function CodeBlock({
             isLong && expanded && "max-h-[500px]"
           )}
         >
-          <Suspense fallback={<CodeBlockFallback code={codeString} language={language} />}>
-            <SyntaxHighlightedCode code={codeString} language={language} {...props} />
-          </Suspense>
+          {context.streaming ? (
+            <CodeBlockFallback code={codeString} language={language} />
+          ) : (
+            <Suspense fallback={<CodeBlockFallback code={codeString} language={language} />}>
+              <SyntaxHighlightedCode code={codeString} language={language} {...props} />
+            </Suspense>
+          )}
         </div>
         {/* Expand/Collapse footer */}
         {isLong && (
@@ -312,8 +317,8 @@ export const Markdown = memo(function Markdown({
   const renderedContent = useMemo(() => stripAllAnsi(rawContent), [rawContent]);
 
   const contextValue = useMemo(
-    () => ({ sessionId, workingDirectory, fileIndex: fileIndex ?? undefined }),
-    [sessionId, workingDirectory, fileIndex]
+    () => ({ sessionId, workingDirectory, fileIndex: fileIndex ?? undefined, streaming }),
+    [sessionId, workingDirectory, fileIndex, streaming]
   );
 
   // Memoize components so ReactMarkdown doesn't re-parse when only the parent
@@ -332,16 +337,16 @@ export const Markdown = memo(function Markdown({
       ),
       h2: ({ children }: { children?: ReactNode }) => (
         <h2
-          className="text-[13px] font-bold text-accent mt-3 mb-2 first:mt-0 pb-1.5 border-b border-[var(--border-subtle)] flex items-center gap-1.5 overflow-hidden max-h-8"
+          className="text-[13px] font-bold text-foreground/90 mt-3 mb-2 first:mt-0 pb-1.5 border-b border-[var(--border-subtle)] flex items-center gap-1.5 overflow-hidden max-h-8"
           title={typeof children === "string" ? children : undefined}
         >
-          <span className="w-0.5 h-4 bg-accent rounded-full flex-shrink-0" />
+          <span className="w-0.5 h-4 bg-foreground/40 rounded-full flex-shrink-0" />
           <span className="truncate">{children}</span>
         </h2>
       ),
       h3: ({ children }: { children?: ReactNode }) => (
         <h3
-          className="text-[12.5px] font-semibold text-muted-foreground mt-3 mb-1.5 first:mt-0 pl-2.5 border-l-2 border-accent truncate max-w-full"
+          className="text-[12.5px] font-semibold text-foreground/85 mt-3 mb-1.5 first:mt-0 pl-2.5 border-l-2 border-foreground/35 truncate max-w-full"
           title={typeof children === "string" ? children : undefined}
         >
           {children}

@@ -16,9 +16,7 @@ pub enum AuthorizationError {
     ToolForbidden { tool: String },
     #[error("tool '{tool}' is not in stage allowed_tools list")]
     ToolNotAllowed { tool: String },
-    #[error(
-        "intent '{intent:?}' requires authz level above profile max_authorization ({max:?})"
-    )]
+    #[error("intent '{intent:?}' requires authz level above profile max_authorization ({max:?})")]
     IntentExceedsAuthorization {
         intent: IntentAxis,
         max: AuthorizationLevel,
@@ -63,15 +61,14 @@ impl PreActionAuthorizer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::stage_spec::load_stage_spec_from_json;
     use super::super::profile::load_profile_from_json;
+    use super::super::stage_spec::load_stage_spec_from_json;
+    use super::*;
 
     const ASSESSMENT_JSON: &str =
         include_str!("../../../../../resources/harness/profiles/assessment.json");
-    const STAGE_JSON: &str = include_str!(
-        "../../../../../resources/harness/stages/external_attack_surface.json"
-    );
+    const STAGE_JSON: &str =
+        include_str!("../../../../../resources/harness/stages/external_attack_surface.json");
 
     fn fixtures() -> (Profile, StageSpec) {
         (
@@ -97,7 +94,12 @@ mod tests {
     #[test]
     fn unknown_tool_rejected() {
         let (p, s) = fixtures();
-        let r = PreActionAuthorizer::check("random_tool_not_listed", &s, &p, IntentAxis::PassiveObserve);
+        let r = PreActionAuthorizer::check(
+            "random_tool_not_listed",
+            &s,
+            &p,
+            IntentAxis::PassiveObserve,
+        );
         assert!(matches!(r, Err(AuthorizationError::ToolNotAllowed { .. })));
     }
 

@@ -43,6 +43,11 @@ where
         source: golish_core::events::ToolSource::Main,
     });
 
+    if tool_name == "ask_human" {
+        return execute_tool_direct_generic(tool_name, tool_args, ctx, model, context, tool_id)
+            .await;
+    }
+
     let agent_mode = *ctx.access.agent_mode.read().await;
 
     let is_auto_approve =

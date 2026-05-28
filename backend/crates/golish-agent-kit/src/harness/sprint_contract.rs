@@ -116,12 +116,32 @@ impl SprintContractGenerator for DefaultSprintContractGenerator {
         skeleton: &StageSkeleton,
         scope_context: &str,
     ) -> Result<SprintContract> {
+        tracing::info!(
+            target: "harness::sprint_contract",
+            stage_run_id = %stage_run_id,
+            stage_kind = ?stage_kind,
+            scope_context_len = scope_context.len(),
+            expected_findings = skeleton.expected_findings.len(),
+            time_budget_minutes = skeleton.time_budget_minutes,
+            min_tool_invocation_kinds = skeleton.min_tool_invocations.len(),
+            generator = "deterministic-default",
+            "sprint contract generate (deterministic)"
+        );
         let contract_text = render_contract_text(stage_kind, skeleton, scope_context);
-        Ok(SprintContract::new_active(
+        let contract = SprintContract::new_active(
             stage_run_id,
             contract_text,
             "deterministic-default".to_string(),
-        ))
+        );
+        tracing::info!(
+            target: "harness::sprint_contract",
+            contract_id = %contract.id,
+            stage_run_id = %contract.stage_run_id,
+            status = %contract.status,
+            contract_text_len = contract.contract_text.len(),
+            "sprint contract generated"
+        );
+        Ok(contract)
     }
 }
 
@@ -171,16 +191,13 @@ fn render_contract_text(
 mod tests {
     use super::*;
 
-    const ASSESSMENT_SKELETON_JSON: &str = include_str!(
-        "../../../../../resources/harness/profiles/assessment.sprint_skeleton.json"
-    );
+    const ASSESSMENT_SKELETON_JSON: &str =
+        include_str!("../../../../../resources/harness/profiles/assessment.sprint_skeleton.json");
 
     #[test]
     fn parse_assessment_skeleton_has_external_attack_surface() {
         let s = SprintSkeleton::from_json(ASSESSMENT_SKELETON_JSON).expect("parse");
-        assert!(s
-            .for_stage(StageKind::ExternalAttackSurface)
-            .is_some());
+        assert!(s.for_stage(StageKind::ExternalAttackSurface).is_some());
     }
 
     #[test]
@@ -191,8 +208,12 @@ mod tests {
         let subdomain = &stage.expected_findings[0];
         assert_eq!(subdomain.kind, "subdomain");
         assert_eq!(subdomain.expected_count_range, [1, 200]);
-        assert!(subdomain.required_evidence_kinds.contains(&"dns_a".to_string()));
-        assert!(subdomain.required_evidence_kinds.contains(&"ct_log".to_string()));
+        assert!(subdomain
+            .required_evidence_kinds
+            .contains(&"dns_a".to_string()));
+        assert!(subdomain
+            .required_evidence_kinds
+            .contains(&"ct_log".to_string()));
     }
 
     #[test]
@@ -208,7 +229,10 @@ mod tests {
         let stage = s.for_stage(StageKind::ExternalAttackSurface).unwrap();
         assert_eq!(stage.min_tool_invocations.get("dns_resolve"), Some(&1));
         assert_eq!(stage.min_tool_invocations.get("http_probe"), Some(&1));
-        assert_eq!(stage.min_tool_invocations.get("subdomain_enum_passive"), Some(&1));
+        assert_eq!(
+            stage.min_tool_invocations.get("subdomain_enum_passive"),
+            Some(&1)
+        );
     }
 
     #[test]

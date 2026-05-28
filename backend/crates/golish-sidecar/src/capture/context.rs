@@ -262,6 +262,7 @@ impl CaptureContext {
             // Events we don't capture
             AiEvent::Started { .. }
             | AiEvent::TextDelta { .. }
+            | AiEvent::ToolIntentObservation { .. }
             | AiEvent::ContextWarning { .. }
             | AiEvent::ToolResponseTruncated { .. }
             | AiEvent::LoopWarning { .. }
@@ -272,6 +273,7 @@ impl CaptureContext {
             | AiEvent::SubAgentToolResult { .. }
             | AiEvent::UserMessage { .. }
             | AiEvent::SubAgentTextDelta { .. }
+            | AiEvent::SubAgentReasoning { .. }
             | AiEvent::SubAgentCompleted { .. }
             | AiEvent::SubAgentError { .. }
             | AiEvent::WorkflowStarted { .. }

@@ -171,6 +171,28 @@ mod cli_json_event_tests {
     }
 
     #[test]
+    fn tool_intent_observation_has_correct_format() {
+        let ai_event = AiEvent::ToolIntentObservation {
+            request_id: "textual-tool-call-1-0".to_string(),
+            tool_name: "ask_human".to_string(),
+            source: "textual_xml".to_string(),
+            decision: "require_human_answer".to_string(),
+            reason: Some("Need real user response".to_string()),
+            raw_preview: None,
+        };
+        let cli_json = convert_to_cli_json(&ai_event);
+        let json_str = serde_json::to_string(&cli_json).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed["event"], "tool_intent_observation");
+        assert_eq!(parsed["request_id"], "textual-tool-call-1-0");
+        assert_eq!(parsed["tool_name"], "ask_human");
+        assert_eq!(parsed["source"], "textual_xml");
+        assert_eq!(parsed["decision"], "require_human_answer");
+        assert_eq!(parsed["reason"], "Need real user response");
+    }
+
+    #[test]
     fn tool_result_uses_output_not_result() {
         let ai_event = AiEvent::ToolResult {
             tool_name: "read_file".to_string(),
@@ -225,6 +247,25 @@ mod cli_json_event_tests {
 
         assert_eq!(parsed["event"], "reasoning");
         assert_eq!(parsed["content"], "Let me think about this step by step...");
+    }
+
+    #[test]
+    fn sub_agent_reasoning_event_has_correct_format() {
+        let ai_event = AiEvent::SubAgentReasoning {
+            agent_id: "pentester".to_string(),
+            delta: "checking constraints".to_string(),
+            accumulated: "checking constraints".to_string(),
+            parent_request_id: "req-parent".to_string(),
+        };
+        let cli_json = convert_to_cli_json(&ai_event);
+        let json_str = serde_json::to_string(&cli_json).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed["event"], "sub_agent_reasoning");
+        assert_eq!(parsed["agent_id"], "pentester");
+        assert_eq!(parsed["delta"], "checking constraints");
+        assert_eq!(parsed["accumulated"], "checking constraints");
+        assert_eq!(parsed["parent_request_id"], "req-parent");
     }
 
     #[test]

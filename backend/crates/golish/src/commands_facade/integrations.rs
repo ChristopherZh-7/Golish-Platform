@@ -10,7 +10,7 @@
 //! - `integrations_test`             · run the schema's connectivity test
 //! - `integrations_capture_start`    · open ⚡ auto-capture session
 //! - `integrations_capture_status`   · poll one session (event-channel
-//!                                     fallback for reconnect)
+//!   fallback for reconnect)
 //! - `integrations_capture_cancel`   · cancel an in-flight session
 //! - `integrations_capture_clear_profile` · clear saved capture browser login state
 //!

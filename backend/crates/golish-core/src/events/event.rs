@@ -39,6 +39,25 @@ pub enum AiEvent {
         source: ToolSource,
     },
 
+    /// Normalized tool intent observation before execution.
+    ///
+    /// This records what the model wanted, how Golish parsed it, and what the
+    /// deterministic gate decided before any tool executor runs.
+    ToolIntentObservation {
+        request_id: String,
+        tool_name: String,
+        /// Native tool call, recovered XML text, recovered JSON text, etc.
+        source: String,
+        /// allow, require_approval, require_human_answer, reject.
+        decision: String,
+        /// Optional policy/gate reason.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// Optional truncated raw model span, when available.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        raw_preview: Option<String>,
+    },
+
     /// Tool approval request with HITL metadata
     /// The frontend should show an approval dialog and respond with ToolApprovalResponse
     ToolApprovalRequest {
@@ -179,6 +198,14 @@ pub enum AiEvent {
 
     /// Sub-agent streaming text delta (thinking/reasoning/output)
     SubAgentTextDelta {
+        agent_id: String,
+        delta: String,
+        accumulated: String,
+        parent_request_id: String,
+    },
+
+    /// Sub-agent reasoning/thinking delta.
+    SubAgentReasoning {
         agent_id: String,
         delta: String,
         accumulated: String,

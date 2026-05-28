@@ -107,6 +107,14 @@ impl TokenBudgetConfig {
             m if m.contains("gemini") && m.contains("flash") => limits.gemini_flash,
             m if m.contains("gemini") && m.contains("pro") => limits.gemini_pro,
             m if m.contains("gemini") => limits.gemini_pro, // Default Gemini to Pro
+            // Xiaomi MiMo models
+            m if m.contains("mimo-v2-omni") => limits.xiaomi_mimo_omni,
+            m if m.contains("mimo-v2.5-pro")
+                || m.contains("mimo-v2.5")
+                || m.contains("mimo-v2-pro") =>
+            {
+                limits.xiaomi_mimo
+            }
             // Default fallback
             _ => DEFAULT_MAX_CONTEXT_TOKENS,
         };

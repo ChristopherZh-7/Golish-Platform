@@ -257,6 +257,24 @@ fn test_model_context_limits_gemini() {
 }
 
 #[test]
+fn test_model_context_limits_xiaomi_mimo() {
+    let config = TokenBudgetConfig::for_model("mimo-v2.5-pro");
+    assert_eq!(config.max_context_tokens, 1_000_000);
+
+    let config = TokenBudgetConfig::for_model("mimo-v2.5");
+    assert_eq!(config.max_context_tokens, 1_000_000);
+
+    let config = TokenBudgetConfig::for_model("mimo-v2-pro");
+    assert_eq!(config.max_context_tokens, 1_000_000);
+
+    let config = TokenBudgetConfig::for_model("mimo-v2-omni");
+    assert_eq!(config.max_context_tokens, 256_000);
+
+    let config = TokenBudgetConfig::for_model("mimo-v2.5-pro@anthropic");
+    assert_eq!(config.max_context_tokens, 1_000_000);
+}
+
+#[test]
 fn test_model_context_limits_o_series() {
     // o1 model
     let config = TokenBudgetConfig::for_model("o1");

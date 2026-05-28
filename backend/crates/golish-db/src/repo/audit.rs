@@ -577,8 +577,18 @@ mod reclaim_tests {
         // cutoff 必须落在 (now_before - 1h, now_after - 1h] 区间内
         let lower = now_before - Duration::hours(1) - Duration::seconds(1);
         let upper = now_after - Duration::hours(1) + Duration::seconds(1);
-        assert!(cutoff > lower, "cutoff {} < {} (lower bound)", cutoff, lower);
-        assert!(cutoff < upper, "cutoff {} > {} (upper bound)", cutoff, upper);
+        assert!(
+            cutoff > lower,
+            "cutoff {} < {} (lower bound)",
+            cutoff,
+            lower
+        );
+        assert!(
+            cutoff < upper,
+            "cutoff {} > {} (upper bound)",
+            cutoff,
+            upper
+        );
     }
 
     #[test]

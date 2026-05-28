@@ -17,6 +17,14 @@ fn all_event_types_roundtrip() {
             request_id: "req-1".to_string(),
             source: ToolSource::Main,
         },
+        AiEvent::ToolIntentObservation {
+            request_id: "req-intent-1".to_string(),
+            tool_name: "ask_human".to_string(),
+            source: "textual_xml".to_string(),
+            decision: "require_human_answer".to_string(),
+            reason: Some("user confirmation required".to_string()),
+            raw_preview: Some("<function=ask_human>".to_string()),
+        },
         AiEvent::ToolApprovalRequest {
             request_id: "req-2".to_string(),
             tool_name: "write_file".to_string(),
@@ -88,6 +96,12 @@ fn all_event_types_roundtrip() {
             agent_id: "a1".to_string(),
             delta: "Analyzing".to_string(),
             accumulated: "Analyzing".to_string(),
+            parent_request_id: "parent-1".to_string(),
+        },
+        AiEvent::SubAgentReasoning {
+            agent_id: "a1".to_string(),
+            delta: "Thinking".to_string(),
+            accumulated: "Thinking".to_string(),
             parent_request_id: "parent-1".to_string(),
         },
         AiEvent::SubAgentCompleted {

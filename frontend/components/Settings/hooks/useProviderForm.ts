@@ -17,6 +17,7 @@ export type ProviderSettingsKey = keyof Pick<
   | "zai_sdk"
   | "nvidia"
   | "deepseek"
+  | "xiaomi"
 >;
 
 export interface ProviderConfig {
@@ -53,6 +54,8 @@ function isProviderConfigured(id: ProviderSettingsKey, settings: AiSettings): bo
       return !!settings.nvidia?.api_key;
     case "deepseek":
       return !!settings.deepseek?.api_key;
+    case "xiaomi":
+      return !!settings.xiaomi?.api_key;
     default:
       return false;
   }
@@ -72,6 +75,7 @@ function providerToSettingsKey(provider: string): ProviderSettingsKey | null {
     zai_sdk: "zai_sdk",
     nvidia: "nvidia",
     deepseek: "deepseek",
+    xiaomi: "xiaomi",
   };
   return mapping[provider] ?? null;
 }
@@ -124,6 +128,15 @@ function defaultProviderSettings(provider: ProviderSettingsKey): Record<string, 
       return {
         api_key: null,
         base_url: null,
+        show_in_selector: true,
+      };
+    case "xiaomi":
+      return {
+        api_key: null,
+        region: null,
+        default_protocol: null,
+        openai_base_url: null,
+        anthropic_base_url: null,
         show_in_selector: true,
       };
     default:
@@ -229,6 +242,13 @@ export const FALLBACK_PROVIDERS: ProviderConfig[] = [
     description: "NVIDIA NIM inference (OpenAI-compatible)",
     getConfigured: (s) => !!s.nvidia?.api_key,
   },
+  {
+    id: "xiaomi",
+    name: "Xiaomi MiMo",
+    icon: "🟠",
+    description: "Xiaomi MiMo Token Plan (OpenAI + Anthropic dual-compatible)",
+    getConfigured: (s) => !!s.xiaomi?.api_key,
+  },
 ];
 
 export const PROVIDER_COLORS: Record<string, { bg: string; border: string; dot: string }> = {
@@ -236,6 +256,7 @@ export const PROVIDER_COLORS: Record<string, { bg: string; border: string; dot: 
   ollama: { bg: "rgba(139,92,246,0.07)", border: "rgba(139,92,246,0.35)", dot: "#8B5CF6" },
   nvidia: { bg: "rgba(118,185,0,0.07)", border: "rgba(118,185,0,0.35)", dot: "#76B900" },
   deepseek: { bg: "rgba(59,130,246,0.07)", border: "rgba(59,130,246,0.35)", dot: "#3B82F6" },
+  xiaomi: { bg: "rgba(255,103,0,0.07)", border: "rgba(255,103,0,0.35)", dot: "#FF6700" },
   vertex_ai: { bg: "rgba(66,133,244,0.07)", border: "rgba(66,133,244,0.35)", dot: "#4285F4" },
   vertex_gemini: { bg: "rgba(142,117,255,0.07)", border: "rgba(142,117,255,0.35)", dot: "#8E75FF" },
   anthropic: { bg: "rgba(217,119,6,0.07)", border: "rgba(217,119,6,0.35)", dot: "#D97706" },

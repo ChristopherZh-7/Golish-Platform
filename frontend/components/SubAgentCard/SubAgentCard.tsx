@@ -173,7 +173,7 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
             <pre
               ref={preRef}
               className={cn(
-                "max-h-48 overflow-auto whitespace-pre-wrap rounded bg-[var(--ansi-black)]/20 px-2 py-1.5 text-[10px] font-mono text-foreground/80",
+                "ansi-output max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border/15 bg-background/40 px-2 py-1.5 text-[10px] font-mono text-muted-foreground",
                 isStreaming && "border-l-2 border-[var(--ansi-blue)]"
               )}
             >
