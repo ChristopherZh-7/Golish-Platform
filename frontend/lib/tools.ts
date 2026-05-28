@@ -128,13 +128,17 @@ export function getToolLabel(name: string, variant: "short" | "standard" = "stan
 
 export function getToolPrimaryArg(name: string, args: Record<string, unknown>): string | null {
   if ((name === "run_command" || name === "run_pty_cmd") && args.command)
-    return String(args.command);
+    return formatCommandForDisplay(String(args.command));
   if (args.path) return String(args.path);
   if (args.file_path) return String(args.file_path);
   if (args.url) return String(args.url);
   if (args.query) return String(args.query);
   if (args.pattern) return String(args.pattern);
   return null;
+}
+
+export function formatCommandForDisplay(command: string): string {
+  return command.replace(/\\n/g, "\n").replace(/\\r/g, "").replace(/\\t/g, "    ");
 }
 
 /** Format result for display */

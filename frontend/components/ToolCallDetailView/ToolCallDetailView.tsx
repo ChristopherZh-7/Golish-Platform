@@ -17,7 +17,7 @@ import { useTranslation } from "react-i18next";
 import { Markdown } from "@/components/Markdown";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
-import { getToolColor, getToolLabel } from "@/lib/tools";
+import { formatCommandForDisplay, getToolColor, getToolLabel } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { AiToolExecution } from "@/store";
 import { useStore } from "@/store";
@@ -35,8 +35,49 @@ function formatDurationShort(ms: number): string {
   return `${minutes}m ${remSec}s`;
 }
 
-function ToolArgsTable({ args }: { args: Record<string, unknown> }) {
-  const entries = Object.entries(args);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeToolArgs(
+  args: unknown
+): { kind: "record"; value: Record<string, unknown> } | { kind: "raw"; value: string } {
+  if (isRecord(args)) {
+    return { kind: "record", value: args };
+  }
+
+  if (typeof args === "string") {
+    try {
+      const parsed = JSON.parse(args);
+      if (isRecord(parsed)) {
+        return { kind: "record", value: parsed };
+      }
+    } catch {
+      // Fall through to raw display for partial provider fragments.
+    }
+    return { kind: "raw", value: args };
+  }
+
+  return { kind: "raw", value: JSON.stringify(args, null, 2) ?? String(args) };
+}
+
+function hasToolArgs(args: unknown): boolean {
+  if (isRecord(args)) return Object.keys(args).length > 0;
+  if (typeof args === "string") return args.trim().length > 0;
+  return args !== null && args !== undefined;
+}
+
+function ToolArgsTable({ args }: { args: unknown }) {
+  const normalized = normalizeToolArgs(args);
+  if (normalized.kind === "raw") {
+    return (
+      <pre className="px-3 py-2 text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all max-h-48 overflow-auto leading-relaxed">
+        {normalized.value}
+      </pre>
+    );
+  }
+
+  const entries = Object.entries(normalized.value);
   if (entries.length === 0) return null;
 
   return (
@@ -94,6 +135,32 @@ function ToolResultDisplay({ result }: { result: unknown }) {
   );
 }
 
+function formatShellLikeOutput(result: unknown, streamingOutput?: string): string | null {
+  if (streamingOutput) return streamingOutput;
+  if (!result || typeof result !== "object") return null;
+
+  const r = result as Record<string, unknown>;
+  const command = typeof r.command === "string" ? r.command : null;
+  const stdout = typeof r.stdout === "string" ? r.stdout : "";
+  const stderr = typeof r.stderr === "string" ? r.stderr : "";
+  const output = typeof r.output === "string" ? r.output : "";
+  const error =
+    typeof r.error === "string" ? r.error : typeof r.message === "string" ? r.message : "";
+  const exitCode = typeof r.exit_code === "number" ? r.exit_code : null;
+
+  const header: string[] = [];
+  if (command) header.push(`$ ${formatCommandForDisplay(command)}`);
+  if (exitCode !== null && exitCode !== 0) header.push(`[exit ${exitCode}]`);
+
+  const body: string[] = [];
+  if (stdout) body.push(stdout);
+  if (!stdout && output) body.push(output);
+  if (stderr) body.push(body.length > 0 ? `stderr:\n${stderr}` : stderr);
+  if (error) body.push(body.length > 0 ? `error: ${error}` : error);
+
+  return [...header, ...body].join("\n\n") || null;
+}
+
 const STATUS_BADGE_STYLES: Record<AiToolExecution["status"], string> = {
   running: "bg-[var(--accent-dim)] text-accent",
   completed: "bg-[var(--success-dim)] text-[var(--success)]",
@@ -113,6 +180,26 @@ function getStatusLabel(status: AiToolExecution["status"]): string {
       return "Interrupted";
   }
 }
+
+const TOOL_INTENT_SOURCE_LABELS: Record<
+  NonNullable<AiToolExecution["toolIntent"]>["source"],
+  string
+> = {
+  native_tool_call: "Native tool call",
+  textual_xml: "Recovered XML text",
+  textual_json: "Recovered JSON text",
+  recovered: "Recovered",
+};
+
+const TOOL_INTENT_DECISION_LABELS: Record<
+  NonNullable<AiToolExecution["toolIntent"]>["decision"],
+  string
+> = {
+  allow: "Allowed",
+  require_approval: "Waiting for approval",
+  require_human_answer: "Waiting for user",
+  reject: "Rejected",
+};
 
 export const ToolCallDetailView = memo(function ToolCallDetailView({
   sessionId,
@@ -178,14 +265,14 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     return null;
   })();
 
-  const isShellCmd = execution.toolName === "run_pty_cmd" || execution.toolName === "run_command";
-  const shellOutput = (() => {
-    if (!isShellCmd) return null;
-    if (execution.streamingOutput) return execution.streamingOutput;
-    if (!execution.result || typeof execution.result !== "object") return null;
-    const r = execution.result as Record<string, unknown>;
-    return (r.stdout as string) || (r.output as string) || null;
-  })();
+  const isShellCmd =
+    execution.toolName === "run_pty_cmd" ||
+    execution.toolName === "run_command" ||
+    execution.toolName === "pentest_run";
+  const intent = execution.toolIntent;
+  const shellOutput = isShellCmd
+    ? formatShellLikeOutput(execution.result, execution.streamingOutput)
+    : null;
 
   return (
     <div className="h-full flex flex-col bg-card">
@@ -241,7 +328,51 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           </div>
         </div>
 
-        {Object.keys(execution.args ?? {}).length > 0 && (
+        {intent && (
+          <div className="px-4 py-3 border-b border-border/20">
+            <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
+              Intent
+            </div>
+            <div className="rounded-md bg-muted/30 border border-border/20 divide-y divide-border/15">
+              <div className="px-3 py-1.5 flex items-baseline gap-3">
+                <span className="w-28 text-[10px] font-mono text-[var(--ansi-cyan)]/70 flex-shrink-0">
+                  Model wanted
+                </span>
+                <span className="text-[11px] font-mono text-foreground/80 truncate">
+                  {intent.modelWanted}
+                </span>
+              </div>
+              <div className="px-3 py-1.5 flex items-baseline gap-3">
+                <span className="w-28 text-[10px] font-mono text-[var(--ansi-cyan)]/70 flex-shrink-0">
+                  Source
+                </span>
+                <span className="text-[11px] text-foreground/80">
+                  {TOOL_INTENT_SOURCE_LABELS[intent.source]}
+                </span>
+              </div>
+              <div className="px-3 py-1.5 flex items-baseline gap-3">
+                <span className="w-28 text-[10px] font-mono text-[var(--ansi-cyan)]/70 flex-shrink-0">
+                  Golish decision
+                </span>
+                <span className="text-[11px] text-foreground/80">
+                  {TOOL_INTENT_DECISION_LABELS[intent.decision]}
+                </span>
+              </div>
+              {intent.reason && (
+                <div className="px-3 py-2">
+                  <div className="text-[10px] font-mono text-[var(--ansi-cyan)]/70 mb-1">
+                    Reason
+                  </div>
+                  <p className="text-[11px] text-muted-foreground/80 leading-relaxed">
+                    {intent.reason}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {hasToolArgs(execution.args) && (
           <div className="px-4 py-3 border-b border-border/20">
             <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
               Input
@@ -257,7 +388,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
             <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
               Output
             </div>
-            <pre className="max-h-[480px] overflow-auto whitespace-pre-wrap rounded bg-[var(--ansi-black)]/20 px-3 py-2 text-[11px] font-mono text-foreground/80">
+            <pre className="ansi-output max-h-[480px] overflow-auto whitespace-pre-wrap rounded border border-border/15 bg-background/40 px-3 py-2 text-[11px] font-mono text-muted-foreground">
               {shellOutput.length > 8000
                 ? `${shellOutput.slice(0, 8000)}\n... (truncated)`
                 : shellOutput}

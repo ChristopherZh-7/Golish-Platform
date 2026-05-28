@@ -114,9 +114,9 @@ function OutputBlock({ text, isShellCommand }: { text: string; isShellCommand: b
     <div className="mt-1">
       <pre
         className={cn(
-          "overflow-auto whitespace-pre-wrap rounded px-2 py-1.5 text-[10px] font-mono leading-relaxed",
+          "ansi-output overflow-auto whitespace-pre-wrap rounded px-2 py-1.5 text-[10px] font-mono leading-relaxed text-muted-foreground",
           expanded ? "max-h-[80vh]" : "max-h-48",
-          isShellCommand ? "bg-[var(--ansi-black)]/20 text-foreground/80" : "bg-muted px-2 py-1"
+          isShellCommand ? "border border-border/15 bg-background/40" : "bg-muted px-2 py-1"
         )}
       >
         {display}
@@ -164,7 +164,9 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
   const primary = getToolPrimaryArg(execution.toolName, execution.args);
 
   const isShellCommand =
-    execution.toolName === "run_command" || execution.toolName === "run_pty_cmd";
+    execution.toolName === "run_command" ||
+    execution.toolName === "run_pty_cmd" ||
+    execution.toolName === "pentest_run";
 
   const shellResult = useMemo(
     () => (isShellCommand ? parseShellResult(execution.result) : null),

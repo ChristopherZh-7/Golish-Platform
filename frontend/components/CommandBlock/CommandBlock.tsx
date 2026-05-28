@@ -1,9 +1,9 @@
-import { ChevronDown, ChevronRight, Clock, Maximize2, Minimize2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, Clock } from "lucide-react";
+import { useMemo } from "react";
 import { Ansi } from "@/components/Ansi/Ansi";
 import { CopyButton } from "@/components/Markdown/CopyButton";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { stripOscSequences } from "@/lib/ansi";
+import { expandTerminalTabs, stripOscSequences } from "@/lib/ansi";
 import { formatDurationLong } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { CommandBlock as CommandBlockType } from "@/store";
@@ -29,10 +29,12 @@ export function CommandBlock({
   source,
 }: CommandBlockProps) {
   const isSuccess = block.exitCode === 0;
-  const [outputExpanded, setOutputExpanded] = useState(false);
 
   // Strip OSC sequences but keep ANSI color codes for rendering
-  const cleanOutput = useMemo(() => stripOscSequences(block.output), [block.output]);
+  const cleanOutput = useMemo(
+    () => expandTerminalTabs(stripOscSequences(block.output)),
+    [block.output]
+  );
   const hasOutput = cleanOutput.trim().length > 0;
 
   // Content for copying (command + output)
@@ -99,42 +101,14 @@ export function CommandBlock({
         />
       </div>
 
-      {/* Output with fixed height preview + expand */}
+      {/* Output */}
       <CollapsibleContent>
-        <div className="px-5 pb-2">
-          <div
-            className={cn(
-              "relative overflow-hidden transition-[max-height] duration-200",
-              !outputExpanded && "max-h-[120px]"
-            )}
-          >
-            <pre
-              className="ansi-output whitespace-pre-wrap break-words m-0 text-muted-foreground"
-              style={codeStyle}
-            >
+        <div className="px-5 pb-2 pt-1">
+          <div className="relative overflow-x-auto overflow-y-hidden">
+            <pre className="ansi-output m-0 whitespace-pre" style={codeStyle}>
               <Ansi useClasses>{cleanOutput}</Ansi>
             </pre>
-            {!outputExpanded && cleanOutput.length > 200 && (
-              <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-card to-transparent pointer-events-none" />
-            )}
           </div>
-          {cleanOutput.length > 200 && (
-            <button
-              type="button"
-              className="flex items-center gap-1 mt-1 text-[10px] text-muted-foreground/50 hover:text-muted-foreground/70 transition-colors"
-              onClick={() => setOutputExpanded(!outputExpanded)}
-            >
-              {outputExpanded ? (
-                <>
-                  <Minimize2 className="w-3 h-3" /> Collapse
-                </>
-              ) : (
-                <>
-                  <Maximize2 className="w-3 h-3" /> Expand
-                </>
-              )}
-            </button>
-          )}
         </div>
       </CollapsibleContent>
     </Collapsible>

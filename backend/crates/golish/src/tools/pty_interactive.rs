@@ -49,50 +49,104 @@ impl PtyOutputTap {
 
 const DEFAULT_TIMEOUT_MS: u64 = 10000;
 const MAX_TIMEOUT_MS: u64 = 120000;
-const IDLE_THRESHOLD_MS: u64 = 2000;
 
-/// Drop-in replacement for `RunPtyCmdTool` that routes commands through
-/// the user's visible terminal instead of spawning a background process.
+/// Run a shell command outside the visible terminal and return structured
+/// output for the AI tool detail panel.
 ///
-/// Registered with name "run_pty_cmd", this replaces the default background
-/// execution so the AI's commands appear in the user's terminal tabs.
-pub struct VisibleRunPtyCmdTool {
-    pty_manager: Arc<PtyManager>,
-    output_tap: Arc<PtyOutputTap>,
-    active_session: Arc<parking_lot::Mutex<Option<String>>>,
+/// This deliberately avoids `PtyManager::write`, so AI-originated shell
+/// commands do not create `CommandBlock`s in the user's terminal timeline.
+pub(crate) async fn run_shell_command_detail(
+    command: &str,
+    workspace: &Path,
+    timeout_ms: u64,
+) -> Result<Value> {
+    let started_at = std::time::Instant::now();
+    let timeout_duration = Duration::from_millis(timeout_ms);
+
+    let mut cmd = shell_command(command);
+    cmd.current_dir(workspace).kill_on_drop(true);
+
+    tracing::info!(
+        "[run_pty_cmd] Executing in background for tool detail: command={}, timeout_ms={}",
+        command,
+        timeout_ms
+    );
+
+    let output_result = timeout(timeout_duration, cmd.output()).await;
+    let duration_ms = started_at.elapsed().as_millis() as u64;
+
+    let output = match output_result {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => {
+            return Ok(json!({
+                "error": format!("Failed to execute command: {e}"),
+                "command": command,
+                "exit_code": 1,
+                "duration_ms": duration_ms,
+            }));
+        }
+        Err(_) => {
+            return Ok(json!({
+                "error": format!("Command timed out after {}ms", timeout_ms),
+                "command": command,
+                "stdout": "",
+                "stderr": "",
+                "exit_code": 124,
+                "timed_out": true,
+                "duration_ms": duration_ms,
+            }));
+        }
+    };
+
+    Ok(json!({
+        "stdout": truncate_output(String::from_utf8_lossy(&output.stdout).into_owned()),
+        "stderr": truncate_output(String::from_utf8_lossy(&output.stderr).into_owned()),
+        "command": command,
+        "exit_code": output.status.code().unwrap_or(-1),
+        "duration_ms": duration_ms,
+    }))
 }
+
+#[cfg(unix)]
+fn shell_command(command: &str) -> tokio::process::Command {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let mut cmd = tokio::process::Command::new(shell);
+    cmd.arg("-lc").arg(command);
+    cmd
+}
+
+#[cfg(windows)]
+fn shell_command(command: &str) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("cmd.exe");
+    cmd.arg("/C").arg(command);
+    cmd
+}
+
+fn truncate_output(output: String) -> String {
+    let max_output_len = 50_000;
+    if output.len() <= max_output_len {
+        return output;
+    }
+
+    let end = output.floor_char_boundary(max_output_len);
+    format!(
+        "{}...\n[Output truncated, {} bytes total]",
+        &output[..end],
+        output.len()
+    )
+}
+
+/// Drop-in replacement for `RunPtyCmdTool` that returns shell output to the
+/// AI tool detail panel instead of writing into the user's visible terminal.
+pub struct VisibleRunPtyCmdTool;
 
 impl VisibleRunPtyCmdTool {
     pub fn new(
-        pty_manager: Arc<PtyManager>,
-        output_tap: Arc<PtyOutputTap>,
-        active_session: Arc<parking_lot::Mutex<Option<String>>>,
+        _pty_manager: Arc<PtyManager>,
+        _output_tap: Arc<PtyOutputTap>,
+        _active_session: Arc<parking_lot::Mutex<Option<String>>>,
     ) -> Self {
-        Self {
-            pty_manager,
-            output_tap,
-            active_session,
-        }
-    }
-
-    fn resolve_session(&self) -> Result<String, Value> {
-        if let Some(active) = self.active_session.lock().clone() {
-            tracing::info!("[run_pty_cmd] Using active terminal session: {}", active);
-            return Ok(active);
-        }
-        let sessions = self.pty_manager.list_session_ids();
-        if sessions.is_empty() {
-            return Err(json!({
-                "error": "No active terminal sessions. Please open a terminal tab first.",
-                "exit_code": 1
-            }));
-        }
-        let first = sessions.into_iter().next().unwrap();
-        tracing::info!(
-            "[run_pty_cmd] No active session set, falling back to: {}",
-            first
-        );
-        Ok(first)
+        Self
     }
 }
 
@@ -103,9 +157,8 @@ impl Tool for VisibleRunPtyCmdTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute a shell command in the user's visible terminal and return the output. \
-         Commands run in the active terminal tab so the user can see the execution. \
-         Supports interactive commands like SSH, docker, etc."
+        "Execute a shell command and return stdout/stderr/exit_code. \
+         Output is shown in the AI tool detail panel, not in the user's terminal timeline."
     }
 
     fn parameters(&self) -> Value {
@@ -125,12 +178,7 @@ impl Tool for VisibleRunPtyCmdTool {
         })
     }
 
-    async fn execute(&self, args: Value, _workspace: &Path) -> Result<Value> {
-        let session_id = match self.resolve_session() {
-            Ok(sid) => sid,
-            Err(err_val) => return Ok(err_val),
-        };
-
+    async fn execute(&self, args: Value, workspace: &Path) -> Result<Value> {
         let command = args
             .get("command")
             .and_then(|v| v.as_str())
@@ -142,83 +190,6 @@ impl Tool for VisibleRunPtyCmdTool {
             .unwrap_or(DEFAULT_TIMEOUT_MS / 1000);
         let timeout_ms = (timeout_secs * 1000).min(MAX_TIMEOUT_MS);
 
-        let input = format!("{}\n", command);
-
-        tracing::info!(
-            "[run_pty_cmd] Executing in visible terminal: session={}, command={}, timeout_ms={}",
-            session_id,
-            command,
-            timeout_ms
-        );
-
-        if let Err(e) = self.pty_manager.get_session(&session_id) {
-            return Ok(json!({
-                "error": format!("PTY session not found: {}", e),
-                "exit_code": 1
-            }));
-        }
-
-        // Subscribe to output BEFORE writing so we don't miss anything
-        let mut rx = self.output_tap.subscribe();
-
-        if let Err(e) = self.pty_manager.write(&session_id, input.as_bytes()) {
-            return Ok(json!({
-                "error": format!("Failed to write to terminal: {}", e),
-                "exit_code": 1
-            }));
-        }
-
-        // Collect output with timeout and idle detection
-        let mut output = String::new();
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-        let idle_duration = Duration::from_millis(IDLE_THRESHOLD_MS);
-
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-
-            let wait_time = remaining.min(idle_duration);
-
-            match timeout(wait_time, rx.recv()).await {
-                Ok(Ok(event)) if event.session_id == session_id => {
-                    output.push_str(&event.data);
-                }
-                Ok(Ok(_)) => continue,
-                Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
-                    tracing::warn!("PTY output tap lagged by {} messages", n);
-                    continue;
-                }
-                Ok(Err(broadcast::error::RecvError::Closed)) => break,
-                Err(_) => {
-                    if !output.is_empty() {
-                        break;
-                    }
-                    if tokio::time::Instant::now() >= deadline {
-                        break;
-                    }
-                }
-            }
-        }
-
-        let max_output_len = 50_000;
-        let truncated = output.len() > max_output_len;
-        let stdout = if truncated {
-            let end = output.floor_char_boundary(max_output_len);
-            format!(
-                "{}...\n[Output truncated, {} bytes total]",
-                &output[..end],
-                output.len()
-            )
-        } else {
-            output
-        };
-
-        Ok(json!({
-            "stdout": stdout,
-            "command": command,
-            "exit_code": 0,
-        }))
+        run_shell_command_detail(command, workspace, timeout_ms).await
     }
 }

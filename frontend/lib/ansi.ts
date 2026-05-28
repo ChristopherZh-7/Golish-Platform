@@ -112,3 +112,69 @@ export function stripOscSequences(str: string): string {
 
   return result.trim();
 }
+
+/**
+ * Expand literal tab characters the way a terminal would, while keeping ANSI
+ * SGR sequences in place. Browser tab rendering can drift when output is
+ * split into ANSI spans; terminal output is more stable as explicit spaces.
+ */
+export function expandTerminalTabs(str: string, tabSize = 8): string {
+  if (!str.includes("\t")) return str;
+
+  let result = "";
+  let column = 0;
+  let i = 0;
+  const size = Math.max(1, Math.floor(tabSize));
+
+  while (i < str.length) {
+    const codePoint = str.codePointAt(i) ?? 0;
+    const char = String.fromCodePoint(codePoint);
+
+    if (char === "\x1b") {
+      const sequenceEnd = findAnsiSequenceEnd(str, i);
+      result += str.slice(i, sequenceEnd);
+      i = sequenceEnd;
+      continue;
+    }
+
+    if (char === "\t") {
+      const spaces = size - (column % size);
+      result += " ".repeat(spaces);
+      column += spaces;
+      i += 1;
+      continue;
+    }
+
+    result += char;
+    if (char === "\n" || char === "\r") {
+      column = 0;
+    } else {
+      column += codePoint > 0xff ? 2 : 1;
+    }
+    i += char.length;
+  }
+
+  return result;
+}
+
+function findAnsiSequenceEnd(str: string, start: number): number {
+  const next = str[start + 1];
+  if (next === "[") {
+    for (let i = start + 2; i < str.length; i++) {
+      const code = str.charCodeAt(i);
+      if (code >= 0x40 && code <= 0x7e) return i + 1;
+    }
+    return str.length;
+  }
+
+  if (next === "]") {
+    const bel = str.indexOf("\x07", start + 2);
+    const st = str.indexOf("\x1b\\", start + 2);
+    if (bel === -1 && st === -1) return str.length;
+    if (bel === -1) return st + 2;
+    if (st === -1) return bel + 1;
+    return Math.min(bel + 1, st + 2);
+  }
+
+  return Math.min(start + 2, str.length);
+}
