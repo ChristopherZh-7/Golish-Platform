@@ -45,6 +45,10 @@ from pathlib import Path
 
 LAYER_TABLE: dict[str, float] = {
     # L1 Foundation (zero internal golish-* deps)
+    # NB: golish-platform is the true bottom (OS/path/open helpers); golish-core
+    # depends on it as a same-layer sibling (allowed: dep_layer <= crate_layer).
+    "golish-platform": 1.0,
+    "golish-js-analyzer": 1.0,
     "golish-core": 1.0,
     "golish-settings": 1.0,
     "golish-context": 1.0,
@@ -70,6 +74,9 @@ LAYER_TABLE: dict[str, float] = {
     "golish-pentest": 2.0,
     "golish-vuln-intel": 2.0,
     "golish-scan-runner": 2.0,
+    "golish-auth-probe": 2.0,
+    "golish-integrations": 2.0,
+    "golish-intel-providers": 2.0,
     "golish-shell-exec": 2.0,
     "golish-skills": 2.0,
     "golish-synthesis": 2.0,
@@ -118,6 +125,9 @@ L2_CLUSTER: dict[str, str] = {
     "golish-vuln-intel": "pentest",
     "golish-scan-runner": "pentest",
     "golish-pentest-mcp": "pentest",
+    "golish-auth-probe": "pentest",
+    "golish-integrations": "pentest",
+    "golish-intel-providers": "pentest",
     # assets — skills / synthesis / output / tools
     "golish-skills": "assets",
     "golish-synthesis": "assets",

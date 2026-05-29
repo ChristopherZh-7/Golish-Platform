@@ -10,7 +10,7 @@
 | Layer | Choice |
 |---|---|
 | Desktop shell | Tauri 2 |
-| Backend | Rust 2021 (48 crates, ~177K LOC) |
+| Backend | Rust 2021 (45 crates) |
 | Frontend | React 19 + TypeScript 6 + Vite 8 |
 | State mgmt | Zustand + Immer (14 slices) |
 | UI kit | Radix primitives + Tailwind 4 |
@@ -77,7 +77,8 @@ this on every PR.
 └─────────────────────┬─────────────────────────────────────────────┘
                       │
 ┌─────────────────────▼─────────────────────────────────────────────┐
-│ L1 Foundation (no internal golish-* deps)                         │
+│ L1 Foundation (no internal golish-* deps; platform is the base)   │
+│   golish-platform · golish-js-analyzer                            │
 │   golish-core · golish-settings · golish-context · golish-mcp     │
 │   golish-projects · golish-graphiti                               │
 │   golish-json-repair · golish-udiff                               │
@@ -92,6 +93,8 @@ this on every PR.
 
 | Crate | Purpose |
 |---|---|
+| `golish-platform` | OS / path / `open` helpers — the true bottom crate (golish-core depends on it as an L1 sibling) |
+| `golish-js-analyzer` | Static JS endpoint/secret analysis (pure, no internal deps) |
 | `golish-core` | Shared types, events, `PromptContributor`, `ToolName`, `GolishRuntime` trait, session types |
 | `golish-settings` | `GolishSettings` + TOML loader/migration + template |
 | `golish-context` | Token budget + context window tracking |
@@ -107,7 +110,7 @@ this on every PR.
 
 #### L2 — Simple infrastructure (only L1 deps)
 
-L2 contains 20 crates organized into **5 functional sub-clusters** for
+L2 contains 23 crates organized into **5 functional sub-clusters** for
 discoverability. The cluster boundary is purely **documentary** — the DAG
 guard (`scripts/check_dag.py`) only enforces the layer constraint (a
 crate at L_n must depend only on crates at L_{≤n}). Sibling deps within
@@ -141,7 +144,7 @@ the same layer are OK; cluster grouping does not add edges.
 > Note: `rig-anthropic-vertex` and `rig-gemini-vertex` are L1 (zero
 > internal `golish-*` deps) — they're listed in the L1 catalog above.
 
-##### L2.pentest (4) — penetration testing domain
+##### L2.pentest (7) — penetration testing domain
 
 | Crate | Depends on | Purpose |
 |---|---|---|
@@ -149,6 +152,9 @@ the same layer are OK; cluster grouping does not add edges.
 | `golish-vuln-intel` | core, db, vuln-intel-domain | Vuln intel client + sploitus |
 | `golish-scan-runner` | core, db | External scanner adapters (nuclei, whatweb, feroxbuster) |
 | `golish-pentest-mcp` | core | Pentest-specific MCP tools |
+| `golish-integrations` | core, db, settings | Schema-driven external-service credential storage (vault/file/settings) |
+| `golish-intel-providers` | integrations | ASM API providers (0.zone, FOFA, Quake, …) |
+| `golish-auth-probe` | js-analyzer | Authenticated/IDOR probing |
 
 ##### L2.assets (6) — skills / synthesis / output / tools
 

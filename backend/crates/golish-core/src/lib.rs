@@ -1,15 +1,18 @@
 //! Core types and traits for the Golish application.
 //!
 //! This crate provides the foundation types used across all other golish crates.
-//! It has ZERO internal crate dependencies and only depends on external libraries.
+//! Its only internal dependency is `golish-platform` (a same-layer L1 sibling
+//! providing OS / path / open helpers); otherwise it depends only on external
+//! libraries.
 //!
 //! ## Architecture Principle
 //!
-//! golish-core sits at the bottom of the dependency hierarchy:
-//! - Layer 1 (Foundation): golish-core ← YOU ARE HERE
-//! - Layer 2 (Infrastructure): golish-settings, golish-runtime
-//! - Layer 3 (Domain): golish-tools, golish-pty, etc.
-//! - Layer 4 (Application): golish (main crate)
+//! golish-core sits at the bottom of the dependency hierarchy (L1 Foundation,
+//! alongside `golish-platform`):
+//! - Layer 1 (Foundation): golish-platform, golish-core ← YOU ARE HERE
+//! - Layer 2 (Infrastructure): golish-settings, golish-db, golish-pty, etc.
+//! - Layer 3 (Domain): golish-prompts, golish-sub-agents, etc.
+//! - Layer 6 (Application): golish (main crate)
 
 // Module declarations (will be populated in next steps)
 pub mod agent_mode;
