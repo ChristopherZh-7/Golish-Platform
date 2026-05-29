@@ -34,8 +34,8 @@ interface UseChatStreamingSyncOptions {
  *    into local component state (so manual user toggles stay snappy)
  *  - one-shot terminal restore once the workspace data is ready
  *  - loading pentest tools + configured providers on mount
- *  - scrolling the active conversation tab into view and resetting plan
- *    refs whenever the active conversation changes
+ *  - resetting plan refs whenever the active conversation changes
+ *    (tab scroll-into-view is owned by <ConversationTabs/>)
  *  - restoring execution mode / sub-agents toggle from the terminal
  *    session after the conv switch completes
  *
@@ -108,15 +108,12 @@ export function useChatStreamingSync(opts: UseChatStreamingSyncOptions): void {
     return () => window.removeEventListener("settings-updated", loadProviders);
   }, [setConfiguredProviders]);
 
-  // Reset plan refs + scroll the active conversation tab into view when
-  // the active conversation changes. The tab strip lives in
-  // <ConversationTabs/> so we look the active tab up by data-attribute.
+  // Reset plan refs when the active conversation changes. Scrolling the active
+  // tab into view is owned by <ConversationTabs/> via useChatTabsScrollbar so
+  // the new/active tab reliably stays visible (older tabs scroll off-left).
   useEffect(() => {
     planTextOffsetRef.current = null;
     planMessageIdRef.current = null;
-    if (!activeConvId) return;
-    const activeTab = document.querySelector(`[data-conv-id="${activeConvId}"]`);
-    activeTab?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
   }, [activeConvId, planMessageIdRef, planTextOffsetRef]);
 
   // When switching conversations, activate its terminal and restore execution

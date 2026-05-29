@@ -34,7 +34,7 @@ export const ConversationTabs = memo(function ConversationTabs({
 }: ConversationTabsProps) {
   const { t } = useTranslation();
   const { tabsRef, tabsHovered, setTabsHovered, scrollThumb, handleThumbDragStart } =
-    useChatTabsScrollbar(conversations.length);
+    useChatTabsScrollbar(conversations.length, activeConvId);
 
   return (
     <div

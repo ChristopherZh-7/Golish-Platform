@@ -18,7 +18,10 @@ export interface ChatTabsScrollbarState {
   handleThumbDragStart: (e: React.MouseEvent) => void;
 }
 
-export function useChatTabsScrollbar(_conversationCount: number): ChatTabsScrollbarState {
+export function useChatTabsScrollbar(
+  conversationCount: number,
+  activeConvId: string | null
+): ChatTabsScrollbarState {
   const tabsRef = useRef<HTMLDivElement | null>(null);
   const [tabsHovered, setTabsHovered] = useState(false);
   const [scrollThumb, setScrollThumb] = useState({ left: 0, width: 0, visible: false });
@@ -51,6 +54,28 @@ export function useChatTabsScrollbar(_conversationCount: number): ChatTabsScroll
       observer.disconnect();
     };
   }, [updateScrollThumb]);
+
+  // Keep the active tab fully in view when the active conversation changes or a
+  // tab is added/removed. Mirrors Cursor: opening a new tab pushes older tabs
+  // off to the left so the new (active) tab — and the trailing "+" button —
+  // stay visible instead of overflowing past the right edge.
+  useEffect(() => {
+    const el = tabsRef.current;
+    if (!el || !activeConvId) return;
+    const activeTab = el.querySelector<HTMLElement>(`[data-conv-id="${CSS.escape(activeConvId)}"]`);
+    if (!activeTab) return;
+    const gap = 8;
+    const containerRect = el.getBoundingClientRect();
+    const tabRect = activeTab.getBoundingClientRect();
+    const overflowRight = tabRect.right - containerRect.right;
+    const overflowLeft = containerRect.left - tabRect.left;
+    if (overflowRight > 0) {
+      el.scrollLeft += overflowRight + gap;
+    } else if (overflowLeft > 0) {
+      el.scrollLeft -= overflowLeft + gap;
+    }
+    updateScrollThumb();
+  }, [activeConvId, conversationCount, updateScrollThumb]);
 
   // Mouse wheel -> horizontal scroll
   useEffect(() => {
