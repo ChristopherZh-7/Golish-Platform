@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Organization } from "@/lib/api/organizations";
 import type { Target } from "@/lib/pentest/types";
-import { buildTopologyModel } from "./buildTopologyModel";
+import { applyTopologyFocus, buildTopologyModel, collectLineageIds } from "./buildTopologyModel";
 
 const visible = {
   organization: true,
@@ -111,5 +111,55 @@ describe("buildTopologyModel", () => {
         target: "target:root-target",
       })
     );
+  });
+});
+
+describe("topology focus / lineage", () => {
+  const root = makeOrg("root", "Root");
+  const sub = makeOrg("sub", "Sub org", root.id);
+  const root2 = makeOrg("root2", "Root Two");
+
+  function model() {
+    return buildTopologyModel(
+      [root, sub, root2],
+      [
+        makeTarget("t1", "t1.example.com", root.id),
+        makeTarget("t2", "t2.example.com", sub.id),
+        makeTarget("t4", "t4.example.com", root2.id),
+      ],
+      { mode: "ownership", visibility: visible }
+    );
+  }
+
+  it("collectLineageIds returns the ancestor chain and excludes siblings/cousins", () => {
+    const ids = collectLineageIds(model().edges, "target:t2");
+    expect([...ids].sort()).toEqual(["root", "sub", "target:t2"]);
+    expect(ids.has("target:t1")).toBe(false);
+    expect(ids.has("root2")).toBe(false);
+  });
+
+  it("isolates a target to its org ancestor chain and hides other branches", () => {
+    const focused = applyTopologyFocus(model(), "target:t2");
+    const ids = focused.nodes.map((node) => node.id);
+    expect(ids).toEqual(expect.arrayContaining(["root", "sub", "target:t2"]));
+    expect(ids).not.toContain("target:t1");
+    expect(ids).not.toContain("root2");
+    expect(ids).not.toContain("target:t4");
+    expect(focused.edges.every((edge) => ids.includes(edge.source) && ids.includes(edge.target))).toBe(true);
+    expect(Math.min(...focused.nodes.map((node) => node.y))).toBe(86);
+  });
+
+  it("isolates an org to its whole descendant subtree and hides sibling roots", () => {
+    const focused = applyTopologyFocus(model(), "root");
+    const ids = focused.nodes.map((node) => node.id);
+    expect(ids).toEqual(expect.arrayContaining(["root", "sub", "target:t1", "target:t2"]));
+    expect(ids).not.toContain("root2");
+    expect(ids).not.toContain("target:t4");
+  });
+
+  it("returns the same model when the focus node is absent or null", () => {
+    const base = model();
+    expect(applyTopologyFocus(base, "target:does-not-exist")).toBe(base);
+    expect(applyTopologyFocus(base, null)).toBe(base);
   });
 });

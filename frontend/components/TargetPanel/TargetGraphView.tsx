@@ -4,7 +4,11 @@ import { organizations as orgsApi } from "@/lib/api";
 import type { Organization } from "@/lib/api/organizations";
 import type { Target } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
-import { buildTopologyModel } from "./topology/buildTopologyModel";
+import {
+  applyTopologyFocus,
+  buildTopologyModel,
+  collectLineageIds,
+} from "./topology/buildTopologyModel";
 import { TopologyCanvas } from "./topology/TopologyCanvas";
 import { TopologyControls } from "./topology/TopologyControls";
 import { TopologyInspector } from "./topology/TopologyInspector";
@@ -25,6 +29,7 @@ export function TargetGraphView({ targets }: { targets: Target[] }) {
   const [visibility, setVisibility] = useState<TopologyVisibility>(DEFAULT_VISIBILITY);
   const [query, setQuery] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [focusNodeId, setFocusNodeId] = useState<string | null>(null);
   const [fitSignal, setFitSignal] = useState(0);
 
   useEffect(() => {
@@ -50,10 +55,12 @@ export function TargetGraphView({ targets }: { targets: Target[] }) {
     };
   }, []);
 
-  const model = useMemo(
+  const fullModel = useMemo(
     () => buildTopologyModel(organizations, targets, { mode, visibility, query }),
     [organizations, targets, mode, visibility, query]
   );
+
+  const model = useMemo(() => applyTopologyFocus(fullModel, focusNodeId), [fullModel, focusNodeId]);
 
   const selectedNode = useMemo(
     () => model.nodes.find((node) => node.id === selectedNodeId) ?? model.nodes[0] ?? null,
@@ -70,6 +77,45 @@ export function TargetGraphView({ targets }: { targets: Target[] }) {
     }
   }, [selectedNode, selectedNodeId]);
 
+  useEffect(() => {
+    if (focusNodeId && !fullModel.nodes.some((node) => node.id === focusNodeId)) {
+      setFocusNodeId(null);
+    }
+  }, [fullModel, focusNodeId]);
+
+  const focusedNode = useMemo(
+    () => (focusNodeId ? (fullModel.nodes.find((node) => node.id === focusNodeId) ?? null) : null),
+    [fullModel.nodes, focusNodeId]
+  );
+
+  const relatedNodeIds = useMemo(() => {
+    if (focusNodeId || !selectedNode) return null;
+    return collectLineageIds(fullModel.edges, selectedNode.id);
+  }, [focusNodeId, selectedNode, fullModel.edges]);
+
+  const focusSelected = () => {
+    if (selectedNode) setFocusNodeId(selectedNode.id);
+  };
+  const toggleFocusNode = (nodeId: string) => {
+    setFocusNodeId((prev) => (prev === nodeId ? null : nodeId));
+  };
+  const clearFocus = () => setFocusNodeId(null);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      if (event.key === "Escape" && focusNodeId) {
+        setFocusNodeId(null);
+      } else if ((event.key === "f" || event.key === "F") && selectedNode) {
+        event.preventDefault();
+        setFocusNodeId(selectedNode.id);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [focusNodeId, selectedNode]);
+
   const selectedLabel = selectedNode?.label ?? "No selection";
 
   return (
@@ -84,6 +130,11 @@ export function TargetGraphView({ targets }: { targets: Target[] }) {
         onVisibilityChange={(kind) => setVisibility((prev) => ({ ...prev, [kind]: !prev[kind] }))}
         onQueryChange={setQuery}
         onFitSelected={() => setFitSignal((value) => value + 1)}
+        focusActive={focusNodeId != null}
+        focusLabel={focusedNode?.label ?? null}
+        canIsolate={selectedNode != null}
+        onIsolateSelected={focusSelected}
+        onClearFocus={clearFocus}
       />
 
       <div className="relative flex min-w-0 flex-1">
@@ -102,8 +153,12 @@ export function TargetGraphView({ targets }: { targets: Target[] }) {
         <TopologyCanvas
           model={model}
           selectedNodeId={selectedNode?.id ?? null}
+          focusNodeId={focusNodeId}
+          relatedNodeIds={relatedNodeIds}
           fitSignal={fitSignal}
           onSelectNode={setSelectedNodeId}
+          onFocusNode={toggleFocusNode}
+          onClearFocus={clearFocus}
         />
       </div>
 

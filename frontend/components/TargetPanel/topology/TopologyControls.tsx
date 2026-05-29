@@ -1,4 +1,14 @@
-import { Crosshair, Filter, GitBranch, Layers3, Network, RotateCcw, Search } from "lucide-react";
+import {
+  Crosshair,
+  Filter,
+  Focus,
+  GitBranch,
+  Layers3,
+  Network,
+  RotateCcw,
+  Search,
+  X,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { TopologyMode, TopologyVisibility } from "./types";
 
@@ -39,6 +49,11 @@ export function TopologyControls({
   onVisibilityChange,
   onQueryChange,
   onFitSelected,
+  focusActive,
+  focusLabel,
+  canIsolate,
+  onIsolateSelected,
+  onClearFocus,
 }: {
   mode: TopologyMode;
   visibility: TopologyVisibility;
@@ -49,6 +64,11 @@ export function TopologyControls({
   onVisibilityChange: (kind: keyof TopologyVisibility) => void;
   onQueryChange: (query: string) => void;
   onFitSelected: () => void;
+  focusActive: boolean;
+  focusLabel: string | null;
+  canIsolate: boolean;
+  onIsolateSelected: () => void;
+  onClearFocus: () => void;
 }) {
   return (
     <aside className="flex h-full w-[232px] shrink-0 flex-col border-r border-border/35 bg-card/35">
@@ -117,9 +137,37 @@ export function TopologyControls({
 
         <SectionLabel className="mt-6" icon={<Crosshair className="h-3 w-3" />} label="Focus" />
         <div className="mt-2 rounded-lg border border-border/35 bg-background/20 p-3">
-          <div className="truncate text-[12px] font-medium text-foreground">{selectedLabel}</div>
-          <div className="mt-1 text-[10px] text-muted-foreground">selected node</div>
+          <div className="truncate text-[12px] font-medium text-foreground">
+            {focusActive ? (focusLabel ?? selectedLabel) : selectedLabel}
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground">
+            {focusActive ? "isolated · others hidden" : "selected node"}
+          </div>
+          {focusActive ? (
+            <button
+              type="button"
+              className="mt-2.5 inline-flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-cyan-300/40 bg-cyan-300/10 text-[10px] font-semibold text-cyan-200 transition-colors hover:bg-cyan-300/15"
+              onClick={onClearFocus}
+            >
+              <X className="h-3 w-3" />
+              Exit focus (Esc)
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={!canIsolate}
+              className="mt-2.5 inline-flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-border/40 bg-background/25 text-[10px] font-semibold text-muted-foreground transition-colors hover:border-cyan-300/40 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={onIsolateSelected}
+            >
+              <Focus className="h-3 w-3" />
+              Isolate (F)
+            </button>
+          )}
         </div>
+        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground/70">
+          Double-click a node or press F to isolate its org chain + subtree. Single-click dims
+          unrelated nodes.
+        </p>
       </div>
 
       <div className="grid grid-cols-2 gap-2 border-t border-border/25 p-4">

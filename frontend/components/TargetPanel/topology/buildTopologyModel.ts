@@ -231,6 +231,77 @@ export function buildTopologyModel(
   };
 }
 
+/**
+ * Lineage of a node = its ancestor chain (towards the root org) plus its entire
+ * descendant subtree. Siblings and cousins are intentionally excluded so that
+ * "focus this unit" only keeps the direct vertical relationship.
+ */
+export function collectLineageIds(edges: TopologyEdge[], nodeId: string): Set<string> {
+  const ids = new Set<string>([nodeId]);
+  walkLineage(edges, nodeId, ids, "up");
+  walkLineage(edges, nodeId, ids, "down");
+  return ids;
+}
+
+function walkLineage(
+  edges: TopologyEdge[],
+  start: string,
+  ids: Set<string>,
+  direction: "up" | "down"
+) {
+  let frontier = [start];
+  while (frontier.length > 0) {
+    const next: string[] = [];
+    for (const current of frontier) {
+      for (const edge of edges) {
+        const from = direction === "up" ? edge.target : edge.source;
+        const to = direction === "up" ? edge.source : edge.target;
+        if (from === current && !ids.has(to)) {
+          ids.add(to);
+          next.push(to);
+        }
+      }
+    }
+    frontier = next;
+  }
+}
+
+/**
+ * Hard isolate: keep only the focus node's lineage, drop every other branch, and
+ * vertically compact the survivors so the isolated path fills the canvas. Returns
+ * the model unchanged when there is no focus or the focus node no longer exists.
+ */
+export function applyTopologyFocus(
+  model: TopologyModel,
+  focusNodeId: string | null
+): TopologyModel {
+  if (!focusNodeId) return model;
+  if (!model.nodes.some((node) => node.id === focusNodeId)) return model;
+
+  const lineage = collectLineageIds(model.edges, focusNodeId);
+  const focusedNodes = model.nodes.filter((node) => lineage.has(node.id));
+  const focusedEdges = model.edges.filter(
+    (edge) => lineage.has(edge.source) && lineage.has(edge.target)
+  );
+
+  const distinctY = [...new Set(focusedNodes.map((node) => node.y))].sort((a, b) => a - b);
+  const rowByY = new Map(distinctY.map((y, index) => [y, index]));
+  const compactNodes = focusedNodes.map((node) => ({
+    ...node,
+    y: 86 + (rowByY.get(node.y) ?? 0) * ROW_GAP,
+  }));
+
+  return {
+    nodes: compactNodes,
+    edges: focusedEdges,
+    stats: model.stats,
+    bounds: {
+      width: model.bounds.width,
+      height: Math.max(CANVAS_MIN_HEIGHT, 120 + Math.max(0, distinctY.length - 1) * ROW_GAP),
+    },
+  };
+}
+
 function buildOrgBuckets(organizations: Organization[], targets: Target[]): OrgBucket[] {
   const buckets = new Map<string, OrgBucket>();
   for (const org of organizations) {
