@@ -15,7 +15,8 @@ import {
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CustomSelect } from "@/components/ui/custom-select";
-import { invoke, vulnLinks } from "@/lib/api";
+import { invoke } from "@/lib/api";
+import { vulnIntelApi } from "@/lib/api/vuln-intel";
 import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import type { PocTemplate, VulnLink } from "./types";
@@ -391,7 +392,7 @@ int main(int argc, char *argv[]) {
         })
         .catch(console.error);
     } else {
-      vulnLinks.updatePoc(editing.id, formName.trim(), formContent).catch(console.error);
+      vulnIntelApi.updatePoc(editing.id, formName.trim(), formContent).catch(console.error);
       onUpdateLink((l) => ({
         ...l,
         pocTemplates: l.pocTemplates.map((p) =>
@@ -407,7 +408,7 @@ int main(int argc, char *argv[]) {
   const handleDeletePoc = useCallback(
     (id: string) => {
       onUpdateLink((l) => ({ ...l, pocTemplates: l.pocTemplates.filter((p) => p.id !== id) }));
-      vulnLinks.removePoc(id).catch(console.error);
+      vulnIntelApi.removePoc(id).catch(console.error);
     },
     [onUpdateLink]
   );

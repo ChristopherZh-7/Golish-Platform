@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke, vulnLinks } from "@/lib/api";
+import { invoke } from "@/lib/api";
+import { vulnIntelApi } from "@/lib/api/vuln-intel";
 import { type WikiBacklinkInfo, type WikiPageInfo, type WikiTreeNode, wikiApi } from "@/lib/wiki";
 import type { VulnLink } from "./types";
 
@@ -219,7 +220,7 @@ export function useWikiTab(
         ...l,
         wikiPaths: l.wikiPaths.includes(path) ? l.wikiPaths : [...l.wikiPaths, path],
       }));
-      vulnLinks.addWikiLink(cveId, path).catch(console.error);
+      vulnIntelApi.addWiki(cveId, path).catch(console.error);
     },
     [onUpdateLink, cveId]
   );
@@ -227,7 +228,7 @@ export function useWikiTab(
   const handleUnlinkWiki = useCallback(
     (path: string) => {
       onUpdateLink((l) => ({ ...l, wikiPaths: l.wikiPaths.filter((p) => p !== path) }));
-      vulnLinks.removeWikiLink(cveId, path).catch(console.error);
+      vulnIntelApi.removeWiki(cveId, path).catch(console.error);
       if (selectedPath === path) setSelectedPath(null);
     },
     [onUpdateLink, cveId, selectedPath]

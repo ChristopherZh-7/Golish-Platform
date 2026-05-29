@@ -79,8 +79,8 @@ export const vulnIntelApi = {
   removePoc: (pocId: string) => invoke("vuln_link_remove_poc", { pocId }),
   updatePoc: (pocId: string, name: string, content: string) =>
     invoke("vuln_link_update_poc", { pocId, name, content }),
-  addScan: (cveId: string, target: string, pocId: string, result: string, details?: string) =>
-    invoke("vuln_link_add_scan", { cveId, target, pocId, result, details }),
+  addScan: (params: { cveId: string; target: string; result: string; details?: string }) =>
+    invoke("vuln_link_add_scan", params),
 
   // PoC search
   searchGithubPoc: (cveId: string) =>

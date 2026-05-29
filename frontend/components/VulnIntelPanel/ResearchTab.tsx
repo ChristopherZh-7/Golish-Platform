@@ -2,7 +2,6 @@ import { AlertTriangle, Bot, Loader2, MessageSquare, Trash2, Zap } from "lucide-
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
 import { respondToToolApproval, setAgentMode } from "@/lib/ai";
-import { research } from "@/lib/api";
 import { vulnIntelApi } from "@/lib/api/vuln-intel";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
@@ -105,8 +104,8 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
       if (blocks.length > 0) {
         const turn: CompletedTurn = { id: crypto.randomUUID(), blocks };
         setCompletedTurns((prev) => [...prev, turn]);
-        research
-          .saveTurn(cveId, sid, turn)
+        vulnIntelApi
+          .researchSaveTurn(cveId, sid, turn)
           .catch((e) => console.error("Failed to save research turn:", e));
       }
     }
@@ -117,8 +116,8 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
   const prevRespondingRef = useRef(false);
   useEffect(() => {
     if (prevRespondingRef.current && !isResponding && completedTurns.length > 0) {
-      research
-        .setStatus(cveId, "completed")
+      vulnIntelApi
+        .researchSetStatus(cveId, "completed")
         .catch((e) => console.error("Failed to set research status:", e));
     }
     prevRespondingRef.current = isResponding;
@@ -138,7 +137,7 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
     if (!confirm("Delete all research history for this CVE? This cannot be undone.")) return;
     setClearing(true);
     try {
-      await research.clearResearch(cveId);
+      await vulnIntelApi.researchClear(cveId);
       setCompletedTurns([]);
     } catch (e) {
       console.error("Failed to clear research history:", e);

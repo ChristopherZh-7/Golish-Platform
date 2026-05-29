@@ -11,7 +11,8 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { type AiProvider, buildProviderConfig, initAiSession, sendPromptSession } from "@/lib/ai";
-import { invoke, vulnLinks } from "@/lib/api";
+import { invoke } from "@/lib/api";
+import { vulnIntelApi } from "@/lib/api/vuln-intel";
 import { getSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
@@ -224,7 +225,7 @@ Update the product page frontmatter \`status\`:
           ? l.wikiPaths
           : [...l.wikiPaths, expectedPath],
       }));
-      vulnLinks.addWikiLink(entry.cve_id, expectedPath).catch(console.error);
+      vulnIntelApi.addWiki(entry.cve_id, expectedPath).catch(console.error);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("Failed to trigger AI research:", e);

@@ -16,7 +16,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CustomSelect } from "@/components/ui/custom-select";
 import { invoke } from "@/lib/api";
-import * as vulnLinksApi from "@/lib/api/vuln-links";
+import { vulnIntelApi } from "@/lib/api/vuln-intel";
 import { copyToClipboard } from "@/lib/clipboard";
 import { onCustomEvent } from "@/lib/events";
 import type { DbVulnLinkFull, PocTemplate, VulnLink } from "./types";
@@ -157,7 +157,7 @@ export const PocLibraryView = memo(function PocLibraryView({
       if (link) {
         next[cveId] = { ...link, pocTemplates: link.pocTemplates.filter((p) => p.id !== pocId) };
         onLinksChange(next);
-        vulnLinksApi.removePoc(pocId).catch(console.error);
+        vulnIntelApi.removePoc(pocId).catch(console.error);
       }
     },
     [vulnLinks, onLinksChange]
@@ -180,7 +180,7 @@ export const PocLibraryView = memo(function PocLibraryView({
     ];
     next[runTarget.cveId] = link;
     onLinksChange(next);
-    vulnLinksApi
+    vulnIntelApi
       .addScan({
         cveId: runTarget.cveId,
         target: targetUrl.trim(),

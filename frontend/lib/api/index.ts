@@ -35,7 +35,6 @@ import * as pentestBrowser from "./pentest-browser";
 import * as pipeline from "./pipeline";
 import * as projects from "./projects";
 import * as pty from "./pty";
-import * as research from "./research";
 import * as security from "./security";
 import * as securityAnalysis from "./security-analysis";
 import * as settings from "./settings";
@@ -44,7 +43,6 @@ import * as sidecar from "./sidecar";
 import * as targets from "./targets";
 import * as vault from "./vault";
 import * as vulnIntel from "./vuln-intel";
-import * as vulnLinks from "./vuln-links";
 import * as detachedWindow from "./window";
 import * as wordlist from "./wordlist";
 
@@ -81,8 +79,6 @@ export {
   methodology,
   targets,
   vault,
-  vulnLinks,
-  research,
 };
 
 export const api = {
@@ -118,6 +114,4 @@ export const api = {
   methodology,
   targets,
   vault,
-  vulnLinks,
-  research,
 } as const;
