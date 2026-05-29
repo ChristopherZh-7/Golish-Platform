@@ -6,8 +6,6 @@
 //! Auth: `api-key` query string parameter (single token, no email).
 //! Query: base64-**URL-safe** encoded (NOT standard base64).
 
-use std::time::Duration;
-
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 use serde::Deserialize;
 use url::Url;
@@ -16,17 +14,11 @@ use crate::error::{IntelError, IntelResult};
 
 pub(crate) const PROVIDER_ID: &str = "hunter";
 const SEARCH_URL: &str = "https://hunter.qianxin.com/openApi/search";
-const USER_AGENT: &str = concat!("golish-intel-providers/", env!("CARGO_PKG_VERSION"));
-const TIMEOUT_SECS: u64 = 30;
 const DEFAULT_PAGE_SIZE: u32 = 100;
 
 /// Default reqwest client tuned for Hunter.
 pub fn default_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(TIMEOUT_SECS))
-        .user_agent(USER_AGENT)
-        .build()
-        .expect("reqwest client must build with valid defaults")
+    crate::shared::http_common::default_client()
 }
 
 /// URL-safe base64 encode the Hunter query string.

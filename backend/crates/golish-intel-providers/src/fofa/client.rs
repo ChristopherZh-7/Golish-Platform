@@ -9,8 +9,6 @@
 //! the key in the canonical form `"<email>|<key>"`. [`split_credentials`]
 //! parses it; missing / malformed combos yield [`IntelError::InvalidKey`].
 
-use std::time::Duration;
-
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Deserialize;
 use url::Url;
@@ -20,8 +18,6 @@ use crate::error::{IntelError, IntelResult};
 pub(crate) const PROVIDER_ID: &str = "fofa";
 const SEARCH_URL: &str = "https://fofa.info/api/v1/search/all";
 const INFO_URL: &str = "https://fofa.info/api/v1/info/my";
-const USER_AGENT: &str = concat!("golish-intel-providers/", env!("CARGO_PKG_VERSION"));
-const TIMEOUT_SECS: u64 = 30;
 const DEFAULT_SIZE: u32 = 100;
 
 /// Split the canonical `"<email>|<key>"` credential string.
@@ -50,11 +46,7 @@ pub(crate) fn split_credentials(combined: &str) -> IntelResult<(&str, &str)> {
 /// Default reqwest client used by [`FofaProvider`]; exposed for tests that
 /// want to swap in a mocked transport.
 pub fn default_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(TIMEOUT_SECS))
-        .user_agent(USER_AGENT)
-        .build()
-        .expect("reqwest client must build with valid defaults")
+    crate::shared::http_common::default_client()
 }
 
 /// Encode the FOFA query string as standard base64.
@@ -99,7 +91,7 @@ where
         .await
         .map_err(|e| IntelError::network(PROVIDER_ID, e))?;
 
-    decode_envelope(resp).await
+    crate::shared::http_common::decode_json_envelope(PROVIDER_ID, resp).await
 }
 
 /// Issue the cheap `info/my` request and decode the user-info envelope.
@@ -118,39 +110,7 @@ where
         .send()
         .await
         .map_err(|e| IntelError::network(PROVIDER_ID, e))?;
-    decode_envelope(resp).await
-}
-
-async fn decode_envelope<T>(resp: reqwest::Response) -> IntelResult<T>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let status = resp.status();
-    if !status.is_success() {
-        if status.as_u16() == 401 || status.as_u16() == 403 {
-            return Err(IntelError::AuthFailed {
-                provider: PROVIDER_ID.into(),
-                reason: format!("HTTP {status}"),
-            });
-        }
-        return Err(IntelError::bad_response(
-            PROVIDER_ID,
-            format!("HTTP {status}"),
-        ));
-    }
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| IntelError::network(PROVIDER_ID, e))?;
-    serde_json::from_str::<T>(&body).map_err(|e| {
-        IntelError::bad_response(
-            PROVIDER_ID,
-            format!(
-                "JSON parse failed: {e} · body head: {}",
-                &body[..body.len().min(200)]
-            ),
-        )
-    })
+    crate::shared::http_common::decode_json_envelope(PROVIDER_ID, resp).await
 }
 
 /// Translate a FOFA `errmsg` string into a typed error.

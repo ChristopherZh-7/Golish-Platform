@@ -7,8 +7,6 @@
 //!
 //! Reference: <https://developer.shodan.io/api>
 
-use std::time::Duration;
-
 use serde::Deserialize;
 use url::Url;
 
@@ -16,16 +14,10 @@ use crate::error::{IntelError, IntelResult};
 
 pub(crate) const PROVIDER_ID: &str = "shodan";
 const BASE_URL: &str = "https://api.shodan.io";
-const USER_AGENT: &str = concat!("golish-intel-providers/", env!("CARGO_PKG_VERSION"));
-const TIMEOUT_SECS: u64 = 30;
 
 /// Default reqwest client; tests can substitute via [`super::ShodanProvider::with_http_client`].
 pub fn default_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(TIMEOUT_SECS))
-        .user_agent(USER_AGENT)
-        .build()
-        .expect("reqwest client must build with valid defaults")
+    crate::shared::http_common::default_client()
 }
 
 /// Issue `GET /shodan/host/search?key=...&query=...`.

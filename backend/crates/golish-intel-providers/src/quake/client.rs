@@ -8,8 +8,6 @@
 //!
 //! Reference: <https://quake.360.net/quake/#/help>
 
-use std::time::Duration;
-
 use serde::{Deserialize, Serialize};
 
 use crate::error::{IntelError, IntelResult};
@@ -17,8 +15,6 @@ use crate::error::{IntelError, IntelResult};
 pub(crate) const PROVIDER_ID: &str = "quake";
 const SEARCH_URL: &str = "https://quake.360.net/api/v3/search/quake_service";
 const USER_INFO_URL: &str = "https://quake.360.net/api/v3/user/info";
-const USER_AGENT: &str = concat!("golish-intel-providers/", env!("CARGO_PKG_VERSION"));
-const TIMEOUT_SECS: u64 = 30;
 const DEFAULT_SIZE: u32 = 100;
 const AUTH_HEADER: &str = "X-QuakeToken";
 
@@ -38,11 +34,7 @@ pub(crate) struct QuakeSearchRequest<'a> {
 /// Default reqwest client; tests can pass in a mocked one via
 /// [`super::QuakeProvider::with_http_client`].
 pub fn default_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(TIMEOUT_SECS))
-        .user_agent(USER_AGENT)
-        .build()
-        .expect("reqwest client must build with valid defaults")
+    crate::shared::http_common::default_client()
 }
 
 /// POST to `/api/v3/search/quake_service`.
@@ -68,7 +60,7 @@ where
         .send()
         .await
         .map_err(|e| IntelError::network(PROVIDER_ID, e))?;
-    decode_envelope(resp).await
+    crate::shared::http_common::decode_json_envelope(PROVIDER_ID, resp).await
 }
 
 /// GET `/api/v3/user/info`.
@@ -82,39 +74,7 @@ where
         .send()
         .await
         .map_err(|e| IntelError::network(PROVIDER_ID, e))?;
-    decode_envelope(resp).await
-}
-
-async fn decode_envelope<T>(resp: reqwest::Response) -> IntelResult<T>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let status = resp.status();
-    if !status.is_success() {
-        if status.as_u16() == 401 || status.as_u16() == 403 {
-            return Err(IntelError::AuthFailed {
-                provider: PROVIDER_ID.into(),
-                reason: format!("HTTP {status}"),
-            });
-        }
-        return Err(IntelError::bad_response(
-            PROVIDER_ID,
-            format!("HTTP {status}"),
-        ));
-    }
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| IntelError::network(PROVIDER_ID, e))?;
-    serde_json::from_str::<T>(&body).map_err(|e| {
-        IntelError::bad_response(
-            PROVIDER_ID,
-            format!(
-                "JSON parse failed: {e} · body head: {}",
-                &body[..body.len().min(200)]
-            ),
-        )
-    })
+    crate::shared::http_common::decode_json_envelope(PROVIDER_ID, resp).await
 }
 
 /// Map a non-zero Quake `code` + `message` into a typed error.

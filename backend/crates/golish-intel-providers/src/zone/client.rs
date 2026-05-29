@@ -49,42 +49,12 @@ where
         .await
         .map_err(|e| IntelError::network("0.zone", e))?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        // Non-2xx is unusual for 0.zone (it returns 200 even on auth errors).
-        // Map 401/403 explicitly; everything else becomes a bad-response error.
-        if status.as_u16() == 401 || status.as_u16() == 403 {
-            return Err(IntelError::AuthFailed {
-                provider: "0.zone".into(),
-                reason: format!("HTTP {status}"),
-            });
-        }
-        return Err(IntelError::bad_response("0.zone", format!("HTTP {status}")));
-    }
-
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| IntelError::network("0.zone", e))?;
-
-    serde_json::from_str::<T>(&body).map_err(|e| {
-        IntelError::bad_response(
-            "0.zone",
-            format!(
-                "JSON parse failed: {e} · body head: {}",
-                &body[..body.len().min(200)]
-            ),
-        )
-    })
+    crate::shared::http_common::decode_json_envelope("0.zone", resp).await
 }
 
 /// Construct a default reqwest client with sensible defaults.
 pub fn default_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(TIMEOUT_SECS))
-        .user_agent(USER_AGENT)
-        .build()
-        .expect("reqwest client must build with valid defaults")
+    crate::shared::http_common::default_client()
 }
 
 /// Classify a `code != 0` envelope into a typed error.
