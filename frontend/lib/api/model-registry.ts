@@ -5,6 +5,7 @@
  * from the backend model registry.
  */
 
+import type { AiProvider } from "@/lib/ai/types";
 import { invoke } from "@/lib/api/client";
 
 // ---------------------------------------------------------------------------
@@ -16,22 +17,12 @@ import { invoke } from "@/lib/api/client";
 /**
  * AI provider selection.
  *
- * Mirror of `backend/crates/golish-core/src/types.rs::AiProvider`.
+ * Canonical definition lives in `@/lib/ai/types` (mirror of
+ * `backend/crates/golish-core/src/types.rs::AiProvider`). Re-exported here so
+ * existing `@/lib/model-registry` / `@/lib/api/model-registry` imports keep
+ * resolving to the single source of truth.
  */
-export type AiProvider =
-  | "vertex_ai"
-  | "vertex_gemini"
-  | "openrouter"
-  | "anthropic"
-  | "openai"
-  | "ollama"
-  | "gemini"
-  | "groq"
-  | "xai"
-  | "zai_sdk"
-  | "nvidia"
-  | "deepseek"
-  | "xiaomi";
+export type { AiProvider };
 
 /**
  * Capabilities that vary across LLM models.

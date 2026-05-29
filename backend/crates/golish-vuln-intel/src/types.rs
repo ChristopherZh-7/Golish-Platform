@@ -1,31 +1,8 @@
 //! Vuln-intel data types, DB row mappings, and storage helpers.
 
-use chrono::Utc;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VulnFeed {
-    pub id: String,
-    pub name: String,
-    pub feed_type: String,
-    pub url: String,
-    pub enabled: bool,
-    pub last_fetched: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VulnEntry {
-    pub cve_id: String,
-    pub title: String,
-    pub description: String,
-    pub severity: String,
-    pub cvss_score: Option<f64>,
-    pub published: String,
-    pub source: String,
-    pub references: Vec<String>,
-    pub affected_products: Vec<String>,
-}
+pub use golish_vuln_intel_domain::{default_feeds, nvd_recent_url, VulnEntry, VulnFeed};
 
 pub fn ts_from_dt(dt: chrono::DateTime<chrono::Utc>) -> u64 {
     dt.timestamp() as u64
@@ -83,43 +60,6 @@ impl From<EntryRow> for VulnEntry {
     }
 }
 
-pub fn default_feeds() -> Vec<VulnFeed> {
-    vec![
-        VulnFeed {
-            id: "cisa-kev".to_string(),
-            name: "CISA Known Exploited Vulnerabilities".to_string(),
-            feed_type: "cisa_kev".to_string(),
-            url: "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json".to_string(),
-            enabled: true,
-            last_fetched: None,
-        },
-        VulnFeed {
-            id: "nvd-recent".to_string(),
-            name: "NVD Recent CVEs".to_string(),
-            feed_type: "nvd_recent".to_string(),
-            url: String::new(),
-            enabled: true,
-            last_fetched: None,
-        },
-        VulnFeed {
-            id: "cnvd".to_string(),
-            name: "CNVD 国家信息安全漏洞共享平台".to_string(),
-            feed_type: "rss".to_string(),
-            url: "https://www.cnvd.org.cn/rssXml".to_string(),
-            enabled: false,
-            last_fetched: None,
-        },
-        VulnFeed {
-            id: "seebug-paper".to_string(),
-            name: "Seebug Paper 安全技术精粹".to_string(),
-            feed_type: "rss".to_string(),
-            url: "https://paper.seebug.org/rss/".to_string(),
-            enabled: true,
-            last_fetched: None,
-        },
-    ]
-}
-
 pub(crate) async fn ensure_default_feeds(pool: &sqlx::PgPool) -> crate::VulnIntelResult<()> {
     for feed in default_feeds() {
         sqlx::query(
@@ -134,16 +74,6 @@ pub(crate) async fn ensure_default_feeds(pool: &sqlx::PgPool) -> crate::VulnInte
         .await?;
     }
     Ok(())
-}
-
-pub fn nvd_recent_url(days_back: i64) -> String {
-    let end = Utc::now();
-    let start = end - chrono::Duration::days(days_back);
-    format!(
-        "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=200&pubStartDate={}&pubEndDate={}",
-        start.format("%Y-%m-%dT00:00:00.000"),
-        end.format("%Y-%m-%dT23:59:59.999"),
-    )
 }
 
 pub(crate) async fn upsert_entries(

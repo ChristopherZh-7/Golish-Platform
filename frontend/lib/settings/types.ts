@@ -1,3 +1,12 @@
+import type { AiProvider } from "../ai/types";
+
+/**
+ * AI provider selection. Canonical definition lives in `@/lib/ai/types`
+ * (mirror of `backend/crates/golish-core/src/types.rs::AiProvider`).
+ * Re-exported so existing `@/lib/settings` imports keep resolving.
+ */
+export type { AiProvider };
+
 export interface CodebaseConfig {
   path: string;
   memory_file?: string;
@@ -85,28 +94,6 @@ export interface AiSettings {
   deepseek: DeepSeekSettings;
   xiaomi: XiaomiSettings;
 }
-
-/**
- * AI provider selection.
- *
- * Mirror of `backend/crates/golish-core/src/types.rs::AiProvider`. After
- * the M2.5 ts-rs codegen removal this enum is hand-maintained — keep
- * the literal union in sync with the Rust source manually.
- */
-export type AiProvider =
-  | "vertex_ai"
-  | "vertex_gemini"
-  | "openrouter"
-  | "anthropic"
-  | "openai"
-  | "ollama"
-  | "gemini"
-  | "groq"
-  | "xai"
-  | "zai_sdk"
-  | "nvidia"
-  | "deepseek"
-  | "xiaomi";
 
 export interface VertexAiSettings {
   credentials_path: string | null;

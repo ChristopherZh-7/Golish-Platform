@@ -52,6 +52,14 @@ pub fn default_feeds() -> Vec<VulnFeed> {
             last_fetched: None,
         },
         VulnFeed {
+            id: "cnvd".to_string(),
+            name: "CNVD 国家信息安全漏洞共享平台".to_string(),
+            feed_type: "rss".to_string(),
+            url: "https://www.cnvd.org.cn/rssXml".to_string(),
+            enabled: false,
+            last_fetched: None,
+        },
+        VulnFeed {
             id: "seebug-paper".to_string(),
             name: "Seebug Paper 安全技术精粹".to_string(),
             feed_type: "rss".to_string(),
