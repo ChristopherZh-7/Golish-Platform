@@ -145,7 +145,6 @@ describe("App selectors", () => {
           [sessionId]: {
             ...useStore.getState().sessions[sessionId],
             processName: "zsh", // This shouldn't cause a new reference
-            gitBranch: "main", // This shouldn't cause a new reference
           },
         },
       });
@@ -289,7 +288,6 @@ describe("App selectors", () => {
             inputMode: "agent",
             renderMode: "timeline",
             processName: "vim",
-            gitBranch: "main",
             aiConfig: {
               provider: "anthropic",
               model: "claude-3-opus",

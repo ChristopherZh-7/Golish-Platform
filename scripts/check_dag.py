@@ -87,10 +87,6 @@ LAYER_TABLE: dict[str, float] = {
     "golish-agent-kit": 4.1,
     "golish-agent-runtime": 4.2,
     "golish-agent-bridge": 4.3,
-    # L5 Evaluation harnesses
-    "golish-evals": 5.0,
-    "golish-benchmarks": 5.0,
-    "golish-swebench": 5.0,
     # L6 Application
     "golish": 6.0,
 }

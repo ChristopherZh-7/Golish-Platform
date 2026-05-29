@@ -28,9 +28,6 @@ mod bootstrap;
 mod repl;
 mod runner;
 
-#[cfg(feature = "evals")]
-pub mod eval;
-
 pub use args::Args;
 pub use bootstrap::{initialize, CliContext};
 // Re-export from golish-cli-output crate

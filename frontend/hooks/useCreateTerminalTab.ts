@@ -1,5 +1,4 @@
 import { useCallback } from "react";
-import { getGitBranch, gitStatus } from "@/lib/api/git";
 import { ptyCreate } from "@/lib/api/pty";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
@@ -19,14 +18,7 @@ export function useCreateTerminalTab() {
       scrollback?: string,
       logicalTerminalId?: string
     ): Promise<string | null> => {
-      const {
-        addSession,
-        updateGitBranch,
-        setGitStatus,
-        setGitStatusLoading,
-        activeConversationId,
-        addTerminalToConversation,
-      } = useStore.getState();
+      const { addSession, activeConversationId, addTerminalToConversation } = useStore.getState();
 
       try {
         const session = await ptyCreate(workingDirectory);
@@ -49,23 +41,6 @@ export function useCreateTerminalTab() {
         if (!skipConversationLink && activeConversationId) {
           addTerminalToConversation(activeConversationId, session.id);
         }
-
-        // Fetch git branch and status in the background
-        void (async () => {
-          setGitStatusLoading(session.id, true);
-          try {
-            const [branch, status] = await Promise.all([
-              getGitBranch(session.working_directory),
-              gitStatus(session.working_directory),
-            ]);
-            updateGitBranch(session.id, branch);
-            setGitStatus(session.id, status);
-          } catch {
-            // Silently ignore - not a git repo or git not installed
-          } finally {
-            setGitStatusLoading(session.id, false);
-          }
-        })();
 
         return session.id;
       } catch (e) {

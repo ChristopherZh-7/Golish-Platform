@@ -324,9 +324,6 @@ export async function disposeAllRuntimeTerminals(): Promise<void> {
       delete s.isThinkingExpanded[sid];
       delete s.contextMetrics[sid];
       delete s.compactionCount[sid];
-      delete s.gitStatus[sid];
-      delete s.gitStatusLoading[sid];
-      delete s.gitCommitMessage[sid];
       delete s.activeWorkflows[sid];
       delete s.workflowHistory[sid];
       delete s.activeSubAgents[sid];

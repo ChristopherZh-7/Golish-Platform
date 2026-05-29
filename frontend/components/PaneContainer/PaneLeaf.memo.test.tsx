@@ -18,11 +18,6 @@ vi.mock("@/lib/api/pty", () => ({
   ptyResizeGrid: vi.fn().mockResolvedValue(undefined),
   ptyRequestGridSnapshot: vi.fn().mockResolvedValue(null),
 }));
-vi.mock("@/lib/api/git", () => ({
-  getGitBranch: vi.fn().mockResolvedValue("main"),
-  getGitStatus: vi.fn().mockResolvedValue({ changes: [] }),
-}));
-
 // D6.4b: xterm.js mocks and the TerminalPortalProvider were retired
 // alongside the renderer; PaneLeaf now mounts GridTerminal directly.
 
@@ -53,9 +48,6 @@ const resetStore = () => {
     isCompacting: {},
     isSessionDead: {},
     compactionError: {},
-    gitStatus: {},
-    gitStatusLoading: {},
-    gitCommitMessage: {},
     tabLayouts: {},
     tabHasNewActivity: {},
     sessionTokenUsage: {},
@@ -169,8 +161,8 @@ describe("PaneLeaf Memo Optimization Tests", () => {
 
   describe("Props stability", () => {
     /**
-     * The onOpenGitPanel prop should be passed as a stable reference
-     * to prevent unnecessary re-renders.
+     * Props should be passed as stable references to prevent unnecessary
+     * re-renders.
      */
     it("should render with minimal props", async () => {
       createSession("session-1");

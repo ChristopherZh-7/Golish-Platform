@@ -9,14 +9,11 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   BUILTIN_FULLTERM_COMMANDS,
   extractProcessName,
-  GIT_STATUS_POLL_INTERVAL_MS,
   isFastCommand,
   PROCESS_DETECTION_DELAY_MS,
   SHELL_PROCESSES,
-  shouldRefreshGitInfo,
 } from "@/hooks/tauri-event-types";
 import { isAiSessionInitialized, updateAiWorkspace } from "@/lib/ai";
-import { getGitBranch, gitStatus } from "@/lib/api/git";
 import { ptyGetForegroundProcess } from "@/lib/api/pty";
 import { onEvent } from "@/lib/events";
 import { addCommandHistory } from "@/lib/history";
@@ -39,39 +36,8 @@ export function createTerminalEventService() {
     string,
     { exitCode: number; endTime: number; fallbackTimer: ReturnType<typeof setTimeout> }
   >();
-  const gitRefreshSeq = new Map<string, number>();
-  const gitRefreshInFlight = new Set<string>();
   const lastStartedCommand = new Map<string, string | null>();
   let fulltermCommands = new Set(BUILTIN_FULLTERM_COMMANDS);
-  let gitStatusPollInterval: ReturnType<typeof setInterval> | null = null;
-
-  function refreshGitInfo(sessionId: string, cwd: string) {
-    if (gitRefreshInFlight.has(sessionId)) return;
-
-    const state = useStore.getState();
-    const nextSeq = (gitRefreshSeq.get(sessionId) ?? 0) + 1;
-    gitRefreshSeq.set(sessionId, nextSeq);
-    const isLatest = () => (gitRefreshSeq.get(sessionId) ?? 0) === nextSeq;
-
-    gitRefreshInFlight.add(sessionId);
-    state.setGitStatusLoading(sessionId, true);
-
-    void (async () => {
-      try {
-        const [branch, status] = await Promise.all([getGitBranch(cwd), gitStatus(cwd)]);
-        if (!isLatest()) return;
-        state.updateGitBranch(sessionId, branch);
-        state.setGitStatus(sessionId, status);
-      } catch {
-        if (!isLatest()) return;
-        state.updateGitBranch(sessionId, null);
-        state.setGitStatus(sessionId, null);
-      } finally {
-        gitRefreshInFlight.delete(sessionId);
-        if (isLatest()) state.setGitStatusLoading(sessionId, false);
-      }
-    })();
-  }
 
   function clearProcessDetectionTimer(sessionId: string) {
     const timer = processDetectionTimers.get(sessionId);
@@ -207,16 +173,6 @@ export function createTerminalEventService() {
               }
             }
 
-            const commandForRefresh =
-              command ??
-              lastStartedCommand.get(session_id) ??
-              state.pendingCommand[session_id]?.command;
-
-            if (exit_code === 0 && shouldRefreshGitInfo(commandForRefresh ?? null)) {
-              const cwd = state.sessions[session_id]?.workingDirectory;
-              if (cwd) refreshGitInfo(session_id, cwd);
-            }
-
             clearProcessDetectionTimer(session_id);
             state.setProcessName(session_id, null);
             break;
@@ -242,13 +198,6 @@ export function createTerminalEventService() {
         const state = store.getState();
 
         state.updateWorkingDirectory(session_id, path);
-
-        try {
-          const branch = await getGitBranch(path);
-          state.updateGitBranch(session_id, branch);
-        } catch {
-          state.updateGitBranch(session_id, null);
-        }
 
         try {
           const initialized = await isAiSessionInitialized(session_id);
@@ -285,20 +234,11 @@ export function createTerminalEventService() {
       })
     );
 
-    gitStatusPollInterval = setInterval(() => {
-      const state = store.getState();
-      for (const sessionId of Object.keys(state.sessions)) {
-        const session = state.sessions[sessionId];
-        if (session?.workingDirectory) refreshGitInfo(sessionId, session.workingDirectory);
-      }
-    }, GIT_STATUS_POLL_INTERVAL_MS);
-
     return () => {
       for (const timer of processDetectionTimers.values()) clearTimeout(timer);
       processDetectionTimers.clear();
       for (const { fallbackTimer } of deferredExitCodes.values()) clearTimeout(fallbackTimer);
       deferredExitCodes.clear();
-      if (gitStatusPollInterval) clearInterval(gitStatusPollInterval);
       Promise.all(
         unlisteners.map((p) =>
           p.then((unlisten) => {

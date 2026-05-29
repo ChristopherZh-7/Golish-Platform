@@ -2,7 +2,6 @@ import { homeDir } from "@tauri-apps/api/path";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { FolderGit2, Loader2, Plus, X } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,14 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
-import { deleteWorktree } from "@/lib/api/git";
 import { clearSaveFingerprints } from "@/lib/conversation-db-sync";
-import {
-  listProjectsForHome,
-  listRecentDirectories,
-  type ProjectInfo,
-  type RecentDirectory,
-} from "@/lib/indexer";
 import { logger } from "@/lib/logger";
 import {
   deleteProject,
@@ -32,13 +24,6 @@ import {
 } from "@/lib/projects";
 import { disposeAllRuntimeTerminals } from "@/lib/terminal-restore";
 import { openProject, useStore } from "@/store";
-import {
-  type ContextMenuState,
-  ProjectContextMenu,
-  WorktreeContextMenu,
-  type WorktreeContextMenuState,
-} from "./ContextMenus";
-import { NewWorktreeModal } from "./NewWorktreeModal";
 import { SetupProjectModal } from "./SetupProjectModal";
 
 export const HOME_VIEW_FOCUS_DEBOUNCE_MS = 100;
@@ -47,19 +32,9 @@ export const HOME_VIEW_FOCUS_MIN_INTERVAL_MS = 2000;
 export const HomeView = memo(function HomeView() {
   const { t } = useTranslation();
   const { createTerminalTab } = useCreateTerminalTab();
-  const [, setProjects] = useState<ProjectInfo[]>([]);
   const [savedProjects, setSavedProjects] = useState<ProjectData[]>([]);
-  const [, setRecentDirectories] = useState<RecentDirectory[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSetupModalOpen, setIsSetupModalOpen] = useState(false);
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [worktreeContextMenu, setWorktreeContextMenu] = useState<WorktreeContextMenuState | null>(
-    null
-  );
-  const [worktreeModal, setWorktreeModal] = useState<{
-    projectPath: string;
-    projectName: string;
-  } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ name: string; path: string } | null>(null);
   const [openingProject, setOpeningProject] = useState<string | null>(null);
   const openingRef = useRef(false);
@@ -73,19 +48,6 @@ export const HomeView = memo(function HomeView() {
         setSavedProjects(savedProjectsData);
       } catch (e) {
         logger.warn("Failed to load saved projects:", e);
-      }
-
-      setIsLoading(false);
-
-      try {
-        const [projectsData, directoriesData] = await Promise.all([
-          listProjectsForHome(),
-          listRecentDirectories(10),
-        ]);
-        setProjects(projectsData);
-        setRecentDirectories(directoriesData);
-      } catch (e) {
-        logger.warn("Failed to load indexer data:", e);
       }
     } finally {
       setIsLoading(false);
@@ -167,47 +129,6 @@ export const HomeView = memo(function HomeView() {
       logger.error("Failed to open project:", error);
     }
   }, [fetchData, handleOpenProject]);
-
-  const handleNewWorktree = useCallback(() => {
-    if (contextMenu) {
-      setWorktreeModal({
-        projectPath: contextMenu.projectPath,
-        projectName: contextMenu.projectName,
-      });
-    }
-  }, [contextMenu]);
-
-  const handleDeleteWorktree = useCallback(async () => {
-    if (worktreeContextMenu) {
-      if (
-        confirm(
-          t("home.deleteWorktreeConfirm", {
-            branch: worktreeContextMenu.branchName,
-          })
-        )
-      ) {
-        try {
-          await deleteWorktree(
-            worktreeContextMenu.projectPath,
-            worktreeContextMenu.worktreePath,
-            true
-          );
-          fetchData(false);
-        } catch (error) {
-          logger.error("Failed to delete worktree:", error);
-          alert(t("home.deleteWorktreeFailed", { error: String(error) }));
-        }
-      }
-    }
-  }, [worktreeContextMenu, fetchData, t]);
-
-  const handleWorktreeCreated = useCallback(
-    (worktreePath: string) => {
-      fetchData(false);
-      createTerminalTab(worktreePath);
-    },
-    [fetchData, createTerminalTab]
-  );
 
   const handleProjectSubmit = useCallback(
     async (data: ProjectFormData) => {
@@ -296,38 +217,6 @@ export const HomeView = memo(function HomeView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {worktreeModal && (
-        <NewWorktreeModal
-          isOpen={true}
-          projectPath={worktreeModal.projectPath}
-          projectName={worktreeModal.projectName}
-          onClose={() => setWorktreeModal(null)}
-          onSuccess={handleWorktreeCreated}
-        />
-      )}
-
-      {contextMenu &&
-        createPortal(
-          <ProjectContextMenu
-            x={contextMenu.x}
-            y={contextMenu.y}
-            onNewWorktree={handleNewWorktree}
-            onClose={() => setContextMenu(null)}
-          />,
-          document.body
-        )}
-
-      {worktreeContextMenu &&
-        createPortal(
-          <WorktreeContextMenu
-            x={worktreeContextMenu.x}
-            y={worktreeContextMenu.y}
-            onDelete={handleDeleteWorktree}
-            onClose={() => setWorktreeContextMenu(null)}
-          />,
-          document.body
-        )}
 
       <div className="h-full overflow-auto bg-background">
         <div className="flex flex-col items-center justify-center min-h-full py-16 px-8">

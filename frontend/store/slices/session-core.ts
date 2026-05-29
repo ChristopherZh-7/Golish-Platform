@@ -101,12 +101,6 @@ export function createSessionCoreActions(
         state.isSessionDead[session.id] = false;
         state.compactionError = state.compactionError ?? {};
         state.compactionError[session.id] = null;
-        state.gitStatus = state.gitStatus ?? {};
-        state.gitStatus[session.id] = null;
-        state.gitStatusLoading = state.gitStatusLoading ?? {};
-        state.gitStatusLoading[session.id] = true;
-        state.gitCommitMessage = state.gitCommitMessage ?? {};
-        state.gitCommitMessage[session.id] = "";
 
         if (!isPaneSession) {
           state.tabLayouts = state.tabLayouts ?? {};
@@ -192,13 +186,6 @@ export function createSessionCoreActions(
       set((state) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].virtualEnv = name;
-        }
-      }),
-
-    updateGitBranch: (sessionId: string, branch: string | null) =>
-      set((state) => {
-        if (state.sessions[sessionId]) {
-          state.sessions[sessionId].gitBranch = branch;
         }
       }),
 

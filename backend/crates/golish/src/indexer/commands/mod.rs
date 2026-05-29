@@ -8,12 +8,8 @@
 //!   shutdown.  Operates on the live `AppState::indexer_state`.
 //! - [`codebases`]    — the multi-codebase registry surfaced in Settings:
 //!   add / remove / re-index / migrate / memory-file management.
-//! - [`home_view`]    — the project & worktree summary that backs the
-//!   Home view (`list_projects_for_home`).
 //! - [`hidden_dirs`]  — recent-directories listing + the user-managed
 //!   hidden-dirs exclusion list (`~/.golish/hidden_dirs.json`).
-//! - [`worktrees`]    — git worktree CRUD (`list_git_branches`,
-//!   `create_git_worktree`).
 //!
 //! Public command names and DTO shapes are unchanged; `lib.rs` glob-imports
 //! `indexer::commands::*` so `tauri::generate_handler!` continues to find
@@ -22,8 +18,6 @@
 pub mod codebases;
 pub mod core;
 pub mod hidden_dirs;
-pub mod home_view;
-pub mod worktrees;
 
 // Re-export every public surface so the glob `use indexer::commands::*;`
 // in lib.rs (used by the giant `tauri::generate_handler!` block) resolves
@@ -45,7 +39,3 @@ pub use core::{
 };
 #[allow(unused_imports)]
 pub use hidden_dirs::{list_recent_directories, remove_recent_directory, RecentDirectory};
-#[allow(unused_imports)]
-pub use home_view::{list_projects_for_home, BranchInfo, ProjectInfo};
-#[allow(unused_imports)]
-pub use worktrees::{create_git_worktree, list_git_branches, WorktreeCreated};

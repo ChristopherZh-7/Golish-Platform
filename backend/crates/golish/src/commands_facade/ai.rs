@@ -26,7 +26,7 @@
 //!   `get_context_*`, `get_remaining_tokens`, `reset_context_manager`,
 //!   `retry_compaction`, `is_context_management_enabled`
 //! - **Loop protection**: `*_loop_protection_config`, `*_loop_detect*`
-//! - **Misc**: `generate_commit_message`, `finalize_ai_session`,
+//! - **Misc**: `finalize_ai_session`,
 //!   `search_memories`, `list_recent_memories`, `get_memory_count`
 
 pub use crate::ai::commands::*;

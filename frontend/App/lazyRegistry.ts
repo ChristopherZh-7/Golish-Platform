@@ -9,10 +9,6 @@ export const FileEditorSidebarPanel = lazy(() =>
   }))
 );
 
-export const GitPanel = lazy(() =>
-  import("../components/GitPanel").then((m) => ({ default: m.GitPanel }))
-);
-
 export const SessionBrowser = lazy(() =>
   import("../components/SessionBrowser/SessionBrowser").then((m) => ({
     default: m.SessionBrowser,

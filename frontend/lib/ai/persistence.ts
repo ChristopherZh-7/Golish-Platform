@@ -3,7 +3,6 @@ import type {
   AgentFileInfo,
   ApiRequestStatsSnapshot,
   AuditEntry,
-  CommitMessageResponse,
   DbTokenUsageStats,
   MemoryEntry,
   PromptPayload,
@@ -100,16 +99,6 @@ export function extractText(payload: PromptPayload): string {
     .filter((part): part is TextPart => part.type === "text")
     .map((part) => part.text)
     .join("\n");
-}
-
-// ── Commit Writer ──────────────────────
-
-export async function generateCommitMessage(
-  sessionId: string,
-  diff: string,
-  fileSummary?: string
-): Promise<CommitMessageResponse> {
-  return invoke("generate_commit_message", { sessionId, diff, fileSummary });
 }
 
 // ── Analytics / DB commands ──────────────────────

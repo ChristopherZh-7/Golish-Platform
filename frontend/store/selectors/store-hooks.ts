@@ -125,20 +125,6 @@ export const useAiConfig = () => useStore((state) => state.aiConfig);
 export const useSessionAiConfig = (sessionId: string) =>
   useStore((state) => state.sessions[sessionId]?.aiConfig);
 
-// ─── Git (per-session) ───────────────────────────────────────────────────
-
-export const useGitBranch = (sessionId: string) =>
-  useStore((state) => state.sessions[sessionId]?.gitBranch ?? null);
-
-export const useGitStatus = (sessionId: string) =>
-  useStore((state) => state.gitStatus[sessionId] ?? null);
-
-export const useGitStatusLoading = (sessionId: string) =>
-  useStore((state) => state.gitStatusLoading[sessionId] ?? false);
-
-export const useGitCommitMessage = (sessionId: string) =>
-  useStore((state) => state.gitCommitMessage[sessionId] ?? "");
-
 // ─── Context metrics ─────────────────────────────────────────────────────
 
 export const useContextMetrics = (sessionId: string) =>

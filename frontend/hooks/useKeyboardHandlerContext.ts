@@ -22,14 +22,10 @@ export interface KeyboardHandlerContext {
   // Session state
   activeSessionId: string | null;
 
-  // Panel state
-  gitPanelOpen: boolean;
-
   // Callbacks
   handleNewTab: () => void;
   handleToggleMode: () => void;
   openContextPanel: () => void;
-  openGitPanel: () => void;
   toggleFileEditorPanel: () => void;
   openSettingsTab: () => void;
   handleSplitPane: (direction: SplitDirection) => Promise<void>;
@@ -51,11 +47,9 @@ export interface KeyboardHandlerContext {
 
 const defaultContext: KeyboardHandlerContext = {
   activeSessionId: null,
-  gitPanelOpen: false,
   handleNewTab: () => {},
   handleToggleMode: () => {},
   openContextPanel: () => {},
-  openGitPanel: () => {},
   toggleFileEditorPanel: () => {},
   openSettingsTab: () => {},
   handleSplitPane: async () => {},
@@ -172,18 +166,6 @@ export function createKeyboardHandler(
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "c") {
       e.preventDefault();
       ctx.openContextPanel();
-      return;
-    }
-
-    // Cmd+Shift+G for git panel
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "g") {
-      e.preventDefault();
-      if (ctx.gitPanelOpen) {
-        // Close - need to use a setter, but we don't have direct access
-        // The App component will handle this through the ref
-      } else {
-        ctx.openGitPanel();
-      }
       return;
     }
 

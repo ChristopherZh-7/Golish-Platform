@@ -108,11 +108,6 @@ dotenvy.workspace = true
 
 rig-core.workspace = true
 
-# Evals framework (optional - only for evals feature)
-golish-evals = { path = "../golish-evals", optional = true }
-golish-benchmarks = { path = "../golish-benchmarks", optional = true }
-golish-swebench = { path = "../golish-swebench", optional = true }
-
 # Graph-based workflow execution for multi-agent systems
 graph-flow.workspace = true
 async-trait.workspace = true
@@ -140,8 +135,6 @@ rustls.workspace = true
 
 [features]
 default = []
-# Evaluation framework using rig::evals
-evals = ["dep:golish-evals", "dep:golish-benchmarks", "dep:golish-swebench"]
 
 [dev-dependencies]
 tempfile.workspace = true

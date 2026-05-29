@@ -30,7 +30,6 @@ import {
   DashboardPanelView,
   FileEditorSidebarPanel,
   FindingsPanelView,
-  GitPanel,
   KeyboardShortcutsHelp,
   MethodologyPanelView,
   PipelinePanelView,
@@ -112,7 +111,6 @@ export interface AppShellProps {
   openContextPanel: () => void;
   openSettingsTab: () => void;
   toggleFileEditorPanel: () => void;
-  handleGitPanelOpenChange: (open: boolean) => void;
   handleContextPanelOpenChange: (open: boolean) => void;
   handleFileEditorPanelOpenChange: (open: boolean) => void;
   handleSidecarPanelOpenChange: (open: boolean) => void;
@@ -177,7 +175,6 @@ export function AppShell(props: AppShellProps) {
     openContextPanel,
     openSettingsTab,
     toggleFileEditorPanel,
-    handleGitPanelOpenChange,
     handleContextPanelOpenChange,
     handleFileEditorPanelOpenChange,
     handleSidecarPanelOpenChange,
@@ -185,7 +182,6 @@ export function AppShell(props: AppShellProps) {
 
   // Store subscriptions owned by the shell (presentational reads only)
   const { activeSessionId, focusedWorkingDirectory: workingDirectory, tabLayouts } = useAppState();
-  const gitPanelOpen = useStore((state) => state.gitPanelOpen);
   const contextPanelOpen = useStore((state) => state.contextPanelOpen);
   const fileEditorPanelOpen = useStore((state) => state.fileEditorPanelOpen);
   const sidecarPanelOpen = useStore((state) => state.sidecarPanelOpen);
@@ -474,9 +470,6 @@ export function AppShell(props: AppShellProps) {
                     )}
                   </div>
 
-                  <Suspense fallback={null}>
-                    <GitPanel open={gitPanelOpen} onOpenChange={handleGitPanelOpenChange} />
-                  </Suspense>
                   <Suspense fallback={null}>
                     <ContextPanel
                       open={contextPanelOpen}

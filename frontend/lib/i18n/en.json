@@ -55,9 +55,7 @@
     "noProjects": "No projects yet. Create one to get started.",
     "deleteProjectTitle": "Delete Project",
     "deleteProjectPrefix": "Remove",
-    "deleteProjectSuffix": "from Golish? This deletes the project configuration but won't delete any files.",
-    "deleteWorktreeConfirm": "Are you sure you want to delete worktree \"{{branch}}\"?",
-    "deleteWorktreeFailed": "Failed to delete worktree: {{error}}"
+    "deleteProjectSuffix": "from Golish? This deletes the project configuration but won't delete any files."
   },
   "targets": {
     "title": "Target Manager",

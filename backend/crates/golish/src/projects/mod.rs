@@ -7,4 +7,3 @@
 pub mod commands;
 
 pub use golish_projects::file_storage;
-pub use golish_projects::list_projects;

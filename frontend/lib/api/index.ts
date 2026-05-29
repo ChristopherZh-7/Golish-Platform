@@ -5,10 +5,10 @@
  *
  * Example:
  *   import { api } from "@/lib/api";
- *   const branch = await api.git.getGitBranch("/path");
+ *   const session = await api.pty.ptyCreate("/path");
  *
  * Or import individual functions:
- *   import { getGitBranch } from "@/lib/api/git";
+ *   import { ptyCreate } from "@/lib/api/pty";
  */
 
 export { ApiError, getInflightCommands, invoke } from "./client";
@@ -21,7 +21,6 @@ import * as conversationDb from "./conversation-db";
 import * as fileEditor from "./file-editor";
 import * as files from "./files";
 import * as findings from "./findings";
-import * as git from "./git";
 import * as history from "./history";
 import * as indexer from "./indexer";
 import * as integrations from "./integrations";
@@ -52,7 +51,6 @@ import * as wordlist from "./wordlist";
 export {
   pty,
   assetIntel,
-  git,
   shell,
   files,
   fileEditor,
@@ -90,7 +88,6 @@ export {
 export const api = {
   pty,
   assetIntel,
-  git,
   shell,
   files,
   fileEditor,

@@ -28,11 +28,6 @@ export {
   useAppState,
 } from "./app";
 export {
-  type GitPanelState,
-  selectGitPanelState,
-  useGitPanelState,
-} from "./git-panel";
-export {
   clearAllSessionCaches,
   clearSessionCache,
   type SessionState,
@@ -54,10 +49,6 @@ export {
   useContextMetrics,
   useExecutionMode,
   useFocusedSessionId,
-  useGitBranch,
-  useGitCommitMessage,
-  useGitStatus,
-  useGitStatusLoading,
   useInputMode,
   useIsAgentResponding,
   useIsAgentThinking,

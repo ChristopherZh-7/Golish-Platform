@@ -25,7 +25,7 @@ interface UnifiedInputProps {
 
 The only caller is `frontend/components/PaneContainer/PaneLeaf.tsx` which passes only `sessionId`.
 
-`workingDirectory` is read **inside** the component via `useStore((s) => s.sessions[sessionId]?.workingDirectory)` — it is not a prop. There is no `onOpenGitPanel` anywhere in the workspace.
+`workingDirectory` is read **inside** the component via `useStore((s) => s.sessions[sessionId]?.workingDirectory)` — it is not a prop.
 
 ### 1.3 Store subscriptions (DO NOT change selector shape)
 

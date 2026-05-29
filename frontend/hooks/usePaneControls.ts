@@ -1,6 +1,5 @@
 import { useCallback } from "react";
 import { buildProviderConfig, initAiSession } from "@/lib/ai";
-import { getGitBranch } from "@/lib/api/git";
 import { ptyCreate } from "@/lib/api/pty";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
@@ -14,7 +13,6 @@ export function usePaneControls(activeSessionId: string | null) {
   const closePane = useStore((state) => state.closePane);
   const removeSession = useStore((state) => state.removeSession);
   const navigatePane = useStore((state) => state.navigatePane);
-  const updateGitBranch = useStore((state) => state.updateGitBranch);
   const setSessionAiConfig = useStore((state) => state.setSessionAiConfig);
 
   const handleSplitPane = useCallback(
@@ -61,13 +59,6 @@ export function usePaneControls(activeSessionId: string | null) {
         );
 
         try {
-          const branch = await getGitBranch(newSession.working_directory);
-          updateGitBranch(newSession.id, branch);
-        } catch {
-          // Not a git repo or git not installed
-        }
-
-        try {
           const config = await buildProviderConfig(settings, newSession.working_directory);
           await initAiSession(newSession.id, config);
           setSessionAiConfig(newSession.id, { status: "ready" });
@@ -83,7 +74,7 @@ export function usePaneControls(activeSessionId: string | null) {
         notify.error("Failed to split pane");
       }
     },
-    [activeSessionId, addSession, splitPane, updateGitBranch, setSessionAiConfig]
+    [activeSessionId, addSession, splitPane, setSessionAiConfig]
   );
 
   const handleClosePane = useCallback(async () => {

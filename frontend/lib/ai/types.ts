@@ -703,11 +703,6 @@ export interface PromptPayload {
 export type TextPart = Extract<PromptPart, { type: "text" }>;
 export type ImagePart = Extract<PromptPart, { type: "image" }>;
 
-export interface CommitMessageResponse {
-  summary: string;
-  description: string;
-}
-
 export interface ToolCallStats {
   name: string;
   total_count: number;

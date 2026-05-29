@@ -3,7 +3,6 @@ members = [
     "crates/golish",
     "crates/golish-cli-output",
     "crates/golish-core",
-    "crates/golish-evals",
     "crates/golish-models",
     "crates/golish-settings",
     "crates/golish-tools",
@@ -27,8 +26,6 @@ members = [
     "crates/rig-zai-sdk",
     "crates/rig-gemini-vertex",
     "crates/golish-skills",
-    "crates/golish-benchmarks",
-    "crates/golish-swebench",
     "crates/golish-json-repair",
     "crates/golish-mcp",
     "crates/golish-pentest",
@@ -49,7 +46,7 @@ members = [
     "crates/golish-intel-providers",
     "crates/golish-integrations",
 ]
-# Default members for fast inner-loop development (excludes Tauri app, evals, benchmarks)
+# Default members for fast inner-loop development (excludes Tauri app)
 default-members = [
     "crates/golish-core",
     "crates/golish-models",
@@ -108,7 +105,6 @@ repository = "https://github.com/ChristopherZh-7/golish-platform"
 # Internal crates
 golish-cli-output = { path = "crates/golish-cli-output" }
 golish-core = { path = "crates/golish-core" }
-golish-evals = { path = "crates/golish-evals" }
 golish-models = { path = "crates/golish-models" }
 golish-settings = { path = "crates/golish-settings" }
 golish-tools = { path = "crates/golish-tools" }
@@ -128,8 +124,6 @@ golish-web = { path = "crates/golish-web" }
 golish-shell-exec = { path = "crates/golish-shell-exec" }
 golish-synthesis = { path = "crates/golish-synthesis" }
 golish-skills = { path = "crates/golish-skills" }
-golish-benchmarks = { path = "crates/golish-benchmarks" }
-golish-swebench = { path = "crates/golish-swebench" }
 rig-zai-sdk = { path = "crates/rig-zai-sdk" }
 rig-gemini-vertex = { path = "crates/rig-gemini-vertex" }
 golish-pentest = { path = "crates/golish-pentest" }
@@ -237,9 +231,7 @@ rig-vertexai = { version = "0.2.4" }
 # HTTP utilities (for custom HTTP clients)
 http = "1.2"
 
-# Evals framework (optional - only for evals feature)
 tempfile = { version = "3" }
-indicatif = { version = "0.18" }
 
 # Google Cloud authentication (for sidecar Vertex AI synthesis)
 gcp_auth = "0.12"

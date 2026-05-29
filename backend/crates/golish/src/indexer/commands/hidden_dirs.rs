@@ -5,10 +5,6 @@
 //! (`~/.golish/hidden_dirs.json`) is just a flat array of paths the user
 //! has chosen not to see again — `remove_recent_directory` adds an entry,
 //! `list_recent_directories` filters them out.
-//!
-//! We borrow [`super::home_view::get_git_stats`] and
-//! [`super::home_view::format_relative_time`] for the per-directory
-//! summary so this module stays focused on the exclusion logic.
 
 use std::path::PathBuf;
 
@@ -16,7 +12,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::GolishError;
 
-use super::home_view::{format_relative_time, get_git_stats};
+/// Format a UTC timestamp as a coarse relative time (e.g. "2h ago").
+fn format_relative_time(datetime: chrono::DateTime<chrono::Utc>) -> String {
+    let now = chrono::Utc::now();
+    let duration = now.signed_duration_since(datetime);
+
+    if duration.num_days() > 0 {
+        format!("{}d ago", duration.num_days())
+    } else if duration.num_hours() > 0 {
+        format!("{}h ago", duration.num_hours())
+    } else if duration.num_minutes() > 0 {
+        format!("{}m ago", duration.num_minutes())
+    } else {
+        "just now".to_string()
+    }
+}
 
 /// Recent directory information for the home view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,14 +35,6 @@ pub struct RecentDirectory {
     pub path: String,
     /// Directory name
     pub name: String,
-    /// Current git branch (if in a git repo)
-    pub branch: Option<String>,
-    /// Number of files with changes
-    pub file_count: u32,
-    /// Lines added
-    pub insertions: i32,
-    /// Lines deleted
-    pub deletions: i32,
     /// Last accessed time (relative, e.g., "2h ago")
     pub last_accessed: String,
 }
@@ -101,20 +103,9 @@ pub async fn list_recent_directories(
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| session.workspace_label.clone());
 
-        // Get current git stats if the directory still exists
-        let (branch, insertions, deletions, file_count) = if path.exists() {
-            get_git_stats(&path).map_or((None, 0, 0, 0), |(b, i, d, f)| (Some(b), i, d, f))
-        } else {
-            (None, 0, 0, 0)
-        };
-
         directories.push(RecentDirectory {
             path: session.workspace_path,
             name,
-            branch,
-            file_count,
-            insertions,
-            deletions,
             last_accessed: format_relative_time(session.ended_at),
         });
     }

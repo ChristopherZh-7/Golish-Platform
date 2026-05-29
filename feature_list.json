@@ -42,6 +42,30 @@
       "notes": "2026-05-28 用户明确要求：先全删 ZAP，再全删整个 SecurityView 外层面板（用户原话：『安全测试的内容你是不是都给我删掉』『我觉得删掉最干净是最好的』），未来基于 org 做 target-centric 信息收集面板（端口扫描 / 每端口抓 JS / 敏感信息泄漏 / sitemap 等）。后端 command 全保留为重构能力库。本条目 commit 策略待用户确认；分支 chore/remove-zap（基于 feat/harness-design-2026-05-26 HEAD）。重要：本分支带着大量上轮未 commit 的 in-progress 改动（harness backfill / chat panel / xiaomi-mimo / agent-tool-use 等），建议先把 chore/remove-zap 作为干净的删除 commit 提交，然后再去 feat/harness-design 分支推进剩余工作。下一步功能：feat/asset-recon-panel 重构 target-centric 信息收集面板（在 TargetPanel 下展开 target detail 时显示）。"
     },
     {
+      "id": "chore-remove-git-eval-worktree",
+      "priority": 0,
+      "area": "backend/crates/golish + backend/Cargo.toml + scripts/check_dag.py + justfile + frontend (store/hooks/components/lib) + docs/architecture.md",
+      "title": "Remove terminal-era leftovers: Git source-control panel + per-terminal git branch badge + git worktrees + AI eval/benchmark crates",
+      "user_visible_behavior": "项目从 terminal/coding 工具演变为渗透平台，删除非渗透遗留：(1) Git 源代码管理面板（GitPanel：status/diff/stage/commit/push + AI 写 commit message）整套消失；(2) 终端标签上的 git 分支/改动小徽标（getGitBranch/gitStatus 织入 useCreateTerminalTab/usePaneControls/useTauriEvents/terminal-events/UnifiedInput/git store slice）全部移除；(3) git worktree 管理（NewWorktreeModal + HomeView 右键菜单 + create/list/delete worktree 命令 + home_view 项目-worktree 摘要）移除；(4) AI 编码评测 crate golish-evals / golish-benchmarks(HumanEval) / golish-swebench(SWE-bench) 及 --features evals CLI、cli/eval/ 目录、justfile eval/swebench 目标全删。保留：DiffView 基础组件（agent 工具 diff/udiff/sidecar 复用）、GitHub Token + pentest_git_clone_tool（下载渗透工具用）、golish-sidecar 自己的 generate_commit_message（patches→PR 合成，非源代码面板）、HomeView 项目列表（listProjectConfigs）。",
+      "status": "passing",
+      "verification": [
+        "cd backend && cargo check -p golish → exit 0",
+        "cd frontend && pnpm exec tsc --noEmit → 0 errors",
+        "cd frontend && pnpm exec biome check . → Checked 689 files / No fixes applied",
+        "pnpm test:run → 92 files / 1075 passed / 12 skipped",
+        "rg 'GitPanel|getGitBranch|create_git_worktree|list_git_branches|generate_commit_message|golish-swebench|golish-evals' frontend backend/crates → 仅剩 golish-sidecar 自有 generate_commit_message（不同特性，保留）+ 历史 docs",
+        "python3 scripts/check_dag.py（仍报 5 个新 crate unknown — 既有 baseline 问题，与本次删除无关；本次仅移除了 L5 eval 三个 crate 的登记）"
+      ],
+      "evidence": {
+        "backend": "删除 backend/crates/golish/src/commands/proc/git.rs、ai/commands/commit_writer.rs、indexer/commands/home_view.rs、indexer/commands/worktrees.rs；从 commands_registry.rs 移除 get_git_branch/git_status/git_diff/git_diff_staged/git_stage/git_unstage/git_commit/git_push/git_delete_worktree/list_git_branches/create_git_worktree/list_projects_for_home/generate_commit_message；shell/mod.rs 删 get_git_branch；hidden_dirs.rs 内联 format_relative_time 并去掉 git 统计（RecentDirectory 收窄为 path/name/last_accessed）；删除 3 个 eval crate 目录 + backend/Cargo.toml members/deps/indicatif + golish/Cargo.toml evals feature/optional deps + main.rs/cli/args.rs/cli/mod.rs/cli/bootstrap eval 分支 + cli/eval/ 目录；scripts/check_dag.py 移除 L5 三个 crate；justfile 删 eval/eval-list/swebench-setup/swebench/swebench-verbose 并修 ci/test-rust-all。",
+        "frontend": "删除 components/GitPanel/、DiffView/GitDiffView.tsx、lib/api/git.ts、lib/git.ts、store/slices/git.ts(+test)、store/selectors/git-panel.ts、HomeView/NewWorktreeModal.tsx(+.bak)、HomeView/ContextMenus.tsx、HomeView/ProjectCards.tsx、hooks/useTauriEvents.test.tsx；store git slice 从 store/index.ts 组合移除 + session-draft-types/session-core/session.ts/pane.ts/panel.ts/store-hooks/selectors-index/unified-input 去 git；App.tsx/AppShell.tsx/useKeyboardHandlerContext 去 GitPanel + Cmd+Shift+G；useCreateTerminalTab/usePaneControls/useTauriEvents/terminal-events 去 git fetch + poll；lib/api/index.ts 去 git 命名空间；lib/api/indexer.ts + lib/indexer.ts 去 worktree/ProjectInfo/BranchInfo 并收窄 RecentDirectory；lib/ai/persistence.ts + types.ts 去 generateCommitMessage/CommitMessageResponse；mocks.ts 去 git mock；HomeView.tsx 去 worktree 全部接线；~20 测试文件去 git mock 行 / git 断言。",
+        "docs": "docs/architecture.md 移除 L5 Evaluation harnesses（DAG 图 + crate 目录）并加 2026-05-29 删除说明。其它历史 docs（swebench/、pr-check-evals.md、prompt-contributions.md、home-view-implementation.md 等）仍引用已删 crate，作为历史记录保留，未逐一清理。",
+        "preserved": "DiffView 基础组件、GitHub Token/Integrations、pentest_git_clone_tool、golish-sidecar::generate_commit_message（patches→PR 合成，不同于源代码面板）、HomeView 项目列表（listProjectConfigs）、listRecentDirectories（收窄）。",
+        "not_run": "未跑 just precommit（baseline 即有 clippy warnings-as-errors 与 sandbox PermissionDenied 测试失败，与本删除无关）；未做手动 E2E（用户尚未 just dev 复测，建议复测：开终端标签无 git 徽标、Cmd+Shift+G 无效、HomeView 正常、无控制台报错）。"
+      },
+      "notes": "2026-05-29 用户决策链：先问 git 那套是什么（答：源代码管理面板，提交 git 用），用户『这个功能我不需要，terminal 演变过来的，对渗透不需要的删掉』→ 选『全删（含 worktree+eval）』→ git 分两层时选『B：连终端分支徽标一起删』（明确授权动终端核心）。commit 策略待用户确认。"
+    },
+    {
       "id": "target-surface-workbench",
       "priority": 0,
       "area": "frontend/components/TargetPanel + frontend/lib/api/security-analysis + frontend/lib/i18n + docs/design + docs/superpowers/plans",

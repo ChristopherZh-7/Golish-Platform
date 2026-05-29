@@ -37,9 +37,6 @@ describe("Derived Timeline Selectors", () => {
       isCompacting: {},
       isSessionDead: {},
       compactionError: {},
-      gitStatus: {},
-      gitStatusLoading: {},
-      gitCommitMessage: {},
     });
   });
 

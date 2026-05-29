@@ -164,26 +164,13 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
     // Build log directives based on mode.
     // A3: `golish_ai=` umbrella was removed; expand to the individual
     // implementation crates so log filtering keeps the same coverage.
-    #[allow(unused_mut)] // mutated when evals feature is enabled
-    let mut directives: Vec<String> = vec![
+    let directives: Vec<String> = vec![
         format!("golish={}", log_level),
-        format!("golish_evals={}", log_level),
         format!("golish_agent_kit={}", log_level),
         format!("golish_agent_runtime={}", log_level),
         format!("golish_agent_bridge={}", log_level),
         format!("golish_prompts={}", log_level),
     ];
-
-    // In eval mode, suppress noisy internal logs to keep output clean
-    #[cfg(feature = "evals")]
-    if args.eval {
-        // Suppress agentic loop details (compaction checks, iteration logs)
-        directives.push("golish_agent_runtime::agentic_loop=warn".to_string());
-        // Suppress system hooks debug logs
-        directives.push("golish_agent_kit::system_hooks=warn".to_string());
-        // Suppress sub-agent executor details
-        directives.push("golish_sub_agents::executor=warn".to_string());
-    }
 
     let extra_directives: Vec<&str> = directives.iter().map(|s| s.as_str()).collect();
 

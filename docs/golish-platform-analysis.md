@@ -55,7 +55,6 @@ Layer 2: Infrastructure (22 crates)
   ├── golish-mcp         (MCP client)
   ├── golish-synthesis   (session synthesis)
   ├── golish-artifacts   (artifact management)
-  ├── golish-evals       (evaluation framework)
   ├── golish-db          (PostgreSQL persistence, NEW)
   └── Provider crates:
       ├── rig-anthropic-vertex

@@ -23,9 +23,6 @@ vi.mock("@/lib/api/pty", () => ({
   ptyDestroy: vi.fn(),
   setActiveTerminalSession: vi.fn(() => Promise.resolve()),
 }));
-vi.mock("@/lib/api/git", () => ({
-  getGitBranch: vi.fn(),
-}));
 vi.mock("@/lib/api/shell", () => ({
   shellIntegrationStatus: vi.fn(),
   shellIntegrationInstall: vi.fn(),
@@ -74,9 +71,6 @@ const resetStore = () => {
     isCompacting: {},
     isSessionDead: {},
     compactionError: {},
-    gitStatus: {},
-    gitStatusLoading: {},
-    gitCommitMessage: {},
     sessionTokenUsage: {},
     lastSentCommand: {},
     terminalClearRequest: {},
@@ -333,13 +327,11 @@ describe("App.tsx Performance Optimizations", () => {
           handleNewTab: () => {},
           handleToggleMode: () => {},
           openContextPanel: () => {},
-          openGitPanel: () => {},
           toggleFileEditorPanel: () => {},
           openSettingsTab: () => {},
           handleSplitPane: async (_dir: string) => {},
           handleClosePane: async () => {},
           handleNavigatePane: (_dir: string) => {},
-          gitPanelOpen: false,
         },
       };
 
@@ -572,13 +564,11 @@ describe("App Keyboard Event Listener Subscription", () => {
     const contextRef: React.MutableRefObject<KeyboardHandlerContext> = {
       current: {
         activeSessionId: null,
-        gitPanelOpen: false,
         handleNewTab: () => {
           newTabCalled = true;
         },
         handleToggleMode: () => {},
         openContextPanel: () => {},
-        openGitPanel: () => {},
         toggleFileEditorPanel: () => {},
         openSettingsTab: () => {},
         handleSplitPane: async () => {},

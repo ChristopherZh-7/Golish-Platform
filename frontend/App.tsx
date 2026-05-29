@@ -22,8 +22,6 @@ export function App() {
 
   // Panel state from store — only the openers/closers App.tsx wires
   // up; AppShell subscribes to the open booleans directly.
-  const gitPanelOpen = useStore((state) => state.gitPanelOpen);
-  const openGitPanel = useStore((state) => state.openGitPanel);
   const openContextPanel = useStore((state) => state.openContextPanel);
   const toggleFileEditorPanel = useStore((state) => state.toggleFileEditorPanel);
   const closePanels = useStore((state) => state.closePanels);
@@ -70,11 +68,9 @@ export function App() {
 
   // Wire global keyboard shortcuts (refs pattern, listener installed once)
   useGlobalShortcuts({
-    gitPanelOpen,
     handleNewTab,
     handleToggleMode,
     openContextPanel,
-    openGitPanel,
     toggleFileEditorPanel,
     openSettingsTab,
     handleSplitPane,
@@ -121,10 +117,6 @@ export function App() {
   const handleOpenHistory = useCallback(() => useStore.getState().setSessionBrowserOpen(true), []);
 
   // Panel onOpenChange callbacks (open via specific opener, close via shared closePanels)
-  const handleGitPanelOpenChange = useCallback(
-    (open: boolean) => (open ? openGitPanel() : closePanels()),
-    [openGitPanel, closePanels]
-  );
   const handleContextPanelOpenChange = useCallback(
     (open: boolean) => (open ? openContextPanel() : closePanels()),
     [openContextPanel, closePanels]
@@ -174,7 +166,6 @@ export function App() {
     openContextPanel,
     openSettingsTab,
     toggleFileEditorPanel,
-    handleGitPanelOpenChange,
     handleContextPanelOpenChange,
     handleFileEditorPanelOpenChange,
     handleSidecarPanelOpenChange,

@@ -122,38 +122,6 @@ let mockAiInitialized = false;
 let mockConversationLength = 0;
 let mockSessionPersistenceEnabled = true;
 
-// Mock Git state (used by get_git_branch and git_status)
-interface MockGitStatusSummary {
-  branch: string | null;
-  ahead: number;
-  behind: number;
-  entries: Array<unknown>;
-  insertions: number;
-  deletions: number;
-}
-
-let mockGitBranch: string | null = "main";
-let mockGitStatus: MockGitStatusSummary = {
-  branch: mockGitBranch,
-  ahead: 0,
-  behind: 0,
-  entries: [],
-  insertions: 0,
-  deletions: 0,
-};
-
-export function setMockGitState(next: Partial<MockGitStatusSummary>): void {
-  if ("branch" in next) {
-    mockGitBranch = next.branch ?? null;
-  }
-
-  mockGitStatus = {
-    ...mockGitStatus,
-    ...next,
-    branch: mockGitBranch,
-  };
-}
-
 // Session-specific AI state (for per-tab isolation)
 const mockSessionAiState: Map<
   string,
@@ -3016,12 +2984,6 @@ export function setupMocks(): void {
       }
     ).__MOCK_EMIT_COMMAND_BLOCK_EVENT__ = emitCommandBlockEvent;
 
-    // Expose git state controls for e2e testing
-    (
-      window as unknown as {
-        __MOCK_SET_GIT_STATE__?: typeof setMockGitState;
-      }
-    ).__MOCK_SET_GIT_STATE__ = setMockGitState;
     (
       window as unknown as {
         __MOCK_EMIT_TERMINAL_OUTPUT__?: typeof emitTerminalOutput;
@@ -3091,14 +3053,6 @@ export function setupMocks(): void {
 
       case "shell_integration_uninstall":
         return undefined;
-
-      case "get_git_branch":
-        // Return mock branch name for browser mode
-        return mockGitBranch;
-
-      case "git_status":
-        // Return mock git status summary for browser mode
-        return mockGitStatus;
 
       // =========================================================================
       // Theme Commands
@@ -3625,35 +3579,6 @@ export function setupMocks(): void {
       // =========================================================================
       // Home View Commands
       // =========================================================================
-      case "list_projects_for_home":
-        // Return mock projects for the home view
-        return [
-          {
-            path: "/home/user/projects/golish",
-            name: "golish",
-            branches: [
-              {
-                name: "main",
-                path: "/home/user/projects/golish",
-                file_count: 0,
-                insertions: 0,
-                deletions: 0,
-                last_activity: "2h ago",
-              },
-              {
-                name: "feature/home-view",
-                path: "/home/user/projects/golish-feature-home-view",
-                file_count: 3,
-                insertions: 42,
-                deletions: 12,
-                last_activity: "1h ago",
-              },
-            ],
-            warnings: 0,
-            last_activity: "1h ago",
-          },
-        ];
-
       case "list_recent_directories": {
         // Return mock recent directories
         return [
@@ -3677,18 +3602,6 @@ export function setupMocks(): void {
           },
         ];
       }
-
-      case "list_git_branches":
-        // Return mock git branches
-        return ["main", "develop", "feature/new-feature"];
-
-      case "create_git_worktree":
-        return {
-          path: "/home/user/projects/golish-new-branch",
-          branch: "new-branch",
-          init_script_run: false,
-          init_script_output: null,
-        };
 
       case "save_project":
         console.log("[Mock IPC] save_project:", args);

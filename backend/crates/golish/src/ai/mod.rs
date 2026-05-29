@@ -51,7 +51,7 @@ pub use commands::{
     add_tool_always_allow, cancel_ai_generation, check_recon_tools_cmd, clear_ai_conversation,
     clear_ai_conversation_session, delete_agent_definition, disable_full_auto_mode,
     disable_loop_detection, enable_full_auto_mode, enable_loop_detection, execute_ai_tool,
-    export_ai_session_transcript, finalize_ai_session, find_ai_session, generate_commit_message,
+    export_ai_session_transcript, finalize_ai_session, find_ai_session,
     get_agent_mode, get_ai_conversation_length, get_ai_conversation_length_session,
     get_api_request_stats, get_approval_patterns, get_audit_log, get_available_tools,
     get_context_summary, get_context_trim_config, get_context_utilization,
@@ -73,5 +73,5 @@ pub use commands::{
     send_ai_prompt_with_attachments, set_agent_mode, set_ai_session_persistence,
     set_execution_mode, set_hitl_config, set_loop_protection_config, set_sub_agent_model,
     set_tool_policy, set_tool_policy_config, shutdown_ai_agent, shutdown_ai_session,
-    signal_frontend_ready, update_ai_workspace, AiState, CommitMessageResponse,
+    signal_frontend_ready, update_ai_workspace, AiState,
 };

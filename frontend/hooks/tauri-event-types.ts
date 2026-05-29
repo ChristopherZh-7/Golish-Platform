@@ -8,7 +8,6 @@
 
 export const PROCESS_DETECTION_DELAY_MS = 300;
 export const SHELL_PROCESSES = new Set(["zsh", "bash", "sh", "fish"]);
-export const GIT_STATUS_POLL_INTERVAL_MS = 5000;
 
 export const FAST_COMMANDS = new Set([
   "ls",
@@ -82,16 +81,6 @@ export function isFastCommand(command: string | null): boolean {
   if (!command) return true;
   const firstWord = command.trim().split(/\s+/)[0];
   return FAST_COMMANDS.has(firstWord);
-}
-
-export function shouldRefreshGitInfo(command: string | null): boolean {
-  if (!command) return false;
-  const trimmed = command.trim();
-  if (!trimmed) return false;
-  return (
-    /(?:^|\s|&&|\|\||;|\()git\s+(?:checkout|switch)\b/.test(trimmed) ||
-    /(?:^|\s|&&|\|\||;|\()gh\s+pr\s+checkout\b/.test(trimmed)
-  );
 }
 
 /**

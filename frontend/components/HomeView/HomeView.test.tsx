@@ -2,9 +2,10 @@ import { act, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the modules before importing HomeView
-vi.mock("@/lib/indexer", () => ({
-  listProjectsForHome: vi.fn().mockResolvedValue([]),
-  listRecentDirectories: vi.fn().mockResolvedValue([]),
+vi.mock("@/lib/projects", () => ({
+  listProjectConfigs: vi.fn().mockResolvedValue([]),
+  saveProject: vi.fn().mockResolvedValue(undefined),
+  deleteProject: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/hooks/useCreateTerminalTab", () => ({
@@ -13,7 +14,7 @@ vi.mock("@/hooks/useCreateTerminalTab", () => ({
   }),
 }));
 
-import { listProjectsForHome, listRecentDirectories } from "@/lib/indexer";
+import { listProjectConfigs } from "@/lib/projects";
 import { HOME_VIEW_FOCUS_DEBOUNCE_MS, HOME_VIEW_FOCUS_MIN_INTERVAL_MS, HomeView } from "./HomeView";
 
 describe("HomeView", () => {
@@ -21,7 +22,7 @@ describe("HomeView", () => {
     vi.clearAllMocks();
     // Real timers throughout: fake timers + React 19 + happy-dom doesn't
     // reliably flush the chained microtasks that `fetchData()` triggers
-    // (it `await`s `listProjectConfigs()` *then* `listProjectsForHome()`).
+    // (it `await`s `listProjectConfigs()` *then* `listProjectConfigs()`).
     // Real timers + real waits are slower but deterministic.
     vi.useRealTimers();
   });
@@ -37,17 +38,15 @@ describe("HomeView", () => {
       render(<HomeView />);
 
       await waitFor(() => {
-        expect(listProjectsForHome).toHaveBeenCalledTimes(1);
-        expect(listRecentDirectories).toHaveBeenCalledTimes(1);
+        expect(listProjectConfigs).toHaveBeenCalledTimes(1);
       });
     });
 
     // SKIP: focus-debounce assertions are flaky under React 19 + happy-dom.
     // The mount-side `fetchData` chain (`listProjectConfigs` → setState →
-    // `Promise.all([listProjectsForHome, listRecentDirectories])`) yields to
     // microtasks several times. After the first test completes, RTL cleans
     // up the previous tree but lingering scheduler work apparently shadows
-    // the second mount's effect, so `listProjectsForHome` is never called
+    // the second mount's effect, so `listProjectConfigs` is never called
     // again within the waitFor budget. The behaviour is exercised by
     // `should fetch data on initial mount` above and is unchanged in
     // production. Re-enable when vitest/happy-dom give us a stable
@@ -57,7 +56,7 @@ describe("HomeView", () => {
 
       // Wait for initial fetch
       await waitFor(() => {
-        expect(listProjectsForHome).toHaveBeenCalledTimes(1);
+        expect(listProjectConfigs).toHaveBeenCalledTimes(1);
       });
 
       // Clear mocks to track focus events only
@@ -77,13 +76,13 @@ describe("HomeView", () => {
       });
 
       // Should NOT have called fetch yet (debounced)
-      expect(listProjectsForHome).not.toHaveBeenCalled();
+      expect(listProjectConfigs).not.toHaveBeenCalled();
 
       // Wait past the debounce window — handleFocus's setTimeout fires
       // and `fetchData(false)` lands its async chain.
       await waitFor(
         () => {
-          expect(listProjectsForHome).toHaveBeenCalledTimes(1);
+          expect(listProjectConfigs).toHaveBeenCalledTimes(1);
         },
         { timeout: 1000 }
       );
@@ -95,7 +94,7 @@ describe("HomeView", () => {
 
       // Wait for initial fetch
       await waitFor(() => {
-        expect(listProjectsForHome).toHaveBeenCalledTimes(1);
+        expect(listProjectConfigs).toHaveBeenCalledTimes(1);
       });
 
       // Allow the min-interval window to fully elapse so the first focus
@@ -114,7 +113,7 @@ describe("HomeView", () => {
       // Debounce flush + microtask drain
       await waitFor(
         () => {
-          expect(listProjectsForHome).toHaveBeenCalledTimes(1);
+          expect(listProjectConfigs).toHaveBeenCalledTimes(1);
         },
         { timeout: 1000 }
       );
@@ -132,7 +131,7 @@ describe("HomeView", () => {
         setTimeout(resolve, HOME_VIEW_FOCUS_DEBOUNCE_MS + 100)
       );
 
-      expect(listProjectsForHome).not.toHaveBeenCalled();
+      expect(listProjectConfigs).not.toHaveBeenCalled();
     });
 
     // SKIP: same root cause as the two previous tests.
@@ -141,7 +140,7 @@ describe("HomeView", () => {
 
       // Wait for initial fetch
       await waitFor(() => {
-        expect(listProjectsForHome).toHaveBeenCalledTimes(1);
+        expect(listProjectConfigs).toHaveBeenCalledTimes(1);
       });
 
       // Wait past min interval so focus handler is permitted.
@@ -158,7 +157,7 @@ describe("HomeView", () => {
 
       await waitFor(
         () => {
-          expect(listProjectsForHome).toHaveBeenCalledTimes(1);
+          expect(listProjectConfigs).toHaveBeenCalledTimes(1);
         },
         { timeout: 1000 }
       );
@@ -177,7 +176,7 @@ describe("HomeView", () => {
 
       await waitFor(
         () => {
-          expect(listProjectsForHome).toHaveBeenCalledTimes(1);
+          expect(listProjectConfigs).toHaveBeenCalledTimes(1);
         },
         { timeout: 1000 }
       );

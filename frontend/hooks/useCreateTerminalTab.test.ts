@@ -83,10 +83,6 @@ describe("useCreateTerminalTab", () => {
           };
         case "get_project_settings":
           return { provider: null, model: null, agent_mode: null };
-        case "get_git_branch":
-          return "main";
-        case "git_status":
-          return { changed: 0, staged: 0, untracked: 0 };
         case "init_ai_session":
           return undefined;
         case "build_provider_config":
@@ -191,32 +187,6 @@ describe("useCreateTerminalTab", () => {
         (c) => c.command === "get_settings"
       ).length;
       expect(totalSettingsCallCount).toBe(1);
-    });
-
-    it("should call git branch and git status in parallel in background", async () => {
-      const { result } = renderHook(() => useCreateTerminalTab());
-
-      await act(async () => {
-        await result.current.createTerminalTab("/test/path");
-      });
-
-      // Wait for background work to complete
-      await act(async () => {
-        await flushBackgroundWork();
-      });
-
-      // Find the timing of git calls
-      const gitBranchCall = invokeCallTimes.find((c) => c.command === "get_git_branch");
-      const gitStatusCall = invokeCallTimes.find((c) => c.command === "git_status");
-
-      expect(gitBranchCall).toBeDefined();
-      expect(gitStatusCall).toBeDefined();
-
-      // Both git calls should happen at approximately the same time
-      if (gitBranchCall && gitStatusCall) {
-        const timeDiff = Math.abs(gitBranchCall.time - gitStatusCall.time);
-        expect(timeDiff).toBeLessThan(5);
-      }
     });
 
     it.skip("should eventually update AI status to ready after background init", async () => {

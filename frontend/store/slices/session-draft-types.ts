@@ -65,11 +65,6 @@ export interface SessionStoreDraft {
   isSessionDead: Record<string, boolean>;
   compactionError: Record<string, string | null>;
 
-  // ── Git slice fields ───────────────────────────────────────────────
-  gitStatus: Record<string, unknown>;
-  gitStatusLoading: Record<string, boolean>;
-  gitCommitMessage: Record<string, string>;
-
   // ── Pane slice fields ──────────────────────────────────────────────
   tabLayouts: Record<string, TabLayout>;
 

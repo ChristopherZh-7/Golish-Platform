@@ -75,17 +75,6 @@ export {
   type DialogState,
   initialDialogState,
 } from "./dialog";
-// Git slice
-export {
-  createGitSlice,
-  type GitActions,
-  type GitSlice,
-  type GitState,
-  initialGitState,
-  selectGitCommitMessage,
-  selectGitStatus,
-  selectGitStatusLoading,
-} from "./git";
 // HITL slice
 export {
   createHitlSlice,
@@ -130,7 +119,6 @@ export {
   type PanelState,
   selectContextPanelOpen,
   selectFileEditorPanelOpen,
-  selectGitPanelOpen,
   selectSessionBrowserOpen,
   selectSidecarPanelOpen,
 } from "./panel";

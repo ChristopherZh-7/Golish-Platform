@@ -50,12 +50,7 @@ this on every PR.
 ```text
 ┌───────────────────────────────────────────────────────────────────┐
 │ L6 Application                                                    │
-│   golish  (Tauri app · 548 IPC commands · 6 managed sub-states)   │
-└─────────────────────┬─────────────────────────────────────────────┘
-                      │
-┌─────────────────────▼─────────────────────────────────────────────┐
-│ L5 Evaluation harnesses                                           │
-│   golish-evals · golish-benchmarks · golish-swebench              │
+│   golish  (Tauri app · Tauri IPC commands · managed sub-states)   │
 └─────────────────────┬─────────────────────────────────────────────┘
                       │
 ┌─────────────────────▼─────────────────────────────────────────────┐
@@ -194,13 +189,11 @@ the same layer are OK; cluster grouping does not add edges.
 > via a `golish-ai` facade crate. That umbrella was a backward-compat
 > leftover; consumers now depend on the specific crate.
 
-#### L5 — Evaluation harnesses
-
-| Crate | Purpose |
-|---|---|
-| `golish-evals` | Reusable agent executor for benchmarks |
-| `golish-benchmarks` | HumanEval + custom benchmark scenarios |
-| `golish-swebench` | SWE-bench Lite integration (Docker-based) |
+> **L5 eval harnesses removed (2026-05-29)**: the `golish-evals`,
+> `golish-benchmarks` (HumanEval), and `golish-swebench` crates were
+> coding-agent evaluation harnesses, not part of the pentest product.
+> They have been deleted; the agent stack (L4) is now consumed directly
+> by the application (L6).
 
 #### L6 — Application
 

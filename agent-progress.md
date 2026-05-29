@@ -29,6 +29,27 @@
 
 ---
 
+### 2026-05-29 · 全栈删除 terminal-era 遗留（Git 源代码面板 + 终端 git 徽标 + worktree + AI 评测 crate）
+
+- **本轮目标**：用户先做了一轮架构体检（重复/复用/解耦/优化），随后聚焦到「git 那套东西是什么」→ 确认是源代码管理面板（提交 git 用）→ 决定删除所有对渗透测试无用的 terminal/coding 时代遗留。用户决策：「全删（含 worktree+eval）」；git 分两层时明确选「B：连终端分支徽标一起删」（授权动终端核心）。
+- **已完成（全部删除并验证编译/测试通过）**：
+  - **AI 评测 crate**：删 `golish-evals`/`golish-benchmarks`(HumanEval)/`golish-swebench`(SWE-bench) 三个 crate 目录 + workspace/golish Cargo.toml 登记 + `evals` feature + `--features evals` CLI 分支（main.rs/cli/args.rs/cli/mod.rs/cli/bootstrap）+ `cli/eval/` 目录 + scripts/check_dag.py 的 L5 登记 + justfile 的 eval/swebench 目标。
+  - **Git 源代码面板（后端）**：删 `commands/proc/git.rs`、`ai/commands/commit_writer.rs`、`indexer/commands/home_view.rs`、`indexer/commands/worktrees.rs`；registry/facade 移除 git 系命令（status/diff/stage/commit/push/delete_worktree）+ worktree（create/list）+ `generate_commit_message` + `list_projects_for_home`；`shell/mod.rs` 删 `get_git_branch`；`hidden_dirs.rs` 内联 `format_relative_time` 并去 git 统计（`RecentDirectory` 收窄为 path/name/last_accessed）。
+  - **Git 面板 + 终端 git 徽标（前端）**：删 `components/GitPanel/`、`DiffView/GitDiffView.tsx`、`lib/api/git.ts`、`lib/git.ts`、`store/slices/git.ts`、`store/selectors/git-panel.ts`、`HomeView/{NewWorktreeModal,ContextMenus,ProjectCards}.tsx`；store 去 git slice + session/pane/panel/selectors/unified-input；App/AppShell/useKeyboardHandlerContext 去 GitPanel + Cmd+Shift+G；useCreateTerminalTab/usePaneControls/useTauriEvents/terminal-events 去 git fetch + 5s 轮询；lib/api/index 去 git 命名空间；lib/api/indexer + lib/indexer 去 worktree/ProjectInfo/BranchInfo；lib/ai/persistence+types 去 generateCommitMessage/CommitMessageResponse；mocks.ts 去 git mock；~20 测试文件去 git mock/断言（删 useTauriEvents.test.tsx + HomeView.memo.test.tsx 两个纯 git/ProjectCards 测试）。
+- **已记录证据**：
+  - `cd backend && cargo check -p golish` → exit 0
+  - `cd frontend && pnpm exec tsc --noEmit` → 0 errors
+  - `cd frontend && pnpm exec biome check .` → Checked 689 files / No fixes applied
+  - `pnpm test:run` → 92 files / 1075 passed / 12 skipped
+- **保留（渗透要用/不同特性）**：`DiffView` 基础组件、GitHub Token/Integrations、`pentest_git_clone_tool`、`golish-sidecar::generate_commit_message`（patches→PR 合成，不是源代码面板）、HomeView 项目列表（`listProjectConfigs`）、`listRecentDirectories`（收窄）。
+- **未跑 / 原因**：未跑 `just precommit`（baseline 即有 clippy warnings-as-errors + sandbox PermissionDenied 测试失败，与本删除无关）；未做手动 E2E（建议用户 `just dev` 复测：终端标签无 git 徽标、Cmd+Shift+G 失效、HomeView 正常、无控制台报错）。
+- **提交记录**：未 commit（等用户确认）。
+- **已修改但未提交（本轮 scope）**：见上方删除/编辑清单 + `feature_list.json`（新增 `chore-remove-git-eval-worktree` = passing）+ `agent-progress.md` + `docs/architecture.md`（移除 L5 eval 段）。注意工作树仍含此前 Target Surface Workbench 等未提交改动，commit 前需按功能拆分。
+- **追加（同轮）· 历史 docs + 注释清理到字面零残留**：用户要求「清掉历史 docs+注释」。删除 `docs/swebench/`(目录)、`docs/swebench.md`、`docs/rig-evals.md`、`docs/pr-check-evals.md`、`docs/home-view-implementation.md`；`docs/README.md` 移除 Evaluation/benchmarks 段的 4 个死链（保留 graph-flow-integration）；`docs/prompt-contributions.md` 删 Evaluations(executor.rs) 段 + Testing 段 + golish-evals related-file + 改写 intro；`docs/system-prompt-guide.md` 删 eval parity 测试；`docs/golish-platform-analysis.md` 删 golish-evals 树行；清理 `PaneLeaf.memo.test.tsx` 与 `UnifiedInput/REFACTOR_PLAN.md` 里 onOpenGitPanel 注释。最终残留扫描：仅剩 `docs/architecture.md` 的删除说明（有意）+ `golish-sidecar::generate_commit_message`（不同特性，有意保留）。复验：tsc 0 / biome clean / vitest 92 files 1075 passed / cargo check -p golish exit 0。注：AGENTS.md I6 通常建议旧文档标 superseded 而非删除，本轮按用户明确指令直接删除。
+- **下一步建议**：① 用户 `just dev` 手动复测 UI（终端无 git 徽标 / Cmd+Shift+G 失效 / HomeView 正常 / 控制台无报错）；② 体检报告里的其它项（修绿 DAG 守卫、前端 useAsyncQuery 抽取、后端 pentest/vuln domain 去重）待用户挑选推进；③ commit 策略待用户确认（工作树仍含此前未提交改动，需按功能拆分）。
+
+---
+
 ### 2026-05-28 · Target Surface Workbench 设计确认 + 第一版前端接线
 
 - **本轮目标**：用户确认 ZAP/SecurityView 删除后，下一步 UI 按 mock 方向设计（Org Tree + Target Surface Workbench）。用户明确要求“不要跑 init 了，直接搞”，因此中止正在跑的 `./init.sh`，直接落设计文档、实施计划和第一版前端 UI。

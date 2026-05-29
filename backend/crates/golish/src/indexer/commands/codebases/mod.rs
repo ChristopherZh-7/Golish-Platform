@@ -9,8 +9,8 @@
 //! the user's settings file as they touch it.
 //!
 //! Path-handling helpers ([`expand_home_dir`], [`contract_home_dir`],
-//! [`get_codebase_file_count`]) are kept `pub(super)` so the
-//! [`super::home_view`] module can reuse them without re-implementing the
+//! [`get_codebase_file_count`]) are kept `pub(super)` so sibling
+//! modules can reuse them without re-implementing the
 //! `~/`-expansion convention.
 
 use std::path::PathBuf;

@@ -66,7 +66,6 @@ export interface Session {
   customName?: string;
   processName?: string;
   virtualEnv?: string | null;
-  gitBranch?: string | null;
   aiConfig?: AiConfig;
   plan?: TaskPlan;
   planMessageId?: string | null;

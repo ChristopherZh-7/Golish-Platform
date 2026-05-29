@@ -12,21 +12,11 @@ export interface UnifiedInputState {
   workingDirectory: string;
   virtualEnv: string | null;
   isSessionDead: boolean;
-  gitBranch: string | null;
-  gitStatus: {
-    insertions: number;
-    deletions: number;
-    ahead: number;
-    behind: number;
-  } | null;
 }
-
-const EMPTY_GIT_STATUS = null;
 
 interface CacheEntry {
   session: ReturnType<typeof useStore.getState>["sessions"][string] | undefined;
   isSessionDead: boolean | undefined;
-  gitStatus: ReturnType<typeof useStore.getState>["gitStatus"][string] | undefined;
   result: UnifiedInputState;
 }
 
@@ -36,35 +26,20 @@ function getRawInputs(state: ReturnType<typeof useStore.getState>, sessionId: st
   return {
     session: state.sessions[sessionId],
     isSessionDead: state.isSessionDead[sessionId],
-    gitStatus: state.gitStatus[sessionId],
   };
 }
 
 function isCacheValid(cached: CacheEntry, inputs: ReturnType<typeof getRawInputs>): boolean {
-  return (
-    cached.session === inputs.session &&
-    cached.isSessionDead === inputs.isSessionDead &&
-    cached.gitStatus === inputs.gitStatus
-  );
+  return cached.session === inputs.session && cached.isSessionDead === inputs.isSessionDead;
 }
 
 function createInputState(inputs: ReturnType<typeof getRawInputs>): UnifiedInputState {
   const session = inputs.session;
-  const gitStatus = inputs.gitStatus;
 
   return {
     workingDirectory: session?.workingDirectory ?? "",
     virtualEnv: session?.virtualEnv ?? null,
     isSessionDead: inputs.isSessionDead ?? false,
-    gitBranch: gitStatus?.branch ?? null,
-    gitStatus: gitStatus
-      ? {
-          insertions: gitStatus.insertions ?? 0,
-          deletions: gitStatus.deletions ?? 0,
-          ahead: gitStatus.ahead ?? 0,
-          behind: gitStatus.behind ?? 0,
-        }
-      : EMPTY_GIT_STATUS,
   };
 }
 

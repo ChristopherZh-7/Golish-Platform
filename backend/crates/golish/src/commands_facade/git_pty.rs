@@ -1,4 +1,4 @@
-//! PTY, shell, git, terminal, themes, IME, and frontend-log commands.
+//! PTY, shell, terminal, themes, IME, and frontend-log commands.
 //!
 //! Expected command domains exposed here (documentation only):
 //! - **PTY**: `pty_create`, `pty_write`, `pty_resize`, `pty_destroy`,
@@ -6,8 +6,6 @@
 //!   `set_active_terminal_session`
 //! - **Path completion & shell**: `list_path_completions`,
 //!   `classify_input`, `shell_integration_{status,install,uninstall}`
-//! - **Git**: `get_git_branch`, `git_{status,diff,diff_staged,stage,
-//!   unstage,commit,push,delete_worktree}`
 //! - **History**: `add_command_history`, `add_prompt_history`,
 //!   `load_history`, `search_history`, `clear_history`
 //! - **Recon pipeline**: `run_recon_pipeline`, `check_recon_tools_cmd`

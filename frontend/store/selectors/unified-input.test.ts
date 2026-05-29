@@ -5,7 +5,7 @@ import { clearAllSessionCaches } from "./session";
 /**
  * Tests for UnifiedInput Combined Selector
  *
- * UnifiedInputState: workingDirectory, virtualEnv, isSessionDead, gitBranch, gitStatus
+ * UnifiedInputState: workingDirectory, virtualEnv, isSessionDead
  */
 
 const resetStore = () => {
@@ -34,9 +34,6 @@ const resetStore = () => {
     isCompacting: {},
     isSessionDead: {},
     compactionError: {},
-    gitStatus: {},
-    gitStatusLoading: {},
-    gitCommitMessage: {},
     tabLayouts: {},
     tabHasNewActivity: {},
     sessionTokenUsage: {},
@@ -90,8 +87,6 @@ describe("UnifiedInput Combined Selector", () => {
       expect(result).toHaveProperty("workingDirectory");
       expect(result).toHaveProperty("virtualEnv");
       expect(result).toHaveProperty("isSessionDead");
-      expect(result).toHaveProperty("gitBranch");
-      expect(result).toHaveProperty("gitStatus");
     });
 
     it("changes to session-1 should not affect session-2 result", async () => {

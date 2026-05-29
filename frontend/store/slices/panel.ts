@@ -2,7 +2,7 @@
  * Panel slice for the Zustand store.
  *
  * Manages UI panel open/close state with mutual exclusion for right-side panels.
- * Right-side panels (git, context, fileEditor, sidecar) are mutually exclusive -
+ * Right-side panels (context, fileEditor, sidecar) are mutually exclusive -
  * only one can be open at a time. SessionBrowser is independent (it's a dialog).
  */
 
@@ -10,7 +10,6 @@ import type { SliceCreator } from "./types";
 
 // State interface
 export interface PanelState {
-  gitPanelOpen: boolean;
   contextPanelOpen: boolean;
   fileEditorPanelOpen: boolean;
   sidecarPanelOpen: boolean;
@@ -19,7 +18,6 @@ export interface PanelState {
 
 // Actions interface
 export interface PanelActions {
-  openGitPanel: () => void;
   openContextPanel: () => void;
   openFileEditorPanel: () => void;
   openSidecarPanel: () => void;
@@ -35,7 +33,6 @@ export interface PanelSlice extends PanelState, PanelActions {}
 
 // Initial state
 export const initialPanelState: PanelState = {
-  gitPanelOpen: false,
   contextPanelOpen: false,
   fileEditorPanelOpen: false,
   sidecarPanelOpen: false,
@@ -50,18 +47,9 @@ export const initialPanelState: PanelState = {
 export const createPanelSlice: SliceCreator<PanelSlice> = (set) => ({
   ...initialPanelState,
 
-  openGitPanel: () =>
-    set((state) => {
-      state.gitPanelOpen = true;
-      state.contextPanelOpen = false;
-      state.fileEditorPanelOpen = false;
-      state.sidecarPanelOpen = false;
-    }),
-
   openContextPanel: () =>
     set((state) => {
       state.contextPanelOpen = true;
-      state.gitPanelOpen = false;
       state.fileEditorPanelOpen = false;
       state.sidecarPanelOpen = false;
     }),
@@ -69,7 +57,6 @@ export const createPanelSlice: SliceCreator<PanelSlice> = (set) => ({
   openFileEditorPanel: () =>
     set((state) => {
       state.fileEditorPanelOpen = true;
-      state.gitPanelOpen = false;
       state.contextPanelOpen = false;
       state.sidecarPanelOpen = false;
     }),
@@ -77,7 +64,6 @@ export const createPanelSlice: SliceCreator<PanelSlice> = (set) => ({
   openSidecarPanel: () =>
     set((state) => {
       state.sidecarPanelOpen = true;
-      state.gitPanelOpen = false;
       state.contextPanelOpen = false;
       state.fileEditorPanelOpen = false;
     }),
@@ -89,7 +75,6 @@ export const createPanelSlice: SliceCreator<PanelSlice> = (set) => ({
 
   closePanels: () =>
     set((state) => {
-      state.gitPanelOpen = false;
       state.contextPanelOpen = false;
       state.fileEditorPanelOpen = false;
       state.sidecarPanelOpen = false;
@@ -105,7 +90,6 @@ export const createPanelSlice: SliceCreator<PanelSlice> = (set) => ({
       const next = !state.fileEditorPanelOpen;
       state.fileEditorPanelOpen = next;
       if (next) {
-        state.gitPanelOpen = false;
         state.contextPanelOpen = false;
         state.sidecarPanelOpen = false;
       }
@@ -118,8 +102,6 @@ export const createPanelSlice: SliceCreator<PanelSlice> = (set) => ({
 });
 
 // Selectors
-export const selectGitPanelOpen = <T extends PanelState>(state: T): boolean => state.gitPanelOpen;
-
 export const selectContextPanelOpen = <T extends PanelState>(state: T): boolean =>
   state.contextPanelOpen;
 

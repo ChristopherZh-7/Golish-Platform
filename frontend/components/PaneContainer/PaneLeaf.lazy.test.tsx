@@ -18,11 +18,6 @@ vi.mock("@/lib/api/pty", () => ({
   ptyResizeGrid: vi.fn().mockResolvedValue(undefined),
   ptyRequestGridSnapshot: vi.fn().mockResolvedValue(null),
 }));
-vi.mock("@/lib/api/git", () => ({
-  getGitBranch: vi.fn().mockResolvedValue("main"),
-  getGitStatus: vi.fn().mockResolvedValue({ changes: [] }),
-}));
-
 // D6.4b: xterm.js mocks + TerminalPortalProvider retired with the
 // renderer; PaneLeaf now mounts GridTerminal directly.
 
@@ -53,9 +48,6 @@ const resetStore = () => {
     isCompacting: {},
     isSessionDead: {},
     compactionError: {},
-    gitStatus: {},
-    gitStatusLoading: {},
-    gitCommitMessage: {},
     tabLayouts: {},
     tabHasNewActivity: {},
     sessionTokenUsage: {},

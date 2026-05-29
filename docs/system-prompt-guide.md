@@ -352,9 +352,6 @@ cargo test -p golish-ai system_prompt
 
 # Test sub-agent definitions
 cargo test -p golish-sub-agents
-
-# Test prompt parity (evals match main agent)
-cargo test -p golish-evals prompt
 ```
 
 ### Verification Checklist

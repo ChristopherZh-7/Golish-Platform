@@ -14,7 +14,6 @@ use golish_core::runtime::GolishRuntime;
 
 pub mod agents;
 pub mod analytics;
-pub mod commit_writer;
 pub mod config;
 pub mod context;
 pub mod core;
@@ -33,7 +32,6 @@ pub mod workflow;
 // Re-export all commands for easier access
 pub use agents::*;
 pub use analytics::*;
-pub use commit_writer::*;
 pub use config::*;
 pub use context::*;
 pub use core::*;

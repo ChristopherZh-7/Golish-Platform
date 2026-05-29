@@ -11,7 +11,7 @@ The Golish agent uses a dynamic prompt composition system that builds the system
 3. **Project instructions** - From CLAUDE.md or configured memory file
 4. **Dynamic contributions** - From registered prompt contributors
 
-This ensures that both the main agent and evaluations use identical system prompts, testing real production behavior.
+This ensures the agent's system prompt is composed consistently from the same building blocks, testing real production behavior.
 
 ## Architecture
 
@@ -120,40 +120,6 @@ let system_prompt = build_system_prompt_with_contributions(
 );
 ```
 
-### Evaluations (executor.rs)
-
-Evals use the same prompt building logic to ensure they test production behavior:
-
-```rust
-pub fn build_production_system_prompt(workspace: &Path, provider: EvalProvider) -> String {
-    let sub_agent_registry = Arc::new(RwLock::new(SubAgentRegistry::new()));
-    let contributors = create_default_contributors(sub_agent_registry);
-    let mut registry = PromptContributorRegistry::new();
-    for contributor in contributors {
-        registry.register(contributor);
-    }
-
-    let provider_name = match provider {
-        EvalProvider::VertexClaude => "anthropic",
-        EvalProvider::Zai => "zai",
-        EvalProvider::OpenAi => "openai",
-    };
-
-    let prompt_context = PromptContext::new(provider_name, "eval-model")
-        .with_web_search(matches!(provider, EvalProvider::VertexClaude))
-        .with_sub_agents(true)
-        .with_workspace(workspace.display().to_string());
-
-    build_system_prompt_with_contributions(
-        workspace,
-        AgentMode::AutoApprove,
-        None,
-        Some(&registry),
-        Some(&prompt_context),
-    )
-}
-```
-
 ## Prompt Priority
 
 Contributions are ordered by priority (lower values appear first):
@@ -196,32 +162,6 @@ impl PromptContributor for MyContributor {
 
 2. Register it in `create_default_contributors()` or add it manually to the registry.
 
-## Testing
-
-The prompt parity between main agent and evals is verified by unit tests in `golish-evals/src/executor.rs`:
-
-```rust
-#[test]
-fn test_eval_prompt_matches_main_agent_prompt_vertex() {
-    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let workspace = temp_dir.path();
-
-    let eval_prompt = build_production_system_prompt(workspace, EvalProvider::VertexClaude);
-    let main_prompt = build_main_agent_prompt(workspace, "anthropic", true);
-
-    assert_eq!(
-        eval_prompt, main_prompt,
-        "Eval prompt must match main agent prompt for Vertex Claude"
-    );
-}
-```
-
-Run tests with:
-
-```bash
-cargo test -p golish-evals -p golish-ai
-```
-
 ## Related Files
 
 - `golish-core/src/prompt.rs` - Core types (PromptContext, PromptContributor, PromptSection)
@@ -231,4 +171,3 @@ cargo test -p golish-evals -p golish-ai
 - `golish-ai/src/contributors/provider_tools.rs` - ProviderBuiltinToolsContributor
 - `golish-ai/src/system_prompt.rs` - System prompt building functions
 - `golish-ai/src/agent_bridge.rs` - Main agent prompt composition
-- `golish-evals/src/executor.rs` - Eval prompt composition

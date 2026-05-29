@@ -55,9 +55,7 @@
     "noProjects": "还没有项目，创建一个开始使用。",
     "deleteProjectTitle": "删除项目",
     "deleteProjectPrefix": "是否从 Golish 移除",
-    "deleteProjectSuffix": "？这只会删除项目配置，不会删除任何文件。",
-    "deleteWorktreeConfirm": "确定删除 worktree「{{branch}}」吗？",
-    "deleteWorktreeFailed": "删除 worktree 失败：{{error}}"
+    "deleteProjectSuffix": "？这只会删除项目配置，不会删除任何文件。"
   },
   "targets": {
     "title": "目标管理",
