@@ -86,7 +86,7 @@
     "notes": "备注",
     "noTargets": "暂无目标，点击上方 + 添加",
     "treeEmpty": "还没有组织和 target",
-    "treeEmptyHint": "切到 网络 视图新建组织，或在 列表 视图加 target",
+    "treeEmptyHint": "先新建 engagement，再导入客户目标或从组织画像发现资产",
     "selectOrganization": "选择归属组织",
     "selectOrganizationRequired": "归属组织（必选）",
     "organizationRequiredError": "攻防模式下必须选择归属组织",

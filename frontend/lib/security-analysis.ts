@@ -16,6 +16,10 @@ export {
   oplogList,
   oplogListByTarget,
   oplogSearch,
+  type PassiveScanLog,
+  passiveScansList,
   type TargetAsset,
+  type TimelineEntry,
   targetAssetsList,
+  targetTimeline,
 } from "@/lib/api/security-analysis";

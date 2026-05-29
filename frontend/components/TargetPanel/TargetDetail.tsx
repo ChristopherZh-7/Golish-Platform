@@ -10,22 +10,12 @@ import {
   Shield,
   Wifi,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { QuickNotes } from "@/components/QuickNotes/QuickNotes";
 import type { PortInfo, Target } from "@/lib/pentest/types";
-import {
-  type ApiEndpoint,
-  type AuditRow,
-  apiEndpointsList,
-  type Fingerprint,
-  fingerprintsList,
-  type JsAnalysisResult,
-  jsAnalysisList,
-  oplogListByTarget,
-  type TargetAsset,
-  targetAssetsList,
-} from "@/lib/security-analysis";
+import type { ApiEndpoint, AuditRow, JsAnalysisResult } from "@/lib/security-analysis";
 import { cn } from "@/lib/utils";
+import { useTargetSurfaceData } from "./hooks/useTargetSurfaceData";
 
 export function TargetDetailView({
   target,
@@ -36,47 +26,9 @@ export function TargetDetailView({
   t: (key: string) => string;
   onUpdateNotes: (id: string, notes: string) => void;
 }) {
-  const [secData, setSecData] = useState<{
-    assets: TargetAsset[];
-    endpoints: ApiEndpoint[];
-    fingerprints: Fingerprint[];
-    jsResults: JsAnalysisResult[];
-    logs: AuditRow[];
-  }>({ assets: [], endpoints: [], fingerprints: [], jsResults: [], logs: [] });
-  const [secLoading, setSecLoading] = useState(true);
+  const { data: secData, loading: secLoading } = useTargetSurfaceData(target.id);
   const [expandedPorts, setExpandedPorts] = useState<Set<number>>(new Set());
   const [showLogs, setShowLogs] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setSecLoading(true);
-      try {
-        const [a, e, f, j, l] = await Promise.all([
-          targetAssetsList(target.id).catch(() => []),
-          apiEndpointsList(target.id).catch(() => []),
-          fingerprintsList(target.id).catch(() => []),
-          jsAnalysisList(target.id).catch(() => []),
-          oplogListByTarget(target.id, 50).catch(() => []),
-        ]);
-        if (!cancelled) {
-          setSecData({
-            assets: Array.isArray(a) ? a : [],
-            endpoints: Array.isArray(e) ? e : [],
-            fingerprints: Array.isArray(f) ? f : [],
-            jsResults: Array.isArray(j) ? j : [],
-            logs: Array.isArray(l) ? l : [],
-          });
-        }
-      } catch {
-        /* ignore */
-      }
-      if (!cancelled) setSecLoading(false);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [target.id]);
 
   const togglePort = (port: number) => {
     setExpandedPorts((prev) => {

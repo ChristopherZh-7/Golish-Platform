@@ -1,99 +1,113 @@
-import { Network } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
-import { invoke } from "@/lib/api";
+import { AlertTriangle, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { organizations as orgsApi } from "@/lib/api";
+import type { Organization } from "@/lib/api/organizations";
 import type { Target } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
-import { GraphNodeDetail, GraphSidebar } from "./GraphElements";
-import { useGraphLayout } from "./hooks/useGraphLayout";
+import { buildTopologyModel } from "./topology/buildTopologyModel";
+import { TopologyCanvas } from "./topology/TopologyCanvas";
+import { TopologyControls } from "./topology/TopologyControls";
+import { TopologyInspector } from "./topology/TopologyInspector";
+import type { TopologyMode, TopologyVisibility } from "./topology/types";
+
+const DEFAULT_VISIBILITY: TopologyVisibility = {
+  organization: true,
+  target: true,
+  service: true,
+  evidence: true,
+};
 
 export function TargetGraphView({ targets }: { targets: Target[] }) {
-  const { t } = useTranslation();
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [nodeFindings, setNodeFindings] = useState<
-    { id: string; title: string; severity: string; status: string }[]
-  >([]);
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [orgLoading, setOrgLoading] = useState(true);
+  const [orgError, setOrgError] = useState<string | null>(null);
+  const [mode, setMode] = useState<TopologyMode>("ownership");
+  const [visibility, setVisibility] = useState<TopologyVisibility>(DEFAULT_VISIBILITY);
+  const [query, setQuery] = useState("");
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [fitSignal, setFitSignal] = useState(0);
 
-  const { cyRef, selectedTarget, setSelectedTarget, focusNode } = useGraphLayout(
-    containerRef,
-    targets
+  useEffect(() => {
+    let cancelled = false;
+    setOrgLoading(true);
+    setOrgError(null);
+    orgsApi
+      .listOrganizations(getProjectPath())
+      .then((list) => {
+        if (!cancelled) setOrganizations(list);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setOrganizations([]);
+          setOrgError(String(error));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setOrgLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const model = useMemo(
+    () => buildTopologyModel(organizations, targets, { mode, visibility, query }),
+    [organizations, targets, mode, visibility, query]
+  );
+
+  const selectedNode = useMemo(
+    () => model.nodes.find((node) => node.id === selectedNodeId) ?? model.nodes[0] ?? null,
+    [model.nodes, selectedNodeId]
   );
 
   useEffect(() => {
-    if (!selectedTarget) {
-      setNodeFindings([]);
+    if (!selectedNode && selectedNodeId) {
+      setSelectedNodeId(null);
       return;
     }
-    const host = selectedTarget.real_ip || selectedTarget.value;
-    invoke<{ id: string; title: string; severity: string; status: string }[]>("findings_for_host", {
-      host,
-      projectPath: getProjectPath(),
-    })
-      .then(setNodeFindings)
-      .catch(() => setNodeFindings([]));
-  }, [selectedTarget]);
+    if (!selectedNodeId && selectedNode) {
+      setSelectedNodeId(selectedNode.id);
+    }
+  }, [selectedNode, selectedNodeId]);
 
-  const handleNavigateChild = useCallback(
-    (child: Target) => {
-      const cy = cyRef.current;
-      if (cy) {
-        const node = cy.getElementById(`target:${child.id}`);
-        if (node.length > 0) {
-          cy.stop();
-          cy.animate(
-            {
-              center: { eles: node },
-              zoom: Math.max(cy.zoom(), 1.2),
-            },
-            {
-              duration: 200,
-              easing: "ease-out-quad",
-              complete: () => setSelectedTarget(child),
-            }
-          );
-          return;
-        }
-      }
-      setSelectedTarget(child);
-    },
-    [cyRef, setSelectedTarget]
-  );
+  const selectedLabel = selectedNode?.label ?? "No selection";
 
   return (
-    <div className="relative h-full w-full overflow-hidden flex">
-      <GraphSidebar targets={targets} selectedTarget={selectedTarget} onFocusNode={focusNode} />
+    <div className="flex h-full w-full overflow-hidden bg-background">
+      <TopologyControls
+        mode={mode}
+        visibility={visibility}
+        query={query}
+        stats={model.stats}
+        selectedLabel={selectedLabel}
+        onModeChange={setMode}
+        onVisibilityChange={(kind) => setVisibility((prev) => ({ ...prev, [kind]: !prev[kind] }))}
+        onQueryChange={setQuery}
+        onFitSelected={() => setFitSignal((value) => value + 1)}
+      />
 
-      <div className="flex-1 min-w-0 relative">
-        <div
-          ref={containerRef}
-          className="absolute inset-0"
-          style={{
-            background: "var(--background)",
-            backgroundImage:
-              "radial-gradient(circle, hsl(var(--muted-foreground) / 0.08) 1px, transparent 1px)",
-            backgroundSize: "24px 24px",
-          }}
-        />
-
-        {targets.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="flex flex-col items-center gap-3 text-muted-foreground/60">
-              <Network className="w-12 h-12" />
-              <p className="text-sm">{t("targets.noTargets")}</p>
-            </div>
+      <div className="relative flex min-w-0 flex-1">
+        {orgLoading && (
+          <div className="absolute left-4 top-4 z-20 inline-flex items-center gap-2 rounded-md border border-border/35 bg-card/90 px-3 py-2 text-[11px] text-muted-foreground shadow-sm">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Loading organizations
           </div>
         )}
-
-        {selectedTarget && (
-          <GraphNodeDetail
-            target={selectedTarget}
-            targets={targets}
-            findings={nodeFindings}
-            onClose={() => setSelectedTarget(null)}
-            onNavigate={handleNavigateChild}
-          />
+        {orgError && (
+          <div className="absolute left-4 top-4 z-20 inline-flex max-w-md items-center gap-2 rounded-md border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-[11px] text-amber-200 shadow-sm">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            {orgError}
+          </div>
         )}
+        <TopologyCanvas
+          model={model}
+          selectedNodeId={selectedNode?.id ?? null}
+          fitSignal={fitSignal}
+          onSelectNode={setSelectedNodeId}
+        />
       </div>
+
+      <TopologyInspector node={selectedNode} />
     </div>
   );
 }

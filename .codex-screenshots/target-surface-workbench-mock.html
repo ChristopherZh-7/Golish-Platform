@@ -1,0 +1,514 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Golish Target Surface Mock</title>
+    <style>
+      :root {
+        --bg: #0b0f12;
+        --panel: #10161b;
+        --line: #1f2a31;
+        --muted: #7d8b94;
+        --text: #d8e3e8;
+        --sub: #9aa9b2;
+        --accent: #7ce7d0;
+        --green: #67e8a5;
+        --blue: #75a7ff;
+        --yellow: #f1c76a;
+        --red: #fb7185;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        width: 1280px;
+        height: 720px;
+        overflow: hidden;
+        background: radial-gradient(circle at 50% -10%, #142026 0, var(--bg) 45%);
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        letter-spacing: 0;
+      }
+      .app {
+        height: 720px;
+        padding: 18px;
+        display: grid;
+        grid-template-columns: 54px 310px 1fr;
+        gap: 12px;
+      }
+      .rail,
+      .tree,
+      .main {
+        border: 1px solid rgba(125, 231, 208, 0.08);
+        background: rgba(16, 22, 27, 0.92);
+        box-shadow: 0 20px 70px rgba(0, 0, 0, 0.35);
+      }
+      .rail {
+        border-radius: 14px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 12px 6px;
+        gap: 12px;
+      }
+      .ico {
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        color: #7f919a;
+        font-size: 15px;
+      }
+      .ico.active {
+        color: var(--accent);
+        background: rgba(124, 231, 208, 0.12);
+        box-shadow: inset 3px 0 0 var(--accent);
+      }
+      .spacer {
+        flex: 1;
+      }
+      .tree,
+      .main {
+        border-radius: 16px;
+        overflow: hidden;
+      }
+      .tree-head {
+        padding: 16px 16px 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      .eyebrow {
+        font-size: 10px;
+        text-transform: uppercase;
+        color: var(--muted);
+        font-weight: 700;
+        letter-spacing: 0.08em;
+      }
+      .title {
+        margin-top: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 15px;
+        font-weight: 700;
+      }
+      .count {
+        font-size: 10px;
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .tree-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 13px;
+      }
+      .btn {
+        border: 1px solid rgba(124, 231, 208, 0.16);
+        background: rgba(124, 231, 208, 0.08);
+        color: var(--accent);
+        border-radius: 7px;
+        height: 28px;
+        padding: 0 10px;
+        font-size: 11px;
+        font-weight: 650;
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .btn.secondary {
+        color: var(--sub);
+        background: #0b1115;
+        border-color: var(--line);
+      }
+      .tree-body {
+        padding: 12px 10px;
+        font-size: 12px;
+      }
+      .org {
+        margin-bottom: 8px;
+      }
+      .org-row,
+      .target-row {
+        height: 31px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 8px;
+        border-radius: 8px;
+        color: var(--sub);
+      }
+      .org-row.active {
+        background: rgba(124, 231, 208, 0.09);
+        color: var(--text);
+      }
+      .target-row.selected {
+        background: rgba(117, 167, 255, 0.1);
+        color: var(--text);
+        border: 1px solid rgba(117, 167, 255, 0.14);
+      }
+      .children {
+        margin-left: 16px;
+        border-left: 1px solid rgba(255, 255, 255, 0.06);
+        padding-left: 8px;
+      }
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 99px;
+        background: var(--green);
+        flex: 0 0 auto;
+      }
+      .dot.blue {
+        background: var(--blue);
+      }
+      .dot.yellow {
+        background: var(--yellow);
+      }
+      .dot.gray {
+        background: #64737c;
+      }
+      .tiny {
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .main {
+        display: grid;
+        grid-template-rows: auto auto 1fr;
+      }
+      .main-head {
+        padding: 17px 18px 12px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      .h1 {
+        font-size: 18px;
+        font-weight: 780;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+      .badge {
+        height: 22px;
+        border-radius: 6px;
+        padding: 0 7px;
+        display: inline-flex;
+        align-items: center;
+        font-size: 10px;
+        font-weight: 800;
+        border: 1px solid rgba(103, 232, 165, 0.25);
+        color: var(--green);
+        background: rgba(103, 232, 165, 0.08);
+      }
+      .meta {
+        margin-top: 6px;
+        font-size: 11px;
+        color: var(--muted);
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        padding-top: 1px;
+      }
+      .tabs {
+        height: 42px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--line);
+        background: #0d1317;
+      }
+      .tab {
+        height: 28px;
+        padding: 0 10px;
+        border-radius: 7px;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        font-size: 11px;
+        font-weight: 650;
+      }
+      .tab.active {
+        color: var(--accent);
+        background: rgba(124, 231, 208, 0.1);
+      }
+      .content {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: 12px;
+        padding: 14px;
+      }
+      .section {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: rgba(11, 16, 20, 0.62);
+        overflow: hidden;
+      }
+      .section-head {
+        height: 40px;
+        padding: 0 12px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--line);
+      }
+      .section-title {
+        font-size: 12px;
+        font-weight: 760;
+      }
+      .section-sub {
+        font-size: 10px;
+        color: var(--muted);
+      }
+      .grid2 {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        padding: 10px 12px;
+      }
+      .kv {
+        min-height: 46px;
+        border: 1px solid rgba(255, 255, 255, 0.055);
+        background: rgba(255, 255, 255, 0.018);
+        border-radius: 8px;
+        padding: 8px;
+      }
+      .k {
+        font-size: 10px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .v {
+        font-size: 12px;
+        color: var(--text);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .services {
+        padding: 8px 10px 11px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 11px;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 700;
+        text-align: left;
+        height: 28px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      td {
+        height: 34px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        color: var(--sub);
+      }
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      .port {
+        color: var(--accent);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-weight: 700;
+      }
+      .status {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--green);
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        height: 20px;
+        border-radius: 5px;
+        padding: 0 6px;
+        background: rgba(117, 167, 255, 0.1);
+        color: #9fbeff;
+        font-size: 10px;
+        font-weight: 700;
+        margin-right: 4px;
+      }
+      .chip.warn {
+        background: rgba(241, 199, 106, 0.1);
+        color: var(--yellow);
+      }
+      .chip.red {
+        background: rgba(251, 113, 133, 0.1);
+        color: var(--red);
+      }
+      .right-stack {
+        display: grid;
+        grid-template-rows: 1fr 1fr;
+        gap: 12px;
+        min-height: 0;
+      }
+      .list {
+        padding: 8px 10px;
+        display: grid;
+        gap: 7px;
+      }
+      .item {
+        min-height: 34px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        background: rgba(255, 255, 255, 0.017);
+        border-radius: 8px;
+        padding: 7px 8px;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: center;
+      }
+      .path {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--text);
+        font-size: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .desc {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 10px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .risk {
+        font-size: 10px;
+        font-weight: 800;
+        color: var(--yellow);
+      }
+      .risk.high {
+        color: var(--red);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="rail">
+        <div class="ico">⌂</div>
+        <div class="ico">▤</div>
+        <div class="ico active">◎</div>
+        <div class="ico">✦</div>
+        <div class="ico">›_</div>
+        <div class="spacer"></div>
+        <div class="ico">⚙</div>
+      </aside>
+      <aside class="tree">
+        <div class="tree-head">
+          <div class="eyebrow">Target Manager</div>
+          <div class="title">Organizations <span class="count">4 orgs · 12 targets</span></div>
+          <div class="tree-actions">
+            <button class="btn">＋ Engagement</button>
+            <button class="btn secondary">Graph</button>
+          </div>
+        </div>
+        <div class="tree-body">
+          <div class="org">
+            <div class="org-row active"><span class="dot"></span> Xiaomi Corp <span class="tiny">root</span></div>
+            <div class="children">
+              <div class="org-row"><span class="dot blue"></span> 小米通讯 <span class="tiny">5</span></div>
+              <div class="org-row"><span class="dot blue"></span> 小米科技 <span class="tiny">3</span></div>
+              <div class="target-row"><span class="dot gray"></span> mi.com <span class="tiny">domain</span></div>
+              <div class="target-row selected"><span class="dot yellow"></span> portal.mi.com <span class="tiny">url</span></div>
+              <div class="target-row"><span class="dot yellow"></span> api.mi.com <span class="tiny">url</span></div>
+              <div class="target-row"><span class="dot gray"></span> 1.2.3.4 <span class="tiny">ip</span></div>
+            </div>
+          </div>
+          <div class="org-row"><span class="dot gray"></span> Unassigned <span class="tiny">2</span></div>
+        </div>
+      </aside>
+      <main class="main">
+        <div class="main-head">
+          <div>
+            <div class="h1">portal.mi.com <span class="badge">IN SCOPE</span></div>
+            <div class="meta">
+              <span>Xiaomi Corp</span>
+              <span>customer_provided</span>
+              <span>last baseline recon 12m ago</span>
+              <span>evidence: user import + httpx + whatweb</span>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn">Run baseline recon</button>
+            <button class="btn secondary">Collect JS</button>
+            <button class="btn secondary">Match vulns</button>
+          </div>
+        </div>
+        <nav class="tabs">
+          <div class="tab">Identity</div>
+          <div class="tab active">Surface</div>
+          <div class="tab">Sitemap</div>
+          <div class="tab">JS / API</div>
+          <div class="tab">Sensitive</div>
+          <div class="tab">Evidence</div>
+        </nav>
+        <div class="content">
+          <div class="section">
+            <div class="section-head">
+              <div class="section-title">Target Surface</div>
+              <div class="section-sub">normalized per target</div>
+            </div>
+            <div class="grid2">
+              <div class="kv"><div class="k">Resolved IP</div><div class="v">1.2.3.4</div></div>
+              <div class="kv"><div class="k">CDN / WAF</div><div class="v">Cloudflare</div></div>
+              <div class="kv"><div class="k">ASN</div><div class="v">AS12345 · Xiaomi</div></div>
+              <div class="kv"><div class="k">HTTP origins</div><div class="v">https://portal.mi.com</div></div>
+            </div>
+            <div class="services">
+              <table>
+                <thead>
+                  <tr><th>Port</th><th>Service</th><th>Web</th><th>Signals</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td class="port">80/tcp</td><td>http</td><td><span class="status">301</span> → https</td><td><span class="chip">redirect</span></td></tr>
+                  <tr><td class="port">443/tcp</td><td>https · nginx</td><td><span class="status">200</span> Xiaomi Portal</td><td><span class="chip">React</span><span class="chip">Spring</span></td></tr>
+                  <tr><td class="port">8443/tcp</td><td>https</td><td><span class="status">403</span> admin-looking</td><td><span class="chip warn">review</span></td></tr>
+                  <tr><td class="port">22/tcp</td><td>ssh · OpenSSH 8.x</td><td>—</td><td><span class="chip">service</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="right-stack">
+            <div class="section">
+              <div class="section-head">
+                <div class="section-title">JS / API Findings</div>
+                <div class="section-sub">18 JS · 27 endpoints</div>
+              </div>
+              <div class="list">
+                <div class="item"><div><div class="path">/static/app.8f3a.js</div><div class="desc">7 API routes · webpack chunks · source map available</div></div><div class="risk">MED</div></div>
+                <div class="item"><div><div class="path">POST /api/auth/login</div><div class="desc">auth endpoint extracted from bundled JS</div></div><div class="risk">INFO</div></div>
+                <div class="item"><div><div class="path">GET /api/admin/users</div><div class="desc">admin-looking path, not tested</div></div><div class="risk high">HIGH</div></div>
+              </div>
+            </div>
+            <div class="section">
+              <div class="section-head">
+                <div class="section-title">Evidence Trail</div>
+                <div class="section-sub">replayable</div>
+              </div>
+              <div class="list">
+                <div class="item"><div><div class="path">customer import</div><div class="desc">target added by user · scope=in · 2026-05-28 15:30</div></div><span class="chip">source</span></div>
+                <div class="item"><div><div class="path">httpx probe</div><div class="desc">status/title/redirect captured for 3 web services</div></div><span class="chip">tool</span></div>
+                <div class="item"><div><div class="path">js_collect</div><div class="desc">18 scripts collected · 2 sensitive candidates</div></div><span class="chip red">secrets</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>

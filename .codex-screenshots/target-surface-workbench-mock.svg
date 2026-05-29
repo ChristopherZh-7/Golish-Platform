@@ -1,0 +1,208 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="-10%" r="70%">
+      <stop offset="0%" stop-color="#142026"/>
+      <stop offset="55%" stop-color="#0b0f12"/>
+      <stop offset="100%" stop-color="#080b0e"/>
+    </radialGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="20" stdDeviation="24" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+    <style>
+      .ui { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+      .panel { fill: #10161b; stroke: rgba(125,231,208,.08); stroke-width: 1; filter: url(#shadow); }
+      .panel2 { fill: rgba(11,16,20,.62); stroke: #1f2a31; stroke-width: 1; }
+      .line { stroke: #1f2a31; stroke-width: 1; }
+      .text { fill: #d8e3e8; }
+      .sub { fill: #9aa9b2; }
+      .muted { fill: #7d8b94; }
+      .accent { fill: #7ce7d0; }
+      .green { fill: #67e8a5; }
+      .blue { fill: #75a7ff; }
+      .yellow { fill: #f1c76a; }
+      .red { fill: #fb7185; }
+      .h1 { font-size: 18px; font-weight: 780; }
+      .h2 { font-size: 15px; font-weight: 720; }
+      .label { font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+      .small { font-size: 11px; }
+      .tiny { font-size: 10px; }
+      .cell { font-size: 11px; }
+      .chipText { font-size: 10px; font-weight: 700; }
+    </style>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+
+  <g class="ui">
+    <!-- Left rail -->
+    <rect x="18" y="18" width="54" height="684" rx="14" class="panel"/>
+    <rect x="28" y="54" width="34" height="34" rx="8" fill="#0d1317"/>
+    <text x="45" y="76" text-anchor="middle" class="sub" font-size="15">H</text>
+    <rect x="28" y="112" width="34" height="34" rx="8" fill="#0d1317"/>
+    <text x="45" y="134" text-anchor="middle" class="sub" font-size="15">L</text>
+    <rect x="28" y="160" width="34" height="34" rx="8" fill="rgba(124,231,208,.12)"/>
+    <rect x="28" y="160" width="3" height="34" rx="2" fill="#7ce7d0"/>
+    <text x="45" y="182" text-anchor="middle" class="accent" font-size="16">T</text>
+    <rect x="28" y="208" width="34" height="34" rx="8" fill="#0d1317"/>
+    <text x="45" y="230" text-anchor="middle" class="sub" font-size="15">A</text>
+    <rect x="28" y="256" width="34" height="34" rx="8" fill="#0d1317"/>
+    <text x="45" y="278" text-anchor="middle" class="sub mono" font-size="14">&gt;_</text>
+    <rect x="28" y="654" width="34" height="34" rx="8" fill="#0d1317"/>
+    <text x="45" y="676" text-anchor="middle" class="sub" font-size="15">S</text>
+
+    <!-- Org tree -->
+    <rect x="84" y="18" width="310" height="684" rx="16" class="panel"/>
+    <text x="100" y="49" class="muted label">TARGET MANAGER</text>
+    <text x="100" y="73" class="text h2">Organizations</text>
+    <text x="292" y="72" class="muted tiny">4 orgs · 12 targets</text>
+    <rect x="100" y="90" width="118" height="28" rx="7" fill="rgba(124,231,208,.08)" stroke="rgba(124,231,208,.16)"/>
+    <text x="159" y="108" text-anchor="middle" class="accent small" font-weight="650">+ Engagement</text>
+    <rect x="226" y="90" width="62" height="28" rx="7" fill="#0b1115" stroke="#1f2a31"/>
+    <text x="257" y="108" text-anchor="middle" class="sub small" font-weight="650">Graph</text>
+    <line x1="84" y1="132" x2="394" y2="132" class="line"/>
+
+    <rect x="100" y="150" width="278" height="31" rx="8" fill="rgba(124,231,208,.09)"/>
+    <circle cx="114" cy="165.5" r="3.5" fill="#67e8a5"/>
+    <text x="126" y="170" class="text small">Xiaomi Corp</text>
+    <text x="350" y="170" class="muted tiny">root</text>
+    <line x1="116" y1="190" x2="116" y2="341" stroke="rgba(255,255,255,.06)"/>
+    <circle cx="134" cy="207" r="3.5" fill="#75a7ff"/>
+    <text x="146" y="211" class="sub small">Xiaomi Communications</text>
+    <text x="358" y="211" class="muted tiny">5</text>
+    <circle cx="134" cy="238" r="3.5" fill="#75a7ff"/>
+    <text x="146" y="242" class="sub small">Xiaomi Technology</text>
+    <text x="358" y="242" class="muted tiny">3</text>
+    <circle cx="134" cy="269" r="3.5" fill="#64737c"/>
+    <text x="146" y="273" class="sub small">mi.com</text>
+    <text x="338" y="273" class="muted tiny">domain</text>
+    <rect x="126" y="285" width="252" height="31" rx="8" fill="rgba(117,167,255,.10)" stroke="rgba(117,167,255,.14)"/>
+    <circle cx="134" cy="300.5" r="3.5" fill="#f1c76a"/>
+    <text x="146" y="305" class="text small">portal.mi.com</text>
+    <text x="354" y="305" class="muted tiny">url</text>
+    <circle cx="134" cy="331" r="3.5" fill="#f1c76a"/>
+    <text x="146" y="335" class="sub small">api.mi.com</text>
+    <text x="354" y="335" class="muted tiny">url</text>
+    <circle cx="134" cy="362" r="3.5" fill="#64737c"/>
+    <text x="146" y="366" class="sub small">1.2.3.4</text>
+    <text x="358" y="366" class="muted tiny">ip</text>
+    <circle cx="114" cy="406" r="3.5" fill="#64737c"/>
+    <text x="126" y="410" class="sub small">Unassigned</text>
+    <text x="362" y="410" class="muted tiny">2</text>
+
+    <!-- Main workbench -->
+    <rect x="406" y="18" width="856" height="684" rx="16" class="panel"/>
+    <text x="424" y="54" class="text h1">portal.mi.com</text>
+    <rect x="558" y="36" width="70" height="22" rx="6" fill="rgba(103,232,165,.08)" stroke="rgba(103,232,165,.25)"/>
+    <text x="593" y="51" text-anchor="middle" class="green chipText">IN SCOPE</text>
+    <text x="424" y="78" class="muted small">Xiaomi Corp</text>
+    <text x="505" y="78" class="muted small">customer_provided</text>
+    <text x="630" y="78" class="muted small">last baseline recon 12m ago</text>
+    <text x="815" y="78" class="muted small">evidence: user import + httpx + whatweb</text>
+    <rect x="1000" y="36" width="126" height="28" rx="7" fill="rgba(124,231,208,.08)" stroke="rgba(124,231,208,.16)"/>
+    <text x="1063" y="54" text-anchor="middle" class="accent small" font-weight="650">Run baseline recon</text>
+    <rect x="1134" y="36" width="72" height="28" rx="7" fill="#0b1115" stroke="#1f2a31"/>
+    <text x="1170" y="54" text-anchor="middle" class="sub small" font-weight="650">Collect JS</text>
+    <line x1="406" y1="96" x2="1262" y2="96" class="line"/>
+
+    <rect x="420" y="109" width="64" height="28" rx="7" fill="#0d1317"/>
+    <text x="452" y="127" text-anchor="middle" class="muted small" font-weight="650">Identity</text>
+    <rect x="488" y="109" width="64" height="28" rx="7" fill="rgba(124,231,208,.10)"/>
+    <text x="520" y="127" text-anchor="middle" class="accent small" font-weight="650">Surface</text>
+    <text x="586" y="127" text-anchor="middle" class="muted small" font-weight="650">Sitemap</text>
+    <text x="666" y="127" text-anchor="middle" class="muted small" font-weight="650">JS / API</text>
+    <text x="752" y="127" text-anchor="middle" class="muted small" font-weight="650">Sensitive</text>
+    <text x="842" y="127" text-anchor="middle" class="muted small" font-weight="650">Evidence</text>
+    <line x1="406" y1="150" x2="1262" y2="150" class="line"/>
+
+    <!-- Surface panel -->
+    <rect x="420" y="164" width="474" height="524" rx="10" class="panel2"/>
+    <line x1="420" y1="204" x2="894" y2="204" class="line"/>
+    <text x="432" y="188" class="text small" font-weight="760">Target Surface</text>
+    <text x="780" y="188" class="muted tiny">normalized per target</text>
+
+    <rect x="432" y="216" width="219" height="46" rx="8" fill="rgba(255,255,255,.018)" stroke="rgba(255,255,255,.055)"/>
+    <text x="442" y="234" class="muted tiny">Resolved IP</text>
+    <text x="442" y="252" class="text mono small">1.2.3.4</text>
+    <rect x="663" y="216" width="219" height="46" rx="8" fill="rgba(255,255,255,.018)" stroke="rgba(255,255,255,.055)"/>
+    <text x="673" y="234" class="muted tiny">CDN / WAF</text>
+    <text x="673" y="252" class="text mono small">Cloudflare</text>
+    <rect x="432" y="270" width="219" height="46" rx="8" fill="rgba(255,255,255,.018)" stroke="rgba(255,255,255,.055)"/>
+    <text x="442" y="288" class="muted tiny">ASN</text>
+    <text x="442" y="306" class="text mono small">AS12345 · Xiaomi</text>
+    <rect x="663" y="270" width="219" height="46" rx="8" fill="rgba(255,255,255,.018)" stroke="rgba(255,255,255,.055)"/>
+    <text x="673" y="288" class="muted tiny">HTTP origins</text>
+    <text x="673" y="306" class="text mono small">https://portal.mi.com</text>
+
+    <text x="432" y="354" class="muted tiny" font-weight="700">Port</text>
+    <text x="530" y="354" class="muted tiny" font-weight="700">Service</text>
+    <text x="662" y="354" class="muted tiny" font-weight="700">Web</text>
+    <text x="800" y="354" class="muted tiny" font-weight="700">Signals</text>
+    <line x1="432" y1="364" x2="882" y2="364" stroke="rgba(255,255,255,.05)"/>
+    <text x="432" y="390" class="accent mono cell" font-weight="700">80/tcp</text>
+    <text x="530" y="390" class="sub cell">http</text>
+    <text x="662" y="390" class="green mono cell">301</text>
+    <text x="692" y="390" class="sub cell">→ https</text>
+    <rect x="800" y="375" width="55" height="20" rx="5" fill="rgba(117,167,255,.10)"/>
+    <text x="827.5" y="389" text-anchor="middle" class="blue chipText">redirect</text>
+    <line x1="432" y1="406" x2="882" y2="406" stroke="rgba(255,255,255,.04)"/>
+    <text x="432" y="432" class="accent mono cell" font-weight="700">443/tcp</text>
+    <text x="530" y="432" class="sub cell">https · nginx</text>
+    <text x="662" y="432" class="green mono cell">200</text>
+    <text x="692" y="432" class="sub cell">Xiaomi Portal</text>
+    <rect x="800" y="417" width="42" height="20" rx="5" fill="rgba(117,167,255,.10)"/>
+    <text x="821" y="431" text-anchor="middle" class="blue chipText">React</text>
+    <rect x="848" y="417" width="42" height="20" rx="5" fill="rgba(117,167,255,.10)"/>
+    <text x="869" y="431" text-anchor="middle" class="blue chipText">Spring</text>
+    <line x1="432" y1="448" x2="882" y2="448" stroke="rgba(255,255,255,.04)"/>
+    <text x="432" y="474" class="accent mono cell" font-weight="700">8443/tcp</text>
+    <text x="530" y="474" class="sub cell">https</text>
+    <text x="662" y="474" class="green mono cell">403</text>
+    <text x="692" y="474" class="sub cell">admin-looking</text>
+    <rect x="800" y="459" width="50" height="20" rx="5" fill="rgba(241,199,106,.10)"/>
+    <text x="825" y="473" text-anchor="middle" class="yellow chipText">review</text>
+    <line x1="432" y1="490" x2="882" y2="490" stroke="rgba(255,255,255,.04)"/>
+    <text x="432" y="516" class="accent mono cell" font-weight="700">22/tcp</text>
+    <text x="530" y="516" class="sub cell">ssh · OpenSSH 8.x</text>
+    <text x="662" y="516" class="sub cell">—</text>
+    <rect x="800" y="501" width="48" height="20" rx="5" fill="rgba(117,167,255,.10)"/>
+    <text x="824" y="515" text-anchor="middle" class="blue chipText">service</text>
+
+    <!-- Right panels -->
+    <rect x="906" y="164" width="342" height="256" rx="10" class="panel2"/>
+    <line x1="906" y1="204" x2="1248" y2="204" class="line"/>
+    <text x="918" y="188" class="text small" font-weight="760">JS / API Findings</text>
+    <text x="1138" y="188" class="muted tiny">18 JS · 27 endpoints</text>
+    <rect x="918" y="216" width="318" height="42" rx="8" fill="rgba(255,255,255,.017)" stroke="rgba(255,255,255,.05)"/>
+    <text x="928" y="235" class="text mono cell">/static/app.8f3a.js</text>
+    <text x="928" y="250" class="muted tiny">7 API routes · webpack chunks · source map available</text>
+    <text x="1205" y="242" class="yellow chipText">MED</text>
+    <rect x="918" y="268" width="318" height="42" rx="8" fill="rgba(255,255,255,.017)" stroke="rgba(255,255,255,.05)"/>
+    <text x="928" y="287" class="text mono cell">POST /api/auth/login</text>
+    <text x="928" y="302" class="muted tiny">auth endpoint extracted from bundled JS</text>
+    <text x="1202" y="294" class="yellow chipText">INFO</text>
+    <rect x="918" y="320" width="318" height="42" rx="8" fill="rgba(255,255,255,.017)" stroke="rgba(255,255,255,.05)"/>
+    <text x="928" y="339" class="text mono cell">GET /api/admin/users</text>
+    <text x="928" y="354" class="muted tiny">admin-looking path, not tested</text>
+    <text x="1200" y="346" class="red chipText">HIGH</text>
+
+    <rect x="906" y="432" width="342" height="256" rx="10" class="panel2"/>
+    <line x1="906" y1="472" x2="1248" y2="472" class="line"/>
+    <text x="918" y="456" class="text small" font-weight="760">Evidence Trail</text>
+    <text x="1187" y="456" class="muted tiny">replayable</text>
+    <rect x="918" y="484" width="318" height="42" rx="8" fill="rgba(255,255,255,.017)" stroke="rgba(255,255,255,.05)"/>
+    <text x="928" y="503" class="text mono cell">customer import</text>
+    <text x="928" y="518" class="muted tiny">target added by user · scope=in · 2026-05-28 15:30</text>
+    <rect x="1182" y="495" width="44" height="20" rx="5" fill="rgba(117,167,255,.10)"/>
+    <text x="1204" y="509" text-anchor="middle" class="blue chipText">source</text>
+    <rect x="918" y="536" width="318" height="42" rx="8" fill="rgba(255,255,255,.017)" stroke="rgba(255,255,255,.05)"/>
+    <text x="928" y="555" class="text mono cell">httpx probe</text>
+    <text x="928" y="570" class="muted tiny">status/title/redirect captured for 3 web services</text>
+    <rect x="1188" y="547" width="38" height="20" rx="5" fill="rgba(117,167,255,.10)"/>
+    <text x="1207" y="561" text-anchor="middle" class="blue chipText">tool</text>
+    <rect x="918" y="588" width="318" height="42" rx="8" fill="rgba(255,255,255,.017)" stroke="rgba(255,255,255,.05)"/>
+    <text x="928" y="607" class="text mono cell">js_collect</text>
+    <text x="928" y="622" class="muted tiny">18 scripts collected · 2 sensitive candidates</text>
+    <rect x="1178" y="599" width="48" height="20" rx="5" fill="rgba(251,113,133,.10)"/>
+    <text x="1202" y="613" text-anchor="middle" class="red chipText">secrets</text>
+  </g>
+</svg>

@@ -1,0 +1,297 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <defs>
+    <style>
+      .bg { fill: #090d10; }
+      .panel { fill: #10161b; stroke: #1e2a31; stroke-width: 1; }
+      .panel2 { fill: #0d1317; stroke: #1e2a31; stroke-width: 1; }
+      .soft { fill: #121a20; stroke: #22313a; stroke-width: 1; }
+      .node { fill: #111920; stroke: #243640; stroke-width: 1; }
+      .nodeActive { fill: #101d24; stroke: #6ee7d8; stroke-width: 1.4; }
+      .nodeBlue { fill: #101923; stroke: #395d8f; stroke-width: 1; }
+      .nodeGreen { fill: #101b17; stroke: #2f6f50; stroke-width: 1; }
+      .nodeAmber { fill: #1d1810; stroke: #70572a; stroke-width: 1; }
+      .mutedLine { stroke: #26343d; stroke-width: 1; }
+      .edge { stroke: #48606c; stroke-width: 1.4; fill: none; }
+      .edgeStrong { stroke: #6ee7d8; stroke-width: 1.8; fill: none; }
+      .edgeBlue { stroke: #78a8ff; stroke-width: 1.4; fill: none; }
+      .edgeAmber { stroke: #f2c76b; stroke-width: 1.4; fill: none; }
+      .text { fill: #d9e7ec; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
+      .sub { fill: #93a4ad; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
+      .dim { fill: #667782; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
+      .mono { fill: #d9e7ec; font-family: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace; letter-spacing: 0; }
+      .label { fill: #7f929d; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 10px; font-weight: 700; letter-spacing: 0; }
+      .tiny { font-size: 10px; }
+      .small { font-size: 11px; }
+      .body { font-size: 12px; }
+      .title { font-size: 16px; font-weight: 760; }
+      .h1 { font-size: 18px; font-weight: 780; }
+      .pill { fill: #0c1519; stroke: #25343d; stroke-width: 1; }
+      .accentPill { fill: #10231f; stroke: #2f6f65; stroke-width: 1; }
+      .green { fill: #6ee7a5; }
+      .blue { fill: #78a8ff; }
+      .cyan { fill: #6ee7d8; }
+      .amber { fill: #f2c76b; }
+      .red { fill: #fb7185; }
+    </style>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#162129" stroke-width="1" opacity="0.65"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#48606c"/>
+    </marker>
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6ee7d8"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#78a8ff"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1280" height="720"/>
+  <rect x="16" y="16" width="1248" height="688" rx="16" fill="#0b1014" stroke="#1d2a32"/>
+
+  <g transform="translate(28,28)">
+    <rect class="panel" width="52" height="664" rx="13"/>
+    <rect x="9" y="12" width="34" height="34" rx="9" fill="#12221f" stroke="#2b695f"/>
+    <text x="26" y="34" text-anchor="middle" class="text body" font-weight="800">G</text>
+    <rect x="9" y="68" width="34" height="34" rx="9" fill="#0d1317"/>
+    <text x="26" y="90" text-anchor="middle" class="dim body">AI</text>
+    <rect x="9" y="112" width="34" height="34" rx="9" fill="#12221f"/>
+    <rect x="9" y="112" width="3" height="34" rx="2" fill="#6ee7d8"/>
+    <text x="26" y="134" text-anchor="middle" class="cyan body">T</text>
+    <rect x="9" y="156" width="34" height="34" rx="9" fill="#0d1317"/>
+    <text x="26" y="178" text-anchor="middle" class="dim body">P</text>
+    <rect x="9" y="612" width="34" height="34" rx="9" fill="#0d1317"/>
+    <text x="26" y="634" text-anchor="middle" class="dim body">S</text>
+  </g>
+
+  <g transform="translate(92,28)">
+    <rect class="panel" width="230" height="664" rx="14"/>
+    <text x="16" y="27" class="label">TOPOLOGY</text>
+    <text x="16" y="52" class="text title">Attack Surface Map</text>
+    <text x="16" y="72" class="sub small">4 orgs · 18 targets · 63 evidence</text>
+
+    <rect x="16" y="95" width="198" height="34" rx="8" fill="#0b1115" stroke="#22313a"/>
+    <text x="31" y="117" class="dim small">Filter graph...</text>
+
+    <text x="16" y="155" class="label">GRAPH MODE</text>
+    <rect x="16" y="168" width="198" height="34" rx="8" class="accentPill"/>
+    <text x="31" y="190" class="cyan small" font-weight="750">Ownership</text>
+    <text x="168" y="190" class="dim tiny">org chain</text>
+    <rect x="16" y="208" width="198" height="34" rx="8" class="pill"/>
+    <text x="31" y="230" class="sub small">Surface</text>
+    <text x="167" y="230" class="dim tiny">ports/js</text>
+    <rect x="16" y="248" width="198" height="34" rx="8" class="pill"/>
+    <text x="31" y="270" class="sub small">Evidence</text>
+    <text x="158" y="270" class="dim tiny">timeline</text>
+
+    <text x="16" y="320" class="label">VISIBLE TYPES</text>
+    <g transform="translate(16,336)">
+      <rect width="94" height="26" rx="7" class="accentPill"/>
+      <circle cx="15" cy="13" r="4" class="cyan"/>
+      <text x="27" y="17" class="sub tiny">Orgs</text>
+      <rect x="104" width="94" height="26" rx="7" class="accentPill"/>
+      <circle cx="119" cy="13" r="4" class="blue"/>
+      <text x="131" y="17" class="sub tiny">Targets</text>
+      <rect y="34" width="94" height="26" rx="7" class="accentPill"/>
+      <circle cx="15" cy="47" r="4" class="green"/>
+      <text x="27" y="51" class="sub tiny">Services</text>
+      <rect x="104" y="34" width="94" height="26" rx="7" class="pill"/>
+      <circle cx="119" cy="47" r="4" class="amber"/>
+      <text x="131" y="51" class="sub tiny">Findings</text>
+    </g>
+
+    <text x="16" y="436" class="label">FOCUS</text>
+    <rect x="16" y="452" width="198" height="86" rx="10" class="soft"/>
+    <text x="32" y="476" class="text body" font-weight="720">Xiaomi Communications</text>
+    <text x="32" y="495" class="sub tiny">selected organization</text>
+    <rect x="32" y="511" width="54" height="18" rx="5" fill="#10231f" stroke="#2f6f50"/>
+    <text x="59" y="524" text-anchor="middle" class="green tiny">in scope</text>
+    <rect x="92" y="511" width="58" height="18" rx="5" fill="#101923" stroke="#395d8f"/>
+    <text x="121" y="524" text-anchor="middle" class="blue tiny">7 targets</text>
+
+    <rect x="16" y="562" width="94" height="30" rx="8" fill="#10231f" stroke="#2f6f65"/>
+    <text x="63" y="582" text-anchor="middle" class="cyan tiny" font-weight="720">Auto layout</text>
+    <rect x="120" y="562" width="94" height="30" rx="8" class="pill"/>
+    <text x="167" y="582" text-anchor="middle" class="sub tiny" font-weight="720">Fit selected</text>
+
+    <text x="16" y="633" class="dim tiny">Layout: layered left-to-right</text>
+  </g>
+
+  <g transform="translate(334,28)">
+    <rect class="panel" width="616" height="664" rx="14"/>
+    <rect x="1" y="1" width="614" height="662" rx="14" fill="url(#grid)" opacity="0.58"/>
+    <rect x="0" y="0" width="616" height="72" rx="14" fill="#10161b" stroke="#1e2a31"/>
+    <text x="18" y="29" class="text h1">Topology</text>
+    <text x="18" y="51" class="sub small">Organization to target to service, with evidence as the contract</text>
+    <rect x="401" y="18" width="66" height="28" rx="7" class="accentPill"/>
+    <text x="434" y="36" text-anchor="middle" class="cyan tiny" font-weight="760">Layered</text>
+    <rect x="475" y="18" width="54" height="28" rx="7" class="pill"/>
+    <text x="502" y="36" text-anchor="middle" class="sub tiny" font-weight="760">Scope</text>
+    <rect x="537" y="18" width="60" height="28" rx="7" class="pill"/>
+    <text x="567" y="36" text-anchor="middle" class="sub tiny" font-weight="760">Evidence</text>
+
+    <line x1="48" y1="112" x2="48" y2="620" class="mutedLine" opacity="0.3"/>
+    <line x1="210" y1="112" x2="210" y2="620" class="mutedLine" opacity="0.3"/>
+    <line x1="374" y1="112" x2="374" y2="620" class="mutedLine" opacity="0.3"/>
+    <line x1="532" y1="112" x2="532" y2="620" class="mutedLine" opacity="0.3"/>
+    <text x="48" y="101" text-anchor="middle" class="label">ORG</text>
+    <text x="210" y="101" text-anchor="middle" class="label">TARGET</text>
+    <text x="374" y="101" text-anchor="middle" class="label">SERVICE</text>
+    <text x="532" y="101" text-anchor="middle" class="label">EVIDENCE</text>
+
+    <path d="M126 178 C156 178, 160 178, 188 178" class="edgeStrong" marker-end="url(#arrowCyan)"/>
+    <path d="M126 178 C154 216, 160 244, 188 268" class="edge" marker-end="url(#arrow)"/>
+    <path d="M126 178 C154 125, 160 118, 188 126" class="edge" marker-end="url(#arrow)"/>
+    <path d="M292 178 C321 178, 328 178, 350 178" class="edgeBlue" marker-end="url(#arrowBlue)"/>
+    <path d="M292 178 C319 214, 328 238, 350 258" class="edgeBlue" marker-end="url(#arrowBlue)"/>
+    <path d="M292 268 C322 305, 329 333, 350 348" class="edge" marker-end="url(#arrow)"/>
+    <path d="M450 178 C480 178, 488 178, 510 178" class="edgeStrong" marker-end="url(#arrowCyan)"/>
+    <path d="M450 258 C479 250, 487 220, 510 206" class="edgeBlue" marker-end="url(#arrowBlue)"/>
+    <path d="M450 348 C480 383, 489 426, 510 446" class="edgeAmber" marker-end="url(#arrow)"/>
+
+    <g transform="translate(30,142)">
+      <rect class="nodeActive" width="96" height="72" rx="12"/>
+      <circle cx="18" cy="20" r="6" class="cyan"/>
+      <text x="31" y="24" class="text body" font-weight="760">Xiaomi</text>
+      <text x="16" y="44" class="sub tiny">root org</text>
+      <text x="16" y="60" class="dim tiny">3 sub · 18 target</text>
+    </g>
+
+    <g transform="translate(188,104)">
+      <rect class="node" width="104" height="44" rx="10"/>
+      <circle cx="17" cy="18" r="5" class="cyan"/>
+      <text x="30" y="21" class="text small" font-weight="730">mi.com</text>
+      <text x="30" y="36" class="dim tiny">domain</text>
+    </g>
+    <g transform="translate(188,156)">
+      <rect class="nodeBlue" width="104" height="48" rx="10"/>
+      <circle cx="17" cy="19" r="5" class="blue"/>
+      <text x="30" y="22" class="mono small">portal.mi.com</text>
+      <text x="30" y="38" class="dim tiny">customer scope</text>
+    </g>
+    <g transform="translate(188,246)">
+      <rect class="node" width="104" height="44" rx="10"/>
+      <circle cx="17" cy="18" r="5" class="blue"/>
+      <text x="30" y="21" class="mono small">api.mi.com</text>
+      <text x="30" y="36" class="dim tiny">discovered</text>
+    </g>
+
+    <g transform="translate(350,154)">
+      <rect class="nodeGreen" width="100" height="48" rx="10"/>
+      <circle cx="18" cy="19" r="5" class="green"/>
+      <text x="31" y="22" class="text small" font-weight="730">443 https</text>
+      <text x="31" y="38" class="dim tiny">nginx · 200</text>
+    </g>
+    <g transform="translate(350,234)">
+      <rect class="nodeGreen" width="100" height="48" rx="10"/>
+      <circle cx="18" cy="19" r="5" class="green"/>
+      <text x="31" y="22" class="text small" font-weight="730">JS / API</text>
+      <text x="31" y="38" class="dim tiny">11 endpoints</text>
+    </g>
+    <g transform="translate(350,324)">
+      <rect class="nodeAmber" width="100" height="48" rx="10"/>
+      <circle cx="18" cy="19" r="5" class="amber"/>
+      <text x="31" y="22" class="text small" font-weight="730">Sensitive</text>
+      <text x="31" y="38" class="dim tiny">3 candidates</text>
+    </g>
+
+    <g transform="translate(510,154)">
+      <rect class="nodeActive" width="82" height="48" rx="10"/>
+      <text x="14" y="20" class="text small" font-weight="730">whatweb</text>
+      <text x="14" y="36" class="dim tiny">evidence</text>
+    </g>
+    <g transform="translate(510,206)">
+      <rect class="nodeBlue" width="82" height="44" rx="10"/>
+      <text x="14" y="19" class="text small" font-weight="730">js probe</text>
+      <text x="14" y="34" class="dim tiny">12:44</text>
+    </g>
+    <g transform="translate(510,426)">
+      <rect class="nodeAmber" width="82" height="48" rx="10"/>
+      <text x="14" y="20" class="text small" font-weight="730">secret?</text>
+      <text x="14" y="36" class="dim tiny">needs verify</text>
+    </g>
+
+    <g opacity="0.52">
+      <path d="M126 356 C156 340, 160 316, 188 314" class="edge" marker-end="url(#arrow)"/>
+      <path d="M126 356 C158 388, 160 430, 188 448" class="edge" marker-end="url(#arrow)"/>
+      <g transform="translate(30,324)">
+        <rect class="node" width="96" height="60" rx="12"/>
+        <circle cx="18" cy="20" r="6" fill="#64737c"/>
+        <text x="31" y="24" class="text body" font-weight="720">Youpin</text>
+        <text x="16" y="44" class="dim tiny">subsidiary</text>
+      </g>
+      <g transform="translate(188,302)">
+        <rect class="node" width="104" height="44" rx="10"/>
+        <circle cx="17" cy="18" r="5" class="blue"/>
+        <text x="30" y="21" class="mono small">youpin.mi.com</text>
+        <text x="30" y="36" class="dim tiny">out of scope</text>
+      </g>
+      <g transform="translate(188,430)">
+        <rect class="node" width="104" height="44" rx="10"/>
+        <circle cx="17" cy="18" r="5" class="blue"/>
+        <text x="30" y="21" class="mono small">shop.mi.com</text>
+        <text x="30" y="36" class="dim tiny">candidate</text>
+      </g>
+    </g>
+  </g>
+
+  <g transform="translate(962,28)">
+    <rect class="panel" width="290" height="664" rx="14"/>
+    <rect x="0" y="0" width="290" height="68" rx="14" fill="#10161b" stroke="#1e2a31"/>
+    <text x="16" y="28" class="label">INSPECTOR</text>
+    <text x="16" y="52" class="text title">portal.mi.com</text>
+    <rect x="208" y="20" width="56" height="22" rx="6" fill="#10231f" stroke="#2f6f50"/>
+    <text x="236" y="35" text-anchor="middle" class="green tiny" font-weight="760">IN</text>
+
+    <g transform="translate(16,88)">
+      <text x="0" y="0" class="label">SUMMARY</text>
+      <rect y="16" width="258" height="88" rx="10" class="soft"/>
+      <text x="16" y="40" class="sub tiny">Source</text>
+      <text x="92" y="40" class="text small">customer provided</text>
+      <text x="16" y="61" class="sub tiny">Resolved IP</text>
+      <text x="92" y="61" class="mono small">183.84.6.118</text>
+      <text x="16" y="82" class="sub tiny">Latest evidence</text>
+      <text x="92" y="82" class="text small">2 min ago</text>
+    </g>
+
+    <g transform="translate(16,218)">
+      <text x="0" y="0" class="label">SURFACE</text>
+      <rect y="16" width="122" height="70" rx="10" class="panel2"/>
+      <text x="14" y="41" class="text title">5</text>
+      <text x="14" y="60" class="sub tiny">open ports</text>
+      <rect x="136" y="16" width="122" height="70" rx="10" class="panel2"/>
+      <text x="150" y="41" class="text title">11</text>
+      <text x="150" y="60" class="sub tiny">API endpoints</text>
+      <rect y="96" width="122" height="70" rx="10" class="panel2"/>
+      <text x="14" y="121" class="text title">3</text>
+      <text x="14" y="140" class="sub tiny">JS files</text>
+      <rect x="136" y="96" width="122" height="70" rx="10" class="panel2"/>
+      <text x="150" y="121" class="amber title">3</text>
+      <text x="150" y="140" class="sub tiny">signals</text>
+    </g>
+
+    <g transform="translate(16,426)">
+      <text x="0" y="0" class="label">EVIDENCE TRAIL</text>
+      <rect y="18" width="258" height="46" rx="9" class="soft"/>
+      <circle cx="18" cy="41" r="4" class="cyan"/>
+      <text x="32" y="37" class="text small" font-weight="700">whatweb fingerprint</text>
+      <text x="32" y="53" class="dim tiny">nginx · 443 · replayable</text>
+      <rect y="72" width="258" height="46" rx="9" class="soft"/>
+      <circle cx="18" cy="95" r="4" class="blue"/>
+      <text x="32" y="91" class="text small" font-weight="700">JS API extraction</text>
+      <text x="32" y="107" class="dim tiny">11 endpoints · source linked</text>
+      <rect y="126" width="258" height="46" rx="9" class="soft"/>
+      <circle cx="18" cy="149" r="4" class="amber"/>
+      <text x="32" y="145" class="text small" font-weight="700">sensitive candidate</text>
+      <text x="32" y="161" class="dim tiny">requires deterministic verify</text>
+    </g>
+
+    <g transform="translate(16,626)">
+      <rect width="124" height="30" rx="8" fill="#10231f" stroke="#2f6f65"/>
+      <text x="62" y="20" text-anchor="middle" class="cyan tiny" font-weight="760">Open workbench</text>
+      <rect x="134" width="124" height="30" rx="8" class="pill"/>
+      <text x="196" y="20" text-anchor="middle" class="sub tiny" font-weight="760">Run recon</text>
+    </g>
+  </g>
+</svg>

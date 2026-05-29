@@ -66,6 +66,7 @@ import { getProjectPath } from "@/lib/projects";
 import { cn } from "@/lib/utils";
 import { type EngagementMode, NewEngagementDialog } from "./NewEngagementDialog";
 import { TargetDetailView } from "./TargetDetail";
+import { TargetSurfaceWorkbench } from "./TargetSurfaceWorkbench";
 
 const TYPE_ICONS: Record<string, React.ReactNode> = {
   domain: <Globe className="w-3 h-3 text-blue-400" />,
@@ -1079,6 +1080,7 @@ export function TargetGroupedView({
   const [newEngagementOpen, setNewEngagementOpen] = useState(false);
   const [newEngagementMode, setNewEngagementMode] = useState<EngagementMode>("customer_targets");
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
+  const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("overview");
 
   // Inline editor / creator state — only one can be open at a time. `ROOT_PARENT_KEY`
@@ -1155,6 +1157,10 @@ export function TargetGroupedView({
       selectedOrg ? targets.filter((target) => target.organization_id === selectedOrg.id) : [],
     [selectedOrg, targets]
   );
+  const selectedTarget = useMemo(
+    () => targets.find((target) => target.id === selectedTargetId) ?? null,
+    [selectedTargetId, targets]
+  );
 
   useEffect(() => {
     if (!selectedOrgId && orgs.length > 0) {
@@ -1165,6 +1171,23 @@ export function TargetGroupedView({
       setSelectedOrgId(orgs[0]?.id ?? null);
     }
   }, [orgs, selectedOrgId]);
+
+  useEffect(() => {
+    if (selectedTargetId && !targets.some((target) => target.id === selectedTargetId)) {
+      setSelectedTargetId(null);
+    }
+  }, [selectedTargetId, targets]);
+
+  useEffect(() => {
+    if (
+      selectedOrg &&
+      selectedTarget &&
+      selectedTarget.organization_id &&
+      selectedTarget.organization_id !== selectedOrg.id
+    ) {
+      setSelectedTargetId(null);
+    }
+  }, [selectedOrg, selectedTarget]);
 
   const toggleCollapse = useCallback((id: string) => {
     setCollapsed((prev) => {
@@ -2145,25 +2168,32 @@ export function TargetGroupedView({
   const renderTarget = (target: Target) => {
     const cfg = target.status ? STATUS_CONFIG[target.status] || STATUS_CONFIG.new : null;
     const isEditing = editingTargetId === target.id;
+    const isSelected = selectedTargetId === target.id;
     return (
       <div
         key={target.id}
         className={cn(
-          "px-2 py-1 hover:bg-muted/30 transition-colors group cursor-pointer rounded",
-          target.scope === "out" && "opacity-50",
-          isEditing && "bg-muted/20"
+          "border-l-2 border-transparent px-2 py-0.5 hover:bg-muted/20 transition-colors group cursor-pointer rounded-r",
+          isEditing && "bg-muted/15",
+          isSelected && "border-accent/60 bg-muted/25"
         )}
-        onClick={() => setEditingTargetId(isEditing ? null : target.id)}
+        onClick={() => {
+          setSelectedTargetId(target.id);
+          if (target.organization_id) setSelectedOrgId(target.organization_id);
+          setEditingTargetId(null);
+        }}
       >
-        <div className="flex items-center gap-2">
-          {TYPE_ICONS[target.type] || <Globe className="w-3 h-3" />}
+        <div className="flex h-6 items-center gap-2">
+          <span className="flex w-4 items-center justify-center opacity-90">
+            {TYPE_ICONS[target.type] || <Globe className="w-3 h-3" />}
+          </span>
           <button
             type="button"
             className={cn(
-              "p-0.5 rounded transition-colors",
+              "rounded p-0.5 transition-colors",
               target.scope === "in"
-                ? "text-green-400 hover:text-green-300"
-                : "text-red-400 hover:text-red-300"
+                ? "text-green-400/90 hover:text-green-300"
+                : "text-red-400/75 hover:text-red-300"
             )}
             onClick={(e) => {
               e.stopPropagation();
@@ -2177,19 +2207,22 @@ export function TargetGroupedView({
               <ShieldOff className="w-2.5 h-2.5" />
             )}
           </button>
-          <span className="text-[11px] font-mono text-foreground flex-1 truncate">
+          <span
+            className={cn(
+              "flex-1 truncate font-mono text-[11px]",
+              target.scope === "out" && !isSelected ? "text-muted-foreground" : "text-foreground"
+            )}
+          >
             {target.value}
           </span>
           {cfg && target.status !== "new" && (
-            <span
-              className={cn("text-[10px] px-1.5 py-0.5 rounded font-medium", cfg.color, cfg.bg)}
-            >
+            <span className={cn("rounded px-1.5 py-0.5 text-[9px] font-medium", cfg.color, cfg.bg)}>
               {cfg.label}
             </span>
           )}
           {target.ports && target.ports.length > 0 && (
             <span
-              className="flex items-center gap-0.5 text-[10px] text-emerald-400/80"
+              className="flex min-w-8 items-center justify-end gap-0.5 text-[10px] text-emerald-400/75"
               title={`${target.ports.length} open port(s)`}
             >
               <Wifi className="w-2.5 h-2.5" />
@@ -2198,7 +2231,7 @@ export function TargetGroupedView({
           )}
           <button
             type="button"
-            className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-muted-foreground hover:text-red-400 transition-all"
+            className="rounded p-1 text-muted-foreground opacity-0 transition-all hover:bg-red-500/15 hover:text-red-400 group-hover:opacity-100"
             onClick={(e) => {
               e.stopPropagation();
               onDelete(target.id);
@@ -2356,6 +2389,7 @@ export function TargetGroupedView({
     const orgRow = orgs.find((o) => o.id === node.id);
     const engagementMode = getEffectiveEngagementMode(orgRow, orgs);
     const badge = engagementMode ? ENGAGEMENT_BADGES[engagementMode] : null;
+    const showModeBadge = badge && (depth === 0 || selectedOrgId === node.id);
     const actionModel = getOrgActionModel(engagementMode, {
       isChild: Boolean(orgRow?.parent_id),
     });
@@ -2367,7 +2401,7 @@ export function TargetGroupedView({
         ) : (
           <div
             className={cn(
-              "flex items-center gap-1 px-2 py-1 hover:bg-muted/20 transition-colors group rounded",
+              "flex items-center gap-1 px-2 py-1 hover:bg-muted/15 transition-colors group rounded",
               selectedOrgId === node.id && !isUnassigned && "bg-muted/15"
             )}
             style={{ paddingLeft: `${8 + depth * 16}px` }}
@@ -2375,7 +2409,10 @@ export function TargetGroupedView({
             <button
               type="button"
               onClick={() => {
-                if (!isUnassigned) setSelectedOrgId(node.id);
+                if (!isUnassigned) {
+                  setSelectedOrgId(node.id);
+                  setSelectedTargetId(null);
+                }
                 toggleCollapse(node.id);
               }}
               className="flex items-center gap-2 flex-1 text-left min-w-0"
@@ -2392,21 +2429,21 @@ export function TargetGroupedView({
                 <Building2 className="w-3 h-3 text-accent/70 flex-shrink-0" />
               )}
               <span className="text-[11px] font-medium text-foreground truncate">{node.name}</span>
-              <span className="text-[10px] text-muted-foreground/60 tabular-nums">
+              <span className="text-[10px] text-muted-foreground/55 tabular-nums">
                 {counts.total}
               </span>
               {counts.inScope > 0 && (
-                <span className="text-[9px] px-1 py-0.5 rounded bg-green-500/10 text-green-400">
+                <span className="rounded bg-green-500/10 px-1 py-0.5 text-[9px] text-green-400">
                   {counts.inScope} in
                 </span>
               )}
-              {badge && (
+              {showModeBadge && (
                 <span className={cn("text-[9px] px-1 py-0.5 rounded", badge.className)}>
                   {badge.label}
                 </span>
               )}
               {!isUnassigned && node.children.length > 0 && (
-                <span className="text-[9px] text-muted-foreground/50">
+                <span className="inline-flex items-center whitespace-nowrap text-[9px] text-muted-foreground/50">
                   · {node.children.length} sub
                 </span>
               )}
@@ -2502,19 +2539,11 @@ export function TargetGroupedView({
       <div className="px-4 py-2 border-b border-border/30 bg-muted/5 flex items-center gap-2">
         <button
           type="button"
-          className="flex items-center gap-1.5 px-2 py-1 text-xs rounded bg-accent/10 hover:bg-accent/20 text-accent transition-colors"
+          className="flex items-center gap-1.5 rounded border border-green-500/25 bg-green-500/10 px-2 py-1 text-xs font-medium text-green-300 transition-colors hover:bg-green-500/15 hover:text-green-200"
           onClick={() => openNewEngagement("customer_targets")}
         >
           <Plus className="w-3 h-3" />
           {translateWithFallback(t, "targetWorkspace.actions.newEngagement", "New Engagement")}
-        </button>
-        <button
-          type="button"
-          className="flex items-center gap-1.5 px-2 py-1 text-xs rounded hover:bg-muted/40 text-muted-foreground hover:text-foreground transition-colors"
-          onClick={() => handleStartAddChild(null)}
-        >
-          <Building2 className="w-3 h-3" />
-          {translateWithFallback(t, "targetWorkspace.actions.quickOrg", "Quick org")}
         </button>
         <span className="text-[10px] text-muted-foreground/60 tabular-nums">
           {translateWithFallback(
@@ -2537,7 +2566,7 @@ export function TargetGroupedView({
           <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2 w-full max-w-2xl">
             <button
               type="button"
-              className="rounded-lg border border-border/40 bg-muted/10 px-3 py-3 text-left hover:bg-muted/20 transition-colors"
+              className="rounded-lg border border-green-500/25 bg-green-500/5 px-3 py-3 text-left transition-colors hover:bg-green-500/10"
               onClick={() => openNewEngagement("customer_targets")}
             >
               <Shield className="w-4 h-4 text-green-400 mb-2" />
@@ -2554,10 +2583,10 @@ export function TargetGroupedView({
             </button>
             <button
               type="button"
-              className="rounded-lg border border-border/40 bg-muted/10 px-3 py-3 text-left hover:bg-muted/20 transition-colors"
+              className="rounded-lg border border-blue-500/25 bg-blue-500/5 px-3 py-3 text-left transition-colors hover:bg-blue-500/10"
               onClick={() => openNewEngagement("discover_assets")}
             >
-              <Network className="w-4 h-4 text-accent mb-2" />
+              <Network className="w-4 h-4 text-blue-400 mb-2" />
               <p className="text-xs text-foreground">
                 {translateWithFallback(
                   t,
@@ -2575,7 +2604,7 @@ export function TargetGroupedView({
             </button>
             <button
               type="button"
-              className="rounded-lg border border-border/40 bg-muted/10 px-3 py-3 text-left hover:bg-muted/20 transition-colors"
+              className="rounded-lg border border-border/40 bg-background/20 px-3 py-3 text-left transition-colors hover:bg-muted/20"
               onClick={() => handleStartAddChild(null)}
             >
               <Building2 className="w-4 h-4 text-muted-foreground mb-2" />
@@ -2593,11 +2622,17 @@ export function TargetGroupedView({
           </div>
         </div>
       ) : (
-        <div className="flex-1 min-h-0 grid grid-cols-[minmax(280px,0.9fr)_minmax(360px,1.1fr)]">
-          <div className="min-h-0 overflow-y-auto py-2 px-1 space-y-px border-r border-border/30">
+        <div className="flex-1 min-h-0 grid grid-cols-[minmax(280px,0.72fr)_minmax(380px,1.28fr)]">
+          <div className="min-h-0 overflow-y-auto py-2 px-1 space-y-px border-r border-border/25">
             {roots.map((node) => renderNode(node, 0))}
           </div>
-          <div className="min-h-0 overflow-hidden bg-background/40">{renderWorkspacePanel()}</div>
+          <div className="min-h-0 overflow-hidden bg-background/20">
+            {selectedTarget ? (
+              <TargetSurfaceWorkbench target={selectedTarget} onUpdateNotes={onUpdateNotes} />
+            ) : (
+              renderWorkspacePanel()
+            )}
+          </div>
         </div>
       )}
 

@@ -86,7 +86,7 @@
     "notes": "Notes",
     "noTargets": "No targets yet. Click + to add one.",
     "treeEmpty": "No organizations or targets yet",
-    "treeEmptyHint": "Switch to the Network view to add an organization, or to List to add targets",
+    "treeEmptyHint": "Create an engagement, then import customer targets or discover assets from an organization profile",
     "selectOrganization": "Select organization",
     "selectOrganizationRequired": "Organization (required)",
     "organizationRequiredError": "Red-team mode requires an organization",

@@ -59,6 +59,24 @@ const MODE_OPTIONS: Array<{
   },
 ];
 
+const MODE_OPTION_STYLES: Record<EngagementMode, { active: string; inactive: string }> = {
+  customer_targets: {
+    active: "border-green-500/40 bg-green-500/10 text-green-100",
+    inactive:
+      "border-border/50 bg-muted/10 text-muted-foreground hover:border-green-500/25 hover:bg-green-500/5 hover:text-green-100",
+  },
+  discover_assets: {
+    active: "border-blue-500/40 bg-blue-500/10 text-blue-100",
+    inactive:
+      "border-border/50 bg-muted/10 text-muted-foreground hover:border-blue-500/25 hover:bg-blue-500/5 hover:text-blue-100",
+  },
+  profile_only: {
+    active: "border-border/60 bg-muted/25 text-foreground",
+    inactive:
+      "border-border/50 bg-muted/10 text-muted-foreground hover:bg-muted/20 hover:text-foreground",
+  },
+};
+
 function parseTargets(raw: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -252,8 +270,8 @@ export function NewEngagementDialog({
                   className={cn(
                     "text-left rounded-lg border px-3 py-2 transition-colors",
                     mode === option.id
-                      ? "border-accent bg-accent/10 text-accent"
-                      : "border-border/50 bg-muted/10 text-muted-foreground hover:text-foreground"
+                      ? MODE_OPTION_STYLES[option.id].active
+                      : MODE_OPTION_STYLES[option.id].inactive
                   )}
                 >
                   <span className="flex items-center gap-2 text-xs font-medium">
@@ -297,7 +315,7 @@ export function NewEngagementDialog({
                       aria-label="Look up company"
                       className={cn(
                         "inline-flex items-center gap-1 rounded border px-2 py-1 text-[10px]",
-                        "border-accent/40 bg-accent/10 text-accent hover:bg-accent/20",
+                        "border-blue-500/35 bg-blue-500/10 text-blue-200 hover:bg-blue-500/15 hover:text-blue-100",
                         (!orgName.trim() || lookupRunning) && "opacity-50 cursor-not-allowed"
                       )}
                       disabled={!orgName.trim() || lookupRunning}
@@ -462,8 +480,8 @@ export function NewEngagementDialog({
                 </label>
               </div>
               <p className="text-[10px] text-amber-400/80">
-                Discovery orchestration is not wired yet; this creates the org and preserves the UI
-                path for the next backend phase.
+                This creates the organization and saves discovery settings. From the org workspace,
+                run subsidiary discovery, enrich fields, then promote approved targets into scope.
               </p>
             </section>
           )}
@@ -490,7 +508,7 @@ export function NewEngagementDialog({
             disabled={!canSubmit || submitting}
             className={cn(
               "px-3 py-1.5 text-xs rounded-md inline-flex items-center gap-1.5",
-              "bg-accent text-accent-foreground hover:bg-accent/90",
+              "border border-green-500/25 bg-green-500/15 text-green-100 hover:bg-green-500/20",
               (!canSubmit || submitting) && "opacity-50 cursor-not-allowed"
             )}
             onClick={handleSubmit}

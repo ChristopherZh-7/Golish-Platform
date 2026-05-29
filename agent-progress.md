@@ -17,15 +17,232 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | **chore-remove-zap-module**（2026-05-28 新增 · 已 `passing`）+ **agent-tool-use-compatibility-layer**（2026-05-27 拆出 · 仍 `in_progress`）。ZAP 模块全部前后端代码已删除（28 backend 文件 + 19 frontend 文件 + 38 个 zap_* command + Browse View）；新分支 `chore/remove-zap`。 |
+| **当前最高优先级** | **target-surface-workbench**（2026-05-28 新增 · 当前唯一 `in_progress`）。ZAP/SecurityView 删除后，正在把 Target Manager 改成 organization tree + selected target surface/evidence workbench。 |
 | **当前 blocker** | `xiaomi-mimo-provider` 已从 `in_progress` 切 `blocked`，等待 tool-use compatibility layer 与真实 MiMo E2E 后再决定 passing。2026-05-27 复测发现 `ask_human` 被误包成普通 ToolApprovalRequest；已修为直接发 `AskHumanRequest`，但需重启 dev app 后真实复测。`just precommit` 仍未全绿：Rust clippy 有既有 warnings-as-errors；`test-rust`/`test-rust-all` 在 sandbox 下有 PermissionDenied baseline failures（`golish-pentest sploitus::client::tests::surfaces_api_error_status` / `golish tools::asset_intel::tests::http_json_runtime_posts_fake_data_and_normalizes_candidates`）。 |
-| **未提交的半成品** | 当前分支 `chore/remove-zap` 包含两层未提交改动：① **ZAP 整体删除**（本轮新增）— ~50 个文件删除/重写；② 上一段（feat/harness-design-2026-05-26 分支带过来）的 5 段半成品（harness tracing / chat panel backfill / chat.rs FK violation 修复 / xiaomi-mimo-provider 全栈接入 / agent tool-use compatibility 初步补强）。**建议**：先把 ZAP 删除作为一个干净 commit 在 `chore/remove-zap` 提交（pure deletion），切回 `feat/harness-design-2026-05-26` 推进其它工作。 |
+| **未提交的半成品** | 当前工作树包含 Target Surface Workbench 设计/计划/mock + 前端实现文件；`feature_list.json` 状态已切到 `target-surface-workbench`。仍有此前未提交的大段 ZAP 删除与 agent/chat/provider 相关改动，commit 前需要按功能拆分。 |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-28 · Target Surface Workbench 设计确认 + 第一版前端接线
+
+- **本轮目标**：用户确认 ZAP/SecurityView 删除后，下一步 UI 按 mock 方向设计（Org Tree + Target Surface Workbench）。用户明确要求“不要跑 init 了，直接搞”，因此中止正在跑的 `./init.sh`，直接落设计文档、实施计划和第一版前端 UI。
+- **状态切换**：
+  - `feature_list.json` 新增 `target-surface-workbench` 并设为唯一 `in_progress`。
+  - `agent-tool-use-compatibility-layer` 从 `in_progress` 暂停为 `blocked`：用户当前切到 Target Surface Workbench；之前代码不回滚，后续再恢复。
+- **已完成**：
+  - 新增设计文档：`docs/design/2026-05-28-target-surface-workbench.md`
+  - 新增实施计划：`docs/superpowers/plans/2026-05-28-target-surface-workbench.md`
+  - 新增 mock artifact：`.codex-screenshots/target-surface-workbench-mock.svg`（用户已确认“可以就这样设计”）；同时保留 `.codex-screenshots/target-surface-workbench-mock.html` 作为静态 mock 源。
+  - 新增 `frontend/components/TargetPanel/hooks/useTargetSurfaceData.ts`：复用现有 security-analysis API，统一拉 `targetAssetsList` / `apiEndpointsList` / `fingerprintsList` / `jsAnalysisList` / `oplogListByTarget`，返回 loading/error/reload。
+  - 新增 `frontend/components/TargetPanel/TargetSurfaceWorkbench.tsx`：Target 选中后显示正式 workbench，包含 header scope/source/evidence metadata、staged actions、`Identity / Surface / Sitemap / JS/API / Sensitive / Evidence` tabs；首版复用现有 target ports / endpoints / JS / logs。
+  - `TargetGroupedView.tsx` 新增 `selectedTargetId` 状态：点击 target row 右侧进入 Workbench；点击 org row 清除 target selection 回到 org workspace。
+  - `TargetDetail.tsx` 改用共享 `useTargetSurfaceData` hook，避免旧的 fetch 逻辑继续散在组件内。
+  - `NewEngagementDialog.tsx` 删除 “Discovery orchestration is not wired yet” 过期文案，改成保存 discovery settings 后从 org workspace 继续 discover/enrich/promote。
+  - `frontend/lib/i18n/{en,zh-CN}.json` 更新空态，不再提旧的 Network/List 视图。
+- **已记录证据**：
+  - `./init.sh`（用户后续要求停止）→ 依赖安装 passed；`fmt` passed；`check-fe` passed；`test-fe` passed；执行到 `lint-rust` 时用户要求“不要跑init了 直接搞”，已 SIGINT，中止后 exit 130。
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/TargetPanel frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json docs/design/2026-05-28-target-surface-workbench.md docs/superpowers/plans/2026-05-28-target-surface-workbench.md` → exit 0 / Checked 18 files / No fixes applied
+  - `pnpm exec vitest run frontend/components/TargetPanel` → 2 files passed / 41 tests passed
+  - Browser visual check：`http://127.0.0.1:1420` → Recent project `golish` → Target Manager 空态成功渲染，新文案为 “Create an engagement, then import customer targets or discover assets from an organization profile”，不再提 Network/List。
+  - `node -e "JSON.parse(require('fs').readFileSync('feature_list.json','utf8'))"` → feature_list JSON parse ok；唯一 `in_progress` 为 `target-surface-workbench`。
+- **未跑 / 原因**：
+  - 未完成 `./init.sh` / `just precommit`：用户明确要求停止 init 并直接实现。
+  - 未做真实 target 数据视觉 QA：当前 browser 只验证了空态；需要后续用真实或 mock target 数据确认 Workbench 的 selected-target 状态、JS/API/Sensitive/Evidence tabs 在 1280x720 下无重叠。
+  - 未触碰后端 / DB schema / Tauri command。
+- **提交记录**：未 commit。
+- **已修改但未提交（本轮 scope）**：
+  - `.codex-screenshots/target-surface-workbench-mock.html`
+  - `.codex-screenshots/target-surface-workbench-mock.svg`
+  - `docs/design/2026-05-28-target-surface-workbench.md`
+  - `docs/superpowers/plans/2026-05-28-target-surface-workbench.md`
+  - `feature_list.json`
+  - `agent-progress.md`
+  - `frontend/components/TargetPanel/hooks/useTargetSurfaceData.ts`
+  - `frontend/components/TargetPanel/TargetSurfaceWorkbench.tsx`
+  - `frontend/components/TargetPanel/TargetGroupedView.tsx`
+  - `frontend/components/TargetPanel/TargetDetail.tsx`
+  - `frontend/components/TargetPanel/NewEngagementDialog.tsx`
+  - `frontend/lib/i18n/en.json`
+  - `frontend/lib/i18n/zh-CN.json`
+- **下一步建议**：用一组可控 mock target 数据或现有真实项目 target 进入 selected-target 状态做视觉 QA；然后补 `Sitemap` / `Sensitive` 真实数据源映射，最后在用户允许时跑 `just precommit` 再考虑切 `passing`。
+
+#### 2026-05-28 追加 · Workbench 数据面补强
+
+- **追加目标**：用户说“开始实现吧”，继续把 Workbench 从壳子推进到更完整的 existing-data UI。
+- **追加已完成**：
+  - `useTargetSurfaceData` 继续扩展：新增拉取 `passiveScansList(targetId, 50)`、`targetTimeline(targetId, 100)`、`listDirectoryEntries({ targetId })`，与 assets/endpoints/fingerprints/js/oplog 一起组成统一 target surface payload。
+  - `frontend/lib/security-analysis.ts` 兼容 re-export 补 `PassiveScanLog` / `passiveScansList` / `TimelineEntry` / `targetTimeline`。
+  - `TargetSurfaceWorkbench` tabs 显示数量 badge。
+  - `Surface` tab 真实渲染 fingerprints，不再永远显示空态。
+  - `Sitemap` tab 渲染 directory entries + `target_assets` 中 path/url/sitemap 类型记录。
+  - `Sensitive` tab 渲染 JS secrets / source map signals，并合并 passive scan 中 `vulnerable` / `potential` 结果。
+  - `Evidence` tab 优先渲染 `target_timeline`，无 timeline 时回退到 `oplogListByTarget`。
+- **追加验证证据**：
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/TargetPanel frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json frontend/lib/security-analysis.ts` → exit 0 / Checked 19 files / No fixes applied
+  - `pnpm exec vitest run frontend/components/TargetPanel` → 2 files passed / 41 tests passed
+  - Browser text check：`http://127.0.0.1:1420` → project `golish` → Target Manager 文本成功读取，空态仍为新文案。截图 capture 曾超时一次，但 DOM/text polling 成功。
+- **仍未完成**：
+  - 需要有真实 target 数据或专门 mock fixture，才能检查 selected target workbench 的有数据视觉状态。
+  - 未跑 `just precommit`（遵循用户“不跑 init，直接搞”的当前指令）。
+
+#### 2026-05-28 追加 · 左右视觉对齐 pass
+
+- **追加目标**：用户截图指出左侧树与右侧 Workbench 样式有出入；继续把 selected-target 工作台和左侧 target tree 的视觉语言收敛。
+- **追加已完成**：
+  - `TargetSurfaceWorkbench.tsx`：压低 header / tab / action button 高度，弱化 section / metric / empty state 的边框和背景；`Surface` / `JS/API` 双列 grid 增加 `items-start`，避免左侧 Services 被右列空内容撑成超高卡片；空态高度从 280px 收到 180px。
+  - `TargetGroupedView.tsx`：左右布局比例从 `0.9fr/1.1fr` 调为 `0.72fr/1.28fr`，让右侧 Workbench 获得更合理的检查空间。
+  - 左侧 target tree 轻整理：selected target 改为稳定左边选中条；out-of-scope 只弱化名称不再整行半透明；target 行固定成 type / scope / value / evidence count / action 的紧凑结构；子公司不再每行重复 mode badge，仅根节点或当前选中节点显示。
+- **追加验证证据**：
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/TargetPanel frontend/lib/security-analysis.ts frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json` → exit 0 / Checked 19 files / No fixes applied
+  - `pnpm exec vitest run frontend/components/TargetPanel` → 2 files passed / 41 tests passed
+  - 尝试启动 `pnpm dev --host 127.0.0.1`：沙箱内监听 localhost 被 EPERM 拦截；升级后 1420/1421 已占用；改用 1430 可启动，但随后用户表示“不用自己看，我给你截图”，因此停止浏览器自检路线，基于用户截图继续收敛样式。
+- **仍未完成**：
+  - 未跑 `just precommit`（当前用户指令仍是不要跑 init/precommit，直接实现）。
+  - 还需要用户用真实 UI 截图确认左侧 tree pass 是否够；若继续调整，优先处理 top toolbar / org action hover 区域，而不是重做整套导航。
+
+#### 2026-05-28 追加 · Target 顶部切换与主操作色修正
+
+- **追加目标**：用户截图指出 Target Manager 顶部 tree/graph 分段 tab 已不需要，且“新建任务”等主操作颜色在当前暗色主题下看不清；同时确认拓扑图后续应重新设计。
+- **追加已完成**：
+  - `TargetPanel.tsx` 移除顶部 tree/graph 分段切换，Target Manager 固定进入 org tree + selected target workbench；`TargetGraphView` 代码保留，后续 topology/relationship workspace 重新设计时再接入。
+  - Target Manager 标题改为普通 `text-foreground`，icon 改蓝色，避免继续依赖低对比 `accent`。
+  - `TargetGroupedView.tsx`：顶部“新建任务”改为 green primary button，Quick org 改为低调边框按钮；空态三张入口卡把 Import targets / Discover assets 分别改成 green / blue 语义色。
+  - `NewEngagementDialog.tsx`：workflow 选项、Look up、submit primary button 去掉低对比 `accent` 主色，改为 green / blue / neutral 语义色。
+- **追加验证证据**：
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/TargetPanel frontend/lib/security-analysis.ts frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json` → exit 0 / Checked 19 files / No fixes applied
+  - `pnpm exec vitest run frontend/components/TargetPanel` → 2 files passed / 41 tests passed
+- **仍未完成**：
+  - 拓扑图没有在本轮重做：当前只隐藏旧入口，后续建议作为 Relationship / Ownership Graph 独立工作区设计，带 evidence filter、org/target/path 切换，而不是恢复顶部小 tab。
+  - 未跑 `just precommit`（继续遵循用户“不跑 init，直接搞”的当前指令）。
+
+#### 2026-05-28 追加 · 移除 Quick org 顶栏入口
+
+- **追加目标**：用户明确要求删掉“快速建组织”按钮。
+- **追加已完成**：
+  - `TargetGroupedView.tsx` 顶栏删除 Quick org 按钮，只保留 New Engagement 作为主创建入口和 org/target 计数。
+  - 空态中的 Profile Only 卡片暂保留，避免空项目没有只建 customer record 的路径。
+- **追加验证证据**：
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/TargetPanel frontend/lib/security-analysis.ts frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json` → exit 0 / Checked 19 files / No fixes applied
+  - `pnpm exec vitest run frontend/components/TargetPanel` → 2 files passed / 41 tests passed
+- **仍未完成**：
+  - 未跑 `just precommit`（继续遵循用户“不跑 init，直接搞”的当前指令）。
+
+#### 2026-05-28 追加 · Org 子公司计数不换行
+
+- **追加目标**：用户截图指出 `7 sub` 在左侧 org 行里被拆成两行。
+- **追加已完成**：
+  - `TargetGroupedView.tsx` 将子组织计数改为 `inline-flex whitespace-nowrap`，保证 `· 7 sub` 作为一个整体同行显示。
+- **追加验证证据**：
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/TargetPanel frontend/lib/security-analysis.ts frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json` → exit 0 / Checked 19 files / No fixes applied
+  - `pnpm exec vitest run frontend/components/TargetPanel` → 2 files passed / 41 tests passed
+- **仍未完成**：
+  - 未跑 `just precommit`（继续遵循用户“不跑 init，直接搞”的当前指令）。
+
+#### 2026-05-28 追加 · 恢复 Topology 入口
+
+- **追加目标**：用户希望拓扑图后续由另一个 session 重新设计，但当前不要隐藏入口。
+- **追加已完成**：
+  - `TargetPanel.tsx` 恢复 tree / topology view switch，并保持默认进入 org tree + workbench。
+  - 切换 UI 从纯图标分段改成低调的 `Tree / Topology` 文本+图标按钮，保证入口可见但不抢主流程。
+  - `TargetGraphView` 继续作为现有 topology view 渲染，等待后续重新设计。
+- **追加验证证据**：
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/TargetPanel frontend/lib/security-analysis.ts frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json` → exit 0 / Checked 19 files / No fixes applied
+  - `pnpm exec vitest run frontend/components/TargetPanel` → 2 files passed / 41 tests passed
+- **仍未完成**：
+  - 拓扑图本身未重做；本轮只恢复入口。
+  - 未跑 `just precommit`（继续遵循用户“不跑 init，直接搞”的当前指令）。
+
+#### 2026-05-28 追加 · Topology redesign 静态 mock
+
+- **追加目标**：用户希望先 mock 新拓扑图方向，确认“看着舒服、逻辑更好”后再决定是否接入 `elkjs` / 重构真实图。
+- **追加已完成**：
+  - 新增静态 mock：`.codex-screenshots/target-topology-redesign-mock.svg`
+  - mock 方向：左侧 topology controls / graph mode / filters，中间 full-bleed layered attack surface map，右侧 inspector；节点从 `Organization → Target → Service → Evidence` 分层，边带语义（ownership / service exposure / evidence trail），视觉上与当前 Target Surface Workbench 的暗色、紧凑、证据优先风格对齐。
+- **追加验证证据**：
+  - `python3 -m xml.etree.ElementTree .codex-screenshots/target-topology-redesign-mock.svg` → exit 0（SVG/XML 结构可解析）
+  - `wc -l .codex-screenshots/target-topology-redesign-mock.svg` → 297 lines
+- **仍未完成**：
+  - 未改真实 Topology 代码；本轮只产出 mock。
+  - 未跑 `init` / `just precommit`，遵循用户“不要运行init 你直接看”的当前指令。
+
+#### 2026-05-28 追加 · Topology redesign 第一版实现
+
+- **追加目标**：用户确认 mock “很不错”后要求开始实现；按用户确认的策略删除旧拓扑实现，用新版 Attack Surface Map 替换旧 Topology。
+- **追加已完成**：
+  - 新增设计文档：`docs/design/2026-05-28-target-topology-redesign.md`
+  - 新增实施计划：`docs/superpowers/plans/2026-05-28-target-topology-redesign.md`
+  - 新增 topology 模型层：`frontend/components/TargetPanel/topology/types.ts`、`buildTopologyModel.ts`
+  - 新增 topology UI：`TopologyControls.tsx`、`TopologyCanvas.tsx`、`TopologyInspector.tsx`
+  - 重写 `TargetGraphView.tsx`：通过现有 `organizations` API wrapper 拉 organization list，组合 `targets` 构建 `Organization → Target → Service → Evidence` 分层图；不再裸 `invoke("findings_for_host")`。
+  - 删除旧实现：`frontend/components/TargetPanel/GraphElements.tsx`、`frontend/components/TargetPanel/hooks/useGraphLayout.ts`。旧 Cytoscape target-only graph 不再与新版并存。
+- **追加验证证据**：
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/TargetPanel docs/design/2026-05-28-target-topology-redesign.md docs/superpowers/plans/2026-05-28-target-topology-redesign.md` → exit 0 / Checked 19 files / No fixes applied
+  - `pnpm exec vitest run frontend/components/TargetPanel` → 2 files passed / 41 tests passed
+  - `rg -n "GraphElements|useGraphLayout|buildGraphElements|GraphSidebar|GraphNodeDetail|findings_for_host" frontend/components/TargetPanel frontend/lib -S` → exit 1 / no matches（确认旧 graph helper 与裸 findings invoke 已清空）
+- **仍未完成**：
+  - 未跑 `init` / `just precommit`，遵循用户“不要运行init 你直接看”的当前指令。
+  - 未做浏览器视觉 QA；下一步建议用户跑 app 看真实数据截图，再微调节点密度、边距、inspector action 是否接入 Tree workbench。
+  - 未新增 `elkjs` 依赖；当前第一版用本地 deterministic layered layout，后续如果节点规模变大再把 layout 层替换为 ELK。
+
+#### 2026-05-28 追加 · Topology org 层级修正
+
+- **追加目标**：用户截图指出逻辑错误：总 org 下的 sub org 被画成一个个独立 org，而不是挂在总 org 后面。
+- **追加已完成**：
+  - `buildTopologyModel.ts` 从 flat org 排序改为按 `parent_id` 构建 `childrenByParent` 并递归渲染。
+  - 画布列从 `ORG / TARGET / SERVICE / EVIDENCE` 调整为 `ROOT ORG / SUB ORG / TARGET / SERVICE / EVIDENCE`。
+  - root org 仍在第一列；sub org 在第二列；sub org 下的 targets 再进入 target 列；root 直接 targets 则挂在 sub org/target 相邻列，避免把子公司当独立 root 展开。
+- **追加验证证据**：
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/TargetPanel/topology frontend/components/TargetPanel/TargetGraphView.tsx` → exit 0 / Checked 6 files / No fixes applied
+  - `pnpm exec vitest run frontend/components/TargetPanel` → 2 files passed / 41 tests passed
+  - `node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('feature_list.json','utf8')); console.log('feature_list ok')"` → exit 0
+- **仍未完成**：
+  - 未跑 `init` / `just precommit`，遵循用户“不要运行init 你直接看”的当前指令。
+  - 未做浏览器视觉 QA；等待用户复看真实截图确认 root/sub/target 层级是否符合预期。
+
+#### 2026-05-28 追加 · Topology root/sub 关联可视化修正
+
+- **追加目标**：用户进一步指出虽然分列了，但看不到 root org 和 sub org 的关联性。
+- **追加已完成**：
+  - `buildTopologyModel.ts` 从“root 先占一行、children 往下追加”的流水布局，改成先计算整组 child/subtree 占用行，再把 root org 放到该组垂直中心。
+  - target/service/evidence 也改为同一 target 的第一 service/evidence 与 target 同行，额外 service 再下排，减少边线漂移。
+  - `TopologyCanvas.tsx` 将 `owns` 连线从弱灰线改为更亮更粗的 cyan 线，让 root → sub org 的父子关系更明显。
+- **追加验证证据**：
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/TargetPanel/topology frontend/components/TargetPanel/TargetGraphView.tsx` → exit 0 / Checked 6 files / No fixes applied
+  - `pnpm exec vitest run frontend/components/TargetPanel` → 2 files passed / 41 tests passed
+- **仍未完成**：
+  - 未跑 `init` / `just precommit`，遵循用户“不要运行init 你直接看”的当前指令。
+  - 未做浏览器视觉 QA；等待用户复看真实截图确认 root/sub 关联视觉是否足够清晰。
+
+#### 2026-05-28 追加 · Topology root target 列归属修正
+
+- **追加目标**：用户截图指出加入 sub org 后，没有 sub org 的 target 视觉上跑到了 sub org 里面。
+- **追加已完成**：
+  - `buildTopologyModel.ts` 修正 target 列分配：root org 直属 target、sub org target、unassigned target 统一进入 `TARGET` 列，不再把 root 直属 target 放到 `SUB ORG` 列。
+  - 新增 `buildTopologyModel.test.ts` 回归测试，覆盖 root-owned / sub-owned / unassigned 三类 target 在有 sub org 时的列归属，并确认 root target 不会连到 sub org。
+- **追加验证证据**：
+  - `pnpm exec vitest run frontend/components/TargetPanel/topology/buildTopologyModel.test.ts` → 先红灯：root-owned target 实际 `column: 1`；修复后 exit 0 / 1 passed
+  - `pnpm exec tsc --noEmit` → exit 0
+  - `pnpm exec biome check frontend/components/TargetPanel/topology frontend/components/TargetPanel/TargetGraphView.tsx` → exit 0 / Checked 7 files / No fixes applied
+  - `pnpm exec vitest run frontend/components/TargetPanel` → exit 0 / 3 files passed / 42 tests passed
+- **仍未完成**：
+  - 未跑 `init` / `just precommit`；本轮只做 topology 前端定向修复与验证。
+  - 未做浏览器视觉 QA；需要用户刷新 topology 后确认真实截图里 root target 已回到 Target 列。
 
 ---
 
