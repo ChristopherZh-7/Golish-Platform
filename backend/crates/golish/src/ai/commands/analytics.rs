@@ -10,10 +10,13 @@ use crate::state::AppState;
 
 // -- Tool call analytics ---------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct ToolCallStats {
     pub name: String,
+    #[ts(type = "number")]
     pub total_count: i64,
+    #[ts(type = "number")]
     pub total_duration_ms: i64,
     pub avg_duration_ms: f64,
 }
@@ -42,9 +45,12 @@ pub async fn get_tool_call_stats(
 
 // -- Token usage analytics -------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TokenUsageStats {
+#[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
+pub struct DbTokenUsageStats {
+    #[ts(type = "number")]
     pub total_tokens_in: i64,
+    #[ts(type = "number")]
     pub total_tokens_out: i64,
     pub total_cost_in: f64,
     pub total_cost_out: f64,
@@ -53,10 +59,10 @@ pub struct TokenUsageStats {
 #[tauri::command]
 pub async fn get_db_token_usage_stats(
     state: State<'_, AppState>,
-) -> Result<TokenUsageStats, GolishError> {
+) -> Result<DbTokenUsageStats, GolishError> {
     let stats = golish_db::repo::message_chains::usage_stats_total(&state.db_pool).await?;
 
-    Ok(TokenUsageStats {
+    Ok(DbTokenUsageStats {
         total_tokens_in: stats.total_tokens_in,
         total_tokens_out: stats.total_tokens_out,
         total_cost_in: stats.total_cost_in,
@@ -91,8 +97,10 @@ pub async fn get_usage_by_agent(
 
 // -- Audit log -------------------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct AuditEntry {
+    #[ts(type = "number")]
     pub id: i64,
     pub action: String,
     pub category: String,
@@ -136,11 +144,13 @@ pub async fn get_audit_log(
 
 // -- Memory management -----------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct MemoryEntry {
     pub id: String,
     pub content: String,
     pub mem_type: String,
+    #[ts(type = "Record<string, unknown> | null")]
     pub metadata: Option<serde_json::Value>,
     pub created_at: String,
 }

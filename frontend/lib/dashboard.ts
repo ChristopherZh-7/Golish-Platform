@@ -1,12 +1,8 @@
 import { invoke } from "@/lib/api/client";
+import type { DbTokenUsageStats } from "@/lib/generated/DbTokenUsageStats";
 import type { Target as PentestTarget } from "@/lib/pentest/types";
 
-export interface TokenUsageStats {
-  total_tokens_in: number;
-  total_tokens_out: number;
-  total_cost_in: number;
-  total_cost_out: number;
-}
+export type { DbTokenUsageStats };
 
 export interface AgentUsage {
   agent: string;
@@ -63,7 +59,7 @@ export interface AuditEntry {
 
 export const dashboardApi = {
   // AI stats
-  getTokenUsageStats: () => invoke<TokenUsageStats>("get_db_token_usage_stats"),
+  getTokenUsageStats: () => invoke<DbTokenUsageStats>("get_db_token_usage_stats"),
   getUsageByAgent: () => invoke<AgentUsage[]>("get_usage_by_agent"),
   getToolCallStats: () => invoke<ToolCallStat[]>("get_tool_call_stats", {}),
   getMemoryCount: () => invoke<number>("get_memory_count"),

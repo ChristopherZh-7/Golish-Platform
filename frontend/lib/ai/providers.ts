@@ -80,7 +80,7 @@ export async function buildProviderConfig(
       return {
         provider: "vertex_ai",
         workspace,
-        credentials_path: vertex_ai.credentials_path || null,
+        credentials_path: vertex_ai.credentials_path || undefined,
         project_id: vertex_ai.project_id,
         location: vertex_ai.location || "us-east5",
         model: default_model,
@@ -96,7 +96,7 @@ export async function buildProviderConfig(
       return {
         provider: "vertex_gemini",
         workspace,
-        credentials_path: vertex_gemini.credentials_path || null,
+        credentials_path: vertex_gemini.credentials_path || undefined,
         project_id: vertex_gemini.project_id,
         location: vertex_gemini.location || "us-central1",
         model: default_model,

@@ -9,11 +9,15 @@ use serde::{Deserialize, Serialize};
 /// Vision/image capabilities for LLM providers.
 ///
 /// Used to determine if a model supports image inputs and what constraints apply.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct VisionCapabilities {
     /// Whether the model supports image inputs.
     pub supports_vision: bool,
     /// Maximum image size in bytes (provider-specific limit).
+    /// Forced to `number` (not `bigint`) since image sizes stay well within
+    /// JS safe-integer range and the frontend treats it as a number.
+    #[ts(type = "number")]
     pub max_image_size_bytes: usize,
     /// Supported MIME types (e.g., "image/png", "image/jpeg").
     pub supported_formats: Vec<String>,

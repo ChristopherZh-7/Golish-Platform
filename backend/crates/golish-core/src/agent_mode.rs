@@ -14,8 +14,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Agent mode determines how tool approvals are handled.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub enum AgentMode {
     /// Default mode: Tool approval required based on policy (normal HITL).
     /// Uses the configured tool policy to determine which tools need approval.

@@ -28,9 +28,9 @@ import { useTranslation } from "react-i18next";
 import {
   type AgentUsage,
   type AuditEntry,
+  type DbTokenUsageStats,
   dashboardApi,
   type ProjectMethodology,
-  type TokenUsageStats,
   type ToolCallStat,
 } from "@/lib/dashboard";
 import { onEvent } from "@/lib/events";
@@ -52,7 +52,7 @@ import {
 } from "./StatCards";
 
 interface AiStats {
-  tokenUsage: TokenUsageStats | null;
+  tokenUsage: DbTokenUsageStats | null;
   agentUsage: AgentUsage[];
   toolCallStats: ToolCallStat[];
   memoryCount: number;

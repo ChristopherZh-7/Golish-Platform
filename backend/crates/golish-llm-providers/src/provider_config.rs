@@ -145,30 +145,44 @@ fn default_include_thoughts() -> bool {
 ///
 /// Uses serde tag discrimination for clean JSON/frontend integration.
 /// This enables a single Tauri command to handle all provider initialization.
+// ts-rs notes (B-4): the unified `ProviderConfig` is the cross-IPC source of
+// truth. Fields the frontend never sends are hidden from the generated type:
+// `model_override` is re-attached on the frontend via `ProviderConfigBase`
+// (avoids pulling `ModelOverride` into the generated graph); the settings-backed
+// fields (`include_thoughts` / `enable_web_search` / `web_search_context_size`)
+// use `#[ts(skip)]` because ts-rs `optional` only applies to `Option<T>` and
+// they are non-`Option`. Real `Option<_>` fields use `#[ts(optional)]` so the
+// frontend builders need not pass them.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ts_rs::TS)]
 #[serde(tag = "provider", rename_all = "snake_case")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub enum ProviderConfig {
     VertexAi {
         workspace: String,
         model: String,
         #[serde(default)]
+        #[ts(optional)]
         credentials_path: Option<String>,
         project_id: String,
         location: String,
         #[serde(default)]
+        #[ts(skip)]
         model_override: Option<ModelOverride>,
     },
     VertexGemini {
         workspace: String,
         model: String,
         #[serde(default)]
+        #[ts(optional)]
         credentials_path: Option<String>,
         project_id: String,
         location: String,
         #[serde(default = "default_include_thoughts")]
+        #[ts(skip)]
         include_thoughts: bool,
         #[serde(default)]
+        #[ts(skip)]
         model_override: Option<ModelOverride>,
     },
     Openrouter {
@@ -176,8 +190,10 @@ pub enum ProviderConfig {
         model: String,
         api_key: String,
         #[serde(default)]
+        #[ts(optional, type = "Record<string, unknown>")]
         provider_preferences: Option<serde_json::Value>,
         #[serde(default)]
+        #[ts(skip)]
         model_override: Option<ModelOverride>,
     },
     Openai {
@@ -185,14 +201,19 @@ pub enum ProviderConfig {
         model: String,
         api_key: String,
         #[serde(default)]
+        #[ts(optional)]
         base_url: Option<String>,
         #[serde(default)]
+        #[ts(optional)]
         reasoning_effort: Option<String>,
         #[serde(default)]
+        #[ts(skip)]
         enable_web_search: bool,
         #[serde(default = "default_web_search_context_size")]
+        #[ts(skip)]
         web_search_context_size: String,
         #[serde(default)]
+        #[ts(skip)]
         model_override: Option<ModelOverride>,
     },
     Anthropic {
@@ -200,14 +221,17 @@ pub enum ProviderConfig {
         model: String,
         api_key: String,
         #[serde(default)]
+        #[ts(skip)]
         model_override: Option<ModelOverride>,
     },
     Ollama {
         workspace: String,
         model: String,
         #[serde(default)]
+        #[ts(optional)]
         base_url: Option<String>,
         #[serde(default)]
+        #[ts(skip)]
         model_override: Option<ModelOverride>,
     },
     Gemini {
@@ -215,8 +239,10 @@ pub enum ProviderConfig {
         model: String,
         api_key: String,
         #[serde(default = "default_include_thoughts")]
+        #[ts(skip)]
         include_thoughts: bool,
         #[serde(default)]
+        #[ts(skip)]
         model_override: Option<ModelOverride>,
     },
     Groq {
@@ -224,6 +250,7 @@ pub enum ProviderConfig {
         model: String,
         api_key: String,
         #[serde(default)]
+        #[ts(skip)]
         model_override: Option<ModelOverride>,
     },
     Xai {
@@ -231,6 +258,7 @@ pub enum ProviderConfig {
         model: String,
         api_key: String,
         #[serde(default)]
+        #[ts(skip)]
         model_override: Option<ModelOverride>,
     },
     ZaiSdk {
@@ -238,10 +266,13 @@ pub enum ProviderConfig {
         model: String,
         api_key: String,
         #[serde(default)]
+        #[ts(optional)]
         base_url: Option<String>,
         #[serde(default)]
+        #[ts(optional)]
         source_channel: Option<String>,
         #[serde(default)]
+        #[ts(skip)]
         model_override: Option<ModelOverride>,
     },
     Nvidia {
@@ -249,8 +280,10 @@ pub enum ProviderConfig {
         model: String,
         api_key: String,
         #[serde(default)]
+        #[ts(optional)]
         base_url: Option<String>,
         #[serde(default)]
+        #[ts(skip)]
         model_override: Option<ModelOverride>,
     },
     Deepseek {
@@ -258,8 +291,10 @@ pub enum ProviderConfig {
         model: String,
         api_key: String,
         #[serde(default)]
+        #[ts(optional)]
         base_url: Option<String>,
         #[serde(default)]
+        #[ts(skip)]
         model_override: Option<ModelOverride>,
     },
     Xiaomi {
@@ -267,14 +302,19 @@ pub enum ProviderConfig {
         model: String,
         api_key: String,
         #[serde(default)]
+        #[ts(optional)]
         region: Option<String>,
         #[serde(default)]
+        #[ts(optional)]
         default_protocol: Option<String>,
         #[serde(default)]
+        #[ts(optional)]
         base_url: Option<String>,
         #[serde(default)]
+        #[ts(optional)]
         anthropic_base_url: Option<String>,
         #[serde(default)]
+        #[ts(skip)]
         model_override: Option<ModelOverride>,
     },
 }

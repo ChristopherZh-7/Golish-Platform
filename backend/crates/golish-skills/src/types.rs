@@ -28,13 +28,15 @@ pub struct SkillFrontmatter {
 ///
 /// This is the complete representation of a skill, including
 /// information about optional subdirectories.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct SkillInfo {
     /// Skill name (from frontmatter)
     pub name: String,
     /// Full path to the skill directory
     pub path: String,
     /// Source: "global" or "project"
+    #[ts(type = "\"global\" | \"project\"")]
     pub source: String,
     /// Description from frontmatter
     pub description: String,
