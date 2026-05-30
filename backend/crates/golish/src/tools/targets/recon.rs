@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::types::ts_from_chrono;
+use golish_core::time::ts_from_dt;
 
 /// Fields for an extended recon update.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -80,7 +80,7 @@ impl From<DirEntryRow> for DirectoryEntry {
             words: r.words,
             content_type: r.content_type,
             tool: r.tool,
-            created_at: ts_from_chrono(r.created_at),
+            created_at: ts_from_dt(r.created_at),
         }
     }
 }

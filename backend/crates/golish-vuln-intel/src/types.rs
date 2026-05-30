@@ -4,9 +4,7 @@ use uuid::Uuid;
 
 pub use golish_vuln_intel_domain::{default_feeds, nvd_recent_url, VulnEntry, VulnFeed};
 
-pub fn ts_from_dt(dt: chrono::DateTime<chrono::Utc>) -> u64 {
-    dt.timestamp() as u64
-}
+pub use golish_core::time::ts_from_dt;
 
 #[derive(sqlx::FromRow)]
 pub struct FeedRow {

@@ -6,20 +6,9 @@ use std::path::Path;
 
 use crate::types::BranchInfo;
 
-pub fn format_relative_time(datetime: chrono::DateTime<chrono::Utc>) -> String {
-    let now = chrono::Utc::now();
-    let duration = now.signed_duration_since(datetime);
-
-    if duration.num_days() > 0 {
-        format!("{}d ago", duration.num_days())
-    } else if duration.num_hours() > 0 {
-        format!("{}h ago", duration.num_hours())
-    } else if duration.num_minutes() > 0 {
-        format!("{}m ago", duration.num_minutes())
-    } else {
-        "just now".to_string()
-    }
-}
+// `format_relative_time` is the canonical helper in `golish-core::time`;
+// re-export so `golish_indexer::git_helpers::format_relative_time` stays stable.
+pub use golish_core::time::format_relative_time;
 
 pub fn get_last_commit_time(path: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
     use std::process::Command;

@@ -11,22 +11,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::error::GolishError;
-
-/// Format a UTC timestamp as a coarse relative time (e.g. "2h ago").
-fn format_relative_time(datetime: chrono::DateTime<chrono::Utc>) -> String {
-    let now = chrono::Utc::now();
-    let duration = now.signed_duration_since(datetime);
-
-    if duration.num_days() > 0 {
-        format!("{}d ago", duration.num_days())
-    } else if duration.num_hours() > 0 {
-        format!("{}h ago", duration.num_hours())
-    } else if duration.num_minutes() > 0 {
-        format!("{}m ago", duration.num_minutes())
-    } else {
-        "just now".to_string()
-    }
-}
+use golish_core::time::format_relative_time;
 
 /// Recent directory information for the home view.
 #[derive(Debug, Clone, Serialize, Deserialize)]

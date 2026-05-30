@@ -6,6 +6,7 @@ authors.workspace = true
 description = "Code indexer trait + state + vtcode-indexer backend + codebase registry helpers + git utilities"
 
 [dependencies]
+golish-core = { workspace = true }
 golish-settings = { workspace = true }
 
 vtcode-indexer = { workspace = true }

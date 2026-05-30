@@ -48,12 +48,7 @@ async fn save_meta(store: &MetaStore) -> Result<(), GolishError> {
         .map_err(GolishError::from)
 }
 
-fn now_ts() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
+use golish_core::time::now_ts;
 
 #[tauri::command]
 pub async fn wordlist_list() -> Result<Vec<WordlistMeta>, GolishError> {

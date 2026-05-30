@@ -134,6 +134,42 @@ pub fn golish_dir_for_workspace(workspace: &std::path::Path) -> PathBuf {
     }
 }
 
+/// Expand a leading `~` or `~/` into the current user's home directory.
+///
+/// Returns the original path unchanged when no expansion applies or the
+/// home directory cannot be resolved. Single source of truth for the
+/// `expand_home_dir` / `expand_tilde` helpers that were copy-pasted across
+/// `golish`, `golish-indexer` and `golish-agent-kit`.
+pub fn expand_tilde(path: &str) -> PathBuf {
+    if path == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
+/// Same as [`expand_tilde`] but returns an owned [`String`]. Useful for
+/// `&str`-boundary code such as path completion.
+pub fn expand_tilde_string(path: &str) -> String {
+    expand_tilde(path).to_string_lossy().into_owned()
+}
+
+/// Inverse of [`expand_tilde`]: replace a leading home-directory prefix
+/// with `~/` for display. Returns the path unchanged when it is not under
+/// the home directory.
+pub fn contract_home_dir(path: &std::path::Path) -> String {
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(stripped) = path.strip_prefix(&home) {
+            return format!("~/{}", stripped.display());
+        }
+    }
+    path.to_string_lossy().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -142,5 +178,29 @@ mod tests {
             super::app_data_base(),
             golish_platform::paths::app_data_base("golish-platform")
         );
+    }
+
+    #[test]
+    fn expand_tilde_leaves_absolute_path_untouched() {
+        assert_eq!(
+            super::expand_tilde("/etc/hosts"),
+            std::path::PathBuf::from("/etc/hosts")
+        );
+    }
+
+    #[test]
+    fn expand_tilde_resolves_tilde_prefix() {
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(super::expand_tilde("~/foo"), home.join("foo"));
+            assert_eq!(super::expand_tilde("~"), home);
+        }
+    }
+
+    #[test]
+    fn contract_home_dir_roundtrips_with_expand() {
+        if let Some(home) = dirs::home_dir() {
+            let p = home.join("proj").join("x");
+            assert_eq!(super::contract_home_dir(&p), "~/proj/x");
+        }
     }
 }

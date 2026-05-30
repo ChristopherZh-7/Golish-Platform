@@ -15,21 +15,10 @@ pub fn find_memory_file_for_workspace(
     workspace_path: &Path,
     codebases: &[CodebaseConfig],
 ) -> Option<PathBuf> {
-    // Helper to expand ~ to home directory
-    fn expand_home_dir(path: &str) -> PathBuf {
-        if path.starts_with("~/") {
-            dirs::home_dir()
-                .map(|home| home.join(&path[2..]))
-                .unwrap_or_else(|| PathBuf::from(path))
-        } else {
-            PathBuf::from(path)
-        }
-    }
-
     // First, check if workspace matches an indexed codebase with explicit memory_file
     if let Ok(workspace_canonical) = workspace_path.canonicalize() {
         for config in codebases {
-            let codebase_path = expand_home_dir(&config.path);
+            let codebase_path = golish_core::paths::expand_tilde(&config.path);
             if let Ok(codebase_canonical) = codebase_path.canonicalize() {
                 // Check if workspace is the codebase or a subdirectory
                 if workspace_canonical == codebase_canonical

@@ -150,17 +150,13 @@ pub(super) fn print_event_verbose(event: &AiEvent) {
     }
 }
 
-/// Truncate a string for display (UTF-8 safe).
+/// Truncate a string for display (UTF-8 safe): collapse newlines/CR, then cap
+/// at `max_chars` characters with a trailing `...`. The char truncation reuses
+/// the canonical `golish_core::utils::truncate_chars`.
 fn truncate_string(s: &str, max_chars: usize) -> String {
     let s = s.replace('\n', " ").replace('\r', "");
-    // Use char_indices to find valid UTF-8 boundaries
     if s.chars().count() > max_chars {
-        let end_idx = s
-            .char_indices()
-            .nth(max_chars)
-            .map(|(idx, _)| idx)
-            .unwrap_or(s.len());
-        format!("{}...", &s[..end_idx])
+        format!("{}...", golish_core::utils::truncate_chars(&s, max_chars))
     } else {
         s
     }

@@ -1,6 +1,7 @@
 //! Target / Scope / TargetType / TargetStatus DTOs and the database row
 //! adapter.
 
+use golish_core::time::ts_from_dt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -160,10 +161,6 @@ pub(super) fn detect_type(value: &str) -> TargetType {
     TargetType::Domain
 }
 
-pub(super) fn ts_from_chrono(dt: chrono::DateTime<chrono::Utc>) -> u64 {
-    dt.timestamp() as u64
-}
-
 /// Parse an ISO 8601 datetime string (with timezone) into UTC.
 /// Returns None for empty/whitespace/malformed inputs so callers can pass
 /// through to SQL as NULL.
@@ -219,8 +216,8 @@ impl From<TargetRow> for Target {
             status: TargetStatus::from_str(&r.status),
             grp: r.grp,
             owner: r.owner,
-            time_window_start: r.time_window_start.map(ts_from_chrono),
-            time_window_end: r.time_window_end.map(ts_from_chrono),
+            time_window_start: r.time_window_start.map(ts_from_dt),
+            time_window_end: r.time_window_end.map(ts_from_dt),
             organization_id: r.organization_id.map(|u| u.to_string()),
             source: r.source,
             parent_id: r.parent_id.map(|u| u.to_string()),
@@ -232,8 +229,8 @@ impl From<TargetRow> for Target {
             webserver: r.webserver,
             os_info: r.os_info,
             content_type: r.content_type,
-            created_at: ts_from_chrono(r.created_at),
-            updated_at: ts_from_chrono(r.updated_at),
+            created_at: ts_from_dt(r.created_at),
+            updated_at: ts_from_dt(r.updated_at),
         }
     }
 }

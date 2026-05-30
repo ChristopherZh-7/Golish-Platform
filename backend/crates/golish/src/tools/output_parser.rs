@@ -290,15 +290,10 @@ pub async fn output_detect_tool(
 
 use crate::state::DbState;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoreStats {
-    pub parsed_count: usize,
-    pub stored_count: usize,
-    #[serde(default)]
-    pub new_count: usize,
-    pub skipped_count: usize,
-    pub errors: Vec<String>,
-}
+// StoreStats is the identical parse-and-store stats type owned by
+// `golish-pipeline`; re-export it here (I5 single source) instead of
+// maintaining a second copy. golish already depends on golish-pipeline.
+pub use golish_pipeline::parser::StoreStats;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParseAndStoreResult {

@@ -64,6 +64,18 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     }
 }
 
+/// Truncate to at most `max_chars` Unicode scalar values (head-keeping, no
+/// marker). The char-counted companion to the byte-counted [`truncate_str`];
+/// single source of truth for the `truncate_*` helpers previously copied into
+/// `golish-cli-output`, `golish-agent-runtime`, `golish` and `golish-shell-exec`.
+pub fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        s.chars().take(max_chars).collect()
+    }
+}
+
 /// Truncate using a 70/30 head/tail strategy, preserving both start and end.
 pub fn truncate_head_tail(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
@@ -84,6 +96,31 @@ pub fn truncate_head_tail(s: &str, max_bytes: usize) -> String {
         s.len() - head.len() - tail.len(),
         tail
     )
+}
+
+/// Strip ANSI / VT escape sequences (`ESC [ … <letter>`) from a string.
+///
+/// Single source of truth for the `strip_ansi` helpers previously copied into
+/// `golish-db` and `golish-agent-kit`.
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip ESC [ ... <letter> sequences
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for nc in chars.by_ref() {
+                    if nc.is_ascii_alphabetic() || nc == 'm' {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Extract a required string argument from a JSON `Value` object.
@@ -218,5 +255,23 @@ mod tests {
         assert_eq!(truncate_str(s, 3), "abc");
         assert_eq!(truncate_str(s, 2), "ab");
         assert_eq!(truncate_str(s, 1), "a");
+    }
+
+    #[test]
+    fn test_truncate_chars_counts_scalars_not_bytes() {
+        // Each CJK char is 1 scalar (3 bytes) — char-counted, not byte-counted.
+        let s = "Hello, 世界!";
+        assert_eq!(truncate_chars(s, 100), s);
+        assert_eq!(truncate_chars(s, 8), "Hello, 世");
+        assert_eq!(truncate_chars(s, 0), "");
+        assert_eq!(truncate_chars("", 5), "");
+    }
+
+    #[test]
+    fn test_strip_ansi_removes_color_and_keeps_text() {
+        assert_eq!(strip_ansi("\x1b[31mred\x1b[0m text"), "red text");
+        assert_eq!(strip_ansi("plain"), "plain");
+        assert_eq!(strip_ansi("\x1b[1;32mok\x1b[0m"), "ok");
+        assert_eq!(strip_ansi(""), "");
     }
 }

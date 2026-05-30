@@ -8,17 +8,7 @@ pub use golish_core::vault::{
     VaultEntry, VaultEntrySafe, VaultEntryType,
 };
 
-fn now_ts() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn ts_from_dt(dt: chrono::DateTime<chrono::Utc>) -> u64 {
-    dt.timestamp() as u64
-}
-
+use golish_core::time::{now_ts, ts_from_dt};
 use golish_db::repo::vault::VaultSafeRow;
 
 /// Map a golish-db safe projection row to the frontend `VaultEntrySafe` DTO.

@@ -13,8 +13,6 @@
 //! modules can reuse them without re-implementing the
 //! `~/`-expansion convention.
 
-use std::path::PathBuf;
-
 use golish_indexer::paths::{compute_index_dir, find_existing_index_dir};
 use serde::{Deserialize, Serialize};
 
@@ -45,26 +43,9 @@ pub struct CodebaseInfo {
     pub memory_file: Option<String>,
 }
 
-/// Helper to expand `~` to home directory.
-pub(super) fn expand_home_dir(path: &str) -> PathBuf {
-    if path.starts_with("~/") {
-        dirs::home_dir()
-            .map(|home| home.join(&path[2..]))
-            .unwrap_or_else(|| PathBuf::from(path))
-    } else {
-        PathBuf::from(path)
-    }
-}
-
-/// Helper to contract home directory to `~`.
-pub(super) fn contract_home_dir(path: &std::path::Path) -> String {
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(stripped) = path.strip_prefix(&home) {
-            return format!("~/{}", stripped.display());
-        }
-    }
-    path.to_string_lossy().to_string()
-}
+/// Tilde-expansion helpers live in `golish-core::paths`; re-export at the
+/// previous `pub(super)` paths so sibling modules keep working.
+pub(super) use golish_core::paths::{contract_home_dir, expand_tilde as expand_home_dir};
 
 /// Helper to get file count for a codebase's index directory.
 ///

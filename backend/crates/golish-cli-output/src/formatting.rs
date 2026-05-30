@@ -25,17 +25,10 @@ pub(crate) fn format_json_pretty(value: &serde_json::Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
-/// Truncate a string to a maximum number of characters.
-///
-/// This is used for terminal mode output only. JSON mode does NOT truncate.
-/// Handles unicode correctly by iterating over chars rather than bytes.
-pub(crate) fn truncate_output(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        s.to_string()
-    } else {
-        s.chars().take(max_chars).collect()
-    }
-}
+/// Truncate a string to a maximum number of characters (terminal mode only;
+/// JSON mode does NOT truncate). The canonical char-counted truncator lives
+/// in `golish-core::utils`; re-export it under the existing name.
+pub(crate) use golish_core::utils::truncate_chars as truncate_output;
 
 /// Format tool arguments for display (truncated summary).
 ///

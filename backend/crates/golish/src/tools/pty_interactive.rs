@@ -128,10 +128,11 @@ fn truncate_output(output: String) -> String {
         return output;
     }
 
-    let end = output.floor_char_boundary(max_output_len);
+    // Byte-bounded, char-boundary-safe head truncation via the canonical
+    // `golish_core::utils::truncate_str`, plus this caller's size note.
     format!(
         "{}...\n[Output truncated, {} bytes total]",
-        &output[..end],
+        golish_core::utils::truncate_str(&output, max_output_len),
         output.len()
     )
 }

@@ -282,9 +282,7 @@ fn matches_entry_type(entry: &HistoryEntry, t: &str) -> bool {
     )
 }
 
-fn now_ms() -> u64 {
-    Utc::now().timestamp_millis() as u64
-}
+use golish_core::time::now_ms;
 
 struct UnlockOnDrop(File);
 

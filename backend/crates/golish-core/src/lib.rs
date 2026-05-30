@@ -36,6 +36,7 @@ pub mod prompt;
 pub mod ready_gate;
 pub mod session_manager;
 pub mod skill_provider;
+pub mod time;
 pub mod utils;
 pub mod vault;
 pub mod web_fetch;
@@ -67,6 +68,7 @@ pub use session::{
 pub use session_kind::{is_title_gen_session_id, title_gen_session_id, TITLE_GEN_SESSION_PREFIX};
 pub use session_manager::{SessionManager, SessionManagerFactory};
 pub use skill_provider::{SkillMatch, SkillMetadata, SkillProvider};
+pub use time::{now_ms, now_ts, ts_from_dt};
 pub use tool::Tool;
 pub use tool_name::{ToolCategory, ToolName};
 pub use web_fetch::{WebFetchProvider, WebFetchResult};

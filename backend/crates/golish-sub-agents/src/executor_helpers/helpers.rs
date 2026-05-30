@@ -2,10 +2,7 @@
 //! file-path extraction.
 
 pub(crate) fn epoch_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    golish_core::time::now_ts()
 }
 
 /// Check if a tool modifies files

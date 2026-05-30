@@ -92,9 +92,4 @@ pub struct Pipeline {
     pub updated_at: u64,
 }
 
-pub fn now_ts() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
+pub use golish_core::time::now_ts;

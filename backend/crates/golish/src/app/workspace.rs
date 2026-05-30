@@ -78,23 +78,7 @@ pub(crate) fn resolve_validated_workspace(cli_override: Option<&Path>) -> Result
     Ok(canonical)
 }
 
-/// Expand a leading `~` or `~/` into the current user's home directory.
-/// Returns the original path unchanged when no expansion applies or the
-/// home directory cannot be resolved.
-pub(crate) fn expand_tilde(path: &str) -> PathBuf {
-    if path == "~" {
-        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
-    }
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(path)
-}
-
-/// Same as [`expand_tilde`] but returns a [`String`]. Useful for path
-/// completion logic that operates on `&str` boundaries.
-pub(crate) fn expand_tilde_string(path: &str) -> String {
-    expand_tilde(path).to_string_lossy().into_owned()
-}
+/// Tilde-expansion helpers are the canonical ones in `golish-core::paths`;
+/// re-exported here so existing `crate::app::workspace::expand_tilde*` call
+/// sites stay stable.
+pub(crate) use golish_core::paths::{expand_tilde, expand_tilde_string};

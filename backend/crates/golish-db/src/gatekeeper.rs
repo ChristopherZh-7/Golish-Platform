@@ -86,26 +86,7 @@ pub fn filter_content(result: &str) -> Option<String> {
     ))
 }
 
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            // Skip ESC [ ... <letter> sequences
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for nc in chars.by_ref() {
-                    if nc.is_ascii_alphabetic() || nc == 'm' {
-                        break;
-                    }
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
+use golish_core::utils::strip_ansi;
 
 // ── Layer 3: Structured content builder ─────────────────────────────
 
