@@ -552,9 +552,9 @@
       "id": "arch-s1-2-port-horizontal-coupling",
       "priority": 1,
       "area": "backend/crates/golish/src/ports + backend/crates/golish/src/tools/pentest_bridge + scripts/check_repo_ownership.py",
-      "title": "S1-2 portify cross-service horizontal coupling (provider-side service ports)",
-      "user_visible_behavior": "无用户可见行为变化。命令层不再直查别的服务的 golish-db repo，改走 *Port（trait + in-proc 适配器）；逐条拔掉 S1-1 守卫 ALLOWLIST（当前 30 条 = 29 真跨服务读 + 1 scan_queue 映射伪阳性 → 目标清零）。为 DB-per-service 抽服务铺路。走路骨架 S1-2a 已落 read-only VaultReadPort（platform）：vault_ops/auth_probe 的 list/get/resolve 读改走端口，拔 2 条 vault allowlist（30→28）；store 仍走裸 ON CONFLICT INSERT（保 RAW_SQL_ALLOWLIST，归 P0-3）。",
-      "status": "in_progress",
+      "title": "S1-2 portify cross-service horizontal coupling (provider-side service ports) — walking-skeleton complete",
+      "user_visible_behavior": "无用户可见行为变化。命令层不再直查别的服务的 golish-db repo，改走 *Port（trait + in-proc 适配器）；逐条拔掉 S1-1 守卫 ALLOWLIST（当前 30 条 = 29 真跨服务读 + 1 scan_queue 映射伪阳性 → 目标清零）。为 DB-per-service 抽服务铺路。**走路骨架 S1-2a 已完成**：read-only VaultReadPort（platform）落地，vault_ops/auth_probe 的 list/get/resolve 读走端口，拔 2 条 vault allowlist（30→28），全套验证全绿且按 plan 拆 6 commit。后续 S1-2b-g 各开独立 feature_list 条目跟踪。",
+      "status": "passing",
       "verification": [
         "S1-2a: just arch → exit 0 且 ALLOWLIST 减 2 (vault·30→28)；RAW_SQL_ALLOWLIST 不变（store 仍裸 SQL，端口为 read-only）",
         "S1-2a: cargo nextest -p golish → 不回归；ports::platform::vault 契约测试通过",
@@ -570,7 +570,27 @@
         "s1_2a_verification": "cargo check -p golish → Finished 1.53s exit 0；rg golish_db::repo::vault 于 pentest_bridge → 空；python3 scripts/check_repo_ownership.py → [repo-ownership] OK clean exit 0；just arch → check_dag ✓45 crates + repo-ownership OK exit 0；cargo nextest -p golish ports::platform::vault → 1 passed/373 skipped exit 0（4m53s 冷编译，contract test vault_read_port_is_object_safe PASS）；just precommit → ✓ All checks passed! exit 0（29.6 min · fmt + check-fe + test-fe + lint-rust + test-rust-all 全绿）",
         "s1_2a_commits": "S1-2a 已按 plan 拆 6 commit 落 feat/recon-service（未 push）：6abaec8 feat(arch) 端口骨架(ports/+lib.rs,4f +118) / 1e162de refactor(arch) route VaultTool(vault_ops.rs,1f +14-15) / 1a7018b refactor(arch) route AuthProbeTool(auth_probe.rs,1f +9-9) / 1149ddb refactor(arch) inject PgVaultAdapter(pentest_bridge/mod.rs,1f +4-2) / 389d3fd chore(arch) pull ratchet(check_repo_ownership.py,1f +3-2) / 本 docs(arch) commit（design+plan+architecture.md+本 feature_list+progress，hash 见 git log）"
       },
-      "notes": "2026-05-30 S1-2a（VaultReadPort 走路骨架）**已实现+全套验证+已 commit**：另一会话写 Tasks 1-4（端口/迁移/注入，cargo check exit 0），MCP-agent-4（数据工程）接手 Task 5 守卫拔 ratchet（just arch exit 0，ALLOWLIST 30→28）+ Task 6 文档/状态收尾，MCP-agent-3（后端工程）接手跑契约单测 + just precommit 全绿 + 按 plan 拆 6 commit 落 feat/recon-service（未 push，本地 ahead 10）。关键偏差（保零语义）：端口设计为 read-only（弃 store_entry），store 保留裸 ON CONFLICT INSERT，故 vault_ops.rs 留 RAW_SQL_ALLOWLIST，原计划 Task 5.3 不执行。父条目仍 in_progress（仅 a 片完成，b-g 待做；用户可决定把 a 单独标 passing 后开新条目 arch-s1-2b…，或父条目保持 in_progress 直到全部 a-g 完成）。S1-2 拆 7 片：a VaultReadPort(2,走路骨架·✓ 完成) / b ReconReadPort(22,最大,按消费方子切) / c VulnReadPort+wiki(2) / d PentestPlanReadPort(1) / e AgentLogReadPort(2) / f scan_queue 映射清理(1,非端口,需用户确认归属) / g asset_intel 模块 import 解耦(另一条轴,可并 S3)。关键洞察：agent 栈已有消费方端口 DbRepoProvider（golish-agent-kit），S1-2 加的是提供方服务端口，二者不同层。待用户拍板：切片顺序、端口错误类型(anyhow vs GolishError)、trait 是否先放 golish 内、scan_queue 归属、是否顶替 target-surface-workbench 成为 in_progress（见设计 §9）；是否 push feat/recon-service（ahead 10）。"
+      "notes": "2026-05-30 S1-2a（VaultReadPort 走路骨架）**已收口 passing**：实现+验证+commit 全部完成。Tasks 1-4 由另一会话完成（端口/迁移/注入），MCP-agent-4 完成 Task 5 守卫拔 ratchet（30→28）+ Task 6 文档收尾，MCP-agent-3 跑契约单测 + just precommit 全绿 + 按 plan 拆 6 commit 落 feat/recon-service（未 push，本地 ahead 10）。关键偏差（保零语义）：端口设计为 read-only（弃 store_entry），store 保留裸 ON CONFLICT INSERT（语义不可迁，等 P0-3），故 vault_ops.rs 留 RAW_SQL_ALLOWLIST，原计划 Task 5.3 不执行——这条经验已沉淀到 S1-2b 设计的命名考量（b 端口含写，故叫 ReconPort 而非 ReconReadPort）。S1-2 整体 7 片路线图：**a ✓ / b 设计已写待审 / c-g 待续**：b ReconPort(22,最大,按消费方子切 6 子片,设计 docs/design/2026-05-30-s1-2b-recon-read-port.md) / c VulnReadPort+wiki(2) / d PentestPlanReadPort(1) / e AgentLogReadPort(2) / f scan_queue 映射清理(1,非端口,需用户确认归属) / g asset_intel 模块 import 解耦(可并 S3)。各片独立 feature_list 条目跟踪，本父条目转 passing 表示走路骨架确立、模式跑通。待用户拍板：是否 push feat/recon-service（10 commit 累积）；S1-2b 设计 §10 5 个决策（端口结构 X/Y / 子片顺序 / DbRepoProvider trait 边界 / 写 method 命名 / b1 plan 启动）。"
+    },
+    {
+      "id": "arch-s1-2b-recon-port",
+      "priority": 1,
+      "area": "backend/crates/golish/src/ports/recon + ai/db_bridge/recon.rs + tools/security_analysis.rs + tools/pentest_bridge/* + tools/pipeline/storage.rs + tools/audit.rs + tools/vuln_intel/commands/matching.rs + scripts/check_repo_ownership.py",
+      "title": "S1-2b portify cross-service recon coupling (ReconPort, 22 allowlist entries across 6 consumers)",
+      "user_visible_behavior": "无用户可见行为变化。承接 S1-2a 走路骨架，新增 ReconPort（提供方服务端口，含读+写——agent-bridge 适配器内有 insert/upsert/update 写路径，故端口非 read-only），按 plan §6 「按消费方子切」拆 6 子片：b1 ai/db_bridge/recon.rs (5) / b2 tools/security_analysis.rs (5) / b3 tools/pentest_bridge/{auth_probe,record_finding,js_collect/sitemap,js_collect/tool_impl,js_extract_apis}.rs (6) / b4 tools/pipeline/storage.rs (3) / b5 tools/audit.rs (1) / b6 tools/vuln_intel/commands/matching.rs (1)。每子片独立 just arch 绿，ALLOWLIST 净减 22 条（28→6，剩 vuln 2 + agent_log 2 + pentest_plan 1 + scan_queue 1，归 c/d/e/f）。",
+      "status": "not_started",
+      "verification": [
+        "S1-2b: 6 子片 b1-b6 各自 just arch → exit 0 且对应 ALLOWLIST 条目删除",
+        "S1-2b: cargo nextest -p golish ports::recon → 端口契约测试通过；总 nextest 不回归",
+        "S1-2b: grep golish_db::repo::{targets,target_assets,api_endpoints,js_analysis,fingerprints,passive_scans,sitemap_store,directory_entries} 于 6 消费方文件 → 空",
+        "S1-2b: 合并 PR 前 just precommit → exit 0",
+        "S1-2b: ALLOWLIST 28 → 6（删 22 条 recon 跨服务）"
+      ],
+      "evidence": {
+        "design": "docs/design/2026-05-30-s1-2b-recon-read-port.md（§1 命名差异 ReconPort vs ReadPort 因 b 含写 / §2 22 条 allowlist 精确清单+grep 实证 / §3 25 method 按表分组 / §4 6 子片划分 / §5 trait 结构方案 X 单 trait vs 方案 Y 5 子 port（推荐 Y）/ §6 守卫配合 / §7 验证矩阵 / §8 风险 / §10 5 个待用户拍板决策）",
+        "plan": "待 b1 详细实施计划 docs/superpowers/plans/2026-05-30-s1-2b1-recon-port-agent-bridge.md（设计 §10 决策 5：审过设计后写）"
+      },
+      "notes": "2026-05-30 由 MCP-agent-3（后端工程）接 S1-2a 收尾后起草设计文档（仅文档，零代码改动）。设计文档约 200 行紧凑覆盖 22 条 allowlist 实证、6 子片划分、ReconPort trait 雏形（25 method 含读+写）、守卫配合、5 个待用户拍板决策。本条目 not_started 等用户审过设计 §10 决策再转 in_progress（同时把 §2.1 唯一 in_progress 名额从『无』转给本条目；target-surface-workbench 继续 blocked）。S1-2 父条目已转 passing 表示走路骨架确立。命名差异关键：a 是 VaultReadPort（read-only 因 store ON CONFLICT 不可迁），b 是 ReconPort（含写，因 agent-bridge 适配器内有 insert/upsert/update）——这条经验直接来自 a 的智能纠错。"
     }
   ]
 }
