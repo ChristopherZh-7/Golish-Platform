@@ -287,11 +287,13 @@ pub async fn sensitive_scan_apply_verdicts(
             .iter()
             .find(|r| r.probe_path == path || r.full_url == path)
         {
-            let _ = sqlx::query("UPDATE sensitive_scan_results SET ai_verdict = $1 WHERE id = $2")
-                .bind(verdict)
-                .bind(row.id)
-                .execute(pool)
-                .await;
+            let _ = golish_db::repo::sensitive_scan::set_verdict_by_id_scoped(
+                pool,
+                row.id,
+                verdict,
+                project_path.as_deref(),
+            )
+            .await;
             applied += 1;
             if verdict == "true_positive" {
                 tp_count += 1;

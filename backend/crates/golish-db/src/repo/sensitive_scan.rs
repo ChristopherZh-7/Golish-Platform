@@ -9,6 +9,7 @@
 use anyhow::Result;
 use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgPool};
+use uuid::Uuid;
 
 const SENSITIVE_RESULT_COLS: &str = "id, base_url, probe_path, full_url, status_code, content_length, content_type, is_confirmed, ai_verdict, created_at";
 
@@ -30,6 +31,10 @@ fn build_clear_results_sql() -> String {
 
 fn build_clear_history_sql() -> String {
     "DELETE FROM sensitive_scan_history WHERE project_path = $1".to_string()
+}
+
+fn build_set_verdict_by_id_scoped_sql() -> String {
+    "UPDATE sensitive_scan_results SET ai_verdict = $1 WHERE id = $2 AND project_path IS NOT DISTINCT FROM $3".to_string()
 }
 
 /// List sensitive-scan results for a project, newest first; `confirmed_only`
@@ -81,6 +86,24 @@ pub async fn clear_history(pool: &PgPool, project_path: Option<&str>) -> Result<
     Ok(res.rows_affected())
 }
 
+/// Set the AI verdict on a result by id, guarded by project scope (IDOR
+/// defense-in-depth; the caller already loaded the row from a project-scoped
+/// list, so legitimate flows are unaffected). Returns rows affected.
+pub async fn set_verdict_by_id_scoped(
+    pool: &PgPool,
+    id: Uuid,
+    verdict: &str,
+    project_path: Option<&str>,
+) -> Result<u64> {
+    let res = sqlx::query(&build_set_verdict_by_id_scoped_sql())
+        .bind(verdict)
+        .bind(id)
+        .bind(project_path)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +130,14 @@ mod tests {
         assert_eq!(
             build_clear_history_sql(),
             "DELETE FROM sensitive_scan_history WHERE project_path = $1"
+        );
+    }
+
+    #[test]
+    fn set_verdict_scoped_sql_has_project_guard() {
+        assert_eq!(
+            build_set_verdict_by_id_scoped_sql(),
+            "UPDATE sensitive_scan_results SET ai_verdict = $1 WHERE id = $2 AND project_path IS NOT DISTINCT FROM $3"
         );
     }
 }
