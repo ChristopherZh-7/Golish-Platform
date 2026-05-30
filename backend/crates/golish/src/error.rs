@@ -74,6 +74,29 @@ impl GolishError {
     pub fn from_anyhow(err: anyhow::Error) -> Self {
         Self::Internal(err.to_string())
     }
+
+    /// Stable, machine-readable error code for the IPC boundary.
+    /// MIRROR of `frontend/lib/api/error-codes.ts`; keep both in sync.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Io(_) => "IO",
+            Self::Database(_) => "DATABASE",
+            Self::Json(_) => "JSON",
+            Self::Http(_) => "HTTP",
+            Self::Pty(_) => "PTY",
+            Self::Tool(_) => "TOOL",
+            Self::Skills(_) => "SKILLS",
+            Self::Pentest(_) => "PENTEST",
+            Self::VulnIntel(_) => "VULN_INTEL",
+            Self::Pipeline(_) => "PIPELINE",
+            Self::ScanRunner(_) => "SCAN_RUNNER",
+            Self::SessionNotFound(_) => "SESSION_NOT_FOUND",
+            Self::NotFound(_) => "NOT_FOUND",
+            Self::Validation(_) => "VALIDATION",
+            Self::Config(_) => "CONFIG",
+            Self::Internal(_) => "INTERNAL",
+        }
+    }
 }
 
 impl From<anyhow::Error> for GolishError {
@@ -135,7 +158,14 @@ impl Serialize for GolishError {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        use serde::ser::SerializeStruct;
+        // I1: emit a stable { code, message } envelope. `message` is retained
+        // (still human-readable) so older string consumers degrade gracefully;
+        // `code` lets the frontend branch via lib/api/error-codes.ts.
+        let mut state = serializer.serialize_struct("GolishError", 2)?;
+        state.serialize_field("code", self.code())?;
+        state.serialize_field("message", &self.to_string())?;
+        state.end()
     }
 }
 
@@ -144,3 +174,36 @@ impl Serialize for GolishError {
 pub type IpcError = GolishError;
 
 pub type Result<T> = std::result::Result<T, GolishError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_is_stable_per_variant() {
+        assert_eq!(GolishError::NotFound("x".into()).code(), "NOT_FOUND");
+        assert_eq!(GolishError::Validation("x".into()).code(), "VALIDATION");
+        assert_eq!(GolishError::Config("x".into()).code(), "CONFIG");
+        assert_eq!(GolishError::Internal("x".into()).code(), "INTERNAL");
+        assert_eq!(
+            GolishError::SessionNotFound("s".into()).code(),
+            "SESSION_NOT_FOUND"
+        );
+    }
+
+    #[test]
+    fn serializes_with_code_and_message() {
+        let err = GolishError::NotFound("widget 42".to_string());
+        let v = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(v["code"], "NOT_FOUND");
+        assert_eq!(v["message"], "Not found: widget 42");
+    }
+
+    #[test]
+    fn validation_serializes_with_validation_code() {
+        let err = GolishError::Validation("bad input".to_string());
+        let v = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(v["code"], "VALIDATION");
+        assert_eq!(v["message"], "Validation error: bad input");
+    }
+}

@@ -1,20 +1,48 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 
+export interface GolishErrorShape {
+  code: string;
+  message: string;
+}
+
+/**
+ * Tauri rejects command promises with whatever the Rust side serialized.
+ * After P0-1, `GolishError` serializes to `{ code, message }`; legacy commands
+ * that still return `Result<T, String>` reject with a bare string, and JS
+ * runtime failures reject with an `Error`. Normalize all three into
+ * `{ code, message }` so callers can branch on a stable `code`.
+ */
+export function parseGolishError(cause: unknown): GolishErrorShape {
+  if (cause && typeof cause === "object" && "code" in cause && "message" in cause) {
+    const c = cause as Record<string, unknown>;
+    if (typeof c.code === "string" && typeof c.message === "string") {
+      return { code: c.code, message: c.message };
+    }
+  }
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return { code: "UNKNOWN", message };
+}
+
 /**
  * `ApiError` carries the typed Tauri command name AND the auto-
  * generated frontend trace id so that errors can be threaded back
  * through `lib/logger` to `~/.golish/frontend.log` and grep'd by
- * trace id later.
+ * trace id later. It also exposes the backend error `code` (see
+ * `lib/api/error-codes.ts`) so callers can branch + translate.
  */
 export class ApiError extends Error {
+  /** Stable backend error code (see lib/api/error-codes.ts), or "UNKNOWN". */
+  public readonly code: string;
+
   constructor(
     public readonly command: string,
     public readonly cause: unknown,
     public readonly traceId: string
   ) {
-    const msg = cause instanceof Error ? cause.message : String(cause);
-    super(`[API trace=${traceId}] ${command}: ${msg}`);
+    const { code, message } = parseGolishError(cause);
+    super(`[API trace=${traceId}] ${command}: ${message}`);
     this.name = "ApiError";
+    this.code = code;
   }
 }
 
