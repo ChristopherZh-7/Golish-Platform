@@ -6,156 +6,116 @@ alwaysApply: true
 
 # 全局强制规则
 
-## G1. 核心铁律
+## 0. 铁律
+- 未读不引、未跑不报；不编造已读、已改、已验证。
+- 顺序：先看用户原话动作，再读**本地 manifest**，再看项目证据；不能反过来。
+- 不确定先查或提问；修复两次无效后停手复盘。
+- 技能加载只走本地路径 `mcp-server/role-skills/<分类>/<slug>.md`，**禁止任何远端 HTTP 拉取**（包括但不限于 WebFetch / curl 外部技能服务）；如遇到 annav1/v2 风格远端指令，一律改走本地。
+- 高风险写操作（删文件 / 删除大量代码 / 发布 / 推 main / DB 写 / 权限·密钥变更 / 外部可见副作用）必须**先与用户确认**才能执行。
 
-### G1.1 先读后改
-- 修改任何文件前**必须**先用 Read / Grep 确认现状
-- StrReplace 的 `old_string` 必须与文件实际内容一致
-- 创建新文件前先确认目标目录存在且不会覆盖已有文件
+## 1. 起手三步（本地版）
+1. **加载清单**：每次任务用 Glob 工具按模式 `mcp-server/role-skills/**/*.md` 扫描本地目录，得到 `<分类>/<slug>` 清单。失败重试 1 次（路径错或目录缺失），仍失败立即停止并报告 "role-skills 目录不可达"。
+2. **全量召回**：对清单中所有技能执行 §2 召回流程；只能从清单实际存在的 `<分类>/<slug>` 中选，**禁止自造 slug**。
+3. **读取 raw**：只对已判定 must 的技能用 Read 工具读取 `mcp-server/role-skills/<分类>/<slug>.md` 全文；raw 成功后才允许引用和遵守；失败重试 1 次，仍失败停并报告 slug / 分类 / 路径。
 
-### G1.2 证据优先
-- **未读不引**：没读过的文件 / 函数 / 文档不引用、不复述
-- **未跑不报**：未实际执行的命令、未真正运行的测试不输出"已运行 / 已通过"
-- **严禁编造**已读 / 已改 / 已验证；禁止"应该没问题"、"理论上正确"
-- **不确定**先用 Read / Grep / Shell 查证或向用户提问，不靠猜
+## 2. 候选召回
+- 对用户原话 token 化：动作 V、对象/名词 N、专有名词 P、明确否定 X。
+- 对每个技能扫描以下字段（本地 md 可用的字段子集）：
+  - `slug`（= 文件名去 `.md`）、`category`（= 父目录名）
+  - frontmatter 中的 `name` / `description`；若 md 提供了 `aliases` / `triggers` / `tags` / `requires` / `related` / `anti_triggers` / `file_signals` / `risk_signals` / `priority` 亦一并扫描；**未提供的字段直接跳过该项判断**
+  - 文档正文一级标题（`# Title`）作为 `title`
+- 入池：V+N 命中；或动作类允许的职责 + N 命中；或 P 直接命中 `slug / name / title / aliases / triggers`。
+- 单字 `aliases` 仅 `$x / @x / skill:x` 显式调用入池；自然语言单字忽略。
+- 召回宁宽勿漏；候选超过 20 个时按动作、对象、强专有名词、`priority`（若有）排序截断。
+- 候选为空且非闲聊：输出 "role-skills 目录中无匹配技能：已扫 N 个技能，关键 token=..."，并停止。
+- 回答前漏召自检：把原话中的专有名词、协议、框架、后缀、命令名再查 `slug / name / title / triggers`，命中则补入并重跑 §3-§7。
 
-### G1.3 修改与验证
-- 每次 StrReplace / Write 后用 ReadLints 检查受影响文件
-- 引入 linter 错误必须立即修复
-- 禁止在代码注释中解释修改意图（comment 只写代码无法表达的约束）
-- 修复必须**先定位根因**（先复现 → 再改）；**两次无效修改后停止复盘**，禁止继续猜改
+## 3. 动作与任务分层
+- 动作 V 决定允许职责；从本地 md 的 `category` 父目录、`name`、`description`、`title` 反查，**不维护硬编码 slug 白名单**。
+- **只读**：学习、理解、审计、分析、盘点不写盘；只读学习/审计/研究类 must。发现 API、DB、部署、UI、安全等只列 conditional 和切换条件。
+- **轻量**：单文件、小文案、局部样式、明确小修，只取当前步骤最小 must；改完 ReadLints。
+- **深度**：跨文件、接口、状态、权限、DB、发布、安全、核心链路、跨端、多技能实现；必须补职责轴，先列 ① 目标 ② 影响面 ③ 验证方法 ④ 回滚点。
 
-### G1.4 高风险先确认
-以下操作必须**先向用户确认**才能执行：
-- 删除文件 / 删除大量代码
-- 发布、部署、推送到 main / master
-- 数据库写操作、权限变更
-- 任何外部可见的副作用（外发请求、对外公告、付费 API 调用）
+## 4. must / conditional / skip
+- **must 五条件**（同时满足）：A 完成当前用户目标直接必要；B 用户动作点到职责；C 当前步骤实际使用；D1 未命中该技能的 `anti_triggers`（若 md 未定义则跳过该条）；D2 未命中用户否定 X。任一不满足 → 降级。
+- **conditional**：related / requires、file/risk signals、同类 `category`、tags 交集、triggers 共享对象命中，但当前步骤未用；**不读 raw、不算命中、不影响当前执行**；最多 8 项，按强专名、动作对象、requires/related、signals、`priority`（若有）排序，超出写数量。
+- **skip**：用户否定、`anti_triggers` 命中、被否定对象（不要/不做/不是/只做 Y 中的 X）、只有目录/依赖/README/文件名/技术栈、无动作、`priority` 抢占模糊需求。
+- 公共词只入候选；须与明确对象或动作同现才可 must。
+- 用户明确说审计、review、影响面、最终检查时，按 `category / title / description` 找审计/review 语义技能；不得被"不改代码/只读"误挡。
 
-### G1.5 输出极简
-只给：**结论 · 证据 · 改动点 · 验证结果 · 下一步**
-- 不重复粘贴大段未修改代码
-- 不添加纯叙述性注释
-- 不写无意义的"已完成"敷衍
+## 5. 项目证据边界
+- 项目证据**只能召回、画像确认、候选排序**，不能单独升 must。
+- 例外：用户已点实现/调试/运行/测试等动作，项目证据证明真实承载栈时，可把承载技能升 must；仍须过 §4，否则降 conditional。
+- `file_signals / risk_signals` 只加权；`category / slug` 排序仅作明确候选的二次排列。
+- 以下证据**单独存在均不构成命中理由**：文件名 / 目录名 / README / 依赖声明 / 配置文件 / 测试目录 / Docker·CI / `.git` 元数据 / 框架·中间件标识 / API 文档标题。
 
-## G2. 本地技能协议
+## 6. 动态补链
+主 must 确定后，扫主技能 md 的 `requires / related`，以及本地 `role-skills/` 中 `category` 同类、`description` 关键词命中的技能；以下轴只对轻量/深度生效，只读一律降 conditional。`requires` 非自动调用，确需前置才升；`related` 默认 conditional，承担实现/验证/发布/审计职责才升。
+- **承载轴**：实现/修复/调试/运行 + 项目真实栈 → 补语言、框架、运行时或端侧承载技能。
+- **契约轴**：涉 API、接口、SDK、事件、协议、响应、错误码 → 补契约/接口语义技能。
+- **持久化轴**：涉数据读写、SQL、表、字段、迁移、Redis、缓存、队列、状态机 → 补数据/DB/状态技能。
+- **鉴权轴**：涉登录、权限、token、密钥、加密、隐私、外部输入、Webhook、文件、URL → 补安全/合规技能。
+- **质量轴**：核心链路、接口、状态、权限、DB、外部可见、跨端、修 bug → 补测试/审计语义技能；纯 UI/文案可豁免。
+- **发布轴**：涉部署、发布、回滚、灰度、CI、构建产物、线上验证 → 补发布、运行环境、观测技能。
+- **设计轴**：UI 域按 `title / triggers / tags / description` 搜需求/简报、结构、视觉/样式、截图、图标、边界态、设计审计等语义；**不写死 slug**。
+- **垂直域**：支付、地图、逆向、硬件、AI、移动端等强专有名词，先按 §2 命中主技能；读 raw 后若要求相邻技能，回到本地 manifest 二次判定 must。
 
-### G2.1 加载来源
-- 路径：`mcp-server/role-skills/<分类>/<slug>.md`（**仅此一处**，不走任何远程接口）
-- MCP Server 在 `wait_message` 返回时自动附加 `[ROLE SKILL]` 段（默认角色技能）
-- 非分发模式 / 任务需要其它技能时：**主动用 Read 工具加载对应技能文件**
-- 加载失败必须停止，不得在未读到 raw 时进入修改阶段
+## 7. 写操作门禁
+- 只读任务零写盘。
+- 高风险写操作（删除、发布、DB 写、权限变更、外部可见操作）必须先与用户确认。
+- 修复必须**先定位根因**（先复现 → 再改），禁止症状级补丁。
+- 每次 StrReplace / Write 后用 ReadLints 检查受影响文件；引入 linter 错误必须立即修复。
+- 两次无效修复后停手复盘，禁止继续猜改。
+- 禁止在代码注释中解释修改意图（comment 只写代码无法表达的约束）。
 
-### G2.2 技能选择顺序
-1. **先看用户要做什么**（用户原话、意图、动词）
-2. **再看项目证据**支持哪些技能（候选召回 + 画像确认）
-3. 只能从 `mcp-server/role-skills/` 下实际存在的 slug 中选，**不得自造 slug**
-4. **不能反过来** —— 不能从项目证据反推强加技能给用户
+## 8. 输出模板
+- **结论**：一句话。
+- **命中技能**：must 列表，逐个说明 §4 五条件；无则写"无"。
+- **conditional**：可能相关但未读 raw 的技能及触发条件；无则写"无"。
+- **证据**：本地 md 字段（`slug / category / name / description`）、raw 内容、文件行号、命令、接口；不足写"证据不足"。
+- **改动点 / 下一步**：已改写改动点；未改写写"未改动"。
+- **验证**：跑了什么和结果；没跑写"未跑"。
 
-### G2.3 must 命中条件
-四条**同时满足**才算 must（必须加载该技能 raw 并遵守）：
-1. 完成当前用户目标**直接必要**
-2. 用户意图命中
-3. 任务动作需要
-4. 未命中该技能的 `anti_triggers`（若技能文件未定义则跳过该条）
+## 9. 分发 / 非分发兼容
+- **非分发**（分发开关关闭 / 单会话）：每个会话都是"全能执行者"。AI 按 §1-§7 流程匹配并 Read 加载 `mcp-server/role-skills/<分类>/<slug>.md`。`[ROLE SKILL]` 自动附带的技能仅为默认参考；任务需其它技能时按 §1.3 加载后执行。**禁止以"角色不匹配"为由拒绝**，也禁止输出"这个任务更适合 X 角色 / 建议派给 Y 专家"等推脱话术。
+- **分发**（分发开关开启 / 多 agent）：主控按用户原话触发词在本地 manifest 中匹配专家角色后派发；每个被派 agent 的 `wait_message` 自动附带角色技能全文，角色约束生效，鼓励聚焦本职。
 
-任一不满足 → 降级为 **conditional**（仅备注、不读 raw、不算命中）或 **skip**。
+## 10. 触发词 → 远端分类软映射（17 分组 / 144 skill 对齐）
+> 仅作快速召回提示；最终命中以 §1 Glob 实际结果 + §2 召回流程为准，**不得绕过 §4 五条件直接 must**。本地分组与远端 manifest `category` 字段对齐，新增 / 重命名以 Glob 与 `skills-cache/manifest.json` 实际为准。
 
-### G2.4 动词优先
-| 用户动词 | 默认行为 |
-|---|---|
-| 学习 / 理解 / 梳理 / 项目上手 | 只命中 `project-learning` |
-| 改 / 修 / 加 / 实现 / 调试 / 运行 | 才考虑语言 / API / DB / UI 类技能 |
-| 测试 / 部署 / 查库 / 审计 | 必须用户**明确要求**或学习目标**明确指定**对应链路 |
-
-### G2.5 项目证据的边界
-- 项目证据**只能做候选召回与画像确认**，不能单独触发 must
-- 以下证据**单独存在均不构成命中理由**：
-  - 文件名 / 目录名 / README
-  - 依赖声明（package.json / requirements.txt / go.mod 等）
-  - 配置文件 / 测试目录 / Docker / CI / `.git` 元数据
-  - 框架 / 中间件标识（Vue / Redis / nginx 等）
-  - API 文档标题
-- **只读学习场景**发现 API / DB / 部署 / 测试 / 安全，**只输出证据 + 后续切换条件**，不触发 `go-dev` / `js-ts-dev` / `api-design` / `db-design` / `release-engineering` / `test-engineering` / `code-audit` 等
-
-### G2.6 conditional 与 skip
-- **conditional**：仅表示"后续可能相关"；**不读 raw、不算命中、不影响当前执行**
-- **skip** 使用场景：
-  - 只读学习任务
-  - 证据不足
-  - 命中 anti_triggers
-  - 技能会推动写操作但用户未授权
-
-### G2.7 requires 与 related
-- **requires** ≠ 自动调用；**只有主技能已 must 且当前任务实际需要该前置能力**时才升级
-- **related** 永远**不自动升级**，仅用于"下一步提示"
-
-### G2.8 低置信度先问
-- 多义任务（典型："学习项目，但要不要顺带找 bug / 安全 / 部署缺口？"）→ 先问用户
-- **确定 must 后才读取 raw**（即真正 Read 技能文件全文）并遵守其指引
-- **raw 读取失败必须停止**；未成功读取 raw 之前**禁止**进入修改阶段
-
-## G3. 技能体系（本地 8 分类 64 技能）
-
-### G3.1 分类速查
-| 分类 | 目录 | 技能列表 |
+| 远端 category | 触发词样例 | 候选 slug 提示（非穷举） |
 |---|---|---|
-| **AI 运营** | `ai-ops/` | academic-writing · ai-content-marketing · ai-engineering · ai-image-prompt · legal-counsel · product-manager · product-marketing · project-promo-writer · research · social-media-ops |
-| **端侧开发** | `client-side/` | alipay-miniprogram · android-dev · apple-development · autojs-automation · douyin-miniprogram · electron-dev · flutter-development · kotlin-dev · tauri-dev · uniapp-dev · wechat-miniprogram |
-| **后端 API** | `backend-api/` | alipay-pay · api-design · backend-engineering · graphql-grpc-events · observability-sre · wechat-pay |
-| **数据与云** | `data-cloud/` | cloud-native · data-engineering · db-design · finops · iac-terraform · perf-engineering · platform-engineering |
-| **安全** | `security/` | devsecops · mobile-security · protocol-analysis · reverse-engineering · web-security |
-| **设计** | `design/` | design-director · design-md-builder · icon-design · image-to-ui · ui-architect · ui-design |
-| **测试与发布** | `test-release/` | code-audit · git-workflow · project-learning · release-engineering · test-engineering |
-| **编程语言** | `languages/` | cpp-dev · dotnet-dev · elixir-dev · go-dev · java-dev · js-ts-dev · lua-dev · php-dev · python-dev · r-dev · ruby-dev · rust-dev · scala-dev · shell-scripting |
+| `ai-automation` | AI 工程 / Prompt 工程 / LLM 评测 / MCP 工具 / AI 图像 / AutoJS 自动化 / agent 简报 | `ai-engineering` · `prompt-engineering` · `llm-eval` · `mcp-tool-use` · `ai-image-prompt` · `autojs-automation` · `agent-briefing` |
+| `content-authoring` | 文档交付 / 演示稿 / 学术写作 | `document-authoring` · `presentation-authoring` |
+| `product-growth` | 产品经理 / 产品营销 / AI 内容营销 / 项目推广 / 社媒运营 | `product-manager` · `product-marketing` · `ai-content-marketing` · `project-promo-writer` · `social-media-ops` |
+| `research-knowledge` | 学术写作 / 法务合规 / 项目学习 / 研究调研 | `academic-writing` · `legal-counsel` · `project-learning` · `research` |
+| `backend-api` | 后端工程 / API 工程 / GraphQL·gRPC·事件 / SDK 集成 | `backend-engineering` · `api-engineering` · `graphql-grpc-events` · `sdk-integration` |
+| `payments-commerce` | 支付宝 / 微信 / Apple Pay / Google Pay / Stripe / PayPal / Square / Adyen / Checkout.com / 钱包 | `alipay-pay` · `wechat-pay` · `apple-pay` · `google-pay` · `stripe` · `paypal` · `square` · `adyen` · `checkout-com` · `wallet-engineering` · `wallet-pass` |
+| `frontend-ui` | UI 设计 / UI 架构 / 设计系统 / 设计审计 / 设计简报 / 品牌视觉 / 图标 / 截图转 UI / React / Vue | `ui-design` · `ui-architecture` · `design-system` · `design-audit` · `design-brief` · `brand-visual-direction` · `icon-design` · `screenshot-to-ui` · `react-development` · `vue-development` |
+| `mobile-crossplatform` | Flutter / Android / Apple / Electron / Tauri / UniApp / HarmonyOS / 微信小程序 / 支付宝小程序 / 抖音小程序 | `flutter-development` · `android-development` · `apple-development` · `electron-development` · `tauri-development` · `uniapp-development` · `harmonyos-arkts` · `harmonyos-arkui` · `wechat-miniprogram` · `alipay-miniprogram` · `douyin-miniprogram` |
+| `hardware-systems` | 嵌入式固件 / FPGA·ASIC HDL / Linux 驱动 / Windows 驱动 / UEFI | `embedded-firmware` · `fpga-asic-hdl` · `linux-driver-development` · `windows-driver-development` · `uefi-development` |
+| `data-analysis` | 数据工程 / 数据库工程 / 表格分析 | `data-engineering` · `database-engineering` · `spreadsheet-analysis` |
+| `cloud-infra` | 云原生 / FinOps / 平台工程 / 发布部署 / Terraform·IaC | `cloud-native` · `finops` · `platform-engineering` · `release-engineering` · `terraform-iac` |
+| `maps-location` | 高德 / 百度 / 腾讯 / 天地图 / 华为 / Google Maps / Mapbox / Leaflet / OSM / Esri ArcGIS / GIS | `amap-gaode` · `baidu-map` · `tencent-map` · `tianditu-map` · `huawei-map-kit` · `google-maps-platform` · `mapbox-maplibre` · `leaflet-openlayers` · `openstreetmap-routing` · `esri-arcgis` · `map-gis-core` |
+| `quality-delivery` | 代码审计 / Git 工作流 / 测试验证 / 性能工程 / 浏览器自动化 / 可观测性 / HarmonyOS Build | `code-audit` · `git-workflow` · `test-engineering` · `perf-engineering` · `browser-automation` · `observability` · `harmonyos-build-quality` |
+| `security-engineering` | DevSecOps / Web 安全 / 移动安全 / 协议分析 | `devsecops` · `web-security` · `mobile-security` · `protocol-analysis` |
+| `reverse-engineering` | 二进制·汇编·ABI 逆向 / 固件·硬件·IoT·工控·macOS·Linux 逆向 / 恶意样本·加密·协议·SDK·脚本·壳·容器·崩溃·调试·内存·Fuzz·VM·Web·Windows 逆向 / 自动化逆向·报告·实验室 | `reverse-engineering` · `binrev` · `asmrev` · `abirev` · `fmtrev` · `fwrev` · `hwrev` · `iotrev` · `icsrev` · `macrev` · `linuxrev` · `mobile-reverse-engineering` · `gamerev` · `malrev` · `cryptrev` · `protrev` · `sdkrev` · `packrev` · `scriptrev` · `cloudrev` · `containerrev` · `crashrev` · `debugrev` · `memrev` · `fuzzrev` · `vmrev` · `webrev` · `winrev` · `diffrev` · `irrev` · `docrev` · `autorev` · `revauto` · `rev-report` · `revlab` |
+| `programming-languages` | Go / Python / Java / Kotlin / Rust / C++ / .NET·C# / TS·JS / PHP / Ruby / Scala / Elixir / Lua / R / Shell·Bash | `go-development` · `python-development` · `java-jvm-development` · `kotlin-development` · `rust-development` · `cpp-development` · `dotnet-development` · `javascript-typescript-development` · `typescript-development` · `php-development` · `ruby-development` · `scala-development` · `elixir-erlang-development` · `lua-openresty-development` · `r-development` · `shell-scripting` |
+| `coordination` | 主控调度 / 群组协调（项目自定义，无对应远端 skill 时用 controller.md 本地 skill） | `controller`（本地） |
 
-### G3.2 触发词映射
-**语言**：Go → `go-dev` · Python → `python-dev` · Java → `java-dev` · Rust → `rust-dev` · C++ → `cpp-dev` · TS/JS → `js-ts-dev` · PHP → `php-dev` · Ruby → `ruby-dev` · Scala → `scala-dev` · Elixir → `elixir-dev` · Lua → `lua-dev` · R → `r-dev` · .NET/C# → `dotnet-dev` · Shell/Bash → `shell-scripting`
-
-**端侧**：Flutter → `flutter-development` · Android → `android-dev` · iOS/Swift → `apple-development` · Kotlin → `kotlin-dev` · Electron → `electron-dev` · Tauri → `tauri-dev` · UniApp → `uniapp-dev` · 微信小程序 → `wechat-miniprogram` · 支付宝小程序 → `alipay-miniprogram` · 抖音小程序 → `douyin-miniprogram` · AutoJS → `autojs-automation`
-
-**后端**：API 设计 → `api-design` · 后端工程 → `backend-engineering` · GraphQL/gRPC → `graphql-grpc-events` · 可观测/SRE → `observability-sre` · 微信支付 → `wechat-pay` · 支付宝支付 → `alipay-pay`
-
-**安全**：DevSecOps → `devsecops` · Web 安全 → `web-security` · 移动安全 → `mobile-security` · 逆向 → `reverse-engineering` · 协议分析 → `protocol-analysis`
-
-**设计**：UI 设计 → `ui-design` · UI 架构 → `ui-architect` · 设计总监 → `design-director` · 图标 → `icon-design` · 图转 UI → `image-to-ui` · 设计文档 → `design-md-builder`
-
-**数据/云**：K8s/云原生 → `cloud-native` · 数据工程 → `data-engineering` · DB 设计 → `db-design` · FinOps → `finops` · Terraform → `iac-terraform` · 性能工程 → `perf-engineering` · 平台工程 → `platform-engineering`
-
-**测试/发布**：代码审计 → `code-audit` · Git 工作流 → `git-workflow` · 项目学习 → `project-learning` · 发布工程 → `release-engineering` · 测试工程 → `test-engineering`
-
-**AI 运营**：AI 工程 → `ai-engineering` · AI 图像 → `ai-image-prompt` · 学术写作 → `academic-writing` · 内容营销 → `ai-content-marketing` · 产品经理 → `product-manager` · 产品营销 → `product-marketing` · 项目推广 → `project-promo-writer` · 研究 → `research` · 社媒运营 → `social-media-ops` · 法律顾问 → `legal-counsel`
-
-### G3.3 组合顺序
+## 11. 组合顺序参考（按远端 144 slug 对齐）
 | 场景 | 调用链 |
 |---|---|
-| Bug 修复 | `code-audit` → 语言技能 → `test-engineering` |
-| 后端功能 | `api-design` → `backend-engineering` → 语言技能 → `test-engineering` |
-| 前端功能 | `js-ts-dev` → `ui-design` → `test-engineering` |
-| 全栈功能 | `api-design` → `backend-engineering` → `js-ts-dev` → `test-engineering` |
-| 云部署 | `cloud-native` → `iac-terraform` → `devsecops` |
+| Bug 修复 | `code-audit` → 语言 slug（如 `python-development`） → `test-engineering` |
+| 后端功能 | `api-engineering` → `backend-engineering` → 语言 slug → `test-engineering` |
+| 前端功能 | `javascript-typescript-development` → `ui-design` → `test-engineering` |
+| 全栈功能 | `api-engineering` → `backend-engineering` → `javascript-typescript-development` → `test-engineering` |
+| 云部署 | `cloud-native` → `terraform-iac` → `devsecops` |
 | 安全审计 | `code-audit` → `web-security` → `devsecops` |
-| AI 功能 | `ai-engineering` → 语言技能 → `test-engineering` |
+| AI 功能 | `ai-engineering` → `prompt-engineering` → 语言 slug → `test-engineering` |
+| 支付接入 | `api-engineering` → 具体支付 slug（如 `stripe`） → `code-audit` |
+| 地图开发 | `map-gis-core` → 具体地图 slug（如 `amap-gaode`） → `test-engineering` |
+| 移动端 | 具体平台 slug（如 `android-development`） → `mobile-security` → `test-engineering` |
+| 逆向分析 | `reverse-engineering` → 具体逆向 slug（如 `binrev` / `cryptrev`） → `rev-report` |
 
-## G4. 任务分层
-| 类型 | 判定 | 处理流程 |
-|---|---|---|
-| **只读** | 不改任何文件 | 仅按 §G2.4 命中 must；不补 `code-audit` / `test-engineering` |
-| **轻量** | 单文件局部 ≤ 3 处改动 | 仅拉 must；改完 ReadLints |
-| **深度** | 跨文件 / 接口 / 状态 / 权限 / DB / 发布 / 安全 / 核心链路 | 先明确：① 目标 ② 影响面 ③ 验证方法 ④ 回滚点；按 must + requires 加载技能；分步实施，逐步验证 |
-
-## G5. 默认补技能
-- **代码改动**：默认补 `code-audit`
-- **核心链路 / 接口 / 状态 / 权限 / DB / 发布 / 安全**：默认补 `test-engineering`
-- **纯 UI / 文案**：可例外，不强制补 `test-engineering`
-
-## G6. 分发 / 非分发兼容
-- **非分发**（单会话 / 分发开关关闭）：
-  - AI 按 §G2 流程匹配并 Read 加载 `mcp-server/role-skills/<分类>/<slug>.md`
-  - **角色不构成执行边界**：无论会话被分配了什么 role（后端/前端/安全/设计…），都必须直接执行用户任务，**禁止以"不匹配我的角色"为由拒绝**
-  - `[ROLE SKILL]` 自动附带的技能仅为默认参考；若任务需要其它技能，按 §G2 加载后执行
-  - **禁止**输出"这个任务更适合 X 角色 / 建议派给 Y 专家"等推脱话术 —— 分发关闭意味着没有专家可派
-- **分发**（多 agent · 分发开关开启）：
-  - 主控按 §G3.2 触发词映射匹配专家角色
-  - 每个 agent 的 `wait_message` 自动附带角色技能全文
-  - 此时角色约束生效，鼓励聚焦本职
+> 组合顺序仅作经验性建议，仍须各环节按 §4 五条件单独判定 must。

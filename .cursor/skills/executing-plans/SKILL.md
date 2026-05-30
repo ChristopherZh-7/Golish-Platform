@@ -145,3 +145,7 @@ $ git commit -m "feat: 添加用户输入验证（任务 2/5）"
 - 每个任务单独提交，commit message 引用任务编号
 - 遇到阻塞时停下来，不要猜测
 - 未经用户明确同意，绝不在 main/master 分支上开始实现
+
+## BaJie-MCP 集成说明
+
+本 skill 被 BaJie-MCP 执行角色（feature_dev / backend_dev 等）在收到带计划的任务时使用。
