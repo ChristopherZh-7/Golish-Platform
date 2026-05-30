@@ -174,8 +174,8 @@ mod tests {
     //!
     //! Because `SettingsManager` only exposes `::new()` that reads
     //! from a global path, we don't build a full [`IntegrationsState`]
-    //! here. Instead we drive the underlying `DefaultSchemaResolver`
-    //! + `DefaultTester` directly — the IPC functions are thin
+    //! here. Instead we drive the underlying `DefaultSchemaResolver` +
+    //! `DefaultTester` directly — the IPC functions are thin
     //! adapters over these primitives.
 
     use golish_integrations::tester::DefaultTester;
