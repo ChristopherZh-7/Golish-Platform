@@ -30,6 +30,22 @@ export function formatLogDate(ts: string | number): string {
   });
 }
 
+/**
+ * Clock time-of-day "HH:MM:SS" (locale-formatted, 2-digit components). Echoes
+ * the raw input when it cannot be parsed as a date. Distinct from
+ * {@link formatDurationClock} (an elapsed "M:SS" duration) and
+ * {@link formatLogDate} (which also includes the date).
+ */
+export function formatClockTime(value: string | number): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 type RelativeTimeFallback = "days" | "localeDate";
 
 export function formatRelativeTime(

@@ -1,6 +1,7 @@
 import type { DirectoryEntry } from "@/lib/pentest/api";
 import type { PortInfo } from "@/lib/pentest/types";
 import type { JsAnalysisResult, PassiveScanLog, TargetAsset } from "@/lib/security-analysis";
+import { formatClockTime as formatTime } from "@/lib/time";
 import type { SensitiveFinding, SitemapItem } from "./types";
 
 export function isHttpPort(port: PortInfo): boolean {
@@ -84,12 +85,7 @@ export function formatLatestEvidence(
   return null;
 }
 
-export function formatTime(value: string | number): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
+// `formatTime` (clock time-of-day HH:MM:SS) is the canonical helper in
+// `@/lib/time` (`formatClockTime`); imported above and re-exported here so the
+// existing `surfaceModel` import sites stay stable.
+export { formatTime };
