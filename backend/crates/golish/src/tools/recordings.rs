@@ -84,7 +84,7 @@ impl From<RecordingRow> for Recording {
 pub async fn recording_save(
     state: tauri::State<'_, DbState>,
     recording: Recording,
-    _project_path: Option<String>,
+    project_path: Option<String>,
 ) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
     let events_json = serde_json::to_value(&recording.events)?;
@@ -104,7 +104,7 @@ pub async fn recording_save(
     .bind(recording.meta.duration_ms as i64)
     .bind(recording.meta.event_count as i32)
     .bind(&events_json)
-    .bind(&_project_path)
+    .bind(&project_path)
     .execute(pool)
     .await
 ?;
@@ -121,14 +121,15 @@ pub async fn recording_save(
 pub async fn recording_load(
     state: tauri::State<'_, DbState>,
     id: String,
-    _project_path: Option<String>,
+    project_path: Option<String>,
 ) -> Result<Recording, GolishError> {
     let pool = state.pool_ready().await?;
     let row: RecordingRow = sqlx::query_as(
         "SELECT id, title, session_id, width, height, duration_ms, event_count, events, created_at \
-         FROM recordings WHERE id = $1",
+         FROM recordings WHERE id = $1 AND project_path IS NOT DISTINCT FROM $2",
     )
     .bind(&id)
+    .bind(&project_path)
     .fetch_optional(pool)
     .await
 ?
@@ -140,13 +141,14 @@ pub async fn recording_load(
 #[tauri::command]
 pub async fn recording_list(
     state: tauri::State<'_, DbState>,
-    _project_path: Option<String>,
+    project_path: Option<String>,
 ) -> Result<Vec<RecordingMeta>, GolishError> {
     let pool = state.pool_ready().await?;
     let rows: Vec<MetaRow> = sqlx::query_as(
         "SELECT id, title, session_id, width, height, duration_ms, event_count, created_at \
-         FROM recordings ORDER BY created_at DESC",
+         FROM recordings WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY created_at DESC",
     )
+    .bind(&project_path)
     .fetch_all(pool)
     .await?;
 
@@ -157,11 +159,12 @@ pub async fn recording_list(
 pub async fn recording_delete(
     state: tauri::State<'_, DbState>,
     id: String,
-    _project_path: Option<String>,
+    project_path: Option<String>,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    sqlx::query("DELETE FROM recordings WHERE id = $1")
+    sqlx::query("DELETE FROM recordings WHERE id = $1 AND project_path IS NOT DISTINCT FROM $2")
         .bind(&id)
+        .bind(&project_path)
         .execute(pool)
         .await?;
     tracing::debug!("[recording_delete] Deleted recording {id}");
