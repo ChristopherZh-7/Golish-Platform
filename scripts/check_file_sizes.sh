@@ -2,8 +2,8 @@
 # Architecture file-size guard.
 #
 # Fails the build if any non-test file exceeds its budget:
-# - Rust:  500 lines (exclude tests/, *_tests.rs, mocks.rs)
-# - TS/TSX: 800 lines (exclude __fixtures__/, *.test.ts, *.test.tsx, mocks.ts)
+# - Rust:  500 lines (exclude tests/, *_tests.rs, tests.rs, mocks.rs)
+# - TS/TSX: 800 lines (exclude __fixtures__/, mocks/, *.test.ts, *.test.tsx, mocks.ts)
 #
 # Rationale: big files block parallel reviews and slow incremental builds.
 # Encode budgets in CI so drift is caught on the PR that introduces it.
@@ -38,6 +38,7 @@ echo "[check_file_sizes] scanning Rust files > ${RUST_LIMIT} lines …"
 rust_big=$(find backend/crates -name "*.rs" \
     -not -path "*/tests/*" \
     -not -name "*_tests.rs" \
+    -not -name "tests.rs" \
     -not -name "mocks.rs" \
     -print0 \
   | xargs -0 wc -l 2>/dev/null \
@@ -68,6 +69,7 @@ while IFS=$'\t' read -r lines path; do
 done < <(
   find frontend \( -name "*.ts" -o -name "*.tsx" \) \
     -not -path "*/__fixtures__/*" \
+    -not -path "*/mocks/*" \
     -not -name "*.test.ts" \
     -not -name "*.test.tsx" \
     -not -name "mocks.ts" \
