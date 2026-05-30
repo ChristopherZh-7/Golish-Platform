@@ -435,7 +435,7 @@ impl AgentBridge {
     }
 
     /// Override the tool configuration (e.g. to disable all tools for title-gen sessions).
-    pub fn set_tool_config(&mut self, config: crate::tool_definitions::ToolConfig) {
+    pub fn set_tool_config(&mut self, config: crate::tool_definitions::ToolSelectionConfig) {
         self.tool_config = config;
     }
 

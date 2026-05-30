@@ -1,7 +1,7 @@
 use rig::completion::ToolDefinition;
 use serde_json::json;
 
-use super::config::ToolConfig;
+use super::config::ToolSelectionConfig;
 use super::definitions::get_sub_agent_tool_definitions;
 use super::preset::ToolPreset;
 use super::sanitize::sanitize_schema;
@@ -228,13 +228,13 @@ fn test_tool_preset_full() {
 
 #[test]
 fn test_tool_config_default_is_standard() {
-    let config = ToolConfig::default();
+    let config = ToolSelectionConfig::default();
     assert_eq!(config.preset, ToolPreset::Standard);
 }
 
 #[test]
 fn test_tool_config_is_tool_enabled() {
-    let config = ToolConfig::with_preset(ToolPreset::Standard);
+    let config = ToolSelectionConfig::with_preset(ToolPreset::Standard);
 
     assert!(config.is_tool_enabled("read_file"));
     assert!(config.is_tool_enabled("grep_file"));
@@ -245,7 +245,7 @@ fn test_tool_config_is_tool_enabled() {
 
 #[test]
 fn test_tool_config_additional_tools() {
-    let config = ToolConfig {
+    let config = ToolSelectionConfig {
         preset: ToolPreset::Minimal,
         additional: vec!["grep_file".to_string()],
         disabled: vec![],
@@ -258,7 +258,7 @@ fn test_tool_config_additional_tools() {
 
 #[test]
 fn test_tool_config_disabled_tools() {
-    let config = ToolConfig {
+    let config = ToolSelectionConfig {
         preset: ToolPreset::Standard,
         additional: vec![],
         disabled: vec!["delete_file".to_string()],
@@ -270,7 +270,7 @@ fn test_tool_config_disabled_tools() {
 
 #[test]
 fn test_tool_config_disabled_overrides_additional() {
-    let config = ToolConfig {
+    let config = ToolSelectionConfig {
         preset: ToolPreset::Minimal,
         additional: vec!["grep_file".to_string()],
         disabled: vec!["grep_file".to_string()],
@@ -301,7 +301,7 @@ fn test_get_tool_definitions_for_preset_full() {
 
 #[test]
 fn test_tool_config_with_config() {
-    let config = ToolConfig {
+    let config = ToolSelectionConfig {
         preset: ToolPreset::Minimal,
         additional: vec!["grep_file".to_string(), "list_files".to_string()],
         disabled: vec![],
@@ -318,7 +318,7 @@ fn test_tool_config_with_config() {
 
 #[test]
 fn test_tool_config_main_agent() {
-    let config = ToolConfig::main_agent();
+    let config = ToolSelectionConfig::main_agent();
 
     assert_eq!(config.preset, ToolPreset::Standard);
 
@@ -354,7 +354,7 @@ fn test_tool_config_main_agent() {
 
 #[test]
 fn test_main_agent_tool_definitions() {
-    let config = ToolConfig::main_agent();
+    let config = ToolSelectionConfig::main_agent();
     let tools = get_tool_definitions_with_config(&config);
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
 

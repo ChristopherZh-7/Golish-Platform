@@ -52,7 +52,7 @@ mod tests {
     use super::*;
     use crate::test_utils::TestContextBuilder;
     use golish_agent_kit::execution_mode::ExecutionMode;
-    use golish_agent_kit::tool_definitions::{ToolConfig, ToolPreset};
+    use golish_agent_kit::tool_definitions::{ToolPreset, ToolSelectionConfig};
     use golish_llm_providers::LlmClient;
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -94,7 +94,7 @@ mod tests {
     async fn none_tool_preset_exposes_no_tools_even_in_chat_mode() {
         let test_ctx = TestContextBuilder::new()
             .execution_mode(ExecutionMode::Chat)
-            .tool_config(ToolConfig::with_preset(ToolPreset::None))
+            .tool_config(ToolSelectionConfig::with_preset(ToolPreset::None))
             .build()
             .await;
         let client = Arc::new(RwLock::new(LlmClient::Mock));

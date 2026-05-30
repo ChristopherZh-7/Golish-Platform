@@ -28,8 +28,8 @@ use super::sprint_contract::{
 use super::stage_harness::StageHarness;
 use super::stage_spec::load_stage_spec_from_json;
 use super::types::{
-    ExternalAttackSurfaceDeliverable, Finding, FindingSeverity, SkippedCheckRecord, StageClaim,
-    StageKind,
+    ExternalAttackSurfaceDeliverable, FindingSeverity, HarnessFinding, SkippedCheckRecord,
+    StageClaim, StageKind,
 };
 
 const ASSESSMENT_PROFILE_JSON: &str =
@@ -69,14 +69,14 @@ fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
         ],
     };
     // 1 subdomain + 1 http_service (覆盖 sprint_skeleton 的两类 expected_findings)
-    d.findings.push(Finding {
+    d.findings.push(HarnessFinding {
         finding_id: Uuid::new_v4(),
         kind: "subdomain".to_string(),
         subject: "api.example.com".to_string(),
         severity: FindingSeverity::Info,
         evidence_refs: vec![dns_eid, ct_eid],
     });
-    d.findings.push(Finding {
+    d.findings.push(HarnessFinding {
         finding_id: Uuid::new_v4(),
         kind: "http_service".to_string(),
         subject: "api.example.com:443".to_string(),
@@ -145,7 +145,7 @@ fn e2e_finding_references_unknown_evidence_blocks_via_freshness_sanity() {
     let harness = build_harness();
     let mut d = happy_deliverable(Uuid::new_v4());
     // 加一个 finding 引用 deliverable.evidence_refs 之外的 eid → freshness_check sanity 拦
-    d.findings.push(Finding {
+    d.findings.push(HarnessFinding {
         finding_id: Uuid::new_v4(),
         kind: "subdomain".to_string(),
         subject: "phantom.example.com".to_string(),

@@ -59,7 +59,7 @@ use golish_core::{ApiRequestStats, ApiRequestStatsSnapshot};
 
 use super::agent_mode::AgentMode;
 use super::llm_client::LlmClient;
-use super::tool_definitions::ToolConfig;
+use super::tool_definitions::ToolSelectionConfig;
 use crate::loop_detection::LoopDetector;
 use crate::tool_policy::ToolPolicyManager;
 use golish_context::{CompactionState, ContextManager};
@@ -172,7 +172,7 @@ pub struct AgentBridge {
     // -- Cross-cutting identity & orchestration -------------------------------
     pub(crate) workspace: Arc<RwLock<PathBuf>>,
     pub(crate) tool_registry: Arc<RwLock<ToolRegistry>>,
-    pub(crate) tool_config: ToolConfig,
+    pub(crate) tool_config: ToolSelectionConfig,
     pub(crate) cancelled: Arc<AtomicBool>,
     pub(crate) api_request_stats: Arc<ApiRequestStats>,
 

@@ -1,39 +1,14 @@
 import { invoke } from "@/lib/api/client";
+import type { Evidence } from "@/lib/generated/Evidence";
+import type { Finding } from "@/lib/generated/Finding";
+
+// Re-export the ts-rs generated wire types so existing `@/lib/api/findings`
+// imports keep working while the single source of truth lives in
+// `frontend/lib/generated/` (I5; backend `golish::tools::findings`).
+export type { Evidence, Finding };
 
 export interface FindingsStore {
   findings: Finding[];
-}
-
-export interface Finding {
-  id: string;
-  title: string;
-  severity: string;
-  cvss?: number;
-  url: string;
-  target: string;
-  /** Wire field is snake_case `target_id` (backend `Finding.target_id`). */
-  target_id?: string;
-  description: string;
-  steps: string;
-  remediation: string;
-  tags: string[];
-  tool: string;
-  template: string;
-  references: string[];
-  evidence: Evidence[];
-  status: string;
-  /** Lineage of the finding: "manual" | "automated" (backend serde default "manual"). */
-  source: string;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface Evidence {
-  id: string;
-  filename: string;
-  mime_type: string;
-  caption: string;
-  added_at: number;
 }
 
 // Tauri commands accept Option<String> for projectPath, so the frontend can

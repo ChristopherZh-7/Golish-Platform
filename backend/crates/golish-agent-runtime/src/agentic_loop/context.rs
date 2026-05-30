@@ -21,7 +21,7 @@ pub trait McpToolExecutor: Send + Sync {
         args: &serde_json::Value,
     ) -> Option<(serde_json::Value, bool)>;
 }
-use super::ToolConfig;
+use super::ToolSelectionConfig;
 use golish_agent_kit::hitl::ApprovalRecorder;
 use golish_agent_kit::loop_detection::LoopDetector;
 use golish_agent_kit::sidecar_trait::{AiEventProcessor, SessionCaptureBackend};
@@ -141,7 +141,7 @@ pub struct AgenticLoopContext<'a> {
     pub workspace: &'a Arc<RwLock<std::path::PathBuf>>,
     pub context_manager: &'a Arc<ContextManager>,
     pub compaction_state: &'a Arc<RwLock<CompactionState>>,
-    pub tool_config: &'a ToolConfig,
+    pub tool_config: &'a ToolSelectionConfig,
     pub graph_backend:
         Option<Arc<dyn golish_agent_kit::tool_executors::graph_trait::GraphKnowledgeBase>>,
     pub sidecar_state: Option<&'a Arc<dyn SessionCaptureBackend>>,

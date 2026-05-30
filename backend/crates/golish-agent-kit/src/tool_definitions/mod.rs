@@ -3,8 +3,8 @@
 //! ## Layout
 //!
 //! - [`preset`]: [`preset::ToolPreset`] enum + per-preset allow-lists.
-//! - [`config`]: [`config::ToolConfig`] (preset + add/disable overrides) and
-//!   the [`config::ToolConfig::main_agent`] factory.
+//! - [`config`]: [`config::ToolSelectionConfig`] (preset + add/disable overrides) and
+//!   the [`config::ToolSelectionConfig::main_agent`] factory.
 //! - [`sanitize`]: [`sanitize::sanitize_schema`] — recursive JSON Schema
 //!   transformer for OpenAI strict mode + Anthropic compatibility.
 //! - [`definitions`]: hand-rolled tool descriptors (`run_command`,
@@ -20,7 +20,7 @@
 //! - [`preset::ToolPreset::Standard`] — core development tools (default).
 //! - [`preset::ToolPreset::Full`] — all registered tools.
 //!
-//! Use [`config::ToolConfig`] to override presets with custom allow/block lists.
+//! Use [`config::ToolSelectionConfig`] to override presets with custom allow/block lists.
 
 mod config;
 mod definitions;
@@ -31,7 +31,7 @@ mod selection;
 #[cfg(test)]
 mod tests;
 
-pub use config::ToolConfig;
+pub use config::ToolSelectionConfig;
 pub use definitions::{
     get_ask_human_tool_definition, get_run_command_tool_definition, get_sub_agent_tool_definitions,
 };

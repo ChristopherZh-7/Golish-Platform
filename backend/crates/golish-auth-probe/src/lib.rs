@@ -13,7 +13,7 @@
 //! ## Scope (P0 scaffold)
 //!
 //! This first commit defines the public types (`Scenario`, `Round`,
-//! `Verdict`, `Finding`, `ProbeConfig`, `ProbeReport`). The actual HTTP
+//! `Verdict`, `ProbeFinding`, `ProbeConfig`, `ProbeReport`). The actual HTTP
 //! orchestrator (`probe()`) is implemented in the next commit so this
 //! crate compiles cleanly without committing untested HTTP logic.
 
@@ -31,7 +31,7 @@ pub use compare::compare_rounds;
 pub use orchestrator::probe;
 pub use substitute::{substitute_id, SubstituteKind};
 pub use types::{
-    Evidence, Finding, ProbeConfig, ProbeReport, ProbeSummary, Round, RoundOutcome, Scenario,
+    Evidence, ProbeConfig, ProbeFinding, ProbeReport, ProbeSummary, Round, RoundOutcome, Scenario,
     Severity, TokenSource, Verdict,
 };
 

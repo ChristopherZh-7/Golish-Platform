@@ -217,9 +217,11 @@ pub async fn configure_bridge(
 }
 
 async fn configure_title_gen(bridge: &mut AgentBridge) {
-    bridge.set_tool_config(golish_agent_kit::tool_definitions::ToolConfig::with_preset(
-        golish_agent_kit::tool_definitions::ToolPreset::None,
-    ));
+    bridge.set_tool_config(
+        golish_agent_kit::tool_definitions::ToolSelectionConfig::with_preset(
+            golish_agent_kit::tool_definitions::ToolPreset::None,
+        ),
+    );
     let mut registry = bridge.tool_registry().write().await;
     registry.clear();
     drop(registry);

@@ -31,7 +31,7 @@ use {
 
 // Re-imported here so sibling sub-modules (`context`, `single_tool_call`)
 // can reach them via `super::...`. Production code paths.
-use golish_agent_kit::tool_definitions::ToolConfig;
+use golish_agent_kit::tool_definitions::ToolSelectionConfig;
 use golish_agent_kit::tool_executors::normalize_run_pty_cmd_args;
 use golish_context::token_budget::TokenUsage;
 use golish_sub_agents::SubAgentContext;

@@ -11,13 +11,13 @@ use crate::compare::compare_rounds;
 use crate::request::{build_client, execute_round};
 use crate::substitute::{substitute_id, SubstituteKind};
 use crate::types::{
-    Evidence, Finding, ProbeConfig, ProbeReport, ProbeSummary, Round, RoundOutcome, Scenario,
+    Evidence, ProbeConfig, ProbeFinding, ProbeReport, ProbeSummary, Round, RoundOutcome, Scenario,
     Severity, TokenSource, Verdict,
 };
 
 /// Run the probe over a list of endpoints.
 ///
-/// Returns a [`ProbeReport`] with one [`Finding`] per (endpoint, scenario)
+/// Returns a [`ProbeReport`] with one [`ProbeFinding`] per (endpoint, scenario)
 /// tuple that yielded a verdict.
 pub async fn probe(endpoints: &[Endpoint], cfg: &ProbeConfig) -> Result<ProbeReport> {
     let client = build_client(cfg.timeout_ms, cfg.user_agent.as_deref())?;
@@ -44,7 +44,7 @@ pub async fn probe(endpoints: &[Endpoint], cfg: &ProbeConfig) -> Result<ProbeRep
                 let sev_key = severity_key(severity);
                 *report.summary.by_scenario.entry(scen_key).or_insert(0) += 1;
                 *report.summary.by_severity.entry(sev_key).or_insert(0) += 1;
-                report.findings.push(Finding {
+                report.findings.push(ProbeFinding {
                     endpoint: ep.clone(),
                     scenario: *scenario,
                     verdict,

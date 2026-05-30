@@ -15,18 +15,21 @@ pub(super) fn evidence_dir(project_path: Option<&str>) -> PathBuf {
         .join("evidence")
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct Finding {
     pub id: String,
     pub title: String,
     pub severity: Severity,
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub cvss: Option<f64>,
     #[serde(default)]
     pub url: String,
     #[serde(default)]
     pub target: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
     pub target_id: Option<String>,
     #[serde(default)]
     pub description: String,
@@ -47,7 +50,9 @@ pub struct Finding {
     pub status: FindingStatus,
     #[serde(default = "default_finding_source")]
     pub source: String,
+    #[ts(type = "number")]
     pub created_at: u64,
+    #[ts(type = "number")]
     pub updated_at: u64,
 }
 
@@ -55,17 +60,20 @@ pub(super) fn default_finding_source() -> String {
     "manual".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct Evidence {
     pub id: String,
     pub filename: String,
     pub mime_type: String,
     pub caption: String,
+    #[ts(type = "number")]
     pub added_at: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub enum Severity {
     Critical,
     High,
@@ -95,8 +103,9 @@ impl Severity {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub enum FindingStatus {
     Open,
     Confirmed,
@@ -138,16 +147,7 @@ pub struct FindingsStore {
     pub findings: Vec<Finding>,
 }
 
-pub(super) fn now_ts() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-pub(super) fn ts_from_dt(dt: chrono::DateTime<chrono::Utc>) -> u64 {
-    dt.timestamp() as u64
-}
+pub(super) use golish_core::time::{now_ts, ts_from_dt};
 
 impl From<golish_db::repo::findings::FindingDetailRow> for Finding {
     fn from(r: golish_db::repo::findings::FindingDetailRow) -> Self {

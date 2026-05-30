@@ -134,7 +134,9 @@ mod tests {
     use super::super::super::sprint_contract::{
         ExpectedFinding, SprintContract, SprintSkeleton, StageSkeleton,
     };
-    use super::super::super::types::{ExternalAttackSurfaceDeliverable, Finding, FindingSeverity};
+    use super::super::super::types::{
+        ExternalAttackSurfaceDeliverable, FindingSeverity, HarnessFinding,
+    };
     use super::*;
     use golish_pentest::evidence_ledger::EvidenceAuditId;
     use uuid::Uuid;
@@ -162,7 +164,7 @@ mod tests {
     ) -> ExternalAttackSurfaceDeliverable {
         let mut d = empty_deliverable();
         for i in 0..subdomain_count {
-            d.findings.push(Finding {
+            d.findings.push(HarnessFinding {
                 finding_id: Uuid::new_v4(),
                 kind: "subdomain".to_string(),
                 subject: format!("sub{}.example.com", i),
@@ -171,7 +173,7 @@ mod tests {
             });
         }
         for i in 0..http_count {
-            d.findings.push(Finding {
+            d.findings.push(HarnessFinding {
                 finding_id: Uuid::new_v4(),
                 kind: "http_service".to_string(),
                 subject: format!("http{}.example.com", i),

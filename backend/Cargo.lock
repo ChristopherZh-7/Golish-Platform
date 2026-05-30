@@ -2959,6 +2959,7 @@ dependencies = [
  "anyhow",
  "dirs",
  "golish-core",
+ "golish-pentest-domain",
  "golish-shell-exec",
  "rmcp",
  "serde",

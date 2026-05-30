@@ -23,7 +23,7 @@ use crate::agentic_loop::{
 };
 use golish_agent_kit::agent_mode::AgentMode;
 use golish_agent_kit::execution_mode::ExecutionMode;
-use golish_agent_kit::tool_definitions::ToolConfig;
+use golish_agent_kit::tool_definitions::ToolSelectionConfig;
 
 use crate::execution_mode::ExecutionModeRegistry;
 
@@ -114,7 +114,7 @@ pub struct TestContextBuilder {
     denied_tools: Vec<String>,
     allowed_tools: Vec<String>,
     execution_mode: ExecutionMode,
-    tool_config: ToolConfig,
+    tool_config: ToolSelectionConfig,
 }
 
 impl Default for TestContextBuilder {
@@ -133,7 +133,7 @@ impl TestContextBuilder {
             denied_tools: vec![],
             allowed_tools: vec![],
             execution_mode: ExecutionMode::default(),
-            tool_config: ToolConfig::default(),
+            tool_config: ToolSelectionConfig::default(),
         }
     }
 
@@ -144,7 +144,7 @@ impl TestContextBuilder {
     }
 
     /// Override the tool config for this test.
-    pub fn tool_config(mut self, config: ToolConfig) -> Self {
+    pub fn tool_config(mut self, config: ToolSelectionConfig) -> Self {
         self.tool_config = config;
         self
     }
@@ -267,7 +267,7 @@ pub struct TestContext {
     pub workspace: Arc<RwLock<PathBuf>>,
     pub agent_mode: Arc<RwLock<AgentMode>>,
     pub plan_manager: Arc<PlanManager>,
-    pub tool_config: ToolConfig,
+    pub tool_config: ToolSelectionConfig,
     pub api_request_stats: Arc<ApiRequestStats>,
     /// Optional runtime for testing auto-approve flag
     pub runtime: Option<Arc<dyn GolishRuntime>>,

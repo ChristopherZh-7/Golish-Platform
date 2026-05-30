@@ -61,7 +61,7 @@ pub fn run(deliverable: &ExternalAttackSurfaceDeliverable) -> GateCheckOutcome {
 #[cfg(test)]
 mod tests {
     use super::super::super::types::{
-        ExternalAttackSurfaceDeliverable, Finding, FindingSeverity, StageClaim,
+        ExternalAttackSurfaceDeliverable, FindingSeverity, HarnessFinding, StageClaim,
     };
     use super::*;
     use golish_pentest::evidence_ledger::EvidenceAuditId;
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn finding_without_evidence_refs_blocks() {
         let mut d = empty_deliverable();
-        d.findings.push(Finding {
+        d.findings.push(HarnessFinding {
             finding_id: Uuid::new_v4(),
             kind: "open_port".to_string(),
             subject: "api.example.com:443".to_string(),

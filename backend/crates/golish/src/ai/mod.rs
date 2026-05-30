@@ -23,9 +23,9 @@ pub use golish_agent_kit::{
     get_tool_definitions_with_config, hitl, llm_client, loop_detection, memory_file,
     memory_gatekeeper, normalize_run_pty_cmd_args, planner, route_tool_execution, sidecar_trait,
     system_hooks, tool_definitions, tool_execution, tool_executors, tool_policy,
-    tool_provider_impl, AgentMode, DefaultToolProvider, SharedComponentsConfig, ToolConfig,
+    tool_provider_impl, AgentMode, DefaultToolProvider, SharedComponentsConfig,
     ToolExecutionConfig, ToolExecutionContext, ToolExecutionError, ToolExecutionResult, ToolPreset,
-    ToolRoutingCategory, ToolSource,
+    ToolRoutingCategory, ToolSelectionConfig, ToolSource,
 };
 pub use golish_agent_runtime::agentic_loop::{OutputClassifier, PostShellHook};
 pub use golish_agent_runtime::{agentic_loop, eval_support};

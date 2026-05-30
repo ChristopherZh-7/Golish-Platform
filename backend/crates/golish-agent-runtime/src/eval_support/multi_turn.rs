@@ -17,7 +17,7 @@ use golish_agent_kit::agent_mode::AgentMode;
 use golish_agent_kit::hitl::ApprovalRecorder;
 use golish_agent_kit::loop_detection::LoopDetector;
 use golish_agent_kit::planner::PlanManager;
-use golish_agent_kit::tool_definitions::ToolConfig;
+use golish_agent_kit::tool_definitions::ToolSelectionConfig;
 use golish_agent_kit::tool_policy::ToolPolicyManager;
 use golish_context::{CompactionState, ContextManager, ContextManagerConfig};
 use golish_core::events::AiEvent;
@@ -95,7 +95,7 @@ where
     let plan_manager = Arc::new(PlanManager::new());
     let workspace_arc = Arc::new(RwLock::new(config.workspace.clone()));
     let llm_client = Arc::new(RwLock::new(LlmClient::Mock));
-    let tool_config = ToolConfig::default();
+    let tool_config = ToolSelectionConfig::default();
     let capabilities = ModelCapabilities::detect(&config.provider_name, &config.model_name);
 
     for (turn_idx, user_prompt) in user_prompts.iter().enumerate() {

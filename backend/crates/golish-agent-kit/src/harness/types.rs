@@ -128,7 +128,7 @@ pub struct SkippedCheckRecord {
 
 /// Doc 3 §4.3 Finding · 结构化交付.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Finding {
+pub struct HarnessFinding {
     pub finding_id: Uuid,
     pub kind: String,
     pub subject: String,
@@ -147,7 +147,7 @@ pub struct ExternalAttackSurfaceDeliverable {
     pub evidence_refs: Vec<EvidenceAuditId>,
     #[serde(default)]
     pub skipped_checks: Vec<SkippedCheckRecord>,
-    pub findings: Vec<Finding>,
+    pub findings: Vec<HarnessFinding>,
     /// **app-level hint**, gate 用 StageSpec.required_checks 为准.
     #[serde(default)]
     pub required_checks_done: Vec<String>,

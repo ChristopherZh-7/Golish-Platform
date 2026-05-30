@@ -92,7 +92,7 @@ pub use golish_prompts::{
 pub use llm_client::SharedComponentsConfig;
 pub use tool_definitions::{
     get_all_tool_definitions_with_config, get_tool_definitions_for_preset,
-    get_tool_definitions_with_config, ToolConfig, ToolPreset,
+    get_tool_definitions_with_config, ToolPreset, ToolSelectionConfig,
 };
 pub use tool_execution::{
     normalize_run_pty_cmd_args, route_tool_execution, ToolExecutionConfig, ToolExecutionContext,

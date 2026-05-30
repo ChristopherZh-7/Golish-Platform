@@ -62,7 +62,7 @@ pub use stage_spec::{
     StageSpecLoadError,
 };
 pub use types::{
-    AgentContinuity, ExternalAttackSurfaceDeliverable, Finding, FindingSeverity,
+    AgentContinuity, ExternalAttackSurfaceDeliverable, FindingSeverity, HarnessFinding,
     HarnessRecoveryActions, HarnessStageHint, IntentAxis, RiskLevel, SkippedCheckRecord,
     StageClaim, StageKind,
 };

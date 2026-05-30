@@ -32,9 +32,9 @@ pub async fn apply_tool_selection(
         return tools;
     }
 
-    // 1. Static tool groups via existing ToolConfig + ToolPreset filter.
+    // 1. Static tool groups via existing ToolSelectionConfig + ToolPreset filter.
     //    The Policy decides whether to include any static tools at all;
-    //    the existing ToolConfig still narrows by tool name within the
+    //    the existing ToolSelectionConfig still narrows by tool name within the
     //    enabled groups.
     if selection.static_groups.any_enabled() {
         tools.extend(get_all_tool_definitions_with_config(ctx.tool_config));

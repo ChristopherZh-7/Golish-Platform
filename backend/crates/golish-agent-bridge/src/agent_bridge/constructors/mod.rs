@@ -33,7 +33,7 @@ use crate::agent_mode::AgentMode;
 use crate::event_coordinator::EventCoordinator;
 use crate::llm_client::{AgentBridgeComponents, ProviderConfig, SharedComponentsConfig};
 use crate::planner::PlanManager;
-use crate::tool_definitions::ToolConfig;
+use crate::tool_definitions::ToolSelectionConfig;
 
 mod anthropic_family;
 mod gemini_family;
@@ -361,7 +361,7 @@ impl AgentBridge {
             },
             workspace,
             tool_registry,
-            tool_config: ToolConfig::main_agent(),
+            tool_config: ToolSelectionConfig::main_agent(),
             cancelled: Arc::new(AtomicBool::new(false)),
             api_request_stats: Arc::new(ApiRequestStats::new()),
             sub_agent_registry,

@@ -106,7 +106,8 @@ pub fn run(deliverable: &ExternalAttackSurfaceDeliverable, spec: &StageSpec) -> 
 mod tests {
     use super::super::super::stage_spec::load_stage_spec_from_json;
     use super::super::super::types::{
-        ExternalAttackSurfaceDeliverable, Finding, FindingSeverity, SkippedCheckRecord, StageClaim,
+        ExternalAttackSurfaceDeliverable, FindingSeverity, HarnessFinding, SkippedCheckRecord,
+        StageClaim,
     };
     use super::*;
     use golish_pentest::evidence_ledger::EvidenceAuditId;
@@ -146,7 +147,7 @@ mod tests {
     fn non_empty_deliverable_passes_when_min_invocations_met() {
         let spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
         let mut d = empty_deliverable();
-        d.findings.push(Finding {
+        d.findings.push(HarnessFinding {
             finding_id: Uuid::new_v4(),
             kind: "subdomain".to_string(),
             subject: "api.example.com".to_string(),
@@ -163,7 +164,7 @@ mod tests {
         let spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
         let mut d = empty_deliverable();
         // 加一个 finding 让 deliverable 非 vacuous + 凑 3 evidence_refs 避开 FakePattern
-        d.findings.push(Finding {
+        d.findings.push(HarnessFinding {
             finding_id: Uuid::new_v4(),
             kind: "subdomain".to_string(),
             subject: "x.example.com".to_string(),
@@ -209,7 +210,7 @@ mod tests {
         let spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
         let mut d = empty_deliverable();
         // 加 finding 让 deliverable 非 vacuous
-        d.findings.push(Finding {
+        d.findings.push(HarnessFinding {
             finding_id: Uuid::new_v4(),
             kind: "subdomain".to_string(),
             subject: "x.example.com".to_string(),

@@ -104,7 +104,7 @@ pub struct Evidence {
 
 /// One finding for a single (endpoint, scenario) combo.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Finding {
+pub struct ProbeFinding {
     pub endpoint: golish_js_analyzer::Endpoint,
     pub scenario: Scenario,
     pub verdict: Verdict,
@@ -178,6 +178,6 @@ pub struct ProbeSummary {
 pub struct ProbeReport {
     pub tested_count: usize,
     pub skipped_count: usize,
-    pub findings: Vec<Finding>,
+    pub findings: Vec<ProbeFinding>,
     pub summary: ProbeSummary,
 }

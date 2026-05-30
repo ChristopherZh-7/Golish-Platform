@@ -6,7 +6,7 @@ use super::preset::ToolPreset;
 
 /// Configuration for tool selection with optional overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct ToolConfig {
+pub struct ToolSelectionConfig {
     /// Base preset to use.
     #[serde(default)]
     pub preset: ToolPreset,
@@ -18,7 +18,7 @@ pub struct ToolConfig {
     pub disabled: Vec<String>,
 }
 
-impl ToolConfig {
+impl ToolSelectionConfig {
     /// Create a new config with the given preset.
     pub fn with_preset(preset: ToolPreset) -> Self {
         Self {

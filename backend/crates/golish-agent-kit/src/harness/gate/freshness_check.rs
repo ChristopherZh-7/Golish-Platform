@@ -180,7 +180,7 @@ pub fn run_with_freshness(
 mod tests {
     use super::super::super::stage_spec::load_stage_spec_from_json;
     use super::super::super::types::{
-        ExternalAttackSurfaceDeliverable, Finding, FindingSeverity, StageClaim,
+        ExternalAttackSurfaceDeliverable, FindingSeverity, HarnessFinding, StageClaim,
     };
     use super::*;
     use golish_pentest::evidence_ledger::EvidenceAuditId;
@@ -214,7 +214,7 @@ mod tests {
         let mut d = empty_deliverable();
         let eid = EvidenceAuditId::new(7);
         d.evidence_refs = vec![eid];
-        d.findings.push(Finding {
+        d.findings.push(HarnessFinding {
             finding_id: Uuid::new_v4(),
             kind: "subdomain".to_string(),
             subject: "x.example.com".to_string(),
@@ -230,7 +230,7 @@ mod tests {
         let mut d = empty_deliverable();
         // 故意不把 eid=42 加到 deliverable.evidence_refs
         d.evidence_refs = vec![];
-        d.findings.push(Finding {
+        d.findings.push(HarnessFinding {
             finding_id: Uuid::new_v4(),
             kind: "subdomain".to_string(),
             subject: "x.example.com".to_string(),
@@ -270,7 +270,7 @@ mod tests {
         let mut d = empty_deliverable();
         let eid = EvidenceAuditId::new(1);
         d.evidence_refs = vec![eid];
-        d.findings.push(Finding {
+        d.findings.push(HarnessFinding {
             finding_id: Uuid::new_v4(),
             kind: "subdomain".to_string(),
             subject: "x.example.com".to_string(),
@@ -293,7 +293,7 @@ mod tests {
         let mut d = empty_deliverable();
         let eid = EvidenceAuditId::new(1);
         d.evidence_refs = vec![eid];
-        d.findings.push(Finding {
+        d.findings.push(HarnessFinding {
             finding_id: Uuid::new_v4(),
             kind: "subdomain".to_string(),
             subject: "x.example.com".to_string(),
@@ -319,7 +319,7 @@ mod tests {
         let mut d = empty_deliverable();
         let eid = EvidenceAuditId::new(1);
         d.evidence_refs = vec![eid];
-        d.findings.push(Finding {
+        d.findings.push(HarnessFinding {
             finding_id: Uuid::new_v4(),
             kind: "subdomain".to_string(),
             subject: "x.example.com".to_string(),
@@ -349,7 +349,7 @@ mod tests {
         let mut d = empty_deliverable();
         let eid = EvidenceAuditId::new(1);
         d.evidence_refs = vec![eid];
-        d.findings.push(Finding {
+        d.findings.push(HarnessFinding {
             finding_id: Uuid::new_v4(),
             kind: "subdomain".to_string(),
             subject: "x.example.com".to_string(),

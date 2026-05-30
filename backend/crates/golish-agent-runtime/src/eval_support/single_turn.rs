@@ -16,7 +16,7 @@ use golish_agent_kit::agent_mode::AgentMode;
 use golish_agent_kit::hitl::ApprovalRecorder;
 use golish_agent_kit::loop_detection::LoopDetector;
 use golish_agent_kit::planner::PlanManager;
-use golish_agent_kit::tool_definitions::ToolConfig;
+use golish_agent_kit::tool_definitions::ToolSelectionConfig;
 use golish_agent_kit::tool_policy::ToolPolicyManager;
 use golish_context::{CompactionState, ContextManager, ContextManagerConfig};
 use golish_core::events::AiEvent;
@@ -129,7 +129,7 @@ where
     let llm_client = Arc::new(RwLock::new(LlmClient::Mock));
 
     // Tool config - enable all tools
-    let tool_config = ToolConfig::default();
+    let tool_config = ToolSelectionConfig::default();
 
     let api_request_stats = Arc::new(ApiRequestStats::new());
 
@@ -360,7 +360,7 @@ where
     let llm_client = Arc::new(RwLock::new(LlmClient::Mock));
 
     // Tool config - enable all tools
-    let tool_config = ToolConfig::default();
+    let tool_config = ToolSelectionConfig::default();
 
     let api_request_stats = Arc::new(ApiRequestStats::new());
 

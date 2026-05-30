@@ -1,7 +1,7 @@
 //! Public entry points for selecting and filtering tool definitions.
 //!
 //! Tools are pulled from [`golish_tools::build_function_declarations`],
-//! filtered through a [`super::config::ToolConfig`], and have their schemas
+//! filtered through a [`super::config::ToolSelectionConfig`], and have their schemas
 //! sanitised by [`super::sanitize::sanitize_schema`] for LLM provider
 //! compatibility.
 
@@ -11,7 +11,7 @@ use golish_core::ToolName;
 use golish_tools::build_function_declarations;
 use rig::completion::ToolDefinition;
 
-use super::config::ToolConfig;
+use super::config::ToolSelectionConfig;
 use super::preset::ToolPreset;
 use super::sanitize::sanitize_schema;
 
@@ -20,20 +20,20 @@ use super::sanitize::sanitize_schema;
 /// This is the recommended entry point for most use cases.
 #[allow(dead_code)] // Public API — used externally or for future internal use.
 pub fn get_standard_tool_definitions() -> Vec<ToolDefinition> {
-    get_tool_definitions_with_config(&ToolConfig::default())
+    get_tool_definitions_with_config(&ToolSelectionConfig::default())
 }
 
 /// Get tool definitions with a specific preset.
 #[allow(dead_code)] // Public API — used externally or for future internal use.
 pub fn get_tool_definitions_for_preset(preset: ToolPreset) -> Vec<ToolDefinition> {
-    get_tool_definitions_with_config(&ToolConfig::with_preset(preset))
+    get_tool_definitions_with_config(&ToolSelectionConfig::with_preset(preset))
 }
 
 /// Get tool definitions with full configuration control.
 ///
 /// Filters function declarations based on the provided config, sanitises
 /// schemas for Anthropic compatibility, and applies description overrides.
-pub fn get_tool_definitions_with_config(config: &ToolConfig) -> Vec<ToolDefinition> {
+pub fn get_tool_definitions_with_config(config: &ToolSelectionConfig) -> Vec<ToolDefinition> {
     build_function_declarations()
         .into_iter()
         .filter(|fd| config.is_tool_enabled(&fd.name))
@@ -64,13 +64,13 @@ pub fn get_tool_definitions_with_config(config: &ToolConfig) -> Vec<ToolDefiniti
 ///
 /// Alias of [`get_tool_definitions_with_config`] kept for clarity at call
 /// sites that want to convey "every tool the config enables".
-pub fn get_all_tool_definitions_with_config(config: &ToolConfig) -> Vec<ToolDefinition> {
+pub fn get_all_tool_definitions_with_config(config: &ToolSelectionConfig) -> Vec<ToolDefinition> {
     get_tool_definitions_with_config(config)
 }
 
 /// Get all available tool definitions (uses [`ToolPreset::Full`]).
 pub fn get_all_tool_definitions() -> Vec<ToolDefinition> {
-    get_tool_definitions_with_config(&ToolConfig::with_preset(ToolPreset::Full))
+    get_tool_definitions_with_config(&ToolSelectionConfig::with_preset(ToolPreset::Full))
 }
 
 /// Filter tools by allow-list. An empty allow-list returns the input
