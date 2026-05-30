@@ -54,7 +54,6 @@ LAYER_TABLE: dict[str, float] = {
     "golish-context": 1.0,
     "golish-mcp": 1.0,
     "golish-projects": 1.0,
-    "golish-graphiti": 1.0,
     "golish-json-repair": 1.0,
     "golish-udiff": 1.0,
     "golish-pentest-domain": 1.0,
@@ -68,6 +67,9 @@ LAYER_TABLE: dict[str, float] = {
     "golish-indexer": 2.0,
     "golish-llm-providers": 2.0,
     "golish-db": 2.0,
+    # graph KB; depends on golish-db's PgPool (sibling edge), so it lives at L2
+    # next to its persistence peer rather than L1 (it is no longer dep-free).
+    "golish-graphiti": 2.0,
     "golish-pty": 2.0,
     "golish-web": 2.0,
     "golish-tools": 2.0,
@@ -109,6 +111,7 @@ LAYER_TABLE: dict[str, float] = {
 L2_CLUSTER: dict[str, str] = {
     # persistence — data / session / index / model registry
     "golish-db": "persistence",
+    "golish-graphiti": "persistence",
     "golish-models": "persistence",
     "golish-session": "persistence",
     "golish-indexer": "persistence",
