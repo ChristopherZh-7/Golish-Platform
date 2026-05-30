@@ -71,7 +71,8 @@
       "area": "frontend/components/TargetPanel + frontend/lib/api/security-analysis + frontend/lib/i18n + docs/design + docs/superpowers/plans",
       "title": "Target Surface Workbench（org → target → surface → evidence 的信息收集工作台）",
       "user_visible_behavior": "ZAP/SecurityView 删除后，Target Manager 不再只是组织树和内联 target 展开块；选中 organization 仍显示 Profile/Scope/Targets/Candidates/Runs/Evidence，选中具体 target 时右侧进入 Target Surface Workbench：Identity、Surface、Sitemap、JS/API、Sensitive、Evidence 六个 tab。用户能从 customer-provided 或 discovered target 直接看到 scope/source/evidence、端口服务、HTTP 指纹、JS/API、敏感信息候选和可重放 evidence，并用 staged actions（Run baseline recon / Collect JS / Match vulns）推进下一步。首版优先复用现有 targetAssets/apiEndpoints/fingerprints/jsAnalysis/oplog API，不改 schema，不重建 SecurityView。",
-      "status": "in_progress",
+      "status": "blocked",
+      "blocker": "2026-05-30 暂泊：让出唯一 in_progress 名额给 arch-s1-2-port-horizontal-coupling（AGENTS.md §2.1，一次只一个 in_progress）。前端 workbench 实现未回退、可随时恢复；S1-2 端口化推进期间挂起。如需继续前端工作把本条改回 in_progress 并把 S1-2 改回。",
       "verification": [
         "设计文档 docs/design/2026-05-28-target-surface-workbench.md 存在并覆盖当前问题、目标模型、mock 布局、非目标、第一实现切片",
         "实施计划 docs/superpowers/plans/2026-05-28-target-surface-workbench.md 存在并拆分 copy cleanup / data hook / workbench component / selection wiring / visual QA / final verification",
@@ -546,6 +547,30 @@
         "recorded_at": "2026-05-30"
       },
       "notes": "依据 docs/design/2026-05-30-servitization-readiness.md §6 S1-1。Task 1/2/4/5/6.1-6.2 由 MCP-3（后端工程）执行，上下文 2026-05-30 转交 MCP-5 收尾 Task 6.3/6.4 + 修既有 check_dag 违规 + 提交。**已收口为 passing**：just arch 双守卫全绿（check_dag 45 crates ✓ + repo-ownership ✓）。原 check_dag 违规 golish-graphiti(L1)→golish-db(L2) 系 commit 49cc135 加显式依赖后漏更新层表所致，本轮修为 graphiti 归 L2（依赖 golish-db PgPool，非删依赖）。改动集零 Rust/TS/Cargo diff，just precommit 未重跑（不影响编译/测试，基线全绿）。已落 4 commit 到 feat/recon-service（b0811ea/dc9ad0f/821c101 + docs commit），未 push。物理重排 repo 子模块(S1-1b) 与 *Port 抽取(S1-2) 为后续。"
+    },
+    {
+      "id": "arch-s1-2-port-horizontal-coupling",
+      "priority": 1,
+      "area": "backend/crates/golish/src/ports + backend/crates/golish/src/tools/pentest_bridge + scripts/check_repo_ownership.py",
+      "title": "S1-2 portify cross-service horizontal coupling (provider-side service ports)",
+      "user_visible_behavior": "无用户可见行为变化。命令层不再直查别的服务的 golish-db repo，改走 *Port（trait + in-proc 适配器）；逐条拔掉 S1-1 守卫 ALLOWLIST（当前 30 条 = 29 真跨服务读 + 1 scan_queue 映射伪阳性 → 目标清零）。为 DB-per-service 抽服务铺路。走路骨架 S1-2a 已落 read-only VaultReadPort（platform）：vault_ops/auth_probe 的 list/get/resolve 读改走端口，拔 2 条 vault allowlist（30→28）；store 仍走裸 ON CONFLICT INSERT（保 RAW_SQL_ALLOWLIST，归 P0-3）。",
+      "status": "in_progress",
+      "verification": [
+        "S1-2a: just arch → exit 0 且 ALLOWLIST 减 2 (vault·30→28)；RAW_SQL_ALLOWLIST 不变（store 仍裸 SQL，端口为 read-only）",
+        "S1-2a: cargo nextest -p golish → 不回归；ports::platform::vault 契约测试通过",
+        "S1-2a: grep 'golish_db::repo::vault' 于 vault_ops.rs / auth_probe.rs 为空",
+        "S1-2a: just precommit → exit 0（本切片含 Rust 改动，必须全套验证，不可略过）"
+      ],
+      "evidence": {
+        "design": "docs/design/2026-05-30-s1-2-port-horizontal-coupling.md（§2 两层端口洞察 / §3 30 条 allowlist 按提供方归类 / §4 端口模式 + 守卫配合 / §5 VaultReadPort 骨架 / §6 切片路线 / §9 待拍板决策）",
+        "plan": "docs/superpowers/plans/2026-05-30-s1-2-portification.md（S1-2a 6 Task 全 code-complete + S1-2b–g 路线图）",
+        "s1_2a_ports": "新增 golish/src/ports/{mod.rs,platform/mod.rs,platform/vault.rs}（read-only VaultReadPort 三法 list_name_meta/get_secret/get_value + PgVaultAdapter）；golish/src/lib.rs:37 `mod ports;`",
+        "s1_2a_consumers": "vault_ops.rs（VaultTool 持 Arc<dyn VaultReadPort>，list/get 走端口，store 保裸 INSERT）；auth_probe.rs（AuthProbeTool 持端口，resolve_token 走端口）；pentest_bridge/mod.rs:39-47 构造共享 PgVaultAdapter 注入两工具",
+        "s1_2a_guard": "scripts/check_repo_ownership.py：DOMAIN_RULES 加 (ports/platform→platform)；删 2 条 vault ALLOWLIST（auth_probe.rs/vault_ops.rs）；RAW_SQL_ALLOWLIST 保留 vault_ops.rs（store 裸 SQL，read-only 偏差）",
+        "s1_2a_verification": "cargo check -p golish → Finished 1.53s exit 0；rg golish_db::repo::vault 于 pentest_bridge → 空；python3 scripts/check_repo_ownership.py → [repo-ownership] OK clean exit 0；just arch → check_dag ✓45 crates + repo-ownership OK exit 0；cargo nextest -p golish ports::platform::vault → 1 passed/373 skipped exit 0（4m53s 冷编译，contract test vault_read_port_is_object_safe PASS）；just precommit → ✓ All checks passed! exit 0（29.6 min · fmt + check-fe + test-fe + lint-rust + test-rust-all 全绿）",
+        "s1_2a_commits": "S1-2a 已按 plan 拆 6 commit 落 feat/recon-service（未 push）：6abaec8 feat(arch) 端口骨架(ports/+lib.rs,4f +118) / 1e162de refactor(arch) route VaultTool(vault_ops.rs,1f +14-15) / 1a7018b refactor(arch) route AuthProbeTool(auth_probe.rs,1f +9-9) / 1149ddb refactor(arch) inject PgVaultAdapter(pentest_bridge/mod.rs,1f +4-2) / 389d3fd chore(arch) pull ratchet(check_repo_ownership.py,1f +3-2) / 本 docs(arch) commit（design+plan+architecture.md+本 feature_list+progress，hash 见 git log）"
+      },
+      "notes": "2026-05-30 S1-2a（VaultReadPort 走路骨架）**已实现+全套验证+已 commit**：另一会话写 Tasks 1-4（端口/迁移/注入，cargo check exit 0），MCP-agent-4（数据工程）接手 Task 5 守卫拔 ratchet（just arch exit 0，ALLOWLIST 30→28）+ Task 6 文档/状态收尾，MCP-agent-3（后端工程）接手跑契约单测 + just precommit 全绿 + 按 plan 拆 6 commit 落 feat/recon-service（未 push，本地 ahead 10）。关键偏差（保零语义）：端口设计为 read-only（弃 store_entry），store 保留裸 ON CONFLICT INSERT，故 vault_ops.rs 留 RAW_SQL_ALLOWLIST，原计划 Task 5.3 不执行。父条目仍 in_progress（仅 a 片完成，b-g 待做；用户可决定把 a 单独标 passing 后开新条目 arch-s1-2b…，或父条目保持 in_progress 直到全部 a-g 完成）。S1-2 拆 7 片：a VaultReadPort(2,走路骨架·✓ 完成) / b ReconReadPort(22,最大,按消费方子切) / c VulnReadPort+wiki(2) / d PentestPlanReadPort(1) / e AgentLogReadPort(2) / f scan_queue 映射清理(1,非端口,需用户确认归属) / g asset_intel 模块 import 解耦(另一条轴,可并 S3)。关键洞察：agent 栈已有消费方端口 DbRepoProvider（golish-agent-kit），S1-2 加的是提供方服务端口，二者不同层。待用户拍板：切片顺序、端口错误类型(anyhow vs GolishError)、trait 是否先放 golish 内、scan_queue 归属、是否顶替 target-surface-workbench 成为 in_progress（见设计 §9）；是否 push feat/recon-service（ahead 10）。"
     }
   ]
 }

@@ -17,15 +17,87 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | **target-surface-workbench**（2026-05-28 新增 · 当前唯一 `in_progress`）。ZAP/SecurityView 删除后，正在把 Target Manager 改成 organization tree + selected target surface/evidence workbench。 |
+| **当前最高优先级** | **arch-s1-2-port-horizontal-coupling**（当前唯一 `in_progress`）。S1-2a `VaultReadPort` 走路骨架**已实现+全套验证+已拆 6 commit**（落 `feat/recon-service`，**未 push**，本地 ahead 10）；父条目仍 in_progress（b-g 未做）。`target-surface-workbench` 2026-05-30 暂泊 `blocked`（让出 §2.1 名额，前端实现未回退、可随时恢复）。 |
 | **当前 blocker** | `xiaomi-mimo-provider` 已从 `in_progress` 切 `blocked`，等待 tool-use compatibility layer 与真实 MiMo E2E 后再决定 passing。2026-05-27 复测发现 `ask_human` 被误包成普通 ToolApprovalRequest；已修为直接发 `AskHumanRequest`，但需重启 dev app 后真实复测。**2026-05-30 更新**：本机 `just check` **全绿**（fmt + check-fe + test-fe + lint-rust（clippy `-D warnings` 0 告警 + `cargo fmt --check`）+ test-rust-all（nextest **2592 passed / 7 skipped / 0 failed**）+ check-types（ts-rs 绑定无漂移）均 ✅）。此前记录的 clippy warnings 与 sandbox PermissionDenied baseline failures 在本机最新工作树**未复现**。 |
-| **未提交的半成品** | **2026-05-30：架构优化批已拆 9 commit 落 `feat/recon-service`（`98beea9`→`6aaa0fb`，HEAD `d060ce4`）。** 其上叠了 **P0-3b 残余作用域 SQL 下沉**（T1-T6 全部完成，**未 commit**）：26 个 tracked 文件改动 + 6 个新 repo 模块（untracked：`repo/{scan_queue,sensitive_scan,conversation_store,directory_entries,sitemap_store,custom_rules}.rs`）。验证：rg 命令层裸作用域 SQL 清零、`golish-db` nextest 46/46、`golish --lib` nextest 318/318、`clippy golish-db+golish` 全绿，并跑通**全栈 `just precommit` → `✓ All checks passed!`（exit 0）**（含用户授权后修的 1 个 pre-existing `integrations/commands.rs:179` baseline）。**已按拆分提交 4 个 commit**（`65e0292`/`06af27a`/`d023386`/`c2f5ad2`，落 `feat/recon-service`，未 push）。**2026-05-30 续（MCP-2）：P2 拆分①完成——`golish-pentest-domain/src/models.rs`(1310) 模块化为 module-root + `models/{tool_config,asset_intel,runtime,tests}.rs`（全 < 500 行），全验证通过（crate check/nextest 17✓/clippy `-D warnings`/`cargo check --workspace` 全绿），**未 commit**（`M models.rs` + `?? models/`）。P2 拆分②完成——`golish/src/tools/pentest_bridge/js_collect.rs`(1357) 模块化为 module-root + `js_collect/{extract,judge,quality,sitemap,tool_impl,tests}.rs`（全 < 500 行，max 470），全验证通过（`cargo check -p golish`/`nextest js_collect` 26✓/`clippy -p golish --all-targets -D warnings` 全绿），**未 commit**（`M js_collect.rs` + `?? js_collect/`）。P2 拆分③完成——`golish/src/tools/integrations/capture/engine.rs`(1483) 模块化为 module-root + `engine/{extract,helpers,tests}.rs`（全 < 500 行，engine.rs 496）；生命周期/webview 方法留 root 避免 super:: 改写，全验证通过（`cargo check -p golish`/`nextest capture::engine` 23✓/`clippy -p golish --all-targets -D warnings` 全绿），**未 commit**（`M engine.rs` + `?? engine/`）。P2 拆分④（进行中）——`frontend/mocks.ts`(4135→2353) 抽出事件系统/AI 模拟/showcase 三层到 `mocks/{event-bus,events,simulations,showcase}.ts`（公共面零变更；`showcase.ts` 1146 仍 >500 待再分），`check-fe`+`test-fe` 全绿；剩余 demos/有状态 ipc 待续。**✅ 已按块 commit**：经 `just precommit` 全绿（`✓ All checks passed!`，~21.7min）后落 5 个 commit 到 `feat/recon-service`（`a71319b` pentest-domain models / `03871db` js_collect / `63c196e` capture engine / `83a105c` frontend mocks / `dd3c367` docs progress，**未 push**）。**2026-05-30 收尾（MCP-agent-2）：本会话架构体检全批（拆/合并/优化/dedup）已 `cargo fmt --all` 后按主题拆 20 个 commit（`a85f7d4`(scripts)→…→ docs(progress)，**未 push**）；提交后工作树 clean。完整 `just precommit` 本轮未重跑（树稍早已全绿，fmt 仅排版）。** **2026-05-30 续（MCP-5 · 接 MCP-3 转交）：S1-1 repo 数据所有权守卫 + check_dag 修复**——已修既有 `golish-graphiti(L1)→golish-db(L2)` DAG 违规（graphiti 归 L2，非删依赖）；`just arch` → **exit 0**（双守卫全绿）。已落 4 commit 到 `feat/recon-service`（`b0811ea`/`dc9ad0f`/`821c101` + 1 docs commit，**未 push**），提交后工作树 clean。feature_list `arch-s1-1-repo-ownership-guard` → **passing**；`just precommit` 未重跑（改动集零 Rust/TS/Cargo diff）。 |
+| **未提交的半成品** | **2026-05-30：架构优化批已拆 9 commit 落 `feat/recon-service`（`98beea9`→`6aaa0fb`，HEAD `d060ce4`）。** 其上叠了 **P0-3b 残余作用域 SQL 下沉**（T1-T6 全部完成，**未 commit**）：26 个 tracked 文件改动 + 6 个新 repo 模块（untracked：`repo/{scan_queue,sensitive_scan,conversation_store,directory_entries,sitemap_store,custom_rules}.rs`）。验证：rg 命令层裸作用域 SQL 清零、`golish-db` nextest 46/46、`golish --lib` nextest 318/318、`clippy golish-db+golish` 全绿，并跑通**全栈 `just precommit` → `✓ All checks passed!`（exit 0）**（含用户授权后修的 1 个 pre-existing `integrations/commands.rs:179` baseline）。**已按拆分提交 4 个 commit**（`65e0292`/`06af27a`/`d023386`/`c2f5ad2`，落 `feat/recon-service`，未 push）。**2026-05-30 续（MCP-2）：P2 拆分①完成——`golish-pentest-domain/src/models.rs`(1310) 模块化为 module-root + `models/{tool_config,asset_intel,runtime,tests}.rs`（全 < 500 行），全验证通过（crate check/nextest 17✓/clippy `-D warnings`/`cargo check --workspace` 全绿），**未 commit**（`M models.rs` + `?? models/`）。P2 拆分②完成——`golish/src/tools/pentest_bridge/js_collect.rs`(1357) 模块化为 module-root + `js_collect/{extract,judge,quality,sitemap,tool_impl,tests}.rs`（全 < 500 行，max 470），全验证通过（`cargo check -p golish`/`nextest js_collect` 26✓/`clippy -p golish --all-targets -D warnings` 全绿），**未 commit**（`M js_collect.rs` + `?? js_collect/`）。P2 拆分③完成——`golish/src/tools/integrations/capture/engine.rs`(1483) 模块化为 module-root + `engine/{extract,helpers,tests}.rs`（全 < 500 行，engine.rs 496）；生命周期/webview 方法留 root 避免 super:: 改写，全验证通过（`cargo check -p golish`/`nextest capture::engine` 23✓/`clippy -p golish --all-targets -D warnings` 全绿），**未 commit**（`M engine.rs` + `?? engine/`）。P2 拆分④（进行中）——`frontend/mocks.ts`(4135→2353) 抽出事件系统/AI 模拟/showcase 三层到 `mocks/{event-bus,events,simulations,showcase}.ts`（公共面零变更；`showcase.ts` 1146 仍 >500 待再分），`check-fe`+`test-fe` 全绿；剩余 demos/有状态 ipc 待续。**✅ 已按块 commit**：经 `just precommit` 全绿（`✓ All checks passed!`，~21.7min）后落 5 个 commit 到 `feat/recon-service`（`a71319b` pentest-domain models / `03871db` js_collect / `63c196e` capture engine / `83a105c` frontend mocks / `dd3c367` docs progress，**未 push**）。**2026-05-30 收尾（MCP-agent-2）：本会话架构体检全批（拆/合并/优化/dedup）已 `cargo fmt --all` 后按主题拆 20 个 commit（`a85f7d4`(scripts)→…→ docs(progress)，**未 push**）；提交后工作树 clean。完整 `just precommit` 本轮未重跑（树稍早已全绿，fmt 仅排版）。** **2026-05-30 续（MCP-5 · 接 MCP-3 转交）：S1-1 repo 数据所有权守卫 + check_dag 修复**——已修既有 `golish-graphiti(L1)→golish-db(L2)` DAG 违规（graphiti 归 L2，非删依赖）；`just arch` → **exit 0**（双守卫全绿）。已落 4 commit 到 `feat/recon-service`（`b0811ea`/`dc9ad0f`/`821c101` + 1 docs commit，**未 push**），提交后工作树 clean。feature_list `arch-s1-1-repo-ownership-guard` → **passing**；`just precommit` 未重跑（改动集零 Rust/TS/Cargo diff）。 **2026-05-30 续（MCP-agent-4 数据工程）：S1-2a `VaultReadPort` 走路骨架** —— 另一会话写 Tasks 1-4（端口/迁移/注入），本会话接手 Task 5（守卫拔 ratchet）+ Task 6（文档/feature_list/progress）。改动：`?? golish/src/ports/`(3 文件)、`M golish/src/lib.rs`、`M tools/pentest_bridge/{vault_ops,auth_probe,mod}.rs`、`M scripts/check_repo_ownership.py`、`M docs/architecture.md`、`M feature_list.json`、`M agent-progress.md`、`?? docs/{design,plans}/2026-05-30-s1-2-*`。验证：`cargo check -p golish` exit 0、`just arch` exit 0（ALLOWLIST **30→28**）、guard OK clean、`rg golish_db::repo::vault` 于 pentest_bridge 空。**2026-05-30 续（MCP-agent-3 后端工程，用户授权 C: A+B 一气呵成）**：跑 `cargo nextest -p golish ports::platform::vault` → **1 passed/373 skipped exit 0**（4m53s 冷编译）+ `just precommit` → **✓ All checks passed! exit 0**（29.6 min · fmt+check-fe+test-fe+lint-rust+test-rust-all 全绿）；按 plan 拆 **6 commit 落 feat/recon-service**：`6abaec8`(feat 端口骨架,4f+118)/`1e162de`(refactor VaultTool,1f)/`1a7018b`(refactor AuthProbeTool,1f)/`1149ddb`(refactor 构造点注入,1f)/`389d3fd`(chore 拔 ratchet,1f) + 本 docs commit（design+plan+architecture+feature_list+progress,5f）；**未 push**，本地 ahead 10。 |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-30 · S1-2a VaultReadPort 走路骨架 commit + precommit 收尾（MCP-agent-3 后端工程 · 接 MCP-agent-4 上下文 · DISPATCH off · 用户授权 C: A+B 一气呵成 · §5.9 单会话直接执行）
+
+- **上下文来源**：用户在另一会话（MCP-agent-4 数据工程）把"未 commit、未跑 just precommit"的 S1-2a 工作树（端口+迁移+守卫+文档全做完）粘到本会话，问"搞到哪里了 就是我之前说要拆分成模块以后方便搞那个"。本会话先核验进度（实读 `ports/vault.rs` / `vault_ops.rs` / `auth_probe.rs` / `pentest_bridge/mod.rs` / `check_repo_ownership.py` / `feature_list.json` / `agent-progress.md` / `docs/superpowers/plans/...s1-2-portification.md` / `docs/design/...s1-2-port-horizontal-coupling.md`），给出 5 选项；用户选 **C: A+B 一气呵成**——跑契约单测 + `just precommit` 全套，全绿后按 plan 拆 6 commit。
+- **A 阶段（验证）**：
+  - `cd backend && cargo nextest run -p golish 'ports::platform::vault'` → **1 passed / 373 skipped / exit 0**，4m 53s 冷编译；contract test `golish ports::platform::vault::tests::vault_read_port_is_object_safe` PASS 0.016s。
+  - `just precommit` → **✓ All checks passed! exit 0**，约 29.6 min（1776657 ms）；含 fmt + check-fe + test-fe + lint-rust（clippy `-D warnings` 全绿）+ test-rust-all（nextest 全绿）。
+- **B 阶段（按 plan 拆 6 commit · 落 `feat/recon-service`，未 push）**：
+  - `6abaec8` feat(arch): add VaultReadPort + PgVaultAdapter (S1-2a ports skeleton) · 4 files / +118（`ports/{mod,platform/mod,platform/vault}.rs` + `lib.rs`）
+  - `1e162de` refactor(arch): route VaultTool through VaultReadPort (S1-2a) · 1 file / +14-15（`vault_ops.rs`，list/get 走端口，store 保裸 SQL）
+  - `1a7018b` refactor(arch): route AuthProbeTool through VaultReadPort (S1-2a) · 1 file / +9-9（`auth_probe.rs::resolve_token` 走端口）
+  - `1149ddb` refactor(arch): inject PgVaultAdapter into vault/auth tools (S1-2a) · 1 file / +4-2（`pentest_bridge/mod.rs:39-47` 注入共享适配器，闭合 RED 状态）
+  - `389d3fd` chore(arch): pull ratchet — vault coupling now via VaultReadPort (S1-2a) · 1 file / +3-2（`check_repo_ownership.py`：DOMAIN_RULES 加 `("ports/platform","platform")` + 删 2 条 vault ALLOWLIST；30→28；RAW_SQL 保留 vault_ops.rs 因 store 仍裸 SQL）
+  - 本 docs(arch) commit · 5 files：`docs/design/2026-05-30-s1-2-port-horizontal-coupling.md` + `docs/superpowers/plans/2026-05-30-s1-2-portification.md` + `docs/architecture.md` + `feature_list.json`（回填 evidence + commit hash）+ `agent-progress.md`（本记录 + 顶部状态更新）
+- **运行过的验证（已记录证据 · evidence）**：
+  - `cargo nextest -p golish ports::platform::vault` → 1 passed / 373 skipped / exit 0（4m53s 冷编译）
+  - `just precommit` → ✓ All checks passed! exit 0（29.6 min）
+  - 前序（上一轮）：`cargo check -p golish` Finished 1.53s exit 0、`just arch` exit 0（check_dag ✓45 crates + repo-ownership OK）、`rg golish_db::repo::vault` 于 pentest_bridge 空、`python3 scripts/check_repo_ownership.py` [repo-ownership] OK clean exit 0、`feature_list.json` JSON valid
+  - 后续：`python3 -c "import json; json.load(open('feature_list.json'))"` → exit 0 `feature_list.json valid`（本轮更新后再校验）
+- **完成定义（AGENTS.md §3 五条逐条核对）**：
+  - ① 验证命令实际跑过且证据已记录 ✓（命令 + 退出码 + 输出片段 + 时长全在本记录与 `feature_list.evidence.s1_2a_verification`）
+  - ② `feature_list.verification` 4 条逐条核对 ✓（ALLOWLIST 30→28 ✓ / nextest 通过 ✓ / grep vault 空 ✓ / precommit exit 0 ✓）
+  - ③ `just precommit` 全绿 ✓（exit 0, 29.6 min, fmt+check-fe+test-fe+lint-rust+test-rust-all 全套）
+  - ④ 没有引入未在 scope 内的代码改动 ✓（git diff 集合严格 = plan 列出的文件，无外溢）
+  - ⑤ 下一轮会话不需要人工补救就能继续 ✓（feature_list + progress + 6 commit 全落 + design/plan 同步）
+- **完成定义结论**：S1-2a 切片**完整收尾**（实现+验证+commit+文档同步全部 done）。父条目 `arch-s1-2-port-horizontal-coupling` 仍 **in_progress**（b-g 未做）；按 AGENTS.md §3 严格表述：a 片满足 passing 五条，但父条目代表整个 S1-2，建议用户在 ① 父条目继续 in_progress 直到 a-g 全完 / ② 把父条目转 passing 并新开 `arch-s1-2b-recon-read-port` 等子条目跟踪 b-g 两种登记法中二选一。
+- **未做（按 Cursor 规则需用户授权）**：
+  - `git push origin feat/recon-service`（本地 ahead 10 = S1-1 收尾 4 commit + 本批 S1-2a 6 commit）
+  - 推进 S1-2b `ReconReadPort`（22 条最大切片，按消费方子切；需先写设计/计划）
+  - 决定父条目 passing/in_progress 登记法（见上）
+- **下一步建议**：① 用户决定 push（建议 push，10 commit 不算多且彼此独立）；② 父条目登记法二选一；③ 若选①父条目保持 in_progress → 直接进 S1-2b 设计/计划；若选②父条目转 passing → 新条目 + 让 `target-surface-workbench` 回 in_progress 或继续顶 S1-2b。
+
+---
+
+### 2026-05-30 · S1-2a VaultReadPort 走路骨架 实现 Task 5-6（MCP-agent-4 数据工程 · 接另一会话 Tasks 1-4 上下文 · DISPATCH on · 用户转交记忆，§5 执行者本会话直接执行）
+
+- **上下文来源**：用户把另一会话的「记忆」转交本会话——该会话已完成 S1-2a 的 Tasks 1-4（按 `docs/superpowers/plans/2026-05-30-s1-2-portification.md`），停在「即将 cargo check 验证」。本会话（数据工程）接手：先核验 Tasks 1-4，再做 Task 5（数据所有权守卫拔 ratchet，本职）+ Task 6（收尾）。
+- **核验 Tasks 1-4（已在工作树，evidence）**：
+  - 端口层 `golish/src/ports/{mod.rs,platform/mod.rs,platform/vault.rs}` 已建；`lib.rs:37 mod ports;`。
+  - **关键偏差（智能纠错）**：端口为 **read-only**（3 法，弃 `store_entry`）——`store` 动作用 `ON CONFLICT DO NOTHING`，并入 `insert_full` 会变语义，故保留裸 INSERT。→ `vault_ops.rs` 留 `RAW_SQL_ALLOWLIST`，原计划 Task 5.3 **不执行**。
+  - 消费方：`vault_ops.rs`（VaultTool list/get 走端口、store 保裸 SQL）、`auth_probe.rs`（resolve_token 走端口）；构造点 `pentest_bridge/mod.rs:39-47` 注入共享 `PgVaultAdapter`。
+  - `cargo check -p golish` → **Finished 1.53s, exit 0**；`rg golish_db::repo::vault` 于 pentest_bridge → **空**。
+- **本会话完成 Task 5（守卫，数据所有权 ratchet · 本职）**：`scripts/check_repo_ownership.py`：`DOMAIN_RULES` 顶部加 `("ports/platform","platform")`；删 2 条 vault `ALLOWLIST`（auth_probe.rs/vault_ops.rs）；**保留** `RAW_SQL_ALLOWLIST` 的 vault_ops.rs（偏差）。
+  - 验证：`python3 scripts/check_repo_ownership.py` → **[repo-ownership] OK clean, exit 0**；`just arch` → **check_dag ✓45 crates + repo-ownership OK, exit 0**。ALLOWLIST **30→28**。
+- **本会话完成 Task 6（部分）**：`docs/architecture.md` data-ownership 节补 S1-2 进度段；`feature_list.json`：`arch-s1-2` → **in_progress**（非 passing，仅 a 片完成）+ 回填 evidence + 修正 verification（RAW_SQL 不减）；`target-surface-workbench` → **blocked**（让 §2.1 名额，可恢复）；JSON 校验 exit 0。本记录。
+- **运行过的验证（已记录证据）**：`cargo check -p golish` exit 0；`just arch` exit 0；guard OK clean；feature_list JSON valid exit 0；`cargo nextest -p golish ports::platform::vault`（运行中，结果待回填）。
+- **完成定义（未达 passing）**：父条目 in_progress；**未 commit**、**未跑 just precommit**——按 Cursor 提交规则，实现+验证后由用户授权再提交（commit 前跑全套 precommit）。
+- **下一步建议**：① 用户确认 `target-surface-workbench` 暂泊 + S1-2 父条目 in_progress（非 passing）；② 授权后跑 `just precommit` 全绿 → 按计划 Task 1-6 拆 commit（端口/迁移/注入/守卫/文档）；③ 续 S1-2b `ReconReadPort`（22 条，最大，按消费方子切）。
+
+---
+
+### 2026-05-30 · S1-2 端口化横向耦合 设计 + 实现计划（MCP-agent-1 主控中心 · 接 MCP-5 上下文转交 · DISPATCH on · 窗口内仅本会话在线 → §5.9 单会话直接执行 · 仅文档/计划，零代码改动）
+
+- **上下文来源**：MCP-5（UI 设计实现）2026-05-30 把 S1-1 收尾上下文转交本会话（主控 MCP-1）；用户指令「**开始写 S1-2 计划**」。`list_sessions` 显示 MCP-2/3/4/5 全部 `online:false`，唯一在线工作会话是 MCP-1（`bajie-mcp-default` 为无角色占位），按 §5.9「分发开关开启 + 仅 1 会话在线 → 直接执行」，主控本会话亲自起草，不派发。
+- **本轮目标**：为 servitization 阶段 1 第二项 S1-2（端口化横向耦合）出**设计文档 + 实现计划 + feature_list 登记**（AGENTS.md §1.3：跨 crate Rust 改动须先设计/计划，审过再动代码）。
+- **关键洞察（实读代码得出，非转述）**：
+  - agent 栈**已有消费方端口** `DbRepoProvider`（`golish_agent_kit::db_traits`，由 `golish/src/ai/db_bridge/mod.rs:16,24-35` 的 `GolishDbRepoProvider` 实现）——**S1-2 不动它**。
+  - S1-2 要加的是**提供方服务端口**：按「被读的是哪个服务的表」定义 `*Port`，让跨服务直查 `golish_db::repo::<x>` 改走端口（in-proc 适配器 → 阶段4 网络适配器）。
+  - S1-1 守卫 `ALLOWLIST` 当前 **30 条 = 29 真跨服务读 + 1 条 `tools/scan_queue.rs→scan_queue` 领域映射伪阳性**（recon 域文件读 vuln 域 repo，同一概念被一分为二，应改归属而非建端口）。
+  - 按提供方归类出 **5 个端口**：`ReconReadPort`(22,最大) / `VaultReadPort`(2) / `VulnReadPort`+wiki(2) / `AgentLogReadPort`(2) / `PentestPlanReadPort`(1)。recon 被依赖最多（22/29），与 §5「最先抽 vuln、最后抽 recon」一致。
+- **本轮完成（产出文件，均未 commit）**：
+  - 新建 `docs/design/2026-05-30-s1-2-port-horizontal-coupling.md`（设计：两层端口洞察、30 条 allowlist 按提供方归类、端口三件套模式、守卫 DOMAIN_RULES `ports/<service>` 配合机制、`VaultReadPort` 走路骨架、7 切片路线、remote-ready 约束、§9 待用户拍板 5 决策）。
+  - 新建 `docs/superpowers/plans/2026-05-30-s1-2-portification.md`（实现计划：S1-2a `VaultReadPort` 走路骨架 6 个 Task 全 code-complete——端口 trait+`PgVaultAdapter`、迁移 `vault_ops.rs`/`auth_probe.rs`、构造点 `pentest_bridge/mod.rs:34-53` 注入、守卫拔 ratchet、验证收尾；附 S1-2b–g 路线图 + writing-plans 自检）。
+  - `feature_list.json` 新增 `arch-s1-2-port-horizontal-coupling`，`status: not_started`（**未** in_progress：§2.1 唯一 in_progress 仍为 `target-surface-workbench`，是否顶替待用户定，见设计 §9 决策5）。
+- **运行过的验证（已记录证据）**：
+  - `python3 -c "import json; json.load(open('feature_list.json'))"` → **exit 0 `feature_list.json valid`**。
+  - 代码事实核验（grep/read 实证）：`VaultTool` 构造点 `tools/pentest_bridge/mod.rs:42`、`AuthProbeTool` `:45`；vault repo 签名 `golish-db/src/repo/vault.rs:120/314/330/347`；消费方直查点 `vault_ops.rs:167/201/122`、`auth_probe.rs:253`；crate 根 `golish/src/lib.rs:43 pub mod tools;`。
+  - **未跑** `just precommit` / `cargo` / `just arch`：本轮**零代码改动**（仅新增 2 个 md + 改 feature_list.json + 本记录），不影响编译/守卫；S1-2a 真正实现时再按计划 Task 6 跑全套。
+- **完成定义**：本轮是**规划交付**，非功能实现 → S1-2 保持 `not_started`，不宣称 passing。设计含**待用户审查关卡**（brainstorming 规范）。
+- **下一步建议**：① 用户审设计 §9 五个决策（切片顺序 / 端口错误类型 anyhow vs GolishError / trait 位置 / scan_queue 归属 / 是否顶替 workbench 焦点）；② 决策后执行 S1-2a 走路骨架（`.cursor/skills/executing-plans/`）；③ 4 个 S1-1 commit 仍在 `feat/recon-service` 本地未 push。
 
 ---
 

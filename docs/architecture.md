@@ -299,6 +299,16 @@ candidate (S1-2).
 | platform | vault, notes, terminal_logs |
 | shared | audit, scoped |
 
+> **S1-2 (in progress)**: cross-service reads migrate to provider-side service
+> ports under `golish/src/ports/<service>/` (a `*Port` trait + an in-proc
+> `Pg*Adapter` that is the only place allowed to reach the exposed service's
+> repos). Each migrated call-site drops an allow-list entry; the guard maps
+> `ports/<service>` to that service's domain so the adapter is legal. First port
+> shipped: read-only `VaultReadPort` (platform) — `auth_probe.rs` and
+> `vault_ops.rs` reads now route through it (allow-list 30 → 28). The vault
+> `store` path keeps its raw `ON CONFLICT` INSERT for now (P0-3 scoped-SQL, not
+> S1-2). See `docs/design/2026-05-30-s1-2-port-horizontal-coupling.md`.
+
 ## Related docs
 
 - [Planning system](planning-system.md)
