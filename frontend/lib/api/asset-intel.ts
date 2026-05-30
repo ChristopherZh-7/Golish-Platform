@@ -6,7 +6,7 @@ import type { OrganizationCandidates } from "./organizations";
  * Tauri event channel used for all Asset Intel streaming events.
  *
  * Must stay in sync with the backend constant `ASSET_INTEL_EVENT`
- * in `backend/crates/golish/src/tools/asset_intel.rs`.
+ * in `backend/crates/golish/src/tools/asset_intel/mod.rs`.
  */
 export const ASSET_INTEL_EVENT = "asset-intel:event";
 
