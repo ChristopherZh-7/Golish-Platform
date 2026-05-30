@@ -1,0 +1,395 @@
+/**
+ * `OrgTreeSidebar` — the left-hand org/target tree.
+ *
+ * Extracted from `TargetGroupedView.tsx`'s `renderNode` (+ `renderOrgActionButton`).
+ * The node row is recursive (`OrgTreeNodeRow` renders its own children) and
+ * delegates leaves to `TargetTreeRow` and the inline create/edit forms. All
+ * tree + form state stays owned by `TargetGroupedView`; this is a controlled
+ * view, so the full handler/state surface is threaded through `OrgTreeProps`.
+ */
+
+import {
+  Building2,
+  ChevronDown,
+  Crosshair,
+  FolderOpen,
+  Info,
+  Loader2,
+  Network,
+  Pencil,
+  Shield,
+  Trash2,
+  Wifi,
+} from "lucide-react";
+import type { Dispatch, SetStateAction } from "react";
+import type { Organization } from "@/lib/api/organizations";
+import type { Target } from "@/lib/pentest/types";
+import {
+  ENGAGEMENT_BADGES,
+  getEffectiveEngagementMode,
+  getOrgActionModel,
+  isAssetIntelOrgAction,
+} from "@/lib/target-panel/engagement";
+import { countAllTargets, type OrgTreeNode, UNASSIGNED_KEY } from "@/lib/target-panel/org-tree";
+import type {
+  AssetIntelOrgActionKind,
+  OrgActionItem,
+  WorkspaceTab,
+} from "@/lib/target-panel/types";
+import { cn } from "@/lib/utils";
+import { InlineAddTargetForm, InlineCreateOrgForm, InlineOrgEditForm } from "./InlineOrgForms";
+import { TargetTreeRow } from "./TargetTreeRow";
+
+interface OrgTreeProps {
+  collapsed: Set<string>;
+  toggleCollapse: (id: string) => void;
+  editingOrgId: string | null;
+  orgs: Organization[];
+  selectedOrgId: string | null;
+  setSelectedOrgId: Dispatch<SetStateAction<string | null>>;
+  setSelectedTargetId: Dispatch<SetStateAction<string | null>>;
+  setWorkspaceTab: Dispatch<SetStateAction<WorkspaceTab>>;
+  addingTargetTo: string | null;
+  addingChildTo: string | null;
+  hydratingOrgId: string | null;
+  hydratingAction: AssetIntelOrgActionKind | null;
+  handleStartAddTarget: (orgId: string) => void;
+  handleStartAddChild: (parentId: string | null) => void;
+  handleStartEditOrg: (node: OrgTreeNode) => void;
+  handleDeleteOrg: (id: string, name: string) => void;
+  handleRunAssetIntel: (org: Organization, action: AssetIntelOrgActionKind) => void;
+  editingTargetId: string | null;
+  setEditingTargetId: Dispatch<SetStateAction<string | null>>;
+  selectedTargetId: string | null;
+  onToggleScope: (target: Target) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+  onUpdateNotes: (id: string, notes: string) => void;
+  orgFormName: string;
+  setOrgFormName: Dispatch<SetStateAction<string>>;
+  orgFormOwner: string;
+  setOrgFormOwner: Dispatch<SetStateAction<string>>;
+  targetFormValue: string;
+  setTargetFormValue: Dispatch<SetStateAction<string>>;
+  targetFormName: string;
+  setTargetFormName: Dispatch<SetStateAction<string>>;
+  submitting: boolean;
+  inlineError: string | null;
+  handleCreateOrg: (parentId: string | null) => void;
+  handleAddTargetSubmit: (orgId: string) => void;
+  handleSaveEditOrg: () => void;
+  closeAllEditors: () => void;
+  t: (key: string) => string;
+}
+
+function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreeProps) {
+  const {
+    node,
+    depth,
+    collapsed,
+    toggleCollapse,
+    editingOrgId,
+    orgs,
+    selectedOrgId,
+    setSelectedOrgId,
+    setSelectedTargetId,
+    setWorkspaceTab,
+    addingTargetTo,
+    addingChildTo,
+    hydratingOrgId,
+    hydratingAction,
+    handleStartAddTarget,
+    handleStartAddChild,
+    handleStartEditOrg,
+    handleDeleteOrg,
+    handleRunAssetIntel,
+    editingTargetId,
+    setEditingTargetId,
+    selectedTargetId,
+    onToggleScope,
+    onDelete,
+    onUpdateNotes,
+    orgFormName,
+    setOrgFormName,
+    orgFormOwner,
+    setOrgFormOwner,
+    targetFormValue,
+    setTargetFormValue,
+    targetFormName,
+    setTargetFormName,
+    submitting,
+    inlineError,
+    handleCreateOrg,
+    handleAddTargetSubmit,
+    handleSaveEditOrg,
+    closeAllEditors,
+    t,
+  } = props;
+
+  const renderOrgActionButton = (action: OrgActionItem, node: OrgTreeNode) => {
+    const runAction = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      switch (action.kind) {
+        case "import_targets":
+          handleStartAddTarget(node.id);
+          break;
+        case "hydrate_subsidiaries":
+        case "enrich_organization":
+          {
+            const org = orgs.find((item) => item.id === node.id);
+            if (org && hydratingOrgId !== node.id) void handleRunAssetIntel(org, action.kind);
+          }
+          break;
+        case "choose_next_step":
+          setSelectedOrgId(node.id);
+          setWorkspaceTab("overview");
+          break;
+        case "review_scope":
+          setSelectedOrgId(node.id);
+          setWorkspaceTab("candidates");
+          break;
+        case "add_child":
+          handleStartAddChild(node.id);
+          break;
+      }
+    };
+
+    const isAssetIntelAction = isAssetIntelOrgAction(action.kind);
+    const isAnyAssetIntelRunOnNode = isAssetIntelAction && hydratingOrgId === node.id;
+    const isHydrating = isAnyAssetIntelRunOnNode && hydratingAction === action.kind;
+    const icon = isHydrating ? (
+      <Loader2 className="w-3 h-3 animate-spin" />
+    ) : action.kind === "hydrate_subsidiaries" ? (
+      <Network className="w-3 h-3" />
+    ) : action.kind === "enrich_organization" ? (
+      <Wifi className="w-3 h-3" />
+    ) : action.kind === "add_child" ? (
+      <Building2 className="w-3 h-3" />
+    ) : action.kind === "review_scope" ? (
+      <Shield className="w-3 h-3" />
+    ) : action.kind === "choose_next_step" ? (
+      <Info className="w-3 h-3" />
+    ) : (
+      <Crosshair className="w-3 h-3" />
+    );
+
+    return (
+      <button
+        key={action.kind}
+        type="button"
+        className={cn(
+          "p-1 rounded hover:bg-muted/50 text-muted-foreground transition-colors",
+          action.kind === "hydrate_subsidiaries" && "hover:text-blue-400",
+          action.kind === "enrich_organization" && "hover:text-cyan-400",
+          action.kind === "import_targets" && "hover:text-green-400",
+          action.kind === "review_scope" && "hover:text-amber-400",
+          action.kind === "choose_next_step" && "hover:text-accent",
+          action.kind === "add_child" && "hover:text-accent"
+        )}
+        onClick={runAction}
+        disabled={isAnyAssetIntelRunOnNode}
+        title={action.label}
+      >
+        {icon}
+      </button>
+    );
+  };
+
+  const isCollapsed = collapsed.has(node.id);
+  const counts = countAllTargets(node);
+  const isUnassigned = node.id === UNASSIGNED_KEY;
+  const isEditingThis = editingOrgId === node.id;
+  const orgRow = orgs.find((o) => o.id === node.id);
+  const engagementMode = getEffectiveEngagementMode(orgRow, orgs);
+  const badge = engagementMode ? ENGAGEMENT_BADGES[engagementMode] : null;
+  const showModeBadge = badge && (depth === 0 || selectedOrgId === node.id);
+  const actionModel = getOrgActionModel(engagementMode, {
+    isChild: Boolean(orgRow?.parent_id),
+  });
+
+  return (
+    <div key={node.id}>
+      {isEditingThis ? (
+        <InlineOrgEditForm
+          depth={depth}
+          t={t}
+          orgFormName={orgFormName}
+          setOrgFormName={setOrgFormName}
+          orgFormOwner={orgFormOwner}
+          setOrgFormOwner={setOrgFormOwner}
+          submitting={submitting}
+          handleSaveEditOrg={handleSaveEditOrg}
+          closeAllEditors={closeAllEditors}
+        />
+      ) : (
+        <div
+          className={cn(
+            "flex items-center gap-1 px-2 py-1 hover:bg-muted/15 transition-colors group rounded",
+            selectedOrgId === node.id && !isUnassigned && "bg-muted/15"
+          )}
+          style={{ paddingLeft: `${8 + depth * 16}px` }}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              if (!isUnassigned) {
+                setSelectedOrgId(node.id);
+                setSelectedTargetId(null);
+              }
+              toggleCollapse(node.id);
+            }}
+            className="flex items-center gap-2 flex-1 text-left min-w-0"
+          >
+            <ChevronDown
+              className={cn(
+                "w-3 h-3 text-muted-foreground/60 transition-transform flex-shrink-0",
+                isCollapsed && "-rotate-90"
+              )}
+            />
+            {isUnassigned ? (
+              <FolderOpen className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" />
+            ) : (
+              <Building2 className="w-3 h-3 text-accent/70 flex-shrink-0" />
+            )}
+            <span className="text-[11px] font-medium text-foreground truncate">{node.name}</span>
+            <span className="text-[10px] text-muted-foreground/55 tabular-nums">
+              {counts.total}
+            </span>
+            {counts.inScope > 0 && (
+              <span className="rounded bg-green-500/10 px-1 py-0.5 text-[9px] text-green-400">
+                {counts.inScope} in
+              </span>
+            )}
+            {showModeBadge && (
+              <span className={cn("text-[9px] px-1 py-0.5 rounded", badge.className)}>
+                {badge.label}
+              </span>
+            )}
+            {!isUnassigned && node.children.length > 0 && (
+              <span className="inline-flex items-center whitespace-nowrap text-[9px] text-muted-foreground/50">
+                · {node.children.length} sub
+              </span>
+            )}
+          </button>
+
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+            {isUnassigned ? (
+              <button
+                type="button"
+                className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-accent"
+                onClick={() => handleStartAddTarget(node.id)}
+                title={t("targets.addTarget")}
+              >
+                <Crosshair className="w-3 h-3" />
+              </button>
+            ) : (
+              <>
+                {renderOrgActionButton(actionModel.primary, node)}
+                {actionModel.secondary && renderOrgActionButton(actionModel.secondary, node)}
+              </>
+            )}
+            {!isUnassigned && (
+              <>
+                <div className="w-px h-3 bg-border/40 mx-0.5" />
+                <button
+                  type="button"
+                  className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-blue-400"
+                  onClick={() => {
+                    setSelectedOrgId(node.id);
+                    setWorkspaceTab("fields");
+                  }}
+                  title={t("organizations.profile.openButton")}
+                >
+                  <Info className="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
+                  className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground"
+                  onClick={() => handleStartEditOrg(node)}
+                  title={t("organizations.edit")}
+                >
+                  <Pencil className="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
+                  className="p-1 rounded hover:bg-red-500/20 text-muted-foreground hover:text-red-400"
+                  onClick={() => handleDeleteOrg(node.id, node.name)}
+                  title={t("organizations.delete")}
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {addingTargetTo === node.id && (
+        <InlineAddTargetForm
+          orgId={node.id}
+          depth={depth + 1}
+          t={t}
+          targetFormValue={targetFormValue}
+          setTargetFormValue={setTargetFormValue}
+          targetFormName={targetFormName}
+          setTargetFormName={setTargetFormName}
+          submitting={submitting}
+          inlineError={inlineError}
+          handleAddTargetSubmit={handleAddTargetSubmit}
+          closeAllEditors={closeAllEditors}
+        />
+      )}
+      {addingChildTo === node.id && (
+        <InlineCreateOrgForm
+          parentId={node.id}
+          depth={depth + 1}
+          t={t}
+          orgFormName={orgFormName}
+          setOrgFormName={setOrgFormName}
+          orgFormOwner={orgFormOwner}
+          setOrgFormOwner={setOrgFormOwner}
+          submitting={submitting}
+          inlineError={inlineError}
+          handleCreateOrg={handleCreateOrg}
+          closeAllEditors={closeAllEditors}
+        />
+      )}
+
+      {!isCollapsed && (
+        <div className="space-y-px">
+          {node.targets.length > 0 && (
+            <div className="space-y-px py-0.5" style={{ paddingLeft: `${8 + (depth + 1) * 16}px` }}>
+              {node.targets.map((target) => (
+                <TargetTreeRow
+                  key={target.id}
+                  target={target}
+                  t={t}
+                  editingTargetId={editingTargetId}
+                  selectedTargetId={selectedTargetId}
+                  setSelectedTargetId={setSelectedTargetId}
+                  setSelectedOrgId={setSelectedOrgId}
+                  setEditingTargetId={setEditingTargetId}
+                  onToggleScope={onToggleScope}
+                  onDelete={onDelete}
+                  onUpdateNotes={onUpdateNotes}
+                />
+              ))}
+            </div>
+          )}
+          {node.children.map((child) => (
+            <OrgTreeNodeRow key={child.id} {...props} node={child} depth={depth + 1} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function OrgTreeSidebar({ roots, ...rest }: { roots: OrgTreeNode[] } & OrgTreeProps) {
+  return (
+    <div className="min-h-0 overflow-y-auto py-2 px-1 space-y-px border-r border-border/25">
+      {roots.map((node) => (
+        <OrgTreeNodeRow key={node.id} node={node} depth={0} {...rest} />
+      ))}
+    </div>
+  );
+}

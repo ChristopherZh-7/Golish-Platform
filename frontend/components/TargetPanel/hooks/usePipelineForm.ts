@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { pipeline, targets } from "@/lib/api";
+import { pipeline } from "@/lib/api";
 import { onEvent } from "@/lib/events";
 import type { PipelineSummary } from "@/lib/pentest/pipeline-types";
 import { getProjectPath } from "@/lib/projects";
@@ -148,7 +148,7 @@ export function usePipelineForm(targetValue: string) {
     setSummary(null);
     setRunning(true);
     try {
-      await targets.executePipeline({
+      await pipeline.executePipeline({
         pipeline: selected,
         target: targetValue,
         projectPath: getProjectPath(),
@@ -162,7 +162,7 @@ export function usePipelineForm(targetValue: string) {
 
   const cancelPipeline = useCallback(async () => {
     try {
-      await targets.cancelPipeline();
+      await pipeline.cancelPipeline();
     } catch {
       /* ignore */
     }
