@@ -90,6 +90,9 @@ SHARED_REPOS: frozenset[str] = frozenset({"audit", "scoped"})
 # Ordered (first-match-wins) caller-path-prefix -> service domain.
 # Paths are relative to backend/crates/golish/src/.
 DOMAIN_RULES: list[tuple[str, str]] = [
+    # Provider-side port adapters belong to the service they expose (S1-2):
+    # ports/platform/* legally reaches platform-owned repos (vault/notes/...).
+    ("ports/platform", "platform"),
     ("tools/asset_intel", "recon"),
     ("tools/organizations", "recon"),
     ("tools/targets", "recon"),
@@ -135,14 +138,12 @@ ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
         ("tools/audit.rs", "passive_scans"),
         ("tools/audit.rs", "search_logs"),
         ("tools/pentest_bridge/auth_probe.rs", "targets"),
-        ("tools/pentest_bridge/auth_probe.rs", "vault"),
         ("tools/pentest_bridge/js_collect/sitemap.rs", "sitemap_store"),
         ("tools/pentest_bridge/js_collect/tool_impl.rs", "js_analysis"),
         ("tools/pentest_bridge/js_collect/tool_impl.rs", "targets"),
         ("tools/pentest_bridge/js_extract_apis.rs", "js_analysis"),
         ("tools/pentest_bridge/js_extract_apis.rs", "targets"),
         ("tools/pentest_bridge/record_finding.rs", "targets"),
-        ("tools/pentest_bridge/vault_ops.rs", "vault"),
         ("tools/pipeline/storage.rs", "directory_entries"),
         ("tools/pipeline/storage.rs", "sitemap_store"),
         ("tools/pipeline/storage.rs", "targets"),
