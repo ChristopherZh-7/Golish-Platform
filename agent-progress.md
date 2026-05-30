@@ -19,13 +19,44 @@
 | **标准验证** | `just precommit` = `just check && just test` |
 | **当前最高优先级** | **target-surface-workbench**（2026-05-28 新增 · 当前唯一 `in_progress`）。ZAP/SecurityView 删除后，正在把 Target Manager 改成 organization tree + selected target surface/evidence workbench。 |
 | **当前 blocker** | `xiaomi-mimo-provider` 已从 `in_progress` 切 `blocked`，等待 tool-use compatibility layer 与真实 MiMo E2E 后再决定 passing。2026-05-27 复测发现 `ask_human` 被误包成普通 ToolApprovalRequest；已修为直接发 `AskHumanRequest`，但需重启 dev app 后真实复测。**2026-05-30 更新**：本机 `just check` **全绿**（fmt + check-fe + test-fe + lint-rust（clippy `-D warnings` 0 告警 + `cargo fmt --check`）+ test-rust-all（nextest **2592 passed / 7 skipped / 0 failed**）+ check-types（ts-rs 绑定无漂移）均 ✅）。此前记录的 clippy warnings 与 sandbox PermissionDenied baseline failures 在本机最新工作树**未复现**。 |
-| **未提交的半成品** | **2026-05-30：架构优化批（原 125-file 工作树）已按功能拆成 9 个 commit 落到 `feat/recon-service`（`98beea9`→`6aaa0fb`），`just check` 全绿。** 当前工作树仅剩本 `agent-progress.md` 一处文档更新。 |
+| **未提交的半成品** | **2026-05-30：架构优化批已拆 9 commit 落 `feat/recon-service`（`98beea9`→`6aaa0fb`，HEAD `d060ce4`）。** 其上叠了 **P0-3b 残余作用域 SQL 下沉**（T1-T6 全部完成，**未 commit**）：26 个 tracked 文件改动 + 6 个新 repo 模块（untracked：`repo/{scan_queue,sensitive_scan,conversation_store,directory_entries,sitemap_store,custom_rules}.rs`）。验证：rg 命令层裸作用域 SQL 清零、`golish-db` nextest 46/46、`golish --lib` nextest 318/318、`clippy golish-db+golish` 全绿，并跑通**全栈 `just precommit` → `✓ All checks passed!`（exit 0）**（含用户授权后修的 1 个 pre-existing `integrations/commands.rs:179` baseline）。仅差 commit（高风险待确认）。 |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-30 · P0-3b 残余作用域 SQL 全量下沉 golish-db repo（T4-T6 · MCP-1 接手 MCP-4/MCP-5 上下文执行）
+
+- **本轮目标**：接手 MCP-4 转移的上下文（源头 MCP-5 写完计划 `docs/superpowers/plans/2026-05-30-p0-3b-idor-residual-sink-full.md` 后断线，T1-T3 已在未提交工作树中完成），继续 T4-T6——把命令层残余的项目作用域裸 SQL 全部下沉到 `golish-db` repo 唯一边界（IDOR/I2 收口）。`[DISPATCH:off]` → 本会话直接执行。
+- **已完成**：
+  - **T4（repo 侧此前已建，本轮补命令层 + 1 个新 repo fn）**：
+    - `tools/audit.rs` 6 处裸 SQL 全部改调 repo：`audit_list`→`audit::list_by_project_exact::<AuditRow>`、`audit_clear`→`audit::clear_by_project_exact`、`passive_scans_global`→`passive_scans::list_global_by_project`、`agent_logs_list`/`terminal_logs_list`/`search_logs_list`→各自 `*::list_by_project`。
+    - `tools/pentest_bridge/auth_probe.rs` vault token 反查（L254）下沉：新增 `repo::vault::get_value_by_name_project`（`SELECT value FROM vault_entries WHERE name=$1 AND project_path=$2 LIMIT 1`，配 `build_*_sql` 零漂移单测）。
+  - **T5（新建 6 个 repo 模块 + 1 个 targets fn + 命令层改调 8 文件）**：
+    - 新建 `repo/{scan_queue,sensitive_scan,conversation_store,directory_entries,sitemap_store,custom_rules}.rs`，`repo/mod.rs` 注册 6 个 `pub mod`；每个自定义 SQL fn 均配 `build_*_sql` + `#[cfg(test)]` 零漂移断言。
+    - `repo/targets.rs` 加 `exists_by_value_exact`（pipeline dedup 探针）+ 零漂移单测。
+    - 命令层改调：`scan_queue.rs`(4)、`custom_rules.rs`(2)、`targets/directory.rs`(2 分支)、`sensitive_scan.rs`(sitemap 读 + results 列表 + clear×2 + verdicts 列表)、`conversation_store/mod.rs`(conv_list + load_preferences)、`conversation_store/batch.rs`(事务内 stale 删除，含动态 `NOT IN` 占位符；保持原子性)、`pipeline/storage.rs`(targets/dir EXISTS + sitemap 读/删)、`pentest_bridge/js_collect.rs`(sitemap 读/删)。
+    - `conversation_store/mod.rs` 为消解 clippy `type_complexity` 抽了 `ConvListRow` / `WorkspacePrefsRow` 两个 `type` 别名。
+  - **零漂移范式**：所有自定义 SQL 走 `build_*_sql()` 纯函数 + 单测断言字符串 == 迁移前原文（含 sitemap `name='zap-sitemap'` 字面、targets legacy 谓词、conversations `($1::text IS NULL OR ...)` 谓词、动态 `NOT IN` 0/1/3 形状）。
+- **运行过的验证**（本机最新工作树实跑）：
+  - `rg -n "project_path (IS NOT DISTINCT FROM|= \$|IS NULL OR project_path)" backend/crates/golish/src/tools` → **CLEAN（命令层裸作用域 SQL 清零）**
+  - `cargo check -p golish-db --tests` → exit 0（24.4s）
+  - `cargo check -p golish-db -p golish` → exit 0（43.1s）
+  - `cargo nextest run -p golish-db` → **46 passed / 0 failed**（含 7 个本轮新增零漂移测试：scan_queue / sensitive_scan / sitemap_store / directory_entries / custom_rules / conversation_store ×2 + targets exists + vault get_value）
+  - `cargo nextest run -p golish --lib` → **318 passed / 0 failed**（无回归）
+  - `cargo clippy -p golish-db -p golish --all-targets -- -D warnings` → **exit 0 全绿**。本轮先修我引入的 type_complexity×2（抽 `ConvListRow`/`WorkspacePrefsRow` 别名）+ explicit_auto_deref×1（`&mut tx`）；随后**经用户明确授权**（「修掉 integrations clippy」）顺手清掉 1 个 pre-existing baseline `integrations/commands.rs:179 doc_lazy_continuation`（doc 注释里行首 `+ ` 被 markdown 误判为列表项 → 把 `+` 移到上一行行尾，非 SQL 逻辑改动）。
+  - **`just precommit`（用户授权后跑全栈门禁）→ exit 0 `✓ All checks passed!`**（~18.5min；= fmt + check-fe[biome+tsc] + test-fe[vitest] + lint-rust[clippy `--workspace` `-D warnings` + `cargo fmt --check`] + test-rust-all[nextest `--workspace`] + check-types[ts-rs gen + `git diff --exit-code` 无漂移] + test[再跑前后端]）。`fmt` 自动格式化后工作树仍仅本轮预期改动，无意外漂移。
+- **已记录证据**：见上「运行过的验证」；新文件 6 个 repo 模块为 untracked（`git diff --stat` 不显示，nextest 已编译并跑过其测试）。
+- **提交记录**：**未 commit**（commit 属高风险，需用户确认；且工作树含 P0-3b 全量改动 26 改 + 6 新，commit 前可按 T1-T6 / Tier 粒度拆分）。
+- **已知风险或未解决问题**：
+  - 全部为 `cargo`（无活 DB）层验证——零漂移单测保证 SQL 字符串与迁移前逐字一致，但 SQL 实际行为未跑 pg-embed 集成测试（与既有 repo 测试范式一致）。
+  - `just precommit` 已跑且**全绿**（见上）；唯一未做的是 **commit 本身**（高风险，需用户确认）。
+  - 注：经用户授权额外修了 `integrations/commands.rs:179` 这条 pre-existing baseline clippy（doc 注释，非 P0-3b SQL scope，但已纳入本轮 diff）。
+- **下一步最佳动作**：① 用户授权后按 Tier/任务粒度拆 commit（建议：先 `golish-db` repo 增量[T1/T3/T4 repo + 6 新模块]，再命令层改调[T2/T4/T5]，integrations clippy 单列一个 `fix`）；② 决定是否 push `feat/recon-service` / 开 PR；③ 工作树仍含 MCP-5 留下的 untracked 计划文件 `docs/superpowers/plans/2026-05-30-p0-3b-idor-residual-sink-full.md`，commit 时一并纳入。
 
 ---
 
