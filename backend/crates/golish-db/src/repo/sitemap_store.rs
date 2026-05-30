@@ -5,7 +5,7 @@
 //! identical scoped SQL; this centralises that read/delete. The companion
 //! insert stays in the command layer (it is not a scope guard).
 
-use anyhow::Result;
+use crate::Result;
 use sqlx::PgPool;
 
 fn build_read_zap_sitemap_sql() -> String {

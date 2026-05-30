@@ -2754,6 +2754,7 @@ name = "golish-graphiti"
 version = "0.2.43"
 dependencies = [
  "chrono",
+ "golish-db",
  "serde",
  "serde_json",
  "sqlx",

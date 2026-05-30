@@ -1,6 +1,6 @@
 //! POC, reference, and changelog operations for the wiki knowledge base.
 
-use anyhow::Result;
+use crate::Result;
 use sqlx::PgPool;
 use uuid::Uuid;
 

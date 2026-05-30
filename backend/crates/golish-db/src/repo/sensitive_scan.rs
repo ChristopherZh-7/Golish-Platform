@@ -6,7 +6,7 @@
 //! command layer. The sitemap-directory read used by the scanner lives in
 //! `repo::sitemap_store`.
 
-use anyhow::Result;
+use crate::Result;
 use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;

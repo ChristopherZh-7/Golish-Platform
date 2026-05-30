@@ -5,7 +5,7 @@
 //! AI agent and the Endpoint Inspector UI to render a per-endpoint test
 //! timeline and cross-target stats.
 
-use anyhow::Result;
+use crate::Result;
 use sqlx::PgPool;
 use uuid::Uuid;
 

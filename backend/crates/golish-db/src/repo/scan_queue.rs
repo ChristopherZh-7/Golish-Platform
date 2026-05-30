@@ -5,7 +5,7 @@
 //! these helpers instead of inlining the SQL. Inserts/upserts stay in the
 //! command layer (they are not scope guards).
 
-use anyhow::Result;
+use crate::Result;
 use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgPool};
 

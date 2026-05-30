@@ -22,3 +22,12 @@ pub enum VulnIntelError {
 }
 
 pub type VulnIntelResult<T> = Result<T, VulnIntelError>;
+
+impl From<golish_db::DbError> for VulnIntelError {
+    fn from(err: golish_db::DbError) -> Self {
+        match err {
+            golish_db::DbError::Sqlx(e) => Self::Db(e),
+            other => Self::Other(other.into()),
+        }
+    }
+}

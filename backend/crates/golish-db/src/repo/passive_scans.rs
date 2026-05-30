@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::Result;
 use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;

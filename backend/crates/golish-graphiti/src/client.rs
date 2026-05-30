@@ -1,7 +1,7 @@
 //! `GraphClient` — high-level operations on `graph_entities` / `graph_relations`.
 
+use golish_db::PgPool;
 use serde_json::Value;
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::GraphError;
@@ -17,10 +17,10 @@ pub struct GraphClient {
 }
 
 impl GraphClient {
-    /// Construct a new client over an existing connection pool. The pool must
-    /// point at the database where the `20260427000001_graph_knowledge_base`
-    /// migration has been applied (typically the embedded PG instance owned
-    /// by `golish-db`).
+    /// Construct a new client over golish-db's connection pool. The pool points
+    /// at golish-db's embedded PG instance, where the
+    /// `20260427000001_graph_knowledge_base` migration (owned by golish-db) has
+    /// created the `graph_entities` / `graph_relations` tables.
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }

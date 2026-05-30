@@ -4,7 +4,7 @@
 //! and `clear-all` operations through here. Upserts and delete-by-id stay in
 //! the command layer.
 
-use anyhow::Result;
+use crate::Result;
 use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgPool};
 

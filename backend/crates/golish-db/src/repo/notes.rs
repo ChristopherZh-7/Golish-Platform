@@ -1,8 +1,8 @@
-use anyhow::Result;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::models::Note;
+use crate::Result;
 
 pub async fn create(
     pool: &PgPool,

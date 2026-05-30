@@ -4,7 +4,7 @@
 //! the command layer (`golish::tools::targets::directory`) and the pipeline
 //! storage adapter. Inserts stay in the command layer.
 
-use anyhow::Result;
+use crate::Result;
 use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;

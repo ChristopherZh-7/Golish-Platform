@@ -7,14 +7,15 @@ license.workspace = true
 description = "PostgreSQL-backed graph knowledge base for security entity/relation reasoning"
 
 [dependencies]
-# Async SQL toolkit (shares the embedded PG instance from golish-db)
-sqlx = { version = "0.8", features = [
-    "runtime-tokio-rustls",
-    "postgres",
-    "uuid",
-    "chrono",
-    "json",
-] }
+# Persistence layer that owns the embedded PG instance and the
+# `graph_knowledge_base` migration this crate's tables live in. Depending on it
+# turns the previously-implicit "shares golish-db's PG" coupling into a
+# compiler-visible edge and lets us consume its canonical `PgPool` type.
+golish-db = { workspace = true }
+
+# Async SQL toolkit. Kept workspace-aligned with golish-db so the two crates
+# never drift onto divergent sqlx feature sets while sharing one pool.
+sqlx = { workspace = true }
 
 # Serialization
 serde.workspace = true

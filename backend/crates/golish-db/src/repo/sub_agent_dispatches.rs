@@ -3,7 +3,7 @@
 //! Used by the agent runtime to record every `execute_sub_agent_with_client`
 //! call so the app can list mid-flight invocations after a restart.
 
-use anyhow::Result;
+use crate::Result;
 use sqlx::PgPool;
 use uuid::Uuid;
 

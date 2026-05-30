@@ -1,7 +1,7 @@
 mod poc;
 pub use poc::*;
 
-use anyhow::Result;
+use crate::Result;
 use sqlx::PgPool;
 
 use crate::models::{NewWikiPage, VulnKbLink, WikiPage};

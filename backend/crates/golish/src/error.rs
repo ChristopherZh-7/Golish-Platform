@@ -105,6 +105,20 @@ impl From<anyhow::Error> for GolishError {
     }
 }
 
+impl From<golish_db::DbError> for GolishError {
+    fn from(err: golish_db::DbError) -> Self {
+        // Preserve the stable IPC code where golish-db's typed error maps onto an
+        // existing GolishError variant; fall back to Internal for the rest.
+        match err {
+            golish_db::DbError::Sqlx(e) => Self::Database(e),
+            golish_db::DbError::Json(e) => Self::Json(e),
+            golish_db::DbError::Io(e) => Self::Io(e),
+            golish_db::DbError::NotFound(m) => Self::NotFound(m),
+            other => Self::Internal(other.to_string()),
+        }
+    }
+}
+
 impl From<String> for GolishError {
     fn from(s: String) -> Self {
         Self::Internal(s)

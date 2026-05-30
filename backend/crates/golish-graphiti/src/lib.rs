@@ -7,8 +7,10 @@
 //! lateral_move, ...).
 //!
 //! The graph backs onto the same embedded PostgreSQL instance managed by the
-//! `golish-db` crate; consumers pass in an existing [`sqlx::PgPool`] when
-//! constructing a [`client::GraphClient`].
+//! `golish-db` crate — which also owns the `graph_knowledge_base` migration that
+//! creates this crate's tables. That dependency is now explicit: consumers pass
+//! in a [`golish_db::PgPool`] (re-exported from `golish-db`) when constructing a
+//! [`client::GraphClient`].
 //!
 //! # Quick Start
 //! ```rust,ignore

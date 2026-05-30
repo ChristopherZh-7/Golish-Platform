@@ -30,20 +30,25 @@
 pub mod config;
 pub mod embedded;
 pub mod embeddings;
+pub mod error;
 pub mod gatekeeper;
 pub mod models;
 pub mod pool;
 pub mod repo;
 
-use anyhow::Result;
 use chrono::Duration;
-use sqlx::PgPool;
 
 pub use config::DbConfig;
+pub use error::{DbError, Result};
 pub use golish_core::DbReadyGate;
 pub use models::*;
 pub use pool::create_lazy_pool;
 pub use repo::audit::{reclaim_abandoned_audits, DEFAULT_RECLAIM_THRESHOLD_HOURS};
+/// The canonical connection-pool type golish-db hands to consumers that share
+/// its embedded PostgreSQL instance (e.g. `golish-graphiti`). Re-exported so
+/// those crates can express the dependency in their own type signatures instead
+/// of pinning a second `sqlx` independently.
+pub use sqlx::PgPool;
 
 /// Top-level database handle. Owns the embedded PG server and connection pool.
 pub struct GolishDb {
@@ -59,7 +64,7 @@ impl GolishDb {
     /// but older than `DEFAULT_RECLAIM_THRESHOLD_HOURS` hours). Reclaim failure is
     /// logged but does NOT abort startup — the platform must come up even if the
     /// audit table has a transient issue (Doc 1 §5.3 fire-and-forget semantics).
-    pub async fn start(config: DbConfig) -> Result<Self> {
+    pub async fn start(config: DbConfig) -> anyhow::Result<Self> {
         let embedded = embedded::EmbeddedPg::start(config).await?;
         let info = pool::create_pool(&embedded.connection_string()).await?;
 

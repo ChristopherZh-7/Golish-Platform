@@ -6,7 +6,7 @@
 //! from `golish::tools::conversation_store`. Per-conversation upserts stay in
 //! the command layer.
 
-use anyhow::Result;
+use crate::Result;
 use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgConnection, PgPool};
 

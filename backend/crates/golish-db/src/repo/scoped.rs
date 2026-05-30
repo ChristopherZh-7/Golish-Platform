@@ -18,7 +18,7 @@
 //! the canonical form the per-table repo functions used before delegation, so the
 //! refactor introduces **zero query semantics drift**.
 
-use anyhow::Result;
+use crate::Result;
 use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;

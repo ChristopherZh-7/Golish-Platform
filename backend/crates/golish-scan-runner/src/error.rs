@@ -25,3 +25,12 @@ pub enum ScanRunnerError {
 }
 
 pub type ScanRunnerResult<T> = Result<T, ScanRunnerError>;
+
+impl From<golish_db::DbError> for ScanRunnerError {
+    fn from(err: golish_db::DbError) -> Self {
+        match err {
+            golish_db::DbError::Sqlx(e) => Self::Db(e),
+            other => Self::Other(other.into()),
+        }
+    }
+}

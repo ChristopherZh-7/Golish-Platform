@@ -25,3 +25,12 @@ pub enum PipelineError {
 }
 
 pub type PipelineResult<T> = Result<T, PipelineError>;
+
+impl From<golish_db::DbError> for PipelineError {
+    fn from(err: golish_db::DbError) -> Self {
+        match err {
+            golish_db::DbError::Sqlx(e) => Self::Db(e),
+            other => Self::Other(other.into()),
+        }
+    }
+}

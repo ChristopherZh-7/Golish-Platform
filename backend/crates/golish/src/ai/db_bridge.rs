@@ -604,6 +604,7 @@ impl DbRepoProvider for GolishDbRepoProvider {
             args,
         )
         .await
+        .map_err(Into::into)
     }
 
     async fn dispatch_record_finish(
@@ -621,6 +622,7 @@ impl DbRepoProvider for GolishDbRepoProvider {
             error_message,
         )
         .await
+        .map_err(Into::into)
     }
 
     async fn dispatch_list_running(

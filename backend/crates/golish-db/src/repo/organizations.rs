@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -159,13 +159,15 @@ pub async fn update(
 pub async fn move_to(pool: &PgPool, id: Uuid, new_parent: Option<Uuid>) -> Result<()> {
     if let Some(target) = new_parent {
         if target == id {
-            anyhow::bail!("cannot move organization under itself");
+            return Err(anyhow::anyhow!("cannot move organization under itself").into());
         }
         // Walk ancestor chain to ensure `target` is not a descendant of `id`.
         let mut cursor = Some(target);
         while let Some(cur) = cursor {
             if cur == id {
-                anyhow::bail!("cannot move organization under its own descendant");
+                return Err(
+                    anyhow::anyhow!("cannot move organization under its own descendant").into(),
+                );
             }
             cursor = sqlx::query_scalar::<_, Option<Uuid>>(
                 "SELECT parent_id FROM organizations WHERE id = $1",
