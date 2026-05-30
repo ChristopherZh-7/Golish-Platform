@@ -34,64 +34,15 @@ import {
 import { getSettings } from "@/lib/settings";
 import type { ExecPickerState, ToolUpdateInfo } from "../Dialogs";
 import type { ToolWithMeta } from "../OutputParserEditor";
+import { filterCandidateExecutables } from "./toolInstall/executableFilter";
+import { selectGitHubAsset } from "./toolInstall/githubAsset";
+import { isAutoInstallMethod, resolveInstallForPlatform } from "./toolInstall/installPlatform";
 
-const AUTO_INSTALL_METHODS = new Set(["github", "homebrew", "homebrew-cask", "gem", "pip"]);
-
-export function isAutoInstallMethod(method?: string | null) {
-  return !!method && AUTO_INSTALL_METHODS.has(method);
-}
-
-type InstallSubBlock = { method: string; source?: string } | null | undefined;
-
-interface InstallLikeShape {
-  method: string;
-  source: string;
-  macos?: InstallSubBlock;
-  linux?: InstallSubBlock;
-  windows?: InstallSubBlock;
-}
-
-export function detectInstallPlatform(): "windows" | "macos" | "linux" {
-  const ua = (navigator.userAgent || "").toLowerCase();
-  const platformStr = (navigator.platform || "").toLowerCase();
-  if (platformStr.includes("win") || ua.includes("windows")) return "windows";
-  if (platformStr.includes("mac") || platformStr.includes("darwin") || ua.includes("mac"))
-    return "macos";
-  return "linux";
-}
-
-/**
- * Resolve the (method, source) tuple to use on the current platform.
- *
- * Falls back to the top-level `install.method` / `install.source` if the
- * platform-specific sub-block is missing. Returns `null` when the tool's
- * default method cannot be auto-installed on this platform (e.g.
- * Homebrew on Windows without a `windows` block) so the caller can show
- * an actionable error.
- */
-export function resolveInstallForPlatform(
-  install: InstallLikeShape | null | undefined
-): { method: string; source: string } | null {
-  if (!install) return null;
-  const platform = detectInstallPlatform();
-  let block: InstallSubBlock;
-  if (platform === "windows") block = install.windows;
-  else if (platform === "macos") block = install.macos;
-  else block = install.linux;
-  if (block?.method) {
-    return {
-      method: block.method,
-      source: block.source && block.source.length > 0 ? block.source : install.source,
-    };
-  }
-  if (platform === "windows") {
-    const homebrewMethods = new Set(["homebrew", "homebrew-cask", "brew", "brew-cask"]);
-    if (homebrewMethods.has(install.method)) {
-      return null;
-    }
-  }
-  return { method: install.method, source: install.source };
-}
+export {
+  detectInstallPlatform,
+  isAutoInstallMethod,
+  resolveInstallForPlatform,
+} from "./toolInstall/installPlatform";
 
 interface InstallOptions {
   interactive?: boolean;
@@ -320,64 +271,7 @@ export function useToolInstall(
           try {
             const release = await fetchGitHubRelease(owner, repo);
             releaseVersion = release.tag_name;
-            const ua = (navigator.userAgent || "").toLowerCase();
-            const platformStr = (navigator.platform || "").toLowerCase();
-            const isMac =
-              platformStr.includes("mac") || platformStr.includes("darwin") || ua.includes("mac");
-            const isWin = !isMac && (platformStr.includes("win") || ua.includes("windows"));
-            const arch = ua.includes("arm64") || ua.includes("aarch64") ? "arm64" : "x64";
-            const SKIP_EXTS = [".txt", ".md", ".sha256", ".sha512", ".asc", ".sig", ".pem"];
-            const isSkippable = (name: string) =>
-              SKIP_EXTS.some((e) => name.toLowerCase().endsWith(e)) ||
-              /checksums?/i.test(name) ||
-              /\.sbom\b/i.test(name);
-            const archiveExts = [".zip", ".tar.gz", ".tgz", ".jar"];
-            const winInstallerExts = [".exe", ".msi"];
-            const isArchive = (name: string) =>
-              archiveExts.some((e) => name.toLowerCase().endsWith(e));
-            const isWinInstaller = (name: string) =>
-              winInstallerExts.some((e) => name.toLowerCase().endsWith(e));
-            const archMatches = (n: string) => {
-              if (arch === "arm64") {
-                return n.includes("arm64") || n.includes("aarch64");
-              }
-              if (n.includes("arm64") || n.includes("aarch64")) return false;
-              return (
-                n.includes("x86_64") || n.includes("x64") || n.includes("amd64") || n.includes("64")
-              );
-            };
-            const platformAssets = release.assets.filter((a) => {
-              if (isSkippable(a.name)) return false;
-              const n = a.name.toLowerCase();
-              if (isMac)
-                return (
-                  n.includes("darwin") ||
-                  n.includes("macos") ||
-                  n.includes("mac") ||
-                  n.includes("osx")
-                );
-              if (isWin)
-                return (
-                  n.includes("windows") ||
-                  n.includes("win64") ||
-                  n.includes("win32") ||
-                  n.includes("win-") ||
-                  n.endsWith(".exe") ||
-                  n.endsWith(".msi") ||
-                  /[-_.]win[-_.]/i.test(a.name)
-                );
-              return n.includes("linux");
-            });
-            const archScored = platformAssets.filter((a) => archMatches(a.name.toLowerCase()));
-            const candidatePool = archScored.length > 0 ? archScored : platformAssets;
-            binaryAsset =
-              (isWin && candidatePool.find((a) => isWinInstaller(a.name))) ||
-              candidatePool.find((a) => isArchive(a.name)) ||
-              candidatePool[0] ||
-              platformAssets.find((a) => isArchive(a.name)) ||
-              platformAssets[0] ||
-              release.assets.find((a) => !isSkippable(a.name) && isArchive(a.name)) ||
-              null;
+            binaryAsset = selectGitHubAsset(release.assets);
           } catch (releaseErr) {
             const message = String(releaseErr);
             if (message.includes("rate limit")) {
@@ -411,72 +305,8 @@ export function useToolInstall(
               let execs: string[] = await findToolExecutables(stableDirName, tool.runtime || null);
               if (execs.length === 0) {
                 try {
-                  const NON_EXEC_NAMES = new Set([
-                    "license",
-                    "licence",
-                    "readme",
-                    "readme.md",
-                    "readme.txt",
-                    "changelog",
-                    "changelog.md",
-                    "contributing",
-                    "contributing.md",
-                    "authors",
-                    "notice",
-                    "code_of_conduct.md",
-                    "security.md",
-                    "makefile",
-                    "dockerfile",
-                    "docker-compose.yml",
-                    "cargo.toml",
-                    "cargo.lock",
-                    "package.json",
-                    "package-lock.json",
-                    "go.mod",
-                    "go.sum",
-                    "gemfile",
-                    "gemfile.lock",
-                    "requirements.txt",
-                    "setup.py",
-                    "setup.cfg",
-                    "pyproject.toml",
-                  ]);
-                  const NON_EXEC_EXTS = new Set([
-                    "md",
-                    "txt",
-                    "rst",
-                    "html",
-                    "css",
-                    "json",
-                    "yaml",
-                    "yml",
-                    "toml",
-                    "xml",
-                    "csv",
-                    "log",
-                    "lock",
-                    "cfg",
-                    "ini",
-                    "conf",
-                    "png",
-                    "jpg",
-                    "jpeg",
-                    "gif",
-                    "svg",
-                    "ico",
-                    "pdf",
-                    "doc",
-                    "zip",
-                    "tar",
-                    "gz",
-                  ]);
                   const allFiles: string[] = await listToolDirFiles(stableDirName);
-                  execs = allFiles.filter((f) => {
-                    const base = f.split("/").pop()?.toLowerCase() || "";
-                    if (NON_EXEC_NAMES.has(base)) return false;
-                    const ext = base.includes(".") ? base.split(".").pop() || "" : "";
-                    return !(ext && NON_EXEC_EXTS.has(ext));
-                  });
+                  execs = filterCandidateExecutables(allFiles);
                 } catch {}
               }
               const cfg = await getConfig().catch(() => null);
