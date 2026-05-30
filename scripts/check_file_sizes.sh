@@ -31,11 +31,40 @@ ts_baseline() {
     esac
 }
 
+# Rust files exempted from the RUST budget. Same monotonic-decreasing
+# contract as ts_baseline: CI fails if any of these grows.
+#
+#   - golish-core/src/events/event.rs is a single `#[derive(ts_rs::TS)]`
+#     `AiEvent` wire-contract enum. A Rust enum's variants cannot be split
+#     across files, and nesting variants into sub-enums would change the
+#     serde `{ "type": ... }` JSON wire format consumed by the frontend
+#     (an I5 break). It is intentionally one large enum; exempt by design.
+rust_baseline() {
+    case "$1" in
+        "backend/crates/golish-core/src/events/event.rs") echo 504 ;;
+        *) echo "" ;;
+    esac
+}
+
 violations=0
 
 # ---- Rust --------------------------------------------------------------
 echo "[check_file_sizes] scanning Rust files > ${RUST_LIMIT} lines …"
-rust_big=$(find backend/crates -name "*.rs" \
+while IFS=$'\t' read -r lines path; do
+  baseline=$(rust_baseline "$path")
+  if [ -n "$baseline" ]; then
+    if [ "$lines" -gt "$baseline" ]; then
+      echo "[check_file_sizes] ✗ $path grew: $lines > baseline $baseline" >&2
+      violations=$((violations + 1))
+    else
+      echo "    (grandfather ≤ $baseline) $path = $lines"
+    fi
+    continue
+  fi
+  echo "[check_file_sizes] ✗ $path: $lines lines > ${RUST_LIMIT}" >&2
+  violations=$((violations + 1))
+done < <(
+  find backend/crates -name "*.rs" \
     -not -path "*/tests/*" \
     -not -name "*_tests.rs" \
     -not -name "tests.rs" \
@@ -43,13 +72,8 @@ rust_big=$(find backend/crates -name "*.rs" \
     -print0 \
   | xargs -0 wc -l 2>/dev/null \
   | awk -v L="$RUST_LIMIT" '$1 > L && $2 != "total" { print $1 "\t" $2 }' \
-  | sort -rn)
-
-if [ -n "$rust_big" ]; then
-  echo "[check_file_sizes] ✗ Rust files over ${RUST_LIMIT} lines:" >&2
-  echo "$rust_big" | sed 's/^/    /' >&2
-  violations=$((violations + $(echo "$rust_big" | wc -l)))
-fi
+  | sort -rn
+)
 
 # ---- TS / TSX ----------------------------------------------------------
 echo "[check_file_sizes] scanning TS/TSX files > ${TS_LIMIT} lines …"
