@@ -108,6 +108,7 @@ check:
     @just step test-fe
     @just step lint-rust
     @just step test-rust-all
+    @just step check-types
     @printf '\033[1;32m━━━ OK ━━━\033[0m\n'
 
 [private]
@@ -128,6 +129,16 @@ check-fe:
 check-rust:
     @cd backend && cargo check -q
     @cd backend && cargo fmt --check
+
+# Regenerate cross-IPC TypeScript bindings from Rust (ts-rs). Types annotated
+# with #[ts(export)] are written to frontend/lib/generated/ as a side effect of
+# running their auto-generated `export_bindings_*` tests. See docs/design/2026-05-29-architecture-optimization.md §4.2.
+gen-types:
+    @cd backend && cargo test --workspace export_bindings -q
+
+# Fail if the committed ts-rs bindings drift from the Rust source of truth (I5).
+check-types: gen-types
+    @git diff --exit-code -- frontend/lib/generated/
 
 # Lint Rust (clippy + fmt check — all workspace crates)
 lint-rust:

@@ -48,7 +48,8 @@ pub async fn get_available_tools(
 }
 
 /// Sub-agent information for the frontend.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct SubAgentInfo {
     pub id: String,
     pub name: String,

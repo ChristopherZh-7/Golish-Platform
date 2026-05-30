@@ -6,8 +6,9 @@ use std::fmt;
 // =============================================================================
 
 /// AI provider selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub enum AiProvider {
     #[default]
     VertexAi,
@@ -132,8 +133,9 @@ impl fmt::Display for LogLevel {
 }
 
 /// Reasoning effort level for models that support it (e.g., OpenAI o-series, GPT-5)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub enum ReasoningEffort {
     Low,
     Medium,

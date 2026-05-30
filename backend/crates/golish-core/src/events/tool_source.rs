@@ -3,8 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Source of a tool call - indicates where the tool request originated.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub enum ToolSource {
     /// Tool called by the main agent
     #[default]
@@ -23,6 +24,7 @@ pub enum ToolSource {
         step_name: Option<String>,
         /// Current step index (0-based)
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(type = "number | null")]
         step_index: Option<usize>,
     },
 }

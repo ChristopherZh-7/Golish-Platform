@@ -19,8 +19,9 @@ pub const MAX_PLAN_STEPS: usize = 12;
 pub const MIN_PLAN_STEPS: usize = 1;
 
 /// Status of a plan step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub enum StepStatus {
     /// Step has not been started yet.
     #[default]
@@ -41,8 +42,9 @@ pub enum StepStatus {
 /// Useful as a hint to the refiner agent: when 2+ recent failures share
 /// the same `failure_kind`, the agent should pivot strategy rather than
 /// retry with minor parameter tweaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub enum FailureKind {
     /// Different command, tool, or parameter set would solve it.
     Technical,
@@ -78,11 +80,13 @@ impl std::fmt::Display for StepStatus {
 }
 
 /// A single step in the plan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct PlanStep {
     /// Stable unique identifier for this step (UUID).
     /// Persists across plan updates so tool executions remain linked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
     pub id: Option<String>,
     /// Description of what this step accomplishes.
     pub step: String,
@@ -92,19 +96,25 @@ pub struct PlanStep {
     /// Backwards-compatible: omitted on serialisation when `None` and
     /// defaulted to `None` on deserialisation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
     pub failure_kind: Option<FailureKind>,
 }
 
 /// Summary statistics for a plan.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct PlanSummary {
     /// Total number of steps.
+    #[ts(type = "number")]
     pub total: usize,
     /// Number of completed steps.
+    #[ts(type = "number")]
     pub completed: usize,
     /// Number of in-progress steps.
+    #[ts(type = "number")]
     pub in_progress: usize,
     /// Number of pending steps.
+    #[ts(type = "number")]
     pub pending: usize,
 }
 

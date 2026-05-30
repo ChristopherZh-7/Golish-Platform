@@ -18,10 +18,12 @@ use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct RuleInfo {
     pub name: String,
     pub path: String,
+    #[ts(type = "\"global\" | \"project\"")]
     pub source: String,
     pub description: String,
     pub globs: Option<String>,

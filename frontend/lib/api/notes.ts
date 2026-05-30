@@ -1,14 +1,9 @@
+import type { Note } from "@/lib/generated/Note";
 import { invoke } from "./client";
 
-export interface Note {
-  id: string;
-  entity_type: string;
-  entity_id: string;
-  content: string;
-  color: string;
-  created_at: number;
-  updated_at: number;
-}
+// `Note` is generated from the Rust IPC DTO via ts-rs (golish/src/tools/notes.rs).
+// Re-exported so existing `@/lib/api/notes` consumers keep their import path.
+export type { Note };
 
 export async function listNotes(params: {
   entityType: string;

@@ -13,8 +13,13 @@ use serde::{Deserialize, Serialize};
 /// Simplified AI events for the frontend.
 /// We emit these directly from AgentBridge instead of converting from vtcode's ThreadEvent,
 /// since ThreadEvent uses tuple structs that are harder to work with.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[ts(
+    export,
+    export_to = "../../../../frontend/lib/generated/",
+    rename = "GeneratedAiEvent"
+)]
 pub enum AiEvent {
     /// Agent started processing a turn
     Started { turn_id: String },
@@ -32,6 +37,7 @@ pub enum AiEvent {
     /// This is the legacy event - kept for backward compatibility
     ToolRequest {
         tool_name: String,
+        #[ts(type = "import('@/lib/serde_json/JsonValue').JsonValue")]
         args: serde_json::Value,
         request_id: String,
         /// Source of this tool call (main agent, sub-agent, or workflow)
@@ -63,6 +69,7 @@ pub enum AiEvent {
     ToolApprovalRequest {
         request_id: String,
         tool_name: String,
+        #[ts(type = "import('@/lib/serde_json/JsonValue').JsonValue")]
         args: serde_json::Value,
         /// Current approval stats for this tool (if any)
         stats: Option<ApprovalPattern>,
@@ -81,6 +88,7 @@ pub enum AiEvent {
     ToolAutoApproved {
         request_id: String,
         tool_name: String,
+        #[ts(type = "import('@/lib/serde_json/JsonValue').JsonValue")]
         args: serde_json::Value,
         /// Reason for auto-approval
         reason: String,
@@ -93,6 +101,7 @@ pub enum AiEvent {
     ToolDenied {
         request_id: String,
         tool_name: String,
+        #[ts(type = "import('@/lib/serde_json/JsonValue').JsonValue")]
         args: serde_json::Value,
         /// Reason for denial
         reason: String,
@@ -104,6 +113,7 @@ pub enum AiEvent {
     /// Tool execution completed
     ToolResult {
         tool_name: String,
+        #[ts(type = "import('@/lib/serde_json/JsonValue').JsonValue")]
         result: serde_json::Value,
         success: bool,
         request_id: String,
@@ -173,6 +183,7 @@ pub enum AiEvent {
         agent_id: String,
         agent_name: String,
         task: String,
+        #[ts(type = "number")]
         depth: usize,
         parent_request_id: String,
     },
@@ -181,6 +192,7 @@ pub enum AiEvent {
     SubAgentToolRequest {
         agent_id: String,
         tool_name: String,
+        #[ts(type = "import('@/lib/serde_json/JsonValue').JsonValue")]
         args: serde_json::Value,
         request_id: String,
         parent_request_id: String,
@@ -191,6 +203,7 @@ pub enum AiEvent {
         agent_id: String,
         tool_name: String,
         success: bool,
+        #[ts(type = "import('@/lib/serde_json/JsonValue').JsonValue")]
         result: serde_json::Value,
         request_id: String,
         parent_request_id: String,
@@ -231,14 +244,18 @@ pub enum AiEvent {
     /// Context warning threshold exceeded
     ContextWarning {
         utilization: f64,
+        #[ts(type = "number")]
         total_tokens: usize,
+        #[ts(type = "number")]
         max_tokens: usize,
     },
 
     /// Tool response was truncated due to size limits
     ToolResponseTruncated {
         tool_name: String,
+        #[ts(type = "number")]
         original_tokens: usize,
+        #[ts(type = "number")]
         truncated_tokens: usize,
     },
 
@@ -251,6 +268,7 @@ pub enum AiEvent {
         /// Number of tokens before compaction
         tokens_before: u64,
         /// Number of messages before compaction
+        #[ts(type = "number")]
         messages_before: usize,
     },
 
@@ -259,10 +277,13 @@ pub enum AiEvent {
         /// Number of tokens before compaction
         tokens_before: u64,
         /// Number of messages before compaction
+        #[ts(type = "number")]
         messages_before: usize,
         /// Number of messages after compaction
+        #[ts(type = "number")]
         messages_after: usize,
         /// Length of the generated summary
+        #[ts(type = "number")]
         summary_length: usize,
         /// The generated summary text
         summary: Option<String>,
@@ -275,6 +296,7 @@ pub enum AiEvent {
         /// Number of tokens before compaction
         tokens_before: u64,
         /// Number of messages before compaction
+        #[ts(type = "number")]
         messages_before: usize,
         /// Error message
         error: String,
@@ -286,7 +308,9 @@ pub enum AiEvent {
     /// Warning: approaching loop detection threshold
     LoopWarning {
         tool_name: String,
+        #[ts(type = "number")]
         current_count: usize,
+        #[ts(type = "number")]
         max_count: usize,
         message: String,
     },
@@ -294,14 +318,18 @@ pub enum AiEvent {
     /// Tool call blocked due to loop detection
     LoopBlocked {
         tool_name: String,
+        #[ts(type = "number")]
         repeat_count: usize,
+        #[ts(type = "number")]
         max_count: usize,
         message: String,
     },
 
     /// Maximum tool iterations reached for this turn
     MaxIterationsReached {
+        #[ts(type = "number")]
         iterations: usize,
+        #[ts(type = "number")]
         max_iterations: usize,
         message: String,
     },
@@ -318,7 +346,9 @@ pub enum AiEvent {
     WorkflowStepStarted {
         workflow_id: String,
         step_name: String,
+        #[ts(type = "number")]
         step_index: usize,
+        #[ts(type = "number")]
         total_steps: usize,
     },
 
@@ -367,6 +397,7 @@ pub enum AiEvent {
         /// Tool name (web_search or web_fetch)
         tool_name: String,
         /// Tool input parameters
+        #[ts(type = "import('@/lib/serde_json/JsonValue').JsonValue")]
         input: serde_json::Value,
     },
 
@@ -375,6 +406,7 @@ pub enum AiEvent {
         /// Tool use ID that this result corresponds to
         request_id: String,
         /// Search results (array of {url, title, content, page_age})
+        #[ts(type = "import('@/lib/serde_json/JsonValue').JsonValue")]
         results: serde_json::Value,
     },
 
@@ -457,7 +489,9 @@ pub enum AiEvent {
     /// A previously interrupted task is being resumed
     TaskResumed {
         task_id: String,
+        #[ts(type = "number")]
         subtask_index: usize,
+        #[ts(type = "number")]
         total_subtasks: usize,
     },
 

@@ -164,6 +164,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9.34"
 
+# Cross-IPC type generation (Rust -> TS). See docs/design/2026-05-29-architecture-optimization.md §4.2 / AGENTS.md I5
+ts-rs = { version = "12.0.1", features = ["serde-json-impl", "chrono-impl"] }
+
 # File watching
 notify = "8"
 notify-debouncer-mini = "0.7"

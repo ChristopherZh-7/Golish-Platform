@@ -20,6 +20,9 @@ anyhow = { workspace = true }
 dirs = { workspace = true }
 tracing = { workspace = true }
 
+# Cross-IPC type generation (Rust -> TS). See AGENTS.md I5
+ts-rs = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

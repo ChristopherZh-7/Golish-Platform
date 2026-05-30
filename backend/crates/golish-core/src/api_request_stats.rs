@@ -6,14 +6,16 @@ use std::{
 use serde::Serialize;
 use tokio::sync::RwLock;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct ProviderRequestStatsSnapshot {
     pub requests: u64,
     pub last_sent_at: Option<u64>,
     pub last_received_at: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct ApiRequestStatsSnapshot {
     pub providers: HashMap<String, ProviderRequestStatsSnapshot>,
 }
