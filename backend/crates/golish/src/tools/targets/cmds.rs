@@ -17,17 +17,7 @@ pub async fn target_list(
     let pool = state.pool_ready().await?;
 
     let pp = project_path.as_deref().filter(|s| !s.is_empty());
-    let rows = sqlx::query_as::<_, TargetRow>(
-        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
-                  real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
-                  created_at, updated_at
-           FROM targets WHERE ($1 IS NULL OR project_path = $1 OR project_path = '')
-           ORDER BY created_at"#,
-    )
-    .bind(pp)
-    .fetch_all(pool)
-    .await?;
+    let rows = golish_db::repo::targets::list_rows_legacy::<TargetRow>(pool, pp).await?;
 
     let targets: Vec<Target> = rows.into_iter().map(Target::from).collect();
 
@@ -133,9 +123,7 @@ pub async fn target_batch_add(
         .map_err(|e: uuid::Error| e.to_string())?;
 
     let mut existing: Vec<String> =
-        sqlx::query_scalar("SELECT value FROM targets WHERE project_path = $1")
-            .bind(project_path.as_deref())
-            .fetch_all(pool)
+        golish_db::repo::targets::list_values_by_project_exact(pool, project_path.as_deref())
             .await?;
 
     let mut added = Vec::new();
@@ -195,14 +183,8 @@ pub async fn target_update(
     // Scoping guard (AGENTS.md I2): the target must belong to the caller's
     // project (or be a legacy global row, project_path = ''), mirroring
     // `target_list` visibility. Reject cross-project ids before any UPDATE.
-    let owned: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM targets WHERE id = $1 \
-         AND ($2 IS NULL OR project_path = $2 OR project_path = '')",
-    )
-    .bind(uid)
-    .bind(project_path.as_deref())
-    .fetch_optional(pool)
-    .await?;
+    let owned =
+        golish_db::repo::targets::get_id_scoped_legacy(pool, uid, project_path.as_deref()).await?;
     crate::tools::scoping::ensure_scoped_found(owned)?;
 
     if let Some(n) = &name {
@@ -316,15 +298,9 @@ pub async fn target_delete(
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let res = sqlx::query(
-        "DELETE FROM targets WHERE id=$1 \
-         AND ($2 IS NULL OR project_path = $2 OR project_path = '')",
-    )
-    .bind(uid)
-    .bind(project_path.as_deref())
-    .execute(pool)
-    .await?;
-    crate::tools::scoping::ensure_scoped_mutation(res.rows_affected())?;
+    let rows_affected =
+        golish_db::repo::targets::delete_scoped_legacy(pool, uid, project_path.as_deref()).await?;
+    crate::tools::scoping::ensure_scoped_mutation(rows_affected)?;
     Ok(())
 }
 
@@ -334,10 +310,7 @@ pub async fn target_clear_all(
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    sqlx::query("DELETE FROM targets WHERE project_path = $1")
-        .bind(project_path.as_deref())
-        .execute(pool)
-        .await?;
+    golish_db::repo::targets::clear_by_project_exact(pool, project_path.as_deref()).await?;
     Ok(())
 }
 
@@ -351,16 +324,14 @@ pub async fn target_update_status(
     let pool = state.pool_ready().await?;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-    let res = sqlx::query(
-        "UPDATE targets SET status=$1::target_status, updated_at=NOW() WHERE id=$2 \
-         AND ($3 IS NULL OR project_path = $3 OR project_path = '')",
+    let rows_affected = golish_db::repo::targets::update_status_scoped_legacy(
+        pool,
+        uid,
+        status.as_str(),
+        project_path.as_deref(),
     )
-    .bind(status.as_str())
-    .bind(uid)
-    .bind(project_path.as_deref())
-    .execute(pool)
     .await?;
-    crate::tools::scoping::ensure_scoped_mutation(res.rows_affected())?;
+    crate::tools::scoping::ensure_scoped_mutation(rows_affected)?;
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,

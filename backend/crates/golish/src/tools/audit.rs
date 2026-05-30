@@ -84,17 +84,12 @@ pub async fn audit_list(
     let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(500);
     let pp = project_path.unwrap_or_default();
-    let rows = sqlx::query_as::<_, AuditRow>(
-        r#"SELECT created_at, action, category, details, entity_type, entity_id, source
-           FROM audit_log
-           WHERE ($1::text IS NULL OR category = $1)
-             AND project_path = $2
-           ORDER BY created_at DESC LIMIT $3"#,
+    let rows = golish_db::repo::audit::list_by_project_exact::<AuditRow>(
+        pool,
+        category.as_deref(),
+        &pp,
+        lim,
     )
-    .bind(category.as_deref())
-    .bind(&pp)
-    .bind(lim)
-    .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(AuditEntry::from).collect())
 }
@@ -106,10 +101,7 @@ pub async fn audit_clear(
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let pp = project_path.unwrap_or_default();
-    sqlx::query("DELETE FROM audit_log WHERE project_path = $1")
-        .bind(&pp)
-        .execute(pool)
-        .await?;
+    golish_db::repo::audit::clear_by_project_exact(pool, &pp).await?;
     Ok(())
 }
 
@@ -138,14 +130,9 @@ pub async fn passive_scans_global(
     let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
-    let rows = sqlx::query_as::<_, PassiveScanRow>(
-        "SELECT id, target_id, test_type, payload, url, result, severity, tool_used, tested_at \
-         FROM passive_scan_logs WHERE project_path = $1 ORDER BY tested_at DESC LIMIT $2",
-    )
-    .bind(&pp)
-    .bind(lim)
-    .fetch_all(pool)
-    .await?;
+    let rows =
+        golish_db::repo::passive_scans::list_global_by_project::<PassiveScanRow>(pool, &pp, lim)
+            .await?;
     Ok(rows)
 }
 
@@ -175,15 +162,7 @@ pub async fn agent_logs_list(
     let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
-    let rows = sqlx::query_as::<_, AgentLogRow>(
-        "SELECT id, session_id, task_id, subtask_id, initiator::text, executor::text, task, result, duration_ms, created_at \
-         FROM agent_logs WHERE project_path = $1 ORDER BY created_at DESC LIMIT $2",
-    )
-    .bind(&pp)
-    .bind(lim)
-    .fetch_all(pool)
-    .await
-?;
+    let rows = golish_db::repo::agent_logs::list_by_project::<AgentLogRow>(pool, &pp, lim).await?;
     Ok(rows)
 }
 
@@ -210,14 +189,8 @@ pub async fn terminal_logs_list(
     let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
-    let rows = sqlx::query_as::<_, TerminalLogRow>(
-        "SELECT id, session_id, task_id, subtask_id, stream::text, content, created_at \
-         FROM terminal_logs WHERE project_path = $1 ORDER BY created_at DESC LIMIT $2",
-    )
-    .bind(&pp)
-    .bind(lim)
-    .fetch_all(pool)
-    .await?;
+    let rows =
+        golish_db::repo::terminal_logs::list_by_project::<TerminalLogRow>(pool, &pp, lim).await?;
     Ok(rows)
 }
 
@@ -246,15 +219,8 @@ pub async fn search_logs_list(
     let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
-    let rows = sqlx::query_as::<_, SearchLogRow>(
-        "SELECT id, session_id, task_id, subtask_id, initiator::text, engine, query, result, created_at \
-         FROM search_logs WHERE project_path = $1 ORDER BY created_at DESC LIMIT $2",
-    )
-    .bind(&pp)
-    .bind(lim)
-    .fetch_all(pool)
-    .await
-?;
+    let rows =
+        golish_db::repo::search_logs::list_by_project::<SearchLogRow>(pool, &pp, lim).await?;
     Ok(rows)
 }
 

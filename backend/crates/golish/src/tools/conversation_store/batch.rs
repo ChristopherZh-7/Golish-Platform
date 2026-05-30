@@ -58,26 +58,12 @@ pub async fn conv_save_batch(
     let mut tx = pool.begin().await?;
 
     // ── 1. Delete stale conversations not in `surviving_ids` ──
-    if payload.surviving_ids.is_empty() {
-        sqlx::query("DELETE FROM conversations WHERE project_path = $1")
-            .bind(&payload.project_path)
-            .execute(&mut *tx)
-            .await?;
-    } else {
-        // Build a ($2, $3, ...) placeholder list for the surviving IDs
-        let placeholders: Vec<String> = (0..payload.surviving_ids.len())
-            .map(|i| format!("${}", i + 2))
-            .collect();
-        let query_str = format!(
-            "DELETE FROM conversations WHERE project_path = $1 AND id NOT IN ({})",
-            placeholders.join(", ")
-        );
-        let mut q = sqlx::query(&query_str).bind(&payload.project_path);
-        for id in &payload.surviving_ids {
-            q = q.bind(id);
-        }
-        q.execute(&mut *tx).await?;
-    }
+    golish_db::repo::conversation_store::delete_stale_conversations(
+        &mut tx,
+        &payload.project_path,
+        &payload.surviving_ids,
+    )
+    .await?;
 
     // ── 2. Upsert each changed conversation ──
     for item in &payload.items {

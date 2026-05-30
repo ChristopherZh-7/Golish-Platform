@@ -32,14 +32,8 @@ pub async fn custom_rules_list(
     project_path: Option<String>,
 ) -> Result<Vec<CustomPassiveRule>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows: Vec<(String, String, String, String, String, bool)> = sqlx::query_as(
-        "SELECT id, name, pattern, scope, severity, enabled \
-         FROM custom_passive_rules WHERE project_path = $1 \
-         ORDER BY created_at ASC",
-    )
-    .bind(project_path.as_deref())
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(String, String, String, String, String, bool)> =
+        golish_db::repo::custom_rules::list_by_project(pool, project_path.as_deref()).await?;
 
     Ok(rows
         .into_iter()
@@ -95,10 +89,7 @@ pub async fn custom_rules_save_all(
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
 
-    sqlx::query("DELETE FROM custom_passive_rules WHERE project_path = $1")
-        .bind(project_path.as_deref())
-        .execute(pool)
-        .await?;
+    golish_db::repo::custom_rules::clear_by_project(pool, project_path.as_deref()).await?;
 
     for rule in &rules {
         sqlx::query(

@@ -41,14 +41,8 @@ pub async fn scan_queue_list(
     project_path: Option<String>,
 ) -> Result<Vec<ScanEndpoint>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows: Vec<ScanQueueRow> = sqlx::query_as(
-        "SELECT id::text, url, scan_id, progress, status, alerts, added_at \
-             FROM scan_queue WHERE project_path = $1 \
-             ORDER BY added_at ASC",
-    )
-    .bind(project_path.as_deref())
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<ScanQueueRow> =
+        golish_db::repo::scan_queue::list_by_project(pool, project_path.as_deref()).await?;
 
     Ok(rows
         .into_iter()
@@ -113,10 +107,7 @@ pub async fn scan_queue_save_all(
     let pool = state.pool_ready().await?;
 
     // Delete existing entries for this project, then re-insert
-    sqlx::query("DELETE FROM scan_queue WHERE project_path = $1")
-        .bind(project_path.as_deref())
-        .execute(pool)
-        .await?;
+    golish_db::repo::scan_queue::clear_by_project(pool, project_path.as_deref()).await?;
 
     for ep in &endpoints {
         let id: Uuid = ep
@@ -152,11 +143,7 @@ pub async fn scan_queue_remove(
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    sqlx::query("DELETE FROM scan_queue WHERE url = $1 AND project_path = $2")
-        .bind(&url)
-        .bind(project_path.as_deref())
-        .execute(pool)
-        .await?;
+    golish_db::repo::scan_queue::delete_by_url(pool, &url, project_path.as_deref()).await?;
     Ok(())
 }
 
@@ -166,9 +153,6 @@ pub async fn scan_queue_clear_completed(
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    sqlx::query("DELETE FROM scan_queue WHERE status = 'complete' AND project_path = $1")
-        .bind(project_path.as_deref())
-        .execute(pool)
-        .await?;
+    golish_db::repo::scan_queue::clear_completed(pool, project_path.as_deref()).await?;
     Ok(())
 }

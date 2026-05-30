@@ -38,18 +38,9 @@ pub async fn db_target_add(
         .unwrap_or("default");
     let own = owner.map(str::trim).unwrap_or("");
 
-    let existing = sqlx::query_as::<_, TargetRow>(
-        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
-                  real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
-                  created_at, updated_at
-           FROM targets WHERE value=$1 AND ($2 IS NULL OR project_path = $2 OR project_path = '') LIMIT 1"#,
-    )
-    .bind(value)
-    .bind(project_path)
-    .fetch_optional(pool)
-    .await
-?;
+    let existing =
+        golish_db::repo::targets::find_row_by_value_legacy::<TargetRow>(pool, value, project_path)
+            .await?;
 
     if let Some(r) = existing {
         return Ok(Target::from(r));
@@ -85,17 +76,8 @@ pub async fn db_target_list(
     pool: &PgPool,
     project_path: Option<&str>,
 ) -> Result<Vec<Target>, GolishError> {
-    let rows = sqlx::query_as::<_, TargetRow>(
-        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
-                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
-                     created_at, updated_at
-           FROM targets WHERE project_path = $1
-           ORDER BY created_at"#,
-    )
-    .bind(project_path)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<TargetRow> =
+        golish_db::repo::targets::list_rows_by_project_exact(pool, project_path).await?;
 
     Ok(rows.into_iter().map(Target::from).collect())
 }

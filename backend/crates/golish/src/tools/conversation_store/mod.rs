@@ -6,6 +6,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::DbState;
 
+/// Raw row shape returned by `repo::conversation_store::list_by_project`
+/// (mirrors the SELECT column order). Aliased to keep the call site readable.
+type ConvListRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    i32,
+    chrono::DateTime<chrono::Utc>,
+);
+
+/// Raw row shape returned by `repo::conversation_store::load_preferences`.
+type WorkspacePrefsRow = (
+    Option<String>,
+    Option<serde_json::Value>,
+    Option<String>,
+    Option<serde_json::Value>,
+);
+
 // ─── DTOs ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,25 +139,8 @@ pub async fn conv_list(
     project_path: Option<String>,
 ) -> Result<Vec<ConversationRow>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows = sqlx::query_as::<
-        _,
-        (
-            String,
-            String,
-            String,
-            Option<String>,
-            i32,
-            chrono::DateTime<chrono::Utc>,
-        ),
-    >(
-        r#"SELECT id, title, ai_session_id, project_path, sort_order, created_at
-           FROM conversations
-           WHERE ($1::text IS NULL OR project_path = $1)
-           ORDER BY sort_order ASC, created_at ASC"#,
-    )
-    .bind(project_path.as_deref())
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<ConvListRow> =
+        golish_db::repo::conversation_store::list_by_project(pool, project_path.as_deref()).await?;
 
     Ok(rows
         .into_iter()
@@ -466,22 +468,8 @@ pub async fn conv_load_preferences(
     project_path: String,
 ) -> Result<Option<WorkspacePreferences>, GolishError> {
     let pool = state.pool_ready().await?;
-    let row = sqlx::query_as::<
-        _,
-        (
-            Option<String>,
-            Option<serde_json::Value>,
-            Option<String>,
-            Option<serde_json::Value>,
-        ),
-    >(
-        r#"SELECT active_conversation_id, ai_model, approval_mode, approval_patterns
-           FROM workspace_preferences
-           WHERE project_path = $1"#,
-    )
-    .bind(&project_path)
-    .fetch_optional(pool)
-    .await?;
+    let row: Option<WorkspacePrefsRow> =
+        golish_db::repo::conversation_store::load_preferences(pool, &project_path).await?;
 
     Ok(row.map(
         |(active_conversation_id, ai_model, approval_mode, approval_patterns)| {

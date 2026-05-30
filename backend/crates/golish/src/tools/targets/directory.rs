@@ -50,23 +50,11 @@ pub async fn db_directory_entries_list(
     target_id: Option<Uuid>,
     project_path: Option<&str>,
 ) -> Result<Vec<DirectoryEntry>, GolishError> {
-    let rows = if let Some(tid) = target_id {
-        sqlx::query_as::<_, DirEntryRow>(
-            r#"SELECT id, target_id, url, status_code, content_length, lines, words, content_type, tool, created_at
-               FROM directory_entries WHERE target_id = $1 ORDER BY created_at"#,
-        )
-        .bind(tid)
-        .fetch_all(pool)
-        .await
+    let rows: Vec<DirEntryRow> = if let Some(tid) = target_id {
+        golish_db::repo::directory_entries::list_by_target(pool, tid).await?
     } else {
-        sqlx::query_as::<_, DirEntryRow>(
-            r#"SELECT id, target_id, url, status_code, content_length, lines, words, content_type, tool, created_at
-               FROM directory_entries WHERE project_path = $1 ORDER BY created_at"#,
-        )
-        .bind(project_path)
-        .fetch_all(pool)
-        .await
-    }?;
+        golish_db::repo::directory_entries::list_by_project(pool, project_path).await?
+    };
 
     Ok(rows.into_iter().map(DirectoryEntry::from).collect())
 }

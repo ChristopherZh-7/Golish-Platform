@@ -54,14 +54,10 @@ impl ScanResultStore for PgScanStore {
     }
 
     async fn load_sitemap_dirs(&self, project_path: Option<&str>) -> Vec<String> {
-        let data = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT data FROM sitemap_store WHERE name = 'zap-sitemap' AND project_path = $1",
-        )
-        .bind(project_path)
-        .fetch_optional(&self.pool)
-        .await
-        .unwrap_or(None)
-        .unwrap_or(serde_json::json!([]));
+        let data = golish_db::repo::sitemap_store::read_zap_sitemap(&self.pool, project_path)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(serde_json::json!([]));
         scan::extract_dirs_from_sitemap(&data)
     }
 
@@ -217,27 +213,13 @@ pub async fn sensitive_scan_results(
     confirmed_only: Option<bool>,
 ) -> Result<Vec<SensitiveScanResult>, GolishError> {
     let pool = app_state.pool_ready().await?;
-    let rows = if confirmed_only.unwrap_or(false) {
-        sqlx::query_as::<_, SensitiveScanRow>(
-            "SELECT id, base_url, probe_path, full_url, status_code, content_length, content_type, \
-             is_confirmed, ai_verdict, created_at FROM sensitive_scan_results \
-             WHERE project_path = $1 AND is_confirmed = TRUE ORDER BY created_at DESC",
-        )
-        .bind(project_path.as_deref())
-        .fetch_all(pool)
-        .await
-    } else {
-        sqlx::query_as::<_, SensitiveScanRow>(
-            "SELECT id, base_url, probe_path, full_url, status_code, content_length, content_type, \
-             is_confirmed, ai_verdict, created_at FROM sensitive_scan_results \
-             WHERE project_path = $1 ORDER BY created_at DESC",
-        )
-        .bind(project_path.as_deref())
-        .fetch_all(pool)
-        .await
-    };
-    rows.map(|r| r.into_iter().map(|row| row.into()).collect())
-        .map_err(GolishError::from)
+    let rows = golish_db::repo::sensitive_scan::list_results_by_project::<SensitiveScanRow>(
+        pool,
+        project_path.as_deref(),
+        confirmed_only.unwrap_or(false),
+    )
+    .await?;
+    Ok(rows.into_iter().map(|row| row.into()).collect())
 }
 
 #[tauri::command]
@@ -246,14 +228,8 @@ pub async fn sensitive_scan_clear(
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
     let pool = app_state.pool_ready().await?;
-    sqlx::query("DELETE FROM sensitive_scan_results WHERE project_path = $1")
-        .bind(project_path.as_deref())
-        .execute(pool)
-        .await?;
-    sqlx::query("DELETE FROM sensitive_scan_history WHERE project_path = $1")
-        .bind(project_path.as_deref())
-        .execute(pool)
-        .await?;
+    golish_db::repo::sensitive_scan::clear_results(pool, project_path.as_deref()).await?;
+    golish_db::repo::sensitive_scan::clear_history(pool, project_path.as_deref()).await?;
     Ok(())
 }
 
@@ -291,12 +267,10 @@ pub async fn sensitive_scan_apply_verdicts(
     project_path: Option<String>,
 ) -> Result<serde_json::Value, GolishError> {
     let pool = app_state.pool_ready().await?;
-    let rows = sqlx::query_as::<_, SensitiveScanRow>(
-        "SELECT id, base_url, probe_path, full_url, status_code, content_length, content_type, \
-         is_confirmed, ai_verdict, created_at FROM sensitive_scan_results WHERE project_path = $1",
+    let rows = golish_db::repo::sensitive_scan::list_results_unordered::<SensitiveScanRow>(
+        pool,
+        project_path.as_deref(),
     )
-    .bind(project_path.as_deref())
-    .fetch_all(pool)
     .await?;
 
     let mut tp_count = 0u32;

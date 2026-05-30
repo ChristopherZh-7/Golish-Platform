@@ -14,13 +14,8 @@ pub async fn intel_match_targets(
 
     // Scoping guard (AGENTS.md I2): only match against the caller's targets,
     // mirroring `target_list` visibility (incl. legacy global rows).
-    let target_rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
-        "SELECT name, tags FROM targets \
-         WHERE ($1 IS NULL OR project_path = $1 OR project_path = '')",
-    )
-    .bind(project_path.as_deref())
-    .fetch_all(pool)
-    .await?;
+    let target_rows =
+        golish_db::repo::targets::match_rows_legacy(pool, project_path.as_deref()).await?;
 
     let mut keywords = Vec::new();
     for (name, tags) in &target_rows {

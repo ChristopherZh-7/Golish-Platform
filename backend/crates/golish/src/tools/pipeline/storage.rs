@@ -39,14 +39,10 @@ impl PipelineStorage for MainStorage {
             ));
         };
 
-        let existed = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM targets WHERE value = $1 AND project_path = $2)",
-        )
-        .bind(&hostname)
-        .bind(project_path)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(false);
+        let existed =
+            golish_db::repo::targets::exists_by_value_exact(pool, &hostname, project_path)
+                .await
+                .unwrap_or(false);
 
         targets::db_target_add(
             pool,
@@ -182,14 +178,10 @@ impl PipelineStorage for MainStorage {
             .get("url")
             .ok_or_else(|| PipelineError::Storage("No url field".into()))?;
 
-        let existed = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM directory_entries WHERE url = $1 AND project_path = $2)",
-        )
-        .bind(url)
-        .bind(project_path)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(false);
+        let existed =
+            golish_db::repo::directory_entries::exists_by_url_project(pool, url, project_path)
+                .await
+                .unwrap_or(false);
 
         let status: Option<i32> = item.fields.get("status").and_then(|s| s.parse().ok());
         let size: Option<i32> = item
@@ -274,14 +266,11 @@ impl PipelineStorage for MainStorage {
         }
         let pp = project_path.filter(|s| !s.is_empty());
 
-        let existing: Option<serde_json::Value> = sqlx::query_scalar(
-            "SELECT data FROM sitemap_store WHERE name = 'zap-sitemap' AND project_path = $1",
-        )
-        .bind(pp)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten();
+        let existing: Option<serde_json::Value> =
+            golish_db::repo::sitemap_store::read_zap_sitemap(pool, pp)
+                .await
+                .ok()
+                .flatten();
 
         let mut sitemap_data = existing.unwrap_or_else(|| {
             serde_json::json!({
@@ -346,12 +335,7 @@ impl PipelineStorage for MainStorage {
             "[katana-sitemap] Merged URLs into sitemap"
         );
 
-        let _ = sqlx::query(
-            "DELETE FROM sitemap_store WHERE name = 'zap-sitemap' AND project_path = $1",
-        )
-        .bind(pp)
-        .execute(pool)
-        .await;
+        let _ = golish_db::repo::sitemap_store::delete_zap_sitemap(pool, pp).await;
 
         let _ = sqlx::query(
             r#"INSERT INTO sitemap_store (name, data, project_path)

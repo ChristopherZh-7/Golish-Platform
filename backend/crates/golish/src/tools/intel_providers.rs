@@ -310,19 +310,10 @@ async fn link_target_to_organization(
     target_id: Uuid,
     organization_name: &str,
     project_path: Option<&str>,
-) -> Result<(), sqlx::Error> {
+) -> anyhow::Result<()> {
     let pp = project_path.unwrap_or("");
-    let org_id: Option<Uuid> = sqlx::query_scalar(
-        r#"SELECT id FROM organizations
-           WHERE project_path = $1
-             AND name = $2
-             AND parent_id IS NULL
-           LIMIT 1"#,
-    )
-    .bind(pp)
-    .bind(organization_name)
-    .fetch_optional(pool)
-    .await?;
+    let org_id =
+        golish_db::repo::organizations::find_root_id_by_name(pool, pp, organization_name).await?;
     let Some(oid) = org_id else { return Ok(()) };
 
     sqlx::query(
