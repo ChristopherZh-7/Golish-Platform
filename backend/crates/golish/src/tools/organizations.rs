@@ -325,8 +325,11 @@ pub async fn organization_delete(
 ///
 /// 校验在 `validate_profile_patch` 一遍走完，发现任一字段不合法立刻 400，
 /// 不写库——避免一半字段进去、一半 reject 的半成品状态。
+// NOTE: keys are snake_case (serde default), matching both the `Organization`
+// read struct and the frontend `lib/api/organizations.ts` patch payload. An
+// earlier `rename_all = "camelCase"` here silently dropped every multi-word
+// field (credit_code / ip_ranges / scope_rules / …) sent by the UI.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct OrganizationProfilePatch {
     pub aliases: Option<Vec<String>>,
     pub industry: Option<String>,
@@ -679,6 +682,24 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_profile_patch(&p).is_empty());
+    }
+
+    #[test]
+    fn profile_patch_deserializes_snake_case_keys() {
+        // The frontend (lib/api/organizations.ts) sends snake_case patch keys;
+        // they must deserialize so multi-word fields actually update (regression
+        // guard for the old `rename_all = "camelCase"` that silently dropped them).
+        let json = serde_json::json!({
+            "credit_code": "91110108551385082Q",
+            "ip_ranges": ["10.0.0.0/24"],
+            "email_domains": ["pingan.com"],
+            "scope_rules": { "in": ["example.com"] },
+        });
+        let p: OrganizationProfilePatch = serde_json::from_value(json).unwrap();
+        assert_eq!(p.credit_code.as_deref(), Some("91110108551385082Q"));
+        assert!(p.ip_ranges.is_some());
+        assert!(p.email_domains.is_some());
+        assert!(p.scope_rules.is_some());
     }
 
     #[test]
