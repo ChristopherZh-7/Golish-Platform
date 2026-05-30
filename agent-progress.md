@@ -18,14 +18,72 @@
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
 | **当前最高优先级** | **target-surface-workbench**（2026-05-28 新增 · 当前唯一 `in_progress`）。ZAP/SecurityView 删除后，正在把 Target Manager 改成 organization tree + selected target surface/evidence workbench。 |
-| **当前 blocker** | `xiaomi-mimo-provider` 已从 `in_progress` 切 `blocked`，等待 tool-use compatibility layer 与真实 MiMo E2E 后再决定 passing。2026-05-27 复测发现 `ask_human` 被误包成普通 ToolApprovalRequest；已修为直接发 `AskHumanRequest`，但需重启 dev app 后真实复测。`just precommit` 仍未全绿：Rust clippy 有既有 warnings-as-errors；`test-rust`/`test-rust-all` 在 sandbox 下有 PermissionDenied baseline failures（`golish-pentest sploitus::client::tests::surfaces_api_error_status` / `golish tools::asset_intel::tests::http_json_runtime_posts_fake_data_and_normalizes_candidates`）。 |
-| **未提交的半成品** | 当前工作树包含 Target Surface Workbench 设计/计划/mock + 前端实现文件；`feature_list.json` 状态已切到 `target-surface-workbench`。仍有此前未提交的大段 ZAP 删除与 agent/chat/provider 相关改动，commit 前需要按功能拆分。 |
+| **当前 blocker** | `xiaomi-mimo-provider` 已从 `in_progress` 切 `blocked`，等待 tool-use compatibility layer 与真实 MiMo E2E 后再决定 passing。2026-05-27 复测发现 `ask_human` 被误包成普通 ToolApprovalRequest；已修为直接发 `AskHumanRequest`，但需重启 dev app 后真实复测。**2026-05-30 更新**：本机 `just check` **全绿**（fmt + check-fe + test-fe + lint-rust（clippy `-D warnings` 0 告警 + `cargo fmt --check`）+ test-rust-all（nextest **2592 passed / 7 skipped / 0 failed**）+ check-types（ts-rs 绑定无漂移）均 ✅）。此前记录的 clippy warnings 与 sandbox PermissionDenied baseline failures 在本机最新工作树**未复现**。 |
+| **未提交的半成品** | **2026-05-30：架构优化批（原 125-file 工作树）已按功能拆成 9 个 commit 落到 `feat/recon-service`（`98beea9`→`6aaa0fb`），`just check` 全绿。** 当前工作树仅剩本 `agent-progress.md` 一处文档更新。 |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-30 · 架构优化批 125-file 工作树按功能拆 9 commit + 全绿验证（MCP-2 执行）
+
+- **本轮目标**：承接 MCP-3 转移的上下文（架构优化 P0/P1 代码已写完但 125 文件全压工作树未提交），用户指令「按功能拆 commit 分组」→「随便你」。本轮 = 真正落地拆分提交 + 端到端验证。
+- **关键发现（用证据纠正了转移上下文里的过时结论）**：
+  - 转移上下文称 `just precommit` 非全绿（clippy warnings + sandbox baseline failures）。**本机实测全绿**：clippy `-D warnings` 0 告警、nextest workspace **2592 passed / 7 skipped / 0 failed**、check-fe / test-fe / `cargo fmt --check` / ts-rs 绑定无漂移全过。旧失败未复现。
+  - `gen-types`（`cargo test --workspace export_bindings`）把 `frontend/lib/generated/` 重新与 Rust 源对齐：7 个此前“已修改”的绑定文件本是过时漂移，回到 HEAD；20 个新类型为真实新增。
+  - 计划里两处归属纠正：`vuln_intel/commands/matching.rs` 实为 I2 scoping（并入 C2/C3，非 C8）；`findings/mod.rs` 改用 `golish_db::repo::findings::FindingDetailRow` 且对齐 `FindingStatus`，与 DB 层强耦合（并入 C2/C3）。`tools/organizations.rs` 的 `rename_all="camelCase"` 删除是独立 bug fix（单列一个 `fix` commit）。
+  - C2（golish-db 助手）与 C3（tools scoping）签名互相依赖（repo 签名加 `project_path`），单独提交 C2 会让 golish crate 不编译 → **合并成一个 commit**；C4/C5 因 hunk 重叠也按计划择优拆成「错误码契约」+「api 层路由」两个干净 file-level commit（无需 `git add -p`）。
+- **已完成（9 个 commit，按依赖序，落在 `feat/recon-service`）**：
+  1. `98beea9` feat(types): finish ts-rs cross-IPC type generation (P0-2) — 37 files
+  2. `30cb5e1` refactor(db): project-scoped CRUD helper + enforce IDOR scope (P1-1, P0-3, I2) — 32 files
+  3. `f329be5` fix(organizations): accept snake_case keys in profile patch (I3) — 1 file
+  4. `92522a7` feat(error): end-to-end error-code contract (P0-1, I1) — 5 files
+  5. `6065658` refactor(frontend): route through typed API layer + tri-state (P0-4, M2) — 19 files
+  6. `1ff31bc` refactor(asset-intel): split monolith into runtime/service/commands layers — 11 files
+  7. `b03a51f` refactor(target-panel): extract org/target subcomponents from TargetGroupedView (P1-4) — 15 files
+  8. `75165c3` docs(arch): architecture optimization design + P0/P1 implementation plans — 6 files
+  9. `6aaa0fb` chore(harness): tighten global-enforcement rules + skill cross-links — 7 files
+- **已记录证据**（均在本机最新工作树/HEAD 实跑）：
+  - `cargo check --workspace` → exit 0（Finished，1m37s）
+  - `cargo clippy --workspace -q -- -D warnings` → exit 0（0 告警）
+  - `cargo fmt --check` → exit 0
+  - `cargo nextest run --workspace --status-level fail` → **2592 passed / 7 skipped / 0 failed**（~95s）
+  - `just check-fe`（biome + tsc）→ exit 0；`just test-fe`（vitest）→ exit 0
+  - `cargo test --workspace export_bindings` + `git diff --exit-code -- frontend/lib/generated/` → 无漂移
+  - **拆分提交完成后** `just check` → `✓ passed` / `━━━ OK ━━━`（exit 0），且 `git status --porcelain` 仅剩 `agent-progress.md`（证明 fmt 步零改动、9 个 commit 与工作树字节一致）
+- **提交记录**：见上 9 个 commit。均为本地 commit，**未 push**（push 属高风险，需用户确认）。
+- **已知风险或未解决问题**：
+  - 各 commit 未做逐个隔离编译验证（成本高）；但按依赖序排列、最终 HEAD == 已验证全绿工作树，最终态有保证。
+  - 这些 P0/P1 项仍无 `feature_list.json` 专属条目（靠设计文档 + 计划跟踪）；当前唯一 `in_progress` 仍为 `target-surface-workbench`，本轮未动其状态。
+  - `xiaomi-mimo-provider` blocker 与本轮无关，保持原状。
+- **下一步最佳动作**：① 用户决定是否 push `feat/recon-service` / 开 PR；② 视需要把 P0/P1 在 `feature_list.json` 补成正式条目并标 passing（已有证据）；③ 继续推进未动的 P1-2 / P1-3 / P2 项。
+
+---
+
+### 2026-05-30 · P0-4 前端 api 层（裸 invoke 收口）验证（多 agent 派发 · agent-5 执行）
+
+- **本轮目标**：controller agent-1 派发 dispatch `47df9103` / `t-1`，要求落地 P0-4（前端调用层回归 api 层）。计划：`docs/superpowers/plans/2026-05-29-p0-frontend-api-layer.md`。
+- **发现**：P0-4 的 9 个任务在当前未提交工作树中**已全部实现**，本轮转为**验证**（read-only + 跑测，未改业务代码）：
+  - 任务1：`frontend/lib/api/pipeline.ts` 已含 `executePipeline`/`cancelPipeline`/`deletePipeline` + 新头注释（"All pipeline IPC lives here"）✅
+  - 任务2/3：`rg 'targets\.(execute|cancel|delete)Pipeline' frontend` → 0 命中；`PipelinePanel.tsx` 改用 `listPipelines`/`deletePipeline` ✅
+  - 任务4：`frontend/lib/api/vuln-intel.ts` 已含 `addPocFull`(L109) + `wikiSearchDb`(L138) ✅
+  - 任务5/6/7/8：`rg 'invoke[<(]' frontend/components` → 仅 1 处 `FindingsPanel.tsx` 的 biome-ignore **注释**（convertFileSrc，非 invoke 调用）✅；`rg 'import {...invoke...} from "@/lib/api"' frontend/components` → 0 ✅
+  - 任务9：`frontend/lib/api/index.ts` 已不再 re-export `invoke`（barrel 硬约束）✅；`biome.json` 保留 `@tauri-apps/api/core` + `@/lib/api/client` 两条（计划允许只留 barrel 硬约束，第三条 `@/lib/api` 为可选双保险，未启用）
+- **运行过的验证**：
+  - `just check-fe`（biome + tsc）→ **exit 0**（236s，仅 models.generated.ts 预构建副作用输出，无类型/lint 错）
+  - `just test-fe`（vitest 全量 96 files）→ exit 1：**4 failed | 1090 passed | 12 skipped**；4 个失败**全部 `Test timed out in 5000ms`**，落在 `Markdown.lazy` / `PaneLeaf.memo` / `NewEngagementDialog` / 一个 createSession session 测试，**均与 api 层无关**；耗时异常（environment 282s / setup 177s）指向高负载
+  - 隔离重跑（低负载）4 失败文件 + P0-4 区：`pnpm exec vitest run Markdown.lazy PaneLeaf.memo NewEngagementDialog VulnIntelPanel PipelinePanel TargetPanel/hooks lib/api` → **exit 0，5 files / 27 passed**；之前超时的 "should be wrapped in React.memo" 2965ms、Markdown fallback 2541ms、NewEngagement 1794ms 均远低于 5000ms → **确认 4 个失败是多 agent 并发高负载下的环境性 flaky 超时，非 P0-4 回归**
+- **已记录证据**：见上"运行过的验证"
+- **提交记录**：未 commit（高风险需用户确认；且工作树含大量 P0-4 之外的未提交改动，需按功能拆分）
+- **已知风险或未解决问题**：
+  - `just test-fe` 全量在高负载下偶发超时（已隔离确认无关 P0-4）；干净全绿需在低负载下重跑
+  - 工作树含 P0-4 之外大量未提交改动（asset_intel / target panel / error-codes 等），commit 前需拆分
+  - `feature_list.json` 无 P0-4 专属条目（由计划文档 + 派单跟踪），当前唯一 `in_progress` 仍为 `target-surface-workbench`，本轮未改其状态
+- **下一步最佳动作**：① 低负载下重跑 `just test-fe` 取干净全绿；② 用户决定 P0-4 的 commit 拆分（建议按计划 9 任务的 commit 粒度）；③ P0-4 兄弟计划（panel error 态）另行推进
 
 ---
 
