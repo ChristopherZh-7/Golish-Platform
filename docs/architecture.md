@@ -67,8 +67,8 @@ this on every PR.
 └─────────────────────┬─────────────────────────────────────────────┘
                       │
 ┌─────────────────────▼─────────────────────────────────────────────┐
-│ L2 Simple infrastructure · 20 crates · 5 sub-clusters             │
-│   persistence: db · models · session · indexer                    │
+│ L2 Simple infrastructure · 24 crates · 5 sub-clusters             │
+│   persistence: db · models · session · indexer · graphiti         │
 │   os:          pty · shell-exec · events                          │
 │   llm:         llm-providers · rig-openai-responses · rig-zai-sdk │
 │   pentest:     pentest · vuln-intel · scan-runner · pentest-mcp   │
@@ -80,7 +80,7 @@ this on every PR.
 │ L1 Foundation (no internal golish-* deps; platform is the base)   │
 │   golish-platform · golish-js-analyzer                            │
 │   golish-core · golish-settings · golish-context · golish-mcp     │
-│   golish-projects · golish-graphiti                               │
+│   golish-projects                                                 │
 │   golish-json-repair · golish-udiff                               │
 │   golish-pentest-domain · golish-vuln-intel-domain                │
 │   rig-anthropic-vertex · rig-gemini-vertex                        │
@@ -100,7 +100,6 @@ this on every PR.
 | `golish-context` | Token budget + context window tracking |
 | `golish-mcp` | MCP protocol client + `McpManager` + transport (stdio/http/sse) |
 | `golish-projects` | Project directory discovery + metadata |
-| `golish-graphiti` | Knowledge graph trait |
 | `golish-json-repair` | Fixes malformed JSON emitted by LLMs |
 | `golish-udiff` | Unified-diff parsing + application |
 | `golish-pentest-domain` | Pentest data model (pure types) |
@@ -110,17 +109,18 @@ this on every PR.
 
 #### L2 — Simple infrastructure (only L1 deps)
 
-L2 contains 23 crates organized into **5 functional sub-clusters** for
+L2 contains 24 crates organized into **5 functional sub-clusters** for
 discoverability. The cluster boundary is purely **documentary** — the DAG
 guard (`scripts/check_dag.py`) only enforces the layer constraint (a
 crate at L_n must depend only on crates at L_{≤n}). Sibling deps within
 the same layer are OK; cluster grouping does not add edges.
 
-##### L2.persistence (4) — data / session / index / model registry
+##### L2.persistence (5) — data / session / index / model registry
 
 | Crate | Depends on | Purpose |
 |---|---|---|
 | `golish-db` | core | Postgres pool + migrations + gatekeeper |
+| `golish-graphiti` | db | Graph knowledge base (shares golish-db's embedded PG + `PgPool`) |
 | `golish-models` | settings | Model metadata tables (IDs, capabilities, `AiProvider` mapping) |
 | `golish-session` | core | Session archive + manager |
 | `golish-indexer` | settings | File tree indexing via `vtcode-indexer` |
@@ -273,6 +273,31 @@ narrow sub-state over `AppState`.
    `State<'_, DbState>` / `State<'_, PtyState>` / etc. Use
    `State<'_, AppState>` only when a command genuinely crosses
    domains.
+5. **Data ownership (servitization S1-1)** — every `golish-db` repo
+   belongs to exactly one service (recon / vuln / pentest / agent /
+   platform; see the ownership table below). Command-layer modules may
+   only touch repos their own service owns; existing cross-service reads
+   are frozen as a ratchet in `scripts/check_repo_ownership.py` and must
+   migrate to a port (S1-2). New cross-service reads / new command-layer
+   raw `sqlx` are blocked by CI. This prepares DB-per-service. See
+   `docs/design/2026-05-30-servitization-readiness.md`.
+
+## Backend: data ownership (servitization S1-1)
+
+Each `golish-db` repo is owned by exactly one service; the guard
+`scripts/check_repo_ownership.py` (CI: `arch-check.yml`, local: `just arch`)
+enforces it via a ratchet — current cross-service coupling is allow-listed,
+new coupling fails CI. Each allow-list entry is a future `*Port` extraction
+candidate (S1-2).
+
+| Service | Repos |
+|---|---|
+| recon | targets, target_assets, organizations, api_endpoints, sitemap_store, directory_entries, fingerprints, js_analysis, passive_scans, sensitive_scan, screenshots, custom_rules, endpoint_tests |
+| vuln | vuln_intel, vuln_scan, scan_queue, wiki_kb, kb_research |
+| pentest | findings, methodology, pipelines, stage_runs, execution_plans, evidence_classifications, operation_state, sprint_contracts |
+| agent | sessions, tasks, subtasks, conversation_store, message_chains, agent_logs, tool_calls, sub_agent_dispatches, memories, msg_logs, prompt_templates, vector_store_logs, search_logs |
+| platform | vault, notes, terminal_logs |
+| shared | audit, scoped |
 
 ## Related docs
 

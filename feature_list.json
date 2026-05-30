@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
   "version": "0.1.7",
-  "last_updated": "2026-05-28",
+  "last_updated": "2026-05-30",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -518,6 +518,34 @@
         "risks_residual": "① runtime context usage 现在在 golish-context::TokenBudgetConfig::for_model 里单独识别 MiMo（前三个 1M，Omni 256K）；如果未来模型列表继续增长，需要同步该表或改为直接读取 golish-models registry ② rig-core 0.36 normalize_anthropic_base_url 行为：剥 /v1/messages / /messages / /v1 但保留 /anthropic 后缀；rig-core 升级时需回归 ③ 用户 sk- 测试 key 余额为 0；用 tp- key 联调通过 ④ 同设计文档 §6.4 dispatch 宏开销：本轮 +2 变体（RigXiaomi + RigXiaomiAnthropic），15 个 LlmClient 变体编译时间未观察显著膨胀"
       },
       "notes": "用户 §5.5 Step 0 选『不分发，自己来』触发主控豁免态（[DISPATCH:off] 模式 + 单 controller agent + 无其它在线 executor）。设计文档先由另一会话 (bajie-mcp-agent-1) 起草，本会话按 5 个 Phase 顺序实施。Phase 1-3 后端骨架 + Phase 3 联调验证 + Phase 4 前端 17 文件接入 + Phase 5 验证一气呵成。2026-05-27 用户指出模型下拉每项后面的 1M/256K 不该放在模型名里，且 context usage 每个模型都显示 128K；已去掉模型名 context 标签，并把 golish-context token budget 加上 MiMo context limits。2026-05-27 §2.1 切换：用户复测 MiMo 工具调用发现更大的 runtime 架构问题（文本 tool_call、ask_human 未弹、自然语言自我确认、可观测性不足），已拆出 `agent-tool-use-compatibility-layer` 作为当前唯一 in_progress；本条暂置 blocked，等待 compatibility layer 与真实 MiMo E2E 后再决定是否切 passing。**未做**：① just precommit 全套（当前 ./init.sh 暴露 baseline frontend 6 fails + Rust clippy 5 个既有 warning-as-error；本轮只做 targeted 验证）② Playwright e2e（推 Phase 2，与 chat panel xiaomi 选择器实测一起）③ commit（4 段未提交改动等用户决定拆分策略：建议 tracing / backfill / fix(task-mode) / feat(xiaomi) / tool-compat 5 commits）。"
+    },
+    {
+      "id": "arch-s1-1-repo-ownership-guard",
+      "priority": 1,
+      "area": "scripts/check_repo_ownership.py + .github/workflows/arch-check.yml + justfile + docs/architecture.md",
+      "title": "S1-1 repo data-ownership boundary guard (servitization groundwork)",
+      "user_visible_behavior": "无用户可见行为变化。新增确定性 CI 守卫：命令层模块只能读自己服务拥有的 golish-db repo；现有跨服务直读 (29 条) 与命令层裸 sqlx (30 文件) 冻结为 ratchet 基线，CI 只拦新增耦合。每条 allowlist 条目 = 未来 S1-2 *Port 抽取候选。为 DB-per-service 抽服务打地基。",
+      "status": "passing",
+      "verification": [
+        "python3 scripts/check_repo_ownership.py → exit 0 / 'OK clean'（2026-05-30 实跑 ✓）",
+        "守卫拦新增耦合：临时建 tools/vault_s1probe_tmp.rs 含 golish_db::repo::findings（platform→pentest 跨服务）→ 守卫 exit 1 报 'platform -> repo::findings (owned by pentest)'；删除后 exit 0（2026-05-30 实跑 ✓）",
+        "just arch → exit 0（check_dag ✓ 45 crates clean + repo-ownership ✓ OK clean，2026-05-30 实跑）。原既有 check_dag 违规 golish-graphiti(L1)→golish-db(L2) 本轮已修：graphiti 实际依赖 golish-db 的 PgPool，故归入 L2（commit b0811ea），非删依赖",
+        "just precommit → 未重跑；本功能改动集=CI 脚本(check_dag.py/check_repo_ownership.py)+arch-check.yml+justfile+文档，零 Rust/TS/Cargo 编辑，不影响 cargo/vitest；基线 just check 于 2026-05-30 记录为全绿"
+      ],
+      "evidence": {
+        "design": "docs/design/2026-05-30-servitization-readiness.md（§3 阻碍① 共享单库 / §5 五服务边界 / §6 阶段1 S1-1）",
+        "plan": "docs/superpowers/plans/2026-05-30-s1-1-repo-data-ownership-boundary.md（6 Task）",
+        "guard_script": "scripts/check_repo_ownership.py（REPO_OWNER repo→5 服务 + SHARED_REPOS{audit,scoped} + DOMAIN_RULES 调用方路径→域 + ALLOWLIST 29 跨服务条目 + RAW_SQL_ALLOWLIST 30 文件）",
+        "ci": ".github/workflows/arch-check.yml 新增 repo-ownership job（actions/setup-python 3.11 + 跑守卫）",
+        "just_recipe": "justfile 新增 arch recipe（bash 包装，两守卫均无条件跑 + 聚合退出码，避免一个失败掩盖另一个）",
+        "docs": "docs/architecture.md：Evolution principles 增 #5 Data ownership + 新增 'Backend: data ownership (servitization S1-1)' 服务→repo 表",
+        "guard_clean_run": "python3 scripts/check_repo_ownership.py → exit 0 'OK clean'（2026-05-30）",
+        "guard_catches_new": "temp probe tools/vault_s1probe_tmp.rs（platform 域 use golish_db::repo::findings/pentest）→ exit 1 'platform -> repo::findings (owned by pentest)'；删除后 exit 0（2026-05-30）",
+        "dag_fix": "check_dag.py: golish-graphiti L1.0→L2.0 + 加入 persistence L2_CLUSTER（graphiti 依赖 golish-db PgPool，sibling edge 合法，非删依赖）。docs/architecture.md 层图 + L1/L2 目录同步（L2.persistence 5 crate · L2 计 24）。just arch → exit 0",
+        "commits": "feat/recon-service（未 push）：b0811ea fix(arch) graphiti L2 · dc9ad0f feat(arch) 守卫脚本 · 821c101 ci(arch) CI+just arch · docs(arch) commit 含 architecture.md/design/plan/feature_list/agent-progress",
+        "recorded_at": "2026-05-30"
+      },
+      "notes": "依据 docs/design/2026-05-30-servitization-readiness.md §6 S1-1。Task 1/2/4/5/6.1-6.2 由 MCP-3（后端工程）执行，上下文 2026-05-30 转交 MCP-5 收尾 Task 6.3/6.4 + 修既有 check_dag 违规 + 提交。**已收口为 passing**：just arch 双守卫全绿（check_dag 45 crates ✓ + repo-ownership ✓）。原 check_dag 违规 golish-graphiti(L1)→golish-db(L2) 系 commit 49cc135 加显式依赖后漏更新层表所致，本轮修为 graphiti 归 L2（依赖 golish-db PgPool，非删依赖）。改动集零 Rust/TS/Cargo diff，just precommit 未重跑（不影响编译/测试，基线全绿）。已落 4 commit 到 feat/recon-service（b0811ea/dc9ad0f/821c101 + docs commit），未 push。物理重排 repo 子模块(S1-1b) 与 *Port 抽取(S1-2) 为后续。"
     }
   ]
 }
