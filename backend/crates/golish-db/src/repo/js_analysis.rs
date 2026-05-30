@@ -86,18 +86,10 @@ pub async fn list_by_target(pool: &PgPool, target_id: Uuid) -> Result<Vec<JsAnal
 }
 
 pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<JsAnalysisResult>> {
-    let row =
-        sqlx::query_as::<_, JsAnalysisResult>("SELECT * FROM js_analysis_results WHERE id = $1")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?;
-    Ok(row)
+    super::scoped::get_by_id(pool, "js_analysis_results", id).await
 }
 
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("DELETE FROM js_analysis_results WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    super::scoped::delete_by_id(pool, "js_analysis_results", id).await?;
     Ok(())
 }

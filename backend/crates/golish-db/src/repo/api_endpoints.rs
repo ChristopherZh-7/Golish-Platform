@@ -99,9 +99,6 @@ pub async fn update_capture_path(pool: &PgPool, id: Uuid, capture_path: &str) ->
 }
 
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("DELETE FROM api_endpoints WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    super::scoped::delete_by_id(pool, "api_endpoints", id).await?;
     Ok(())
 }

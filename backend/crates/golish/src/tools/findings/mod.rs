@@ -3,7 +3,6 @@ pub use crud::*;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use uuid::Uuid;
 
 pub(super) fn evidence_dir(project_path: Option<&str>) -> PathBuf {
     if let Some(pp) = project_path {
@@ -101,8 +100,9 @@ impl Severity {
 pub enum FindingStatus {
     Open,
     Confirmed,
+    Fixed,
     FalsePositive,
-    Resolved,
+    Accepted,
 }
 
 impl FindingStatus {
@@ -110,15 +110,23 @@ impl FindingStatus {
         match self {
             Self::Open => "open",
             Self::Confirmed => "confirmed",
-            Self::FalsePositive => "falsepositif",
-            Self::Resolved => "resolved",
+            Self::Fixed => "fixed",
+            // Must match the PG `finding_status` enum and golish-db's canonical
+            // `FindingStatus` (snake_case `false_positive`); otherwise the
+            // `::finding_status` cast in `insert_finding` rejects the value.
+            Self::FalsePositive => "false_positive",
+            Self::Accepted => "accepted",
         }
     }
     fn from_str(s: &str) -> Self {
         match s {
             "confirmed" => Self::Confirmed,
-            "falsepositif" | "falsepositive" => Self::FalsePositive,
-            "resolved" => Self::Resolved,
+            "fixed" => Self::Fixed,
+            // Accept the canonical PG value plus the historical misspelling.
+            "false_positive" | "falsepositif" | "falsepositive" => Self::FalsePositive,
+            "accepted" => Self::Accepted,
+            // The retired "resolved" status degrades to "fixed" for legacy rows.
+            "resolved" => Self::Fixed,
             _ => Self::Open,
         }
     }
@@ -141,31 +149,8 @@ pub(super) fn ts_from_dt(dt: chrono::DateTime<chrono::Utc>) -> u64 {
     dt.timestamp() as u64
 }
 
-#[derive(sqlx::FromRow)]
-pub(super) struct FindingRow {
-    id: Uuid,
-    title: String,
-    sev: String,
-    cvss: Option<f64>,
-    url: String,
-    target: String,
-    target_id: Option<Uuid>,
-    description: String,
-    steps: String,
-    remediation: String,
-    tags: serde_json::Value,
-    tool: String,
-    template: String,
-    refs: serde_json::Value,
-    evidence: serde_json::Value,
-    status: String,
-    source: String,
-    created_at: chrono::DateTime<chrono::Utc>,
-    updated_at: chrono::DateTime<chrono::Utc>,
-}
-
-impl From<FindingRow> for Finding {
-    fn from(r: FindingRow) -> Self {
+impl From<golish_db::repo::findings::FindingDetailRow> for Finding {
+    fn from(r: golish_db::repo::findings::FindingDetailRow) -> Self {
         Self {
             id: r.id.to_string(),
             title: r.title,
@@ -189,6 +174,3 @@ impl From<FindingRow> for Finding {
         }
     }
 }
-
-#[allow(dead_code)]
-const SELECT_COLS: &str = "id, title, sev::TEXT, cvss, url, target, target_id, description, steps, remediation, tags, tool, template, refs, evidence, status::TEXT, source, created_at, updated_at";

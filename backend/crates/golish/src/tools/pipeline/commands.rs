@@ -124,12 +124,8 @@ pub async fn pipeline_list(
     project_path: Option<String>,
 ) -> Result<Vec<Pipeline>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows: Vec<serde_json::Value> = sqlx::query_scalar(
-        "SELECT data FROM pipelines WHERE project_path = $1 ORDER BY updated_at DESC",
-    )
-    .bind(project_path.as_deref())
-    .fetch_all(pool)
-    .await?;
+    let rows =
+        golish_db::repo::pipelines::list_data_by_project(pool, project_path.as_deref()).await?;
 
     let items: Vec<Pipeline> = rows
         .into_iter()
@@ -178,16 +174,17 @@ pub async fn pipeline_save(
     };
     let json = serde_json::to_value(&entry)?;
     let uid: Uuid = id.parse().unwrap();
-    sqlx::query(
-        r#"INSERT INTO pipelines (id, data, project_path)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = NOW()"#,
-    )
-    .bind(uid)
-    .bind(&json)
-    .bind(project_path.as_deref())
-    .execute(pool)
-    .await?;
+    // Scoping guard (AGENTS.md I2): the upsert's ON CONFLICT branch must not
+    // overwrite a pipeline owned by another project. If this id already exists
+    // outside the caller's project, reject it; brand-new ids fall through to INSERT.
+    let cross_project =
+        golish_db::repo::pipelines::find_cross_project(pool, uid, project_path.as_deref()).await?;
+    if cross_project.is_some() {
+        return Err(GolishError::NotFound(
+            "pipeline not found in the current project".to_string(),
+        ));
+    }
+    golish_db::repo::pipelines::upsert(pool, uid, &json, project_path.as_deref()).await?;
     Ok(id)
 }
 
@@ -198,14 +195,12 @@ pub async fn pipeline_delete(
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = project_path;
     let Ok(uid) = id.parse::<Uuid>() else {
         return Ok(());
     };
-    sqlx::query("DELETE FROM pipelines WHERE id=$1")
-        .bind(uid)
-        .execute(pool)
-        .await?;
+    let affected =
+        golish_db::repo::pipelines::delete_scoped(pool, uid, project_path.as_deref()).await?;
+    crate::tools::scoping::ensure_scoped_mutation(affected)?;
     Ok(())
 }
 
@@ -216,14 +211,13 @@ pub async fn pipeline_load(
     project_path: Option<String>,
 ) -> Result<Pipeline, GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = project_path;
     let uid: Uuid = id
         .parse()
         .map_err(|e: uuid::Error| GolishError::Validation(e.to_string()))?;
-    let data: serde_json::Value = sqlx::query_scalar("SELECT data FROM pipelines WHERE id=$1")
-        .bind(uid)
-        .fetch_one(pool)
-        .await?;
+    // Scoping guard (AGENTS.md I2): only load a pipeline in the caller's project.
+    let data: serde_json::Value = crate::tools::scoping::ensure_scoped_found(
+        golish_db::repo::pipelines::load_data_scoped(pool, uid, project_path.as_deref()).await?,
+    )?;
     Ok(serde_json::from_value(data)?)
 }
 

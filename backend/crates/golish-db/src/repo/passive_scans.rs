@@ -111,9 +111,6 @@ pub async fn stats_by_target(pool: &PgPool, target_id: Uuid) -> Result<serde_jso
 }
 
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("DELETE FROM passive_scan_logs WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    super::scoped::delete_by_id(pool, "passive_scan_logs", id).await?;
     Ok(())
 }

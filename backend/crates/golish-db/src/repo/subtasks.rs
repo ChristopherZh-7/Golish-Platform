@@ -29,11 +29,7 @@ pub async fn create(pool: &PgPool, s: NewSubtask) -> Result<Subtask> {
 }
 
 pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<Subtask>> {
-    let row = sqlx::query_as::<_, Subtask>("SELECT * FROM subtasks WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row)
+    super::scoped::get_by_id(pool, "subtasks", id).await
 }
 
 pub async fn list_by_task(pool: &PgPool, task_id: Uuid) -> Result<Vec<Subtask>> {

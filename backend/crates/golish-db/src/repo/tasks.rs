@@ -19,11 +19,7 @@ pub async fn create(pool: &PgPool, t: NewTask) -> Result<Task> {
 }
 
 pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<Task>> {
-    let row = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row)
+    super::scoped::get_by_id(pool, "tasks", id).await
 }
 
 pub async fn list_by_session(pool: &PgPool, session_id: Uuid) -> Result<Vec<Task>> {

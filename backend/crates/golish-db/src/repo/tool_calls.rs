@@ -24,11 +24,7 @@ pub async fn create(pool: &PgPool, tc: NewToolCall) -> Result<ToolCall> {
 }
 
 pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<ToolCall>> {
-    let row = sqlx::query_as::<_, ToolCall>("SELECT * FROM tool_calls WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row)
+    super::scoped::get_by_id(pool, "tool_calls", id).await
 }
 
 pub async fn list_by_session(pool: &PgPool, session_id: Uuid) -> Result<Vec<ToolCall>> {

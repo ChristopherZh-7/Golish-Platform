@@ -11,12 +11,16 @@ pub async fn intel_match_targets(
     project_path: Option<String>,
 ) -> Result<Vec<VulnEntry>, GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = project_path;
 
-    let target_rows: Vec<(String, serde_json::Value)> =
-        sqlx::query_as("SELECT name, tags FROM targets")
-            .fetch_all(pool)
-            .await?;
+    // Scoping guard (AGENTS.md I2): only match against the caller's targets,
+    // mirroring `target_list` visibility (incl. legacy global rows).
+    let target_rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
+        "SELECT name, tags FROM targets \
+         WHERE ($1 IS NULL OR project_path = $1 OR project_path = '')",
+    )
+    .bind(project_path.as_deref())
+    .fetch_all(pool)
+    .await?;
 
     let mut keywords = Vec::new();
     for (name, tags) in &target_rows {

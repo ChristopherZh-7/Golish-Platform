@@ -22,11 +22,7 @@ pub async fn create(pool: &PgPool, s: NewSession) -> Result<Session> {
 }
 
 pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<Session>> {
-    let row = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row)
+    super::scoped::get_by_id(pool, "sessions", id).await
 }
 
 pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<Session>> {
@@ -48,9 +44,6 @@ pub async fn update_status(pool: &PgPool, id: Uuid, status: SessionStatus) -> Re
 }
 
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("DELETE FROM sessions WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    super::scoped::delete_by_id(pool, "sessions", id).await?;
     Ok(())
 }

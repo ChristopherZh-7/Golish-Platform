@@ -458,12 +458,7 @@ pub async fn method_start_project(
     };
     let data = serde_json::to_value(&project)?;
     let uid: Uuid = project.id.parse().unwrap_or_else(|_| Uuid::new_v4());
-    sqlx::query("INSERT INTO methodology_projects (id, data, project_path) VALUES ($1, $2, $3)")
-        .bind(uid)
-        .bind(&data)
-        .bind(project_path.as_deref())
-        .execute(pool)
-        .await?;
+    golish_db::repo::methodology::insert_data(pool, uid, &data, project_path.as_deref()).await?;
     Ok(project)
 }
 
@@ -473,12 +468,8 @@ pub async fn method_list_projects(
     project_path: Option<String>,
 ) -> Result<Vec<ProjectMethodology>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows: Vec<serde_json::Value> = sqlx::query_scalar(
-        "SELECT data FROM methodology_projects WHERE project_path = $1 ORDER BY updated_at DESC",
-    )
-    .bind(project_path.as_deref())
-    .fetch_all(pool)
-    .await?;
+    let rows =
+        golish_db::repo::methodology::list_data_by_project(pool, project_path.as_deref()).await?;
 
     let projects: Vec<ProjectMethodology> = rows
         .into_iter()
@@ -494,13 +485,11 @@ pub async fn method_load_project(
     project_path: Option<String>,
 ) -> Result<ProjectMethodology, GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let data: serde_json::Value =
-        sqlx::query_scalar("SELECT data FROM methodology_projects WHERE id=$1")
-            .bind(uid)
-            .fetch_one(pool)
-            .await?;
+    // Scoping guard (AGENTS.md I2): only load a methodology project in the caller's project.
+    let data: serde_json::Value = crate::tools::scoping::ensure_scoped_found(
+        golish_db::repo::methodology::get_data_scoped(pool, uid, project_path.as_deref()).await?,
+    )?;
     serde_json::from_value(data).map_err(GolishError::from)
 }
 
@@ -515,14 +504,12 @@ pub async fn method_update_item(
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = project_path;
     let uid: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-    let data: serde_json::Value =
-        sqlx::query_scalar("SELECT data FROM methodology_projects WHERE id=$1")
-            .bind(uid)
-            .fetch_one(pool)
-            .await?;
+    // Scoping guard (AGENTS.md I2): only mutate a methodology project in the caller's project.
+    let data: serde_json::Value = crate::tools::scoping::ensure_scoped_found(
+        golish_db::repo::methodology::get_data_scoped(pool, uid, project_path.as_deref()).await?,
+    )?;
 
     let mut project: ProjectMethodology = serde_json::from_value(data)?;
 
@@ -543,11 +530,7 @@ pub async fn method_update_item(
     project.updated_at = chrono::Utc::now().to_rfc3339();
     let new_data = serde_json::to_value(&project)?;
 
-    sqlx::query("UPDATE methodology_projects SET data=$1, updated_at=NOW() WHERE id=$2")
-        .bind(&new_data)
-        .bind(uid)
-        .execute(pool)
-        .await?;
+    golish_db::repo::methodology::update_data(pool, uid, &new_data).await?;
     Ok(())
 }
 
@@ -558,11 +541,9 @@ pub async fn method_delete_project(
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    sqlx::query("DELETE FROM methodology_projects WHERE id=$1")
-        .bind(uid)
-        .execute(pool)
-        .await?;
+    let affected =
+        golish_db::repo::methodology::delete_scoped(pool, uid, project_path.as_deref()).await?;
+    crate::tools::scoping::ensure_scoped_mutation(affected)?;
     Ok(())
 }

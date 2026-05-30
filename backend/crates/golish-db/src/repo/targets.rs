@@ -32,21 +32,11 @@ pub async fn create(
 }
 
 pub async fn list(pool: &PgPool, project_path: Option<&str>) -> Result<Vec<Target>> {
-    let rows = sqlx::query_as::<_, Target>(
-        "SELECT * FROM targets WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY created_at DESC",
-    )
-    .bind(project_path)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
+    super::scoped::list_by_project(pool, "targets", "created_at DESC", project_path).await
 }
 
 pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<Target>> {
-    let row = sqlx::query_as::<_, Target>("SELECT * FROM targets WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row)
+    super::scoped::get_by_id(pool, "targets", id).await
 }
 
 pub async fn update(
@@ -70,10 +60,7 @@ pub async fn update(
 }
 
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("DELETE FROM targets WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    super::scoped::delete_by_id(pool, "targets", id).await?;
     Ok(())
 }
 

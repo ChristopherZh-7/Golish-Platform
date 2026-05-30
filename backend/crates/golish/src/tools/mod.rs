@@ -10,6 +10,9 @@
 // Re-export everything from golish-tools
 pub use golish_tools::*;
 
+// Shared project-scoping (IDOR / ownership) guards for command CRUD (AGENTS.md I2)
+pub(crate) mod scoping;
+
 // Penetration testing tool management (ported from Golish)
 pub mod pentest;
 

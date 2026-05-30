@@ -21,11 +21,7 @@ pub async fn create(pool: &PgPool, plan: NewExecutionPlan) -> Result<ExecutionPl
 }
 
 pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<ExecutionPlan>> {
-    let row = sqlx::query_as::<_, ExecutionPlan>("SELECT * FROM execution_plans WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row)
+    super::scoped::get_by_id(pool, "execution_plans", id).await
 }
 
 pub async fn list_by_project(
@@ -93,9 +89,6 @@ pub async fn update_context(pool: &PgPool, id: Uuid, context: &serde_json::Value
 }
 
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("DELETE FROM execution_plans WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    super::scoped::delete_by_id(pool, "execution_plans", id).await?;
     Ok(())
 }

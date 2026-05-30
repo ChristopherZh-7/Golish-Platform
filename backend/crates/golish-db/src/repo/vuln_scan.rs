@@ -36,9 +36,6 @@ pub async fn get_scans_for_cve(pool: &PgPool, cve_id: &str) -> Result<Vec<VulnSc
 }
 
 pub async fn delete_scan(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("DELETE FROM vuln_scan_history WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    super::scoped::delete_by_id(pool, "vuln_scan_history", id).await?;
     Ok(())
 }

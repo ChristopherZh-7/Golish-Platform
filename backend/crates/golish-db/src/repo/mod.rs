@@ -18,6 +18,7 @@ pub mod organizations;
 pub mod passive_scans;
 pub mod pipelines;
 pub mod prompt_templates;
+pub mod scoped;
 pub mod screenshots;
 pub mod search_logs;
 pub mod sessions;

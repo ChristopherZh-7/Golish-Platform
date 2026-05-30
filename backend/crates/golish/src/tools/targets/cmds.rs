@@ -190,8 +190,20 @@ pub async fn target_update(
     project_path: Option<String>,
 ) -> Result<Target, GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    // Scoping guard (AGENTS.md I2): the target must belong to the caller's
+    // project (or be a legacy global row, project_path = ''), mirroring
+    // `target_list` visibility. Reject cross-project ids before any UPDATE.
+    let owned: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM targets WHERE id = $1 \
+         AND ($2 IS NULL OR project_path = $2 OR project_path = '')",
+    )
+    .bind(uid)
+    .bind(project_path.as_deref())
+    .fetch_optional(pool)
+    .await?;
+    crate::tools::scoping::ensure_scoped_found(owned)?;
 
     if let Some(n) = &name {
         sqlx::query("UPDATE targets SET name=$1, updated_at=NOW() WHERE id=$2")
@@ -303,12 +315,16 @@ pub async fn target_delete(
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    sqlx::query("DELETE FROM targets WHERE id=$1")
-        .bind(uid)
-        .execute(pool)
-        .await?;
+    let res = sqlx::query(
+        "DELETE FROM targets WHERE id=$1 \
+         AND ($2 IS NULL OR project_path = $2 OR project_path = '')",
+    )
+    .bind(uid)
+    .bind(project_path.as_deref())
+    .execute(pool)
+    .await?;
+    crate::tools::scoping::ensure_scoped_mutation(res.rows_affected())?;
     Ok(())
 }
 
@@ -333,14 +349,18 @@ pub async fn target_update_status(
     project_path: Option<String>,
 ) -> Result<Target, GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-    sqlx::query("UPDATE targets SET status=$1::target_status, updated_at=NOW() WHERE id=$2")
-        .bind(status.as_str())
-        .bind(uid)
-        .execute(pool)
-        .await?;
+    let res = sqlx::query(
+        "UPDATE targets SET status=$1::target_status, updated_at=NOW() WHERE id=$2 \
+         AND ($3 IS NULL OR project_path = $3 OR project_path = '')",
+    )
+    .bind(status.as_str())
+    .bind(uid)
+    .bind(project_path.as_deref())
+    .execute(pool)
+    .await?;
+    crate::tools::scoping::ensure_scoped_mutation(res.rows_affected())?;
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,

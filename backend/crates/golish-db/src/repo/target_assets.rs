@@ -78,9 +78,6 @@ pub async fn count_by_target(pool: &PgPool, target_id: Uuid) -> Result<i64> {
 }
 
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("DELETE FROM target_assets WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    super::scoped::delete_by_id(pool, "target_assets", id).await?;
     Ok(())
 }

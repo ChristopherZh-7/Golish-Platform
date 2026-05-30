@@ -71,11 +71,7 @@ impl ProfilePatch {
 /// Fetch a single organization by id. Returns `None` when the row no
 /// longer exists (e.g. parent got cascade-deleted between list and get).
 pub async fn get_one(pool: &PgPool, id: Uuid) -> Result<Option<Organization>> {
-    let row = sqlx::query_as::<_, Organization>("SELECT * FROM organizations WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row)
+    super::scoped::get_by_id(pool, "organizations", id).await
 }
 
 /// List all organizations for a project (flat, sorted by parent_id NULLs first
@@ -190,10 +186,7 @@ pub async fn move_to(pool: &PgPool, id: Uuid, new_parent: Option<Uuid>) -> Resul
 
 /// Cascade-deletes via ON DELETE CASCADE (subtree drops too).
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("DELETE FROM organizations WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    super::scoped::delete_by_id(pool, "organizations", id).await?;
     Ok(())
 }
 

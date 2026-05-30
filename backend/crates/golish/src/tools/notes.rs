@@ -3,14 +3,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::DbState;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct Note {
     pub id: String,
     pub entity_type: String,
     pub entity_id: String,
     pub content: String,
     pub color: String,
+    #[ts(type = "number")]
     pub created_at: u64,
+    #[ts(type = "number")]
     pub updated_at: u64,
 }
 
@@ -75,13 +78,13 @@ pub async fn notes_update(
     color: Option<String>,
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
-    let _ = project_path;
     let pool = state.pool_ready().await?;
     let uid: uuid::Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let c = color.unwrap_or_else(|| "yellow".to_string());
-    golish_db::repo::notes::update(pool, uid, &content, &c)
-        .await
-        .map_err(GolishError::from)
+    // Scoping guard (AGENTS.md I2): only update a note in the caller's project.
+    let affected =
+        golish_db::repo::notes::update(pool, uid, &content, &c, project_path.as_deref()).await?;
+    crate::tools::scoping::ensure_scoped_mutation(affected)
 }
 
 #[tauri::command]
@@ -90,10 +93,9 @@ pub async fn notes_delete(
     id: String,
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
-    let _ = project_path;
     let pool = state.pool_ready().await?;
     let uid: uuid::Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    golish_db::repo::notes::delete(pool, uid)
-        .await
-        .map_err(GolishError::from)
+    // Scoping guard (AGENTS.md I2): only delete a note in the caller's project.
+    let affected = golish_db::repo::notes::delete(pool, uid, project_path.as_deref()).await?;
+    crate::tools::scoping::ensure_scoped_mutation(affected)
 }

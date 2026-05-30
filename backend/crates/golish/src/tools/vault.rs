@@ -19,38 +19,24 @@ fn ts_from_dt(dt: chrono::DateTime<chrono::Utc>) -> u64 {
     dt.timestamp() as u64
 }
 
-#[derive(sqlx::FromRow)]
-struct VaultRow {
-    id: Uuid,
-    name: String,
-    entry_type: String,
-    username: String,
-    notes: String,
-    project: String,
-    tags: serde_json::Value,
-    status: String,
-    source_url: String,
-    last_validated_at: Option<chrono::DateTime<chrono::Utc>>,
-    created_at: chrono::DateTime<chrono::Utc>,
-    updated_at: chrono::DateTime<chrono::Utc>,
-}
+use golish_db::repo::vault::VaultSafeRow;
 
-impl From<VaultRow> for VaultEntrySafe {
-    fn from(r: VaultRow) -> Self {
-        Self {
-            id: r.id.to_string(),
-            name: r.name,
-            entry_type: VaultEntryType::from_str(&r.entry_type),
-            username: r.username,
-            notes: r.notes,
-            project: r.project,
-            tags: serde_json::from_value(r.tags).unwrap_or_default(),
-            status: r.status,
-            source_url: r.source_url,
-            last_validated_at: r.last_validated_at.map(ts_from_dt),
-            created_at: ts_from_dt(r.created_at),
-            updated_at: ts_from_dt(r.updated_at),
-        }
+/// Map a golish-db safe projection row to the frontend `VaultEntrySafe` DTO.
+/// (A free fn rather than a `From` impl: both types are foreign to this crate.)
+fn row_to_safe(r: VaultSafeRow) -> VaultEntrySafe {
+    VaultEntrySafe {
+        id: r.id.to_string(),
+        name: r.name,
+        entry_type: VaultEntryType::from_str(&r.entry_type),
+        username: r.username,
+        notes: r.notes,
+        project: r.project,
+        tags: serde_json::from_value(r.tags).unwrap_or_default(),
+        status: r.status,
+        source_url: r.source_url,
+        last_validated_at: r.last_validated_at.map(ts_from_dt),
+        created_at: ts_from_dt(r.created_at),
+        updated_at: ts_from_dt(r.updated_at),
     }
 }
 
@@ -60,16 +46,8 @@ pub async fn vault_list(
     project_path: Option<String>,
 ) -> Result<Vec<VaultEntrySafe>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows: Vec<VaultRow> = sqlx::query_as(
-        "SELECT id, name, entry_type::TEXT, username, notes, project, tags, status, source_url, last_validated_at, created_at, updated_at \
-         FROM vault_entries WHERE project_path = $1 ORDER BY created_at DESC",
-    )
-    .bind(project_path.as_deref())
-    .fetch_all(pool)
-    .await
-?;
-
-    Ok(rows.into_iter().map(VaultEntrySafe::from).collect())
+    let rows = golish_db::repo::vault::list_safe_by_project(pool, project_path.as_deref()).await?;
+    Ok(rows.into_iter().map(row_to_safe).collect())
 }
 
 #[tauri::command]
@@ -97,23 +75,20 @@ pub async fn vault_add(
     let tags_json = serde_json::to_value(&tg).unwrap_or_else(|_| serde_json::json!([]));
     let enc_value = obfuscate(&value);
 
-    sqlx::query(
-        r#"INSERT INTO vault_entries (id, name, entry_type, value, username, notes, project, tags, source_url, project_path)
-           VALUES ($1, $2, $3::vault_entry_type, $4, $5, $6, $7, $8, $9, $10)"#,
+    golish_db::repo::vault::insert_full(
+        pool,
+        id,
+        &name,
+        entry_type.as_str(),
+        &enc_value,
+        &un,
+        &nt,
+        &pj,
+        &tags_json,
+        &su,
+        project_path.as_deref(),
     )
-    .bind(id)
-    .bind(&name)
-    .bind(entry_type.as_str())
-    .bind(&enc_value)
-    .bind(&un)
-    .bind(&nt)
-    .bind(&pj)
-    .bind(&tags_json)
-    .bind(&su)
-    .bind(&project_path)
-    .execute(pool)
-    .await
-?;
+    .await?;
 
     Ok(VaultEntrySafe {
         id: short_id,
@@ -138,12 +113,11 @@ pub async fn vault_get_value(
     project_path: Option<String>,
 ) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let enc: String = sqlx::query_scalar("SELECT value FROM vault_entries WHERE id = $1")
-        .bind(uid)
-        .fetch_one(pool)
-        .await?;
+    // Scoping guard (AGENTS.md I2): never reveal a secret from another project.
+    let enc: String = crate::tools::scoping::ensure_scoped_found(
+        golish_db::repo::vault::get_value_scoped(pool, uid, project_path.as_deref()).await?,
+    )?;
     Ok(deobfuscate(&enc)?)
 }
 
@@ -160,63 +134,43 @@ pub async fn vault_update(
     project_path: Option<String>,
 ) -> Result<VaultEntrySafe, GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = &project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-    if let Some(n) = &name {
-        sqlx::query("UPDATE vault_entries SET name=$1, updated_at=NOW() WHERE id=$2")
-            .bind(n)
-            .bind(uid)
-            .execute(pool)
-            .await?;
-    }
-    if let Some(v) = &value {
-        sqlx::query("UPDATE vault_entries SET value=$1, updated_at=NOW() WHERE id=$2")
-            .bind(obfuscate(v))
-            .bind(uid)
-            .execute(pool)
-            .await?;
-    }
-    if let Some(u) = &username {
-        sqlx::query("UPDATE vault_entries SET username=$1, updated_at=NOW() WHERE id=$2")
-            .bind(u)
-            .bind(uid)
-            .execute(pool)
-            .await?;
-    }
-    if let Some(n) = &notes {
-        sqlx::query("UPDATE vault_entries SET notes=$1, updated_at=NOW() WHERE id=$2")
-            .bind(n)
-            .bind(uid)
-            .execute(pool)
-            .await?;
-    }
-    if let Some(p) = &project {
-        sqlx::query("UPDATE vault_entries SET project=$1, updated_at=NOW() WHERE id=$2")
-            .bind(p)
-            .bind(uid)
-            .execute(pool)
-            .await?;
-    }
-    if let Some(t) = &tags {
-        let j = serde_json::to_value(t).unwrap_or_else(|_| serde_json::json!([]));
-        sqlx::query("UPDATE vault_entries SET tags=$1, updated_at=NOW() WHERE id=$2")
-            .bind(&j)
-            .bind(uid)
-            .execute(pool)
-            .await?;
+    // Scoping guard (AGENTS.md I2): only update a vault entry in the caller's project.
+    let owned = golish_db::repo::vault::exists_scoped(pool, uid, project_path.as_deref()).await?;
+    crate::tools::scoping::ensure_scoped_found(owned)?;
+
+    // Only touch the row when at least one field was supplied (preserves the
+    // prior behaviour of not bumping `updated_at` on an all-`None` call).
+    if name.is_some()
+        || value.is_some()
+        || username.is_some()
+        || notes.is_some()
+        || project.is_some()
+        || tags.is_some()
+    {
+        let enc_value = value.as_ref().map(|v| obfuscate(v));
+        let tags_json = tags
+            .as_ref()
+            .map(|t| serde_json::to_value(t).unwrap_or_else(|_| serde_json::json!([])));
+        golish_db::repo::vault::update_fields(
+            pool,
+            uid,
+            name.as_deref(),
+            enc_value.as_deref(),
+            username.as_deref(),
+            notes.as_deref(),
+            project.as_deref(),
+            tags_json.as_ref(),
+        )
+        .await?;
     }
 
-    let row: VaultRow = sqlx::query_as(
-        "SELECT id, name, entry_type::TEXT, username, notes, project, tags, status, source_url, last_validated_at, created_at, updated_at \
-         FROM vault_entries WHERE id=$1",
-    )
-    .bind(uid)
-    .fetch_one(pool)
-    .await
-?;
+    let row = golish_db::repo::vault::get_safe(pool, uid)
+        .await?
+        .ok_or_else(|| GolishError::NotFound("vault entry not found".to_string()))?;
 
-    Ok(VaultEntrySafe::from(row))
+    Ok(row_to_safe(row))
 }
 
 #[tauri::command]
@@ -227,13 +181,11 @@ pub async fn vault_update_status(
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = &project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    sqlx::query("UPDATE vault_entries SET status=$1, last_validated_at=NOW() WHERE id=$2")
-        .bind(&status)
-        .bind(uid)
-        .execute(pool)
-        .await?;
+    let affected =
+        golish_db::repo::vault::set_status_scoped(pool, uid, &status, project_path.as_deref())
+            .await?;
+    crate::tools::scoping::ensure_scoped_mutation(affected)?;
     Ok(())
 }
 
@@ -244,14 +196,14 @@ pub async fn vault_validate(
     project_path: Option<String>,
 ) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = &project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
+    // Scoping guard (AGENTS.md I2): only validate a vault entry in the caller's project.
     let (enc_value, source_url, entry_type): (String, String, String) =
-        sqlx::query_as("SELECT value, source_url, entry_type::TEXT FROM vault_entries WHERE id=$1")
-            .bind(uid)
-            .fetch_one(pool)
-            .await?;
+        crate::tools::scoping::ensure_scoped_found(
+            golish_db::repo::vault::get_validate_fields_scoped(pool, uid, project_path.as_deref())
+                .await?,
+        )?;
 
     let value = deobfuscate(&enc_value)?;
 
@@ -297,11 +249,7 @@ pub async fn vault_validate(
         Err(_) => "unknown",
     };
 
-    sqlx::query("UPDATE vault_entries SET status=$1, last_validated_at=NOW() WHERE id=$2")
-        .bind(status)
-        .bind(uid)
-        .execute(pool)
-        .await?;
+    golish_db::repo::vault::set_status(pool, uid, status).await?;
 
     Ok(status.to_string())
 }
@@ -313,12 +261,10 @@ pub async fn vault_delete(
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    sqlx::query("DELETE FROM vault_entries WHERE id = $1")
-        .bind(uid)
-        .execute(pool)
-        .await?;
+    let affected =
+        golish_db::repo::vault::delete_scoped(pool, uid, project_path.as_deref()).await?;
+    crate::tools::scoping::ensure_scoped_mutation(affected)?;
     Ok(())
 }
 
@@ -332,22 +278,8 @@ pub async fn vault_resolve(
     let name = reference
         .trim_start_matches("{{vault:")
         .trim_end_matches("}}");
-    let enc: String = if let Some(ref pp) = project_path {
-        sqlx::query_scalar(
-            "SELECT value FROM vault_entries WHERE (name=$1 OR id::TEXT=$1) AND project_path = $2",
-        )
-        .bind(name)
-        .bind(pp)
-        .fetch_one(pool)
-        .await
-    } else {
-        sqlx::query_scalar(
-            "SELECT value FROM vault_entries WHERE (name=$1 OR id::TEXT=$1) AND project_path = ''",
-        )
-        .bind(name)
-        .fetch_one(pool)
-        .await
-    }
-    .map_err(|_| format!("Vault entry '{}' not found", name))?;
+    let enc = golish_db::repo::vault::resolve_value(pool, name, project_path.as_deref())
+        .await?
+        .ok_or_else(|| format!("Vault entry '{}' not found", name))?;
     Ok(deobfuscate(&enc)?)
 }

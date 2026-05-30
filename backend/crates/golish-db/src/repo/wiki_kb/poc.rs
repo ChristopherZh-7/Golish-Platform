@@ -170,10 +170,7 @@ pub async fn get_pocs_for_cve(pool: &PgPool, cve_id: &str) -> Result<Vec<VulnKbP
 }
 
 pub async fn delete_poc(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("DELETE FROM vuln_kb_pocs WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    crate::repo::scoped::delete_by_id(pool, "vuln_kb_pocs", id).await?;
     Ok(())
 }
 

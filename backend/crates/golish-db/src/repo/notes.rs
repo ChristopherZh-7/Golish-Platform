@@ -63,20 +63,31 @@ pub async fn list_filtered(
     Ok(rows)
 }
 
-pub async fn update(pool: &PgPool, id: Uuid, content: &str, color: &str) -> Result<()> {
-    sqlx::query("UPDATE notes SET content = $1, color = $2, updated_at = NOW() WHERE id = $3")
-        .bind(content)
-        .bind(color)
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(())
+/// Update a note, scoped to `project_path` (AGENTS.md I2). Returns the number of
+/// affected rows so the caller can reject cross-project ids (zero rows == the
+/// note is missing or belongs to another project).
+pub async fn update(
+    pool: &PgPool,
+    id: Uuid,
+    content: &str,
+    color: &str,
+    project_path: Option<&str>,
+) -> Result<u64> {
+    let res = sqlx::query(
+        "UPDATE notes SET content = $1, color = $2, updated_at = NOW() \
+         WHERE id = $3 AND project_path IS NOT DISTINCT FROM $4",
+    )
+    .bind(content)
+    .bind(color)
+    .bind(id)
+    .bind(project_path)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
 }
 
-pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("DELETE FROM notes WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(())
+/// Delete a note, scoped to `project_path` (AGENTS.md I2). Returns the number of
+/// affected rows so the caller can reject cross-project ids.
+pub async fn delete(pool: &PgPool, id: Uuid, project_path: Option<&str>) -> Result<u64> {
+    super::scoped::delete_scoped(pool, "notes", id, project_path).await
 }

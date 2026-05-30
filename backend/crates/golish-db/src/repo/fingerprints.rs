@@ -69,9 +69,6 @@ pub async fn list_by_category(
 }
 
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("DELETE FROM fingerprints WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    super::scoped::delete_by_id(pool, "fingerprints", id).await?;
     Ok(())
 }
