@@ -33,6 +33,7 @@ pub mod history;
 mod indexer;
 mod mcp;
 mod models;
+mod ports;
 mod projects;
 mod pty;
 pub mod runtime;
