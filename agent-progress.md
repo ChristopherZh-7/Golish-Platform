@@ -19,7 +19,7 @@
 | **标准验证** | `just precommit` = `just check && just test` |
 | **当前最高优先级** | **target-surface-workbench**（2026-05-28 新增 · 当前唯一 `in_progress`）。ZAP/SecurityView 删除后，正在把 Target Manager 改成 organization tree + selected target surface/evidence workbench。 |
 | **当前 blocker** | `xiaomi-mimo-provider` 已从 `in_progress` 切 `blocked`，等待 tool-use compatibility layer 与真实 MiMo E2E 后再决定 passing。2026-05-27 复测发现 `ask_human` 被误包成普通 ToolApprovalRequest；已修为直接发 `AskHumanRequest`，但需重启 dev app 后真实复测。**2026-05-30 更新**：本机 `just check` **全绿**（fmt + check-fe + test-fe + lint-rust（clippy `-D warnings` 0 告警 + `cargo fmt --check`）+ test-rust-all（nextest **2592 passed / 7 skipped / 0 failed**）+ check-types（ts-rs 绑定无漂移）均 ✅）。此前记录的 clippy warnings 与 sandbox PermissionDenied baseline failures 在本机最新工作树**未复现**。 |
-| **未提交的半成品** | **2026-05-30：架构优化批已拆 9 commit 落 `feat/recon-service`（`98beea9`→`6aaa0fb`，HEAD `d060ce4`）。** 其上叠了 **P0-3b 残余作用域 SQL 下沉**（T1-T6 全部完成，**未 commit**）：26 个 tracked 文件改动 + 6 个新 repo 模块（untracked：`repo/{scan_queue,sensitive_scan,conversation_store,directory_entries,sitemap_store,custom_rules}.rs`）。验证：rg 命令层裸作用域 SQL 清零、`golish-db` nextest 46/46、`golish --lib` nextest 318/318、`clippy golish-db+golish` 全绿，并跑通**全栈 `just precommit` → `✓ All checks passed!`（exit 0）**（含用户授权后修的 1 个 pre-existing `integrations/commands.rs:179` baseline）。仅差 commit（高风险待确认）。 |
+| **未提交的半成品** | **2026-05-30：架构优化批已拆 9 commit 落 `feat/recon-service`（`98beea9`→`6aaa0fb`，HEAD `d060ce4`）。** 其上叠了 **P0-3b 残余作用域 SQL 下沉**（T1-T6 全部完成，**未 commit**）：26 个 tracked 文件改动 + 6 个新 repo 模块（untracked：`repo/{scan_queue,sensitive_scan,conversation_store,directory_entries,sitemap_store,custom_rules}.rs`）。验证：rg 命令层裸作用域 SQL 清零、`golish-db` nextest 46/46、`golish --lib` nextest 318/318、`clippy golish-db+golish` 全绿，并跑通**全栈 `just precommit` → `✓ All checks passed!`（exit 0）**（含用户授权后修的 1 个 pre-existing `integrations/commands.rs:179` baseline）。**已按拆分提交 4 个 commit**（`65e0292`/`06af27a`/`d023386`/`c2f5ad2`，落 `feat/recon-service`，未 push）。 |
 
 ---
 
@@ -51,7 +51,12 @@
   - `cargo clippy -p golish-db -p golish --all-targets -- -D warnings` → **exit 0 全绿**。本轮先修我引入的 type_complexity×2（抽 `ConvListRow`/`WorkspacePrefsRow` 别名）+ explicit_auto_deref×1（`&mut tx`）；随后**经用户明确授权**（「修掉 integrations clippy」）顺手清掉 1 个 pre-existing baseline `integrations/commands.rs:179 doc_lazy_continuation`（doc 注释里行首 `+ ` 被 markdown 误判为列表项 → 把 `+` 移到上一行行尾，非 SQL 逻辑改动）。
   - **`just precommit`（用户授权后跑全栈门禁）→ exit 0 `✓ All checks passed!`**（~18.5min；= fmt + check-fe[biome+tsc] + test-fe[vitest] + lint-rust[clippy `--workspace` `-D warnings` + `cargo fmt --check`] + test-rust-all[nextest `--workspace`] + check-types[ts-rs gen + `git diff --exit-code` 无漂移] + test[再跑前后端]）。`fmt` 自动格式化后工作树仍仅本轮预期改动，无意外漂移。
 - **已记录证据**：见上「运行过的验证」；新文件 6 个 repo 模块为 untracked（`git diff --stat` 不显示，nextest 已编译并跑过其测试）。
-- **提交记录**：**未 commit**（commit 属高风险，需用户确认；且工作树含 P0-3b 全量改动 26 改 + 6 新，commit 前可按 T1-T6 / Tier 粒度拆分）。
+- **提交记录**：经用户授权（「按拆分提交」）已落 4 个 commit 到 `feat/recon-service`（**未 push**）：
+  1. `65e0292` feat(db): project-scoped repo helpers for residual scoped SQL sink (P0-3b) — 15 files
+  2. `06af27a` refactor(tools): route residual scoped SQL through golish-db repo (P0-3b) — 17 files
+  3. `d023386` fix(integrations): resolve clippy doc_lazy_continuation in test module docs — 1 file
+  4. `c2f5ad2` docs: record P0-3b residual scoped SQL sink plan + progress — 2 files
+  （+ 本条 progress 收尾微调另起一个 docs commit）。工作树提交后 `git status` 干净。
 - **已知风险或未解决问题**：
   - 全部为 `cargo`（无活 DB）层验证——零漂移单测保证 SQL 字符串与迁移前逐字一致，但 SQL 实际行为未跑 pg-embed 集成测试（与既有 repo 测试范式一致）。
   - `just precommit` 已跑且**全绿**（见上）；唯一未做的是 **commit 本身**（高风险，需用户确认）。
