@@ -2,7 +2,8 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use sqlx::postgres::PgRow;
+use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use crate::models::AuditEntry;
@@ -426,6 +427,71 @@ pub async fn clear(pool: &PgPool, project_path: Option<&str>) -> Result<u64> {
     .execute(pool)
     .await?;
     Ok(result.rows_affected())
+}
+
+// ── `audit_*` Tauri command helpers (exact `project_path = $n`) ─────────────
+// The GUI `audit_list` / `audit_clear` commands use an exact `project_path = $n`
+// match (project_path defaults to `''`), which differs from the `IS NULL`-aware
+// predicate of `list` / `clear` above. Kept separate to preserve behaviour.
+
+const AUDIT_ENTRY_LIST_COLS: &str =
+    "created_at, action, category, details, entity_type, entity_id, source";
+
+fn build_list_by_project_exact_sql() -> String {
+    format!(
+        "SELECT {AUDIT_ENTRY_LIST_COLS} FROM audit_log WHERE ($1::text IS NULL OR category = $1) AND project_path = $2 ORDER BY created_at DESC LIMIT $3"
+    )
+}
+
+fn build_clear_by_project_exact_sql() -> String {
+    "DELETE FROM audit_log WHERE project_path = $1".to_string()
+}
+
+/// List audit rows for an exact `project_path` match, optionally filtered by
+/// `category`, newest first. Generic over the caller's row type (the command
+/// layer's 7-column `AuditRow`).
+pub async fn list_by_project_exact<T>(
+    pool: &PgPool,
+    category: Option<&str>,
+    project_path: &str,
+    limit: i64,
+) -> Result<Vec<T>>
+where
+    T: for<'r> FromRow<'r, PgRow> + Send + Unpin,
+{
+    let rows = sqlx::query_as::<_, T>(&build_list_by_project_exact_sql())
+        .bind(category)
+        .bind(project_path)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}
+
+/// Delete every audit row for an exact `project_path` match. Returns rows affected.
+pub async fn clear_by_project_exact(pool: &PgPool, project_path: &str) -> Result<u64> {
+    let res = sqlx::query(&build_clear_by_project_exact_sql())
+        .bind(project_path)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+#[cfg(test)]
+mod sql_tests {
+    use super::*;
+
+    #[test]
+    fn audit_command_sql_matches_command_layer() {
+        assert_eq!(
+            build_list_by_project_exact_sql(),
+            "SELECT created_at, action, category, details, entity_type, entity_id, source FROM audit_log WHERE ($1::text IS NULL OR category = $1) AND project_path = $2 ORDER BY created_at DESC LIMIT $3"
+        );
+        assert_eq!(
+            build_clear_by_project_exact_sql(),
+            "DELETE FROM audit_log WHERE project_path = $1"
+        );
+    }
 }
 
 // ─── Cross-table timeline ──────────────────────────────────────────────

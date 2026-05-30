@@ -291,3 +291,89 @@ pub async fn resolve_value(
     };
     Ok(row)
 }
+
+// ── AI `credential_vault` tool helpers (exact `project_path = $n`) ──────────
+// These mirror the per-tool SQL exactly (lowercase `entry_type::text`, exact
+// project_path match) and are kept distinct from the frontend-safe helpers
+// above to avoid any semantics drift.
+
+fn build_list_name_meta_by_project_sql() -> String {
+    "SELECT name, entry_type::text, username, notes FROM vault_entries WHERE project_path = $1 ORDER BY name".to_string()
+}
+
+fn build_get_secret_by_name_project_sql() -> String {
+    "SELECT value, username, entry_type::text FROM vault_entries WHERE name=$1 AND project_path = $2 LIMIT 1".to_string()
+}
+
+fn build_get_value_by_name_project_sql() -> String {
+    "SELECT value FROM vault_entries WHERE name=$1 AND project_path = $2 LIMIT 1".to_string()
+}
+
+/// `(name, entry_type, username, notes)` rows for a project (exact match),
+/// alphabetical. Backs the AI `credential_vault` tool's `list` action.
+pub async fn list_name_meta_by_project(
+    pool: &PgPool,
+    project_path: &str,
+) -> Result<Vec<(String, String, String, String)>> {
+    let rows = sqlx::query_as::<_, (String, String, String, String)>(
+        &build_list_name_meta_by_project_sql(),
+    )
+    .bind(project_path)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// `(value, username, entry_type)` for the first vault entry matching `name`
+/// within a project (exact match). Backs the AI `credential_vault` tool's
+/// `get` action. `None` == no such entry.
+pub async fn get_secret_by_name_project(
+    pool: &PgPool,
+    name: &str,
+    project_path: &str,
+) -> Result<Option<(String, String, String)>> {
+    let row =
+        sqlx::query_as::<_, (String, String, String)>(&build_get_secret_by_name_project_sql())
+            .bind(name)
+            .bind(project_path)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row)
+}
+
+/// The first vault entry's encrypted `value` matching `name` within a project
+/// (exact match, `LIMIT 1`). Backs the `auth_probe` token resolver, which only
+/// needs the encrypted value. `None` == no such entry.
+pub async fn get_value_by_name_project(
+    pool: &PgPool,
+    name: &str,
+    project_path: &str,
+) -> Result<Option<String>> {
+    let row = sqlx::query_scalar::<_, String>(&build_get_value_by_name_project_sql())
+        .bind(name)
+        .bind(project_path)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vault_tool_sql_matches_command_layer() {
+        assert_eq!(
+            build_list_name_meta_by_project_sql(),
+            "SELECT name, entry_type::text, username, notes FROM vault_entries WHERE project_path = $1 ORDER BY name"
+        );
+        assert_eq!(
+            build_get_secret_by_name_project_sql(),
+            "SELECT value, username, entry_type::text FROM vault_entries WHERE name=$1 AND project_path = $2 LIMIT 1"
+        );
+        assert_eq!(
+            build_get_value_by_name_project_sql(),
+            "SELECT value FROM vault_entries WHERE name=$1 AND project_path = $2 LIMIT 1"
+        );
+    }
+}

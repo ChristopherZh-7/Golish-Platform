@@ -266,3 +266,37 @@ pub async fn update_profile(
     tx.commit().await?;
     Ok(Some(row))
 }
+
+fn build_find_root_id_by_name_sql() -> String {
+    "SELECT id FROM organizations WHERE project_path = $1 AND name = $2 AND parent_id IS NULL LIMIT 1"
+        .to_string()
+}
+
+/// Find the root (parent-less) organization id by exact name within a project.
+/// Mirrors the find-or-create rule used by `store_organization_update`. `None`
+/// == no such root org yet.
+pub async fn find_root_id_by_name(
+    pool: &PgPool,
+    project_path: &str,
+    name: &str,
+) -> Result<Option<Uuid>> {
+    let id = sqlx::query_scalar::<_, Uuid>(&build_find_root_id_by_name_sql())
+        .bind(project_path)
+        .bind(name)
+        .fetch_optional(pool)
+        .await?;
+    Ok(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_root_id_by_name_sql_matches_command_layer() {
+        assert_eq!(
+            build_find_root_id_by_name_sql(),
+            "SELECT id FROM organizations WHERE project_path = $1 AND name = $2 AND parent_id IS NULL LIMIT 1"
+        );
+    }
+}

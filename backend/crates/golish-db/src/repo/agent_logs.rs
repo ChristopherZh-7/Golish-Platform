@@ -1,5 +1,6 @@
 use anyhow::Result;
-use sqlx::PgPool;
+use sqlx::postgres::PgRow;
+use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use crate::models::{AgentLog, AgentType, NewAgentLog};
@@ -73,4 +74,39 @@ pub struct AgentCallStats {
     pub executor: AgentType,
     pub call_count: i64,
     pub total_duration_ms: i64,
+}
+
+const AGENT_LOG_LIST_COLS: &str = "id, session_id, task_id, subtask_id, initiator::text, executor::text, task, result, duration_ms, created_at";
+
+fn build_list_by_project_sql() -> String {
+    format!(
+        "SELECT {AGENT_LOG_LIST_COLS} FROM agent_logs WHERE project_path = $1 ORDER BY created_at DESC LIMIT $2"
+    )
+}
+
+/// Project-wide agent-log list (subset projection with enum columns cast to
+/// text), newest first. Generic over the caller's row type.
+pub async fn list_by_project<T>(pool: &PgPool, project_path: &str, limit: i64) -> Result<Vec<T>>
+where
+    T: for<'r> FromRow<'r, PgRow> + Send + Unpin,
+{
+    let rows = sqlx::query_as::<_, T>(&build_list_by_project_sql())
+        .bind(project_path)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_by_project_sql_matches_command_layer() {
+        assert_eq!(
+            build_list_by_project_sql(),
+            "SELECT id, session_id, task_id, subtask_id, initiator::text, executor::text, task, result, duration_ms, created_at FROM agent_logs WHERE project_path = $1 ORDER BY created_at DESC LIMIT $2"
+        );
+    }
 }
