@@ -73,6 +73,15 @@
   },
   "overrides": [
     {
+      "includes": ["frontend/lib/generated/**"],
+      "formatter": {
+        "enabled": false
+      },
+      "linter": {
+        "enabled": false
+      }
+    },
+    {
       "includes": [
         "frontend/lib/**",
         "frontend/**/*.test.ts",

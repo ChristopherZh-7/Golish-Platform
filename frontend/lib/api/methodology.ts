@@ -1,5 +1,21 @@
 import { invoke } from "./client";
 
+export interface MethodologyItem {
+  id: string;
+  title: string;
+  description: string;
+  checked: boolean;
+  notes: string;
+  tools: string[];
+}
+
+export interface MethodologyPhase {
+  id: string;
+  name: string;
+  description: string;
+  items: MethodologyItem[];
+}
+
 export interface MethodologyTemplate {
   id: string;
   name: string;
@@ -7,24 +23,14 @@ export interface MethodologyTemplate {
   phases: MethodologyPhase[];
 }
 
-export interface MethodologyPhase {
-  id: string;
-  name: string;
-  items: MethodologyItem[];
-}
-
-export interface MethodologyItem {
-  id: string;
-  name: string;
-  checked: boolean;
-  notes: string;
-}
-
 export interface ProjectMethodology {
   id: string;
-  name: string;
   template_id: string;
+  template_name: string;
+  project_name: string;
   phases: MethodologyPhase[];
+  created_at: string;
+  updated_at: string;
 }
 
 export async function listTemplates(): Promise<MethodologyTemplate[]> {

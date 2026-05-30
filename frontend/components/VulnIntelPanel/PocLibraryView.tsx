@@ -15,20 +15,11 @@ import {
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CustomSelect } from "@/components/ui/custom-select";
-import { invoke } from "@/lib/api";
 import { vulnIntelApi } from "@/lib/api/vuln-intel";
 import { copyToClipboard } from "@/lib/clipboard";
 import { onCustomEvent } from "@/lib/events";
-import type { DbVulnLinkFull, PocTemplate, VulnLink } from "./types";
+import type { PocTemplate, VulnLink } from "./types";
 import { dbToVulnLink } from "./types";
-
-interface NucleiDiscoverResult {
-  total_files: number;
-  total_cves: number;
-  imported: number;
-  skipped: number;
-  errors: number;
-}
 
 const _discoverState = { searching: false, progress: "", found: 0 };
 
@@ -96,13 +87,13 @@ export const PocLibraryView = memo(function PocLibraryView({
     setFoundPersist(0);
     setProgressPersist("Starting full Nuclei template discovery...");
     try {
-      const result = await invoke<NucleiDiscoverResult>("intel_discover_all_nuclei");
+      const result = await vulnIntelApi.discoverAllNuclei();
       setFoundPersist(result.imported);
       setProgressPersist(
         `Done: ${result.imported} imported, ${result.skipped} skipped, ${result.errors} errors — ${result.total_cves} unique CVEs from ${result.total_files} files`
       );
       try {
-        const allLinks = await invoke<Record<string, DbVulnLinkFull>>("vuln_link_get_all");
+        const allLinks = await vulnIntelApi.getAllLinks();
         const converted: Record<string, VulnLink> = {};
         for (const [cveId, db] of Object.entries(allLinks)) {
           converted[cveId] = dbToVulnLink(db);

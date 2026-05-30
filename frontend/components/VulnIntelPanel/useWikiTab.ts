@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@/lib/api";
 import { vulnIntelApi } from "@/lib/api/vuln-intel";
 import { type WikiBacklinkInfo, type WikiPageInfo, type WikiTreeNode, wikiApi } from "@/lib/wiki";
 import type { VulnLink } from "./types";
@@ -159,13 +158,15 @@ export function useWikiTab(
       setLinkedPageInfos([]);
       return;
     }
-    invoke<WikiPageInfo[]>("wiki_pages_for_paths", { paths: link.wikiPaths })
+    vulnIntelApi
+      .wikiPagesForPaths(link.wikiPaths)
       .then(setLinkedPageInfos)
       .catch(() => setLinkedPageInfos([]));
   }, [link.wikiPaths, indexReady]);
 
   useEffect(() => {
-    invoke<WikiPageInfo[]>("wiki_suggest_for_cve", { cveId, limit: 8 })
+    vulnIntelApi
+      .wikiSuggestForCve(cveId, 8)
       .then(setSuggestedPages)
       .catch(() => setSuggestedPages([]));
   }, [cveId]);
@@ -175,7 +176,8 @@ export function useWikiTab(
       setBacklinks([]);
       return;
     }
-    invoke<WikiBacklinkInfo[]>("wiki_backlinks", { path: selectedPath })
+    vulnIntelApi
+      .wikiBacklinks(selectedPath)
       .then(setBacklinks)
       .catch(() => setBacklinks([]));
   }, [selectedPath]);
@@ -298,9 +300,7 @@ export function useWikiTab(
     }
     setSearching(true);
     try {
-      const results = await invoke<
-        { path: string; title: string; category: string; tags: string[]; status: string | null }[]
-      >("wiki_search_db", { query: query.trim(), limit: 20 });
+      const results = await vulnIntelApi.wikiSearchDb(query.trim(), 20);
       setSearchResults(
         results.map((r) => ({
           path: r.path,

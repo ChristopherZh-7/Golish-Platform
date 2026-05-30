@@ -98,6 +98,33 @@ export async function loadProjectWorkspace(projectName: string): Promise<string 
   return invoke<string | null>("load_project_workspace", { projectName });
 }
 
+export interface ProjectExportResult {
+  path: string;
+  files_count: number;
+  size_bytes: number;
+}
+
+export interface ProjectImportResult {
+  files_count: number;
+}
+
+/** Export a project to a .zip archive at `outputPath`. */
+export async function exportProject(
+  outputPath: string,
+  projectPath: string | null
+): Promise<ProjectExportResult> {
+  return invoke<ProjectExportResult>("project_export", { outputPath, projectPath });
+}
+
+/** Import a project from a .zip archive. */
+export async function importProject(
+  zipPath: string,
+  overwrite: boolean,
+  projectPath: string | null
+): Promise<ProjectImportResult> {
+  return invoke<ProjectImportResult>("project_import", { zipPath, overwrite, projectPath });
+}
+
 // ============================================================================
 // Pentest project config & file storage
 // ============================================================================

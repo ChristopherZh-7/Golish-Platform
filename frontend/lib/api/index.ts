@@ -11,7 +11,11 @@
  *   import { ptyCreate } from "@/lib/api/pty";
  */
 
-export { ApiError, getInflightCommands, invoke } from "./client";
+// Note: `invoke` is intentionally NOT re-exported here. Components must call
+// Tauri through a typed wrapper (`api.<domain>.<verb>` or `@/lib/api/<domain>`),
+// never the raw client. Wrappers inside `lib/api/*` import `invoke` from
+// `./client` directly.
+export { ApiError, getInflightCommands } from "./client";
 
 import * as ai from "./ai";
 import * as assetIntel from "./asset-intel";

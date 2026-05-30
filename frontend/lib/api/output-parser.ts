@@ -43,8 +43,9 @@ export async function detectTool(command: string, rawOutput: string): Promise<De
 export async function parse(args: {
   rawOutput: string;
   config: OutputConfig;
-  toolId: string;
-  toolName: string;
+  /** Optional tool lineage; backend accepts `Option<String>` for both. */
+  toolId: string | null;
+  toolName: string | null;
 }): Promise<{ items: ParsedItem[] }> {
   return invoke<{ items: ParsedItem[] }>(
     "output_parse",

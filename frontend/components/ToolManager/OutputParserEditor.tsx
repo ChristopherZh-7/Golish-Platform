@@ -1,6 +1,6 @@
 import { Trash2, X } from "lucide-react";
 import { useCallback, useState } from "react";
-import { invoke } from "@/lib/api";
+import { outputParser } from "@/lib/api";
 import type { ToolConfig } from "@/lib/pentest/types";
 import { cn } from "@/lib/utils";
 export type ToolWithMeta = ToolConfig & { categoryName?: string; subcategoryName?: string };
@@ -113,13 +113,11 @@ export function OutputParserEditor({
   const handleTestParse = useCallback(async () => {
     if (!testInput.trim()) return;
     try {
-      const result = await invoke<{
-        items: { data_type: string; fields: Record<string, string> }[];
-      }>("output_parse", {
+      const result = await outputParser.parse({
         rawOutput: testInput,
         config,
-        toolId: formData.id || null,
-        toolName: formData.name || null,
+        toolId: (formData.id as string) || null,
+        toolName: (formData.name as string) || null,
       });
       setTestResult(JSON.stringify(result.items, null, 2));
     } catch (e) {

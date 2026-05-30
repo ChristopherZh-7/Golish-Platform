@@ -11,7 +11,6 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { type AiProvider, buildProviderConfig, initAiSession, sendPromptSession } from "@/lib/ai";
-import { invoke } from "@/lib/api";
 import { vulnIntelApi } from "@/lib/api/vuln-intel";
 import { getSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
@@ -20,7 +19,7 @@ import { HistoryTab } from "./HistoryTab";
 import { IntelTab } from "./IntelTab";
 import { PocTab } from "./PocTab";
 import { ResearchTab } from "./ResearchTab";
-import type { DbVulnLinkFull, DetailTab, VulnEntry, VulnLink } from "./types";
+import type { DetailTab, VulnEntry, VulnLink } from "./types";
 import { dbToVulnLink, SEV_COLORS, SEV_DOT } from "./types";
 
 // Lazy-load WikiTab (~891 lines) — only mounted when user clicks the wiki tab.
@@ -46,7 +45,8 @@ export function VulnDetailView({
 
   // Check if DB has previous research for this CVE
   useEffect(() => {
-    invoke<{ turns: unknown[]; status: string } | null>("kb_research_load", { cveId: entry.cve_id })
+    vulnIntelApi
+      .researchLoad(entry.cve_id)
       .then((log) => {
         if (log?.turns && Array.isArray(log.turns) && log.turns.length > 0) {
           setHasResearchHistory(true);
@@ -58,7 +58,8 @@ export function VulnDetailView({
   // Load fresh link data from DB when viewing this CVE (runs once per CVE)
   useEffect(() => {
     let stale = false;
-    invoke<DbVulnLinkFull>("vuln_link_get", { cveId: entry.cve_id })
+    vulnIntelApi
+      .getLink(entry.cve_id)
       .then((dbLink) => {
         if (stale) return;
         const freshLink = dbToVulnLink(dbLink);

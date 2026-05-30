@@ -14,7 +14,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CustomSelect } from "@/components/ui/custom-select";
-import { invoke, methodology } from "@/lib/api";
+import { methodology } from "@/lib/api";
 import { getProjectPath } from "@/lib/projects";
 
 interface CheckItem {
@@ -65,8 +65,8 @@ export function MethodologyPanel() {
   const loadData = useCallback(async () => {
     try {
       const [t, p] = await Promise.all([
-        invoke<MethodologyTemplate[]>("method_list_templates"),
-        invoke<ProjectMethodology[]>("method_list_projects", { projectPath: getProjectPath() }),
+        methodology.listTemplates(),
+        methodology.listProjects(getProjectPath()),
       ]);
       setTemplates(Array.isArray(t) ? t : []);
       setProjects(Array.isArray(p) ? p : []);
@@ -82,7 +82,7 @@ export function MethodologyPanel() {
   const handleCreateProject = useCallback(async () => {
     if (!newProjectName.trim() || !newTemplateId) return;
     try {
-      const project = await invoke<ProjectMethodology>("method_start_project", {
+      const project = await methodology.startProject({
         templateId: newTemplateId,
         projectName: newProjectName,
         projectPath: getProjectPath(),
@@ -101,10 +101,7 @@ export function MethodologyPanel() {
 
   const handleOpenProject = useCallback(async (id: string) => {
     try {
-      const project = await invoke<ProjectMethodology>("method_load_project", {
-        id,
-        projectPath: getProjectPath(),
-      });
+      const project = await methodology.loadProject(id, getProjectPath());
       setActiveProject(project);
       setView("project");
       setExpandedPhases(new Set(project.phases.map((p) => p.id)));

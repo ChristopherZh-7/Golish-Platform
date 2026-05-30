@@ -15,7 +15,15 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { checkReconTools, type ReconToolCheck } from "@/lib/ai";
-import { invoke, targets } from "@/lib/api";
+import { ApiError } from "@/lib/api";
+import { translateErrorCode } from "@/lib/api/error-codes";
+import {
+  deletePipeline,
+  listPipelines,
+  listPipelineTemplates,
+  savePipeline,
+  savePipelineTemplate,
+} from "@/lib/api/pipeline";
 import { onEvent } from "@/lib/events";
 import { listAiTools, scanTools } from "@/lib/pentest/api";
 import type { Pipeline, PipelineStep } from "@/lib/pentest/pipeline-types";
@@ -74,6 +82,7 @@ export function PipelinePanel() {
   const [tools, setTools] = useState<ToolWithMeta[]>([]);
   const [aiTools, setAiTools] = useState<AiToolMeta[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [showToolPicker, setShowToolPicker] = useState(false);
   const [pickerTab, setPickerTab] = useState<PickerTab>("cli");
@@ -102,17 +111,24 @@ export function PipelinePanel() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const [pl, tl, ai] = await Promise.all([
-        invoke<Pipeline[]>("pipeline_list", { projectPath: getProjectPath() }),
+        listPipelines(getProjectPath()),
         scanTools(),
         listAiTools().catch(() => [] as AiToolMeta[]),
       ]);
       setPipelines(Array.isArray(pl) ? pl : []);
       setTools((tl?.tools || []).filter((t) => t.launchMode === "cli" && t.installed));
       setAiTools(Array.isArray(ai) ? ai : []);
-    } catch {
-      /* */
+    } catch (e) {
+      setError(
+        translateErrorCode(
+          e instanceof ApiError ? e.code : "UNKNOWN",
+          e instanceof Error ? e.message : undefined
+        )
+      );
+      setPipelines([]);
     }
     setLoading(false);
   }, []);
@@ -144,10 +160,7 @@ export function PipelinePanel() {
 
   const handleSave = useCallback(async () => {
     if (!active) return;
-    const id = await invoke<string>("pipeline_save", {
-      pipeline: active,
-      projectPath: getProjectPath(),
-    });
+    const id = await savePipeline(active, getProjectPath());
     setActive((p) => (p ? { ...p, id } : null));
     setDirty(false);
     load();
@@ -155,13 +168,13 @@ export function PipelinePanel() {
 
   const handleSaveAsTemplate = useCallback(async () => {
     if (!active) return;
-    await invoke<string>("pipeline_save_template", { pipeline: active });
+    await savePipelineTemplate(active);
     load();
   }, [active, load]);
 
   const handleLoadTemplate = useCallback(async () => {
     try {
-      const templates = await invoke<Pipeline[]>("pipeline_list_templates");
+      const templates = await listPipelineTemplates();
       if (templates.length === 0) return;
       const t = templates[0];
       setActive({ ...t, id: "", is_template: false, created_at: 0, updated_at: 0 });
@@ -173,7 +186,7 @@ export function PipelinePanel() {
 
   const handleDelete = useCallback(
     async (id: string) => {
-      await targets.deletePipeline(id, getProjectPath());
+      await deletePipeline(id, getProjectPath());
       if (active?.id === id) setActive(null);
       load();
     },
@@ -303,6 +316,14 @@ export function PipelinePanel() {
       runTauriUnlistenFromPromise(ul);
     };
   }, []);
+
+  if (error)
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-2 text-red-400/70">
+        <AlertTriangle className="w-5 h-5" />
+        <p className="text-[11px]">{error}</p>
+      </div>
+    );
 
   if (loading)
     return (

@@ -11,7 +11,8 @@ export interface Finding {
   cvss?: number;
   url: string;
   target: string;
-  targetId?: string;
+  /** Wire field is snake_case `target_id` (backend `Finding.target_id`). */
+  target_id?: string;
   description: string;
   steps: string;
   remediation: string;
@@ -21,6 +22,8 @@ export interface Finding {
   references: string[];
   evidence: Evidence[];
   status: string;
+  /** Lineage of the finding: "manual" | "automated" (backend serde default "manual"). */
+  source: string;
   created_at: number;
   updated_at: number;
 }

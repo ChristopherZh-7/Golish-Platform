@@ -15,29 +15,14 @@ import {
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CustomSelect } from "@/components/ui/custom-select";
-import { invoke } from "@/lib/api";
-import { vulnIntelApi } from "@/lib/api/vuln-intel";
+import {
+  type GithubPocResult,
+  type NucleiTemplateResult,
+  vulnIntelApi,
+} from "@/lib/api/vuln-intel";
 import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import type { PocTemplate, VulnLink } from "./types";
-
-interface GithubPocResult {
-  full_name: string;
-  html_url: string;
-  description: string | null;
-  language: string | null;
-  stars: number;
-  updated_at: string;
-  topics: string[];
-}
-
-interface NucleiTemplateResult {
-  name: string;
-  path: string;
-  html_url: string;
-  content: string | null;
-  severity: string | null;
-}
 
 export function PocTab({
   link,
@@ -70,7 +55,7 @@ export function PocTab({
     setGhSearching(true);
     setGhError(null);
     try {
-      const results = await invoke<GithubPocResult[]>("intel_search_github_poc", { cveId });
+      const results = await vulnIntelApi.searchGithubPoc(cveId);
       setGhResults(results);
     } catch (e) {
       setGhError(String(e));
@@ -84,9 +69,7 @@ export function PocTab({
     setNucleiSearching(true);
     setNucleiError(null);
     try {
-      const results = await invoke<NucleiTemplateResult[]>("intel_search_nuclei_templates", {
-        cveId,
-      });
+      const results = await vulnIntelApi.searchNucleiTemplates(cveId);
       setNucleiResults(results);
     } catch (e) {
       setNucleiError(String(e));
@@ -101,7 +84,7 @@ export function PocTab({
       if (!template.content) return;
       setNucleiImporting(template.name);
       try {
-        const dbPoc = await invoke<PocTemplate>("vuln_link_add_poc_full", {
+        const dbPoc = await vulnIntelApi.addPocFull({
           cveId,
           name: `[Nuclei] ${template.name}`,
           pocType: "nuclei",
@@ -371,13 +354,14 @@ int main(int argc, char *argv[]) {
     if (!formName.trim() || !formContent.trim()) return;
     const isNew = !editing;
     if (isNew) {
-      invoke<PocTemplate>("vuln_link_add_poc", {
-        cveId,
-        name: formName.trim(),
-        pocType: formType,
-        language: formLang,
-        content: formContent,
-      })
+      vulnIntelApi
+        .addPoc({
+          cveId,
+          name: formName.trim(),
+          pocType: formType,
+          language: formLang,
+          content: formContent,
+        })
         .then((dbPoc) => {
           onUpdateLink((l) => ({
             ...l,

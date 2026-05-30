@@ -37,7 +37,7 @@ import {
   CommandSeparator,
   CommandShortcut,
 } from "@/components/ui/command";
-import { invoke } from "@/lib/api";
+import { exportProject, importProject } from "@/lib/api/projects";
 import { indexDirectory, isIndexerInitialized, searchCode, searchFiles } from "@/lib/indexer";
 import { notify } from "@/lib/notify";
 import { getProjectPath } from "@/lib/projects";
@@ -203,10 +203,7 @@ export function CommandPalette({
         filters: [{ name: "ZIP", extensions: ["zip"] }],
       });
       if (!path) return;
-      const result = await invoke<{ path: string; files_count: number; size_bytes: number }>(
-        "project_export",
-        { outputPath: path, projectPath: getProjectPath() }
-      );
+      const result = await exportProject(path, getProjectPath());
       const sizeMb = (result.size_bytes / 1024 / 1024).toFixed(1);
       notify.success(`Exported ${result.files_count} files (${sizeMb} MB)`);
     } catch (e) {
@@ -221,11 +218,7 @@ export function CommandPalette({
         multiple: false,
       });
       if (!path) return;
-      const result = await invoke<{ files_count: number }>("project_import", {
-        zipPath: path,
-        overwrite: false,
-        projectPath: getProjectPath(),
-      });
+      const result = await importProject(path, false, getProjectPath());
       notify.success(`Imported ${result.files_count} files`);
     } catch (e) {
       notify.error(`Import failed: ${e}`);

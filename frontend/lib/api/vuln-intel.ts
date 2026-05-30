@@ -5,50 +5,35 @@ import type {
   VulnFeed,
 } from "@/components/VulnIntelPanel/types";
 import { invoke } from "@/lib/api/client";
+import type { WikiBacklinkInfo, WikiPageInfo } from "@/lib/wiki";
 
+// Shapes mirror the backend Rust structs (golish-vuln-intel):
+//   github_poc.rs::GithubPocResult, nuclei_search.rs::NucleiTemplateResult,
+//   nuclei_discover.rs::NucleiDiscoverResult.
 export interface GithubPocResult {
-  name: string;
-  url: string;
-  description: string;
-  language: string;
+  full_name: string;
+  html_url: string;
+  description: string | null;
+  language: string | null;
   stars: number;
-  updated: string;
+  updated_at: string;
+  topics: string[];
 }
 
 export interface NucleiTemplateResult {
-  id: string;
   name: string;
-  severity: string;
-  author: string;
-  tags: string[];
-  description: string;
-  template_content: string;
+  path: string;
+  html_url: string;
+  content: string | null;
+  severity: string | null;
 }
 
 export interface NucleiDiscoverResult {
-  total: number;
-  templates: Array<{
-    cve_id: string;
-    template_id: string;
-    name: string;
-    severity: string;
-    content: string;
-  }>;
-}
-
-export interface WikiPageInfo {
-  path: string;
-  title: string;
-  category: string;
-  tags: string[];
-  status: string | null;
-  word_count?: number;
-  updated_at?: string;
-}
-
-export interface WikiBacklinkInfo {
-  source_path: string;
-  context: string;
+  total_files: number;
+  total_cves: number;
+  imported: number;
+  skipped: number;
+  errors: number;
 }
 
 export const vulnIntelApi = {
@@ -112,6 +97,27 @@ export const vulnIntelApi = {
       tags,
     }),
   discoverAllNuclei: () => invoke<NucleiDiscoverResult>("intel_discover_all_nuclei"),
+  // Create a PoC from manual form input (no source metadata).
+  addPoc: (params: {
+    cveId: string;
+    name: string;
+    pocType: string;
+    language: string;
+    content: string;
+  }) => invoke<PocTemplate>("vuln_link_add_poc", params),
+  // Import a full PoC (e.g. a Nuclei template) as-is.
+  addPocFull: (params: {
+    cveId: string;
+    name: string;
+    pocType: string;
+    language: string;
+    content: string;
+    source: string;
+    sourceUrl: string;
+    severity: string;
+    description: string;
+    tags: string[];
+  }) => invoke<PocTemplate>("vuln_link_add_poc_full", params),
 
   // KB Research
   researchLoad: (cveId: string) =>
@@ -129,6 +135,16 @@ export const vulnIntelApi = {
   wikiSuggestForCve: (cveId: string, limit: number) =>
     invoke<WikiPageInfo[]>("wiki_suggest_for_cve", { cveId, limit }),
   wikiBacklinks: (path: string) => invoke<WikiBacklinkInfo[]>("wiki_backlinks", { path }),
+  wikiSearchDb: (query: string, limit: number) =>
+    invoke<
+      Array<{
+        path: string;
+        title: string;
+        category: string;
+        tags: string[];
+        status: string | null;
+      }>
+    >("wiki_search_db", { query, limit }),
   wikiSearch: (query: string) =>
     invoke<
       Array<{

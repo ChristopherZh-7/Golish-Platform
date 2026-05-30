@@ -13,10 +13,11 @@
  * enforced by `scripts/check_file_sizes.sh` keeps shrinking.
  */
 
-import { Loader2, Radar, RefreshCw, Target, Terminal } from "lucide-react";
+import { AlertTriangle, Loader2, Radar, RefreshCw, Target, Terminal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { triggerAutoRecon } from "@/lib/ai";
-import { invoke } from "@/lib/api";
+import { ApiError, targets as targetsApi } from "@/lib/api";
+import { translateErrorCode } from "@/lib/api/error-codes";
 import { onCustomEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
 import type { Target as PentestTarget } from "@/lib/pentest/types";
@@ -27,23 +28,30 @@ import { useReconFeed } from "./hooks/useReconFeed";
 import { ItemRow } from "./ItemRow";
 import { PipelineProgressBar } from "./PipelineProgressBar";
 import { StepRow } from "./StepRow";
-import type { TargetStore } from "./types";
 
 export function ProjectOverview({ sessionId }: { sessionId: string }) {
   const projectName = useStore((s) => s.currentProjectName);
   const projectPath = useStore((s) => s.currentProjectPath);
   const [targets, setTargets] = useState<PentestTarget[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [reconRunning, setReconRunning] = useState(false);
   const feedEndRef = useRef<HTMLDivElement>(null);
 
   const fetchTargets = useCallback(async () => {
     try {
       const pp = getProjectPath();
-      const data = await invoke<TargetStore>("target_list", { projectPath: pp });
+      const data = await targetsApi.listTargets(pp);
       setTargets(data.targets);
+      setError(null);
     } catch (e) {
       logger.error("[ProjectOverview] fetchTargets failed:", e);
+      setError(
+        translateErrorCode(
+          e instanceof ApiError ? e.code : "UNKNOWN",
+          e instanceof Error ? e.message : undefined
+        )
+      );
       setTargets([]);
     } finally {
       setLoading(false);
@@ -178,7 +186,12 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
           </div>
         ) : (
           <div className="h-full flex flex-col items-center justify-center gap-3 px-4">
-            {loading ? (
+            {error ? (
+              <>
+                <AlertTriangle className="w-6 h-6 text-red-400/70" />
+                <p className="text-xs text-red-400/70 text-center">{error}</p>
+              </>
+            ) : loading ? (
               <Loader2 className="w-6 h-6 text-muted-foreground/20 animate-spin" />
             ) : hasTargets ? (
               <>

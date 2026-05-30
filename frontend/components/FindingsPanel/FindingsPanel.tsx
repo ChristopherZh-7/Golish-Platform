@@ -23,13 +23,15 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { QuickNotes } from "@/components/QuickNotes/QuickNotes";
+import { ApiError } from "@/lib/api";
+import { translateErrorCode } from "@/lib/api/error-codes";
 import { logAudit } from "@/lib/audit";
 import { type Evidence, type Finding, findingsApi } from "@/lib/findings";
 import { getProjectPath } from "@/lib/projects";
 import { cn } from "@/lib/utils";
 
 type Severity = "critical" | "high" | "medium" | "low" | "info";
-type FindingStatus = "open" | "confirmed" | "falsePositive" | "resolved";
+type FindingStatus = "open" | "confirmed" | "fixed" | "falsepositive" | "accepted";
 
 import { SEV_BADGE, SEV_LABELS, SEV_TEXT } from "@/lib/severity";
 
@@ -52,8 +54,9 @@ const SEVERITY_CONFIG: Record<
 const STATUS_LABELS: Record<FindingStatus, string> = {
   open: "Open",
   confirmed: "Confirmed",
-  falsePositive: "False Positive",
-  resolved: "Resolved",
+  fixed: "Fixed",
+  falsepositive: "False Positive",
+  accepted: "Accepted",
 };
 
 import { MiniDropdown } from "@/components/ui/MiniDropdown";
@@ -62,6 +65,7 @@ export function FindingsPanel() {
   const { t } = useTranslation();
   const [findings, setFindings] = useState<Finding[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
   const [statusFilter, setStatusFilter] = useState<FindingStatus | "all">("all");
@@ -76,10 +80,17 @@ export function FindingsPanel() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const store = await findingsApi.list(getProjectPath());
       setFindings(store?.findings || []);
-    } catch {
+    } catch (e) {
+      setError(
+        translateErrorCode(
+          e instanceof ApiError ? e.code : "UNKNOWN",
+          e instanceof Error ? e.message : undefined
+        )
+      );
       setFindings([]);
     } finally {
       setLoading(false);
@@ -453,7 +464,12 @@ export function FindingsPanel() {
 
       {/* Findings list */}
       <div className="flex-1 overflow-y-auto">
-        {loading ? (
+        {error ? (
+          <div className="flex flex-col items-center justify-center h-32 gap-2 text-red-400/70">
+            <AlertTriangle className="w-8 h-8" />
+            <p className="text-[11px]">{error}</p>
+          </div>
+        ) : loading ? (
           <div className="flex items-center justify-center h-32">
             <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/50" />
           </div>
@@ -500,7 +516,7 @@ export function FindingsPanel() {
                           ? "text-yellow-400 bg-yellow-500/10"
                           : finding.status === "confirmed"
                             ? "text-red-400 bg-red-500/10"
-                            : finding.status === "resolved"
+                            : finding.status === "fixed" || finding.status === "accepted"
                               ? "text-emerald-400 bg-emerald-500/10"
                               : "text-muted-foreground/60 bg-muted/10"
                       )}
@@ -607,7 +623,13 @@ export function FindingsPanel() {
 
                       <div className="flex items-center gap-2 pt-1">
                         {(
-                          ["open", "confirmed", "falsePositive", "resolved"] as FindingStatus[]
+                          [
+                            "open",
+                            "confirmed",
+                            "fixed",
+                            "falsepositive",
+                            "accepted",
+                          ] as FindingStatus[]
                         ).map((s) => (
                           <button
                             type="button"
@@ -620,7 +642,9 @@ export function FindingsPanel() {
                                 : "text-muted-foreground/50 hover:text-muted-foreground/70 hover:bg-muted/10"
                             )}
                           >
-                            {s === "resolved" && <Check className="w-2.5 h-2.5 inline mr-0.5" />}
+                            {(s === "fixed" || s === "accepted") && (
+                              <Check className="w-2.5 h-2.5 inline mr-0.5" />
+                            )}
                             {STATUS_LABELS[s]}
                           </button>
                         ))}

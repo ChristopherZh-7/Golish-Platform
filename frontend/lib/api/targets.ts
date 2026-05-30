@@ -55,19 +55,3 @@ export async function updateTarget(params: {
 export async function clearAllTargets(projectPath: string | null): Promise<void> {
   await invoke("target_clear_all", { projectPath });
 }
-
-export async function executePipeline(params: {
-  pipeline: unknown;
-  target: string;
-  projectPath: string | null;
-}): Promise<void> {
-  await invoke("pipeline_execute", params);
-}
-
-export async function cancelPipeline(): Promise<void> {
-  await invoke("pipeline_cancel");
-}
-
-export async function deletePipeline(id: string, projectPath: string | null): Promise<void> {
-  await invoke("pipeline_delete", { id, projectPath });
-}
