@@ -324,3 +324,14 @@ release-manual version:
 
     echo "✓ Tag v$VERSION pushed. CI will build and publish the release."
     echo "  Watch progress: gh run watch"
+
+# Run architecture guards locally (DAG + repo data-ownership). CI runs these
+# in .github/workflows/arch-check.yml; this is the local mirror. Both guards
+# run unconditionally so one failing guard doesn't hide the other's status.
+arch:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    rc=0
+    python3 scripts/check_dag.py || rc=1
+    python3 scripts/check_repo_ownership.py || rc=1
+    exit $rc

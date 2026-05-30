@@ -29,6 +29,23 @@ jobs:
       - name: Run DAG check
         run: python3 scripts/check_dag.py
 
+  repo-ownership:
+    name: Repo data-ownership boundary
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run repo-ownership guard
+        run: python3 scripts/check_repo_ownership.py
+
   file-sizes:
     name: File size budgets
     runs-on: ubuntu-latest
