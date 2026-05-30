@@ -19,13 +19,101 @@
 | **标准验证** | `just precommit` = `just check && just test` |
 | **当前最高优先级** | **target-surface-workbench**（2026-05-28 新增 · 当前唯一 `in_progress`）。ZAP/SecurityView 删除后，正在把 Target Manager 改成 organization tree + selected target surface/evidence workbench。 |
 | **当前 blocker** | `xiaomi-mimo-provider` 已从 `in_progress` 切 `blocked`，等待 tool-use compatibility layer 与真实 MiMo E2E 后再决定 passing。2026-05-27 复测发现 `ask_human` 被误包成普通 ToolApprovalRequest；已修为直接发 `AskHumanRequest`，但需重启 dev app 后真实复测。**2026-05-30 更新**：本机 `just check` **全绿**（fmt + check-fe + test-fe + lint-rust（clippy `-D warnings` 0 告警 + `cargo fmt --check`）+ test-rust-all（nextest **2592 passed / 7 skipped / 0 failed**）+ check-types（ts-rs 绑定无漂移）均 ✅）。此前记录的 clippy warnings 与 sandbox PermissionDenied baseline failures 在本机最新工作树**未复现**。 |
-| **未提交的半成品** | **2026-05-30：架构优化批已拆 9 commit 落 `feat/recon-service`（`98beea9`→`6aaa0fb`，HEAD `d060ce4`）。** 其上叠了 **P0-3b 残余作用域 SQL 下沉**（T1-T6 全部完成，**未 commit**）：26 个 tracked 文件改动 + 6 个新 repo 模块（untracked：`repo/{scan_queue,sensitive_scan,conversation_store,directory_entries,sitemap_store,custom_rules}.rs`）。验证：rg 命令层裸作用域 SQL 清零、`golish-db` nextest 46/46、`golish --lib` nextest 318/318、`clippy golish-db+golish` 全绿，并跑通**全栈 `just precommit` → `✓ All checks passed!`（exit 0）**（含用户授权后修的 1 个 pre-existing `integrations/commands.rs:179` baseline）。**已按拆分提交 4 个 commit**（`65e0292`/`06af27a`/`d023386`/`c2f5ad2`，落 `feat/recon-service`，未 push）。 |
+| **未提交的半成品** | **2026-05-30：架构优化批已拆 9 commit 落 `feat/recon-service`（`98beea9`→`6aaa0fb`，HEAD `d060ce4`）。** 其上叠了 **P0-3b 残余作用域 SQL 下沉**（T1-T6 全部完成，**未 commit**）：26 个 tracked 文件改动 + 6 个新 repo 模块（untracked：`repo/{scan_queue,sensitive_scan,conversation_store,directory_entries,sitemap_store,custom_rules}.rs`）。验证：rg 命令层裸作用域 SQL 清零、`golish-db` nextest 46/46、`golish --lib` nextest 318/318、`clippy golish-db+golish` 全绿，并跑通**全栈 `just precommit` → `✓ All checks passed!`（exit 0）**（含用户授权后修的 1 个 pre-existing `integrations/commands.rs:179` baseline）。**已按拆分提交 4 个 commit**（`65e0292`/`06af27a`/`d023386`/`c2f5ad2`，落 `feat/recon-service`，未 push）。**2026-05-30 续（MCP-2）：P2 拆分①完成——`golish-pentest-domain/src/models.rs`(1310) 模块化为 module-root + `models/{tool_config,asset_intel,runtime,tests}.rs`（全 < 500 行），全验证通过（crate check/nextest 17✓/clippy `-D warnings`/`cargo check --workspace` 全绿），**未 commit**（`M models.rs` + `?? models/`）。P2 拆分②完成——`golish/src/tools/pentest_bridge/js_collect.rs`(1357) 模块化为 module-root + `js_collect/{extract,judge,quality,sitemap,tool_impl,tests}.rs`（全 < 500 行，max 470），全验证通过（`cargo check -p golish`/`nextest js_collect` 26✓/`clippy -p golish --all-targets -D warnings` 全绿），**未 commit**（`M js_collect.rs` + `?? js_collect/`）。P2 拆分③完成——`golish/src/tools/integrations/capture/engine.rs`(1483) 模块化为 module-root + `engine/{extract,helpers,tests}.rs`（全 < 500 行，engine.rs 496）；生命周期/webview 方法留 root 避免 super:: 改写，全验证通过（`cargo check -p golish`/`nextest capture::engine` 23✓/`clippy -p golish --all-targets -D warnings` 全绿），**未 commit**（`M engine.rs` + `?? engine/`）。P2 拆分④（进行中）——`frontend/mocks.ts`(4135→2353) 抽出事件系统/AI 模拟/showcase 三层到 `mocks/{event-bus,events,simulations,showcase}.ts`（公共面零变更；`showcase.ts` 1146 仍 >500 待再分），`check-fe`+`test-fe` 全绿，**未 commit**（`M mocks.ts` + `?? mocks/`）；剩余 demos/有状态 ipc 待续。** |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-30 · P2 大文件拆分 ④（进行中）：frontend/mocks.ts 事件系统层抽出（MCP-2 续）
+
+- **本轮目标**：用户选「继续拆 mocks.ts」。`[DISPATCH:off]`。mocks.ts 是 4135 行的浏览器/E2E mock harness（dev-only），结构特殊：~1100 行有状态 `mockIPC` switch + 大量可变模块状态。完整拆分是多模块分解（工作量≈前 3 个文件之和）。本轮先抽出**自包含的事件系统层**（已用 grep 验证解耦：simulate*/emit*/demo* 均不读写可变计数器状态，`mockIPC` handler 也不调用它们）。
+- **已完成（step 1 事件系统 + step 2 AI 模拟 + step 3 showcase）**：
+  - `mocks/event-bus.ts`（74）：监听器注册表 + `dispatchMockEvent`（原私有，现 `pub`）。
+  - `mocks/events.ts`（215）：事件类型 + emit 助手。
+  - `mocks/simulations.ts`（435）：AI 流式模拟（simulateAiResponse/SubAgent/WithSubAgent/JsHarvest，仅依赖 `emitAiEvent`）。
+  - `mocks/showcase.ts`（**1146 · 仍 >500**）：timeline block 注入 + full-flow demos（mockCommandBlock/PipelineProgressBlock/SubAgentBlocks/ToolExecutionBlocks/PlanPipeline/ShowAllBlocks/FullPlanExecution/RunCommandApproval/simulatePipelineFanOut，用 `useStore`+`dispatchMockEvent`+`AiEventType`）。
+  - `mocks.ts`（4135→2353）：移除上述各块改 import；再导出全部原公共符号（`@/mocks` 公共面零变更）。
+- **运行过的验证**（本机实跑，三步均跑过）：
+  - `just check-fe`（tsc + biome）→ exit 0
+  - `just test-fe`（vitest 全量）→ exit 0
+  - `ReadLints` 各新文件 → 无错误
+- **已记录证据**：见上「运行过的验证」。
+- **提交记录**：**待用户授权**。`M mocks.ts` + `?? mocks/`（event-bus/events/simulations/showcase）。
+- **已知风险或未解决问题**：mocks.ts 仍 2353（>500）；`showcase.ts` 1146（>500，可再按 timeline-block / full-flow demos / pipeline-fanout 三分）。剩余 mocks.ts 内：demos(~513)、有状态 state+getters/setters+`mockIPC` switch(~1300)。最后一块降到 <500 需把 ~10 个可变 `let` 收进共享状态容器 + switch 按域拆 handler（较大改动）。
+- **下一步最佳动作**：① 抽 `mocks/demos.ts`；② state 容器 + `mocks/ipc.ts`（switch 按域拆）；③ 视需要再分 `showcase.ts`。或先 commit 已完成的 ①②③ 生产代码拆分 + ④ mocks step1-3。
+
+---
+
+### 2026-05-30 · P2 大文件拆分 ③：golish/tools/integrations/capture/engine.rs 1483→模块化（MCP-2 续）
+
+- **本轮目标**：用户选「继续拆 capture/engine」。`[DISPATCH:off]` → 直接执行。把最大后端文件 `engine.rs`（1483 行）按职责拆成 module-root + 3 子模块，行为零变更。
+- **关键设计**：把「会话生命周期/状态机 + webview 构建」方法**留在 root**（它们是唯一引用 capture 级兄弟模块 `data_dir`/`webview_isolation`/`session` 的代码 → 避免任何 `super::` 路径改写）；只抽出抽取逻辑与底层 helpers：
+  - `engine.rs`（496）：module-root + doc + consts + `pub struct CaptureEngine` + impl Default + `impl CaptureEngine`（new/register/get/transition/cancel/gc/session_count/transition_and_emit/rearm/spawn_soft_retry_probe/deliver_js_value/start_webview/clear_profile/spawn_ttl_watcher）+ `pub(crate) use {extract,helpers}::*` 再导出。
+  - `engine/extract.rs`（468）：`impl CaptureEngine { try_extract }` + on_navigation_event + rule_is_required + extract_one（7 种 CaptureRule 分发）+ 4 个 soft-retry failure-reason helpers。
+  - `engine/helpers.rs`（247）：eval_js_value/parse_js_value_title（webview JS 值桥）+ fetch_domain_cookies/cookie_domain_matches/format_joined_cookies（cookie 访问）+ persist_captured_values（存储后端桥）。
+  - `engine/tests.rs`（320）：23 个原单测逐字搬迁（module 路径仍 `capture::engine::tests`，session 字段可见性零变更）。
+  - 关键不变量：跨多 `impl CaptureEngine` 块的方法互调按类型解析（与文件无关）；`self.sessions`/`js_value_waiters` 私有字段经子模块（descendant）访问；free fns 视情况 `pub(crate)` 由 root 再导出，仅 rule_is_required/extract_one 保持私有。
+- **运行过的验证**（本机实跑）：
+  - `wc -l` → 496 / 468 / 247 / 320，**全部 < 500**（engine.rs 496 紧贴预算）。
+  - `cargo check -p golish` → exit 0（23.0s）
+  - `cargo nextest run -p golish capture::engine` → **23 passed / 346 skipped**（原 23 单测全过）
+  - `cargo clippy -p golish --all-targets -- -D warnings` → exit 0（0 告警）
+- **已记录证据**：见上「运行过的验证」。
+- **提交记录**：**待用户授权**。工作树累积三块 P2：①models、②js_collect、③capture/engine（各 `M <root>` + `?? <dir>/`）+ `M agent-progress.md`。
+- **已知风险或未解决问题**：仅 cargo 层验证（无活 DB / 无真实 webview）；engine.rs 行数贴近 500 预算上限。
+- **下一步最佳动作**：① 用户授权后按块拆 3 个 `refactor` commit；② 继续 P2（前端 `mocks.ts` 4135 收益最大；后端 `golish-integrations/*`、`pipeline steps/single.rs`、`tools/organizations.rs`、`ai/db_bridge.rs`）。
+
+---
+
+### 2026-05-30 · P2 大文件拆分 ②：golish/tools/pentest_bridge/js_collect.rs 1357→模块化（MCP-2 续）
+
+- **本轮目标**：用户选「继续拆 js_collect」。`[DISPATCH:off]` → 直接执行。把 `js_collect.rs`（1357 行，职责混：下载+sitemap+扫描+质量门）按职责拆成 module-root + 6 子模块，行为零变更。
+- **已完成**：`js_collect.rs` 保留为 module-root，`pub struct JsCollectTool`（外部仅此一项经 `pentest_bridge/mod.rs::pub use` 暴露，路径零变更）+ 3 const + 模块声明 + `pub(crate) use *::*` 再导出：
+  - `js_collect.rs`（93）：module-root + doc + struct + new + consts(MAX_FILES/DOWNLOAD_CONCURRENCY/MANIFEST_PROBES) + 再导出。
+  - `js_collect/extract.rs`（237）：纯 URL/HTML/JS 引用提取（resolve_url / extract_html_* / scan_js_for_references / looks_like_js_ref / extract_public_path / expand_webpack_chunk_map）。
+  - `js_collect/judge.rs`（135）：内容真实性 + 同质性检测（Confidence / judge_js_content / HomogeneityReport / detect_homogeneous_chunks）。
+  - `js_collect/quality.rs`（104）：`build_quality_warnings` + `CollectStats`（结构体入参规避 clippy `too_many_arguments`）。
+  - `js_collect/sitemap.rs`（95）：`merge_into_sitemap`（sitemap_store 合并写入；**空集守卫保留在调用点**以保证零行为变更）。
+  - `js_collect/tool_impl.rs`（470）：`impl Tool for JsCollectTool`（四策略发现 + 限并发下载 + 递归扫描 + 审计 + 委托 quality/sitemap）。
+  - `js_collect/tests.rs`（309）：26 个原单测逐字搬迁，`use super::*` 经再导出解析。
+  - 关键不变量：`self.pool` 私有字段经子模块（descendant）访问；audit `json!` 与 sitemap `INSERT`（含 project_path）逐字保留；只把 quality-warnings 构建与 sitemap 合并抽成函数，主 execute 流程顺序与可变状态零变更。
+- **运行过的验证**（本机实跑）：
+  - `wc -l` → 93 / 237 / 135 / 104 / 95 / 309 / 470，**全部 < 500**。
+  - `cargo check -p golish` → exit 0（36.4s）
+  - `cargo nextest run -p golish js_collect` → **26 passed / 343 skipped**（原 26 单测全过）
+  - `cargo clippy -p golish --all-targets -- -D warnings` → exit 0（4m05s，0 告警）
+- **已记录证据**：见上「运行过的验证」。
+- **提交记录**：**待用户授权**。工作树累积两块 P2：①`M models.rs`+`?? models/`、②`M js_collect.rs`+`?? js_collect/`，外加 `M agent-progress.md`。
+- **已知风险或未解决问题**：仅 cargo 层验证（无活 DB）；`sitemap.rs` 的 `sitemap_store` INSERT 仍是裸 SQL（原样保留，未纳入 P0-3b repo 下沉，不在本次 scope）。
+- **下一步最佳动作**：① 用户授权后按块拆 commit（①pentest-domain models、②js_collect，各一个 `refactor`）；② 继续 P2 下一个（`capture/engine.rs` 1483 / 前端 `mocks.ts` 4135）。
+
+---
+
+### 2026-05-30 · P2 大文件拆分 ①：golish-pentest-domain/models.rs 1310→模块化（MCP-2 接手 MCP-1 上下文执行）
+
+- **本轮目标**：接手 MCP-1（主控）转移的架构体检 backlog，执行 P2「超 500 行文件拆分」第 1 块。`[DISPATCH:off]` → 本会话直接执行。计划见 `docs/superpowers/plans/2026-05-30-arch-health-backlog.md`。
+- **已完成**：把 `crates/golish-pentest-domain/src/models.rs`（1310 行）按职责拆成 module-root + 子模块目录（Rust 2018+ path 风格，**无删文件**，仅重写 models.rs + 新建 models/ 目录）：
+  - `models.rs`（23 行）：module-root，`mod {asset_intel,runtime,tool_config}` + `pub use *::*` 全量再导出 + `#[cfg(test)] mod tests`。**公共路径零变更**（`golish_pentest_domain::models::X` 与 crate-root `::X` 均保持；lib.rs `pub use models::*` 未动）。
+  - `models/tool_config.rs`（426）：ParamOption/ToolParam/ToolCategory/SubCategory/ToolConfig/InstalledVia/OutputConfig/OutputPattern/ToolConfigFile/ScanResult + `impl ToolConfig`(normalize/validate) + default_* + `VALID_PENTEST_PHASES`。
+  - `models/asset_intel.rs`（321）：全部 `AssetIntel*` 类型 + 私有 default_*_asset_intel helpers（自包含）。
+  - `models/runtime.rs`（145）：ToolSkill/InstallInfo/PlatformInstall/RuntimeInfo/RuntimeType/InterfaceType/LaunchResult + impl（自包含）。
+  - `models/tests.rs`（431）：原 `#[cfg(test)] mod tests` 全量搬迁，`use super::*` 经再导出解析；14 个原测试逐字保留。
+  - 行为零变更：纯模块重组；serde `default="fn"` 路径仍在各结构定义所在模块内解析。
+- **运行过的验证**（本机实跑）：
+  - `wc -l models.rs models/*.rs` → 23 / 426 / 321 / 145 / 431，**全部 < 500**（达标 500 行模块预算）
+  - `cargo check -p golish-pentest-domain --all-targets` → exit 0（13.85s）
+  - `cargo nextest run -p golish-pentest-domain` → **17 passed / 0 skipped**（14 models + 3 search）
+  - `cargo clippy -p golish-pentest-domain --all-targets -- -D warnings` → exit 0（0 告警）
+  - `cargo check --workspace` → exit 0（50.23s，全部下游 crate 编译通过 → 公共 API 零破坏）
+- **已记录证据**：见上「运行过的验证」。
+- **提交记录**：**待用户授权**（commit 属 AGENTS.md §2.7 高风险）。工作树：`M models.rs` + `?? models/`（4 新文件）。
+- **已知风险或未解决问题**：仅 cargo 层验证（与该 crate 既有范式一致）。ToolConfig 的 I5 孪生问题（P1-a）未触碰——本块只是文件内重组，不合并孪生。
+- **下一步最佳动作**：① 用户授权后单独 commit 本块（建议 `refactor(pentest-domain): split models.rs into config/asset_intel/runtime submodules (P2)`）；② 继续 P2 下一个文件（后端 `js_collect.rs` 1357 / `capture/engine.rs` 1483；前端 `mocks.ts` 4135 收益最大）。每块独立 commit，不混入跨块改动。
 
 ---
 
