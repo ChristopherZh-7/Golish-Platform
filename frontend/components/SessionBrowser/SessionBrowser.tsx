@@ -32,6 +32,7 @@ import {
   type SessionSnapshot,
 } from "@/lib/ai";
 import { notify } from "@/lib/notify";
+import { formatDurationCompact } from "@/lib/time";
 
 interface SessionBrowserProps {
   open: boolean;
@@ -310,15 +311,8 @@ export function SessionBrowser({ open, onOpenChange, onSessionRestore }: Session
 
   const formatDuration = useCallback((startedAt: string, endedAt: string) => {
     try {
-      const start = new Date(startedAt);
-      const end = new Date(endedAt);
-      const durationMs = end.getTime() - start.getTime();
-      const minutes = Math.floor(durationMs / 60000);
-      const seconds = Math.floor((durationMs % 60000) / 1000);
-      if (minutes > 0) {
-        return `${minutes}m ${seconds}s`;
-      }
-      return `${seconds}s`;
+      const durationMs = new Date(endedAt).getTime() - new Date(startedAt).getTime();
+      return formatDurationCompact(durationMs);
     } catch {
       return "—";
     }

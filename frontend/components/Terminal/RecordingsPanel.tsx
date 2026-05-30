@@ -10,6 +10,7 @@ import {
   type Recording,
   type RecordingMeta,
 } from "@/lib/terminal/recording";
+import { formatDurationClock } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 export function RecordingsPanel({ onClose }: { onClose: () => void }) {
@@ -150,13 +151,6 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
     [activeRecording, load, stopPlayback]
   );
 
-  const formatDuration = (ms: number) => {
-    const s = Math.floor(ms / 1000);
-    const m = Math.floor(s / 60);
-    const sec = s % 60;
-    return `${m}:${sec.toString().padStart(2, "0")}`;
-  };
-
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-card rounded-xl">
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/10 flex-shrink-0">
@@ -207,7 +201,7 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
                     </button>
                   </div>
                   <div className="flex items-center gap-2 mt-0.5 text-[10px] text-muted-foreground/40">
-                    <span>{formatDuration(rec.duration_ms)}</span>
+                    <span>{formatDurationClock(rec.duration_ms)}</span>
                     <span>{rec.event_count} events</span>
                   </div>
                   <div className="text-[9px] text-muted-foreground/30 mt-0.5">

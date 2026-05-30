@@ -17,6 +17,7 @@ import { useTranslation } from "react-i18next";
 import { Markdown } from "@/components/Markdown";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
+import { formatDurationLong } from "@/lib/time";
 import { formatCommandForDisplay, getToolColor, getToolLabel } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { AiToolExecution } from "@/store";
@@ -24,15 +25,6 @@ import { useStore } from "@/store";
 
 interface ToolCallDetailViewProps {
   sessionId: string;
-}
-
-function formatDurationShort(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remSec = Math.round(seconds - minutes * 60);
-  return `${minutes}m ${remSec}s`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -304,7 +296,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         {execution.durationMs != null && (
           <span className="text-[11px] text-muted-foreground/70 tabular-nums flex items-center gap-1">
             <Clock className="w-3 h-3" />
-            {formatDurationShort(execution.durationMs)}
+            {formatDurationLong(execution.durationMs)}
           </span>
         )}
       </div>

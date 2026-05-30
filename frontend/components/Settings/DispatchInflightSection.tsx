@@ -14,6 +14,7 @@
 import { Activity, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { listRunningSubAgentDispatches, type RunningSubAgentDispatch } from "@/lib/ai";
+import { formatRelativeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 
@@ -22,15 +23,6 @@ interface DispatchInflightSectionProps {
   sessionId?: string | null;
   /** Optional extra className for the outer wrapper. */
   className?: string;
-}
-
-function formatRelative(iso: string): string {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return iso;
-  const deltaSec = Math.max(0, Math.floor((Date.now() - t) / 1000));
-  if (deltaSec < 60) return `${deltaSec}s ago`;
-  if (deltaSec < 3600) return `${Math.floor(deltaSec / 60)}m ago`;
-  return `${Math.floor(deltaSec / 3600)}h ago`;
 }
 
 export function DispatchInflightSection({ sessionId, className }: DispatchInflightSectionProps) {
@@ -122,7 +114,7 @@ export function DispatchInflightSection({ sessionId, className }: DispatchInflig
                 <span className="text-[10px] text-muted-foreground/60">depth={row.depth}</span>
               )}
               <span className="text-[10px] text-muted-foreground/60 ml-auto">
-                started {formatRelative(row.started_at)}
+                started {formatRelativeAgo(row.started_at, { minUnit: "second", maxUnit: "hour" })}
               </span>
             </li>
           ))}

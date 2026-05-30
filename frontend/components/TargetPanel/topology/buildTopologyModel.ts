@@ -1,5 +1,6 @@
 import type { Organization } from "@/lib/api/organizations";
 import type { PortInfo, Target } from "@/lib/pentest/types";
+import { formatRelativeAgo } from "@/lib/time";
 import type {
   TopologyEdge,
   TopologyMode,
@@ -440,16 +441,10 @@ function evidenceLabel(target: Target, count: number) {
 }
 
 function evidenceSubtitle(target: Target) {
-  if (target.updated_at) return `updated ${formatRelative(target.updated_at)}`;
+  if (target.updated_at)
+    return `updated ${formatRelativeAgo(target.updated_at, {
+      invalidLabel: "recently",
+      futureLabel: "recently",
+    })}`;
   return target.source || "local ledger";
-}
-
-function formatRelative(ms: number) {
-  const delta = Date.now() - ms;
-  if (!Number.isFinite(delta) || delta < 0) return "recently";
-  const minutes = Math.floor(delta / 60_000);
-  if (minutes < 60) return `${Math.max(1, minutes)}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
 }
