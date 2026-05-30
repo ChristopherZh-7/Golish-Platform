@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::schema::{
     ExternalFileFormat, ExternalFileStorage, Field, FieldType, IntegrationGroup, IntegrationSchema,
