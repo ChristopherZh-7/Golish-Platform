@@ -22,22 +22,26 @@
 use anyhow::Result;
 use futures::StreamExt;
 use rig::completion::Message;
-use rig::message::{ReasoningContent, ToolCall};
+use rig::message::ToolCall;
 use rig::streaming::{StreamedAssistantContent, StreamingCompletionResponse};
 
 use golish_context::token_budget::TokenUsage;
 use golish_core::events::AiEvent;
-use golish_core::utils::truncate_str;
-use golish_llm_providers::{ProviderStreamQuirks, ReasoningHandling};
+use golish_llm_providers::ProviderStreamQuirks;
 
 use super::context::{emit_event, is_cancelled, AgenticLoopContext};
 use super::stream_retry::classify_stream_start_error;
 
+mod chunks;
 mod encrypted;
 mod span;
 mod textual_tool_calls;
 mod usage;
 
+#[cfg(test)]
+mod tests;
+
+use self::chunks::{handle_reasoning, handle_reasoning_delta, handle_text_chunk};
 use self::encrypted::extract_openai_reasoning_encrypted_content;
 use self::span::{record_completion_for_span, record_reasoning_for_span};
 use self::textual_tool_calls::{extract_textual_tool_call, strip_textual_tool_call_markup};
@@ -156,186 +160,49 @@ where
         match chunk_result {
             Ok(chunk) => match chunk {
                 StreamedAssistantContent::Text(text_msg) => {
-                    if let Some(thinking) = text_msg.text.strip_prefix("[Thinking] ") {
-                        if supports_thinking {
-                            tracing::trace!(
-                                "[Unified] Received [Thinking]-prefixed text chunk #{}: {} chars",
-                                chunk_count,
-                                thinking.len()
-                            );
-                            thinking_content.push_str(thinking);
-                            accumulated_thinking.push_str(thinking);
-                        }
-                        emit_event(
-                            ctx,
-                            AiEvent::Reasoning {
-                                content: thinking.to_string(),
-                            },
-                        );
-                    } else if let Some(rest) = text_msg.text.strip_prefix("[WEB_SEARCH_RESULT:") {
-                        // [WEB_SEARCH_RESULT:tool_use_id:json_results]
-                        if let Some(colon_pos) = rest.find(':') {
-                            let tool_use_id = &rest[..colon_pos];
-                            let json_rest = rest[colon_pos + 1..].trim_end_matches(']');
-                            if let Ok(results) =
-                                serde_json::from_str::<serde_json::Value>(json_rest)
-                            {
-                                tracing::info!("Parsed web search results for {}", tool_use_id);
-                                emit_event(
-                                    ctx,
-                                    AiEvent::WebSearchResult {
-                                        request_id: tool_use_id.to_string(),
-                                        results,
-                                    },
-                                );
-                            }
-                        }
-                    } else if let Some(rest) = text_msg.text.strip_prefix("[WEB_FETCH_RESULT:") {
-                        // [WEB_FETCH_RESULT:tool_use_id:url:json_content]
-                        let parts: Vec<&str> = rest.splitn(3, ':').collect();
-                        if parts.len() >= 3 {
-                            let tool_use_id = parts[0];
-                            let url = parts[1];
-                            let json_rest = parts[2].trim_end_matches(']');
-                            let content_preview = if json_rest.len() > 200 {
-                                format!("{}...", truncate_str(json_rest, 200))
-                            } else {
-                                json_rest.to_string()
-                            };
-                            tracing::info!("Parsed web fetch result for {}: {}", tool_use_id, url);
-                            emit_event(
-                                ctx,
-                                AiEvent::WebFetchResult {
-                                    request_id: tool_use_id.to_string(),
-                                    url: url.to_string(),
-                                    content_preview,
-                                },
-                            );
-                        }
-                    } else {
-                        // Regular text content
-                        text_content.push_str(&text_msg.text);
-                        accumulated_response.push_str(&text_msg.text);
-                        let _ = ctx.events.event_tx.send(AiEvent::TextDelta {
-                            delta: text_msg.text,
-                            accumulated: accumulated_response.clone(),
-                        });
-
-                        // Detect degenerate repetitive generation
-                        if text_content.len() > last_repetition_check_len + 200 {
-                            last_repetition_check_len = text_content.len();
-                            if super::sub_agent_dispatch::detect_repetitive_text(&text_content) {
-                                tracing::warn!(
-                                    text_len = text_content.len(),
-                                    "Repetitive text detected, stopping generation"
-                                );
-                                break;
-                            }
-                        }
+                    if handle_text_chunk(
+                        ctx,
+                        text_msg.text,
+                        supports_thinking,
+                        chunk_count,
+                        &mut text_content,
+                        accumulated_response,
+                        &mut thinking_content,
+                        accumulated_thinking,
+                        &mut last_repetition_check_len,
+                    ) {
+                        break;
                     }
                 }
                 StreamedAssistantContent::Reasoning(reasoning) => {
-                    let reasoning_text = reasoning
-                        .content
-                        .iter()
-                        .filter_map(|c| {
-                            if let ReasoningContent::Text { text, .. } = c {
-                                Some(text.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("");
-                    let chunk_signature = reasoning.content.iter().find_map(|c| {
-                        if let ReasoningContent::Text { signature, .. } = c {
-                            signature.clone()
-                        } else {
-                            None
-                        }
-                    });
-
-                    match quirks.reasoning_handling {
-                        ReasoningHandling::AlwaysContent => {
-                            if !reasoning_text.is_empty() {
-                                tracing::trace!(
-                                    "[Unified] quirks=AlwaysContent: routing reasoning chunk #{} ({} chars) to text channel",
-                                    chunk_count,
-                                    reasoning_text.len()
-                                );
-                                text_content.push_str(&reasoning_text);
-                                accumulated_response.push_str(&reasoning_text);
-                                let _ = ctx.events.event_tx.send(AiEvent::TextDelta {
-                                    delta: reasoning_text,
-                                    accumulated: accumulated_response.clone(),
-                                });
-                            }
-                        }
-                        ReasoningHandling::Standard | ReasoningHandling::FallbackToContent => {
-                            tracing::trace!(
-                                "[Unified] Received native reasoning chunk #{}: {} chars, has_signature: {}",
-                                chunk_count,
-                                reasoning_text.len(),
-                                chunk_signature.is_some()
-                            );
-                            // Always accumulate into the thinking buffer when
-                            // quirks route reasoning to the thinking channel.
-                            // `supports_thinking` only controls whether we
-                            // *persist* the reasoning in chat history (downstream
-                            // assistant_push phase); it must not gate runtime
-                            // display.
-                            thinking_content.push_str(&reasoning_text);
-                            if supports_thinking {
-                                accumulated_thinking.push_str(&reasoning_text);
-                                if chunk_signature.is_some() {
-                                    thinking_signature = chunk_signature;
-                                }
-                                if reasoning.id.is_some() {
-                                    thinking_id = reasoning.id.clone();
-                                }
-                            }
-                            emit_event(
-                                ctx,
-                                AiEvent::Reasoning {
-                                    content: reasoning_text,
-                                },
-                            );
-                        }
-                    }
+                    handle_reasoning(
+                        ctx,
+                        reasoning,
+                        quirks.reasoning_handling,
+                        supports_thinking,
+                        chunk_count,
+                        &mut text_content,
+                        accumulated_response,
+                        &mut thinking_content,
+                        accumulated_thinking,
+                        &mut thinking_signature,
+                        &mut thinking_id,
+                    );
                 }
                 StreamedAssistantContent::ReasoningDelta { id, reasoning } => {
-                    match quirks.reasoning_handling {
-                        ReasoningHandling::AlwaysContent => {
-                            if !reasoning.is_empty() {
-                                tracing::trace!(
-                                    "[Unified] quirks=AlwaysContent: routing reasoning delta chunk #{} ({} chars) to text channel",
-                                    chunk_count,
-                                    reasoning.len()
-                                );
-                                text_content.push_str(&reasoning);
-                                accumulated_response.push_str(&reasoning);
-                                let _ = ctx.events.event_tx.send(AiEvent::TextDelta {
-                                    delta: reasoning,
-                                    accumulated: accumulated_response.clone(),
-                                });
-                            }
-                        }
-                        ReasoningHandling::Standard | ReasoningHandling::FallbackToContent => {
-                            tracing::trace!(
-                                "[Unified] Received reasoning delta chunk #{}: {} chars",
-                                chunk_count,
-                                reasoning.len()
-                            );
-                            thinking_content.push_str(&reasoning);
-                            if supports_thinking {
-                                accumulated_thinking.push_str(&reasoning);
-                                if id.is_some() && thinking_id.is_none() {
-                                    thinking_id = id;
-                                }
-                            }
-                            emit_event(ctx, AiEvent::Reasoning { content: reasoning });
-                        }
-                    }
+                    handle_reasoning_delta(
+                        ctx,
+                        id,
+                        reasoning,
+                        quirks.reasoning_handling,
+                        supports_thinking,
+                        chunk_count,
+                        &mut text_content,
+                        accumulated_response,
+                        &mut thinking_content,
+                        accumulated_thinking,
+                        &mut thinking_id,
+                    );
                 }
                 StreamedAssistantContent::ToolCall { tool_call, .. } => {
                     // Server tool (web_search/web_fetch executed by provider)
@@ -557,34 +424,5 @@ fn initial_tool_args_fragment(args: &serde_json::Value) -> String {
         serde_json::Value::Object(map) if map.is_empty() => String::new(),
         serde_json::Value::String(value) => value.clone(),
         value => value.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::{has_complete_tool_args, initial_tool_args_fragment};
-
-    #[test]
-    fn string_tool_args_are_treated_as_streaming_fragments() {
-        let args = json!("{\"command\":\"dig example.com A +short\", \"cwd\":");
-
-        assert!(!has_complete_tool_args(&args));
-        assert_eq!(
-            initial_tool_args_fragment(&args),
-            "{\"command\":\"dig example.com A +short\", \"cwd\":"
-        );
-    }
-
-    #[test]
-    fn object_tool_args_are_complete() {
-        let args = json!({"command": "dig example.com A +short", "cwd": ""});
-
-        assert!(has_complete_tool_args(&args));
-        assert_eq!(
-            initial_tool_args_fragment(&args),
-            "{\"command\":\"dig example.com A +short\",\"cwd\":\"\"}"
-        );
     }
 }
