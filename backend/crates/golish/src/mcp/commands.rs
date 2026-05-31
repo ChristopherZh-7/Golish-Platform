@@ -451,9 +451,10 @@ pub struct McpSetupResult {
 ///
 /// Called after connect/disconnect to keep all sessions in sync with the global manager.
 async fn refresh_all_bridge_mcp_tools(state: &AppState) {
+    let agent_state = state.extract_agent_state();
     let bridges = state.ai_state.bridges.read().await;
     for (session_id, bridge) in bridges.iter() {
-        crate::ai::commands::setup_bridge_mcp_tools(bridge, state).await;
+        crate::ai::commands::setup_bridge_mcp_tools(bridge, &agent_state).await;
         tracing::debug!("[mcp] Refreshed MCP tools for session {}", session_id);
     }
 }

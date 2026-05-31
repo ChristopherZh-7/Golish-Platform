@@ -1,0 +1,48 @@
+[package]
+name = "golish-recon-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Per-domain Tauri command crate: reconnaissance (targets, asset intel, organizations, scan runner/queue, sensitive scan, intel providers, integrations capture)"
+
+[dependencies]
+# Application-boundary shared types (GolishError, DbState, TauriEventEmitter); L5.
+golish-app-core = { workspace = true }
+
+# Domain + infrastructure crates (L1/L2) — legal downward edges.
+golish-db = { workspace = true }
+golish-core = { workspace = true }
+golish-settings = { workspace = true }
+golish-pentest = { workspace = true }
+golish-scan-runner = { workspace = true }
+golish-intel-providers = { workspace = true }
+golish-integrations = { workspace = true }
+# asset_intel writes provider output via golish-projects file storage (L1).
+golish-projects = { workspace = true }
+
+# Tauri command surface (webview capture in `integrations` needs the full surface).
+tauri = { workspace = true }
+
+# Async DB + HTTP + filesystem.
+sqlx = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Error handling (intel_providers adapters return anyhow::Result).
+anyhow = { workspace = true }
+base64 = { workspace = true }
+# integrations capture engine resolves the per-OS browser data directory.
+dirs = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }
+url = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# asset_intel + integrations tests build temp dirs for toolsconfig / capture.
+tempfile = { workspace = true }

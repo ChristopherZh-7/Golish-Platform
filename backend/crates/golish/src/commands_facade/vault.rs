@@ -11,4 +11,4 @@
 //! (N5) so the credential vault is no longer buried in the
 //! catch-all workspace facade.
 
-pub use crate::tools::vault::*;
+pub use golish_platform_app::vault::*;

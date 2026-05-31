@@ -44,20 +44,23 @@
 pub use crate::commands::fs::*;
 pub use crate::commands::project::*;
 pub use crate::projects::commands::*;
-pub use crate::tools::audit::*;
 pub use crate::tools::conversation_store::batch::*;
 pub use crate::tools::conversation_store::*;
-pub use crate::tools::custom_rules::*;
-pub use crate::tools::execution_plans::*;
-pub use crate::tools::methodology::*;
-pub use crate::tools::notes::*;
-pub use crate::tools::organizations::*;
-pub use crate::tools::output_parser::*;
 pub use crate::tools::project_io::*;
-pub use crate::tools::recordings::*;
-pub use crate::tools::scan_queue::*;
-pub use crate::tools::scan_runner::*;
-pub use crate::tools::security_analysis::*;
-pub use crate::tools::sensitive_scan::*;
-pub use crate::tools::targets::*;
-pub use crate::tools::wordlists::*;
+pub use golish_pentest_app::execution_plans::*;
+pub use golish_pentest_app::methodology::*;
+pub use golish_pentest_app::output_parser::*;
+pub use golish_pentest_app::security_analysis::*;
+pub use golish_platform_app::audit::*;
+pub use golish_platform_app::notes::*;
+pub use golish_platform_app::recordings::*;
+// Recon service commands extracted to the golish-recon-app crate
+// (crate-per-service split M2a); globbed directly so the `__cmd__$name`
+// macros reach the aggregate `generate_handler!`.
+pub use golish_recon_app::custom_rules::*;
+pub use golish_recon_app::organizations::*;
+pub use golish_recon_app::scan_queue::*;
+pub use golish_recon_app::scan_runner::*;
+pub use golish_recon_app::sensitive_scan::*;
+pub use golish_recon_app::targets::*;
+pub use golish_recon_app::wordlists::*;

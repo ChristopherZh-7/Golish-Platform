@@ -18,4 +18,7 @@
 //!
 //! Extracted from `commands_facade/workspace.rs` on 2026-05-02 (N5).
 
-pub use crate::tools::wiki::*;
+// Extracted to the `golish-vuln-app` crate (crate-per-service split M1b).
+// The glob re-exports both the command fns and their `__cmd__$name` macros so
+// the aggregate `generate_handler!` in `commands_registry.rs` resolves them.
+pub use golish_vuln_app::wiki::*;

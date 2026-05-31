@@ -13,8 +13,8 @@ use crate::commands::FileWatcherState;
 use crate::history::HistoryManager;
 use crate::state::AppState;
 use crate::tools;
-use crate::tools::integrations::capture::CaptureEngine;
-use crate::tools::integrations::IntegrationsState;
+use golish_recon_app::integrations::capture::CaptureEngine;
+use golish_recon_app::integrations::IntegrationsState;
 
 /// Apply plugins, managed state and lifecycle hooks to the given Tauri
 /// builder. The caller is responsible for chaining `invoke_handler`,
@@ -25,6 +25,7 @@ pub(crate) fn configure_builder(
     history_manager: Arc<RwLock<Option<HistoryManager>>>,
 ) -> tauri::Builder<tauri::Wry> {
     let db_state = app_state.extract_db_state();
+    let agent_state = app_state.extract_agent_state();
     let telemetry_state = app_state.extract_telemetry_state();
     let mcp_managed = app_state.extract_mcp_managed();
     let pty_state = app_state.extract_pty_state();
@@ -55,12 +56,20 @@ pub(crate) fn configure_builder(
     // background task without lifetime headaches.
     let capture_engine: Arc<CaptureEngine> = Arc::new(CaptureEngine::new());
 
+    // Recon-app asset-intel (crate-per-service M2b) resolves `toolsconfig_dir`
+    // via the pentest config manager. Share the same `Arc<ConfigManager>` the
+    // PentestState uses so behaviour is identical to the pre-extraction code.
+    let pentest_state = tools::pentest::PentestState::new();
+    let asset_intel_tools_config =
+        golish_recon_app::asset_intel::ToolsConfigState(pentest_state.config_manager.clone());
+
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .manage(app_state)
         .manage(db_state)
+        .manage(agent_state)
         .manage(telemetry_state)
         .manage(mcp_managed)
         .manage(pty_state)
@@ -69,7 +78,8 @@ pub(crate) fn configure_builder(
         .manage(pentest_cfg)
         .manage(history_manager)
         .manage(Arc::new(FileWatcherState::new()))
-        .manage(tools::pentest::PentestState::new())
+        .manage(pentest_state)
+        .manage(asset_intel_tools_config)
         .manage(integrations_state)
         .manage(capture_engine)
         .on_window_event(|window, event| {

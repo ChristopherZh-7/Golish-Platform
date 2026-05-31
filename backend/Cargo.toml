@@ -3,6 +3,12 @@ members = [
     "crates/golish",
     "crates/golish-cli-output",
     "crates/golish-core",
+    "crates/golish-app-core",
+    "crates/golish-vuln-app",
+    "crates/golish-recon-app",
+    "crates/golish-pentest-app",
+    "crates/golish-agent-app",
+    "crates/golish-platform-app",
     "crates/golish-models",
     "crates/golish-settings",
     "crates/golish-tools",
@@ -49,6 +55,12 @@ members = [
 # Default members for fast inner-loop development (excludes Tauri app)
 default-members = [
     "crates/golish-core",
+    "crates/golish-app-core",
+    "crates/golish-vuln-app",
+    "crates/golish-recon-app",
+    "crates/golish-pentest-app",
+    "crates/golish-agent-app",
+    "crates/golish-platform-app",
     "crates/golish-models",
     "crates/golish-settings",
     "crates/golish-tools",
@@ -105,6 +117,12 @@ repository = "https://github.com/ChristopherZh-7/golish-platform"
 # Internal crates
 golish-cli-output = { path = "crates/golish-cli-output" }
 golish-core = { path = "crates/golish-core" }
+golish-app-core = { path = "crates/golish-app-core" }
+golish-vuln-app = { path = "crates/golish-vuln-app" }
+golish-recon-app = { path = "crates/golish-recon-app" }
+golish-pentest-app = { path = "crates/golish-pentest-app" }
+golish-agent-app = { path = "crates/golish-agent-app" }
+golish-platform-app = { path = "crates/golish-platform-app" }
 golish-models = { path = "crates/golish-models" }
 golish-settings = { path = "crates/golish-settings" }
 golish-tools = { path = "crates/golish-tools" }

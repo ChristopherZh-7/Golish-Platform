@@ -13,8 +13,12 @@ use crate::tools::pty_interactive::PtyOutputTap;
 /// `AppState`.
 pub struct PtyState {
     pub manager: Arc<PtyManager>,
+    // Carried so PtyState mirrors AppState's pty fields; not yet read by any pty
+    // command (pre-existing since the A4 narrow-state split, kept for future use).
+    #[allow(dead_code)]
     pub output_tap: Arc<PtyOutputTap>,
     pub active_session: Arc<Mutex<Option<String>>>,
+    #[allow(dead_code)]
     pub busy_sessions: Arc<Mutex<HashSet<String>>>,
 }
 

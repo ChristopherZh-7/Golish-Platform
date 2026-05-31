@@ -4,7 +4,7 @@ use crate::runtime::TauriRuntime;
 use crate::state::PtyState;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Manager, State};
 
 #[tauri::command]
 pub async fn pty_create(
@@ -18,7 +18,13 @@ pub async fn pty_create(
     let rows = rows.unwrap_or(24);
     let cols = cols.unwrap_or(80);
 
-    let runtime = Arc::new(TauriRuntime::new(app_handle));
+    // TauriRuntime no longer fetches the PTY output tap from AppState itself
+    // (it moved to golish-app-core, below AppState); inject it from the
+    // managed AppState here so terminal output still feeds AI tool subscribers.
+    let pty_output_tap = app_handle
+        .try_state::<crate::state::AppState>()
+        .map(|s| s.pty_output_tap.clone());
+    let runtime = Arc::new(TauriRuntime::new(app_handle, pty_output_tap));
 
     Ok(state
         .manager

@@ -10,6 +10,9 @@ pub mod sidecar;
 pub mod telemetry;
 
 pub use db::DbState;
+// Narrow `AgentState` now lives in golish-agent-app together with the agent
+// command surface (M4-proper); golish constructs it via
+// `AppState::extract_agent_state()` and no longer re-exports the type.
 pub use mcp::McpManaged;
 pub use pty::PtyState;
 pub use sidecar::SidecarManaged;
@@ -87,6 +90,10 @@ impl AppState {
         }
     }
 
+    // Legacy DB-readiness wait; commands now go through `extract_db_state()` →
+    // `DbState`, so nothing reads this on AppState anymore. Kept for parity /
+    // future use (pre-existing; surfaced when M4-A recompiled this module).
+    #[allow(dead_code)]
     pub async fn db_pool_ready(&self) -> Result<&PgPool, GolishError> {
         if self.db_ready.is_ready() {
             return Ok(&self.db_pool);
@@ -109,6 +116,30 @@ impl AppState {
     /// Extract a `DbState` that shares the same pool + gate.
     pub fn extract_db_state(&self) -> DbState {
         DbState::new(self.db_pool.clone(), self.db_ready.clone())
+    }
+
+    /// Extract an [`AgentState`](golish_agent_app::AgentState) sharing the same
+    /// handles the agent commands need (everything except the platform-only
+    /// `command_index` / `telemetry_stats` / `langfuse_active`). All fields are
+    /// `Arc`/`Clone` shares, so the agent commands see the same runtime state as
+    /// the rest of the app. This is what lets `ai/commands/*` take the narrow
+    /// `AgentState` instead of this monolith (crate-per-service M4-A).
+    pub fn extract_agent_state(&self) -> golish_agent_app::AgentState {
+        golish_agent_app::AgentState {
+            ai_state: self.ai_state.clone(),
+            pty_manager: self.pty_manager.clone(),
+            indexer_state: self.indexer_state.clone(),
+            settings_manager: self.settings_manager.clone(),
+            sidecar_config: self.sidecar_config.clone(),
+            sidecar_state: self.sidecar_state.clone(),
+            mcp_manager: self.mcp_manager.clone(),
+            pentest_config_manager: self.pentest_config_manager.clone(),
+            pty_output_tap: self.pty_output_tap.clone(),
+            active_terminal_session: self.active_terminal_session.clone(),
+            pentest_busy_sessions: self.pentest_busy_sessions.clone(),
+            db_pool: self.db_pool.clone(),
+            db_ready: self.db_ready.clone(),
+        }
     }
 
     /// Extract a `TelemetryState` that shares the same stats + langfuse flag.

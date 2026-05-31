@@ -10,92 +10,47 @@
 // Re-export everything from golish-tools
 pub use golish_tools::*;
 
-// Shared project-scoping (IDOR / ownership) guards for command CRUD (AGENTS.md I2)
-pub(crate) mod scoping;
+// NB: the project-scoping (IDOR / ownership) guards live in golish-app-core (L5);
+// the last golish-staying consumers (vault / notes) moved to golish-platform-app
+// (crate-per-service M5), so the historical `crate::tools::scoping` re-export was
+// dropped. The per-domain app crates import `golish_app_core::scoping` directly.
 
-// Penetration testing tool management (ported from Golish)
-pub mod pentest;
+// Penetration testing service (tool mgmt / AI bridge / pipelines / findings /
+// methodology / evidence / security analysis) extracted to the
+// `golish-pentest-app` crate (crate-per-service split M3). Commands reach the
+// aggregate `generate_handler!` via `commands_facade::{pentest,workspace,
+// findings,evidence,pipeline}`. golish-staying `ai/` + startup wiring still call
+// the pentest module at compile time (layer A), so it is re-exported here.
+pub(crate) use golish_pentest_app::pentest;
 
-// Wiki / knowledge-base storage
-pub mod wiki;
+// Wiki / knowledge-base storage — extracted to the `golish-vuln-app` crate
+// (crate-per-service split M1b). Commands reach the aggregate
+// `generate_handler!` via `commands_facade::wiki`.
 
-// Target / scope management
-pub mod targets;
+// Recon commands live in the `golish-recon-app` crate (M2); pentest commands in
+// `golish-pentest-app` (M3). Both reach the aggregate `generate_handler!` via the
+// `commands_facade` re-exports. After M3 moved pipeline/storage out, no
+// golish-staying module reaches recon's `targets` at compile time anymore.
 
-// Credential vault (encrypted storage)
-pub mod vault;
+// Platform commands (vault / audit / notes / recordings) live in the
+// `golish-platform-app` crate (M5); they reach the aggregate `generate_handler!`
+// via the `commands_facade::{vault, workspace}` re-exports.
 
 // Project export/import
 pub mod project_io;
 
-// Pentest AI tools (expose installed pentest tools to the AI agent)
-pub mod pentest_ai;
+// Interactive PTY tool (allows AI to control visible terminal sessions).
+// Sunk into golish-app-core (L5) so the pentest app crate's AI tools and the
+// main app's runtime wiring share one copy; re-exported here so golish-staying
+// callers keep using `crate::tools::pty_interactive::*`.
+pub(crate) use golish_app_core::pty_interactive;
 
-// Interactive PTY tool (allows AI to control visible terminal sessions)
-pub mod pty_interactive;
+// Vulnerability intelligence — extracted to the `golish-vuln-app` crate
+// (crate-per-service split M1). Commands are re-exported to the aggregate
+// `generate_handler!` via `commands_facade::vuln_intel`.
 
-// Pentest methodology templates
-pub mod methodology;
-
-// Terminal session recordings
-pub mod recordings;
-
-// Generic tool output parsing engine
-pub mod output_parser;
-
-// Vulnerability findings tracker
-pub mod findings;
-
-// Tool chain pipeline
-pub mod pipeline;
-
-// Quick notes
-pub mod notes;
-
-// Multi-level organization tree (HVV org hierarchy)
-pub mod organizations;
-
-// Audit log
-pub mod audit;
-
-// Evidence Ledger Tauri command (Doc 2 §3 · Phase 1b Task 1b.2)
-pub mod evidence;
-
-// Wordlist manager
-pub mod wordlists;
-
-// Vulnerability intelligence
-pub mod vuln_intel;
-
-// AI bridge tools (expose targets/findings/vault to the AI agent)
-pub mod pentest_bridge;
-
-// Execution plans (structured task tracking for AI agent continuation)
-pub mod execution_plans;
-
-// Frontend conversation & timeline persistence (replaces workspace.json)
-pub mod conversation_store;
-
-// Scan queue persistence
-pub mod scan_queue;
-
-// Custom passive scan rules persistence
-pub mod custom_rules;
-
-// Security analysis (operation logs, assets, endpoints, fingerprints, scans)
-pub mod security_analysis;
-
-// Scan runner (WhatWeb, Nuclei targeted, feroxbuster)
-pub mod scan_runner;
-
-// Sensitive file scanner (directory-level probing)
-pub mod sensitive_scan;
-
-// ASM intel providers (0.zone, FOFA, Quake, ...) — Settings UI + agent
-pub mod intel_providers;
-
-// Business-level asset intelligence providers for Discover Assets engagements
-pub mod asset_intel;
-
-// Schema-driven external-service credential management (Integrations)
-pub mod integrations;
+// Frontend conversation & timeline persistence (replaces workspace.json) —
+// extracted to golish-agent-app (agent-owned `conversation_store` table,
+// crate-per-service M4-proper); re-exported so `commands_facade::workspace`
+// keeps feeding its commands to `generate_handler!`.
+pub(crate) use golish_agent_app::conversation_store;

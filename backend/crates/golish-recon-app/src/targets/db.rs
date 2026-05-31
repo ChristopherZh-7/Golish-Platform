@@ -1,0 +1,169 @@
+//! Plain database helpers (no Tauri annotations) for targets/recon updates.
+//! Used by the `#[tauri::command]` wrappers in `cmds.rs` and by other modules
+//! that need to write through directly.
+
+use golish_app_core::GolishError;
+use sqlx::PgPool;
+use uuid::Uuid;
+
+use super::recon::ReconUpdate;
+use super::types::{detect_type, Target, TargetRow, TargetType};
+
+// ============================================================================
+// Standalone DB functions for AI tool integration (no Tauri state needed)
+// ============================================================================
+
+#[allow(clippy::too_many_arguments)]
+pub async fn db_target_add(
+    pool: &PgPool,
+    name: &str,
+    value: &str,
+    target_type: Option<&str>,
+    grp: Option<&str>,
+    owner: Option<&str>,
+    time_window_start: Option<chrono::DateTime<chrono::Utc>>,
+    time_window_end: Option<chrono::DateTime<chrono::Utc>>,
+    organization_id: Option<Uuid>,
+    project_path: Option<&str>,
+    source: &str,
+    parent_id: Option<Uuid>,
+) -> Result<Target, GolishError> {
+    let tt = target_type
+        .map(TargetType::from_str)
+        .unwrap_or_else(|| detect_type(value));
+    let n = if name.is_empty() { value } else { name };
+    let g = grp
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("default");
+    let own = owner.map(str::trim).unwrap_or("");
+
+    let existing =
+        golish_db::repo::targets::find_row_by_value_legacy::<TargetRow>(pool, value, project_path)
+            .await?;
+
+    if let Some(r) = existing {
+        return Ok(Target::from(r));
+    }
+
+    let row = sqlx::query_as::<_, TargetRow>(
+        r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, owner, time_window_start, time_window_end, organization_id, project_path, source, parent_id)
+           VALUES ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, $4, $5, $6, $7, $8, $9, $10, $11)
+           RETURNING id, name, target_type::text, value, tags, notes, scope::text,
+                     status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
+                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
+                     created_at, updated_at"#,
+    )
+    .bind(n)
+    .bind(tt.as_str())
+    .bind(value)
+    .bind(g)
+    .bind(own)
+    .bind(time_window_start)
+    .bind(time_window_end)
+    .bind(organization_id)
+    .bind(project_path)
+    .bind(source)
+    .bind(parent_id)
+    .fetch_one(pool)
+    .await
+?;
+
+    Ok(Target::from(row))
+}
+
+pub async fn db_target_list(
+    pool: &PgPool,
+    project_path: Option<&str>,
+) -> Result<Vec<Target>, GolishError> {
+    let rows: Vec<TargetRow> =
+        golish_db::repo::targets::list_rows_by_project_exact(pool, project_path).await?;
+
+    Ok(rows.into_iter().map(Target::from).collect())
+}
+
+pub async fn db_target_update_status(
+    pool: &PgPool,
+    id: Uuid,
+    status: &str,
+) -> Result<(), GolishError> {
+    sqlx::query("UPDATE targets SET status=$1::target_status, updated_at=NOW() WHERE id=$2")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn db_target_update_recon(
+    pool: &PgPool,
+    id: Uuid,
+    ports: &serde_json::Value,
+) -> Result<(), GolishError> {
+    sqlx::query("UPDATE targets SET ports=$1, updated_at=NOW() WHERE id=$2")
+        .bind(ports)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Extended recon update accepting all httpx/nmap-derived fields.
+/// Only non-empty values overwrite existing data.
+pub async fn db_target_update_recon_extended(
+    pool: &PgPool,
+    id: Uuid,
+    updates: &ReconUpdate,
+) -> Result<(), GolishError> {
+    sqlx::query(
+        r#"UPDATE targets SET
+            real_ip       = CASE WHEN $1 != '' THEN $1 ELSE real_ip END,
+            cdn_waf       = CASE WHEN $2 != '' THEN $2 ELSE cdn_waf END,
+            http_title    = CASE WHEN $3 != '' THEN $3 ELSE http_title END,
+            http_status   = COALESCE($4, http_status),
+            webserver     = CASE WHEN $5 != '' THEN $5 ELSE webserver END,
+            os_info       = CASE WHEN $6 != '' THEN $6 ELSE os_info END,
+            content_type  = CASE WHEN $7 != '' THEN $7 ELSE content_type END,
+            ports         = CASE WHEN $8::jsonb = '[]'::jsonb THEN ports
+                            ELSE (
+                                SELECT COALESCE(jsonb_agg(merged), '[]'::jsonb) FROM (
+                                    -- Existing ports that are NOT in the new data (keep as-is)
+                                    SELECT ep AS merged
+                                    FROM jsonb_array_elements(ports) ep
+                                    WHERE NOT EXISTS (
+                                        SELECT 1 FROM jsonb_array_elements($8::jsonb) np
+                                        WHERE (ep->>'port') = (np->>'port')
+                                          AND COALESCE(ep->>'proto','tcp') = COALESCE(np->>'proto','tcp')
+                                    )
+                                    UNION ALL
+                                    -- New/updated ports: merge with existing entry if present
+                                    SELECT CASE
+                                        WHEN ep IS NOT NULL THEN ep || np
+                                        ELSE np
+                                    END AS merged
+                                    FROM jsonb_array_elements($8::jsonb) np
+                                    LEFT JOIN LATERAL (
+                                        SELECT ep FROM jsonb_array_elements(ports) ep
+                                        WHERE (ep->>'port') = (np->>'port')
+                                          AND COALESCE(ep->>'proto','tcp') = COALESCE(np->>'proto','tcp')
+                                        LIMIT 1
+                                    ) existing(ep) ON true
+                                ) sub
+                            ) END,
+            updated_at    = NOW()
+           WHERE id = $9"#,
+    )
+    .bind(&updates.real_ip)
+    .bind(&updates.cdn_waf)
+    .bind(&updates.http_title)
+    .bind(updates.http_status)
+    .bind(&updates.webserver)
+    .bind(&updates.os_info)
+    .bind(&updates.content_type)
+    .bind(&updates.ports)
+    .bind(id)
+    .execute(pool)
+    .await
+?;
+    Ok(())
+}

@@ -5,5 +5,3 @@
 //! command wrappers and re-exports the library types.
 
 pub mod commands;
-
-pub use golish_projects::file_storage;

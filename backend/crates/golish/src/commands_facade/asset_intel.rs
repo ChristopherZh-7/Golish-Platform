@@ -8,4 +8,5 @@
 //! - `asset_intel_enrich_organization` · two-phase enrichment (single org)
 //! - `asset_intel_enrich_batch` · two-phase enrichment (parent + children)
 
-pub use crate::tools::asset_intel::*;
+// Extracted to the golish-recon-app crate (crate-per-service split M2b).
+pub use golish_recon_app::asset_intel::*;

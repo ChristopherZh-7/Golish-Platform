@@ -23,6 +23,24 @@ golish-cli-output = { workspace = true }
 golish-core = { path = "../golish-core" }
 golish-platform = { workspace = true }
 
+# Application-shared boundary types (GolishError + DbState); L5
+golish-app-core = { workspace = true }
+
+# Per-domain app crate: vuln-intel commands (crate-per-service split M1)
+golish-vuln-app = { workspace = true }
+
+# Per-domain app crate: recon commands (crate-per-service split M2)
+golish-recon-app = { workspace = true }
+
+# Per-domain app crate: pentest commands (crate-per-service split M3)
+golish-pentest-app = { workspace = true }
+
+# Per-domain crate: agent runtime state — AiState + narrow AgentState (M4-A)
+golish-agent-app = { workspace = true }
+
+# Per-domain app crate: platform commands — vault/audit/notes/recordings (M5)
+golish-platform-app = { workspace = true }
+
 # Infrastructure crates
 golish-settings = { path = "../golish-settings" }
 golish-models = { path = "../golish-models" }

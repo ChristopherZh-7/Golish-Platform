@@ -10,4 +10,7 @@
 //! - **Nuclei templates**: `intel_search_nuclei_templates`,
 //!   `intel_batch_search_nuclei_templates`, `intel_discover_all_nuclei`
 
-pub use crate::tools::vuln_intel::*;
+// Extracted to the `golish-vuln-app` crate (crate-per-service split M1).
+// The glob re-exports both the command fns and their `__cmd__$name` macros so
+// the aggregate `generate_handler!` in `commands_registry.rs` resolves them.
+pub use golish_vuln_app::vuln_intel::*;

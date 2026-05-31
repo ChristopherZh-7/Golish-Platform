@@ -96,6 +96,27 @@ LAYER_TABLE: dict[str, float] = {
     "golish-agent-kit": 4.1,
     "golish-agent-runtime": 4.2,
     "golish-agent-bridge": 4.3,
+    # L5 Application-shared boundary types (unified error + narrow managed
+    # state) consumed by per-domain app crates and the main app.
+    "golish-app-core": 5.0,
+    # L5.5 Per-domain app crates: each owns one service's Tauri command surface
+    # (crate-per-service split). Depend on golish-app-core (L5) + domain crates
+    # (L1/L2); consumed only by the main `golish` binary's generate_handler!.
+    "golish-vuln-app": 5.5,
+    "golish-recon-app": 5.5,
+    # platform app: vault/audit/notes/recordings; pure leaf (DbState only). Reads
+    # cross-service tables (passive_scans/agent_logs/search_logs) via the golish-db
+    # repo layer (L2), not sibling crates, so it stays L5.5 with no sibling
+    # app-crate dependency (crate-per-service M5).
+    "golish-platform-app": 5.5,
+    # L5.6 pentest app: depends on recon-app (L5.5) at compile time (pipeline
+    # storage reads recon `targets`) + app-core (L5); sits above recon so the
+    # edge is a clean downward dep. ReconPort (S1-2b) will cut it to layer B.
+    "golish-pentest-app": 5.6,
+    # L5.6 agent app: holds AiState + the narrow AgentState (M4-A) so the agent
+    # command surface can move off the monolithic AppState. Depends on app-core
+    # (L5) + agent-bridge (L4.3) + domain crates; sibling of pentest-app.
+    "golish-agent-app": 5.6,
     # L6 Application
     "golish": 6.0,
 }

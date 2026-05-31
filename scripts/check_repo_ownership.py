@@ -93,32 +93,30 @@ DOMAIN_RULES: list[tuple[str, str]] = [
     # Provider-side port adapters belong to the service they expose (S1-2):
     # ports/platform/* legally reaches platform-owned repos (vault/notes/...).
     ("ports/platform", "platform"),
-    ("tools/asset_intel", "recon"),
-    ("tools/organizations", "recon"),
-    ("tools/targets", "recon"),
-    ("tools/custom_rules", "recon"),
-    ("tools/sensitive_scan", "recon"),
-    ("tools/scan_runner", "recon"),
-    ("tools/scan_queue", "recon"),
-    ("tools/intel_providers", "recon"),
-    ("tools/integrations", "recon"),
-    ("tools/pentest_bridge", "pentest"),
-    ("tools/pentest_ai", "pentest"),
-    ("tools/pentest", "pentest"),
-    ("tools/findings", "pentest"),
-    ("tools/methodology", "pentest"),
-    ("tools/pipeline", "pentest"),
-    ("tools/execution_plans", "pentest"),
-    ("tools/evidence", "pentest"),
-    ("tools/security_analysis", "pentest"),
+    # ports/recon/* (recon service adapters sunk into golish-app-core, S1-2b)
+    # legally reach recon-owned repos (api_endpoints/js_analysis/fingerprints/
+    # passive_scans/target_assets/targets/sitemap_store/directory_entries).
+    ("ports/recon", "recon"),
+    # NB: the recon command modules (targets / organizations / asset_intel /
+    # scan_* / custom_rules / sensitive_scan / intel_providers / integrations)
+    # were extracted to the golish-recon-app crate (crate-per-service M2); that
+    # crate is scanned via SOURCE_ROOTS with a fixed `recon` domain, so no
+    # per-path rule is needed here anymore.
+    # NB: the pentest command modules (pentest / pentest_ai / pentest_bridge /
+    # findings / methodology / pipeline / execution_plans / evidence /
+    # security_analysis) were extracted to the golish-pentest-app crate
+    # (crate-per-service M3); that crate is scanned via SOURCE_ROOTS with a fixed
+    # `pentest` domain, so no per-path rule is needed here anymore.
     ("tools/vuln_intel", "vuln"),
     ("tools/wiki", "vuln"),
-    ("tools/conversation_store", "agent"),
-    ("ai/", "agent"),
-    ("tools/vault", "platform"),
-    ("tools/audit", "platform"),
-    ("tools/notes", "platform"),
-    ("tools/recordings", "platform"),
+    # NB: the agent command surface (ai/* command bodies + bridges) and the
+    # agent-owned conversation_store were extracted to the golish-agent-app crate
+    # (crate-per-service M4-proper); that crate is scanned via SOURCE_ROOTS with a
+    # fixed `agent` domain, so no per-path rule is needed here anymore.
+    # NB: the platform command surface (vault / audit / notes / recordings) was
+    # extracted to the golish-platform-app crate (crate-per-service M5); that crate
+    # is scanned via SOURCE_ROOTS with a fixed `platform` domain, so no per-path
+    # rule is needed here anymore.
 ]
 
 # Baseline coupling frozen as a ratchet — seed via `--emit-allowlist` (Task 2).
@@ -126,34 +124,39 @@ DOMAIN_RULES: list[tuple[str, str]] = [
 # means you introduced the corresponding *Port (see design doc §6 S1-2).
 ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
     {
-        ("ai/db_bridge/orchestration.rs", "execution_plans"),
-        ("ai/db_bridge/recon.rs", "api_endpoints"),
-        ("ai/db_bridge/recon.rs", "fingerprints"),
-        ("ai/db_bridge/recon.rs", "js_analysis"),
-        ("ai/db_bridge/recon.rs", "passive_scans"),
-        ("ai/db_bridge/recon.rs", "target_assets"),
-        ("ai/db_bridge/recon.rs", "vuln_intel"),
-        ("ai/db_bridge/wiki.rs", "wiki_kb"),
-        ("tools/audit.rs", "agent_logs"),
-        ("tools/audit.rs", "passive_scans"),
-        ("tools/audit.rs", "search_logs"),
-        ("tools/pentest_bridge/auth_probe.rs", "targets"),
-        ("tools/pentest_bridge/js_collect/sitemap.rs", "sitemap_store"),
-        ("tools/pentest_bridge/js_collect/tool_impl.rs", "js_analysis"),
-        ("tools/pentest_bridge/js_collect/tool_impl.rs", "targets"),
-        ("tools/pentest_bridge/js_extract_apis.rs", "js_analysis"),
-        ("tools/pentest_bridge/js_extract_apis.rs", "targets"),
-        ("tools/pentest_bridge/record_finding.rs", "targets"),
-        ("tools/pipeline/storage.rs", "directory_entries"),
-        ("tools/pipeline/storage.rs", "sitemap_store"),
-        ("tools/pipeline/storage.rs", "targets"),
-        ("tools/scan_queue.rs", "scan_queue"),
-        ("tools/security_analysis.rs", "api_endpoints"),
-        ("tools/security_analysis.rs", "fingerprints"),
-        ("tools/security_analysis.rs", "js_analysis"),
-        ("tools/security_analysis.rs", "passive_scans"),
-        ("tools/security_analysis.rs", "target_assets"),
-        ("tools/vuln_intel/commands/matching.rs", "targets"),
+        # agent command surface extracted to the golish-agent-app crate
+        # (crate-per-service M4-proper); keys are crate-prefixed (see SOURCE_ROOTS).
+        # The db_bridge implements golish-agent-kit's DbRepoProvider, reading
+        # cross-service recon/vuln/pentest tables (layer A; ReconPort/etc. cut to B).
+        ("golish-agent-app/ai/db_bridge/orchestration.rs", "execution_plans"),
+        # NB: recon.rs's 5 recon-table reads/writes (api_endpoints / fingerprints
+        # / js_analysis / passive_scans / target_assets) now route through the
+        # recon service ports (golish-app-core/ports/recon, S1-2b1), so their
+        # ALLOWLIST entries were removed (ratchet net-forward).
+        ("golish-agent-app/ai/db_bridge/recon.rs", "vuln_intel"),
+        ("golish-agent-app/ai/db_bridge/wiki.rs", "wiki_kb"),
+        # platform service extracted to the golish-platform-app crate
+        # (crate-per-service M5); keys are crate-prefixed (see SOURCE_ROOTS).
+        # audit.rs reads agent-owned agent_logs/search_logs via the golish-db
+        # repo layer (layer A; AgentLogReadPort cuts to B at S1-2e). The recon
+        # passive_scans read moved to the recon port (S1-2b5).
+        ("golish-platform-app/audit.rs", "agent_logs"),
+        ("golish-platform-app/audit.rs", "search_logs"),
+        # NB: pentest's recon-table reads/writes — pentest_bridge (auth_probe /
+        # record_finding / js_collect{sitemap,tool_impl} / js_extract_apis,
+        # targets+sitemap_store+js_analysis) + pipeline/storage.rs
+        # (targets+sitemap_store+directory_entries) — now route through the recon
+        # service ports (golish-app-core/ports/recon, S1-2b3/b4), so their
+        # ALLOWLIST entries were removed (ratchet net-forward).
+        # NB: security_analysis.rs's 5 recon-table reads now route through the
+        # recon service ports (golish-app-core/ports/recon, S1-2b2), so their
+        # ALLOWLIST entries were removed (ratchet net-forward).
+        # NB: matching.rs's recon `targets` read now routes through the recon
+        # service port (golish-app-core/ports/recon, S1-2b6), so its ALLOWLIST
+        # entry was removed (ratchet net-forward).
+        # recon extracted to the golish-recon-app crate (crate-per-service M2a);
+        # scan_queue.rs reads vuln-owned scan_queue table (cross-service).
+        ("golish-recon-app/scan_queue.rs", "scan_queue"),
     }
 )
 
@@ -162,36 +165,45 @@ ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
 # by S1-1. See docs/design/2026-05-29-architecture-optimization.md P0-3.
 RAW_SQL_ALLOWLIST: frozenset[str] = frozenset(
     {
-        "ai/session_bridge.rs",
-        "ai/tracking_bridge/chain.rs",
-        "ai/tracking_bridge/memory.rs",
-        "ai/tracking_bridge/records.rs",
+        # agent service extracted to the golish-agent-app crate (crate-per-service
+        # M4-proper); keys are crate-prefixed (see SOURCE_ROOTS).
+        "golish-agent-app/ai/session_bridge.rs",
+        "golish-agent-app/ai/tracking_bridge/chain.rs",
+        "golish-agent-app/ai/tracking_bridge/memory.rs",
+        "golish-agent-app/ai/tracking_bridge/records.rs",
+        "golish-agent-app/conversation_store/batch.rs",
+        "golish-agent-app/conversation_store/mod.rs",
         "projects/commands.rs",
-        "tools/asset_intel/runtime/mod.rs",
-        "tools/audit.rs",
-        "tools/conversation_store/batch.rs",
-        "tools/conversation_store/mod.rs",
-        "tools/custom_rules.rs",
-        "tools/evidence.rs",
-        "tools/intel_providers.rs",
-        "tools/pentest_bridge/auth_probe.rs",
-        "tools/pentest_bridge/js_collect/sitemap.rs",
-        "tools/pentest_bridge/record_finding.rs",
-        "tools/pentest_bridge/run_pipeline.rs",
-        "tools/pentest_bridge/vault_ops.rs",
-        "tools/pipeline/storage.rs",
         "tools/project_io.rs",
-        "tools/recordings.rs",
-        "tools/scan_queue.rs",
-        "tools/sensitive_scan.rs",
-        "tools/targets/cmds.rs",
-        "tools/targets/db.rs",
-        "tools/targets/directory.rs",
-        "tools/vuln_intel/commands/feeds.rs",
-        "tools/vuln_intel/commands/fetching.rs",
-        "tools/vuln_intel/commands/matching.rs",
-        "tools/vuln_intel/commands/search.rs",
-        "tools/wiki/vuln_links.rs",
+        # platform service extracted to the golish-platform-app crate (M5).
+        "golish-platform-app/audit.rs",
+        "golish-platform-app/recordings.rs",
+        # pentest service extracted to the golish-pentest-app crate
+        # (crate-per-service M3); keys are crate-prefixed (see SOURCE_ROOTS).
+        "golish-pentest-app/evidence.rs",
+        "golish-pentest-app/pentest_bridge/auth_probe.rs",
+        "golish-pentest-app/pentest_bridge/js_collect/sitemap.rs",
+        "golish-pentest-app/pentest_bridge/record_finding.rs",
+        "golish-pentest-app/pentest_bridge/run_pipeline.rs",
+        "golish-pentest-app/pentest_bridge/vault_ops.rs",
+        "golish-pentest-app/pipeline/storage.rs",
+        # recon extracted to the golish-recon-app crate (crate-per-service M2a/b);
+        # keys are crate-prefixed (see SOURCE_ROOTS).
+        "golish-recon-app/asset_intel/runtime/mod.rs",
+        "golish-recon-app/custom_rules.rs",
+        "golish-recon-app/intel_providers.rs",
+        "golish-recon-app/scan_queue.rs",
+        "golish-recon-app/sensitive_scan.rs",
+        "golish-recon-app/targets/cmds.rs",
+        "golish-recon-app/targets/db.rs",
+        "golish-recon-app/targets/directory.rs",
+        # vuln-intel + wiki extracted to the golish-vuln-app crate
+        # (crate-per-service M1); keys are crate-prefixed (see SOURCE_ROOTS).
+        "golish-vuln-app/wiki/vuln_links.rs",
+        "golish-vuln-app/vuln_intel/commands/feeds.rs",
+        "golish-vuln-app/vuln_intel/commands/fetching.rs",
+        "golish-vuln-app/vuln_intel/commands/matching.rs",
+        "golish-vuln-app/vuln_intel/commands/search.rs",
     }
 )
 
@@ -202,6 +214,27 @@ PUB_MOD_RE = re.compile(r"^pub mod ([a-z_][a-z0-9_]*);", re.MULTILINE)
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "backend" / "crates" / "golish" / "src"
 REPO_MOD = ROOT / "backend" / "crates" / "golish-db" / "src" / "repo" / "mod.rs"
+
+# Command-layer source roots to scan (crate name, fixed_domain).
+# The god-crate `golish` uses per-path DOMAIN_RULES (fixed_domain=None); each
+# extracted per-service app crate owns exactly one service, so its whole src
+# tree maps to a fixed domain. ALLOWLIST / RAW_SQL_ALLOWLIST keys for app crates
+# are prefixed with the crate name (e.g.
+# `golish-vuln-app/vuln_intel/commands/matching.rs`) to stay unambiguous; the
+# god-crate keeps its historical golish/src-relative keys.
+SOURCE_ROOTS: list[tuple[str, str | None]] = [
+    ("golish", None),
+    ("golish-vuln-app", "vuln"),
+    ("golish-recon-app", "recon"),
+    ("golish-pentest-app", "pentest"),
+    ("golish-agent-app", "agent"),
+    ("golish-platform-app", "platform"),
+    # app-core houses the shared VaultReadPort + PgVaultAdapter (sunk in M3 so the
+    # pentest app can use them without depending on golish). Scan it with
+    # path-relative domains so the adapter's golish_db::repo::vault call stays
+    # guarded — `ports/platform/vault.rs` maps to platform via DOMAIN_RULES.
+    ("golish-app-core", None),
+]
 
 
 def domain_of(rel: str) -> str | None:
@@ -224,30 +257,37 @@ def scan() -> tuple[list[str], list[str], set[tuple[str, str]], set[str]]:
     raw_viol: list[str] = []
     emit_own: set[tuple[str, str]] = set()
     emit_raw: set[str] = set()
-    for path in sorted(SRC.rglob("*.rs")):
-        rel = str(path.relative_to(SRC))
-        if is_test_file(rel):
+    for crate, fixed_dom in SOURCE_ROOTS:
+        src = ROOT / "backend" / "crates" / crate / "src"
+        if not src.is_dir():
             continue
-        text = path.read_text()
-        dom = domain_of(rel)
-        for m in REPO_USE_RE.finditer(text):
-            repo = m.group(1)
-            if repo in SHARED_REPOS:
+        for path in sorted(src.rglob("*.rs")):
+            rel = str(path.relative_to(src))
+            if is_test_file(rel):
                 continue
-            owner = REPO_OWNER.get(repo)
-            if owner is None:
-                own_viol.append(f"{rel}: uses unregistered repo `{repo}` — add to REPO_OWNER")
-                continue
-            if dom is None:
-                own_viol.append(f"{rel}: caller path has no domain — add a DOMAIN_RULES prefix")
-                continue
-            if owner == dom or (rel, repo) in ALLOWLIST:
-                continue
-            own_viol.append(f"{rel}: {dom} -> repo::{repo} (owned by {owner})")
-            emit_own.add((rel, repo))
-        if RAW_SQL_RE.search(text) and rel not in RAW_SQL_ALLOWLIST:
-            raw_viol.append(f"{rel}: raw sqlx::query in command layer — route via golish-db repo")
-            emit_raw.add(rel)
+            # God-crate keeps its golish/src-relative key; app crates are
+            # crate-prefixed so allowlist keys stay unambiguous across crates.
+            key = rel if crate == "golish" else f"{crate}/{rel}"
+            text = path.read_text()
+            dom = fixed_dom if fixed_dom is not None else domain_of(rel)
+            for m in REPO_USE_RE.finditer(text):
+                repo = m.group(1)
+                if repo in SHARED_REPOS:
+                    continue
+                owner = REPO_OWNER.get(repo)
+                if owner is None:
+                    own_viol.append(f"{key}: uses unregistered repo `{repo}` — add to REPO_OWNER")
+                    continue
+                if dom is None:
+                    own_viol.append(f"{key}: caller path has no domain — add a DOMAIN_RULES prefix")
+                    continue
+                if owner == dom or (key, repo) in ALLOWLIST:
+                    continue
+                own_viol.append(f"{key}: {dom} -> repo::{repo} (owned by {owner})")
+                emit_own.add((key, repo))
+            if RAW_SQL_RE.search(text) and key not in RAW_SQL_ALLOWLIST:
+                raw_viol.append(f"{key}: raw sqlx::query in command layer — route via golish-db repo")
+                emit_raw.add(key)
     return own_viol, raw_viol, emit_own, emit_raw
 
 

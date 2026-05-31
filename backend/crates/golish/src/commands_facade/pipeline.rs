@@ -7,4 +7,4 @@
 //!   `pipeline_delete_template`
 //! - `pipeline_list_ai_tools` (in-process AI tool catalog for the editor)
 
-pub use crate::tools::pipeline::*;
+pub use golish_pentest_app::pipeline::*;

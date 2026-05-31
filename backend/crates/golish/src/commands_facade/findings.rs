@@ -11,4 +11,4 @@
 //!
 //! Extracted from `commands_facade/workspace.rs` on 2026-05-02 (N5).
 
-pub use crate::tools::findings::*;
+pub use golish_pentest_app::findings::*;

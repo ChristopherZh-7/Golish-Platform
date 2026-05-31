@@ -1,0 +1,56 @@
+// Commands module for AI agent interaction.
+//
+// This module provides Tauri command handlers for the AI agent system,
+// organized into logical submodules for maintainability.
+
+pub mod agents;
+pub mod analytics;
+pub mod config;
+pub mod context;
+pub mod core;
+pub mod debug;
+pub mod dispatch;
+pub mod graph;
+pub mod hitl;
+pub mod loop_detection;
+pub mod mode;
+pub mod plan;
+pub mod policy;
+pub mod session;
+pub mod summarizer;
+pub mod workflow;
+
+mod bridge_config;
+
+// Re-export all commands for easier access
+pub use agents::*;
+pub use analytics::*;
+pub use config::*;
+pub use context::*;
+pub use core::*;
+pub use debug::*;
+pub use dispatch::*;
+pub use graph::*;
+pub use hitl::*;
+pub use loop_detection::*;
+pub use mode::*;
+pub use plan::*;
+pub use policy::*;
+pub use session::*;
+pub use summarizer::*;
+pub use workflow::*;
+
+// Bridge wiring lives in `bridge_config`; re-export at the previous paths.
+// `setup_bridge_mcp_tools` + `McpManagerToolExecutor` are `pub` (not
+// `pub(crate)`) because the main `golish` crate reaches them across the crate
+// boundary via its `crate::ai` shim (app/mcp_bootstrap, mcp/commands,
+// cli/bootstrap) now that the agent command surface lives here (M4-proper).
+pub use bridge_config::configure_bridge;
+pub use bridge_config::{setup_bridge_mcp_tools, McpManagerToolExecutor};
+
+// `AiState` + the agent error helpers live in this crate's `state` module
+// (crate-per-service M4-A). Re-export here so existing
+// `crate::ai::commands::*` / `crate::ai::AiState` paths resolve.
+pub use crate::{
+    ai_not_initialized_error, ai_session_not_initialized_error, AiState, AI_NOT_INITIALIZED_ERROR,
+};

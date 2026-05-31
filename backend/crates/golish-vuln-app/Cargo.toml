@@ -1,0 +1,35 @@
+[package]
+name = "golish-vuln-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Per-domain Tauri command crate: vulnerability intelligence (feeds, search, matching, PoC/Nuclei enrichment)"
+
+[dependencies]
+# Application-boundary shared types (GolishError, DbState, TauriEventEmitter); L5.
+golish-app-core = { workspace = true }
+
+# Domain + infrastructure crates (L1/L2) — legal downward edges.
+golish-vuln-intel = { workspace = true }
+golish-db = { workspace = true }
+golish-settings = { workspace = true }
+# Foundation crate (L1): `golish_core::paths::wiki_dir` resolves the on-disk
+# wiki root for the filesystem-backed page CRUD moved here in M1b.
+golish-core = { workspace = true }
+
+# Tauri command surface.
+tauri = { workspace = true }
+
+# Async DB + HTTP.
+sqlx = { workspace = true }
+reqwest = { workspace = true }
+# Async filesystem I/O for the wiki page CRUD (`tokio::fs`).
+tokio = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }
+url = { workspace = true }
+tracing = { workspace = true }

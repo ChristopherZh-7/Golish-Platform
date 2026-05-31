@@ -1,0 +1,47 @@
+[package]
+name = "golish-app-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Application-boundary shared types (unified error + narrow managed state) for Golish app crates"
+
+[dependencies]
+# Domain crates whose error types `GolishError` wraps at the app boundary.
+# All sit at L2/L3 — golish-app-core is L5, so these are legal downward edges.
+golish-db = { workspace = true }
+golish-pty = { workspace = true }
+golish-tools = { workspace = true }
+golish-skills = { workspace = true }
+golish-pentest = { workspace = true }
+golish-vuln-intel = { workspace = true }
+golish-pipeline = { workspace = true }
+golish-scan-runner = { workspace = true }
+
+# Foundation crate (L1): the EventEmitter trait + path helpers backing the
+# shared TauriEventEmitter adapter below.
+golish-core = { workspace = true }
+
+# Tauri: the shared TauriEventEmitter adapter wraps `tauri::AppHandle` so every
+# per-domain app crate can emit `golish_core` events without re-implementing the
+# glue. This is why golish-app-core (not a tauri-free L2 crate) is its home.
+tauri = { workspace = true }
+
+serde = { workspace = true }
+# ReconScansPort's passive-scan-global DTO carries a `tested_at` timestamp.
+chrono = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+sqlx = { workspace = true }
+reqwest = { workspace = true }
+uuid = { workspace = true }
+zip = { workspace = true }
+base64 = { workspace = true }
+# pty_interactive: async PTY output tap + run_pty_cmd Tool impl.
+# ports: VaultReadPort is an #[async_trait] trait.
+tokio = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+# runtime: CliRuntime checks `atty` for interactive stdin (headless approval prompt).
+atty = { workspace = true }

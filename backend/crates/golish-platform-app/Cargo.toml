@@ -1,0 +1,33 @@
+[package]
+name = "golish-platform-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Per-domain Tauri command crate: platform services (credential vault, audit/timeline, notes, terminal recordings)"
+
+[dependencies]
+# Application-boundary shared types (GolishError, DbState, scoping IDOR guard); L5.
+golish-app-core = { workspace = true }
+
+# Domain + infrastructure crates (L1/L2) — legal downward edges.
+# golish-core: vault obfuscate/deobfuscate + time helpers.
+golish-core = { workspace = true }
+# golish-db: repo layer for vault/notes/audit + cross-service reads
+# (passive_scans/agent_logs/search_logs) which stay guarded via ALLOWLIST.
+golish-db = { workspace = true }
+
+# Tauri command surface.
+tauri = { workspace = true }
+
+# Raw sqlx in audit.rs / recordings.rs (P0-3 raw-SQL allowlist tracked).
+sqlx = { workspace = true }
+# vault_validate probes stored credentials against the target over HTTP.
+reqwest = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+# notes.rs exposes a ts-rs wire type to the frontend.
+ts-rs = { workspace = true }

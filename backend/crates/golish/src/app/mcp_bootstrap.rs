@@ -101,9 +101,10 @@ pub(crate) fn spawn_mcp_initialization(
         // Refresh MCP tools on any bridges that were created before MCP
         // finished loading (e.g. a session initialised during startup).
         let app_state = app_handle.state::<AppState>();
+        let agent_state = app_state.extract_agent_state();
         let bridges = app_state.ai_state.bridges.read().await;
         for (session_id, bridge) in bridges.iter() {
-            crate::ai::commands::setup_bridge_mcp_tools(bridge, &app_state).await;
+            crate::ai::commands::setup_bridge_mcp_tools(bridge, &agent_state).await;
             tracing::debug!(
                 "[mcp] Refreshed MCP tools for session {} after background init",
                 session_id

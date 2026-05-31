@@ -1,0 +1,65 @@
+[package]
+name = "golish-agent-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Per-domain crate for the agent service: shared agent runtime state (AiState) + narrow AgentState that agent Tauri commands take instead of the monolithic AppState (crate-per-service M4-A)"
+
+[dependencies]
+# Application-boundary shared types (GolishError, DbState, pty_interactive,
+# runtime::TauriRuntime, ports); L5.
+golish-app-core = { workspace = true }
+
+# Sibling app crate (L5.6): the agent's bridge_config registers the pentest AI
+# tools (`create_pentest_ai_tools` / `create_pentest_bridge_tools`). Same-layer
+# sibling edge (acyclic — pentest-app does not depend on agent-app).
+golish-pentest-app = { workspace = true }
+
+# Agent stack (L4): AiState holds per-session AgentBridge handles; the command
+# surface + bridges thread agent-kit/runtime trait objects.
+golish-agent-bridge = { workspace = true }
+golish-agent-kit = { workspace = true }
+golish-agent-runtime = { workspace = true }
+golish-sub-agents = { path = "../golish-sub-agents" }
+
+# Domain + infrastructure crates whose handles AgentState aggregates / the agent
+# command surface + bridges use (≤L5).
+golish-core = { workspace = true }
+golish-db = { workspace = true }
+golish-graphiti = { workspace = true }
+golish-settings = { workspace = true }
+golish-sidecar = { workspace = true }
+golish-indexer = { workspace = true }
+golish-pty = { workspace = true }
+# golish-mcp is referenced by path across the workspace (not a workspace.dep).
+golish-mcp = { path = "../golish-mcp" }
+golish-pentest = { workspace = true }
+golish-prompts = { workspace = true }
+golish-events = { workspace = true }
+golish-projects = { workspace = true }
+golish-llm-providers = { workspace = true }
+golish-models = { workspace = true }
+golish-context = { workspace = true }
+golish-session = { workspace = true }
+
+# Tauri command surface.
+tauri = { workspace = true }
+
+sqlx = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+regex = "1"
+tracing = { workspace = true }
+rig-core = { workspace = true }
+graph-flow = { workspace = true }
+dirs = { workspace = true }
+dotenvy = { workspace = true }
+# agents.rs / check_recon_tools_cmd expose ts-rs wire types to the frontend.
+ts-rs = { workspace = true }

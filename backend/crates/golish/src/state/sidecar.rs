@@ -8,6 +8,9 @@ use crate::sidecar::{SidecarConfig, SidecarState};
 /// `State<'_, SidecarManaged>` directly. Field names deliberately mirror
 /// `AppState` so commands only need to rename the `State<>` type.
 pub struct SidecarManaged {
+    // Mirrors AppState's sidecar_config; not yet read by any sidecar command
+    // (pre-existing since the A4 narrow-state split, kept for future use).
+    #[allow(dead_code)]
     pub sidecar_config: SidecarConfig,
     pub sidecar_state: Arc<SidecarState>,
 }

@@ -18,7 +18,19 @@
 //! and `docs/design/2026-05-21-credential-capture-engine.md` for the
 //! capture-specific architecture.
 
-pub use crate::tools::integrations::{
+// Extracted to the golish-recon-app crate (crate-per-service split M2c).
+// Functions come from the module root; the `__cmd__$name` macros are pulled
+// from their defining submodules so the aggregate `generate_handler!` resolves
+// them.
+pub use golish_recon_app::integrations::capture_commands::{
+    __cmd__integrations_capture_cancel, __cmd__integrations_capture_clear_profile,
+    __cmd__integrations_capture_start, __cmd__integrations_capture_status,
+};
+pub use golish_recon_app::integrations::commands::{
+    __cmd__integrations_clear, __cmd__integrations_get, __cmd__integrations_list_schemas,
+    __cmd__integrations_set, __cmd__integrations_test,
+};
+pub use golish_recon_app::integrations::{
     integrations_capture_cancel, integrations_capture_clear_profile, integrations_capture_start,
     integrations_capture_status, integrations_clear, integrations_get, integrations_list_schemas,
     integrations_set, integrations_test,
