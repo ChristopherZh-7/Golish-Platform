@@ -70,7 +70,7 @@ impl GolishDbRepoProvider {
         &self,
         project_path: &str,
     ) -> anyhow::Result<Vec<ExecutionPlanView>> {
-        let plans = golish_db::repo::execution_plans::list_active(&self.pool, project_path).await?;
+        let plans = self.pentest_plan.plan_list_active(project_path).await?;
         Ok(plans
             .into_iter()
             .map(|p| ExecutionPlanView {
@@ -91,14 +91,9 @@ impl GolishDbRepoProvider {
         current_step: i32,
         status: PlanStatus,
     ) -> anyhow::Result<()> {
-        golish_db::repo::execution_plans::update_steps(
-            &self.pool,
-            id,
-            steps,
-            current_step,
-            convert_plan_status_back(status),
-        )
-        .await?;
+        self.pentest_plan
+            .plan_update_steps(id, steps, current_step, convert_plan_status_back(status))
+            .await?;
         Ok(())
     }
 
@@ -106,17 +101,16 @@ impl GolishDbRepoProvider {
         &self,
         plan: NewExecutionPlan,
     ) -> anyhow::Result<ExecutionPlanView> {
-        let created = golish_db::repo::execution_plans::create(
-            &self.pool,
-            golish_db::models::NewExecutionPlan {
+        let created = self
+            .pentest_plan
+            .plan_create(golish_db::models::NewExecutionPlan {
                 session_id: plan.session_id,
                 project_path: plan.project_path,
                 title: plan.title,
                 description: plan.description,
                 steps: plan.steps,
-            },
-        )
-        .await?;
+            })
+            .await?;
         Ok(ExecutionPlanView {
             id: created.id,
             title: created.title,

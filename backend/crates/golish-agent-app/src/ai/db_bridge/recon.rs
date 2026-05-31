@@ -13,8 +13,10 @@ impl GolishDbRepoProvider {
         cve_id: &str,
         limit: i64,
     ) -> anyhow::Result<serde_json::Value> {
-        let entries =
-            golish_db::repo::vuln_intel::search_entries(&self.pool, cve_id, limit).await?;
+        let entries = self
+            .vuln_intel
+            .vuln_intel_search_entries(cve_id, limit)
+            .await?;
         Ok(serde_json::to_value(entries)?)
     }
 

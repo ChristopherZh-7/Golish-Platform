@@ -14,8 +14,12 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use golish_agent_kit::db_traits::*;
+use golish_app_core::ports::pentest::{PentestPlanPort, PgPentestPlanAdapter};
 use golish_app_core::ports::recon::{
     PgReconAssetsAdapter, PgReconScansAdapter, ReconAssetsPort, ReconScansPort,
+};
+use golish_app_core::ports::vuln::{
+    PgVulnIntelAdapter, PgWikiKbAdapter, VulnIntelPort, WikiKbPort,
 };
 
 mod convert;
@@ -30,6 +34,14 @@ pub struct GolishDbRepoProvider {
     // (servitization S1-2b) instead of calling `golish_db::repo::<recon>` here.
     recon_scans: Arc<dyn ReconScansPort>,
     recon_assets: Arc<dyn ReconAssetsPort>,
+    // Vuln cross-service reads/writes route through the vuln service ports
+    // (servitization S1-2c) instead of calling `golish_db::repo::{vuln_intel,
+    // wiki_kb}` here.
+    vuln_intel: Arc<dyn VulnIntelPort>,
+    wiki_kb: Arc<dyn WikiKbPort>,
+    // Pentest execution-plan reads/writes route through the pentest service port
+    // (servitization S1-2d) instead of calling the pentest plan repo directly.
+    pentest_plan: Arc<dyn PentestPlanPort>,
 }
 
 impl GolishDbRepoProvider {
@@ -37,10 +49,17 @@ impl GolishDbRepoProvider {
         let recon_scans: Arc<dyn ReconScansPort> = Arc::new(PgReconScansAdapter::new(pool.clone()));
         let recon_assets: Arc<dyn ReconAssetsPort> =
             Arc::new(PgReconAssetsAdapter::new(pool.clone()));
+        let vuln_intel: Arc<dyn VulnIntelPort> = Arc::new(PgVulnIntelAdapter::new(pool.clone()));
+        let wiki_kb: Arc<dyn WikiKbPort> = Arc::new(PgWikiKbAdapter::new(pool.clone()));
+        let pentest_plan: Arc<dyn PentestPlanPort> =
+            Arc::new(PgPentestPlanAdapter::new(pool.clone()));
         Self {
             pool,
             recon_scans,
             recon_assets,
+            vuln_intel,
+            wiki_kb,
+            pentest_plan,
         }
     }
 }

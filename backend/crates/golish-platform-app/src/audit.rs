@@ -1,3 +1,6 @@
+use golish_app_core::ports::agent::{
+    AgentLogGlobal, AgentLogReadPort, PgAgentLogAdapter, SearchLogGlobal,
+};
 use golish_app_core::ports::recon::{PgReconScansAdapter, ReconPassiveScanGlobal, ReconScansPort};
 use golish_app_core::DbState;
 use golish_app_core::GolishError;
@@ -127,32 +130,21 @@ pub async fn passive_scans_global(
 }
 
 // ── Agent logs ─────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentLogRow {
-    id: uuid::Uuid,
-    session_id: uuid::Uuid,
-    task_id: Option<uuid::Uuid>,
-    subtask_id: Option<uuid::Uuid>,
-    initiator: String,
-    executor: String,
-    task: String,
-    result: Option<String>,
-    duration_ms: Option<i32>,
-    created_at: chrono::DateTime<chrono::Utc>,
-}
+// `AgentLogRow` moved to the agent port as `AgentLogGlobal` (S1-2e): platform
+// reads agent-owned agent_logs via the port, not the repo directly.
 
 #[tauri::command]
 pub async fn agent_logs_list(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
     limit: Option<i64>,
-) -> Result<Vec<AgentLogRow>, GolishError> {
-    let pool = state.pool_ready().await?;
+) -> Result<Vec<AgentLogGlobal>, GolishError> {
+    state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
-    let rows = golish_db::repo::agent_logs::list_by_project::<AgentLogRow>(pool, &pp, lim).await?;
+    let rows = PgAgentLogAdapter::new(state.pool_arc())
+        .agent_logs_list_by_project(&pp, lim)
+        .await?;
     Ok(rows)
 }
 
@@ -185,32 +177,20 @@ pub async fn terminal_logs_list(
 }
 
 // ── Search logs ────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchLogRow {
-    id: uuid::Uuid,
-    session_id: uuid::Uuid,
-    task_id: Option<uuid::Uuid>,
-    subtask_id: Option<uuid::Uuid>,
-    initiator: Option<String>,
-    engine: String,
-    query: String,
-    result: Option<String>,
-    created_at: chrono::DateTime<chrono::Utc>,
-}
+// `SearchLogRow` moved to the agent port as `SearchLogGlobal` (S1-2e).
 
 #[tauri::command]
 pub async fn search_logs_list(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
     limit: Option<i64>,
-) -> Result<Vec<SearchLogRow>, GolishError> {
-    let pool = state.pool_ready().await?;
+) -> Result<Vec<SearchLogGlobal>, GolishError> {
+    state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
-    let rows =
-        golish_db::repo::search_logs::list_by_project::<SearchLogRow>(pool, &pp, lim).await?;
+    let rows = PgAgentLogAdapter::new(state.pool_arc())
+        .search_logs_list_by_project(&pp, lim)
+        .await?;
     Ok(rows)
 }
 

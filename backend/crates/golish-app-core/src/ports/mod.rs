@@ -7,5 +7,8 @@
 //! touch another service's repo directly. See
 //! `docs/design/2026-05-30-s1-2-port-horizontal-coupling.md`.
 
+pub mod agent;
+pub mod pentest;
 pub mod platform;
 pub mod recon;
+pub mod vuln;

@@ -48,10 +48,12 @@ REPO_OWNER: dict[str, str] = {
     "screenshots": "recon",
     "custom_rules": "recon",
     "endpoint_tests": "recon",
+    # scan_queue is the recon scan queue (sole user = golish-recon-app/
+    # scan_queue.rs); reclassified vuln->recon (S1-2f ownership-map fix).
+    "scan_queue": "recon",
     # vuln — vulnerability intelligence
     "vuln_intel": "vuln",
     "vuln_scan": "vuln",
-    "scan_queue": "vuln",
     "wiki_kb": "vuln",
     "kb_research": "vuln",
     # pentest — engine / pipeline / findings
@@ -97,6 +99,15 @@ DOMAIN_RULES: list[tuple[str, str]] = [
     # legally reach recon-owned repos (api_endpoints/js_analysis/fingerprints/
     # passive_scans/target_assets/targets/sitemap_store/directory_entries).
     ("ports/recon", "recon"),
+    # ports/vuln/* (vuln service adapters in golish-app-core, S1-2c) legally
+    # reach vuln-owned repos (vuln_intel / wiki_kb).
+    ("ports/vuln", "vuln"),
+    # ports/pentest/* (pentest service adapters in golish-app-core, S1-2d)
+    # legally reach pentest-owned repos (execution_plans).
+    ("ports/pentest", "pentest"),
+    # ports/agent/* (agent service adapters in golish-app-core, S1-2e) legally
+    # reach agent-owned repos (agent_logs / search_logs).
+    ("ports/agent", "agent"),
     # NB: the recon command modules (targets / organizations / asset_intel /
     # scan_* / custom_rules / sensitive_scan / intel_providers / integrations)
     # were extracted to the golish-recon-app crate (crate-per-service M2); that
@@ -128,20 +139,21 @@ ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
         # (crate-per-service M4-proper); keys are crate-prefixed (see SOURCE_ROOTS).
         # The db_bridge implements golish-agent-kit's DbRepoProvider, reading
         # cross-service recon/vuln/pentest tables (layer A; ReconPort/etc. cut to B).
-        ("golish-agent-app/ai/db_bridge/orchestration.rs", "execution_plans"),
+        # NB: orchestration.rs's execution_plans read/write now routes through the
+        # pentest service port (golish-app-core/ports/pentest, S1-2d), so its
+        # ALLOWLIST entry was removed.
         # NB: recon.rs's 5 recon-table reads/writes (api_endpoints / fingerprints
         # / js_analysis / passive_scans / target_assets) now route through the
         # recon service ports (golish-app-core/ports/recon, S1-2b1), so their
         # ALLOWLIST entries were removed (ratchet net-forward).
-        ("golish-agent-app/ai/db_bridge/recon.rs", "vuln_intel"),
-        ("golish-agent-app/ai/db_bridge/wiki.rs", "wiki_kb"),
+        # NB: agent db_bridge's vuln reads (recon.rs → vuln_intel, wiki.rs →
+        # wiki_kb) now route through the vuln service ports (golish-app-core/
+        # ports/vuln, S1-2c), so their ALLOWLIST entries were removed.
         # platform service extracted to the golish-platform-app crate
         # (crate-per-service M5); keys are crate-prefixed (see SOURCE_ROOTS).
-        # audit.rs reads agent-owned agent_logs/search_logs via the golish-db
-        # repo layer (layer A; AgentLogReadPort cuts to B at S1-2e). The recon
-        # passive_scans read moved to the recon port (S1-2b5).
-        ("golish-platform-app/audit.rs", "agent_logs"),
-        ("golish-platform-app/audit.rs", "search_logs"),
+        # NB: audit.rs's agent_logs/search_logs reads now route through the agent
+        # service port (golish-app-core/ports/agent, S1-2e); the recon
+        # passive_scans read moved to the recon port (S1-2b5). All removed.
         # NB: pentest's recon-table reads/writes — pentest_bridge (auth_probe /
         # record_finding / js_collect{sitemap,tool_impl} / js_extract_apis,
         # targets+sitemap_store+js_analysis) + pipeline/storage.rs
@@ -154,9 +166,10 @@ ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
         # NB: matching.rs's recon `targets` read now routes through the recon
         # service port (golish-app-core/ports/recon, S1-2b6), so its ALLOWLIST
         # entry was removed (ratchet net-forward).
-        # recon extracted to the golish-recon-app crate (crate-per-service M2a);
-        # scan_queue.rs reads vuln-owned scan_queue table (cross-service).
-        ("golish-recon-app/scan_queue.rs", "scan_queue"),
+        # NB: scan_queue is now recon-owned (S1-2f false-positive fix), so
+        # recon-app/scan_queue.rs reading it is own-domain — ALLOWLIST entry
+        # removed. The cross-service ratchet is now EMPTY: every horizontal
+        # repo coupling flows through a service port (S1-2 a–f complete).
     }
 )
 

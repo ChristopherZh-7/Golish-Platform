@@ -15,17 +15,17 @@ impl GolishDbRepoProvider {
             status: page.status.clone(),
             content: page.content.clone(),
         };
-        golish_db::repo::wiki_kb::upsert_page(&self.pool, &db_page).await?;
+        self.wiki_kb.wiki_upsert_page(&db_page).await?;
         Ok(())
     }
 
     pub(super) async fn wiki_link_cve_impl(&self, cve: &str, path: &str) -> anyhow::Result<()> {
-        golish_db::repo::wiki_kb::link_cve_to_wiki(&self.pool, cve, path).await?;
+        self.wiki_kb.wiki_link_cve_to_wiki(cve, path).await?;
         Ok(())
     }
 
     pub(super) async fn wiki_delete_refs_from_impl(&self, path: &str) -> anyhow::Result<()> {
-        golish_db::repo::wiki_kb::delete_refs_from(&self.pool, path).await?;
+        self.wiki_kb.wiki_delete_refs_from(path).await?;
         Ok(())
     }
 
@@ -35,7 +35,7 @@ impl GolishDbRepoProvider {
         to: &str,
         ctx: &str,
     ) -> anyhow::Result<()> {
-        golish_db::repo::wiki_kb::upsert_page_ref(&self.pool, from, to, ctx).await?;
+        self.wiki_kb.wiki_upsert_page_ref(from, to, ctx).await?;
         Ok(())
     }
 
@@ -51,7 +51,7 @@ impl GolishDbRepoProvider {
             actor: entry.actor.clone(),
             summary: entry.summary.clone(),
         };
-        golish_db::repo::wiki_kb::add_changelog(&self.pool, &db_entry).await?;
+        self.wiki_kb.wiki_add_changelog(&db_entry).await?;
         Ok(())
     }
 
@@ -60,7 +60,7 @@ impl GolishDbRepoProvider {
         query: &str,
         limit: i64,
     ) -> anyhow::Result<serde_json::Value> {
-        let results = golish_db::repo::wiki_kb::search_fts(&self.pool, query, limit).await?;
+        let results = self.wiki_kb.wiki_search_fts(query, limit).await?;
         Ok(serde_json::to_value(results)?)
     }
 
@@ -69,7 +69,7 @@ impl GolishDbRepoProvider {
         cat: &str,
         limit: i64,
     ) -> anyhow::Result<serde_json::Value> {
-        let results = golish_db::repo::wiki_kb::search_by_category(&self.pool, cat, limit).await?;
+        let results = self.wiki_kb.wiki_search_by_category(cat, limit).await?;
         Ok(serde_json::to_value(results)?)
     }
 
@@ -78,12 +78,12 @@ impl GolishDbRepoProvider {
         tag: &str,
         limit: i64,
     ) -> anyhow::Result<serde_json::Value> {
-        let results = golish_db::repo::wiki_kb::search_by_tag(&self.pool, tag, limit).await?;
+        let results = self.wiki_kb.wiki_search_by_tag(tag, limit).await?;
         Ok(serde_json::to_value(results)?)
     }
 
     pub(super) async fn wiki_list_cves_with_pocs_impl(&self) -> anyhow::Result<serde_json::Value> {
-        let rows = golish_db::repo::wiki_kb::list_cves_with_pocs(&self.pool).await?;
+        let rows = self.wiki_kb.wiki_list_cves_with_pocs().await?;
         Ok(serde_json::to_value(rows)?)
     }
 
@@ -91,12 +91,12 @@ impl GolishDbRepoProvider {
         &self,
         limit: i64,
     ) -> anyhow::Result<serde_json::Value> {
-        let rows = golish_db::repo::wiki_kb::list_unresearched_cves(&self.pool, limit).await?;
+        let rows = self.wiki_kb.wiki_list_unresearched_cves(limit).await?;
         Ok(serde_json::to_value(rows)?)
     }
 
     pub(super) async fn wiki_poc_stats_impl(&self) -> anyhow::Result<serde_json::Value> {
-        let stats = golish_db::repo::wiki_kb::poc_stats(&self.pool).await?;
+        let stats = self.wiki_kb.wiki_poc_stats().await?;
         Ok(stats)
     }
 
@@ -114,20 +114,21 @@ impl GolishDbRepoProvider {
         description: &str,
         tags: &[String],
     ) -> anyhow::Result<serde_json::Value> {
-        let result = golish_db::repo::wiki_kb::upsert_poc_full(
-            &self.pool,
-            cve_id,
-            name,
-            poc_type,
-            language,
-            content,
-            source,
-            source_url,
-            severity,
-            description,
-            tags,
-        )
-        .await?;
+        let result = self
+            .wiki_kb
+            .wiki_upsert_poc_full(
+                cve_id,
+                name,
+                poc_type,
+                language,
+                content,
+                source,
+                source_url,
+                severity,
+                description,
+                tags,
+            )
+            .await?;
         Ok(serde_json::to_value(result)?)
     }
 }
