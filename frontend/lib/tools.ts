@@ -14,6 +14,7 @@ import {
   Terminal,
   Wrench,
 } from "lucide-react";
+import { safeStringify } from "./text";
 
 /**
  * Risk level for a tool operation. Mirrors the canonical Rust enum
@@ -146,7 +147,7 @@ export function formatToolResult(result: unknown): string {
   if (typeof result === "string") {
     return result;
   }
-  return JSON.stringify(result, null, 2);
+  return safeStringify(result);
 }
 
 /** Type guard to check if a result is a shell command result */

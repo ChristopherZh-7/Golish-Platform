@@ -25,6 +25,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { stripAllAnsi } from "@/lib/ansi";
 import { copyToClipboard } from "@/lib/clipboard";
+import { safeStringify } from "@/lib/text";
 import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, SubAgentToolCall } from "@/store";
@@ -111,7 +112,7 @@ function ToolCallRow({ tool }: { tool: SubAgentToolCall }) {
           <div className="overflow-hidden">
             <span className="text-muted-foreground font-medium">Arguments:</span>
             <pre className="mt-1 rounded-lg bg-muted/50 border border-border px-3 py-2 text-[11px] overflow-auto max-h-32 whitespace-pre-wrap break-all">
-              {JSON.stringify(tool.args, null, 2)}
+              {safeStringify(tool.args)}
             </pre>
           </div>
 
@@ -120,9 +121,7 @@ function ToolCallRow({ tool }: { tool: SubAgentToolCall }) {
             <div className="overflow-hidden">
               <span className="text-muted-foreground font-medium">Result:</span>
               <pre className="mt-1 max-h-48 overflow-auto rounded-lg bg-muted/50 border border-border px-3 py-2 text-[11px] whitespace-pre-wrap break-all">
-                {typeof tool.result === "string"
-                  ? tool.result
-                  : JSON.stringify(tool.result, null, 2)}
+                {typeof tool.result === "string" ? tool.result : safeStringify(tool.result)}
               </pre>
             </div>
           )}

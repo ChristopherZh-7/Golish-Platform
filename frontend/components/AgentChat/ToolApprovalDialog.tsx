@@ -24,6 +24,7 @@ import {
 import { type ApprovalPattern, calculateApprovalRate, respondToToolApproval } from "@/lib/ai";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
+import { safeStringify } from "@/lib/text";
 import { getRiskLevel, isDangerousTool } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { RiskLevel } from "@/store";
@@ -123,7 +124,7 @@ export function ToolApprovalDialog({ sessionId }: ToolApprovalDialogProps) {
     }
   };
 
-  const argsString = JSON.stringify(tool.args, null, 2);
+  const argsString = safeStringify(tool.args);
   const hasArgs = Object.keys(tool.args).length > 0;
 
   return (

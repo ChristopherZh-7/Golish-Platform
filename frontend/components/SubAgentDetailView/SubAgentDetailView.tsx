@@ -36,6 +36,7 @@ import { StatusIcon } from "@/components/ui/StatusIcon";
 import { stripAllAnsi } from "@/lib/ansi";
 import { copyToClipboard } from "@/lib/clipboard";
 import { getAgentColor, getAgentIcon } from "@/lib/sub-agent-theme";
+import { safeStringify } from "@/lib/text";
 import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, SubAgentToolCall } from "@/store";
@@ -118,7 +119,6 @@ function ToolArgsTable({ args }: { args: Record<string, unknown> }) {
 /* ─── Tool result display ─── */
 
 const ToolResultDisplay = memo(function ToolResultDisplay({ result }: { result: unknown }) {
-  const strResult = typeof result === "string" ? result : JSON.stringify(result, null, 2);
   const isMarkdownLike =
     typeof result === "string" &&
     (/^#{1,3}\s/m.test(result) ||
@@ -136,7 +136,7 @@ const ToolResultDisplay = memo(function ToolResultDisplay({ result }: { result: 
 
   return (
     <pre className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-64 overflow-auto text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all leading-relaxed">
-      {strResult.length > 5000 ? `${strResult.slice(0, 5000)}\n... (truncated)` : strResult}
+      {safeStringify(result, 5000)}
     </pre>
   );
 });

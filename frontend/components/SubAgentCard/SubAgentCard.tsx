@@ -17,6 +17,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { StatusIcon } from "@/components/ui/StatusIcon";
 import { stripAllAnsi } from "@/lib/ansi";
 import { getAgentColor, getAgentIcon } from "@/lib/sub-agent-theme";
+import { safeStringify } from "@/lib/text";
 import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, SubAgentEntry, SubAgentToolCall } from "@/store";
@@ -107,11 +108,9 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
     const r = tool.result as Record<string, unknown>;
     return (r.stdout as string) || (r.output as string) || null;
   })();
-  const argsPreview: string = JSON.stringify(tool.args ?? null, null, 2) ?? String(tool.args ?? "");
+  const argsPreview: string = safeStringify(tool.args ?? null);
   const resultPreview: string =
-    typeof tool.result === "string"
-      ? tool.result
-      : (JSON.stringify(tool.result as Record<string, unknown>, null, 2) ?? "");
+    typeof tool.result === "string" ? tool.result : safeStringify(tool.result);
   const renderArgsSection = (): ReactElement | null => {
     if (isShellCmd) return null;
     return (

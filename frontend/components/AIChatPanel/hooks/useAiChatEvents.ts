@@ -6,6 +6,7 @@ import {
   onAiEvent,
   respondToToolApproval,
 } from "@/lib/ai";
+import { safeStringify } from "@/lib/text";
 import { type ChatMessage, useStore } from "@/store";
 import type { AskHumanState } from "../AskHumanInline";
 import type { WorkflowRunSnapshot } from "../WorkflowProgress";
@@ -144,9 +145,7 @@ export function useAiChatEvents({
             }
             case "tool_result": {
               const resultStr =
-                typeof event.result === "string"
-                  ? event.result
-                  : JSON.stringify(event.result, null, 2);
+                typeof event.result === "string" ? event.result : safeStringify(event.result);
               store.updateMessageToolResult(convId, event.tool_name, resultStr, event.success);
               if (modes.pendingApprovalRef.current?.requestId === event.request_id)
                 modes.setPendingApproval(null);

@@ -17,6 +17,7 @@ import { useTranslation } from "react-i18next";
 import { Markdown } from "@/components/Markdown";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
+import { safeStringify } from "@/lib/text";
 import { formatDurationLong } from "@/lib/time";
 import { formatCommandForDisplay, getToolColor, getToolLabel } from "@/lib/tools";
 import { cn } from "@/lib/utils";
@@ -104,7 +105,6 @@ function ToolArgsTable({ args }: { args: unknown }) {
 function ToolResultDisplay({ result }: { result: unknown }) {
   if (result === null || result === undefined) return null;
 
-  const strResult = typeof result === "string" ? result : JSON.stringify(result, null, 2);
   const isMarkdownLike =
     typeof result === "string" &&
     (/^#{1,3}\s/m.test(result) ||
@@ -122,7 +122,7 @@ function ToolResultDisplay({ result }: { result: unknown }) {
 
   return (
     <pre className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-[480px] overflow-auto text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all leading-relaxed">
-      {strResult.length > 8000 ? `${strResult.slice(0, 8000)}\n... (truncated)` : strResult}
+      {safeStringify(result, 8000)}
     </pre>
   );
 }

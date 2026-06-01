@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { copyToClipboard } from "@/lib/clipboard";
+import { safeStringify } from "@/lib/text";
 import { formatDurationShort } from "@/lib/time";
 import { type AnyToolCall, formatPrimaryArg } from "@/lib/toolGrouping";
 import {
@@ -232,7 +233,7 @@ export function ToolDetailsModal({ tool, onClose }: ToolDetailsModalProps) {
     }
   };
 
-  const argsString = JSON.stringify(tool.args, null, 2);
+  const argsString = safeStringify(tool.args);
   const resultString = formatToolResult(tool.result);
 
   return (
