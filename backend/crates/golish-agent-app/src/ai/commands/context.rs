@@ -12,109 +12,84 @@ use golish_context::{ContextSummary, ContextTrimConfig};
 #[tauri::command]
 pub async fn get_context_summary(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<ContextSummary, GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return Ok(bridge.get_context_summary().await);
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    Ok(guard.as_ref().unwrap().get_context_summary().await)
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    Ok(bridge.get_context_summary().await)
 }
 
 /// Get detailed token usage statistics.
 #[tauri::command]
 pub async fn get_token_usage_stats(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<TokenUsageStats, GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return Ok(bridge.get_token_usage_stats().await);
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    Ok(guard.as_ref().unwrap().get_token_usage_stats().await)
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    Ok(bridge.get_token_usage_stats().await)
 }
 
 /// Get the current token alert level.
 #[tauri::command]
 pub async fn get_token_alert_level(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<TokenAlertLevel, GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return Ok(bridge.get_token_alert_level().await);
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    Ok(guard.as_ref().unwrap().get_token_alert_level().await)
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    Ok(bridge.get_token_alert_level().await)
 }
 
 /// Get the context utilization percentage (0.0 - 1.0+).
 #[tauri::command]
 pub async fn get_context_utilization(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<f64, GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return Ok(bridge.get_context_utilization().await);
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    Ok(guard.as_ref().unwrap().get_context_utilization().await)
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    Ok(bridge.get_context_utilization().await)
 }
 
 /// Get remaining available tokens in the context window.
 #[tauri::command]
 pub async fn get_remaining_tokens(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<usize, GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return Ok(bridge.get_remaining_tokens().await);
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    Ok(guard.as_ref().unwrap().get_remaining_tokens().await)
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    Ok(bridge.get_remaining_tokens().await)
 }
 
 /// Reset the context manager (clear all token tracking).
 #[tauri::command]
 pub async fn reset_context_manager(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<(), GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        bridge.reset_context_manager().await;
-        return Ok(());
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    guard.as_ref().unwrap().reset_context_manager().await;
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    bridge.reset_context_manager().await;
     Ok(())
 }
 
@@ -122,40 +97,28 @@ pub async fn reset_context_manager(
 #[tauri::command]
 pub async fn get_context_trim_config(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<ContextTrimConfig, GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return Ok(bridge.get_context_trim_config());
-    }
-    state
+    let bridge = state
         .ai_state
-        .with_legacy_bridge(|b| b.get_context_trim_config())
+        .get_session_bridge(&session_id)
         .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    Ok(bridge.get_context_trim_config())
 }
 
 /// Check if context management is enabled.
 #[tauri::command]
 pub async fn is_context_management_enabled(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<bool, GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return Ok(bridge.is_context_management_enabled());
-    }
-    state
+    let bridge = state
         .ai_state
-        .with_legacy_bridge(|b| b.is_context_management_enabled())
+        .get_session_bridge(&session_id)
         .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    Ok(bridge.is_context_management_enabled())
 }
 
 /// Retry context compaction for a specific session.

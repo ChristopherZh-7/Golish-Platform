@@ -166,7 +166,7 @@ async fn register_pentest_tools(
     app_handle: Option<tauri::AppHandle>,
 ) {
     {
-        let pentest_tools = golish_pentest_app::pentest_ai::create_pentest_ai_tools(
+        let pentest_tools = state.pentest_tool_factory.create_ai_tools(
             state.pentest_config_manager.clone(),
             state.pty_manager.clone(),
             state.pty_output_tap.clone(),
@@ -183,7 +183,7 @@ async fn register_pentest_tools(
     }
 
     {
-        let bridge_tools = golish_pentest_app::pentest_bridge::create_pentest_bridge_tools(
+        let bridge_tools = state.pentest_tool_factory.create_bridge_tools(
             state.db_pool.clone(),
             state.pentest_config_manager.clone(),
             app_handle,

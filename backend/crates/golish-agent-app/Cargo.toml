@@ -10,11 +10,6 @@ description = "Per-domain crate for the agent service: shared agent runtime stat
 # runtime::TauriRuntime, ports); L5.
 golish-app-core = { workspace = true }
 
-# Sibling app crate (L5.6): the agent's bridge_config registers the pentest AI
-# tools (`create_pentest_ai_tools` / `create_pentest_bridge_tools`). Same-layer
-# sibling edge (acyclic — pentest-app does not depend on agent-app).
-golish-pentest-app = { workspace = true }
-
 # Agent stack (L4): AiState holds per-session AgentBridge handles; the command
 # surface + bridges thread agent-kit/runtime trait objects.
 golish-agent-bridge = { workspace = true }

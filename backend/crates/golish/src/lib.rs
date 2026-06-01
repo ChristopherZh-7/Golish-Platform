@@ -32,6 +32,7 @@ pub mod history;
 mod indexer;
 mod mcp;
 mod models;
+mod pentest_tool_factory;
 mod projects;
 mod pty;
 pub mod runtime;

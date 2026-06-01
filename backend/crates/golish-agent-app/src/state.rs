@@ -1,6 +1,6 @@
 //! Agent service state.
 //!
-//! - [`AiState`] — per-session agent runtime state (bridges / legacy bridge /
+//! - [`AiState`] — per-session agent runtime state (per-session bridges /
 //!   runtime). Moved out of the god-crate `golish` (was `ai/commands/mod.rs`)
 //!   so the agent command surface can later live in this crate without a
 //!   `golish ↔ golish-agent-app` cycle (crate-per-service M4-A).
@@ -17,6 +17,7 @@ use sqlx::PgPool;
 use tokio::sync::RwLock;
 
 use golish_agent_bridge::AgentBridge;
+use golish_app_core::ports::pentest::PentestToolFactory;
 use golish_app_core::pty_interactive::PtyOutputTap;
 use golish_app_core::GolishError;
 use golish_core::runtime::GolishRuntime;
@@ -40,9 +41,6 @@ pub struct AiState {
     /// The Arc wrapper allows commands to clone the bridge reference and
     /// release the map lock before calling long-running async methods.
     pub bridges: Arc<RwLock<HashMap<String, Arc<AgentBridge>>>>,
-    /// Legacy single bridge for backwards compatibility during migration.
-    /// TODO: Remove once all commands use session-specific bridges.
-    pub bridge: Arc<RwLock<Option<AgentBridge>>>,
     /// Runtime abstraction for event emission and approval handling.
     /// Stored here for later phases when AgentBridge will use it directly.
     /// Currently created during init but the existing event_tx path is used.
@@ -53,14 +51,10 @@ impl Default for AiState {
     fn default() -> Self {
         Self {
             bridges: Arc::new(RwLock::new(HashMap::new())),
-            bridge: Arc::new(RwLock::new(None)),
             runtime: Arc::new(RwLock::new(None)),
         }
     }
 }
-
-/// Error message for uninitialized AI agent.
-pub const AI_NOT_INITIALIZED_ERROR: &str = "AI agent not initialized. Call init_ai_agent first.";
 
 /// Build a `GolishError` for an uninitialized session.
 pub fn ai_session_not_initialized_error(session_id: &str) -> GolishError {
@@ -68,11 +62,6 @@ pub fn ai_session_not_initialized_error(session_id: &str) -> GolishError {
         "AI agent not initialized for session '{}'. Call init_ai_session first.",
         session_id
     ))
-}
-
-/// Build a `GolishError` for the legacy uninitialized agent.
-pub fn ai_not_initialized_error() -> GolishError {
-    GolishError::Internal(AI_NOT_INITIALIZED_ERROR.to_string())
 }
 
 impl AiState {
@@ -121,46 +110,6 @@ impl AiState {
     pub async fn remove_session_bridge(&self, session_id: &str) -> Option<Arc<AgentBridge>> {
         self.bridges.write().await.remove(session_id)
     }
-
-    // ========== Legacy single-bridge methods ==========
-    //
-    // These access `self.bridge` (the legacy non-keyed bridge stored on
-    // `init_ai_agent`). Every command that still calls them is on the
-    // migration shortlist documented at the top of this module — switch
-    // to `get_session_bridge(session_id)` / `has_session_bridge` once the
-    // command's IPC signature carries a `session_id`.
-
-    /// Returns a read guard on the legacy single bridge, erroring if
-    /// `init_ai_agent` has not been called.
-    ///
-    /// **Legacy** — prefer `get_session_bridge(session_id)`. Renamed
-    /// from `get_bridge` in QW1 (2026-05) so call sites are obviously
-    /// "legacy path" at a glance.
-    pub async fn get_legacy_bridge(
-        &self,
-    ) -> Result<tokio::sync::RwLockReadGuard<'_, Option<AgentBridge>>, GolishError> {
-        let guard = self.bridge.read().await;
-        if guard.is_none() {
-            return Err(ai_not_initialized_error());
-        }
-        Ok(guard)
-    }
-
-    /// Convenience wrapper that maps an `FnOnce` over the legacy
-    /// single bridge without the caller needing to deal with the read
-    /// guard or `Option`.
-    ///
-    /// **Legacy** — prefer `get_session_bridge(session_id)` and call
-    /// the closure manually after pattern-matching. Renamed from
-    /// `with_bridge` in QW1 (2026-05).
-    pub async fn with_legacy_bridge<F, T>(&self, f: F) -> Result<T, GolishError>
-    where
-        F: FnOnce(&AgentBridge) -> T,
-    {
-        let guard = self.bridge.read().await;
-        let bridge = guard.as_ref().ok_or_else(ai_not_initialized_error)?;
-        Ok(f(bridge))
-    }
 }
 
 /// Narrow managed state for the agent service's Tauri command handlers.
@@ -186,4 +135,8 @@ pub struct AgentState {
     pub pentest_busy_sessions: Arc<Mutex<HashSet<String>>>,
     pub db_pool: Arc<PgPool>,
     pub db_ready: DbReadyGate,
+    /// Inbound port supplying the pentest tool set the bridge registers, so this
+    /// crate needs no compile-time `golish-pentest-app` dependency (S1-3). The
+    /// composition root (`golish`) injects the concrete factory.
+    pub pentest_tool_factory: Arc<dyn PentestToolFactory>,
 }

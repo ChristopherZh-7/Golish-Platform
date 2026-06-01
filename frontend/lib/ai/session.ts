@@ -7,8 +7,6 @@ import type {
   ProviderConfig,
   ReconToolCheck,
   SessionAiConfigInfo,
-  SubAgentInfo,
-  ToolDefinition,
   WorkflowInfo,
 } from "./types";
 
@@ -30,32 +28,12 @@ export function isTitleGenSessionId(sessionId: string): boolean {
   return sessionId.startsWith(TITLE_GEN_SESSION_PREFIX);
 }
 
-// `initAiAgent` moved to `./providers.ts` in QW2 (2026-05) — that
-// version takes a `ProviderConfig` (tagged enum covering every
-// provider) and is the single supported entry point.
-
 export async function retryCompaction(sessionId: string): Promise<void> {
   return invoke("retry_compaction", { sessionId });
 }
 
-export async function sendPrompt(prompt: string): Promise<string> {
-  return invoke("send_ai_prompt", { prompt });
-}
-
-export async function executeTool(toolName: string, args: unknown): Promise<unknown> {
-  return invoke("execute_ai_tool", { toolName, args });
-}
-
-export async function getAvailableTools(): Promise<ToolDefinition[]> {
-  return invoke("get_available_tools");
-}
-
 export async function getAvailableWorkflows(): Promise<WorkflowInfo[]> {
   return invoke("list_workflows");
-}
-
-export async function getAvailableSubAgents(): Promise<SubAgentInfo[]> {
-  return invoke("list_sub_agents");
 }
 
 export async function setSubAgentModel(
@@ -78,10 +56,6 @@ export async function clearSubAgentModel(sessionId: string, agentId: string): Pr
   return setSubAgentModel(sessionId, agentId, null, null);
 }
 
-export async function shutdownAiAgent(): Promise<void> {
-  return invoke("shutdown_ai_agent");
-}
-
 export function onAiEvent(callback: (event: AiEvent) => void): Promise<UnlistenFn> {
   return onEvent("ai-event", callback);
 }
@@ -90,19 +64,15 @@ export async function signalFrontendReady(sessionId: string): Promise<void> {
   return invoke("signal_frontend_ready", { sessionId });
 }
 
-export async function isAiInitialized(): Promise<boolean> {
-  return invoke("is_ai_initialized");
-}
-
 export async function updateAiWorkspace(workspace: string, sessionId?: string): Promise<void> {
   return invoke("update_ai_workspace", { workspace, sessionId });
 }
 
-export async function clearAiConversation(sessionId?: string): Promise<void> {
+export async function clearAiConversation(sessionId: string): Promise<void> {
   return invoke("clear_ai_conversation", { sessionId });
 }
 
-export async function getAiConversationLength(sessionId?: string): Promise<number> {
+export async function getAiConversationLength(sessionId: string): Promise<number> {
   return invoke("get_ai_conversation_length", { sessionId });
 }
 

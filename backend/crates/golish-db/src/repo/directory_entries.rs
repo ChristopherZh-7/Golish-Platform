@@ -70,6 +70,51 @@ pub async fn exists_by_url_project(
     Ok(exists)
 }
 
+fn build_insert_entry_sql() -> String {
+    format!(
+        "INSERT INTO directory_entries (target_id, url, status_code, content_length, lines, words, tool, project_path)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (url, tool) WHERE target_id IS NOT NULL
+           DO UPDATE SET status_code = EXCLUDED.status_code,
+                         content_length = EXCLUDED.content_length,
+                         lines = EXCLUDED.lines,
+                         words = EXCLUDED.words
+           RETURNING {DIR_ENTRY_COLS}"
+    )
+}
+
+/// Insert (or upsert by `url`+`tool` when `target_id` is set) a directory entry,
+/// returning the row. Mirrors the legacy `db_directory_entry_add`. Generic over
+/// the caller's row type.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_entry<T>(
+    pool: &PgPool,
+    target_id: Option<Uuid>,
+    url: &str,
+    status_code: Option<i32>,
+    content_length: Option<i32>,
+    lines: Option<i32>,
+    words: Option<i32>,
+    tool: &str,
+    project_path: Option<&str>,
+) -> Result<T>
+where
+    T: for<'r> FromRow<'r, PgRow> + Send + Unpin,
+{
+    let row = sqlx::query_as::<_, T>(&build_insert_entry_sql())
+        .bind(target_id)
+        .bind(url)
+        .bind(status_code)
+        .bind(content_length)
+        .bind(lines)
+        .bind(words)
+        .bind(tool)
+        .bind(project_path)
+        .fetch_one(pool)
+        .await?;
+    Ok(row)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -30,7 +30,4 @@ pub mod state;
 // (GolishError + TauriRuntime live in golish-app-core) without editing each file.
 pub use golish_app_core::{error, runtime};
 
-pub use state::{
-    ai_not_initialized_error, ai_session_not_initialized_error, AgentState, AiState,
-    AI_NOT_INITIALIZED_ERROR,
-};
+pub use state::{ai_session_not_initialized_error, AgentState, AiState};

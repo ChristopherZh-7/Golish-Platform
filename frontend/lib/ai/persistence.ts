@@ -37,15 +37,15 @@ export async function exportAiSessionTranscript(
   return invoke("export_ai_session_transcript", { identifier, outputPath });
 }
 
-export async function setAiSessionPersistence(enabled: boolean, sessionId?: string): Promise<void> {
+export async function setAiSessionPersistence(enabled: boolean, sessionId: string): Promise<void> {
   return invoke("set_ai_session_persistence", { enabled, sessionId });
 }
 
-export async function isAiSessionPersistenceEnabled(sessionId?: string): Promise<boolean> {
+export async function isAiSessionPersistenceEnabled(sessionId: string): Promise<boolean> {
   return invoke("is_ai_session_persistence_enabled", { sessionId });
 }
 
-export async function finalizeAiSession(sessionId?: string): Promise<string | null> {
+export async function finalizeAiSession(sessionId: string): Promise<string | null> {
   return invoke("finalize_ai_session", { sessionId });
 }
 

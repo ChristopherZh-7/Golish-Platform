@@ -71,7 +71,9 @@ export function getInstallMethodLabel(tool: ToolWithMeta, t: (key: string) => st
   return method;
 }
 
-function provenanceBadge(via: string | undefined): { className: string; label: string } | null {
+function provenanceBadge(
+  via: string | null | undefined,
+): { className: string; label: string } | null {
   switch (via) {
     case "homebrew":
       return { className: "bg-amber-500/15 text-amber-400", label: "Homebrew" };

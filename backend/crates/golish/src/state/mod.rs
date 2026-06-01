@@ -139,6 +139,9 @@ impl AppState {
             pentest_busy_sessions: self.pentest_busy_sessions.clone(),
             db_pool: self.db_pool.clone(),
             db_ready: self.db_ready.clone(),
+            pentest_tool_factory: std::sync::Arc::new(
+                crate::pentest_tool_factory::GolishPentestToolFactory,
+            ),
         }
     }
 

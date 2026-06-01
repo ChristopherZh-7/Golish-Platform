@@ -1,178 +1,19 @@
-//! Target / Scope / TargetType / TargetStatus DTOs and the database row
-//! adapter.
+//! Database row adapter (`TargetRow`) + its conversion to the shared [`Target`]
+//! DTO.
+//!
+//! The core target DTOs (`Target` / `TargetType` / `Scope` / `TargetStatus` /
+//! `TargetStore`) and the `detect_type` / `parse_iso8601` helpers now live in
+//! `golish_app_core::domain::targets` (shared cross-service contract, S1-3) and
+//! are re-exported here so existing `super::types::*` paths stay valid. Only the
+//! `sqlx::FromRow` row adapter — a DB-layer detail private to this crate —
+//! remains defined here.
 
 use golish_core::time::ts_from_dt;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Target {
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "type")]
-    pub target_type: TargetType,
-    pub value: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub notes: String,
-    pub scope: Scope,
-    pub status: TargetStatus,
-    #[serde(default)]
-    pub grp: String,
-    #[serde(default)]
-    pub owner: String,
-    #[serde(default)]
-    pub time_window_start: Option<u64>,
-    #[serde(default)]
-    pub time_window_end: Option<u64>,
-    #[serde(default)]
-    pub organization_id: Option<String>,
-    #[serde(default)]
-    pub source: String,
-    #[serde(default)]
-    pub parent_id: Option<String>,
-    #[serde(default)]
-    pub ports: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub real_ip: String,
-    #[serde(default)]
-    pub cdn_waf: String,
-    #[serde(default)]
-    pub http_title: String,
-    #[serde(default)]
-    pub http_status: Option<i32>,
-    #[serde(default)]
-    pub webserver: String,
-    #[serde(default)]
-    pub os_info: String,
-    #[serde(default)]
-    pub content_type: String,
-    pub created_at: u64,
-    pub updated_at: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum TargetType {
-    Domain,
-    Ip,
-    Cidr,
-    Url,
-    Wildcard,
-}
-
-impl TargetType {
-    pub(super) fn as_str(&self) -> &'static str {
-        match self {
-            Self::Domain => "domain",
-            Self::Ip => "ip",
-            Self::Cidr => "cidr",
-            Self::Url => "url",
-            Self::Wildcard => "wildcard",
-        }
-    }
-    pub(super) fn from_str(s: &str) -> Self {
-        match s {
-            "ip" => Self::Ip,
-            "cidr" => Self::Cidr,
-            "url" => Self::Url,
-            "wildcard" => Self::Wildcard,
-            _ => Self::Domain,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Scope {
-    #[serde(rename = "in")]
-    InScope,
-    #[serde(rename = "out")]
-    OutOfScope,
-}
-
-impl Scope {
-    pub(super) fn as_str(&self) -> &'static str {
-        match self {
-            Self::InScope => "in",
-            Self::OutOfScope => "out",
-        }
-    }
-    pub(super) fn from_str(s: &str) -> Self {
-        match s {
-            "out" => Self::OutOfScope,
-            _ => Self::InScope,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum TargetStatus {
-    New,
-    Recon,
-    ReconDone,
-    Scanning,
-    Tested,
-}
-
-impl TargetStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::New => "new",
-            Self::Recon => "recon",
-            Self::ReconDone => "recon_done",
-            Self::Scanning => "scanning",
-            Self::Tested => "tested",
-        }
-    }
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "recon" => Self::Recon,
-            "recon_done" => Self::ReconDone,
-            "scanning" => Self::Scanning,
-            "tested" => Self::Tested,
-            _ => Self::New,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TargetStore {
-    pub targets: Vec<Target>,
-}
-
-pub(super) fn detect_type(value: &str) -> TargetType {
-    let v = value.trim();
-    if v.starts_with("http://") || v.starts_with("https://") {
-        return TargetType::Url;
-    }
-    if v.contains('/') {
-        return TargetType::Cidr;
-    }
-    if v.starts_with("*.") {
-        return TargetType::Wildcard;
-    }
-    if v.parse::<std::net::IpAddr>().is_ok() {
-        return TargetType::Ip;
-    }
-    TargetType::Domain
-}
-
-/// Parse an ISO 8601 datetime string (with timezone) into UTC.
-/// Returns None for empty/whitespace/malformed inputs so callers can pass
-/// through to SQL as NULL.
-pub(super) fn parse_iso8601(s: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
-    let trimmed = s?.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    chrono::DateTime::parse_from_rfc3339(trimmed)
-        .ok()
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-}
+pub use golish_app_core::domain::targets::{
+    detect_type, parse_iso8601, Scope, Target, TargetStatus, TargetStore, TargetType,
+};
 
 #[derive(sqlx::FromRow)]
 pub(super) struct TargetRow {

@@ -1,58 +1,17 @@
-//! Recon-related types: `ReconUpdate` (extended scan results) and the
-//! `DirectoryEntry` / `DirEntryRow` pair for directory-discovery storage.
+//! Directory-entry row adapter (`DirEntryRow`) + its conversion to the shared
+//! [`DirectoryEntry`] DTO.
+//!
+//! The `ReconUpdate` extended-scan payload and the `DirectoryEntry` DTO now live
+//! in `golish_app_core::domain::targets` (shared cross-service contract, S1-3)
+//! and are re-exported here so existing `super::recon::*` paths stay valid. Only
+//! the `sqlx::FromRow` row adapter — a DB-layer detail private to this crate —
+//! remains defined here.
 
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use golish_core::time::ts_from_dt;
 
-/// Fields for an extended recon update.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ReconUpdate {
-    #[serde(default)]
-    pub real_ip: String,
-    #[serde(default)]
-    pub cdn_waf: String,
-    #[serde(default)]
-    pub http_title: String,
-    #[serde(default)]
-    pub http_status: Option<i32>,
-    #[serde(default)]
-    pub webserver: String,
-    #[serde(default)]
-    pub os_info: String,
-    #[serde(default)]
-    pub content_type: String,
-    #[serde(default)]
-    pub ports: serde_json::Value,
-}
-
-impl ReconUpdate {
-    pub fn new() -> Self {
-        Self {
-            ports: serde_json::json!([]),
-            ..Default::default()
-        }
-    }
-}
-
-// ============================================================================
-// Directory entry storage (for ffuf / feroxbuster output)
-// ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DirectoryEntry {
-    pub id: String,
-    pub target_id: Option<String>,
-    pub url: String,
-    pub status_code: Option<i32>,
-    pub content_length: Option<i32>,
-    pub lines: Option<i32>,
-    pub words: Option<i32>,
-    pub content_type: String,
-    pub tool: String,
-    pub created_at: u64,
-}
+pub use golish_app_core::domain::targets::{DirectoryEntry, ReconUpdate};
 
 #[derive(sqlx::FromRow)]
 pub(super) struct DirEntryRow {

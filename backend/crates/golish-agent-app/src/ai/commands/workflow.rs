@@ -70,10 +70,10 @@ pub async fn check_recon_tools_cmd() -> Result<ReconToolCheck, GolishError> {
     let config_manager = golish_pentest::ConfigManager::with_defaults();
 
     for tool in &tools {
-        let preflight = golish_pentest_app::pentest::preflight_tool(
+        let preflight = golish_pentest::preflight_tool(
             tool,
             &config_manager,
-            golish_pentest_app::pentest::PreflightMode::AllowPathFallback,
+            golish_pentest::PreflightMode::AllowPathFallback,
         )
         .await;
         if !preflight.ready {

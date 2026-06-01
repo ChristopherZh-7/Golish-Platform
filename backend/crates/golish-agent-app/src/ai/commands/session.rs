@@ -18,34 +18,15 @@ use golish_session::{
 #[tauri::command]
 pub async fn clear_ai_conversation(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<(), GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
-        bridge.clear_conversation_history().await;
-        tracing::info!("AI conversation history cleared for session {}", sid);
-        return Ok(());
-    }
-    let bridge_guard = state.ai_state.get_legacy_bridge().await?;
-    let bridge = bridge_guard.as_ref().unwrap();
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| super::ai_session_not_initialized_error(&session_id))?;
     bridge.clear_conversation_history().await;
-
-    // End the sidecar session so a new one starts with the next prompt
-    if let Err(e) = state.sidecar_state.end_session() {
-        tracing::warn!(
-            "Failed to end sidecar session during conversation clear: {}",
-            e
-        );
-        // Don't fail the whole operation - sidecar is optional
-    } else {
-        tracing::debug!("Sidecar session ended during conversation clear");
-    }
-
-    tracing::info!("AI conversation history cleared");
+    tracing::info!("AI conversation history cleared for session {}", session_id);
     Ok(())
 }
 
@@ -87,18 +68,14 @@ pub async fn restore_ai_conversation(
 #[tauri::command]
 pub async fn get_ai_conversation_length(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<usize, GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
-        return Ok(bridge.conversation_history_len().await);
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    Ok(guard.as_ref().unwrap().conversation_history_len().await)
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| super::ai_session_not_initialized_error(&session_id))?;
+    Ok(bridge.conversation_history_len().await)
 }
 
 /// List recent AI conversation sessions.
@@ -166,23 +143,14 @@ pub async fn load_ai_session(
 pub async fn set_ai_session_persistence(
     state: State<'_, AgentState>,
     enabled: bool,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<(), GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
-        bridge.set_session_persistence_enabled(enabled).await;
-        return Ok(());
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    guard
-        .as_ref()
-        .unwrap()
-        .set_session_persistence_enabled(enabled)
-        .await;
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| super::ai_session_not_initialized_error(&session_id))?;
+    bridge.set_session_persistence_enabled(enabled).await;
     Ok(())
 }
 
@@ -190,41 +158,28 @@ pub async fn set_ai_session_persistence(
 #[tauri::command]
 pub async fn is_ai_session_persistence_enabled(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<bool, GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
-        return Ok(bridge.is_session_persistence_enabled().await);
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    Ok(guard
-        .as_ref()
-        .unwrap()
-        .is_session_persistence_enabled()
-        .await)
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| super::ai_session_not_initialized_error(&session_id))?;
+    Ok(bridge.is_session_persistence_enabled().await)
 }
 
 /// Manually finalize and save the current session.
 #[tauri::command]
 pub async fn finalize_ai_session(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<Option<String>, GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
-        let path = bridge.finalize_session().await;
-        return Ok(path.map(|p| p.display().to_string()));
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    let path = guard.as_ref().unwrap().finalize_session().await;
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| super::ai_session_not_initialized_error(&session_id))?;
+    let path = bridge.finalize_session().await;
     Ok(path.map(|p| p.display().to_string()))
 }
 

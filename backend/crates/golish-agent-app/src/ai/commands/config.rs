@@ -118,12 +118,6 @@ pub async fn update_ai_workspace(
         }
     }
 
-    // Also update legacy bridge if initialized (for backwards compatibility)
-    if let Ok(bridge_guard) = state.ai_state.get_legacy_bridge().await {
-        let bridge = bridge_guard.as_ref().unwrap();
-        bridge.set_workspace(workspace_path.clone()).await;
-    }
-
     // Re-initialize sidecar if workspace changed
     let status = state.sidecar_state.status();
     if status.enabled && status.workspace_path.as_ref() != Some(&workspace_path) {

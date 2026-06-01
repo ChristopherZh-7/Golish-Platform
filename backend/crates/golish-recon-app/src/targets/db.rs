@@ -1,6 +1,11 @@
-//! Plain database helpers (no Tauri annotations) for targets/recon updates.
-//! Used by the `#[tauri::command]` wrappers in `cmds.rs` and by other modules
-//! that need to write through directly.
+//! Plain database helpers (no Tauri annotations) for targets/recon writes.
+//!
+//! The SQL now lives in `golish_db::repo::targets` (sunk there in S1-3 so the
+//! cross-service `ReconTargetsPort` adapter can back pentest/agent without a
+//! sibling-crate dependency); these are thin recon-side wrappers over it,
+//! preserving the prior signatures/semantics. Currently caller-free inside the
+//! workspace — the pentest AI tools that used them moved to the port — but kept
+//! as recon's data-layer API.
 
 use golish_app_core::GolishError;
 use sqlx::PgPool;
@@ -8,10 +13,6 @@ use uuid::Uuid;
 
 use super::recon::ReconUpdate;
 use super::types::{detect_type, Target, TargetRow, TargetType};
-
-// ============================================================================
-// Standalone DB functions for AI tool integration (no Tauri state needed)
-// ============================================================================
 
 #[allow(clippy::too_many_arguments)]
 pub async fn db_target_add(
@@ -38,37 +39,28 @@ pub async fn db_target_add(
         .unwrap_or("default");
     let own = owner.map(str::trim).unwrap_or("");
 
-    let existing =
+    if let Some(r) =
         golish_db::repo::targets::find_row_by_value_legacy::<TargetRow>(pool, value, project_path)
-            .await?;
-
-    if let Some(r) = existing {
+            .await?
+    {
         return Ok(Target::from(r));
     }
 
-    let row = sqlx::query_as::<_, TargetRow>(
-        r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, owner, time_window_start, time_window_end, organization_id, project_path, source, parent_id)
-           VALUES ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, $4, $5, $6, $7, $8, $9, $10, $11)
-           RETURNING id, name, target_type::text, value, tags, notes, scope::text,
-                     status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
-                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
-                     created_at, updated_at"#,
+    let row: TargetRow = golish_db::repo::targets::insert_full(
+        pool,
+        n,
+        tt.as_str(),
+        value,
+        g,
+        own,
+        time_window_start,
+        time_window_end,
+        organization_id,
+        project_path,
+        source,
+        parent_id,
     )
-    .bind(n)
-    .bind(tt.as_str())
-    .bind(value)
-    .bind(g)
-    .bind(own)
-    .bind(time_window_start)
-    .bind(time_window_end)
-    .bind(organization_id)
-    .bind(project_path)
-    .bind(source)
-    .bind(parent_id)
-    .fetch_one(pool)
-    .await
-?;
-
+    .await?;
     Ok(Target::from(row))
 }
 
@@ -78,7 +70,6 @@ pub async fn db_target_list(
 ) -> Result<Vec<Target>, GolishError> {
     let rows: Vec<TargetRow> =
         golish_db::repo::targets::list_rows_by_project_exact(pool, project_path).await?;
-
     Ok(rows.into_iter().map(Target::from).collect())
 }
 
@@ -87,11 +78,7 @@ pub async fn db_target_update_status(
     id: Uuid,
     status: &str,
 ) -> Result<(), GolishError> {
-    sqlx::query("UPDATE targets SET status=$1::target_status, updated_at=NOW() WHERE id=$2")
-        .bind(status)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    golish_db::repo::targets::update_status_by_id(pool, id, status).await?;
     Ok(())
 }
 
@@ -100,11 +87,7 @@ pub async fn db_target_update_recon(
     id: Uuid,
     ports: &serde_json::Value,
 ) -> Result<(), GolishError> {
-    sqlx::query("UPDATE targets SET ports=$1, updated_at=NOW() WHERE id=$2")
-        .bind(ports)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    golish_db::repo::targets::update_ports_by_id(pool, id, ports).await?;
     Ok(())
 }
 
@@ -115,55 +98,18 @@ pub async fn db_target_update_recon_extended(
     id: Uuid,
     updates: &ReconUpdate,
 ) -> Result<(), GolishError> {
-    sqlx::query(
-        r#"UPDATE targets SET
-            real_ip       = CASE WHEN $1 != '' THEN $1 ELSE real_ip END,
-            cdn_waf       = CASE WHEN $2 != '' THEN $2 ELSE cdn_waf END,
-            http_title    = CASE WHEN $3 != '' THEN $3 ELSE http_title END,
-            http_status   = COALESCE($4, http_status),
-            webserver     = CASE WHEN $5 != '' THEN $5 ELSE webserver END,
-            os_info       = CASE WHEN $6 != '' THEN $6 ELSE os_info END,
-            content_type  = CASE WHEN $7 != '' THEN $7 ELSE content_type END,
-            ports         = CASE WHEN $8::jsonb = '[]'::jsonb THEN ports
-                            ELSE (
-                                SELECT COALESCE(jsonb_agg(merged), '[]'::jsonb) FROM (
-                                    -- Existing ports that are NOT in the new data (keep as-is)
-                                    SELECT ep AS merged
-                                    FROM jsonb_array_elements(ports) ep
-                                    WHERE NOT EXISTS (
-                                        SELECT 1 FROM jsonb_array_elements($8::jsonb) np
-                                        WHERE (ep->>'port') = (np->>'port')
-                                          AND COALESCE(ep->>'proto','tcp') = COALESCE(np->>'proto','tcp')
-                                    )
-                                    UNION ALL
-                                    -- New/updated ports: merge with existing entry if present
-                                    SELECT CASE
-                                        WHEN ep IS NOT NULL THEN ep || np
-                                        ELSE np
-                                    END AS merged
-                                    FROM jsonb_array_elements($8::jsonb) np
-                                    LEFT JOIN LATERAL (
-                                        SELECT ep FROM jsonb_array_elements(ports) ep
-                                        WHERE (ep->>'port') = (np->>'port')
-                                          AND COALESCE(ep->>'proto','tcp') = COALESCE(np->>'proto','tcp')
-                                        LIMIT 1
-                                    ) existing(ep) ON true
-                                ) sub
-                            ) END,
-            updated_at    = NOW()
-           WHERE id = $9"#,
+    golish_db::repo::targets::update_recon_extended_by_id(
+        pool,
+        id,
+        &updates.real_ip,
+        &updates.cdn_waf,
+        &updates.http_title,
+        updates.http_status,
+        &updates.webserver,
+        &updates.os_info,
+        &updates.content_type,
+        &updates.ports,
     )
-    .bind(&updates.real_ip)
-    .bind(&updates.cdn_waf)
-    .bind(&updates.http_title)
-    .bind(updates.http_status)
-    .bind(&updates.webserver)
-    .bind(&updates.os_info)
-    .bind(&updates.content_type)
-    .bind(&updates.ports)
-    .bind(id)
-    .execute(pool)
-    .await
-?;
+    .await?;
     Ok(())
 }

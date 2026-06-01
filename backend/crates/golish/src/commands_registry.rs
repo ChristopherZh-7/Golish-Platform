@@ -44,11 +44,8 @@ fn install_handlers(
         run_recon_pipeline, check_recon_tools_cmd,
         list_themes, read_theme, save_theme, delete_theme, save_theme_asset, get_theme_asset_path,
         write_frontend_log, ime_get_source, ime_set_source,
-        // ── ai (agent init / chat / context / policies) ──────────
-        init_ai_agent,
-        send_ai_prompt, execute_ai_tool, get_available_tools,
-        list_sub_agents, get_sub_agent_model, set_sub_agent_model,
-        shutdown_ai_agent, is_ai_initialized,
+        // ── ai (agent chat / context / policies) ─────────────────
+        get_sub_agent_model, set_sub_agent_model,
         init_ai_session, shutdown_ai_session, cancel_ai_generation,
         is_ai_session_initialized, get_session_ai_config,
         send_ai_prompt_session, send_ai_prompt_with_attachments, get_vision_capabilities,

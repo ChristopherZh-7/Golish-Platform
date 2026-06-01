@@ -11,18 +11,14 @@ use golish_agent_kit::tool_policy::{ToolPolicy, ToolPolicyConfig};
 #[tauri::command]
 pub async fn get_tool_policy_config(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<ToolPolicyConfig, GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return Ok(bridge.get_tool_policy_config().await);
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    Ok(guard.as_ref().unwrap().get_tool_policy_config().await)
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    Ok(bridge.get_tool_policy_config().await)
 }
 
 /// Update the tool policy configuration.
@@ -30,23 +26,14 @@ pub async fn get_tool_policy_config(
 pub async fn set_tool_policy_config(
     state: State<'_, AgentState>,
     config: ToolPolicyConfig,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<(), GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return bridge
-            .set_tool_policy_config(config)
-            .await
-            .map_err(GolishError::from);
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    guard
-        .as_ref()
-        .unwrap()
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    bridge
         .set_tool_policy_config(config)
         .await
         .map_err(GolishError::from)
@@ -57,18 +44,14 @@ pub async fn set_tool_policy_config(
 pub async fn get_tool_policy(
     state: State<'_, AgentState>,
     tool_name: String,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<ToolPolicy, GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return Ok(bridge.get_tool_policy(&tool_name).await);
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    Ok(guard.as_ref().unwrap().get_tool_policy(&tool_name).await)
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    Ok(bridge.get_tool_policy(&tool_name).await)
 }
 
 /// Set the policy for a specific tool.
@@ -77,23 +60,14 @@ pub async fn set_tool_policy(
     state: State<'_, AgentState>,
     tool_name: String,
     policy: ToolPolicy,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<(), GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return bridge
-            .set_tool_policy(&tool_name, policy)
-            .await
-            .map_err(GolishError::from);
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    guard
-        .as_ref()
-        .unwrap()
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    bridge
         .set_tool_policy(&tool_name, policy)
         .await
         .map_err(GolishError::from)
@@ -103,23 +77,14 @@ pub async fn set_tool_policy(
 #[tauri::command]
 pub async fn reset_tool_policies(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<(), GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return bridge
-            .reset_tool_policies()
-            .await
-            .map_err(GolishError::from);
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    guard
-        .as_ref()
-        .unwrap()
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    bridge
         .reset_tool_policies()
         .await
         .map_err(GolishError::from)
@@ -130,23 +95,14 @@ pub async fn reset_tool_policies(
 pub async fn enable_full_auto_mode(
     state: State<'_, AgentState>,
     allowed_tools: Vec<String>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<(), GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        bridge.enable_full_auto_mode(allowed_tools).await;
-        return Ok(());
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    guard
-        .as_ref()
-        .unwrap()
-        .enable_full_auto_mode(allowed_tools)
-        .await;
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    bridge.enable_full_auto_mode(allowed_tools).await;
     Ok(())
 }
 
@@ -154,19 +110,14 @@ pub async fn enable_full_auto_mode(
 #[tauri::command]
 pub async fn disable_full_auto_mode(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<(), GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        bridge.disable_full_auto_mode().await;
-        return Ok(());
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    guard.as_ref().unwrap().disable_full_auto_mode().await;
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    bridge.disable_full_auto_mode().await;
     Ok(())
 }
 
@@ -174,16 +125,12 @@ pub async fn disable_full_auto_mode(
 #[tauri::command]
 pub async fn is_full_auto_mode_enabled(
     state: State<'_, AgentState>,
-    session_id: Option<String>,
+    session_id: String,
 ) -> Result<bool, GolishError> {
-    if let Some(ref sid) = session_id {
-        let bridge = state
-            .ai_state
-            .get_session_bridge(sid)
-            .await
-            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return Ok(bridge.is_full_auto_mode_enabled().await);
-    }
-    let guard = state.ai_state.get_legacy_bridge().await?;
-    Ok(guard.as_ref().unwrap().is_full_auto_mode_enabled().await)
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+    Ok(bridge.is_full_auto_mode_enabled().await)
 }

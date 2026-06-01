@@ -29,6 +29,36 @@
 
 ---
 
+### 2026-06-01 · legacy bridge 4 个遗留项全清（①死错误码 ②A2 IPC 收紧 ③mocks 死 case ④SubAgentInfo DTO）（MCP-agent-1 · DISPATCH off · §5.9 单会话直接执行 · 用户「扫掉0后遗留项」→「④② 都做」）
+
+- **本轮目标**：清掉上一轮（2026-05-31 legacy single-bridge 重构）尾部标注的 4 个遗留项。重连后以磁盘实证恢复上下文（记忆已过期）。
+- **①死错误码（后端，纯死码）**：`state.rs` 删 `AI_NOT_INITIALIZED_ERROR` 常量 + `ai_not_initialized_error()` 函数（grep 实证 0 调用方，文案 "Call init_ai_agent first" 已 stale）；清 `ai/commands/mod.rs` + `lib.rs` 两处 re-export。
+- **③mocks 死 case（前端，纯死码）**：`mocks.ts` 删 8 个死 case（init_ai_agent/_vertex、send_ai_prompt、execute_ai_tool、get_available_tools、list_sub_agents、shutdown_ai_agent、is_ai_initialized；保留中间活的 list_workflows）；连带删 orphan `mockAiInitialized` 变量 + `mockTools`/`mockSubAgents`（import + `fixtures.ts` 定义）+ 同步文件头 doc。保留 `mockConversationLength`（clear/get_length/session 恢复仍用）。
+- **④SubAgentInfo DTO（删文件，用户授权）**：生产者 list_sub_agents 已删 → DTO orphan（grep 实证前端仅 types.ts import+re-export，0 实际使用）。删 `core/tools.rs`（仅含该 struct）+ `core/mod.rs` 去 `pub mod tools`/`pub use tools::*` + 删生成的 `frontend/lib/generated/SubAgentInfo.ts` + `types.ts` 去 import+re-export。
+- **②A2 IPC 签名收紧（用户授权）**：35 个 dual-mode 命令 `session_id: Option<String>` → 必填 `String` + 扁平化 body（去 `if let Some` + `Err(ai_session_required_error())`），按 context.rs 已有的 retry_compaction 目标形态。文件：context(8)/policy(8)/hitl(7)/loop_detection(7)/session(5)。各文件去 `ai_session_required_error` import；`state.rs` 删现已 0-caller 的 `ai_session_required_error()` fn。**故意排除 3 个真 Optional**（None 是合法路径，非 dual-mode）：`config.rs::update_ai_workspace`（全局更新工作区）、`analytics.rs::get_tool_call_stats`（跨全会话统计）、`workflow.rs::run_recon_pipeline`（已废弃命令忽略此参数）。
+  - **前端 wrapper 同步收紧（让 typecheck 成为"所有调用方都传 sessionId"的证明）**：`context.ts` 15 个 wrapper（context+loop）本就 `sessionId: string` 必填，无需改；`approval.ts`(7 hitl)/`persistence.ts`(3)/`session.ts`(2) 共 12 个 `sessionId?` → `sessionId`。**policy 8 命令前端无 wrapper/调用方**（grep 0），后端收紧纯安全。唯一活调用方 `actions.ts:246 clearAiConversation(sessionId)` 传的是 string，安全。
+- **运行过的验证（已记录证据）**：`cargo clippy -p golish-agent-app -- -D warnings` exit 0（1m35s，零告警，证实删 helper 后无 unused import）；`cargo clippy -p golish --lib -- -D warnings` exit 0（2m06s，registry generate_handler! 收紧签名后编译干净）；`pnpm typecheck` exit 0（**证明 35 命令所有前端调用方都传 sessionId + SubAgentInfo 移除无悬垂引用**）；`pnpm biome check`（6 文件）exit 0；`cargo check -p golish-agent-app`+`-p golish` exit 0（①③ 阶段，2m03s/1m49s）；ReadLints 全无错；grep 确认 `ai_not_initialized_error`/`ai_session_required_error`/`SubAgentInfo`/`core::tools` 全清。
+- **范围/风险**：纯死码删除（①③④）+ IPC 签名收紧（②，typecheck 证安全）。未跑全量 `just precommit`（工作树有另一条 targets/ts-rs bindings 未提交流会混入；全程未碰它）。运行时 GUI 未实测（删/改的命令前端调用方极少且都传 sessionId，typecheck 已证类型安全；②建议日后配 GUI 冒烟一次）。
+- **提交记录**：**未 commit、未 push**（按 §2.7；本批 legacy 清理 + 上轮 legacy 重构 + 那条 targets 流交织，提交边界需用户理清）。
+- **下一步建议**：用户决定 ① 是否把 legacy bridge 全批（上轮重构 + 本轮 4 遗留项）单独 commit；② 是否对 ② 做一次 GUI 冒烟（hitl/context/loop/session 设置面板真点一遍）；③ 那条 targets/ts-rs bindings 未提交流单独收口。
+
+---
+
+### 2026-05-31 · legacy AI single-bridge 残余清除（A1 dead-fallback 收口 + stub 删除 + 7 个 dead session-less 命令/wrapper 删除）（MCP-agent-1 · DISPATCH off · §5.9 单会话直接执行 · 用户「A 仍做 legacy 重构」）
+
+- **本轮目标**：完成 legacy single-bridge 重构收尾（用户在 B「清多会话 legacy bridge」后选 A）。重连后以**磁盘实证**为准（记忆已过期）。
+- **关键实证（与上轮记忆相反）**：legacy `AiState.bridge` 字段**早已删除**；`get_legacy_bridge`/`with_legacy_bridge` 已是 always-erroring stub；前端主对话**早已走 session-keyed**（`send_ai_prompt_session`/`init_ai_session`）。即危险的核心链路迁移已完成,剩下纯 dead-code 清理（**零活路径行为变更**）。`initAiAgent`/`sendPrompt` 等 7 个 session-less 前端 wrapper **零调用方**（grep 实证）→ AI 对话未坏。
+- **Phase A1（dual-mode fallback 收口）**：policy(7)/context(8,含 2 个 with_legacy_bridge)/loop_detection(7)/hitl(7)/session(5) 共 34 个命令的 `session_id=None → get_legacy_bridge()` 死分支改为内联 `ai_session_required_error()`（行为同:None 早已 error）；config.rs `update_ai_workspace` 删死 best-effort 块。各文件补 `use crate::state::ai_session_required_error`。
+- **移除 stub**：`state.rs` 删 `get_legacy_bridge`/`with_legacy_bridge`（无调用方,grep 证）+ 更新模块 doc。
+- **Phase B（删 7 个 dead session-less 命令）**：`core/tools.rs` 删 send_ai_prompt/execute_ai_tool/get_available_tools/list_sub_agents/shutdown_ai_agent/is_ai_initialized（保留 SubAgentInfo DTO）；删 `core/lifecycle.rs`（init_ai_agent 唯一内容）；`core/mod.rs` 删 lifecycle 模块 + 6+1 个 `__cmd__` re-export；`ai/mod.rs` `pub use commands::{}` 删 7 名；`commands_registry.rs` generate_handler! 删 7 名；facade doc 更新。
+- **前端**：删 7 个 dead wrapper（providers.ts `initAiAgent` / session.ts `sendPrompt`+`executeTool`+`getAvailableTools`+`getAvailableSubAgents`+`shutdownAiAgent`+`isAiInitialized`）+ 清 session.ts 的 `ToolDefinition`/`SubAgentInfo` unused import + 删 1 stale 注释。barrel `export *` 自动跟随。mocks.ts 保留（dead case 无害,避免 unused-var 级联）。
+- **运行过的验证（已记录证据）**：`cargo fmt -p golish-agent-app -p golish`；`cargo check -p golish-agent-app` exit 0（51s）；`cargo check -p golish` exit 0（registry macro 展开,1m41s）；`cargo clippy -p golish-agent-app -p golish -- -D warnings` exit 0（**零告警**,2m25s）；`pnpm typecheck` exit 0（证:无活调用方依赖被删 wrapper）；`pnpm biome check lib/ai/{session,providers}.ts` exit 0；ReadLints（4 文件）无错；`rg get_legacy_bridge|with_legacy_bridge` 全仓库 = **0 命中**。
+- **风险/范围**：纯 dead-code 删除,**零活路径行为变更**（typecheck 即安全证明）。未跑全量 `just precommit`（仓库有大量上轮未提交改动会混入）；运行时 GUI 未实测（删的都是已 error/无调用的代码,风险极低）。
+- **遗留（noted follow-up,未做以避免 scope creep）**：① `AI_NOT_INITIALIZED_ERROR`/`ai_not_initialized_error`（state.rs,pub dead,消息仍写 "Call init_ai_agent first" 已 stale,0 调用方）可删；② **A2**：把 34 个 dual-mode 命令 `session_id: Option<String>` 收紧为必填 `String`（IPC 签名变更,typecheck 可证安全,建议配合 GUI 冒烟）；③ mocks.ts 删 7 个 dead case；④ SubAgentInfo DTO 现 orphan（list_sub_agents 删后无生产者）。
+- **下一步建议**：用户决定 ① 是否做 A2（IPC 签名收紧）；② 是否 commit（本批 legacy 清理 + 上轮一堆未提交需先理清提交边界,**未授权 push**）。
+
+---
+
 ### 2026-05-31 · commit M0–S1-2b（45f4bb2）+ S1-2c/d/e/f 完成 → S1-2 横向耦合端口化整体完成（ALLOWLIST 28→0）（MCP-agent-3 · DISPATCH off · §5.9 · 用户「你帮我commit吧 commit完之后你自己后面全部做完 我出门了」）
 
 - **上下文来源**：b3-b6 完成后用户授权「先 commit,再自主完成剩余全部」（commit 授权,**未授权 push**）。

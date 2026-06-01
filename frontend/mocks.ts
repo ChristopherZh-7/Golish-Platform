@@ -38,8 +38,6 @@ import {
   mockPrompts,
   mockSessions,
   mockSkills,
-  mockSubAgents,
-  mockTools,
   mockWorkflows,
 } from "./mocks/fixtures";
 import {
@@ -120,7 +118,6 @@ const mockPtySessions: Record<
 };
 
 // Mock AI state
-let mockAiInitialized = false;
 let mockConversationLength = 0;
 let mockSessionPersistenceEnabled = true;
 
@@ -1277,37 +1274,8 @@ export function setupMocks(): void {
       // =========================================================================
       // AI Agent Commands
       // =========================================================================
-      case "init_ai_agent":
-      case "init_ai_agent_vertex":
-        mockAiInitialized = true;
-        mockConversationLength = 0;
-        return undefined;
-
-      case "send_ai_prompt":
-        // In browser mode, we just return a mock response
-        // Real streaming events would come from the backend
-        mockConversationLength += 2; // User message + AI response
-        return `mock-turn-id-${Date.now()}`;
-
-      case "execute_ai_tool":
-        return { success: true, result: "Mock tool execution result" };
-
-      case "get_available_tools":
-        return mockTools;
-
       case "list_workflows":
         return mockWorkflows;
-
-      case "list_sub_agents":
-        return mockSubAgents;
-
-      case "shutdown_ai_agent":
-        mockAiInitialized = false;
-        mockConversationLength = 0;
-        return undefined;
-
-      case "is_ai_initialized":
-        return mockAiInitialized;
 
       case "update_ai_workspace":
         return undefined;

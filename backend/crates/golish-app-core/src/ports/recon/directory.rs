@@ -1,16 +1,24 @@
-//! `ReconDirectoryPort` — recon `directory_entries` existence checks as a port.
+//! `ReconDirectoryPort` — recon `directory_entries` existence checks + inserts
+//! as a port.
 //!
 //! The in-proc adapter mirrors `golish_db::repo::directory_entries` exactly. It
 //! is the ONLY place the consuming pentest service reaches the recon
 //! `directory_entries` repo; it lives under the recon port domain so the
-//! ownership guard treats it as recon-owned.
+//! ownership guard treats it as recon-owned. The insert (S1-3, mirroring the
+//! former `golish_recon_app::targets::db_directory_entry_add`) returns the
+//! shared [`DirectoryEntry`] DTO; `DirEntryRow` is a private DB-decode detail.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use sqlx::PgPool;
+use uuid::Uuid;
 
-/// Outbound port for recon directory-entry existence checks (read-only).
+use golish_core::time::ts_from_dt;
+
+use crate::domain::targets::DirectoryEntry;
+
+/// Outbound port for recon directory-entry existence checks + inserts.
 #[async_trait]
 pub trait ReconDirectoryPort: Send + Sync {
     async fn directory_entries_exists_by_url_project(
@@ -18,6 +26,21 @@ pub trait ReconDirectoryPort: Send + Sync {
         url: &str,
         project_path: Option<&str>,
     ) -> anyhow::Result<bool>;
+
+    /// Insert (or upsert by `url`+`tool` when `target_id` is set) a directory
+    /// entry, returning the row. Mirrors `db_directory_entry_add`.
+    #[allow(clippy::too_many_arguments)]
+    async fn directory_entry_add(
+        &self,
+        target_id: Option<Uuid>,
+        url: &str,
+        status_code: Option<i32>,
+        content_length: Option<i32>,
+        lines: Option<i32>,
+        words: Option<i32>,
+        tool: &str,
+        project_path: Option<&str>,
+    ) -> anyhow::Result<DirectoryEntry>;
 }
 
 /// In-proc adapter backed by the embedded Postgres pool.
@@ -28,6 +51,39 @@ pub struct PgReconDirectoryAdapter {
 impl PgReconDirectoryAdapter {
     pub fn new(pool: Arc<PgPool>) -> Self {
         Self { pool }
+    }
+}
+
+/// DB-row decode for the `directory_entries` projection (`DIR_ENTRY_COLS`).
+/// Private to the adapter — the boundary type is the [`DirectoryEntry`] DTO.
+#[derive(sqlx::FromRow)]
+struct DirEntryRow {
+    id: Uuid,
+    target_id: Option<Uuid>,
+    url: String,
+    status_code: Option<i32>,
+    content_length: Option<i32>,
+    lines: Option<i32>,
+    words: Option<i32>,
+    content_type: String,
+    tool: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<DirEntryRow> for DirectoryEntry {
+    fn from(r: DirEntryRow) -> Self {
+        DirectoryEntry {
+            id: r.id.to_string(),
+            target_id: r.target_id.map(|u| u.to_string()),
+            url: r.url,
+            status_code: r.status_code,
+            content_length: r.content_length,
+            lines: r.lines,
+            words: r.words,
+            content_type: r.content_type,
+            tool: r.tool,
+            created_at: ts_from_dt(r.created_at),
+        }
     }
 }
 
@@ -44,6 +100,32 @@ impl ReconDirectoryPort for PgReconDirectoryAdapter {
             project_path,
         )
         .await?)
+    }
+
+    async fn directory_entry_add(
+        &self,
+        target_id: Option<Uuid>,
+        url: &str,
+        status_code: Option<i32>,
+        content_length: Option<i32>,
+        lines: Option<i32>,
+        words: Option<i32>,
+        tool: &str,
+        project_path: Option<&str>,
+    ) -> anyhow::Result<DirectoryEntry> {
+        let row: DirEntryRow = golish_db::repo::directory_entries::insert_entry(
+            self.pool.as_ref(),
+            target_id,
+            url,
+            status_code,
+            content_length,
+            lines,
+            words,
+            tool,
+            project_path,
+        )
+        .await?;
+        Ok(DirectoryEntry::from(row))
     }
 }
 

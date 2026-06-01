@@ -11,23 +11,6 @@ export async function getOpenAiApiKey(): Promise<string | null> {
   return invoke("get_openai_api_key");
 }
 
-/**
- * Unified AI agent init — single entry point covering every provider.
- *
- * The backend `init_ai_agent` IPC accepts a tagged `ProviderConfig` enum
- * (see `golish-llm-providers/src/provider_config.rs`) so this function
- * is the only init wrapper the frontend needs. The four legacy wrappers
- * (`init_ai_agent` (4-field), `init_ai_agent_openai`,
- * `init_ai_agent_vertex`, `init_ai_agent_unified`) were collapsed in
- * QW2 (2026-05). Per-provider helpers (`initWithAnthropic` / `initWithOllama` /
- * `initWithGemini` / `initWithGroq` / `initWithXai`) were removed in QW6
- * (2026-05) — they had zero call sites; callers should pass a fully-formed
- * `ProviderConfig` directly.
- */
-export async function initAiAgent(config: ProviderConfig): Promise<void> {
-  return invoke("init_ai_agent", { config });
-}
-
 export async function getAnthropicApiKey(): Promise<string | null> {
   return invoke("get_anthropic_api_key");
 }

@@ -323,6 +323,157 @@ pub async fn find_id_by_value_pair(
     Ok(id)
 }
 
+// ── Domain-write helpers (servitization S1-3) ───────────────────────────────
+//
+// These mirror the writes previously living in `golish-recon-app`'s
+// `targets::db_*` domain functions. They were sunk here (the data layer) so the
+// recon service port adapter in `golish-app-core` can back the cross-service
+// `ReconTargetsPort` writes without pentest/agent depending on `golish-recon-app`.
+// Row-returning helpers stay generic over the caller's `T: FromRow` (the adapter
+// passes its own row type), matching the read helpers above. SQL is preserved
+// verbatim for zero behaviour drift.
+
+fn build_insert_full_sql() -> String {
+    format!(
+        "INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, owner, time_window_start, time_window_end, organization_id, project_path, source, parent_id)
+           VALUES ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, $4, $5, $6, $7, $8, $9, $10, $11)
+           RETURNING {TARGET_ROW_COLS}"
+    )
+}
+
+/// Insert a new target with full recon columns defaulted (`tags='[]'`,
+/// `notes=''`, `scope='in'`), returning the created row. Mirrors the legacy
+/// `db_target_add` INSERT. The caller owns the dedup probe (see
+/// [`find_row_by_value_legacy`]). Generic over the caller's row type.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_full<T>(
+    pool: &PgPool,
+    name: &str,
+    target_type: &str,
+    value: &str,
+    grp: &str,
+    owner: &str,
+    time_window_start: Option<chrono::DateTime<chrono::Utc>>,
+    time_window_end: Option<chrono::DateTime<chrono::Utc>>,
+    organization_id: Option<Uuid>,
+    project_path: Option<&str>,
+    source: &str,
+    parent_id: Option<Uuid>,
+) -> Result<T>
+where
+    T: for<'r> FromRow<'r, PgRow> + Send + Unpin,
+{
+    let row = sqlx::query_as::<_, T>(&build_insert_full_sql())
+        .bind(name)
+        .bind(target_type)
+        .bind(value)
+        .bind(grp)
+        .bind(owner)
+        .bind(time_window_start)
+        .bind(time_window_end)
+        .bind(organization_id)
+        .bind(project_path)
+        .bind(source)
+        .bind(parent_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(row)
+}
+
+/// Update a target's `status` by id (no project scope — the caller already owns
+/// the id). Mirrors legacy `db_target_update_status`.
+pub async fn update_status_by_id(pool: &PgPool, id: Uuid, status: &str) -> Result<()> {
+    sqlx::query("UPDATE targets SET status=$1::target_status, updated_at=NOW() WHERE id=$2")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Overwrite a target's `ports` JSON by id. Mirrors legacy
+/// `db_target_update_recon`.
+pub async fn update_ports_by_id(
+    pool: &PgPool,
+    id: Uuid,
+    ports: &serde_json::Value,
+) -> Result<()> {
+    sqlx::query("UPDATE targets SET ports=$1, updated_at=NOW() WHERE id=$2")
+        .bind(ports)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Apply an extended recon update (httpx/nmap-derived fields) by id: only
+/// non-empty scalar fields overwrite, and `ports` are merged by `(port, proto)`.
+/// Mirrors legacy `db_target_update_recon_extended` (SQL verbatim).
+#[allow(clippy::too_many_arguments)]
+pub async fn update_recon_extended_by_id(
+    pool: &PgPool,
+    id: Uuid,
+    real_ip: &str,
+    cdn_waf: &str,
+    http_title: &str,
+    http_status: Option<i32>,
+    webserver: &str,
+    os_info: &str,
+    content_type: &str,
+    ports: &serde_json::Value,
+) -> Result<()> {
+    sqlx::query(
+        r#"UPDATE targets SET
+            real_ip       = CASE WHEN $1 != '' THEN $1 ELSE real_ip END,
+            cdn_waf       = CASE WHEN $2 != '' THEN $2 ELSE cdn_waf END,
+            http_title    = CASE WHEN $3 != '' THEN $3 ELSE http_title END,
+            http_status   = COALESCE($4, http_status),
+            webserver     = CASE WHEN $5 != '' THEN $5 ELSE webserver END,
+            os_info       = CASE WHEN $6 != '' THEN $6 ELSE os_info END,
+            content_type  = CASE WHEN $7 != '' THEN $7 ELSE content_type END,
+            ports         = CASE WHEN $8::jsonb = '[]'::jsonb THEN ports
+                            ELSE (
+                                SELECT COALESCE(jsonb_agg(merged), '[]'::jsonb) FROM (
+                                    -- Existing ports that are NOT in the new data (keep as-is)
+                                    SELECT ep AS merged
+                                    FROM jsonb_array_elements(ports) ep
+                                    WHERE NOT EXISTS (
+                                        SELECT 1 FROM jsonb_array_elements($8::jsonb) np
+                                        WHERE (ep->>'port') = (np->>'port')
+                                          AND COALESCE(ep->>'proto','tcp') = COALESCE(np->>'proto','tcp')
+                                    )
+                                    UNION ALL
+                                    -- New/updated ports: merge with existing entry if present
+                                    SELECT CASE
+                                        WHEN ep IS NOT NULL THEN ep || np
+                                        ELSE np
+                                    END AS merged
+                                    FROM jsonb_array_elements($8::jsonb) np
+                                    LEFT JOIN LATERAL (
+                                        SELECT ep FROM jsonb_array_elements(ports) ep
+                                        WHERE (ep->>'port') = (np->>'port')
+                                          AND COALESCE(ep->>'proto','tcp') = COALESCE(np->>'proto','tcp')
+                                        LIMIT 1
+                                    ) existing(ep) ON true
+                                ) sub
+                            ) END,
+            updated_at    = NOW()
+           WHERE id = $9"#,
+    )
+    .bind(real_ip)
+    .bind(cdn_waf)
+    .bind(http_title)
+    .bind(http_status)
+    .bind(webserver)
+    .bind(os_info)
+    .bind(content_type)
+    .bind(ports)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,5 +541,14 @@ mod tests {
             build_exists_by_value_exact_sql(),
             "SELECT EXISTS(SELECT 1 FROM targets WHERE value = $1 AND project_path = $2)"
         );
+    }
+
+    #[test]
+    fn insert_full_sql_projects_full_row() {
+        let cols = "id, name, target_type::text, value, tags, notes, scope::text, status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports, real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type, created_at, updated_at";
+        let sql = build_insert_full_sql();
+        assert!(sql.starts_with("INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, owner, time_window_start, time_window_end, organization_id, project_path, source, parent_id)"));
+        assert!(sql.contains("'[]', '', 'in'::scope_type"));
+        assert!(sql.trim_end().ends_with(&format!("RETURNING {cols}")));
     }
 }

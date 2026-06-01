@@ -51,6 +51,4 @@ pub use bridge_config::{setup_bridge_mcp_tools, McpManagerToolExecutor};
 // `AiState` + the agent error helpers live in this crate's `state` module
 // (crate-per-service M4-A). Re-export here so existing
 // `crate::ai::commands::*` / `crate::ai::AiState` paths resolve.
-pub use crate::{
-    ai_not_initialized_error, ai_session_not_initialized_error, AiState, AI_NOT_INITIALIZED_ERROR,
-};
+pub use crate::{ai_session_not_initialized_error, AiState};

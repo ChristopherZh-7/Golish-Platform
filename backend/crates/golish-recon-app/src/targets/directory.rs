@@ -21,28 +21,18 @@ pub async fn db_directory_entry_add(
     tool: &str,
     project_path: Option<&str>,
 ) -> Result<DirectoryEntry, GolishError> {
-    let row = sqlx::query_as::<_, DirEntryRow>(
-        r#"INSERT INTO directory_entries (target_id, url, status_code, content_length, lines, words, tool, project_path)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           ON CONFLICT (url, tool) WHERE target_id IS NOT NULL
-           DO UPDATE SET status_code = EXCLUDED.status_code,
-                         content_length = EXCLUDED.content_length,
-                         lines = EXCLUDED.lines,
-                         words = EXCLUDED.words
-           RETURNING id, target_id, url, status_code, content_length, lines, words, content_type, tool, created_at"#,
+    let row: DirEntryRow = golish_db::repo::directory_entries::insert_entry(
+        pool,
+        target_id,
+        url,
+        status_code,
+        content_length,
+        lines,
+        words,
+        tool,
+        project_path,
     )
-    .bind(target_id)
-    .bind(url)
-    .bind(status_code)
-    .bind(content_length)
-    .bind(lines)
-    .bind(words)
-    .bind(tool)
-    .bind(project_path)
-    .fetch_one(pool)
-    .await
-?;
-
+    .await?;
     Ok(DirectoryEntry::from(row))
 }
 

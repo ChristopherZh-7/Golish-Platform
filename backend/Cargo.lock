@@ -2555,7 +2555,6 @@ dependencies = [
  "golish-mcp",
  "golish-models",
  "golish-pentest",
- "golish-pentest-app",
  "golish-projects",
  "golish-prompts",
  "golish-pty",
@@ -2715,6 +2714,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "ts-rs",
  "uuid",
  "zip 8.6.0",
 ]
@@ -3048,7 +3048,6 @@ dependencies = [
  "golish-platform",
  "golish-projects",
  "golish-pty",
- "golish-recon-app",
  "golish-settings",
  "parking_lot",
  "regex",
@@ -3073,6 +3072,7 @@ version = "0.2.43"
 dependencies = [
  "serde",
  "serde_json",
+ "ts-rs",
 ]
 
 [[package]]

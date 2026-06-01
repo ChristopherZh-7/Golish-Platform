@@ -208,8 +208,9 @@ RAW_SQL_ALLOWLIST: frozenset[str] = frozenset(
         "golish-recon-app/scan_queue.rs",
         "golish-recon-app/sensitive_scan.rs",
         "golish-recon-app/targets/cmds.rs",
-        "golish-recon-app/targets/db.rs",
-        "golish-recon-app/targets/directory.rs",
+        # NB: targets/db.rs + targets/directory.rs raw sqlx sank to
+        # golish_db::repo::{targets,directory_entries} (S1-3 sibling-dep cut), so
+        # their RAW_SQL_ALLOWLIST entries were removed (ratchet net-forward).
         # vuln-intel + wiki extracted to the golish-vuln-app crate
         # (crate-per-service M1); keys are crate-prefixed (see SOURCE_ROOTS).
         "golish-vuln-app/wiki/vuln_links.rs",

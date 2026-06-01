@@ -1,59 +1,14 @@
 /**
- * Read-only mock data fixtures served by the mock IPC handler (tools,
- * workflows, sub-agents, sessions, approval patterns, prompts, skills,
- * per-project settings) plus the `MockCodebase` shape. Pure data — no state.
+ * Read-only mock data fixtures served by the mock IPC handler (workflows,
+ * sessions, approval patterns, prompts, skills, per-project settings) plus
+ * the `MockCodebase` shape. Pure data — no state.
  */
-
-// Mock tool definitions
-export const mockTools = [
-  {
-    name: "read_file",
-    description: "Read the contents of a file",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "Path to the file" },
-      },
-      required: ["path"],
-    },
-  },
-  {
-    name: "write_file",
-    description: "Write content to a file",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "Path to the file" },
-        content: { type: "string", description: "Content to write" },
-      },
-      required: ["path", "content"],
-    },
-  },
-  {
-    name: "run_command",
-    description: "Execute a shell command",
-    parameters: {
-      type: "object",
-      properties: {
-        command: { type: "string", description: "Command to execute" },
-      },
-      required: ["command"],
-    },
-  },
-];
 
 // Mock workflows
 export const mockWorkflows = [
   { name: "code-review", description: "Review code changes and provide feedback" },
   { name: "test-generation", description: "Generate unit tests for code" },
   { name: "refactor", description: "Suggest code refactoring improvements" },
-];
-
-// Mock sub-agents
-export const mockSubAgents = [
-  { id: "explorer", name: "Code Explorer", description: "Explores and understands codebases" },
-  { id: "debugger", name: "Debug Assistant", description: "Helps debug issues" },
-  { id: "documenter", name: "Documentation Writer", description: "Generates documentation" },
 ];
 
 // Mock sessions

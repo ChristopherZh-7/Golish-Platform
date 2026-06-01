@@ -17,7 +17,6 @@ import type { ReconToolCheck } from "@/lib/generated/ReconToolCheck";
 import type { RiskLevel } from "@/lib/generated/RiskLevel";
 import type { RuleInfo } from "@/lib/generated/RuleInfo";
 import type { SkillInfo } from "@/lib/generated/SkillInfo";
-import type { SubAgentInfo } from "@/lib/generated/SubAgentInfo";
 import type { ToolApprovalConfig } from "@/lib/generated/ToolApprovalConfig";
 import type { ToolCallStats } from "@/lib/generated/ToolCallStats";
 import type { ToolSource } from "@/lib/generated/ToolSource";
@@ -40,7 +39,6 @@ export type {
   RiskLevel,
   RuleInfo,
   SkillInfo,
-  SubAgentInfo,
   ToolApprovalConfig,
   ToolCallStats,
   ToolSource,
