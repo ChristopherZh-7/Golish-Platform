@@ -1,5 +1,7 @@
 # Evidence Ledger on Existing audit_log
 
+> ℹ️ **2026-06-01**: harness re-anchor（[2026-06-01-harness-rebuild.md](2026-06-01-harness-rebuild.md)）**保留**本文 Evidence Ledger schema / IFC 三态 / §6.1 aging registry。2026-06-01 仅在 `evidence_kinds.json` **追加** target-centric kind（target_asset/fingerprint/api_endpoint/js_analysis/sitemap/sensitive_exposure），不改本文 schema 决策。
+
 - **Author**: MCP-1
 - **Date**: 2026-05-26
 - **Status**: Implemented (Phase 1 · 见 commits 1792885 / e5eb552 / 03f24fa / af60bc3)

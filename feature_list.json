@@ -11,6 +11,28 @@
   ],
   "features": [
     {
+      "id": "harness-rebuild-2026-06-01",
+      "priority": 0,
+      "area": "backend/crates/golish-agent-kit/src/harness + resources/harness",
+      "title": "Operation Harness 重建（re-anchor）：external_attack_surface stage 从已删 SecurityView 模型重锚到 Target Surface Workbench + 补 D4 验证",
+      "user_visible_behavior": "GOLISH_HARNESS_STAGE_MODE=true 时，task 模式 external_attack_surface stage 的 gate 不再锚在已删除的 SecurityView/recon 模型；deliverable 的 claim/finding 按 Target Surface Workbench 六 tab（Identity/Surface/Sitemap/JS-API/Sensitive/Evidence）映射，新增第 6 个 deterministic gate check surface_coverage：缺 Surface 或 JS-API 证据覆盖即 BLOCK 并给 recovery_actions（Sitemap 软要求，允许 honest-empty 但须显式 skip）。flag 默认 OFF，旧路径不受影响。",
+      "status": "blocked",
+      "blocker": "P1 代码已落地（见 design §13），但：① P2 手动 E2E（D4 validation-first 核心）需 just dev 运行时 + 人工观测，无法自动产证据；② feature_list 已有 2 个 in_progress 条目（AGENTS.md §2.1 只允许 1 个），本条目暂置 blocked 避免加剧违例，待用户 a) 跑 just dev 做 E2E b) reconcile in_progress 槽位。",
+      "design": "docs/design/2026-06-01-harness-rebuild.md（Approved · §11 拍板 D1=A/D2=A精练/D3=A/D4=A）",
+      "plan": "docs/superpowers/plans/2026-06-01-harness-rebuild.md（writing-plans · Task 1-8）",
+      "verification": [
+        "python3 -m json.tool resources/harness/evidence_kinds.json + stages/external_attack_surface.json → exit 0",
+        "cargo nextest run -p golish-agent-kit -E 'test(harness::surface_mapping)' → 6/6",
+        "cargo nextest run -p golish-agent-kit -E 'test(harness::gate::surface_coverage_check)' → 4/4",
+        "cargo nextest run -p golish-agent-kit -E 'test(harness::)' → 原 88 + 新 10 全绿（含 e2e_tests 10，happy fixture 已补 api_endpoint finding）",
+        "cargo nextest run -p golish-pentest -E 'test(evidence_kinds)' → registry 加 6 kind 仍绿",
+        "just check → 全绿（本轮结尾跑一次）",
+        "P2 手动 E2E（用户·需运行时）：GOLISH_HARNESS_STAGE_MODE=true just dev → task『评估 <target> 的 external attack surface』→ 观察 backfill/evidence/gate PASS；交 vacuous + 只-Surface deliverable → gate BLOCK + recovery_actions（reason 含 JsApi）"
+      ],
+      "evidence": null,
+      "notes": "2026-06-01 MCP-agent-1 在 feat/harness-2026-06-01 分支执行。设计草案原作者 MCP-agent-2（草案文件本轮一度从工作树消失，已据会话早期读取内容恢复并补 §11 拍板/§12 校正/§13 执行记录）。re-anchor 工作面比草案估计窄（§12）：harness gate 与数据模型无关，query_target_data 已返回 Surface Workbench 源，仅 evidence_kinds + 覆盖判定需补。改动均未 commit（等 just check 绿 + 用户 E2E 后整批 commit）。"
+    },
+    {
       "id": "chore-remove-zap-module",
       "priority": 0,
       "area": "backend/crates/golish-pentest + backend/crates/golish + backend/crates/golish-platform + frontend/components/SecurityView + frontend/components/BrowserView + frontend/lib/pentest + frontend/store + frontend/lib/i18n + frontend/components/TargetPanel + frontend/components/TabBar + frontend/components/PaneContainer + frontend/components/DetachedView",

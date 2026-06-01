@@ -1,5 +1,7 @@
 # MCP Resource Evidence Summary
 
+> ℹ️ **2026-06-01**: harness re-anchor（[2026-06-01-harness-rebuild.md](2026-06-01-harness-rebuild.md)）**保留**本文 MCP Resource sanitizer 设计（evidence 不直接进 LLM 上下文，走 evidence_read(eid) 脱敏 summary）。本轮未改动本文决策。
+
 - **Author**: MCP-1 (代笔 MCP-4 owner 内容)
 - **Date**: 2026-05-26
 - **Status**: Implemented (Phase 1 · 见 commits aa7e6bf / b215046 / ffee39a)

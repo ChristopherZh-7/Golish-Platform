@@ -1,5 +1,7 @@
 # Stage Harness MVP · external_attack_surface
 
+> ℹ️ **2026-06-01**: 本 stage 已 re-anchor 到 Target Surface Workbench（claim/finding → 六 tab 映射 + 第 6 个 gate check surface_coverage）。当前状态/锚点以 [2026-06-01-harness-rebuild.md](2026-06-01-harness-rebuild.md)（§12/§13）为准；本文 deliverable schema / gate 哲学 / §4 StageSpec 结构仍有效。
+
 - **Author**: MCP-1 (代笔 MCP-2 owner 内容)
 - **Date**: 2026-05-26
 - **Status**: Implemented (Phase 1 · 见 commits 163f04e / 559416f / bb98f3e / 1bcdc52 / 52f70d4 / 1b0a23e / 10dd927 / b106d55)

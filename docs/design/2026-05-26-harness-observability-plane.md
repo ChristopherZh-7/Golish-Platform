@@ -1,5 +1,7 @@
 # Golish Harness Observability Plane
 
+> ℹ️ **2026-06-01**: 本文 Observability Plane 仍 **Phase 2 deferred**（GateResult 已留 `gate_result_id`/`blocking_reason_id` 占位字段）。harness 当前进展见 [2026-06-01-harness-rebuild.md](2026-06-01-harness-rebuild.md)；本轮 re-anchor 不触及 observability wiring。
+
 - **Author**: Codex
 - **Date**: 2026-05-26
 - **Status**: Acknowledged (Phase 1 partial-satisfy via Evidence Ledger; full Observability Plane 推 Phase 2+)

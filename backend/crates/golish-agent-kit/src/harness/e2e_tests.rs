@@ -83,6 +83,15 @@ fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
         severity: FindingSeverity::Info,
         evidence_refs: vec![http_eid],
     });
+    // JS/API finding: 满足 surface_coverage_check 的 JsApi 硬要求
+    // (design doc 2026-06-01 §D2 · re-anchor 到 Target Surface Workbench).
+    d.findings.push(HarnessFinding {
+        finding_id: Uuid::new_v4(),
+        kind: "api_endpoint".to_string(),
+        subject: "api.example.com/v1/login".to_string(),
+        severity: FindingSeverity::Info,
+        evidence_refs: vec![http_eid],
+    });
     d
 }
 

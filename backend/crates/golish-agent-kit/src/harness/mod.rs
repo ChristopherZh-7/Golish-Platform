@@ -40,6 +40,7 @@ pub mod profile;
 pub mod sprint_contract;
 pub mod stage_harness;
 pub mod stage_spec;
+pub mod surface_mapping;
 pub mod types;
 
 #[cfg(test)]
@@ -60,6 +61,10 @@ pub use stage_harness::StageHarness;
 pub use stage_spec::{
     load_stage_spec_from_json, HumanApprovalPolicy, InheritsEvidenceFrom, StageSpec,
     StageSpecLoadError,
+};
+pub use surface_mapping::{
+    missing_required_categories, SurfaceCategory, SurfaceCoverage, D2_REQUIRED_CATEGORIES,
+    D2_SOFT_CATEGORIES,
 };
 pub use types::{
     AgentContinuity, ExternalAttackSurfaceDeliverable, FindingSeverity, HarnessFinding,

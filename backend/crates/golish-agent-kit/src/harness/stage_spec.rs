@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn external_attack_surface_required_checks_count() {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
-        assert_eq!(s.required_checks.len(), 5);
+        assert_eq!(s.required_checks.len(), 6);
     }
 
     #[test]

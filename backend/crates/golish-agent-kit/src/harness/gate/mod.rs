@@ -11,6 +11,7 @@ pub mod contract_check;
 pub mod freshness_check;
 pub mod schema_check;
 pub mod scope_check;
+pub mod surface_coverage_check;
 pub mod vacuous_check;
 
 use serde::{Deserialize, Serialize};
@@ -91,6 +92,7 @@ pub fn validate_external_attack_surface_gate(
         scope_check::run(deliverable),
         contract_check::run(deliverable, contract),
         vacuous_check::run(deliverable, spec),
+        surface_coverage_check::run(deliverable),
         freshness_check::run(deliverable, spec),
     ] {
         if let GateCheckOutcome::Block {

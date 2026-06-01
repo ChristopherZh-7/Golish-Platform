@@ -1,5 +1,7 @@
 # Golish Operation Harness: Profile + DAG + Stage Loop + Harness Lab
 
+> ℹ️ **2026-06-01**: harness 已 re-anchor 到 Target Surface Workbench；本文「现状/优先级/crate 前提」部分见 [2026-06-01-harness-rebuild.md](2026-06-01-harness-rebuild.md)（§6/§12）。**本文 §21 Final Consolidated Decisions 仍是 source of truth**，gate 哲学 / Evidence Ledger schema 仍有效（除 F3/F4，见 rebuild §6）。
+
 - **Author**: Codex (§1-§12), MCP-1 / MCP-2 / MCP-4 discussion (§13-§21)
 - **Date**: 2026-05-26
 - **Status**: Discussion Locked (after Round 6 三方评审收敛，待 user §2.7 授权后启动 Doc 1/2/3 起草)

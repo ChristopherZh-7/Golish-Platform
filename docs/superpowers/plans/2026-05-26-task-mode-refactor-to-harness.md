@@ -1,5 +1,7 @@
 # Task Mode Refactor to Harness · Implementation Plan
 
+> ℹ️ **2026-06-01**: 本计划「现状/优先级」部分已被 [../../design/2026-06-01-harness-rebuild.md](../../design/2026-06-01-harness-rebuild.md) + [2026-06-01-harness-rebuild.md](2026-06-01-harness-rebuild.md) re-anchor。Phase 1 已实现（见本文 §12），后续 re-anchor + 验证以 2026-06-01 plan 为准；本文 task-mode 重构步骤作历史保留。
+
 - **Author**: MCP-1
 - **Date**: 2026-05-26
 - **Status**: Implemented (Phase 1 · 17 Task / 16 commits)

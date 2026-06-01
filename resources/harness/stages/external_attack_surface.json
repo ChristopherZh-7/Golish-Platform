@@ -37,7 +37,8 @@
     "evidence_non_empty",
     "unchecked_distinct_from_checked_empty",
     "out_of_scope_targets_excluded",
-    "min_tool_invocations_per_check"
+    "min_tool_invocations_per_check",
+    "surface_workbench_coverage"
   ],
 
   "min_invocations": {
