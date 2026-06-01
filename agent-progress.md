@@ -29,6 +29,20 @@
 
 ---
 
+### 2026-06-01 · harness 闭环集成测试（drive_stage_transition · 内存 operation_state repo + 审批通道）（MCP-agent-1 · DISPATCH off · §5.9 单会话直接执行 · 用户「写闭环集成测试」→「commit」→「归档进 progress」）
+
+- **本轮目标**：用户在 harness Phase C 收口（commit `634a6dc`）后要「进程内闭环集成测试」（计划 Phase D 第 2 项：mock executor + 内存 operation_state repo）。
+- **靶点选择**：测 `task_orchestrator/subtask_phases/execute.rs` 的私有 `drive_stage_transition`（gate outcome → DAG 决策 → 审批闸 → 推进游标）。**关键：该方法不查 `stage_mode_enabled()`（LazyLock 缓存 env），故测试确定性、不受 `GOLISH_HARNESS_STAGE_MODE` env 影响**；全量 `run()` 路径因 flag 是 LazyLock 需独立 env 进程，不适合默认 nextest。
+- **新增** `subtask_phases/execute_harness_loop_tests.rs`（495 行，`#[cfg(test)] #[path=...] mod` 挂为 execute 子模块 → 可达私有 `drive_stage_transition` + `HarnessGateOutcome`）；`execute.rs` +4 行 mod 声明。
+- **内存 repo**：`MemRepo` 实现 `DbRepoProvider`，仅 `operation_state_{insert,get,advance_stage}` 真实（`Mutex<HashMap>`），其余 ~39 方法 `unimplemented!()`（transition driver 不触）。
+- **4 个闭环测试**：① `pass_walks_cursor_along_assessment_dag`（PASS 沿 assessment DAG scoping→target_intel→eas→分支首选 enumeration→reporting，终点 Complete 不动；中间 stage 因 approval_policy 开预喂 approve）② `block_holds_cursor`（gate BLOCK→Hold）③ `approval_gate_holds_on_non_affirmative_reply`（pentest vuln_triage→verification 审批闸回「no」→hold+发 waiting_approval）④ `approval_gate_resumes_on_affirmative_reply`（同闸回「approve」→resume 推进 verification）。测试 ③ vs ④ 同设置/反回复/反结果 → 证明 C5 审批分支真被执行（非空过）。
+- **运行过的验证（已记录证据）**：`cargo nextest -p golish-agent-kit execute_harness_loop_tests` → 4/4；`cargo nextest -p golish-agent-kit --no-fail-fast` → **357/357**（原 353，+4，无回归）；ReadLints → 0；`cargo clippy -p golish-agent-kit -- -D warnings`（= `just lint-rust` 口径，无 `--all-targets`）→ exit 0。
+- **提交记录**：commit `0ff5b6a`（`test(harness): closed-loop integration tests for stage-transition driver`，2 文件 +499），落 `feat/harness-2026-06-01`，**未 push**（§2.7）。分支 HEAD：`0ff5b6a` ← `634a6dc` ← `3a06265`。
+- **范围/诚实**：clippy `--all-targets`（比 gate 严）暴露一处**既有** `planner/tests/manager_tests.rs:365` type_complexity（非本轮代码、不在 gate `--workspace` 口径内），按「只在必要时改既有 lint」未动。本测试覆盖 transition 闭环（游标/审批/resume），**不**覆盖：全量 `run()` flag-on 路径、gate→repair reflector 回灌、C6 真 handoff 注入（后二者有 MCP-4 单测）、活体 E2E（需 LLM key + just dev，仍人工）。
+- **下一步建议**：① push `feat/harness-2026-06-01`（需用户点头）；② 补 handoff/repair 闭环集成测试；③ 活体 E2E（`GOLISH_HARNESS_STAGE_MODE=true GOLISH_HARNESS_PROFILE=red_team just dev` + LLM key）。
+
+---
+
 ### 2026-06-01 · harness Phase C 收口：C1–C6 闭环 + 多 profile 选择 + 起点 scoping + 修 4 红测试（MCP-agent-4 · DISPATCH off · §5.9 单会话直接执行 · 用户「是不是 harness 全搞定了」审计 →「修红测试」→「补 profile 选择+起点 scoping」→「补 C5 resume/C6 真交接」→「commit+归档」）
 
 - **本轮起点**：用户问「harness 逻辑是不是全部搞定了」。先做**只读审计**（读 2026-06-01 两份计划 full-impl/rebuild + 实际代码），诚实结论：A+B+C 接线基本铺完、编译过、单测大多绿，但有 **4 红测试** + 多处 **MVP 半成品** + **从没活体跑过**。随后用户逐项让我收口。
