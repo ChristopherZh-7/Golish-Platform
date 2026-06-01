@@ -746,6 +746,10 @@ fn parse_deliverable_from_content(content: &str) -> Option<crate::harness::Stage
 }
 
 #[cfg(test)]
+#[path = "execute_harness_loop_tests.rs"]
+mod execute_harness_loop_tests;
+
+#[cfg(test)]
 mod harness_gate_hook_tests {
     use super::*;
     use crate::harness::{HarnessStageHint, StageKind};
