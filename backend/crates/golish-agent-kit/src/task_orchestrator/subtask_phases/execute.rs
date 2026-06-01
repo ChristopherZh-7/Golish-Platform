@@ -155,9 +155,13 @@ impl TaskOrchestrator {
                         continue;
                     }
 
-                    let agent_content = apply_harness_gate_hook(planned, agent_result.content);
+                    let (gated_content, gate_outcome) =
+                        apply_harness_gate_hook(planned, agent_result.content);
+                    if let Some(outcome) = gate_outcome {
+                        self.drive_stage_transition(task_id, outcome).await;
+                    }
                     let agent_result = AgentResult {
-                        content: agent_content,
+                        content: gated_content,
                         ..agent_result
                     };
 
@@ -260,7 +264,63 @@ impl TaskOrchestrator {
         let fallback = last_result
             .map(|r| r.content)
             .unwrap_or_else(|| "Subtask completed without tool usage.".to_string());
-        (apply_harness_gate_hook(planned, fallback), None)
+        let (out, gate_outcome) = apply_harness_gate_hook(planned, fallback);
+        if let Some(outcome) = gate_outcome {
+            self.drive_stage_transition(task_id, outcome).await;
+        }
+        (out, None)
+    }
+
+    /// Phase 2: gate 通过后按 Operation DAG 推进 operation_state 游标 (Doc 3 §6.2).
+    ///
+    /// `operation_id == task_id` (Phase 2 决定: 一个 Task = 一个 operation). 投影
+    /// assessment DAG, 用 [`crate::harness::decide_transition`] 选下一 stage, 写入
+    /// `operation_state.current_stage`. Hold / Complete (无下一格) 则不写.
+    async fn drive_stage_transition(&self, operation_id: Uuid, outcome: HarnessGateOutcome) {
+        let graph = match crate::harness::base_operation_graph() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!(target: "harness::hook", error = %e, "base operation graph load failed");
+                return;
+            }
+        };
+        let profile = match crate::harness::load_profile_from_json(ASSESSMENT_PROFILE_JSON) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(target: "harness::hook", error = %e, "profile load failed in transition");
+                return;
+            }
+        };
+        let dag = graph.project(&profile.allowed_stage_set());
+        let decision =
+            crate::harness::decide_transition(outcome.gated_stage, outcome.gate_allowed, &dag);
+        let Some(next) = decision.advance_target() else {
+            tracing::info!(
+                target: "harness::hook",
+                operation_id = %operation_id,
+                gated_stage = ?outcome.gated_stage,
+                gate_allowed = outcome.gate_allowed,
+                decision = ?decision,
+                "no stage advance (hold/complete)"
+            );
+            return;
+        };
+        match crate::db_shim::operation_state::advance_stage(
+            &*self.repo,
+            operation_id,
+            next.as_str(),
+        )
+        .await
+        {
+            Ok(()) => tracing::info!(
+                target: "harness::hook",
+                operation_id = %operation_id,
+                from = ?outcome.gated_stage,
+                to = ?next,
+                "operation_state cursor advanced"
+            ),
+            Err(e) => tracing::warn!(target: "harness::hook", error = %e, "advance_stage failed"),
+        }
     }
 }
 
@@ -287,16 +347,27 @@ const ASSESSMENT_PROFILE_JSON: &str =
 const EXTERNAL_ATTACK_SURFACE_SPEC_JSON: &str =
     include_str!("../../../../../../resources/harness/stages/external_attack_surface.json");
 
-fn apply_harness_gate_hook(planned: &PlannedSubtask, content: String) -> String {
+/// gate hook 跑完后回传给流转驱动的最小信息 (Phase 2 · Doc 3 §6.2).
+struct HarnessGateOutcome {
+    gated_stage: crate::harness::StageKind,
+    gate_allowed: bool,
+}
+
+/// 返回 `(content, Option<outcome>)`: `None` 表示 hook 透传 (未跑 gate); `Some` 表示
+/// 跑了 gate, 调用方据此驱动 stage 流转 (推进 operation_state 游标).
+fn apply_harness_gate_hook(
+    planned: &PlannedSubtask,
+    content: String,
+) -> (String, Option<HarnessGateOutcome>) {
     if !crate::harness::stage_mode_enabled() {
-        return content;
+        return (content, None);
     }
     let Some(stage_hint) = planned.harness_stage.as_ref() else {
         tracing::debug!(
             target: "harness::hook",
             "skip: stage_mode enabled but planned.harness_stage is None"
         );
-        return content;
+        return (content, None);
     };
     // Phase 1 MVP 仅支持 ExternalAttackSurface
     if stage_hint.stage_kind != crate::harness::StageKind::ExternalAttackSurface {
@@ -305,7 +376,7 @@ fn apply_harness_gate_hook(planned: &PlannedSubtask, content: String) -> String 
             stage_kind = ?stage_hint.stage_kind,
             "skip: Phase 1 MVP supports only ExternalAttackSurface"
         );
-        return content;
+        return (content, None);
     }
 
     tracing::info!(
@@ -320,14 +391,14 @@ fn apply_harness_gate_hook(planned: &PlannedSubtask, content: String) -> String 
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(target: "harness::hook", error = %e, "[harness] failed to load assessment profile JSON");
-            return content;
+            return (content, None);
         }
     };
     let spec = match crate::harness::load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_SPEC_JSON) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(target: "harness::hook", error = %e, "[harness] failed to load external_attack_surface spec JSON");
-            return content;
+            return (content, None);
         }
     };
     let harness = match crate::harness::StageHarness::for_stage(
@@ -338,7 +409,7 @@ fn apply_harness_gate_hook(planned: &PlannedSubtask, content: String) -> String 
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(target: "harness::hook", error = %e, "[harness] StageHarness::for_stage failed");
-            return content;
+            return (content, None);
         }
     };
 
@@ -349,7 +420,7 @@ fn apply_harness_gate_hook(planned: &PlannedSubtask, content: String) -> String 
             content_len = content.len(),
             "no ExternalAttackSurfaceDeliverable JSON found in agent content, skipping gate"
         );
-        return content;
+        return (content, None);
     };
 
     tracing::info!(
@@ -397,7 +468,13 @@ fn apply_harness_gate_hook(planned: &PlannedSubtask, content: String) -> String 
     out.push_str("\n\n## Harness Gate Decision\n\n```json\n");
     out.push_str(&decision_json);
     out.push_str("\n```\n");
-    out
+    (
+        out,
+        Some(HarnessGateOutcome {
+            gated_stage: stage_hint.stage_kind,
+            gate_allowed: decision.allowed,
+        }),
+    )
 }
 
 /// Phase 1 MVP: 尝试把 content 整体 (trim 后) 解析为 ExternalAttackSurfaceDeliverable.
@@ -442,14 +519,14 @@ mod harness_gate_hook_tests {
         // crate::harness::stage_mode_enabled() 默认 false → hook 必然透传
         let p = planned_with_harness(StageKind::ExternalAttackSurface);
         let content = "anything".to_string();
-        assert_eq!(apply_harness_gate_hook(&p, content.clone()), content);
+        assert_eq!(apply_harness_gate_hook(&p, content.clone()).0, content);
     }
 
     #[test]
     fn no_harness_stage_skips_gate() {
         let p = planned_no_harness();
         let content = "ignore me".to_string();
-        assert_eq!(apply_harness_gate_hook(&p, content.clone()), content);
+        assert_eq!(apply_harness_gate_hook(&p, content.clone()).0, content);
     }
 
     #[test]

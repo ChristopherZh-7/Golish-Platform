@@ -218,6 +218,17 @@ pub struct MessageChainView {
     pub id: Uuid,
 }
 
+/// Minimal view of an `operation_state` cursor row (harness stage cursor, Doc 1 §3.4).
+///
+/// Only the fields the agent runtime reads back: which profile + which stage the
+/// operation is currently on.
+#[derive(Debug, Clone)]
+pub struct OperationStateView {
+    pub operation_id: Uuid,
+    pub profile: String,
+    pub current_stage: String,
+}
+
 /// Minimal view of a sub-agent dispatch row, exposed to higher layers
 /// (Tauri command + frontend) for the "resume after restart" feature.
 #[derive(Debug, Clone, Serialize, Deserialize)]

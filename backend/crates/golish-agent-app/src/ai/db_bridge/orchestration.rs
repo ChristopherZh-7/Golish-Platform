@@ -10,6 +10,39 @@ use super::GolishDbRepoProvider;
 use golish_agent_kit::db_traits::*;
 
 impl GolishDbRepoProvider {
+    pub(super) async fn operation_state_insert_impl(
+        &self,
+        operation_id: Uuid,
+        profile: &str,
+        current_stage: &str,
+    ) -> anyhow::Result<()> {
+        golish_db::repo::operation_state::insert(&self.pool, operation_id, profile, current_stage)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub(super) async fn operation_state_get_impl(
+        &self,
+        operation_id: Uuid,
+    ) -> anyhow::Result<Option<OperationStateView>> {
+        let row = golish_db::repo::operation_state::get(&self.pool, operation_id).await?;
+        Ok(row.map(|r| OperationStateView {
+            operation_id: r.operation_id,
+            profile: r.profile,
+            current_stage: r.current_stage,
+        }))
+    }
+
+    pub(super) async fn operation_state_advance_stage_impl(
+        &self,
+        operation_id: Uuid,
+        new_stage: &str,
+    ) -> anyhow::Result<()> {
+        golish_db::repo::operation_state::advance_stage(&self.pool, operation_id, new_stage)
+            .await
+            .map_err(Into::into)
+    }
+
     pub(super) async fn message_chain_create_impl(
         &self,
         session_id: Uuid,

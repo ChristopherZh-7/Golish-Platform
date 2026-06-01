@@ -431,6 +431,29 @@ mod load_from_db_tests {
             unimplemented!("plan_create not used by load_from_db tests")
         }
 
+        // ── Operation state stubs (harness stage cursor) ───────────────
+        async fn operation_state_insert(
+            &self,
+            _operation_id: Uuid,
+            _profile: &str,
+            _current_stage: &str,
+        ) -> anyhow::Result<()> {
+            unimplemented!("operation_state_insert not used by load_from_db tests")
+        }
+        async fn operation_state_get(
+            &self,
+            _operation_id: Uuid,
+        ) -> anyhow::Result<Option<crate::db_traits::OperationStateView>> {
+            unimplemented!("operation_state_get not used by load_from_db tests")
+        }
+        async fn operation_state_advance_stage(
+            &self,
+            _operation_id: Uuid,
+            _new_stage: &str,
+        ) -> anyhow::Result<()> {
+            unimplemented!("operation_state_advance_stage not used by load_from_db tests")
+        }
+
         // ── Sub-agent dispatch stubs (P0-4) ────────────────────────────
         async fn dispatch_record_start(
             &self,

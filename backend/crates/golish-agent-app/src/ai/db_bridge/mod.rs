@@ -325,6 +325,33 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.subtask_delete_pending_impl(task_id).await
     }
 
+    // ── Operation State (harness stage cursor) ───────────────
+    async fn operation_state_insert(
+        &self,
+        operation_id: Uuid,
+        profile: &str,
+        current_stage: &str,
+    ) -> anyhow::Result<()> {
+        self.operation_state_insert_impl(operation_id, profile, current_stage)
+            .await
+    }
+
+    async fn operation_state_get(
+        &self,
+        operation_id: Uuid,
+    ) -> anyhow::Result<Option<OperationStateView>> {
+        self.operation_state_get_impl(operation_id).await
+    }
+
+    async fn operation_state_advance_stage(
+        &self,
+        operation_id: Uuid,
+        new_stage: &str,
+    ) -> anyhow::Result<()> {
+        self.operation_state_advance_stage_impl(operation_id, new_stage)
+            .await
+    }
+
     // ── Message Chains / Execution Plans / Dispatch ──────────
     async fn message_chain_create(
         &self,

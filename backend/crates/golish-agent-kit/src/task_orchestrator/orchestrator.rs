@@ -77,6 +77,26 @@ impl TaskOrchestrator {
 
         tasks::update_status(&*self.repo, task.id, TaskStatus::Running).await?;
 
+        // Phase 2 harness: 一个 Task = 一个 operation. stage_mode 开启时建 operation_state
+        // 游标 (current_stage = MVP 实跑的 external_attack_surface); gate 过后由
+        // drive_stage_transition 推进. flag OFF 时完全不触碰 DB, 旧路径零影响.
+        if crate::harness::stage_mode_enabled() {
+            if let Err(e) = crate::db_shim::operation_state::insert(
+                &*self.repo,
+                task.id,
+                "assessment",
+                crate::harness::StageKind::ExternalAttackSurface.as_str(),
+            )
+            .await
+            {
+                tracing::warn!(
+                    target: "harness::hook",
+                    error = %e,
+                    "operation_state insert failed (continuing)"
+                );
+            }
+        }
+
         self.emit(AiEvent::TaskProgress {
             task_id: task.id.to_string(),
             status: "running".to_string(),

@@ -148,6 +148,24 @@ pub trait DbRepoProvider: Send + Sync {
     async fn subtask_list_by_task(&self, task_id: Uuid) -> anyhow::Result<Vec<SubtaskView>>;
     async fn subtask_delete_pending(&self, task_id: Uuid) -> anyhow::Result<()>;
 
+    // ── Operation State (harness stage cursor · Doc 1 §3.4) ─────────────
+
+    async fn operation_state_insert(
+        &self,
+        operation_id: Uuid,
+        profile: &str,
+        current_stage: &str,
+    ) -> anyhow::Result<()>;
+    async fn operation_state_get(
+        &self,
+        operation_id: Uuid,
+    ) -> anyhow::Result<Option<OperationStateView>>;
+    async fn operation_state_advance_stage(
+        &self,
+        operation_id: Uuid,
+        new_stage: &str,
+    ) -> anyhow::Result<()>;
+
     // ── Message Chains ──────────────────────────────────────────────────
 
     async fn message_chain_create(

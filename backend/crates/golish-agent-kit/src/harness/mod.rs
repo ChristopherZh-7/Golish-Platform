@@ -14,10 +14,12 @@
 //! ├── types.rs                 共享 DTO (StageKind / AuthorizationLevel / IntentAxis / GateResult / ...)
 //! ├── profile.rs               Profile (assessment / pentest / ...) + JSON loader
 //! ├── stage_spec.rs            StageSpec (external_attack_surface / ...) + JSON loader
+//! ├── operation_graph.rs       Base Operation DAG loader + profile 投影 + next_stages (Doc 3 §3)
 //! ├── nl_slice.rs              终态 4 字段 NlSlice (Doc 3 §6)
 //! ├── intent_classifier.rs     deterministic 词库 classifier (Doc 3 §6.1, Task 1c.3 完整)
 //! ├── pre_action_authorizer.rs 每 tool call 前 authz 检查
 //! ├── stage_harness.rs         主入口 · StageHarness::for_stage + validate_gate
+//! ├── stage_transition.rs      gate 结果 → 下一 stage 决策 (Doc 3 §6.2)
 //! ├── sprint_contract.rs       Sprint Contract DTO + Generator (Task 1c.4)
 //! └── gate/
 //!     ├── mod.rs               6 个 check 调度
@@ -35,11 +37,13 @@
 pub mod gate;
 pub mod intent_classifier;
 pub mod nl_slice;
+pub mod operation_graph;
 pub mod pre_action_authorizer;
 pub mod profile;
 pub mod sprint_contract;
 pub mod stage_harness;
 pub mod stage_spec;
+pub mod stage_transition;
 pub mod surface_mapping;
 pub mod types;
 
@@ -49,6 +53,10 @@ mod e2e_tests;
 pub use gate::{validate_external_attack_surface_gate, GateCheckOutcome, GateResult};
 pub use intent_classifier::{IntentClassifier, IntentClassifierConfig};
 pub use nl_slice::NlSlice;
+pub use operation_graph::{
+    base_operation_graph, load_operation_graph_from_json, AllowedDag, OperationGraph,
+    OperationGraphError, StageEdge,
+};
 pub use pre_action_authorizer::{AuthorizationError, PreActionAuthorizer};
 pub use profile::{
     load_profile_from_json, ApprovalPolicy, AuthorizationLevel, Profile, ProfileLoadError,
@@ -62,6 +70,7 @@ pub use stage_spec::{
     load_stage_spec_from_json, HumanApprovalPolicy, InheritsEvidenceFrom, StageSpec,
     StageSpecLoadError,
 };
+pub use stage_transition::{decide_from_gate, decide_transition, TransitionDecision};
 pub use surface_mapping::{
     missing_required_categories, SurfaceCategory, SurfaceCoverage, D2_REQUIRED_CATEGORIES,
     D2_SOFT_CATEGORIES,

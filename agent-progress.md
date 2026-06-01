@@ -29,6 +29,21 @@
 
 ---
 
+### 2026-06-01 · harness 第 2 层 Operation DAG 引擎 + gate 驱动 stage 流转 + operation_state 游标接线（方案 A：Task=operation）（MCP-agent-1 · DISPATCH off · §5.9 单会话直接执行 · 用户「深挖 DAG 流转引擎」→「写第2层引擎」→「接真 DB 游标」）
+
+- **本轮目标**：把 harness 的"中间断层"——第 2 层 Operation DAG 流转引擎——从"只有 JSON 数据、无运行时消费者"补成真引擎，并按用户选的方案 A（一个 Task = 一个 operation）接通 `operation_state` DB 游标，让 gate 过后游标真正推进。
+- **背景实证（重连后磁盘核实）**：`resources/harness/graph/operation_graph.json`（12 节点 13 边）此前**从没被 Rust 解析**（全仓唯一引用是 `harness/types.rs:11` 注释）；`golish-db` 的 `operation_state` repo（含 `advance_stage`）定义但**零调用点**；`StageHarness::for_stage` 硬锁单 stage（`stage_harness.rs:40`）。即第 2 层是"空的中间"，整条链 flag 默认 OFF 从没真跑通。
+- **新增 `harness/operation_graph.rs`（golish-agent-kit）**：`OperationGraph{nodes,edges}` + `StageEdge` + `load_operation_graph_from_json`（校验：边引用未声明节点→`UnknownNodeInEdge`；有环→`Cycle`，Kahn 拓扑排序）+ `base_operation_graph()`（`include_str!` 内置加载）+ `project(allowed)→AllowedDag`（Doc 3 §3.3 profile 投影：留 allowed 节点 + 两端都 allowed 的边）+ `AllowedDag::{next_stages,contains,is_terminal,entry_points,terminals}`。assessment 投影 = 5 节点 5 边（scoping→target_intel→external_attack_surface→{enumeration,reporting}，enumeration→reporting）。
+- **新增 `harness/stage_transition.rs`（golish-agent-kit）**：`TransitionDecision{Hold,Complete,Advance,Branch}` + `decide_transition(current,gate_allowed,&dag)` + `decide_from_gate(&GateResult,&dag)` + `TransitionDecision::advance_target()`（Advance→该 stage / Branch→首候选 / Hold|Complete→None）。纯函数不碰 DB。
+- **接 operation_state 游标（方案 A · 跨 crate）**：① golish-agent-kit：`DbRepoProvider` 加 `operation_state_{insert,get,advance_stage}` + `OperationStateView` 类型（db_traits/types.rs）+ db_shim `operation_state` 透传模块；测试 `StubRepo`（manager_tests.rs）补 3 stub。② golish-agent-app：`GolishDbRepoProvider` 实现 3 方法（mod.rs 委托 + orchestration.rs `_impl`）→ 调 `golish_db::repo::operation_state`（`&self.pool`）。
+- **hook 驱动（task_orchestrator/subtask_phases/execute.rs）**：`apply_harness_gate_hook` 改返回 `(String, Option<HarnessGateOutcome>)`（保持 7 个 skip 透传分支）；新增 `drive_stage_transition(&self, operation_id, outcome)`：`base_operation_graph()` → `project(assessment.allowed_stage_set())` → `decide_transition` → `advance_target()` → `operation_state::advance_stage` 写库；接在**两个** gate 点（主成功路径 execute.rs:158 + fallback execute.rs 尾）。`orchestrator.rs::run()` 在 `stage_mode_enabled()` 时建 operation_state（operation_id=task_id，current_stage=external_attack_surface）。**flag OFF 零碰 DB，旧路径零影响**。
+- **运行过的验证（已记录证据）**：`cargo check -p golish-agent-kit -p golish-agent-app --all-targets` exit 0（两 crate 编译）；`cargo nextest -p golish-agent-kit` → **334 passed / 0 failed**（含新增 13 operation_graph + 8 stage_transition + StubRepo 编译 + 既有 hook 测试）；`cargo clippy`：agent-app `-D` clean、agent-kit 仅 1 条**既有无关** warning（planner/tests/manager_tests.rs:365 type_complexity）；`cargo fmt --check` 两 crate clean；ReadLints 全无错。
+- **范围/风险**：纯新增 + 收敛式 hook 改造。**未做活体端到端**（没开 flag + 起真嵌入 PG + 真 agent 跑一轮看 DB 真写行）——DB 写入是"接好 + 类型/单测过 + 编译过"，**非"亲眼看到表里多一行"**。Phase-1 简化：current_stage 种在 external_attack_surface（MVP 唯一实跑格）；Branch 自动取首候选；gate 跟 subtask 跑（沿用现有 hook 位置）。资产收集内容由同事负责（接缝 = deliverable schema + StageSpec），本轮只动"框架笼子"。
+- **提交记录**：**未 commit、未 push**（按 §2.7；等用户定提交边界）。
+- **下一步建议**：① 写带嵌入 PG 的集成测试锁死闭环（insert→模拟 gate 过→advance→读回 current_stage=enumeration）；② 补 scoping/target_intel/enumeration/reporting 4 个 StageSpec 让多格真连跑；③ 解锁 `StageHarness::for_stage` 单 stage 硬限（按 stage 从 disk 载 StageSpec）；④ 把 `next_stages` 叠 approval/authz 闸（`approval_policy` + `max_authorization`）。
+
+---
+
 ### 2026-06-01 · legacy bridge 4 个遗留项全清（①死错误码 ②A2 IPC 收紧 ③mocks 死 case ④SubAgentInfo DTO）（MCP-agent-1 · DISPATCH off · §5.9 单会话直接执行 · 用户「扫掉0后遗留项」→「④② 都做」）
 
 - **本轮目标**：清掉上一轮（2026-05-31 legacy single-bridge 重构）尾部标注的 4 个遗留项。重连后以磁盘实证恢复上下文（记忆已过期）。

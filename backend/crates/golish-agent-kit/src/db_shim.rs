@@ -94,6 +94,36 @@ pub mod subtasks {
     }
 }
 
+pub mod operation_state {
+    use super::*;
+
+    pub async fn insert(
+        repo: &dyn DbRepoProvider,
+        operation_id: Uuid,
+        profile: &str,
+        current_stage: &str,
+    ) -> anyhow::Result<()> {
+        repo.operation_state_insert(operation_id, profile, current_stage)
+            .await
+    }
+
+    pub async fn get(
+        repo: &dyn DbRepoProvider,
+        operation_id: Uuid,
+    ) -> anyhow::Result<Option<OperationStateView>> {
+        repo.operation_state_get(operation_id).await
+    }
+
+    pub async fn advance_stage(
+        repo: &dyn DbRepoProvider,
+        operation_id: Uuid,
+        new_stage: &str,
+    ) -> anyhow::Result<()> {
+        repo.operation_state_advance_stage(operation_id, new_stage)
+            .await
+    }
+}
+
 pub mod message_chains {
     use super::*;
 
