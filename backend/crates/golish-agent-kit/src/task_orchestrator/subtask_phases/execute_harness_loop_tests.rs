@@ -116,7 +116,11 @@ impl DbRepoProvider for MemRepo {
     async fn wiki_add_changelog(&self, _entry: &NewWikiChangelog) -> anyhow::Result<()> {
         unimplemented!()
     }
-    async fn wiki_search_fts(&self, _query: &str, _limit: i64) -> anyhow::Result<serde_json::Value> {
+    async fn wiki_search_fts(
+        &self,
+        _query: &str,
+        _limit: i64,
+    ) -> anyhow::Result<serde_json::Value> {
         unimplemented!()
     }
     async fn wiki_search_by_category(
@@ -269,11 +273,7 @@ impl DbRepoProvider for MemRepo {
     ) -> anyhow::Result<SubtaskView> {
         unimplemented!()
     }
-    async fn subtask_update_status(
-        &self,
-        _id: Uuid,
-        _status: SubtaskStatus,
-    ) -> anyhow::Result<()> {
+    async fn subtask_update_status(&self, _id: Uuid, _status: SubtaskStatus) -> anyhow::Result<()> {
         unimplemented!()
     }
     async fn subtask_set_result(&self, _id: Uuid, _result: &str) -> anyhow::Result<()> {
@@ -392,9 +392,9 @@ fn drain(rx: &mut mpsc::UnboundedReceiver<AiEvent>) -> Vec<AiEvent> {
 }
 
 fn saw_waiting_approval(events: &[AiEvent]) -> bool {
-    events.iter().any(|e| {
-        matches!(e, AiEvent::TaskProgress { status, .. } if status == "waiting_approval")
-    })
+    events
+        .iter()
+        .any(|e| matches!(e, AiEvent::TaskProgress { status, .. } if status == "waiting_approval"))
 }
 
 /// PASS at each stage advances the `operation_state` cursor along the
@@ -416,7 +416,8 @@ async fn pass_walks_cursor_along_assessment_dag() {
         approvals.send("approve".to_string()).unwrap();
     }
 
-    orch.drive_stage_transition(op, pass(StageKind::Scoping)).await;
+    orch.drive_stage_transition(op, pass(StageKind::Scoping))
+        .await;
     assert_eq!(repo.stage(op).as_deref(), Some("target_intel"));
 
     orch.drive_stage_transition(op, pass(StageKind::TargetIntel))
@@ -482,7 +483,9 @@ async fn approval_gate_resumes_on_affirmative_reply() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
 
-    orch.user_input_sender().send("approve".to_string()).unwrap();
+    orch.user_input_sender()
+        .send("approve".to_string())
+        .unwrap();
     orch.drive_stage_transition(op, pass(StageKind::VulnTriage))
         .await;
 

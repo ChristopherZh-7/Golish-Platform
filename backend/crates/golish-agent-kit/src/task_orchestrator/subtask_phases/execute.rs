@@ -474,7 +474,7 @@ impl TaskOrchestrator {
 // ── Harness gate hook (Phase C · Doc 3 §5.2 接入点) ─────────────────────────
 //
 // 仅当满足以下全部条件时, agent_result.content 末尾才会被追加 gate decision JSON:
-//   1. `harness::stage_mode_enabled()` 返回 true (默认 false)
+//   1. `harness::stage_mode_enabled()` 返回 true (默认 on; 显式 =false 才关)
 //   2. `planned.harness_stage` 非 None
 //   3. agent_result.content 含可解析的 StageDeliverable JSON
 //      (整体即 JSON, 或 ```json fence 内的 JSON)
@@ -777,8 +777,9 @@ mod harness_gate_hook_tests {
     }
 
     #[test]
-    fn feature_flag_off_skips_gate_unconditionally() {
-        // crate::harness::stage_mode_enabled() 默认 false → hook 必然透传
+    fn hook_passes_through_unparseable_content() {
+        // content 不是可解析的 StageDeliverable → hook 透传原文.
+        // (flag off 时早退透传; flag on 时解析失败也透传 — 两种默认都成立.)
         let p = planned_with_harness(StageKind::ExternalAttackSurface);
         let ctx = ExecutionContext::default();
         let content = "anything".to_string();

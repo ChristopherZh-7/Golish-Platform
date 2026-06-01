@@ -73,11 +73,7 @@ pub trait ReconTargetsPort: Send + Sync {
     async fn target_update_status(&self, id: Uuid, status: &str) -> anyhow::Result<()>;
 
     /// Overwrite a target's `ports` JSON by id. Mirrors `db_target_update_recon`.
-    async fn target_update_recon(
-        &self,
-        id: Uuid,
-        ports: &serde_json::Value,
-    ) -> anyhow::Result<()>;
+    async fn target_update_recon(&self, id: Uuid, ports: &serde_json::Value) -> anyhow::Result<()>;
 
     /// Apply an extended recon update by id. Mirrors
     /// `db_target_update_recon_extended`.
@@ -277,11 +273,7 @@ impl ReconTargetsPort for PgReconTargetsAdapter {
         Ok(golish_db::repo::targets::update_status_by_id(self.pool.as_ref(), id, status).await?)
     }
 
-    async fn target_update_recon(
-        &self,
-        id: Uuid,
-        ports: &serde_json::Value,
-    ) -> anyhow::Result<()> {
+    async fn target_update_recon(&self, id: Uuid, ports: &serde_json::Value) -> anyhow::Result<()> {
         Ok(golish_db::repo::targets::update_ports_by_id(self.pool.as_ref(), id, ports).await?)
     }
 

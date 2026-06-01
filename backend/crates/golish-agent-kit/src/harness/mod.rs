@@ -89,18 +89,20 @@ pub use types::{
     StageClaim, StageDeliverable, StageKind,
 };
 
-/// Feature flag: 启用 stage_mode 路径.
+/// Feature flag: 启用 stage_mode 路径 (Operation Harness).
 ///
-/// Phase 1 实施 (Task 1c.7):
-///   - 默认 **OFF**: 旧 task_orchestrator 路径继续工作, harness 路径与之并行
-///   - 启用方式: 设环境变量 `GOLISH_HARNESS_STAGE_MODE=true` (或 `=1`).
-///     启动时 LazyLock 缓存一次, 避免每次 subtask 都查 env.
+/// **默认 ON** (2026-06-01 起): task 模式默认走 Operation Harness
+/// (Profile → Operation DAG → Stage gate → Evidence Ledger).
+///   - 逃生阀 (kill switch): 设环境变量 `GOLISH_HARNESS_STAGE_MODE=false`
+///     (或 `0` / `off` / `no`, 大小写不敏感) 即回退到旧 task_orchestrator 路径,
+///     无需改代码即可线上快速回退.
+///   - 其它任何值 (未设 / `true` / `1` / 乱填) = 开.
+///   - 启动时 LazyLock 缓存一次, 避免每次 subtask 都查 env.
 ///   - Phase 2 计划: 从 settings.toml 的 `harness.stage_mode_enabled` 读取,
-///     与 LangFuse / proxy 等 settings 同源.
+///     与 LangFuse / proxy 等 settings 同源 (env 作为覆盖).
 ///
-/// **不建议生产环境直接启用**: Phase 1 MVP 仅 ExternalAttackSurface stage,
-/// 其它 stage 走 hook 时返 Err 导致 subtask 失败. 配合 Phase 1d demo 单测
-/// 验证后再 flip on.
+/// 历史: 此前默认 OFF, 作为 harness MVP 与旧路径并行的灰度过渡; 多 stage / 多 profile
+/// 运行时 (Phase A/B/C) 落地后按设计终态翻为默认 ON.
 pub fn stage_mode_enabled() -> bool {
     use std::sync::LazyLock;
     static ENABLED: LazyLock<bool> = LazyLock::new(read_env_flag);
@@ -108,9 +110,15 @@ pub fn stage_mode_enabled() -> bool {
 }
 
 fn read_env_flag() -> bool {
-    matches!(
-        std::env::var("GOLISH_HARNESS_STAGE_MODE").ok().as_deref(),
-        Some("true" | "1" | "TRUE" | "True")
+    parse_stage_mode_flag(std::env::var("GOLISH_HARNESS_STAGE_MODE").ok().as_deref())
+}
+
+/// Pure parser (env-independent → 可单测全分支). 默认 ON: 仅显式 falsey 值关闭;
+/// 未设 / 未知 / truthy 值一律开.
+fn parse_stage_mode_flag(value: Option<&str>) -> bool {
+    !matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("false" | "0" | "off" | "no")
     )
 }
 
@@ -141,23 +149,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stage_mode_enabled_default_off() {
-        // 注意: 这个测试假设运行环境没有 GOLISH_HARNESS_STAGE_MODE.
-        // 若 CI 设了该 env, 跳过.
+    fn stage_mode_enabled_default_on() {
+        // 默认 ON. 若运行环境显式设了 GOLISH_HARNESS_STAGE_MODE 则跳过 (避免 env 干扰).
         if std::env::var("GOLISH_HARNESS_STAGE_MODE").is_ok() {
             return;
         }
-        assert!(!stage_mode_enabled(), "default must be off");
+        assert!(stage_mode_enabled(), "default must be on");
     }
 
     #[test]
-    fn read_env_flag_true_variants() {
-        // 这里直接测纯函数 (避开 LazyLock 缓存)
-        // 因 std::env::set_var 不安全 (多线程), 我们手动测每个分支:
-        // 等价于读 env 后的逻辑.
-        // Note: 实际 LazyLock 缓存第一次调用时的结果, 单测应跑 read_env_flag 而非
-        // stage_mode_enabled 来测分支.
-        let _ = read_env_flag(); // sanity: 不 panic
+    fn parse_stage_mode_flag_unset_defaults_on() {
+        assert!(parse_stage_mode_flag(None), "unset must default ON");
+    }
+
+    #[test]
+    fn parse_stage_mode_flag_explicit_falsey_disables() {
+        for off in ["false", "0", "off", "no", "FALSE", " False ", "OFF", "No"] {
+            assert!(!parse_stage_mode_flag(Some(off)), "'{off}' must disable");
+        }
+    }
+
+    #[test]
+    fn parse_stage_mode_flag_truthy_or_unknown_enables() {
+        for on in ["true", "1", "TRUE", "yes", "on", "garbage", ""] {
+            assert!(parse_stage_mode_flag(Some(on)), "'{on}' must enable");
+        }
     }
 
     #[test]

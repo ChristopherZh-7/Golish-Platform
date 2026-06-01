@@ -384,11 +384,26 @@ mod tests {
     #[test]
     fn infer_stage_routes_other_stages() {
         let cases = [
-            ("Generate the final report with remediation plan", StageKind::Reporting),
-            ("Run nuclei vulnerability scan against the hosts", StageKind::VulnTriage),
-            ("Port scanning and service enumeration on open ports", StageKind::Enumeration),
-            ("Validate the exploit with a controlled PoC", StageKind::Verification),
-            ("Whois and ASN lookup for passive intel", StageKind::TargetIntel),
+            (
+                "Generate the final report with remediation plan",
+                StageKind::Reporting,
+            ),
+            (
+                "Run nuclei vulnerability scan against the hosts",
+                StageKind::VulnTriage,
+            ),
+            (
+                "Port scanning and service enumeration on open ports",
+                StageKind::Enumeration,
+            ),
+            (
+                "Validate the exploit with a controlled PoC",
+                StageKind::Verification,
+            ),
+            (
+                "Whois and ASN lookup for passive intel",
+                StageKind::TargetIntel,
+            ),
             ("Define scope and rules of engagement", StageKind::Scoping),
         ];
         for (text, expected) in cases {
