@@ -149,27 +149,10 @@ async fn execute_task_mode(
 
     let event_tx = bridge.get_or_create_event_tx();
 
-    // Emit a short initial message so the user sees immediate feedback.
-    // This cycle completes before the Generator call so it won't collide
-    // with per-subtask Started/Completed events from execute_isolated.
-    let init_turn = uuid::Uuid::new_v4().to_string();
-    let init_msg = "I'm analyzing your request and generating a task plan. \
-         This may take a moment while I decompose the task into subtasks..."
-        .to_string();
-    bridge.emit_event(AiEvent::Started { turn_id: init_turn });
+    // Echo the user's task input into the event stream (chat-mode parity).
+    // Progress feedback is surfaced by the orchestrator's TaskProgress events.
     bridge.emit_event(AiEvent::UserMessage {
         content: task_input.to_string(),
-    });
-    bridge.emit_event(AiEvent::TextDelta {
-        delta: init_msg.clone(),
-        accumulated: init_msg.clone(),
-    });
-    bridge.emit_event(AiEvent::Completed {
-        response: init_msg,
-        reasoning: None,
-        input_tokens: None,
-        output_tokens: None,
-        duration_ms: Some(0),
     });
 
     let start_time = std::time::Instant::now();
@@ -178,6 +161,7 @@ async fn execute_task_mode(
             state.db_pool.clone(),
         ));
     let mut orchestrator = TaskOrchestrator::new(db_repo, uuid_session_id, event_tx);
+    orchestrator.set_profile_override(bridge.get_harness_profile().await);
     let executor = BridgeAgentExecutor::new(bridge.clone());
 
     let result = orchestrator.run(task_input, &executor).await;

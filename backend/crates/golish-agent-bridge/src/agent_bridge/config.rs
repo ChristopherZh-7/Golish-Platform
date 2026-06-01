@@ -351,6 +351,17 @@ impl AgentBridge {
         *self.execution_mode.read().await
     }
 
+    /// Set the selected harness operation profile id for this session
+    /// (`None` clears it, reverting Task runs to the env default profile).
+    pub async fn set_harness_profile(&self, profile: Option<String>) {
+        *self.harness_profile.write().await = profile;
+    }
+
+    /// Get the selected harness operation profile id for this session.
+    pub async fn get_harness_profile(&self) -> Option<String> {
+        self.harness_profile.read().await.clone()
+    }
+
     // ========================================================================
     // System prompt (lightweight standalone variant)
     // ========================================================================

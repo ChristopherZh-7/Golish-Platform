@@ -138,7 +138,7 @@ export function useChatSend(opts: UseChatSendOptions) {
     try {
       clearGenerationSuppressForAiSession(conv.aiSessionId);
       useStore.getState().setConversationStreaming(conv.id, true);
-      const isTaskMode = chatExecutionModeRef.current === "task";
+      const isTaskMode = chatExecutionModeRef.current !== "chat";
       if (isTaskMode) taskInProgressRef.current = true;
 
       await setExecutionModeBackend(conv.aiSessionId, chatExecutionModeRef.current).catch(() => {});

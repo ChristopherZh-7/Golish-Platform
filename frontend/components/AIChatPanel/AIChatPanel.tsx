@@ -155,8 +155,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
         store.setActiveSession(firstTerminal);
       }
       for (const tid of terminals) {
-        if (store.sessions[tid]?.executionMode === "task") {
-          modes.setChatExecutionMode("task");
+        const em = store.sessions[tid]?.executionMode;
+        if (em && em !== "chat") {
+          modes.setChatExecutionMode(em);
           break;
         }
       }

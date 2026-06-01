@@ -131,8 +131,8 @@ export function useChatStreamingSync(opts: UseChatStreamingSyncOptions): void {
       }
       for (const tid of terminals) {
         const sess = store.sessions[tid];
-        if (sess?.executionMode === "task") {
-          setChatExecutionMode("task");
+        if (sess?.executionMode && sess.executionMode !== "chat") {
+          setChatExecutionMode(sess.executionMode);
           break;
         }
       }

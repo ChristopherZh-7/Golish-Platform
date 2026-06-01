@@ -220,6 +220,12 @@ pub struct AgentBridge {
     /// authorizer (allowed_tools confinement + intent vs ceiling) on real
     /// executor tools. `None` = no stage (flag off / non-stage turn / chat mode).
     pub(crate) harness_active_authz: Arc<RwLock<Option<golish_agent_kit::harness::HarnessAuthz>>>,
+
+    /// Per-session selected harness operation profile id (e.g. "assessment" /
+    /// "red_team"), chosen via the chat-panel mode picker. `None` = chat mode /
+    /// no profile selected; a Task run with `None` falls back to the
+    /// `GOLISH_HARNESS_PROFILE` env default.
+    pub(crate) harness_profile: Arc<RwLock<Option<String>>>,
 }
 
 impl AgentBridge {

@@ -385,6 +385,7 @@ impl AgentBridge {
             mcp_tool_executor: Arc::new(RwLock::new(None)),
             harness_active_stage: Arc::new(RwLock::new(None)),
             harness_active_authz: Arc::new(RwLock::new(None)),
+            harness_profile: Arc::new(RwLock::new(None)),
         }
     }
 }

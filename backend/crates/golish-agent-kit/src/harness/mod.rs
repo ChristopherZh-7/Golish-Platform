@@ -66,6 +66,7 @@ pub use profile::{
 };
 pub use resources::{
     load_embedded_profile, load_embedded_stage_spec, profile_json, stage_spec_json,
+    EMBEDDED_PROFILE_IDS,
 };
 pub use sprint_contract::{
     DefaultSprintContractGenerator, ExpectedFinding, SprintContract, SprintContractGenerator,

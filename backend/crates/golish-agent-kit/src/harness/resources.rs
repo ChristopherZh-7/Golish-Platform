@@ -43,6 +43,17 @@ pub fn stage_spec_json(kind: StageKind) -> &'static str {
     }
 }
 
+/// 所有内嵌 profile 的 id，单一来源（与 [`profile_json`] 的 match 臂一一对应）。
+/// 顺序即 UI 列表呈现顺序：最安全的 assessment 在前，最激进的 red_team 在后。
+/// 新增一个 profile JSON 时，在此数组与 [`profile_json`] 各加一行即可，前端零改动。
+pub const EMBEDDED_PROFILE_IDS: &[&str] = &[
+    "assessment",
+    "pentest",
+    "bug_bounty",
+    "cloud_assessment",
+    "red_team",
+];
+
 /// 按 profile id 取嵌入的 profile JSON 原文; 未知 id 返回 None.
 pub fn profile_json(id: &str) -> Option<&'static str> {
     Some(match id {

@@ -7,6 +7,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { type AgentMode, type ExecutionModeDescriptor, listExecutionModes } from "@/lib/ai";
 import { cn } from "@/lib/utils";
 
@@ -135,17 +136,25 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
                 onAgentModeChange(mode.allowsSubAgents ? "auto-approve" : "default");
               }}
               className={cn(
-                "text-xs cursor-pointer flex items-start gap-2 py-2.5",
+                "text-xs cursor-pointer flex items-center gap-2 py-2",
                 isActive
                   ? resolveItemActiveClass(mode.badgeColor)
                   : "text-foreground hover:text-accent"
               )}
             >
-              <Icon className="w-4 h-4 mt-0.5 shrink-0" />
-              <div className="flex flex-col">
-                <span className="font-medium">{mode.displayName}</span>
-                <span className="text-[10px] text-muted-foreground">{mode.description}</span>
-              </div>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex w-full items-center gap-2">
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span className="font-medium">{mode.displayName}</span>
+                  </div>
+                </TooltipTrigger>
+                {mode.description && (
+                  <TooltipContent side="right" className="max-w-[240px]">
+                    {mode.description}
+                  </TooltipContent>
+                )}
+              </Tooltip>
             </DropdownMenuItem>
           );
         })}

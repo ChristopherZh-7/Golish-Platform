@@ -42,6 +42,10 @@ pub struct TaskOrchestrator {
     /// whose `inherits_evidence_from` lists an upstream stage gets the real
     /// summary injected into its subtask context, not just the static kind hint.
     pub(super) harness_evidence: std::collections::HashMap<String, String>,
+    /// C7 · per-run operation profile override from the chat-panel mode picker.
+    /// `None` = fall back to the `GOLISH_HARNESS_PROFILE` env default
+    /// ([`crate::harness::active_profile_id`]).
+    pub(super) profile_override: Option<String>,
 }
 
 impl TaskOrchestrator {
@@ -58,12 +62,19 @@ impl TaskOrchestrator {
             user_input_rx: Some(user_input_rx),
             user_input_tx,
             harness_evidence: std::collections::HashMap::new(),
+            profile_override: None,
         }
     }
 
     /// Returns a sender that can be used to provide user input to a waiting subtask.
     pub fn user_input_sender(&self) -> mpsc::UnboundedSender<String> {
         self.user_input_tx.clone()
+    }
+
+    /// Override the operation profile for this run (set from the chat-panel mode
+    /// picker). `None` keeps the `GOLISH_HARNESS_PROFILE` env default.
+    pub fn set_profile_override(&mut self, profile: Option<String>) {
+        self.profile_override = profile;
     }
 
     /// Run a full Task mode execution.
@@ -90,22 +101,28 @@ impl TaskOrchestrator {
         // GOLISH_HARNESS_PROFILE 选择, 未知 id 回退 assessment (typo 不 wedge 启动).
         // flag OFF 时完全不触碰 DB, 旧路径零影响.
         if crate::harness::stage_mode_enabled() {
-            let profile_id =
-                match crate::harness::load_embedded_profile(crate::harness::active_profile_id()) {
-                    Ok(Some(_)) => crate::harness::active_profile_id(),
-                    _ => {
-                        tracing::warn!(
-                            target: "harness::hook",
-                            configured = crate::harness::active_profile_id(),
-                            "unknown GOLISH_HARNESS_PROFILE, falling back to assessment"
-                        );
-                        "assessment"
-                    }
-                };
+            // Prefer the per-run picker override; fall back to the env default.
+            // Own the string up front so no borrow of `self` lingers across the
+            // later `&mut self` subtask loop.
+            let configured: String = self
+                .profile_override
+                .clone()
+                .unwrap_or_else(|| crate::harness::active_profile_id().to_string());
+            let profile_id: String = match crate::harness::load_embedded_profile(&configured) {
+                Ok(Some(_)) => configured,
+                _ => {
+                    tracing::warn!(
+                        target: "harness::hook",
+                        configured = %configured,
+                        "unknown harness profile, falling back to assessment"
+                    );
+                    "assessment".to_string()
+                }
+            };
             if let Err(e) = crate::db_shim::operation_state::insert(
                 &*self.repo,
                 task.id,
-                profile_id,
+                &profile_id,
                 crate::harness::StageKind::Scoping.as_str(),
             )
             .await
