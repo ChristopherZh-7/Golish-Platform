@@ -46,26 +46,30 @@ impl TaskOrchestrator {
             planned_subtasks: Vec::new(),
             harness_stage: None,
             harness_authz: None,
+            harness_profile_id: None,
         };
 
-        // C3 · resolve the operation's authorization ceiling once (stage_mode
-        // only). `operation_id == task_id`; read the real profile from
-        // `operation_state` so per-tool dispatch can reject intents above the
-        // profile's `max_authorization`. `None` → gate degrades to forbidden-only.
-        let op_max_authz: Option<crate::harness::AuthorizationLevel> =
-            if crate::harness::stage_mode_enabled() {
-                match crate::db_shim::operation_state::get(&*self.repo, task_id).await {
-                    Ok(Some(state)) => {
-                        match crate::harness::load_embedded_profile(&state.profile) {
-                            Ok(Some(p)) => Some(p.max_authorization),
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                }
-            } else {
-                None
-            };
+        // C3/C1 · resolve the operation's profile once (stage_mode only).
+        // `operation_id == task_id`; read the real profile from `operation_state`
+        // so (C3) per-tool dispatch can reject intents above the profile's
+        // `max_authorization`, and (C1) the gate hook constructs StageHarness with
+        // the real profile id instead of a placeholder. `None` → gate degrades to
+        // forbidden-only / falls back to "assessment".
+        let (op_max_authz, op_profile_id): (
+            Option<crate::harness::AuthorizationLevel>,
+            Option<String>,
+        ) = if crate::harness::stage_mode_enabled() {
+            match crate::db_shim::operation_state::get(&*self.repo, task_id).await {
+                Ok(Some(state)) => match crate::harness::load_embedded_profile(&state.profile) {
+                    Ok(Some(p)) => (Some(p.max_authorization), Some(state.profile)),
+                    _ => (None, None),
+                },
+                _ => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+        exec_ctx.harness_profile_id = op_profile_id;
 
         if start_index > 0 {
             let db_subtasks = subtasks::list_by_task(&*self.repo, task_id).await?;

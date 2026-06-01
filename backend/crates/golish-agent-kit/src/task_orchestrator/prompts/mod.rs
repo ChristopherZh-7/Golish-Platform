@@ -76,6 +76,74 @@ You are operating inside the **{stage}** stage of an authorized operation. Stay 
     )
 }
 
+/// C6 · cross-stage evidence handoff context (Doc 3 §6.2 handoff).
+///
+/// Renders the stage's `inherits_evidence_from` so the executing agent knows
+/// which evidence kinds upstream stages should have produced and can build on
+/// them instead of re-collecting. Empty `inherits_evidence_from` → empty string
+/// (no section emitted). Prepended to the subtask description right after the
+/// stage charter, only under `stage_mode_enabled()`.
+pub fn stage_inherited_evidence(spec: &StageSpec) -> String {
+    if spec.inherits_evidence_from.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from(
+        "## INHERITED EVIDENCE (handoff from prior stages)\n\n\
+         This stage builds on evidence already collected upstream. Query existing \
+         evidence first and reuse it; do not blindly re-run upstream tools:\n\n",
+    );
+    for inh in &spec.inherits_evidence_from {
+        let kinds = if inh.evidence_kinds.is_empty() {
+            "(all kinds)".to_string()
+        } else {
+            inh.evidence_kinds.join(", ")
+        };
+        s.push_str(&format!(
+            "- from **{}**: {}\n",
+            inh.stage_kind.as_str(),
+            kinds
+        ));
+    }
+    s.push('\n');
+    s
+}
+
+/// C6 · real cross-stage evidence handoff. Unlike [`stage_inherited_evidence`]
+/// (which only lists the *kinds* a stage declares it inherits), this injects the
+/// **actual** gate-passed deliverable summaries produced by upstream stages this
+/// run, looked up by `inherits_evidence_from`. `recorded` is keyed by
+/// `StageKind::as_str()`. Returns an empty string when none of the inherited
+/// stages have a recorded summary yet (e.g. they ran in a prior process, or the
+/// DAG took a shortcut), in which case only the static kind hint is emitted.
+pub fn render_inherited_handoff(
+    spec: &StageSpec,
+    recorded: &std::collections::HashMap<String, String>,
+) -> String {
+    if spec.inherits_evidence_from.is_empty() || recorded.is_empty() {
+        return String::new();
+    }
+    let mut sections = String::new();
+    for inh in &spec.inherits_evidence_from {
+        if let Some(summary) = recorded.get(inh.stage_kind.as_str()) {
+            sections.push_str(&format!(
+                "### from {}\n{}\n\n",
+                inh.stage_kind.as_str(),
+                summary
+            ));
+        }
+    }
+    if sections.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from(
+        "## INHERITED EVIDENCE — ACTUAL UPSTREAM RESULTS\n\n\
+         These concrete results were produced by upstream stages earlier in this \
+         operation. Reuse them; do not re-collect what is already below:\n\n",
+    );
+    s.push_str(&sections);
+    s
+}
+
 /// Generator prompt — decomposes a user task into ordered subtasks.
 ///
 /// Equivalent to PentAGI's `generator.tmpl`.

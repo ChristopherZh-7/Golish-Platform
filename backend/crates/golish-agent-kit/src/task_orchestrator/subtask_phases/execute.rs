@@ -80,6 +80,17 @@ impl TaskOrchestrator {
                 if let Some(hint) = planned.harness_stage.as_ref() {
                     if let Ok(spec) = crate::harness::load_embedded_stage_spec(hint.stage_kind) {
                         desc.push_str(&super::super::prompts::stage_charter(&spec));
+                        // C6 · handoff: inject which evidence kinds this stage
+                        // inherits from upstream stages (consumes the otherwise
+                        // runtime-dead `inherits_evidence_from`).
+                        desc.push_str(&super::super::prompts::stage_inherited_evidence(&spec));
+                        // C6 · real handoff: inject the actual gate-passed
+                        // deliverable summaries from upstream stages recorded
+                        // earlier in this operation.
+                        desc.push_str(&super::super::prompts::render_inherited_handoff(
+                            &spec,
+                            &self.harness_evidence,
+                        ));
                     }
                 }
             }
@@ -104,9 +115,21 @@ impl TaskOrchestrator {
 
         // Phase 3: Execute with reflector retry loop
         let mut last_result: Option<AgentResult> = None;
+        // C4 · pending gate-repair correction. When the harness gate BLOCKs, the
+        // recovery message is stashed here and injected on the next iteration so
+        // the agent re-does the subtask (distinct from the text-only reflector).
+        let mut pending_gate_correction: Option<String> = None;
 
         for reflector_attempt in 0..=MAX_REFLECTOR_RETRIES {
-            let exec_result = if reflector_attempt == 0 {
+            let exec_result = if let Some(correction) = pending_gate_correction.take() {
+                let augmented_desc = format!(
+                    "{}\n\n## IMPORTANT CORRECTION\n\n{}",
+                    augmented_description, correction
+                );
+                executor
+                    .execute_subtask(&planned.title, &augmented_desc, exec_ctx, Some(agent_type))
+                    .await
+            } else if reflector_attempt == 0 {
                 executor
                     .execute_subtask(
                         &planned.title,
@@ -166,8 +189,38 @@ impl TaskOrchestrator {
                     }
 
                     let (gated_content, gate_outcome) =
-                        apply_harness_gate_hook(planned, agent_result.content);
+                        apply_harness_gate_hook(planned, exec_ctx, agent_result.content);
                     if let Some(outcome) = gate_outcome {
+                        // C4 · gate BLOCK with retries left → feed the recovery
+                        // correction back into the loop (re-do the subtask) instead
+                        // of accepting the blocked result; defer transition until
+                        // the gate settles (PASS, or BLOCK with no retries left).
+                        if !outcome.gate_allowed
+                            && reflector_attempt < MAX_REFLECTOR_RETRIES
+                            && outcome.repair_correction.is_some()
+                        {
+                            tracing::info!(
+                                "[TaskMode/Harness] Gate BLOCK on '{}' (attempt {}/{}), \
+                                 feeding repair correction back to reflector",
+                                planned.title,
+                                reflector_attempt + 1,
+                                MAX_REFLECTOR_RETRIES,
+                            );
+                            pending_gate_correction = outcome.repair_correction.clone();
+                            last_result = Some(AgentResult {
+                                content: gated_content,
+                                ..agent_result
+                            });
+                            continue;
+                        }
+                        // C6 · on PASS, record this stage's deliverable summary so
+                        // downstream inheriting stages receive the real handoff.
+                        if outcome.gate_allowed {
+                            if let Some(summary) = outcome.evidence_summary.clone() {
+                                self.harness_evidence
+                                    .insert(outcome.gated_stage.as_str().to_string(), summary);
+                            }
+                        }
                         self.drive_stage_transition(task_id, outcome).await;
                     }
                     let agent_result = AgentResult {
@@ -274,8 +327,16 @@ impl TaskOrchestrator {
         let fallback = last_result
             .map(|r| r.content)
             .unwrap_or_else(|| "Subtask completed without tool usage.".to_string());
-        let (out, gate_outcome) = apply_harness_gate_hook(planned, fallback);
+        // Loop exhausted: run the gate once on the fallback content (no further
+        // retry possible) and drive the transition on whatever it decides.
+        let (out, gate_outcome) = apply_harness_gate_hook(planned, exec_ctx, fallback);
         if let Some(outcome) = gate_outcome {
+            if outcome.gate_allowed {
+                if let Some(summary) = outcome.evidence_summary.clone() {
+                    self.harness_evidence
+                        .insert(outcome.gated_stage.as_str().to_string(), summary);
+                }
+            }
             self.drive_stage_transition(task_id, outcome).await;
         }
         (out, None)
@@ -288,7 +349,7 @@ impl TaskOrchestrator {
     /// [`crate::harness::decide_transition`] 选下一 stage. C5: 若下一 stage 需人工
     /// 批准则 hold 并发 `waiting_approval` 事件, 不自动推进. Hold / Complete (无下
     /// 一格) 同样不写.
-    async fn drive_stage_transition(&self, operation_id: Uuid, outcome: HarnessGateOutcome) {
+    async fn drive_stage_transition(&mut self, operation_id: Uuid, outcome: HarnessGateOutcome) {
         let state = match crate::db_shim::operation_state::get(&*self.repo, operation_id).await {
             Ok(Some(s)) => s,
             Ok(None) => {
@@ -334,7 +395,8 @@ impl TaskOrchestrator {
         };
 
         // C5 · approval 闸: 下一 stage 需人工批准 + profile policy 打开 → hold,
-        // 发 waiting_approval 事件请求确认, 不自动推进游标.
+        // 发 waiting_approval 事件并**阻塞等用户回复** (user_input_rx). 肯定回复才
+        // 推进游标 (resume); 否定 / 通道关闭 / 无交互通道时保持 hold 不推进.
         if let Ok(next_spec) = crate::harness::load_embedded_stage_spec(next) {
             if crate::harness::stage_entry_requires_approval(&next_spec, &profile) {
                 tracing::info!(
@@ -348,12 +410,45 @@ impl TaskOrchestrator {
                     task_id: operation_id.to_string(),
                     status: "waiting_approval".to_string(),
                     message: format!(
-                        "Stage {} → {} requires human approval before proceeding.",
+                        "Stage {} → {} requires human approval. Reply to approve \
+                         (yes / approve / 继续) or anything else to hold.",
                         outcome.gated_stage.as_str(),
                         next.as_str()
                     ),
                 });
-                return;
+
+                // Scope the rx borrow to just the recv so we can emit afterwards.
+                let reply = match self.user_input_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => None,
+                };
+                let approved = reply
+                    .as_deref()
+                    .map(approval_reply_is_affirmative)
+                    .unwrap_or(false);
+                if approved {
+                    self.emit(AiEvent::TaskProgress {
+                        task_id: operation_id.to_string(),
+                        status: "running".to_string(),
+                        message: format!("Approval granted; advancing to {}.", next.as_str()),
+                    });
+                } else {
+                    tracing::info!(
+                        target: "harness::hook",
+                        operation_id = %operation_id,
+                        to = ?next,
+                        "approval not granted; cursor held"
+                    );
+                    self.emit(AiEvent::TaskProgress {
+                        task_id: operation_id.to_string(),
+                        status: "waiting_approval".to_string(),
+                        message: format!(
+                            "Approval not granted; staying at {}.",
+                            outcome.gated_stage.as_str()
+                        ),
+                    });
+                    return;
+                }
             }
         }
 
@@ -395,12 +490,23 @@ impl TaskOrchestrator {
 struct HarnessGateOutcome {
     gated_stage: crate::harness::StageKind,
     gate_allowed: bool,
+    /// C4 · when the gate BLOCKs, a correction message (reasons + recovery
+    /// actions) the caller can feed back into the reflector retry loop so the
+    /// agent re-does the subtask and resubmits a fixed deliverable. `None` when
+    /// the gate passed.
+    repair_correction: Option<String>,
+    /// C6 · compact summary of the parsed deliverable (claims/findings/evidence
+    /// counts). Recorded into the orchestrator's handoff store on PASS so
+    /// downstream inheriting stages get the real upstream results. `None` when no
+    /// deliverable was parsed.
+    evidence_summary: Option<String>,
 }
 
 /// 返回 `(content, Option<outcome>)`: `None` 表示 hook 透传 (未跑 gate); `Some` 表示
 /// 跑了 gate, 调用方据此驱动 stage 流转 (推进 operation_state 游标).
 fn apply_harness_gate_hook(
     planned: &PlannedSubtask,
+    exec_ctx: &ExecutionContext,
     content: String,
 ) -> (String, Option<HarnessGateOutcome>) {
     if !crate::harness::stage_mode_enabled() {
@@ -422,12 +528,18 @@ fn apply_harness_gate_hook(
         "harness gate hook entered"
     );
 
-    // profile 仅用于构造 StageHarness (gate 校验只读 stage_spec); 用 assessment 占位.
-    // 真实 profile 由 drive_stage_transition 按 operation_state 读取并影响流转/审批.
-    let profile = match crate::harness::load_embedded_profile("assessment") {
+    // C1 · construct StageHarness with the operation's real profile (threaded via
+    // exec_ctx from operation_state), falling back to "assessment" when absent.
+    // gate validation only reads stage_spec; the profile id also keeps logs and
+    // future profile-sensitive checks honest.
+    let profile_id = exec_ctx
+        .harness_profile_id
+        .as_deref()
+        .unwrap_or("assessment");
+    let profile = match crate::harness::load_embedded_profile(profile_id) {
         Ok(Some(p)) => p,
         _ => {
-            tracing::warn!(target: "harness::hook", "[harness] failed to load assessment profile");
+            tracing::warn!(target: "harness::hook", profile_id = %profile_id, "[harness] failed to load operation profile");
             return (content, None);
         }
     };
@@ -491,6 +603,14 @@ fn apply_harness_gate_hook(
         );
     }
 
+    // C4 · on BLOCK, render a correction the caller can feed back into the
+    // reflector retry loop (gate→repair). `None` on PASS.
+    let repair_correction = if decision.allowed {
+        None
+    } else {
+        Some(build_gate_correction(&decision))
+    };
+
     let decision_json = serde_json::to_string_pretty(&decision)
         .unwrap_or_else(|_| "{\"error\":\"failed to serialize gate decision\"}".to_string());
 
@@ -503,8 +623,105 @@ fn apply_harness_gate_hook(
         Some(HarnessGateOutcome {
             gated_stage: stage_hint.stage_kind,
             gate_allowed: decision.allowed,
+            repair_correction,
+            evidence_summary: Some(summarize_deliverable(&deliverable)),
         }),
     )
+}
+
+/// C6 · render a compact, bounded summary of a gate-passed deliverable for the
+/// cross-stage handoff store. Lists the first few claims + findings (kind +
+/// subject) and the evidence-ref count so a downstream stage sees what upstream
+/// actually produced without re-reading the full deliverable JSON.
+fn summarize_deliverable(d: &crate::harness::StageDeliverable) -> String {
+    const MAX_ITEMS: usize = 6;
+    let mut s = String::new();
+    if !d.claims.is_empty() {
+        s.push_str("- claims: ");
+        let parts: Vec<String> = d
+            .claims
+            .iter()
+            .take(MAX_ITEMS)
+            .map(|c| format!("{} ({})", c.kind, c.subject))
+            .collect();
+        s.push_str(&parts.join("; "));
+        if d.claims.len() > MAX_ITEMS {
+            s.push_str(&format!(" … (+{} more)", d.claims.len() - MAX_ITEMS));
+        }
+        s.push('\n');
+    }
+    if !d.findings.is_empty() {
+        s.push_str("- findings: ");
+        let parts: Vec<String> = d
+            .findings
+            .iter()
+            .take(MAX_ITEMS)
+            .map(|f| format!("{} ({})", f.kind, f.subject))
+            .collect();
+        s.push_str(&parts.join("; "));
+        if d.findings.len() > MAX_ITEMS {
+            s.push_str(&format!(" … (+{} more)", d.findings.len() - MAX_ITEMS));
+        }
+        s.push('\n');
+    }
+    s.push_str(&format!("- evidence refs: {}", d.evidence_refs.len()));
+    s
+}
+
+/// C4 · render a harness gate BLOCK decision into a correction message for the
+/// reflector retry loop: the agent re-does the subtask addressing the gate's
+/// reasons + recovery actions and resubmits a fixed `StageDeliverable`.
+fn build_gate_correction(decision: &crate::harness::GateResult) -> String {
+    let mut s = String::from(
+        "Your stage deliverable was REJECTED by the deterministic harness gate. \
+         Fix the issues below and resubmit a corrected StageDeliverable via \
+         `submit_stage_deliverable`.\n\n### Gate rejection reasons\n",
+    );
+    if decision.reasons.is_empty() {
+        s.push_str("- (no specific reason reported)\n");
+    } else {
+        for r in &decision.reasons {
+            s.push_str(&format!("- {}\n", r));
+        }
+    }
+    if let Some(rec) = decision.recovery_actions.as_ref() {
+        if !rec.repair_tool_calls.is_empty() {
+            s.push_str("\n### Required tool calls (run these, then re-collect evidence)\n");
+            for t in &rec.repair_tool_calls {
+                s.push_str(&format!("- {}\n", t));
+            }
+        }
+        if !rec.missing_evidence_kinds.is_empty() {
+            s.push_str("\n### Missing evidence to collect\n");
+            for k in &rec.missing_evidence_kinds {
+                s.push_str(&format!("- {}\n", k));
+            }
+        }
+        if !rec.hints.is_empty() {
+            s.push_str("\n### Hints\n");
+            for h in &rec.hints {
+                s.push_str(&format!("- {}\n", h));
+            }
+        }
+    }
+    s
+}
+
+/// C5 · whether a user's approval reply grants the held stage transition.
+/// Affirmative on common yes-tokens (en + zh); anything else holds the cursor.
+fn approval_reply_is_affirmative(reply: &str) -> bool {
+    let r = reply.trim().to_lowercase();
+    if r.is_empty() {
+        return false;
+    }
+    const YES: &[&str] = &[
+        "approve", "approved", "approval", "yes", "ok", "okay", "proceed", "continue", "confirm",
+        "批准", "同意", "通过", "继续", "确认", "可以",
+    ];
+    if r == "y" || r == "go" {
+        return true;
+    }
+    YES.iter().any(|t| r.contains(t))
 }
 
 /// 把 content 解析为 [`crate::harness::StageDeliverable`].
@@ -559,15 +776,23 @@ mod harness_gate_hook_tests {
     fn feature_flag_off_skips_gate_unconditionally() {
         // crate::harness::stage_mode_enabled() 默认 false → hook 必然透传
         let p = planned_with_harness(StageKind::ExternalAttackSurface);
+        let ctx = ExecutionContext::default();
         let content = "anything".to_string();
-        assert_eq!(apply_harness_gate_hook(&p, content.clone()).0, content);
+        assert_eq!(
+            apply_harness_gate_hook(&p, &ctx, content.clone()).0,
+            content
+        );
     }
 
     #[test]
     fn no_harness_stage_skips_gate() {
         let p = planned_no_harness();
+        let ctx = ExecutionContext::default();
         let content = "ignore me".to_string();
-        assert_eq!(apply_harness_gate_hook(&p, content.clone()).0, content);
+        assert_eq!(
+            apply_harness_gate_hook(&p, &ctx, content.clone()).0,
+            content
+        );
     }
 
     #[test]
@@ -583,5 +808,112 @@ mod harness_gate_hook_tests {
     fn parse_deliverable_returns_none_on_non_json_content() {
         assert!(parse_deliverable_from_content("not json").is_none());
         assert!(parse_deliverable_from_content("# markdown header\n\nsome text").is_none());
+    }
+
+    #[test]
+    fn build_gate_correction_includes_reasons_and_recovery() {
+        // C4 · the correction fed back to the reflector must surface the gate's
+        // reasons + required tool calls + missing evidence so the agent can fix it.
+        let decision = crate::harness::GateResult::block(
+            vec!["scope_status missing".to_string()],
+            crate::harness::HarnessRecoveryActions {
+                repair_tool_calls: vec!["dns_resolve".to_string()],
+                missing_evidence_kinds: vec!["subdomain".to_string()],
+                ..Default::default()
+            },
+        );
+        let c = build_gate_correction(&decision);
+        assert!(c.contains("REJECTED"));
+        assert!(c.contains("scope_status missing"));
+        assert!(c.contains("dns_resolve"));
+        assert!(c.contains("subdomain"));
+    }
+
+    #[test]
+    fn stage_inherited_evidence_renders_for_inheriting_stage_and_empty_otherwise() {
+        // C6 · enumeration inherits from external_attack_surface; scoping inherits
+        // from nothing → empty section.
+        let enumeration = crate::harness::load_embedded_stage_spec(StageKind::Enumeration).unwrap();
+        let rendered = crate::task_orchestrator::prompts::stage_inherited_evidence(&enumeration);
+        assert!(rendered.contains("INHERITED EVIDENCE"));
+        assert!(rendered.contains("external_attack_surface"));
+
+        let scoping = crate::harness::load_embedded_stage_spec(StageKind::Scoping).unwrap();
+        assert!(crate::task_orchestrator::prompts::stage_inherited_evidence(&scoping).is_empty());
+    }
+
+    #[test]
+    fn approval_reply_affirmative_and_negative() {
+        // C5 · only explicit yes-tokens (en + zh) grant the held transition.
+        for yes in [
+            "yes",
+            "Y",
+            "approve",
+            "  Approved ",
+            "继续",
+            "ok proceed",
+            "go",
+        ] {
+            assert!(approval_reply_is_affirmative(yes), "'{yes}' should approve");
+        }
+        for no in ["", "no", "wait", "hold on", "stop", "n"] {
+            assert!(
+                !approval_reply_is_affirmative(no),
+                "'{no}' should NOT approve"
+            );
+        }
+    }
+
+    #[test]
+    fn summarize_deliverable_lists_claims_findings_and_evidence() {
+        // C6 · the handoff summary surfaces upstream claims/findings + ev count.
+        use crate::harness::types::{FindingSeverity, HarnessFinding, StageClaim};
+        use golish_pentest::evidence_ledger::EvidenceAuditId;
+        let d = crate::harness::StageDeliverable {
+            stage_id: "external_attack_surface".to_string(),
+            stage_run_id: uuid::Uuid::new_v4(),
+            claims: vec![StageClaim {
+                kind: "http_service_observed".to_string(),
+                subject: "api.example.com".to_string(),
+                summary: "200 OK".to_string(),
+                evidence_ids: vec![EvidenceAuditId::new(1)],
+            }],
+            evidence_refs: vec![EvidenceAuditId::new(1), EvidenceAuditId::new(2)],
+            skipped_checks: vec![],
+            findings: vec![HarnessFinding {
+                finding_id: uuid::Uuid::new_v4(),
+                kind: "subdomain".to_string(),
+                subject: "api.example.com".to_string(),
+                severity: FindingSeverity::Info,
+                evidence_refs: vec![EvidenceAuditId::new(1)],
+            }],
+            required_checks_done: vec![],
+        };
+        let s = summarize_deliverable(&d);
+        assert!(s.contains("http_service_observed"));
+        assert!(s.contains("subdomain"));
+        assert!(s.contains("evidence refs: 2"));
+    }
+
+    #[test]
+    fn render_inherited_handoff_injects_recorded_upstream() {
+        // C6 · enumeration inherits from external_attack_surface; with a recorded
+        // upstream summary the real-handoff section is emitted, else empty.
+        let enumeration = crate::harness::load_embedded_stage_spec(StageKind::Enumeration).unwrap();
+        let mut recorded = std::collections::HashMap::new();
+        assert!(
+            crate::task_orchestrator::prompts::render_inherited_handoff(&enumeration, &recorded)
+                .is_empty(),
+            "no recorded upstream → empty"
+        );
+        recorded.insert(
+            "external_attack_surface".to_string(),
+            "- findings: subdomain (api.example.com)".to_string(),
+        );
+        let rendered =
+            crate::task_orchestrator::prompts::render_inherited_handoff(&enumeration, &recorded);
+        assert!(rendered.contains("ACTUAL UPSTREAM RESULTS"));
+        assert!(rendered.contains("external_attack_surface"));
+        assert!(rendered.contains("subdomain (api.example.com)"));
     }
 }

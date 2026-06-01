@@ -36,6 +36,12 @@ pub struct TaskOrchestrator {
     pub(super) event_tx: mpsc::UnboundedSender<AiEvent>,
     pub(super) user_input_rx: Option<mpsc::UnboundedReceiver<String>>,
     user_input_tx: mpsc::UnboundedSender<String>,
+    /// C6 · cross-stage evidence handoff store (stage_mode). Keyed by
+    /// `StageKind::as_str()`; value is a compact summary of that stage's gate-
+    /// passed deliverable (claims/findings/evidence counts). A downstream stage
+    /// whose `inherits_evidence_from` lists an upstream stage gets the real
+    /// summary injected into its subtask context, not just the static kind hint.
+    pub(super) harness_evidence: std::collections::HashMap<String, String>,
 }
 
 impl TaskOrchestrator {
@@ -51,6 +57,7 @@ impl TaskOrchestrator {
             event_tx,
             user_input_rx: Some(user_input_rx),
             user_input_tx,
+            harness_evidence: std::collections::HashMap::new(),
         }
     }
 
@@ -77,15 +84,29 @@ impl TaskOrchestrator {
 
         tasks::update_status(&*self.repo, task.id, TaskStatus::Running).await?;
 
-        // Phase 2 harness: 一个 Task = 一个 operation. stage_mode 开启时建 operation_state
-        // 游标 (current_stage = MVP 实跑的 external_attack_surface); gate 过后由
-        // drive_stage_transition 推进. flag OFF 时完全不触碰 DB, 旧路径零影响.
+        // Phase C harness: 一个 Task = 一个 operation. stage_mode 开启时建
+        // operation_state 游标, 起点为 DAG entry (scoping); gate 过后由
+        // drive_stage_transition 沿 profile 投影的 DAG 推进. profile 经
+        // GOLISH_HARNESS_PROFILE 选择, 未知 id 回退 assessment (typo 不 wedge 启动).
+        // flag OFF 时完全不触碰 DB, 旧路径零影响.
         if crate::harness::stage_mode_enabled() {
+            let profile_id =
+                match crate::harness::load_embedded_profile(crate::harness::active_profile_id()) {
+                    Ok(Some(_)) => crate::harness::active_profile_id(),
+                    _ => {
+                        tracing::warn!(
+                            target: "harness::hook",
+                            configured = crate::harness::active_profile_id(),
+                            "unknown GOLISH_HARNESS_PROFILE, falling back to assessment"
+                        );
+                        "assessment"
+                    }
+                };
             if let Err(e) = crate::db_shim::operation_state::insert(
                 &*self.repo,
                 task.id,
-                "assessment",
-                crate::harness::StageKind::ExternalAttackSurface.as_str(),
+                profile_id,
+                crate::harness::StageKind::Scoping.as_str(),
             )
             .await
             {

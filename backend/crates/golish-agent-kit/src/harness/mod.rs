@@ -114,6 +114,28 @@ fn read_env_flag() -> bool {
     )
 }
 
+/// Operation profile selection for stage_mode (Phase C).
+///
+/// Default `assessment`. Override via `GOLISH_HARNESS_PROFILE=<id>` where `<id>`
+/// is one of the embedded profile ids (`assessment` / `pentest` / `red_team` /
+/// `bug_bounty` / `cloud_assessment`). Cached once at first read (LazyLock), same
+/// as [`stage_mode_enabled`]. The id is NOT validated here; operation startup
+/// validates it against the embedded registry and falls back to `assessment` so a
+/// typo cannot wedge the cursor with an unknown profile.
+pub fn active_profile_id() -> &'static str {
+    use std::sync::LazyLock;
+    static PROFILE: LazyLock<String> = LazyLock::new(read_env_profile);
+    PROFILE.as_str()
+}
+
+fn read_env_profile() -> String {
+    std::env::var("GOLISH_HARNESS_PROFILE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "assessment".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +158,39 @@ mod tests {
         // Note: 实际 LazyLock 缓存第一次调用时的结果, 单测应跑 read_env_flag 而非
         // stage_mode_enabled 来测分支.
         let _ = read_env_flag(); // sanity: 不 panic
+    }
+
+    #[test]
+    fn read_env_profile_defaults_to_assessment_when_unset() {
+        if std::env::var("GOLISH_HARNESS_PROFILE").is_ok() {
+            return;
+        }
+        assert_eq!(read_env_profile(), "assessment");
+    }
+
+    #[test]
+    fn all_selectable_profiles_load_from_registry() {
+        // Startup invariant: every id a user can pick via GOLISH_HARNESS_PROFILE
+        // must resolve in the embedded registry, and the assessment fallback must
+        // always exist.
+        for id in [
+            "assessment",
+            "pentest",
+            "red_team",
+            "bug_bounty",
+            "cloud_assessment",
+        ] {
+            assert!(
+                load_embedded_profile(id).unwrap().is_some(),
+                "selectable profile '{id}' must load from embedded registry"
+            );
+        }
+        // active_profile_id() either resolves directly or the startup falls back
+        // to assessment (proven loadable above).
+        let active = active_profile_id();
+        assert!(
+            load_embedded_profile(active).unwrap().is_some()
+                || load_embedded_profile("assessment").unwrap().is_some()
+        );
     }
 }

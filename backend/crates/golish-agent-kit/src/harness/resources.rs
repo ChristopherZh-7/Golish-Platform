@@ -96,9 +96,15 @@ mod tests {
 
     #[test]
     fn all_five_profiles_load() {
-        for id in ["assessment", "pentest", "red_team", "bug_bounty", "cloud_assessment"] {
-            let p = load_embedded_profile(id)
-                .unwrap_or_else(|e| panic!("load {} failed: {}", id, e));
+        for id in [
+            "assessment",
+            "pentest",
+            "red_team",
+            "bug_bounty",
+            "cloud_assessment",
+        ] {
+            let p =
+                load_embedded_profile(id).unwrap_or_else(|e| panic!("load {} failed: {}", id, e));
             assert!(p.is_some(), "profile {} should load", id);
             assert_eq!(p.unwrap().id, id);
         }

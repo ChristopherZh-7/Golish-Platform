@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
   "version": "0.1.7",
-  "last_updated": "2026-05-30",
+  "last_updated": "2026-06-01",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -31,6 +31,27 @@
       ],
       "evidence": null,
       "notes": "2026-06-01 MCP-agent-1 在 feat/harness-2026-06-01 分支执行。设计草案原作者 MCP-agent-2（草案文件本轮一度从工作树消失，已据会话早期读取内容恢复并补 §11 拍板/§12 校正/§13 执行记录）。re-anchor 工作面比草案估计窄（§12）：harness gate 与数据模型无关，query_target_data 已返回 Surface Workbench 源，仅 evidence_kinds + 覆盖判定需补。改动均未 commit（等 just check 绿 + 用户 E2E 后整批 commit）。"
+    },
+    {
+      "id": "harness-full-impl-2026-06-01",
+      "priority": 0,
+      "area": "backend/crates/golish-agent-kit/src/{harness,task_orchestrator} + golish-agent-runtime/agentic_loop/turn/phases/tool_dispatch.rs + golish-agent-bridge",
+      "title": "Operation Harness 全量运行时接线（Phase A/B/C）：多 stage/多 profile + 通用 gate + 工具面授权 + charter/handoff/approval 闭环",
+      "user_visible_behavior": "GOLISH_HARNESS_STAGE_MODE=true 时 task 模式按 operation harness 跑：GOLISH_HARNESS_PROFILE 选 profile（assessment/pentest/red_team/bug_bounty/cloud_assessment，未知回退 assessment），operation_state 游标从 DAG 入口 scoping 起，按 profile 投影的 DAG 在 gate PASS 后推进；每个 stage 注入 charter（允许/禁止工具面）+ 上游真实 evidence handoff；每个工具调用经 PreActionAuthorizer 按 stage allowed/forbidden + profile 授权上限裁决；gate BLOCK 把 recovery 回灌 reflector 重跑；进入需审批的 stage 时暂停等用户回复，肯定才推进。flag 默认 OFF，旧 task 路径零影响。",
+      "status": "blocked",
+      "blocker": "Phase A/B/C 代码全落地 + 单测 353/353（flag off+on）+ clippy/fmt/下游编译全绿，但：① 活体 E2E 未做（游标真推进/审批真弹窗/BLOCK 真回灌只有编译+单测证据，需 just dev + LLM key 或进程内闭环集成测试）；② §2.1 in_progress 槽位被 arch-crate-per-service-split 占用。待用户做 E2E + 腾槽位后转 passing。",
+      "design": "docs/design/2026-06-01-harness-rebuild.md + docs/design/2026-05-26-operation-harness-profile-dag-lab.md（§21 source of truth）",
+      "plan": "docs/superpowers/plans/2026-06-01-harness-full-impl.md（Phase A 数据 / B 泛化 / C 接线 / D 滞后）",
+      "verification": [
+        "cargo nextest run -p golish-agent-kit --no-fail-fast → 353/353（flag off）",
+        "GOLISH_HARNESS_STAGE_MODE=true cargo nextest run -p golish-agent-kit → 353/353（flag on 路径健康）",
+        "cargo clippy -p golish-agent-kit -p golish-agent-app -- -D warnings → exit 0",
+        "rustfmt --check（harness 模块 + task_orchestrator 改动文件）→ clean",
+        "cargo check -p golish-agent-app -p golish-agent-runtime -p golish-agent-bridge → exit 0",
+        "活体 E2E（用户·需运行时·未做）：GOLISH_HARNESS_STAGE_MODE=true GOLISH_HARNESS_PROFILE=red_team just dev → 多 stage 真连跑 + 审批暂停 + 游标推进 + handoff 注入"
+      ],
+      "evidence": null,
+      "notes": "2026-06-01 MCP-agent-4 在 feat/harness-2026-06-01 收口 Phase C：C1 hook 泛化 / C2 charter / C3 PreActionAuthorizer 接 runtime dispatch（authz 穿透 orchestrator→bridge 侧信道→runtime）/ C4 gate→repair 回灌 / C5 approval hold→wait→resume / C6 真 evidence handoff（harness_evidence store + summarize_deliverable + render_inherited_handoff）。新增 active_profile_id() env 选择器 + startup 校验回退 + 起点改 scoping。修 4 红测试（3 e2e min_invocations fixture + 1 graph 边数断言 13→15，根因 Phase B 泛化回归非旧账）。MVP 边界：C6 handoff 内存级（不跨 resume 持久化）/ C5 复用 user_input 通道无独立审批 UI / profile 选择 env 级无 UI。关键认知：harness 是 task_orchestrator 的 flag 叠加层（5 个 stage_mode_enabled() 全在 task_orchestrator 内），非独立引擎，删 task 逻辑=删 harness。改动 commit 落 feat/harness-2026-06-01，未 push。"
     },
     {
       "id": "chore-remove-zap-module",

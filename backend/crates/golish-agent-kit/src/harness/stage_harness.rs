@@ -48,8 +48,13 @@ impl StageHarness {
 
     /// Phase B · 从嵌入 registry 按 kind 自动载 StageSpec, 免去调用方手动传 spec.
     pub fn for_stage_embedded(stage_kind: StageKind, profile: Profile) -> Result<Self> {
-        let stage_spec = super::resources::load_embedded_stage_spec(stage_kind)
-            .map_err(|e| anyhow!("load embedded stage spec for {:?} failed: {}", stage_kind, e))?;
+        let stage_spec = super::resources::load_embedded_stage_spec(stage_kind).map_err(|e| {
+            anyhow!(
+                "load embedded stage spec for {:?} failed: {}",
+                stage_kind,
+                e
+            )
+        })?;
         Self::for_stage(stage_kind, profile, stage_spec)
     }
 

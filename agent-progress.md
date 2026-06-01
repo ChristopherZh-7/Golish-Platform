@@ -29,6 +29,21 @@
 
 ---
 
+### 2026-06-01 · harness Phase C 收口：C1–C6 闭环 + 多 profile 选择 + 起点 scoping + 修 4 红测试（MCP-agent-4 · DISPATCH off · §5.9 单会话直接执行 · 用户「是不是 harness 全搞定了」审计 →「修红测试」→「补 profile 选择+起点 scoping」→「补 C5 resume/C6 真交接」→「commit+归档」）
+
+- **本轮起点**：用户问「harness 逻辑是不是全部搞定了」。先做**只读审计**（读 2026-06-01 两份计划 full-impl/rebuild + 实际代码），诚实结论：A+B+C 接线基本铺完、编译过、单测大多绿，但有 **4 红测试** + 多处 **MVP 半成品** + **从没活体跑过**。随后用户逐项让我收口。
+- **审计结论（磁盘+行号实证）**：C1（`execute.rs` 读 `exec_ctx.harness_profile_id` 按 kind 载 spec）/ C2（`prompts::stage_charter` + 注入）/ C3（runtime `tool_dispatch.rs:164-215` 调 `PreActionAuthorizer::check_with_max_authz`，authz 穿透 orchestrator→bridge 侧信道 `trait_impl.rs:92`→runtime）/ C4（`pending_gate_correction` + `build_gate_correction`）/ C5（`stage_transition.rs:84` + `drive_stage_transition`）/ C6（`prompts::stage_inherited_evidence`）均已接。
+- **修 4 红测试**：3 个 e2e（happy/sprint_contract/skipped_check）因新 `min_invocations_check` 拦 happy fixture（`external_attack_surface.json` 声明 `min_invocations={dns_resolve,http_probe,subdomain_enum_passive}`，fixture 的 `required_checks_done` 没列）→ 给 `happy_deliverable` 补这 3 个工具名。第 4 个 `operation_graph`：图实有 **15** 边、断言 **13**（DAG 扩边后没同步）→ 改名 `base_graph_has_12_nodes_15_edges` 断言 15。**根因是 Phase B 泛化引入的回归，非「无关旧账」**。
+- **补 profile 选择 + 起点 scoping**：新增 `harness::active_profile_id()`（env `GOLISH_HARNESS_PROFILE`，默认 assessment，LazyLock，同 `stage_mode_enabled` 套路）；`orchestrator.rs` startup 原写死 `insert("assessment", external_attack_surface)` → 改 `load_embedded_profile` 校验选中 profile（未知 id 回退 assessment），起点改 `StageKind::Scoping`（DAG 入口）。效果：pentest/red_team/bug_bounty/cloud_assessment 在运行时可达（之前是死数据）。
+- **C5 resume**：`drive_stage_transition` 改 `&mut self`；命中审批闸 emit `waiting_approval` → **阻塞等 `user_input_rx`** → 肯定回复（`approval_reply_is_affirmative` en+zh）才 `advance_stage`，否则 hold（无交互通道则只 hold 不推进，保留测试行为）。
+- **C6 真交接**：`TaskOrchestrator` 加 `harness_evidence: HashMap<String,String>`；gate PASS 时 `summarize_deliverable()` 生成摘要存库；下游 stage 建 charter 时 `render_inherited_handoff()` 按 `inherits_evidence_from` 查库注入「ACTUAL UPSTREAM RESULTS」（不再只是静态 kind 提示）。
+- **运行过的验证（已记录证据）**：`cargo nextest -p golish-agent-kit --no-fail-fast` → **353/353 passed**（flag off）；同命令带 `GOLISH_HARNESS_STAGE_MODE=true` → **353/353**（flag on 路径健康）；`cargo clippy -p golish-agent-kit -p golish-agent-app -- -D warnings` → exit 0；`rustfmt --check`（harness 模块 + task_orchestrator 改动文件）→ clean；`cargo check -p golish-agent-app -p golish-agent-runtime -p golish-agent-bridge` → exit 0。新增 5 单测（active_profile / read_env_profile / approval_reply / summarize_deliverable / render_inherited_handoff）。顺手 fmt 了 3 个 Phase B 遗留 drift 文件（min_invocations_check/resources/stage_harness，纯排版）。
+- **范围/风险（诚实）**：**未做活体 E2E**（游标真推进 / 审批真弹窗 / BLOCK 真回灌只有编译+单测证据）。MVP 边界：C6 handoff 内存级（不跨进程/resume 持久化，resume 回退静态提示）；C5 approval 复用 `user_input` 通道无独立审批 UI；profile 选择 env 级无 UI/任务元数据。**关键认知**：harness 是 `task_orchestrator` 的 flag 叠加层（5 个 `stage_mode_enabled()` 全在 `task_orchestrator` 内），**非独立引擎，删 task 逻辑=删 harness**。
+- **提交记录**：本轮收口 commit 13 文件（11 code + agent-progress.md + feature_list.json），落 `feat/harness-2026-06-01`，**未 push**（§2.7）。
+- **下一步建议**：① 活体 E2E（`GOLISH_HARNESS_STAGE_MODE=true GOLISH_HARNESS_PROFILE=red_team just dev`）或写进程内闭环集成测试（mock executor + 内存 operation_state repo）；② stage 序列化执行（subtask 真按 DAG 顺序而非 harness_backfill 关键词）；③ Phase D Harness Lab 自反馈线。
+
+---
+
 ### 2026-06-01 · harness 第 2 层 Operation DAG 引擎 + gate 驱动 stage 流转 + operation_state 游标接线（方案 A：Task=operation）（MCP-agent-1 · DISPATCH off · §5.9 单会话直接执行 · 用户「深挖 DAG 流转引擎」→「写第2层引擎」→「接真 DB 游标」）
 
 - **本轮目标**：把 harness 的"中间断层"——第 2 层 Operation DAG 流转引擎——从"只有 JSON 数据、无运行时消费者"补成真引擎，并按用户选的方案 A（一个 Task = 一个 operation）接通 `operation_state` DB 游标，让 gate 过后游标真正推进。

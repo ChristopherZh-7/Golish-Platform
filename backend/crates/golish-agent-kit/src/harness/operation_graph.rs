@@ -249,10 +249,12 @@ mod tests {
     }
 
     #[test]
-    fn base_graph_has_12_nodes_13_edges() {
+    fn base_graph_has_12_nodes_15_edges() {
         let g = base();
         assert_eq!(g.nodes.len(), 12);
-        assert_eq!(g.edges.len(), 13);
+        // 11 linear stage-flow edges + 4 bail-to-reporting shortcuts
+        // (external_attack_surface / enumeration / vuln_triage / verification).
+        assert_eq!(g.edges.len(), 15);
     }
 
     #[test]

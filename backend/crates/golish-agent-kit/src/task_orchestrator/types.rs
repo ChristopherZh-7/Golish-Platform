@@ -142,6 +142,11 @@ pub struct ExecutionContext {
     /// can run the full pre-action authorizer (allowed_tools confinement + intent
     /// vs ceiling) on real executor tools. `None` = no stage / flag off.
     pub harness_authz: Option<crate::harness::HarnessAuthz>,
+    /// C1 · the operation's profile id (from `operation_state.profile`, e.g.
+    /// "assessment" / "pentest"). Threaded so the gate hook constructs the
+    /// `StageHarness` with the real profile instead of a hardcoded placeholder.
+    /// `None` = flag off / no operation_state row (hook falls back to "assessment").
+    pub harness_profile_id: Option<String>,
 }
 
 /// Info about a subtask being currently executed.

@@ -27,7 +27,11 @@ pub fn run(deliverable: &StageDeliverable, spec: &StageSpec) -> GateCheckOutcome
     } else {
         let reasons = missing
             .iter()
-            .map(|t| format!("min tool invocations not satisfied for '{t}' (not in required_checks_done)"))
+            .map(|t| {
+                format!(
+                    "min tool invocations not satisfied for '{t}' (not in required_checks_done)"
+                )
+            })
             .collect();
         GateCheckOutcome::Block {
             reasons,
@@ -63,7 +67,10 @@ mod tests {
     fn passes_when_no_min_invocations_required() {
         let mut spec = load_embedded_stage_spec(StageKind::Reporting).unwrap();
         spec.min_invocations = HashMap::new();
-        assert!(matches!(run(&deliverable(vec![]), &spec), GateCheckOutcome::Pass));
+        assert!(matches!(
+            run(&deliverable(vec![]), &spec),
+            GateCheckOutcome::Pass
+        ));
     }
 
     #[test]

@@ -63,9 +63,14 @@ fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
         evidence_refs: vec![dns_eid, http_eid, ct_eid],
         skipped_checks: vec![],
         findings: vec![],
+        // external_attack_surface.json declares min_invocations for these recon
+        // tools; a compliant deliverable records having run each at least once.
         required_checks_done: vec![
             "scope_status_present".to_string(),
             "evidence_non_empty".to_string(),
+            "dns_resolve".to_string(),
+            "subdomain_enum_passive".to_string(),
+            "http_probe".to_string(),
         ],
     };
     // 1 subdomain + 1 http_service (覆盖 sprint_skeleton 的两类 expected_findings)
