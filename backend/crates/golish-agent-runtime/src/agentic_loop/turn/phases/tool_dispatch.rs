@@ -42,7 +42,7 @@ pub async fn run<M>(
     let mut gated_tool_calls = Vec::new();
     let mut gate_rejected = Vec::new();
     for tc in tool_calls_to_execute {
-        let decision = gate_tool_call_for_dispatch(&tc);
+        let decision = gate_tool_call_for_dispatch(&tc, ctx.harness_stage, ctx.harness_authz);
         emit_tool_intent_observation(ctx, &tc, &decision);
         match decision {
             ToolGateDecision::Allow => gated_tool_calls.push(tc),
@@ -161,7 +161,59 @@ fn emit_tool_denied_event(
     capture_ctx.process(&event);
 }
 
-fn gate_tool_call_for_dispatch(tool_call: &ToolCall) -> ToolGateDecision {
+fn gate_tool_call_for_dispatch(
+    tool_call: &ToolCall,
+    harness_stage: Option<golish_agent_kit::harness::StageKind>,
+    harness_authz: Option<golish_agent_kit::harness::HarnessAuthz>,
+) -> ToolGateDecision {
+    // C3 · harness stage per-tool dispatch authorization (when a stage is active).
+    //
+    // Two regimes, by tool kind:
+    //   * Orchestration delegation tools (`sub_agent_*`): forbidden-tool barrier
+    //     ONLY. The Task-mode primary delegates via these and they are never in a
+    //     stage's allowed_tools, so allowed-tools confinement would break
+    //     orchestration. Forbidden rejection is safe (orchestration tools are
+    //     never forbidden) and deterministic.
+    //   * Real executor tools: the FULL pre-action authorizer
+    //     (`PreActionAuthorizer::check_with_max_authz`) — forbidden + allowed_tools
+    //     confinement + intent-vs-profile-ceiling — using the threaded
+    //     `harness_authz`. Falls back to forbidden-only when no authz context is
+    //     present (defensive; should not happen once a stage is set).
+    //
+    // `harness_stage == None` (stage_mode flag off / non-stage turn) skips the
+    // whole block, leaving legacy behaviour untouched.
+    if let Some(kind) = harness_stage {
+        if let Ok(spec) = golish_agent_kit::harness::load_embedded_stage_spec(kind) {
+            let name = tool_call.function.name.as_str();
+            let is_orchestration = name.starts_with("sub_agent_");
+            let forbidden = spec.forbidden_tools.iter().any(|t| t == name);
+            if is_orchestration {
+                if forbidden {
+                    return ToolGateDecision::Reject {
+                        reason: forbidden_reason(name, &spec.id),
+                    };
+                }
+            } else if let Some(authz) = harness_authz {
+                if let Err(err) =
+                    golish_agent_kit::harness::PreActionAuthorizer::check_with_max_authz(
+                        name,
+                        &spec,
+                        authz.max_authorization,
+                        authz.intent,
+                    )
+                {
+                    return ToolGateDecision::Reject {
+                        reason: err.to_string(),
+                    };
+                }
+            } else if forbidden {
+                return ToolGateDecision::Reject {
+                    reason: forbidden_reason(name, &spec.id),
+                };
+            }
+        }
+    }
+
     let source = infer_tool_intent_source(tool_call);
     let intent = if source == ToolIntentSource::NativeToolCall {
         ToolIntent::from_native(tool_call.clone())
@@ -218,6 +270,13 @@ fn emit_tool_intent_observation(
     });
 }
 
+fn forbidden_reason(tool: &str, stage_id: &str) -> String {
+    format!(
+        "tool '{}' is forbidden in harness stage '{}'",
+        tool, stage_id
+    )
+}
+
 fn truncate_for_log(value: &str) -> String {
     const MAX: usize = 160;
     if value.chars().count() <= MAX {
@@ -255,7 +314,7 @@ mod tests {
     #[test]
     fn textual_ask_human_is_classified_as_human_barrier() {
         let call = make_tool_call("textual-tool-call-1-0", "ask_human");
-        let decision = gate_tool_call_for_dispatch(&call);
+        let decision = gate_tool_call_for_dispatch(&call, None, None);
         assert!(matches!(
             decision,
             ToolGateDecision::RequireHumanAnswer { .. }
@@ -265,7 +324,87 @@ mod tests {
     #[test]
     fn native_tool_call_passes_gate() {
         let call = make_tool_call("tc-1", "read_file");
-        let decision = gate_tool_call_for_dispatch(&call);
+        let decision = gate_tool_call_for_dispatch(&call, None, None);
+        assert_eq!(decision, ToolGateDecision::Allow);
+    }
+
+    #[test]
+    fn harness_stage_rejects_forbidden_tool() {
+        use golish_agent_kit::harness::StageKind;
+        // external_attack_surface forbids metasploit/sqlmap/exploit_validation.
+        let call = make_tool_call("tc-9", "metasploit");
+        let decision =
+            gate_tool_call_for_dispatch(&call, Some(StageKind::ExternalAttackSurface), None);
+        assert!(matches!(decision, ToolGateDecision::Reject { .. }));
+    }
+
+    #[test]
+    fn harness_stage_allows_non_forbidden_tool() {
+        use golish_agent_kit::harness::StageKind;
+        // sub_agent_* / orchestration tools are not forbidden → pass barrier.
+        let call = make_tool_call("tc-10", "sub_agent_pentester");
+        let decision =
+            gate_tool_call_for_dispatch(&call, Some(StageKind::ExternalAttackSurface), None);
+        assert_eq!(decision, ToolGateDecision::Allow);
+    }
+
+    #[test]
+    fn harness_authz_rejects_real_tool_not_in_allowed_set() {
+        use golish_agent_kit::harness::{AuthorizationLevel, HarnessAuthz, IntentAxis, StageKind};
+        // A real (non-orchestration) tool that is NOT in the stage's allowed_tools
+        // must be rejected once an authz context is present (full confinement).
+        let call = make_tool_call("tc-11", "definitely_not_a_stage_tool");
+        let authz = HarnessAuthz {
+            max_authorization: AuthorizationLevel::ActiveRecon,
+            intent: IntentAxis::PassiveObserve,
+        };
+        let decision =
+            gate_tool_call_for_dispatch(&call, Some(StageKind::ExternalAttackSurface), Some(authz));
+        assert!(matches!(decision, ToolGateDecision::Reject { .. }));
+    }
+
+    #[test]
+    fn harness_authz_allows_real_tool_in_allowed_set_within_ceiling() {
+        use golish_agent_kit::harness::{AuthorizationLevel, HarnessAuthz, IntentAxis, StageKind};
+        // dns_resolve is in external_attack_surface allowed_tools; PassiveObserve
+        // intent is within the assessment ceiling (ActiveRecon) → Allow.
+        let call = make_tool_call("tc-12", "dns_resolve");
+        let authz = HarnessAuthz {
+            max_authorization: AuthorizationLevel::ActiveRecon,
+            intent: IntentAxis::PassiveObserve,
+        };
+        let decision =
+            gate_tool_call_for_dispatch(&call, Some(StageKind::ExternalAttackSurface), Some(authz));
+        assert_eq!(decision, ToolGateDecision::Allow);
+    }
+
+    #[test]
+    fn harness_authz_rejects_intent_above_ceiling() {
+        use golish_agent_kit::harness::{AuthorizationLevel, HarnessAuthz, IntentAxis, StageKind};
+        // dns_resolve is allowed, but ExploitValidation intent exceeds the
+        // assessment ceiling (ActiveRecon) → reject on authorization.
+        let call = make_tool_call("tc-13", "dns_resolve");
+        let authz = HarnessAuthz {
+            max_authorization: AuthorizationLevel::ActiveRecon,
+            intent: IntentAxis::ExploitValidation,
+        };
+        let decision =
+            gate_tool_call_for_dispatch(&call, Some(StageKind::ExternalAttackSurface), Some(authz));
+        assert!(matches!(decision, ToolGateDecision::Reject { .. }));
+    }
+
+    #[test]
+    fn harness_authz_exempts_orchestration_from_allowed_confinement() {
+        use golish_agent_kit::harness::{AuthorizationLevel, HarnessAuthz, IntentAxis, StageKind};
+        // sub_agent_* is not in allowed_tools, but orchestration delegation is
+        // exempt from confinement even when an authz context is present.
+        let call = make_tool_call("tc-14", "sub_agent_pentester");
+        let authz = HarnessAuthz {
+            max_authorization: AuthorizationLevel::ActiveRecon,
+            intent: IntentAxis::PassiveObserve,
+        };
+        let decision =
+            gate_tool_call_for_dispatch(&call, Some(StageKind::ExternalAttackSurface), Some(authz));
         assert_eq!(decision, ToolGateDecision::Allow);
     }
 

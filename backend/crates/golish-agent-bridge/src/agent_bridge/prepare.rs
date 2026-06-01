@@ -306,6 +306,11 @@ impl AgentBridge {
             post_shell_hook: self.post_shell_hook.clone(),
             output_classifier: self.output_classifier.clone(),
             web_fetcher: self.web_fetcher.clone(),
+            // C3 · forward the active harness stage + authorization context (set
+            // per-subtask by the Task-mode executor) into the loop so the tool
+            // gate can enforce the stage barrier and full pre-action authorizer.
+            harness_stage: *self.harness_active_stage.read().await,
+            harness_authz: *self.harness_active_authz.read().await,
         }
     }
 

@@ -44,7 +44,28 @@ impl TaskOrchestrator {
             task_input,
             current_subtask: None,
             planned_subtasks: Vec::new(),
+            harness_stage: None,
+            harness_authz: None,
         };
+
+        // C3 · resolve the operation's authorization ceiling once (stage_mode
+        // only). `operation_id == task_id`; read the real profile from
+        // `operation_state` so per-tool dispatch can reject intents above the
+        // profile's `max_authorization`. `None` → gate degrades to forbidden-only.
+        let op_max_authz: Option<crate::harness::AuthorizationLevel> =
+            if crate::harness::stage_mode_enabled() {
+                match crate::db_shim::operation_state::get(&*self.repo, task_id).await {
+                    Ok(Some(state)) => {
+                        match crate::harness::load_embedded_profile(&state.profile) {
+                            Ok(Some(p)) => Some(p.max_authorization),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
 
         if start_index > 0 {
             let db_subtasks = subtasks::list_by_task(&*self.repo, task_id).await?;
@@ -115,6 +136,29 @@ impl TaskOrchestrator {
                 description: planned.description.clone(),
                 agent: planned.agent.clone(),
             });
+            // C3 · thread this subtask's harness stage (stage_mode on only) so the
+            // bridge/agentic loop can enforce the stage forbidden-tool barrier.
+            exec_ctx.harness_stage = if crate::harness::stage_mode_enabled() {
+                planned.harness_stage.as_ref().map(|h| h.stage_kind)
+            } else {
+                None
+            };
+            // C3 · bundle the authorization context: classify this subtask's
+            // intent (deterministic keyword classifier over its description) and
+            // pair it with the operation ceiling. Only set when a stage is active
+            // and the ceiling resolved → per-tool dispatch runs the full
+            // pre-action authorizer on real executor tools.
+            exec_ctx.harness_authz = match (exec_ctx.harness_stage, op_max_authz) {
+                (Some(stage_kind), Some(max_authorization)) => {
+                    let intent = crate::harness::IntentClassifier::with_default_keywords()
+                        .classify(&planned.description, stage_kind);
+                    Some(crate::harness::HarnessAuthz {
+                        max_authorization,
+                        intent,
+                    })
+                }
+                _ => None,
+            };
             exec_ctx.planned_subtasks = queue[subtask_index + 1..]
                 .iter()
                 .map(|p| PlannedSubtaskInfo {

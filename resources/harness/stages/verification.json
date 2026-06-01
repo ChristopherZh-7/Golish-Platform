@@ -1,0 +1,51 @@
+{
+  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$comment": "Stage spec: verification. L4 controlled exploit validation. Approval-gated. Phase A.",
+
+  "id": "verification",
+  "kind": "verification",
+  "risk_level": "critical",
+
+  "requires_stages": ["vuln_triage"],
+  "allowed_next_stages": ["access_validation", "reporting"],
+
+  "allowed_tools": [
+    "query_target_data",
+    "exploit_validation",
+    "log_operation",
+    "log_scan_result",
+    "submit_stage_deliverable"
+  ],
+
+  "forbidden_tools": [
+    "credential_attack",
+    "destructive_action",
+    "persistence"
+  ],
+
+  "deliverable_schema": "StageDeliverable",
+  "gate_validator": "validate_stage_gate",
+
+  "required_checks": [
+    "scope_status_present",
+    "evidence_non_empty",
+    "out_of_scope_targets_excluded"
+  ],
+
+  "min_invocations": {},
+
+  "max_other_skips": 1,
+
+  "human_approval": {
+    "required_before": ["exploit_validation"]
+  },
+
+  "agent_continuity": "single_session",
+
+  "inherits_evidence_from": [
+    {
+      "stage_kind": "vuln_triage",
+      "evidence_kinds": ["vuln_finding"]
+    }
+  ]
+}

@@ -40,6 +40,7 @@ pub mod nl_slice;
 pub mod operation_graph;
 pub mod pre_action_authorizer;
 pub mod profile;
+pub mod resources;
 pub mod sprint_contract;
 pub mod stage_harness;
 pub mod stage_spec;
@@ -50,16 +51,21 @@ pub mod types;
 #[cfg(test)]
 mod e2e_tests;
 
-pub use gate::{validate_external_attack_surface_gate, GateCheckOutcome, GateResult};
+pub use gate::{
+    validate_external_attack_surface_gate, validate_stage_gate, GateCheckOutcome, GateResult,
+};
 pub use intent_classifier::{IntentClassifier, IntentClassifierConfig};
 pub use nl_slice::NlSlice;
 pub use operation_graph::{
     base_operation_graph, load_operation_graph_from_json, AllowedDag, OperationGraph,
     OperationGraphError, StageEdge,
 };
-pub use pre_action_authorizer::{AuthorizationError, PreActionAuthorizer};
+pub use pre_action_authorizer::{AuthorizationError, HarnessAuthz, PreActionAuthorizer};
 pub use profile::{
     load_profile_from_json, ApprovalPolicy, AuthorizationLevel, Profile, ProfileLoadError,
+};
+pub use resources::{
+    load_embedded_profile, load_embedded_stage_spec, profile_json, stage_spec_json,
 };
 pub use sprint_contract::{
     DefaultSprintContractGenerator, ExpectedFinding, SprintContract, SprintContractGenerator,
@@ -70,7 +76,9 @@ pub use stage_spec::{
     load_stage_spec_from_json, HumanApprovalPolicy, InheritsEvidenceFrom, StageSpec,
     StageSpecLoadError,
 };
-pub use stage_transition::{decide_from_gate, decide_transition, TransitionDecision};
+pub use stage_transition::{
+    decide_from_gate, decide_transition, stage_entry_requires_approval, TransitionDecision,
+};
 pub use surface_mapping::{
     missing_required_categories, SurfaceCategory, SurfaceCoverage, D2_REQUIRED_CATEGORIES,
     D2_SOFT_CATEGORIES,
@@ -78,7 +86,7 @@ pub use surface_mapping::{
 pub use types::{
     AgentContinuity, ExternalAttackSurfaceDeliverable, FindingSeverity, HarnessFinding,
     HarnessRecoveryActions, HarnessStageHint, IntentAxis, RiskLevel, SkippedCheckRecord,
-    StageClaim, StageKind,
+    StageClaim, StageDeliverable, StageKind,
 };
 
 /// Feature flag: 启用 stage_mode 路径.

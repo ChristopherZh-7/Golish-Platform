@@ -133,6 +133,15 @@ pub struct ExecutionContext {
     pub current_subtask: Option<CurrentSubtask>,
     /// Remaining planned subtasks (after the current one).
     pub planned_subtasks: Vec<PlannedSubtaskInfo>,
+    /// C3 · harness stage of the current subtask (when stage_mode on). Threaded
+    /// to the bridge → agentic loop so per-tool dispatch can enforce the stage's
+    /// forbidden-tool barrier. `None` = no stage / flag off.
+    pub harness_stage: Option<crate::harness::StageKind>,
+    /// C3 · authorization context (profile ceiling + classified intent) for the
+    /// current subtask. Threaded alongside `harness_stage` so per-tool dispatch
+    /// can run the full pre-action authorizer (allowed_tools confinement + intent
+    /// vs ceiling) on real executor tools. `None` = no stage / flag off.
+    pub harness_authz: Option<crate::harness::HarnessAuthz>,
 }
 
 /// Info about a subtask being currently executed.

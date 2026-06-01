@@ -183,6 +183,8 @@ where
         post_shell_hook: None,
         output_classifier: None,
         web_fetcher: None,
+        harness_stage: None,
+        harness_authz: None,
     };
 
     let capabilities = ModelCapabilities::detect(&config.provider_name, &config.model_name);
@@ -414,6 +416,8 @@ where
         post_shell_hook: None,
         output_classifier: None,
         web_fetcher: None,
+        harness_stage: None,
+        harness_authz: None,
     };
 
     // Detect capabilities from provider/model

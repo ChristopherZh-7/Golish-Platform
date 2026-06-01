@@ -334,6 +334,8 @@ impl TestContext {
             post_shell_hook: None,
             output_classifier: None,
             web_fetcher: None,
+            harness_stage: None,
+            harness_authz: None,
         }
     }
 

@@ -169,6 +169,16 @@ pub struct AgenticLoopContext<'a> {
     pub output_classifier: Option<OutputClassifier>,
     /// Web fetch provider (injected by the host crate).
     pub web_fetcher: Option<Arc<dyn golish_core::WebFetchProvider>>,
+
+    /// C3 · active harness stage for per-tool dispatch authz (forbidden-tool
+    /// barrier). Set by the host bridge when running a harness-staged subtask;
+    /// `None` = no enforcement (flag off / non-stage turn).
+    pub harness_stage: Option<golish_agent_kit::harness::StageKind>,
+    /// C3 · authorization context (profile ceiling + classified intent) for the
+    /// active subtask. Threaded alongside `harness_stage`; lets per-tool dispatch
+    /// run the full pre-action authorizer (allowed_tools confinement + intent vs
+    /// ceiling) on real executor tools. `None` = no stage (flag off / non-stage).
+    pub harness_authz: Option<golish_agent_kit::harness::HarnessAuthz>,
 }
 
 /// Check cancellation flag; returns true when the user has requested a stop.

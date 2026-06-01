@@ -5,11 +5,11 @@
 
 use anyhow::{anyhow, Result};
 
-use super::gate::{validate_external_attack_surface_gate, GateResult};
+use super::gate::{validate_stage_gate, GateResult};
 use super::profile::Profile;
 use super::sprint_contract::SprintContract;
 use super::stage_spec::StageSpec;
-use super::types::{ExternalAttackSurfaceDeliverable, StageKind};
+use super::types::{StageDeliverable, StageKind};
 
 /// Doc 3 §5 stage harness 顶层.
 ///
@@ -28,21 +28,14 @@ impl StageHarness {
         }
     }
 
-    /// 按 StageKind 选 stage_spec.
+    /// 按 StageKind 构造 (Phase B: 解锁单 stage 硬锁, 支持全 12 stage).
     ///
-    /// Phase 1c.2 skeleton 仅支持 `ExternalAttackSurface`; 其它 stage 返 Err.
-    /// 实际加载在 Task 1c.6 阶段做 (from disk · resources/harness/...).
+    /// 唯一约束: `stage_spec.kind` 必须等于请求的 `stage_kind` (防止张冠李戴).
     pub fn for_stage(
         stage_kind: StageKind,
         profile: Profile,
         stage_spec: StageSpec,
     ) -> Result<Self> {
-        if stage_kind != StageKind::ExternalAttackSurface {
-            return Err(anyhow!(
-                "StageHarness Phase 1 MVP supports only ExternalAttackSurface, got {:?}",
-                stage_kind
-            ));
-        }
         if stage_spec.kind != stage_kind {
             return Err(anyhow!(
                 "StageSpec.kind ({:?}) does not match requested stage_kind ({:?})",
@@ -53,13 +46,20 @@ impl StageHarness {
         Ok(Self::new(profile, stage_spec))
     }
 
+    /// Phase B · 从嵌入 registry 按 kind 自动载 StageSpec, 免去调用方手动传 spec.
+    pub fn for_stage_embedded(stage_kind: StageKind, profile: Profile) -> Result<Self> {
+        let stage_spec = super::resources::load_embedded_stage_spec(stage_kind)
+            .map_err(|e| anyhow!("load embedded stage spec for {:?} failed: {}", stage_kind, e))?;
+        Self::for_stage(stage_kind, profile, stage_spec)
+    }
+
     /// 验证 deliverable 是否通过 gate.
     ///
-    /// Task 1c.5 实施各 check 后, 本方法返回真实 allowed / reasons / recovery.
-    /// Phase 1c.2 skeleton 直接调用 `validate_external_attack_surface_gate`.
+    /// 调用通用 `validate_stage_gate` (按 self.stage_spec 的 required_checks 选 check),
+    /// 返回 allowed / reasons / recovery.
     pub fn validate_gate(
         &self,
-        deliverable: &ExternalAttackSurfaceDeliverable,
+        deliverable: &StageDeliverable,
         sprint_contract: Option<&SprintContract>,
     ) -> GateResult {
         tracing::info!(
@@ -68,10 +68,9 @@ impl StageHarness {
             stage_id = %deliverable.stage_id,
             stage_run_id = %deliverable.stage_run_id,
             has_contract = sprint_contract.is_some(),
-            "validate_gate entered (5-check pipeline)"
+            "validate_gate entered (generic stage gate)"
         );
-        let result =
-            validate_external_attack_surface_gate(deliverable, &self.stage_spec, sprint_contract);
+        let result = validate_stage_gate(deliverable, &self.stage_spec, sprint_contract);
         tracing::info!(
             target: "harness::stage_harness",
             stage_id = %deliverable.stage_id,
@@ -104,11 +103,31 @@ mod tests {
     }
 
     #[test]
-    fn for_stage_rejects_unsupported_stage_in_phase1() {
+    fn for_stage_rejects_kind_mismatch_enumeration() {
+        // 用 external_attack_surface spec 但请求 Enumeration → kind 不匹配 → Err.
         let p = load_profile_from_json(ASSESSMENT_JSON).unwrap();
         let s = load_stage_spec_from_json(STAGE_JSON).unwrap();
         let h = StageHarness::for_stage(StageKind::Enumeration, p, s);
         assert!(h.is_err());
+    }
+
+    #[test]
+    fn for_stage_embedded_loads_non_external_stages() {
+        // Phase B: 单 stage 硬锁已解, for_stage_embedded 能载任意 stage.
+        let p = load_profile_from_json(ASSESSMENT_JSON).unwrap();
+        for kind in [
+            StageKind::Scoping,
+            StageKind::TargetIntel,
+            StageKind::Enumeration,
+            StageKind::VulnTriage,
+            StageKind::Reporting,
+        ] {
+            assert!(
+                StageHarness::for_stage_embedded(kind, p.clone()).is_ok(),
+                "for_stage_embedded should load {:?}",
+                kind
+            );
+        }
     }
 
     #[test]

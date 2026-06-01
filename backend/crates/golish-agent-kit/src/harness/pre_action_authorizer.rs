@@ -23,6 +23,20 @@ pub enum AuthorizationError {
     },
 }
 
+/// C3 · authorization context threaded to per-tool dispatch.
+///
+/// Bundles the operation's authorization ceiling (`profile.max_authorization`,
+/// constant per operation) with the current subtask's classified [`IntentAxis`]
+/// (per subtask). Carried in the agentic loop context so per-tool dispatch can
+/// run [`PreActionAuthorizer::check_with_max_authz`] without re-loading the
+/// profile JSON on every tool call. `Copy` so it threads cheaply through the
+/// bridge side-channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HarnessAuthz {
+    pub max_authorization: AuthorizationLevel,
+    pub intent: IntentAxis,
+}
+
 pub struct PreActionAuthorizer;
 
 impl PreActionAuthorizer {
@@ -31,6 +45,19 @@ impl PreActionAuthorizer {
         tool: &str,
         spec: &StageSpec,
         profile: &Profile,
+        intent: IntentAxis,
+    ) -> Result<(), AuthorizationError> {
+        Self::check_with_max_authz(tool, spec, profile.max_authorization, intent)
+    }
+
+    /// Same as [`check`](Self::check) but takes the authorization ceiling
+    /// directly instead of a full [`Profile`]. Used by per-tool dispatch, which
+    /// threads [`HarnessAuthz`] (a `Copy` ceiling+intent bundle) rather than
+    /// re-loading the profile JSON on every call.
+    pub fn check_with_max_authz(
+        tool: &str,
+        spec: &StageSpec,
+        max_authorization: AuthorizationLevel,
         intent: IntentAxis,
     ) -> Result<(), AuthorizationError> {
         if spec.forbidden_tools.iter().any(|t| t == tool) {
@@ -49,10 +76,10 @@ impl PreActionAuthorizer {
             IntentAxis::VulnValidation => AuthorizationLevel::VulnValidation,
             IntentAxis::ExploitValidation => AuthorizationLevel::ControlledExploit,
         };
-        if required_level.rank() > profile.max_authorization.rank() {
+        if required_level.rank() > max_authorization.rank() {
             return Err(AuthorizationError::IntentExceedsAuthorization {
                 intent,
-                max: profile.max_authorization,
+                max: max_authorization,
             });
         }
         Ok(())
@@ -119,5 +146,24 @@ mod tests {
         let (p, s) = fixtures();
         let r = PreActionAuthorizer::check("dns_resolve", &s, &p, IntentAxis::PassiveObserve);
         assert!(r.is_ok());
+    }
+
+    #[test]
+    fn check_with_max_authz_matches_check() {
+        // The lean entry (ceiling-only) used by per-tool dispatch must produce
+        // identical decisions to the full-`Profile` `check`.
+        let (p, s) = fixtures();
+        for (tool, intent) in [
+            ("dns_resolve", IntentAxis::ActiveProbe),
+            ("metasploit", IntentAxis::ExploitValidation),
+            ("random_tool_not_listed", IntentAxis::PassiveObserve),
+            ("dns_resolve", IntentAxis::ExploitValidation),
+            ("dns_resolve", IntentAxis::PassiveObserve),
+        ] {
+            let full = PreActionAuthorizer::check(tool, &s, &p, intent);
+            let lean =
+                PreActionAuthorizer::check_with_max_authz(tool, &s, p.max_authorization, intent);
+            assert_eq!(full, lean, "mismatch for tool={tool} intent={intent:?}");
+        }
     }
 }

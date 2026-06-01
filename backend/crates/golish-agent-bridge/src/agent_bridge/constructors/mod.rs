@@ -383,6 +383,8 @@ impl AgentBridge {
             skill_cache: Arc::new(RwLock::new(Vec::new())),
             mcp_tool_definitions: Arc::new(RwLock::new(Vec::new())),
             mcp_tool_executor: Arc::new(RwLock::new(None)),
+            harness_active_stage: Arc::new(RwLock::new(None)),
+            harness_active_authz: Arc::new(RwLock::new(None)),
         }
     }
 }

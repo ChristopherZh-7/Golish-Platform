@@ -1,0 +1,58 @@
+{
+  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$comment": "Stage spec: target_intel. Passive intel collection (DNS / ASN / whois / CT). L1 passive_intel. Phase A.",
+
+  "id": "target_intel",
+  "kind": "target_intel",
+  "risk_level": "low",
+
+  "requires_stages": ["scoping"],
+  "allowed_next_stages": ["external_attack_surface"],
+
+  "allowed_tools": [
+    "query_target_data",
+    "dns_resolve",
+    "subdomain_enum_passive",
+    "shodan_query",
+    "log_operation",
+    "log_scan_result",
+    "submit_stage_deliverable"
+  ],
+
+  "forbidden_tools": [
+    "http_probe",
+    "metasploit",
+    "sqlmap",
+    "credential_attack",
+    "destructive_action",
+    "exploit_validation"
+  ],
+
+  "deliverable_schema": "StageDeliverable",
+  "gate_validator": "validate_stage_gate",
+
+  "required_checks": [
+    "scope_status_present",
+    "evidence_non_empty",
+    "out_of_scope_targets_excluded"
+  ],
+
+  "min_invocations": {
+    "dns_resolve": 1
+  },
+
+  "max_other_skips": 2,
+
+  "human_approval": {
+    "required_before": ["active_scan"]
+  },
+
+  "agent_continuity": "single_session",
+
+  "inherits_evidence_from": [
+    {
+      "stage_kind": "scoping",
+      "evidence_kinds": ["scope_rule"]
+    }
+  ]
+}

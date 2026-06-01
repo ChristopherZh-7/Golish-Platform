@@ -10,6 +10,8 @@
 
 use super::gate::GateResult;
 use super::operation_graph::AllowedDag;
+use super::profile::Profile;
+use super::stage_spec::StageSpec;
 use super::types::StageKind;
 
 /// 一次 stage gate 结束后的流转决定.
@@ -71,6 +73,26 @@ pub fn decide_from_gate(
     dag: &AllowedDag,
 ) -> TransitionDecision {
     decide_transition(current, gate.allowed, dag)
+}
+
+/// C5 · 进入 `next_spec` 这个 stage 前是否需人工批准.
+///
+/// `decide_transition` 保持纯拓扑 (不判审批); 本函数是 transition 之外的独立判定:
+/// 当 **下一 stage 声明了 `human_approval.required_before`** (有需审批动作) **且**
+/// **profile 的 `approval_policy` 打开** (before_active_scan / before_scope_expansion
+/// 任一为真) 时返回 true. 调用方据此在推进游标前 hold 并请求人工点头.
+pub fn stage_entry_requires_approval(next_spec: &StageSpec, profile: &Profile) -> bool {
+    let stage_wants_approval = next_spec
+        .human_approval
+        .as_ref()
+        .map(|h| !h.required_before.is_empty())
+        .unwrap_or(false);
+    let policy_on = profile
+        .approval_policy
+        .as_ref()
+        .map(|p| p.before_active_scan || p.before_scope_expansion)
+        .unwrap_or(false);
+    stage_wants_approval && policy_on
 }
 
 #[cfg(test)]
@@ -190,5 +212,17 @@ mod tests {
             decide_from_gate(StageKind::Scoping, &blocked, &dag),
             TransitionDecision::Hold
         );
+    }
+
+    #[test]
+    fn stage_entry_requires_approval_when_stage_and_policy_both_on() {
+        use crate::harness::resources::{load_embedded_profile, load_embedded_stage_spec};
+        let profile = load_embedded_profile("pentest").unwrap().unwrap();
+        // verification: human_approval.required_before = [exploit_validation]; pentest policy on.
+        let verification = load_embedded_stage_spec(StageKind::Verification).unwrap();
+        assert!(stage_entry_requires_approval(&verification, &profile));
+        // reporting: empty required_before → no approval needed.
+        let reporting = load_embedded_stage_spec(StageKind::Reporting).unwrap();
+        assert!(!stage_entry_requires_approval(&reporting, &profile));
     }
 }

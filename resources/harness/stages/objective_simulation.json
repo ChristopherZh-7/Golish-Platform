@@ -1,0 +1,48 @@
+{
+  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$comment": "Stage spec: objective_simulation. L5 red-team objective simulation (no real damage). Approval-gated. Phase A.",
+
+  "id": "objective_simulation",
+  "kind": "objective_simulation",
+  "risk_level": "critical",
+
+  "requires_stages": ["objective_pathing"],
+  "allowed_next_stages": ["cleanup"],
+
+  "allowed_tools": [
+    "query_target_data",
+    "log_operation",
+    "log_scan_result",
+    "submit_stage_deliverable"
+  ],
+
+  "forbidden_tools": [
+    "destructive_action"
+  ],
+
+  "deliverable_schema": "StageDeliverable",
+  "gate_validator": "validate_stage_gate",
+
+  "required_checks": [
+    "scope_status_present",
+    "evidence_non_empty",
+    "out_of_scope_targets_excluded"
+  ],
+
+  "min_invocations": {},
+
+  "max_other_skips": 1,
+
+  "human_approval": {
+    "required_before": ["post_exploit", "exploit_validation"]
+  },
+
+  "agent_continuity": "multi_session_relay",
+
+  "inherits_evidence_from": [
+    {
+      "stage_kind": "objective_pathing",
+      "evidence_kinds": ["attack_path"]
+    }
+  ]
+}

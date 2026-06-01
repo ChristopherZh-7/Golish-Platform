@@ -9,17 +9,20 @@
 
 pub mod contract_check;
 pub mod freshness_check;
+pub mod min_invocations_check;
 pub mod schema_check;
 pub mod scope_check;
 pub mod surface_coverage_check;
 pub mod vacuous_check;
+
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::sprint_contract::SprintContract;
 use super::stage_spec::StageSpec;
-use super::types::{ExternalAttackSurfaceDeliverable, HarnessRecoveryActions};
+use super::types::{HarnessRecoveryActions, StageDeliverable};
 
 /// 单个 check 的结果 (gate/mod 聚合用).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,25 +79,56 @@ impl GateResult {
     }
 }
 
-/// Doc 3 §8.1 调用链 · Phase 1c.2 skeleton 顺序聚合 5 check.
+/// Doc 3 §8.1 通用 gate 入口 (Phase B) · 按 StageSpec 跑结构性 check + spec
+/// 选择的语义 check, 适用任意 stage.
 ///
-/// Task 1c.5 各 check 内部实施真实逻辑.
-pub fn validate_external_attack_surface_gate(
-    deliverable: &ExternalAttackSurfaceDeliverable,
+/// **结构性 check** (schema / contract / vacuous / freshness) 永远跑: 与 stage
+/// 语义无关, 只看 deliverable 形状 / 契约 / 时效.
+///
+/// **语义 check** (scope / surface_coverage / min_invocations) 由
+/// `spec.required_checks` 命名选跑; 多个 required_checks 名映射到同一 check 时
+/// 去重只跑一次. `evidence_non_empty` / `unchecked_distinct_from_checked_empty`
+/// 已被 schema / vacuous 覆盖, 不单独再跑.
+pub fn validate_stage_gate(
+    deliverable: &StageDeliverable,
     spec: &StageSpec,
     contract: Option<&SprintContract>,
 ) -> GateResult {
+    let mut outcomes = vec![
+        schema_check::run(deliverable, spec),
+        contract_check::run(deliverable, contract),
+        vacuous_check::run(deliverable, spec),
+        freshness_check::run(deliverable, spec),
+    ];
+
+    let mut ran: HashSet<&'static str> = HashSet::new();
+    for name in &spec.required_checks {
+        let check_id = match name.as_str() {
+            "scope_status_present" | "out_of_scope_targets_excluded" => "scope",
+            "surface_workbench_coverage" => "surface_coverage",
+            "min_tool_invocations_per_check" => "min_invocations",
+            _ => continue,
+        };
+        if !ran.insert(check_id) {
+            continue;
+        }
+        outcomes.push(match check_id {
+            "scope" => scope_check::run(deliverable),
+            "surface_coverage" => surface_coverage_check::run(deliverable),
+            "min_invocations" => min_invocations_check::run(deliverable, spec),
+            _ => unreachable!(),
+        });
+    }
+
+    aggregate(outcomes)
+}
+
+/// 把多个 check outcome 聚合为单个 GateResult (合并 reasons + recovery).
+fn aggregate(outcomes: Vec<GateCheckOutcome>) -> GateResult {
     let mut reasons = Vec::new();
     let mut recovery = HarnessRecoveryActions::default();
 
-    for outcome in [
-        schema_check::run(deliverable, spec),
-        scope_check::run(deliverable),
-        contract_check::run(deliverable, contract),
-        vacuous_check::run(deliverable, spec),
-        surface_coverage_check::run(deliverable),
-        freshness_check::run(deliverable, spec),
-    ] {
+    for outcome in outcomes {
         if let GateCheckOutcome::Block {
             reasons: r,
             recovery: rec,
@@ -114,6 +148,15 @@ pub fn validate_external_attack_surface_gate(
     } else {
         GateResult::block(reasons, recovery)
     }
+}
+
+/// 薄包装 · 保留旧调用方与 e2e 单测 (= 跑 external_attack_surface spec 的通用 gate).
+pub fn validate_external_attack_surface_gate(
+    deliverable: &StageDeliverable,
+    spec: &StageSpec,
+    contract: Option<&SprintContract>,
+) -> GateResult {
+    validate_stage_gate(deliverable, spec, contract)
 }
 
 #[cfg(test)]

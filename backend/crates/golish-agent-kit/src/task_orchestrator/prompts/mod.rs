@@ -6,6 +6,8 @@
 mod pipeline;
 pub use pipeline::*;
 
+use crate::harness::stage_spec::StageSpec;
+
 /// Intent classifier prompt — determines whether a user message in Task mode
 /// is an actionable task or just casual conversation (greeting, question, etc.).
 ///
@@ -36,6 +38,42 @@ pub(crate) fn safe_truncate(s: &str, max: usize) -> &str {
         }
         &s[..end]
     }
+}
+
+/// C2 · Operation Harness stage charter — 注入到 subtask 描述顶部.
+///
+/// 告诉执行 agent 当前 stage 的允许/禁止工具面、必须提交的结构化 deliverable、
+/// 以及确定性 gate 会检查哪些项. 仅在 `stage_mode_enabled()` + subtask 有
+/// `harness_stage` 时由 `execute_single_subtask` 拼到描述前.
+pub fn stage_charter(spec: &StageSpec) -> String {
+    let allowed = spec.allowed_tools.join(", ");
+    let forbidden = if spec.forbidden_tools.is_empty() {
+        "(none)".to_string()
+    } else {
+        spec.forbidden_tools.join(", ")
+    };
+    let checks = if spec.required_checks.is_empty() {
+        "(none)".to_string()
+    } else {
+        spec.required_checks.join(", ")
+    };
+    format!(
+        r#"## OPERATION HARNESS — STAGE CHARTER
+
+You are operating inside the **{stage}** stage of an authorized operation. Stay within this stage's boundary:
+
+- **Allowed tools** (use ONLY these): {allowed}
+- **Forbidden tools** (NEVER call): {forbidden}
+- You MUST finish by submitting a structured deliverable via `submit_stage_deliverable`; every claim and finding must reference evidence ids.
+- A deterministic gate will check: {checks}. Unverified natural-language claims do NOT pass the gate.
+- Do not escalate authorization or jump to another stage — the runtime advances stages for you once the gate passes.
+
+"#,
+        stage = spec.id,
+        allowed = allowed,
+        forbidden = forbidden,
+        checks = checks,
+    )
 }
 
 /// Generator prompt — decomposes a user task into ordered subtasks.
@@ -98,19 +136,22 @@ When the task involves testing a target, follow this standard methodology:
 ## HARNESS STAGE ASSIGNMENT (Phase 1 MVP — Operation Harness)
 
 When a subtask falls into a known **harness stage**, attach a `harness_stage` field so
-the runtime can validate the deliverable against deterministic gate checks. Phase 1 MVP
-supports ONLY ONE stage; future phases will add more.
+the runtime can validate the deliverable against deterministic gate checks. Tag each subtask
+with the ONE harness stage it belongs to (the full operation DAG is supported).
 
-**Currently supported stage** (omit `harness_stage` entirely if the subtask does not fit):
+**Harness stages** (pick the single best match; omit `harness_stage` entirely if none fit):
 
-- `external_attack_surface` — passive + light-active recon of a target's outside surface:
-  DNS resolution, subdomain enumeration (passive + CT logs), HTTP service probing,
-  port discovery from outside. Triggered when the subtask is about: 资产测绘 / attack surface /
-  external recon / subdomain enum / DNS records / 域名 / passive recon / 外部侦察.
-  Do NOT use this stage for: internal pivoting, exploitation, authenticated scanning,
-  vulnerability validation, or reporting.
+- `scoping` — define scope / rules of engagement / authorization boundary (no probing).
+- `target_intel` — passive intel: whois, ASN, DNS records, registrant info. (情报收集)
+- `external_attack_surface` — passive + light-active external recon: subdomain enum (passive + CT logs), DNS resolution, HTTP probing, external port discovery. (资产测绘 / 攻击面 / 外部侦察)
+- `enumeration` — active recon: port scanning, service enumeration/fingerprinting, directory enumeration. (端口扫描 / 目录扫描 / 服务枚举)
+- `vuln_triage` — non-destructive vulnerability identification (nuclei, vuln matching). (漏洞扫描 / 漏洞识别)
+- `verification` — controlled exploit validation / PoC confirmation, approval-gated. (漏洞验证)
+- `reporting` — synthesize the final report from collected evidence. (报告生成 / 修复建议)
 
-If a subtask matches `external_attack_surface`, add:
+(Red-team stages access_validation / internal_discovery / objective_pathing / objective_simulation / cleanup also exist; tag only when explicitly in scope.)
+
+Add it like (replace the value with the matching stage):
 
 ```
 "harness_stage": { "stage_kind": "external_attack_surface" }

@@ -1,0 +1,47 @@
+{
+  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$comment": "Stage spec: scoping / ROE. DAG entry node. L0-L1 only, no probing. Phase A (2026-06-01 harness-full-impl).",
+
+  "id": "scoping",
+  "kind": "scoping",
+  "risk_level": "low",
+
+  "requires_stages": [],
+  "allowed_next_stages": ["target_intel"],
+
+  "allowed_tools": [
+    "query_target_data",
+    "log_operation",
+    "submit_stage_deliverable"
+  ],
+
+  "forbidden_tools": [
+    "dns_resolve",
+    "http_probe",
+    "subdomain_enum_passive",
+    "metasploit",
+    "sqlmap",
+    "credential_attack",
+    "destructive_action",
+    "exploit_validation"
+  ],
+
+  "deliverable_schema": "StageDeliverable",
+  "gate_validator": "validate_stage_gate",
+
+  "required_checks": [
+    "scope_status_present"
+  ],
+
+  "min_invocations": {},
+
+  "max_other_skips": 2,
+
+  "human_approval": {
+    "required_before": ["scope_expansion"]
+  },
+
+  "agent_continuity": "single_session",
+
+  "inherits_evidence_from": []
+}

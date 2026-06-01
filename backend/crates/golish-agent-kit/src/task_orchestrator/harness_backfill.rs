@@ -106,6 +106,103 @@ pub fn infer_harness_stage(text: &str) -> Option<HarnessStageHint> {
     Some(HarnessStageHint::new(StageKind::ExternalAttackSurface))
 }
 
+/// Phase C 多 stage 关键词表 (与 [`EXTERNAL_ATTACK_SURFACE_KEYWORDS`] **不重叠**).
+///
+/// 顺序 = 优先级 (越具体/越下游越先判, 避免被泛词抢). `external_attack_surface`
+/// 由 [`infer_harness_stage`] 单独优先处理 (含 anti-trigger), 不在本表.
+const OTHER_STAGE_KEYWORDS: &[(StageKind, &[&str])] = &[
+    (
+        StageKind::Reporting,
+        &[
+            "final report",
+            "report generation",
+            "generate report",
+            "generate the report",
+            "remediation plan",
+            "生成报告",
+            "撰写报告",
+            "报告生成",
+            "修复建议",
+            "修复方案",
+        ],
+    ),
+    (
+        StageKind::Verification,
+        &[
+            "exploit validation",
+            "validate the exploit",
+            "exploit confirmation",
+            "controlled exploit",
+            "poc 验证",
+            "漏洞验证",
+            "利用验证",
+        ],
+    ),
+    (
+        StageKind::VulnTriage,
+        &[
+            "vulnerability scan",
+            "vuln scan",
+            "vulnerability assessment",
+            "vuln triage",
+            "nuclei",
+            "漏洞扫描",
+            "漏洞识别",
+            "漏洞评估",
+        ],
+    ),
+    (
+        StageKind::Enumeration,
+        &[
+            "port scan",
+            "port scanning",
+            "service enumeration",
+            "directory enumeration",
+            "directory brute",
+            "service fingerprint",
+            "端口扫描",
+            "目录扫描",
+            "服务枚举",
+        ],
+    ),
+    (
+        StageKind::TargetIntel,
+        &[
+            "whois",
+            "asn lookup",
+            "passive intel",
+            "registrant",
+            "情报收集",
+        ],
+    ),
+    (
+        StageKind::Scoping,
+        &[
+            "rules of engagement",
+            "scope definition",
+            "define scope",
+            "engagement scope",
+            "授权范围",
+            "确定范围",
+        ],
+    ),
+];
+
+/// Phase C 多 stage 路由: 先用 [`infer_harness_stage`] (external, 含 anti-trigger),
+/// 不命中再按 [`OTHER_STAGE_KEYWORDS`] 匹配其它 stage. 返回首个命中的 stage hint.
+pub fn infer_stage(text: &str) -> Option<HarnessStageHint> {
+    if let Some(hint) = infer_harness_stage(text) {
+        return Some(hint);
+    }
+    let lower = text.to_lowercase();
+    for (kind, keywords) in OTHER_STAGE_KEYWORDS {
+        if keywords.iter().any(|kw| lower.contains(&kw.to_lowercase())) {
+            return Some(HarnessStageHint::new(*kind));
+        }
+    }
+    None
+}
+
 /// Backfill `harness_stage` on every subtask whose field is currently `None`.
 ///
 /// **Never overwrites** an LLM-supplied value (`Some(_)` → left as-is). Only
@@ -120,7 +217,7 @@ pub fn backfill_harness_stage(subtasks: &mut [PlannedSubtask]) -> usize {
             continue;
         }
         let text = format!("{} {}", subtask.title, subtask.description);
-        if let Some(hint) = infer_harness_stage(&text) {
+        if let Some(hint) = infer_stage(&text) {
             tracing::info!(
                 target: "harness::backfill",
                 subtask_title = %subtask.title,
@@ -270,5 +367,44 @@ mod tests {
                 stage_kind: StageKind::ExternalAttackSurface
             })
         ));
+    }
+
+    #[test]
+    fn infer_stage_routes_external_first() {
+        // external 关键词命中时优先返 external (与 infer_harness_stage 一致).
+        let h = infer_stage("Map the external attack surface and enumerate subdomains");
+        assert!(matches!(
+            h,
+            Some(HarnessStageHint {
+                stage_kind: StageKind::ExternalAttackSurface
+            })
+        ));
+    }
+
+    #[test]
+    fn infer_stage_routes_other_stages() {
+        let cases = [
+            ("Generate the final report with remediation plan", StageKind::Reporting),
+            ("Run nuclei vulnerability scan against the hosts", StageKind::VulnTriage),
+            ("Port scanning and service enumeration on open ports", StageKind::Enumeration),
+            ("Validate the exploit with a controlled PoC", StageKind::Verification),
+            ("Whois and ASN lookup for passive intel", StageKind::TargetIntel),
+            ("Define scope and rules of engagement", StageKind::Scoping),
+        ];
+        for (text, expected) in cases {
+            let h = infer_stage(text);
+            assert!(
+                matches!(h, Some(HarnessStageHint { stage_kind }) if stage_kind == expected),
+                "text {:?} should route to {:?}, got {:?}",
+                text,
+                expected,
+                h
+            );
+        }
+    }
+
+    #[test]
+    fn infer_stage_returns_none_for_unrelated() {
+        assert!(infer_stage("Refactor billing module and update README").is_none());
     }
 }

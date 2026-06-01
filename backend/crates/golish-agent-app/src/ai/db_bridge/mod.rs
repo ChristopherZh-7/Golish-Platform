@@ -460,3 +460,116 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.dispatch_list_running_impl(session_id).await
     }
 }
+
+/// DB-backed integration tests for the harness `operation_state` stage cursor.
+///
+/// These exercise the **full wired stack** for Phase 2 gate-driven transitions:
+/// `decide_transition` (golish-agent-kit) → `DbRepoProvider::operation_state_*`
+/// (this app impl) → `golish_db::repo::operation_state` (real Postgres).
+///
+/// They are **opt-in**: set `GOLISH_TEST_DATABASE_URL` to a migrated Postgres
+/// (e.g. the running app's embedded PG) to run them. Without it the tests skip
+/// so the default `cargo nextest` stays green in DB-less environments.
+#[cfg(test)]
+mod operation_state_integration_tests {
+    use super::GolishDbRepoProvider;
+    use golish_agent_kit::db_traits::DbRepoProvider;
+    use golish_agent_kit::harness::{
+        base_operation_graph, decide_transition, load_profile_from_json, StageKind,
+    };
+    use std::sync::Arc;
+    use std::time::Duration;
+    use uuid::Uuid;
+
+    const ASSESSMENT_JSON: &str =
+        include_str!("../../../../../../resources/harness/profiles/assessment.json");
+
+    async fn connect_test_pool() -> Option<Arc<sqlx::PgPool>> {
+        let url = std::env::var("GOLISH_TEST_DATABASE_URL").ok()?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(Duration::from_secs(10))
+            .connect(&url)
+            .await
+            .ok()?;
+        Some(Arc::new(pool))
+    }
+
+    /// assessment 投影子图: external_attack_surface gate 过 → 应推进到 enumeration.
+    fn assessment_advance_target(current: StageKind, gate_allowed: bool) -> Option<StageKind> {
+        let dag = base_operation_graph().expect("base graph").project(
+            &load_profile_from_json(ASSESSMENT_JSON)
+                .expect("assessment profile")
+                .allowed_stage_set(),
+        );
+        decide_transition(current, gate_allowed, &dag).advance_target()
+    }
+
+    /// 闭环 (Doc 3 §6.2): insert(external_attack_surface) → 真决策(gate 过)选下一格
+    /// → advance_stage → 读回 current_stage == enumeration.
+    #[tokio::test]
+    async fn gate_pass_advances_operation_state_cursor_end_to_end() {
+        let Some(pool) = connect_test_pool().await else {
+            eprintln!(
+                "skip gate_pass_advances_operation_state_cursor_end_to_end: \
+                 set GOLISH_TEST_DATABASE_URL to a migrated Postgres to run it"
+            );
+            return;
+        };
+        let repo = GolishDbRepoProvider::new(pool);
+        let op = Uuid::new_v4();
+
+        repo.operation_state_insert(op, "assessment", StageKind::ExternalAttackSurface.as_str())
+            .await
+            .expect("insert operation_state");
+        let row = repo
+            .operation_state_get(op)
+            .await
+            .expect("get")
+            .expect("row exists after insert");
+        assert_eq!(row.current_stage, "external_attack_surface");
+        assert_eq!(row.profile, "assessment");
+
+        let next = assessment_advance_target(StageKind::ExternalAttackSurface, true)
+            .expect("gate pass should yield an advance target");
+        assert_eq!(next, StageKind::Enumeration);
+
+        repo.operation_state_advance_stage(op, next.as_str())
+            .await
+            .expect("advance_stage");
+        let row = repo
+            .operation_state_get(op)
+            .await
+            .expect("get")
+            .expect("row exists after advance");
+        assert_eq!(row.current_stage, "enumeration");
+    }
+
+    /// gate 没过 → 决策 Hold (无 advance target) → 不推进, 游标保持原 stage.
+    #[tokio::test]
+    async fn gate_block_holds_operation_state_cursor() {
+        let Some(pool) = connect_test_pool().await else {
+            eprintln!("skip gate_block_holds_operation_state_cursor: set GOLISH_TEST_DATABASE_URL");
+            return;
+        };
+        let repo = GolishDbRepoProvider::new(pool);
+        let op = Uuid::new_v4();
+
+        repo.operation_state_insert(op, "assessment", StageKind::ExternalAttackSurface.as_str())
+            .await
+            .expect("insert operation_state");
+
+        assert!(
+            assessment_advance_target(StageKind::ExternalAttackSurface, false).is_none(),
+            "blocked gate must not yield an advance target"
+        );
+
+        // 没调 advance_stage → 游标仍在 external_attack_surface.
+        let row = repo
+            .operation_state_get(op)
+            .await
+            .expect("get")
+            .expect("row exists");
+        assert_eq!(row.current_stage, "external_attack_surface");
+    }
+}

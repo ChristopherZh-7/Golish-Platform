@@ -1,0 +1,33 @@
+{
+  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#2",
+  "$comment": "Profile: Red Team. L5 post-exploit / objective simulation. Cleanup required. Phase A.",
+
+  "id": "red_team",
+  "display_name": "Red Team",
+  "max_authorization": "post_exploit_red_team",
+
+  "allowed_stage_kinds": [
+    "scoping",
+    "target_intel",
+    "external_attack_surface",
+    "enumeration",
+    "vuln_triage",
+    "verification",
+    "access_validation",
+    "internal_discovery",
+    "objective_pathing",
+    "objective_simulation",
+    "cleanup",
+    "reporting"
+  ],
+
+  "forbidden_stage_kinds": [],
+
+  "approval_policy": {
+    "before_active_scan": true,
+    "before_scope_expansion": true
+  },
+
+  "cleanup_required": true,
+  "evidence_required": true
+}

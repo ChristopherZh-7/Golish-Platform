@@ -1,0 +1,60 @@
+{
+  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$comment": "Stage spec: enumeration. Active recon (L2): port/service/dir enumeration. Phase A.",
+
+  "id": "enumeration",
+  "kind": "enumeration",
+  "risk_level": "medium",
+
+  "requires_stages": ["external_attack_surface"],
+  "allowed_next_stages": ["vuln_triage", "reporting"],
+
+  "allowed_tools": [
+    "query_target_data",
+    "http_probe",
+    "fingerprint_target",
+    "port_scan",
+    "dir_enum",
+    "log_operation",
+    "log_scan_result",
+    "submit_stage_deliverable"
+  ],
+
+  "forbidden_tools": [
+    "metasploit",
+    "sqlmap",
+    "credential_attack",
+    "destructive_action",
+    "exploit_validation"
+  ],
+
+  "deliverable_schema": "StageDeliverable",
+  "gate_validator": "validate_stage_gate",
+
+  "required_checks": [
+    "scope_status_present",
+    "evidence_non_empty",
+    "unchecked_distinct_from_checked_empty",
+    "out_of_scope_targets_excluded",
+    "min_tool_invocations_per_check"
+  ],
+
+  "min_invocations": {
+    "http_probe": 1
+  },
+
+  "max_other_skips": 2,
+
+  "human_approval": {
+    "required_before": ["active_scan"]
+  },
+
+  "agent_continuity": "single_session",
+
+  "inherits_evidence_from": [
+    {
+      "stage_kind": "external_attack_surface",
+      "evidence_kinds": ["http_service", "fingerprint", "subdomain"]
+    }
+  ]
+}

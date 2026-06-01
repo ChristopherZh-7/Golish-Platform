@@ -136,11 +136,14 @@ pub struct HarnessFinding {
     pub evidence_refs: Vec<EvidenceAuditId>,
 }
 
-/// Doc 3 §4.3 ExternalAttackSurfaceDeliverable.
+/// Doc 3 §4.3 StageDeliverable · 所有 stage 通用的 gate 输入 contract.
 ///
-/// agent 提交给 gate 的输入 contract.
+/// 原 `ExternalAttackSurfaceDeliverable`; Phase B 泛化为全 stage 通用 (字段本就
+/// 与 stage 语义无关). 保留 `ExternalAttackSurfaceDeliverable` 别名做向后兼容,
+/// 旧 hook / gate / 单测零改动. 刻意不放 `stage_kind`: gate 以 `StageSpec.kind`
+/// 为准, hook 以 `HarnessStageHint.stage_kind` 为准 (避免冗余真相源).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExternalAttackSurfaceDeliverable {
+pub struct StageDeliverable {
     pub stage_id: String,
     pub stage_run_id: Uuid,
     pub claims: Vec<StageClaim>,
@@ -152,6 +155,9 @@ pub struct ExternalAttackSurfaceDeliverable {
     #[serde(default)]
     pub required_checks_done: Vec<String>,
 }
+
+/// 向后兼容别名 (Phase B 泛化前的名字). 新代码用 `StageDeliverable`.
+pub type ExternalAttackSurfaceDeliverable = StageDeliverable;
 
 /// HarnessStageHint · 嵌入到 PlannedSubtask, Task 1c.6 在 task_orchestrator 用.
 ///

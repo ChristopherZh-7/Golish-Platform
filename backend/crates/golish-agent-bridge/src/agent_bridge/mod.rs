@@ -206,6 +206,20 @@ pub struct AgentBridge {
     pub(crate) mcp_tool_definitions: Arc<RwLock<Vec<rig::completion::ToolDefinition>>>,
     pub(crate) mcp_tool_executor:
         Arc<RwLock<Option<Arc<dyn crate::agentic_loop::McpToolExecutor>>>>,
+
+    // -- Operation Harness (C3) ----------------------------------------------
+    /// Active harness stage side-channel. Set per-subtask by the Task-mode
+    /// executor (`BridgeAgentExecutor::execute_subtask`) before running the loop;
+    /// read by `build_loop_context` so the agentic loop's per-tool dispatch can
+    /// enforce the stage forbidden-tool barrier. `None` = no stage (flag off /
+    /// non-stage turn / chat mode).
+    pub(crate) harness_active_stage: Arc<RwLock<Option<golish_agent_kit::harness::StageKind>>>,
+    /// Active harness authorization context (profile ceiling + classified
+    /// intent). Set per-subtask alongside `harness_active_stage`; read by
+    /// `build_loop_context` so per-tool dispatch can run the full pre-action
+    /// authorizer (allowed_tools confinement + intent vs ceiling) on real
+    /// executor tools. `None` = no stage (flag off / non-stage turn / chat mode).
+    pub(crate) harness_active_authz: Arc<RwLock<Option<golish_agent_kit::harness::HarnessAuthz>>>,
 }
 
 impl AgentBridge {

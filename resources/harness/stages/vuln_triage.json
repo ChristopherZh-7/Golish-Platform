@@ -1,0 +1,55 @@
+{
+  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$comment": "Stage spec: vuln_triage. L3 non-destructive vuln validation (nuclei / matching). Phase A.",
+
+  "id": "vuln_triage",
+  "kind": "vuln_triage",
+  "risk_level": "high",
+
+  "requires_stages": ["enumeration"],
+  "allowed_next_stages": ["verification", "reporting"],
+
+  "allowed_tools": [
+    "query_target_data",
+    "nuclei_scan",
+    "vuln_match",
+    "http_probe",
+    "log_operation",
+    "log_scan_result",
+    "submit_stage_deliverable"
+  ],
+
+  "forbidden_tools": [
+    "metasploit",
+    "sqlmap",
+    "credential_attack",
+    "destructive_action"
+  ],
+
+  "deliverable_schema": "StageDeliverable",
+  "gate_validator": "validate_stage_gate",
+
+  "required_checks": [
+    "scope_status_present",
+    "evidence_non_empty",
+    "unchecked_distinct_from_checked_empty",
+    "out_of_scope_targets_excluded"
+  ],
+
+  "min_invocations": {},
+
+  "max_other_skips": 2,
+
+  "human_approval": {
+    "required_before": ["active_scan", "exploit_validation"]
+  },
+
+  "agent_continuity": "single_session",
+
+  "inherits_evidence_from": [
+    {
+      "stage_kind": "enumeration",
+      "evidence_kinds": ["open_port", "http_service", "fingerprint"]
+    }
+  ]
+}

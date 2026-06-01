@@ -1,0 +1,34 @@
+{
+  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#2",
+  "$comment": "Profile: Bug Bounty. L3 vuln validation, public-scope testing. Phase A.",
+
+  "id": "bug_bounty",
+  "display_name": "Bug Bounty",
+  "max_authorization": "vuln_validation",
+
+  "allowed_stage_kinds": [
+    "scoping",
+    "target_intel",
+    "external_attack_surface",
+    "enumeration",
+    "vuln_triage",
+    "reporting"
+  ],
+
+  "forbidden_stage_kinds": [
+    "verification",
+    "access_validation",
+    "internal_discovery",
+    "objective_pathing",
+    "objective_simulation",
+    "cleanup"
+  ],
+
+  "approval_policy": {
+    "before_active_scan": false,
+    "before_scope_expansion": true
+  },
+
+  "cleanup_required": false,
+  "evidence_required": true
+}

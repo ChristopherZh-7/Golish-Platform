@@ -74,6 +74,16 @@ impl TaskOrchestrator {
         let augmented_description = {
             let mut desc = String::new();
 
+            // C2 · harness stage charter (stage_mode 开 + 该 subtask 归属某 stage 时,
+            // 前置注入允许/禁止工具面 + deliverable/gate 要求).
+            if crate::harness::stage_mode_enabled() {
+                if let Some(hint) = planned.harness_stage.as_ref() {
+                    if let Ok(spec) = crate::harness::load_embedded_stage_spec(hint.stage_kind) {
+                        desc.push_str(&super::super::prompts::stage_charter(&spec));
+                    }
+                }
+            }
+
             if let Some(ref enrichment) = enrichment {
                 desc.push_str("## SUPPLEMENTARY CONTEXT\n\n");
                 desc.push_str(enrichment);
@@ -271,23 +281,40 @@ impl TaskOrchestrator {
         (out, None)
     }
 
-    /// Phase 2: gate 通过后按 Operation DAG 推进 operation_state 游标 (Doc 3 §6.2).
+    /// Phase 2/C: gate 通过后按 Operation DAG 推进 operation_state 游标 (Doc 3 §6.2).
     ///
-    /// `operation_id == task_id` (Phase 2 决定: 一个 Task = 一个 operation). 投影
-    /// assessment DAG, 用 [`crate::harness::decide_transition`] 选下一 stage, 写入
-    /// `operation_state.current_stage`. Hold / Complete (无下一格) 则不写.
+    /// `operation_id == task_id` (一个 Task = 一个 operation). 读 `operation_state`
+    /// 拿**真实 profile + 当前 stage** (不再硬编码 assessment), 投影 DAG, 用
+    /// [`crate::harness::decide_transition`] 选下一 stage. C5: 若下一 stage 需人工
+    /// 批准则 hold 并发 `waiting_approval` 事件, 不自动推进. Hold / Complete (无下
+    /// 一格) 同样不写.
     async fn drive_stage_transition(&self, operation_id: Uuid, outcome: HarnessGateOutcome) {
+        let state = match crate::db_shim::operation_state::get(&*self.repo, operation_id).await {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                tracing::warn!(target: "harness::hook", operation_id = %operation_id, "no operation_state row; skip transition");
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(target: "harness::hook", error = %e, "operation_state get failed");
+                return;
+            }
+        };
+        let profile = match crate::harness::load_embedded_profile(&state.profile) {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                tracing::warn!(target: "harness::hook", profile = %state.profile, "unknown profile in operation_state; skip transition");
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(target: "harness::hook", error = %e, "profile load failed in transition");
+                return;
+            }
+        };
         let graph = match crate::harness::base_operation_graph() {
             Ok(g) => g,
             Err(e) => {
                 tracing::warn!(target: "harness::hook", error = %e, "base operation graph load failed");
-                return;
-            }
-        };
-        let profile = match crate::harness::load_profile_from_json(ASSESSMENT_PROFILE_JSON) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(target: "harness::hook", error = %e, "profile load failed in transition");
                 return;
             }
         };
@@ -305,6 +332,31 @@ impl TaskOrchestrator {
             );
             return;
         };
+
+        // C5 · approval 闸: 下一 stage 需人工批准 + profile policy 打开 → hold,
+        // 发 waiting_approval 事件请求确认, 不自动推进游标.
+        if let Ok(next_spec) = crate::harness::load_embedded_stage_spec(next) {
+            if crate::harness::stage_entry_requires_approval(&next_spec, &profile) {
+                tracing::info!(
+                    target: "harness::hook",
+                    operation_id = %operation_id,
+                    from = ?outcome.gated_stage,
+                    to = ?next,
+                    "transition holds for human approval"
+                );
+                self.emit(AiEvent::TaskProgress {
+                    task_id: operation_id.to_string(),
+                    status: "waiting_approval".to_string(),
+                    message: format!(
+                        "Stage {} → {} requires human approval before proceeding.",
+                        outcome.gated_stage.as_str(),
+                        next.as_str()
+                    ),
+                });
+                return;
+            }
+        }
+
         match crate::db_shim::operation_state::advance_stage(
             &*self.repo,
             operation_id,
@@ -324,30 +376,22 @@ impl TaskOrchestrator {
     }
 }
 
-// ── Harness gate hook (Phase 1c.6 · Doc 3 §5.2 接入点) ─────────────────────────
+// ── Harness gate hook (Phase C · Doc 3 §5.2 接入点) ─────────────────────────
 //
 // 仅当满足以下全部条件时, agent_result.content 末尾才会被追加 gate decision JSON:
-//   1. `harness::stage_mode_enabled()` 返回 true (Phase 1 默认 false, 见
-//      Task 1c.7 settings.toml 接入)
+//   1. `harness::stage_mode_enabled()` 返回 true (默认 false)
 //   2. `planned.harness_stage` 非 None
-//   3. `harness_stage.stage_kind == StageKind::ExternalAttackSurface`
-//      (Phase 1 MVP 仅支持此 stage; 其它 stage 推 Phase 2)
-//   4. agent_result.content 含可解析的 ExternalAttackSurfaceDeliverable JSON
-//      (Phase 1 MVP 简化路径: 整个 content 必须是 JSON)
+//   3. agent_result.content 含可解析的 StageDeliverable JSON
+//      (整体即 JSON, 或 ```json fence 内的 JSON)
 //
-// 任一条件不满足时返回原 content (不破坏旧路径行为).
+// Phase C: 支持**任意 stage** —— 按 `stage_hint.stage_kind` 从嵌入 registry 载对应
+// StageSpec, 跑通用 gate (`validate_stage_gate`). 任一条件不满足时返回原 content
+// (不破坏旧路径行为).
 //
-// **现有 execute_single_subtask 2 元组返回签名保持不变** (plan §5 Task 1c.6
-// hook 代码用 3 元组返回值, 实际项目签名是 2 元组; 通过把 gate decision 文本
-// 化嵌入 content 末尾来兼容).
+// **execute_single_subtask 2 元组返回签名保持不变**: gate decision 文本化嵌入
+// content 末尾兼容; 第二元素 `Option<HarnessGateOutcome>` 驱动 stage 流转.
 
-const ASSESSMENT_PROFILE_JSON: &str =
-    include_str!("../../../../../../resources/harness/profiles/assessment.json");
-
-const EXTERNAL_ATTACK_SURFACE_SPEC_JSON: &str =
-    include_str!("../../../../../../resources/harness/stages/external_attack_surface.json");
-
-/// gate hook 跑完后回传给流转驱动的最小信息 (Phase 2 · Doc 3 §6.2).
+/// gate hook 跑完后回传给流转驱动的最小信息 (Doc 3 §6.2).
 struct HarnessGateOutcome {
     gated_stage: crate::harness::StageKind,
     gate_allowed: bool,
@@ -369,15 +413,6 @@ fn apply_harness_gate_hook(
         );
         return (content, None);
     };
-    // Phase 1 MVP 仅支持 ExternalAttackSurface
-    if stage_hint.stage_kind != crate::harness::StageKind::ExternalAttackSurface {
-        tracing::debug!(
-            target: "harness::hook",
-            stage_kind = ?stage_hint.stage_kind,
-            "skip: Phase 1 MVP supports only ExternalAttackSurface"
-        );
-        return (content, None);
-    }
 
     tracing::info!(
         target: "harness::hook",
@@ -387,38 +422,33 @@ fn apply_harness_gate_hook(
         "harness gate hook entered"
     );
 
-    let profile = match crate::harness::load_profile_from_json(ASSESSMENT_PROFILE_JSON) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(target: "harness::hook", error = %e, "[harness] failed to load assessment profile JSON");
+    // profile 仅用于构造 StageHarness (gate 校验只读 stage_spec); 用 assessment 占位.
+    // 真实 profile 由 drive_stage_transition 按 operation_state 读取并影响流转/审批.
+    let profile = match crate::harness::load_embedded_profile("assessment") {
+        Ok(Some(p)) => p,
+        _ => {
+            tracing::warn!(target: "harness::hook", "[harness] failed to load assessment profile");
             return (content, None);
         }
     };
-    let spec = match crate::harness::load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_SPEC_JSON) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(target: "harness::hook", error = %e, "[harness] failed to load external_attack_surface spec JSON");
-            return (content, None);
-        }
-    };
-    let harness = match crate::harness::StageHarness::for_stage(
+    // 按 stage_hint.stage_kind 从嵌入 registry 载对应 StageSpec (支持任意 stage).
+    let harness = match crate::harness::StageHarness::for_stage_embedded(
         stage_hint.stage_kind,
         profile,
-        spec,
     ) {
         Ok(h) => h,
         Err(e) => {
-            tracing::warn!(target: "harness::hook", error = %e, "[harness] StageHarness::for_stage failed");
+            tracing::warn!(target: "harness::hook", error = %e, "[harness] StageHarness::for_stage_embedded failed");
             return (content, None);
         }
     };
 
     let Some(deliverable) = parse_deliverable_from_content(&content) else {
-        // Phase 1 MVP: 找不到 deliverable 时不强制 block; debug-log 留痕.
+        // 找不到 deliverable 时不强制 block; debug-log 留痕.
         tracing::debug!(
             target: "harness::hook",
             content_len = content.len(),
-            "no ExternalAttackSurfaceDeliverable JSON found in agent content, skipping gate"
+            "no StageDeliverable JSON found in agent content, skipping gate"
         );
         return (content, None);
     };
@@ -477,14 +507,25 @@ fn apply_harness_gate_hook(
     )
 }
 
-/// Phase 1 MVP: 尝试把 content 整体 (trim 后) 解析为 ExternalAttackSurfaceDeliverable.
+/// 把 content 解析为 [`crate::harness::StageDeliverable`].
 ///
-/// 若 content 是混合文本 (含 prose + JSON code block), Phase 2 加 JSON code
-/// fence 抽取; 当前简化版返回 None → hook skip.
-fn parse_deliverable_from_content(
-    content: &str,
-) -> Option<crate::harness::ExternalAttackSurfaceDeliverable> {
-    serde_json::from_str(content.trim()).ok()
+/// 两条路径: ① content 整体 (trim 后) 即 JSON; ② content 含 ```json ... ``` fence
+/// 时抽取 fence 内 JSON. 都失败返 None → hook skip (不强制 block).
+fn parse_deliverable_from_content(content: &str) -> Option<crate::harness::StageDeliverable> {
+    if let Ok(d) = serde_json::from_str::<crate::harness::StageDeliverable>(content.trim()) {
+        return Some(d);
+    }
+    if let Some(start) = content.find("```json") {
+        let after = &content[start + "```json".len()..];
+        if let Some(end) = after.find("```") {
+            if let Ok(d) =
+                serde_json::from_str::<crate::harness::StageDeliverable>(after[..end].trim())
+            {
+                return Some(d);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -530,14 +571,12 @@ mod harness_gate_hook_tests {
     }
 
     #[test]
-    fn embedded_resource_jsons_parse_at_compile_time() {
-        // 测的不是逻辑而是 const include_str! 路径正确, 嵌入的 JSON 合法.
-        assert!(!ASSESSMENT_PROFILE_JSON.is_empty());
-        assert!(!EXTERNAL_ATTACK_SURFACE_SPEC_JSON.is_empty());
-        assert!(crate::harness::load_profile_from_json(ASSESSMENT_PROFILE_JSON).is_ok());
-        assert!(
-            crate::harness::load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_SPEC_JSON).is_ok()
-        );
+    fn embedded_registry_loads_external_stage_and_assessment_profile() {
+        // 替代旧的 const include_str! 测试: 经嵌入 registry 加载.
+        assert!(crate::harness::load_embedded_profile("assessment")
+            .unwrap()
+            .is_some());
+        assert!(crate::harness::load_embedded_stage_spec(StageKind::ExternalAttackSurface).is_ok());
     }
 
     #[test]

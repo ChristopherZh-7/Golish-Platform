@@ -1,0 +1,55 @@
+{
+  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$comment": "Stage spec: reporting. Terminal sink stage. Synthesize report from accumulated evidence. Phase A.",
+
+  "id": "reporting",
+  "kind": "reporting",
+  "risk_level": "low",
+
+  "requires_stages": [],
+  "allowed_next_stages": [],
+
+  "allowed_tools": [
+    "query_target_data",
+    "log_operation",
+    "submit_stage_deliverable"
+  ],
+
+  "forbidden_tools": [
+    "dns_resolve",
+    "http_probe",
+    "metasploit",
+    "sqlmap",
+    "credential_attack",
+    "destructive_action",
+    "exploit_validation"
+  ],
+
+  "deliverable_schema": "StageDeliverable",
+  "gate_validator": "validate_stage_gate",
+
+  "required_checks": [
+    "evidence_non_empty"
+  ],
+
+  "min_invocations": {},
+
+  "max_other_skips": 5,
+
+  "human_approval": {
+    "required_before": []
+  },
+
+  "agent_continuity": "single_session",
+
+  "inherits_evidence_from": [
+    {
+      "stage_kind": "external_attack_surface",
+      "evidence_kinds": ["http_service", "subdomain", "fingerprint"]
+    },
+    {
+      "stage_kind": "enumeration",
+      "evidence_kinds": ["open_port", "dir_entry"]
+    }
+  ]
+}

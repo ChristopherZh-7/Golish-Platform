@@ -84,6 +84,13 @@ impl AgentExecutor for BridgeAgentExecutor {
             }
         };
 
+        // C3 · publish this subtask's harness stage + authorization context to the
+        // bridge side-channel so the agentic loop's per-tool gate can enforce the
+        // stage forbidden-tool barrier (stage) and the full pre-action authorizer
+        // (authz). `None` when stage_mode is off or the subtask has no stage.
+        *self.bridge.harness_active_stage.write().await = execution_context.harness_stage;
+        *self.bridge.harness_active_authz.write().await = execution_context.harness_authz;
+
         let content = self.bridge.execute_isolated(&prompt).await?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
