@@ -29,6 +29,19 @@
 
 ---
 
+### 2026-06-02 · Engine v2 方案 B 设计 + P0 evidence-loop 计划（MCP-agent-2 · DISPATCH off · 接 MCP-1/MCP-4 上下文转移 · 用户「项目落盘 gap 文档」→「换框架的规划/怎么手搓/哪个做底座/现阶段要什么功能」→选方案 B→「写 spec + P0 计划」→「设计文档写完 commit，明天再实现」）
+
+- **本轮目标**：用户想「换 AI 流程这一块、结合调研过的项目搞一个自己的」。经 brainstorming → 选**方案 B（嵌接+借鉴）**→ 出正式设计 + P0 计划并 commit（明天再实现代码）。
+- **gap 文档补全（`2026-06-02-harness-vs-mainstream-gap-analysis.md`，185→约 220 行）**：附录 B（11 个讨论过的项目逐项落盘：LangGraph/OpenFang/IronClaw/ZeroClaw/metalcraft/Heartbit/AutoAgents/GraphBit/XBOW/PentAGI/Pentest Agent Suite + B.8 横向对比）+ 附录 C（底座选型=自研引擎+vendor metalcraft 范式 + 分期手搓步骤）+ 附录 D（现状勘误 + P0-P3 功能清单）。
+- **诚实更正（用户当场质疑「有没有认真研究」后补做）**：① 附录 B 写入时未亲核外部项目 → **当场 web 核对**存在性+特征（B.0.0 表：metalcraft=`rust4ai/metalcraft`、OpenFang=`RightNow-AI/openfang` 等均真实；IronClaw 星标 11.8k→实测 ~12.3k）；② 本会话亲核真实代码更正旧口径：**evidence ledger 非「没建」是「建了一半」**——schema(`migrations/20260601000001`) + 读路径(`golish-pentest-app/src/evidence.rs::evidence_read`) + 域类型/`ScopeService` trait + 分类层已有，缺**写入 `append()` + gate 回查**；`stage_mode` 默认 **ON**(`execute.rs:477`)；`stage_runs` 空表。
+- **新增设计/计划**：`docs/design/2026-06-02-golish-agent-engine-v2-design.md`（方案 B：留-搓-借架构 + 4 期路线 + P0 细节 + 不变量/风险 + 决策记录；§1 现状勘验 9 项均本会话亲核真实文件）+ `docs/superpowers/plans/2026-06-02-engine-v2-p0-evidence-loop.md`（writing-plans · Task 1-7：log_evidence 写入 / sha256 哈希链 / `append()` / 分类写入 / tool_dispatch hook / `validate_stage_gate_with_ledger` / 集中验收，每 Task 带真实代码块+验证命令+「确认点」）。`feature_list.json` 加 `engine-v2-graft-2026-06-02`(not_started·priority 1)。
+- **运行过的验证（已记录证据）**：ReadLints 3 文件（design/plan/feature_list）→ 0 错误；`python3 -m json.tool feature_list.json` → exit 0（22 features，末条 id 校验通过）。亲核的真实文件：`20260601000001_evidence_ledger.sql` / `evidence_ledger/{mod,types}.rs` / `evidence.rs` / `gate/{mod,freshness_check}.rs` / `audit/mod.rs` / `agentic_loop/compaction.rs` / `db_tracking/memory/` / `task_orchestrator/orchestrator.rs` 等。
+- **提交记录**：见本轮 commit（仅设计文档/计划：docs/design 全 harness/engine 系列 + P0 plan + feature_list + 本 progress；**未含任何代码改动**——用户明示「明天再实现」）。**未 push**（§2.7）。
+- **诚实/范围**：① 附录 B 外部项目仅 web README/docs 层核对，**未 clone 源码**；metalcraft 行级断言（`executor.rs`/`checkpoint.rs`）**vendor 前必须真 clone 复验**。② P0 计划代码块基于本会话亲核的真实签名（`log_operation`/`freshness_check::run_with_freshness`/`EvidenceAuditId` 等）；`tool_dispatch.rs` 确切 hook 变量名标为「确认点·实现时读文件定」。③ 工作树仍有**他人/前序的未提交代码改动**（harness_backfill.rs / prompts/mod.rs / execute.rs / AIChatPanel.tsx / i18n / external_attack_surface.json / TaskPreparingIndicator.* / `dns_out.txt`）——本轮**故意不碰不提交**（非本任务 scope + 用户要明天再实现）。
+- **下一步建议**：① 用户审设计/计划；② 腾 `in_progress` 槽位（§2.1 现被 crate-per-service 占）；③ 执行 P0 Task 1（`log_evidence`）起；④ vendor metalcraft 前真 clone 复验附录 A。
+
+---
+
 ### 2026-06-01 · harness 闭环集成测试（drive_stage_transition · 内存 operation_state repo + 审批通道）（MCP-agent-1 · DISPATCH off · §5.9 单会话直接执行 · 用户「写闭环集成测试」→「commit」→「归档进 progress」）
 
 - **本轮目标**：用户在 harness Phase C 收口（commit `634a6dc`）后要「进程内闭环集成测试」（计划 Phase D 第 2 项：mock executor + 内存 operation_state repo）。
