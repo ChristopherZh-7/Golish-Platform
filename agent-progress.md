@@ -29,6 +29,18 @@
 
 ---
 
+### 2026-06-02 · P3-a/b/c 知识+持续（RAG 先验 + 知识图 + 回灌）（MCP-agent-2 · DISPATCH off · 用户「开P3」→「P3-a/b/c 一起」）
+
+- **本轮目标**：P3——测漏洞前自动检索 writeup（RAG 先验）+ 知识图 + 持续回灌。a/b/c 一起做。
+- **借源/底座**：复用 `DbRepoProvider.wiki_search_fts/vuln_intel_search`（RAG）+ `GraphKnowledgeBase` trait（`search_entities`/`upsert_entity`）+ golish-graphiti；借 PentAGI Graphiti（已 clone）。
+- **新 `harness/rag_prior.rs`**：① **P3-a** `retrieve_wiki_prior`（wiki_search_fts → 防御式解析 writeup）+ `render_prior_knowledge`（注入 stage prompt 的 markdown，仿 inherits_evidence）；② **P3-b** `retrieve_graph_prior`（GraphKnowledgeBase.search_entities → writeup）+ `retrieve_prior_knowledge` 统一 wiki+graph；③ **P3-c** `feed_findings_to_graph`（finding upsert 进 KG 供下次先验，continuous）。
+- **验证（已记录证据）**：`cargo nextest -p golish-agent-kit -E 'test(harness::rag_prior)'` → **4/4**（wiki 解析多形状 / render / graph prior / feed 回灌——含 mock GraphKnowledgeBase）；`clippy -p golish-agent-kit -- -D warnings` exit 0；`cargo fmt --check` 净。
+- **提交记录**：本批 commit（harness/rag_prior.rs + harness/mod.rs + P3 plan + progress + feature_list），落 `feat/harness-2026-06-01`，未 push。
+- **范围/诚实**：检索/render/回灌是**可测 SDK**；**活体注入**（把 render_prior_knowledge 拼进 vuln_triage/verification prompt）+ KG 深化（关系/attack path）+ LLM-judge = 接线 follow-up（同 P2「先 SDK 后 live」）。**P0-P3 全期框架落地完成**；feature 仍 in_progress（活体接线 + 用户填 stage criteria JSON + 工具打验证类 kind + just precommit + push 待办）。
+- **下一步**：① 三件套（gate/eval/guardrail/rag）进运行时活体接线；② 用户填 12 stage 过关证据 JSON；③ 工具给 evidence 打验证类 kind；④ 全量 just precommit + 活体验收 + push。
+
+---
+
 ### 2026-06-02 · P2-d tool I/O guardrail（借 AutoAgents EnforcementPolicy + OpenFang SSRF）（MCP-agent-2 · DISPATCH off · 用户「开 P2-d guardrail」）
 
 - **本轮目标**：P2-d guardrail——tool I/O 护栏，P2 最后一块。

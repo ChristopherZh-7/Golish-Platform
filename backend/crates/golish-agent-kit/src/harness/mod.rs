@@ -44,6 +44,7 @@ pub mod operation_graph;
 pub mod operation_mermaid;
 pub mod pre_action_authorizer;
 pub mod profile;
+pub mod rag_prior;
 pub mod resources;
 pub mod sprint_contract;
 pub mod stage_harness;
