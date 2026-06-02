@@ -34,6 +34,7 @@
 //! Phase 1c.3 + 1c.4 + 1c.5 在此基础上填实 IntentClassifier 词库 / SprintContract /
 //! gate check.
 
+pub mod eval;
 pub mod gate;
 pub mod graph_engine;
 pub mod intent_classifier;

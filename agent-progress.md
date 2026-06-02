@@ -29,6 +29,18 @@
 
 ---
 
+### 2026-06-02 · P2-c doer-quality eval（借 Heartbit EvalScorer）（MCP-agent-2 · DISPATCH off · 用户「开 P2-c eval」）
+
+- **本轮目标**：P2-c eval 框架——「eval 能判 doer」。
+- **借 Heartbit**：先读 `/tmp/refs/heartbit/crates/heartbit-core/src/eval/mod.rs`（EvalScorer trait 返回 `(score, notes)` + EvalSummary 聚合），借其形状。
+- **做法（确定性·纯函数，不需 LLM judge）**：新 `harness/eval.rs`——`DoerScorer` trait（`score(deliverable, gate) -> (f64, notes)`）+ 3 规则评分器 `GateOutcomeScorer`（过=1/BLOCK=0）/`EvidenceBackingScorer`（claims+findings 引证比例）/`FindingVerificationScorer`（high/critical finding 带证据比例）+ `DoerScorecard`（overall=均值）+ `default_scorers()` + `score_deliverable()`。从 harness 已记录的 deliverable+gate 数据给 doer 打质量分。
+- **验证（已记录证据）**：`cargo nextest -p golish-agent-kit -E 'test(harness::eval)'` → **4/4**（perfect=1.0 / blocked+unbacked≈0 / 无 high 不罚 / 半引证=0.5）；`clippy -p golish-agent-kit -- -D warnings` exit 0；`cargo fmt --check` 净。
+- **提交记录**：本批 commit（harness/eval.rs + harness/mod.rs + progress + feature_list），落 `feat/harness-2026-06-01`，未 push。
+- **范围/诚实**：LLM-judge 评分（语义质量）留后续；当前是规则层。P2-d（guardrail）仍未做。
+- **下一步**：P2-d guardrail / 把 eval 接进运行时跑历史 stage_runs / 用户填 stage criteria JSON。
+
+---
+
 ### 2026-06-02 · P2-a/b 配置驱动验证 gate（信任+质量）（MCP-agent-2 · DISPATCH off · 用户「开P2」→ 讨论『框架我写、每阶段过关证据你填 JSON』→「一路干完」）
 
 - **本轮目标**：执行 P2 计划 a/b——把「每阶段什么证据才过」做成**配置驱动**：我写框架（机制），用户填 stage JSON 定每阶段过关证据。讨论澄清：P2 是现有 gate + P0 evidence 之上的**补充**（验证/质量层），非重写。
