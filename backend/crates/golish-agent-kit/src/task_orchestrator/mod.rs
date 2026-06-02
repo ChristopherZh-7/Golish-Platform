@@ -32,6 +32,7 @@
 pub mod prompts;
 
 pub mod harness_backfill;
+pub mod harness_resume;
 mod helpers;
 mod orchestrator;
 mod subtask_phases;

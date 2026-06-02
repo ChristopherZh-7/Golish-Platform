@@ -30,7 +30,39 @@ impl GolishDbRepoProvider {
             operation_id: r.operation_id,
             profile: r.profile,
             current_stage: r.current_stage,
+            state_blob: r.state_blob,
         }))
+    }
+
+    pub(super) async fn stage_run_insert_impl(
+        &self,
+        id: Uuid,
+        operation_id: Uuid,
+        stage_kind: &str,
+    ) -> anyhow::Result<()> {
+        golish_db::repo::stage_runs::insert(&self.pool, id, operation_id, stage_kind)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub(super) async fn stage_run_mark_terminal_impl(
+        &self,
+        id: Uuid,
+        status: &str,
+    ) -> anyhow::Result<()> {
+        golish_db::repo::stage_runs::mark_terminal(&self.pool, id, status)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub(super) async fn operation_state_write_state_blob_impl(
+        &self,
+        operation_id: Uuid,
+        state_blob: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        golish_db::repo::operation_state::write_state_blob(&self.pool, operation_id, state_blob)
+            .await
+            .map_err(Into::into)
     }
 
     pub(super) async fn operation_state_advance_stage_impl(

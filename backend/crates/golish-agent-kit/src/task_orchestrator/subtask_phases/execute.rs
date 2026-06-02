@@ -473,6 +473,33 @@ impl TaskOrchestrator {
             ),
             Err(e) => tracing::warn!(target: "harness::hook", error = %e, "advance_stage failed"),
         }
+
+        // P1 · roll the stage_run + resume checkpoint forward: close the prior
+        // stage's run, open one for `next`, and rewrite state_blob so a process
+        // kill resumes at `next`. Best-effort (warn-free): failures don't block
+        // the transition the cursor already made.
+        let prior: crate::task_orchestrator::harness_resume::HarnessResumeState =
+            serde_json::from_value(state.state_blob.clone()).unwrap_or_default();
+        if let Some(prev_run) = prior.current_stage_run_id {
+            let _ =
+                crate::db_shim::stage_runs::mark_terminal(&*self.repo, prev_run, "completed").await;
+        }
+        let new_run = Uuid::new_v4();
+        let _ =
+            crate::db_shim::stage_runs::insert(&*self.repo, new_run, operation_id, next.as_str())
+                .await;
+        let rs = crate::task_orchestrator::harness_resume::HarnessResumeState {
+            current_stage: next.as_str().to_string(),
+            current_stage_run_id: Some(new_run),
+            completed_count: prior.completed_count + 1,
+            ..prior
+        };
+        let _ = crate::db_shim::operation_state::write_state_blob(
+            &*self.repo,
+            operation_id,
+            serde_json::to_value(&rs).unwrap_or_default(),
+        )
+        .await;
     }
 
     /// P0 · gate evidence 回查: 把交付物里引用、但 ledger 中**不存在**的 evidence

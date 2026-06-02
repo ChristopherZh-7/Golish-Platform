@@ -29,6 +29,35 @@
 
 ---
 
+### 2026-06-02 · P1 图骨架 + 检查点/断点续跑（vendor metalcraft · Shape B）（MCP-agent-2 · DISPATCH off · §5.9 单会话直接执行 · 用户「开P1」→「直接开 Shape B Task 1」→「一路做到 Task 6」→「commit P1+文档」）
+
+- **本轮目标**：执行 `docs/superpowers/plans/2026-06-02-engine-v2-p1-graph-checkpoint.md`（P1 Task 1-6，Shape B = vendor metalcraft 图引擎 + 用其 Checkpointer/Mermaid 增强现有 stage 流转，**不**全替换 orchestrator）。
+- **关键发现（读真码）**：DB 原语齐了（`stage_runs` 表+repo、`operation_state.state_blob`+`write_state_blob`）但 golish-agent-kit **零调用**（空表/未用）；`resume()` 重载 subtask 时 `harness_stage=None`（丢 harness 上下文）。所以 P1 缺的是**编排层写入接缝 + resume 恢复**，非建表。
+- **T1 vendor metalcraft**：`harness/graph_engine/{mod,error,graph,executor,checkpoint}.rs`——逐字照抄 `rust4ai/metalcraft`（MIT，本会话已 clone 深读+附录 A 行级断言坐实），仅改 `crate::`→`super::` + **去 `Executor::stream()`**（其 `tokio-stream`/`mpsc` 本 crate 没有，harness 用 run/resume 不用流）→ 不增依赖。
+- **T2 图可视**：`operation_mermaid.rs`——operation DAG 按 profile 投影 → Mermaid `flowchart TD`。
+- **T3 桥接（方案 A 同款）**：`DbRepoProvider` 加 `stage_run_insert`/`stage_run_mark_terminal`/`operation_state_write_state_blob`（默认 no-op 不破 mock）+ db_shim 包装 + app `GolishDbRepoProvider` 实现 + `OperationStateView` 加 `state_blob`。
+- **T4 检查点**：`task_orchestrator/harness_resume.rs::HarnessResumeState`（profile/current_stage/current_stage_run_id/queue_titles/completed_count/schema_v）；`run()` 开头写首个 stage_run + state_blob；`drive_stage_transition` 推进时 mark_terminal 旧 run + insert 新 run + 重写 state_blob。
+- **T5 resume 恢复**：`resume()` 对 harness operation 调 `backfill_harness_stage(&mut queue)` 重建每 subtask 的 harness_stage（替代恒 None）。
+- **运行过的验证（已记录证据）**：`cargo check` kit+app+runtime exit 0；`nextest -p golish-agent-kit -E 'test(harness)'` → **176/176**（原 170 +6：graph_engine 3 / operation_mermaid 1 / harness_resume 2）；`clippy -p golish-agent-kit -p golish-agent-app -- -D warnings` exit 0；`cargo fmt --check` 净。
+- **提交记录**：本批 commit（P1 代码 10 改 + 7 新【graph_engine 5 + operation_mermaid + harness_resume】+ P1 plan + 本 progress + feature_list），落 `feat/harness-2026-06-01`，**未 push**。**昨晚 WIP 仍未碰未提交**。
+- **范围/诚实**：① 活体 kill→resume（`GOLISH_HARNESS_STAGE_MODE=true just dev` → `just kill` → resume）= 用户侧需运行时，**未做**；② 单测里 MemRepo 用默认 no-op，stage_runs/state_blob 写入只编译验证+不真落库（真持久化看活体）；③ Shape A（orchestrator 整体改 metalcraft Graph 执行）留远期。故 feature 维持 **in_progress**。
+- **下一步建议**：① 活体验收 kill→resume；② 把 operation_mermaid 接一个 Tauri command + 前端展示「图」；③ P2（利用验证 gate + eval，借 XBOW/Heartbit）；④ push 需用户点头。
+
+---
+
+### 2026-06-02 · P0 Evidence Ledger 写入闭环实现（方案 B 嵌接）（MCP-agent-2 · DISPATCH off · §5.9 单会话直接执行 · 用户「今天开始实现」→「下载参考代码别盲写」→「按 A 干到底」→「继续搞完」→「补专测」→「commit 这批」→「更新 progress」）
+
+- **本轮目标**：执行 `docs/superpowers/plans/2026-06-02-engine-v2-p0-evidence-loop.md`（P0 Task 1-7），用 executing-plans skill 逐 Task 实现+验证。
+- **下载参考核验（用户要求不盲写）**：clone 6 个借用项目到 /tmp/refs 读真实源码：**OpenFang**（`RightNow-AI/openfang`）`crates/openfang-runtime/src/audit.rs` Merkle 链（genesis 64 零 / sha256→hex / prev_hash 链 / walk 验证）→ 确认 Task 2 `hash_chain.rs` 忠实借用（额外加 0x1f 域分隔加固）；**metalcraft**（`rust4ai/metalcraft`）`executor.rs`（RunOutcome::Failed 保部分状态、FuturesUnordered+sort_by 确定性并行）+`checkpoint.rs`（Checkpointer trait+MemoryCheckpointer+resume）→ gap 附录 A 行级断言**全部坐实**；Heartbit/AutoAgents/GraphBit/LangGraph/PentAGI 源码核对 gap B.0.0 断言属实。
+- **已实现（11 文件 +627/-9）**：T1 `golish-db audit::log_evidence`(audit_role='evidence')+`existing_evidence_ids`；T2 `golish-pentest evidence_ledger/hash_chain.rs`（OpenFang sha256 链，内联 hex 不引依赖）；T3 `append.rs`（编排 hash+log_evidence+分类）；T4 复用现成 `evidence_classifications::insert`；T5 runtime `tool_execution/direct/mod.rs` run_pty_cmd 成功+harness stage 时经 DbTracker 自动入账；T6 `execute.rs::enforce_evidence_existence` 伪造 evidence id→BLOCK+纠正；桥接（方案 A）`DbRepoProvider` +2 方法（默认 no-op 不破 mock）+ app 层 `db_bridge/evidence.rs` 实现 + `db_tracking` task_id/project_path getter。
+- **计划 bug 就地修正（读真码发现）**：① T4 原写 golish-db import golish_pentest 枚举 = crate 循环依赖 → 改复用 insert、db 不反向依赖；② T3 PentestError::Db 实为 `#[from] sqlx::Error` 非 String → 用 `?` 经现有 From；③ T6 freshness 真 max_age 因 `run_with_freshness` 收 `ExternalAttackSurfaceDeliverable` 而实时 gate 跑泛型 `StageDeliverable` → 改做存在性回查（类型安全），真 max_age 留后续；④ T5 `set_task_context` 全库无调用者（task_id 恒 None）→ session_uuid 兜底分组键。
+- **运行过的验证（已记录证据）**：`cargo clippy -p golish-db -p golish-pentest -p golish-agent-kit -p golish-agent-runtime -p golish-agent-app -- -D warnings` → exit 0；`cargo fmt --check` → 净（仅本批 4 文件格式化）；`nextest -p golish-pentest -E 'test(evidence_ledger)'` → **14/14**；`nextest -p golish-agent-kit -E 'test(harness)'` → **170/170**（原 167 +3 新『假 refs 被 BLOCK』单测）。
+- **提交记录**：commit `b2247e7`（`feat(harness): wire P0 evidence ledger write loop + anti-fabrication gate`，11 文件 +627/-9）落 `feat/harness-2026-06-01`，**未 push**（§2.7）。**只提交 evidence-ledger 11 文件**；昨晚 WIP（harness_backfill/prompts/前端 AIChatPanel+i18n+TaskPreparingIndicator/external_attack_surface.json/global-enforcement.mdc/dns_out.txt）**故意未碰未提交**。
+- **范围/诚实**：① 活体验收（`GOLISH_HARNESS_STAGE_MODE=true just dev` 跑 eas → DB 查 `audit_role='evidence'` 行 + `verify_chain`）**未做** = 用户侧需运行时；② 全量 `just precommit` 未跑（重 + 会连带测无关前端 WIP）；③ T5 evidence 暂以 session_uuid 分组（非 task_id，因 set_task_context 无调用者）；T6 只做存在性回查未做 freshness 真 max_age；kind=工具名 MVP。故 feature `engine-v2-graft-2026-06-02` 维持 **in_progress**（非 passing，缺活体证据 + precommit）。
+- **下一步建议**：① 用户跑活体验收落 evidence；② 接 `set_task_context` 让 evidence 按 task 分组；③ T6 freshness 真 max_age（泛型化或 EAS 专路）；④ push 需用户点头；⑤ 全量 precommit（连带处理前端 WIP）。
+
+---
+
 ### 2026-06-02 · Engine v2 方案 B 设计 + P0 evidence-loop 计划（MCP-agent-2 · DISPATCH off · 接 MCP-1/MCP-4 上下文转移 · 用户「项目落盘 gap 文档」→「换框架的规划/怎么手搓/哪个做底座/现阶段要什么功能」→选方案 B→「写 spec + P0 计划」→「设计文档写完 commit，明天再实现」）
 
 - **本轮目标**：用户想「换 AI 流程这一块、结合调研过的项目搞一个自己的」。经 brainstorming → 选**方案 B（嵌接+借鉴）**→ 出正式设计 + P0 计划并 commit（明天再实现代码）。

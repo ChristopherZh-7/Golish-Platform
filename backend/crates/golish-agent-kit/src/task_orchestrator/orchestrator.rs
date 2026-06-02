@@ -189,6 +189,36 @@ impl TaskOrchestrator {
         // Emit initial plan with all steps pending
         self.emit_plan_update(&queue, usize::MAX, StepStatus::Pending, 1);
 
+        // P1 · write the initial harness checkpoint (open a stage_run for the
+        // entry stage + persist a resume state_blob) so a kill before the first
+        // stage transition can still resume from the right place.
+        if crate::harness::stage_mode_enabled() {
+            if let Ok(Some(os)) = crate::db_shim::operation_state::get(&*self.repo, task.id).await {
+                let run_id = uuid::Uuid::new_v4();
+                let _ = crate::db_shim::stage_runs::insert(
+                    &*self.repo,
+                    run_id,
+                    task.id,
+                    &os.current_stage,
+                )
+                .await;
+                let rs = crate::task_orchestrator::harness_resume::HarnessResumeState {
+                    profile: os.profile.clone(),
+                    current_stage: os.current_stage.clone(),
+                    current_stage_run_id: Some(run_id),
+                    queue_titles: queue.iter().map(|p| p.title.clone()).collect(),
+                    completed_count: 0,
+                    schema_v: 1,
+                };
+                let _ = crate::db_shim::operation_state::write_state_blob(
+                    &*self.repo,
+                    task.id,
+                    serde_json::to_value(&rs).unwrap_or_default(),
+                )
+                .await;
+            }
+        }
+
         self.execute_subtask_loop(task.id, &mut queue, 0, executor)
             .await
     }
@@ -228,6 +258,20 @@ impl TaskOrchestrator {
                 acceptance_criteria: Vec::new(),
             })
             .collect();
+
+        // P1 · restore harness context on resume: the queue was rebuilt from DB
+        // rows that don't carry harness_stage, so re-infer each subtask's stage
+        // when this is a harness operation. Without this, a resumed run silently
+        // falls back to the non-harness path (no gate / no cursor advance).
+        if crate::harness::stage_mode_enabled()
+            && crate::db_shim::operation_state::get(&*self.repo, task.id)
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+        {
+            crate::task_orchestrator::harness_backfill::backfill_harness_stage(&mut queue);
+        }
 
         self.emit(AiEvent::TaskResumed {
             task_id: task.id.to_string(),

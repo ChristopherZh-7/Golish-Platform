@@ -43,6 +43,7 @@ impl MemRepo {
                 operation_id,
                 profile: profile.to_string(),
                 current_stage: current_stage.to_string(),
+                state_blob: serde_json::Value::Null,
             },
         );
         Arc::new(Self {
@@ -74,6 +75,7 @@ impl DbRepoProvider for MemRepo {
                 operation_id,
                 profile: profile.to_string(),
                 current_stage: current_stage.to_string(),
+                state_blob: serde_json::Value::Null,
             },
         );
         Ok(())

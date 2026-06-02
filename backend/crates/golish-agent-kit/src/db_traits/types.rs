@@ -227,6 +227,9 @@ pub struct OperationStateView {
     pub operation_id: Uuid,
     pub profile: String,
     pub current_stage: String,
+    /// Harness-private resume state (JSONB). Carries `HarnessResumeState`
+    /// (current stage run id + queue titles + completed count) for kill→resume.
+    pub state_blob: serde_json::Value,
 }
 
 /// Minimal view of a sub-agent dispatch row, exposed to higher layers

@@ -1,0 +1,493 @@
+//! Graph executor (run / resume / deterministic parallel merge). Vendored from
+//! metalcraft (`rust4ai/metalcraft`, MIT) · see `mod.rs` for provenance.
+//!
+//! Local adaptation: metalcraft's `Executor::stream()` method is omitted here
+//! (it pulls `tokio-stream` + `mpsc`, not in this crate's dependency tree; the
+//! harness uses `run`/`resume`, not streaming). Everything else is faithful,
+//! including `RunOutcome::Failed` partial-state preservation and the
+//! `FuturesUnordered` + `sort_by` deterministic parallel merge.
+
+use futures::stream::{FuturesUnordered, StreamExt};
+use std::sync::Arc;
+use tracing::{info_span, Instrument};
+
+use super::checkpoint::Checkpointer;
+use super::error::{GraphError, Result};
+use super::graph::{CompiledGraph, Edge, NodeOutcome, Reducer, END};
+
+// ---------------------------------------------------------------------------
+// StepEvent — emitted for each node execution
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct StepEvent {
+    /// The node that just ran.
+    pub node: String,
+    /// The next node to run (or END, or "__interrupted__").
+    pub next: String,
+    /// Wall-clock duration of this node's execution.
+    pub duration: std::time::Duration,
+    /// Whether the node completed successfully, was interrupted, or errored.
+    pub outcome: StepOutcome,
+}
+
+/// Outcome of a single node execution.
+#[derive(Debug, Clone)]
+pub enum StepOutcome {
+    /// Node completed successfully and produced an update.
+    Success,
+    /// Node requested an interrupt.
+    Interrupted { reason: String },
+    /// Node failed with an error.
+    Failed { error: String },
+}
+
+// ---------------------------------------------------------------------------
+// RunOutcome — execution can complete or be interrupted
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub enum RunOutcome<S> {
+    /// Graph reached END normally.
+    Completed(S),
+    /// A node requested an interrupt (human-in-the-loop).
+    Interrupted {
+        state: S,
+        reason: String,
+        /// The node that will re-run when resumed.
+        resume_from: String,
+    },
+    /// A node failed. Carries the state accumulated up to the failure (every
+    /// successful node's update was already applied) so callers can inspect or
+    /// persist partial progress, alongside the error message. Previously a
+    /// node failure surfaced as `Err(GraphError)` and the partial state was
+    /// dropped; this variant preserves it.
+    Failed {
+        state: S,
+        /// The node that failed.
+        node: String,
+        error: String,
+    },
+}
+
+/// Internal result from executing a single step.
+enum StepResult {
+    /// Continue to this next node.
+    Continue(String),
+    /// Node requested an interrupt; resume from this node.
+    Interrupt { reason: String, resume_from: String },
+}
+
+// ---------------------------------------------------------------------------
+// Executor — runs a compiled graph to completion
+// ---------------------------------------------------------------------------
+
+/// Action returned by a step guard callback.
+pub enum GuardAction {
+    /// Continue execution normally.
+    Continue,
+    /// Stop execution with an interrupt reason.
+    Stop(String),
+}
+
+/// A callback invoked after each step. Receives the current state, the node
+/// that just ran, and the next node. Can halt execution early.
+pub type StepGuard<S> = Arc<dyn Fn(&S, &StepEvent) -> GuardAction + Send + Sync>;
+
+/// An async observer called after each node execution with rich diagnostics.
+/// Purely observational — cannot halt execution. Errors are logged but ignored.
+#[async_trait::async_trait]
+pub trait StepObserver<S: Reducer>: Send + Sync {
+    async fn on_step(&self, state: &S, event: &StepEvent);
+}
+
+/// Blanket impl: async closures work as observers.
+#[async_trait::async_trait]
+impl<S, F, Fut> StepObserver<S> for F
+where
+    S: Reducer,
+    F: Fn(StepEvent) -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = ()> + Send,
+{
+    async fn on_step(&self, _state: &S, event: &StepEvent) {
+        (self)(event.clone()).await;
+    }
+}
+
+pub struct Executor<S: Reducer> {
+    graph: Arc<CompiledGraph<S>>,
+    checkpointer: Option<Arc<dyn Checkpointer<S>>>,
+    max_steps: usize,
+    step_guard: Option<StepGuard<S>>,
+    observer: Option<Arc<dyn StepObserver<S>>>,
+}
+
+impl<S: Reducer> Executor<S> {
+    pub fn new(graph: CompiledGraph<S>) -> Self {
+        Self {
+            graph: Arc::new(graph),
+            checkpointer: None,
+            max_steps: 100,
+            step_guard: None,
+            observer: None,
+        }
+    }
+
+    /// Create an executor from a pre-shared Arc<CompiledGraph>.
+    /// Useful when the same graph is reused across multiple test runs.
+    pub fn new_from_arc(graph: Arc<CompiledGraph<S>>) -> Self {
+        Self {
+            graph,
+            checkpointer: None,
+            max_steps: 100,
+            step_guard: None,
+            observer: None,
+        }
+    }
+
+    /// Attach a checkpointer for state persistence.
+    pub fn with_checkpointer(mut self, cp: Arc<dyn Checkpointer<S>>) -> Self {
+        self.checkpointer = Some(cp);
+        self
+    }
+
+    /// Set the maximum number of execution steps before erroring.
+    pub fn max_steps(mut self, n: usize) -> Self {
+        self.max_steps = n;
+        self
+    }
+
+    /// Set a guard that runs after each step.
+    ///
+    /// The guard receives the current state and step event, and can
+    /// halt execution by returning [`GuardAction::Stop`]. Useful for
+    /// loop detection, error-spiral protection, or custom policies.
+    pub fn with_step_guard(mut self, guard: StepGuard<S>) -> Self {
+        self.step_guard = Some(guard);
+        self
+    }
+
+    /// Attach a step observer for diagnostics. Called after each node
+    /// execution with timing and outcome info. Does not affect control flow.
+    pub fn with_observer<O: StepObserver<S> + 'static>(mut self, observer: O) -> Self {
+        self.observer = Some(Arc::new(observer));
+        self
+    }
+
+    /// Run the graph to completion (or interruption).
+    pub async fn run(&self, mut state: S, thread_id: &str) -> Result<RunOutcome<S>> {
+        let mut current = self.graph.entry.clone();
+
+        for step in 0..self.max_steps {
+            if current == END {
+                return Ok(RunOutcome::Completed(state));
+            }
+
+            let started = std::time::Instant::now();
+            let step_result = self.execute_step(&mut state, &current, step).await;
+            let duration = started.elapsed();
+
+            match step_result {
+                Ok(StepResult::Continue(next)) => {
+                    let event = StepEvent {
+                        node: current.clone(),
+                        next: next.clone(),
+                        duration,
+                        outcome: StepOutcome::Success,
+                    };
+
+                    // Notify observer
+                    if let Some(obs) = &self.observer {
+                        obs.on_step(&state, &event).await;
+                    }
+
+                    // Run step guard
+                    if let Some(guard) = &self.step_guard {
+                        if let GuardAction::Stop(reason) = guard(&state, &event) {
+                            if let Some(cp) = &self.checkpointer {
+                                cp.save(thread_id, &state, &next).await?;
+                            }
+                            return Ok(RunOutcome::Interrupted {
+                                state,
+                                reason,
+                                resume_from: next,
+                            });
+                        }
+                    }
+
+                    if let Some(cp) = &self.checkpointer {
+                        cp.save(thread_id, &state, &next).await?;
+                    }
+                    current = next;
+                }
+                Ok(StepResult::Interrupt {
+                    reason,
+                    resume_from,
+                }) => {
+                    let event = StepEvent {
+                        node: current.clone(),
+                        next: resume_from.clone(),
+                        duration,
+                        outcome: StepOutcome::Interrupted {
+                            reason: reason.clone(),
+                        },
+                    };
+                    if let Some(obs) = &self.observer {
+                        obs.on_step(&state, &event).await;
+                    }
+
+                    if let Some(cp) = &self.checkpointer {
+                        cp.save(thread_id, &state, &resume_from).await?;
+                    }
+                    return Ok(RunOutcome::Interrupted {
+                        state,
+                        reason,
+                        resume_from,
+                    });
+                }
+                Err(e) => {
+                    let event = StepEvent {
+                        node: current.clone(),
+                        next: String::new(),
+                        duration,
+                        outcome: StepOutcome::Failed {
+                            error: e.to_string(),
+                        },
+                    };
+                    if let Some(obs) = &self.observer {
+                        obs.on_step(&state, &event).await;
+                    }
+                    // Hand back the partial state instead of dropping it on the
+                    // floor — the caller can persist or inspect what the graph
+                    // accumulated before the failing node.
+                    return Ok(RunOutcome::Failed {
+                        state,
+                        node: current,
+                        error: e.to_string(),
+                    });
+                }
+            }
+        }
+
+        Err(GraphError::StepLimitExceeded(self.max_steps))
+    }
+
+    /// Resume execution from a checkpoint, optionally injecting an update first.
+    pub async fn resume(
+        &self,
+        thread_id: &str,
+        inject: Option<S::Update>,
+    ) -> Result<RunOutcome<S>> {
+        let cp = self
+            .checkpointer
+            .as_ref()
+            .ok_or_else(|| GraphError::Checkpoint("no checkpointer configured".into()))?;
+
+        let (mut state, next_node) = cp.load(thread_id).await?.ok_or_else(|| {
+            GraphError::Checkpoint(format!("no checkpoint found for thread '{thread_id}'"))
+        })?;
+
+        // Apply any injected update (e.g. human input) before continuing
+        if let Some(update) = inject {
+            state.apply(update);
+        }
+
+        let mut current = next_node;
+
+        for step in 0..self.max_steps {
+            if current == END {
+                return Ok(RunOutcome::Completed(state));
+            }
+
+            let started = std::time::Instant::now();
+            let step_result = self.execute_step(&mut state, &current, step).await;
+            let duration = started.elapsed();
+
+            match step_result {
+                Ok(StepResult::Continue(next)) => {
+                    let event = StepEvent {
+                        node: current.clone(),
+                        next: next.clone(),
+                        duration,
+                        outcome: StepOutcome::Success,
+                    };
+                    if let Some(obs) = &self.observer {
+                        obs.on_step(&state, &event).await;
+                    }
+                    if let Some(guard) = &self.step_guard {
+                        if let GuardAction::Stop(reason) = guard(&state, &event) {
+                            cp.save(thread_id, &state, &next).await?;
+                            return Ok(RunOutcome::Interrupted {
+                                state,
+                                reason,
+                                resume_from: next,
+                            });
+                        }
+                    }
+                    cp.save(thread_id, &state, &next).await?;
+                    current = next;
+                }
+                Ok(StepResult::Interrupt {
+                    reason,
+                    resume_from,
+                }) => {
+                    let event = StepEvent {
+                        node: current.clone(),
+                        next: resume_from.clone(),
+                        duration,
+                        outcome: StepOutcome::Interrupted {
+                            reason: reason.clone(),
+                        },
+                    };
+                    if let Some(obs) = &self.observer {
+                        obs.on_step(&state, &event).await;
+                    }
+                    cp.save(thread_id, &state, &resume_from).await?;
+                    return Ok(RunOutcome::Interrupted {
+                        state,
+                        reason,
+                        resume_from,
+                    });
+                }
+                Err(e) => {
+                    let event = StepEvent {
+                        node: current.clone(),
+                        next: String::new(),
+                        duration,
+                        outcome: StepOutcome::Failed {
+                            error: e.to_string(),
+                        },
+                    };
+                    if let Some(obs) = &self.observer {
+                        obs.on_step(&state, &event).await;
+                    }
+                    return Ok(RunOutcome::Failed {
+                        state,
+                        node: current,
+                        error: e.to_string(),
+                    });
+                }
+            }
+        }
+
+        Err(GraphError::StepLimitExceeded(self.max_steps))
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal
+    // -----------------------------------------------------------------------
+
+    async fn execute_step(&self, state: &mut S, current: &str, step: usize) -> Result<StepResult> {
+        let span = info_span!("node", name = current, step = step);
+
+        async {
+            match self.graph.edges.get(current) {
+                Some(Edge::Parallel(targets)) => self.execute_parallel(state, targets).await,
+                _ => {
+                    let node = self
+                        .graph
+                        .nodes
+                        .get(current)
+                        .ok_or_else(|| GraphError::NodeNotFound(current.to_string()))?;
+
+                    let outcome = node.run(state).await.map_err(|e| GraphError::Node {
+                        node: current.to_string(),
+                        message: e.to_string(),
+                    })?;
+
+                    match outcome {
+                        NodeOutcome::Update(update) => {
+                            state.apply(update);
+
+                            let next = match self.graph.edges.get(current) {
+                                Some(Edge::Static(next)) => next.clone(),
+                                Some(Edge::Conditional(f)) => f(state),
+                                None => return Err(GraphError::NoEdge(current.to_string())),
+                                Some(Edge::Parallel(_)) => unreachable!(),
+                            };
+
+                            Ok(StepResult::Continue(next))
+                        }
+                        NodeOutcome::Interrupt { update, reason } => {
+                            if let Some(u) = update {
+                                state.apply(u);
+                            }
+                            // Resume from the CURRENT node so it re-runs with new input
+                            Ok(StepResult::Interrupt {
+                                reason,
+                                resume_from: current.to_string(),
+                            })
+                        }
+                    }
+                }
+            }
+        }
+        .instrument(span)
+        .await
+    }
+
+    async fn execute_parallel(&self, state: &mut S, targets: &[String]) -> Result<StepResult> {
+        let mut tasks = FuturesUnordered::new();
+
+        for name in targets {
+            let node = self
+                .graph
+                .nodes
+                .get(name)
+                .ok_or_else(|| GraphError::NodeNotFound(name.clone()))?
+                .clone();
+            let s = state.clone();
+            let name = name.clone();
+            tasks.push(async move {
+                let result = node.run(&s).await;
+                (name, result)
+            });
+        }
+
+        let mut results = Vec::new();
+        while let Some((name, res)) = tasks.next().await {
+            let outcome = res.map_err(|e| GraphError::Node {
+                node: name.clone(),
+                message: e.to_string(),
+            })?;
+
+            match outcome {
+                NodeOutcome::Update(update) => {
+                    results.push((name, update));
+                }
+                NodeOutcome::Interrupt { update, reason } => {
+                    // Apply any partial updates collected so far
+                    results.sort_by(|a, b| a.0.cmp(&b.0));
+                    for (_, u) in results {
+                        state.apply(u);
+                    }
+                    if let Some(u) = update {
+                        state.apply(u);
+                    }
+                    return Ok(StepResult::Interrupt {
+                        reason,
+                        resume_from: name,
+                    });
+                }
+            }
+        }
+
+        // Apply in deterministic order
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, update) in results {
+            state.apply(update);
+        }
+
+        if let Some(first) = targets.first() {
+            match self.graph.edges.get(first) {
+                Some(Edge::Static(next)) => Ok(StepResult::Continue(next.clone())),
+                Some(Edge::Conditional(f)) => Ok(StepResult::Continue(f(state))),
+                _ => Err(GraphError::NoEdge(format!(
+                    "parallel branch '{first}' has no outgoing edge"
+                ))),
+            }
+        } else {
+            Err(GraphError::NoEdge("empty parallel targets".into()))
+        }
+    }
+}

@@ -280,4 +280,36 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<std::collections::HashSet<i64>> {
         Ok(ids.iter().copied().collect())
     }
+
+    // ── Stage runs + checkpoint (P1 · graph/checkpoint) ─────────────────
+
+    /// Insert a `stage_runs` row (one stage execution instance). Default no-op
+    /// so test doubles keep passing; the app layer overrides it.
+    async fn stage_run_insert(
+        &self,
+        id: Uuid,
+        operation_id: Uuid,
+        stage_kind: &str,
+    ) -> anyhow::Result<()> {
+        let _ = (id, operation_id, stage_kind);
+        Ok(())
+    }
+
+    /// Mark a `stage_runs` row terminal (`completed` / `failed` /
+    /// `paused_needs_user`). Default no-op.
+    async fn stage_run_mark_terminal(&self, id: Uuid, status: &str) -> anyhow::Result<()> {
+        let _ = (id, status);
+        Ok(())
+    }
+
+    /// Overwrite `operation_state.state_blob` (harness resume checkpoint).
+    /// Default no-op.
+    async fn operation_state_write_state_blob(
+        &self,
+        operation_id: Uuid,
+        state_blob: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let _ = (operation_id, state_blob);
+        Ok(())
+    }
 }

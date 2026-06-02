@@ -35,9 +35,11 @@
 //! gate check.
 
 pub mod gate;
+pub mod graph_engine;
 pub mod intent_classifier;
 pub mod nl_slice;
 pub mod operation_graph;
+pub mod operation_mermaid;
 pub mod pre_action_authorizer;
 pub mod profile;
 pub mod resources;

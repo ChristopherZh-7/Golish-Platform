@@ -122,6 +122,36 @@ pub mod operation_state {
         repo.operation_state_advance_stage(operation_id, new_stage)
             .await
     }
+
+    pub async fn write_state_blob(
+        repo: &dyn DbRepoProvider,
+        operation_id: Uuid,
+        state_blob: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        repo.operation_state_write_state_blob(operation_id, state_blob)
+            .await
+    }
+}
+
+pub mod stage_runs {
+    use super::*;
+
+    pub async fn insert(
+        repo: &dyn DbRepoProvider,
+        id: Uuid,
+        operation_id: Uuid,
+        stage_kind: &str,
+    ) -> anyhow::Result<()> {
+        repo.stage_run_insert(id, operation_id, stage_kind).await
+    }
+
+    pub async fn mark_terminal(
+        repo: &dyn DbRepoProvider,
+        id: Uuid,
+        status: &str,
+    ) -> anyhow::Result<()> {
+        repo.stage_run_mark_terminal(id, status).await
+    }
 }
 
 pub mod message_chains {

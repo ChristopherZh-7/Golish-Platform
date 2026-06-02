@@ -353,6 +353,29 @@ impl DbRepoProvider for GolishDbRepoProvider {
             .await
     }
 
+    async fn stage_run_insert(
+        &self,
+        id: Uuid,
+        operation_id: Uuid,
+        stage_kind: &str,
+    ) -> anyhow::Result<()> {
+        self.stage_run_insert_impl(id, operation_id, stage_kind)
+            .await
+    }
+
+    async fn stage_run_mark_terminal(&self, id: Uuid, status: &str) -> anyhow::Result<()> {
+        self.stage_run_mark_terminal_impl(id, status).await
+    }
+
+    async fn operation_state_write_state_blob(
+        &self,
+        operation_id: Uuid,
+        state_blob: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        self.operation_state_write_state_blob_impl(operation_id, state_blob)
+            .await
+    }
+
     // ── Message Chains / Execution Plans / Dispatch ──────────
     async fn message_chain_create(
         &self,
