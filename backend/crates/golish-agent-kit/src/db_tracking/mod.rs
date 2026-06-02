@@ -89,6 +89,17 @@ impl DbTracker {
         self.session_uuid
     }
 
+    /// Current operation/task id (= `audit_log.run_id` grouping key for the
+    /// evidence ledger hash chain). `None` outside a task scope.
+    pub fn task_id(&self) -> Option<Uuid> {
+        self.task_id
+    }
+
+    /// Project path scope for evidence rows, if set.
+    pub fn project_path(&self) -> Option<&str> {
+        self.project_path.as_deref()
+    }
+
     pub fn backend(&self) -> &Arc<dyn DbTrackingBackend> {
         &self.backend
     }

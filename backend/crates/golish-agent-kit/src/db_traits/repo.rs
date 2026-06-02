@@ -233,4 +233,51 @@ pub trait DbRepoProvider: Send + Sync {
         &self,
         session_id: Uuid,
     ) -> anyhow::Result<Vec<SubAgentDispatchView>>;
+
+    // ── Evidence Ledger (P0 · OpenFang-style hash chain) ────────────────
+
+    /// Append a tool-output evidence row to the ledger: writes an
+    /// `audit_log(audit_role='evidence')` row carrying an OpenFang-style hash
+    /// chain (`prev_hash`/`hash` in the detail JSON) plus a current scope
+    /// classification. Returns the new evidence `audit_log.id`.
+    ///
+    /// Default impl is a no-op returning `0` so test doubles need not wire a
+    /// real ledger; the app layer (`GolishDbRepoProvider`) overrides it.
+    #[allow(clippy::too_many_arguments)]
+    async fn evidence_append(
+        &self,
+        operation_id: Uuid,
+        stage_run_id: Option<Uuid>,
+        session_id: Option<&str>,
+        project_path: Option<&str>,
+        tool_name: &str,
+        kind: &str,
+        subject: &str,
+        raw_output: &str,
+    ) -> anyhow::Result<i64> {
+        let _ = (
+            operation_id,
+            stage_run_id,
+            session_id,
+            project_path,
+            tool_name,
+            kind,
+            subject,
+            raw_output,
+        );
+        Ok(0)
+    }
+
+    /// Of the given `audit_log.id`s, return the subset that actually exist as
+    /// `audit_role='evidence'` rows. The harness gate uses this to reject
+    /// deliverables citing fabricated evidence ids.
+    ///
+    /// Default impl treats every id as existing (no-op = never blocks) so test
+    /// doubles keep passing; the app layer overrides it with a real query.
+    async fn evidence_existing_ids(
+        &self,
+        ids: &[i64],
+    ) -> anyhow::Result<std::collections::HashSet<i64>> {
+        Ok(ids.iter().copied().collect())
+    }
 }

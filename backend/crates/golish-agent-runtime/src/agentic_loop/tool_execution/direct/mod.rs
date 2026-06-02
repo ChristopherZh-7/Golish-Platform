@@ -212,6 +212,54 @@ where
                     });
                 }
 
+                // P0 · evidence ledger: record this tool run as an
+                // `audit_role='evidence'` row (OpenFang-style hash chain) so the
+                // harness gate can later cross-check the deliverable's
+                // `evidence_refs` against real ledger ids. Scoped to harness-
+                // staged subtasks with a known operation; failure only warns and
+                // never blocks the tool path.
+                if ctx.harness_stage.is_some() {
+                    if let Some(tracker) = ctx.events.db_tracker {
+                        if let Some(repo) = tracker.repo() {
+                            // Operation grouping key for the hash chain: the
+                            // task_id when a task scope is set, else the session
+                            // uuid. (Per-task scoping via `set_task_context` has no
+                            // callers yet; session keeps the chain working today
+                            // and auto-upgrades to task_id once that is wired.)
+                            let op_id = tracker.task_id().unwrap_or_else(|| tracker.session_uuid());
+                            let ev_stdout = v
+                                .get("stdout")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let ev_subject = tool_args
+                                .get("command")
+                                .and_then(|c| c.as_str())
+                                .filter(|c| !c.is_empty())
+                                .unwrap_or(effective_tool_name);
+                            if let Err(e) = repo
+                                .evidence_append(
+                                    op_id,
+                                    None,
+                                    ctx.events.session_id,
+                                    tracker.project_path(),
+                                    effective_tool_name,
+                                    effective_tool_name,
+                                    ev_subject,
+                                    &ev_stdout,
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    target: "harness::evidence",
+                                    error = %e,
+                                    "evidence append failed (continuing)"
+                                );
+                            }
+                        }
+                    }
+                }
+
                 // P-KG: regex-scan stdout for IP/CVE/URL hints and
                 // upsert them into the graph in the background. The
                 // sub-agent path does the same on its response text;

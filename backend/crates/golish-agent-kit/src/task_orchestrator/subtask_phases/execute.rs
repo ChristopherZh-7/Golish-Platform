@@ -190,7 +190,11 @@ impl TaskOrchestrator {
 
                     let (gated_content, gate_outcome) =
                         apply_harness_gate_hook(planned, exec_ctx, agent_result.content);
-                    if let Some(outcome) = gate_outcome {
+                    if let Some(mut outcome) = gate_outcome {
+                        // P0 · reject deliverables citing fabricated evidence ids
+                        // (may flip PASS→BLOCK + attach a correction) before the
+                        // retry decision below.
+                        self.enforce_evidence_existence(&mut outcome).await;
                         // C4 · gate BLOCK with retries left → feed the recovery
                         // correction back into the loop (re-do the subtask) instead
                         // of accepting the blocked result; defer transition until
@@ -330,7 +334,8 @@ impl TaskOrchestrator {
         // Loop exhausted: run the gate once on the fallback content (no further
         // retry possible) and drive the transition on whatever it decides.
         let (out, gate_outcome) = apply_harness_gate_hook(planned, exec_ctx, fallback);
-        if let Some(outcome) = gate_outcome {
+        if let Some(mut outcome) = gate_outcome {
+            self.enforce_evidence_existence(&mut outcome).await;
             if outcome.gate_allowed {
                 if let Some(summary) = outcome.evidence_summary.clone() {
                     self.harness_evidence
@@ -469,6 +474,68 @@ impl TaskOrchestrator {
             Err(e) => tracing::warn!(target: "harness::hook", error = %e, "advance_stage failed"),
         }
     }
+
+    /// P0 · gate evidence 回查: 把交付物里引用、但 ledger 中**不存在**的 evidence
+    /// id 当作伪造 → 翻 BLOCK + 追加纠正喂回 reflector. infra 查询失败只 warn,
+    /// 不误伤合法 stage (放行), 避免 DB 抖动卡死流程.
+    async fn enforce_evidence_existence(&self, outcome: &mut HarnessGateOutcome) {
+        if outcome.evidence_refs.is_empty() {
+            return;
+        }
+        let existing = match self
+            .repo
+            .evidence_existing_ids(&outcome.evidence_refs)
+            .await
+        {
+            Ok(set) => set,
+            Err(e) => {
+                tracing::warn!(
+                    target: "harness::hook",
+                    error = %e,
+                    "evidence existence check failed; not blocking on infra error"
+                );
+                return;
+            }
+        };
+        let fabricated = fabricated_evidence_ids(&outcome.evidence_refs, &existing);
+        if fabricated.is_empty() {
+            return;
+        }
+        tracing::warn!(
+            target: "harness::hook",
+            stage = %outcome.gated_stage.as_str(),
+            fabricated = ?fabricated,
+            "gate BLOCK: deliverable cites evidence ids absent from the ledger"
+        );
+        block_outcome_for_fabricated(outcome, &fabricated);
+    }
+}
+
+/// Pure core of the evidence-existence gate: the cited ids absent from the
+/// ledger (`existing`). Non-empty ⇒ the deliverable fabricated evidence refs ⇒
+/// the gate must BLOCK. Order follows `cited` for stable messages.
+fn fabricated_evidence_ids(cited: &[i64], existing: &std::collections::HashSet<i64>) -> Vec<i64> {
+    cited
+        .iter()
+        .copied()
+        .filter(|id| !existing.contains(id))
+        .collect()
+}
+
+/// Pure: flip a gate outcome to BLOCK with an anti-fabrication correction,
+/// preserving any prior correction by prepending the fabrication notice.
+fn block_outcome_for_fabricated(outcome: &mut HarnessGateOutcome, fabricated: &[i64]) {
+    outcome.gate_allowed = false;
+    let correction = format!(
+        "Your StageDeliverable cites evidence ids {fabricated:?} that do NOT exist in the \
+         evidence ledger. You may only reference evidence produced by real tool runs in this \
+         operation. Re-run the required tools so their output is recorded, then resubmit a \
+         StageDeliverable whose evidence_refs are all real ledger ids."
+    );
+    outcome.repair_correction = Some(match outcome.repair_correction.take() {
+        Some(prev) => format!("{correction}\n\n{prev}"),
+        None => correction,
+    });
 }
 
 // ── Harness gate hook (Phase C · Doc 3 §5.2 接入点) ─────────────────────────
@@ -500,6 +567,10 @@ struct HarnessGateOutcome {
     /// downstream inheriting stages get the real upstream results. `None` when no
     /// deliverable was parsed.
     evidence_summary: Option<String>,
+    /// P0 · the deliverable's cited evidence ids (as `audit_log.id`) so the
+    /// caller can verify each exists in the ledger (anti-fabrication) before
+    /// honoring a PASS. Empty when no deliverable / no refs.
+    evidence_refs: Vec<i64>,
 }
 
 /// 返回 `(content, Option<outcome>)`: `None` 表示 hook 透传 (未跑 gate); `Some` 表示
@@ -513,9 +584,15 @@ fn apply_harness_gate_hook(
         return (content, None);
     }
     let Some(stage_hint) = planned.harness_stage.as_ref() else {
-        tracing::debug!(
+        // Observability (2026-06-01): previously DEBUG, so a stage-less subtask
+        // produced ZERO signal at default log level — the gate "silently
+        // skipped" and the DAG cursor never moved without any trace. INFO so
+        // `golish=info` runs can see that this subtask carried no stage.
+        tracing::info!(
             target: "harness::hook",
-            "skip: stage_mode enabled but planned.harness_stage is None"
+            subtask_title = %planned.title,
+            "harness gate skipped: subtask has no harness_stage (not tagged by Generator \
+             or keyword backfill) — no gate / no cursor advance for it"
         );
         return (content, None);
     };
@@ -556,11 +633,16 @@ fn apply_harness_gate_hook(
     };
 
     let Some(deliverable) = parse_deliverable_from_content(&content) else {
-        // 找不到 deliverable 时不强制 block; debug-log 留痕.
-        tracing::debug!(
+        // Only reachable for a stage-TAGGED subtask, so this is a genuine
+        // contract miss (agent didn't end with a ```json StageDeliverable);
+        // WARN — not spammy because untagged subtasks already returned above.
+        tracing::warn!(
             target: "harness::hook",
+            stage_kind = ?stage_hint.stage_kind,
+            subtask_title = %planned.title,
             content_len = content.len(),
-            "no StageDeliverable JSON found in agent content, skipping gate"
+            "harness gate skipped: subtask is stage-tagged but agent produced no parseable \
+             StageDeliverable JSON block — gate did not run, cursor will not advance"
         );
         return (content, None);
     };
@@ -625,6 +707,11 @@ fn apply_harness_gate_hook(
             gate_allowed: decision.allowed,
             repair_correction,
             evidence_summary: Some(summarize_deliverable(&deliverable)),
+            evidence_refs: deliverable
+                .evidence_refs
+                .iter()
+                .map(|e| e.as_i64())
+                .collect(),
         }),
     )
 }
@@ -674,8 +761,9 @@ fn summarize_deliverable(d: &crate::harness::StageDeliverable) -> String {
 fn build_gate_correction(decision: &crate::harness::GateResult) -> String {
     let mut s = String::from(
         "Your stage deliverable was REJECTED by the deterministic harness gate. \
-         Fix the issues below and resubmit a corrected StageDeliverable via \
-         `submit_stage_deliverable`.\n\n### Gate rejection reasons\n",
+         Fix the issues below and resubmit by ending your next message with a \
+         corrected ```json StageDeliverable block (there is no submit tool).\n\n\
+         ### Gate rejection reasons\n",
     );
     if decision.reasons.is_empty() {
         s.push_str("- (no specific reason reported)\n");
@@ -920,5 +1008,60 @@ mod harness_gate_hook_tests {
         assert!(rendered.contains("ACTUAL UPSTREAM RESULTS"));
         assert!(rendered.contains("external_attack_surface"));
         assert!(rendered.contains("subdomain (api.example.com)"));
+    }
+
+    #[test]
+    fn fabricated_evidence_ids_flags_only_absent_refs() {
+        let existing: std::collections::HashSet<i64> = [1, 2, 3].into_iter().collect();
+        // all cited exist → nothing fabricated
+        assert!(fabricated_evidence_ids(&[1, 2, 3], &existing).is_empty());
+        // mix: only the absent ids are flagged, in cited order
+        assert_eq!(
+            fabricated_evidence_ids(&[1, 999, 2, 42], &existing),
+            vec![999, 42]
+        );
+        // all absent
+        assert_eq!(fabricated_evidence_ids(&[7, 8], &existing), vec![7, 8]);
+        // empty cited → empty
+        assert!(fabricated_evidence_ids(&[], &existing).is_empty());
+    }
+
+    #[test]
+    fn block_outcome_for_fabricated_flips_pass_to_block() {
+        // A PASS deliverable citing a fabricated id must flip to BLOCK with a
+        // correction naming the fabricated ids (plan acceptance #2: fake refs
+        // get BLOCKed).
+        let mut o = HarnessGateOutcome {
+            gated_stage: StageKind::ExternalAttackSurface,
+            gate_allowed: true,
+            repair_correction: None,
+            evidence_summary: None,
+            evidence_refs: vec![1, 999],
+        };
+        block_outcome_for_fabricated(&mut o, &[999]);
+        assert!(!o.gate_allowed, "fabricated evidence must BLOCK the gate");
+        let c = o.repair_correction.expect("correction set on block");
+        assert!(c.contains("999"), "correction names the fabricated id");
+        assert!(c.contains("do NOT exist"));
+    }
+
+    #[test]
+    fn block_outcome_for_fabricated_prepends_to_existing_correction() {
+        let mut o = HarnessGateOutcome {
+            gated_stage: StageKind::ExternalAttackSurface,
+            gate_allowed: false,
+            repair_correction: Some("PRIOR-GATE-REASON".to_string()),
+            evidence_summary: None,
+            evidence_refs: vec![5],
+        };
+        block_outcome_for_fabricated(&mut o, &[5]);
+        let c = o.repair_correction.unwrap();
+        assert!(
+            c.contains("PRIOR-GATE-REASON"),
+            "must keep prior correction"
+        );
+        let fab_pos = c.find("do NOT exist").expect("fabrication notice present");
+        let prior_pos = c.find("PRIOR-GATE-REASON").unwrap();
+        assert!(fab_pos < prior_pos, "fabrication notice is prepended");
     }
 }

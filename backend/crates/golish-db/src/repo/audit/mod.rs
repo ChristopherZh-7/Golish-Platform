@@ -163,5 +163,67 @@ pub async fn log_operation_with_lineage(
     Ok(row)
 }
 
+/// 写一条 evidence 行 (`audit_role='evidence'`). 返回带 id 的 [`AuditEntry`],
+/// 调用方 (`EvidenceLedger::append`) 取 `.id` 包成 `EvidenceAuditId`.
+///
+/// 与 `log_operation_with_lineage` 的区别: `status` 固定 `'completed'`,
+/// `audit_role` 固定 `'evidence'` (migration `20260601000001` 加的列, 默认
+/// `'action'`, 老行不破). `RETURNING *` 多出的 `audit_role` 列被 `FromRow`
+/// 忽略 (AuditEntry 不含该字段, 读路径走 detail JSON).
+#[allow(clippy::too_many_arguments)]
+pub async fn log_evidence(
+    pool: &PgPool,
+    action: &str,
+    category: &str,
+    details: &str,
+    project_path: Option<&str>,
+    source: &str,
+    target_id: Option<Uuid>,
+    session_id: Option<&str>,
+    tool_name: Option<&str>,
+    detail: &Value,
+    run_id: Option<Uuid>,
+) -> Result<AuditEntry> {
+    let row = sqlx::query_as::<_, AuditEntry>(
+        r#"INSERT INTO audit_log
+               (action, category, details, project_path, source,
+                target_id, session_id, tool_name, status, detail,
+                run_id, audit_role)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9, $10, 'evidence')
+           RETURNING *"#,
+    )
+    .bind(action)
+    .bind(category)
+    .bind(details)
+    .bind(project_path)
+    .bind(source)
+    .bind(target_id)
+    .bind(session_id)
+    .bind(tool_name)
+    .bind(detail)
+    .bind(run_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(row)
+}
+
+/// 给一组 `audit_log.id`, 返回其中真实存在且 `audit_role='evidence'` 的子集.
+///
+/// harness gate 用它拒绝引用了不存在 evidence id 的交付物 (防 agent 伪造
+/// `evidence_refs`). 空入参直接返回空, 避免无谓 query.
+pub async fn existing_evidence_ids(pool: &PgPool, ids: &[i64]) -> Result<Vec<i64>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        r#"SELECT id FROM audit_log
+           WHERE audit_role = 'evidence' AND id = ANY($1)"#,
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 #[cfg(test)]
 mod tests;

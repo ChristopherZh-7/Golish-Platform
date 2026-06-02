@@ -23,6 +23,7 @@ use golish_app_core::ports::vuln::{
 };
 
 mod convert;
+mod evidence;
 mod orchestration;
 mod recon;
 mod tasks;
@@ -458,6 +459,38 @@ impl DbRepoProvider for GolishDbRepoProvider {
         session_id: Uuid,
     ) -> anyhow::Result<Vec<SubAgentDispatchView>> {
         self.dispatch_list_running_impl(session_id).await
+    }
+
+    // ── Evidence Ledger (P0) ─────────────────────────────────
+    async fn evidence_append(
+        &self,
+        operation_id: Uuid,
+        stage_run_id: Option<Uuid>,
+        session_id: Option<&str>,
+        project_path: Option<&str>,
+        tool_name: &str,
+        kind: &str,
+        subject: &str,
+        raw_output: &str,
+    ) -> anyhow::Result<i64> {
+        self.evidence_append_impl(
+            operation_id,
+            stage_run_id,
+            session_id,
+            project_path,
+            tool_name,
+            kind,
+            subject,
+            raw_output,
+        )
+        .await
+    }
+
+    async fn evidence_existing_ids(
+        &self,
+        ids: &[i64],
+    ) -> anyhow::Result<std::collections::HashSet<i64>> {
+        self.evidence_existing_ids_impl(ids).await
     }
 }
 
