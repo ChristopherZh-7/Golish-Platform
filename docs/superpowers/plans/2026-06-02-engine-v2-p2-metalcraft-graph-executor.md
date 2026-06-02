@@ -47,6 +47,26 @@ user_input_rx）。故用 `StageRunner` 抽象解耦。
   状态可落 `operation_state.state_blob`/`stage_runs` → 细粒度崩溃续跑。需加 repo 写
   blob 方法（非 schema 变更，state_blob 列已存在）。
 
+## 增量 4 · 方案 C 全量重写（用户 2026-06-02 选定，subsume 4b/4c）
+
+> 用户在 A（内部可变）/ B（channel）/ C（全量重写）中选 **C**：把 `run()` 改成
+> **metalcraft Executor 驱动**，subtask 循环折进 stage 节点体。最高风险 → **必须增量
+> + flag 闸 + 旧 `execute_subtask_loop` 保留为 fallback/回滚**，新路径证明前不删旧路径。
+> 回滚点：`GOLISH_HARNESS_GRAPH_FLOW` 关掉即回旧循环。
+
+- **C-1（本次 · additive · 零 live 变更）**：`stage_execution::group_subtasks_by_stage`
+  —— 把扁平 subtask 队列按 stage 分组（首次出现序），Executor 驱动时「一个 stage 节点
+  跑该组 subtask」的基础。纯函数 + 单测，不碰 run()。
+- **C-2（核心 · 风险最高）**：`OrchestratorStageRunner` 实现 `StageRunner`——内部可变
+  （`Arc<Mutex<ExecState>>` 装 harness_evidence / completed_results / cost）让 `run_stage`
+  能从 `&self` 跑某 stage 的 subtask 组（复用 `execute_single_subtask` 逻辑 + gate）。
+- **C-3（flag 闸）**：`run()` 按 `graph_flow_enabled()` 二选一：ON → `run_executor_driven`
+  （build_runner_graph + Executor.run）；OFF → 旧 `execute_subtask_loop`（默认 = 回滚）。
+- **C-4**：DB-backed `Checkpointer`（= 原增量 3/4d），Executor 驱动后落 state_blob/stage_runs。
+
+每步：`just precommit` 绿 + 新单测；旧路径默认不变（flag OFF）。
+
 ## 验收
 - 每增量：`just precommit` 绿 + 新单测过。
-- 增量 1 不改任何 live 路径（grep 确认 `operation_flow` 仅被自身 + mod.rs 引用）。
+- 增量 1 / C-1 不改任何 live 路径（grep 确认仅被自身 + mod.rs 引用）。
+- C 全程旧 `execute_subtask_loop` 保留，flag OFF 行为逐字节不变（回滚安全）。
