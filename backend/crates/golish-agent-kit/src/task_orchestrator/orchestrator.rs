@@ -406,7 +406,7 @@ impl TaskOrchestrator {
 /// [`TaskOrchestrator::emit_plan_update`] so a step's InProgress and Completed
 /// emissions get distinct, ordered versions and the frontend reducer stops
 /// dropping the "completed" transition.
-fn next_plan_version() -> u32 {
+pub(super) fn next_plan_version() -> u32 {
     use std::sync::atomic::{AtomicU32, Ordering};
     static PLAN_VERSION: AtomicU32 = AtomicU32::new(1);
     PLAN_VERSION.fetch_add(1, Ordering::Relaxed)

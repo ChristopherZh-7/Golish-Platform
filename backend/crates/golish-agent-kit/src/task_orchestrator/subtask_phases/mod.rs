@@ -264,8 +264,13 @@ impl TaskOrchestrator {
             })
             .collect();
         let final_summary = PlanSummary::from_steps(&final_steps);
+        // P2 · use the same process-global monotonic version source as
+        // `emit_plan_update` so this final "all completed" plan can never collide
+        // with (or sort before) the per-step updates emitted above. The previous
+        // hard-coded `queue.len() + 10` could land below a recent step version
+        // (which the frontend reducer would then mis-order/keep stale).
         self.emit(AiEvent::PlanUpdated {
-            version: (queue.len() as u32 + 10),
+            version: super::orchestrator::next_plan_version(),
             summary: final_summary,
             steps: final_steps,
             explanation: Some("Task completed".to_string()),

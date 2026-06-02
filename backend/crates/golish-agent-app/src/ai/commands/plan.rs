@@ -8,26 +8,27 @@ use tauri::State;
 use crate::state::AgentState;
 use golish_agent_kit::planner::TaskPlan;
 
-use super::ai_session_not_initialized_error;
-
 /// Get the current task plan for a session.
 ///
 /// # Arguments
 /// * `session_id` - The session ID to get the plan for
 ///
 /// # Returns
-/// The current TaskPlan with version, summary, and steps
+/// The current `TaskPlan` (version, summary, steps). An uninitialized session
+/// returns an empty plan (version 0) instead of an error — see below.
 #[tauri::command]
 pub async fn get_plan(
     session_id: String,
     state: State<'_, AgentState>,
 ) -> Result<TaskPlan, GolishError> {
     let bridges = state.ai_state.bridges.read().await;
-    let bridge = bridges
-        .get(&session_id)
-        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
-
-    // Get the current plan from the bridge's plan_manager
-    let plan = bridge.plan_manager().snapshot().await;
-    Ok(plan)
+    // P2 · an uninitialized session simply has no plan yet. The frontend restore
+    // fallback (useTaskPlanState) calls this early — before `init_ai_session`
+    // registers the bridge — so return an empty plan (version 0, which the
+    // frontend treats as "no plan") instead of erroring. Erroring here only
+    // produced a recurring `console.warn` on every early restore.
+    match bridges.get(&session_id) {
+        Some(bridge) => Ok(bridge.plan_manager().snapshot().await),
+        None => Ok(TaskPlan::default()),
+    }
 }

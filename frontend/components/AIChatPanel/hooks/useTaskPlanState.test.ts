@@ -198,4 +198,32 @@ describe("useTaskPlanState · P0-1 fallback fetch", () => {
     expect(consoleSpy).toHaveBeenCalled();
     consoleSpy.mockRestore();
   });
+
+  it("treats an empty plan (version 0) from an uninitialized session as a silent no-op", async () => {
+    // P2 · `get_plan` now returns an empty plan (version 0) instead of throwing
+    // `ai_session_not_initialized` when the session bridge isn't registered yet.
+    // The fallback must treat that as "no plan": no store write AND — crucially —
+    // NO console.warn (the old throw path warned on every early restore).
+    (ai.getPlan as any).mockResolvedValue(
+      makeStubPlan({
+        version: 0,
+        steps: [],
+        summary: { total: 0, completed: 0, in_progress: 0, pending: 0 },
+      })
+    );
+    resetStoreWithConversation({ aiSessionId: SID });
+
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    renderHookEmpty();
+    await waitFor(() => {
+      expect(ai.getPlan).toHaveBeenCalledTimes(1);
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    // No plan written, and no noisy warning (unlike the rejection path above).
+    expect(useStore.getState().sessions[SID]?.plan).toBeUndefined();
+    expect(consoleSpy).not.toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
 });
