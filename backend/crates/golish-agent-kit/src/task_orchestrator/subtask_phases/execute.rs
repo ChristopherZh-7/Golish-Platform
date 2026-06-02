@@ -401,7 +401,15 @@ impl TaskOrchestrator {
         let dag = graph.project(&profile.allowed_stage_set());
         let decision =
             crate::harness::decide_transition(outcome.gated_stage, outcome.gate_allowed, &dag);
-        let Some(next) = decision.advance_target() else {
+        // P2 (graph flow) · pick the next stage. With the metalcraft graph-flow
+        // flag ON, a branch routes by progress (no findings → bail to reporting)
+        // instead of always taking the first candidate; flag OFF preserves the
+        // legacy `advance_target` (first-candidate) behaviour exactly.
+        let Some(next) = crate::harness::operation_flow::chosen_next_stage(
+            &decision,
+            outcome.findings_count > 0,
+            crate::harness::operation_flow::graph_flow_enabled(),
+        ) else {
             tracing::info!(
                 target: "harness::hook",
                 operation_id = %operation_id,
@@ -662,6 +670,11 @@ struct HarnessGateOutcome {
     /// `StageSpec.required_evidence_kinds`); the caller cross-checks them against
     /// the ledger before honoring a PASS. Empty = stage declares no requirement.
     required_evidence_kinds: Vec<String>,
+    /// P2 (graph flow) · how many findings the deliverable carried. Used as the
+    /// "made progress" signal for conditional branch routing: a stage that
+    /// passes its gate but surfaces NO findings can bail to reporting instead of
+    /// descending into enumeration/triage (see `operation_flow::chosen_next_stage`).
+    findings_count: usize,
 }
 
 /// 返回 `(content, Option<outcome>)`: `None` 表示 hook 透传 (未跑 gate); `Some` 表示
@@ -822,6 +835,7 @@ fn apply_harness_gate_hook(
             )
             .map(|s| s.required_evidence_kinds)
             .unwrap_or_default(),
+            findings_count: deliverable.findings.len(),
         }),
     )
 }
@@ -1148,6 +1162,7 @@ mod harness_gate_hook_tests {
             evidence_summary: None,
             evidence_refs: vec![1, 999],
             required_evidence_kinds: Vec::new(),
+            findings_count: 0,
         };
         block_outcome_for_fabricated(&mut o, &[999]);
         assert!(!o.gate_allowed, "fabricated evidence must BLOCK the gate");
@@ -1165,6 +1180,7 @@ mod harness_gate_hook_tests {
             evidence_summary: None,
             evidence_refs: vec![5],
             required_evidence_kinds: Vec::new(),
+            findings_count: 0,
         };
         block_outcome_for_fabricated(&mut o, &[5]);
         let c = o.repair_correction.unwrap();
