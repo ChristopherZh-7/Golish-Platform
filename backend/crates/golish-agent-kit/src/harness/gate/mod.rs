@@ -8,6 +8,7 @@
 //! [`GateResult`], Phase 2 完整 wiring 时填.
 
 pub mod contract_check;
+pub mod finding_verification_check;
 pub mod freshness_check;
 pub mod min_invocations_check;
 pub mod schema_check;
@@ -99,6 +100,9 @@ pub fn validate_stage_gate(
         contract_check::run(deliverable, contract),
         vacuous_check::run(deliverable, spec),
         freshness_check::run(deliverable, spec),
+        // P2 · config-driven verification (no-op unless the stage spec declares
+        // finding_verification / min_findings / min_claims).
+        finding_verification_check::run(deliverable, spec),
     ];
 
     let mut ran: HashSet<&'static str> = HashSet::new();

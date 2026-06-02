@@ -6,7 +6,7 @@
 //! `DbRepoProvider` (see `mod.rs`) so the orchestrator/runtime reach the ledger
 //! without holding a raw pool.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use uuid::Uuid;
 
@@ -54,5 +54,16 @@ impl GolishDbRepoProvider {
     ) -> anyhow::Result<HashSet<i64>> {
         let found = golish_db::repo::audit::existing_evidence_ids(&self.pool, ids).await?;
         Ok(found.into_iter().collect())
+    }
+
+    pub(crate) async fn evidence_kinds_for_impl(
+        &self,
+        ids: &[i64],
+    ) -> anyhow::Result<HashMap<i64, String>> {
+        let rows = golish_db::repo::audit::evidence_kinds_for(&self.pool, ids).await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id, kind)| kind.map(|k| (id, k)))
+            .collect())
     }
 }

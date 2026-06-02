@@ -374,6 +374,7 @@ fn pass(stage: StageKind) -> HarnessGateOutcome {
         repair_correction: None,
         evidence_summary: None,
         evidence_refs: Vec::new(),
+        required_evidence_kinds: Vec::new(),
     }
 }
 
@@ -384,6 +385,7 @@ fn block(stage: StageKind) -> HarnessGateOutcome {
         repair_correction: None,
         evidence_summary: None,
         evidence_refs: Vec::new(),
+        required_evidence_kinds: Vec::new(),
     }
 }
 

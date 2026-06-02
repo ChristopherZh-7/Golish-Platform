@@ -515,6 +515,13 @@ impl DbRepoProvider for GolishDbRepoProvider {
     ) -> anyhow::Result<std::collections::HashSet<i64>> {
         self.evidence_existing_ids_impl(ids).await
     }
+
+    async fn evidence_kinds_for(
+        &self,
+        ids: &[i64],
+    ) -> anyhow::Result<std::collections::HashMap<i64, String>> {
+        self.evidence_kinds_for_impl(ids).await
+    }
 }
 
 /// DB-backed integration tests for the harness `operation_state` stage cursor.

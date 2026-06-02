@@ -110,6 +110,21 @@ pub enum FindingSeverity {
     Critical,
 }
 
+impl FindingSeverity {
+    /// Ordering rank for threshold comparisons (Info=0 .. Critical=4). Used by
+    /// the P2 verification gate to compare a finding's severity against a
+    /// stage's `finding_verification.min_severity`.
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Info => 0,
+            Self::Low => 1,
+            Self::Medium => 2,
+            Self::High => 3,
+            Self::Critical => 4,
+        }
+    }
+}
+
 /// Doc 3 §4.3 StageClaim · 每个 claim 必有 evidence_refs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StageClaim {

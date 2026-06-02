@@ -47,5 +47,12 @@
       "stage_kind": "vuln_triage",
       "evidence_kinds": ["vuln_finding"]
     }
-  ]
+  ],
+
+  "$comment_p2": "P2 verification-gate SAMPLE — tune to taste. required_evidence_kinds: this stage's cited evidence must include these kinds (ledger-checked). finding_verification: findings at/above min_severity must carry evidence, and (when set) one of require_evidence_kinds. Fill the other 11 stage specs the same way to define each stage's pass-criteria.",
+  "required_evidence_kinds": ["exploit_verified"],
+  "finding_verification": {
+    "min_severity": "high",
+    "require_evidence_kinds": ["poc", "exploit_verified"]
+  }
 }

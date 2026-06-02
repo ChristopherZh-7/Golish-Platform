@@ -312,4 +312,15 @@ pub trait DbRepoProvider: Send + Sync {
         let _ = (operation_id, state_blob);
         Ok(())
     }
+
+    /// P2 · map each given evidence `audit_log.id` to its `detail->>'kind'`
+    /// (omitting ids with no kind). The verification gate uses this to enforce
+    /// a stage's `required_evidence_kinds`. Default empty (test doubles).
+    async fn evidence_kinds_for(
+        &self,
+        ids: &[i64],
+    ) -> anyhow::Result<std::collections::HashMap<i64, String>> {
+        let _ = ids;
+        Ok(std::collections::HashMap::new())
+    }
 }

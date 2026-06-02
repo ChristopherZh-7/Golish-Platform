@@ -225,5 +225,24 @@ pub async fn existing_evidence_ids(pool: &PgPool, ids: &[i64]) -> Result<Vec<i64
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+/// 给一组 evidence `audit_log.id`, 返回每条的 `detail->>'kind'` (可能 NULL).
+///
+/// P2 verification gate 用它做 evidence-kind 回查: stage 要求的 evidence 种类
+/// (`required_evidence_kinds`) 是否真的在交付物引用的证据里出现.
+pub async fn evidence_kinds_for(pool: &PgPool, ids: &[i64]) -> Result<Vec<(i64, Option<String>)>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
+        r#"SELECT id, detail->>'kind'
+           FROM audit_log
+           WHERE audit_role = 'evidence' AND id = ANY($1)"#,
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests;

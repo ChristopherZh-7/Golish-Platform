@@ -29,6 +29,20 @@
 
 ---
 
+### 2026-06-02 · P2-a/b 配置驱动验证 gate（信任+质量）（MCP-agent-2 · DISPATCH off · 用户「开P2」→ 讨论『框架我写、每阶段过关证据你填 JSON』→「一路干完」）
+
+- **本轮目标**：执行 P2 计划 a/b——把「每阶段什么证据才过」做成**配置驱动**：我写框架（机制），用户填 stage JSON 定每阶段过关证据。讨论澄清：P2 是现有 gate + P0 evidence 之上的**补充**（验证/质量层），非重写。
+- **关键澄清（与用户）**：gate criteria 是领域决策 → 做成数据（stage JSON）而非硬编码。现有 12 个 stage spec 只 external_attack_surface 填满、其余占位 → 用户后续填。
+- **P2-a 结构层**：`StageSpec` 加声明式字段 `required_evidence_kinds` / `finding_verification{min_severity,require_evidence_kinds}` / `min_findings` / `min_claims`（全 serde default，旧 JSON 不破）；`FindingSeverity::rank()`；新 `gate/finding_verification_check.rs`（达阈值 severity 的 finding 必须有非空 evidence_refs + 计数），恒跑接进 `validate_stage_gate`。
+- **P2-b ledger 层**：`golish-db audit::evidence_kinds_for`（查 detail->>'kind'）+ `DbRepoProvider.evidence_kinds_for`（默认空）+ app 实现；`HarnessGateOutcome` 加 `required_evidence_kinds`（从 spec 填）；`execute.rs::enforce_evidence_kinds`（仿 P0 enforce：stage 要求的 evidence kind 必须真出现在 ledger，缺→BLOCK+纠正），接进 2 个 gate 调用点。
+- **示例**：`verification.json` 落 finding_verification(high, poc/exploit_verified) + required_evidence_kinds(exploit_verified) + $comment，给用户照填模板。
+- **运行过的验证（已记录证据）**：`cargo nextest -p golish-agent-kit -E 'test(harness)'` → **180/180**（+4 finding_verification）；`clippy -p golish-agent-kit -p golish-agent-app -- -D warnings` exit 0；`cargo fmt --check` 净；`python3 -m json.tool verification.json` OK。
+- **提交记录**：本批 commit（P2-a/b 代码 + verification.json 示例 + P2 plan + 本 progress + feature_list），落 `feat/harness-2026-06-01`，未 push。昨晚 WIP 仍未碰。
+- **范围/诚实**：① **P2-c（eval 框架借 Heartbit）+ P2-d（guardrail 借 AutoAgents/OpenFang）未做**——较大独立借用，建议各自单独做；② required_evidence_kinds 的「真实利用」依赖工具产出阶段给 evidence 打验证类 kind（exploit_verified 等），当前 kind=工具名 MVP（P0 Task5），需工具包接入才会真打这些 kind；③ 单测里 MemRepo evidence_kinds_for 默认空，ledger 层只编译+逻辑验证，真回查看活体。故 feature 维持 in_progress。
+- **下一步建议**：① 用户填 12 个 stage 过关证据 JSON；② 工具产出阶段给 evidence 打验证类 kind；③ P2-c eval / P2-d guardrail；④ 活体验收。
+
+---
+
 ### 2026-06-02 · P1 图骨架 + 检查点/断点续跑（vendor metalcraft · Shape B）（MCP-agent-2 · DISPATCH off · §5.9 单会话直接执行 · 用户「开P1」→「直接开 Shape B Task 1」→「一路做到 Task 6」→「commit P1+文档」）
 
 - **本轮目标**：执行 `docs/superpowers/plans/2026-06-02-engine-v2-p1-graph-checkpoint.md`（P1 Task 1-6，Shape B = vendor metalcraft 图引擎 + 用其 Checkpointer/Mermaid 增强现有 stage 流转，**不**全替换 orchestrator）。

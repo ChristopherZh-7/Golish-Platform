@@ -7,7 +7,21 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::types::{AgentContinuity, RiskLevel, StageKind};
+use super::types::{AgentContinuity, FindingSeverity, RiskLevel, StageKind};
+
+/// P2 · per-stage "trustworthy conclusion" rule (verification gate).
+///
+/// Findings at/above `min_severity` must carry evidence: non-empty
+/// `evidence_refs` (deliverable structural layer) and — when
+/// `require_evidence_kinds` is set — at least one of those evidence rows must be
+/// of a listed kind (ledger layer, enforced caller-side). Declarative: you set
+/// this per stage in the stage JSON to define what "verified" means there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FindingVerificationRule {
+    pub min_severity: FindingSeverity,
+    #[serde(default)]
+    pub require_evidence_kinds: Vec<String>,
+}
 
 /// Doc 3 §4.1 human_approval policy 嵌入字段.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -59,6 +73,23 @@ pub struct StageSpec {
 
     #[serde(default)]
     pub inherits_evidence_from: Vec<InheritsEvidenceFrom>,
+
+    // ── P2 · 配置驱动的「过关证据」声明（你填这里，gate 照执，零代码） ──────────
+    /// P2 · 该 stage 交付物必须含的 evidence 种类（ledger 回查；空=不强制）。
+    /// 例：信息收集阶段填 ["dns_a","http_probe","subdomain"] 表示要有这些证据才过。
+    #[serde(default)]
+    pub required_evidence_kinds: Vec<String>,
+
+    /// P2 · finding 验证规则：达到阈值 severity 的 finding 必须有证据 / PoC。
+    /// 例：verification 阶段填 {"min_severity":"high","require_evidence_kinds":["poc","exploit_verified"]}。
+    #[serde(default)]
+    pub finding_verification: Option<FindingVerificationRule>,
+
+    /// P2 · 交付物最少 finding / claim 数（None=不强制）。
+    #[serde(default)]
+    pub min_findings: Option<u32>,
+    #[serde(default)]
+    pub min_claims: Option<u32>,
 }
 
 fn default_continuity() -> AgentContinuity {

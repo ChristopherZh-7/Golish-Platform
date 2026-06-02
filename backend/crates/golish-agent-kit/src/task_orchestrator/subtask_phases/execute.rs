@@ -195,6 +195,7 @@ impl TaskOrchestrator {
                         // (may flip PASS→BLOCK + attach a correction) before the
                         // retry decision below.
                         self.enforce_evidence_existence(&mut outcome).await;
+                        self.enforce_evidence_kinds(&mut outcome).await;
                         // C4 · gate BLOCK with retries left → feed the recovery
                         // correction back into the loop (re-do the subtask) instead
                         // of accepting the blocked result; defer transition until
@@ -336,6 +337,7 @@ impl TaskOrchestrator {
         let (out, gate_outcome) = apply_harness_gate_hook(planned, exec_ctx, fallback);
         if let Some(mut outcome) = gate_outcome {
             self.enforce_evidence_existence(&mut outcome).await;
+            self.enforce_evidence_kinds(&mut outcome).await;
             if outcome.gate_allowed {
                 if let Some(summary) = outcome.evidence_summary.clone() {
                     self.harness_evidence
@@ -536,6 +538,52 @@ impl TaskOrchestrator {
         );
         block_outcome_for_fabricated(outcome, &fabricated);
     }
+
+    /// P2 · evidence-kind 回查: stage spec 声明的 `required_evidence_kinds` 必须真的
+    /// 出现在交付物引用的证据里 (查 ledger 的 `detail->>'kind'`). 缺 → BLOCK + 纠正。
+    /// infra 查询失败只 warn, 不误伤合法 stage。
+    async fn enforce_evidence_kinds(&self, outcome: &mut HarnessGateOutcome) {
+        if outcome.required_evidence_kinds.is_empty() {
+            return;
+        }
+        let present: std::collections::HashSet<String> =
+            match self.repo.evidence_kinds_for(&outcome.evidence_refs).await {
+                Ok(map) => map.into_values().collect(),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "harness::hook",
+                        error = %e,
+                        "evidence kind check failed; not blocking on infra error"
+                    );
+                    return;
+                }
+            };
+        let missing: Vec<String> = outcome
+            .required_evidence_kinds
+            .iter()
+            .filter(|k| !present.contains(*k))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        tracing::warn!(
+            target: "harness::hook",
+            stage = %outcome.gated_stage.as_str(),
+            missing = ?missing,
+            "gate BLOCK: stage requires evidence kinds absent from the deliverable"
+        );
+        outcome.gate_allowed = false;
+        let correction = format!(
+            "This stage requires evidence of kinds {missing:?}, but the deliverable's evidence \
+             includes none of them. Run the tools that produce these evidence kinds and resubmit \
+             a StageDeliverable that cites them."
+        );
+        outcome.repair_correction = Some(match outcome.repair_correction.take() {
+            Some(prev) => format!("{correction}\n\n{prev}"),
+            None => correction,
+        });
+    }
 }
 
 /// Pure core of the evidence-existence gate: the cited ids absent from the
@@ -598,6 +646,10 @@ struct HarnessGateOutcome {
     /// caller can verify each exists in the ledger (anti-fabrication) before
     /// honoring a PASS. Empty when no deliverable / no refs.
     evidence_refs: Vec<i64>,
+    /// P2 · evidence kinds this stage requires (from
+    /// `StageSpec.required_evidence_kinds`); the caller cross-checks them against
+    /// the ledger before honoring a PASS. Empty = stage declares no requirement.
+    required_evidence_kinds: Vec<String>,
 }
 
 /// 返回 `(content, Option<outcome>)`: `None` 表示 hook 透传 (未跑 gate); `Some` 表示
@@ -739,6 +791,11 @@ fn apply_harness_gate_hook(
                 .iter()
                 .map(|e| e.as_i64())
                 .collect(),
+            required_evidence_kinds: crate::harness::load_embedded_stage_spec(
+                stage_hint.stage_kind,
+            )
+            .map(|s| s.required_evidence_kinds)
+            .unwrap_or_default(),
         }),
     )
 }
@@ -1064,6 +1121,7 @@ mod harness_gate_hook_tests {
             repair_correction: None,
             evidence_summary: None,
             evidence_refs: vec![1, 999],
+            required_evidence_kinds: Vec::new(),
         };
         block_outcome_for_fabricated(&mut o, &[999]);
         assert!(!o.gate_allowed, "fabricated evidence must BLOCK the gate");
@@ -1080,6 +1138,7 @@ mod harness_gate_hook_tests {
             repair_correction: Some("PRIOR-GATE-REASON".to_string()),
             evidence_summary: None,
             evidence_refs: vec![5],
+            required_evidence_kinds: Vec::new(),
         };
         block_outcome_for_fabricated(&mut o, &[5]);
         let c = o.repair_correction.unwrap();
