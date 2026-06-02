@@ -40,6 +40,7 @@ pub mod graph_engine;
 pub mod guardrail;
 pub mod intent_classifier;
 pub mod nl_slice;
+pub mod operation_flow;
 pub mod operation_graph;
 pub mod operation_mermaid;
 pub mod pre_action_authorizer;
