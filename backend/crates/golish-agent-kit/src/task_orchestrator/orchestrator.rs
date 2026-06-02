@@ -46,6 +46,16 @@ pub struct TaskOrchestrator {
     /// `None` = fall back to the `GOLISH_HARNESS_PROFILE` env default
     /// ([`crate::harness::active_profile_id`]).
     pub(super) profile_override: Option<String>,
+    /// P2 方案 C · when true, the metalcraft Executor owns the stage loop, so
+    /// `execute_single_subtask` must NOT drive the per-subtask cursor transition
+    /// (the graph drives transitions); it accumulates the flow outcome into
+    /// [`Self::stage_outcome_acc`] instead. Default false = legacy per-subtask
+    /// transition (`run_executor_driven` sets/clears it around each stage).
+    pub(super) graph_driven: bool,
+    /// P2 方案 C · accumulated [`StageFlowOutcome`] for the stage currently being
+    /// run under the Executor (merged across that stage's subtasks: gate ANDed,
+    /// progress ORed). Read + cleared by `run_stage_subtasks`.
+    pub(super) stage_outcome_acc: Option<crate::harness::operation_flow::StageFlowOutcome>,
 }
 
 impl TaskOrchestrator {
@@ -63,6 +73,8 @@ impl TaskOrchestrator {
             user_input_tx,
             harness_evidence: std::collections::HashMap::new(),
             profile_override: None,
+            graph_driven: false,
+            stage_outcome_acc: None,
         }
     }
 
@@ -158,7 +170,7 @@ impl TaskOrchestrator {
         let mut queue: Vec<PlannedSubtask> = Vec::new();
         for planned in &generator_output.subtasks {
             let agent_type = parse_agent_type(&planned.agent);
-            let subtask = subtasks::create(
+            let subtask = match subtasks::create(
                 &*self.repo,
                 subtasks::NewSubtask {
                     task_id: task.id,
@@ -168,7 +180,16 @@ impl TaskOrchestrator {
                     agent: agent_type,
                 },
             )
-            .await?;
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    // P1 · don't leak the task as `running` if subtask creation
+                    // fails partway; finalize it before bubbling the error up.
+                    self.fail_task_if_active(task.id, &e).await;
+                    return Err(e.context("Failed to create subtask"));
+                }
+            };
 
             self.emit(AiEvent::SubtaskCreated {
                 task_id: task.id.to_string(),
@@ -186,8 +207,10 @@ impl TaskOrchestrator {
             message: format!("Generated {} subtasks, starting execution...", queue.len()),
         });
 
-        // Emit initial plan with all steps pending
-        self.emit_plan_update(&queue, usize::MAX, StepStatus::Pending, 1);
+        // Initial plan: all steps Pending. `current_index` must be 0 (not a
+        // sentinel like usize::MAX) — emit_plan_update marks every `i <
+        // current_index` Completed.
+        self.emit_plan_update(&queue, 0, StepStatus::Pending);
 
         // P1 · write the initial harness checkpoint (open a stage_run for the
         // entry stage + persist a resume state_blob) so a kill before the first
@@ -219,8 +242,54 @@ impl TaskOrchestrator {
             }
         }
 
-        self.execute_subtask_loop(task.id, &mut queue, 0, executor)
-            .await
+        // P2 方案 C · when the graph-flow flag is on (and stage_mode), let the
+        // metalcraft Executor drive the operation stage graph; otherwise the
+        // legacy flat subtask loop runs unchanged (default / rollback).
+        let outcome = if crate::harness::stage_mode_enabled()
+            && crate::harness::operation_flow::graph_flow_enabled()
+        {
+            self.run_executor_driven(task.id, &queue, executor).await
+        } else {
+            self.execute_subtask_loop(task.id, &mut queue, 0, executor)
+                .await
+        };
+
+        // P1 · never leave the task zombied in `running`: any error from the
+        // execution path finalizes the row as `failed` here (a process killed
+        // mid-run is swept by the DB startup reaper instead). The happy path
+        // already wrote `finished`, so `fail_task_if_active` skips it.
+        if let Err(ref e) = outcome {
+            self.fail_task_if_active(task.id, e).await;
+        }
+        outcome
+    }
+
+    /// Finalize a task as `failed` unless it already reached a terminal status.
+    ///
+    /// P1 · before this, the only failure finalizer was the generator branch, so
+    /// every other error path in [`Self::run`] left the row stuck in `running`
+    /// (a zombie). Reads the current status first so a `finished` (or
+    /// already-`failed`) result written by the normal path is never clobbered.
+    /// Best-effort: a DB error while finalizing is swallowed (the task is
+    /// already failing, and the startup reaper is the backstop).
+    pub(super) async fn fail_task_if_active(&self, task_id: Uuid, err: &anyhow::Error) {
+        match tasks::get(&*self.repo, task_id).await {
+            Ok(Some(t))
+                if matches!(
+                    t.status,
+                    TaskStatus::Created | TaskStatus::Running | TaskStatus::Waiting
+                ) =>
+            {
+                let _ = tasks::set_result(
+                    &*self.repo,
+                    task_id,
+                    &format!("Task failed: {err:#}"),
+                    TaskStatus::Failed,
+                )
+                .await;
+            }
+            _ => {}
+        }
     }
 
     /// Resume a previously interrupted task from the last completed subtask.
@@ -288,12 +357,18 @@ impl TaskOrchestrator {
     }
 
     /// Emit a PlanUpdated event to synchronize the frontend Task Plan UI.
+    ///
+    /// The event `version` comes from a process-global monotonic counter
+    /// ([`next_plan_version`]) so every emission is strictly newer than the
+    /// last. Callers previously passed a hand-rolled version (`idx + 2`) that
+    /// collided between a step's InProgress and Completed updates, so the
+    /// frontend `setPlan` reducer — which drops same-version events — silently
+    /// swallowed every "completed" transition.
     pub(super) fn emit_plan_update(
         &self,
         queue: &[PlannedSubtask],
         current_index: usize,
         current_status: StepStatus,
-        version: u32,
     ) {
         let steps: Vec<PlanStep> = queue
             .iter()
@@ -316,10 +391,46 @@ impl TaskOrchestrator {
             .collect();
         let summary = PlanSummary::from_steps(&steps);
         self.emit(AiEvent::PlanUpdated {
-            version,
+            version: next_plan_version(),
             summary,
             steps,
             explanation: None,
         });
+    }
+}
+
+/// Process-global monotonic version source for `PlanUpdated` events.
+///
+/// Returns a strictly increasing value on each call (starting at 1, never 0 —
+/// the frontend treats `version == 0` as "no plan"). Used by
+/// [`TaskOrchestrator::emit_plan_update`] so a step's InProgress and Completed
+/// emissions get distinct, ordered versions and the frontend reducer stops
+/// dropping the "completed" transition.
+fn next_plan_version() -> u32 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static PLAN_VERSION: AtomicU32 = AtomicU32::new(1);
+    PLAN_VERSION.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod plan_version_tests {
+    use super::next_plan_version;
+
+    /// Regression (P0 · plan version collision): `next_plan_version` must hand
+    /// back strictly increasing, non-zero values so a step's InProgress and
+    /// Completed `PlanUpdated` events never share a version. The frontend
+    /// `setPlan` reducer drops same-version events, so the old hand-rolled
+    /// `idx + 2` collided between those two emissions and silently swallowed
+    /// every "completed" transition (plan card stuck at 0/N). Robust against
+    /// parallel test interleaving: concurrent callers only widen the gap, they
+    /// can never make a later call return a value <= an earlier one.
+    #[test]
+    fn next_plan_version_is_strictly_increasing_and_nonzero() {
+        let v1 = next_plan_version();
+        let v2 = next_plan_version();
+        let v3 = next_plan_version();
+        assert!(v1 >= 1, "version must never be 0 (frontend treats 0 as 'no plan')");
+        assert!(v2 > v1, "v2 ({v2}) must be strictly greater than v1 ({v1})");
+        assert!(v3 > v2, "v3 ({v3}) must be strictly greater than v2 ({v2})");
     }
 }

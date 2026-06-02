@@ -11,7 +11,14 @@
 //! C-4（DB checkpointer）是后续较大、较高风险的步骤。
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use async_trait::async_trait;
+use uuid::Uuid;
+
+use crate::db_traits::DbRepoProvider;
+use crate::harness::graph_engine::{Checkpointer, GraphError, Result as GraphResult};
+use crate::harness::operation_flow::OperationFlowState;
 use crate::harness::StageKind;
 
 use super::types::PlannedSubtask;
@@ -41,6 +48,62 @@ pub fn group_subtasks_by_stage(queue: &[PlannedSubtask]) -> Vec<(StageKind, Vec<
             (stage, indices)
         })
         .collect()
+}
+
+/// C-4 · DB-backed [`Checkpointer`] for the Executor-driven flow.
+///
+/// Persists the [`OperationFlowState`] (+ next node) into
+/// `operation_state.state_blob` under a `"graph_flow"` key, so a crashed/killed
+/// run can resume the metalcraft Executor mid-flow (finer than the legacy
+/// stage-cursor resume). Errors map to [`GraphError::Checkpoint`].
+pub struct DbFlowCheckpointer {
+    repo: Arc<dyn DbRepoProvider>,
+    operation_id: Uuid,
+}
+
+impl DbFlowCheckpointer {
+    pub fn new(repo: Arc<dyn DbRepoProvider>, operation_id: Uuid) -> Self {
+        Self { repo, operation_id }
+    }
+}
+
+#[async_trait]
+impl Checkpointer<OperationFlowState> for DbFlowCheckpointer {
+    async fn save(
+        &self,
+        _thread_id: &str,
+        state: &OperationFlowState,
+        next_node: &str,
+    ) -> GraphResult<()> {
+        let blob = serde_json::json!({
+            "graph_flow": { "state": state, "next_node": next_node }
+        });
+        crate::db_shim::operation_state::write_state_blob(&*self.repo, self.operation_id, blob)
+            .await
+            .map_err(|e| GraphError::Checkpoint(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn load(&self, _thread_id: &str) -> GraphResult<Option<(OperationFlowState, String)>> {
+        let view = crate::db_shim::operation_state::get(&*self.repo, self.operation_id)
+            .await
+            .map_err(|e| GraphError::Checkpoint(e.to_string()))?;
+        let Some(view) = view else {
+            return Ok(None);
+        };
+        let Some(gf) = view.state_blob.get("graph_flow") else {
+            return Ok(None);
+        };
+        let state: OperationFlowState =
+            serde_json::from_value(gf.get("state").cloned().unwrap_or_default())
+                .map_err(|e| GraphError::Checkpoint(e.to_string()))?;
+        let next_node = gf
+            .get("next_node")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        Ok(Some((state, next_node)))
+    }
 }
 
 #[cfg(test)]

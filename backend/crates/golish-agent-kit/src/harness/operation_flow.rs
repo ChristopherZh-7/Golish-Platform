@@ -31,10 +31,11 @@ use super::types::StageKind;
 /// graph-flow conditional routing (bail-to-reporting when a stage makes no
 /// progress) instead of the legacy "always take the first branch candidate".
 ///
-/// **Default OFF** — opt in with `GOLISH_HARNESS_GRAPH_FLOW=1` (or `true`/`on`/
-/// `yes`, case-insensitive). Cached once at first read (LazyLock), same pattern
-/// as [`super::stage_mode_enabled`]. OFF reproduces legacy behaviour exactly, so
-/// wiring this into `drive_stage_transition` is a zero-risk additive change.
+/// **Default ON** (2026-06-02, after the Executor-driven path passed live
+/// verification + the plan-progress fix). Kill switch: set
+/// `GOLISH_HARNESS_GRAPH_FLOW=0` (or `false`/`off`/`no`, case-insensitive) to
+/// fall back to the legacy subtask loop. Cached once at first read (LazyLock),
+/// same pattern as [`super::stage_mode_enabled`].
 pub fn graph_flow_enabled() -> bool {
     use std::sync::LazyLock;
     static ENABLED: LazyLock<bool> = LazyLock::new(|| {
@@ -43,12 +44,13 @@ pub fn graph_flow_enabled() -> bool {
     *ENABLED
 }
 
-/// Pure parser (env-independent → fully unit-testable). Default OFF: only an
-/// explicit truthy value turns it on.
+/// Pure parser (env-independent → fully unit-testable). Default ON: only an
+/// explicit falsey value turns it off (kill switch), mirroring
+/// [`super::stage_mode_enabled`].
 fn parse_graph_flow_flag(value: Option<&str>) -> bool {
-    matches!(
+    !matches!(
         value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
-        Some("1" | "true" | "on" | "yes")
+        Some("0" | "false" | "off" | "no")
     )
 }
 
@@ -88,7 +90,7 @@ pub fn chosen_next_stage(
 }
 
 /// 一个 stage 在「流转路由」视角下的产出。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StageFlowOutcome {
     /// 该 stage 的确定性 gate 是否通过。`false` → 在此 stage 暂停返工。
     pub gate_allowed: bool,
@@ -122,7 +124,7 @@ impl StageFlowOutcome {
 }
 
 /// metalcraft [`Reducer`] 状态：operation 流转的累积视图。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct OperationFlowState {
     /// 调用方预置的「每个 stage 会产出什么」。增量 2+ 改为各 stage 真跑时实时填入。
     pub seeded: HashMap<StageKind, StageFlowOutcome>,
@@ -310,6 +312,53 @@ pub fn build_runner_graph(
         g = g.set_entry(entry.as_str());
     }
     g.compile()
+}
+
+/// C-2 · one stage-execution request a graph node sends to the external servicer
+/// (the orchestrator's `&mut self` loop) when the Executor truly owns the loop.
+pub struct StageRunRequest {
+    pub stage: StageKind,
+    /// Channel the servicer replies on with the stage's flow outcome.
+    pub reply: tokio::sync::oneshot::Sender<StageFlowOutcome>,
+}
+
+/// C-2 · a [`StageRunner`] that delegates `run_stage` over a channel to an
+/// external servicer instead of running the stage itself.
+///
+/// This is the key that lets the metalcraft [`Executor`] **truly own the
+/// top-level loop** (= user-chosen option C) while stage execution stays where
+/// it must live — the orchestrator's `&mut self` method holding the borrowed
+/// `&dyn AgentExecutor`. The node body only captures a `Send + Sync + 'static`
+/// channel sender (no executor borrow, no `&mut self`), sidestepping the
+/// 'static-node ↔ borrowed-executor lifetime mismatch. The servicer (orchestrator)
+/// runs the metalcraft `Executor` and a request-servicing loop concurrently
+/// (`tokio::select!`), running each requested stage with `&mut self`.
+pub struct ChannelStageRunner {
+    tx: tokio::sync::mpsc::Sender<StageRunRequest>,
+}
+
+impl ChannelStageRunner {
+    pub fn new(tx: tokio::sync::mpsc::Sender<StageRunRequest>) -> Self {
+        Self { tx }
+    }
+}
+
+#[async_trait::async_trait]
+impl StageRunner for ChannelStageRunner {
+    async fn run_stage(&self, stage: StageKind) -> StageFlowOutcome {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        // Servicer gone / not listening → treat as a blocked gate so the flow
+        // halts safely (Interrupt) rather than silently advancing.
+        if self
+            .tx
+            .send(StageRunRequest { stage, reply })
+            .await
+            .is_err()
+        {
+            return StageFlowOutcome::blocked();
+        }
+        rx.await.unwrap_or_else(|_| StageFlowOutcome::blocked())
+    }
 }
 
 #[cfg(test)]
@@ -518,13 +567,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_graph_flow_flag_defaults_off() {
-        assert!(!parse_graph_flow_flag(None));
-        for off in ["0", "false", "off", "no", "", "garbage"] {
-            assert!(!parse_graph_flow_flag(Some(off)), "'{off}' must stay OFF");
+    fn parse_graph_flow_flag_defaults_on() {
+        assert!(parse_graph_flow_flag(None));
+        for off in ["0", "false", "off", "no", "OFF", " No "] {
+            assert!(!parse_graph_flow_flag(Some(off)), "'{off}' must disable");
         }
-        for on in ["1", "true", "on", "yes", "TRUE", " On "] {
-            assert!(parse_graph_flow_flag(Some(on)), "'{on}' must enable");
+        for on in ["1", "true", "on", "yes", "", "garbage"] {
+            assert!(parse_graph_flow_flag(Some(on)), "'{on}' must stay ON");
         }
     }
 
@@ -634,5 +683,54 @@ mod tests {
             }
             other => panic!("expected Interrupted, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn channel_runner_lets_executor_drive_via_external_servicer() {
+        // C-2: the Executor owns the loop; a separate servicer task replies to
+        // each stage request (mirrors the orchestrator's &mut self servicing).
+        let dag = assessment_dag();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<StageRunRequest>(8);
+        let servicer = tokio::spawn(async move {
+            while let Some(req) = rx.recv().await {
+                let _ = req.reply.send(StageFlowOutcome::pass_with_progress());
+            }
+        });
+
+        let runner = Arc::new(ChannelStageRunner::new(tx));
+        let graph = build_runner_graph(&dag, runner).expect("graph");
+        let out = Executor::new(graph)
+            .run(OperationFlowState::default(), "op")
+            .await
+            .expect("run");
+
+        match out {
+            RunOutcome::Completed(s) => assert_eq!(
+                s.visited,
+                vec![
+                    StageKind::Scoping,
+                    StageKind::TargetIntel,
+                    StageKind::ExternalAttackSurface,
+                    StageKind::Enumeration,
+                    StageKind::Reporting,
+                ]
+            ),
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        servicer.abort();
+    }
+
+    #[test]
+    fn flow_state_serde_round_trips() {
+        // DB checkpointer (C-4) persists OperationFlowState as JSON.
+        let mut s = OperationFlowState::default();
+        s.apply(FlowUpdate::ExecutedWith(
+            StageKind::Scoping,
+            StageFlowOutcome::pass_with_progress(),
+        ));
+        let json = serde_json::to_string(&s).expect("serialize");
+        let back: OperationFlowState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.visited, vec![StageKind::Scoping]);
+        assert!(back.applied.contains_key(&StageKind::Scoping));
     }
 }

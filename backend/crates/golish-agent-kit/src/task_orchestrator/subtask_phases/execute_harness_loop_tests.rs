@@ -35,6 +35,8 @@ struct MemRepo {
     /// Canned `wiki_search_fts` result for the P3 RAG-prior wiring tests.
     /// Defaults to `Null` (no hits); the transition-driver tests never read it.
     wiki_result: Mutex<serde_json::Value>,
+    /// In-memory `tasks` table for the P1 `fail_task_if_active` tests.
+    tasks: Mutex<HashMap<Uuid, TaskView>>,
 }
 
 impl MemRepo {
@@ -52,6 +54,7 @@ impl MemRepo {
         Arc::new(Self {
             op_state: Mutex::new(m),
             wiki_result: Mutex::new(serde_json::Value::Null),
+            tasks: Mutex::new(HashMap::new()),
         })
     }
 
@@ -61,6 +64,33 @@ impl MemRepo {
             .unwrap()
             .get(&operation_id)
             .map(|s| s.current_stage.clone())
+    }
+
+    /// Seed a `tasks` row with a given status (P1 finalize tests).
+    fn insert_task(&self, status: TaskStatus, result: Option<&str>) -> Uuid {
+        let id = Uuid::new_v4();
+        self.tasks.lock().unwrap().insert(
+            id,
+            TaskView {
+                id,
+                input: "test task".to_string(),
+                status,
+                result: result.map(|s| s.to_string()),
+            },
+        );
+        id
+    }
+
+    fn task_status(&self, id: Uuid) -> Option<TaskStatus> {
+        self.tasks.lock().unwrap().get(&id).map(|t| t.status)
+    }
+
+    fn task_result(&self, id: Uuid) -> Option<String> {
+        self.tasks
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|t| t.result.clone())
     }
 
     /// Seed the canned wiki search result returned by `wiki_search_fts`.
@@ -263,17 +293,31 @@ impl DbRepoProvider for MemRepo {
     ) -> anyhow::Result<serde_json::Value> {
         unimplemented!()
     }
-    async fn task_create(&self, _task: NewTask) -> anyhow::Result<TaskView> {
-        unimplemented!()
+    async fn task_create(&self, task: NewTask) -> anyhow::Result<TaskView> {
+        let id = Uuid::new_v4();
+        let view = TaskView {
+            id,
+            input: task.input.clone(),
+            status: TaskStatus::Created,
+            result: None,
+        };
+        self.tasks.lock().unwrap().insert(id, view.clone());
+        Ok(view)
     }
-    async fn task_get(&self, _id: Uuid) -> anyhow::Result<Option<TaskView>> {
-        unimplemented!()
+    async fn task_get(&self, id: Uuid) -> anyhow::Result<Option<TaskView>> {
+        Ok(self.tasks.lock().unwrap().get(&id).cloned())
     }
-    async fn task_update_status(&self, _id: Uuid, _status: TaskStatus) -> anyhow::Result<()> {
-        unimplemented!()
+    async fn task_update_status(&self, id: Uuid, status: TaskStatus) -> anyhow::Result<()> {
+        if let Some(t) = self.tasks.lock().unwrap().get_mut(&id) {
+            t.status = status;
+        }
+        Ok(())
     }
-    async fn task_set_result(&self, _id: Uuid, _result: &str) -> anyhow::Result<()> {
-        unimplemented!()
+    async fn task_set_result(&self, id: Uuid, result: &str) -> anyhow::Result<()> {
+        if let Some(t) = self.tasks.lock().unwrap().get_mut(&id) {
+            t.result = Some(result.to_string());
+        }
+        Ok(())
     }
     async fn subtask_create(
         &self,
@@ -377,6 +421,10 @@ impl DbRepoProvider for MemRepo {
     }
 }
 
+/// Gate PASS **with progress** (`findings_count > 0`). Under the default
+/// graph-flow routing a multi-successor stage then takes the main-path (first)
+/// candidate; with no progress it would bail to reporting (covered separately in
+/// `operation_flow`). These cursor-walk tests want the main path.
 fn pass(stage: StageKind) -> HarnessGateOutcome {
     HarnessGateOutcome {
         gated_stage: stage,
@@ -385,7 +433,7 @@ fn pass(stage: StageKind) -> HarnessGateOutcome {
         evidence_summary: None,
         evidence_refs: Vec::new(),
         required_evidence_kinds: Vec::new(),
-        findings_count: 0,
+        findings_count: 1,
     }
 }
 
@@ -555,4 +603,49 @@ async fn rag_prior_empty_block_when_no_wiki_hits() {
         render_prior_knowledge(&pk).is_empty(),
         "no wiki hits must render an empty prior-knowledge block"
     );
+}
+
+/// P1 · `fail_task_if_active` finalizes a still-`running` task as `failed` (with
+/// the underlying error surfaced in the result) so an errored run never zombies
+/// in `running`. This is the in-process counterpart to the DB startup reaper.
+#[tokio::test]
+async fn fail_task_if_active_marks_running_task_failed() {
+    let op = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "assessment", "scoping");
+    let task_id = repo.insert_task(TaskStatus::Running, None);
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
+
+    orch.fail_task_if_active(task_id, &anyhow::anyhow!("execution blew up"))
+        .await;
+
+    assert_eq!(repo.task_status(task_id), Some(TaskStatus::Failed));
+    assert!(
+        repo.task_result(task_id)
+            .unwrap_or_default()
+            .contains("execution blew up"),
+        "the failure result must surface the underlying error"
+    );
+}
+
+/// P1 · `fail_task_if_active` must NOT clobber a task that already reached a
+/// terminal status — the normal completion path writes `finished` + the real
+/// report, and a late best-effort finalize must leave both untouched.
+#[tokio::test]
+async fn fail_task_if_active_does_not_clobber_finished() {
+    let op = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "assessment", "scoping");
+    let task_id = repo.insert_task(TaskStatus::Finished, Some("real report"));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
+
+    orch.fail_task_if_active(task_id, &anyhow::anyhow!("late error"))
+        .await;
+
+    assert_eq!(
+        repo.task_status(task_id),
+        Some(TaskStatus::Finished),
+        "a terminal status must never be clobbered"
+    );
+    assert_eq!(repo.task_result(task_id).as_deref(), Some("real report"));
 }

@@ -57,6 +57,29 @@ pub fn stage_charter(spec: &StageSpec) -> String {
     } else {
         spec.required_checks.join(", ")
     };
+    // Spec-derived minimum tool invocations: the gate's vacuous_check +
+    // min_invocations_check are deterministic, so surface the exact requirement
+    // to the agent (sorted for stable prompts across HashMap iteration order).
+    let min_inv = if spec.min_invocations.is_empty() {
+        "(no per-tool minimum)".to_string()
+    } else {
+        let mut items: Vec<String> = spec
+            .min_invocations
+            .iter()
+            .map(|(tool, n)| format!("{tool} ≥ {n}"))
+            .collect();
+        items.sort();
+        items.join(", ")
+    };
+    let min_inv_keys_json = {
+        let mut keys: Vec<String> = spec
+            .min_invocations
+            .keys()
+            .map(|k| format!("\"{k}\""))
+            .collect();
+        keys.sort();
+        format!("[{}]", keys.join(", "))
+    };
     format!(
         r#"## OPERATION HARNESS — STAGE CHARTER
 
@@ -64,15 +87,47 @@ You are operating inside the **{stage}** stage of an authorized operation. Stay 
 
 - **Allowed tools** (use ONLY these): {allowed}
 - **Forbidden tools** (NEVER call): {forbidden}
-- You MUST finish by submitting a structured deliverable via `submit_stage_deliverable`; every claim and finding must reference evidence ids.
+- **Minimum tool invocations** (you MUST actually run these): {min_inv}
 - A deterministic gate will check: {checks}. Unverified natural-language claims do NOT pass the gate.
 - Do not escalate authorization or jump to another stage — the runtime advances stages for you once the gate passes.
+
+### REQUIRED — end your final message with a StageDeliverable JSON block
+
+There is NO `submit_*` tool to call. The runtime parses your final message for a
+single fenced ```json block and runs the deterministic gate on it. So after your
+prose summary, your final message MUST end with one ```json block containing a
+`StageDeliverable` shaped exactly like this:
+
+```json
+{{
+  "stage_id": "{stage}",
+  "stage_run_id": "<random uuid v4>",
+  "claims": [
+    {{"kind": "http_service_observed", "subject": "<host>", "summary": "<what was observed>", "evidence_ids": [1]}}
+  ],
+  "evidence_refs": [1, 2, 3],
+  "findings": [
+    {{"finding_id": "<random uuid v4>", "kind": "subdomain", "subject": "<host>", "severity": "info", "evidence_refs": [2]}}
+  ],
+  "skipped_checks": [],
+  "required_checks_done": {min_inv_keys_json}
+}}
+```
+
+Gate rules your deliverable MUST satisfy (otherwise it is rejected and you redo the stage):
+- `stage_id` MUST equal "{stage}"; `stage_run_id` MUST be a valid, non-nil UUID v4.
+- Every claim `evidence_ids` and every finding `evidence_refs` MUST be non-empty, and every id used there MUST also appear in the top-level `evidence_refs`.
+- The top-level `evidence_refs` must have at least one id per real tool run (total count ≥ the sum of the minimum invocations above).
+- `required_checks_done` MUST name every tool you were required to run: {min_inv}.
+- If you deliberately skip a required check, record it in `skipped_checks` with a reason — "checked-empty" is NOT the same as "unchecked".
 
 "#,
         stage = spec.id,
         allowed = allowed,
         forbidden = forbidden,
         checks = checks,
+        min_inv = min_inv,
+        min_inv_keys_json = min_inv_keys_json,
     )
 }
 

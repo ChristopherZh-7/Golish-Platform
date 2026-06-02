@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::db_shim::subtasks;
 use crate::db_traits::SubtaskStatus;
 use golish_core::events::AiEvent;
+use golish_core::plan::StepStatus;
 
 use super::super::helpers::{looks_like_text_only_response, truncate};
 use super::super::types::{
@@ -230,15 +231,7 @@ impl TaskOrchestrator {
                             });
                             continue;
                         }
-                        // C6 · on PASS, record this stage's deliverable summary so
-                        // downstream inheriting stages receive the real handoff.
-                        if outcome.gate_allowed {
-                            if let Some(summary) = outcome.evidence_summary.clone() {
-                                self.harness_evidence
-                                    .insert(outcome.gated_stage.as_str().to_string(), summary);
-                            }
-                        }
-                        self.drive_stage_transition(task_id, outcome).await;
+                        self.consume_gate_outcome(task_id, outcome).await;
                     }
                     let agent_result = AgentResult {
                         content: gated_content,
@@ -350,15 +343,260 @@ impl TaskOrchestrator {
         if let Some(mut outcome) = gate_outcome {
             self.enforce_evidence_existence(&mut outcome).await;
             self.enforce_evidence_kinds(&mut outcome).await;
-            if outcome.gate_allowed {
-                if let Some(summary) = outcome.evidence_summary.clone() {
-                    self.harness_evidence
-                        .insert(outcome.gated_stage.as_str().to_string(), summary);
-                }
-            }
-            self.drive_stage_transition(task_id, outcome).await;
+            self.consume_gate_outcome(task_id, outcome).await;
         }
         (out, None)
+    }
+
+    /// Post-gate handling shared by both gate sites in [`Self::execute_single_subtask`].
+    ///
+    /// On PASS, record the stage's deliverable summary for cross-stage handoff.
+    /// Then either (legacy / `graph_driven == false`) drive the per-subtask cursor
+    /// transition, or (P2 方案 C / `graph_driven == true`) accumulate the flow
+    /// outcome for the Executor-driven loop and leave transitions to the graph.
+    async fn consume_gate_outcome(&mut self, task_id: Uuid, outcome: HarnessGateOutcome) {
+        if outcome.gate_allowed {
+            if let Some(summary) = outcome.evidence_summary.clone() {
+                self.harness_evidence
+                    .insert(outcome.gated_stage.as_str().to_string(), summary);
+            }
+        }
+        if self.graph_driven {
+            let flow = crate::harness::operation_flow::StageFlowOutcome {
+                gate_allowed: outcome.gate_allowed,
+                made_progress: outcome.findings_count > 0,
+            };
+            self.stage_outcome_acc = Some(match self.stage_outcome_acc.take() {
+                Some(prev) => crate::harness::operation_flow::StageFlowOutcome {
+                    gate_allowed: prev.gate_allowed && flow.gate_allowed,
+                    made_progress: prev.made_progress || flow.made_progress,
+                },
+                None => flow,
+            });
+        } else {
+            self.drive_stage_transition(task_id, outcome).await;
+        }
+    }
+
+    /// P2 方案 C · Executor-driven run loop (flag-gated, opt-in).
+    ///
+    /// The metalcraft `Executor` owns the top-level loop, driving the operation
+    /// stage graph; a `ChannelStageRunner` turns each stage node into a request
+    /// this method services with `&mut self` (running that stage's subtask group
+    /// via `execute_single_subtask` with `graph_driven` on). Conditional bail,
+    /// interrupt, and DB checkpoint come from the graph + executor. `run()` only
+    /// takes this path when `operation_flow::graph_flow_enabled()`; otherwise the
+    /// legacy `execute_subtask_loop` runs unchanged (rollback = flag off).
+    pub(crate) async fn run_executor_driven(
+        &mut self,
+        task_id: Uuid,
+        queue: &[PlannedSubtask],
+        executor: &dyn AgentExecutor,
+    ) -> anyhow::Result<String> {
+        use crate::harness::operation_flow::{
+            build_runner_graph, ChannelStageRunner, OperationFlowState, StageRunRequest,
+        };
+
+        let (op_max_authz, op_profile_id) =
+            match crate::db_shim::operation_state::get(&*self.repo, task_id).await {
+                Ok(Some(state)) => match crate::harness::load_embedded_profile(&state.profile) {
+                    Ok(Some(p)) => (Some(p.max_authorization), Some(state.profile)),
+                    _ => (None, None),
+                },
+                _ => (None, None),
+            };
+
+        let task_input = crate::db_shim::tasks::get(&*self.repo, task_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|t| t.input)
+            .unwrap_or_default();
+        let mut exec_ctx = ExecutionContext {
+            completed_results: Vec::new(),
+            task_input,
+            current_subtask: None,
+            planned_subtasks: Vec::new(),
+            harness_stage: None,
+            harness_authz: None,
+            harness_profile_id: op_profile_id.clone(),
+        };
+
+        let groups: std::collections::HashMap<crate::harness::StageKind, Vec<usize>> =
+            crate::task_orchestrator::stage_execution::group_subtasks_by_stage(queue)
+                .into_iter()
+                .collect();
+
+        let profile_id = op_profile_id.as_deref().unwrap_or("assessment");
+        let dag = match (
+            crate::harness::load_embedded_profile(profile_id),
+            crate::harness::base_operation_graph(),
+        ) {
+            (Ok(Some(p)), Ok(g)) => g.project(&p.allowed_stage_set()),
+            _ => {
+                tracing::warn!(target: "harness::hook", "graph-flow: profile/DAG load failed; falling back to legacy loop");
+                return self
+                    .execute_subtask_loop(task_id, &mut queue.to_vec(), 0, executor)
+                    .await;
+            }
+        };
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<StageRunRequest>(8);
+        let runner = std::sync::Arc::new(ChannelStageRunner::new(tx));
+        let graph = match build_runner_graph(&dag, runner) {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!(target: "harness::hook", error = %e, "graph-flow: build_runner_graph failed; falling back to legacy loop");
+                return self
+                    .execute_subtask_loop(task_id, &mut queue.to_vec(), 0, executor)
+                    .await;
+            }
+        };
+        let checkpointer = std::sync::Arc::new(
+            crate::task_orchestrator::stage_execution::DbFlowCheckpointer::new(
+                self.repo.clone(),
+                task_id,
+            ),
+        );
+        let executor_obj =
+            crate::harness::graph_engine::Executor::new(graph).with_checkpointer(checkpointer);
+        let thread = task_id.to_string();
+        let mut exec_fut = Box::pin(executor_obj.run(OperationFlowState::default(), &thread));
+
+        self.emit(AiEvent::TaskProgress {
+            task_id: task_id.to_string(),
+            status: "running".to_string(),
+            message: "Executor-driven harness flow started".to_string(),
+        });
+
+        loop {
+            tokio::select! {
+                res = &mut exec_fut => {
+                    match res {
+                        Ok(outcome) => tracing::info!(target: "harness::hook", ?outcome, "graph-flow: executor finished"),
+                        Err(e) => tracing::warn!(target: "harness::hook", error = %e, "graph-flow: executor errored"),
+                    }
+                    break;
+                }
+                Some(req) = rx.recv() => {
+                    let indices = groups.get(&req.stage).cloned().unwrap_or_default();
+                    let outcome = self
+                        .run_stage_subtasks(
+                            req.stage, &indices, queue, &mut exec_ctx, op_max_authz, executor, task_id,
+                        )
+                        .await;
+                    let _ = crate::db_shim::operation_state::advance_stage(
+                        &*self.repo, task_id, req.stage.as_str(),
+                    )
+                    .await;
+                    let _ = req.reply.send(outcome);
+                }
+            }
+        }
+
+        let report = match executor.generate_report(&exec_ctx).await {
+            Ok(r) => r.content,
+            Err(e) => {
+                tracing::warn!("graph-flow reporter failed, using summary: {}", e);
+                exec_ctx.summary()
+            }
+        };
+        crate::db_shim::tasks::set_result(
+            &*self.repo,
+            task_id,
+            &report,
+            crate::db_traits::TaskStatus::Finished,
+        )
+        .await?;
+        self.emit_plan_update(queue, queue.len(), StepStatus::Completed);
+        self.emit(AiEvent::TaskProgress {
+            task_id: task_id.to_string(),
+            status: "finished".to_string(),
+            message: "Executor-driven harness flow complete".to_string(),
+        });
+        Ok(report)
+    }
+
+    /// P2 方案 C · run one stage's subtask group under the Executor.
+    ///
+    /// Sets `graph_driven` so `execute_single_subtask` accumulates the flow
+    /// outcome (via `consume_gate_outcome`) instead of driving the cursor, then
+    /// returns the merged [`StageFlowOutcome`] for the graph to route on.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_stage_subtasks(
+        &mut self,
+        stage: crate::harness::StageKind,
+        indices: &[usize],
+        queue: &[PlannedSubtask],
+        exec_ctx: &mut ExecutionContext,
+        op_max_authz: Option<crate::harness::AuthorizationLevel>,
+        executor: &dyn AgentExecutor,
+        task_id: Uuid,
+    ) -> crate::harness::operation_flow::StageFlowOutcome {
+        self.graph_driven = true;
+        self.stage_outcome_acc = None;
+        // Resolve the DB subtask rows (created at planning time, in queue order)
+        // so the executor path writes status back the same way the legacy
+        // `execute_subtask_loop` does. Without passing `Some(db_subtask)`,
+        // `execute_single_subtask` skips every status write and the rows stay
+        // `created` forever — the DB, plan card, and anything reading subtask
+        // state never reflect progress.
+        let db_subtasks = subtasks::list_by_task(&*self.repo, task_id)
+            .await
+            .unwrap_or_default();
+        for &idx in indices {
+            let Some(planned) = queue.get(idx).cloned() else {
+                continue;
+            };
+            let db_subtask = db_subtasks.get(idx).cloned();
+            if let Some(ref st) = db_subtask {
+                let _ = subtasks::update_status(&*self.repo, st.id, SubtaskStatus::Running).await;
+            }
+            exec_ctx.harness_stage = Some(stage);
+            exec_ctx.harness_authz = op_max_authz.map(|max_authorization| {
+                let intent = crate::harness::IntentClassifier::with_default_keywords()
+                    .classify(&planned.description, stage);
+                crate::harness::HarnessAuthz {
+                    max_authorization,
+                    intent,
+                }
+            });
+            exec_ctx.current_subtask = Some(super::super::types::CurrentSubtask {
+                title: planned.title.clone(),
+                description: planned.description.clone(),
+                agent: planned.agent.clone(),
+            });
+            self.emit_plan_update(queue, idx, StepStatus::InProgress);
+            let (result_text, _usage) = self
+                .execute_single_subtask(&planned, exec_ctx, executor, &db_subtask, task_id)
+                .await;
+            if let Some(ref st) = db_subtask {
+                let _ =
+                    subtasks::set_result(&*self.repo, st.id, &result_text, SubtaskStatus::Finished)
+                        .await;
+            }
+            self.emit(AiEvent::SubtaskCompleted {
+                task_id: task_id.to_string(),
+                subtask_id: db_subtask
+                    .as_ref()
+                    .map(|s| s.id.to_string())
+                    .unwrap_or_default(),
+                title: planned.title.clone(),
+                result: truncate(&result_text, 500),
+            });
+            exec_ctx
+                .completed_results
+                .push(super::super::types::SubtaskResult {
+                    title: planned.title.clone(),
+                    result: result_text,
+                    token_usage: None,
+                });
+            self.emit_plan_update(queue, idx, StepStatus::Completed);
+        }
+        self.graph_driven = false;
+        self.stage_outcome_acc
+            .take()
+            .unwrap_or_else(crate::harness::operation_flow::StageFlowOutcome::pass_with_progress)
     }
 
     /// Phase 2/C: gate 通过后按 Operation DAG 推进 operation_state 游标 (Doc 3 §6.2).

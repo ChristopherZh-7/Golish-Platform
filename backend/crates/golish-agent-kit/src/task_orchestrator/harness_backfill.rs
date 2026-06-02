@@ -78,6 +78,25 @@ const EXTERNAL_ATTACK_SURFACE_ANTI_TRIGGERS: &[&str] = &[
     "修复建议",
 ];
 
+/// Whether `lower_text` matches `keyword_lower` (both already lowercased) either
+/// as a direct substring (exact phrase / word order) OR — for multi-word
+/// keywords — as a word-order-insensitive token set, where every
+/// whitespace-separated token of the keyword appears somewhere in the text as a
+/// substring.
+///
+/// This lets the existing keyword `"subdomain enum"` match a Generator-reworded
+/// subtask titled `"Enumerate subdomains for example.com"` (reversed order, with
+/// `"enum"` ⊂ `"enumerate"` and `"subdomain"` ⊂ `"subdomains"`), which a plain
+/// phrase `contains` would miss. Single-token keywords (incl. CJK, which has no
+/// whitespace) fall back to the plain substring check.
+fn keyword_matches(lower_text: &str, keyword_lower: &str) -> bool {
+    if lower_text.contains(keyword_lower) {
+        return true;
+    }
+    let tokens: Vec<&str> = keyword_lower.split_whitespace().collect();
+    tokens.len() >= 2 && tokens.iter().all(|t| lower_text.contains(t))
+}
+
 /// Infer `HarnessStageHint` from arbitrary text (typically a subtask
 /// `title + " " + description`).
 ///
@@ -89,7 +108,7 @@ pub fn infer_harness_stage(text: &str) -> Option<HarnessStageHint> {
 
     let has_positive = EXTERNAL_ATTACK_SURFACE_KEYWORDS
         .iter()
-        .any(|kw| lower.contains(&kw.to_lowercase()));
+        .any(|kw| keyword_matches(&lower, &kw.to_lowercase()));
 
     if !has_positive {
         return None;
@@ -196,7 +215,10 @@ pub fn infer_stage(text: &str) -> Option<HarnessStageHint> {
     }
     let lower = text.to_lowercase();
     for (kind, keywords) in OTHER_STAGE_KEYWORDS {
-        if keywords.iter().any(|kw| lower.contains(&kw.to_lowercase())) {
+        if keywords
+            .iter()
+            .any(|kw| keyword_matches(&lower, &kw.to_lowercase()))
+        {
             return Some(HarnessStageHint::new(*kind));
         }
     }
@@ -228,7 +250,11 @@ pub fn backfill_harness_stage(subtasks: &mut [PlannedSubtask]) -> usize {
             filled += 1;
         }
     }
-    if filled > 0 {
+    // Always log when there were subtasks (was: only when filled > 0). A
+    // "backfilled=0 total=N" line is the key signal that NO subtask got a stage
+    // → the harness gate will be transparent for this task. Closes the
+    // "healthy-but-silent" observability gap.
+    if !subtasks.is_empty() {
         tracing::info!(
             target: "harness::backfill",
             backfilled = filled,
@@ -285,6 +311,30 @@ mod tests {
                 stage_kind: StageKind::ExternalAttackSurface
             })
         ));
+    }
+
+    #[test]
+    fn enumerate_subdomains_word_order_triggers_external() {
+        // Regression (2026-06-01): the Generator reworded the subtask to
+        // "Enumerate subdomains ..." (reversed from the "subdomain enum"
+        // keyword). A plain phrase `contains` missed it → harness_stage stayed
+        // None → the gate silently skipped and the DAG cursor never advanced.
+        // Word-order-insensitive token-set matching must now tag it.
+        for text in [
+            "Enumerate subdomains for example.com",
+            "Subdomain discovery and DNS resolution for example.com",
+            "去重子域名并解析 DNS",
+        ] {
+            assert!(
+                matches!(
+                    infer_harness_stage(text),
+                    Some(HarnessStageHint {
+                        stage_kind: StageKind::ExternalAttackSurface
+                    })
+                ),
+                "text {text:?} should tag external_attack_surface"
+            );
+        }
     }
 
     #[test]

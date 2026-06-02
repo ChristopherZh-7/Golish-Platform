@@ -52,6 +52,9 @@ pub const EMBEDDED_PROFILE_IDS: &[&str] = &[
     "bug_bounty",
     "cloud_assessment",
     "red_team",
+    // Minimal smoke-test flow (scoping -> target_intel). Listed last so it sits
+    // at the bottom of the mode picker.
+    "smoke",
 ];
 
 /// 按 profile id 取嵌入的 profile JSON 原文; 未知 id 返回 None.
@@ -62,6 +65,7 @@ pub fn profile_json(id: &str) -> Option<&'static str> {
         "red_team" => profile_json_raw!("red_team.json"),
         "bug_bounty" => profile_json_raw!("bug_bounty.json"),
         "cloud_assessment" => profile_json_raw!("cloud_assessment.json"),
+        "smoke" => profile_json_raw!("smoke.json"),
         _ => return None,
     })
 }
@@ -106,13 +110,14 @@ mod tests {
     }
 
     #[test]
-    fn all_five_profiles_load() {
+    fn all_six_profiles_load() {
         for id in [
             "assessment",
             "pentest",
             "red_team",
             "bug_bounty",
             "cloud_assessment",
+            "smoke",
         ] {
             let p =
                 load_embedded_profile(id).unwrap_or_else(|e| panic!("load {} failed: {}", id, e));

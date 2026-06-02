@@ -104,12 +104,7 @@ impl TaskOrchestrator {
                 ),
             });
 
-            self.emit_plan_update(
-                queue,
-                subtask_index,
-                StepStatus::InProgress,
-                subtask_index as u32 + 2,
-            );
+            self.emit_plan_update(queue, subtask_index, StepStatus::InProgress);
 
             let chain_id = if let Some(ref st) = db_subtask {
                 let agent_type = parse_agent_type(&planned.agent)
@@ -219,12 +214,7 @@ impl TaskOrchestrator {
                 result: truncate(&result_text, 500),
             });
 
-            self.emit_plan_update(
-                queue,
-                subtask_index,
-                StepStatus::Completed,
-                subtask_index as u32 + 2,
-            );
+            self.emit_plan_update(queue, subtask_index, StepStatus::Completed);
 
             subtask_index += 1;
 
