@@ -152,8 +152,11 @@ impl OperationFlowState {
 
 /// 状态变更：节点执行/返工注入。
 pub enum FlowUpdate {
-    /// 记录 `stage` 已执行（把其 `seeded` 产出拷进 `applied`）。
+    /// 记录 `stage` 已执行（把其 `seeded` 产出拷进 `applied`）。增量 1 的 seeded 模型用。
     Executed(StageKind),
+    /// 记录 `stage` 已执行并附上其**真实**产出。增量 4a 的 `StageRunner` 模型用——
+    /// 产出来自真跑而非预置。
+    ExecutedWith(StageKind, StageFlowOutcome),
     /// 返工/resume 时注入：覆盖某 stage 的预置产出（如「现在 gate 过了」）。
     SetOutcome(StageKind, StageFlowOutcome),
 }
@@ -164,6 +167,10 @@ impl Reducer for OperationFlowState {
         match update {
             FlowUpdate::Executed(stage) => {
                 let outcome = self.seeded_outcome(stage);
+                self.visited.push(stage);
+                self.applied.insert(stage, outcome);
+            }
+            FlowUpdate::ExecutedWith(stage, outcome) => {
                 self.visited.push(stage);
                 self.applied.insert(stage, outcome);
             }
@@ -201,6 +208,22 @@ pub fn build_operation_flow_graph(
         );
     }
 
+    g = add_flow_edges(g, dag);
+
+    if let Some(&entry) = dag.entry_points().first() {
+        g = g.set_entry(entry.as_str());
+    }
+    g.compile()
+}
+
+/// Add the stage-flow edges (single successor → static; multiple → conditional
+/// via [`branch_target`]; terminal → `END`) shared by both the seeded
+/// ([`build_operation_flow_graph`]) and runner-driven ([`build_runner_graph`])
+/// builders.
+fn add_flow_edges(
+    mut g: super::graph_engine::Graph<OperationFlowState>,
+    dag: &AllowedDag,
+) -> super::graph_engine::Graph<OperationFlowState> {
     for &stage in &dag.nodes {
         let nexts = dag.next_stages(stage);
         match nexts.as_slice() {
@@ -228,11 +251,7 @@ pub fn build_operation_flow_graph(
             }
         }
     }
-
-    if let Some(&entry) = dag.entry_points().first() {
-        g = g.set_entry(entry.as_str());
-    }
-    g.compile()
+    g
 }
 
 /// 构造一个挂了 [`MemoryCheckpointer`] 的 [`Executor`]（支持 run + resume）。
@@ -241,6 +260,56 @@ pub fn operation_flow_executor(
 ) -> Result<Executor<OperationFlowState>, GraphError> {
     Ok(Executor::new(build_operation_flow_graph(dag)?)
         .with_checkpointer(Arc::new(MemoryCheckpointer::new())))
+}
+
+/// 增量 4a · 控制反转抽象：让 metalcraft [`Executor`] 真正驱动 operation。
+///
+/// 一个 `StageRunner` 知道「如何把某个 stage 端到端跑完」（其 subtasks + gate），
+/// 并报告 [`StageFlowOutcome`]。真 orchestrator 在增量 4b 实现它；图节点体只持有
+/// `Arc<dyn StageRunner>`（解决 metalcraft `Node` 闭包拿不到 orchestrator `&mut self`
+/// 的难题）。
+#[async_trait::async_trait]
+pub trait StageRunner: Send + Sync {
+    /// 端到端跑完一个 stage（subtasks + gate），返回流转所需的产出。
+    async fn run_stage(&self, stage: StageKind) -> StageFlowOutcome;
+}
+
+/// 增量 4a · 构造一张**由 [`StageRunner`] 真驱动**的 metalcraft 图：每个 stage 节点体
+/// 调 `runner.run_stage(stage)`，产出 → [`FlowUpdate::ExecutedWith`]；gate 未过 →
+/// `Interrupt`（暂停返工，可 resume）。分支/终点边复用 [`add_flow_edges`]。
+///
+/// 仍是 additive：把 live `run()` 切到「Executor 驱动这张图」是增量 4c（flag 闸）。
+pub fn build_runner_graph(
+    dag: &AllowedDag,
+    runner: Arc<dyn StageRunner>,
+) -> Result<CompiledGraph<OperationFlowState>, GraphError> {
+    let mut g = super::graph_engine::Graph::<OperationFlowState>::new();
+
+    for &stage in &dag.nodes {
+        let s = stage;
+        let runner = Arc::clone(&runner);
+        g = g.add_node(stage.as_str(), move |_state: OperationFlowState| {
+            let runner = Arc::clone(&runner);
+            async move {
+                let outcome = runner.run_stage(s).await;
+                if outcome.gate_allowed {
+                    Ok(NodeOutcome::Update(FlowUpdate::ExecutedWith(s, outcome)))
+                } else {
+                    Ok(NodeOutcome::interrupt(format!(
+                        "gate blocked at stage '{}' — hold for rework",
+                        s.as_str()
+                    )))
+                }
+            }
+        });
+    }
+
+    g = add_flow_edges(g, dag);
+
+    if let Some(&entry) = dag.entry_points().first() {
+        g = g.set_entry(entry.as_str());
+    }
+    g.compile()
 }
 
 #[cfg(test)]
@@ -475,6 +544,95 @@ mod tests {
                 assert!(s.visited.contains(&StageKind::Reporting));
             }
             other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    // ── 增量 4a · StageRunner-driven graph (control inversion foundation) ──
+
+    struct MockRunner {
+        outcomes: HashMap<StageKind, StageFlowOutcome>,
+    }
+
+    #[async_trait::async_trait]
+    impl StageRunner for MockRunner {
+        async fn run_stage(&self, stage: StageKind) -> StageFlowOutcome {
+            self.outcomes
+                .get(&stage)
+                .copied()
+                .unwrap_or_else(StageFlowOutcome::pass_with_progress)
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_graph_executor_drives_full_recon_path() {
+        // The Executor drives the whole operation by calling the runner per
+        // stage (control inversion): every stage makes progress → linear path.
+        let dag = assessment_dag();
+        let runner = Arc::new(MockRunner {
+            outcomes: HashMap::new(),
+        });
+        let graph = build_runner_graph(&dag, runner).expect("graph");
+        match Executor::new(graph)
+            .run(OperationFlowState::default(), "op")
+            .await
+            .expect("run")
+        {
+            RunOutcome::Completed(s) => assert_eq!(
+                s.visited,
+                vec![
+                    StageKind::Scoping,
+                    StageKind::TargetIntel,
+                    StageKind::ExternalAttackSurface,
+                    StageKind::Enumeration,
+                    StageKind::Reporting,
+                ]
+            ),
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_graph_bails_when_runner_reports_no_progress() {
+        let dag = assessment_dag();
+        let runner = Arc::new(MockRunner {
+            outcomes: seed(&[(
+                StageKind::ExternalAttackSurface,
+                StageFlowOutcome::pass_no_progress(),
+            )]),
+        });
+        let graph = build_runner_graph(&dag, runner).expect("graph");
+        match Executor::new(graph)
+            .run(OperationFlowState::default(), "op")
+            .await
+            .expect("run")
+        {
+            RunOutcome::Completed(s) => {
+                assert!(!s.visited.contains(&StageKind::Enumeration));
+                assert!(s.visited.contains(&StageKind::Reporting));
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_graph_interrupts_when_runner_reports_blocked_gate() {
+        let dag = assessment_dag();
+        let runner = Arc::new(MockRunner {
+            outcomes: seed(&[(
+                StageKind::ExternalAttackSurface,
+                StageFlowOutcome::blocked(),
+            )]),
+        });
+        let graph = build_runner_graph(&dag, runner).expect("graph");
+        match Executor::new(graph)
+            .run(OperationFlowState::default(), "op")
+            .await
+            .expect("run")
+        {
+            RunOutcome::Interrupted { resume_from, .. } => {
+                assert_eq!(resume_from, StageKind::ExternalAttackSurface.as_str())
+            }
+            other => panic!("expected Interrupted, got {other:?}"),
         }
     }
 }

@@ -28,8 +28,24 @@
 ### 增量 3（下次）— DB-backed Checkpointer + 全量状态
 实现 `Checkpointer` for `operation_state`/`stage_runs`（写 state_blob + 开/闭 stage_run 行），让杀进程后能从任意 stage resume（gap P2-b）。
 
-### 增量 4（可选）— 节点体真跑阶段
-node body 调 orchestrator 跑该 stage 的 subtasks（控制反转），Executor 全程驱动。风险最大，最后做。
+### 增量 4 — 控制反转：Executor 真驱动 live operation（最大、最伤核心链路，拆 4 子步）
+node body 真跑该 stage，Executor 全程驱动 + 检查点。难点：metalcraft `Node` 体是
+`Fn(S)->Fut` 的 `Send+Sync` 闭包，拿不到 orchestrator 的 `&mut self`（repo/事件/
+user_input_rx）。故用 `StageRunner` 抽象解耦。
+
+- **4a（本次 · additive · 零 live 变更）**：定义 `StageRunner` trait（`async fn
+  run_stage(stage)->StageFlowOutcome`）+ `build_runner_graph(dag, Arc<dyn StageRunner>)`
+  —— 每个 stage 节点体调 `runner.run_stage(stage)`，结果 → `FlowUpdate::ExecutedWith`，
+  分支用 `branch_target`（复用），gate BLOCK→Interrupt。用 MockRunner 单测 Executor
+  全程驱动 + 条件 bail + resume。**不碰 orchestrator。**
+- **4b**：为真 orchestrator 实现 `StageRunner`（`run_stage` 内跑该 stage 的 subtasks +
+  gate）。难点：把需 `&mut self` 的执行改成 `Arc` 共享句柄可调；可能引 `tokio::Mutex`
+  或重构 subtask 执行为不依赖 `&mut self`。
+- **4c（风险最高 · flag 闸）**：`run()` 增一条「Executor 驱动」路径
+  （`GOLISH_HARNESS_GRAPH_FLOW` 复用或新 flag），默认仍走旧 subtask 循环。
+- **4d**：DB-backed `Checkpointer`（= 原增量 3）。`run()` 跑在 Executor 下后才有全量
+  状态可落 `operation_state.state_blob`/`stage_runs` → 细粒度崩溃续跑。需加 repo 写
+  blob 方法（非 schema 变更，state_blob 列已存在）。
 
 ## 验收
 - 每增量：`just precommit` 绿 + 新单测过。
