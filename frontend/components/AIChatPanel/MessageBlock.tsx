@@ -280,14 +280,25 @@ export const MessageBlock = memo(function MessageBlock({
           });
         }
 
-        // Determine where to insert the task plan card
+        // Determine where to insert the task plan card. Event-driven plans
+        // (PlanUpdated, no `update_plan` tool call) have no plan_marker and often
+        // no usable text offset; anchoring such a card at the TOP of the block
+        // keeps streaming text / tool cards flowing BELOW it instead of pushing
+        // it to the bottom as the message grows.
         let planInserted = false;
         const shouldShowPlan = !isUser && taskPlan;
+        const hasPlanMarker = segments.some((s) => s.kind === "plan_marker");
         // First text segment may not be index 0 once thinking bursts are spliced in.
         const firstTextIdx = segments.findIndex((s) => s.kind === "text");
+        const willInsertInline =
+          !!shouldShowPlan &&
+          ((planTextOffset != null && planTextOffset > 0 && firstTextIdx !== -1) || hasPlanMarker);
+        const showPlanAtTop = !!shouldShowPlan && !willInsertInline;
+        if (showPlanAtTop) planInserted = true;
 
         return (
           <div className="flex flex-col gap-2">
+            {showPlanAtTop && <InlinePlanCard plan={taskPlan!} />}
             {segments.map((seg, idx) => {
               if (seg.kind === "thinking") {
                 return (

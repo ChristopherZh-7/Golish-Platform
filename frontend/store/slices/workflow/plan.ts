@@ -34,8 +34,9 @@ export function createPlanActions(set: ImmerSet<WorkflowStoreDraft>) {
         }
 
         const msgId = currentMessageId ?? state.sessions[sessionId].planMessageId;
+        let stepsChanged = false;
         if (prev && msgId) {
-          const stepsChanged = planStepsStructurallyChanged(prev.steps, plan.steps);
+          stepsChanged = planStepsStructurallyChanged(prev.steps, plan.steps);
           if (stepsChanged) {
             if (!state.sessions[sessionId].retiredPlans) {
               state.sessions[sessionId].retiredPlans = [];
@@ -54,7 +55,11 @@ export function createPlanActions(set: ImmerSet<WorkflowStoreDraft>) {
         }
 
         (state.sessions[sessionId] as Record<string, unknown>).plan = plan;
-        if (newMessageId !== undefined) {
+        // Pin the card where the plan first appeared. Only move the anchor for a
+        // structurally new plan (its predecessor is retired above) — status-only
+        // progress (pending→in_progress→completed) must not chase the latest
+        // message to the bottom.
+        if (newMessageId !== undefined && (!prev || stepsChanged)) {
           (state.sessions[sessionId] as Record<string, unknown>).planMessageId = newMessageId;
         }
 

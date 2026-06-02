@@ -72,7 +72,7 @@ export function getInstallMethodLabel(tool: ToolWithMeta, t: (key: string) => st
 }
 
 function provenanceBadge(
-  via: string | null | undefined,
+  via: string | null | undefined
 ): { className: string; label: string } | null {
   switch (via) {
     case "homebrew":

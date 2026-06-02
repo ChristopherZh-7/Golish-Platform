@@ -22,6 +22,7 @@ import { useTaskPlanState } from "./hooks/useTaskPlanState";
 import { MessageBlock } from "./MessageBlock";
 import { buildPentestSystemPrompt } from "./pentestSystemPrompt";
 import { StageMarker } from "./StageMarker";
+import { TaskPreparingIndicator } from "./TaskPreparingIndicator";
 import { useChatAutoScroll } from "./useChatAutoScroll";
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
@@ -217,6 +218,17 @@ export const AIChatPanel = memo(function AIChatPanel() {
     [modes.pendingApproval?.requestId, modes.pendingApproval?.toolName, modes.pendingApproval]
   );
 
+  // Bridge the blank gap between sending and the first assistant bubble: the
+  // orchestrator plans (task/profile modes) before emitting `started`, so the
+  // conversation streams with no streaming assistant message to host the
+  // in-bubble status line. Suppress while a human prompt/approval is pending.
+  const lastMessage = messages[messages.length - 1];
+  const showPreparing =
+    isStreaming &&
+    !(lastMessage?.role === "assistant" && !!lastMessage.isStreaming) &&
+    !askHumanRequest &&
+    !stablePendingApproval;
+
   // ── Render ───────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-full">
@@ -332,6 +344,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
                   onSkip={handleAskHumanSkip}
                 />
               )}
+              {showPreparing && <TaskPreparingIndicator modeId={modes.chatExecutionMode} />}
               <div ref={messagesEndRef} />
             </div>
           )}
