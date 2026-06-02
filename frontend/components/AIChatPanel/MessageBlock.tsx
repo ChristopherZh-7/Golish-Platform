@@ -14,6 +14,7 @@ import {
   usePlanNestedRequestIds,
 } from "./ChatSubComponents";
 import { InlinePlanCard } from "./InlinePlanCard";
+import { buildMessageSegments } from "./messageSegments";
 import { SubAgentInlineCard } from "./SubAgentInlineCard";
 
 /**
@@ -102,19 +103,11 @@ export const MessageBlock = memo(function MessageBlock({
 
         const hasToolCalls = !isUser && message.toolCalls && message.toolCalls.length > 0;
 
-        const isSubAgentCall = (tc: ChatToolCall) => tc.name.startsWith("sub_agent_");
-
         const isPendingApprovalCall = (tc: ChatToolCall) =>
           pendingApproval != null &&
           (tc.requestId
             ? tc.requestId === pendingApproval.requestId
             : tc.name === pendingApproval.toolName);
-
-        const isVisibleCall = (tc: ChatToolCall) =>
-          tc.name !== "update_plan" &&
-          !isSubAgentCall(tc) &&
-          !nestedIds.has(tc.requestId ?? "") &&
-          (tc.success !== undefined || !isPendingApprovalCall(tc));
 
         const pendingCalls =
           (hasToolCalls && pendingApproval
@@ -140,145 +133,10 @@ export const MessageBlock = memo(function MessageBlock({
             </div>
           ) : null;
 
-        // Build interleaved segments: text chunks, tool-call groups, sub-agent
-        // cards, and reasoning bursts in time order.
-        type Segment =
-          | { kind: "text"; content: string }
-          | { kind: "tools"; calls: ChatToolCall[]; requestIds: string[] }
-          | { kind: "sub_agent"; requestId: string; toolCall: ChatToolCall }
-          | { kind: "plan_marker" }
-          | { kind: "thinking"; seg: ThinkingSegment };
-
-        const segments: Segment[] = [];
-
-        const flushToolBatch = (toolBatch: ChatToolCall[], toolBatchIds: string[]) => {
-          if (toolBatch.length > 0) {
-            segments.push({ kind: "tools", calls: [...toolBatch], requestIds: [...toolBatchIds] });
-          }
-        };
-
-        // Group reasoning bursts by the tool index they preceded so they can be
-        // spliced into the timeline right before that tool batch / answer text.
-        const thinkingByTool = new Map<number, ThinkingSegment[]>();
-        if (hasThinkingSegments) {
-          for (const ts of thinkingSegments) {
-            const arr = thinkingByTool.get(ts.toolIndex);
-            if (arr) arr.push(ts);
-            else thinkingByTool.set(ts.toolIndex, [ts]);
-          }
-        }
-        const pushThinkingBeforeTool = (toolIdx: number) => {
-          const arr = thinkingByTool.get(toolIdx);
-          if (arr) for (const ts of arr) segments.push({ kind: "thinking", seg: ts });
-        };
-
-        if (hasToolCalls && message.toolCallOffsets && message.toolCallOffsets.length > 0) {
-          const offsets = message.toolCallOffsets;
-          const allCalls = message.toolCalls!;
-          let textCursor = 0;
-
-          let toolBatch: ChatToolCall[] = [];
-          let toolBatchIds: string[] = [];
-
-          for (let i = 0; i < allCalls.length; i++) {
-            // Reasoning that resumed after the previous tool, before this text/tool.
-            if (thinkingByTool.has(i)) {
-              flushToolBatch(toolBatch, toolBatchIds);
-              toolBatch = [];
-              toolBatchIds = [];
-              pushThinkingBeforeTool(i);
-            }
-
-            const offset = offsets[i] ?? message.content.length;
-
-            if (offset > textCursor) {
-              flushToolBatch(toolBatch, toolBatchIds);
-              toolBatch = [];
-              toolBatchIds = [];
-              segments.push({ kind: "text", content: message.content.slice(textCursor, offset) });
-              textCursor = offset;
-            }
-
-            if (allCalls[i].name === "update_plan") {
-              flushToolBatch(toolBatch, toolBatchIds);
-              toolBatch = [];
-              toolBatchIds = [];
-              segments.push({ kind: "plan_marker" });
-            } else if (isSubAgentCall(allCalls[i])) {
-              flushToolBatch(toolBatch, toolBatchIds);
-              toolBatch = [];
-              toolBatchIds = [];
-              segments.push({
-                kind: "sub_agent",
-                requestId: allCalls[i].requestId ?? allCalls[i].name,
-                toolCall: allCalls[i],
-              });
-            } else if (isVisibleCall(allCalls[i])) {
-              toolBatch.push(allCalls[i]);
-              if (allCalls[i].requestId) toolBatchIds.push(allCalls[i].requestId!);
-            }
-          }
-
-          flushToolBatch(toolBatch, toolBatchIds);
-          pushThinkingBeforeTool(allCalls.length);
-          if (textCursor < message.content.length) {
-            segments.push({ kind: "text", content: message.content.slice(textCursor) });
-          }
-        } else if (hasToolCalls) {
-          const tcOffset = message.toolCallsContentOffset ?? 0;
-          pushThinkingBeforeTool(0);
-          if (tcOffset > 0) {
-            segments.push({ kind: "text", content: message.content.slice(0, tcOffset) });
-          }
-
-          const allCalls = message.toolCalls!;
-          let toolBatch: ChatToolCall[] = [];
-          let toolBatchIds: string[] = [];
-
-          for (let i = 0; i < allCalls.length; i++) {
-            const tc = allCalls[i];
-            // Reasoning that resumed after the previous tool (index 0 handled above).
-            if (i > 0 && thinkingByTool.has(i)) {
-              flushToolBatch(toolBatch, toolBatchIds);
-              toolBatch = [];
-              toolBatchIds = [];
-              pushThinkingBeforeTool(i);
-            }
-            if (tc.name === "update_plan") {
-              flushToolBatch(toolBatch, toolBatchIds);
-              toolBatch = [];
-              toolBatchIds = [];
-              segments.push({ kind: "plan_marker" });
-            } else if (isSubAgentCall(tc)) {
-              flushToolBatch(toolBatch, toolBatchIds);
-              toolBatch = [];
-              toolBatchIds = [];
-              segments.push({
-                kind: "sub_agent",
-                requestId: tc.requestId ?? tc.name,
-                toolCall: tc,
-              });
-            } else if (isVisibleCall(tc)) {
-              toolBatch.push(tc);
-              if (tc.requestId) toolBatchIds.push(tc.requestId);
-            }
-          }
-          flushToolBatch(toolBatch, toolBatchIds);
-          pushThinkingBeforeTool(allCalls.length);
-
-          if (tcOffset < message.content.length) {
-            segments.push({ kind: "text", content: message.content.slice(tcOffset) });
-          }
-        } else {
-          pushThinkingBeforeTool(0);
-          // Suppress the "..." placeholder while ThinkingBlock owns the
-          // streaming spinner — otherwise the user sees a second loader.
-          const showStreamingPlaceholder = message.isStreaming && !message.thinking;
-          segments.push({
-            kind: "text",
-            content: message.content || (showStreamingPlaceholder ? "..." : ""),
-          });
-        }
+        // Build interleaved segments (text chunks, tool-call groups, sub-agent
+        // cards, plan anchor, and reasoning bursts) in true time order. See
+        // `buildMessageSegments` for the interleaving rules.
+        const segments = buildMessageSegments(message, nestedIds, pendingApproval);
 
         // Determine where to insert the task plan card. Event-driven plans
         // (PlanUpdated, no `update_plan` tool call) have no plan_marker and often

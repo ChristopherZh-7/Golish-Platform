@@ -339,6 +339,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
               )}
               {askHumanRequest && (
                 <AskHumanInline
+                  key={askHumanRequest.requestId}
                   request={askHumanRequest}
                   onSubmit={handleAskHumanSubmit}
                   onSkip={handleAskHumanSkip}

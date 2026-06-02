@@ -1,6 +1,5 @@
-import { KeyRound, List, MessageSquare, ShieldQuestion } from "lucide-react";
+import { KeyRound, List, MessageSquare, Pencil, ShieldQuestion } from "lucide-react";
 import { useState } from "react";
-import { cn } from "@/lib/utils";
 
 export interface AskHumanState {
   requestId: string;
@@ -18,6 +17,11 @@ const INPUT_TYPE_ICONS: Record<string, typeof KeyRound> = {
   confirmation: ShieldQuestion,
 };
 
+/** A-Z badges for the first 26 options, then 1-based numbers as a fallback. */
+function optionLabel(index: number): string {
+  return index < 26 ? String.fromCharCode(65 + index) : String(index + 1);
+}
+
 export function AskHumanInline({
   request,
   onSubmit,
@@ -30,27 +34,34 @@ export function AskHumanInline({
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [freetext, setFreetext] = useState("");
-  const [selectedOptions, setSelectedOptions] = useState<Set<string>>(new Set());
+  // Cursor-style quick replies: each option submits on a single click. The
+  // "Other" affordance reveals a free-text field for a custom answer. When a
+  // choice request ships with no options we open that field straight away so the
+  // user is never stuck with a dead end.
+  const [showOther, setShowOther] = useState(
+    request.inputType === "choice" && request.options.length === 0
+  );
+  const [otherText, setOtherText] = useState("");
 
   const Icon = INPUT_TYPE_ICONS[request.inputType] || MessageSquare;
 
+  const submitOther = () => {
+    const trimmed = otherText.trim();
+    if (trimmed) onSubmit(trimmed);
+  };
+
   const handleSubmit = () => {
-    let response = "";
     switch (request.inputType) {
       case "credentials":
-        response = JSON.stringify({ username, password });
-        break;
-      case "choice":
-        response = Array.from(selectedOptions).join(", ");
+        onSubmit(JSON.stringify({ username, password }));
         break;
       case "freetext":
-        response = freetext;
+        onSubmit(freetext);
         break;
       case "confirmation":
-        response = "yes";
+        onSubmit("yes");
         break;
     }
-    onSubmit(response);
   };
 
   return (
@@ -86,28 +97,51 @@ export function AskHumanInline({
 
       {request.inputType === "choice" && (
         <div className="space-y-1 mb-2">
-          {request.options.map((opt) => (
+          {request.options.map((opt, i) => (
             <button
               key={opt}
               type="button"
-              onClick={() =>
-                setSelectedOptions((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(opt)) next.delete(opt);
-                  else next.add(opt);
-                  return next;
-                })
-              }
-              className={cn(
-                "w-full text-left px-2.5 py-1.5 rounded-md border text-[12px] transition-colors",
-                selectedOptions.has(opt)
-                  ? "bg-accent/10 border-accent/50 text-accent"
-                  : "bg-background border-border/50 hover:border-muted-foreground/30"
-              )}
+              onClick={() => onSubmit(opt)}
+              className="group w-full text-left px-2.5 py-1.5 rounded-md border border-border/50 bg-background text-[12px] flex items-center gap-2 hover:border-accent/50 hover:bg-accent/10 transition-colors"
             >
-              {opt}
+              <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border border-border/60 text-[10px] font-semibold text-muted-foreground group-hover:border-accent/50 group-hover:text-accent">
+                {optionLabel(i)}
+              </span>
+              <span className="flex-1">{opt}</span>
             </button>
           ))}
+
+          {showOther ? (
+            <div className="flex items-center gap-1.5 pt-0.5">
+              <input
+                type="text"
+                // biome-ignore lint/a11y/noAutofocus: focus the field the user just revealed
+                autoFocus
+                value={otherText}
+                onChange={(e) => setOtherText(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submitOther()}
+                className="flex-1 px-2.5 py-1.5 rounded-md bg-background border border-border/50 text-[12px] focus:outline-none focus:border-accent"
+                placeholder="Type your own answer..."
+              />
+              <button
+                type="button"
+                onClick={submitOther}
+                disabled={!otherText.trim()}
+                className="px-3 py-1.5 text-[11px] rounded-md bg-accent text-accent-foreground hover:bg-accent/80 font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Send
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowOther(true)}
+              className="w-full text-left px-2.5 py-1.5 rounded-md border border-dashed border-border/50 text-[12px] text-muted-foreground flex items-center gap-2 hover:border-accent/40 hover:text-foreground transition-colors"
+            >
+              <Pencil className="w-3 h-3 flex-shrink-0" />
+              Other (type your own)...
+            </button>
+          )}
         </div>
       )}
 
@@ -121,13 +155,16 @@ export function AskHumanInline({
       )}
 
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={handleSubmit}
-          className="px-3 py-1 text-[11px] rounded-md bg-accent text-accent-foreground hover:bg-accent/80 font-medium transition-colors"
-        >
-          {request.inputType === "confirmation" ? "Confirm" : "Submit"}
-        </button>
+        {/* Choice options self-submit on click, so no generic Submit button there. */}
+        {request.inputType !== "choice" && (
+          <button
+            type="button"
+            onClick={handleSubmit}
+            className="px-3 py-1 text-[11px] rounded-md bg-accent text-accent-foreground hover:bg-accent/80 font-medium transition-colors"
+          >
+            {request.inputType === "confirmation" ? "Confirm" : "Submit"}
+          </button>
+        )}
         <button
           type="button"
           onClick={onSkip}
