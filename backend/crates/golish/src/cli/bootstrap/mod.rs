@@ -170,6 +170,10 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
         format!("golish_agent_runtime={}", log_level),
         format!("golish_agent_bridge={}", log_level),
         format!("golish_prompts={}", log_level),
+        // Harness gate/transition/eval events use custom `harness::*` targets
+        // (not a `golish_*` module path), so they need their own directive or
+        // they get dropped by the `golish=*` filters above.
+        format!("harness={}", log_level),
     ];
 
     let extra_directives: Vec<&str> = directives.iter().map(|s| s.as_str()).collect();

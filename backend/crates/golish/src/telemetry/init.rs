@@ -372,4 +372,73 @@ mod tests {
         assert!(!should_filter_field("my_langfuse.field")); // prefix doesn't match
         assert!(!should_filter_field("the_gen_ai.field")); // prefix doesn't match
     }
+
+    /// Regression (harness observability blind spot): the harness gate hook,
+    /// stage transitions, and eval scorecards log under custom `harness::*`
+    /// tracing targets — NOT the `golish_*` module path. The console/file
+    /// `EnvFilter` only carried `golish={level}` directives, which prefix-match
+    /// `golish*` targets and therefore never matched `harness::*`, so every gate
+    /// decision was silently dropped even at log_level=trace. `init_telemetry`
+    /// now also adds `harness={level}`; this test locks the underlying filter
+    /// behaviour: a golish-only filter drops `harness::*`, and adding the
+    /// `harness=` directive surfaces it (INFO + WARN, including the per-check
+    /// `harness::gate::*` targets).
+    #[test]
+    fn harness_directive_makes_harness_targets_visible() {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::layer::{Context, Layer};
+
+        struct Capture(Arc<Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> Layer<S> for Capture {
+            fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(event.metadata().target().to_string());
+            }
+        }
+
+        fn capture_with(filter: EnvFilter, emit: impl FnOnce()) -> Vec<String> {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let subscriber = Registry::default().with(filter).with(Capture(seen.clone()));
+            tracing::subscriber::with_default(subscriber, emit);
+            let out = seen.lock().unwrap().clone();
+            out
+        }
+
+        // Scenario A — golish-only filter: harness::* dropped, golish_* kept.
+        let only_golish = capture_with(EnvFilter::new("golish=trace"), || {
+            tracing::info!(target: "harness::hook", "A gate hook entered");
+            tracing::info!(target: "golish_agent_kit::task_orchestrator", "A module event");
+        });
+        assert!(
+            !only_golish.iter().any(|t| t.starts_with("harness")),
+            "without a harness directive, harness::* must be dropped: {only_golish:?}"
+        );
+        assert!(
+            only_golish
+                .iter()
+                .any(|t| t == "golish_agent_kit::task_orchestrator"),
+            "golish_* targets must still pass: {only_golish:?}"
+        );
+
+        // Scenario B — add harness=info (distinct callsites): harness::* visible.
+        let with_harness = capture_with(
+            EnvFilter::new("golish=trace").add_directive("harness=info".parse().unwrap()),
+            || {
+                tracing::info!(target: "harness::hook", "B gate hook entered");
+                tracing::warn!(target: "harness::gate::scope_check", "B gate block");
+            },
+        );
+        assert!(
+            with_harness.iter().any(|t| t == "harness::hook"),
+            "harness::hook INFO must pass with harness=info: {with_harness:?}"
+        );
+        assert!(
+            with_harness
+                .iter()
+                .any(|t| t == "harness::gate::scope_check"),
+            "harness::gate::* WARN must pass with harness=info: {with_harness:?}"
+        );
+    }
 }

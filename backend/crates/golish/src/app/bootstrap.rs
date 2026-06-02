@@ -80,7 +80,13 @@ pub(crate) fn init_telemetry(
     langfuse_config: Option<telemetry::LangfuseConfig>,
     log_level: &str,
 ) -> (Option<TelemetryGuard>, bool, Option<Arc<TelemetryStats>>) {
-    match telemetry::init_tracing(langfuse_config, log_level, &[]) {
+    // The harness gate/transition/eval events log under custom `harness::*`
+    // tracing targets (not the `golish_*` module path), so the `golish={level}`
+    // filter directive never matched them — every gate decision, stage-cursor
+    // transition, and eval scorecard was dropped even at log_level=trace. Mirror
+    // the configured level onto the `harness` target prefix so they're visible.
+    let harness_directive = format!("harness={}", log_level);
+    match telemetry::init_tracing(langfuse_config, log_level, &[harness_directive.as_str()]) {
         Ok(guard) => {
             let active = guard.langfuse_active;
             let stats = guard.stats.clone();
@@ -91,7 +97,8 @@ pub(crate) fn init_telemetry(
             let _ = tracing_subscriber::fmt()
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::from_default_env()
-                        .add_directive("golish=debug".parse().unwrap()),
+                        .add_directive("golish=debug".parse().unwrap())
+                        .add_directive("harness=debug".parse().unwrap()),
                 )
                 .try_init();
             (None, false, None)
