@@ -198,7 +198,9 @@ function chatMessageToDbRow(
   return {
     id: msg.id,
     conversationId,
-    role: msg.role,
+    // `system` (task-mode stage dividers) are runtime-only and filtered out
+    // before persistence; only user/assistant rows reach the DB contract.
+    role: msg.role === "system" ? "assistant" : msg.role,
     content: msg.content,
     thinking: msg.thinking ?? null,
     error: msg.error ?? null,
@@ -511,7 +513,8 @@ async function saveConversationsToDb(
     });
 
     const dbMessages = conv.messages
-      .filter((m) => m.content || m.toolCalls?.length)
+      // Stage-divider markers (role "system") are runtime-only UI; never persisted.
+      .filter((m) => m.role !== "system" && (m.content || m.toolCalls?.length))
       .map((m, idx) => chatMessageToDbRow(m, conv.id, idx));
 
     const terminalStates: ConvBatchItem["terminalStates"] = [];

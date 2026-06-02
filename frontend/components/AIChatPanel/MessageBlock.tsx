@@ -3,7 +3,7 @@ import React, { memo } from "react";
 import { Markdown } from "@/components/Markdown";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/store";
-import type { ChatToolCall } from "@/store/slices/conversation";
+import type { ChatToolCall, ThinkingSegment } from "@/store/slices/conversation";
 
 import { AgentStatusIndicator, type AgentStatusPhase } from "./AgentStatusIndicator";
 import {
@@ -61,13 +61,24 @@ export const MessageBlock = memo(function MessageBlock({
   const isUser = message.role === "user";
   const nestedIds = usePlanNestedRequestIds(taskPlan ? (terminalId ?? null) : null);
 
+  const thinkingSegments = message.thinkingSegments;
+  const hasThinkingSegments = !!thinkingSegments && thinkingSegments.length > 0;
+
+  // A segment is "active" (owns the live spinner) while streaming and nothing
+  // newer (answer text or a tool call) has landed since it started.
+  const thinkingActive = (ts: ThinkingSegment) =>
+    !!message.isStreaming &&
+    ts.contentOffset === (message.content?.length ?? 0) &&
+    ts.toolIndex === (message.toolCalls?.length ?? 0);
+
   return (
     <div className={cn("px-4 py-3", !isUser && "bg-[var(--bg-hover)]")}>
       <div className="text-[11px] text-muted-foreground mb-1.5 font-medium">
         {isUser ? "You" : "Golish AI"}
       </div>
 
-      {!isUser && message.thinking && (
+      {/* Fallback for restored history (no per-segment data): one top block. */}
+      {!isUser && message.thinking && !hasThinkingSegments && (
         <ThinkingBlock
           content={message.thinking}
           isActive={!!message.isStreaming && !message.content && !(message.toolCalls?.length ?? 0)}
@@ -129,12 +140,14 @@ export const MessageBlock = memo(function MessageBlock({
             </div>
           ) : null;
 
-        // Build interleaved segments: text chunks, tool-call groups, and sub-agent cards in order.
+        // Build interleaved segments: text chunks, tool-call groups, sub-agent
+        // cards, and reasoning bursts in time order.
         type Segment =
           | { kind: "text"; content: string }
           | { kind: "tools"; calls: ChatToolCall[]; requestIds: string[] }
           | { kind: "sub_agent"; requestId: string; toolCall: ChatToolCall }
-          | { kind: "plan_marker" };
+          | { kind: "plan_marker" }
+          | { kind: "thinking"; seg: ThinkingSegment };
 
         const segments: Segment[] = [];
 
@@ -142,6 +155,21 @@ export const MessageBlock = memo(function MessageBlock({
           if (toolBatch.length > 0) {
             segments.push({ kind: "tools", calls: [...toolBatch], requestIds: [...toolBatchIds] });
           }
+        };
+
+        // Group reasoning bursts by the tool index they preceded so they can be
+        // spliced into the timeline right before that tool batch / answer text.
+        const thinkingByTool = new Map<number, ThinkingSegment[]>();
+        if (hasThinkingSegments) {
+          for (const ts of thinkingSegments) {
+            const arr = thinkingByTool.get(ts.toolIndex);
+            if (arr) arr.push(ts);
+            else thinkingByTool.set(ts.toolIndex, [ts]);
+          }
+        }
+        const pushThinkingBeforeTool = (toolIdx: number) => {
+          const arr = thinkingByTool.get(toolIdx);
+          if (arr) for (const ts of arr) segments.push({ kind: "thinking", seg: ts });
         };
 
         if (hasToolCalls && message.toolCallOffsets && message.toolCallOffsets.length > 0) {
@@ -153,6 +181,14 @@ export const MessageBlock = memo(function MessageBlock({
           let toolBatchIds: string[] = [];
 
           for (let i = 0; i < allCalls.length; i++) {
+            // Reasoning that resumed after the previous tool, before this text/tool.
+            if (thinkingByTool.has(i)) {
+              flushToolBatch(toolBatch, toolBatchIds);
+              toolBatch = [];
+              toolBatchIds = [];
+              pushThinkingBeforeTool(i);
+            }
+
             const offset = offsets[i] ?? message.content.length;
 
             if (offset > textCursor) {
@@ -184,11 +220,13 @@ export const MessageBlock = memo(function MessageBlock({
           }
 
           flushToolBatch(toolBatch, toolBatchIds);
+          pushThinkingBeforeTool(allCalls.length);
           if (textCursor < message.content.length) {
             segments.push({ kind: "text", content: message.content.slice(textCursor) });
           }
         } else if (hasToolCalls) {
           const tcOffset = message.toolCallsContentOffset ?? 0;
+          pushThinkingBeforeTool(0);
           if (tcOffset > 0) {
             segments.push({ kind: "text", content: message.content.slice(0, tcOffset) });
           }
@@ -197,7 +235,15 @@ export const MessageBlock = memo(function MessageBlock({
           let toolBatch: ChatToolCall[] = [];
           let toolBatchIds: string[] = [];
 
-          for (const tc of allCalls) {
+          for (let i = 0; i < allCalls.length; i++) {
+            const tc = allCalls[i];
+            // Reasoning that resumed after the previous tool (index 0 handled above).
+            if (i > 0 && thinkingByTool.has(i)) {
+              flushToolBatch(toolBatch, toolBatchIds);
+              toolBatch = [];
+              toolBatchIds = [];
+              pushThinkingBeforeTool(i);
+            }
             if (tc.name === "update_plan") {
               flushToolBatch(toolBatch, toolBatchIds);
               toolBatch = [];
@@ -218,11 +264,13 @@ export const MessageBlock = memo(function MessageBlock({
             }
           }
           flushToolBatch(toolBatch, toolBatchIds);
+          pushThinkingBeforeTool(allCalls.length);
 
           if (tcOffset < message.content.length) {
             segments.push({ kind: "text", content: message.content.slice(tcOffset) });
           }
         } else {
+          pushThinkingBeforeTool(0);
           // Suppress the "..." placeholder while ThinkingBlock owns the
           // streaming spinner — otherwise the user sees a second loader.
           const showStreamingPlaceholder = message.isStreaming && !message.thinking;
@@ -235,10 +283,24 @@ export const MessageBlock = memo(function MessageBlock({
         // Determine where to insert the task plan card
         let planInserted = false;
         const shouldShowPlan = !isUser && taskPlan;
+        // First text segment may not be index 0 once thinking bursts are spliced in.
+        const firstTextIdx = segments.findIndex((s) => s.kind === "text");
 
         return (
           <div className="flex flex-col gap-2">
             {segments.map((seg, idx) => {
+              if (seg.kind === "thinking") {
+                return (
+                  <ThinkingBlock
+                    key={`seg-${idx}`}
+                    content={seg.seg.content}
+                    isActive={thinkingActive(seg.seg)}
+                    startedAt={seg.seg.startedAt}
+                    endedAt={seg.seg.endedAt}
+                  />
+                );
+              }
+
               if (seg.kind === "text") {
                 const displayContent = stripToolCallXml(seg.content);
                 const text = displayContent.trim();
@@ -249,7 +311,7 @@ export const MessageBlock = memo(function MessageBlock({
                   !planInserted &&
                   planTextOffset != null &&
                   planTextOffset > 0 &&
-                  idx === 0;
+                  idx === firstTextIdx;
 
                 if (showPlanBefore) {
                   const before = stripToolCallXml(seg.content.slice(0, planTextOffset));
@@ -338,9 +400,13 @@ export const MessageBlock = memo(function MessageBlock({
             .reverse()
             .find((tc) => tc.success === undefined);
 
-          // While ThinkingBlock owns the active spinner for the
-          // reasoning-only state, suppress the footer to avoid duplicates.
-          if (!lastPendingTool && message.thinking && !message.content) {
+          // While a ThinkingBlock owns the active spinner — either the
+          // reasoning-only state or a reasoning burst that resumed after
+          // content/tools — suppress the footer to avoid two spinners.
+          const reasoningOwnsSpinner =
+            (!lastPendingTool && message.thinking && !message.content) ||
+            (hasThinkingSegments && thinkingSegments.some(thinkingActive));
+          if (reasoningOwnsSpinner) {
             return null;
           }
 

@@ -172,6 +172,44 @@ export function useAiChatEvents({
               }
               break;
             }
+            // Task-mode stage boundaries: surface them as inline dividers so
+            // consecutive stage narrations don't read as one continuous
+            // monologue (otherwise e.g. "…scoping complete.Starting recon…"
+            // glues together with the gate/transition invisible).
+            case "subtask_completed":
+              store.addConversationStageMarker(convId, {
+                kind: "subtask_completed",
+                label: `Stage complete: ${event.title}`,
+                title: event.title,
+                detail: event.result || undefined,
+              });
+              break;
+            case "task_progress": {
+              const s = event.status;
+              // Only meaningful transitions — skip the noisy repeated "running".
+              if (s === "finished" || s === "waiting_approval" || s === "reporting") {
+                const label =
+                  s === "finished"
+                    ? "Task complete"
+                    : s === "waiting_approval"
+                      ? "Waiting for approval"
+                      : "Generating report";
+                store.addConversationStageMarker(convId, {
+                  kind: "task_progress",
+                  label,
+                  status: s,
+                  detail: event.message || undefined,
+                });
+              }
+              break;
+            }
+            case "task_resumed":
+              store.addConversationStageMarker(convId, {
+                kind: "task_resumed",
+                label: `Task resumed from subtask ${event.subtask_index}/${event.total_subtasks}`,
+                status: "resumed",
+              });
+              break;
             case "context_warning":
               setContextUsage({
                 utilization: event.utilization,

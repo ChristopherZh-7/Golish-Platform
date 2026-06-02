@@ -21,6 +21,7 @@ import { useChatSessionInit } from "./hooks/useChatSessionInit";
 import { useTaskPlanState } from "./hooks/useTaskPlanState";
 import { MessageBlock } from "./MessageBlock";
 import { buildPentestSystemPrompt } from "./pentestSystemPrompt";
+import { StageMarker } from "./StageMarker";
 import { useChatAutoScroll } from "./useChatAutoScroll";
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
@@ -296,6 +297,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
           ) : (
             <div>
               {messages.map((msg, msgIdx) => {
+                if (msg.role === "system") {
+                  return <StageMarker key={msg.id} message={msg} />;
+                }
                 const isPlanTarget = msgIdx === planTargetIdx;
                 return (
                   <React.Fragment key={msg.id}>

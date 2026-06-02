@@ -118,6 +118,63 @@ function ToolCallCard({
   );
 }
 
+/**
+ * Render a tool result string. When it is a JSON object, render it field-by-field
+ * so multi-line string values keep their real newlines instead of showing the
+ * literal `\n` / `\t` escape sequences produced by JSON.stringify.
+ */
+function ToolResultPreview({ result }: { result: string }) {
+  const parsed = (() => {
+    const trimmed = result.trim();
+    if (!trimmed.startsWith("{")) return null;
+    try {
+      const v = JSON.parse(trimmed);
+      return v && typeof v === "object" && !Array.isArray(v)
+        ? (v as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  const entries = parsed ? Object.entries(parsed) : null;
+  if (entries && entries.length > 0) {
+    return (
+      <div className="divide-y divide-border/15 max-h-[220px] overflow-auto rounded bg-muted/20">
+        {entries.map(([key, val]) => {
+          const strValue = typeof val === "string" ? val : JSON.stringify(val, null, 2);
+          const isLong = strValue.length > 80 || strValue.includes("\n");
+          return (
+            <div key={key} className={cn("px-2 py-1", !isLong && "flex items-baseline gap-2")}>
+              <span className="text-[10px] font-mono text-[var(--ansi-cyan)]/70 flex-shrink-0">
+                {key}
+              </span>
+              {isLong ? (
+                <pre className="mt-0.5 text-[11px] text-muted-foreground/80 font-mono whitespace-pre-wrap break-all max-h-[150px] overflow-auto">
+                  {strValue}
+                </pre>
+              ) : (
+                <span
+                  className="text-[11px] text-muted-foreground/80 font-mono truncate"
+                  title={strValue}
+                >
+                  {strValue}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <pre className="text-[11px] text-muted-foreground/80 font-mono whitespace-pre-wrap max-h-[200px] overflow-auto">
+      {result.length > 2000 ? `${result.slice(0, 2000)}...` : result}
+    </pre>
+  );
+}
+
 export function CollapsibleToolCall({
   tc,
   approval,
@@ -177,9 +234,7 @@ export function CollapsibleToolCall({
           {tc.result && (
             <div>
               <div className="text-[10px] text-muted-foreground/50 mb-0.5">Result</div>
-              <pre className="text-[11px] text-muted-foreground/80 font-mono whitespace-pre-wrap max-h-[200px] overflow-auto">
-                {tc.result.length > 2000 ? `${tc.result.slice(0, 2000)}...` : tc.result}
-              </pre>
+              <ToolResultPreview result={tc.result} />
             </div>
           )}
         </div>

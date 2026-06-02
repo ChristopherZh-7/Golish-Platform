@@ -60,23 +60,20 @@ function hasToolArgs(args: unknown): boolean {
   return args !== null && args !== undefined;
 }
 
-function ToolArgsTable({ args }: { args: unknown }) {
-  const normalized = normalizeToolArgs(args);
-  if (normalized.kind === "raw") {
-    return (
-      <pre className="px-3 py-2 text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all max-h-48 overflow-auto leading-relaxed">
-        {normalized.value}
-      </pre>
-    );
-  }
-
-  const entries = Object.entries(normalized.value);
+/**
+ * Render a plain object as a key/value table. String values are rendered in a
+ * `whitespace-pre-wrap` <pre> so embedded real newlines/tabs display correctly
+ * instead of being collapsed or — when the whole object is JSON.stringify'd —
+ * shown as literal `\n` / `\t` escape sequences.
+ */
+function RecordTable({ value }: { value: Record<string, unknown> }) {
+  const entries = Object.entries(value);
   if (entries.length === 0) return null;
 
   return (
     <div className="divide-y divide-border/15">
-      {entries.map(([key, value]) => {
-        const strValue = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      {entries.map(([key, val]) => {
+        const strValue = typeof val === "string" ? val : JSON.stringify(val, null, 2);
         const isLong = strValue.length > 120 || strValue.includes("\n");
         return (
           <div
@@ -87,7 +84,7 @@ function ToolArgsTable({ args }: { args: unknown }) {
               {key}
             </span>
             {isLong ? (
-              <pre className="mt-1 text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all max-h-40 overflow-auto leading-relaxed">
+              <pre className="mt-1 text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all max-h-60 overflow-auto leading-relaxed">
                 {strValue}
               </pre>
             ) : (
@@ -100,6 +97,19 @@ function ToolArgsTable({ args }: { args: unknown }) {
       })}
     </div>
   );
+}
+
+function ToolArgsTable({ args }: { args: unknown }) {
+  const normalized = normalizeToolArgs(args);
+  if (normalized.kind === "raw") {
+    return (
+      <pre className="px-3 py-2 text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all max-h-48 overflow-auto leading-relaxed">
+        {normalized.value}
+      </pre>
+    );
+  }
+
+  return <RecordTable value={normalized.value} />;
 }
 
 function ToolResultDisplay({ result }: { result: unknown }) {
@@ -116,6 +126,17 @@ function ToolResultDisplay({ result }: { result: unknown }) {
     return (
       <div className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-[480px] overflow-auto text-[12px] text-foreground leading-[1.65] [&_p]:mb-1.5 [&_p:last-child]:mb-0">
         <Markdown content={result as string} />
+      </div>
+    );
+  }
+
+  // Plain objects: render each field so multi-line string values keep their real
+  // newlines/tabs. Stringifying the whole object would escape them into literal
+  // `\n` / `\t` sequences, which renders as unreadable noise in a <pre>.
+  if (isRecord(result)) {
+    return (
+      <div className="rounded-md bg-muted/40 border border-border/20 max-h-[480px] overflow-auto">
+        <RecordTable value={result} />
       </div>
     );
   }

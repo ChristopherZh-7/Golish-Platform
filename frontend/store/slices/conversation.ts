@@ -24,15 +24,64 @@ export interface ChatToolCall {
   requestId?: string;
 }
 
+/**
+ * A single contiguous burst of model reasoning. A new segment is opened
+ * whenever reasoning resumes after the model emitted answer text or made a
+ * tool call, so the chat can interleave thinking with content/tools in time
+ * order (instead of merging every reasoning chunk into one block at the top).
+ *
+ * Runtime-only: this is derived during streaming and is NOT persisted to the
+ * DB. Restored history falls back to the merged `thinking` string.
+ */
+export interface ThinkingSegment {
+  content: string;
+  /** Epoch ms when this segment's first reasoning chunk arrived. */
+  startedAt: number;
+  /** Epoch ms when this segment's last reasoning chunk arrived. */
+  endedAt: number;
+  /** `content.length` when this segment started (interleave anchor). */
+  contentOffset: number;
+  /** `toolCalls.length` when this segment started (interleave anchor). */
+  toolIndex: number;
+}
+
+/**
+ * A staged-orchestration boundary surfaced inline in the chat (task mode).
+ * Renders as a divider between stage narrations so consecutive stages don't
+ * read as one continuous monologue and the user can see the runtime advancing.
+ *
+ * Stored on a `role: "system"` message; `message.content` mirrors `label` so a
+ * restored history message (which loses the structured field) still renders.
+ */
+export interface StageEvent {
+  kind: "subtask_completed" | "task_progress" | "task_resumed";
+  /** Short headline shown on the divider (also persisted via message.content). */
+  label: string;
+  /** Subtask/stage title (for subtask_completed). */
+  title?: string;
+  /** task_progress status (e.g. "finished", "waiting_approval"). */
+  status?: string;
+  /** Optional collapsible detail (e.g. a truncated stage result). */
+  detail?: string;
+}
+
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
   timestamp: number;
   isStreaming?: boolean;
   error?: string;
   toolCalls?: ChatToolCall[];
+  /** Present on `role: "system"` divider messages (task-mode stage boundaries). */
+  stageEvent?: StageEvent;
   thinking?: string;
+  /**
+   * Time-ordered reasoning segments for interleaved rendering. Runtime-only
+   * (not persisted); when absent (e.g. restored history) the UI falls back to
+   * the merged `thinking` string rendered as a single top block.
+   */
+  thinkingSegments?: ThinkingSegment[];
   /** Epoch ms when the first thinking chunk arrived (set lazily by the streaming sync layer). */
   thinkingStartedAt?: number;
   /** Epoch ms when the last thinking chunk arrived. */
@@ -71,6 +120,8 @@ export interface ConversationActions {
   updateConversationMessages: (convId: string, messages: ChatMessage[]) => void;
   setConversationStreaming: (convId: string, streaming: boolean) => void;
   addConversationMessage: (convId: string, message: ChatMessage) => void;
+  /** Append a task-mode stage-boundary divider (role: "system") to the chat */
+  addConversationStageMarker: (convId: string, marker: StageEvent) => void;
   /** Append text delta to the last streaming assistant message */
   appendMessageDelta: (convId: string, delta: string) => void;
   /** Append thinking content to the last streaming assistant message */
@@ -213,6 +264,29 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
       }
     }),
 
+  addConversationStageMarker: (convId, marker) =>
+    set((state) => {
+      const conv = state.conversations[convId];
+      if (!conv) return;
+      // De-dupe: skip if the previous message is an identical stage marker
+      // (defensive against duplicate backend emissions).
+      const prev = conv.messages[conv.messages.length - 1];
+      if (
+        prev?.role === "system" &&
+        prev.stageEvent?.kind === marker.kind &&
+        prev.stageEvent?.label === marker.label
+      ) {
+        return;
+      }
+      conv.messages.push({
+        id: `stage-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        role: "system",
+        content: marker.label,
+        timestamp: Date.now(),
+        stageEvent: marker,
+      });
+    }),
+
   appendMessageDelta: (convId, delta) =>
     set((state) => {
       const conv = state.conversations[convId];
@@ -230,6 +304,30 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
       const last = conv.messages[conv.messages.length - 1];
       if (last?.role === "assistant" && last.isStreaming) {
         const now = Date.now();
+
+        // Interleaved segments: continue the open segment only if no answer
+        // text or tool call landed since it started; otherwise open a new one.
+        if (!last.thinkingSegments) last.thinkingSegments = [];
+        const segs = last.thinkingSegments;
+        const curContentLen = last.content.length;
+        const curToolIndex = last.toolCalls?.length ?? 0;
+        const open = segs[segs.length - 1];
+        const sameStep =
+          open != null && open.contentOffset === curContentLen && open.toolIndex === curToolIndex;
+        if (sameStep) {
+          open.content += content;
+          open.endedAt = now;
+        } else {
+          segs.push({
+            content,
+            startedAt: now,
+            endedAt: now,
+            contentOffset: curContentLen,
+            toolIndex: curToolIndex,
+          });
+        }
+
+        // Keep the merged string in sync for persistence + history fallback.
         last.thinking = (last.thinking || "") + content;
         if (!last.thinkingStartedAt) last.thinkingStartedAt = now;
         last.thinkingEndedAt = now;
