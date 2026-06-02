@@ -29,6 +29,18 @@
 
 ---
 
+### 2026-06-02 · P2-d tool I/O guardrail（借 AutoAgents EnforcementPolicy + OpenFang SSRF）（MCP-agent-2 · DISPATCH off · 用户「开 P2-d guardrail」）
+
+- **本轮目标**：P2-d guardrail——tool I/O 护栏，P2 最后一块。
+- **借源（先读真码）**：`/tmp/refs/autoagents/crates/autoagents-guardrails/src/engine.rs`（EnforcementPolicy Block/Sanitize/Audit）+ `/tmp/refs/openfang/crates/openfang-kernel/src/capabilities.rs`（capability gate）+ SSRF 思路。
+- **做法（纯规则·可测）**：新 `harness/guardrail.rs`——`GuardrailAction{Allow,Audit,Sanitize,Block}`（借 AutoAgents）+ `Guardrail` trait（`inspect(tool, args)`）+ 3 规则护栏：`SsrfGuardrail`（args 里 loopback/link-local/云 metadata 169.254.169.254 等→Block，借 OpenFang SSRF）/`DangerousShellGuardrail`（rm -rf / / mkfs / fork bomb 等→Block）/`PromptInjectionGuardrail`（ignore previous instructions 等→Audit）+ `evaluate_guardrails`（最严胜 Block>Sanitize>Audit>Allow）+ `default_guardrails()`。
+- **验证（已记录证据）**：`cargo nextest -p golish-agent-kit -E 'test(harness::guardrail)'` → **7/7**（metadata/localhost SSRF Block、正常 host Allow、rm -rf Block、subfinder Allow、注入 Audit、最严胜）；`clippy -p golish-agent-kit -- -D warnings` exit 0；`cargo fmt --check` 净。
+- **提交记录**：本批 commit（harness/guardrail.rs + harness/mod.rs + progress + feature_list），落 `feat/harness-2026-06-01`，未 push。
+- **范围/诚实**：纯规则护栏 SDK，**活体接线**（进 `pre_action_authorizer`/tool dispatch 真拦）= follow-up；规则集是 MVP 高价值子集（RFC1918 全解析、taint 流等留后续）。**P2 a/b/c/d 框架全部落地**。
+- **下一步**：把 gate/eval/guardrail 三件接进运行时（live）；工具产出给 evidence 打验证类 kind；用户填 12 stage criteria JSON；P3（RAG+知识图）；活体验收 + push。
+
+---
+
 ### 2026-06-02 · P2-c doer-quality eval（借 Heartbit EvalScorer）（MCP-agent-2 · DISPATCH off · 用户「开 P2-c eval」）
 
 - **本轮目标**：P2-c eval 框架——「eval 能判 doer」。
