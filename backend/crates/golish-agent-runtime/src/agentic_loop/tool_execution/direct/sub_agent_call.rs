@@ -64,6 +64,35 @@ where
     )
     .await;
 
+    // Per-stage tool boundary for the delegated sub-agent: inside a harness
+    // stage, enforce the category whitelist (deny-by-default) — a scan invocation
+    // must resolve to a tool type in this stage's `allowed_tool_types`. Agent/meta
+    // tools are exempt (not scan invocations). Gated by the whitelist flag; off →
+    // no per-stage scan restriction for sub-agents. Built once; the `Arc<Fn>` is
+    // cloned cheaply into each sub_ctx below.
+    // See docs/design/2026-06-02-stage-tool-whitelist-enforcement.md.
+    let stage_tool_guard: Option<golish_sub_agents::StageToolGuard> = ctx
+        .harness_stage
+        .filter(|_| golish_agent_kit::harness::tool_whitelist_enabled())
+        .and_then(|kind| golish_agent_kit::harness::load_embedded_stage_spec(kind).ok())
+        .map(|spec| {
+            let stage_id = spec.id.clone();
+            let allowed = spec.allowed_tool_types.clone();
+            let guard: golish_sub_agents::StageToolGuard =
+                std::sync::Arc::new(move |tn: &str, args: &serde_json::Value| {
+                    if golish_agent_kit::harness::is_scan_invocation(tn, args)
+                        && !golish_agent_kit::harness::stage_allows(tn, args, &allowed)
+                    {
+                        return Err(format!(
+                            "tool '{tn}' is not in the allowed tool types for the '{stage_id}' stage \
+                             — it belongs to a different stage; do not run it here"
+                        ));
+                    }
+                    Ok(())
+                });
+            guard
+        });
+
     // P0-4: persist dispatch lifecycle so the next session can list
     // mid-flight invocations after a crash/restart. Best-effort —
     // missing tracker / repo / DB error leaves dispatch_id = None and
@@ -147,6 +176,7 @@ where
                 chain_persistence: ctx.chain_persistence.as_ref(),
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: ctx.post_shell_hook.clone(),
+                stage_tool_guard: stage_tool_guard.clone(),
             };
             execute_sub_agent_with_client(
                 &agent_def,
@@ -181,6 +211,7 @@ where
                 chain_persistence: ctx.chain_persistence.as_ref(),
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: ctx.post_shell_hook.clone(),
+                stage_tool_guard: stage_tool_guard.clone(),
             };
             execute_sub_agent(
                 &agent_def,
@@ -216,6 +247,7 @@ where
             chain_persistence: ctx.chain_persistence.as_ref(),
             sub_agent_registry: Some(ctx.sub_agent_registry),
             post_shell_hook: ctx.post_shell_hook.clone(),
+            stage_tool_guard: stage_tool_guard.clone(),
         };
         execute_sub_agent(
             &agent_def,
@@ -271,6 +303,17 @@ where
 
     match result {
         Ok(result) => {
+            // C2c · Capture a delegated sub-agent's StageDeliverable so the
+            // Task-mode gate can see it even when the Primary orchestrator
+            // narrates instead of inlining the JSON. Heuristic: the result
+            // carries the `stage_run_id` signature unique to a StageDeliverable.
+            // The Task-mode executor reads + appends the last one captured.
+            if let Some(sink) = ctx.harness_deliverable_sink.as_ref() {
+                if result.response.contains("stage_run_id") {
+                    *sink.write().await = Some(result.response.clone());
+                }
+            }
+
             if let Some(tracker) = ctx.events.db_tracker {
                 let result_preview = truncate_str(&result.response, 500);
                 tracker.record_agent_call(

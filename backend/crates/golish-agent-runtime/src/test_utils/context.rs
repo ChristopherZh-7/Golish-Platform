@@ -336,6 +336,7 @@ impl TestContext {
             web_fetcher: None,
             harness_stage: None,
             harness_authz: None,
+            harness_deliverable_sink: None,
         }
     }
 

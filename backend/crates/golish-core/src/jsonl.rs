@@ -28,8 +28,21 @@ impl JsonlAppender {
     }
 
     /// Serialize `value` to JSON and append as a single line.
+    ///
+    /// Entries whose serialized form exceeds `MAX_ENTRY_BYTES` (e.g. a multi-MB
+    /// tool result) are replaced with a compact truncation marker so a single
+    /// runaway entry cannot balloon the transcript into the GB range.
     pub async fn append<T: Serialize>(&self, value: &T) -> anyhow::Result<()> {
+        const MAX_ENTRY_BYTES: usize = 1024 * 1024;
         let mut line = serde_json::to_string(value)?;
+        if line.len() > MAX_ENTRY_BYTES {
+            line = serde_json::json!({
+                "_timestamp": Utc::now(),
+                "_truncated_entry": true,
+                "_original_bytes": line.len(),
+            })
+            .to_string();
+        }
         line.push('\n');
 
         let _guard = self.write_lock.lock().await;

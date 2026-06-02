@@ -179,6 +179,13 @@ pub struct AgenticLoopContext<'a> {
     /// run the full pre-action authorizer (allowed_tools confinement + intent vs
     /// ceiling) on real executor tools. `None` = no stage (flag off / non-stage).
     pub harness_authz: Option<golish_agent_kit::harness::HarnessAuthz>,
+    /// C2c · optional sink for a `StageDeliverable` produced by a delegated
+    /// sub-agent (e.g. `reporter`). When set, the sub-agent call handler writes
+    /// any result carrying a deliverable signature here, so the Task-mode
+    /// executor can feed it to the deterministic gate even when the Primary
+    /// orchestrator narrated instead of inlining the JSON. `None` = no capture
+    /// (non-stage turn / chat mode).
+    pub harness_deliverable_sink: Option<std::sync::Arc<tokio::sync::RwLock<Option<String>>>>,
 }
 
 /// Check cancellation flag; returns true when the user has requested a stop.

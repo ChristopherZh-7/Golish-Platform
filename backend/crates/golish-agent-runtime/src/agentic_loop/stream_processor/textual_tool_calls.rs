@@ -1,138 +1,35 @@
+//! Agent-runtime adapter over the shared textual tool-call parser.
+//!
+//! The parsing/stripping logic lives in [`golish_core::textual_tool_call`] so it
+//! can be shared with the sub-agent executor. This module only wraps the parsed
+//! result into the runtime's [`ToolIntent`] / `ToolCall` shapes.
+
 use rig::message::ToolCall;
-use serde_json::{Map, Value};
+
+pub(super) use golish_core::strip_textual_tool_call_markup;
 
 use crate::agentic_loop::tool_intent::ToolIntent;
-
-#[derive(Debug, Clone)]
-struct TextualToolCall {
-    name: String,
-    arguments: Value,
-    raw_span: String,
-}
 
 pub(super) fn extract_textual_tool_call(text: &str, iteration: usize) -> Option<ToolCall> {
     extract_textual_tool_intent(text, iteration).map(ToolIntent::into_tool_call)
 }
 
 pub(super) fn extract_textual_tool_intent(text: &str, iteration: usize) -> Option<ToolIntent> {
-    let candidates = parse_textual_tool_calls(text);
-    let selected = candidates
-        .iter()
-        .find(|call| call.name == "ask_human")
-        .or_else(|| candidates.first())?;
+    let selected = golish_core::select_textual_tool_call(text)?;
 
     let id = format!("textual-tool-call-{iteration}-0");
     Some(ToolIntent::recovered_textual_xml(
         id,
-        selected.name.clone(),
-        selected.arguments.clone(),
-        Some(selected.raw_span.clone()),
+        selected.name,
+        selected.arguments,
+        Some(selected.raw_span),
     ))
-}
-
-pub(super) fn strip_textual_tool_call_markup(text: &str) -> String {
-    let without_tool_blocks = remove_tag_blocks(text, "<tool_call", "</tool_call>");
-    remove_tag_blocks(&without_tool_blocks, "<function=", "</function>")
-}
-
-fn parse_textual_tool_calls(text: &str) -> Vec<TextualToolCall> {
-    let mut calls = Vec::new();
-    let mut search_start = 0;
-
-    while let Some(function_rel) = text[search_start..].find("<function=") {
-        let function_start = search_start + function_rel;
-        let name_start = function_start + "<function=".len();
-        let Some(name_end_rel) = text[name_start..].find('>') else {
-            break;
-        };
-        let name_end = name_start + name_end_rel;
-        let name = text[name_start..name_end].trim();
-        if name.is_empty() {
-            search_start = name_end + 1;
-            continue;
-        }
-
-        let body_start = name_end + 1;
-        let Some(body_end_rel) = text[body_start..].find("</function>") else {
-            break;
-        };
-        let body_end = body_start + body_end_rel;
-        let body = &text[body_start..body_end];
-        let raw_span = text[function_start..body_end + "</function>".len()].to_string();
-
-        calls.push(TextualToolCall {
-            name: name.to_string(),
-            arguments: parse_parameters(body),
-            raw_span,
-        });
-        search_start = body_end + "</function>".len();
-    }
-
-    calls
-}
-
-fn parse_parameters(body: &str) -> Value {
-    let mut args = Map::new();
-    let mut search_start = 0;
-
-    while let Some(param_rel) = body[search_start..].find("<parameter=") {
-        let param_start = search_start + param_rel;
-        let key_start = param_start + "<parameter=".len();
-        let Some(key_end_rel) = body[key_start..].find('>') else {
-            break;
-        };
-        let key_end = key_start + key_end_rel;
-        let key = body[key_start..key_end].trim();
-        if key.is_empty() {
-            search_start = key_end + 1;
-            continue;
-        }
-
-        let value_start = key_end + 1;
-        let Some(value_end_rel) = body[value_start..].find("</parameter>") else {
-            break;
-        };
-        let value_end = value_start + value_end_rel;
-        let raw_value = body[value_start..value_end].trim();
-        args.insert(key.to_string(), parse_parameter_value(key, raw_value));
-        search_start = value_end + "</parameter>".len();
-    }
-
-    Value::Object(args)
-}
-
-fn parse_parameter_value(key: &str, raw_value: &str) -> Value {
-    if key == "options" && matches!(raw_value, "" | "None" | "none" | "null") {
-        return Value::Array(Vec::new());
-    }
-
-    serde_json::from_str(raw_value).unwrap_or_else(|_| Value::String(raw_value.to_string()))
-}
-
-fn remove_tag_blocks(text: &str, open_prefix: &str, close_tag: &str) -> String {
-    let mut output = String::with_capacity(text.len());
-    let mut cursor = 0;
-
-    while let Some(open_rel) = text[cursor..].find(open_prefix) {
-        let open = cursor + open_rel;
-        output.push_str(&text[cursor..open]);
-
-        let block_body_start = open + open_prefix.len();
-        if let Some(close_rel) = text[block_body_start..].find(close_tag) {
-            cursor = block_body_start + close_rel + close_tag.len();
-        } else {
-            cursor = text.len();
-            break;
-        }
-    }
-
-    output.push_str(&text[cursor..]);
-    output
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn extracts_ask_human_before_follow_up_add() {

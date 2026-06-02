@@ -84,14 +84,53 @@ impl AgentExecutor for BridgeAgentExecutor {
             }
         };
 
+        // C2b · Stage discipline. When this subtask belongs to a harness stage,
+        // append a final high-salience directive so the agent (1) ends with the
+        // StageDeliverable JSON the deterministic gate parses, and (2) stops +
+        // reports instead of rabbit-holing when a tool is unavailable. Appended
+        // last = most recent → outranks the base orchestrator prompt's generic
+        // prose-completion instructions. No-op for non-stage subtasks.
+        let prompt = if execution_context.harness_stage.is_some() {
+            format!("{}\n\n{}", prompt, prompts::stage_discipline_reminder())
+        } else {
+            prompt
+        };
+
         // C3 · publish this subtask's harness stage + authorization context to the
         // bridge side-channel so the agentic loop's per-tool gate can enforce the
         // stage forbidden-tool barrier (stage) and the full pre-action authorizer
         // (authz). `None` when stage_mode is off or the subtask has no stage.
         *self.bridge.harness_active_stage.write().await = execution_context.harness_stage;
         *self.bridge.harness_active_authz.write().await = execution_context.harness_authz;
+        // C2c · reset the per-subtask deliverable-capture sink before running.
+        *self.bridge.harness_last_deliverable.write().await = None;
 
         let content = self.bridge.execute_isolated(&prompt).await?;
+
+        // C2c · The Primary orchestrator often delegates the StageDeliverable to
+        // `sub_agent_reporter` and then narrates instead of inlining the JSON, so
+        // the gate (which parses only this content) would skip with "no parseable
+        // StageDeliverable". If this is a stage subtask and the content has no
+        // deliverable signature, recover the one a sub-agent produced and append
+        // it as a fenced ```json block so the gate can parse it.
+        let content = if execution_context.harness_stage.is_some() {
+            match self.bridge.harness_last_deliverable.read().await.clone() {
+                Some(deliverable) => {
+                    tracing::info!(
+                        "[TaskMode] Orchestrator omitted StageDeliverable; appending one captured from a sub-agent ({} chars)",
+                        deliverable.len()
+                    );
+                    if deliverable.contains("```json") {
+                        format!("{content}\n\n{deliverable}")
+                    } else {
+                        format!("{content}\n\n```json\n{deliverable}\n```")
+                    }
+                }
+                None => content,
+            }
+        } else {
+            content
+        };
 
         let duration_ms = start.elapsed().as_millis() as u64;
 

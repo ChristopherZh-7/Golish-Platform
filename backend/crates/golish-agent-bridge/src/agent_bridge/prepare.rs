@@ -311,6 +311,9 @@ impl AgentBridge {
             // gate can enforce the stage barrier and full pre-action authorizer.
             harness_stage: *self.harness_active_stage.read().await,
             harness_authz: *self.harness_active_authz.read().await,
+            // C2c · give the loop a writable handle so a delegated sub-agent's
+            // StageDeliverable can be captured and later fed to the gate.
+            harness_deliverable_sink: Some(self.harness_last_deliverable.clone()),
         }
     }
 

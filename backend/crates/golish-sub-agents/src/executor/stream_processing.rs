@@ -11,6 +11,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use rig::message::{ToolCall, ToolFunction};
 use rig::streaming::StreamedAssistantContent;
+use uuid::Uuid;
 
 use crate::executor_helpers::epoch_secs;
 use golish_core::events::AiEvent;
@@ -334,6 +335,38 @@ where
         });
     }
 
+    // Textual tool-call recovery (compatibility adapter).
+    //
+    // Some model families (e.g. Xiaomi MiMo) emit tool calls as textual
+    // `<tool_call><function=...>` markup instead of native structured calls.
+    // The main agentic loop already recovers these; without the same recovery
+    // here a sub-agent treats the markup as prose, never executes the tool, and
+    // leaks the markup into its response. Only attempt recovery when the
+    // provider produced no native tool calls.
+    if tool_calls_to_execute.is_empty() {
+        if let Some(recovered) = golish_core::select_textual_tool_call(&text_content) {
+            let id = format!("textual-tool-call-{}", Uuid::new_v4());
+            tracing::warn!(
+                agent_id,
+                tool_name = %recovered.name,
+                text_len = text_content.len(),
+                "[sub-agent][tool-adapter] Recovered textual XML-style tool call into structured tool call"
+            );
+            text_content = golish_core::strip_textual_tool_call_markup(&text_content);
+            tool_calls_to_execute.push(ToolCall {
+                id: id.clone(),
+                call_id: Some(id),
+                function: ToolFunction {
+                    name: recovered.name,
+                    arguments: recovered.arguments,
+                },
+                signature: None,
+                additional_params: None,
+            });
+            has_tool_calls = true;
+        }
+    }
+
     // Record reasoning/thinking content on the llm_completion span if present.
     if !thinking_text.is_empty() {
         let mut end = thinking_text.len().min(2000);
@@ -356,5 +389,83 @@ where
         tool_calls: tool_calls_to_execute,
         has_tool_calls,
         idle_timeout_hit,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(serde::Serialize)]
+    struct DummyResp;
+
+    impl rig::completion::GetTokenUsage for DummyResp {
+        fn token_usage(&self) -> Option<rig::completion::Usage> {
+            None
+        }
+    }
+
+    fn text_stream(
+        text: &str,
+    ) -> impl futures::Stream<Item = Result<StreamedAssistantContent<DummyResp>, String>> + Unpin
+    {
+        let chunks = vec![Ok(StreamedAssistantContent::Text(rig::message::Text {
+            text: text.to_string(),
+        }))];
+        futures::stream::iter(chunks)
+    }
+
+    async fn run(text: &str) -> StreamResult {
+        let mut stream = text_stream(text);
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let last_activity = Arc::new(AtomicU64::new(epoch_secs()));
+        let quirks = golish_llm_providers::resolve_stream_quirks("xiaomi", "mimo-v2.5-pro", None);
+        let span = tracing::Span::none();
+        process_llm_stream(
+            &mut stream,
+            "pentester",
+            "req-1",
+            &event_tx,
+            &last_activity,
+            None,
+            &span,
+            &quirks,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn recovers_mimo_textual_tool_call_in_sub_agent_stream() {
+        let markup = "我先查一下 DNS。\n\
+<tool_call>\n\
+<function=run_command>\n\
+<parameter=command>dig example.com</parameter>\n\
+</function>\n\
+</tool_call>";
+
+        let sr = run(markup).await;
+
+        assert!(sr.has_tool_calls, "expected recovered textual tool call");
+        assert_eq!(sr.tool_calls.len(), 1);
+        assert_eq!(sr.tool_calls[0].function.name, "run_command");
+        assert_eq!(
+            sr.tool_calls[0].function.arguments["command"],
+            "dig example.com"
+        );
+        assert!(
+            !sr.text_content.contains("<tool_call>") && !sr.text_content.contains("<function="),
+            "markup should be stripped from text_content, got: {}",
+            sr.text_content
+        );
+        assert!(sr.text_content.contains("我先查一下 DNS"));
+    }
+
+    #[tokio::test]
+    async fn plain_prose_yields_no_recovered_tool_call() {
+        let sr = run("just a normal answer, no tool markup").await;
+
+        assert!(!sr.has_tool_calls);
+        assert!(sr.tool_calls.is_empty());
+        assert_eq!(sr.text_content, "just a normal answer, no tool markup");
     }
 }

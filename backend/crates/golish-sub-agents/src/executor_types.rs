@@ -94,6 +94,18 @@ pub type PostShellHook = Arc<
         + Sync,
 >;
 
+/// Per-stage tool-boundary guard for sub-agent tool calls.
+///
+/// Given `(tool_name, args)` it returns `Err(reason)` when the call is NOT
+/// allowed in the active harness stage (deny-by-default category whitelist —
+/// see `docs/design/2026-06-02-stage-tool-whitelist-enforcement.md`). The
+/// sub-agent executor calls it before running each tool and turns `Err` into a
+/// synthetic error result instead of executing.
+///
+/// A plain `Fn` so this crate stays free of harness-crate deps; the runtime
+/// builds it from the stage's `allowed_tool_types`.
+pub type StageToolGuard = Arc<dyn Fn(&str, &serde_json::Value) -> Result<(), String> + Send + Sync>;
+
 /// Context needed for sub-agent execution.
 pub struct SubAgentExecutorContext<'a> {
     pub event_tx: &'a mpsc::UnboundedSender<AiEvent>,
@@ -128,4 +140,9 @@ pub struct SubAgentExecutorContext<'a> {
     pub sub_agent_registry: Option<&'a Arc<RwLock<crate::definition::SubAgentRegistry>>>,
     /// Optional hook called after a successful shell tool execution.
     pub post_shell_hook: Option<PostShellHook>,
+    /// Optional per-stage tool boundary guard (forbidden-only). When the
+    /// sub-agent runs inside a harness stage, this blocks tool calls whose
+    /// resolved capability is in the stage's forbidden list (e.g. `dig` in
+    /// scoping), before execution. `None` = no active stage (legacy behaviour).
+    pub stage_tool_guard: Option<StageToolGuard>,
 }

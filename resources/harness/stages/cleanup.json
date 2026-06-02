@@ -9,16 +9,7 @@
   "requires_stages": ["objective_simulation"],
   "allowed_next_stages": ["reporting"],
 
-  "allowed_tools": [
-    "query_target_data",
-    "log_operation",
-    "log_scan_result",
-    "submit_stage_deliverable"
-  ],
-
-  "forbidden_tools": [
-    "destructive_action"
-  ],
+  "allowed_tool_types": [],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",

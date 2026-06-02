@@ -160,6 +160,9 @@ where
                         chain_persistence: ctx.chain_persistence,
                         sub_agent_registry: ctx.sub_agent_registry,
                         post_shell_hook: ctx.post_shell_hook.clone(),
+                        // Propagate the stage boundary to nested sub-agents so a
+                        // deeper delegate can't bypass the stage's forbidden tools.
+                        stage_tool_guard: ctx.stage_tool_guard.clone(),
                     };
                     match Box::pin(super::execute_sub_agent(
                         &delegate_def,
@@ -287,6 +290,27 @@ where
 
         let tool_timeout = idle_timeout.unwrap_or(timeout_duration);
         let tool_result = tokio::time::timeout(tool_timeout, async {
+            // Stage boundary (forbidden-only): block a tool whose RESOLVED
+            // capability is forbidden in the active harness stage BEFORE running
+            // it (e.g. `dig` via pentest_run in scoping). The synthetic error
+            // flows through the normal result path so the model gets actionable
+            // feedback. See docs/design/2026-06-02-stage-tool-whitelist-enforcement.md.
+            if let Some(reason) = ctx
+                .stage_tool_guard
+                .as_ref()
+                .and_then(|guard| guard(tool_name, &tool_args).err())
+            {
+                tracing::warn!(
+                    target: "harness::stage_guard",
+                    tool = %tool_name,
+                    reason = %reason,
+                    "sub-agent tool call BLOCKED by stage boundary"
+                );
+                return (
+                    serde_json::json!({ "error": reason, "blocked_by_stage": true }),
+                    false,
+                );
+            }
             if tool_name == "web_fetch" {
                 tool_provider
                     .execute_web_fetch_tool(tool_name, &tool_args)

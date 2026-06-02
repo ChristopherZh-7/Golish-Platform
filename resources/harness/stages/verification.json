@@ -9,19 +9,7 @@
   "requires_stages": ["vuln_triage"],
   "allowed_next_stages": ["access_validation", "reporting"],
 
-  "allowed_tools": [
-    "query_target_data",
-    "exploit_validation",
-    "log_operation",
-    "log_scan_result",
-    "submit_stage_deliverable"
-  ],
-
-  "forbidden_tools": [
-    "credential_attack",
-    "destructive_action",
-    "persistence"
-  ],
+  "allowed_tool_types": ["web/injection", "exploit"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",

@@ -9,24 +9,7 @@
   "requires_stages": ["scoping"],
   "allowed_next_stages": ["external_attack_surface"],
 
-  "allowed_tools": [
-    "query_target_data",
-    "dns_resolve",
-    "subdomain_enum_passive",
-    "shodan_query",
-    "log_operation",
-    "log_scan_result",
-    "submit_stage_deliverable"
-  ],
-
-  "forbidden_tools": [
-    "http_probe",
-    "metasploit",
-    "sqlmap",
-    "credential_attack",
-    "destructive_action",
-    "exploit_validation"
-  ],
+  "allowed_tool_types": ["recon/dns", "recon/subdomain", "recon/osint", "recon/url-history"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",

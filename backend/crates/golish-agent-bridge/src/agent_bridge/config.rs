@@ -395,6 +395,21 @@ impl AgentBridge {
         &self.sub_agent_registry
     }
 
+    /// C2c · Side-channel handle: the active harness stage (read side). Lets the
+    /// `submit_stage_deliverable` tool validate the submitted `stage_id` matches.
+    pub fn harness_active_stage_handle(
+        &self,
+    ) -> Arc<RwLock<Option<golish_agent_kit::harness::StageKind>>> {
+        self.harness_active_stage.clone()
+    }
+
+    /// C2c · Side-channel handle: the captured-StageDeliverable sink (write side).
+    /// The `submit_stage_deliverable` tool writes here; the Task-mode executor
+    /// reads it at stage close and feeds it to the deterministic gate.
+    pub fn harness_last_deliverable_handle(&self) -> Arc<RwLock<Option<String>>> {
+        self.harness_last_deliverable.clone()
+    }
+
     /// Get the prompt template registry.
     pub fn prompt_registry(&self) -> &golish_sub_agents::PromptRegistry {
         &self.prompt_registry

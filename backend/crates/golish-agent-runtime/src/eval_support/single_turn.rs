@@ -185,6 +185,7 @@ where
         web_fetcher: None,
         harness_stage: None,
         harness_authz: None,
+        harness_deliverable_sink: None,
     };
 
     let capabilities = ModelCapabilities::detect(&config.provider_name, &config.model_name);
@@ -418,6 +419,7 @@ where
         web_fetcher: None,
         harness_stage: None,
         harness_authz: None,
+        harness_deliverable_sink: None,
     };
 
     // Detect capabilities from provider/model

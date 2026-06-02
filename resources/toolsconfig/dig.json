@@ -1,0 +1,133 @@
+{
+  "tool": {
+    "id": "dig",
+    "pentestPhase": ["recon"],
+    "name": "dig",
+    "description": "DNS lookup utility (BIND) — query A/AAAA/NS/MX/TXT/SOA/CNAME records, follow delegations, and test zone transfers",
+    "executable": "dig",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "dns",
+    "tier": "essential",
+    "tags": ["recon", "dns", "passive"],
+    "install": {
+      "method": "homebrew",
+      "source": "bind",
+      "windows": { "method": "manual", "source": "https://www.isc.org/bind/" },
+      "linux": { "method": "apt", "source": "dnsutils" }
+    },
+    "params": [
+      {
+        "label": "Name",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Domain or host to query (e.g. example.com)",
+        "placeholder": "example.com"
+      },
+      {
+        "label": "Record Type",
+        "flag": "",
+        "type": "select",
+        "description": "DNS record type to request",
+        "options": [
+          { "value": "A", "label": "A (IPv4)" },
+          { "value": "AAAA", "label": "AAAA (IPv6)" },
+          { "value": "NS", "label": "NS (name servers)" },
+          { "value": "MX", "label": "MX (mail)" },
+          { "value": "TXT", "label": "TXT" },
+          { "value": "SOA", "label": "SOA" },
+          { "value": "CNAME", "label": "CNAME" },
+          { "value": "PTR", "label": "PTR (reverse)" },
+          { "value": "ANY", "label": "ANY" }
+        ]
+      },
+      {
+        "label": "Resolver",
+        "flag": "",
+        "type": "string",
+        "description": "Query a specific resolver (prefix with @, e.g. @8.8.8.8)",
+        "placeholder": "@8.8.8.8"
+      },
+      {
+        "label": "Short",
+        "flag": "+short",
+        "type": "boolean",
+        "description": "Print a terse, answer-only response"
+      },
+      {
+        "label": "Trace",
+        "flag": "+trace",
+        "type": "boolean",
+        "description": "Trace the delegation path from the root servers"
+      },
+      {
+        "label": "No All / Answer Only",
+        "flag": "+noall +answer",
+        "type": "boolean",
+        "description": "Show only the answer section"
+      }
+    ],
+    "skills": [
+      {
+        "id": "a-record",
+        "name": "A record (quick)",
+        "description": "Resolve the IPv4 address(es)",
+        "args": "{{name}} A +short",
+        "tags": ["dns", "fast"]
+      },
+      {
+        "id": "ns-record",
+        "name": "NS records",
+        "description": "List authoritative name servers",
+        "args": "{{name}} NS +short",
+        "tags": ["dns"]
+      },
+      {
+        "id": "mx-record",
+        "name": "MX records",
+        "description": "List mail exchangers",
+        "args": "{{name}} MX +short",
+        "tags": ["dns"]
+      },
+      {
+        "id": "txt-record",
+        "name": "TXT records",
+        "description": "Show TXT records (SPF/DMARC/verification)",
+        "args": "{{name}} TXT +short",
+        "tags": ["dns"]
+      },
+      {
+        "id": "common-records",
+        "name": "Common records",
+        "description": "Answer-only view of A/NS/MX/TXT/SOA",
+        "args": "{{name}} ANY +noall +answer",
+        "tags": ["dns", "overview"]
+      },
+      {
+        "id": "zone-transfer",
+        "name": "Zone transfer (AXFR) test",
+        "description": "Attempt an AXFR zone transfer (misconfig check)",
+        "args": "{{name}} AXFR",
+        "tags": ["dns", "misconfig"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["host", "dns_record"],
+      "detect": "ANSWER SECTION|IN\\s+(A|AAAA|NS|MX|TXT|CNAME|SOA)\\s",
+      "db_action": "host_add",
+      "patterns": [
+        {
+          "type": "a_record",
+          "regex": "^([\\w\\.-]+)\\.\\s+\\d+\\s+IN\\s+A\\s+([\\d\\.]+)$",
+          "fields": {
+            "1": "hostname",
+            "2": "ip"
+          }
+        }
+      ]
+    }
+  }
+}

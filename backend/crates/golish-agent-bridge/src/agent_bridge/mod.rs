@@ -226,6 +226,16 @@ pub struct AgentBridge {
     /// no profile selected; a Task run with `None` falls back to the
     /// `GOLISH_HARNESS_PROFILE` env default.
     pub(crate) harness_profile: Arc<RwLock<Option<String>>>,
+
+    /// C2c · StageDeliverable captured from a delegated sub-agent (e.g.
+    /// `reporter`) during the active subtask. The Primary orchestrator often
+    /// narrates instead of inlining the `StageDeliverable` JSON in its final
+    /// message (it delegates production to `sub_agent_reporter`), so the gate —
+    /// which parses only the orchestrator's content — would never see it. The
+    /// agentic loop stashes any sub-agent result that carries a deliverable
+    /// signature here; `BridgeAgentExecutor::execute_subtask` appends it to the
+    /// content before the gate runs. Reset per-subtask. `None` = none captured.
+    pub(crate) harness_last_deliverable: Arc<RwLock<Option<String>>>,
 }
 
 impl AgentBridge {

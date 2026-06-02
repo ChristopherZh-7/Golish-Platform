@@ -96,8 +96,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "list_files".to_string(),
             "grep_file".to_string(),
             "search_memories".to_string(),
-            "run_pipeline".to_string(),
-            "flow_compose".to_string(),
             "manage_targets".to_string(),
             "record_finding".to_string(),
             "vault".to_string(),

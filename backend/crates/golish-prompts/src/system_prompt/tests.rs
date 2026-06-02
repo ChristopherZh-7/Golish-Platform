@@ -224,15 +224,14 @@ fn test_no_context_defaults_to_agents_enabled() {
 }
 
 #[test]
-fn test_pipeline_not_forced() {
+fn test_pipeline_not_exposed_to_agents() {
     let workspace = PathBuf::from("/tmp/test-workspace");
     let prompt = build_system_prompt(&workspace, AgentMode::Default, None);
 
-    // Old behavior: "ALWAYS prefer run_pipeline" should NOT be present
+    // The pipeline runner is intentionally NOT exposed to agents: neither the
+    // tool name nor any "prefer pipeline" guidance may appear in the prompt.
+    assert!(!prompt.contains("run_pipeline"));
     assert!(!prompt.contains("ALWAYS prefer `run_pipeline`"));
-    // New: pipeline is available but not forced
-    assert!(prompt.contains("run_pipeline"));
-    assert!(prompt.contains("Use when the user explicitly requests"));
 }
 
 #[test]

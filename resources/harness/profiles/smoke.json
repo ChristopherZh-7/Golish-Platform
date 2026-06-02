@@ -1,0 +1,28 @@
+{
+  "$comment": "Smoke-test profile: scoping -> target_intel only (the shortest path the base graph allows from the entry without the recon-heavy external_attack_surface). For fast harness/executor smoke tests. No approval pauses; evidence not required so gates pass without recon-tool output.",
+
+  "id": "smoke",
+  "display_name": "Smoke Test",
+  "max_authorization": "passive_intel",
+
+  "allowed_stage_kinds": [
+    "scoping",
+    "target_intel"
+  ],
+
+  "forbidden_stage_kinds": [
+    "external_attack_surface",
+    "enumeration",
+    "vuln_triage",
+    "verification",
+    "access_validation",
+    "internal_discovery",
+    "objective_pathing",
+    "objective_simulation",
+    "cleanup",
+    "reporting"
+  ],
+
+  "cleanup_required": false,
+  "evidence_required": false
+}

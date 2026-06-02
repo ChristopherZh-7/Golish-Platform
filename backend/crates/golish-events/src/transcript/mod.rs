@@ -126,26 +126,23 @@ pub async fn read_transcript(
         return Ok(Vec::new());
     }
 
-    // Try JSONL first (one JSON object per line)
-    let mut entries = Vec::new();
-    let mut jsonl_failed = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<TimestampedEntry<AiEvent>>(trimmed) {
-            Ok(entry) => entries.push(entry),
-            Err(_) => {
-                jsonl_failed = true;
-                break;
+    let mut entries: Vec<TimestampedEntry<AiEvent>> = Vec::new();
+    if content.trim_start().starts_with('[') {
+        // Legacy whole-file JSON array format.
+        entries = serde_json::from_str(&content)?;
+    } else {
+        // JSONL: one entry per line. Skip lines that don't parse (truncation
+        // markers written for oversized entries, or a partial final write)
+        // instead of failing the entire read.
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<TimestampedEntry<AiEvent>>(trimmed) {
+                entries.push(entry);
             }
         }
-    }
-
-    if jsonl_failed {
-        // Fall back to JSON array format (legacy transcripts)
-        entries = serde_json::from_str(&content)?;
     }
 
     // Convert to public TranscriptEvent type

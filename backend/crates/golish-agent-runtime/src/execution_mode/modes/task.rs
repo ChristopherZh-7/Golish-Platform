@@ -48,7 +48,15 @@ impl ExecutionModePolicy for TaskModePolicy {
         // reporter / enricher) are exposed to the primary LLM.
         ToolSelection {
             static_groups: StaticGroupSelection::none(),
-            bridge_tools: BridgeToolSelection::none(),
+            // The orchestrator is dispatch-only EXCEPT for the harness
+            // deliverable channel: when it delegates report-writing to a
+            // specialist it must still be able to take that result and call
+            // `submit_stage_deliverable` itself (design §4.1), otherwise the
+            // stage gate has nothing to validate and the cursor never advances.
+            bridge_tools: BridgeToolSelection {
+                submit_stage_deliverable: true,
+                ..BridgeToolSelection::none()
+            },
             runtime_tools: RuntimeToolSelection::none(),
             agent_tools: AgentToolSelection {
                 include_dispatch_tools: true,
@@ -72,7 +80,13 @@ impl ExecutionModePolicy for TaskModePolicy {
         // tool_list only ring-fenced them at the primary layer.
         ToolSelection {
             static_groups: StaticGroupSelection::all_enabled(),
-            bridge_tools: BridgeToolSelection::all_enabled(),
+            // Full bridge toolbox PLUS the harness deliverable channel so a
+            // specialist (e.g. the reporter at depth 1) can submit the
+            // StageDeliverable directly via `submit_stage_deliverable`.
+            bridge_tools: BridgeToolSelection {
+                submit_stage_deliverable: true,
+                ..BridgeToolSelection::all_enabled()
+            },
             runtime_tools: RuntimeToolSelection {
                 pentest_runtime: true,
                 tavily: true,
@@ -104,6 +118,12 @@ mod tests {
         let s = TaskModePolicy.primary_tools(&mock_ctx()).await;
         assert!(!s.bridge_tools.js_collect);
         assert!(!s.static_groups.file_ops);
+        // The orchestrator still gets the harness deliverable channel so it can
+        // submit the StageDeliverable itself after delegating report-writing.
+        assert!(
+            s.bridge_tools.submit_stage_deliverable,
+            "task primary must expose submit_stage_deliverable (design §4.1)"
+        );
         assert!(s.agent_tools.include_dispatch_tools);
         // Legacy parity: the four "internal" sub-agents are filtered
         // out at the primary layer.
@@ -119,6 +139,11 @@ mod tests {
         let s = TaskModePolicy.subtask_tools(&mock_ctx()).await;
         assert!(s.bridge_tools.js_collect);
         assert!(s.static_groups.file_ops);
+        // Specialists (e.g. the reporter) must be able to submit the deliverable.
+        assert!(
+            s.bridge_tools.submit_stage_deliverable,
+            "task subtask must expose submit_stage_deliverable for the reporter"
+        );
         assert!(s.deny_overrides.iter().any(|n| n == "update_plan"));
         assert!(!s.include_ask_human);
         assert!(s.include_run_command);

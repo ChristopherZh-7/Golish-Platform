@@ -244,5 +244,24 @@ pub async fn evidence_kinds_for(pool: &PgPool, ids: &[i64]) -> Result<Vec<(i64, 
     Ok(rows)
 }
 
+/// 给一组 evidence `audit_log.id`, 返回每条「已存在多久」(秒, = `NOW() - created_at`).
+///
+/// P0 Task 6 · freshness gate 用它把 evidence 真实 age 与 `evidence_kinds.json`
+/// 的 max_age 比较, 拦截过期/陈旧证据. 不存在 / 非 evidence 的 id 不在结果里.
+pub async fn evidence_ages_for(pool: &PgPool, ids: &[i64]) -> Result<Vec<(i64, Option<f64>)>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(i64, Option<f64>)> = sqlx::query_as(
+        r#"SELECT id, EXTRACT(EPOCH FROM (NOW() - created_at))::double precision
+           FROM audit_log
+           WHERE audit_role = 'evidence' AND id = ANY($1)"#,
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests;

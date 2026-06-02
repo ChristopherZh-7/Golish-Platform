@@ -120,6 +120,10 @@ impl BridgeAgentExecutor {
             chain_persistence: self.bridge.services.chain_persistence.as_ref(),
             sub_agent_registry: Some(self.bridge.sub_agent_registry()),
             post_shell_hook: self.bridge.post_shell_hook.clone(),
+            // Stage tool boundary is enforced on the delegated-sub-agent path
+            // (sub_agent_call.rs) and the main dispatch gate; this executor path
+            // does not build it.
+            stage_tool_guard: None,
         };
 
         let client = self.bridge.client().read().await;

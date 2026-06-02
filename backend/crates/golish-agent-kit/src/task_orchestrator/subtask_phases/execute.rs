@@ -209,6 +209,7 @@ impl TaskOrchestrator {
                         // retry decision below.
                         self.enforce_evidence_existence(&mut outcome).await;
                         self.enforce_evidence_kinds(&mut outcome).await;
+                        self.enforce_evidence_freshness(&mut outcome).await;
                         // C4 · gate BLOCK with retries left → feed the recovery
                         // correction back into the loop (re-do the subtask) instead
                         // of accepting the blocked result; defer transition until
@@ -343,6 +344,7 @@ impl TaskOrchestrator {
         if let Some(mut outcome) = gate_outcome {
             self.enforce_evidence_existence(&mut outcome).await;
             self.enforce_evidence_kinds(&mut outcome).await;
+            self.enforce_evidence_freshness(&mut outcome).await;
             self.consume_gate_outcome(task_id, outcome).await;
         }
         (out, None)
@@ -769,6 +771,19 @@ impl TaskOrchestrator {
         if outcome.evidence_refs.is_empty() {
             return;
         }
+        // Scoping is an L0 authorization-confirmation stage ("L0-L1 only, no
+        // probing"): its scope claim is backed by the authorization framework,
+        // not a tool run, so there are no real evidence-ledger ids to cite.
+        // Exempt it from the fabricated-evidence cross-check — otherwise scoping
+        // can never pass (no scan tool ⇒ no ledger evidence ⇒ infinite BLOCK).
+        if outcome.gated_stage == crate::harness::StageKind::Scoping {
+            tracing::debug!(
+                target: "harness::hook",
+                stage = %outcome.gated_stage.as_str(),
+                "evidence-existence check skipped for scoping (authz-confirmation stage)"
+            );
+            return;
+        }
         let existing = match self
             .repo
             .evidence_existing_ids(&outcome.evidence_refs)
@@ -836,6 +851,69 @@ impl TaskOrchestrator {
             "This stage requires evidence of kinds {missing:?}, but the deliverable's evidence \
              includes none of them. Run the tools that produce these evidence kinds and resubmit \
              a StageDeliverable that cites them."
+        );
+        outcome.repair_correction = Some(match outcome.repair_correction.take() {
+            Some(prev) => format!("{correction}\n\n{prev}"),
+            None => correction,
+        });
+    }
+
+    /// P0 Task 6 · evidence「新鲜度」回查 (flag-gated, 默认 OFF): 查 ledger 真实 age,
+    /// 按 `evidence_kinds.json` max_age 拦截**硬过期**证据 (age ≥ 2×max → BLOCK; 软
+    /// 陈旧只 warn)。infra 查询失败只 warn 不误伤; flag 关时整段跳过 (零行为变化)。
+    async fn enforce_evidence_freshness(&self, outcome: &mut HarnessGateOutcome) {
+        if !crate::harness::evidence_freshness_enforcement_enabled()
+            || outcome.evidence_refs.is_empty()
+        {
+            return;
+        }
+        let kinds_raw = match self.repo.evidence_kinds_for(&outcome.evidence_refs).await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(target: "harness::hook", error = %e, "evidence freshness: kind lookup failed; not blocking");
+                return;
+            }
+        };
+        let ages_raw = match self.repo.evidence_ages_for(&outcome.evidence_refs).await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(target: "harness::hook", error = %e, "evidence freshness: age lookup failed; not blocking");
+                return;
+            }
+        };
+        type Eid = golish_pentest::evidence_ledger::EvidenceAuditId;
+        let kinds: std::collections::HashMap<Eid, String> = kinds_raw
+            .into_iter()
+            .map(|(id, k)| (Eid::new(id), k))
+            .collect();
+        let ages: std::collections::HashMap<Eid, std::time::Duration> = ages_raw
+            .into_iter()
+            .map(|(id, d)| (Eid::new(id), d))
+            .collect();
+        let ids: Vec<Eid> = outcome.evidence_refs.iter().map(|&i| Eid::new(i)).collect();
+        let (expired, stale) = crate::harness::freshness_age_reasons(&ids, &kinds, &ages);
+        if !stale.is_empty() {
+            tracing::warn!(
+                target: "harness::hook",
+                stage = %outcome.gated_stage.as_str(),
+                stale = ?stale,
+                "evidence freshness: stale evidence (soft, not blocking)"
+            );
+        }
+        if expired.is_empty() {
+            return;
+        }
+        tracing::warn!(
+            target: "harness::hook",
+            stage = %outcome.gated_stage.as_str(),
+            expired = ?expired,
+            "gate BLOCK: deliverable cites hard-expired evidence"
+        );
+        outcome.gate_allowed = false;
+        let correction = format!(
+            "Some cited evidence is hard-expired (older than 2x its max age): {expired:?}. \
+             Re-run the relevant tools so the evidence is fresh, then resubmit a StageDeliverable \
+             citing the new evidence ids."
         );
         outcome.repair_correction = Some(match outcome.repair_correction.take() {
             Some(prev) => format!("{correction}\n\n{prev}"),
@@ -972,6 +1050,32 @@ fn apply_harness_gate_hook(
             tracing::warn!(target: "harness::hook", error = %e, "[harness] StageHarness::for_stage_embedded failed");
             return (content, None);
         }
+    };
+
+    // C2d · per-target gate. When sprint-skeleton enforcement is enabled, attach
+    // the profile's per-stage skeleton so the gate also checks expected
+    // finding-count ranges + min tool invocations (per-target, not just
+    // structural). Flag-gated (default OFF) because it can newly BLOCK runs whose
+    // finding kinds/counts don't match the skeleton; no-op when the profile ships
+    // no skeleton or the stage has no skeleton entry.
+    let harness = if crate::harness::sprint_skeleton_enforcement_enabled() {
+        match crate::harness::load_embedded_sprint_skeleton(profile_id) {
+            Ok(Some(skeleton)) => match skeleton.for_stage(stage_hint.stage_kind) {
+                Some(stage_skel) => {
+                    tracing::info!(
+                        target: "harness::hook",
+                        stage_kind = ?stage_hint.stage_kind,
+                        profile_id = %profile_id,
+                        "sprint-skeleton enforcement ON: gate will check per-target finding ranges"
+                    );
+                    harness.with_skeleton(Some(stage_skel.clone()))
+                }
+                None => harness,
+            },
+            _ => harness,
+        }
+    } else {
+        harness
     };
 
     let Some(deliverable) = parse_deliverable_from_content(&content) else {

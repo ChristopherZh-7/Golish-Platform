@@ -1,10 +1,11 @@
 //! `ChatModePolicy` — single-agent conversational mode with the full toolbox.
 //!
 //! This policy is what finally gives the chat-mode LLM access to
-//! `js_collect / manage_targets / run_pipeline / record_finding / vault /
-//! flow_compose / js_extract_apis / auth_probe` (the eight `pentest_bridge`
-//! tools that the legacy `tool.name.starts_with("pentest_")` filter was
-//! silently dropping).
+//! `js_collect / manage_targets / record_finding / vault / js_extract_apis /
+//! auth_probe` (the `pentest_bridge` tools that the legacy
+//! `tool.name.starts_with("pentest_")` filter was silently dropping).
+//! Note: `run_pipeline` / `flow_compose` (the pipeline tools) are intentionally
+//! NOT exposed to agents.
 
 use async_trait::async_trait;
 
@@ -73,12 +74,19 @@ mod tests {
             "chat must expose js_collect (regression guard for the bug fixed in PR2)"
         );
         assert!(s.bridge_tools.manage_targets);
-        assert!(s.bridge_tools.run_pipeline);
+        // pipeline tools are intentionally NOT exposed to agents
+        assert!(!s.bridge_tools.run_pipeline);
+        assert!(!s.bridge_tools.flow_compose);
         assert!(s.bridge_tools.auth_probe);
         assert!(s.bridge_tools.record_finding);
         assert!(s.bridge_tools.vault);
-        assert!(s.bridge_tools.flow_compose);
         assert!(s.bridge_tools.js_extract_apis);
+        // The harness deliverable channel is task-mode-only: chat has no active
+        // stage, so it must never expose submit_stage_deliverable.
+        assert!(
+            !s.bridge_tools.submit_stage_deliverable,
+            "chat mode must NOT expose the harness-only submit_stage_deliverable"
+        );
     }
 
     #[tokio::test]

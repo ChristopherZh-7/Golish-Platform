@@ -36,6 +36,7 @@ pub mod prompt;
 pub mod ready_gate;
 pub mod session_manager;
 pub mod skill_provider;
+pub mod textual_tool_call;
 pub mod time;
 pub mod utils;
 pub mod vault;
@@ -68,6 +69,10 @@ pub use session::{
 pub use session_kind::{is_title_gen_session_id, title_gen_session_id, TITLE_GEN_SESSION_PREFIX};
 pub use session_manager::{SessionManager, SessionManagerFactory};
 pub use skill_provider::{SkillMatch, SkillMetadata, SkillProvider};
+pub use textual_tool_call::{
+    parse_textual_tool_calls, select_textual_tool_call, strip_textual_tool_call_markup,
+    TextualToolCall,
+};
 pub use time::{now_ms, now_ts, ts_from_dt};
 pub use tool::Tool;
 pub use tool_name::{ToolCategory, ToolName};

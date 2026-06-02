@@ -46,11 +46,10 @@ pub(crate) fn safe_truncate(s: &str, max: usize) -> &str {
 /// 以及确定性 gate 会检查哪些项. 仅在 `stage_mode_enabled()` + subtask 有
 /// `harness_stage` 时由 `execute_single_subtask` 拼到描述前.
 pub fn stage_charter(spec: &StageSpec) -> String {
-    let allowed = spec.allowed_tools.join(", ");
-    let forbidden = if spec.forbidden_tools.is_empty() {
-        "(none)".to_string()
+    let allowed = if spec.allowed_tool_types.is_empty() {
+        "(none — this stage runs no scan tools)".to_string()
     } else {
-        spec.forbidden_tools.join(", ")
+        spec.allowed_tool_types.join(", ")
     };
     let checks = if spec.required_checks.is_empty() {
         "(none)".to_string()
@@ -80,23 +79,37 @@ pub fn stage_charter(spec: &StageSpec) -> String {
         keys.sort();
         format!("[{}]", keys.join(", "))
     };
+    // C2c · submission channel depends on the submit-tool flag: deterministic
+    // tool call (preferred) vs. the legacy "print a ```json block" text path.
+    let submission_instr = if crate::harness::submit_tool_enabled() {
+        "### REQUIRED — submit via the `submit_stage_deliverable` tool\n\nWhen this stage's required tools have actually run, CALL the `submit_stage_deliverable` tool with the fields below as STRUCTURED ARGUMENTS — do NOT print or describe the JSON in prose, and do NOT just delegate \"write the JSON\" to another agent. The runtime validates your submission with the deterministic gate. The deliverable shape:"
+    } else {
+        "### REQUIRED — end your final message with a StageDeliverable JSON block\n\nThere is NO `submit_*` tool to call. The runtime parses your final message for a single fenced ```json block and runs the deterministic gate on it. So after your prose summary, your final message MUST end with one ```json block containing a `StageDeliverable` shaped exactly like this:"
+    };
+    // Per-stage note for scoping. The "do not probe" boundary is now enforced
+    // deterministically by the runtime (the stage tool guard resolves
+    // pentest_run/shell to their real capability and blocks forbidden ones), so
+    // this prose no longer enumerates tool names — it only states intent + the
+    // (relaxed) evidence contract that stops the fabricated-evidence retry loop.
+    let stage_specific = if spec.kind == crate::harness::StageKind::Scoping {
+        "\n### SCOPING — authorization confirmation ONLY\n\
+- This stage CONFIRMS the target is authorized; it does NOT probe. The runtime enforces the stage's tool boundary, so reconnaissance attempts are blocked here — that work belongs to the next stage.\n\
+- You do NOT need tool evidence here: confirm the authorized scope from the task context (target, exclusions, black-box vs credentialed, objective) and submit. Leave `evidence_refs` empty and use empty `evidence_ids` — the gate does NOT require ledger evidence for scoping.\n\
+- Emit ONE claim with kind \"scope_confirmed\" summarizing the authorized scope, then CALL `submit_stage_deliverable`.\n"
+    } else {
+        ""
+    };
     format!(
         r#"## OPERATION HARNESS — STAGE CHARTER
 
 You are operating inside the **{stage}** stage of an authorized operation. Stay within this stage's boundary:
 
-- **Allowed tools** (use ONLY these): {allowed}
-- **Forbidden tools** (NEVER call): {forbidden}
+- **Allowed tool types** (scan tools — use ONLY these tool types): {allowed}
 - **Minimum tool invocations** (you MUST actually run these): {min_inv}
 - A deterministic gate will check: {checks}. Unverified natural-language claims do NOT pass the gate.
 - Do not escalate authorization or jump to another stage — the runtime advances stages for you once the gate passes.
-
-### REQUIRED — end your final message with a StageDeliverable JSON block
-
-There is NO `submit_*` tool to call. The runtime parses your final message for a
-single fenced ```json block and runs the deterministic gate on it. So after your
-prose summary, your final message MUST end with one ```json block containing a
-`StageDeliverable` shaped exactly like this:
+{stage_specific}
+{submission_instr}
 
 ```json
 {{
@@ -124,11 +137,44 @@ Gate rules your deliverable MUST satisfy (otherwise it is rejected and you redo 
 "#,
         stage = spec.id,
         allowed = allowed,
-        forbidden = forbidden,
         checks = checks,
         min_inv = min_inv,
         min_inv_keys_json = min_inv_keys_json,
+        submission_instr = submission_instr,
+        stage_specific = stage_specific,
     )
+}
+
+/// C2b · Final stage-discipline directive, appended to the very END of the
+/// assembled subtask prompt (after the base orchestrator prompt + charter +
+/// description) so it is the most recent — and therefore highest-salience —
+/// instruction the model sees. Only appended when the subtask belongs to a
+/// harness stage (`ExecutionContext::harness_stage.is_some()`).
+///
+/// Targets two observed live failures:
+///  1. The deterministic gate was skipped because the agent ended with a prose
+///     summary and never emitted the `StageDeliverable` JSON. The charter
+///     already asks for it, but that requirement is injected mid-prompt (inside
+///     the subtask description) and is out-ranked by recency + the base
+///     orchestrator prompt's prose-oriented "COMPLETION REQUIREMENTS". Restating
+///     it LAST makes the agent actually emit the parseable block.
+///  2. Agents rabbit-holed when a tool was unavailable — spawning more
+///     sub-agents / installing / retrying a blocked tool. This tells them to
+///     stop and report instead, and to respect the stage's tool boundary (which
+///     the runtime already enforces, so retries are wasted turns).
+pub fn stage_discipline_reminder() -> String {
+    let boundary = r#"## STAGE DISCIPLINE — READ THIS LAST (overrides any earlier output-format instructions)
+
+- Stay inside this stage's tool boundary: use ONLY the stage's allowed tools and NEVER call a forbidden tool. The runtime blocks forbidden calls anyway — do not waste turns attempting them.
+- If a required tool is unavailable, errors, or returns nothing on two attempts: STOP and record it in `skipped_checks` with the reason ("checked-empty" is NOT the same as "unchecked"). Do NOT install tools, spawn additional sub-agents, or retry the same tool to work around an unavailable capability.
+- The runtime advances stages for you once the deterministic gate passes — do not jump ahead to a later stage."#;
+    // C2c · the deliverable-submission directive depends on the submit-tool flag.
+    let submit = if crate::harness::submit_tool_enabled() {
+        "\n\n### Submit the StageDeliverable by CALLING `submit_stage_deliverable`\nThe stage completes ONLY when you call the `submit_stage_deliverable` tool with the structured fields (stage_id, stage_run_id, claims, evidence_refs, findings). Do NOT just print or describe the JSON, and do NOT only delegate \"write the JSON\" to a sub-agent — if you delegated to a reporter, take its result and call `submit_stage_deliverable` yourself. A prose-only ending leaves the gate with nothing to validate and forces you to redo this entire stage."
+    } else {
+        "\n\n### Your FINAL message MUST end with the StageDeliverable JSON\nThere is NO submit tool. After any prose summary, your final message MUST end with the single fenced ```json block containing the `StageDeliverable` exactly as specified in the stage charter above. A prose-only ending produces NO parseable deliverable, fails the gate, and forces you to redo this entire stage. Always emit the JSON block."
+    };
+    format!("{boundary}{submit}")
 }
 
 /// C6 · cross-stage evidence handoff context (Doc 3 §6.2 handoff).
@@ -499,4 +545,42 @@ Use markdown formatting. Be factual and precise. Reference specific evidence fro
 "#,
         context = execution_context,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The final stage-discipline directive must (1) force a parseable
+    /// StageDeliverable JSON ending so the deterministic gate stops being
+    /// skipped, and (2) tell the agent to stop + report instead of
+    /// rabbit-holing on unavailable tools. Locks both intents in place.
+    #[test]
+    fn stage_discipline_reminder_forces_deliverable_and_stops_rabbit_holing() {
+        let r = stage_discipline_reminder();
+        // Deliverable forcing function (flag-robust: tool path or text path).
+        assert!(r.contains("StageDeliverable"));
+        assert!(
+            r.contains("submit_stage_deliverable") || r.contains("```json"),
+            "must instruct deliverable submission via the tool or a fenced json block"
+        );
+        assert!(r.contains("redo this entire stage"));
+        // Boundary + stop-on-unavailable, no rabbit-holing (always present).
+        assert!(r.contains("forbidden tool"));
+        assert!(r.contains("STOP and record"));
+        assert!(
+            r.contains("spawn additional sub-agents"),
+            "must forbid spawning more sub-agents to work around unavailable tools"
+        );
+    }
+
+    /// Recency contract: the reminder is appended last, so it must explicitly
+    /// state it overrides earlier output-format instructions (the base
+    /// orchestrator prompt's prose "COMPLETION REQUIREMENTS").
+    #[test]
+    fn stage_discipline_reminder_announces_override() {
+        let r = stage_discipline_reminder();
+        assert!(r.to_lowercase().contains("overrides"));
+        assert!(r.to_uppercase().contains("READ THIS LAST"));
+    }
 }

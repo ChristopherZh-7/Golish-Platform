@@ -93,8 +93,6 @@ pub async fn create_default_sub_agents_from_registry(
             "list_files".into(),
             "grep_file".into(),
             "search_memories".into(),
-            "run_pipeline".into(),
-            "flow_compose".into(),
             "manage_targets".into(),
             "record_finding".into(),
             "vault".into(),
@@ -205,6 +203,9 @@ pub async fn create_default_sub_agents_from_registry(
             "read_knowledge".into(),
             "list_cves_with_pocs".into(),
             "poc_stats".into(),
+            // C2c · the reporter is the agent that produces the StageDeliverable
+            // when delegated to; it must submit it via the deterministic tool.
+            "submit_stage_deliverable".into(),
         ])
         .with_max_iterations(20)
         .with_timeout(600)
@@ -276,6 +277,8 @@ pub async fn create_default_sub_agents_from_registry(
         .with_tools(vec![
             "update_plan".into(), "search_memories".into(), "search_knowledge_base".into(),
             "read_knowledge".into(), "query_target_data".into(),
+            // C2c · orchestrator may also submit the stage deliverable directly.
+            "submit_stage_deliverable".into(),
         ])
         .with_max_iterations(50).with_timeout(900).with_idle_timeout(300)
         .with_delegatable_agents(vec![

@@ -18,7 +18,10 @@ fn render_includes_js_collect_when_enabled() {
     let table = render_tool_table_for_prompt(&s);
     assert!(table.contains("`js_collect`"));
     assert!(table.contains("`manage_targets`"));
-    assert!(table.contains("`run_pipeline`"));
+    // pipeline tools are intentionally NOT exposed to agents, even with all
+    // bridge tools "enabled"
+    assert!(!table.contains("`run_pipeline`"));
+    assert!(!table.contains("`flow_compose`"));
     assert!(table.contains("`run_pty_cmd`"));
     assert!(table.contains("`ask_human`"));
 }
@@ -101,7 +104,6 @@ async fn chat_prompt_template_tools_subset_of_chat_policy() {
     // future, this assertion fires and forces a sync update.
     const CRITICAL_NAMES: &[&str] = &[
         "manage_targets",
-        "run_pipeline",
         "record_finding",
         "vault",
         "log_operation",

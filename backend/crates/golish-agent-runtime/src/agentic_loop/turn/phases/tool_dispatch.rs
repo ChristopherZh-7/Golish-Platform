@@ -168,48 +168,48 @@ fn gate_tool_call_for_dispatch(
 ) -> ToolGateDecision {
     // C3 · harness stage per-tool dispatch authorization (when a stage is active).
     //
-    // Two regimes, by tool kind:
-    //   * Orchestration delegation tools (`sub_agent_*`): forbidden-tool barrier
-    //     ONLY. The Task-mode primary delegates via these and they are never in a
-    //     stage's allowed_tools, so allowed-tools confinement would break
-    //     orchestration. Forbidden rejection is safe (orchestration tools are
-    //     never forbidden) and deterministic.
-    //   * Real executor tools: the FULL pre-action authorizer
-    //     (`PreActionAuthorizer::check_with_max_authz`) — forbidden + allowed_tools
-    //     confinement + intent-vs-profile-ceiling — using the threaded
-    //     `harness_authz`. Falls back to forbidden-only when no authz context is
-    //     present (defensive; should not happen once a stage is set).
-    //
-    // `harness_stage == None` (stage_mode flag off / non-stage turn) skips the
-    // whole block, leaving legacy behaviour untouched.
+    // Category whitelist (deny-by-default), enforced ONLY on scan invocations
+    // (`pentest_run` / `run_pty_cmd` or tools in the scan taxonomy). Agent/meta
+    // tools (`sub_agent_*`, `submit_stage_deliverable`, `query_target_data`,
+    // `record_finding`, `manage_targets`, `log_*`, memory/graph) are exempt — they
+    // are never scan invocations, so they pass without being listed per stage. A
+    // scan whose resolved tool type is not in the stage's `allowed_tool_types` is
+    // rejected; an allowed scan additionally must not exceed the profile's
+    // authorization ceiling. `harness_stage == None` (non-stage turn) skips the
+    // whole block.
     if let Some(kind) = harness_stage {
         if let Ok(spec) = golish_agent_kit::harness::load_embedded_stage_spec(kind) {
-            let name = tool_call.function.name.as_str();
-            let is_orchestration = name.starts_with("sub_agent_");
-            let forbidden = spec.forbidden_tools.iter().any(|t| t == name);
-            if is_orchestration {
-                if forbidden {
-                    return ToolGateDecision::Reject {
-                        reason: forbidden_reason(name, &spec.id),
-                    };
+            let raw_name = tool_call.function.name.as_str();
+            let args = &tool_call.function.arguments;
+            if golish_agent_kit::harness::tool_whitelist_enabled() {
+                // Category whitelist (deny-by-default), enforced ONLY on scan
+                // invocations — pentest_run / run_pty_cmd or tools in the scan
+                // taxonomy. Agent/meta tools (sub_agent_*, submit, query_target_data,
+                // record_finding, manage_targets, log_*, memory/graph) are exempt.
+                if golish_agent_kit::harness::is_scan_invocation(raw_name, args) {
+                    if !golish_agent_kit::harness::stage_allows(
+                        raw_name,
+                        args,
+                        &spec.allowed_tool_types,
+                    ) {
+                        return ToolGateDecision::Reject {
+                            reason: not_in_whitelist_reason(raw_name, &spec.id),
+                        };
+                    }
+                    // Orthogonal profile authorization ceiling (intent vs max_authz).
+                    if let Some(authz) = harness_authz {
+                        if let Err(err) =
+                            golish_agent_kit::harness::PreActionAuthorizer::check_intent_ceiling(
+                                authz.intent,
+                                authz.max_authorization,
+                            )
+                        {
+                            return ToolGateDecision::Reject {
+                                reason: err.to_string(),
+                            };
+                        }
+                    }
                 }
-            } else if let Some(authz) = harness_authz {
-                if let Err(err) =
-                    golish_agent_kit::harness::PreActionAuthorizer::check_with_max_authz(
-                        name,
-                        &spec,
-                        authz.max_authorization,
-                        authz.intent,
-                    )
-                {
-                    return ToolGateDecision::Reject {
-                        reason: err.to_string(),
-                    };
-                }
-            } else if forbidden {
-                return ToolGateDecision::Reject {
-                    reason: forbidden_reason(name, &spec.id),
-                };
             }
         }
     }
@@ -270,9 +270,9 @@ fn emit_tool_intent_observation(
     });
 }
 
-fn forbidden_reason(tool: &str, stage_id: &str) -> String {
+fn not_in_whitelist_reason(tool: &str, stage_id: &str) -> String {
     format!(
-        "tool '{}' is forbidden in harness stage '{}'",
+        "tool '{}' is not in the allowed tool types for harness stage '{}'",
         tool, stage_id
     )
 }
@@ -331,7 +331,8 @@ mod tests {
     #[test]
     fn harness_stage_rejects_forbidden_tool() {
         use golish_agent_kit::harness::StageKind;
-        // external_attack_surface forbids metasploit/sqlmap/exploit_validation.
+        // metasploit (exploit/framework) is not in external_attack_surface's
+        // allowed_tool_types → rejected (deny-by-default).
         let call = make_tool_call("tc-9", "metasploit");
         let decision =
             gate_tool_call_for_dispatch(&call, Some(StageKind::ExternalAttackSurface), None);
@@ -349,11 +350,12 @@ mod tests {
     }
 
     #[test]
-    fn harness_authz_rejects_real_tool_not_in_allowed_set() {
+    fn harness_authz_rejects_scan_tool_not_in_allowed_types() {
         use golish_agent_kit::harness::{AuthorizationLevel, HarnessAuthz, IntentAxis, StageKind};
-        // A real (non-orchestration) tool that is NOT in the stage's allowed_tools
-        // must be rejected once an authz context is present (full confinement).
-        let call = make_tool_call("tc-11", "definitely_not_a_stage_tool");
+        // A scan tool whose type is NOT in the stage's allowed_tool_types is
+        // rejected (deny-by-default). sqlmap (web/injection) is not allowed in
+        // external_attack_surface.
+        let call = make_tool_call("tc-11", "sqlmap");
         let authz = HarnessAuthz {
             max_authorization: AuthorizationLevel::ActiveRecon,
             intent: IntentAxis::PassiveObserve,
@@ -364,11 +366,12 @@ mod tests {
     }
 
     #[test]
-    fn harness_authz_allows_real_tool_in_allowed_set_within_ceiling() {
+    fn harness_authz_allows_scan_tool_in_allowed_types_within_ceiling() {
         use golish_agent_kit::harness::{AuthorizationLevel, HarnessAuthz, IntentAxis, StageKind};
-        // dns_resolve is in external_attack_surface allowed_tools; PassiveObserve
-        // intent is within the assessment ceiling (ActiveRecon) → Allow.
-        let call = make_tool_call("tc-12", "dns_resolve");
+        // dig resolves to recon/dns, which is in external_attack_surface
+        // allowed_tool_types; PassiveObserve intent is within the assessment
+        // ceiling (ActiveRecon) → Allow.
+        let call = make_tool_call("tc-12", "dig");
         let authz = HarnessAuthz {
             max_authorization: AuthorizationLevel::ActiveRecon,
             intent: IntentAxis::PassiveObserve,
@@ -381,9 +384,9 @@ mod tests {
     #[test]
     fn harness_authz_rejects_intent_above_ceiling() {
         use golish_agent_kit::harness::{AuthorizationLevel, HarnessAuthz, IntentAxis, StageKind};
-        // dns_resolve is allowed, but ExploitValidation intent exceeds the
-        // assessment ceiling (ActiveRecon) → reject on authorization.
-        let call = make_tool_call("tc-13", "dns_resolve");
+        // dig (recon/dns) is allowed in eas, but ExploitValidation intent exceeds
+        // the assessment ceiling (ActiveRecon) → reject on authorization.
+        let call = make_tool_call("tc-13", "dig");
         let authz = HarnessAuthz {
             max_authorization: AuthorizationLevel::ActiveRecon,
             intent: IntentAxis::ExploitValidation,

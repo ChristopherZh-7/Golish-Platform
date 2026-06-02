@@ -161,6 +161,7 @@ pub(crate) async fn maybe_run_reflector(
             chain_persistence: ctx.chain_persistence.as_ref(),
             sub_agent_registry: Some(ctx.sub_agent_registry),
             post_shell_hook: None,
+            stage_tool_guard: None,
         };
 
         match super::sub_agent_dispatch::execute_sub_agent_with_client(

@@ -137,6 +137,14 @@ impl Tool for GrepFileTool {
 
 /// Search a single file for regex matches.
 fn search_file(path: &Path, regex: &regex::Regex, workspace: &Path) -> Option<Vec<Value>> {
+    // Skip files too large to be source/text worth grepping. Reading a
+    // multi-GB file (e.g. a runaway transcript) would block the tool for a long
+    // time and can OOM the result channel / frontend.
+    const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024;
+    if fs::metadata(path).map(|m| m.len()).unwrap_or(0) > MAX_FILE_SIZE {
+        return None;
+    }
+
     // Read file content
     let content = fs::read_to_string(path).ok()?;
 

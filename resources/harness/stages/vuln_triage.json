@@ -9,22 +9,7 @@
   "requires_stages": ["enumeration"],
   "allowed_next_stages": ["verification", "reporting"],
 
-  "allowed_tools": [
-    "query_target_data",
-    "nuclei_scan",
-    "vuln_match",
-    "http_probe",
-    "log_operation",
-    "log_scan_result",
-    "submit_stage_deliverable"
-  ],
-
-  "forbidden_tools": [
-    "metasploit",
-    "sqlmap",
-    "credential_attack",
-    "destructive_action"
-  ],
+  "allowed_tool_types": ["web/scanner", "web/cms", "exploit/edb"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",

@@ -49,9 +49,16 @@ pub struct StageSpec {
     #[serde(default)]
     pub allowed_next_stages: Vec<StageKind>,
 
-    pub allowed_tools: Vec<String>,
+    /// Category-based stage tool whitelist (deny-by-default). Each entry is a
+    /// **type selector**: a bare category (`"recon"`), a `category/subcategory`
+    /// (`"recon/dns"`), or a specific tool name (`"nmap"`). When the
+    /// `GOLISH_HARNESS_TOOL_WHITELIST` flag is on, the per-stage tool boundary is
+    /// enforced from this list via [`super::tool_taxonomy::stage_allows`]
+    /// (replacing the `forbidden_tools` blacklist). Empty = no scan tools
+    /// permitted (e.g. scoping / reporting). See
+    /// `docs/design/2026-06-02-stage-tool-whitelist-enforcement.md`.
     #[serde(default)]
-    pub forbidden_tools: Vec<String>,
+    pub allowed_tool_types: Vec<String>,
 
     pub deliverable_schema: String,
     pub gate_validator: String,
@@ -134,12 +141,11 @@ mod tests {
     }
 
     #[test]
-    fn external_attack_surface_tool_allow_and_deny() {
+    fn external_attack_surface_allowed_tool_types() {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
-        assert!(s.allowed_tools.contains(&"dns_resolve".to_string()));
-        assert!(s.allowed_tools.contains(&"http_probe".to_string()));
-        assert!(s.forbidden_tools.contains(&"metasploit".to_string()));
-        assert!(s.forbidden_tools.contains(&"sqlmap".to_string()));
+        assert!(s.allowed_tool_types.contains(&"recon/dns".to_string()));
+        assert!(s.allowed_tool_types.contains(&"recon/http".to_string()));
+        assert!(!s.allowed_tool_types.contains(&"web/injection".to_string()));
     }
 
     #[test]

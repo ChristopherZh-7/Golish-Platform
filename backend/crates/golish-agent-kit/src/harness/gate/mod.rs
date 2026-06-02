@@ -21,7 +21,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::sprint_contract::SprintContract;
+use super::sprint_contract::{SprintContract, StageSkeleton};
 use super::stage_spec::StageSpec;
 use super::types::{HarnessRecoveryActions, StageDeliverable};
 
@@ -95,9 +95,24 @@ pub fn validate_stage_gate(
     spec: &StageSpec,
     contract: Option<&SprintContract>,
 ) -> GateResult {
+    validate_stage_gate_with_skeleton(deliverable, spec, contract, None)
+}
+
+/// 同 [`validate_stage_gate`], 但额外接受一个 per-stage [`StageSkeleton`] 以启用
+/// **per-target 强校验**: contract_check 会按 skeleton 的 `expected_count_range`
+/// (每类 finding 数量区间) 与 `min_tool_invocations` 比对 deliverable.
+///
+/// `skeleton = None` 时与旧 [`validate_stage_gate`] 完全等价 (向后兼容); 现网灰度
+/// 由 `sprint_skeleton_enforcement_enabled()` 控制是否在 gate hook 传入 skeleton.
+pub fn validate_stage_gate_with_skeleton(
+    deliverable: &StageDeliverable,
+    spec: &StageSpec,
+    contract: Option<&SprintContract>,
+    skeleton: Option<&StageSkeleton>,
+) -> GateResult {
     let mut outcomes = vec![
         schema_check::run(deliverable, spec),
-        contract_check::run(deliverable, contract),
+        contract_check::run_with_skeleton(deliverable, contract, skeleton),
         vacuous_check::run(deliverable, spec),
         freshness_check::run(deliverable, spec),
         // P2 · config-driven verification (no-op unless the stage spec declares
@@ -196,5 +211,57 @@ mod tests {
             recovery: HarnessRecoveryActions::default(),
         };
         assert!(!block.is_pass());
+    }
+
+    #[test]
+    fn skeleton_enforces_per_target_finding_range() {
+        use super::super::sprint_contract::{ExpectedFinding, StageSkeleton};
+        use super::super::stage_spec::load_stage_spec_from_json;
+        use super::super::types::StageClaim;
+        use golish_pentest::evidence_ledger::EvidenceAuditId;
+        use std::collections::HashMap;
+
+        const SCOPING_JSON: &str =
+            include_str!("../../../../../../resources/harness/stages/scoping.json");
+        let spec = load_stage_spec_from_json(SCOPING_JSON).unwrap();
+
+        // A scoping deliverable that PASSES the baseline gate: one evidence-backed
+        // claim (non-vacuous); scoping has no surface/min-invocation checks.
+        let deliverable = StageDeliverable {
+            stage_id: "scoping".to_string(),
+            stage_run_id: Uuid::new_v4(),
+            claims: vec![StageClaim {
+                kind: "scope_confirmed".to_string(),
+                subject: "example.com".to_string(),
+                summary: "in scope".to_string(),
+                evidence_ids: vec![EvidenceAuditId::new(1)],
+            }],
+            evidence_refs: vec![EvidenceAuditId::new(1)],
+            skipped_checks: vec![],
+            findings: vec![],
+            required_checks_done: vec![],
+        };
+
+        // Baseline (skeleton = None) passes.
+        assert!(validate_stage_gate(&deliverable, &spec, None).allowed);
+
+        // A per-target skeleton requiring >=1 `subdomain` finding turns the same
+        // (0-subdomain) deliverable into a BLOCK — proving the skeleton is wired
+        // through validate_stage_gate_with_skeleton into contract_check.
+        let skeleton = StageSkeleton {
+            expected_findings: vec![ExpectedFinding {
+                kind: "subdomain".to_string(),
+                expected_count_range: [1, 9],
+                required_evidence_kinds: vec![],
+            }],
+            time_budget_minutes: 10,
+            min_tool_invocations: HashMap::new(),
+        };
+        let blocked = validate_stage_gate_with_skeleton(&deliverable, &spec, None, Some(&skeleton));
+        assert!(!blocked.allowed);
+        assert!(blocked
+            .reasons
+            .iter()
+            .any(|r| r.contains("subdomain") && r.contains("below contract minimum")));
     }
 }

@@ -176,6 +176,51 @@ pub fn run_with_freshness(
     }
 }
 
+/// P0 Task 6 · 纯函数: 给一组 evidence id + 它们的 kind/age, 按 `evidence_kinds.json`
+/// 的 max_age 判定「过期」(age ≥ 2×max) 与「陈旧」(max ≤ age < 2×max), 返回
+/// `(expired_reasons, stale_reasons)`. 缺 kind 或 age 信息的 id 跳过 (gate 放行)。
+///
+/// 与 [`run_with_freshness`] 同阈值, 但是一个独立、无 DB 的纯函数, 供
+/// `task_orchestrator` 收口阶段查 ledger 拿到真实 age 后做 post-gate 回查
+/// (刻意不改 `run_with_freshness`, 避免动到已被单测覆盖的 gate 主路径)。
+pub fn freshness_age_reasons(
+    ids: &[EvidenceAuditId],
+    kinds: &HashMap<EvidenceAuditId, String>,
+    ages: &HashMap<EvidenceAuditId, StdDuration>,
+) -> (Vec<String>, Vec<String>) {
+    let registry = EvidenceKindRegistry::instance();
+    let mut expired = Vec::new();
+    let mut stale = Vec::new();
+    for id in ids {
+        let (Some(kind), Some(age)) = (kinds.get(id), ages.get(id).copied()) else {
+            continue;
+        };
+        let max = registry.max_age_with_default(kind).as_secs();
+        if max == 0 {
+            continue;
+        }
+        let a = age.as_secs();
+        if a >= max.saturating_mul(2) {
+            expired.push(format!(
+                "evidence id={} kind={} hard-expired (age={}s, max={}s)",
+                id.as_i64(),
+                kind,
+                a,
+                max
+            ));
+        } else if a >= max {
+            stale.push(format!(
+                "evidence id={} kind={} stale (age={}s, max={}s)",
+                id.as_i64(),
+                kind,
+                a,
+                max
+            ));
+        }
+    }
+    (expired, stale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::super::stage_spec::load_stage_spec_from_json;
@@ -363,5 +408,38 @@ mod tests {
             run_with_freshness(&d, &spec, &kinds, &ages),
             GateCheckOutcome::Pass
         ));
+    }
+
+    #[test]
+    fn freshness_age_reasons_classifies_fresh_stale_expired() {
+        let fresh = EvidenceAuditId::new(1);
+        let stale = EvidenceAuditId::new(2);
+        let expired = EvidenceAuditId::new(3);
+        let mut kinds = std::collections::HashMap::new();
+        kinds.insert(fresh, "http_probe".to_string()); // max 21600s (6h)
+        kinds.insert(stale, "http_probe".to_string());
+        kinds.insert(expired, "http_probe".to_string());
+        let mut ages = std::collections::HashMap::new();
+        ages.insert(fresh, std::time::Duration::from_secs(60)); // 1m → fresh
+        ages.insert(stale, std::time::Duration::from_secs(8 * 3600)); // 8h → stale (6h–12h)
+        ages.insert(expired, std::time::Duration::from_secs(24 * 3600)); // 24h → expired (>12h)
+        let (exp, stl) = freshness_age_reasons(&[fresh, stale, expired], &kinds, &ages);
+        assert!(exp
+            .iter()
+            .any(|r| r.contains("hard-expired") && r.contains("id=3")));
+        assert!(stl
+            .iter()
+            .any(|r| r.contains("stale") && r.contains("id=2")));
+        assert!(!exp.iter().chain(stl.iter()).any(|r| r.contains("id=1")));
+    }
+
+    #[test]
+    fn freshness_age_reasons_skips_missing_kind_or_age() {
+        let id = EvidenceAuditId::new(5);
+        let kinds = std::collections::HashMap::new(); // no kind for the id
+        let mut ages = std::collections::HashMap::new();
+        ages.insert(id, std::time::Duration::from_secs(999_999));
+        let (exp, stl) = freshness_age_reasons(&[id], &kinds, &ages);
+        assert!(exp.is_empty() && stl.is_empty());
     }
 }

@@ -9,16 +9,7 @@
   "requires_stages": ["access_validation"],
   "allowed_next_stages": ["objective_pathing"],
 
-  "allowed_tools": [
-    "query_target_data",
-    "log_operation",
-    "log_scan_result",
-    "submit_stage_deliverable"
-  ],
-
-  "forbidden_tools": [
-    "destructive_action"
-  ],
+  "allowed_tool_types": ["post-exploit", "recon/port-scan", "network/tunnel"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",

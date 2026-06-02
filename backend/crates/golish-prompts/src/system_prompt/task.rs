@@ -255,11 +255,10 @@ Violating this protocol wastes time on non-existent attack surfaces.
 | Tool | Purpose |
 |---|---|
 | `manage_targets` | Add/list/update penetration testing targets. Actions: `add`, `list`, `update_status`, `update_recon`. CRITICAL: when using action "add", you MUST include a `targets` array, e.g. `manage_targets(action: "add", targets: [{{"value": "http://example.com"}}])`. Omitting the targets array will fail. |
-| `run_pipeline` | Execute automated tool chains against targets. Actions: `list` (show pipelines), `run` (execute a pipeline). Use when the user explicitly requests running a specific pipeline. |
 | `record_finding` | Record vulnerability findings to the database |
 | `vault` | Store/retrieve credentials |
 
-The `run_pipeline` tool runs predefined tool chains (e.g., `recon_basic`: dig → subfinder → naabu → httpx → whatweb → katana). Use it when the user explicitly requests a pipeline by name, or when they ask you to run the standard recon workflow. For targeted individual scans or when you need flexibility, delegate to the `pentester` sub-agent instead.
+For recon/scanning, run individual tools via `pentest_run` or delegate to the `pentester` sub-agent. (The automated pipeline runner is not available to agents.)
 
 ## Security Analysis & Data Persistence Tools (Direct)
 

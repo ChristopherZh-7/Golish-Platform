@@ -52,13 +52,16 @@ pub mod stage_harness;
 pub mod stage_spec;
 pub mod stage_transition;
 pub mod surface_mapping;
+pub mod tool_taxonomy;
 pub mod types;
 
 #[cfg(test)]
 mod e2e_tests;
 
+pub use gate::freshness_check::freshness_age_reasons;
 pub use gate::{
-    validate_external_attack_surface_gate, validate_stage_gate, GateCheckOutcome, GateResult,
+    validate_external_attack_surface_gate, validate_stage_gate, validate_stage_gate_with_skeleton,
+    GateCheckOutcome, GateResult,
 };
 pub use intent_classifier::{IntentClassifier, IntentClassifierConfig};
 pub use nl_slice::NlSlice;
@@ -71,12 +74,12 @@ pub use profile::{
     load_profile_from_json, ApprovalPolicy, AuthorizationLevel, Profile, ProfileLoadError,
 };
 pub use resources::{
-    load_embedded_profile, load_embedded_stage_spec, profile_json, stage_spec_json,
-    EMBEDDED_PROFILE_IDS,
+    load_embedded_profile, load_embedded_sprint_skeleton, load_embedded_stage_spec, profile_json,
+    sprint_skeleton_json, stage_spec_json, EMBEDDED_PROFILE_IDS,
 };
 pub use sprint_contract::{
     DefaultSprintContractGenerator, ExpectedFinding, SprintContract, SprintContractGenerator,
-    SprintSkeleton,
+    SprintSkeleton, StageSkeleton,
 };
 pub use stage_harness::StageHarness;
 pub use stage_spec::{
@@ -90,6 +93,7 @@ pub use surface_mapping::{
     missing_required_categories, SurfaceCategory, SurfaceCoverage, D2_REQUIRED_CATEGORIES,
     D2_SOFT_CATEGORIES,
 };
+pub use tool_taxonomy::{is_scan_invocation, stage_allows, tool_category, underlying_tool_name};
 pub use types::{
     AgentContinuity, ExternalAttackSurfaceDeliverable, FindingSeverity, HarnessFinding,
     HarnessRecoveryActions, HarnessStageHint, IntentAxis, RiskLevel, SkippedCheckRecord,
@@ -116,6 +120,79 @@ pub fn stage_mode_enabled() -> bool {
     *ENABLED
 }
 
+/// Feature flag: 启用 `submit_stage_deliverable` 工具（确定性交付通道）。
+///
+/// **默认 ON**。Kill switch: 设环境变量 `GOLISH_HARNESS_SUBMIT_TOOL=false`
+/// (或 `0`/`off`/`no`) 回退到「在最终消息打印 ```json」的文本路径。复用
+/// [`parse_stage_mode_flag`] 的「仅显式 falsey 关闭」语义；首次读 LazyLock 缓存。
+pub fn submit_tool_enabled() -> bool {
+    use std::sync::LazyLock;
+    static ENABLED: LazyLock<bool> = LazyLock::new(|| {
+        parse_stage_mode_flag(std::env::var("GOLISH_HARNESS_SUBMIT_TOOL").ok().as_deref())
+    });
+    *ENABLED
+}
+
+/// Feature flag: 启用 sprint-skeleton 驱动的 **per-target gate 强校验**
+/// (`expected_count_range` 每类 finding 数量区间 + skeleton 的 `min_tool_invocations`)。
+///
+/// **默认 OFF**（opt-in 灰度）：energize 后 gate 会按 profile 的 sprint_skeleton 强制
+/// 每个目标的 finding 数量区间，可能让此前结构性 PASS 的 stage 转 BLOCK，需要先在真机
+/// 上观察。设 `GOLISH_HARNESS_SPRINT_SKELETON=1`（或 `true`/`on`/`yes`）开启；首次读
+/// LazyLock 缓存。
+pub fn sprint_skeleton_enforcement_enabled() -> bool {
+    use std::sync::LazyLock;
+    static ENABLED: LazyLock<bool> = LazyLock::new(|| {
+        parse_truthy_flag(
+            std::env::var("GOLISH_HARNESS_SPRINT_SKELETON")
+                .ok()
+                .as_deref(),
+        )
+    });
+    *ENABLED
+}
+
+/// Feature flag: 启用 evidence「新鲜度」回查（P0 Task 6 收口）。
+///
+/// **默认 OFF**（opt-in）：开启后 gate 收口阶段会按 evidence 真实 age 拦截**硬过期**
+/// 证据（age ≥ 2×max_age → BLOCK；软陈旧只 warn 不阻断）。默认关，因长跑 / 跨 resume
+/// 的 operation 证据可能合法变旧，需先在真机观察。设
+/// `GOLISH_HARNESS_EVIDENCE_FRESHNESS=1`（或 `true`/`on`/`yes`）开启；首次读 LazyLock 缓存。
+pub fn evidence_freshness_enforcement_enabled() -> bool {
+    use std::sync::LazyLock;
+    static ENABLED: LazyLock<bool> = LazyLock::new(|| {
+        parse_truthy_flag(
+            std::env::var("GOLISH_HARNESS_EVIDENCE_FRESHNESS")
+                .ok()
+                .as_deref(),
+        )
+    });
+    *ENABLED
+}
+
+/// Feature flag: 启用**类别白名单**的 per-stage 工具边界（deny-by-default）。
+///
+/// 工具边界从每关 `StageSpec.allowed_tool_types` 的类别选择器（`recon` /
+/// `recon/dns` / 具体工具名）强制——**只对扫描工具生效**（agent/meta 工具豁免），
+/// 不在白名单里的扫描类工具一律拦（主 agent 路 + 子代理路），见
+/// [`tool_taxonomy::stage_allows`] / [`tool_taxonomy::is_scan_invocation`]。
+///
+/// **默认 ON**（旧的 `forbidden_tools` 黑名单已删，这是唯一的工具边界）。Kill switch:
+/// 设 `GOLISH_HARNESS_TOOL_WHITELIST=false`（或 `0`/`off`/`no`）关闭 per-stage 扫描
+/// 限制（紧急绕过；`GOLISH_HARNESS_STAGE_MODE=false` 是更彻底的总开关）。其它任何值
+/// （未设 / `true` / `1`）= 开。首次读 LazyLock 缓存。
+pub fn tool_whitelist_enabled() -> bool {
+    use std::sync::LazyLock;
+    static ENABLED: LazyLock<bool> = LazyLock::new(|| {
+        parse_stage_mode_flag(
+            std::env::var("GOLISH_HARNESS_TOOL_WHITELIST")
+                .ok()
+                .as_deref(),
+        )
+    });
+    *ENABLED
+}
+
 fn read_env_flag() -> bool {
     parse_stage_mode_flag(std::env::var("GOLISH_HARNESS_STAGE_MODE").ok().as_deref())
 }
@@ -126,6 +203,15 @@ fn parse_stage_mode_flag(value: Option<&str>) -> bool {
     !matches!(
         value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
         Some("false" | "0" | "off" | "no")
+    )
+}
+
+/// Pure parser (env-independent → 可单测全分支). 默认 OFF: 仅显式 truthy 值开启;
+/// 未设 / 未知 / falsey 值一律关. 用于 opt-in 灰度 flag.
+fn parse_truthy_flag(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("true" | "1" | "on" | "yes")
     )
 }
 
@@ -180,6 +266,21 @@ mod tests {
     fn parse_stage_mode_flag_truthy_or_unknown_enables() {
         for on in ["true", "1", "TRUE", "yes", "on", "garbage", ""] {
             assert!(parse_stage_mode_flag(Some(on)), "'{on}' must enable");
+        }
+    }
+
+    #[test]
+    fn parse_truthy_flag_default_off() {
+        assert!(!parse_truthy_flag(None), "unset must default OFF");
+        for off in ["false", "0", "off", "no", "garbage", ""] {
+            assert!(!parse_truthy_flag(Some(off)), "'{off}' must stay OFF");
+        }
+    }
+
+    #[test]
+    fn parse_truthy_flag_explicit_truthy_enables() {
+        for on in ["true", "1", "on", "yes", "TRUE", " On ", "YES"] {
+            assert!(parse_truthy_flag(Some(on)), "'{on}' must enable");
         }
     }
 

@@ -211,6 +211,11 @@ where
     match &result {
         Ok(v) => {
             let is_success = is_tool_result_success(v);
+            // P1 · the evidence-ledger id appended for this tool run (if any), so
+            // we can surface it to the agent below — letting it cite a REAL id in
+            // its StageDeliverable instead of fabricating one (which the gate
+            // would then BLOCK).
+            let mut appended_evidence_id: Option<i64> = None;
 
             if effective_tool_name == "run_pty_cmd" && is_success {
                 if let Some(hook) = &ctx.post_shell_hook {
@@ -258,7 +263,7 @@ where
                                 .and_then(|c| c.as_str())
                                 .filter(|c| !c.is_empty())
                                 .unwrap_or(effective_tool_name);
-                            if let Err(e) = repo
+                            match repo
                                 .evidence_append(
                                     op_id,
                                     None,
@@ -271,11 +276,20 @@ where
                                 )
                                 .await
                             {
-                                tracing::warn!(
+                                Ok(id) => {
+                                    appended_evidence_id = Some(id);
+                                    tracing::info!(
+                                        target: "harness::evidence",
+                                        tool = %effective_tool_name,
+                                        evidence_id = id,
+                                        "evidence appended; surfacing id to agent"
+                                    );
+                                }
+                                Err(e) => tracing::warn!(
                                     target: "harness::evidence",
                                     error = %e,
                                     "evidence append failed (continuing)"
-                                );
+                                ),
                             }
                         }
                     }
@@ -317,8 +331,75 @@ where
                 }
             }
 
+            // P3a · `pentest_run` is the primary scan path (nmap / httpx / dig /
+            // …). Like `run_pty_cmd` it must append its output to the evidence
+            // ledger so scanning stages produce REAL ids the deliverable can
+            // cite (otherwise every scan-stage deliverable is "fabricated" and
+            // the gate loops). Kept as a separate block so the working
+            // run_pty_cmd path above is untouched.
+            if effective_tool_name == "pentest_run" && is_success && ctx.harness_stage.is_some() {
+                if let Some(tracker) = ctx.events.db_tracker {
+                    if let Some(repo) = tracker.repo() {
+                        let op_id = tracker.task_id().unwrap_or_else(|| tracker.session_uuid());
+                        let ev_stdout = v
+                            .get("stdout")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let pt_tool = tool_args
+                            .get("tool_name")
+                            .and_then(|s| s.as_str())
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("pentest_run");
+                        let pt_args = tool_args.get("args").and_then(|s| s.as_str()).unwrap_or("");
+                        let ev_subject = if pt_args.is_empty() {
+                            pt_tool.to_string()
+                        } else {
+                            format!("{pt_tool} {pt_args}")
+                        };
+                        match repo
+                            .evidence_append(
+                                op_id,
+                                None,
+                                ctx.events.session_id,
+                                tracker.project_path(),
+                                pt_tool,
+                                pt_tool,
+                                &ev_subject,
+                                &ev_stdout,
+                            )
+                            .await
+                        {
+                            Ok(id) => {
+                                appended_evidence_id = Some(id);
+                                tracing::info!(
+                                    target: "harness::evidence",
+                                    tool = %pt_tool,
+                                    evidence_id = id,
+                                    "pentest_run evidence appended; surfacing id to agent"
+                                );
+                            }
+                            Err(e) => tracing::warn!(
+                                target: "harness::evidence",
+                                error = %e,
+                                "pentest_run evidence append failed (continuing)"
+                            ),
+                        }
+                    }
+                }
+            }
+
+            // P1 · surface the appended evidence id so the agent cites a REAL
+            // ledger id in its StageDeliverable. Additive `_evidence_id` field;
+            // absent when nothing was appended (non-shell tool / no stage).
+            let mut value = v.clone();
+            if let Some(id) = appended_evidence_id {
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert("_evidence_id".to_string(), json!(id));
+                }
+            }
             Ok(ToolExecutionResult {
-                value: v.clone(),
+                value,
                 success: is_success,
             })
         }

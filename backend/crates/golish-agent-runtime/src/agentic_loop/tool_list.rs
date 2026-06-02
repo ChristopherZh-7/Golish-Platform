@@ -140,6 +140,74 @@ mod tests {
         assert!(names.iter().any(|n| n == "ask_human"));
     }
 
+    /// A minimal registry tool used to prove the bridge allow-list path
+    /// actually surfaces a dynamically-registered tool by name.
+    struct MockNamedTool(&'static str);
+
+    #[async_trait::async_trait]
+    impl golish_core::Tool for MockNamedTool {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn description(&self) -> &'static str {
+            "mock tool for tool-list wiring tests"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object", "properties": {} })
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _workspace: &std::path::Path,
+        ) -> anyhow::Result<serde_json::Value> {
+            Ok(serde_json::json!({ "status": "ok" }))
+        }
+    }
+
+    /// End-to-end wiring guard: a registry tool named `submit_stage_deliverable`
+    /// must reach the LLM tool list in task mode (both the depth-0 orchestrator
+    /// and depth-1 specialists) via the bridge allow-list, but must NOT leak
+    /// into chat mode (no active harness stage there).
+    #[tokio::test]
+    async fn submit_stage_deliverable_surfaces_in_task_not_chat() {
+        async fn names_for(mode: ExecutionMode, depth: usize) -> Vec<String> {
+            let test_ctx = TestContextBuilder::new().execution_mode(mode).build().await;
+            {
+                let mut reg = test_ctx.tool_registry.write().await;
+                reg.register_tool(Arc::new(MockNamedTool("submit_stage_deliverable")));
+            }
+            let client = Arc::new(RwLock::new(LlmClient::Mock));
+            let ctx = test_ctx.as_agentic_context_with_client(&client);
+            let sub = SubAgentContext {
+                depth,
+                ..Default::default()
+            };
+            build_tool_list(&ctx, &sub)
+                .await
+                .into_iter()
+                .map(|t| t.name)
+                .collect()
+        }
+
+        let task_primary = names_for(ExecutionMode::Task, 0).await;
+        assert!(
+            task_primary.iter().any(|n| n == "submit_stage_deliverable"),
+            "task primary (orchestrator) must expose submit_stage_deliverable; got: {task_primary:?}"
+        );
+
+        let task_subtask = names_for(ExecutionMode::Task, 1).await;
+        assert!(
+            task_subtask.iter().any(|n| n == "submit_stage_deliverable"),
+            "task subtask (specialist) must expose submit_stage_deliverable; got: {task_subtask:?}"
+        );
+
+        let chat_primary = names_for(ExecutionMode::Chat, 0).await;
+        assert!(
+            !chat_primary.iter().any(|n| n == "submit_stage_deliverable"),
+            "chat mode must NOT expose submit_stage_deliverable; got: {chat_primary:?}"
+        );
+    }
+
     /// Task subtask (depth=1) inherits the full toolbox minus update_plan
     /// and ask_human (subtasks must not block on user input).
     #[tokio::test]

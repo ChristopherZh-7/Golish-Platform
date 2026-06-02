@@ -11,7 +11,7 @@
       "step_type": "dns_lookup",
       "tool_name": "dig",
       "command_template": "dig",
-      "args": ["+short", "{target}"],
+      "args": ["+short", "+time=3", "+tries=1", "{target}"],
       "requires": "domain",
       "on_failure": "continue"
     },

@@ -323,7 +323,9 @@ pub fn recon_basic_template() -> Pipeline {
             name: "dig",
             step_type: "dns_lookup",
             cmd: "dig",
-            args: vec!["+short", "{target}"],
+            // System resolver (no @external) + short timeout so a blocked or
+            // slow resolver fails fast instead of hanging the recon flow.
+            args: vec!["+short", "+time=3", "+tries=1", "{target}"],
             input_from: None,
             requires: Some("domain"),
             iterate_over: None,

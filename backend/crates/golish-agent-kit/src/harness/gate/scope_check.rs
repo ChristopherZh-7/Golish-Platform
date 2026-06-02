@@ -9,23 +9,33 @@ use super::GateCheckOutcome;
 pub fn run(deliverable: &ExternalAttackSurfaceDeliverable) -> GateCheckOutcome {
     let mut reasons = Vec::new();
 
-    // Sanity 1: 每个 claim 必有非空 evidence_ids (Doc 3 §4.3 "必须非空 + 全 InScope")
-    for (idx, claim) in deliverable.claims.iter().enumerate() {
-        if claim.evidence_ids.is_empty() {
-            reasons.push(format!(
-                "claim[{}] (kind={}, subject={}) has empty evidence_ids",
-                idx, claim.kind, claim.subject
-            ));
-        }
-    }
+    // Scoping is an L0 authorization-confirmation stage ("L0-L1 only, no
+    // probing"): there is no scan, so its scope claim is backed by the
+    // authorization framework rather than a tool run. Skip the
+    // evidence-required sanity for scoping so an honest "scope confirmed, no
+    // tool evidence" deliverable can pass (the evidence-required rule still
+    // applies to every scanning stage).
+    let evidence_optional = deliverable.stage_id == "scoping";
 
-    // Sanity 2: 每个 finding 必有非空 evidence_refs
-    for (idx, f) in deliverable.findings.iter().enumerate() {
-        if f.evidence_refs.is_empty() {
-            reasons.push(format!(
-                "finding[{}] (kind={}, subject={}) has empty evidence_refs",
-                idx, f.kind, f.subject
-            ));
+    // Sanity 1: 每个 claim 必有非空 evidence_ids (Doc 3 §4.3 "必须非空 + 全 InScope")
+    if !evidence_optional {
+        for (idx, claim) in deliverable.claims.iter().enumerate() {
+            if claim.evidence_ids.is_empty() {
+                reasons.push(format!(
+                    "claim[{}] (kind={}, subject={}) has empty evidence_ids",
+                    idx, claim.kind, claim.subject
+                ));
+            }
+        }
+
+        // Sanity 2: 每个 finding 必有非空 evidence_refs
+        for (idx, f) in deliverable.findings.iter().enumerate() {
+            if f.evidence_refs.is_empty() {
+                reasons.push(format!(
+                    "finding[{}] (kind={}, subject={}) has empty evidence_refs",
+                    idx, f.kind, f.subject
+                ));
+            }
         }
     }
 
@@ -114,6 +124,22 @@ mod tests {
             }
             _ => panic!("expected Block"),
         }
+    }
+
+    #[test]
+    fn scoping_claim_without_evidence_passes() {
+        // Scoping is authz-confirmation (no probing) → a scope_confirmed claim
+        // needs no tool evidence; scope_check must NOT block it (it would for any
+        // scanning stage — see `claim_without_evidence_blocks`).
+        let mut d = empty_deliverable();
+        d.stage_id = "scoping".to_string();
+        d.claims.push(StageClaim {
+            kind: "scope_confirmed".to_string(),
+            subject: "example.com".to_string(),
+            summary: "authorized target, black-box external".to_string(),
+            evidence_ids: vec![],
+        });
+        assert!(matches!(run(&d), GateCheckOutcome::Pass));
     }
 
     #[test]

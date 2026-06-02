@@ -94,6 +94,12 @@ pub struct BridgeToolSelection {
     pub js_collect: bool,
     pub js_extract_apis: bool,
     pub auth_probe: bool,
+    /// `submit_stage_deliverable` — the deterministic harness deliverable
+    /// channel. Deliberately NOT part of [`Self::all_enabled`]: it is only
+    /// meaningful while a harness stage is active (task mode), so chat mode
+    /// must never see it. Task mode turns it on explicitly for both the
+    /// orchestrator (depth 0) and the specialists (depth > 0).
+    pub submit_stage_deliverable: bool,
 }
 
 impl BridgeToolSelection {
@@ -102,11 +108,18 @@ impl BridgeToolSelection {
             manage_targets: true,
             record_finding: true,
             vault: true,
-            run_pipeline: true,
-            flow_compose: true,
+            // Pipeline tools are intentionally NOT exposed to agents — the
+            // pipeline feature is not given to the AI. Kept as fields so the
+            // type/registry stay stable, but never enabled in any mode (so they
+            // never reach `enabled_tool_names`, the prompt table, or the gate).
+            run_pipeline: false,
+            flow_compose: false,
             js_collect: true,
             js_extract_apis: true,
             auth_probe: true,
+            // Harness-stage-only; opted into per-mode (task) rather than via the
+            // generic "all bridge tools" set so chat mode never exposes it.
+            submit_stage_deliverable: false,
         }
     }
 
@@ -120,6 +133,7 @@ impl BridgeToolSelection {
             js_collect: false,
             js_extract_apis: false,
             auth_probe: false,
+            submit_stage_deliverable: false,
         }
     }
 
@@ -150,6 +164,9 @@ impl BridgeToolSelection {
         }
         if self.auth_probe {
             out.push("auth_probe");
+        }
+        if self.submit_stage_deliverable {
+            out.push("submit_stage_deliverable");
         }
         out
     }
@@ -210,7 +227,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bridge_all_enabled_lists_eight_tools_in_stable_order() {
+    fn bridge_all_enabled_lists_six_tools_in_stable_order() {
         let names = BridgeToolSelection::all_enabled().enabled_tool_names();
         assert_eq!(
             names,
@@ -218,18 +235,40 @@ mod tests {
                 "manage_targets",
                 "record_finding",
                 "vault",
-                "run_pipeline",
-                "flow_compose",
                 "js_collect",
                 "js_extract_apis",
                 "auth_probe",
             ]
         );
+        // pipeline tools are intentionally never exposed to agents
+        assert!(!names.contains(&"run_pipeline"));
+        assert!(!names.contains(&"flow_compose"));
     }
 
     #[test]
     fn bridge_none_yields_empty_list() {
         assert!(BridgeToolSelection::none().enabled_tool_names().is_empty());
+    }
+
+    #[test]
+    fn submit_stage_deliverable_excluded_from_all_enabled_but_listable() {
+        // Regression guard: the harness deliverable tool must NOT leak into the
+        // generic "all bridge tools" set (otherwise chat mode would expose it
+        // with no active stage). It only surfaces when a mode opts in explicitly.
+        assert!(!BridgeToolSelection::all_enabled().submit_stage_deliverable);
+        assert!(!BridgeToolSelection::all_enabled()
+            .enabled_tool_names()
+            .contains(&"submit_stage_deliverable"));
+
+        let sel = BridgeToolSelection {
+            submit_stage_deliverable: true,
+            ..BridgeToolSelection::none()
+        };
+        assert_eq!(
+            sel.enabled_tool_names(),
+            vec!["submit_stage_deliverable"],
+            "opting the flag in must surface exactly that tool name for the allow-list"
+        );
     }
 
     #[test]

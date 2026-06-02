@@ -104,7 +104,9 @@ fn test_pentester_has_security_tools() {
     assert!(has_tool(pentester, "pentest_list_tools"));
     assert!(has_tool(pentester, "web_search"));
     assert!(has_tool(pentester, "search_memories"));
-    assert!(has_tool(pentester, "run_pipeline"));
+    // pipeline tools are intentionally not exposed to agents
+    assert!(!has_tool(pentester, "run_pipeline"));
+    assert!(!has_tool(pentester, "flow_compose"));
     assert!(has_tool(pentester, "manage_targets"));
     assert!(has_tool(pentester, "record_finding"));
     assert!(!has_tool(pentester, "js_collect"));

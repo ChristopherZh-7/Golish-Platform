@@ -323,4 +323,16 @@ pub trait DbRepoProvider: Send + Sync {
         let _ = ids;
         Ok(std::collections::HashMap::new())
     }
+
+    /// P0 Task 6 · map each given evidence `audit_log.id` to its age
+    /// (`NOW() - created_at`). The freshness gate compares this against the
+    /// `evidence_kinds.json` max_age to block hard-expired evidence. Default
+    /// empty (test doubles never block on freshness).
+    async fn evidence_ages_for(
+        &self,
+        ids: &[i64],
+    ) -> anyhow::Result<std::collections::HashMap<i64, std::time::Duration>> {
+        let _ = ids;
+        Ok(std::collections::HashMap::new())
+    }
 }

@@ -66,4 +66,30 @@ impl GolishDbRepoProvider {
             .filter_map(|(id, kind)| kind.map(|k| (id, k)))
             .collect())
     }
+
+    pub(crate) async fn evidence_ages_for_impl(
+        &self,
+        ids: &[i64],
+    ) -> anyhow::Result<HashMap<i64, std::time::Duration>> {
+        let rows = golish_db::repo::audit::evidence_ages_for(&self.pool, ids).await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id, secs)| {
+                // Negative age (clock skew) or NULL → drop; the gate treats a
+                // missing age as "unknown" and does not block on it.
+                secs.filter(|s| *s >= 0.0)
+                    .map(|s| (id, std::time::Duration::from_secs_f64(s)))
+            })
+            .collect())
+    }
+}
+
+/// P2 · expose the ledger existence check to the `submit_stage_deliverable`
+/// tool via its narrow [`EvidenceLedgerQuery`] seam (no full `DbRepoProvider`
+/// dependency from the tool).
+#[async_trait::async_trait]
+impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvider {
+    async fn existing_evidence_ids(&self, ids: &[i64]) -> anyhow::Result<HashSet<i64>> {
+        self.evidence_existing_ids_impl(ids).await
+    }
 }

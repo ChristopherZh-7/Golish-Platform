@@ -194,6 +194,30 @@ async fn register_pentest_tools(
             registry.register_tool(tool);
         }
     }
+
+    // C2c · deterministic StageDeliverable submission tool (flag-gated, default
+    // ON). The reporter/orchestrator fills typed args; the handler captures the
+    // structured deliverable into the bridge side-channel for the stage gate,
+    // replacing the fragile "parse a ```json block out of prose" path.
+    if golish_agent_kit::harness::submit_tool_enabled() {
+        // P2 · give the tool a read-only evidence-ledger handle so it can run
+        // validate-on-submit (reject fabricated evidence_refs immediately rather
+        // than returning a misleading `accepted`).
+        let evidence_repo: std::sync::Arc<dyn crate::ai::harness_submit_tool::EvidenceLedgerQuery> =
+            std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
+                state.db_pool.clone(),
+            ));
+        let tool = std::sync::Arc::new(
+            crate::ai::harness_submit_tool::SubmitStageDeliverableTool::new(
+                bridge.harness_active_stage_handle(),
+                bridge.harness_last_deliverable_handle(),
+            )
+            .with_evidence_repo(evidence_repo),
+        );
+        let mut registry = bridge.tool_registry().write().await;
+        tracing::info!("[harness] Registered tool: submit_stage_deliverable");
+        registry.register_tool(tool);
+    }
 }
 
 async fn register_visible_pty_tool(bridge: &AgentBridge, state: &AgentState) {

@@ -9,16 +9,7 @@
   "requires_stages": ["internal_discovery"],
   "allowed_next_stages": ["objective_simulation"],
 
-  "allowed_tools": [
-    "query_target_data",
-    "log_operation",
-    "log_scan_result",
-    "submit_stage_deliverable"
-  ],
-
-  "forbidden_tools": [
-    "destructive_action"
-  ],
+  "allowed_tool_types": ["post-exploit/ad-tools"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",

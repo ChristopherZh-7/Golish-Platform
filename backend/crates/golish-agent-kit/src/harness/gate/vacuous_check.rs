@@ -92,7 +92,7 @@ pub fn run(deliverable: &ExternalAttackSurfaceDeliverable, spec: &StageSpec) -> 
         );
         let mut recovery = HarnessRecoveryActions::default();
         recovery.hints.push(
-            "invoke at least one tool from stage_spec.allowed_tools and submit findings"
+            "invoke at least one tool from the stage's allowed_tool_types and submit findings"
                 .to_string(),
         );
         for kind in missing_kinds {

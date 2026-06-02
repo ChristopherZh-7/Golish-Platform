@@ -76,6 +76,33 @@ test-rust-all:
 test-rust-verbose:
     cd backend && cargo nextest run --status-level all
 
+# Fast, deterministic harness/gate closed-loop tests (NO live LLM, NO UI run).
+# Use this instead of running a full pentest in the UI to verify the stage gate
+# + submit_stage_deliverable wiring is correct. Covers (golish-agent-kit +
+# golish-agent-runtime): every harness gate check, the stage-transition
+# closed-loop driver (in-memory operation_state), and the execution-mode tool
+# exposure (submit_stage_deliverable surfacing in task mode, not chat). Runs in
+# ~1s after compile.
+test-harness:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd backend && cargo nextest run \
+        -p golish-agent-kit -p golish-agent-runtime \
+        -E '(package(golish-agent-kit) & test(harness)) | (package(golish-agent-runtime) & (test(execution_mode) | test(tool_list)))' \
+        --status-level fail
+
+# Same as `test-harness` but also includes the submit_stage_deliverable tool
+# HANDLER tests in golish-agent-app (parse/accept/reject/needs_fix). Slower on
+# first run because it compiles the heavier app crate; prefer `test-harness` for
+# the tight inner loop.
+test-harness-full: test-harness
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd backend && cargo nextest run \
+        -p golish-agent-app \
+        -E 'package(golish-agent-app) & test(harness_submit_tool)' \
+        --status-level fail
+
 # ============================================
 # Building
 # ============================================

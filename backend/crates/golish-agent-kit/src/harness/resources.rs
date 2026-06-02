@@ -8,6 +8,7 @@
 //! `stage_spec.rs` / `profile.rs` 的内联 fixture 同深度 (5 个 `../` 到 repo 根).
 
 use super::profile::{load_profile_from_json, Profile, ProfileLoadError};
+use super::sprint_contract::SprintSkeleton;
 use super::stage_spec::{load_stage_spec_from_json, StageSpec, StageSpecLoadError};
 use super::types::StageKind;
 
@@ -83,6 +84,27 @@ pub fn load_embedded_profile(id: &str) -> Result<Option<Profile>, ProfileLoadErr
     }
 }
 
+/// 按 profile id 取嵌入的 sprint skeleton JSON 原文; 没有 skeleton 文件的 profile
+/// 返回 `None`。Skeleton 文件与 profile 同目录 (`<profile>.sprint_skeleton.json`)。
+///
+/// 当前仅 `assessment` 带 skeleton; 其余 profile 暂无 (gate 退回基础结构校验)。
+pub fn sprint_skeleton_json(profile_id: &str) -> Option<&'static str> {
+    Some(match profile_id {
+        "assessment" => profile_json_raw!("assessment.sprint_skeleton.json"),
+        _ => return None,
+    })
+}
+
+/// 按 profile id 加载 + 解析 sprint skeleton; 无 skeleton 的 profile 返回 `Ok(None)`。
+pub fn load_embedded_sprint_skeleton(
+    profile_id: &str,
+) -> Result<Option<SprintSkeleton>, serde_json::Error> {
+    match sprint_skeleton_json(profile_id) {
+        Some(raw) => Ok(Some(SprintSkeleton::from_json(raw)?)),
+        None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +151,22 @@ mod tests {
     #[test]
     fn unknown_profile_id_returns_none() {
         assert!(load_embedded_profile("does_not_exist").unwrap().is_none());
+    }
+
+    #[test]
+    fn assessment_sprint_skeleton_loads_with_external_attack_surface() {
+        let s = load_embedded_sprint_skeleton("assessment")
+            .expect("parse ok")
+            .expect("assessment has a skeleton");
+        assert!(s.for_stage(StageKind::ExternalAttackSurface).is_some());
+    }
+
+    #[test]
+    fn profile_without_skeleton_returns_none() {
+        // Real profile with no skeleton file + an unknown id both yield None.
+        assert!(load_embedded_sprint_skeleton("red_team").unwrap().is_none());
+        assert!(load_embedded_sprint_skeleton("does_not_exist")
+            .unwrap()
+            .is_none());
     }
 }

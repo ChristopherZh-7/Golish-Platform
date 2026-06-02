@@ -5,19 +5,23 @@
 
 use anyhow::{anyhow, Result};
 
-use super::gate::{validate_stage_gate, GateResult};
+use super::gate::{validate_stage_gate_with_skeleton, GateResult};
 use super::profile::Profile;
-use super::sprint_contract::SprintContract;
+use super::sprint_contract::{SprintContract, StageSkeleton};
 use super::stage_spec::StageSpec;
 use super::types::{StageDeliverable, StageKind};
 
 /// Doc 3 §5 stage harness 顶层.
 ///
-/// 持有 profile + stage_spec + 当前 sprint_contract, 暴露 validate_gate 给
-/// task_orchestrator 末端 hook 使用.
+/// 持有 profile + stage_spec (+ 可选 per-stage sprint skeleton), 暴露 validate_gate
+/// 给 task_orchestrator 末端 hook 使用.
 pub struct StageHarness {
     pub profile: Profile,
     pub stage_spec: StageSpec,
+    /// Optional per-stage sprint skeleton. When `Some`, [`Self::validate_gate`]
+    /// enforces its `expected_count_range` / `min_tool_invocations` (per-target
+    /// gate). `None` = baseline structural gate only (backward compatible).
+    pub skeleton: Option<StageSkeleton>,
 }
 
 impl StageHarness {
@@ -25,7 +29,15 @@ impl StageHarness {
         Self {
             profile,
             stage_spec,
+            skeleton: None,
         }
+    }
+
+    /// Builder · attach a per-stage sprint skeleton to enable per-target gate
+    /// enforcement. Returns `self` for chaining after `for_stage_embedded`.
+    pub fn with_skeleton(mut self, skeleton: Option<StageSkeleton>) -> Self {
+        self.skeleton = skeleton;
+        self
     }
 
     /// 按 StageKind 构造 (Phase B: 解锁单 stage 硬锁, 支持全 12 stage).
@@ -73,9 +85,15 @@ impl StageHarness {
             stage_id = %deliverable.stage_id,
             stage_run_id = %deliverable.stage_run_id,
             has_contract = sprint_contract.is_some(),
+            has_skeleton = self.skeleton.is_some(),
             "validate_gate entered (generic stage gate)"
         );
-        let result = validate_stage_gate(deliverable, &self.stage_spec, sprint_contract);
+        let result = validate_stage_gate_with_skeleton(
+            deliverable,
+            &self.stage_spec,
+            sprint_contract,
+            self.skeleton.as_ref(),
+        );
         tracing::info!(
             target: "harness::stage_harness",
             stage_id = %deliverable.stage_id,
