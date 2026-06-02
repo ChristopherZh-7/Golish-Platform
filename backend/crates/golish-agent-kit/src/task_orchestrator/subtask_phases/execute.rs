@@ -91,6 +91,18 @@ impl TaskOrchestrator {
                             &spec,
                             &self.harness_evidence,
                         ));
+                        // P3 · RAG prior: retrieve relevant prior writeups/PoCs
+                        // from the wiki KB and inject them so the agent consults
+                        // known exploits/findings before testing. (Graph prior
+                        // needs a graph handle the orchestrator doesn't hold yet
+                        // → wiki-only here; graph wiring is a follow-up.)
+                        let pk = crate::harness::rag_prior::retrieve_wiki_prior(
+                            &*self.repo,
+                            &planned.title,
+                            5,
+                        )
+                        .await;
+                        desc.push_str(&crate::harness::rag_prior::render_prior_knowledge(&pk));
                     }
                 }
             }
@@ -738,6 +750,20 @@ fn apply_harness_gate_hook(
     );
 
     let decision = harness.validate_gate(&deliverable, None);
+
+    // P2-c · doer eval: score this deliverable's quality (gate outcome +
+    // evidence backing + finding verification) and log it for ranking doer runs.
+    let scorecard = crate::harness::eval::score_deliverable(
+        &deliverable,
+        &decision,
+        &crate::harness::eval::default_scorers(),
+    );
+    tracing::info!(
+        target: "harness::eval",
+        stage_id = %deliverable.stage_id,
+        doer_score = scorecard.overall,
+        "doer quality scorecard computed"
+    );
 
     if decision.allowed {
         tracing::info!(

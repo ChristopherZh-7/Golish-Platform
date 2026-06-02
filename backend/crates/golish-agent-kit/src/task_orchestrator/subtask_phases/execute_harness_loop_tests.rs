@@ -32,6 +32,9 @@ use super::HarnessGateOutcome;
 /// transition driver touches nothing else, so every other method is a stub.
 struct MemRepo {
     op_state: Mutex<HashMap<Uuid, OperationStateView>>,
+    /// Canned `wiki_search_fts` result for the P3 RAG-prior wiring tests.
+    /// Defaults to `Null` (no hits); the transition-driver tests never read it.
+    wiki_result: Mutex<serde_json::Value>,
 }
 
 impl MemRepo {
@@ -48,6 +51,7 @@ impl MemRepo {
         );
         Arc::new(Self {
             op_state: Mutex::new(m),
+            wiki_result: Mutex::new(serde_json::Value::Null),
         })
     }
 
@@ -57,6 +61,11 @@ impl MemRepo {
             .unwrap()
             .get(&operation_id)
             .map(|s| s.current_stage.clone())
+    }
+
+    /// Seed the canned wiki search result returned by `wiki_search_fts`.
+    fn set_wiki(&self, value: serde_json::Value) {
+        *self.wiki_result.lock().unwrap() = value;
     }
 }
 
@@ -123,7 +132,8 @@ impl DbRepoProvider for MemRepo {
         _query: &str,
         _limit: i64,
     ) -> anyhow::Result<serde_json::Value> {
-        unimplemented!()
+        // P3 RAG-prior wiring tests read this; transition-driver tests never do.
+        Ok(self.wiki_result.lock().unwrap().clone())
     }
     async fn wiki_search_by_category(
         &self,
@@ -501,4 +511,46 @@ async fn approval_gate_resumes_on_affirmative_reply() {
         "affirmative reply must resume + advance the cursor"
     );
     assert!(saw_waiting_approval(&drain(&mut rx)));
+}
+
+/// P3 RAG-prior wiring: inside a harness stage, `execute_single_subtask` pulls
+/// prior writeups from the wiki KB via `retrieve_wiki_prior` and renders them as
+/// the PRIOR KNOWLEDGE block prepended to the stage charter. This exercises the
+/// exact wired composition (real `DbRepoProvider` trait object → parse → render)
+/// end-to-end, which the rag_prior module's own tests do not cover for the
+/// `retrieve_wiki_prior` entry point.
+#[tokio::test]
+async fn rag_prior_renders_wiki_writeups_for_stage_prompt() {
+    use crate::harness::rag_prior::{render_prior_knowledge, retrieve_wiki_prior};
+
+    let op = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "assessment", "external_attack_surface");
+    repo.set_wiki(serde_json::json!([
+        {"title": "CVE-2021-44228 Log4Shell", "snippet": "JNDI lookup RCE in log4j"}
+    ]));
+
+    let pk = retrieve_wiki_prior(&*repo, "log4j rce", 5).await;
+    let rendered = render_prior_knowledge(&pk);
+
+    assert!(rendered.contains("PRIOR KNOWLEDGE"), "rendered={rendered}");
+    assert!(rendered.contains("[wiki]"), "rendered={rendered}");
+    assert!(rendered.contains("Log4Shell"), "rendered={rendered}");
+}
+
+/// RAG-prior degrades to an empty block when the wiki KB has no hits, so the
+/// stage charter never gets a noisy/empty PRIOR KNOWLEDGE section (best-effort
+/// priming must never inject empty scaffolding).
+#[tokio::test]
+async fn rag_prior_empty_block_when_no_wiki_hits() {
+    use crate::harness::rag_prior::{render_prior_knowledge, retrieve_wiki_prior};
+
+    let op = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "assessment", "external_attack_surface");
+    // Default canned wiki result is `Null` → parse yields zero writeups.
+
+    let pk = retrieve_wiki_prior(&*repo, "nothing-matches", 5).await;
+    assert!(
+        render_prior_knowledge(&pk).is_empty(),
+        "no wiki hits must render an empty prior-knowledge block"
+    );
 }

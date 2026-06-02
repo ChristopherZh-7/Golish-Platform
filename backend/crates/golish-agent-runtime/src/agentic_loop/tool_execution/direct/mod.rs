@@ -182,6 +182,27 @@ where
         tool_name
     };
 
+    // P2-d · guardrail: inside a harness stage, block dangerous tool calls
+    // (SSRF / destructive shell) BEFORE they execute. This is the execution
+    // chokepoint (catches even calls that bypass the dispatch-phase gate); a
+    // Block returns a synthetic error result instead of running the tool.
+    if let Some(reason) = guardrail_block_reason(ctx.harness_stage, effective_tool_name, tool_args)
+    {
+        tracing::warn!(
+            target: "harness::guardrail",
+            tool = %effective_tool_name,
+            reason = %reason,
+            "tool call BLOCKED by guardrail"
+        );
+        return Ok(ToolExecutionResult {
+            value: json!({
+                "error": format!("blocked by guardrail: {reason}"),
+                "blocked_by_guardrail": true,
+            }),
+            success: false,
+        });
+    }
+
     let registry = ctx.tool_registry.read().await;
     let result = registry
         .execute_tool(effective_tool_name, tool_args.clone())
@@ -305,5 +326,65 @@ where
             value: json!({"error": e.to_string()}),
             success: false,
         }),
+    }
+}
+
+/// P2-d guardrail decision for the execution chokepoint.
+///
+/// Returns `Some(reason)` when a tool call must be blocked, else `None`.
+/// Guardrails are scoped to harness stages (like the P0 evidence append): when
+/// no stage is active (`harness_stage == None`) nothing is blocked, preserving
+/// legacy non-harness behaviour. Inside a stage the most-restrictive guardrail
+/// action wins and only a `Block` stops execution — `Audit` / `Sanitize` are
+/// advisory and do not halt the call here.
+fn guardrail_block_reason(
+    harness_stage: Option<golish_agent_kit::harness::StageKind>,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Option<String> {
+    harness_stage?;
+    use golish_agent_kit::harness::guardrail::{
+        default_guardrails, evaluate_guardrails, GuardrailAction,
+    };
+    match evaluate_guardrails(tool_name, args, &default_guardrails()) {
+        GuardrailAction::Block(reason) => Some(reason),
+        GuardrailAction::Allow | GuardrailAction::Audit(_) | GuardrailAction::Sanitize(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guardrail_block_reason;
+    use golish_agent_kit::harness::StageKind;
+    use serde_json::json;
+
+    fn in_stage() -> Option<StageKind> {
+        Some(StageKind::ExternalAttackSurface)
+    }
+
+    #[test]
+    fn ssrf_target_blocked_inside_stage() {
+        let args = json!({ "url": "http://169.254.169.254/latest/meta-data/" });
+        assert!(guardrail_block_reason(in_stage(), "http_probe", &args).is_some());
+    }
+
+    #[test]
+    fn destructive_shell_blocked_inside_stage() {
+        let args = json!({ "command": "rm -rf / --no-preserve-root" });
+        assert!(guardrail_block_reason(in_stage(), "run_pty_cmd", &args).is_some());
+    }
+
+    #[test]
+    fn benign_call_allowed_inside_stage() {
+        let args = json!({ "command": "subfinder -d example.com -silent" });
+        assert!(guardrail_block_reason(in_stage(), "run_pty_cmd", &args).is_none());
+    }
+
+    #[test]
+    fn no_stage_means_no_guardrail() {
+        // Outside a harness stage the guardrail is inert even for dangerous args,
+        // preserving legacy non-harness tool dispatch.
+        let args = json!({ "url": "http://169.254.169.254/" });
+        assert!(guardrail_block_reason(None, "http_probe", &args).is_none());
     }
 }
