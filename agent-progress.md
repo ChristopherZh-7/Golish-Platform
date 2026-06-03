@@ -29,6 +29,45 @@
 
 ---
 
+### 2026-06-03 · 两级阶段模型（Phase×Stage）设计+计划+实现 A/B/C（MCP-agent-2 · DISPATCH off · 用户经 brainstorming 逐条拍板 →「开始执行A/B/C」）
+
+- **本轮目标**：把扁平 12 stage 重构成「大阶段(phase)×小阶段(stage)」两级；先 brainstorming 定决策→写设计→写计划→登记 feature_list→执行计划 Phase A/B/C。
+- **决策（用户逐条拍板）**：D1 两级模型锚定授权阶梯 L0–L5；D2/分组**乙**（5 大阶段：prep[scoping,target_intel] / active_recon[eas,enumeration] / vuln[vuln_triage,verification] / post_exploit[红队4] / closeout[reporting,cleanup]）；D3 完整判定**丙**=复用现有 gate（required_checks+min_invocations+vacuous）；D4 三审批对齐授权跃迁（active_scan=①→②、exploit_validation=②→③、scope_expansion=①段内事件）；D5 放行**甲**=per-stage gate 保留、大阶段出口=成员全PASS+审批；D6 并行先做「去人为顺序」。
+- **设计/计划**：`docs/design/2026-06-03-two-level-phase-stage-model.md`（Approved）+ `docs/superpowers/plans/2026-06-03-two-level-phase-stage-model.md`（writing-plans，Phase A-G）+ feature_list 新条目 `harness-two-level-phase-model-2026-06-03`（in_progress）。
+- **改动点（Phase A/B/C，均 golish-agent-kit + resources，flag 后默认 OFF 设计、flag fn 在 Phase G）**：
+  - 新建 `resources/harness/graph/phases.json`（5 大阶段乙分组）
+  - 新建 `harness/phase.rs`（`Phase`/`PhaseMap` DTO + `load_phase_map_from_json` + `validate`「每 stage 恰好属一 phase」+ `project` 按 profile 投影）
+  - 新建 `harness/phase_flow.rs`（`phase_is_complete` + `next_phase` + `decide_phase_step`→StayInPhase/EnterPhase{approval}/Complete + `pending_phase_approval`）
+  - `harness/resources.rs::load_embedded_phase_map` + `harness/mod.rs`（`pub mod phase/phase_flow` + re-export）
+  - C 重审：已读全部相关 stage JSON，结论=唯一 intra-phase 并行候选 `eas∥enumeration` 涉安全语义、**不静默改**，本批 operation_graph.json **不删边**，待用户复审（design §8『C 重审结论』）。
+- **验证（已记录证据）**：`python3 -m json.tool phases.json` → exit 0；`cargo nextest -p golish-agent-kit -E 'test(harness::phase)'` → **11/11**（6 phase + 5 phase_flow）；全 harness 回归 → **203/203**；`cargo clippy -p golish-agent-kit -- -D warnings`（与 just lint-rust 同 scope，无 --all-targets）→ exit 0（修了我引入的 `next_phase` needless_lifetimes）；`rustfmt --check` 我的 4 文件 → clean。
+- **范围/诚实**：① **零 commit**（§2.7 等用户授权）；② D/E/F/G（运行时游标 + 审批接线 + 前端 + flag + precommit + 活体 E2E）**未做**；③ 未跑全量 `just precommit`（A/B/C 为 kit 纯新增 + 单测，下游无消费方，flag fn 尚未加）；④ `planner/tests/manager_tests.rs:365` 的 type_complexity 是 **pre-existing**（仅 `--all-targets` 才现、非本任务 scope、不在 gate scope 内），未动；⑤ feature_list 现有 4 个 in_progress 超 §2.1 上限（既有多 agent 遗留 + 本次用户显式指令），待用户统一 reconcile。
+- **续 · D/E/G 完成 + F 暂缓（同会话，用户「继续D/E/F/G」）**：
+  - **关键发现**：运行时有**两条路径**——legacy `drive_stage_transition`（有审批 hold）与 graph-flow `run_executor_driven`（默认 active，经 `GOLISH_HARNESS_GRAPH_FLOW` 默认 ON；原本无审批 hold，gate-block 才 Interrupt）。两路径都要接 phase 审批。
+  - **G1**：`harness/mod.rs` 加 `two_level_enabled()`（`GOLISH_HARNESS_TWO_LEVEL`，默认 OFF，`parse_truthy_flag`）。
+  - **phase_flow.rs**：加 `crossing_phase_approval`（跨大阶段才返回目标 phase 的 entry_approval）+ `phase_crossing_requires_approval`（+ profile policy 闸，镜像 `stage_entry_requires_approval`）+ 2 单测。
+  - **E2/D2（legacy）**：`drive_stage_transition` 审批条件 flag 切换（two_level on→phase 跨界审批 de-dup；off→原 per-stage）。用 bare-block 保 brace 平衡，零结构改动风险。
+  - **E3（graph-flow，默认路径）**：新增 `two_level_phase_gate(&mut self)`，在 servicer loop 回引擎前调用——跨大阶段且需审批则 emit `waiting_approval` + 阻塞等 `user_input_rx`；未获批→outcome 降级 `blocked` 使引擎在本 stage Interrupt（不跨界）。
+  - **E1 简化**：线性 DAG 下「大阶段是否跑完」隐式于线性遍历，用 `phase_of(current)≠phase_of(next)` 检测跨界即可，**无需** gate_passed 集合（`decide_phase_step`/`pending_phase_approval` 仍在，留未来并行用）。
+  - **验证（已记录证据）**：`cargo nextest -p golish-agent-kit` → **441/441**（flag off 全量无回归）；`GOLISH_HARNESS_TWO_LEVEL=1` harness 子集 → **205/205**；`clippy -p golish-agent-kit -- -D warnings` → exit 0；rustfmt 改动文件 clean；`cargo check -p golish-agent-app/-runtime/-bridge` → 下游 exit 0。
+  - **F（前端分组）暂缓 + 理由**：`subtask_completed`/`task_progress` 事件只带自由文本 `title`、无 `StageKind` → 视觉分组 headers 需后端事件加 `stage_kind`（IPC/ts-rs 变更，非 frontend-only，应独立任务）；且 `useAiChatEvents.ts` 有其它 agent 未提交改动（git 隔离风险，不动）。phase **边界已可见**：`two_level_phase_gate` emit 的「Phase boundary X → Y…」经现有 StageMarker `waiting_approval` detail 显示。
+- **commit（用户「commit本批改动」授权）**：A/B/C + D/E/G 全部 9 文件已 commit **`1fc9bd4`**（feat/harness-2026-06-01，未 push，+1522/-5）：phases.json / phase.rs / phase_flow.rs / mod.rs / resources.rs / execute.rs / 2 docs / feature_list。**多 agent 隔离**：`harness/mod.rs` 当时混着别的 agent 未提交的 `tool_whitelist_enabled` 删除——我用「暂存 additive 版（HEAD+我的新增，保留 tool_whitelist_enabled）→ 工作树还原其删除」技术，只 commit 我的新增，他们的删除原样留为未暂存（mod.rs 现仍 M=他们那 23 行删除）。`agent-progress.md` 因混着他人笔记**未 commit**（我的本记录留工作树）。
+- **诚实边界（续）**：**G2 全量 `just precommit` 未跑**（改动限 golish-agent-kit，已 441/441+clippy+下游 check 绿；全量含前端无关 WIP + 已知 pre-existing fmt）；**G3 活体 E2E 未做**（需 user runtime：`GOLISH_HARNESS_TWO_LEVEL=1 just dev` 跑 recon 看跨②/③弹审批各一次、gate 仍逐 stage PASS）；**未 push**。
+- **下一步**：① F 需先做后端事件 stage_kind 加丰富（独立任务）；② 活体 E2E；③ 可选：拍 `eas∥enumeration` 解除依赖以启用真 intra-phase 并行；④ 用户决定是否 push feat/harness-2026-06-01。
+
+---
+
+### 2026-06-03 · Task Generator 拒绝/非JSON 响应清晰化（方案A）（MCP-agent-3 · DISPATCH off · 用户截图报错排查）
+
+- **本轮目标**：用户在 Task 模式让规划器"调用白名单外工具(假设 scoping)"，前端报 `Generator failed: Failed to parse generator JSON ... expected value at line 1 column 1`。先诊断，再按用户选的**方案A（拒绝识别）**修复。
+- **根因（已读源码核对）**：Generator LLM **正确拒绝**（返回中文散文"我拒绝这个请求…"），但 `trait_impl.rs::generate_subtasks` 无条件 `serde_json::from_str::<GeneratorOutput>`，对散文首字符即失败 → serde `expected value at line 1 column 1`；`extract_json_from_response`(mod.rs:305) 对无围栏文本原样返回。那串诡异的 "3. **: expected value..." = `truncate_to_char_boundary(resp,500)` 截断点 + anyhow 把 serde 当 cause 拼接，**非模型输出**。
+- **改动点**：`golish-agent-bridge/src/bridge_executor/mod.rs` 新增 `looks_like_json_object`（trim 后首字 `{`/`[` 的语言无关启发式）+ `describe_plan_parse_failure`（散文/拒绝 → 干净 "The task planner declined…" 含原因、无 serde 噪音；真畸形 JSON → 保留 serde 诊断）；`trait_impl.rs` 的 `generate_subtasks` + `refine_plan` 两处 `.context(...)` 改走 `describe_plan_parse_failure`（label "task planner"/"plan refiner"），删未用的 `truncate_to_char_boundary` 导入。
+- **验证（已记录证据）**：TDD 红→绿。新增 4 测试 `bridge_executor::plan_parse_failure_tests`（json 启发式 / 中文拒绝得干净 declined 且不含 "expected value at line 1 column 1" / 畸形 JSON 保留 "Failed to parse"+"Raw response" / 长多字节拒绝不 panic）。`cargo nextest -p golish-agent-bridge` 先红（0/4 桩返回错值），实现后 **8 passed / 0 failed**（4 新 + 4 旧无回归）；`cargo clippy -p golish-agent-bridge --all-targets` exit 0 零告警（连带 kit/runtime check 通过）；ReadLints 无错。
+- **范围/诚实**：未跑全量 `just precommit`（仅改 1 crate 内部错误文案 + 新增 `pub(crate)` 函数，公开签名不变，下游编译不受影响）；**未 commit、未 push**（用户未要求）。
+- **下一步**：如需 → 跑全量 `just precommit` + commit + push；可选前端 `MessageBlock` 对 "declined" 文案做更友好渲染。
+
+---
+
 ### 2026-06-02 · P3-a/b/c 知识+持续（RAG 先验 + 知识图 + 回灌）（MCP-agent-2 · DISPATCH off · 用户「开P3」→「P3-a/b/c 一起」）
 
 - **本轮目标**：P3——测漏洞前自动检索 writeup（RAG 先验）+ 知识图 + 持续回灌。a/b/c 一起做。
