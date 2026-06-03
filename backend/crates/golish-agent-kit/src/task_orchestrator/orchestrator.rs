@@ -153,22 +153,62 @@ impl TaskOrchestrator {
             message: "Generating subtasks...".to_string(),
         });
 
-        let generator_output = match executor.generate_subtasks(task_input).await {
-            Ok(output) => output,
-            Err(e) => {
-                tasks::set_result(
-                    &*self.repo,
-                    task.id,
-                    &format!("Generator failed: {}", e),
-                    TaskStatus::Failed,
-                )
-                .await?;
-                return Err(e.context("Generator failed"));
+        // A1 · lazy per-stage planning: on the harness graph-flow path the executor
+        // plans each stage on entry (see run_stage_subtasks), so do NOT pre-generate
+        // a flat whole-run plan — start empty and let every projected stage plan
+        // itself. Other paths keep the upfront generator unchanged (legacy / rollback).
+        let lazy_per_stage = crate::harness::stage_mode_enabled()
+            && crate::harness::operation_flow::graph_flow_enabled();
+        let mut generated: Vec<PlannedSubtask> = if lazy_per_stage {
+            Vec::new()
+        } else {
+            match executor.generate_subtasks(task_input).await {
+                Ok(output) => output.subtasks,
+                Err(e) => {
+                    tasks::set_result(
+                        &*self.repo,
+                        task.id,
+                        &format!("Generator failed: {}", e),
+                        TaskStatus::Failed,
+                    )
+                    .await?;
+                    return Err(e.context("Generator failed"));
+                }
             }
         };
 
+        // S3 · the run() path never ran the deterministic stage-tag backfill (only
+        // resume() did), so tags depended entirely on the Generator LLM. Backfill
+        // here as a safety net, then drop any subtask tagged with a stage outside
+        // the active profile's allowed set (forbidden / unreachable) so it is never
+        // created-but-orphaned (e.g. a `vuln_triage` subtask under the assessment
+        // profile).
+        if crate::harness::stage_mode_enabled() {
+            crate::task_orchestrator::harness_backfill::backfill_harness_stage(&mut generated);
+            let profile_id: String = self
+                .profile_override
+                .clone()
+                .unwrap_or_else(|| crate::harness::active_profile_id().to_string());
+            if let Ok(Some(p)) = crate::harness::load_embedded_profile(&profile_id) {
+                let allowed = p.allowed_stage_set();
+                generated.retain(|s| match s.harness_stage.as_ref() {
+                    Some(h) if !allowed.contains(&h.stage_kind) => {
+                        tracing::warn!(
+                            target: "harness::hook",
+                            subtask_title = %s.title,
+                            stage = %h.stage_kind.as_str(),
+                            profile = %profile_id,
+                            "dag-strict: dropping planner subtask tagged with a stage outside the profile's allowed set"
+                        );
+                        false
+                    }
+                    _ => true,
+                });
+            }
+        }
+
         let mut queue: Vec<PlannedSubtask> = Vec::new();
-        for planned in &generator_output.subtasks {
+        for planned in &generated {
             let agent_type = parse_agent_type(&planned.agent);
             let subtask = match subtasks::create(
                 &*self.repo,
@@ -429,7 +469,10 @@ mod plan_version_tests {
         let v1 = next_plan_version();
         let v2 = next_plan_version();
         let v3 = next_plan_version();
-        assert!(v1 >= 1, "version must never be 0 (frontend treats 0 as 'no plan')");
+        assert!(
+            v1 >= 1,
+            "version must never be 0 (frontend treats 0 as 'no plan')"
+        );
         assert!(v2 > v1, "v2 ({v2}) must be strictly greater than v1 ({v1})");
         assert!(v3 > v2, "v3 ({v3}) must be strictly greater than v2 ({v2})");
     }

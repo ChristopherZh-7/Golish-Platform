@@ -22,6 +22,18 @@ describe("classifyErrorSeverity", () => {
     expect(classifyErrorSeverity("IT RETURNED A MESSAGE INSTEAD OF A PLAN")).toBe("warning");
   });
 
+  it("flags a JSON-wrapped planner clarification (missing `subtasks`) as a warning", () => {
+    expect(
+      classifyErrorSeverity(
+        'Generator failed: Failed to parse task planner JSON (missing field `subtasks` at line 3 column 1). Raw response: ```json { "message": "你好！请提供具体任务" }```'
+      )
+    ).toBe("warning");
+  });
+
+  it("treats a missing subtasks field as a soft warning even without the parse prefix", () => {
+    expect(classifyErrorSeverity("missing field `subtasks` at line 1")).toBe("warning");
+  });
+
   it("keeps real failures as hard errors", () => {
     expect(classifyErrorSeverity("Network error: connection refused")).toBe("error");
     expect(classifyErrorSeverity("Authentication failed (401)")).toBe("error");

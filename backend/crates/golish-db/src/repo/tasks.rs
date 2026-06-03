@@ -95,9 +95,15 @@ mod tests {
             sql.contains("status IN ('running', 'waiting')"),
             "must only reap non-terminal rows: {sql}"
         );
-        assert!(sql.contains("updated_at < $1"), "must be time-bounded: {sql}");
+        assert!(
+            sql.contains("updated_at < $1"),
+            "must be time-bounded: {sql}"
+        );
         // Preserve an existing result and never resurrect a terminal row.
         assert!(sql.contains("COALESCE(result"), "sql={sql}");
-        assert!(!sql.contains("'finished'"), "must not touch finished: {sql}");
+        assert!(
+            !sql.contains("'finished'"),
+            "must not touch finished: {sql}"
+        );
     }
 }

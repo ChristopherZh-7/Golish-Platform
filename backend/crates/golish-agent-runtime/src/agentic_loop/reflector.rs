@@ -162,6 +162,7 @@ pub(crate) async fn maybe_run_reflector(
             sub_agent_registry: Some(ctx.sub_agent_registry),
             post_shell_hook: None,
             stage_tool_guard: None,
+            hide_tool_in_stage: None,
         };
 
         match super::sub_agent_dispatch::execute_sub_agent_with_client(

@@ -100,7 +100,9 @@ pub use surface_mapping::{
     missing_required_categories, SurfaceCategory, SurfaceCoverage, D2_REQUIRED_CATEGORIES,
     D2_SOFT_CATEGORIES,
 };
-pub use tool_taxonomy::{is_scan_invocation, stage_allows, tool_category, underlying_tool_name};
+pub use tool_taxonomy::{
+    is_scan_invocation, is_scan_tool_name, stage_allows, tool_category, underlying_tool_name,
+};
 pub use types::{
     AgentContinuity, ExternalAttackSurfaceDeliverable, FindingSeverity, HarnessFinding,
     HarnessRecoveryActions, HarnessStageHint, IntentAxis, RiskLevel, SkippedCheckRecord,

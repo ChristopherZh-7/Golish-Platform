@@ -133,9 +133,9 @@ describe("buildMessageSegments", () => {
     expect(shape(buildMessageSegments(message))).toEqual(["text:restored answer"]);
   });
 
-  it("shows a streaming placeholder when nothing has arrived yet", () => {
+  it("emits no placeholder before the first chunk (status indicator covers it)", () => {
     const message = msg({ content: "", isStreaming: true });
-    expect(shape(buildMessageSegments(message))).toEqual(["text:..."]);
+    expect(shape(buildMessageSegments(message))).toEqual([]);
   });
 
   it("treats a user message as plain text", () => {

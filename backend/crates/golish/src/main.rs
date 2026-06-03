@@ -32,6 +32,17 @@ use clap::Parser;
 use golish_lib::cli::Args;
 
 fn main() {
+    // The agent runs a deep, non-recursive async future tree (orchestrator →
+    // subtask → agentic loop → memory gatekeeper → LLM provider). In debug builds
+    // those frames overflow tokio's default 2 MiB worker stack — confirmed via
+    // lldb: EXC_BAD_ACCESS on a `tokio-rt-worker` at `one_shot_completion`'s
+    // prologue. tokio worker/blocking threads inherit std's default stack size,
+    // which honors `RUST_MIN_STACK`, and nothing here sets `thread_stack_size`, so
+    // raising this floor before any runtime/thread starts fixes both GUI and CLI.
+    if std::env::var_os("RUST_MIN_STACK").is_none() {
+        std::env::set_var("RUST_MIN_STACK", "33554432"); // 32 MiB
+    }
+
     // Install the default rustls CryptoProvider before any TLS usage.
     // Required since rustls 0.23 no longer auto-selects a backend.
     rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider())

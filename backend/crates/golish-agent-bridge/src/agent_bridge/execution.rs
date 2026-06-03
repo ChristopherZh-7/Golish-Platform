@@ -25,6 +25,7 @@ use golish_sub_agents::{SubAgentContext, MAX_AGENT_DEPTH};
 
 use crate::agentic_loop::{run_agentic_loop, run_agentic_loop_generic};
 
+use super::failover::{failover_decision, fallback_model};
 use super::terminal_error::{extract_terminal_error_state, should_emit_execution_error_event};
 use super::AgentBridge;
 
@@ -239,6 +240,9 @@ impl AgentBridge {
         });
 
         let start_time = std::time::Instant::now();
+        // E3 · keep a copy of the context for a possible fallback-model retry
+        // (the primary dispatch moves `context` into the chosen variant arm).
+        let failover_context = context.clone();
         let client = self.llm.client.read().await;
 
         let result = golish_llm_providers::dispatch_llm_client_split!(&*client,
@@ -259,6 +263,15 @@ impl AgentBridge {
                 ))
             },
         );
+
+        // E3 · provider failover: if the primary model run failed with a
+        // recoverable error and a distinct fallback model is configured, rebuild
+        // a client for the fallback model and retry the turn once. Default OFF
+        // (GOLISH_LLM_FALLBACK_MODEL unset → this is a no-op, primary `result`
+        // passes through unchanged).
+        let result = self
+            .maybe_failover_to_fallback_model(result, prompt, start_time, failover_context)
+            .await;
 
         // Emit error event on failure so every Started has a matching terminal
         // event (Completed or Error), unless the loop already emitted a
@@ -331,6 +344,85 @@ impl AgentBridge {
                 start_time,
             )
             .await)
+    }
+
+    /// E3 · provider failover.
+    ///
+    /// If `result` is a recoverable failure and a distinct fallback model is
+    /// configured (`GOLISH_LLM_FALLBACK_MODEL`) with a client factory available,
+    /// rebuild a client for the fallback model and run the turn once more.
+    /// Otherwise the input `result` passes through untouched (default OFF).
+    ///
+    /// The primary failure did NOT finalize the conversation history (the loop
+    /// returns before `finalize_execution`), so the retry starts from the same
+    /// state. `Started` / `UserMessage` events were already emitted by the
+    /// caller and are not re-emitted here.
+    async fn maybe_failover_to_fallback_model(
+        &self,
+        result: Result<String>,
+        prompt: &str,
+        start_time: std::time::Instant,
+        context: SubAgentContext,
+    ) -> Result<String> {
+        let e = match result {
+            Ok(v) => return Ok(v),
+            Err(e) => e,
+        };
+
+        let Some(fallback) = failover_decision(
+            &e.to_string(),
+            fallback_model().as_deref(),
+            &self.llm.model_name,
+            self.llm.model_factory.is_some(),
+        ) else {
+            return Err(e);
+        };
+
+        let Some(factory) = self.llm.model_factory.as_ref() else {
+            return Err(e);
+        };
+
+        let fallback_client = match factory
+            .get_or_create(&self.llm.provider_name, &fallback)
+            .await
+        {
+            Ok(client) => client,
+            Err(build_err) => {
+                tracing::warn!(
+                    error = %build_err,
+                    fallback = %fallback,
+                    "[resilience] failed to build fallback client; surfacing primary error"
+                );
+                return Err(e);
+            }
+        };
+
+        tracing::warn!(
+            primary = %self.llm.model_name,
+            fallback = %fallback,
+            error = %e,
+            "[resilience] primary model failed with a recoverable error; failing over to fallback model"
+        );
+        self.emit_event(AiEvent::Warning {
+            message: format!(
+                "Primary model '{}' failed; retrying with fallback model '{}'.",
+                self.llm.model_name, fallback
+            ),
+        });
+
+        golish_llm_providers::dispatch_llm_client_split!(&*fallback_client,
+            vertex_anthropic(va) => {
+                let va = va.clone();
+                self.run_anthropic_thinking_turn(&va, prompt, start_time, context).await
+            },
+            generic(m) => {
+                let m = m.clone();
+                self.run_generic_turn(&m, prompt, start_time, context).await
+            },
+            mock => Err(anyhow::anyhow!(
+                "Fallback model resolved to a mock client - check GOLISH_LLM_FALLBACK_MODEL"
+            )),
+        )
     }
 
     /// Run one agentic turn against the Anthropic-specific path that supports

@@ -22,6 +22,8 @@
 
 use anyhow::Result;
 use rig::completion::Message;
+use rig::message::{Text, UserContent};
+use rig::one_or_many::OneOrMany;
 use tracing::Instrument;
 
 use golish_agent_kit::system_hooks::HookRegistry;
@@ -42,6 +44,39 @@ use super::{
     first_iter_hooks_phase, pre_flight, reflector_or_break_phase, token_estimate_phase,
     tool_dispatch_phase, PhaseOutcome, ReflectorPhaseOutcome, TurnState,
 };
+
+/// E1 · max "stop repeating" recovery re-prompts per run before we give up and
+/// accept the partial output (avoids an unbounded retry loop on a model that
+/// keeps degenerating).
+const MAX_REPETITION_RECOVERIES: u32 = 2;
+
+/// E2 · max retries per run after a retriable mid-stream error truncated the
+/// output.
+const MAX_MID_STREAM_RETRIES: u32 = 2;
+
+/// E1 · corrective prompt injected when the model degenerated into repetition.
+fn repetition_recovery_message() -> Message {
+    Message::User {
+        content: OneOrMany::one(UserContent::Text(Text {
+            text: "[System: Your previous response was repeating itself and was cut off. \
+                   Stop repeating. Do not restate earlier text. Give your conclusion or the \
+                   next concrete action directly and concisely — if a tool is needed, call it.]"
+                .to_string(),
+        })),
+    }
+}
+
+/// E2 · corrective prompt injected when a transient error truncated the stream.
+fn mid_stream_recovery_message() -> Message {
+    Message::User {
+        content: OneOrMany::one(UserContent::Text(Text {
+            text: "[System: Your previous response was cut off by a transient connection error. \
+                   Continue from where you left off and finish the step — do not repeat what you \
+                   already wrote; if a tool is needed, call it.]"
+                .to_string(),
+        })),
+    }
+}
 
 /// Drive one full agentic run end-to-end: build observability spans,
 /// initialise per-loop state, schedule the 8 turn phases, then record
@@ -222,6 +257,8 @@ where
                 thinking_content,
                 thinking_signature,
                 thinking_id,
+                repetition_detected,
+                mid_stream_error,
             } = outcome;
 
             // Phase 6: AssistantPush — append assistant content to history.
@@ -236,6 +273,48 @@ where
                 supports_thinking,
                 ctx,
             );
+
+            // E1/E2 · provider-resilience recovery (between AssistantPush and
+            // Reflector). The partial assistant turn is already in history; we
+            // append a corrective user turn and re-run a fresh iteration, each
+            // bounded by its own budget so a persistently-failing model can't
+            // spin forever. Only fires on text-only turns — if the model still
+            // managed a tool call, let ToolDispatch proceed normally.
+            if !has_tool_calls && repetition_detected {
+                if turn_state.repetition_recoveries < MAX_REPETITION_RECOVERIES {
+                    turn_state.repetition_recoveries += 1;
+                    tracing::warn!(
+                        recovery = turn_state.repetition_recoveries,
+                        max = MAX_REPETITION_RECOVERIES,
+                        "[resilience] repetitive output detected; injecting recovery re-prompt and retrying"
+                    );
+                    chat_history.push(repetition_recovery_message());
+                    continue;
+                }
+                tracing::warn!(
+                    "[resilience] repetitive output persisted after {} recoveries; accepting partial output",
+                    MAX_REPETITION_RECOVERIES
+                );
+            } else if !has_tool_calls {
+                if let Some(err) = mid_stream_error.as_deref() {
+                    if turn_state.mid_stream_retries < MAX_MID_STREAM_RETRIES {
+                        turn_state.mid_stream_retries += 1;
+                        tracing::warn!(
+                            retry = turn_state.mid_stream_retries,
+                            max = MAX_MID_STREAM_RETRIES,
+                            error = %err,
+                            "[resilience] transient mid-stream error truncated output; injecting continuation re-prompt and retrying"
+                        );
+                        chat_history.push(mid_stream_recovery_message());
+                        continue;
+                    }
+                    tracing::warn!(
+                        error = %err,
+                        "[resilience] mid-stream error persisted after {} retries; accepting partial output",
+                        MAX_MID_STREAM_RETRIES
+                    );
+                }
+            }
 
             // Phase 7: ReflectorOrBreak — no-tool-call branch:
             // optionally inject a corrective prompt and repeat, or break.

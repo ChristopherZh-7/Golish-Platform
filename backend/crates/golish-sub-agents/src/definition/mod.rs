@@ -107,8 +107,9 @@ pub struct SubAgentDefinition {
     /// None = inherit the main agent's model.
     pub model_override: Option<(String, String)>,
 
-    /// Overall timeout for the entire sub-agent execution in seconds.
-    /// None = no timeout. Default: 600 (10 minutes).
+    /// Overall (wall-clock) timeout for the entire sub-agent execution in
+    /// seconds. `None` = no overall timeout: the agent runs to completion,
+    /// bounded only by `idle_timeout_secs` and `max_iterations`. Default: `None`.
     pub timeout_secs: Option<u64>,
 
     /// Idle timeout - max seconds without any progress (LLM chunk, tool result).
@@ -173,7 +174,7 @@ impl SubAgentDefinition {
             allowed_tools: Vec::new(),
             max_iterations: 50,
             model_override: None,
-            timeout_secs: Some(600),
+            timeout_secs: None,
             idle_timeout_secs: Some(180),
             prompt_template: None,
             temperature: None,
@@ -325,5 +326,13 @@ impl SubAgentRegistry {
     }
 }
 
-/// Maximum recursion depth to prevent infinite sub-agent loops
-pub const MAX_AGENT_DEPTH: usize = 5;
+/// Maximum sub-agent recursion depth.
+///
+/// `2` caps nesting at a single level: the primary agent (depth 0) may dispatch
+/// sub-agents (depth 1), but sub-agents may NOT spawn further sub-agents
+/// (depth ≥ 1 gets no dispatch / delegation tools, and the bridge hard-errors at
+/// depth ≥ 2 as a backstop). This kills the wasteful same-type recursion observed
+/// in practice (pentester → pentester → pentester). NOTE: it also disables
+/// hierarchical delegation (e.g. pentester → coder/searcher); raise to `3` to
+/// allow exactly one delegation level if that is wanted.
+pub const MAX_AGENT_DEPTH: usize = 2;

@@ -208,12 +208,32 @@ describe("Conversation Slice — stage markers", () => {
   it("keeps distinct consecutive markers", () => {
     useStore.getState().addConversationStageMarker(CONV, {
       kind: "subtask_completed",
-      label: "Stage complete: Scoping",
+      label: "Step complete: Scoping",
     });
     useStore.getState().addConversationStageMarker(CONV, {
       kind: "subtask_completed",
-      label: "Stage complete: Reconnaissance",
+      label: "Step complete: Reconnaissance",
     });
     expect(messages()).toHaveLength(2);
+  });
+
+  it("carries a stage_completed milestone distinct from per-step markers", () => {
+    useStore.getState().addConversationStageMarker(CONV, {
+      kind: "subtask_completed",
+      label: "Step complete: DNS recon",
+    });
+    useStore.getState().addConversationStageMarker(CONV, {
+      kind: "stage_completed",
+      label: "Stage complete: Scoping",
+      status: "finished",
+    });
+
+    const msgs = messages();
+    expect(msgs).toHaveLength(2);
+    // The per-step marker and the whole-stage milestone are kept separate so the
+    // UI can render them with different prominence.
+    expect(msgs[0].stageEvent?.kind).toBe("subtask_completed");
+    expect(msgs[1].stageEvent?.kind).toBe("stage_completed");
+    expect(msgs[1].content).toBe("Stage complete: Scoping");
   });
 });

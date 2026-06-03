@@ -81,14 +81,42 @@ where
                     if golish_agent_kit::harness::is_scan_invocation(tn, args)
                         && !golish_agent_kit::harness::stage_allows(tn, args, &allowed)
                     {
+                        // D2 · precise, self-correcting feedback: name the resolved
+                        // inner tool, list what IS allowed in this stage, and tell
+                        // the model not to retry the same tool — so it corrects
+                        // instead of hammering a denied tool (the 26x-retry case).
+                        let inner = golish_agent_kit::harness::underlying_tool_name(tn, args);
+                        let allowed_list = if allowed.is_empty() {
+                            "(none — this stage runs no scan tools)".to_string()
+                        } else {
+                            allowed.join(", ")
+                        };
                         return Err(format!(
-                            "tool '{tn}' is not in the allowed tool types for the '{stage_id}' stage \
-                             — it belongs to a different stage; do not run it here"
+                            "Tool '{inner}' is not permitted in the '{stage_id}' stage. \
+                             Allowed tool types here: {allowed_list}. Use one of those, or if this \
+                             stage's work is complete, submit your StageDeliverable to advance — \
+                             do not retry '{inner}'."
                         ));
                     }
                     Ok(())
                 });
             guard
+        });
+
+    // D1 · also hide scan tools from the delegated sub-agent's *tool list* when
+    // the active stage permits none (e.g. scoping) — so the model never even sees
+    // `pentest_run` and can't spin retrying it (the 26x-retry case in scoping).
+    // Mirrors the main agent's `hide_scans_for_zero_scan_stage`; the call-time
+    // `stage_tool_guard` above stays as the backstop.
+    let hide_tool_in_stage: Option<golish_sub_agents::StageToolHider> = ctx
+        .harness_stage
+        .and_then(|kind| golish_agent_kit::harness::load_embedded_stage_spec(kind).ok())
+        .filter(|spec| spec.allowed_tool_types.is_empty())
+        .map(|_| {
+            let hider: golish_sub_agents::StageToolHider = std::sync::Arc::new(|name: &str| {
+                golish_agent_kit::harness::is_scan_tool_name(name)
+            });
+            hider
         });
 
     // P0-4: persist dispatch lifecycle so the next session can list
@@ -175,6 +203,7 @@ where
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: ctx.post_shell_hook.clone(),
                 stage_tool_guard: stage_tool_guard.clone(),
+                hide_tool_in_stage: hide_tool_in_stage.clone(),
             };
             execute_sub_agent_with_client(
                 &agent_def,
@@ -210,6 +239,7 @@ where
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: ctx.post_shell_hook.clone(),
                 stage_tool_guard: stage_tool_guard.clone(),
+                hide_tool_in_stage: hide_tool_in_stage.clone(),
             };
             execute_sub_agent(
                 &agent_def,
@@ -246,6 +276,7 @@ where
             sub_agent_registry: Some(ctx.sub_agent_registry),
             post_shell_hook: ctx.post_shell_hook.clone(),
             stage_tool_guard: stage_tool_guard.clone(),
+            hide_tool_in_stage: hide_tool_in_stage.clone(),
         };
         execute_sub_agent(
             &agent_def,

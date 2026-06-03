@@ -44,13 +44,94 @@ pub(crate) async fn build_tool_list(
     };
     drop(workspace_guard);
 
-    apply_tool_selection(selection, ctx, sub_agent_context).await
+    let mut tools = apply_tool_selection(selection, ctx, sub_agent_context).await;
+    // D1 · hide scan tools entirely for an active stage that permits none (e.g.
+    // scoping / target_intel / reporting have empty `allowed_tool_types`). The
+    // per-call guard already blocks them, but hiding them stops the model from
+    // wasting turns trying a tool it could only ever be denied.
+    hide_scans_for_zero_scan_stage(&mut tools, ctx.harness_stage);
+    tools
+}
+
+/// D1 · when an active harness stage allows no scan tools, strip scan-execution
+/// tools from the exposed list so the model never attempts one. No-op when no
+/// stage is active or the stage permits at least one scan type.
+fn hide_scans_for_zero_scan_stage(
+    tools: &mut Vec<rig::completion::ToolDefinition>,
+    harness_stage: Option<golish_agent_kit::harness::StageKind>,
+) {
+    let Some(kind) = harness_stage else {
+        return;
+    };
+    let Ok(spec) = golish_agent_kit::harness::load_embedded_stage_spec(kind) else {
+        return;
+    };
+    if !spec.allowed_tool_types.is_empty() {
+        return;
+    }
+    let before = tools.len();
+    tools.retain(|t| !golish_agent_kit::harness::is_scan_tool_name(&t.name));
+    if tools.len() != before {
+        tracing::debug!(
+            target: "harness::hook",
+            stage = %kind.as_str(),
+            removed = before - tools.len(),
+            "tool-list: hid scan tools for a stage that permits none"
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::TestContextBuilder;
+
+    fn td(name: &str) -> rig::completion::ToolDefinition {
+        rig::completion::ToolDefinition {
+            name: name.to_string(),
+            description: "d".to_string(),
+            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    /// D1 · a stage with empty `allowed_tool_types` (scoping) hides scan tools but
+    /// keeps meta/control-plane tools; a scan-permitting stage (enumeration) and
+    /// the no-stage case leave the list untouched.
+    #[test]
+    fn hide_scans_strips_scan_tools_only_in_zero_scan_stage() {
+        use golish_agent_kit::harness::StageKind;
+
+        let mut tools = vec![
+            td("pentest_run"),
+            td("run_pty_cmd"),
+            td("submit_stage_deliverable"),
+            td("query_target_data"),
+        ];
+        hide_scans_for_zero_scan_stage(&mut tools, Some(StageKind::Scoping));
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            !names.contains(&"pentest_run"),
+            "scan wrapper must be hidden"
+        );
+        assert!(
+            !names.contains(&"run_pty_cmd"),
+            "scan wrapper must be hidden"
+        );
+        assert!(
+            names.contains(&"submit_stage_deliverable") && names.contains(&"query_target_data"),
+            "meta tools must be kept: {names:?}"
+        );
+
+        // enumeration permits scans → nothing stripped.
+        let mut tools2 = vec![td("pentest_run")];
+        hide_scans_for_zero_scan_stage(&mut tools2, Some(StageKind::Enumeration));
+        assert_eq!(tools2.len(), 1, "scan-permitting stage must not hide scans");
+
+        // no active stage → no-op.
+        let mut tools3 = vec![td("pentest_run")];
+        hide_scans_for_zero_scan_stage(&mut tools3, None);
+        assert_eq!(tools3.len(), 1, "no stage → no filtering");
+    }
     use golish_agent_kit::execution_mode::ExecutionMode;
     use golish_agent_kit::tool_definitions::{ToolPreset, ToolSelectionConfig};
     use golish_llm_providers::LlmClient;

@@ -106,6 +106,19 @@ pub type PostShellHook = Arc<
 /// builds it from the stage's `allowed_tool_types`.
 pub type StageToolGuard = Arc<dyn Fn(&str, &serde_json::Value) -> Result<(), String> + Send + Sync>;
 
+/// Per-stage tool-list filter controlling tool *visibility* (D1).
+///
+/// Returns `true` when a tool name should be HIDDEN from the sub-agent's tool
+/// list for the active harness stage (e.g. scan tools during a no-scan stage
+/// like `scoping`). Mirrors the main agent's `hide_scans_for_zero_scan_stage`
+/// so a delegated sub-agent never even *sees* a tool it could only be denied —
+/// which stops the retry spin where the model hammers a blocked tool. The
+/// call-time [`StageToolGuard`] remains the backstop.
+///
+/// A plain `Fn` so this crate stays free of harness-crate deps; the runtime
+/// builds it from the stage's `allowed_tool_types`.
+pub type StageToolHider = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// Context needed for sub-agent execution.
 pub struct SubAgentExecutorContext<'a> {
     pub event_tx: &'a mpsc::UnboundedSender<AiEvent>,
@@ -145,4 +158,10 @@ pub struct SubAgentExecutorContext<'a> {
     /// resolved capability is in the stage's forbidden list (e.g. `dig` in
     /// scoping), before execution. `None` = no active stage (legacy behaviour).
     pub stage_tool_guard: Option<StageToolGuard>,
+    /// Optional per-stage tool-list filter (D1). When the sub-agent runs inside
+    /// a harness stage that permits no scan tools (e.g. `scoping`), this hides
+    /// scan tools from the exposed list so the model never even attempts one —
+    /// preventing the retry spin the call-time guard alone can't stop. `None` =
+    /// no filtering (legacy behaviour).
+    pub hide_tool_in_stage: Option<StageToolHider>,
 }

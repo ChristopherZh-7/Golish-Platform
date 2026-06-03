@@ -22,10 +22,19 @@ const WARNING_SIGNALS = [
   "declined to produce a plan",
   "returned a message instead of a plan",
   "refused the request or asked a question",
+  // The planner sometimes wraps a clarification in JSON ({"message": "…"}),
+  // which fails plan parsing as "Failed to parse <phase> JSON". Still a soft
+  // "tell me your task" prompt, not a hard failure.
+  "failed to parse task planner json",
 ] as const;
 
 /** Classify a surfaced error string as a hard `error` or a soft `warning`. */
 export function classifyErrorSeverity(message: string): MessageSeverity {
   const lower = message.toLowerCase();
-  return WARNING_SIGNALS.some((signal) => lower.includes(signal)) ? "warning" : "error";
+  if (WARNING_SIGNALS.some((signal) => lower.includes(signal))) return "warning";
+  // A planner reply that is valid JSON but missing the required `subtasks`
+  // field is the model answering conversationally (e.g. `{"message": "…"}`)
+  // instead of emitting a plan — treat as a soft warning, not a red error.
+  if (lower.includes("missing field") && lower.includes("subtasks")) return "warning";
+  return "error";
 }

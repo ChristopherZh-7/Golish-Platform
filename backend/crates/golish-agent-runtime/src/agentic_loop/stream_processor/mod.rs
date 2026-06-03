@@ -59,6 +59,15 @@ pub(crate) struct StreamProcessOutcome {
     pub thinking_content: String,
     pub thinking_signature: Option<String>,
     pub thinking_id: Option<String>,
+    /// E1 · the stream was cut short because the model degenerated into
+    /// repeating itself (`detect_repetitive_text`). The turn loop uses this to
+    /// inject a bounded recovery re-prompt instead of accepting the garbage.
+    pub repetition_detected: bool,
+    /// E2 · a *retriable* error occurred mid-stream **after** some content had
+    /// already streamed (so it wasn't surfaced as a terminal error). The turn
+    /// loop uses this to retry (bounded) rather than silently accept the
+    /// truncated output.
+    pub mid_stream_error: Option<String>,
 }
 
 /// Outcome enum for the agentic loop: either keep going with the accumulated
@@ -104,6 +113,9 @@ where
     let mut chunk_count = 0_usize;
     let mut last_stream_chunk_error: Option<String> = None;
     let mut last_repetition_check_len: usize = 0;
+    // E1 · set when the text loop breaks because of degenerate repetition (vs a
+    // normal end-of-stream). Threaded out so the turn loop can recover.
+    let mut repetition_detected = false;
 
     // Track in-flight tool-call state across delta chunks.
     // call_id (OpenAI's "call_abc") is tracked separately from the item id
@@ -171,6 +183,9 @@ where
                         accumulated_thinking,
                         &mut last_repetition_check_len,
                     ) {
+                        // E1 · `handle_text_chunk` returns true only on degenerate
+                        // repetition. Record it so the turn loop can re-prompt.
+                        repetition_detected = true;
                         break;
                     }
                 }
@@ -390,6 +405,19 @@ where
         tracing::debug!("Model thinking: {} chars", thinking_content.len());
     }
 
+    // E2 · a mid-stream chunk error that left *some* usable content was
+    // previously swallowed (only the no-content case surfaced an error). Thread
+    // out the last *retriable* one so the turn loop can retry instead of
+    // accepting truncated output.
+    let mid_stream_error =
+        last_stream_chunk_error.filter(|err| classify_stream_start_error(err).retriable);
+    if let Some(ref err) = mid_stream_error {
+        tracing::warn!(
+            error = %err,
+            "[resilience] retriable mid-stream error with partial content; flagging for bounded retry"
+        );
+    }
+
     Ok(StreamOutcome::Continue(StreamProcessOutcome {
         has_tool_calls,
         tool_calls_to_execute,
@@ -397,6 +425,8 @@ where
         thinking_content,
         thinking_signature,
         thinking_id,
+        repetition_detected,
+        mid_stream_error,
     }))
 }
 

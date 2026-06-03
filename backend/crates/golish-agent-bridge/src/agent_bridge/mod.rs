@@ -83,6 +83,7 @@ mod config;
 mod constructors;
 mod events;
 mod execution;
+mod failover;
 mod prepare;
 mod terminal_error;
 

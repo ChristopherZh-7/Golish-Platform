@@ -299,6 +299,23 @@ pub trait AgentExecutor: Send + Sync {
         remaining_subtasks: &[PlannedSubtask],
     ) -> Result<RefinerOutput>;
 
+    /// Lazily plan ONE stage's tactical subtasks (A1 · lazy per-stage planning).
+    ///
+    /// Called when entering a harness stage so the planner produces only THIS
+    /// stage's steps on demand (instead of one flat whole-run plan upfront). The
+    /// returned list MUST end with a "Submit & verify <stage>" subtask. Default
+    /// returns empty so existing executors (test mocks) need no change; the
+    /// orchestrator then falls back to the single-subtask synthesizer on empty.
+    async fn generate_stage_plan(
+        &self,
+        stage: crate::harness::StageKind,
+        task_input: &str,
+        upstream_evidence: &str,
+    ) -> Result<Vec<PlannedSubtask>> {
+        let _ = (stage, task_input, upstream_evidence);
+        Ok(Vec::new())
+    }
+
     /// Run the reporter to generate the final summary.
     async fn generate_report(&self, execution_context: &ExecutionContext) -> Result<AgentResult>;
 

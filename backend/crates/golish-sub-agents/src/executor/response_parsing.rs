@@ -47,7 +47,7 @@ pub(super) async fn dispatch_tool_calls<M, P>(
     model: &M,
     parent_request_id: &str,
     last_activity: &Arc<AtomicU64>,
-    timeout_duration: Duration,
+    tool_fallback_timeout: Duration,
     idle_timeout: Option<Duration>,
     transcript_writer: &Option<Arc<SubAgentTranscriptWriter>>,
     files_modified: &mut Vec<String>,
@@ -163,6 +163,8 @@ where
                         // Propagate the stage boundary to nested sub-agents so a
                         // deeper delegate can't bypass the stage's forbidden tools.
                         stage_tool_guard: ctx.stage_tool_guard.clone(),
+                        // Same for the D1 tool-list filter (hide scan tools).
+                        hide_tool_in_stage: ctx.hide_tool_in_stage.clone(),
                     };
                     match Box::pin(super::execute_sub_agent(
                         &delegate_def,
@@ -288,7 +290,7 @@ where
         );
         let _tool_guard = tool_span.enter();
 
-        let tool_timeout = idle_timeout.unwrap_or(timeout_duration);
+        let tool_timeout = idle_timeout.unwrap_or(tool_fallback_timeout);
         let tool_result = tokio::time::timeout(tool_timeout, async {
             // Stage boundary (forbidden-only): block a tool whose RESOLVED
             // capability is forbidden in the active harness stage BEFORE running

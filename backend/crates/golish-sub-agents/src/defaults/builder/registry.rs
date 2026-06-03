@@ -47,7 +47,7 @@ pub async fn create_default_sub_agents_from_registry(
             tmpl_or_fallback!("coder", build_coder_prompt()),
         )
         .with_tools(vec!["read_file".into(), "list_files".into(), "grep_file".into(), "ast_grep".into(), "ast_grep_replace".into()])
-        .with_max_iterations(20).with_timeout(600).with_idle_timeout(180),
+        .with_max_iterations(20).with_idle_timeout(180),
     );
 
     agents.push(
@@ -62,7 +62,7 @@ pub async fn create_default_sub_agents_from_registry(
             "ingest_cve".into(), "save_poc".into(), "list_cves_with_pocs".into(),
             "list_unresearched_cves".into(),
         ])
-        .with_max_iterations(25).with_timeout(600).with_idle_timeout(180)
+        .with_max_iterations(25).with_idle_timeout(180)
         .with_delegatable_agents(vec!["memorist".into()]),
     );
 
@@ -73,7 +73,7 @@ pub async fn create_default_sub_agents_from_registry(
             tmpl_or_fallback!("installer", build_installer_prompt()),
         )
         .with_tools(vec!["read_file".into(), "write_file".into(), "web_fetch".into(), "list_directory".into(), "list_files".into(), "grep_file".into(), "pentest_list_tools".into(), "pentest_run".into()])
-        .with_max_iterations(30).with_timeout(600).with_idle_timeout(300)
+        .with_max_iterations(30).with_idle_timeout(300)
         .with_delegatable_agents(vec!["researcher".into(), "memorist".into()]),
     );
 
@@ -109,7 +109,6 @@ pub async fn create_default_sub_agents_from_registry(
             "read_knowledge".into(),
         ])
         .with_max_iterations(50)
-        .with_timeout(900)
         .with_idle_timeout(300)
         .with_delegatable_agents(vec![
             "coder".into(),
@@ -141,7 +140,6 @@ pub async fn create_default_sub_agents_from_registry(
             "read_knowledge".into(),
         ])
         .with_max_iterations(10)
-        .with_timeout(120)
         .with_idle_timeout(60),
     );
 
@@ -152,7 +150,7 @@ pub async fn create_default_sub_agents_from_registry(
             tmpl_or_fallback!("planner", build_planner_prompt()),
         )
         .with_tools(vec!["search_memories".into()])
-        .with_max_iterations(5).with_timeout(120).with_idle_timeout(60),
+        .with_max_iterations(5).with_idle_timeout(60),
     );
 
     agents.push(
@@ -162,7 +160,7 @@ pub async fn create_default_sub_agents_from_registry(
             tmpl_or_fallback!("reflector", build_reflector_prompt()),
         )
         .with_tools(vec![])
-        .with_max_iterations(3).with_timeout(60).with_idle_timeout(30)
+        .with_max_iterations(3).with_idle_timeout(30)
         .as_pipeline_only(),
     );
 
@@ -182,7 +180,6 @@ pub async fn create_default_sub_agents_from_registry(
             "read_knowledge".into(),
         ])
         .with_max_iterations(15)
-        .with_timeout(300)
         .with_idle_timeout(120)
         .with_delegatable_agents(vec!["researcher".into(), "memorist".into()]),
     );
@@ -208,7 +205,6 @@ pub async fn create_default_sub_agents_from_registry(
             "submit_stage_deliverable".into(),
         ])
         .with_max_iterations(20)
-        .with_timeout(600)
         .with_idle_timeout(180)
         .with_delegatable_agents(vec!["memorist".into()]),
     );
@@ -232,7 +228,7 @@ pub async fn create_default_sub_agents_from_registry(
         .with_tools(vec![
             "search_memories".into(), "search_knowledge_base".into(), "read_knowledge".into(),
         ])
-        .with_max_iterations(5).with_timeout(120).with_idle_timeout(60)
+        .with_max_iterations(5).with_idle_timeout(60)
         .as_pipeline_only(),
     );
 
@@ -247,7 +243,7 @@ pub async fn create_default_sub_agents_from_registry(
             "web_fetch".into(), "web_search".into(),
             "read_file".into(), "write_file".into(), "grep_file".into(), "record_finding".into(),
         ])
-        .with_max_iterations(20).with_timeout(300).with_idle_timeout(120),
+        .with_max_iterations(20).with_idle_timeout(120),
     );
 
     agents.push(
@@ -261,7 +257,7 @@ pub async fn create_default_sub_agents_from_registry(
             "read_knowledge".into(), "graph_search".into(), "graph_neighbors".into(),
             "graph_attack_paths".into(), "search_exploits".into(), "list_cves_with_pocs".into(),
         ])
-        .with_max_iterations(10).with_timeout(120).with_idle_timeout(60),
+        .with_max_iterations(10).with_idle_timeout(60),
     );
 
     // `orchestrator.tera` wraps `{{execution_context}}` in `{% raw %}` so
@@ -280,7 +276,7 @@ pub async fn create_default_sub_agents_from_registry(
             // C2c · orchestrator may also submit the stage deliverable directly.
             "submit_stage_deliverable".into(),
         ])
-        .with_max_iterations(50).with_timeout(900).with_idle_timeout(300)
+        .with_max_iterations(50).with_idle_timeout(300)
         .with_delegatable_agents(vec![
             "researcher".into(), "pentester".into(), "coder".into(), "memorist".into(),
             "installer".into(), "adviser".into(), "reporter".into(), "enricher".into(),

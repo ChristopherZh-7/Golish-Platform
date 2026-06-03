@@ -50,14 +50,20 @@ export interface ThinkingSegment {
  * Renders as a divider between stage narrations so consecutive stages don't
  * read as one continuous monologue and the user can see the runtime advancing.
  *
+ * Two completion granularities are intentionally distinct (rendered with
+ * different prominence by `StageMarker`):
+ *  - `subtask_completed` = a single *step* inside a stage finished (subdued).
+ *  - `stage_completed`    = a whole harness *stage* passed its gate (prominent),
+ *    surfaced when `submit_stage_deliverable` is accepted.
+ *
  * Stored on a `role: "system"` message; `message.content` mirrors `label` so a
  * restored history message (which loses the structured field) still renders.
  */
 export interface StageEvent {
-  kind: "subtask_completed" | "task_progress" | "task_resumed";
+  kind: "subtask_completed" | "stage_completed" | "task_progress" | "task_resumed";
   /** Short headline shown on the divider (also persisted via message.content). */
   label: string;
-  /** Subtask/stage title (for subtask_completed). */
+  /** Subtask/step title (for subtask_completed) or stage name (stage_completed). */
   title?: string;
   /** task_progress status (e.g. "finished", "waiting_approval"). */
   status?: string;

@@ -73,7 +73,33 @@ pub(super) async fn build_tool_definitions<P: ToolProvider>(
         }
     }
 
+    // D1 · hide tools the active harness stage forbids entirely (e.g. scan tools
+    // in scoping) so the model never even attempts one — mirrors the main agent's
+    // tool-list filter. The per-call `stage_tool_guard` stays as the backstop.
+    apply_stage_tool_hiding(&mut tools, &ctx.hide_tool_in_stage, agent_id);
+
     tools
+}
+
+/// D1 · remove tools the active harness stage forbids entirely from a sub-agent's
+/// visible list (e.g. scan tools in `scoping`). No-op when no hider is set.
+fn apply_stage_tool_hiding(
+    tools: &mut Vec<ToolDefinition>,
+    hider: &Option<crate::executor_types::StageToolHider>,
+    agent_id: &str,
+) {
+    let Some(hide) = hider.as_ref() else {
+        return;
+    };
+    let before = tools.len();
+    tools.retain(|t| !hide(&t.name));
+    if tools.len() != before {
+        tracing::debug!(
+            "[sub-agent:{}] hid {} stage-forbidden tool(s) from the list",
+            agent_id,
+            before - tools.len()
+        );
+    }
 }
 
 /// Return the [`BARRIER_TOOL_NAME`] tool definition.
@@ -134,5 +160,45 @@ fn nested_delegation_tool_definition(
             "required": ["task"],
             "additionalProperties": false
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn td(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn hider_removes_matching_tools_keeps_others() {
+        let mut tools = vec![
+            td("pentest_run"),
+            td("submit_stage_deliverable"),
+            td("query_target_data"),
+        ];
+        // Simulate a zero-scan stage hider that hides the scan wrapper only.
+        let hider: Option<crate::executor_types::StageToolHider> =
+            Some(Arc::new(|name: &str| name == "pentest_run"));
+        apply_stage_tool_hiding(&mut tools, &hider, "pentester");
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(!names.contains(&"pentest_run"), "scan tool must be hidden");
+        assert!(
+            names.contains(&"submit_stage_deliverable") && names.contains(&"query_target_data"),
+            "non-scan/meta tools must be kept: {names:?}"
+        );
+    }
+
+    #[test]
+    fn no_hider_is_a_noop() {
+        let mut tools = vec![td("pentest_run")];
+        apply_stage_tool_hiding(&mut tools, &None, "pentester");
+        assert_eq!(tools.len(), 1, "no hider → list untouched");
     }
 }

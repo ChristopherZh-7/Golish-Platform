@@ -124,6 +124,7 @@ impl BridgeAgentExecutor {
             // (sub_agent_call.rs) and the main dispatch gate; this executor path
             // does not build it.
             stage_tool_guard: None,
+            hide_tool_in_stage: None,
         };
 
         let client = self.bridge.client().read().await;

@@ -198,7 +198,10 @@ export const MessageBlock = memo(function MessageBlock({
               if (seg.kind === "text") {
                 const displayContent = stripToolCallXml(seg.content);
                 const text = displayContent.trim();
-                if (!text && segments.length > 1) return null;
+                // Empty text renders nothing. While streaming, the
+                // AgentStatusIndicator footer is the single "working" indicator
+                // — no "..." placeholder that would double up with it.
+                if (!text) return null;
 
                 const showPlanBefore =
                   shouldShowPlan &&
@@ -228,13 +231,9 @@ export const MessageBlock = memo(function MessageBlock({
                   );
                 }
 
-                // Same suppression rule as above: don't print the
-                // "..." placeholder while ThinkingBlock is the active
-                // streaming indicator.
-                const placeholder = message.isStreaming && !message.thinking ? "..." : "";
                 return (
                   <div key={`seg-${idx}`} className="text-[12px] text-foreground leading-[1.55]">
-                    <Markdown content={displayContent || placeholder} />
+                    <Markdown content={displayContent} />
                   </div>
                 );
               }

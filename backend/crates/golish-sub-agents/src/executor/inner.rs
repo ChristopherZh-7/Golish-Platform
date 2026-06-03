@@ -45,7 +45,7 @@ pub(super) async fn execute_sub_agent_inner<M, P>(
     parent_request_id: &str,
     start_time: std::time::Instant,
     sub_agent_span: &tracing::Span,
-    timeout_duration: Duration,
+    tool_fallback_timeout: Duration,
     idle_timeout: Option<Duration>,
 ) -> Result<SubAgentResult>
 where
@@ -325,7 +325,7 @@ where
             model,
             parent_request_id,
             &last_activity,
-            timeout_duration,
+            tool_fallback_timeout,
             idle_timeout,
             &transcript_writer,
             &mut files_modified,

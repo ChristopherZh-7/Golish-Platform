@@ -86,11 +86,17 @@ impl GolishDb {
         // Same fire-and-forget reclaim for tasks: a process killed mid-run can't
         // finalize its own `tasks` rows, so they leak forever as `running`. Mark
         // the stale non-terminal ones `failed` on startup so they stop zombieing.
-        match repo::tasks::fail_abandoned(&info.pool, Duration::hours(DEFAULT_RECLAIM_THRESHOLD_HOURS))
-            .await
+        match repo::tasks::fail_abandoned(
+            &info.pool,
+            Duration::hours(DEFAULT_RECLAIM_THRESHOLD_HOURS),
+        )
+        .await
         {
             Ok(n) if n > 0 => {
-                tracing::info!(reaped = n, "Failed abandoned running/waiting tasks on startup");
+                tracing::info!(
+                    reaped = n,
+                    "Failed abandoned running/waiting tasks on startup"
+                );
             }
             Ok(_) => {}
             Err(e) => {

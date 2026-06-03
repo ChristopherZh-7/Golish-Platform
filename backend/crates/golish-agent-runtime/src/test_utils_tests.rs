@@ -2365,6 +2365,7 @@ async fn test_sub_agent_context_inheritance() {
         sub_agent_registry: None,
         post_shell_hook: None,
         stage_tool_guard: None,
+        hide_tool_in_stage: None,
     };
 
     let agent_def = test_sub_agent_definition_for_executor("analyzer");
@@ -2472,6 +2473,7 @@ async fn test_sub_agent_result_propagation() {
         sub_agent_registry: None,
         post_shell_hook: None,
         stage_tool_guard: None,
+        hide_tool_in_stage: None,
     };
 
     let agent_def = test_sub_agent_definition_for_executor("executor");
@@ -2541,6 +2543,7 @@ async fn test_sub_agent_events_emitted() {
         sub_agent_registry: None,
         post_shell_hook: None,
         stage_tool_guard: None,
+        hide_tool_in_stage: None,
     };
 
     let agent_def = test_sub_agent_definition_for_executor("event_tester");
@@ -2648,6 +2651,7 @@ async fn test_sub_agent_error_handling() {
         sub_agent_registry: None,
         post_shell_hook: None,
         stage_tool_guard: None,
+        hide_tool_in_stage: None,
     };
 
     // Create agent with very low max_iterations to trigger the error path
@@ -2734,6 +2738,7 @@ async fn test_sub_agent_tool_restrictions() {
         sub_agent_registry: None,
         post_shell_hook: None,
         stage_tool_guard: None,
+        hide_tool_in_stage: None,
     };
 
     // Create agent with restricted tools (only read_file allowed)
@@ -2828,6 +2833,7 @@ async fn test_sub_agent_timeout_behavior() {
         sub_agent_registry: None,
         post_shell_hook: None,
         stage_tool_guard: None,
+        hide_tool_in_stage: None,
     };
 
     // Create agent with very low max_iterations to simulate timeout

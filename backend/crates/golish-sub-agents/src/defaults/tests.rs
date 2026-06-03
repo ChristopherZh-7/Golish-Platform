@@ -114,7 +114,10 @@ fn test_pentester_has_security_tools() {
     assert!(has_tool(pentester, "read_knowledge"));
     assert!(!has_tool(pentester, "write_knowledge"));
     assert_eq!(pentester.max_iterations, 50);
-    assert_eq!(pentester.timeout_secs, Some(900));
+    // No overall wall-clock timeout: the agent keeps working as long as it
+    // makes progress, bounded only by the idle timeout + max_iterations.
+    assert_eq!(pentester.timeout_secs, None);
+    assert_eq!(pentester.idle_timeout_secs, Some(300));
 }
 
 #[test]
@@ -169,7 +172,9 @@ fn test_reflector_has_no_tools() {
 
     assert!(reflector.allowed_tools.is_empty());
     assert_eq!(reflector.max_iterations, 3);
-    assert_eq!(reflector.timeout_secs, Some(60));
+    // No overall wall-clock timeout; idle timeout + max_iterations still bound it.
+    assert_eq!(reflector.timeout_secs, None);
+    assert_eq!(reflector.idle_timeout_secs, Some(30));
 }
 
 #[test]

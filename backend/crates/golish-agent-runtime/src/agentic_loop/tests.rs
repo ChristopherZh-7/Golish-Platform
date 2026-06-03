@@ -8,6 +8,8 @@ mod unified_loop_tests;
 
 mod repetitive_text_tests;
 
+mod resilience_recovery_tests;
+
 mod utf8_truncation_tests;
 
 mod token_estimation_tests;

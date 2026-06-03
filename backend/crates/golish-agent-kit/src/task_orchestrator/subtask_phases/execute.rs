@@ -357,6 +357,20 @@ impl TaskOrchestrator {
     /// transition, or (P2 方案 C / `graph_driven == true`) accumulate the flow
     /// outcome for the Executor-driven loop and leave transitions to the graph.
     async fn consume_gate_outcome(&mut self, task_id: Uuid, outcome: HarnessGateOutcome) {
+        // G · observability: log every stage gate decision at the single chokepoint
+        // both gate sites flow through. The graph-driven path only accumulates into
+        // `stage_outcome_acc`, so without this its PASS/BLOCK decisions were invisible
+        // in the logs (only the legacy `drive_stage_transition` path logged cursor
+        // moves). Pure additive INFO — no behaviour change.
+        tracing::info!(
+            target: "harness::hook",
+            task_id = %task_id,
+            stage = %outcome.gated_stage.as_str(),
+            gate = if outcome.gate_allowed { "PASS" } else { "BLOCK" },
+            findings = outcome.findings_count,
+            graph_driven = self.graph_driven,
+            "gate decision"
+        );
         if outcome.gate_allowed {
             if let Some(summary) = outcome.evidence_summary.clone() {
                 self.harness_evidence
@@ -434,7 +448,30 @@ impl TaskOrchestrator {
             crate::harness::load_embedded_profile(profile_id),
             crate::harness::base_operation_graph(),
         ) {
-            (Ok(Some(p)), Ok(g)) => g.project(&p.allowed_stage_set()),
+            (Ok(Some(p)), Ok(g)) => {
+                // S0 · observability: which profile drove this run + which stages
+                // the DAG was projected to + per-stage planner subtask counts.
+                // Previously nothing logged the profile/projection, so a run that
+                // skipped scoping/target_intel (because the planner produced no
+                // subtask for them → vacuous pass) was invisible.
+                let allowed = p.allowed_stage_set();
+                tracing::info!(
+                    target: "harness::hook",
+                    profile = %profile_id,
+                    ?allowed,
+                    "graph-flow: profile/DAG projected (DAG-driven execution)"
+                );
+                for (stage, idxs) in &groups {
+                    tracing::info!(
+                        target: "harness::hook",
+                        stage = %stage.as_str(),
+                        planner_subtasks = idxs.len(),
+                        in_dag = allowed.contains(stage),
+                        "graph-flow: stage→planner-subtask mapping"
+                    );
+                }
+                g.project(&allowed)
+            }
             _ => {
                 tracing::warn!(target: "harness::hook", "graph-flow: profile/DAG load failed; falling back to legacy loop");
                 return self
@@ -488,6 +525,12 @@ impl TaskOrchestrator {
                 }
                 Some(req) = rx.recv() => {
                     let indices = groups.get(&req.stage).cloned().unwrap_or_default();
+                    tracing::info!(
+                        target: "harness::hook",
+                        stage = %req.stage.as_str(),
+                        planner_subtasks = indices.len(),
+                        "graph-flow: entering stage"
+                    );
                     let mut outcome = self
                         .run_stage_subtasks(
                             req.stage, &indices, queue, &mut exec_ctx, op_max_authz, executor, task_id,
@@ -502,10 +545,26 @@ impl TaskOrchestrator {
                     {
                         outcome = crate::harness::operation_flow::StageFlowOutcome::blocked();
                     }
-                    let _ = crate::db_shim::operation_state::advance_stage(
+                    // G · observability: the graph-driven path advanced the cursor
+                    // silently; mirror the legacy path's "cursor advanced" log so a
+                    // run's stage progression is visible end-to-end.
+                    match crate::db_shim::operation_state::advance_stage(
                         &*self.repo, task_id, req.stage.as_str(),
                     )
-                    .await;
+                    .await
+                    {
+                        Ok(()) => tracing::info!(
+                            target: "harness::hook",
+                            task_id = %task_id,
+                            stage = %req.stage.as_str(),
+                            "graph-flow: operation_state cursor advanced past stage"
+                        ),
+                        Err(e) => tracing::warn!(
+                            target: "harness::hook",
+                            error = %e,
+                            "graph-flow: advance_stage failed"
+                        ),
+                    }
                     let _ = req.reply.send(outcome);
                 }
             }
@@ -561,6 +620,81 @@ impl TaskOrchestrator {
         let db_subtasks = subtasks::list_by_task(&*self.repo, task_id)
             .await
             .unwrap_or_default();
+
+        // S1+S2 · a stage projected into the DAG but with no planner subtask must
+        // NOT vacuously pass (that is exactly how scoping/target_intel got skipped).
+        // Synthesize one stage-scoped subtask and run it through the normal gate
+        // path so the stage actually executes + gets gated.
+        if indices.is_empty() {
+            tracing::warn!(
+                target: "harness::hook",
+                stage = %stage.as_str(),
+                "dag-strict: projected stage has no planner subtask — synthesizing one (no vacuous pass)"
+            );
+            // A1 · lazy per-stage planning: ask the executor for THIS stage's plan
+            // (2-4 tactical steps ending in submit+verify). Empty / failure → fall
+            // back to a single synthesized subtask so the stage still executes +
+            // gets gated (never a vacuous pass — S1 fail-closed).
+            let upstream = exec_ctx.summary();
+            let lazy = executor
+                .generate_stage_plan(stage, &exec_ctx.task_input, &upstream)
+                .await
+                .unwrap_or_default();
+            let stage_plan: Vec<PlannedSubtask> = if lazy.is_empty() {
+                vec![synthesize_stage_subtask(stage, &exec_ctx.task_input)]
+            } else {
+                lazy
+            };
+            self.emit(AiEvent::TaskProgress {
+                task_id: task_id.to_string(),
+                status: "running".to_string(),
+                message: format!(
+                    "Stage '{}' plan: {} step(s).",
+                    stage.as_str(),
+                    stage_plan.len()
+                ),
+            });
+            tracing::info!(
+                target: "harness::hook",
+                stage = %stage.as_str(),
+                steps = stage_plan.len(),
+                "lazy per-stage plan generated"
+            );
+            for pt in &stage_plan {
+                exec_ctx.harness_stage = Some(stage);
+                exec_ctx.harness_authz = op_max_authz.map(|max_authorization| {
+                    let intent = crate::harness::IntentClassifier::with_default_keywords()
+                        .classify(&pt.description, stage);
+                    crate::harness::HarnessAuthz {
+                        max_authorization,
+                        intent,
+                    }
+                });
+                exec_ctx.current_subtask = Some(super::super::types::CurrentSubtask {
+                    title: pt.title.clone(),
+                    description: pt.description.clone(),
+                    agent: pt.agent.clone(),
+                });
+                let (result_text, _usage) = self
+                    .execute_single_subtask(pt, exec_ctx, executor, &None, task_id)
+                    .await;
+                self.emit(AiEvent::SubtaskCompleted {
+                    task_id: task_id.to_string(),
+                    subtask_id: String::new(),
+                    title: pt.title.clone(),
+                    result: truncate(&result_text, 500),
+                    stage_kind: Some(stage.as_str().to_string()),
+                });
+                exec_ctx
+                    .completed_results
+                    .push(super::super::types::SubtaskResult {
+                        title: pt.title.clone(),
+                        result: result_text,
+                        token_usage: None,
+                    });
+            }
+        }
+
         for &idx in indices {
             let Some(planned) = queue.get(idx).cloned() else {
                 continue;
@@ -612,9 +746,14 @@ impl TaskOrchestrator {
             self.emit_plan_update(queue, idx, StepStatus::Completed);
         }
         self.graph_driven = false;
+        // S1 · a projected stage that produced no gated deliverable must not
+        // vacuously PASS — default to BLOCK so the engine interrupts here instead
+        // of advancing on nothing (the old vacuous `pass_with_progress` is exactly
+        // what let scoping/target_intel slip through). After synthesis + the
+        // fail-closed gate this is only a defensive fallback (acc is normally Some).
         self.stage_outcome_acc
             .take()
-            .unwrap_or_else(crate::harness::operation_flow::StageFlowOutcome::pass_with_progress)
+            .unwrap_or_else(crate::harness::operation_flow::StageFlowOutcome::blocked)
     }
 
     /// 两级模型 · graph-flow 路径的「跨大阶段审批」闸（设计 2026-06-03）。
@@ -1193,17 +1332,22 @@ fn apply_harness_gate_hook(
 
     let Some(deliverable) = parse_deliverable_from_content(&content) else {
         // Only reachable for a stage-TAGGED subtask, so this is a genuine
-        // contract miss (agent didn't end with a ```json StageDeliverable);
-        // WARN — not spammy because untagged subtasks already returned above.
+        // contract miss (agent didn't end with a ```json StageDeliverable).
+        // S4: fail-closed — return a BLOCK with a repair correction so the
+        // reflector retry loop pushes the agent to actually submit a deliverable,
+        // instead of the old fail-open `None` (which silently skipped the gate and
+        // let the cursor advance on plain narration).
         tracing::warn!(
             target: "harness::hook",
             stage_kind = ?stage_hint.stage_kind,
             subtask_title = %planned.title,
             content_len = content.len(),
-            "harness gate skipped: subtask is stage-tagged but agent produced no parseable \
-             StageDeliverable JSON block — gate did not run, cursor will not advance"
+            "harness gate: stage-tagged subtask produced no parseable StageDeliverable JSON block — BLOCK (fail-closed)"
         );
-        return (content, None);
+        return (
+            content,
+            missing_deliverable_gate_outcome(stage_hint.stage_kind),
+        );
     };
 
     tracing::info!(
@@ -1340,8 +1484,9 @@ fn summarize_deliverable(d: &crate::harness::StageDeliverable) -> String {
 fn build_gate_correction(decision: &crate::harness::GateResult) -> String {
     let mut s = String::from(
         "Your stage deliverable was REJECTED by the deterministic harness gate. \
-         Fix the issues below and resubmit by ending your next message with a \
-         corrected ```json StageDeliverable block (there is no submit tool).\n\n\
+         Fix the issues below and resubmit a corrected StageDeliverable — either by \
+         calling the submit_stage_deliverable tool, or by ending your next message \
+         with a corrected ```json StageDeliverable block.\n\n\
          ### Gate rejection reasons\n",
     );
     if decision.reasons.is_empty() {
@@ -1410,6 +1555,158 @@ fn parse_deliverable_from_content(content: &str) -> Option<crate::harness::Stage
         }
     }
     None
+}
+
+/// S4 · the gate outcome when a stage-tagged subtask ends without a parseable
+/// `StageDeliverable`: a BLOCK + repair correction so the reflector retry loop
+/// pushes the agent to actually submit one (fail-closed). Replaces the old
+/// fail-open skip that let the cursor advance on plain narration.
+fn missing_deliverable_gate_outcome(
+    stage: crate::harness::StageKind,
+) -> Option<HarnessGateOutcome> {
+    let correction = format!(
+        "Your output for the '{}' stage did not include a parseable StageDeliverable, \
+         so the deterministic harness gate could not run. You MUST submit a StageDeliverable \
+         — either by calling the submit_stage_deliverable tool, or by ending your next message \
+         with a ```json fenced block containing a StageDeliverable (stage_id, stage_run_id, \
+         claims, findings, evidence_refs). Re-do the stage work as needed and resubmit.",
+        stage.as_str()
+    );
+    Some(HarnessGateOutcome {
+        gated_stage: stage,
+        gate_allowed: false,
+        repair_correction: Some(correction),
+        evidence_summary: None,
+        evidence_refs: Vec::new(),
+        required_evidence_kinds: Vec::new(),
+        findings_count: 0,
+    })
+}
+
+/// S2 (DAG-strict) · synthesize one stage-scoped [`PlannedSubtask`] for a stage
+/// the planner produced no subtask for, so the stage actually executes + gets
+/// gated instead of being vacuously passed. The description is a per-stage
+/// charter scoped to the operation target (`task_input`); `harness_stage` is set
+/// so the gate hook runs against this stage.
+fn synthesize_stage_subtask(stage: crate::harness::StageKind, task_input: &str) -> PlannedSubtask {
+    use crate::harness::StageKind as K;
+    let target = task_input.trim();
+    let (title, description, agent): (&str, String, &str) = match stage {
+        K::Scoping => (
+            "Scope & Authorization Confirmation",
+            format!(
+                "Confirm and document the engagement scope for `{target}`: in-scope \
+                 targets/domains/IPs, explicit out-of-scope items, the authorization basis, \
+                 and rules of engagement. Do NOT perform any active scanning in this stage."
+            ),
+            "pentester",
+        ),
+        K::TargetIntel => (
+            "Passive Target Intelligence",
+            format!(
+                "Gather passive intelligence on `{target}` (WHOIS, ASN/netblocks, registrant, \
+                 public DNS records, org footprint) without touching the target. Summarize what \
+                 is known before any active recon."
+            ),
+            "pentester",
+        ),
+        K::ExternalAttackSurface => (
+            "External Attack Surface Mapping",
+            format!(
+                "Map the external attack surface of `{target}`: passive subdomain enumeration, \
+                 DNS resolution, and exposed hosts. Passive / low-touch only."
+            ),
+            "pentester",
+        ),
+        K::Enumeration => (
+            "Service Enumeration",
+            format!(
+                "Enumerate services on the in-scope hosts of `{target}`: port scan, \
+                 service/version fingerprinting, and surface the key endpoints."
+            ),
+            "pentester",
+        ),
+        K::VulnTriage => (
+            "Vulnerability Triage",
+            format!(
+                "Triage likely vulnerabilities across the enumerated surface of `{target}`, \
+                 prioritizing by severity and exploitability."
+            ),
+            "pentester",
+        ),
+        K::Verification => (
+            "Finding Verification",
+            format!(
+                "Verify the highest-priority findings for `{target}` with controlled, authorized \
+                 checks and record proof."
+            ),
+            "pentester",
+        ),
+        K::Reporting => (
+            "Final Report Compilation",
+            format!(
+                "Compile the final report for `{target}`: scope, methodology, findings with \
+                 evidence, and remediation guidance."
+            ),
+            "analyzer",
+        ),
+        other => (
+            "Stage Execution",
+            format!(
+                "Execute the `{}` stage for `{target}` per the harness stage charter, then submit \
+                 a StageDeliverable.",
+                other.as_str()
+            ),
+            "pentester",
+        ),
+    };
+    PlannedSubtask {
+        title: title.to_string(),
+        description,
+        agent: Some(agent.to_string()),
+        harness_stage: Some(crate::harness::HarnessStageHint::new(stage)),
+        nl_slice: None,
+        acceptance_criteria: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod dag_driven_helper_tests {
+    use super::*;
+    use crate::harness::StageKind;
+
+    #[test]
+    fn missing_deliverable_outcome_blocks_with_correction() {
+        let o = missing_deliverable_gate_outcome(StageKind::Enumeration)
+            .expect("missing deliverable must produce a BLOCK outcome");
+        assert!(
+            !o.gate_allowed,
+            "missing-deliverable must BLOCK (fail-closed)"
+        );
+        assert_eq!(o.gated_stage, StageKind::Enumeration);
+        assert!(
+            o.repair_correction.is_some(),
+            "BLOCK must carry a repair correction to drive the reflector retry"
+        );
+    }
+
+    #[test]
+    fn synthesized_subtask_is_stage_tagged_and_targeted() {
+        let s = synthesize_stage_subtask(StageKind::Scoping, "example.com");
+        assert_eq!(
+            s.harness_stage.as_ref().map(|h| h.stage_kind),
+            Some(StageKind::Scoping),
+            "synthesized subtask must be tagged with its stage so the gate runs"
+        );
+        assert!(
+            s.description.contains("example.com"),
+            "synthesized description must be scoped to the target"
+        );
+        assert!(s.agent.is_some());
+        // Reporting routes to the analyzer specialist, not the pentester.
+        let r = synthesize_stage_subtask(StageKind::Reporting, "example.com");
+        assert_eq!(r.agent.as_deref(), Some("analyzer"));
+    }
 }
 
 #[cfg(test)]

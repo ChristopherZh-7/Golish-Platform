@@ -20,7 +20,7 @@ fn test_sub_agent_definition_new() {
     assert!(agent.allowed_tools.is_empty());
     assert_eq!(agent.max_iterations, 50); // default
     assert!(agent.model_override.is_none()); // default
-    assert_eq!(agent.timeout_secs, Some(600)); // default: 10 minutes
+    assert_eq!(agent.timeout_secs, None); // default: no overall timeout
     assert_eq!(agent.idle_timeout_secs, Some(180)); // default: 3 minutes
     assert!(agent.prompt_template.is_none()); // default: no prompt generation
 }
@@ -198,5 +198,6 @@ fn test_result_construction() {
 
 #[test]
 fn test_max_agent_depth() {
-    assert_eq!(MAX_AGENT_DEPTH, 5);
+    // Capped at 2 = single-level nesting (primary → sub-agent; no deeper).
+    assert_eq!(MAX_AGENT_DEPTH, 2);
 }

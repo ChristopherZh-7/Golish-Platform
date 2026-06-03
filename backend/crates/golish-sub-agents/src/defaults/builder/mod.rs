@@ -37,7 +37,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "ast_grep_replace".to_string(),
         ])
         .with_max_iterations(20)
-        .with_timeout(600)
         .with_idle_timeout(180),
         SubAgentDefinition::new(
             "researcher",
@@ -58,7 +57,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "list_unresearched_cves".to_string(),
         ])
         .with_max_iterations(25)
-        .with_timeout(600)
         .with_idle_timeout(180)
         .with_delegatable_agents(vec!["memorist".into()]),
         SubAgentDefinition::new(
@@ -78,7 +76,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "pentest_run".into(),
         ])
         .with_max_iterations(30)
-        .with_timeout(600)
         .with_idle_timeout(300)
         .with_delegatable_agents(vec!["researcher".into(), "memorist".into()]),
         SubAgentDefinition::new(
@@ -110,7 +107,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "read_knowledge".to_string(),
         ])
         .with_max_iterations(50)
-        .with_timeout(900)
         .with_idle_timeout(300)
         .with_delegatable_agents(vec![
             "coder".to_string(),
@@ -139,7 +135,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "read_knowledge".to_string(),
         ])
         .with_max_iterations(10)
-        .with_timeout(120)
         .with_idle_timeout(60),
         SubAgentDefinition::new(
             "planner",
@@ -149,7 +144,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         )
         .with_tools(vec!["search_memories".to_string()])
         .with_max_iterations(5)
-        .with_timeout(120)
         .with_idle_timeout(60),
         SubAgentDefinition::new(
             "reflector",
@@ -159,7 +153,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         )
         .with_tools(vec![])
         .with_max_iterations(3)
-        .with_timeout(60)
         .with_idle_timeout(30)
         .as_pipeline_only(),
         SubAgentDefinition::new(
@@ -177,7 +170,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "read_knowledge".to_string(),
         ])
         .with_max_iterations(15)
-        .with_timeout(300)
         .with_idle_timeout(120)
         .with_delegatable_agents(vec!["researcher".into(), "memorist".into()]),
         SubAgentDefinition::new(
@@ -197,7 +189,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "poc_stats".to_string(),
         ])
         .with_max_iterations(20)
-        .with_timeout(600)
         .with_idle_timeout(180)
         .with_delegatable_agents(vec!["memorist".into()]),
         SubAgentDefinition::new(
@@ -212,7 +203,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "read_knowledge".to_string(),
         ])
         .with_max_iterations(5)
-        .with_timeout(120)
         .with_idle_timeout(60)
         .as_pipeline_only(),
         SubAgentDefinition::new(
@@ -231,7 +221,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "record_finding".to_string(),
         ])
         .with_max_iterations(20)
-        .with_timeout(300)
         .with_idle_timeout(120),
         SubAgentDefinition::new(
             "enricher",
@@ -251,7 +240,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "list_cves_with_pocs".to_string(),
         ])
         .with_max_iterations(10)
-        .with_timeout(120)
         .with_idle_timeout(60),
         SubAgentDefinition::new(
             "orchestrator",
@@ -267,7 +255,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "query_target_data".to_string(),
         ])
         .with_max_iterations(50)
-        .with_timeout(900)
         .with_idle_timeout(300)
         .with_delegatable_agents(vec![
             "researcher".into(),

@@ -29,6 +29,60 @@
 
 ---
 
+### 2026-06-03 · harness-profile-driven-execution 续推 P1/P2：P2-G 可观测 + P1-E1/E2/E3 provider 韧性（MCP-agent-4 · DISPATCH off · 用户「继续推进 P1/P2」→「E1-E3 全做完」）
+
+- **本轮目标**：接前序 P0+P1-C/D 已完成的状态，继续推进 `docs/design/2026-06-03-harness-profile-driven-execution.md` 的 P1（E provider 韧性）+ P2（F 分诊 / G 可观测）。
+- **精确盘点（读真码核对）**：
+  - P1-C/D 已完成；P1-E **core 已存在**（`stream_retry.rs` 分类+退避+3 重试+终态错误；`stream_processor` 重复检测截停）；剩 E1（重复后 re-prompt 恢复）/ E2（mid-stream 错误重试）/ E3（失败转移备用模型）三增强未做。
+  - P2-F（分诊）**已由独立 feature `task-mode-lead-agent-triage-2026-06-03` 落地**（仅 blocked 于 precommit/E2E/commit）。
+  - P2-G（可观测）此前 S0 已打 profile/DAG 投影 + per-stage planner-subtask 映射日志；缺口 = ① gate 决策（PASS/BLOCK+findings）从未在 `consume_gate_outcome` 单一汇聚点打日志（graph-driven 模式 gate 决策对日志不可见）；② graph-driven 路径 `advance_stage`(execute.rs:534) 静默推进（不像 legacy 路径有"cursor advanced"日志）。
+- **已完成（P2-G 收尾，纯 additive INFO 日志，零行为变更）**：
+  - `task_orchestrator/subtask_phases/execute.rs::consume_gate_outcome` 入口加"gate decision"日志（task_id/stage/PASS|BLOCK/findings/graph_driven）——两条 gate 路径都经此汇聚点，graph-driven 也不再静默。
+  - 同文件 graph-driven servicer loop 的 `advance_stage` 调用加"graph-flow: operation_state cursor advanced past stage"日志（Ok/Err 分支），与 legacy 路径对齐，stage 推进全链路可见。
+- **运行过的验证**：
+  - `cargo check -p golish-agent-runtime -p golish-agent-kit` → exit 0（基线确认：用户所述"报错已修好"属实）
+  - `cargo nextest run -p golish-agent-kit` → **444 passed / 0 skipped**（G 日志改动无回归）
+  - `cargo fmt -p golish-agent-kit -- --check` → 净（无 diff）
+  - `cargo clippy -p golish-agent-kit -- -D warnings` → exit 0（零告警）
+  - ReadLints execute.rs → 无错
+- **已完成（P1-E1/E2/E3 provider 韧性 · 用户确认「E1-E3 全做完」后落地）**：
+  - **E1 重复后 re-prompt 恢复 + E2 mid-stream 错误重试**（`golish-agent-runtime/agentic_loop`）：`StreamProcessOutcome` 加 `repetition_detected: bool` + `mid_stream_error: Option<String>`；`process_stream` 在重复 break 处置位、收尾把**可重试**的 mid-stream chunk error 透出（不再静默吞）；`TurnState` 加 `repetition_recoveries`/`mid_stream_retries`（各上限 2）；executor 在 assistant_push↔reflector 之间插有界恢复块（注入纠正 re-prompt + continue），到顶接受 partial（不无限 spin），仅 `!has_tool_calls` 触发。
+  - **E3 失败转移备用模型**（`golish-agent-bridge`）：核查发现 `CompletionRequest.model` 被各 rig fork 忽略（model 在 client 构造期固化，`rig-zai-sdk/conversion.rs:187`）→ request.model 方案作废；改在 bridge `execute_with_context_inner`：主模型可恢复错误（非取消/认证/上下文溢出）+ 配置 `GOLISH_LLM_FALLBACK_MODEL`（默认空=OFF）+ 有 model_factory → 经 `LlmClientFactory::get_or_create(provider, fallback)` 重建客户端再 dispatch 一次；主失败未 finalize history→重试从同一状态起，不重发 Started/UserMessage。决策逻辑抽 `failover.rs`（纯函数）。
+- **运行过的验证（E 系列）**：
+  - `cargo nextest run -p golish-agent-runtime -p golish-agent-bridge` → **230 + bridge 全过**（含 3 个 E1/E2 集成测 `resilience_recovery_tests`）
+  - `cargo nextest run -p golish-agent-bridge -E 'test(failover)'` → **7/7**（failover_decision/eligible 纯逻辑）
+  - `cargo clippy -p golish-agent-runtime -p golish-agent-bridge -- -D warnings` → exit 0（零告警）
+  - `cargo fmt -p golish-agent-runtime -p golish-agent-bridge -- --check` → 净
+  - `cargo check -p golish-agent-app`（下游）→ exit 0
+- **已记录证据**：见上"运行过的验证"；G：444/444 + clippy/fmt 净；E：230 + 7 + clippy/fmt/下游净。
+- **提交记录**：**未 commit**（§2.7 等用户授权）。
+- **未提交文件清单**：`M execute.rs`（G 日志）+ `M stream_processor/mod.rs` `M stream_processor/chunks.rs?`(无,仅 mod) `M turn/state.rs` `M turn/executor.rs` `?? tests/resilience_recovery_tests.rs` `M tests.rs`（E1/E2）+ `?? agent-bridge/failover.rs` `M agent-bridge/execution.rs` `M agent-bridge/mod.rs`（E3）+ `?? docs/.../2026-06-03-harness-profile-driven-execution-p1p2.md` + `M agent-progress.md`。
+- **已知风险或未解决问题（诚实边界）**：① 活体复跑（真触发重复/断流/失败转移看恢复）需 runtime + LLM key；② E3 仅覆盖主文本路径（`execute_with_context_inner`），多模态 vision 路径未接（niche）；③ 全量 `just precommit` 未跑；④ 未 commit。
+- **下一步最佳动作**：用户授权后 `just precommit` + 活体复跑（① Task 跑出 scoping/gate 日志确认 G；② 配 `GOLISH_LLM_FALLBACK_MODEL` 真触发 E3 失败转移）→ 整批 commit；triage feature 的 E2E 也可一并验。
+
+---
+
+### 2026-06-03 · AIChatPanel 会话 UX/持久化连改 + Task 模式 Lead-Agent 分诊（MCP-agent-1 · DISPATCH off · 接 MCP-4 上下文 · 用户连续逐条驱动 →「按最干净方式全部弄好」）
+
+- **本轮目标**：接 MCP-4 转交（ExecutionModePicker 迭代）后，用户连续提出多个 AIChatPanel 问题，逐个根因→修复；最后聚焦 Task 模式「发『你好』被硬拆成 plan 报错」的架构根因，写设计文档并实现。
+- **改动清单（按提出顺序，全部已 scoped 验证）**：
+  1. **执行模式记忆**（MCP-4 已实现，本轮验证+补测+修格式）：`executionModePicker.utils.ts`(LAST_MODE_STORAGE_KEY/read/writeLastExecutionMode) + `useChatModes.ts`(seed+持久化) + `AIChatPanel.tsx`(空白 tab 用记忆模式)。本轮补 `executionModePicker.utils.test.ts` 3 条记忆单测 + 修 useChatModes 一处 biome 多行格式。
+  2. **齿轮飞出改点击**（`ExecutionModePicker.tsx`）：Radix `DropdownMenuSub` 受控（新增 `subOpen`）+ SubTrigger `onPointerMove/onPointerLeave` preventDefault 屏蔽 hover、`onClick` toggle → 只点击才开；键盘 onKeyDown 不动（a11y 保留）；读 `@radix-ui/react-menu` 源码确认 composeEventHandlers + MenuSub 在父菜单关闭时自动复位受控态。
+  3. **thinking 分段持久化（含 DB schema 改动 · 用户选 A·加列）**：新 migration `backend/crates/golish-db/migrations/20260603000001_chat_msg_thinking_segments.sql`(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS thinking_segments JSONB`，经 `sqlx::migrate!` 启动自动应用) + `conversation_store/{mod.rs,batch.rs}`(ChatMessageRow 加 thinking_segments + INSERT/SELECT/bind/map) + 前端 `conversation-db.ts`(ChatMessageRow.thinkingSegments) + `conversation-db-sync.ts`(chatMessageToDbRow 写 / dbMsgToChatMessage 还原，旧行回退单 `thinking` 块) + 新 `conversation-db-sync.test.ts`。根因：`thinkingSegments[]`（穿插多块）原 runtime-only 不持久化，重启塌成 1 个 `thinking` 块。
+  4. **error severity 琥珀/红 + 去重**（纯前端）：新 `lib/ai/errorSeverity.ts`(`classifyErrorSeverity`：planner 拒答族判 warning) + `conversation.ts`(ChatMessage.errorSeverity + setMessageError 加 severity 参 + `isSameError` 去重：同一失败二次冒出/带 `[API trace=]` 前缀的超集不再新开气泡，保留更短、任一硬错升级 error) + `MessageBlock.tsx`(`MessageErrorLine`：warning=AlertTriangle+amber，error=AlertCircle+red) + 接 `useAiChatEvents`(error 事件)/`useChatSend`(invoke 拒绝) 两触发点。
+  5. **报错气泡持久化 + severity 重启重推导**（纯前端 · 用户选 A·全部持久化）：`conversation-db-sync.ts` 新 `isPersistableMessage`(content||toolCalls||error 才过滤入库，原只 content||toolCalls 把 error-only 气泡挡掉) + `dbMsgToChatMessage` 用 `classifyErrorSeverity(row.error)` 重推导 severity（无需加列）。
+  6. **classifier 扩 JSON 包装拒答**：`{"message":…}` 缺 `subtasks` 走「坏 JSON」分支、文案是 "Failed to parse task planner JSON (missing field `subtasks`)"，原 classifier 漏判仍红；加 "failed to parse task planner json" + ("missing field"&"subtasks") → warning。
+  7. **设计文档**：`docs/design/2026-06-03-task-mode-lead-agent-triage.md`（lead-agent 前置分诊：reply/clarify/decompose；现状 file:line 证据表 + 3 方案对比 + 风险/回滚）。
+  8. **Task 模式 Lead-Agent 分诊实现（方案1 干净落地 · 用户「按最干净方式全部弄好」）**：根因 = Task 模式每条输入先过 8-token 意图分类器（`intent.rs`，超时/失败默认 Task），判 Task 即**直接进规划器**，无主 agent 思考层；「你好」被误判 Task→规划器用对话回→解析不出 plan→报错。**实现全部在 `golish-agent-app/src/ai/commands/core/chat.rs`（非热点，避开别会话在改的 bridge）**：① 新增纯函数 `deterministic_intent`（空/问候→Conversation；URL/IP/scan/exploit/审计等强信号→Task；模棱→None 交 LLM）+ `is_conversational_planner_failure`（镜像前端 classifier 信号）；② Task 分支先 deterministic 再 LLM，Conversation→`bridge.execute`（主 agent 思考回复，不进规划器）；③ `execute_task_mode` 错误处理加兜底：conversational planner failure→`bridge.execute` 回退、不 emit Error 事件。`intent.rs` 零改动。
+- **验证（已记录证据）**：
+  - 前端（每次改后）：`just check-fe`(biome+typecheck) exit 0；`just test-fe`(全量) exit 0（含新增单测：executionModePicker.utils 12 / conversation-db-sync 11 / errorSeverity 6 / conversation 含 severity+去重 6 等）；ReadLints 0。
+  - 后端 thinking 列：`cargo check`(全 workspace) exit 0 · `cargo clippy -p golish-agent-app` 0 warn · `cargo nextest -p golish-agent-app -p golish-db` **73 passed** · `cargo fmt -p golish-agent-app --check` clean。
+  - 后端 lead-agent 分诊：`cargo check -p golish-agent-app` exit 0 · `cargo clippy -p golish-agent-app --all-targets` 0 warn · `cargo nextest -p golish-agent-app` **31 passed**（含新 triage/conversational-failure 6 测）· `cargo fmt -p golish-agent-app --check` clean · ReadLints 0。
+- **范围/诚实**：① **零 commit**（§2.7 等用户授权）；② **未跑全量 `just precommit`**——`cargo fmt --check`(workspace) 当前红，但**全部是别的会话在改的 harness 文件**（golish-agent-bridge / golish-agent-kit/harness / golish-agent-runtime + 新增 phase.rs/phase_flow.rs），**与本轮无关、未触碰**；本轮所有改动文件 fmt/clippy/test 全 clean；③ **活体 E2E 未做**（需 just dev + LLM key 观测「你好→正常回复 / scan X→拆解」）；④ severity 为运行时字段不持久化，靠重启重推导（确定性）保红/琥珀一致；⑤ thinking_segments 是 DB 加列（向后兼容、IF NOT EXISTS），另一台机需跑迁移（启动自动）。
+- **下一步建议**：① 用户跑 `just dev` 做活体 E2E 验「你好不再报错、走主 agent」；② reconcile 与别会话的 fmt（全量 precommit 才能绿）后整批 commit；③ 设计文档 §8 开放问题本轮已按推荐自决（reply=转主 agent / 失败默认 reply+强信号兜底 / 不加 UI / 未做 planner-decline 第二道网），如需可继续 P1（few-shot/可观测）或方案3（planner schema 合法 decline）。
+
+---
+
 ### 2026-06-03 · 两级阶段模型（Phase×Stage）设计+计划+实现 A/B/C（MCP-agent-2 · DISPATCH off · 用户经 brainstorming 逐条拍板 →「开始执行A/B/C」）
 
 - **本轮目标**：把扁平 12 stage 重构成「大阶段(phase)×小阶段(stage)」两级；先 brainstorming 定决策→写设计→写计划→登记 feature_list→执行计划 Phase A/B/C。

@@ -128,6 +128,17 @@ pub fn is_scan_invocation(tool_name: &str, args: &Value) -> bool {
         || tool_category(&underlying_tool_name(tool_name, args)).is_some()
 }
 
+/// Name-only variant of [`is_scan_invocation`] for **tool-list filtering** (where
+/// no call args are available yet). A tool definition is a scan tool iff it is a
+/// scan-execution wrapper (`pentest_run` / `run_pty_cmd` / `run_command`) or its
+/// name resolves to a known scan [`tool_category`]. Used to hide scan tools from
+/// the model in stages whose `allowed_tool_types` is empty (e.g. scoping /
+/// reporting), so the model never sees a scan tool it could only be blocked on.
+pub fn is_scan_tool_name(tool_name: &str) -> bool {
+    matches!(tool_name, "pentest_run" | "run_pty_cmd" | "run_command")
+        || tool_category(tool_name).is_some()
+}
+
 /// Whether the (resolved) tool call is permitted by a stage's `allowed_tool_types`
 /// **type-selector** list (deny-by-default).
 ///
@@ -378,5 +389,31 @@ mod tests {
             &json!({"command": "sqlmap -u http://x"}),
             &allowed
         ));
+    }
+
+    #[test]
+    fn is_scan_tool_name_classifies_by_name_only() {
+        // scan wrappers + known scan tools → true (governed by the whitelist)
+        for scan in [
+            "pentest_run",
+            "run_pty_cmd",
+            "run_command",
+            "nmap",
+            "nuclei",
+            "sqlmap",
+            "subfinder",
+        ] {
+            assert!(is_scan_tool_name(scan), "{scan} must be a scan tool");
+        }
+        // meta / control-plane tools → false (exempt; never hidden)
+        for meta in [
+            "sub_agent_pentester",
+            "submit_stage_deliverable",
+            "read_file",
+            "ask_human",
+            "query_target_data",
+        ] {
+            assert!(!is_scan_tool_name(meta), "{meta} must NOT be a scan tool");
+        }
     }
 }

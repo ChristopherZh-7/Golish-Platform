@@ -1,9 +1,12 @@
 //! Sub-agent execution.
 //!
 //! [`execute_sub_agent`] is the public entry point: it wraps the inner
-//! orchestrator with an overall timeout and uniform error handling. The
-//! actual iterate-stream-dispatch loop lives in [`inner`], with one-shot
-//! setup/teardown phases delegated to dedicated submodules:
+//! orchestrator with an *optional* overall timeout and uniform error handling.
+//! When `timeout_secs` is `None` the sub-agent runs to completion, bounded only
+//! by its idle timeout, per-tool timeouts, and `max_iterations` — it keeps going
+//! as long as it is making progress. The actual iterate-stream-dispatch loop
+//! lives in [`inner`], with one-shot setup/teardown phases delegated to
+//! dedicated submodules:
 //!
 //! - [`prompt_assembly`]: build the effective system prompt (optimized
 //!   prompt + briefing + skills + barrier instruction).
@@ -32,9 +35,11 @@ mod tool_setup;
 
 /// Execute a sub-agent with the given task and context.
 ///
-/// This is the public entry point. It wraps [`inner::execute_sub_agent_inner`]
-/// with an overall timeout and emits a graceful [`AiEvent::SubAgentError`]
-/// when the timeout fires.
+/// This is the public entry point. When `agent_def.timeout_secs` is `Some`, it
+/// wraps [`inner::execute_sub_agent_inner`] with that overall (wall-clock)
+/// timeout and emits a graceful [`AiEvent::SubAgentError`] when it fires. When
+/// `timeout_secs` is `None`, no overall cap is applied and the agent runs until
+/// it finishes, hits its idle timeout, or exhausts `max_iterations`.
 ///
 /// # Arguments
 /// * `agent_def` — sub-agent definition
@@ -82,41 +87,49 @@ where
         depth = parent_context.depth + 1,
     );
 
-    let timeout_duration = agent_def
-        .timeout_secs
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(600));
+    // Overall (wall-clock) execution cap. `None` = run to completion, bounded
+    // only by the idle timeout, per-tool timeouts, and `max_iterations`.
+    let overall_timeout = agent_def.timeout_secs.map(Duration::from_secs);
     let idle_timeout_duration = agent_def.idle_timeout_secs.map(Duration::from_secs);
 
-    // Clone event_tx for timeout error handling (ctx is borrowed, not moved).
+    // A single tool call stays bounded even when the overall cap is disabled, so
+    // one hung tool can't wedge the loop forever. Prefer the idle timeout, then
+    // any configured overall cap, then a conservative default.
+    let tool_fallback_timeout = idle_timeout_duration
+        .or(overall_timeout)
+        .unwrap_or(Duration::from_secs(600));
+
+    // Clone event_tx before `ctx` is moved into the inner future (the overall
+    // timeout error path below needs it).
     let event_tx_clone = ctx.event_tx.clone();
 
-    match tokio::time::timeout(
-        timeout_duration,
-        inner::execute_sub_agent_inner(
-            agent_def,
-            args,
-            parent_context,
-            model,
-            ctx,
-            tool_provider,
-            parent_request_id,
-            start_time,
-            &sub_agent_span,
-            timeout_duration,
-            idle_timeout_duration,
-        )
-        .instrument(sub_agent_span.clone()),
+    let inner_fut = inner::execute_sub_agent_inner(
+        agent_def,
+        args,
+        parent_context,
+        model,
+        ctx,
+        tool_provider,
+        parent_request_id,
+        start_time,
+        &sub_agent_span,
+        tool_fallback_timeout,
+        idle_timeout_duration,
     )
-    .await
-    {
+    .instrument(sub_agent_span.clone());
+
+    let Some(overall_timeout) = overall_timeout else {
+        return inner_fut.await;
+    };
+
+    match tokio::time::timeout(overall_timeout, inner_fut).await {
         Ok(result) => result,
         Err(_elapsed) => {
             let duration_ms = start_time.elapsed().as_millis() as u64;
             let error_msg = format!(
                 "Sub-agent '{}' timed out after {}s",
                 agent_def.id,
-                timeout_duration.as_secs()
+                overall_timeout.as_secs()
             );
             tracing::warn!("{}", error_msg);
 

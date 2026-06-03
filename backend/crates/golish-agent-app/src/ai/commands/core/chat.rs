@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use tauri::State;
 
+use golish_agent_bridge::bridge_executor::{classify_user_intent, UserIntent};
+
 use super::super::super::agent_bridge::AgentBridge;
 use crate::state::AgentState;
 
@@ -66,36 +68,48 @@ pub async fn send_ai_prompt_session(
             })
         }
         golish_agent_kit::execution_mode::ExecutionMode::Task => {
-            use golish_agent_bridge::bridge_executor::{classify_user_intent, UserIntent};
-
-            let intent = classify_user_intent(&bridge, &prompt).await;
+            // Lead-agent triage: decide whether this input actually needs the
+            // multi-step planner, or whether the main agent should just think and
+            // reply. A cheap deterministic check handles the obvious cases (empty,
+            // greetings, clear security tasks) without an LLM round-trip; only
+            // genuinely ambiguous input falls back to the LLM classifier.
+            let user_message = extract_user_message_from_wrapped_prompt(&prompt);
+            let intent = match deterministic_intent(user_message) {
+                Some(decided) => decided,
+                None => classify_user_intent(&bridge, &prompt).await,
+            };
 
             if intent == UserIntent::Conversation {
                 tracing::info!(
-                    message = "[send_ai_prompt_session] Task mode but conversational intent — using Chat path",
+                    message = "[send_ai_prompt_session] Conversational intent — main agent replies (no planner)",
                     session_id = %session_id,
                 );
-                bridge.execute(&prompt).await.map_err(|e| {
+                return bridge.execute(&prompt).await.map_err(|e| {
                     tracing::error!(
-                        message = "[send_ai_prompt_session] Chat-fallback execution error",
+                        message = "[send_ai_prompt_session] Chat-path execution error",
                         session_id = %session_id,
                         error = %e,
                     );
                     GolishError::Internal(e.to_string())
-                })
-            } else {
-                execute_task_mode(bridge, &session_id, &prompt, &state)
-                    .await
-                    .map_err(|e| {
-                        let error = format!("{:#}", e);
-                        tracing::error!(
-                            message = "[send_ai_prompt_session] Task execution error",
-                            session_id = %session_id,
-                            error = %error,
-                        );
-                        GolishError::Internal(error)
-                    })
+                });
             }
+
+            // Task intent: run the planner/orchestrator. If the planner can't form
+            // a plan because the input was actually conversational (the model
+            // replied in prose / `{"message": …}` instead of subtasks), the
+            // fallback inside `execute_task_mode` answers via the main agent rather
+            // than surfacing a "Generator failed" error.
+            execute_task_mode(bridge, &session_id, &prompt, &state)
+                .await
+                .map_err(|e| {
+                    let error = format!("{:#}", e);
+                    tracing::error!(
+                        message = "[send_ai_prompt_session] Task execution error",
+                        session_id = %session_id,
+                        error = %error,
+                    );
+                    GolishError::Internal(error)
+                })
         }
     }
 }
@@ -193,14 +207,141 @@ async fn execute_task_mode(
             });
         }
         Err(e) => {
+            let err_msg = format!("{:#}", e);
+            // Safety net: the planner could not produce a plan because the input
+            // was conversational (model replied in prose / `{"message": …}`).
+            // Answer via the main agent instead of surfacing a "Generator failed"
+            // error. The deterministic triage in the caller catches most of these
+            // before the planner runs; this handles the ambiguous misjudged ones.
+            if is_conversational_planner_failure(&err_msg) {
+                tracing::info!(
+                    target: "harness::task_mode",
+                    error = %err_msg,
+                    "planner declined (conversational input) — falling back to main agent reply"
+                );
+                return bridge
+                    .execute(prompt)
+                    .await
+                    .context("Chat fallback after planner declined");
+            }
             bridge.emit_event(AiEvent::Error {
-                message: format!("{:#}", e),
+                message: err_msg,
                 error_type: "task_orchestrator".to_string(),
             });
         }
     }
 
     result
+}
+
+/// Cheap, deterministic triage for the obvious cases so we don't pay an LLM
+/// round-trip (and don't misfire when that call times out): empty input and pure
+/// greetings/small-talk go to the main agent; clear security tasks go to the
+/// planner. Genuinely ambiguous input returns `None` so the caller defers to the
+/// LLM classifier. Conservative on purpose — only classify when confident.
+fn deterministic_intent(user_message: &str) -> Option<UserIntent> {
+    let trimmed = user_message.trim();
+    if trimmed.is_empty() {
+        return Some(UserIntent::Conversation);
+    }
+    let lower = trimmed.to_lowercase();
+
+    // Clear security-task signals win (even if the message also says "hi").
+    const TASK_SIGNALS: &[&str] = &[
+        "http://",
+        "https://",
+        "scan ",
+        "扫描",
+        "exploit",
+        "渗透",
+        "pentest",
+        "penetration",
+        "enumerate",
+        "recon",
+        "侦察",
+        "audit",
+        "审计",
+        "漏洞",
+        "vulnerab",
+        "brute",
+        "爆破",
+        "fuzz",
+        "提权",
+        "nmap",
+        "sqlmap",
+        "nikto",
+        "gobuster",
+        "subdomain",
+        "子域",
+    ];
+    if TASK_SIGNALS.iter().any(|s| lower.contains(s)) {
+        return Some(UserIntent::Task);
+    }
+
+    // Short, pure greetings / thanks → let the main agent reply directly.
+    const CHAT_PREFIXES: &[&str] = &[
+        "你好",
+        "您好",
+        "哈喽",
+        "嗨",
+        "在吗",
+        "谢谢",
+        "多谢",
+        "感谢",
+        "hi",
+        "hello",
+        "hey",
+        "yo",
+        "thanks",
+        "thank you",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "早上好",
+        "晚上好",
+        "下午好",
+    ];
+    let short = trimmed.chars().count() <= 24;
+    if short && CHAT_PREFIXES.iter().any(|p| lower.starts_with(p)) {
+        return Some(UserIntent::Conversation);
+    }
+
+    // Identity / capability / definition questions are conversational.
+    const CHAT_CONTAINS: &[&str] = &[
+        "你是谁",
+        "你能做什么",
+        "你会什么",
+        "你叫什么",
+        "what can you do",
+        "who are you",
+        "how are you",
+        "什么是",
+        "what is",
+        "explain ",
+    ];
+    if CHAT_CONTAINS.iter().any(|s| lower.contains(s)) {
+        return Some(UserIntent::Conversation);
+    }
+
+    None
+}
+
+/// Whether a Task-orchestrator failure is really "the planner declined because
+/// the input was conversational" (model replied in prose / `{"message": …}`
+/// instead of a plan) rather than a genuine error. Mirrors the frontend
+/// `classifyErrorSeverity` signals so both layers agree on what is "soft".
+fn is_conversational_planner_failure(err_msg: &str) -> bool {
+    let lower = err_msg.to_lowercase();
+    const SIGNALS: &[&str] = &[
+        "declined to produce a plan",
+        "returned a message instead of a plan",
+        "refused the request or asked a question",
+        "failed to parse task planner json",
+    ];
+    if SIGNALS.iter().any(|s| lower.contains(s)) {
+        return true;
+    }
+    lower.contains("missing field") && lower.contains("subtasks")
 }
 
 fn extract_user_message_from_wrapped_prompt(prompt: &str) -> &str {
@@ -227,7 +368,11 @@ fn truncate_for_title(s: &str, max_bytes: usize) -> String {
 
 #[cfg(test)]
 mod chat_title_tests {
-    use super::{extract_user_message_from_wrapped_prompt, truncate_for_title};
+    use super::{
+        deterministic_intent, extract_user_message_from_wrapped_prompt,
+        is_conversational_planner_failure, truncate_for_title,
+    };
+    use golish_agent_bridge::bridge_executor::UserIntent;
 
     #[test]
     fn ascii_under_limit_returned_as_is() {
@@ -278,6 +423,87 @@ mod chat_title_tests {
             extract_user_message_from_wrapped_prompt("帮我看看example.com"),
             "帮我看看example.com"
         );
+    }
+
+    #[test]
+    fn triage_routes_greetings_to_conversation() {
+        for greeting in [
+            "你好",
+            "  你好  ",
+            "Hello",
+            "hi there",
+            "谢谢!",
+            "你是谁",
+            "你能做什么",
+        ] {
+            assert_eq!(
+                deterministic_intent(greeting),
+                Some(UserIntent::Conversation),
+                "greeting must be conversational: {greeting:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn triage_routes_empty_to_conversation() {
+        assert_eq!(deterministic_intent("   "), Some(UserIntent::Conversation));
+    }
+
+    #[test]
+    fn triage_routes_clear_security_tasks_to_task() {
+        for task in [
+            "scan example.com for vulns",
+            "对 https://target.tld 做渗透",
+            "用 nmap 扫描 10.0.0.1",
+            "enumerate subdomains of acme.io",
+            "帮我做一次漏洞审计",
+        ] {
+            assert_eq!(
+                deterministic_intent(task),
+                Some(UserIntent::Task),
+                "security task must be Task: {task:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn triage_task_signal_wins_over_greeting() {
+        assert_eq!(
+            deterministic_intent("你好，帮我扫描 example.com"),
+            Some(UserIntent::Task)
+        );
+    }
+
+    #[test]
+    fn triage_defers_ambiguous_to_llm() {
+        // No clear signal either way → caller falls back to the LLM classifier.
+        assert_eq!(
+            deterministic_intent("the auth module on the staging box"),
+            None
+        );
+    }
+
+    #[test]
+    fn conversational_planner_failure_detects_soft_signals() {
+        assert!(is_conversational_planner_failure(
+            "Generator failed: The task planner declined to produce a plan — ..."
+        ));
+        assert!(is_conversational_planner_failure(
+            "Generator failed: Failed to parse task planner JSON (missing field `subtasks` at line 3)"
+        ));
+        assert!(is_conversational_planner_failure(
+            "[API trace=abc] send_ai_prompt_session: ... missing field `subtasks` ..."
+        ));
+    }
+
+    #[test]
+    fn conversational_planner_failure_ignores_real_errors() {
+        assert!(!is_conversational_planner_failure(
+            "Generator LLM call failed: connection refused"
+        ));
+        assert!(!is_conversational_planner_failure(
+            "authentication failed (401)"
+        ));
     }
 }
 

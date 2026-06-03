@@ -34,6 +34,13 @@ pub struct TurnState {
     /// history during this agent run. Capped at 3 inside
     /// `maybe_run_reflector`.
     pub total_reflector_nudges: u32,
+    /// E1 · how many times this run injected a "stop repeating" recovery
+    /// re-prompt after degenerate-repetition detection. Bounded by
+    /// `MAX_REPETITION_RECOVERIES`.
+    pub repetition_recoveries: u32,
+    /// E2 · how many times this run retried after a retriable mid-stream
+    /// error left truncated output. Bounded by `MAX_MID_STREAM_RETRIES`.
+    pub mid_stream_retries: u32,
 }
 
 impl Default for TurnState {
@@ -43,6 +50,8 @@ impl Default for TurnState {
             reflector_active: true,
             consecutive_no_tool_turns: 0,
             total_reflector_nudges: 0,
+            repetition_recoveries: 0,
+            mid_stream_retries: 0,
         }
     }
 }

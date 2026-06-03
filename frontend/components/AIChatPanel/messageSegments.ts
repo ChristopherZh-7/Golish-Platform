@@ -180,13 +180,10 @@ export function buildMessageSegments(
     // "Thought for …" bursts land between the prose they preceded instead of all
     // stacking at the top of the message.
     emitTextWithThinking(0, message.content.length, 0);
-    // Nothing has landed yet (no content, no reasoning): show a streaming
-    // placeholder so the bubble isn't empty. Suppressed once a ThinkingBlock owns
-    // the spinner to avoid a duplicate loader.
-    if (segments.length === 0) {
-      const showStreamingPlaceholder = message.isStreaming && !message.thinking;
-      segments.push({ kind: "text", content: showStreamingPlaceholder ? "..." : "" });
-    }
+    // Nothing has landed yet (no content, no reasoning): emit no placeholder.
+    // The AgentStatusIndicator footer ("Preparing context" / "Writing response"
+    // …) is the single "working" indicator — a "..." text bubble here would just
+    // double up with it (the redundancy users complained about).
   }
 
   return segments;

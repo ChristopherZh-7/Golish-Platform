@@ -186,8 +186,11 @@ fn gate_tool_call_for_dispatch(
             // taxonomy. Agent/meta tools (sub_agent_*, submit, query_target_data,
             // record_finding, manage_targets, log_*, memory/graph) are exempt.
             if golish_agent_kit::harness::is_scan_invocation(raw_name, args) {
-                if !golish_agent_kit::harness::stage_allows(raw_name, args, &spec.allowed_tool_types)
-                {
+                if !golish_agent_kit::harness::stage_allows(
+                    raw_name,
+                    args,
+                    &spec.allowed_tool_types,
+                ) {
                     return ToolGateDecision::Reject {
                         reason: not_in_whitelist_reason(raw_name, &spec.id),
                     };

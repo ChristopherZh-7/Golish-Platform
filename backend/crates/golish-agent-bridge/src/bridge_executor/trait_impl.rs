@@ -27,15 +27,14 @@ impl AgentExecutor for BridgeAgentExecutor {
         // surfaced as a cryptic `expected value at line 1 column 1` serde error.
         // `describe_plan_parse_failure` splits "model declined" (clean message,
         // no serde noise) from genuinely malformed JSON (keep the serde detail).
-        let mut output: GeneratorOutput = serde_json::from_str(json_str)
-            .map_err(|e| {
-                anyhow::anyhow!(describe_plan_parse_failure(
-                    "task planner",
-                    &response,
-                    json_str,
-                    &e,
-                ))
-            })?;
+        let mut output: GeneratorOutput = serde_json::from_str(json_str).map_err(|e| {
+            anyhow::anyhow!(describe_plan_parse_failure(
+                "task planner",
+                &response,
+                json_str,
+                &e,
+            ))
+        })?;
 
         // Phase 1 MVP · Operation Harness:
         // LLM may omit `harness_stage` even when subtask matches a known stage.
@@ -44,6 +43,61 @@ impl AgentExecutor for BridgeAgentExecutor {
         let _filled = backfill_harness_stage(&mut output.subtasks);
 
         Ok(output)
+    }
+
+    async fn generate_stage_plan(
+        &self,
+        stage: golish_agent_kit::harness::StageKind,
+        task_input: &str,
+        upstream_evidence: &str,
+    ) -> Result<Vec<PlannedSubtask>> {
+        let stage_id = stage.as_str();
+        tracing::info!("[TaskMode/StagePlan] Lazily planning stage '{stage_id}'");
+        let user = format!(
+            "Target: {task_input}\n\nUpstream evidence so far:\n{upstream_evidence}\n\n\
+             Plan ONLY the current stage: `{stage_id}`. Produce 2-4 concrete, executable \
+             subtasks that advance THIS stage. The FINAL subtask MUST be \
+             \"Submit & verify the {stage_id} StageDeliverable\" and instruct the agent to call \
+             the submit_stage_deliverable tool. Do not plan other stages."
+        );
+        let response = match self
+            .simple_completion_for_phase(
+                prompts::generator_prompt(),
+                &user,
+                Some("pipeline_generator"),
+            )
+            .await
+        {
+            Ok(r) => r,
+            // LLM/transport failure → empty so the orchestrator falls back to the
+            // single-subtask synthesizer (never spin, never vacuous pass).
+            Err(e) => {
+                tracing::warn!("[TaskMode/StagePlan] LLM failed (fallback to synth): {e}");
+                return Ok(Vec::new());
+            }
+        };
+        let json_str = extract_json_from_response(&response);
+        // Refusal / non-JSON → empty → caller falls back to the synth single step.
+        let mut output: GeneratorOutput = match serde_json::from_str(json_str) {
+            Ok(o) => o,
+            Err(_) => return Ok(Vec::new()),
+        };
+        if output.subtasks.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Deterministically tag every step with this stage + guarantee a submit
+        // terminal (the model may forget the closing submit step).
+        let agent = if matches!(stage, golish_agent_kit::harness::StageKind::Reporting) {
+            "analyzer"
+        } else {
+            "pentester"
+        };
+        let hint = golish_agent_kit::harness::HarnessStageHint::new(stage);
+        for st in output.subtasks.iter_mut() {
+            st.harness_stage = Some(hint.clone());
+        }
+        ensure_submit_terminal(&mut output.subtasks, stage_id, agent);
+        Ok(output.subtasks)
     }
 
     async fn execute_subtask(
@@ -361,5 +415,67 @@ impl AgentExecutor for BridgeAgentExecutor {
                 Ok(None)
             }
         }
+    }
+}
+
+/// Ensure a lazily-generated stage plan ends with a submit-and-verify step
+/// (deterministic — the model may forget the closing submit). No-op when the
+/// last step already references a submit.
+fn ensure_submit_terminal(subtasks: &mut Vec<PlannedSubtask>, stage_id: &str, agent: &str) {
+    let last_is_submit = subtasks.last().is_some_and(|s| {
+        s.title.to_lowercase().contains("submit")
+            || s.description.contains("submit_stage_deliverable")
+    });
+    if last_is_submit {
+        return;
+    }
+    subtasks.push(PlannedSubtask {
+        title: format!("Submit & verify the {stage_id} StageDeliverable"),
+        description: format!(
+            "Compile this stage's findings and call the submit_stage_deliverable tool with the \
+             structured StageDeliverable (stage_id, stage_run_id, claims, evidence_refs, findings) \
+             for the '{stage_id}' stage. Cite only real evidence-ledger ids produced this run."
+        ),
+        agent: Some(agent.to_string()),
+        harness_stage: None,
+        nl_slice: None,
+        acceptance_criteria: Vec::new(),
+    });
+}
+
+#[cfg(test)]
+mod stage_plan_tests {
+    use super::ensure_submit_terminal;
+    use golish_agent_kit::task_orchestrator::PlannedSubtask;
+
+    fn pt(title: &str) -> PlannedSubtask {
+        PlannedSubtask {
+            title: title.to_string(),
+            description: title.to_string(),
+            agent: Some("pentester".to_string()),
+            harness_stage: None,
+            nl_slice: None,
+            acceptance_criteria: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn appends_submit_when_missing() {
+        let mut v = vec![pt("Enumerate subdomains")];
+        ensure_submit_terminal(&mut v, "enumeration", "pentester");
+        assert_eq!(v.len(), 2);
+        let last = v.last().unwrap();
+        assert!(last.title.to_lowercase().contains("submit"));
+        assert!(last.description.contains("submit_stage_deliverable"));
+    }
+
+    #[test]
+    fn keeps_existing_submit_terminal() {
+        let mut v = vec![
+            pt("recon"),
+            pt("Submit & verify the enumeration StageDeliverable"),
+        ];
+        ensure_submit_terminal(&mut v, "enumeration", "pentester");
+        assert_eq!(v.len(), 2, "must not double-append a submit step");
     }
 }

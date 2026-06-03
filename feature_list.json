@@ -11,6 +11,29 @@
   ],
   "features": [
     {
+      "id": "task-mode-lead-agent-triage-2026-06-03",
+      "priority": 1,
+      "area": "backend/crates/golish-agent-app/src/ai/commands/core/chat.rs + frontend/components/AIChatPanel (severity/persistence) + frontend/lib/{ai/errorSeverity,conversation-db-sync}",
+      "title": "Task 模式 Lead-Agent 前置分诊 + 会话 UX/持久化连改（thinking 分段持久化 / error severity 琥珀-红+去重+持久化 / 齿轮点击展开）",
+      "user_visible_behavior": "Task 模式下发『你好』等闲聊不再被硬塞规划器报错：先经确定性分诊（空/问候→主 agent 直接回复；URL/IP/scan/exploit/审计等强信号→规划器；模棱→LLM 分类），规划器万一仍拿到对话式响应则回退主 agent 回复而非报错。另：①执行模式跨 tab 记忆；②Task profile 齿轮改『点一下才飞出』（不再 hover 自动弹）；③thinking 多段穿插块重启后保留（DB 加列 thinking_segments）；④错误分级（软提示=琥珀 AlertTriangle，硬错=红 AlertCircle）+ 同一失败去重 + 报错气泡持久化、重启 severity 确定性重推导。",
+      "status": "blocked",
+      "blocker": "实现完成 + scoped 验证全绿（见 verification），但：① 全量 `just precommit` 阻塞于**别会话在改的 harness 文件 fmt 未过**（golish-agent-bridge/kit/runtime + 新 phase.rs/phase_flow.rs，与本条目无关、未触碰）；② 活体 E2E 需 `just dev` + LLM key 观测（你好→主 agent 回复 / scan X→拆解 / 误判 conversational→回退）；③ 零 commit（§2.7 等用户授权）。待用户做 E2E + 与别会话 reconcile fmt 后整批 commit → passing。",
+      "design": "docs/design/2026-06-03-task-mode-lead-agent-triage.md（方案1 lead-agent 分诊；§8 开放问题本轮按推荐自决：reply=转主 agent / 失败默认 reply+强任务信号兜底 / 不加 UI / 未做 planner-decline 第二道网）",
+      "plan": null,
+      "verification": [
+        "前端 just check-fe(biome+typecheck) → exit 0",
+        "前端 just test-fe(全量 vitest，含 executionModePicker.utils 12 / conversation-db-sync 11 / errorSeverity 6 / conversation severity+dedupe 6) → exit 0",
+        "后端 cargo check(全 workspace) → exit 0（含 thinking_segments 列 + lead-agent 分诊）",
+        "后端 cargo clippy -p golish-agent-app --all-targets → 0 warning",
+        "后端 cargo nextest -p golish-agent-app → 31 passed（含 triage_routes_*/conversational_planner_failure 6 测）",
+        "后端 cargo nextest -p golish-agent-app -p golish-db → 73 passed（thinking_segments 列改动后）",
+        "后端 cargo fmt -p golish-agent-app --check → clean",
+        "活体 E2E（用户·需运行时·未做）：just dev → Task 模式发『你好』→ 主 agent 正常回复（无报错气泡）；发『scan example.com』→ 进规划器拆解"
+      ],
+      "evidence": null,
+      "notes": "2026-06-03 MCP-agent-1 接 MCP-4 上下文，DISPATCH off，用户连续逐条驱动。根因：Task 模式无主 agent 思考层——8-token 意图分类器(intent.rs)超时/失败默认 Task→直接进规划器；『你好』误判即硬拆→规划器对话回应解析失败→报错。修复全部落 chat.rs(非热点)：deterministic_intent + is_conversational_planner_failure 两纯函数 + Task 分支先确定性后 LLM + execute_task_mode 兜底回退 bridge.execute；intent.rs/bridge 热文件零改动避并发冲突。DB schema：migration 20260603000001 加 chat_messages.thinking_segments JSONB（IF NOT EXISTS 幂等、启动 sqlx::migrate! 自动应用、向后兼容）。前端 severity 为运行时字段不持久化、靠 classifyErrorSeverity(row.error) 重启重推导。改动均未 commit。"
+    },
+    {
       "id": "harness-rebuild-2026-06-01",
       "priority": 0,
       "area": "backend/crates/golish-agent-kit/src/harness + resources/harness",
@@ -695,6 +718,25 @@
       ],
       "evidence": "2026-06-03 Phase A/B/C 执行（feat/harness-2026-06-01 工作区，未 commit）。A 数据+loader：新建 resources/harness/graph/phases.json（5 大阶段 乙 分组）+ harness/phase.rs（PhaseMap DTO/loader/validate「每 stage 恰好属一 phase」/project 按 profile 投影）+ harness/resources.rs::load_embedded_phase_map + mod.rs 接线（pub mod phase/phase_flow + re-export）。B：harness/phase_flow.rs（phase_is_complete=成员 gate 全过 / next_phase / decide_phase_step→StayInPhase|EnterPhase{approval}|Complete / pending_phase_approval）。验证：python3 -m json.tool phases.json → exit 0；cargo nextest -p golish-agent-kit -E 'test(harness::phase)' → 11/11（6 phase + 5 phase_flow）；全 harness 回归 → 203/203；cargo clippy -p golish-agent-kit -- -D warnings（与 just lint-rust 同 scope，无 --all-targets）→ exit 0（修了我引入的 next_phase needless_lifetimes；另 planner/tests/manager_tests.rs:365 type_complexity 是 pre-existing 仅 --all-targets 才现、非本任务 scope、不在 gate scope 内）；rustfmt --check 我的 4 文件 → clean。C requires_stages 重审：已读全部相关 stage JSON，结论=唯一 intra-phase 并行候选 active_recon 的 eas∥enumeration 涉安全语义、不静默改，本批 operation_graph.json 不删边，待用户复审（详见 design §8『C 重审结论』）。 **D/E/G（Rust 运行时接线）执行（2026-06-03 续，flag 后默认 OFF=零回归）**：G1 harness/mod.rs 加 two_level_enabled()（GOLISH_HARNESS_TWO_LEVEL，默认 OFF，parse_truthy_flag）。phase_flow.rs 加 crossing_phase_approval + phase_crossing_requires_approval（+2 单测）。E2/D2 legacy 路径 drive_stage_transition：审批条件 flag 切换——two_level on 时用 phase_crossing_requires_approval（跨大阶段才弹、de-dup），off 走原 per-stage（用 bare-block 保持 brace 平衡，零结构风险）。E3 graph-flow 路径（run_executor_driven，默认 active）：新增 two_level_phase_gate(&mut self) 方法，在 servicer loop 把 stage outcome 回引擎前调用——跨大阶段且需审批则 emit waiting_approval + 阻塞等 user_input_rx；未获批→把 outcome 降级 blocked 使引擎在本 stage Interrupt（不跨界）。E1（gate_passed 集合）线性 DAG 下不需要：phase 完整性隐式于线性遍历，用 phase_of(current)≠phase_of(next) 检测跨界即可（已文档）。验证：cargo nextest -p golish-agent-kit → 441/441（flag off 全量无回归）；GOLISH_HARNESS_TWO_LEVEL=1 harness 子集 205/205；clippy -p golish-agent-kit -- -D warnings exit 0；rustfmt 改动文件 clean；cargo check -p golish-agent-app/runtime/bridge 下游 exit 0。 **F（前端 phase 分组）暂缓**：subtask_completed/task_progress 事件只带自由文本 title、无 StageKind → 视觉分组 headers 需后端事件加 stage_kind（IPC/ts-rs 变更，非 frontend-only），属独立任务；且 useAiChatEvents.ts 有其它 agent 未提交改动（git 隔离风险）。但 phase **边界**已可见：two_level_phase_gate emit 的『Phase boundary X → Y…』经现有 StageMarker 的 waiting_approval detail 显示（useAiChatEvents.ts:202）。 G2 全量 just precommit + G3 活体 E2E（需 user runtime）未做。",
       "notes": "2026-06-03 MCP-agent-2 与用户经 brainstorming 逐条拍板：两级模型锚定授权阶梯 L0-L5；完整判定复用现有 gate（required_checks+min_invocations+vacuous，决策丙）；放行粒度甲（per-stage gate 保留、大阶段出口=成员全PASS+审批）；分组用乙（target_intel 被动情报归入 prep，让 active_scan 审批正好压在被动→主动边界）。设计+计划已写。状态 in_progress（用户 2026-06-03 明确「开始执行A/B/C」，A/B/C 已落地见 evidence）：注意 feature_list 现有 4 个 in_progress，超 AGENTS.md §2.1「同时 1 个」上限——既有多 agent 并行遗留 + 本次用户显式指令所致，待用户统一 reconcile 槽位；本条目 D/E/F/G 待续。核心洞察：phase 是 stage 之上的编排薄层，不动 gate 内核/stage 数据结构/DB schema，全程 flag GOLISH_HARNESS_TWO_LEVEL 后默认 OFF（flag fn 在 Phase G 加）。改动均未 commit（§2.7 等用户授权）。"
+    },
+    {
+      "id": "lazy-per-stage-planning-2026-06-03",
+      "priority": 1,
+      "area": "backend/crates/golish-agent-kit/src/task_orchestrator/{types.rs,subtask_phases/execute.rs,orchestrator.rs} + golish-agent-bridge/src/bridge_executor/trait_impl.rs + frontend/components/AIChatPanel (plan card)",
+      "title": "懒生成逐阶段计划：Task 模式进到某阶段才产该阶段 plan，末步固定 submit+验证，过 gate 才进下一阶段（取代一次性扁平全程 plan）",
+      "user_visible_behavior": "Task 模式不再一次性产 6 条扁平 subtask；改为进每个 DAG 阶段时懒生成该阶段 2-4 个战术步 + 末步『Submit & verify {stage}』，逐步执行→末步调 submit_stage_deliverable→现有 gate→PASS 推进下一阶段→再懒产。聊天里 plan 卡显示『当前阶段的 plan』随阶段切换。测试阶段无 flag，行为无条件替换（保留 stage_mode/graph_flow）。",
+      "status": "not_started",
+      "design": "docs/design/2026-06-03-lazy-per-stage-planning.md（Approved · 用户 brainstorming 逐点拍板：A 懒生成 / 先D主链后A reflector增量 / 无flag）",
+      "plan": "docs/superpowers/plans/2026-06-03-lazy-per-stage-planning.md（writing-plans · Task 1 trait / 2 bridge实现+submit末步 / 3 run_stage_subtasks懒产 / 4 run()跳过扁平 / 5 验证）",
+      "verification": [
+        "cargo nextest -p golish-agent-bridge -E 'test(stage_plan_tests)' → submit 末步补全/不重复 单测全绿",
+        "cargo nextest -p golish-agent-kit -E 'test(task_orchestrator)' → 懒产路径无回归（mock 默认返空走 synth 回落）",
+        "cargo clippy -p golish-agent-kit -p golish-agent-bridge -- -D warnings → exit 0",
+        "活体（用户·需运行时）：just dev 跑 example.com → 每阶段先出该阶段 plan（非一次性6条）→ 末步 submit → 过 gate → 进下一阶段；backend.log 'entering stage' 后紧跟 'lazy per-stage plan generated steps=N'",
+        "just precommit → 全绿"
+      ],
+      "evidence": "2026-06-03 MCP-agent-2 brainstorming 后写设计+计划（零代码改动）。下一步：用户授权后转 in_progress 执行 Task 1-5。",
+      "notes": "2026-06-03 接 MCP-1 上下文转移、修完 sub-agent 撞墙后，用户提出『逐阶段 plan』设想，经 brainstorming 逐点拍板（A 懒生成逐阶段 / 中途更新先 D 主链后 A reflector 增量 / 测试阶段无 flag）。本设计只覆盖 D（主链）；A（reflector 每步增量改本阶段剩余 task，复用 refine_plan）留后续。核心：复用现有 run_stage_subtasks 空阶段分支（execute.rs:596）+ synthesize_stage_subtask 回落（generator 失败/空不空转），把『合成1个』升级为『懒产N个含submit末步』+ run() 跳过上游扁平 generate_subtasks。高风险=动 orchestrator 执行主干，无 flag 直接替换（回滚=git revert）。注意 §2.1 in_progress 槽位已超限，待用户 reconcile。改动未 commit。"
     }
   ]
 }
