@@ -7,6 +7,7 @@
 //! include_str! 相对路径以本文件 (`src/harness/resources.rs`) 为基准, 与
 //! `stage_spec.rs` / `profile.rs` 的内联 fixture 同深度 (5 个 `../` 到 repo 根).
 
+use super::phase::{load_phase_map_from_json, PhaseMap, PhaseMapError};
 use super::profile::{load_profile_from_json, Profile, ProfileLoadError};
 use super::sprint_contract::SprintSkeleton;
 use super::stage_spec::{load_stage_spec_from_json, StageSpec, StageSpecLoadError};
@@ -74,6 +75,15 @@ pub fn profile_json(id: &str) -> Option<&'static str> {
 /// 按 kind 加载 + 解析 stage spec.
 pub fn load_embedded_stage_spec(kind: StageKind) -> Result<StageSpec, StageSpecLoadError> {
     load_stage_spec_from_json(stage_spec_json(kind))
+}
+
+/// 加载 + 校验内嵌的大阶段分组表 (`resources/harness/graph/phases.json`).
+///
+/// 两级阶段模型（设计 2026-06-03）的 phase 拓扑单一来源；与 `operation_graph.json`
+/// 同目录、同 `include_str!` 深度。
+pub fn load_embedded_phase_map() -> Result<PhaseMap, PhaseMapError> {
+    const PHASES_JSON: &str = include_str!("../../../../../resources/harness/graph/phases.json");
+    load_phase_map_from_json(PHASES_JSON)
 }
 
 /// 按 id 加载 + 解析 profile; 未知 id 返回 `Ok(None)`.

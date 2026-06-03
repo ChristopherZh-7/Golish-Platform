@@ -1,0 +1,12 @@
+{
+  "$schema": "../../../docs/design/2026-06-03-two-level-phase-stage-model.md#5",
+  "$comment": "Two-level phase grouping over the 12 StageKinds. Design: docs/design/2026-06-03-two-level-phase-stage-model.md (乙 grouping). Consumed by harness/phase.rs; projected per profile like operation_graph.json. entry_approval = human_approval key required before crossing INTO this phase (None = no phase-level entry approval).",
+
+  "phases": [
+    { "id": "prep",         "stages": ["scoping", "target_intel"] },
+    { "id": "active_recon", "stages": ["external_attack_surface", "enumeration"], "entry_approval": "active_scan" },
+    { "id": "vuln",         "stages": ["vuln_triage", "verification"], "entry_approval": "exploit_validation" },
+    { "id": "post_exploit", "stages": ["access_validation", "internal_discovery", "objective_pathing", "objective_simulation"] },
+    { "id": "closeout",     "stages": ["reporting", "cleanup"] }
+  ]
+}

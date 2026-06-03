@@ -43,6 +43,8 @@ pub mod nl_slice;
 pub mod operation_flow;
 pub mod operation_graph;
 pub mod operation_mermaid;
+pub mod phase;
+pub mod phase_flow;
 pub mod pre_action_authorizer;
 pub mod profile;
 pub mod rag_prior;
@@ -69,13 +71,18 @@ pub use operation_graph::{
     base_operation_graph, load_operation_graph_from_json, AllowedDag, OperationGraph,
     OperationGraphError, StageEdge,
 };
+pub use phase::{load_phase_map_from_json, Phase, PhaseMap, PhaseMapError};
+pub use phase_flow::{
+    decide_phase_step, next_phase, pending_phase_approval, phase_is_complete, PhaseStep,
+};
 pub use pre_action_authorizer::{AuthorizationError, HarnessAuthz, PreActionAuthorizer};
 pub use profile::{
     load_profile_from_json, ApprovalPolicy, AuthorizationLevel, Profile, ProfileLoadError,
 };
 pub use resources::{
-    load_embedded_profile, load_embedded_sprint_skeleton, load_embedded_stage_spec, profile_json,
-    sprint_skeleton_json, stage_spec_json, EMBEDDED_PROFILE_IDS,
+    load_embedded_phase_map, load_embedded_profile, load_embedded_sprint_skeleton,
+    load_embedded_stage_spec, profile_json, sprint_skeleton_json, stage_spec_json,
+    EMBEDDED_PROFILE_IDS,
 };
 pub use sprint_contract::{
     DefaultSprintContractGenerator, ExpectedFinding, SprintContract, SprintContractGenerator,
@@ -189,6 +196,21 @@ pub fn tool_whitelist_enabled() -> bool {
                 .ok()
                 .as_deref(),
         )
+    });
+    *ENABLED
+}
+
+/// Feature flag: 启用两级阶段模型（大阶段 Phase × 小阶段 Stage）的 phase-aware
+/// 流转（设计 `docs/design/2026-06-03-two-level-phase-stage-model.md`）。
+///
+/// **默认 OFF**（opt-in 灰度）：开启后，人工审批从「每 stage」收敛到「跨大阶段边界」
+/// （`active_scan`＝prep→active_recon、`exploit_validation`＝active_recon→vuln，de-dup），
+/// 大阶段内小阶段不再各自卡审批。关闭 = 现状 per-stage 审批，零回归。设
+/// `GOLISH_HARNESS_TWO_LEVEL=1`（或 `true`/`on`/`yes`）开启；首次读 LazyLock 缓存。
+pub fn two_level_enabled() -> bool {
+    use std::sync::LazyLock;
+    static ENABLED: LazyLock<bool> = LazyLock::new(|| {
+        parse_truthy_flag(std::env::var("GOLISH_HARNESS_TWO_LEVEL").ok().as_deref())
     });
     *ENABLED
 }

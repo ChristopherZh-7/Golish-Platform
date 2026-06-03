@@ -443,6 +443,12 @@ impl TaskOrchestrator {
             }
         };
 
+        // Two-level model: the Profile object (for phase-boundary approval policy).
+        // Loaded once; only consulted when GOLISH_HARNESS_TWO_LEVEL is on.
+        let op_profile = crate::harness::load_embedded_profile(profile_id)
+            .ok()
+            .flatten();
+
         let (tx, mut rx) = tokio::sync::mpsc::channel::<StageRunRequest>(8);
         let runner = std::sync::Arc::new(ChannelStageRunner::new(tx));
         let graph = match build_runner_graph(&dag, runner) {
@@ -482,11 +488,20 @@ impl TaskOrchestrator {
                 }
                 Some(req) = rx.recv() => {
                     let indices = groups.get(&req.stage).cloned().unwrap_or_default();
-                    let outcome = self
+                    let mut outcome = self
                         .run_stage_subtasks(
                             req.stage, &indices, queue, &mut exec_ctx, op_max_authz, executor, task_id,
                         )
                         .await;
+                    // Two-level model (flag on): hold for human approval before
+                    // crossing a大阶段 boundary. Withheld → downgrade to blocked so
+                    // the engine Interrupts at this stage (no cross-phase advance).
+                    if !self
+                        .two_level_phase_gate(task_id, req.stage, outcome, &dag, op_profile.as_ref())
+                        .await
+                    {
+                        outcome = crate::harness::operation_flow::StageFlowOutcome::blocked();
+                    }
                     let _ = crate::db_shim::operation_state::advance_stage(
                         &*self.repo, task_id, req.stage.as_str(),
                     )
@@ -601,6 +616,83 @@ impl TaskOrchestrator {
             .unwrap_or_else(crate::harness::operation_flow::StageFlowOutcome::pass_with_progress)
     }
 
+    /// 两级模型 · graph-flow 路径的「跨大阶段审批」闸（设计 2026-06-03）。
+    ///
+    /// flag off / gate 没过 / 非跨界 / 无需审批 → 直接放行（返回 `true`）。在把某 stage
+    /// 的 flow outcome 回给 metalcraft 引擎前调用：若这步推进会跨大阶段且需人工批准，
+    /// 则发 `waiting_approval` 并**阻塞等用户回复**。`false`（未获批）时调用方把 outcome
+    /// 降级为 `blocked`，使引擎在当前 stage Interrupt（暂停返工），不跨大阶段。
+    async fn two_level_phase_gate(
+        &mut self,
+        task_id: Uuid,
+        from_stage: crate::harness::StageKind,
+        outcome: crate::harness::operation_flow::StageFlowOutcome,
+        dag: &crate::harness::AllowedDag,
+        profile: Option<&crate::harness::Profile>,
+    ) -> bool {
+        if !crate::harness::two_level_enabled() || !outcome.gate_allowed {
+            return true;
+        }
+        let Some(profile) = profile else {
+            return true;
+        };
+        // 引擎将走的下一 stage（与引擎条件边同源 branch_target 规则）。
+        let Some(next) = crate::harness::operation_flow::branch_target(
+            &dag.next_stages(from_stage),
+            outcome.made_progress,
+        ) else {
+            return true; // 终点，无跨界
+        };
+        let pm = match crate::harness::load_embedded_phase_map() {
+            Ok(pm) => pm,
+            Err(_) => return true,
+        };
+        if !crate::harness::phase_flow::phase_crossing_requires_approval(
+            &pm, from_stage, next, profile,
+        ) {
+            return true; // 同大阶段内推进 / 无需审批 → 放行
+        }
+        tracing::info!(
+            target: "harness::hook",
+            task_id = %task_id,
+            from = ?from_stage,
+            to = ?next,
+            "two-level phase boundary holds for human approval"
+        );
+        self.emit(AiEvent::TaskProgress {
+            task_id: task_id.to_string(),
+            status: "waiting_approval".to_string(),
+            message: format!(
+                "Phase boundary {} → {} requires human approval. Reply to approve \
+                 (yes / approve / 继续) or anything else to hold.",
+                from_stage.as_str(),
+                next.as_str()
+            ),
+        });
+        let reply = match self.user_input_rx.as_mut() {
+            Some(rx) => rx.recv().await,
+            None => None,
+        };
+        let approved = reply
+            .as_deref()
+            .map(approval_reply_is_affirmative)
+            .unwrap_or(false);
+        if approved {
+            self.emit(AiEvent::TaskProgress {
+                task_id: task_id.to_string(),
+                status: "running".to_string(),
+                message: format!("Approval granted; entering phase via {}.", next.as_str()),
+            });
+        } else {
+            self.emit(AiEvent::TaskProgress {
+                task_id: task_id.to_string(),
+                status: "waiting_approval".to_string(),
+                message: format!("Approval not granted; holding at {}.", from_stage.as_str()),
+            });
+        }
+        approved
+    }
+
     /// Phase 2/C: gate 通过后按 Operation DAG 推进 operation_state 游标 (Doc 3 §6.2).
     ///
     /// `operation_id == task_id` (一个 Task = 一个 operation). 读 `operation_state`
@@ -664,8 +756,28 @@ impl TaskOrchestrator {
         // C5 · approval 闸: 下一 stage 需人工批准 + profile policy 打开 → hold,
         // 发 waiting_approval 事件并**阻塞等用户回复** (user_input_rx). 肯定回复才
         // 推进游标 (resume); 否定 / 通道关闭 / 无交互通道时保持 hold 不推进.
-        if let Ok(next_spec) = crate::harness::load_embedded_stage_spec(next) {
-            if crate::harness::stage_entry_requires_approval(&next_spec, &profile) {
+        // Two-level model (flag on): approval fires only when crossing a大阶段
+        // boundary (de-dup per crossing); legacy (flag off): per-stage approval.
+        let needs_approval = if crate::harness::two_level_enabled() {
+            crate::harness::load_embedded_phase_map()
+                .map(|pm| {
+                    crate::harness::phase_flow::phase_crossing_requires_approval(
+                        &pm,
+                        outcome.gated_stage,
+                        next,
+                        &profile,
+                    )
+                })
+                .unwrap_or(false)
+        } else {
+            crate::harness::load_embedded_stage_spec(next)
+                .map(|next_spec| {
+                    crate::harness::stage_entry_requires_approval(&next_spec, &profile)
+                })
+                .unwrap_or(false)
+        };
+        {
+            if needs_approval {
                 tracing::info!(
                     target: "harness::hook",
                     operation_id = %operation_id,
