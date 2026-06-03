@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { AskHumanInline, type AskHumanState } from "./AskHumanInline";
+import { AskHumanInline, type AskHumanState, resolveAskHumanInputType } from "./AskHumanInline";
 
 function makeRequest(partial: Partial<AskHumanState> = {}): AskHumanState {
   return {
@@ -91,5 +91,50 @@ describe("AskHumanInline", () => {
     await user.type(screen.getByPlaceholderText(/Type your response/), "hello");
     await user.click(screen.getByRole("button", { name: "Submit" }));
     expect(onSubmit).toHaveBeenCalledWith("hello");
+  });
+
+  it("renders selectable buttons when the model supplies options but left input_type at freetext", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    // Simulate the real flow: the event hook resolves the effective input_type.
+    const inputType = resolveAskHumanInputType("freetext", ["Black-box", "Grey-box"]);
+    render(
+      <AskHumanInline
+        request={makeRequest({ inputType, options: ["Black-box", "Grey-box"] })}
+        onSubmit={onSubmit}
+        onSkip={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /Black-box/ }));
+    expect(onSubmit).toHaveBeenCalledWith("Black-box");
+  });
+});
+
+describe("resolveAskHumanInputType", () => {
+  it("coerces freetext to choice when options are present (model forgot to set choice)", () => {
+    expect(resolveAskHumanInputType("freetext", ["A", "B"])).toBe("choice");
+  });
+
+  it("coerces a missing/unknown input_type to choice when options are present", () => {
+    expect(resolveAskHumanInputType(undefined, ["A", "B"])).toBe("choice");
+    expect(resolveAskHumanInputType(null, ["A"])).toBe("choice");
+    expect(resolveAskHumanInputType("garbage", ["A"])).toBe("choice");
+  });
+
+  it("keeps freetext when there are no options", () => {
+    expect(resolveAskHumanInputType("freetext", [])).toBe("freetext");
+    expect(resolveAskHumanInputType(undefined, [])).toBe("freetext");
+    expect(resolveAskHumanInputType("garbage", [])).toBe("freetext");
+  });
+
+  it("preserves an explicit choice", () => {
+    expect(resolveAskHumanInputType("choice", ["A", "B"])).toBe("choice");
+    expect(resolveAskHumanInputType("choice", [])).toBe("choice");
+  });
+
+  it("never overrides deliberate credentials/confirmation types", () => {
+    expect(resolveAskHumanInputType("credentials", ["A"])).toBe("credentials");
+    expect(resolveAskHumanInputType("confirmation", ["Yes", "No"])).toBe("confirmation");
   });
 });

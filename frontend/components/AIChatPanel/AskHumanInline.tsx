@@ -1,13 +1,34 @@
 import { KeyRound, List, MessageSquare, Pencil, ShieldQuestion } from "lucide-react";
 import { useState } from "react";
 
+export const ASK_HUMAN_INPUT_TYPES = ["credentials", "choice", "freetext", "confirmation"] as const;
+export type AskHumanInputType = (typeof ASK_HUMAN_INPUT_TYPES)[number];
+
 export interface AskHumanState {
   requestId: string;
   sessionId: string;
   question: string;
-  inputType: "credentials" | "choice" | "freetext" | "confirmation";
+  inputType: AskHumanInputType;
   options: string[];
   context: string;
+}
+
+/**
+ * Resolve the raw `input_type` a model put on an `ask_human` call into the
+ * effective UI mode. Models frequently supply `options` but leave `input_type`
+ * at the default "freetext" (or send an unrecognised value); when options are
+ * present we surface a selectable "choice" picker instead of silently dropping
+ * them into a dead-end text box.
+ */
+export function resolveAskHumanInputType(
+  rawInputType: string | null | undefined,
+  options: readonly string[]
+): AskHumanInputType {
+  const known = (ASK_HUMAN_INPUT_TYPES as readonly string[]).includes(rawInputType ?? "")
+    ? (rawInputType as AskHumanInputType)
+    : "freetext";
+  if (options.length > 0 && known === "freetext") return "choice";
+  return known;
 }
 
 const INPUT_TYPE_ICONS: Record<string, typeof KeyRound> = {

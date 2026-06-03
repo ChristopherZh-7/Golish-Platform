@@ -1301,6 +1301,69 @@ export function setupMocks(): void {
           location: "us-east5",
         };
 
+      case "list_execution_modes":
+        // Mirror backend EMBEDDED_PROFILE_IDS (camelCase wire format) so the
+        // chat-panel picker — engine toggle (Chat/Task) + Task profile gear —
+        // is populated in browser/mock mode.
+        return [
+          {
+            id: "chat",
+            displayName: "Chat",
+            icon: "MessageSquare",
+            badgeColor: "muted",
+            description: "Conversational single-agent mode with the full toolbox.",
+            allowsSubAgents: false,
+          },
+          {
+            id: "assessment",
+            displayName: "Security Assessment",
+            icon: "Zap",
+            badgeColor: "green",
+            description: "Passive + active recon",
+            allowsSubAgents: true,
+          },
+          {
+            id: "pentest",
+            displayName: "Pentest",
+            icon: "Zap",
+            badgeColor: "blue",
+            description: "Incl. controlled exploit validation",
+            allowsSubAgents: true,
+          },
+          {
+            id: "bug_bounty",
+            displayName: "Bug Bounty",
+            icon: "Zap",
+            badgeColor: "muted",
+            description: "Recon + vuln scanning",
+            allowsSubAgents: true,
+          },
+          {
+            id: "cloud_assessment",
+            displayName: "Cloud Assessment",
+            icon: "Zap",
+            badgeColor: "muted",
+            description: "Recon + vuln scanning",
+            allowsSubAgents: true,
+          },
+          {
+            id: "red_team",
+            displayName: "Red Team",
+            icon: "Zap",
+            badgeColor: "magenta",
+            description: "Full red team, incl. post-exploitation",
+            allowsSubAgents: true,
+          },
+          {
+            id: "smoke",
+            displayName: "Smoke Test",
+            icon: "Zap",
+            badgeColor: "muted",
+            description: "Passive intel only",
+            allowsSubAgents: true,
+          },
+        ];
+
       // =========================================================================
       // Session-Specific AI Commands (Per-Tab Isolation)
       // =========================================================================

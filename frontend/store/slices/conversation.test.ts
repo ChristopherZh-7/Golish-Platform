@@ -88,6 +88,76 @@ describe("Conversation Slice — thinking segments", () => {
   });
 });
 
+describe("Conversation Slice — error severity & de-dupe", () => {
+  const CONV = "conv-error-test";
+
+  const messages = () => useStore.getState().conversations[CONV].messages;
+
+  beforeEach(() => {
+    useStore.setState({
+      conversations: {},
+      activeConversationId: null,
+      conversationOrder: [],
+      conversationTerminals: {},
+    });
+    useStore.getState().addConversation({
+      id: CONV,
+      title: "t",
+      messages: [],
+      createdAt: 0,
+      aiSessionId: CONV,
+      aiInitialized: false,
+      isStreaming: true,
+    });
+    useStore.getState().addConversationMessage(CONV, {
+      id: "m1",
+      role: "assistant",
+      content: "",
+      timestamp: 0,
+      isStreaming: true,
+    });
+  });
+
+  it("records the severity on the streaming message and stops streaming", () => {
+    useStore.getState().setMessageError(CONV, "planner declined", "warning");
+    const last = messages()[messages().length - 1];
+    expect(last.error).toBe("planner declined");
+    expect(last.errorSeverity).toBe("warning");
+    expect(last.isStreaming).toBe(false);
+  });
+
+  it("defaults severity to error when omitted", () => {
+    useStore.getState().setMessageError(CONV, "boom");
+    expect(messages()[0].errorSeverity).toBe("error");
+  });
+
+  it("collapses the same failure surfaced twice into one message (keeps the shorter text)", () => {
+    const clean = "Generator failed: declined to produce a plan";
+    const wrapped = `[API trace=abc] send_ai_prompt_session: ${clean}`;
+    // First surfacing (backend error event) lands on the streaming message.
+    useStore.getState().setMessageError(CONV, clean, "warning");
+    // Second surfacing (invoke rejection) must NOT push a duplicate bubble.
+    useStore.getState().setMessageError(CONV, wrapped, "warning");
+
+    expect(messages()).toHaveLength(1);
+    expect(messages()[0].error).toBe(clean);
+    expect(messages()[0].errorSeverity).toBe("warning");
+  });
+
+  it("escalates to a hard error if the duplicate is more severe", () => {
+    useStore.getState().setMessageError(CONV, "declined to produce a plan", "warning");
+    useStore.getState().setMessageError(CONV, "x declined to produce a plan x", "error");
+    expect(messages()).toHaveLength(1);
+    expect(messages()[0].errorSeverity).toBe("error");
+  });
+
+  it("still pushes a separate bubble for an unrelated error", () => {
+    useStore.getState().setMessageError(CONV, "first failure", "error");
+    useStore.getState().setMessageError(CONV, "totally different failure", "error");
+    expect(messages()).toHaveLength(2);
+  });
+});
+
 describe("Conversation Slice — stage markers", () => {
   const CONV = "conv-stage-test";
 

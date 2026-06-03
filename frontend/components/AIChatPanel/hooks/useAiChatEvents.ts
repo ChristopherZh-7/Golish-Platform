@@ -6,9 +6,10 @@ import {
   onAiEvent,
   respondToToolApproval,
 } from "@/lib/ai";
+import { classifyErrorSeverity } from "@/lib/ai/errorSeverity";
 import { safeStringify } from "@/lib/text";
 import { type ChatMessage, useStore } from "@/store";
-import type { AskHumanState } from "../AskHumanInline";
+import { type AskHumanState, resolveAskHumanInputType } from "../AskHumanInline";
 import type { WorkflowRunSnapshot } from "../WorkflowProgress";
 
 interface UseAiChatEventsOptions {
@@ -219,19 +220,21 @@ export function useAiChatEvents({
               break;
             case "error":
               taskInProgressRef.current = false;
-              store.setMessageError(convId, event.message);
+              store.setMessageError(convId, event.message, classifyErrorSeverity(event.message));
               streamingMsgRef.current = null;
               break;
-            case "ask_human_request":
+            case "ask_human_request": {
+              const askOptions = event.options ?? [];
               setAskHumanRequest({
                 requestId: event.request_id,
                 sessionId: event.session_id,
                 question: event.question,
-                inputType: (event.input_type || "freetext") as AskHumanState["inputType"],
-                options: event.options ?? [],
+                inputType: resolveAskHumanInputType(event.input_type, askOptions),
+                options: askOptions,
                 context: event.context ?? "",
               });
               break;
+            }
             case "workflow_started":
               setActiveWorkflow({
                 id: event.workflow_id,

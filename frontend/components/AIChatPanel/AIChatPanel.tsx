@@ -11,6 +11,7 @@ import { AskHumanInline, CompactionNotice, WorkflowProgress } from "./ChatSubCom
 import { ContextUsageRing } from "./ContextUsageRing";
 import { ConversationTabs } from "./ConversationTabs";
 import { ExecutionModePicker } from "./ExecutionModePicker";
+import { readLastExecutionMode } from "./executionModePicker.utils";
 import { useAiChatEvents } from "./hooks/useAiChatEvents";
 import { useAiChatInit } from "./hooks/useAiChatInit";
 import { useChatConversationOps } from "./hooks/useChatConversationOps";
@@ -164,7 +165,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
         }
       }
     } else {
-      modes.setChatExecutionMode("chat");
+      // Fresh tab (no terminals yet): reopen in the last-remembered mode rather
+      // than always snapping back to Chat.
+      modes.setChatExecutionMode(readLastExecutionMode());
     }
   }, [activeConvId, terminalRestoreInProgress, modes.setChatExecutionMode]); // eslint-disable-line react-hooks/exhaustive-deps
 

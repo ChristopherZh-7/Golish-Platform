@@ -1,4 +1,4 @@
-import { AlertCircle, Loader2 } from "lucide-react";
+import { AlertCircle, AlertTriangle, Loader2 } from "lucide-react";
 import React, { memo } from "react";
 import { Markdown } from "@/components/Markdown";
 import { cn } from "@/lib/utils";
@@ -22,6 +22,36 @@ import { SubAgentInlineCard } from "./SubAgentInlineCard";
  * emit as raw text instead of structured tool_calls.
  * Handles both complete and incomplete (streaming) XML fragments.
  */
+/**
+ * One error/warning line under a message. `warning` reads as amber + triangle
+ * (soft/recoverable, e.g. the planner asking for a task), matching the design
+ * system's "interrupted" treatment; everything else stays red + alert circle.
+ */
+function MessageErrorLine({
+  error,
+  severity,
+  className,
+}: {
+  error: string;
+  severity?: "error" | "warning";
+  className?: string;
+}) {
+  const isWarning = severity === "warning";
+  const Icon = isWarning ? AlertTriangle : AlertCircle;
+  return (
+    <div
+      className={cn(
+        "flex items-start gap-2 text-[13px]",
+        isWarning ? "text-amber-400" : "text-destructive",
+        className
+      )}
+    >
+      <Icon className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+      <span>{error}</span>
+    </div>
+  );
+}
+
 function stripToolCallXml(text: string): string {
   let cleaned = text
     .replace(/<tool_call\b[^>]*>[\s\S]*?<\/tool_call>/g, "")
@@ -93,12 +123,7 @@ export const MessageBlock = memo(function MessageBlock({
           !!message.content?.trim() || (message.toolCalls && message.toolCalls.length > 0);
 
         if (message.error && !hasContent) {
-          return (
-            <div className="flex items-start gap-2 text-[13px] text-destructive">
-              <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
-              <span>{message.error}</span>
-            </div>
-          );
+          return <MessageErrorLine error={message.error} severity={message.errorSeverity} />;
         }
 
         const hasToolCalls = !isUser && message.toolCalls && message.toolCalls.length > 0;
@@ -253,10 +278,11 @@ export const MessageBlock = memo(function MessageBlock({
             )}
             {pendingCalls.length > 0 && renderPendingApprovalCards()}
             {message.error && (
-              <div className="flex items-start gap-2 text-[13px] text-destructive mt-2">
-                <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
-                <span>{message.error}</span>
-              </div>
+              <MessageErrorLine
+                error={message.error}
+                severity={message.errorSeverity}
+                className="mt-2"
+              />
             )}
           </div>
         );

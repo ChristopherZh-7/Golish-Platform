@@ -26,6 +26,8 @@ export interface ChatMessageRow {
   toolCalls: unknown[] | null;
   toolCallsContentOffset: number | null;
   toolCallOffsets: number[] | null;
+  /** JSONB array of ThinkingSegment — restores interleaved Thought blocks. */
+  thinkingSegments: unknown[] | null;
   sortOrder: number;
   createdAt: number;
 }

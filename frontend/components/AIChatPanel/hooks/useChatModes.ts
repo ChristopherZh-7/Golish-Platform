@@ -7,12 +7,14 @@ import {
 } from "@/lib/ai";
 import { flushDbSave } from "@/lib/conversation-db-sync";
 import { useStore } from "@/store";
+import { readLastExecutionMode, writeLastExecutionMode } from "../executionModePicker.utils";
 
 type ApprovalMode = "ask" | "allowlist" | "run-all";
 
 export function useChatModes() {
   const [chatAgentMode, setChatAgentMode] = useState<AgentMode>("default");
-  const [chatExecutionMode, setChatExecutionMode] = useState<string>("chat");
+  // Seed from the remembered engine so a fresh panel reopens in the last mode.
+  const [chatExecutionMode, setChatExecutionMode] = useState<string>(() => readLastExecutionMode());
 
   const chatExecutionModeRef = useRef<string>(chatExecutionMode);
   chatExecutionModeRef.current = chatExecutionMode;
@@ -65,6 +67,8 @@ export function useChatModes() {
     (mode: string) => {
       if (mode === chatExecutionMode) return;
       setChatExecutionMode(mode);
+      // Persist the explicit choice so new tabs / sessions reopen in it.
+      writeLastExecutionMode(mode);
       const storeState = useStore.getState();
       const activeConvId = storeState.activeConversationId;
       if (activeConvId) {

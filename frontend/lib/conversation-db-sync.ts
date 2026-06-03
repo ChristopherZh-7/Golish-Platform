@@ -5,6 +5,7 @@
  * via Tauri commands, replacing the file-based workspace-storage.ts.
  */
 
+import { classifyErrorSeverity } from "@/lib/ai/errorSeverity";
 import {
   type ChatMessageRow,
   type ConvBatchItem,
@@ -20,7 +21,12 @@ import { onCustomEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type { Session, UnifiedBlock } from "@/store";
-import type { ChatConversation, ChatMessage, ChatToolCall } from "@/store/slices/conversation";
+import type {
+  ChatConversation,
+  ChatMessage,
+  ChatToolCall,
+  ThinkingSegment,
+} from "@/store/slices/conversation";
 
 /** Normalize a project path for consistent DB lookups (strip trailing slash, resolve ~). */
 function normalizePath(p: string): string {
@@ -176,21 +182,42 @@ export interface LoadedTerminalData {
   planMessageId: string | null;
 }
 
-function dbMsgToChatMessage(row: ChatMessageRow): ChatMessage {
+export function dbMsgToChatMessage(row: ChatMessageRow): ChatMessage {
+  // Interleaved reasoning bursts (anchored by content/tool offsets) so the chat
+  // restores multiple Thought blocks in time order; falls back to the merged
+  // `thinking` string for rows saved before the column existed.
+  const segments =
+    row.thinkingSegments && row.thinkingSegments.length > 0
+      ? (row.thinkingSegments as ThinkingSegment[])
+      : undefined;
   return {
     id: row.id,
     role: row.role as "user" | "assistant",
     content: row.content,
     timestamp: row.createdAt,
     thinking: row.thinking ?? undefined,
+    thinkingSegments: segments,
     error: row.error ?? undefined,
+    // Severity isn't a stored column — re-derive it deterministically from the
+    // persisted error text so restored warnings stay amber (not red).
+    errorSeverity: row.error ? classifyErrorSeverity(row.error) : undefined,
     toolCalls: row.toolCalls ? (row.toolCalls as ChatToolCall[]) : undefined,
     toolCallsContentOffset: row.toolCallsContentOffset ?? undefined,
     toolCallOffsets: row.toolCallOffsets ?? undefined,
   };
 }
 
-function chatMessageToDbRow(
+/**
+ * Whether a message is worth persisting. Stage-divider markers (role "system")
+ * are runtime-only UI and never saved. Otherwise a message is kept if it carries
+ * content, tool calls, OR an error/warning bubble — so a turn that only produced
+ * an error (e.g. the Task planner declining a greeting) survives a restart.
+ */
+export function isPersistableMessage(msg: ChatMessage): boolean {
+  return msg.role !== "system" && !!(msg.content || msg.toolCalls?.length || msg.error);
+}
+
+export function chatMessageToDbRow(
   msg: ChatMessage,
   conversationId: string,
   sortOrder: number
@@ -207,6 +234,10 @@ function chatMessageToDbRow(
     toolCalls: msg.toolCalls ? (msg.toolCalls as unknown as unknown[]) : null,
     toolCallsContentOffset: msg.toolCallsContentOffset ?? null,
     toolCallOffsets: msg.toolCallOffsets ?? null,
+    thinkingSegments:
+      msg.thinkingSegments && msg.thinkingSegments.length > 0
+        ? (msg.thinkingSegments as unknown as unknown[])
+        : null,
     sortOrder,
     createdAt: msg.timestamp,
   };
@@ -513,8 +544,7 @@ async function saveConversationsToDb(
     });
 
     const dbMessages = conv.messages
-      // Stage-divider markers (role "system") are runtime-only UI; never persisted.
-      .filter((m) => m.role !== "system" && (m.content || m.toolCalls?.length))
+      .filter(isPersistableMessage)
       .map((m, idx) => chatMessageToDbRow(m, conv.id, idx));
 
     const terminalStates: ConvBatchItem["terminalStates"] = [];

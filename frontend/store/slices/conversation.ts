@@ -72,6 +72,12 @@ export interface ChatMessage {
   timestamp: number;
   isStreaming?: boolean;
   error?: string;
+  /**
+   * Visual severity of `error`. `warning` (amber) for soft/recoverable
+   * conditions surfaced through the error channel (e.g. the planner replying in
+   * prose instead of a plan); defaults to `error` (red) when absent. Runtime-only.
+   */
+  errorSeverity?: "error" | "warning";
   toolCalls?: ChatToolCall[];
   /** Present on `role: "system"` divider messages (task-mode stage boundaries). */
   stageEvent?: StageEvent;
@@ -138,7 +144,7 @@ export interface ConversationActions {
   /** Finalize the last streaming message */
   finalizeStreamingMessage: (convId: string, response?: string, reasoning?: string) => void;
   /** Set error on the last streaming message or add an error message */
-  setMessageError: (convId: string, errorMsg: string) => void;
+  setMessageError: (convId: string, errorMsg: string, severity?: "error" | "warning") => void;
   addTerminalToConversation: (convId: string, terminalId: string) => void;
   removeTerminalFromConversation: (convId: string, terminalId: string) => void;
   /** Get all terminal IDs belonging to the active conversation */
@@ -167,6 +173,17 @@ export const initialConversationState: ConversationState = {
 };
 
 let _convCounter = 0;
+
+/**
+ * Whether two surfaced error strings describe the same underlying failure. One
+ * containing the other catches the common case where the invoke rejection wraps
+ * the backend error message with an `[API trace=…] <command>:` prefix.
+ */
+function isSameError(a: string, b: string): boolean {
+  const x = a.trim();
+  const y = b.trim();
+  return x.length > 0 && y.length > 0 && (x.includes(y) || y.includes(x));
+}
 
 export function createNewConversation(): ChatConversation {
   _convCounter += 1;
@@ -387,7 +404,7 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
       conv.isStreaming = false;
     }),
 
-  setMessageError: (convId, errorMsg) =>
+  setMessageError: (convId, errorMsg, severity = "error") =>
     set((state) => {
       const conv = state.conversations[convId];
       if (!conv) return;
@@ -395,6 +412,14 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
       if (last?.role === "assistant" && last.isStreaming) {
         last.isStreaming = false;
         last.error = errorMsg;
+        last.errorSeverity = severity;
+      } else if (last?.role === "assistant" && last.error && isSameError(last.error, errorMsg)) {
+        // The same failure surfacing twice — e.g. the backend `error` event and
+        // the `send_ai_prompt_session` invoke rejection (which wraps the same
+        // text with an `[API trace=…]` prefix). Collapse to one block: keep the
+        // shorter/cleaner text and escalate to a hard error if either side is one.
+        if (errorMsg.trim().length < last.error.trim().length) last.error = errorMsg;
+        if (severity === "error") last.errorSeverity = "error";
       } else {
         conv.messages.push({
           id: `err-${Date.now()}`,
@@ -402,6 +427,7 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
           content: "",
           timestamp: Date.now(),
           error: errorMsg,
+          errorSeverity: severity,
         });
       }
       conv.isStreaming = false;

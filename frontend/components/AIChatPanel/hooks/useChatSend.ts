@@ -9,6 +9,7 @@ import {
   setExecutionMode as setExecutionModeBackend,
   suppressGenerationForAiSession,
 } from "@/lib/ai";
+import { classifyErrorSeverity } from "@/lib/ai/errorSeverity";
 import { type ChatMessage, useStore } from "@/store";
 
 type Attachment = { data: string; mediaType: string; name: string };
@@ -192,7 +193,7 @@ export function useChatSend(opts: UseChatSendOptions) {
     } catch (err) {
       taskInProgressRef.current = false;
       const errMsg = err instanceof Error ? err.message : String(err);
-      useStore.getState().setMessageError(conv.id, errMsg);
+      useStore.getState().setMessageError(conv.id, errMsg, classifyErrorSeverity(errMsg));
     }
   }, [
     input,
