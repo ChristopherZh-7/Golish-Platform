@@ -52,6 +52,7 @@ import {
   handleAskHumanResponse,
   handleToolApprovalRequest,
   handleToolAutoApproved,
+  handleToolBackgroundCompleted,
   handleToolIntentObservation,
   handleToolOutputChunk,
   handleToolRequest,
@@ -86,6 +87,7 @@ export const eventHandlerRegistry: EventHandlerRegistry = {
   tool_auto_approved: handleToolAutoApproved,
   tool_result: handleToolResult,
   tool_output_chunk: handleToolOutputChunk,
+  tool_background_completed: handleToolBackgroundCompleted,
 
   // Human-in-the-loop interaction events
   ask_human_request: handleAskHumanRequest,

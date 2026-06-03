@@ -38,7 +38,218 @@ pub async fn configure_bridge(
         setup_bridge_mcp_tools(bridge, state).await;
         register_pentest_tools(bridge, state, app_handle).await;
         register_visible_pty_tool(bridge, state).await;
+        // P3-c: the listener also books successful background jobs into the
+        // evidence ledger, so it needs a repo handle + the project-path scope.
+        let bg_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> =
+            std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
+                state.db_pool.clone(),
+            ));
+        let pp = bridge
+            .workspace()
+            .read()
+            .await
+            .to_string_lossy()
+            .to_string();
+        let bg_project_path = if pp == "." || pp.is_empty() {
+            None
+        } else {
+            Some(pp)
+        };
+        spawn_background_completion_listener(bridge, bg_repo, bg_project_path);
     }
+}
+
+/// Wire this session's background-job completions back into the agent.
+///
+/// Long shell/pentest commands that exceed their soft timeout keep running in
+/// the background (see `golish-app-core/background_jobs.rs`). When one finishes,
+/// the job manager broadcasts a [`JobCompletion`]; this per-session listener
+/// (started once per `configure_bridge`) picks up the ones attributed to this
+/// session and:
+/// 1. emits a `ToolBackgroundCompleted` event so the frontend can surface it,
+/// 2. books a successful job's output into the evidence ledger (P3-c), and
+/// 3. queues a note (with the evidence id) so the agent learns the outcome — and
+///    can cite a REAL evidence id — on its next turn.
+///
+/// [`JobCompletion`]: golish_app_core::background_jobs::JobCompletion
+fn spawn_background_completion_listener(
+    bridge: &AgentBridge,
+    db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider>,
+    project_path: Option<String>,
+) {
+    use golish_core::events::AiEvent;
+
+    let Some(session_id) = bridge.event_session_id().map(str::to_string) else {
+        tracing::debug!(
+            "[configure_bridge] No session id; skipping background completion listener"
+        );
+        return;
+    };
+    let notes = bridge.background_notes_handle();
+    let event_tx = bridge.get_or_create_event_tx();
+    let mut rx = golish_app_core::background_jobs::manager().subscribe_completions();
+
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(jc) => {
+                    // Only handle jobs this session started.
+                    if jc.session_id.as_deref() != Some(session_id.as_str()) {
+                        continue;
+                    }
+
+                    tracing::info!(
+                        message = "[background-listener] job finished",
+                        session_id = %session_id,
+                        job_id = %jc.job_id,
+                        status = %jc.status.as_str(),
+                    );
+
+                    let _ = event_tx.send(AiEvent::ToolBackgroundCompleted {
+                        job_id: jc.job_id.clone(),
+                        command: jc.command.clone(),
+                        status: jc.status.as_str().to_string(),
+                        exit_code: jc.exit_code,
+                        stdout_tail: jc.stdout_tail.clone(),
+                        stderr_tail: jc.stderr_tail.clone(),
+                        duration_ms: jc.duration_ms,
+                    });
+
+                    // P3-c: book the (successful) job into the evidence ledger so
+                    // the agent can cite a real id next turn.
+                    let evidence_id = maybe_append_background_evidence(
+                        &db_repo,
+                        &session_id,
+                        project_path.as_deref(),
+                        &jc,
+                    )
+                    .await;
+
+                    let note = format_background_note(&jc, evidence_id);
+                    match notes.lock() {
+                        Ok(mut q) => q.push(note),
+                        // Recover the Vec without dropping the note on poison.
+                        Err(poisoned) => poisoned.into_inner().push(note),
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
+                    tracing::warn!(
+                        "[background-listener] lagged; dropped {} completion(s)",
+                        dropped
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    tracing::info!("[configure_bridge] Started background-job completion listener");
+}
+
+/// Append a **successful** background job's output to the evidence ledger (P3-c),
+/// gated on harness stage mode. Returns the new evidence id so it can be surfaced
+/// to the agent (letting it cite a REAL id in a StageDeliverable's `evidence_refs`
+/// instead of fabricating one, which the gate would then BLOCK).
+///
+/// Background jobs terminate **outside** the agentic loop, so the synchronous
+/// evidence path in `golish-agent-runtime` never books them — a backgrounded scan
+/// would otherwise be lost (AGENTS.md I7/I8: a scan that actually ran is
+/// "checked", not "unchecked"). The operation grouping key is a deterministic
+/// per-session uuid: the live tracker's random `session_uuid` isn't reachable
+/// from this detached listener, so background evidence forms its own stable
+/// per-session hash chain. That is fine for the gate's fabricated-ref check,
+/// which verifies an id **exists**, not its chain membership.
+async fn maybe_append_background_evidence(
+    db_repo: &std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider>,
+    session_id: &str,
+    project_path: Option<&str>,
+    jc: &golish_app_core::background_jobs::JobCompletion,
+) -> Option<i64> {
+    use golish_app_core::background_jobs::JobStatus;
+
+    // Only book cleanly-finished jobs (mirrors the sync path's is_success gate);
+    // killed/failed jobs still surface via the note but are not booked as
+    // evidence (an aborted scan is not a completed check).
+    if jc.status != JobStatus::Done || !golish_agent_kit::harness::stage_mode_enabled() {
+        return None;
+    }
+
+    let op_id = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_OID,
+        format!("golish-bg-op:{session_id}").as_bytes(),
+    );
+    let raw_output = if jc.stderr_tail.trim().is_empty() {
+        jc.stdout_tail.clone()
+    } else {
+        format!("{}\n[stderr]\n{}", jc.stdout_tail, jc.stderr_tail)
+    };
+
+    match db_repo
+        .evidence_append(
+            op_id,
+            None,
+            Some(session_id),
+            project_path,
+            "background_job",
+            "background_command",
+            &jc.command,
+            &raw_output,
+        )
+        .await
+    {
+        Ok(id) => {
+            tracing::info!(
+                target: "harness::evidence",
+                job_id = %jc.job_id,
+                evidence_id = id,
+                "background job evidence appended"
+            );
+            Some(id)
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "harness::evidence",
+                error = %e,
+                "background job evidence append failed (continuing)"
+            );
+            None
+        }
+    }
+}
+
+/// Render a concise, model-facing summary of a finished background job. When an
+/// evidence id was booked (P3-c), it is surfaced so the agent can cite it.
+fn format_background_note(
+    jc: &golish_app_core::background_jobs::JobCompletion,
+    evidence_id: Option<i64>,
+) -> String {
+    let exit = jc
+        .exit_code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let mut note = format!(
+        "Background job `{}` (`{}`) finished: status={}, exit={}, took {} ms.",
+        jc.job_id,
+        jc.command,
+        jc.status.as_str(),
+        exit,
+        jc.duration_ms
+    );
+    if let Some(id) = evidence_id {
+        note.push_str(&format!(
+            "\n  evidence_id={id} — cite this in a StageDeliverable's evidence_refs."
+        ));
+    }
+    let stdout = jc.stdout_tail.trim();
+    if !stdout.is_empty() {
+        note.push_str("\n  stdout (tail):\n");
+        note.push_str(stdout);
+    }
+    let stderr = jc.stderr_tail.trim();
+    if !stderr.is_empty() {
+        note.push_str("\n  stderr (tail):\n");
+        note.push_str(stderr);
+    }
+    note
 }
 
 async fn configure_title_gen(bridge: &mut AgentBridge) {
@@ -367,4 +578,39 @@ pub(crate) fn find_memory_file_for_workspace(
 
     // No matching codebase found
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use golish_app_core::background_jobs::{JobCompletion, JobStatus};
+
+    fn sample_completion() -> JobCompletion {
+        JobCompletion {
+            job_id: "job_abc123".to_string(),
+            session_id: Some("sess-1".to_string()),
+            command: "nmap -p- example.com".to_string(),
+            status: JobStatus::Done,
+            exit_code: Some(0),
+            stdout_tail: "open: 80,443".to_string(),
+            stderr_tail: String::new(),
+            duration_ms: 4200,
+        }
+    }
+
+    #[test]
+    fn note_includes_evidence_id_when_booked() {
+        let note = format_background_note(&sample_completion(), Some(42));
+        assert!(note.contains("evidence_id=42"), "note: {note}");
+        assert!(note.contains("evidence_refs"), "note: {note}");
+        assert!(note.contains("job_abc123"));
+        assert!(note.contains("open: 80,443"));
+    }
+
+    #[test]
+    fn note_omits_evidence_id_when_not_booked() {
+        let note = format_background_note(&sample_completion(), None);
+        assert!(!note.contains("evidence_id="), "note: {note}");
+        assert!(note.contains("status=done"));
+    }
 }

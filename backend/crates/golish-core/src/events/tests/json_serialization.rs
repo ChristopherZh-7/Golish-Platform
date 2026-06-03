@@ -444,3 +444,44 @@ fn tool_response_truncated_event_json_format() {
     assert_eq!(json["original_tokens"], 50000);
     assert_eq!(json["truncated_tokens"], 10000);
 }
+
+#[test]
+fn tool_background_completed_event_json_format() {
+    let event = AiEvent::ToolBackgroundCompleted {
+        job_id: "job_abc12345".to_string(),
+        command: "nmap -p- 10.0.0.1".to_string(),
+        status: "done".to_string(),
+        exit_code: Some(0),
+        stdout_tail: "Nmap done\n".to_string(),
+        stderr_tail: String::new(),
+        duration_ms: 65000,
+    };
+    let json = serde_json::to_value(&event).unwrap();
+
+    assert_eq!(json["type"], "tool_background_completed");
+    assert_eq!(json["job_id"], "job_abc12345");
+    assert_eq!(json["command"], "nmap -p- 10.0.0.1");
+    assert_eq!(json["status"], "done");
+    assert_eq!(json["exit_code"], 0);
+    assert_eq!(json["stdout_tail"], "Nmap done\n");
+    assert_eq!(json["duration_ms"], 65000);
+}
+
+#[test]
+fn tool_background_completed_omits_null_exit_code() {
+    // A killed job may have no exit code; the field must be omitted, not null.
+    let event = AiEvent::ToolBackgroundCompleted {
+        job_id: "job_dead0001".to_string(),
+        command: "sleep 9999".to_string(),
+        status: "killed".to_string(),
+        exit_code: None,
+        stdout_tail: String::new(),
+        stderr_tail: String::new(),
+        duration_ms: 1_800_000,
+    };
+    let json = serde_json::to_value(&event).unwrap();
+
+    assert_eq!(json["type"], "tool_background_completed");
+    assert_eq!(json["status"], "killed");
+    assert!(json.get("exit_code").is_none());
+}

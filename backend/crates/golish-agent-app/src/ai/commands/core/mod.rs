@@ -14,6 +14,6 @@ pub use chat::{
 };
 #[doc(hidden)]
 pub use session::{
-    __cmd__cancel_ai_generation, __cmd__get_session_ai_config, __cmd__init_ai_session,
-    __cmd__is_ai_session_initialized, __cmd__shutdown_ai_session,
+    __cmd__ai_cancel_background_job, __cmd__cancel_ai_generation, __cmd__get_session_ai_config,
+    __cmd__init_ai_session, __cmd__is_ai_session_initialized, __cmd__shutdown_ai_session,
 };

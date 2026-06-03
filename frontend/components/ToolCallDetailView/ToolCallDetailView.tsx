@@ -226,6 +226,7 @@ function formatShellLikeOutput(result: unknown, streamingOutput?: string): strin
 
 const STATUS_BADGE_STYLES: Record<AiToolExecution["status"], string> = {
   running: "bg-[var(--accent-dim)] text-accent",
+  backgrounded: "bg-amber-400/10 text-amber-400",
   completed: "bg-[var(--success-dim)] text-[var(--success)]",
   error: "bg-destructive/10 text-destructive",
   interrupted: "bg-yellow-500/10 text-yellow-400",
@@ -235,6 +236,8 @@ function getStatusLabel(status: AiToolExecution["status"]): string {
   switch (status) {
     case "running":
       return "Running";
+    case "backgrounded":
+      return "Backgrounded";
     case "completed":
       return "Completed";
     case "error":

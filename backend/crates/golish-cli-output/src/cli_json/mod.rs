@@ -468,6 +468,28 @@ pub fn convert_to_cli_json(event: &AiEvent) -> CliJsonEvent {
             workflow::plan_updated(*version, summary, steps, explanation),
         ),
 
+        // ── background tool execution ────────────────────────────────────
+        AiEvent::ToolBackgroundCompleted {
+            job_id,
+            command,
+            status,
+            exit_code,
+            stdout_tail,
+            stderr_tail,
+            duration_ms,
+        } => CliJsonEvent::new(
+            "tool_background_completed",
+            serde_json::json!({
+                "job_id": job_id,
+                "command": command,
+                "status": status,
+                "exit_code": exit_code,
+                "stdout_tail": stdout_tail,
+                "stderr_tail": stderr_tail,
+                "duration_ms": duration_ms,
+            }),
+        ),
+
         // ── HITL + task mode ─────────────────────────────────────────────
         AiEvent::AskHumanRequest { .. }
         | AiEvent::AskHumanResponse { .. }

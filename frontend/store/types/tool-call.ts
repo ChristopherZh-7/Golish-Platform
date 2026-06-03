@@ -16,7 +16,7 @@ export interface ToolCall {
   id: string;
   name: string;
   args: Record<string, unknown>;
-  status: "pending" | "approved" | "denied" | "running" | "completed" | "error";
+  status: "pending" | "approved" | "denied" | "running" | "backgrounded" | "completed" | "error";
   result?: unknown;
   executedByAgent?: boolean;
   riskLevel?: RiskLevel;
@@ -32,7 +32,7 @@ export interface ActiveToolCall {
   id: string;
   name: string;
   args: Record<string, unknown>;
-  status: "running" | "completed" | "error";
+  status: "running" | "backgrounded" | "completed" | "error";
   result?: unknown;
   startedAt: string;
   completedAt?: string;

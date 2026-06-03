@@ -30,6 +30,7 @@ const statusConfig: Record<
   approved: { icon: CheckCircle },
   denied: { icon: XCircle },
   running: { icon: Loader2, animate: true },
+  backgrounded: { icon: Loader2, animate: true },
   completed: { icon: CheckCircle },
   error: { icon: XCircle },
 };

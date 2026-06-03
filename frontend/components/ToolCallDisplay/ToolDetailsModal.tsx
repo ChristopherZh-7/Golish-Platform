@@ -194,6 +194,12 @@ const statusConfig: Record<
     label: "Running",
     animate: true,
   },
+  backgrounded: {
+    icon: Loader2,
+    badgeClass: "bg-amber-400/10 text-amber-400",
+    label: "Backgrounded",
+    animate: true,
+  },
   completed: {
     icon: CheckCircle,
     badgeClass: "bg-[var(--success-dim)] text-[var(--success)] hover:bg-[var(--success)]/20",

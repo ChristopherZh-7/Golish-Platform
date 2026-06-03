@@ -278,6 +278,15 @@ export const handleToolAutoApproved: EventHandler<{
   }
 };
 
+/** A soft-timeout result whose command was detached to a background job. */
+function isBackgroundedResult(result: unknown): boolean {
+  return (
+    result != null &&
+    typeof result === "object" &&
+    (result as { status?: unknown }).status === "backgrounded"
+  );
+}
+
 /**
  * Handle tool result event.
  * Updates tool call status to completed/error.
@@ -293,6 +302,19 @@ export const handleToolResult: EventHandler<{
   seq?: number;
 }> = (event, ctx) => {
   const state = ctx.getState();
+
+  // Soft-timeout → backgrounded: the command exceeded its soft timeout and was
+  // detached to a background job that is still running. The agent's turn
+  // continues (it received this tool_result), so drop it from the active list,
+  // but keep the timeline + interleaved cards visibly "running in background"
+  // until a later `tool_background_completed` flips them to a terminal result.
+  if (isBackgroundedResult(event.result)) {
+    state.completeActiveToolCall(ctx.sessionId, event.request_id, true, event.result);
+    state.backgroundStreamingToolBlock(ctx.sessionId, event.request_id, event.result);
+    state.backgroundToolExecutionBlock(ctx.sessionId, event.request_id, event.result);
+    return;
+  }
+
   // Update tool call status to completed/error
   state.completeActiveToolCall(ctx.sessionId, event.request_id, event.success, event.result);
   // Also update streaming block
@@ -341,6 +363,56 @@ export const handleToolOutputChunk: EventHandler<{
   state.appendToolStreamingOutput(ctx.sessionId, event.request_id, event.chunk);
   // Also append to timeline card
   state.appendToolExecutionOutput(ctx.sessionId, event.request_id, event.chunk);
+};
+
+/**
+ * Handle tool_background_completed event.
+ *
+ * A shell/pentest command that had exceeded its soft timeout (and was moved to
+ * the background) has now finished — emitted asynchronously, outside the turn
+ * that started it. We correlate it back to the originating tool card via
+ * `job_id` (the backgrounded `tool_result` stored a result carrying the same
+ * id) and flip that card from its "backgrounded" placeholder to the terminal
+ * result. If the card can't be found (e.g. timeline trimmed), this is a no-op —
+ * the agent still learns the outcome on its next turn via backend re-injection.
+ */
+export const handleToolBackgroundCompleted: EventHandler<{
+  type: "tool_background_completed";
+  job_id: string;
+  command: string;
+  status: string;
+  exit_code: number | null;
+  stdout_tail: string;
+  stderr_tail: string;
+  duration_ms: bigint;
+  session_id: string;
+  seq?: number;
+}> = (event, ctx) => {
+  const state = ctx.getState();
+  const success = event.status === "done";
+  const result = {
+    status: event.status,
+    job_id: event.job_id,
+    command: event.command,
+    exit_code: event.exit_code,
+    stdout: event.stdout_tail,
+    stderr: event.stderr_tail,
+    duration_ms: Number(event.duration_ms),
+    backgrounded_completed: true,
+  };
+
+  const timeline = state.timelines[ctx.sessionId] ?? [];
+  const block = timeline.find(
+    (b) =>
+      b.type === "ai_tool_execution" &&
+      (b.data.result as { job_id?: string } | undefined)?.job_id === event.job_id
+  );
+  if (block && block.type === "ai_tool_execution") {
+    state.completeToolExecutionBlock(ctx.sessionId, block.data.requestId, success, result);
+    // Flip the interleaved (in-message) tool block out of its "backgrounded"
+    // state too, so both views converge on the terminal result.
+    state.updateStreamingToolBlock(ctx.sessionId, block.data.requestId, success, result);
+  }
 };
 
 /**

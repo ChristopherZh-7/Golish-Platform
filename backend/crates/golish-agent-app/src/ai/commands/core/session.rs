@@ -199,6 +199,20 @@ pub async fn cancel_ai_generation(
     }
 }
 
+/// Cancel (kill) a background job started when a shell/pentest command exceeded
+/// its soft timeout and was detached to the background.
+///
+/// The background-job manager is a process-wide singleton, so no session state
+/// is needed. Killing moves the job to a terminal `Killed` state; the manager's
+/// reaper then broadcasts a `JobCompletion`, which the per-session listener
+/// (see `bridge_config::spawn_background_completion_listener`) turns into a
+/// `ToolBackgroundCompleted` event — flipping the originating tool card out of
+/// its "backgrounded" state. Returns `true` if the job existed.
+#[tauri::command]
+pub fn ai_cancel_background_job(job_id: String) -> bool {
+    golish_app_core::background_jobs::manager().kill(&job_id)
+}
+
 /// Check if AI agent is initialized for a specific session.
 #[tauri::command]
 pub async fn is_ai_session_initialized(

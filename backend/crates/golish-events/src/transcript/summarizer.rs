@@ -231,6 +231,21 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
             AiEvent::EnricherResult { context_added, .. } => {
                 output.push_str(&format!("\n**[Enricher]** {}\n", context_added));
             }
+            AiEvent::ToolBackgroundCompleted {
+                command,
+                status,
+                exit_code,
+                ..
+            } => {
+                output.push_str(&format!(
+                    "\n**[Background Job {}]** `{}` (exit {})\n",
+                    status,
+                    command,
+                    exit_code
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "?".to_string())
+                ));
+            }
         }
     }
 

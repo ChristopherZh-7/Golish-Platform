@@ -167,6 +167,13 @@ export interface AiActions {
     success: boolean,
     result?: unknown
   ) => void;
+  /**
+   * Mark a timeline tool card as "backgrounded": the command exceeded its soft
+   * timeout and was detached to a background job (still running). The card stays
+   * non-terminal until a `tool_background_completed` event flips it via
+   * {@link completeToolExecutionBlock}.
+   */
+  backgroundToolExecutionBlock: (sessionId: string, requestId: string, result?: unknown) => void;
   appendToolExecutionOutput: (sessionId: string, requestId: string, chunk: string) => void;
   finalizeRunningToolExecutions: (sessionId: string) => void;
 }
@@ -515,6 +522,19 @@ export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => 
         block.data.completedAt = new Date().toISOString();
         const start = new Date(block.data.startedAt).getTime();
         block.data.durationMs = Date.now() - start;
+      }
+    }),
+
+  backgroundToolExecutionBlock: (sessionId, requestId, result) =>
+    set((state) => {
+      const timeline = state.timelines[sessionId];
+      if (!timeline) return;
+      const block = timeline.find(
+        (b) => b.type === "ai_tool_execution" && b.data.requestId === requestId
+      );
+      if (block && block.type === "ai_tool_execution") {
+        block.data.status = "backgrounded";
+        block.data.result = result;
       }
     }),
 

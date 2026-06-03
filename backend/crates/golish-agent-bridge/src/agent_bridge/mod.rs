@@ -153,6 +153,11 @@ pub(crate) struct BridgeSession {
     pub(crate) conversation_history: Arc<RwLock<Vec<Message>>>,
     pub(crate) session_manager: Arc<RwLock<Option<Box<dyn SessionManager>>>>,
     pub(crate) session_persistence_enabled: Arc<RwLock<bool>>,
+    /// Notes about background jobs that finished *between* turns (see
+    /// `golish-app-core/background_jobs.rs`). Pushed by the per-session
+    /// completion listener and drained into the system prompt on the next turn,
+    /// so the agent learns the outcome of a job it had moved to the background.
+    pub(crate) pending_background: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 // ============================================================================

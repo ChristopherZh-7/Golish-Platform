@@ -61,6 +61,7 @@ impl AiEvent {
             AiEvent::SubtaskUserInput { .. } => "subtask_user_input",
             AiEvent::TaskResumed { .. } => "task_resumed",
             AiEvent::EnricherResult { .. } => "enricher_result",
+            AiEvent::ToolBackgroundCompleted { .. } => "tool_background_completed",
         }
     }
 }

@@ -143,6 +143,13 @@ impl AgentBridge {
         self.events.coordinator.as_ref()
     }
 
+    /// Shared handle to the pending background-job notes queue. The per-session
+    /// completion listener pushes terminal-job summaries here; they are drained
+    /// into the system prompt on the next turn (see `prepare_execution_context`).
+    pub fn background_notes_handle(&self) -> Arc<std::sync::Mutex<Vec<String>>> {
+        self.session.pending_background.clone()
+    }
+
     pub async fn coordinator_state(&self) -> Option<CoordinatorState> {
         if let Some(ref coordinator) = self.events.coordinator {
             coordinator.query_state().await

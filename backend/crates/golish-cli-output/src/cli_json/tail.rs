@@ -44,6 +44,7 @@ pub(super) fn convert_hitl_or_task(event: &AiEvent) -> CliJsonEvent {
             subtask_id,
             title,
             result,
+            ..
         } => CliJsonEvent::new(
             "subtask_completed",
             task::subtask_completed(task_id, subtask_id, title, result),

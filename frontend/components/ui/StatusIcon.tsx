@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Circle, Clock, Loader2, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function StatusIcon({ status, size = "md" }: { status: string; size?: "sm" | "md" }) {
@@ -9,6 +9,8 @@ export function StatusIcon({ status, size = "md" }: { status: string; size?: "sm
       return <CheckCircle2 className={cn(sizeClass, "text-[var(--ansi-green)]")} />;
     case "running":
       return <Loader2 className={cn(sizeClass, "text-[var(--ansi-blue)] animate-spin")} />;
+    case "backgrounded":
+      return <Clock className={cn(sizeClass, "text-amber-400 animate-pulse")} />;
     case "error":
       return <XCircle className={cn(sizeClass, "text-[var(--ansi-red)]")} />;
     case "interrupted":

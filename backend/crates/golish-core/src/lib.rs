@@ -16,6 +16,7 @@
 
 // Module declarations (will be populated in next steps)
 pub mod agent_mode;
+pub mod agent_session;
 pub mod api_request_stats;
 pub mod events;
 pub mod message;
@@ -44,6 +45,7 @@ pub mod web_fetch;
 
 // Re-exports
 pub use agent_mode::AgentMode;
+pub use agent_session::{current_agent_session, with_agent_session};
 pub use api_request_stats::{
     ApiRequestStats, ApiRequestStatsSnapshot, ProviderRequestStatsSnapshot,
 };

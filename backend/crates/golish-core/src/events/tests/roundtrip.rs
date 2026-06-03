@@ -187,6 +187,15 @@ fn all_event_types_roundtrip() {
             step_name: Some("commit".to_string()),
             error: "Failed".to_string(),
         },
+        AiEvent::ToolBackgroundCompleted {
+            job_id: "job_abc12345".to_string(),
+            command: "sleep 60 && echo done".to_string(),
+            status: "done".to_string(),
+            exit_code: Some(0),
+            stdout_tail: "done\n".to_string(),
+            stderr_tail: String::new(),
+            duration_ms: 60123,
+        },
     ];
 
     for event in events {

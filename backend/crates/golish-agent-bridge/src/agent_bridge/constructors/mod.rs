@@ -358,6 +358,7 @@ impl AgentBridge {
                 conversation_history: Default::default(),
                 session_manager: Default::default(),
                 session_persistence_enabled: Arc::new(RwLock::new(true)),
+                pending_background: Default::default(),
             },
             workspace,
             tool_registry,

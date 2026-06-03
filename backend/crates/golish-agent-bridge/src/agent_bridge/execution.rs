@@ -164,14 +164,22 @@ impl AgentBridge {
                 let va = va.clone();
                 drop(client);
                 let (accumulated_response, reasoning, final_history, token_usage) =
-                    run_agentic_loop(&va, &system_prompt, initial_history, context, &loop_ctx).await?;
+                    golish_core::with_agent_session(
+                        self.event_session_id().map(str::to_string),
+                        run_agentic_loop(&va, &system_prompt, initial_history, context, &loop_ctx),
+                    )
+                    .await?;
                 Ok(self.finalize_execution(accumulated_response, reasoning, final_history, token_usage, start_time).await)
             },
             generic(m) => {
                 let m = m.clone();
                 drop(client);
                 let (accumulated_response, reasoning, final_history, token_usage) =
-                    run_agentic_loop_generic(&m, &system_prompt, initial_history, context, &loop_ctx).await?;
+                    golish_core::with_agent_session(
+                        self.event_session_id().map(str::to_string),
+                        run_agentic_loop_generic(&m, &system_prompt, initial_history, context, &loop_ctx),
+                    )
+                    .await?;
                 Ok(self.finalize_execution(accumulated_response, reasoning, final_history, token_usage, start_time).await)
             },
             mock => {
@@ -302,8 +310,17 @@ impl AgentBridge {
         let loop_ctx = self.build_loop_context(&loop_event_tx).await;
 
         let (accumulated_response, reasoning, final_history, token_usage) =
-            run_agentic_loop_generic(model, &system_prompt, initial_history, context, &loop_ctx)
-                .await?;
+            golish_core::with_agent_session(
+                self.event_session_id().map(str::to_string),
+                run_agentic_loop_generic(
+                    model,
+                    &system_prompt,
+                    initial_history,
+                    context,
+                    &loop_ctx,
+                ),
+            )
+            .await?;
 
         Ok(self
             .finalize_execution(
@@ -336,7 +353,11 @@ impl AgentBridge {
         // across prompts. See `finalize_execution` and the `Drop` impl for
         // session lifecycle.
         let (accumulated_response, reasoning, final_history, token_usage) =
-            run_agentic_loop(model, &system_prompt, initial_history, context, &loop_ctx).await?;
+            golish_core::with_agent_session(
+                self.event_session_id().map(str::to_string),
+                run_agentic_loop(model, &system_prompt, initial_history, context, &loop_ctx),
+            )
+            .await?;
 
         Ok(self
             .finalize_execution(

@@ -59,6 +59,7 @@ export const handleSubtaskCompleted: EventHandler<{
   subtask_id: string;
   title: string;
   result: string;
+  stage_kind: string | null;
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {

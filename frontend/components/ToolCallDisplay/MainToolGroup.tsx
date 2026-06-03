@@ -48,6 +48,13 @@ const statusConfig: Record<
     label: "Running",
     animate: true,
   },
+  backgrounded: {
+    icon: Loader2,
+    borderColor: "border-l-amber-400",
+    badgeClass: "bg-amber-400/10 text-amber-400",
+    label: "Backgrounded",
+    animate: true,
+  },
   completed: {
     icon: CheckCircle,
     borderColor: "border-l-[var(--success)]",

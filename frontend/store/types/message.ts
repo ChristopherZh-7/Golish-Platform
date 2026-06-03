@@ -51,7 +51,7 @@ export interface AiToolExecution {
     reason?: string;
     rawPreview?: string;
   };
-  status: "running" | "completed" | "error" | "interrupted";
+  status: "running" | "backgrounded" | "completed" | "error" | "interrupted";
   result?: unknown;
   startedAt: string;
   completedAt?: string;

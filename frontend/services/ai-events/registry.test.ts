@@ -66,11 +66,15 @@ describe("eventHandlerRegistry", () => {
     expect(eventHandlerRegistry.web_fetch_result).toBeDefined();
   });
 
-  it("has exactly 43 registered handlers", () => {
+  it("contains a handler for background tool completion", () => {
+    expect(eventHandlerRegistry.tool_background_completed).toBeDefined();
+  });
+
+  it("has exactly 45 registered handlers", () => {
     const registeredHandlers = Object.keys(eventHandlerRegistry).filter(
       (key) => eventHandlerRegistry[key as keyof EventHandlerRegistry] !== undefined
     );
-    expect(registeredHandlers.length).toBe(44);
+    expect(registeredHandlers.length).toBe(45);
   });
 });
 
@@ -182,6 +186,135 @@ describe("dispatchEvent", () => {
       "test-session",
       "Thinking about this..."
     );
+  });
+
+  it("dispatches tool_background_completed and completes the matching tool card", () => {
+    const completeToolExecutionBlock = vi.fn();
+    const updateStreamingToolBlock = vi.fn();
+    const stateWithTimeline = {
+      completeToolExecutionBlock,
+      updateStreamingToolBlock,
+      timelines: {
+        "test-session": [
+          {
+            type: "ai_tool_execution",
+            data: { requestId: "req-bg", result: { job_id: "job_x", status: "backgrounded" } },
+          },
+        ],
+      },
+    };
+    const ctx = {
+      ...mockCtx,
+      getState: vi.fn(() => stateWithTimeline) as unknown as EventHandlerContext["getState"],
+    };
+    const event = {
+      type: "tool_background_completed" as const,
+      job_id: "job_x",
+      command: "sleep 99 && echo done",
+      status: "done",
+      exit_code: 0,
+      stdout_tail: "done",
+      stderr_tail: "",
+      duration_ms: 1234n,
+      session_id: "test-session",
+    };
+
+    const handled = dispatchEvent(event, ctx);
+
+    expect(handled).toBe(true);
+    expect(completeToolExecutionBlock).toHaveBeenCalledWith(
+      "test-session",
+      "req-bg",
+      true,
+      expect.objectContaining({ job_id: "job_x", status: "done", exit_code: 0 })
+    );
+    // Both views (timeline + interleaved) must converge on the terminal result.
+    expect(updateStreamingToolBlock).toHaveBeenCalledWith(
+      "test-session",
+      "req-bg",
+      true,
+      expect.objectContaining({ job_id: "job_x", status: "done" })
+    );
+  });
+
+  it("routes a backgrounded tool_result to the live (non-terminal) state", () => {
+    const backgroundState = {
+      completeActiveToolCall: vi.fn(),
+      backgroundStreamingToolBlock: vi.fn(),
+      backgroundToolExecutionBlock: vi.fn(),
+      updateStreamingToolBlock: vi.fn(),
+      completeToolExecutionBlock: vi.fn(),
+    };
+    const ctx = {
+      ...mockCtx,
+      getState: vi.fn(() => backgroundState) as unknown as EventHandlerContext["getState"],
+    };
+    const result = { status: "backgrounded", job_id: "job_42", partial_stdout: "scanning..." };
+    const event = {
+      type: "tool_result" as const,
+      tool_name: "pentest_run",
+      result,
+      success: true,
+      request_id: "req-bg2",
+      source: { type: "main" as const },
+      session_id: "test-session",
+    };
+
+    const handled = dispatchEvent(event, ctx);
+
+    expect(handled).toBe(true);
+    expect(backgroundState.backgroundToolExecutionBlock).toHaveBeenCalledWith(
+      "test-session",
+      "req-bg2",
+      result
+    );
+    expect(backgroundState.backgroundStreamingToolBlock).toHaveBeenCalledWith(
+      "test-session",
+      "req-bg2",
+      result
+    );
+    expect(backgroundState.completeActiveToolCall).toHaveBeenCalledWith(
+      "test-session",
+      "req-bg2",
+      true,
+      result
+    );
+    // Must NOT terminally complete the card while the job is still running.
+    expect(backgroundState.completeToolExecutionBlock).not.toHaveBeenCalled();
+  });
+
+  it("routes a normal tool_result to terminal completion", () => {
+    const normalState = {
+      completeActiveToolCall: vi.fn(),
+      backgroundStreamingToolBlock: vi.fn(),
+      backgroundToolExecutionBlock: vi.fn(),
+      updateStreamingToolBlock: vi.fn(),
+      completeToolExecutionBlock: vi.fn(),
+    };
+    const ctx = {
+      ...mockCtx,
+      getState: vi.fn(() => normalState) as unknown as EventHandlerContext["getState"],
+    };
+    const result = { stdout: "ok", exit_code: 0 };
+    const event = {
+      type: "tool_result" as const,
+      tool_name: "run_pty_cmd",
+      result,
+      success: true,
+      request_id: "req-ok",
+      source: { type: "main" as const },
+      session_id: "test-session",
+    };
+
+    dispatchEvent(event, ctx);
+
+    expect(normalState.completeToolExecutionBlock).toHaveBeenCalledWith(
+      "test-session",
+      "req-ok",
+      true,
+      result
+    );
+    expect(normalState.backgroundToolExecutionBlock).not.toHaveBeenCalled();
   });
 
   it("dispatches system_hooks_injected event to correct handler", () => {

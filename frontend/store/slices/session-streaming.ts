@@ -58,6 +58,22 @@ export function createSessionStreamingActions(
         }
       }),
 
+    backgroundStreamingToolBlock: (sessionId: string, toolId: string, result?: unknown) =>
+      set((state) => {
+        const blocks = state.streamingBlocks[sessionId];
+        if (blocks) {
+          for (const block of blocks) {
+            if (block.type === "tool" && block.toolCall.id === toolId) {
+              block.toolCall.status = "backgrounded";
+              block.toolCall.result = result;
+              break;
+            }
+          }
+          state.streamingBlockRevision[sessionId] =
+            (state.streamingBlockRevision[sessionId] ?? 0) + 1;
+        }
+      }),
+
     clearStreamingBlocks: (sessionId: string) =>
       set((state) => {
         state.streamingBlocks[sessionId] = [];

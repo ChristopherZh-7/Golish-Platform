@@ -46,7 +46,7 @@ fn install_handlers(
         write_frontend_log, ime_get_source, ime_set_source,
         // ── ai (agent chat / context / policies) ─────────────────
         get_sub_agent_model, set_sub_agent_model,
-        init_ai_session, shutdown_ai_session, cancel_ai_generation,
+        init_ai_session, shutdown_ai_session, cancel_ai_generation, ai_cancel_background_job,
         is_ai_session_initialized, get_session_ai_config,
         send_ai_prompt_session, send_ai_prompt_with_attachments, get_vision_capabilities,
         clear_ai_conversation_session, get_ai_conversation_length_session, signal_frontend_ready,

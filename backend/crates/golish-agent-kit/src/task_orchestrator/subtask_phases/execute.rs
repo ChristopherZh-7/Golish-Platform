@@ -600,6 +600,7 @@ impl TaskOrchestrator {
                     .unwrap_or_default(),
                 title: planned.title.clone(),
                 result: truncate(&result_text, 500),
+                stage_kind: exec_ctx.harness_stage.map(|s| s.as_str().to_string()),
             });
             exec_ctx
                 .completed_results

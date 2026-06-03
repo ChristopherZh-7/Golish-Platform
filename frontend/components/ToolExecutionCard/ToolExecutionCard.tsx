@@ -1,9 +1,10 @@
-import { ChevronDown, ChevronRight, ChevronsUpDown, Loader2 } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, ChevronsUpDown, Clock, Loader2, X } from "lucide-react";
+import { type MouseEvent, memo, useEffect, useMemo, useRef, useState } from "react";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { StatusIcon } from "@/components/ui/StatusIcon";
+import { cancelBackgroundJob } from "@/lib/ai";
 import { stripAllAnsi } from "@/lib/ansi";
 import { formatDurationShort } from "@/lib/time";
 import { getToolColor, getToolIcon, getToolLabel, getToolPrimaryArg } from "@/lib/tools";
@@ -96,8 +97,24 @@ function parseShellResult(result: unknown): ShellResult | null {
       exitCode: typeof obj.exit_code === "number" ? obj.exit_code : undefined,
     };
   }
+  // Backgrounded (soft-timeout) results carry partial output under partial_*.
+  if (obj.partial_stdout !== undefined || obj.partial_stderr !== undefined) {
+    return {
+      stdout: typeof obj.partial_stdout === "string" ? obj.partial_stdout : undefined,
+      stderr: typeof obj.partial_stderr === "string" ? obj.partial_stderr : undefined,
+    };
+  }
   if (typeof obj.output === "string") {
     return { stdout: obj.output };
+  }
+  return null;
+}
+
+/** Extract the background job id from a backgrounded tool result, if present. */
+function getBackgroundJobId(result: unknown): string | null {
+  if (result != null && typeof result === "object") {
+    const id = (result as { job_id?: unknown }).job_id;
+    if (typeof id === "string") return id;
   }
   return null;
 }
@@ -144,6 +161,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
   sessionId,
 }: ToolExecutionCardProps) {
   const [internalOpen, setInternalOpen] = useState(highlighted);
+  const [cancelling, setCancelling] = useState(false);
   const isExpanded = controlledOpen !== undefined ? controlledOpen : internalOpen;
   const handleOpenChange = (open: boolean) => {
     if (onToggle) onToggle();
@@ -162,6 +180,27 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
   const ToolIcon = getToolIcon(execution.toolName);
   const toolLabel = getToolLabel(execution.toolName);
   const primary = getToolPrimaryArg(execution.toolName, execution.args);
+
+  const isRunning = execution.status === "running";
+  const isBackgrounded = execution.status === "backgrounded";
+  // Both states are "live" (non-terminal): same pulsing border treatment.
+  const isLive = isRunning || isBackgrounded;
+  const backgroundJobId = isBackgrounded ? getBackgroundJobId(execution.result) : null;
+
+  const handleCancelBackgroundJob = async (e: MouseEvent) => {
+    e.stopPropagation();
+    if (!backgroundJobId || cancelling) return;
+    setCancelling(true);
+    try {
+      // On success the card flips to terminal via the tool_background_completed
+      // event; if the job was already gone (false), re-enable so the user isn't
+      // stuck on a dead spinner.
+      const ok = await cancelBackgroundJob(backgroundJobId);
+      if (!ok) setCancelling(false);
+    } catch {
+      setCancelling(false);
+    }
+  };
 
   const isShellCommand =
     execution.toolName === "run_command" ||
@@ -198,14 +237,14 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
           ? "rounded border-0 bg-transparent"
           : cn(
               "mt-1 mb-1.5 rounded-lg border bg-card",
-              execution.status === "running"
+              isLive
                 ? "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]"
                 : "border border-border"
             ),
         highlighted && "ring-1 ring-accent/50 bg-accent/5"
       )}
       style={
-        !compact && execution.status === "running"
+        !compact && isLive
           ? {
               borderLeftColor: toolColor,
               boxShadow: `inset 2px 0 8px -4px ${toolColor}40`,
@@ -240,7 +279,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
             </span>
             <AnchorChip sessionId={sessionId} requestId={execution.requestId} />
 
-            {execution.status === "running" && !compact && (
+            {isRunning && !compact && (
               <Badge
                 variant="outline"
                 className="ml-auto gap-1 flex items-center text-[10px] px-2 py-0.5 rounded-full bg-[var(--accent-dim)] text-accent"
@@ -249,11 +288,41 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
                 Running
               </Badge>
             )}
-            {execution.status === "running" && compact && (
-              <Loader2 className="w-3 h-3 animate-spin text-accent ml-auto flex-shrink-0" />
+            {isBackgrounded && !compact && (
+              <Badge
+                variant="outline"
+                className="ml-auto gap-1 flex items-center text-[10px] px-2 py-0.5 rounded-full border-amber-400/30 bg-amber-400/10 text-amber-400"
+              >
+                <Clock className="w-3 h-3 animate-pulse" />
+                Backgrounded{backgroundJobId ? ` · ${backgroundJobId}` : ""}
+              </Badge>
+            )}
+            {isLive && compact && (
+              <Loader2
+                className={cn(
+                  "w-3 h-3 animate-spin ml-auto flex-shrink-0",
+                  isBackgrounded ? "text-amber-400" : "text-accent"
+                )}
+              />
             )}
           </CollapsibleTrigger>
           <div className="flex items-center gap-2 flex-shrink-0">
+            {!compact && isBackgrounded && backgroundJobId && (
+              <button
+                type="button"
+                onClick={handleCancelBackgroundJob}
+                disabled={cancelling}
+                title="Cancel background job"
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-[var(--ansi-red)]/10 hover:text-[var(--ansi-red)] disabled:opacity-50"
+              >
+                {cancelling ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <X className="h-3 w-3" />
+                )}
+                Cancel
+              </button>
+            )}
             <StatusIcon status={execution.status} />
             {execution.durationMs !== undefined && (
               <span className={cn("text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>

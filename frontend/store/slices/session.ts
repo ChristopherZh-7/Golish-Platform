@@ -122,6 +122,7 @@ export interface SessionActions {
     success: boolean,
     result?: unknown
   ) => void;
+  backgroundStreamingToolBlock: (sessionId: string, toolId: string, result?: unknown) => void;
   clearStreamingBlocks: (sessionId: string) => void;
   addUdiffResultBlock: (sessionId: string, response: string, durationMs: number) => void;
   addStreamingSystemHooksBlock: (sessionId: string, hooks: string[]) => void;

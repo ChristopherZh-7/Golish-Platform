@@ -301,7 +301,8 @@ impl CaptureContext {
             | AiEvent::SubtaskWaitingForInput { .. }
             | AiEvent::SubtaskUserInput { .. }
             | AiEvent::TaskResumed { .. }
-            | AiEvent::EnricherResult { .. } => {
+            | AiEvent::EnricherResult { .. }
+            | AiEvent::ToolBackgroundCompleted { .. } => {
                 // These events are not captured (ToolOutputChunk is streaming output)
             }
         }

@@ -100,15 +100,24 @@ pub async fn run_shell_command_detail(
     let hard_ms = env_ms("GOLISH_TOOL_HARD_TIMEOUT_MS", DEFAULT_HARD_TIMEOUT_MS).max(timeout_ms);
 
     let started_at = std::time::Instant::now();
-    let job_id =
-        crate::background_jobs::manager().spawn(command, workspace, Duration::from_millis(hard_ms));
+    // Attribute the job to the session whose agentic loop is currently running
+    // (set via `golish_core::with_agent_session`), so the completion broadcast
+    // can be routed back to that session. `None` when not attributable.
+    let session_id = golish_core::current_agent_session();
+    let job_id = crate::background_jobs::manager().spawn_for_session(
+        command,
+        workspace,
+        Duration::from_millis(hard_ms),
+        session_id.clone(),
+    );
 
     tracing::info!(
-        "[run_pty_cmd] backgrounded spawn: command={}, soft_ms={}, hard_ms={}, job_id={}",
+        "[run_pty_cmd] backgrounded spawn: command={}, soft_ms={}, hard_ms={}, job_id={}, session={:?}",
         command,
         soft_ms,
         hard_ms,
-        job_id
+        job_id,
+        session_id
     );
 
     // Wait up to the soft timeout for an inline result (poll the manager).

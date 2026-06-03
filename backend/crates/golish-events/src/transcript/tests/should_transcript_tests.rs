@@ -395,6 +395,18 @@ fn all_variants() -> Vec<(AiEvent, bool)> {
             },
             true,
         ),
+        (
+            AiEvent::ToolBackgroundCompleted {
+                job_id: "job_abc12345".into(),
+                command: "sleep 60".into(),
+                status: "done".into(),
+                exit_code: Some(0),
+                stdout_tail: "ok".into(),
+                stderr_tail: String::new(),
+                duration_ms: 60000,
+            },
+            true,
+        ),
     ];
 
     // Compile-time exhaustiveness check: if a new variant is added to AiEvent,
@@ -450,7 +462,8 @@ fn all_variants() -> Vec<(AiEvent, bool)> {
             | AiEvent::EnricherResult { .. }
             | AiEvent::TaskProgress { .. }
             | AiEvent::SubtaskCreated { .. }
-            | AiEvent::SubtaskCompleted { .. } => {}
+            | AiEvent::SubtaskCompleted { .. }
+            | AiEvent::ToolBackgroundCompleted { .. } => {}
         }
     }
 

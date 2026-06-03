@@ -469,6 +469,11 @@ pub enum AiEvent {
         subtask_id: String,
         title: String,
         result: String,
+        /// Harness stage this subtask belonged to (`StageKind::as_str`), when the
+        /// run is stage-mode. Lets the frontend group stage markers into大阶段
+        /// (two-level phase model, design 2026-06-03). `None` for non-stage runs.
+        #[serde(default)]
+        stage_kind: Option<String>,
     },
 
     /// A subtask is waiting for user input before continuing
@@ -500,5 +505,30 @@ pub enum AiEvent {
         task_id: String,
         subtask_id: String,
         context_added: String,
+    },
+
+    // Background tool execution events (soft-timeout → background, design 2026-06-03)
+    /// A shell/pentest command that had been moved to the background on
+    /// soft-timeout has now finished. Emitted asynchronously (outside the turn
+    /// that started it) so the frontend can flip the tool card from
+    /// "running in background" to its terminal state, and so the result can be
+    /// fed back to the agent on its next turn. Correlate to the originating tool
+    /// card via `job_id` (the backgrounded `tool_result` carried the same id).
+    ToolBackgroundCompleted {
+        /// The `job_id` reported in the originating `backgrounded` tool result.
+        job_id: String,
+        /// The shell command that ran.
+        command: String,
+        /// Terminal status: "done" | "failed" | "killed".
+        status: String,
+        /// The command's exit code, if it exited normally.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        /// Tail of captured stdout (already size-capped by the job manager).
+        stdout_tail: String,
+        /// Tail of captured stderr (already size-capped by the job manager).
+        stderr_tail: String,
+        /// Total wall-clock duration of the job in milliseconds.
+        duration_ms: u64,
     },
 }

@@ -37,6 +37,36 @@ impl AgentBridge {
     /// 7. Get or create event channel
     ///
     /// Returns the system prompt, initial history, and event channel sender.
+    /// Drain background-job completion notes (jobs that finished between turns)
+    /// and append them to `system_prompt`, so the agent learns the outcome of a
+    /// command it had moved to the background. Drained once per turn.
+    fn append_background_notes(&self, system_prompt: &mut String) {
+        let notes: Vec<String> = {
+            let mut pending = self.session.pending_background.lock().unwrap_or_else(|e| {
+                // The mutex only guards a Vec<String>; recover after poison.
+                self.session.pending_background.clear_poison();
+                e.into_inner()
+            });
+            std::mem::take(&mut *pending)
+        };
+        if notes.is_empty() {
+            return;
+        }
+        tracing::info!(
+            "[agent] Injecting {} background-job completion note(s)",
+            notes.len()
+        );
+        system_prompt.push_str(
+            "\n\n## Background jobs finished since your last turn\n\
+             These commands had exceeded their soft timeout and were moved to the background; \
+             they have now completed. Take their results into account (do NOT re-run them):\n",
+        );
+        for note in &notes {
+            system_prompt.push_str("\n- ");
+            system_prompt.push_str(note);
+        }
+    }
+
     pub(super) async fn prepare_execution_context(
         &self,
         initial_prompt: &str,
@@ -102,6 +132,8 @@ impl AgentBridge {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&plan_status);
         }
+
+        self.append_background_notes(&mut system_prompt);
 
         self.start_session().await;
         self.record_user_message(initial_prompt).await;
@@ -196,6 +228,8 @@ impl AgentBridge {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&plan_status);
         }
+
+        self.append_background_notes(&mut system_prompt);
 
         self.start_session().await;
         self.record_user_message(text_for_logging).await;

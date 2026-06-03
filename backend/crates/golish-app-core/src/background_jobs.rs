@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use tokio::io::AsyncReadExt;
-use tokio::sync::Notify;
+use tokio::sync::{broadcast, Notify};
 
 use crate::pty_interactive::shell_command;
 
@@ -33,6 +33,14 @@ const MAX_JOB_OUTPUT_BYTES: usize = 512 * 1024;
 /// Soft-delete finished jobs once the map grows past this, so a long session
 /// doesn't accumulate unbounded completed-job state.
 const MAX_RETAINED_JOBS: usize = 128;
+/// Cap the stdout/stderr tail carried on a [`JobCompletion`] broadcast. The
+/// retained job buffer can be up to 512KB; a completion *event* fed back to the
+/// model / frontend should stay small.
+const COMPLETION_TAIL_BYTES: usize = 8 * 1024;
+/// Capacity of the completion broadcast channel. Completions are consumed by
+/// per-session listeners; a slow listener that lags simply drops older
+/// notifications (the job result is still pollable via `snapshot`).
+const COMPLETION_CHANNEL_CAP: usize = 256;
 
 /// High-level lifecycle state of a background job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +68,9 @@ impl JobStatus {
 
 struct JobState {
     command: String,
+    /// Agent session that started the job (for routing the completion back to
+    /// the right session), or `None` when not attributable.
+    session_id: Option<String>,
     status: JobStatus,
     exit_code: Option<i32>,
     stdout: String,
@@ -81,9 +92,43 @@ pub struct JobSnapshot {
     pub finished: bool,
 }
 
+/// Broadcast payload emitted when a background job reaches a terminal state.
+///
+/// Consumed by per-session listeners (wired in `golish-agent-app`) which turn
+/// it into a `ToolBackgroundCompleted` AI event + a note fed back to the agent.
+#[derive(Debug, Clone)]
+pub struct JobCompletion {
+    pub job_id: String,
+    /// Session the job was attributed to at spawn, if any.
+    pub session_id: Option<String>,
+    pub command: String,
+    pub status: JobStatus,
+    pub exit_code: Option<i32>,
+    /// Size-capped tail of stdout (see [`COMPLETION_TAIL_BYTES`]).
+    pub stdout_tail: String,
+    /// Size-capped tail of stderr (see [`COMPLETION_TAIL_BYTES`]).
+    pub stderr_tail: String,
+    pub duration_ms: u64,
+}
+
+/// Keep the trailing `max` bytes of `s` on a char boundary (the *end* of a
+/// command's output is usually the interesting part for a completion notice).
+fn tail_capped(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut cut = s.len() - max;
+    while cut < s.len() && !s.is_char_boundary(cut) {
+        cut += 1;
+    }
+    format!("…[+{} earlier bytes]\n{}", cut, &s[cut..])
+}
+
 /// Process-wide registry of background jobs.
 pub struct BackgroundJobManager {
     jobs: Mutex<HashMap<String, Arc<Mutex<JobState>>>>,
+    /// Fan-out of job-completion notifications to per-session listeners.
+    completions: broadcast::Sender<JobCompletion>,
 }
 
 impl Default for BackgroundJobManager {
@@ -129,21 +174,45 @@ where
 
 impl BackgroundJobManager {
     pub fn new() -> Self {
+        let (completions, _) = broadcast::channel(COMPLETION_CHANNEL_CAP);
         Self {
             jobs: Mutex::new(HashMap::new()),
+            completions,
         }
     }
 
-    /// Spawn `command` in the background. Returns immediately with a `job_id`.
-    /// The child is reaped by an internal task; output streams into a capped
-    /// buffer; the `hard_limit` watchdog kills it if it overruns.
+    /// Subscribe to job-completion notifications. Each terminal job (done /
+    /// failed / killed, via the background reaper) publishes exactly one
+    /// [`JobCompletion`]. Listeners filter by `session_id`.
+    pub fn subscribe_completions(&self) -> broadcast::Receiver<JobCompletion> {
+        self.completions.subscribe()
+    }
+
+    /// Spawn `command` in the background, unattributed. See
+    /// [`Self::spawn_for_session`].
     pub fn spawn(&self, command: &str, workspace: &Path, hard_limit: Duration) -> String {
+        self.spawn_for_session(command, workspace, hard_limit, None)
+    }
+
+    /// Spawn `command` in the background, attributing it to `session_id` so the
+    /// completion broadcast can be routed back to the right session. Returns
+    /// immediately with a `job_id`. The child is reaped by an internal task;
+    /// output streams into a capped buffer; the `hard_limit` watchdog kills it
+    /// if it overruns; a [`JobCompletion`] is broadcast when it terminates.
+    pub fn spawn_for_session(
+        &self,
+        command: &str,
+        workspace: &Path,
+        hard_limit: Duration,
+        session_id: Option<String>,
+    ) -> String {
         self.prune();
 
         let id = format!("job_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
         let kill = Arc::new(Notify::new());
         let state = Arc::new(Mutex::new(JobState {
             command: command.to_string(),
+            session_id,
             status: JobStatus::Running,
             exit_code: None,
             stdout: String::new(),
@@ -171,6 +240,8 @@ impl BackgroundJobManager {
                 }
 
                 let st = state.clone();
+                let completions = self.completions.clone();
+                let job_id = id.clone();
                 tokio::spawn(async move {
                     enum Outcome {
                         Exited(std::io::Result<std::process::ExitStatus>),
@@ -206,6 +277,23 @@ impl BackgroundJobManager {
                             s.finished_at = Some(Instant::now());
                         }
                     }
+                    // Broadcast the terminal state to per-session listeners.
+                    // Send errors (no subscribers) are expected and ignored.
+                    let completion = {
+                        let s = st.lock();
+                        let end = s.finished_at.unwrap_or_else(Instant::now);
+                        JobCompletion {
+                            job_id,
+                            session_id: s.session_id.clone(),
+                            command: s.command.clone(),
+                            status: s.status,
+                            exit_code: s.exit_code,
+                            stdout_tail: tail_capped(&s.stdout, COMPLETION_TAIL_BYTES),
+                            stderr_tail: tail_capped(&s.stderr, COMPLETION_TAIL_BYTES),
+                            duration_ms: end.duration_since(s.started_at).as_millis() as u64,
+                        }
+                    };
+                    let _ = completions.send(completion);
                 });
             }
             Err(e) => {
@@ -358,5 +446,63 @@ mod tests {
         let mgr = BackgroundJobManager::new();
         assert!(mgr.snapshot("job_doesnotexist").is_none());
         assert!(!mgr.kill("job_doesnotexist"));
+    }
+
+    #[tokio::test]
+    async fn completion_is_broadcast_with_session_and_exit_code() {
+        let mgr = BackgroundJobManager::new();
+        let mut rx = mgr.subscribe_completions();
+        let id = mgr.spawn_for_session(
+            "echo bg-complete",
+            &ws(),
+            Duration::from_secs(10),
+            Some("sess-42".to_string()),
+        );
+
+        let completion = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("completion broadcast within timeout")
+            .expect("completion received");
+
+        assert_eq!(completion.job_id, id);
+        assert_eq!(completion.session_id.as_deref(), Some("sess-42"));
+        assert_eq!(completion.status, JobStatus::Done);
+        assert_eq!(completion.exit_code, Some(0));
+        assert!(
+            completion.stdout_tail.contains("bg-complete"),
+            "stdout_tail was: {:?}",
+            completion.stdout_tail
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_reports_failed_status() {
+        let mgr = BackgroundJobManager::new();
+        let mut rx = mgr.subscribe_completions();
+        let _id = mgr.spawn("exit 7", &ws(), Duration::from_secs(10));
+
+        let completion = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("completion within timeout")
+            .expect("completion received");
+
+        assert_eq!(completion.status, JobStatus::Failed);
+        assert_eq!(completion.exit_code, Some(7));
+        // Unattributed spawn → no session routing.
+        assert_eq!(completion.session_id, None);
+    }
+
+    #[test]
+    fn tail_capped_keeps_trailing_bytes_on_char_boundary() {
+        let short = "hello";
+        assert_eq!(tail_capped(short, 1024), "hello");
+
+        let big = "é".repeat(10_000); // 2 bytes each
+        let out = tail_capped(&big, 1024);
+        assert!(out.contains("earlier bytes"));
+        // The retained tail must be valid UTF-8 (only whole 'é' chars).
+        let tail = out.split('\n').next_back().unwrap();
+        assert!(tail.chars().all(|c| c == 'é'));
+        assert!(tail.len() <= 1024 + 2);
     }
 }

@@ -200,4 +200,83 @@ P1 已实现并 scoped 验证全绿，**未碰 agent-runtime/bridge 热文件**�
 
 **验证**：`cargo check -p golish-app-core`/`-p golish-agent-app` → 0；`cargo clippy -p golish-app-core --all-targets` → 0 warning；`cargo nextest -p golish-app-core` → 24 passed（含 6 个新 background_jobs 真子进程测试：捕获 stdout/非零退出→failed/长任务保持运行+kill/硬上限 kill/字符边界截断/未知 job）；`cargo fmt -p golish-app-core --check` → clean（workspace fmt 红仅别会话 harness 文件，与本改动无关）。活体 E2E（`just dev` 跑长命令观察 backgrounded + check_job 轮询）未做。
 
-**仍待（P2/P3，给接手 agent）**：完成事件 `tool_background_completed` + 自动回灌（动 agent-runtime 热文件，需先对齐）；前端「后台运行中」卡片 + 取消按钮；evidence ledger 记后台作业最终产物。
+**仍待（P3，给接手 agent）**：前端「后台运行中」卡片 + 取消按钮（P2 仅在 job 完成后翻卡，未做「运行中」实时态/取消）；evidence ledger 记后台作业最终产物；活体 E2E。
+
+---
+
+## 9. 实现记录（P2 完成回灌 · 2026-06-03 · MCP-2）
+
+P2 已实现并 scoped 验证全绿。**未改动 agentic loop / orchestrator 控制流**；通过「task-local 会话归属 + 进程级完成广播 + 每会话监听器 + 下一回合 system-prompt 回灌」实现，避开了别会话正在改的热文件冲突（仅在 `event.rs` 枚举**末尾追加**一个变体）。
+
+**会话归属（task-local，universal）**
+- `golish-core/src/agent_session.rs`（新）：`tokio::task_local!` 的 `CURRENT_AGENT_SESSION` + `with_agent_session(session_id, fut)` + `current_agent_session()`。tool 经 session-agnostic 的 `Tool::execute` 运行，故不逐个改 tool 签名；改由 bridge 在每个 agentic loop 外层 `with_agent_session` 包裹，内联 `await` 的 tool 执行即可读到会话 id。
+- `golish-agent-bridge/src/agent_bridge/execution.rs`：四处 `run_agentic_loop*` 调用（content 路径 vertex/generic + `run_generic_turn` + `run_anthropic_thinking_turn`）均用 `with_agent_session(self.event_session_id().map(str::to_string), <loop>)` 包裹，覆盖 chat / task / sub-agent 全部 tool 调用。
+
+**完成广播 + 归属**
+- `golish-app-core/src/background_jobs.rs`：新增 `JobCompletion`（job_id/session_id/command/status/exit_code/stdout_tail/stderr_tail/duration_ms）；`BackgroundJobManager` 持 `broadcast::Sender<JobCompletion>`，新增 `spawn_for_session(.., session_id)`（`spawn` 委派 None）、`subscribe_completions()`；reaper 到终态后广播一条 completion；`tail_capped` 把事件内 stdout/stderr 截到 8KB 尾部（字符边界安全）。
+- `golish-app-core/src/pty_interactive.rs`：`run_shell_command_detail` 读 `golish_core::current_agent_session()` 并走 `spawn_for_session`，把 job 归属到当前会话（含 `run_pty_cmd` + `pentest_run`，二者都过此收口点）。
+
+**完成事件**
+- `golish-core/src/events/event.rs`：枚举末尾新增 `AiEvent::ToolBackgroundCompleted { job_id, command, status, exit_code, stdout_tail, stderr_tail, duration_ms }`（`event_type()` / CLI JSON / sidecar / summarizer / should_transcript 各 exhaustive match 同步加臂；ts-rs 重新导出 `GeneratedAiEvent.ts`）。
+
+**回灌（不动 loop 控制流、无重入风险）**
+- `golish-agent-bridge`：`BridgeSession` 加 `pending_background: Arc<Mutex<Vec<String>>>` + `background_notes_handle()`；`prepare_execution_context`（文本/多模态两路）经 `append_background_notes` 把「上一回合后完成的后台作业结果」排空并拼到 system prompt（每条只投喂一次）。
+- `golish-agent-app/src/ai/commands/bridge_config.rs`：`configure_bridge` 启动每会话监听器（`subscribe_completions`），按 `session_id` 过滤本会话 completion → ① `event_tx` 发 `ToolBackgroundCompleted`（前端翻卡）② push 一条 note 到 pending 队列（下一回合喂回 AI）。
+- 前端 `services/ai-events/tool-handlers.ts` + `registry.ts`：新增 `handleToolBackgroundCompleted`，按 `job_id` 关联原 backgrounded 工具卡 → `completeToolExecutionBlock` 翻成终态结果（找不到则 no-op，AI 仍会下回合从回灌得知）。
+
+**验证（scoped 全绿）**
+- `cargo nextest`：golish-core 171 / golish-app-core 27（含 3 个新 completion 广播测试）/ golish-events+cli-output+sidecar 149 / golish-agent-bridge+golish-agent-app 39 —— 全 passed。
+- `cargo check` 7 crate → 0；`cargo clippy --all-targets` 7 crate → 0 warning；`cargo fmt --check` → 本次改动文件 clean（仅别会话 `bridge_executor/trait_impl.rs` 有既存 fmt diff，非本改动）。
+- 前端：`just check-fe`（biome+typecheck）→ 0；`vitest` 110 文件 / 1206 passed（含新增 registry 用例）。
+- 0 commit；活体 E2E（`just dev` 跑长命令观察自动回灌）未做。
+
+**附带修正（ts-rs 重导出暴露的别会话遗留）**：重新生成 `GeneratedAiEvent.ts` 把别会话给 `SubtaskCompleted` 加的 `stage_kind` 一并落进 TS，故 `frontend/services/ai-events/task-handlers.ts` 的 `handleSubtaskCompleted` 内联类型补了一行 `stage_kind: string | null`（仅类型一致，无逻辑改动）。
+
+**给 P3 接手**：实时「运行中」卡片 + 取消按钮；evidence ledger 记后台产物；自动「无用户输入也唤醒新回合」（当前回灌只在下一回合 prepare 注入，若用户不再发消息则不主动起新回合——真正的自动唤醒需重入式 turn 管理，风险较高，单列）。
+
+---
+
+## 10. 实现记录（P3-a 前端实时态 + P3-b 取消按钮 · 2026-06-03 · MCP-agent-1）
+
+承 P2 回灌。P3 三件中的 a/b 已落地并 scoped 验证全绿；**未 commit**。
+
+### P3-a 前端「后台运行中」实时态（纯前端 · 零 ts-rs）
+
+根因：P2 仅在 job **完成后**翻卡；backgrounded 的 `tool_result`（`success=true`、无 `error`）被 `handleToolResult` 当成 ✓ 完成，运行期间卡片误显终态。
+
+- store 新增 `backgrounded` 工具状态：`AiToolExecution.status` / `ToolCall.status` / `ActiveToolCall.status` 三处枚举 + `backgroundToolExecutionBlock`（timeline，`store/slices/ai.ts`）+ `backgroundStreamingToolBlock`（interleaved，`store/slices/session-streaming.ts` + `session.ts`）。
+- `services/ai-events/tool-handlers.ts`：`handleToolResult` 识别 `result.status==="backgrounded"` → `completeActiveToolCall`(agent 已继续) + 两个 background action（卡片保持非终态）；`handleToolBackgroundCompleted` 增补 `updateStreamingToolBlock`，让 timeline + interleaved 同步翻终态。
+- UI：`StatusIcon` 加 `backgrounded`（琥珀 Clock animate-pulse）；`ToolExecutionCard` 显示「Backgrounded · job X」徽标 + 复用 live 脉冲边框 + `parseShellResult` 识别 `partial_stdout/partial_stderr`；6 处 `statusConfig`（ToolCallDetailView / MainToolGroup / ToolCallDisplay / ToolDetailsModal / ToolGroup / ToolGroupDetailsModal）补 `backgrounded` 条目。
+- 测试：`services/ai-events/registry.test.ts` +2（backgrounded 路由不提前完成 / 正常路由仍终态）并修既有 bg 测试 mock（加 `updateStreamingToolBlock`）。
+
+### P3-b 取消按钮（新 Tauri 命令 · 零 ts-rs，因仅 String→bool）
+
+- 后端：`golish-agent-app/.../core/session.rs` 新增 `#[tauri::command] ai_cancel_background_job(job_id) -> bool` → `golish_app_core::background_jobs::manager().kill(&job_id)`；`core/mod.rs` 补 `__cmd__ai_cancel_background_job` 显式 re-export（`generate_handler!` 跨 crate 解析所需）；`commands_registry.rs` ai 段注册。manager 已有 `kill()`；kill → reaper 标 `Killed` 并广播 `JobCompletion`，复用 P2 监听链 emit `ToolBackgroundCompleted` 翻卡 —— **无需新事件 / 新 IPC 类型**。
+- 前端：`lib/ai/session.ts` 加 `cancelBackgroundJob(jobId)`；`ToolExecutionCard` 仅 backgrounded 态在卡头右侧显「Cancel」按钮（stopPropagation 不触发折叠；killed 后经事件翻卡；job 不存在则复位 spinner）。
+
+### 验证（已记录证据）
+
+- `cargo check -p golish-agent-app` 0；`cargo check -p golish` 0（registry 解析新命令）；`cargo clippy -p golish-agent-app --all-targets -- -D warnings` 0；`cargo nextest -p golish-agent-app` 31 passed；`cargo fmt -p golish-agent-app` + `-p golish --check` clean。
+- `just check-fe` 0；`pnpm test:run` 110 文件 / 1208 passed / 12 skipped（含 +2 新单测）；ReadLints 0。
+
+### 仍待（收尾）
+
+- 高风险暂缓：无用户输入自动唤醒新回合。
+- 活体 E2E（`just dev` 跑长命令 → backgrounded 卡片 → Cancel → 翻 killed；harness on 时跑完入 evidence ledger 并被引用）；全量 `just precommit`；commit / push 待用户授权。
+
+---
+
+## 11. 实现记录（P3-c evidence ledger 入账 · 2026-06-03 · MCP-agent-1）
+
+背景作业**在 agentic loop 之外**终止，故 `golish-agent-runtime` 的同步 evidence 路径（仅在 `tool_result` 成功且 `harness_stage.is_some()` 时 `repo.evidence_append`）从不入账后台作业——一个 backgrounded 扫描的产物会丢失（违 AGENTS.md I7/I8：实际跑完的扫描是「已检查」而非「未检查」）。P3-c 在 P2 的每会话完成监听器里补这道账。
+
+- `golish-agent-app/.../bridge_config.rs`：
+  - `spawn_background_completion_listener` 改签名加 `db_repo: Arc<dyn DbRepoProvider>` + `project_path: Option<String>`（call site 从 `state.db_pool` 建 `GolishDbRepoProvider`、从 bridge workspace 取 project_path，`"."`/空 → None）。
+  - 新 `maybe_append_background_evidence`：仅对 **`JobStatus::Done`** 且 `harness::stage_mode_enabled()` 入账（killed/failed 只进 note 不入账）；`op_id = Uuid::new_v5(NAMESPACE_OID, "golish-bg-op:{session}")`（确定性每会话链——live tracker 的随机 `session_uuid` 在此 detached listener 不可达；gate 的 fabricated-ref 校验按 id 存在性而非链成员，故独立链无碍）；`evidence_append(op_id, None, session, project_path, "background_job", "background_command", command, stdout+stderr)`；失败只 warn 不阻断。
+  - `format_background_note` 加 `evidence_id` 参数 → 回灌 note 内附 `evidence_id=N — cite this in a StageDeliverable's evidence_refs`，让 agent 下回合能引真 id（闭合 I8：扫完→入账→告知 id→引用→gate 校验）。
+- 复用既有 `DbRepoProvider::evidence_append`（P0 路径同一入口，`golish-pentest` hash-chain + classification），**未改 evidence ledger 内核**。
+
+### 验证（已记录证据）
+
+- `cargo clippy -p golish-agent-app --all-targets -- -D warnings` 0；`cargo nextest -p golish-agent-app` **33 passed**（+2 新 `format_background_note` 单测：有/无 evidence_id）；`cargo fmt -p golish-agent-app --check` clean；`cargo check -p golish` 0。ReadLints 0。
+- 活体（DB+harness on）入账实测未跑（需 `just dev` + 长命令 + stage mode）。

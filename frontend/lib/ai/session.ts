@@ -89,6 +89,17 @@ export async function cancelAiGeneration(sessionId: string): Promise<void> {
   return invoke("cancel_ai_generation", { sessionId });
 }
 
+/**
+ * Cancel a background job (a shell/pentest command that exceeded its soft
+ * timeout and was detached to keep running). Resolves to `true` if the job was
+ * found and a kill was requested. The originating tool card flips out of its
+ * "backgrounded" state once the resulting `tool_background_completed` event
+ * arrives.
+ */
+export async function cancelBackgroundJob(jobId: string): Promise<boolean> {
+  return invoke("ai_cancel_background_job", { jobId });
+}
+
 export async function isAiSessionInitialized(sessionId: string): Promise<boolean> {
   return invoke("is_ai_session_initialized", { sessionId });
 }

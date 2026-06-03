@@ -242,4 +242,38 @@ success: boolean,
 /**
  * Duration of the generation call in milliseconds
  */
-duration_ms: bigint, } | { "type": "task_progress", task_id: string, status: string, message: string, } | { "type": "subtask_created", task_id: string, subtask_id: string, title: string, agent: string | null, } | { "type": "subtask_completed", task_id: string, subtask_id: string, title: string, result: string, } | { "type": "subtask_waiting_for_input", task_id: string, subtask_id: string, title: string, prompt: string, } | { "type": "subtask_user_input", task_id: string, subtask_id: string, input: string, } | { "type": "task_resumed", task_id: string, subtask_index: number, total_subtasks: number, } | { "type": "enricher_result", task_id: string, subtask_id: string, context_added: string, };
+duration_ms: bigint, } | { "type": "task_progress", task_id: string, status: string, message: string, } | { "type": "subtask_created", task_id: string, subtask_id: string, title: string, agent: string | null, } | { "type": "subtask_completed", task_id: string, subtask_id: string, title: string, result: string, 
+/**
+ * Harness stage this subtask belonged to (`StageKind::as_str`), when the
+ * run is stage-mode. Lets the frontend group stage markers into大阶段
+ * (two-level phase model, design 2026-06-03). `None` for non-stage runs.
+ */
+stage_kind: string | null, } | { "type": "subtask_waiting_for_input", task_id: string, subtask_id: string, title: string, prompt: string, } | { "type": "subtask_user_input", task_id: string, subtask_id: string, input: string, } | { "type": "task_resumed", task_id: string, subtask_index: number, total_subtasks: number, } | { "type": "enricher_result", task_id: string, subtask_id: string, context_added: string, } | { "type": "tool_background_completed", 
+/**
+ * The `job_id` reported in the originating `backgrounded` tool result.
+ */
+job_id: string, 
+/**
+ * The shell command that ran.
+ */
+command: string, 
+/**
+ * Terminal status: "done" | "failed" | "killed".
+ */
+status: string, 
+/**
+ * The command's exit code, if it exited normally.
+ */
+exit_code: number | null, 
+/**
+ * Tail of captured stdout (already size-capped by the job manager).
+ */
+stdout_tail: string, 
+/**
+ * Tail of captured stderr (already size-capped by the job manager).
+ */
+stderr_tail: string, 
+/**
+ * Total wall-clock duration of the job in milliseconds.
+ */
+duration_ms: bigint, };
