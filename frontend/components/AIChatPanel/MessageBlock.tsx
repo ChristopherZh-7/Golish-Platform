@@ -169,7 +169,10 @@ export const MessageBlock = memo(function MessageBlock({
         // keeps streaming text / tool cards flowing BELOW it instead of pushing
         // it to the bottom as the message grows.
         let planInserted = false;
-        const shouldShowPlan = !isUser && taskPlan;
+        // An empty (lazy) plan with zero steps carries no useful "N / M tasks
+        // done" info and used to render a broken "Infinity more" card, so only
+        // surface the plan card once it actually has steps.
+        const shouldShowPlan = !isUser && taskPlan && taskPlan.steps.length > 0;
         const hasPlanMarker = segments.some((s) => s.kind === "plan_marker");
         // First text segment may not be index 0 once thinking bursts are spliced in.
         const firstTextIdx = segments.findIndex((s) => s.kind === "text");

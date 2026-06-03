@@ -653,10 +653,6 @@
     "noModelSelected": "请先选择模型（左下角下拉菜单）",
     "noProviders": "未配置任何服务商",
     "configureInSettings": "请在 设置 → Providers 中配置 API Key",
-    "preparing": {
-      "planning": "%MODE% 模式 · 正在规划任务…（%SECONDS%s）",
-      "thinking": "正在准备…（%SECONDS%s）"
-    },
     "messages": "条消息",
     "toolDetail": {
       "backToTerminal": "返回终端",

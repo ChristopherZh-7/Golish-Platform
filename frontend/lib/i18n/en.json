@@ -654,10 +654,6 @@
     "noModelSelected": "Please select a model first (bottom-left dropdown)",
     "noProviders": "No providers configured",
     "configureInSettings": "Configure API keys in Settings → Providers",
-    "preparing": {
-      "planning": "%MODE% mode · Planning task… (%SECONDS%s)",
-      "thinking": "Preparing… (%SECONDS%s)"
-    },
     "toolDetail": {
       "backToTerminal": "Back to Terminal",
       "done": "done",

@@ -122,8 +122,12 @@ export const InlinePlanCard = memo(function InlinePlanCard({ plan }: { plan: Tas
     }
   }
 
-  const beforeCount = expanded ? 0 : Math.max(0, Math.min(...visibleIndices));
-  const afterCount = expanded ? 0 : Math.max(0, steps.length - 1 - Math.max(...visibleIndices));
+  // Guard the empty case: spreading an empty array into Math.min/Math.max
+  // yields Infinity/-Infinity, which previously rendered as "Infinity more".
+  const hasVisible = visibleIndices.length > 0;
+  const beforeCount = expanded || !hasVisible ? 0 : Math.max(0, Math.min(...visibleIndices));
+  const afterCount =
+    expanded || !hasVisible ? 0 : Math.max(0, steps.length - 1 - Math.max(...visibleIndices));
 
   return (
     <div className="mx-0 my-1.5 rounded-lg border border-[var(--border-subtle)] bg-background/60 overflow-hidden">

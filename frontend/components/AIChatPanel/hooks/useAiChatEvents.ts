@@ -267,6 +267,17 @@ export function useAiChatEvents({
               break;
             case "task_progress": {
               const s = event.status;
+              // `finished` is the authoritative end-of-run signal on the event
+              // channel. Without resetting here, `taskInProgressRef` only flips
+              // back on the `error` event or when the `send_ai_prompt_session`
+              // invoke resolves — but a harness "hold for rework" Interrupt
+              // suspends that invoke, so the terminal `completed` re-arms
+              // streaming (see the `completed` case) and the "preparing" spinner
+              // stays stuck forever. Clearing it here covers blocked + normal end.
+              if (s === "finished") {
+                taskInProgressRef.current = false;
+                store.setConversationStreaming(convId, false);
+              }
               // Only meaningful transitions — skip the noisy repeated "running".
               if (s === "finished" || s === "waiting_approval" || s === "reporting") {
                 const label =

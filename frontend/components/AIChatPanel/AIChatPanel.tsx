@@ -6,6 +6,7 @@ import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
 import { formatModelName } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { type ChatMessage, useStore } from "@/store";
+import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { ChatModelSelector } from "./ChatModelSelector";
 import { AskHumanInline, CompactionNotice, WorkflowProgress } from "./ChatSubComponents";
 import { ContextUsageRing } from "./ContextUsageRing";
@@ -23,7 +24,6 @@ import { useTaskPlanState } from "./hooks/useTaskPlanState";
 import { MessageBlock } from "./MessageBlock";
 import { buildPentestSystemPrompt } from "./pentestSystemPrompt";
 import { StageMarker } from "./StageMarker";
-import { TaskPreparingIndicator } from "./TaskPreparingIndicator";
 import { useChatAutoScroll } from "./useChatAutoScroll";
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
@@ -349,10 +349,12 @@ export const AIChatPanel = memo(function AIChatPanel() {
                 />
               )}
               {showPreparing && (
-                <TaskPreparingIndicator
-                  modeId={modes.chatExecutionMode}
-                  startedAt={activeConv?.streamingStartedAt}
-                />
+                <div className="px-4 py-3">
+                  {/* Cursor-style "Planning" status while the orchestrator plans,
+                      before the first streamed bubble exists. Reuses the same dot+
+                      shimmer as the in-bubble status footer. */}
+                  <AgentStatusIndicator phase="planning" />
+                </div>
               )}
               <div ref={messagesEndRef} />
             </div>
