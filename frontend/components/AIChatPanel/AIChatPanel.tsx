@@ -348,7 +348,12 @@ export const AIChatPanel = memo(function AIChatPanel() {
                   onSkip={handleAskHumanSkip}
                 />
               )}
-              {showPreparing && <TaskPreparingIndicator modeId={modes.chatExecutionMode} />}
+              {showPreparing && (
+                <TaskPreparingIndicator
+                  modeId={modes.chatExecutionMode}
+                  startedAt={activeConv?.streamingStartedAt}
+                />
+              )}
               <div ref={messagesEndRef} />
             </div>
           )}

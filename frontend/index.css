@@ -338,6 +338,45 @@
   animation: agent-status-dot-pulse 1.55s ease-out infinite;
 }
 
+/* Shimmering "working" label: a soft highlight sweeps across the muted text so
+ * the inline agent status reads as alive without any boxy chip chrome. */
+@keyframes agent-status-text-shimmer {
+  0% {
+    background-position: 150% center;
+  }
+  100% {
+    background-position: -150% center;
+  }
+}
+
+.agent-status-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    var(--muted-foreground, #9aa0a6) 35%,
+    var(--foreground, #e8eaed) 50%,
+    var(--muted-foreground, #9aa0a6) 65%
+  );
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: agent-status-text-shimmer 2.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-status-dot {
+    animation: none;
+  }
+
+  .agent-status-shimmer {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: var(--muted-foreground, #9aa0a6);
+    color: var(--muted-foreground, #9aa0a6);
+  }
+}
+
 /* Toast close button - force visibility */
 [data-sonner-toast] [data-close-button] {
   position: absolute !important;

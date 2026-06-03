@@ -14,9 +14,11 @@
 import { ArrowLeft, CheckCircle2, Clock, Loader2, Wrench, XCircle } from "lucide-react";
 import { memo, useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { Ansi } from "@/components/Ansi";
 import { Markdown } from "@/components/Markdown";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
+import { expandTerminalTabs, stripAllAnsi, stripOscSequences } from "@/lib/ansi";
 import { safeStringify } from "@/lib/text";
 import { formatDurationLong } from "@/lib/time";
 import { formatCommandForDisplay, getToolColor, getToolLabel } from "@/lib/tools";
@@ -61,10 +63,23 @@ function hasToolArgs(args: unknown): boolean {
 }
 
 /**
+ * Render a possibly-ANSI string: plain text is returned untouched (so clean
+ * structured output is never altered), while anything carrying escape codes is
+ * routed through {@link Ansi} after stripping cursor/OSC noise so colours paint
+ * instead of leaking as literal `\x1b[…m` sequences.
+ */
+function renderMaybeAnsi(value: string) {
+  if (!value.includes("\x1b")) return value;
+  return <Ansi>{expandTerminalTabs(stripOscSequences(value))}</Ansi>;
+}
+
+/**
  * Render a plain object as a key/value table. String values are rendered in a
  * `whitespace-pre-wrap` <pre> so embedded real newlines/tabs display correctly
  * instead of being collapsed or — when the whole object is JSON.stringify'd —
- * shown as literal `\n` / `\t` escape sequences.
+ * shown as literal `\n` / `\t` escape sequences. String values are also routed
+ * through {@link renderMaybeAnsi} so a field carrying terminal colour codes
+ * paints instead of leaking raw escapes.
  */
 function RecordTable({ value }: { value: Record<string, unknown> }) {
   const entries = Object.entries(value);
@@ -73,7 +88,8 @@ function RecordTable({ value }: { value: Record<string, unknown> }) {
   return (
     <div className="divide-y divide-border/15">
       {entries.map(([key, val]) => {
-        const strValue = typeof val === "string" ? val : JSON.stringify(val, null, 2);
+        const isString = typeof val === "string";
+        const strValue = isString ? (val as string) : JSON.stringify(val, null, 2);
         const isLong = strValue.length > 120 || strValue.includes("\n");
         return (
           <div
@@ -85,11 +101,11 @@ function RecordTable({ value }: { value: Record<string, unknown> }) {
             </span>
             {isLong ? (
               <pre className="mt-1 text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all max-h-60 overflow-auto leading-relaxed">
-                {strValue}
+                {isString ? renderMaybeAnsi(strValue) : strValue}
               </pre>
             ) : (
               <span className="text-[11px] font-mono text-foreground/80 truncate" title={strValue}>
-                {strValue}
+                {isString ? renderMaybeAnsi(strValue) : strValue}
               </span>
             )}
           </div>
@@ -115,17 +131,33 @@ function ToolArgsTable({ args }: { args: unknown }) {
 function ToolResultDisplay({ result }: { result: unknown }) {
   if (result === null || result === undefined) return null;
 
+  // A result delivered as a JSON string renders its nested fields with literal
+  // \n / \t otherwise; parse it so e.g. a `stdout` field shows real newlines via
+  // the per-field RecordTable below instead of one escaped blob.
+  let value: unknown = result;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object") value = parsed;
+      } catch {
+        // Not JSON — keep the original string.
+      }
+    }
+  }
+
   const isMarkdownLike =
-    typeof result === "string" &&
-    (/^#{1,3}\s/m.test(result) ||
-      /\*\*/.test(result) ||
-      /^[-*]\s/m.test(result) ||
-      /```/.test(result));
+    typeof value === "string" &&
+    (/^#{1,3}\s/m.test(value) || /\*\*/.test(value) || /^[-*]\s/m.test(value) || /```/.test(value));
 
   if (isMarkdownLike) {
+    const md = value as string;
     return (
       <div className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-[480px] overflow-auto text-[12px] text-foreground leading-[1.65] [&_p]:mb-1.5 [&_p:last-child]:mb-0">
-        <Markdown content={result as string} />
+        {/* Markdown can't render ANSI; strip it only when present so clean
+            markdown is never altered. */}
+        <Markdown content={md.includes("\x1b") ? stripAllAnsi(md) : md} />
       </div>
     );
   }
@@ -133,26 +165,44 @@ function ToolResultDisplay({ result }: { result: unknown }) {
   // Plain objects: render each field so multi-line string values keep their real
   // newlines/tabs. Stringifying the whole object would escape them into literal
   // `\n` / `\t` sequences, which renders as unreadable noise in a <pre>.
-  if (isRecord(result)) {
+  if (isRecord(value)) {
     return (
       <div className="rounded-md bg-muted/40 border border-border/20 max-h-[480px] overflow-auto">
-        <RecordTable value={result} />
+        <RecordTable value={value} />
       </div>
     );
   }
 
+  const text = safeStringify(value, 8000);
   return (
     <pre className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-[480px] overflow-auto text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all leading-relaxed">
-      {safeStringify(result, 8000)}
+      {typeof value === "string" ? renderMaybeAnsi(text) : text}
     </pre>
   );
 }
 
 function formatShellLikeOutput(result: unknown, streamingOutput?: string): string | null {
   if (streamingOutput) return streamingOutput;
-  if (!result || typeof result !== "object") return null;
 
-  const r = result as Record<string, unknown>;
+  // Results sometimes arrive as a JSON string instead of a parsed object; parse
+  // so embedded stdout newlines/tabs become real whitespace rather than literal
+  // \n / \t escapes in the rendered panel.
+  let value: unknown = result;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        value = JSON.parse(trimmed);
+      } catch {
+        // Not JSON — fall through to the plain-string branch.
+      }
+    }
+  }
+  if (!value || typeof value !== "object") {
+    return typeof result === "string" && result.trim() ? result : null;
+  }
+
+  const r = value as Record<string, unknown>;
   const command = typeof r.command === "string" ? r.command : null;
   const stdout = typeof r.stdout === "string" ? r.stdout : "";
   const stderr = typeof r.stderr === "string" ? r.stderr : "";
@@ -286,6 +336,16 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
   const shellOutput = isShellCmd
     ? formatShellLikeOutput(execution.result, execution.streamingOutput)
     : null;
+  // Strip OSC/cursor noise but keep SGR colour codes so <Ansi> can paint them —
+  // otherwise raw escape sequences (e.g. 256-colour `wttr.in` art) leak into the
+  // panel as literal `\x1b[38;5;…m` text instead of rendering as colours.
+  const cleanedShellOutput = shellOutput
+    ? expandTerminalTabs(stripOscSequences(shellOutput))
+    : null;
+  const displayShellOutput =
+    cleanedShellOutput && cleanedShellOutput.length > 8000
+      ? `${cleanedShellOutput.slice(0, 8000)}\n... (truncated)`
+      : cleanedShellOutput;
 
   return (
     <div className="h-full flex flex-col bg-card">
@@ -396,15 +456,13 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           </div>
         )}
 
-        {isShellCmd && shellOutput && (
+        {isShellCmd && displayShellOutput && (
           <div className="px-4 py-3 border-b border-border/20">
             <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
               Output
             </div>
             <pre className="ansi-output max-h-[480px] overflow-auto whitespace-pre-wrap rounded border border-border/15 bg-background/40 px-3 py-2 text-[11px] font-mono text-muted-foreground">
-              {shellOutput.length > 8000
-                ? `${shellOutput.slice(0, 8000)}\n... (truncated)`
-                : shellOutput}
+              <Ansi>{displayShellOutput}</Ansi>
             </pre>
           </div>
         )}

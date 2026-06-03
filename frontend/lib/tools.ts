@@ -130,6 +130,13 @@ export function getToolLabel(name: string, variant: "short" | "standard" = "stan
 export function getToolPrimaryArg(name: string, args: Record<string, unknown>): string | null {
   if ((name === "run_command" || name === "run_pty_cmd") && args.command)
     return formatCommandForDisplay(String(args.command));
+  // pentest_run wraps the real tool in `tool_name` + `args`; surface them as a
+  // single command-like line (e.g. "dig example.com NS") so the card explains
+  // what it did without the user expanding it.
+  if (name === "pentest_run" && args.tool_name) {
+    const toolArgs = args.args != null ? String(args.args) : "";
+    return formatCommandForDisplay(`${String(args.tool_name)} ${toolArgs}`.trim());
+  }
   if (args.path) return String(args.path);
   if (args.file_path) return String(args.file_path);
   if (args.url) return String(args.url);

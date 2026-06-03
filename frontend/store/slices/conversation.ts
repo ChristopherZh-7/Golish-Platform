@@ -106,6 +106,13 @@ export interface ChatConversation {
   aiSessionId: string;
   aiInitialized: boolean;
   isStreaming: boolean;
+  /**
+   * Epoch ms when the current streaming turn started (set on the false→true
+   * streaming edge). Anchors the "preparing" elapsed counter so it survives the
+   * indicator remounting (e.g. switching conversation tabs). Runtime-only — not
+   * persisted to the conversation DB.
+   */
+  streamingStartedAt?: number;
 }
 
 // State interface
@@ -269,6 +276,14 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
     set((state) => {
       const conv = state.conversations[convId];
       if (conv) {
+        // Anchor the turn start on the false→true edge (and clear on stop) so
+        // the preparing-timer reads a stable origin across remounts instead of
+        // resetting whenever the indicator re-mounts.
+        if (streaming && !conv.isStreaming) {
+          conv.streamingStartedAt = Date.now();
+        } else if (!streaming) {
+          conv.streamingStartedAt = undefined;
+        }
         conv.isStreaming = streaming;
       }
     }),

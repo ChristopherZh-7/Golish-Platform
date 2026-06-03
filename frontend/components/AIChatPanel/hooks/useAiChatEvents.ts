@@ -10,6 +10,7 @@ import { classifyErrorSeverity } from "@/lib/ai/errorSeverity";
 import { safeStringify } from "@/lib/text";
 import { type ChatMessage, useStore } from "@/store";
 import { type AskHumanState, resolveAskHumanInputType } from "../AskHumanInline";
+import { readContextUsage, writeContextUsage } from "../contextUsagePersistence";
 import type { WorkflowRunSnapshot } from "../WorkflowProgress";
 
 interface UseAiChatEventsOptions {
@@ -24,7 +25,7 @@ interface UseAiChatEventsOptions {
 }
 
 export function useAiChatEvents({
-  activeConvId: _activeConvId,
+  activeConvId,
   streamingMsgRef,
   taskInProgressRef,
   modes,
@@ -211,13 +212,18 @@ export function useAiChatEvents({
                 status: "resumed",
               });
               break;
-            case "context_warning":
-              setContextUsage({
+            case "context_warning": {
+              const usage = {
                 utilization: event.utilization,
                 totalTokens: event.total_tokens,
                 maxTokens: event.max_tokens,
-              });
+              };
+              // Persist per conversation so a refresh / tab switch can restore
+              // the ring immediately instead of waiting for the next warning.
+              writeContextUsage(convId, usage);
+              if (convId === store.activeConversationId) setContextUsage(usage);
               break;
+            }
             case "error":
               taskInProgressRef.current = false;
               store.setMessageError(convId, event.message, classifyErrorSeverity(event.message));
@@ -370,6 +376,13 @@ export function useAiChatEvents({
     planTextOffsetRef.current = null;
     planMessageIdRef.current = null;
   }, []);
+
+  // Restore the persisted context-usage snapshot for the active conversation so
+  // the ring shows the last-known utilization immediately after a refresh or a
+  // tab switch, instead of reading "unavailable" until the next warning event.
+  useEffect(() => {
+    setContextUsage(activeConvId ? readContextUsage(activeConvId) : null);
+  }, [activeConvId]);
 
   const handleAskHumanSubmit = useCallback(
     async (response: string) => {

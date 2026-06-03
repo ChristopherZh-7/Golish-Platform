@@ -64,19 +64,17 @@ export const AgentStatusIndicator = memo(function AgentStatusIndicator({
   return (
     <div
       className={cn(
-        "agent-status-line mt-2 inline-flex max-w-full items-center gap-2 rounded-md",
-        "border border-[var(--border-subtle)] bg-background/55 px-2.5 py-1",
-        "text-[11.5px] text-muted-foreground select-none",
+        "agent-status-line mt-2 inline-flex max-w-full items-center gap-2 select-none",
         className
       )}
       aria-live="polite"
       aria-busy
     >
-      <span className="relative flex h-2 w-2 flex-shrink-0" aria-hidden="true">
-        <span className="agent-status-dot absolute inline-flex h-full w-full rounded-full bg-accent/55" />
-        <span className="relative inline-flex h-2 w-2 rounded-full bg-accent/80" />
+      <span className="relative flex h-1.5 w-1.5 flex-shrink-0" aria-hidden="true">
+        <span className="agent-status-dot absolute inline-flex h-full w-full rounded-full bg-accent/60" />
+        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-accent" />
       </span>
-      <span className="truncate text-foreground/75">{text}</span>
+      <span className="agent-status-shimmer truncate text-[12px] font-medium">{text}</span>
     </div>
   );
 });

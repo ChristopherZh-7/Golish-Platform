@@ -5,6 +5,13 @@ import { cn } from "@/lib/utils";
 interface TaskPreparingIndicatorProps {
   /** Active execution-mode id (e.g. "assessment", "red_team", or "chat"). */
   modeId: string;
+  /**
+   * Epoch ms when the preparing phase began. Anchoring the elapsed counter to a
+   * stable timestamp (sourced from the conversation) keeps it correct across
+   * remounts — switching conversation tabs away and back no longer resets it to
+   * 0. Falls back to mount time when omitted.
+   */
+  startedAt?: number;
   className?: string;
 }
 
@@ -31,18 +38,23 @@ function formatModeLabel(modeId: string): string {
  */
 export const TaskPreparingIndicator = memo(function TaskPreparingIndicator({
   modeId,
+  startedAt,
   className,
 }: TaskPreparingIndicatorProps) {
   const { t } = useTranslation();
-  const [seconds, setSeconds] = useState(0);
+  // Initialize from the anchor (not 0) so a remount shows the real elapsed time
+  // immediately, with no flash back to 0 when switching conversation tabs.
+  const [seconds, setSeconds] = useState(() =>
+    Math.max(0, Math.floor((Date.now() - (startedAt ?? Date.now())) / 1000))
+  );
 
   useEffect(() => {
-    const startedAt = Date.now();
-    const id = setInterval(() => {
-      setSeconds(Math.floor((Date.now() - startedAt) / 1000));
-    }, 1000);
+    const anchor = startedAt ?? Date.now();
+    const update = () => setSeconds(Math.max(0, Math.floor((Date.now() - anchor) / 1000)));
+    update();
+    const id = setInterval(update, 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [startedAt]);
 
   const isTaskMode = modeId !== "chat";
   const text = useMemo(() => {
@@ -63,19 +75,17 @@ export const TaskPreparingIndicator = memo(function TaskPreparingIndicator({
     <div className="px-4 py-3">
       <div
         className={cn(
-          "agent-status-line inline-flex max-w-full items-center gap-2 rounded-md",
-          "border border-[var(--border-subtle)] bg-background/55 px-2.5 py-1",
-          "text-[11.5px] text-muted-foreground select-none",
+          "agent-status-line inline-flex max-w-full items-center gap-2 select-none",
           className
         )}
         aria-live="polite"
         aria-busy
       >
-        <span className="relative flex h-2 w-2 flex-shrink-0" aria-hidden="true">
-          <span className="agent-status-dot absolute inline-flex h-full w-full rounded-full bg-accent/55" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-accent/80" />
+        <span className="relative flex h-1.5 w-1.5 flex-shrink-0" aria-hidden="true">
+          <span className="agent-status-dot absolute inline-flex h-full w-full rounded-full bg-accent/60" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-accent" />
         </span>
-        <span className="truncate text-foreground/75">{text}</span>
+        <span className="agent-status-shimmer truncate text-[12px] font-medium">{text}</span>
       </div>
     </div>
   );
