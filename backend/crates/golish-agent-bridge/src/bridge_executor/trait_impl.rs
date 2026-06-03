@@ -7,7 +7,7 @@ use golish_agent_kit::task_orchestrator::{
     GeneratorOutput, PlannedSubtask, RefinerOutput,
 };
 
-use super::{extract_json_from_response, truncate_to_char_boundary, BridgeAgentExecutor};
+use super::{describe_plan_parse_failure, extract_json_from_response, BridgeAgentExecutor};
 
 #[async_trait::async_trait]
 impl AgentExecutor for BridgeAgentExecutor {
@@ -23,10 +23,19 @@ impl AgentExecutor for BridgeAgentExecutor {
             .context("Generator LLM call failed")?;
 
         let json_str = extract_json_from_response(&response);
-        let mut output: GeneratorOutput = serde_json::from_str(json_str).context(format!(
-            "Failed to parse generator JSON. Raw response:\n{}",
-            truncate_to_char_boundary(&response, 500)
-        ))?;
+        // A refusal / clarifying question / non-JSON prose response must NOT be
+        // surfaced as a cryptic `expected value at line 1 column 1` serde error.
+        // `describe_plan_parse_failure` splits "model declined" (clean message,
+        // no serde noise) from genuinely malformed JSON (keep the serde detail).
+        let mut output: GeneratorOutput = serde_json::from_str(json_str)
+            .map_err(|e| {
+                anyhow::anyhow!(describe_plan_parse_failure(
+                    "task planner",
+                    &response,
+                    json_str,
+                    &e,
+                ))
+            })?;
 
         // Phase 1 MVP · Operation Harness:
         // LLM may omit `harness_stage` even when subtask matches a known stage.
@@ -167,10 +176,15 @@ impl AgentExecutor for BridgeAgentExecutor {
             .context("Refiner LLM call failed")?;
 
         let json_str = extract_json_from_response(&response);
-        serde_json::from_str::<RefinerOutput>(json_str).context(format!(
-            "Failed to parse refiner JSON. Raw response:\n{}",
-            truncate_to_char_boundary(&response, 500)
-        ))
+        // Same refusal-vs-malformed split as the generator (see generate_subtasks).
+        serde_json::from_str::<RefinerOutput>(json_str).map_err(|e| {
+            anyhow::anyhow!(describe_plan_parse_failure(
+                "plan refiner",
+                &response,
+                json_str,
+                &e,
+            ))
+        })
     }
 
     async fn generate_report(&self, execution_context: &ExecutionContext) -> Result<AgentResult> {

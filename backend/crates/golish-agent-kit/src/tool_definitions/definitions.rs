@@ -49,7 +49,7 @@ pub fn get_run_command_tool_definition() -> ToolDefinition {
 pub fn get_ask_human_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "ask_human".to_string(),
-        description: "Ask the user for information, credentials, or a decision. Use when you need input you cannot determine on your own: login credentials, scope decisions, authorization for risky actions, or expert guidance. This pauses execution until the user responds.".to_string(),
+        description: "Ask the user for information, credentials, or a decision. Use when you need input you cannot determine on your own: login credentials, scope decisions, authorization for risky actions, or expert guidance. This pauses execution until the user responds. Ask ONE thing at a time — do not bundle several questions into a single prompt. Whenever the answer is one of a small known set (a mode, yes/no, or an item from a list you can enumerate), set input_type to 'choice' (and provide `options`) or 'confirmation' so the user can answer with a single click; reserve 'freetext' for genuinely open-ended answers such as arbitrary hostnames, IPs, or URLs.".to_string(),
         parameters: sanitize_schema(json!({
             "type": "object",
             "properties": {
@@ -60,12 +60,12 @@ pub fn get_ask_human_tool_definition() -> ToolDefinition {
                 "input_type": {
                     "type": "string",
                     "enum": ["credentials", "choice", "freetext", "confirmation"],
-                    "description": "Type of input expected: 'credentials' for username/password, 'choice' for selection from options, 'freetext' for open text input, 'confirmation' for yes/no"
+                    "description": "Type of input expected. Prefer 'choice' (selection from `options`) or 'confirmation' (yes/no) whenever the answer is enumerable — these render one-click buttons for the user. Use 'credentials' for username/password, and 'freetext' ONLY for genuinely open-ended answers (e.g. arbitrary IPs, domains, or URLs)."
                 },
                 "options": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Options for 'choice' type (ignored for other types)"
+                    "description": "Selectable options for 'choice' type — provide at least two. Ignored for other input types."
                 },
                 "context": {
                     "type": "string",

@@ -97,8 +97,8 @@ pub async fn conv_save_batch(
         for msg in &item.messages {
             sqlx::query(
                 r#"INSERT INTO chat_messages
-                   (id, conversation_id, role, content, thinking, error, tool_calls, tool_calls_content_offset, tool_call_offsets, sort_order, created_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, to_timestamp($11::double precision / 1000))"#,
+                   (id, conversation_id, role, content, thinking, error, tool_calls, tool_calls_content_offset, tool_call_offsets, thinking_segments, sort_order, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, to_timestamp($12::double precision / 1000))"#,
             )
             .bind(&msg.id)
             .bind(&conv.id)
@@ -109,6 +109,7 @@ pub async fn conv_save_batch(
             .bind(&msg.tool_calls)
             .bind(msg.tool_calls_content_offset)
             .bind(&msg.tool_call_offsets)
+            .bind(&msg.thinking_segments)
             .bind(msg.sort_order)
             .bind(msg.created_at as f64)
             .execute(&mut *tx)

@@ -51,11 +51,10 @@ pub struct StageSpec {
 
     /// Category-based stage tool whitelist (deny-by-default). Each entry is a
     /// **type selector**: a bare category (`"recon"`), a `category/subcategory`
-    /// (`"recon/dns"`), or a specific tool name (`"nmap"`). When the
-    /// `GOLISH_HARNESS_TOOL_WHITELIST` flag is on, the per-stage tool boundary is
-    /// enforced from this list via [`super::tool_taxonomy::stage_allows`]
-    /// (replacing the `forbidden_tools` blacklist). Empty = no scan tools
-    /// permitted (e.g. scoping / reporting). See
+    /// (`"recon/dns"`), or a specific tool name (`"nmap"`). The per-stage tool
+    /// boundary is enforced from this list via [`super::tool_taxonomy::stage_allows`]
+    /// (only for scan invocations; agent/meta tools are exempt). Empty = no scan
+    /// tools permitted (e.g. scoping / reporting). See
     /// `docs/design/2026-06-02-stage-tool-whitelist-enforcement.md`.
     #[serde(default)]
     pub allowed_tool_types: Vec<String>,

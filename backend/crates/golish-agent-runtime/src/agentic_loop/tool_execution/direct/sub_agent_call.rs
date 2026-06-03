@@ -67,13 +67,11 @@ where
     // Per-stage tool boundary for the delegated sub-agent: inside a harness
     // stage, enforce the category whitelist (deny-by-default) — a scan invocation
     // must resolve to a tool type in this stage's `allowed_tool_types`. Agent/meta
-    // tools are exempt (not scan invocations). Gated by the whitelist flag; off →
-    // no per-stage scan restriction for sub-agents. Built once; the `Arc<Fn>` is
+    // tools are exempt (not scan invocations). Built once; the `Arc<Fn>` is
     // cloned cheaply into each sub_ctx below.
     // See docs/design/2026-06-02-stage-tool-whitelist-enforcement.md.
     let stage_tool_guard: Option<golish_sub_agents::StageToolGuard> = ctx
         .harness_stage
-        .filter(|_| golish_agent_kit::harness::tool_whitelist_enabled())
         .and_then(|kind| golish_agent_kit::harness::load_embedded_stage_spec(kind).ok())
         .map(|spec| {
             let stage_id = spec.id.clone();

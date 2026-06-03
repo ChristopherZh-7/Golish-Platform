@@ -50,6 +50,10 @@ pub struct ChatMessageRow {
     pub tool_calls: Option<serde_json::Value>,
     pub tool_calls_content_offset: Option<i32>,
     pub tool_call_offsets: Option<serde_json::Value>,
+    /// Time-ordered reasoning bursts (JSONB array of ThinkingSegment) so the UI
+    /// can restore interleaved Thought blocks instead of one merged block.
+    #[serde(default)]
+    pub thinking_segments: Option<serde_json::Value>,
     pub sort_order: i32,
     pub created_at: i64,
 }
@@ -178,8 +182,8 @@ pub async fn conv_save_messages(
     for msg in &messages {
         sqlx::query(
             r#"INSERT INTO chat_messages
-               (id, conversation_id, role, content, thinking, error, tool_calls, tool_calls_content_offset, tool_call_offsets, sort_order, created_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, to_timestamp($11::double precision / 1000))"#,
+               (id, conversation_id, role, content, thinking, error, tool_calls, tool_calls_content_offset, tool_call_offsets, thinking_segments, sort_order, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, to_timestamp($12::double precision / 1000))"#,
         )
         .bind(&msg.id)
         .bind(&conversation_id)
@@ -190,6 +194,7 @@ pub async fn conv_save_messages(
         .bind(&msg.tool_calls)
         .bind(msg.tool_calls_content_offset)
         .bind(&msg.tool_call_offsets)
+        .bind(&msg.thinking_segments)
         .bind(msg.sort_order)
         .bind(msg.created_at as f64)
         .execute(&mut *tx)
@@ -207,8 +212,8 @@ pub async fn conv_load_messages(
     conversation_id: String,
 ) -> Result<Vec<ChatMessageRow>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows = sqlx::query_as::<_, (String, String, String, String, Option<String>, Option<String>, Option<serde_json::Value>, Option<i32>, Option<serde_json::Value>, i32, chrono::DateTime<chrono::Utc>)>(
-        r#"SELECT id, conversation_id, role, content, thinking, error, tool_calls, tool_calls_content_offset, tool_call_offsets, sort_order, created_at
+    let rows = sqlx::query_as::<_, (String, String, String, String, Option<String>, Option<String>, Option<serde_json::Value>, Option<i32>, Option<serde_json::Value>, Option<serde_json::Value>, i32, chrono::DateTime<chrono::Utc>)>(
+        r#"SELECT id, conversation_id, role, content, thinking, error, tool_calls, tool_calls_content_offset, tool_call_offsets, thinking_segments, sort_order, created_at
            FROM chat_messages
            WHERE conversation_id = $1
            ORDER BY sort_order ASC, created_at ASC"#,
@@ -231,6 +236,7 @@ pub async fn conv_load_messages(
                 tool_calls,
                 tool_calls_content_offset,
                 tool_call_offsets,
+                thinking_segments,
                 sort_order,
                 created_at,
             )| {
@@ -244,6 +250,7 @@ pub async fn conv_load_messages(
                     tool_calls,
                     tool_calls_content_offset,
                     tool_call_offsets,
+                    thinking_segments,
                     sort_order,
                     created_at: created_at.timestamp_millis(),
                 }

@@ -177,29 +177,6 @@ pub fn evidence_freshness_enforcement_enabled() -> bool {
     *ENABLED
 }
 
-/// Feature flag: 启用**类别白名单**的 per-stage 工具边界（deny-by-default）。
-///
-/// 工具边界从每关 `StageSpec.allowed_tool_types` 的类别选择器（`recon` /
-/// `recon/dns` / 具体工具名）强制——**只对扫描工具生效**（agent/meta 工具豁免），
-/// 不在白名单里的扫描类工具一律拦（主 agent 路 + 子代理路），见
-/// [`tool_taxonomy::stage_allows`] / [`tool_taxonomy::is_scan_invocation`]。
-///
-/// **默认 ON**（旧的 `forbidden_tools` 黑名单已删，这是唯一的工具边界）。Kill switch:
-/// 设 `GOLISH_HARNESS_TOOL_WHITELIST=false`（或 `0`/`off`/`no`）关闭 per-stage 扫描
-/// 限制（紧急绕过；`GOLISH_HARNESS_STAGE_MODE=false` 是更彻底的总开关）。其它任何值
-/// （未设 / `true` / `1`）= 开。首次读 LazyLock 缓存。
-pub fn tool_whitelist_enabled() -> bool {
-    use std::sync::LazyLock;
-    static ENABLED: LazyLock<bool> = LazyLock::new(|| {
-        parse_stage_mode_flag(
-            std::env::var("GOLISH_HARNESS_TOOL_WHITELIST")
-                .ok()
-                .as_deref(),
-        )
-    });
-    *ENABLED
-}
-
 /// Feature flag: 启用两级阶段模型（大阶段 Phase × 小阶段 Stage）的 phase-aware
 /// 流转（设计 `docs/design/2026-06-03-two-level-phase-stage-model.md`）。
 ///

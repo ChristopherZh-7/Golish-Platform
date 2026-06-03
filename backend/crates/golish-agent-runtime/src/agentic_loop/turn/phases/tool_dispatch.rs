@@ -181,33 +181,28 @@ fn gate_tool_call_for_dispatch(
         if let Ok(spec) = golish_agent_kit::harness::load_embedded_stage_spec(kind) {
             let raw_name = tool_call.function.name.as_str();
             let args = &tool_call.function.arguments;
-            if golish_agent_kit::harness::tool_whitelist_enabled() {
-                // Category whitelist (deny-by-default), enforced ONLY on scan
-                // invocations — pentest_run / run_pty_cmd or tools in the scan
-                // taxonomy. Agent/meta tools (sub_agent_*, submit, query_target_data,
-                // record_finding, manage_targets, log_*, memory/graph) are exempt.
-                if golish_agent_kit::harness::is_scan_invocation(raw_name, args) {
-                    if !golish_agent_kit::harness::stage_allows(
-                        raw_name,
-                        args,
-                        &spec.allowed_tool_types,
-                    ) {
+            // Category whitelist (deny-by-default), enforced ONLY on scan
+            // invocations — pentest_run / run_pty_cmd or tools in the scan
+            // taxonomy. Agent/meta tools (sub_agent_*, submit, query_target_data,
+            // record_finding, manage_targets, log_*, memory/graph) are exempt.
+            if golish_agent_kit::harness::is_scan_invocation(raw_name, args) {
+                if !golish_agent_kit::harness::stage_allows(raw_name, args, &spec.allowed_tool_types)
+                {
+                    return ToolGateDecision::Reject {
+                        reason: not_in_whitelist_reason(raw_name, &spec.id),
+                    };
+                }
+                // Orthogonal profile authorization ceiling (intent vs max_authz).
+                if let Some(authz) = harness_authz {
+                    if let Err(err) =
+                        golish_agent_kit::harness::PreActionAuthorizer::check_intent_ceiling(
+                            authz.intent,
+                            authz.max_authorization,
+                        )
+                    {
                         return ToolGateDecision::Reject {
-                            reason: not_in_whitelist_reason(raw_name, &spec.id),
+                            reason: err.to_string(),
                         };
-                    }
-                    // Orthogonal profile authorization ceiling (intent vs max_authz).
-                    if let Some(authz) = harness_authz {
-                        if let Err(err) =
-                            golish_agent_kit::harness::PreActionAuthorizer::check_intent_ceiling(
-                                authz.intent,
-                                authz.max_authorization,
-                            )
-                        {
-                            return ToolGateDecision::Reject {
-                                reason: err.to_string(),
-                            };
-                        }
                     }
                 }
             }
