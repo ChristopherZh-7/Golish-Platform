@@ -50,12 +50,114 @@ impl PtyOutputTap {
 const DEFAULT_TIMEOUT_MS: u64 = 10000;
 const MAX_TIMEOUT_MS: u64 = 120000;
 
+/// Inline wait cap before a still-running command is moved to the background.
+const DEFAULT_SOFT_TIMEOUT_MS: u64 = 30_000;
+/// Background hard limit: runaway jobs are killed after this so nothing leaks.
+const DEFAULT_HARD_TIMEOUT_MS: u64 = 1_800_000; // 30 min
+
+/// Whether long commands move to the background on soft-timeout (Cursor-style)
+/// instead of being killed. On by default; `GOLISH_TOOL_BACKGROUNDING=off`
+/// restores the legacy "timeout → kill → error" behaviour.
+fn backgrounding_enabled() -> bool {
+    !matches!(
+        std::env::var("GOLISH_TOOL_BACKGROUNDING").ok().as_deref(),
+        Some("off") | Some("0") | Some("false")
+    )
+}
+
+fn env_ms(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
 /// Run a shell command outside the visible terminal and return structured
 /// output for the AI tool detail panel.
 ///
 /// This deliberately avoids `PtyManager::write`, so AI-originated shell
 /// commands do not create `CommandBlock`s in the user's terminal timeline.
+///
+/// When backgrounding is enabled (default), the command is spawned through the
+/// [`crate::background_jobs`] manager: if it finishes within the *soft* timeout
+/// the full result is returned as before; otherwise it keeps running in the
+/// background and a `{ status: "backgrounded", job_id }` handle is returned
+/// (success-shaped, so the agentic loop does not treat it as a failure). The AI
+/// polls progress via the `check_job` tool.
 pub async fn run_shell_command_detail(
+    command: &str,
+    workspace: &Path,
+    timeout_ms: u64,
+) -> Result<Value> {
+    if !backgrounding_enabled() {
+        return run_shell_command_blocking(command, workspace, timeout_ms).await;
+    }
+
+    let soft_cap = env_ms("GOLISH_TOOL_SOFT_TIMEOUT_MS", DEFAULT_SOFT_TIMEOUT_MS);
+    let soft_ms = timeout_ms.min(soft_cap).max(1);
+    // The background hard limit must outlast the caller's timeout so the job can
+    // continue past the point where it would previously have been killed.
+    let hard_ms = env_ms("GOLISH_TOOL_HARD_TIMEOUT_MS", DEFAULT_HARD_TIMEOUT_MS).max(timeout_ms);
+
+    let started_at = std::time::Instant::now();
+    let job_id =
+        crate::background_jobs::manager().spawn(command, workspace, Duration::from_millis(hard_ms));
+
+    tracing::info!(
+        "[run_pty_cmd] backgrounded spawn: command={}, soft_ms={}, hard_ms={}, job_id={}",
+        command,
+        soft_ms,
+        hard_ms,
+        job_id
+    );
+
+    // Wait up to the soft timeout for an inline result (poll the manager).
+    let soft_deadline = started_at + Duration::from_millis(soft_ms);
+    loop {
+        if let Some(snap) = crate::background_jobs::manager().snapshot(&job_id) {
+            if snap.finished {
+                crate::background_jobs::manager().remove(&job_id);
+                return Ok(json!({
+                    "stdout": truncate_output(snap.stdout),
+                    "stderr": truncate_output(snap.stderr),
+                    "command": command,
+                    "exit_code": snap.exit_code.unwrap_or(-1),
+                    "duration_ms": snap.duration_ms,
+                }));
+            }
+        }
+        if std::time::Instant::now() >= soft_deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Still running → hand back a background handle. Deliberately no `error` and
+    // no non-zero `exit_code`, so the agentic loop treats this as a successful
+    // tool result and the model reads `status: "backgrounded"`.
+    let (partial_stdout, partial_stderr) = crate::background_jobs::manager()
+        .snapshot(&job_id)
+        .map(|s| (truncate_output(s.stdout), truncate_output(s.stderr)))
+        .unwrap_or_default();
+    Ok(json!({
+        "status": "backgrounded",
+        "job_id": job_id,
+        "command": command,
+        "partial_stdout": partial_stdout,
+        "partial_stderr": partial_stderr,
+        "soft_timeout_ms": soft_ms,
+        "hint": format!(
+            "Command exceeded the {}s soft timeout and is STILL RUNNING in the background (job {}). It was NOT killed. Poll the `check_job` tool with this job_id for status/output; do not re-run the same command.",
+            soft_ms / 1000,
+            job_id
+        ),
+    }))
+}
+
+/// Legacy blocking execution: wait up to `timeout_ms`, killing the process on
+/// timeout. Used when backgrounding is disabled via env, and as the in-soft-
+/// window fast path is handled by the manager above.
+async fn run_shell_command_blocking(
     command: &str,
     workspace: &Path,
     timeout_ms: u64,
@@ -67,7 +169,7 @@ pub async fn run_shell_command_detail(
     cmd.current_dir(workspace).kill_on_drop(true);
 
     tracing::info!(
-        "[run_pty_cmd] Executing in background for tool detail: command={}, timeout_ms={}",
+        "[run_pty_cmd] Executing (blocking) for tool detail: command={}, timeout_ms={}",
         command,
         timeout_ms
     );
@@ -108,7 +210,7 @@ pub async fn run_shell_command_detail(
 }
 
 #[cfg(unix)]
-fn shell_command(command: &str) -> tokio::process::Command {
+pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
     let mut cmd = tokio::process::Command::new(shell);
     cmd.arg("-lc").arg(command);
@@ -116,7 +218,7 @@ fn shell_command(command: &str) -> tokio::process::Command {
 }
 
 #[cfg(windows)]
-fn shell_command(command: &str) -> tokio::process::Command {
+pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("cmd.exe");
     cmd.arg("/C").arg(command);
     cmd
@@ -192,5 +294,62 @@ impl Tool for VisibleRunPtyCmdTool {
         let timeout_ms = (timeout_secs * 1000).min(MAX_TIMEOUT_MS);
 
         run_shell_command_detail(command, workspace, timeout_ms).await
+    }
+}
+
+/// Tool that lets the AI poll a background job started when a shell/pentest
+/// command exceeded its soft timeout (see [`run_shell_command_detail`]).
+pub struct CheckJobTool;
+
+#[async_trait::async_trait]
+impl Tool for CheckJobTool {
+    fn name(&self) -> &'static str {
+        "check_job"
+    }
+
+    fn description(&self) -> &'static str {
+        "Poll a background job (created when a shell/pentest command exceeded its soft timeout and was \
+         moved to the background instead of being killed). Returns its status \
+         (running/done/failed/killed), the command's exit code once finished, and the latest \
+         stdout/stderr. Pass the job_id from a tool result whose status was \"backgrounded\"."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": "The job_id returned in a tool result with status \"backgrounded\"."
+                }
+            },
+            "required": ["job_id"]
+        })
+    }
+
+    async fn execute(&self, args: Value, _workspace: &Path) -> Result<Value> {
+        let job_id = args
+            .get("job_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing required argument: job_id"))?;
+
+        match crate::background_jobs::manager().snapshot(job_id) {
+            Some(snap) => Ok(json!({
+                "job_id": job_id,
+                "status": snap.status.as_str(),
+                "running": !snap.finished,
+                // The *command's* exit code is reported as `job_exit_code` (NOT a
+                // top-level `exit_code`) so a failed background command does not
+                // make this `check_job` call itself read as a tool failure.
+                "job_exit_code": snap.exit_code,
+                "command": snap.command,
+                "stdout": truncate_output(snap.stdout),
+                "stderr": truncate_output(snap.stderr),
+                "duration_ms": snap.duration_ms,
+            })),
+            None => Ok(json!({
+                "error": format!("No background job with id '{job_id}' (it may have finished and been cleared)."),
+            })),
+        }
     }
 }

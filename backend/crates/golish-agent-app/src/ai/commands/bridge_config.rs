@@ -228,8 +228,11 @@ async fn register_visible_pty_tool(bridge: &AgentBridge, state: &AgentState) {
     );
     let mut registry = bridge.tool_registry().write().await;
     registry.register_tool(Arc::new(visible_cmd_tool));
+    // Companion poll tool for commands moved to the background on soft-timeout
+    // (shares the process-global background-job manager — no per-call state).
+    registry.register_tool(Arc::new(golish_app_core::pty_interactive::CheckJobTool));
     tracing::info!(
-        "[configure_bridge] Registered VisibleRunPtyCmdTool for visible terminal execution"
+        "[configure_bridge] Registered VisibleRunPtyCmdTool + CheckJobTool (background job polling)"
     );
 }
 

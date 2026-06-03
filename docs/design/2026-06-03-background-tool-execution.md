@@ -186,3 +186,18 @@ check_job { job_id: string, tail_bytes?: int }
 - **P1 刻意设计为不碰这些热文件**（只在 `golish-app-core` + 工具注册落地），可立即安全开工。
 - **P2 必须**先 `git pull`/与相关会话对齐，确认 agent-runtime 事件注入点稳定后再动，避免合并冲突。
 - 加 command / 改 IPC 严格走 `docs/development.md` 五步 + `commands_facade`；跨 IPC 类型用 `#[derive(ts_rs::TS)]`（AGENTS.md I4/I5）。
+
+---
+
+## 8. 实现记录（P1 已落地 · 2026-06-03 · MCP-3）
+
+P1 已实现并 scoped 验证全绿，**未碰 agent-runtime/bridge 热文件**（仅 golish-app-core + 工具注册）：
+
+- `golish-app-core/src/background_jobs.rs`（新）：`BackgroundJobManager`（进程级单例 `manager()`）+ `spawn/snapshot/kill/remove/prune`；增量读 stdout/stderr 到 512KB 上限尾部缓冲（字符边界安全）；`select!` 在 child 退出 / 硬上限 sleep / kill Notify 三者间竞速；非 `kill_on_drop`，子进程随后台续跑。
+- `golish-app-core/src/pty_interactive.rs`：`run_shell_command_detail` 改为「经管理器 spawn + 软超时轮询」——软超时内完成→返回完整结果（同旧）；超时未完成→返回 `{ status:"backgrounded", job_id, partial_stdout, hint }`（无 `error`/无非零 `exit_code`，agentic loop 视为成功）。旧行为保留为 `run_shell_command_blocking`（`GOLISH_TOOL_BACKGROUNDING=off` 时启用）。新增 `CheckJobTool`（`check_job`）。
+- `golish-agent-app/src/ai/commands/bridge_config.rs`：`register_visible_pty_tool` 一并注册 `CheckJobTool`。
+- 配置（env）：`GOLISH_TOOL_BACKGROUNDING`（默认 on）、`GOLISH_TOOL_SOFT_TIMEOUT_MS`（默认 30000）、`GOLISH_TOOL_HARD_TIMEOUT_MS`（默认 1_800_000）。soft = min(caller_timeout, soft_cap)；hard = max(caller_timeout, hard_default)，确保后台续跑长于旧超时。
+
+**验证**：`cargo check -p golish-app-core`/`-p golish-agent-app` → 0；`cargo clippy -p golish-app-core --all-targets` → 0 warning；`cargo nextest -p golish-app-core` → 24 passed（含 6 个新 background_jobs 真子进程测试：捕获 stdout/非零退出→failed/长任务保持运行+kill/硬上限 kill/字符边界截断/未知 job）；`cargo fmt -p golish-app-core --check` → clean（workspace fmt 红仅别会话 harness 文件，与本改动无关）。活体 E2E（`just dev` 跑长命令观察 backgrounded + check_job 轮询）未做。
+
+**仍待（P2/P3，给接手 agent）**：完成事件 `tool_background_completed` + 自动回灌（动 agent-runtime 热文件，需先对齐）；前端「后台运行中」卡片 + 取消按钮；evidence ledger 记后台作业最终产物。

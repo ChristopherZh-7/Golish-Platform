@@ -28,6 +28,7 @@
 //! because it aggregates golish-internal subsystems (AI / indexer / settings
 //! / sidecar / …); app crates take the narrow `DbState` instead.
 
+pub mod background_jobs;
 pub mod domain;
 pub mod error;
 pub mod event_emitter;
