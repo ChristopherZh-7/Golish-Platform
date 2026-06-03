@@ -410,6 +410,13 @@ impl AgentBridge {
         self.harness_last_deliverable.clone()
     }
 
+    /// Lead-agent decision side-channel handle. The `start_operation` tool writes
+    /// the requested operation (JSON `{objective, analysis}`) here; the Task-mode
+    /// router reads it after the lead turn to decide whether to run the planner.
+    pub fn pending_plan_request_handle(&self) -> Arc<RwLock<Option<String>>> {
+        self.pending_plan_request.clone()
+    }
+
     /// Get the prompt template registry.
     pub fn prompt_registry(&self) -> &golish_sub_agents::PromptRegistry {
         &self.prompt_registry

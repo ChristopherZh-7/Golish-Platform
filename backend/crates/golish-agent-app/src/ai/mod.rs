@@ -11,6 +11,7 @@ pub mod db_bridge;
 pub mod embedder_bridge;
 pub mod graph_bridge;
 pub mod harness_submit_tool;
+pub mod start_operation_tool;
 pub mod session_bridge;
 pub mod sidecar_bridge;
 pub mod tracking_bridge;

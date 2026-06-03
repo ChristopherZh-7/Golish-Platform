@@ -100,6 +100,10 @@ pub struct BridgeToolSelection {
     /// must never see it. Task mode turns it on explicitly for both the
     /// orchestrator (depth 0) and the specialists (depth > 0).
     pub submit_stage_deliverable: bool,
+    /// `start_operation` — control-plane handoff: the lead orchestrator turn
+    /// calls this to begin the structured multi-stage planner. Task-primary
+    /// (depth 0) only; never exposed in chat or to subtask specialists.
+    pub start_operation: bool,
 }
 
 impl BridgeToolSelection {
@@ -120,6 +124,7 @@ impl BridgeToolSelection {
             // Harness-stage-only; opted into per-mode (task) rather than via the
             // generic "all bridge tools" set so chat mode never exposes it.
             submit_stage_deliverable: false,
+            start_operation: false,
         }
     }
 
@@ -134,6 +139,7 @@ impl BridgeToolSelection {
             js_extract_apis: false,
             auth_probe: false,
             submit_stage_deliverable: false,
+            start_operation: false,
         }
     }
 
@@ -167,6 +173,9 @@ impl BridgeToolSelection {
         }
         if self.submit_stage_deliverable {
             out.push("submit_stage_deliverable");
+        }
+        if self.start_operation {
+            out.push("start_operation");
         }
         out
     }

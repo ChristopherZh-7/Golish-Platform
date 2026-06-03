@@ -242,6 +242,11 @@ pub struct AgentBridge {
     /// signature here; `BridgeAgentExecutor::execute_subtask` appends it to the
     /// content before the gate runs. Reset per-subtask. `None` = none captured.
     pub(crate) harness_last_deliverable: Arc<RwLock<Option<String>>>,
+    /// Lead-agent decision side-channel: the `start_operation` tool writes a JSON
+    /// `{objective, analysis}` here when the orchestrator decides the request needs
+    /// the structured planner. The Task-mode router reads it after the lead turn to
+    /// hand off to the planner. `None` = lead answered directly (no planning).
+    pub(crate) pending_plan_request: Arc<RwLock<Option<String>>>,
 }
 
 impl AgentBridge {

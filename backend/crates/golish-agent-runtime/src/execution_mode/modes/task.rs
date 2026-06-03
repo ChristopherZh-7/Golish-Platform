@@ -55,6 +55,9 @@ impl ExecutionModePolicy for TaskModePolicy {
             // stage gate has nothing to validate and the cursor never advances.
             bridge_tools: BridgeToolSelection {
                 submit_stage_deliverable: true,
+                // Lead-agent decision handoff — only the depth-0 orchestrator may
+                // begin a structured operation; subtask specialists must not.
+                start_operation: true,
                 ..BridgeToolSelection::none()
             },
             runtime_tools: RuntimeToolSelection::none(),

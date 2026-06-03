@@ -429,6 +429,21 @@ async fn register_pentest_tools(
         tracing::info!("[harness] Registered tool: submit_stage_deliverable");
         registry.register_tool(tool);
     }
+
+    // Lead-agent decision handoff tool. Always registered; it only reaches the LLM
+    // via the task-primary policy (`BridgeToolSelection.start_operation`). The lead
+    // turn calls it to begin the structured planner; the Task-mode router reads the
+    // captured objective from the bridge side-channel after the lead turn.
+    {
+        let tool = std::sync::Arc::new(
+            crate::ai::start_operation_tool::StartOperationTool::new(
+                bridge.pending_plan_request_handle(),
+            ),
+        );
+        let mut registry = bridge.tool_registry().write().await;
+        tracing::info!("[lead-agent] Registered tool: start_operation");
+        registry.register_tool(tool);
+    }
 }
 
 async fn register_visible_pty_tool(bridge: &AgentBridge, state: &AgentState) {
