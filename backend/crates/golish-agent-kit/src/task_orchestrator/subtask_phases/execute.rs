@@ -640,11 +640,22 @@ impl TaskOrchestrator {
                 .generate_stage_plan(stage, &exec_ctx.task_input, &upstream)
                 .await
                 .unwrap_or_default();
-            let stage_plan: Vec<PlannedSubtask> = if lazy.is_empty() {
+            let mut stage_plan: Vec<PlannedSubtask> = if lazy.is_empty() {
                 vec![synthesize_stage_subtask(stage, &exec_ctx.task_input)]
             } else {
                 lazy
             };
+            // ② A confirm/report-only stage (no scan tools in its whitelist, e.g.
+            // scoping / reporting) is a single deliverable-submission step. A
+            // multi-step tactical plan there only invites a weak model to keep
+            // re-submitting and to spawn off-discipline sub-agents, so collapse it
+            // to one synthesized "do this stage + submit" step.
+            let confirm_only = crate::harness::load_embedded_stage_spec(stage)
+                .map(|s| s.allowed_tool_types.is_empty())
+                .unwrap_or(false);
+            if confirm_only && stage_plan.len() > 1 {
+                stage_plan = vec![synthesize_stage_subtask(stage, &exec_ctx.task_input)];
+            }
             self.emit(AiEvent::TaskProgress {
                 task_id: task_id.to_string(),
                 status: "running".to_string(),
@@ -692,6 +703,19 @@ impl TaskOrchestrator {
                         result: result_text,
                         token_usage: None,
                     });
+                // ① short-circuit: the stage gate already PASSED on this subtask,
+                // so the stage's single deliverable is accepted and the stage is
+                // complete. Running the remaining synthesized steps is redundant
+                // (and lets a weak model re-submit / spawn off-discipline
+                // sub-agents, then BLOCK-merges the stage back to failed). Stop
+                // here and let the cursor advance to the next stage.
+                if self
+                    .stage_outcome_acc
+                    .as_ref()
+                    .is_some_and(|o| o.gate_allowed)
+                {
+                    break;
+                }
             }
         }
 

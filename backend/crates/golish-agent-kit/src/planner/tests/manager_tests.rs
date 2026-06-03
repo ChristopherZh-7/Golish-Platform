@@ -362,6 +362,7 @@ mod load_from_db_tests {
     /// Captures every `emit_plan_updated` call for assertion.
     #[derive(Default)]
     struct CapturingEmitter {
+        #[allow(clippy::type_complexity)]
         events: Mutex<Vec<(u32, PlanSummary, Vec<PlanStep>, Option<String>)>>,
     }
 

@@ -139,6 +139,20 @@ pub fn is_scan_tool_name(tool_name: &str) -> bool {
         || tool_category(tool_name).is_some()
 }
 
+/// Whether a tool is an **offensive / active sub-agent dispatcher** that a
+/// confirm-only stage must not expose.
+///
+/// `sub_agent_*` tools are exempt from the scan whitelist (they are
+/// control-plane dispatchers, see the module note), but a stage that permits
+/// no scans (`allowed_tool_types` empty, e.g. scoping / reporting) also has no
+/// business delegating active recon / exploitation. These offensive
+/// dispatchers are therefore hidden from the model in such stages; the
+/// non-offensive helpers (`sub_agent_reporter` / `_researcher` / `_memorist` /
+/// …) stay available so e.g. reporting can still delegate write-ups.
+pub fn is_offensive_sub_agent(tool_name: &str) -> bool {
+    matches!(tool_name, "sub_agent_pentester" | "sub_agent_browser")
+}
+
 /// Whether the (resolved) tool call is permitted by a stage's `allowed_tool_types`
 /// **type-selector** list (deny-by-default).
 ///
@@ -414,6 +428,28 @@ mod tests {
             "query_target_data",
         ] {
             assert!(!is_scan_tool_name(meta), "{meta} must NOT be a scan tool");
+        }
+    }
+
+    #[test]
+    fn offensive_sub_agents_are_flagged_for_confirm_only_stages() {
+        // Active/offensive dispatchers a zero-scan stage (scoping/reporting) hides.
+        for off in ["sub_agent_pentester", "sub_agent_browser"] {
+            assert!(is_offensive_sub_agent(off), "{off} must be offensive");
+        }
+        // Non-offensive helpers + meta tools must stay available.
+        for keep in [
+            "sub_agent_reporter",
+            "sub_agent_researcher",
+            "sub_agent_memorist",
+            "submit_stage_deliverable",
+            "ask_human",
+            "nmap",
+        ] {
+            assert!(
+                !is_offensive_sub_agent(keep),
+                "{keep} must NOT be flagged offensive"
+            );
         }
     }
 }

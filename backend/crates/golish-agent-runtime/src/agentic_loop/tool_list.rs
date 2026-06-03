@@ -54,8 +54,9 @@ pub(crate) async fn build_tool_list(
 }
 
 /// D1 · when an active harness stage allows no scan tools, strip scan-execution
-/// tools from the exposed list so the model never attempts one. No-op when no
-/// stage is active or the stage permits at least one scan type.
+/// tools AND offensive sub-agent dispatchers (pentester / browser) from the
+/// exposed list so the model never attempts (or delegates) work it could only be
+/// denied. No-op when no stage is active or the stage permits ≥1 scan type.
 fn hide_scans_for_zero_scan_stage(
     tools: &mut Vec<rig::completion::ToolDefinition>,
     harness_stage: Option<golish_agent_kit::harness::StageKind>,
@@ -70,13 +71,20 @@ fn hide_scans_for_zero_scan_stage(
         return;
     }
     let before = tools.len();
-    tools.retain(|t| !golish_agent_kit::harness::is_scan_tool_name(&t.name));
+    // Hide scan-execution tools AND offensive sub-agent dispatchers: a stage that
+    // permits no scans must not delegate active recon / exploitation either, or a
+    // weak model burns the whole stage re-submitting + spawning a pentester it
+    // could only ever be blocked on (the per-call guard still backstops scans).
+    tools.retain(|t| {
+        !golish_agent_kit::harness::is_scan_tool_name(&t.name)
+            && !golish_agent_kit::harness::is_offensive_sub_agent(&t.name)
+    });
     if tools.len() != before {
         tracing::debug!(
             target: "harness::hook",
             stage = %kind.as_str(),
             removed = before - tools.len(),
-            "tool-list: hid scan tools for a stage that permits none"
+            "tool-list: hid scan + offensive sub-agent tools for a stage that permits none"
         );
     }
 }
@@ -106,6 +114,8 @@ mod tests {
             td("run_pty_cmd"),
             td("submit_stage_deliverable"),
             td("query_target_data"),
+            td("sub_agent_pentester"),
+            td("sub_agent_reporter"),
         ];
         hide_scans_for_zero_scan_stage(&mut tools, Some(StageKind::Scoping));
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
@@ -118,8 +128,14 @@ mod tests {
             "scan wrapper must be hidden"
         );
         assert!(
-            names.contains(&"submit_stage_deliverable") && names.contains(&"query_target_data"),
-            "meta tools must be kept: {names:?}"
+            !names.contains(&"sub_agent_pentester"),
+            "offensive sub-agent must be hidden in a zero-scan stage: {names:?}"
+        );
+        assert!(
+            names.contains(&"submit_stage_deliverable")
+                && names.contains(&"query_target_data")
+                && names.contains(&"sub_agent_reporter"),
+            "meta + non-offensive sub-agents must be kept: {names:?}"
         );
 
         // enumeration permits scans → nothing stripped.
