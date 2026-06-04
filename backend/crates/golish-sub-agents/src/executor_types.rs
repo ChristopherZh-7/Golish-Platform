@@ -40,6 +40,16 @@ pub trait ToolProvider: Send + Sync {
         args: &serde_json::Value,
     ) -> Option<(serde_json::Value, bool)>;
 
+    /// Execute a knowledge-base / vulnerability-wiki tool (`search_knowledge_base`,
+    /// `read_knowledge`, `write_knowledge`, `ingest_cve`, `save_poc`, …). Returns
+    /// `None` when `tool_name` isn't a KB tool so the caller falls through to the
+    /// router / registry — same contract as [`Self::execute_memory_tool`].
+    async fn execute_knowledge_base_tool(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Option<(serde_json::Value, bool)>;
+
     /// Normalize run_pty_cmd arguments
     fn normalize_run_pty_cmd_args(&self, args: serde_json::Value) -> serde_json::Value;
 }

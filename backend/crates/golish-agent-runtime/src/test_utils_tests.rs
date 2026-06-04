@@ -2303,6 +2303,14 @@ impl ToolProvider for MockToolProvider {
         None
     }
 
+    async fn execute_knowledge_base_tool(
+        &self,
+        _tool_name: &str,
+        _args: &serde_json::Value,
+    ) -> Option<(serde_json::Value, bool)> {
+        None
+    }
+
     fn normalize_run_pty_cmd_args(&self, args: serde_json::Value) -> serde_json::Value {
         args
     }

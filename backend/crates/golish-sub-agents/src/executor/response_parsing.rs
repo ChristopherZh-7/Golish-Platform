@@ -324,6 +324,11 @@ where
                 .await
             {
                 result
+            } else if let Some(result) = tool_provider
+                .execute_knowledge_base_tool(tool_name, &tool_args)
+                .await
+            {
+                result
             } else if tool_name == "run_pty_cmd" || tool_name == "run_command" {
                 let command = tool_args
                     .get("command")

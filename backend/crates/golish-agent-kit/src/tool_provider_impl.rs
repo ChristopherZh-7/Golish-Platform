@@ -9,7 +9,8 @@ use rig::completion::request::ToolDefinition;
 use crate::db_tracking::DbTracker;
 use crate::tool_definitions::{filter_tools_by_allowed, get_all_tool_definitions};
 use crate::tool_executors::{
-    execute_memory_tool, execute_web_fetch_tool, normalize_run_pty_cmd_args,
+    execute_knowledge_base_tool, execute_memory_tool, execute_web_fetch_tool,
+    normalize_run_pty_cmd_args,
 };
 
 /// Default tool provider that uses golish-ai's tool definitions and executors.
@@ -80,6 +81,14 @@ impl ToolProvider for DefaultToolProvider<'_> {
         args: &serde_json::Value,
     ) -> Option<(serde_json::Value, bool)> {
         execute_memory_tool(tool_name, args, self.db_tracker).await
+    }
+
+    async fn execute_knowledge_base_tool(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Option<(serde_json::Value, bool)> {
+        execute_knowledge_base_tool(tool_name, args, self.db_tracker).await
     }
 
     fn normalize_run_pty_cmd_args(&self, args: serde_json::Value) -> serde_json::Value {
