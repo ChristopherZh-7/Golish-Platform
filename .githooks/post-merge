@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Golish auto-maintenance: cap backend/target/ after `git pull` / merge so Cargo
+# build artifacts never grow unbounded. Enable with `just hooks-install`.
+#
+# No-op when: GOLISH_SKIP_TARGET_CAP=1, cargo-sweep is not installed, or
+# backend/target/ does not exist. Ceiling is GOLISH_TARGET_CAP (default 40GB).
+# Never blocks the git operation (always exits 0).
+set -uo pipefail
+
+[ "${GOLISH_SKIP_TARGET_CAP:-0}" = "1" ] && exit 0
+command -v cargo-sweep >/dev/null 2>&1 || exit 0
+[ -d backend/target ] || exit 0
+
+( cd backend && cargo sweep --maxsize "${GOLISH_TARGET_CAP:-40GB}" ) >/dev/null 2>&1 || true
+exit 0

@@ -210,6 +210,33 @@ clean-fe:
 clean-rust:
     cd backend && cargo clean
 
+# Reclaim stale target/ space via cargo-sweep: drop old-toolchain + >N-day artifacts (default 14).
+clean-stale days="14":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v cargo-sweep >/dev/null 2>&1; then echo "cargo-sweep not installed — run: cargo install cargo-sweep"; exit 1; fi
+    if [ ! -d backend/target ]; then echo "backend/target/ absent — nothing to sweep."; exit 0; fi
+    cd backend && cargo sweep --installed && cargo sweep --time {{days}}
+
+# Hard-cap target/ size via cargo-sweep: delete oldest artifacts until under SIZE (default 30GB).
+clean-cap size="30GB":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v cargo-sweep >/dev/null 2>&1; then echo "cargo-sweep not installed — run: cargo install cargo-sweep"; exit 1; fi
+    if [ ! -d backend/target ]; then echo "backend/target/ absent — nothing to sweep."; exit 0; fi
+    cd backend && cargo sweep --maxsize {{size}}
+
+# Enable target/ auto-cap: route git through .githooks/ (post-merge + post-checkout). One-time.
+hooks-install:
+    git config core.hooksPath .githooks
+    @echo "✓ Auto-cap enabled. backend/target/ capped (default 40GB) on every pull / branch switch."
+    @echo "  Tune ceiling: GOLISH_TARGET_CAP=30GB | skip once: GOLISH_SKIP_TARGET_CAP=1 | off: just hooks-uninstall"
+
+# Disable target/ auto-cap: revert to the default .git/hooks.
+hooks-uninstall:
+    @git config --unset core.hooksPath || true
+    @echo "✓ Reverted to default .git/hooks."
+
 # Deep clean (includes node_modules)
 clean-all: clean
     rm -rf node_modules

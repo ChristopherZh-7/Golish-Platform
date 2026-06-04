@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Golish auto-maintenance: cap backend/target/ after a *branch* checkout (branch
+# switches are when stale per-dep artifacts pile up). Enable with `just hooks-install`.
+#
+# Git passes: $1 old-HEAD, $2 new-HEAD, $3 branch-flag (1 = branch checkout,
+# 0 = file checkout). We only act on branch checkouts. No-op when
+# GOLISH_SKIP_TARGET_CAP=1, cargo-sweep is missing, or backend/target/ is absent.
+# Ceiling is GOLISH_TARGET_CAP (default 40GB). Never blocks git (always exits 0).
+set -uo pipefail
+
+[ "${3:-1}" = "1" ] || exit 0
+[ "${GOLISH_SKIP_TARGET_CAP:-0}" = "1" ] && exit 0
+command -v cargo-sweep >/dev/null 2>&1 || exit 0
+[ -d backend/target ] || exit 0
+
+( cd backend && cargo sweep --maxsize "${GOLISH_TARGET_CAP:-40GB}" ) >/dev/null 2>&1 || true
+exit 0
