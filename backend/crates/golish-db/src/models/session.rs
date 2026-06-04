@@ -17,6 +17,10 @@ pub struct Session {
     pub model: Option<String>,
     pub provider: Option<String>,
     pub project_path: Option<String>,
+    /// Stable anchor to the chat-panel session that owns this DB session row.
+    /// Lets task mode resume the prior operation instead of creating a new
+    /// session+task per message (migration 20260604000002).
+    pub chat_session_key: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
