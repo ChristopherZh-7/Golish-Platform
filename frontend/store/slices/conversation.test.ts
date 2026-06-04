@@ -237,3 +237,82 @@ describe("Conversation Slice — stage markers", () => {
     expect(msgs[1].content).toBe("Stage complete: Scoping");
   });
 });
+
+/**
+ * A multi-stage harness run opens a new assistant message per stage (often with no
+ * `completed` between them, and with stage-divider system messages interleaved), so
+ * the previous stage's "Writing response" footer must not linger after the run has
+ * advanced. The footer renders whenever a message keeps `isStreaming: true`.
+ */
+describe("Conversation Slice — multi-stage streaming footer", () => {
+  const CONV = "conv-multistage-test";
+  const messages = () => useStore.getState().conversations[CONV].messages;
+  const byId = (id: string) => messages().find((m) => m.id === id);
+
+  beforeEach(() => {
+    useStore.setState({
+      conversations: {},
+      activeConversationId: null,
+      conversationOrder: [],
+      conversationTerminals: {},
+    });
+    useStore.getState().addConversation({
+      id: CONV,
+      title: "t",
+      messages: [],
+      createdAt: 0,
+      aiSessionId: CONV,
+      aiInitialized: false,
+      isStreaming: true,
+    });
+  });
+
+  it("clears a prior stage's isStreaming when the next stage's message opens", () => {
+    const s = useStore.getState();
+    s.addConversationMessage(CONV, {
+      id: "stage1",
+      role: "assistant",
+      content: "scoping done",
+      timestamp: 0,
+      isStreaming: true,
+    });
+    // Divider sits between the two assistant messages (so stage1 is no longer last).
+    s.addConversationStageMarker(CONV, {
+      kind: "stage_completed",
+      label: "Stage complete: Scoping",
+      status: "finished",
+    });
+    s.addConversationMessage(CONV, {
+      id: "stage2",
+      role: "assistant",
+      content: "",
+      timestamp: 1,
+      isStreaming: true,
+    });
+
+    expect(byId("stage1")?.isStreaming).toBe(false);
+    expect(byId("stage2")?.isStreaming).toBe(true);
+  });
+
+  it("finalizes the streaming assistant message even when a system marker is last", () => {
+    const s = useStore.getState();
+    s.addConversationMessage(CONV, {
+      id: "stage1",
+      role: "assistant",
+      content: "scoping",
+      timestamp: 0,
+      isStreaming: true,
+    });
+    // `completed` arrives after the divider was appended (divider is now last).
+    s.addConversationStageMarker(CONV, {
+      kind: "stage_completed",
+      label: "Stage complete: Scoping",
+      status: "finished",
+    });
+    s.finalizeStreamingMessage(CONV, "scoping final");
+
+    expect(byId("stage1")?.isStreaming).toBe(false);
+    expect(byId("stage1")?.content).toBe("scoping final");
+    expect(useStore.getState().conversations[CONV].isStreaming).toBe(false);
+  });
+});

@@ -34,7 +34,7 @@ async fn test_plan_manager_update() {
         ],
     };
 
-    let plan = manager.update_plan(args).await.unwrap();
+    let plan = manager.update_plan(args, None).await.unwrap();
 
     assert_eq!(plan.version, 1);
     assert_eq!(plan.steps.len(), 3);
@@ -42,6 +42,61 @@ async fn test_plan_manager_update() {
     assert_eq!(plan.summary.in_progress, 1);
     assert_eq!(plan.summary.pending, 1);
     assert_eq!(plan.explanation, Some("Test plan".to_string()));
+}
+
+#[tokio::test]
+async fn plans_are_isolated_per_stage() {
+    let manager = PlanManager::new();
+
+    let scoping_args = UpdatePlanArgs {
+        explanation: Some("scoping".to_string()),
+        plan: vec![PlanStepInput {
+            step: "Document authorized scope".to_string(),
+            status: StepStatus::Pending,
+        }],
+    };
+    manager
+        .update_plan(scoping_args, Some("scoping"))
+        .await
+        .unwrap();
+
+    let intel_args = UpdatePlanArgs {
+        explanation: Some("target_intel".to_string()),
+        plan: vec![PlanStepInput {
+            step: "Run passive recon".to_string(),
+            status: StepStatus::Pending,
+        }],
+    };
+    manager
+        .update_plan(intel_args, Some("target_intel"))
+        .await
+        .unwrap();
+
+    // Each stage keeps its own plan — no cross-stage drift.
+    let scoping = manager
+        .snapshot_for("scoping")
+        .await
+        .expect("scoping bucket exists");
+    let intel = manager
+        .snapshot_for("target_intel")
+        .await
+        .expect("target_intel bucket exists");
+    assert_eq!(scoping.steps.len(), 1);
+    assert_eq!(scoping.steps[0].step, "Document authorized scope");
+    assert_eq!(intel.steps.len(), 1);
+    assert_eq!(intel.steps[0].step, "Run passive recon");
+
+    // current_stage tracks the last write → no-arg snapshot returns it.
+    let current = manager.snapshot().await;
+    assert_eq!(current.steps.len(), 1);
+    assert_eq!(current.steps[0].step, "Run passive recon");
+    assert!(
+        !current
+            .steps
+            .iter()
+            .any(|s| s.step == "Document authorized scope"),
+        "scoping step must not drift into the target_intel snapshot"
+    );
 }
 
 #[tokio::test]
@@ -57,7 +112,7 @@ async fn test_plan_manager_version_increments() {
             }],
         };
 
-        let plan = manager.update_plan(args).await.unwrap();
+        let plan = manager.update_plan(args, None).await.unwrap();
         assert_eq!(plan.version, i);
     }
 }
@@ -74,7 +129,7 @@ async fn test_plan_manager_snapshot() {
         }],
     };
 
-    manager.update_plan(args).await.unwrap();
+    manager.update_plan(args, None).await.unwrap();
 
     let snapshot = manager.snapshot().await;
     assert_eq!(snapshot.explanation, Some("Snapshot test".to_string()));
@@ -94,7 +149,7 @@ async fn test_plan_manager_clear() {
         }],
     };
 
-    manager.update_plan(args).await.unwrap();
+    manager.update_plan(args, None).await.unwrap();
     assert!(!manager.is_empty().await);
 
     manager.clear().await;
@@ -119,7 +174,7 @@ async fn test_plan_manager_trims_whitespace() {
         }],
     };
 
-    let plan = manager.update_plan(args).await.unwrap();
+    let plan = manager.update_plan(args, None).await.unwrap();
     assert_eq!(plan.explanation, Some("Trimmed explanation".to_string()));
     assert_eq!(plan.steps[0].step, "Trimmed step");
 }
@@ -136,7 +191,7 @@ async fn test_plan_manager_rejects_empty_steps() {
         }],
     };
 
-    let result = manager.update_plan(args).await;
+    let result = manager.update_plan(args, None).await;
     assert!(matches!(result, Err(PlanError::EmptyStepDescription(1))));
 }
 
@@ -158,7 +213,7 @@ async fn test_plan_manager_rejects_multiple_in_progress() {
         ],
     };
 
-    let result = manager.update_plan(args).await;
+    let result = manager.update_plan(args, None).await;
     assert!(matches!(result, Err(PlanError::MultipleInProgress(2))));
 }
 
@@ -180,7 +235,7 @@ async fn test_plan_manager_allows_zero_in_progress() {
         ],
     };
 
-    let result = manager.update_plan(args).await;
+    let result = manager.update_plan(args, None).await;
     assert!(result.is_ok());
 }
 
@@ -202,7 +257,7 @@ async fn test_plan_manager_allows_one_in_progress() {
         ],
     };
 
-    let result = manager.update_plan(args).await;
+    let result = manager.update_plan(args, None).await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap().summary.in_progress, 1);
 }
@@ -223,7 +278,7 @@ async fn test_plan_manager_rejects_too_many_steps() {
         plan: steps,
     };
 
-    let result = manager.update_plan(args).await;
+    let result = manager.update_plan(args, None).await;
     assert!(matches!(result, Err(PlanError::InvalidStepCount(15))));
 }
 
@@ -236,7 +291,7 @@ async fn test_plan_manager_rejects_zero_steps() {
         plan: vec![],
     };
 
-    let result = manager.update_plan(args).await;
+    let result = manager.update_plan(args, None).await;
     assert!(matches!(result, Err(PlanError::InvalidStepCount(0))));
 }
 
@@ -252,7 +307,7 @@ async fn test_plan_manager_accepts_boundary_step_counts() {
             status: StepStatus::Pending,
         }],
     };
-    assert!(manager.update_plan(args).await.is_ok());
+    assert!(manager.update_plan(args, None).await.is_ok());
 
     // Test maximum (12 steps)
     let steps: Vec<PlanStepInput> = (0..12)
@@ -266,7 +321,7 @@ async fn test_plan_manager_accepts_boundary_step_counts() {
         explanation: None,
         plan: steps,
     };
-    let result = manager.update_plan(args).await;
+    let result = manager.update_plan(args, None).await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap().steps.len(), 12);
 }
@@ -288,7 +343,7 @@ async fn test_plan_manager_rejects_just_over_max() {
         plan: steps,
     };
 
-    let result = manager.update_plan(args).await;
+    let result = manager.update_plan(args, None).await;
     assert!(matches!(result, Err(PlanError::InvalidStepCount(13))));
 }
 
@@ -310,7 +365,7 @@ async fn test_plan_manager_empty_description_at_various_positions() {
             },
         ],
     };
-    let result = manager.update_plan(args).await;
+    let result = manager.update_plan(args, None).await;
     assert!(matches!(result, Err(PlanError::EmptyStepDescription(1))));
 
     // Empty at position 2
@@ -327,7 +382,7 @@ async fn test_plan_manager_empty_description_at_various_positions() {
             },
         ],
     };
-    let result = manager.update_plan(args).await;
+    let result = manager.update_plan(args, None).await;
     assert!(matches!(result, Err(PlanError::EmptyStepDescription(2))));
 }
 
@@ -363,7 +418,15 @@ mod load_from_db_tests {
     #[derive(Default)]
     struct CapturingEmitter {
         #[allow(clippy::type_complexity)]
-        events: Mutex<Vec<(u32, PlanSummary, Vec<PlanStep>, Option<String>)>>,
+        events: Mutex<
+            Vec<(
+                u32,
+                PlanSummary,
+                Vec<PlanStep>,
+                Option<String>,
+                Option<String>,
+            )>,
+        >,
     }
 
     impl PlanEventEmitter for CapturingEmitter {
@@ -373,11 +436,12 @@ mod load_from_db_tests {
             summary: PlanSummary,
             steps: Vec<PlanStep>,
             explanation: Option<String>,
+            stage_id: Option<String>,
         ) {
             self.events
                 .lock()
                 .unwrap()
-                .push((version, summary, steps, explanation));
+                .push((version, summary, steps, explanation, stage_id));
         }
     }
 
@@ -737,6 +801,7 @@ mod load_from_db_tests {
             ]),
             status: PlanStatus::InProgress,
             current_step: 1,
+            stage_id: None,
         }
     }
 
@@ -761,7 +826,7 @@ mod load_from_db_tests {
         );
 
         let events = emitter.events.lock().unwrap();
-        let (version, summary, steps, explanation) = events.last().unwrap();
+        let (version, summary, steps, explanation, _stage_id) = events.last().unwrap();
         assert_eq!(*version, 1, "restored plan version starts at 1");
         assert_eq!(steps.len(), 3);
         assert_eq!(summary.total, 3);

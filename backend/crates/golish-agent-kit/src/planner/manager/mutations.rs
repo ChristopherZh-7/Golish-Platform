@@ -1,5 +1,9 @@
 //! Plan mutation paths for [`PlanManager`]: full rewrite (`update_plan`)
 //! and incremental patch ops (`apply_patch_ops`).
+//!
+//! Both mutators are stage-scoped: the `stage_id` argument selects which
+//! per-stage bucket to write (`None` / `""` = chat-mode legacy single card)
+//! and updates `current_stage` so the no-arg readers see the latest write.
 
 use chrono::Utc;
 
@@ -10,11 +14,16 @@ use super::super::{
 use super::PlanManager;
 
 impl PlanManager {
-    /// Update the plan with new steps.
+    /// Update the given stage's plan with new steps.
     ///
-    /// Validates the input and updates the plan atomically.
-    /// If DB persistence is enabled, also saves to PostgreSQL.
-    pub async fn update_plan(&self, args: UpdatePlanArgs) -> Result<TaskPlan, PlanError> {
+    /// Validates the input and updates that stage's bucket atomically.
+    /// If DB persistence is enabled, also saves to PostgreSQL (one row per
+    /// stage). `stage_id` of `None` maps to the `""` chat-mode bucket.
+    pub async fn update_plan(
+        &self,
+        args: UpdatePlanArgs,
+        stage_id: Option<&str>,
+    ) -> Result<TaskPlan, PlanError> {
         // Validate step count
         let step_count = args.plan.len();
         if !(MIN_PLAN_STEPS..=MAX_PLAN_STEPS).contains(&step_count) {
@@ -41,181 +50,149 @@ impl PlanManager {
             return Err(PlanError::MultipleInProgress(in_progress_count));
         }
 
-        // Build a lookup of existing step descriptions → IDs for stable matching
-        let existing_plan = self.plan.read().await;
-        let existing_id_map: std::collections::HashMap<String, String> = existing_plan
-            .steps
-            .iter()
-            .filter_map(|s| s.id.as_ref().map(|id| (s.step.clone(), id.clone())))
-            .collect();
-        // Collect completed/failed steps that must be preserved (PentAGI-style:
-        // refine only replaces pending work, never removes finished work).
-        let preserved_steps: Vec<PlanStep> = existing_plan
-            .steps
-            .iter()
-            .filter(|s| matches!(s.status, StepStatus::Completed | StepStatus::Failed))
-            .cloned()
-            .collect();
-        drop(existing_plan);
+        let key = stage_id.unwrap_or("").to_string();
 
-        // Convert incoming steps, reusing IDs for matching descriptions.
-        // Truncate step text to prevent bloated plan entries (defense-in-depth).
-        const MAX_STEP_LEN: usize = 200;
-        let incoming_steps: Vec<PlanStep> = args
-            .plan
-            .into_iter()
-            .map(|input| {
-                let mut trimmed = input.step.trim().to_string();
-                if trimmed.len() > MAX_STEP_LEN {
-                    // Truncate at a char boundary
-                    let mut end = MAX_STEP_LEN;
-                    while !trimmed.is_char_boundary(end) && end > 0 {
-                        end -= 1;
+        // Mutate the target stage bucket under a single write lock so the
+        // preserved-steps calculation is self-contained (no read→write race).
+        let result = {
+            let mut plans = self.plans.write().await;
+            let entry = plans.entry(key.clone()).or_default();
+
+            // Build a lookup of existing step descriptions → IDs for stable
+            // matching, scoped to this stage's bucket.
+            let existing_id_map: std::collections::HashMap<String, String> = entry
+                .steps
+                .iter()
+                .filter_map(|s| s.id.as_ref().map(|id| (s.step.clone(), id.clone())))
+                .collect();
+            // Collect completed/failed steps that must be preserved (PentAGI-style:
+            // refine only replaces pending work, never removes finished work).
+            let preserved_steps: Vec<PlanStep> = entry
+                .steps
+                .iter()
+                .filter(|s| matches!(s.status, StepStatus::Completed | StepStatus::Failed))
+                .cloned()
+                .collect();
+
+            // Convert incoming steps, reusing IDs for matching descriptions.
+            // Truncate step text to prevent bloated plan entries (defense-in-depth).
+            const MAX_STEP_LEN: usize = 200;
+            let incoming_steps: Vec<PlanStep> = args
+                .plan
+                .into_iter()
+                .map(|input| {
+                    let mut trimmed = input.step.trim().to_string();
+                    if trimmed.len() > MAX_STEP_LEN {
+                        // Truncate at a char boundary
+                        let mut end = MAX_STEP_LEN;
+                        while !trimmed.is_char_boundary(end) && end > 0 {
+                            end -= 1;
+                        }
+                        trimmed.truncate(end);
+                        trimmed.push('…');
+                        tracing::warn!(
+                            original_len = input.step.len(),
+                            "[PlanManager] Step text too long, truncated to {}",
+                            MAX_STEP_LEN,
+                        );
                     }
-                    trimmed.truncate(end);
-                    trimmed.push('…');
-                    tracing::warn!(
-                        original_len = input.step.len(),
-                        "[PlanManager] Step text too long, truncated to {}",
-                        MAX_STEP_LEN,
-                    );
-                }
-                let id = existing_id_map
-                    .get(&trimmed)
-                    .cloned()
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                PlanStep {
-                    id: Some(id),
-                    step: trimmed,
-                    status: input.status,
-                    failure_kind: None,
-                }
-            })
-            .collect();
+                    let id = existing_id_map
+                        .get(&trimmed)
+                        .cloned()
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    PlanStep {
+                        id: Some(id),
+                        step: trimmed,
+                        status: input.status,
+                        failure_kind: None,
+                    }
+                })
+                .collect();
 
-        // Track which preserved steps the AI already included
-        let incoming_ids: std::collections::HashSet<String> =
-            incoming_steps.iter().filter_map(|s| s.id.clone()).collect();
+            // Track which preserved steps the AI already included
+            let incoming_ids: std::collections::HashSet<String> =
+                incoming_steps.iter().filter_map(|s| s.id.clone()).collect();
 
-        // Re-inject completed/failed steps that the AI omitted (plan refine
-        // dropped them, but we must keep finished work visible).
-        let mut steps = Vec::with_capacity(preserved_steps.len() + incoming_steps.len());
-        for ps in &preserved_steps {
-            if let Some(ref id) = ps.id {
-                if !incoming_ids.contains(id) {
-                    steps.push(ps.clone());
+            // Re-inject completed/failed steps that the AI omitted (plan refine
+            // dropped them, but we must keep finished work visible).
+            let mut steps = Vec::with_capacity(preserved_steps.len() + incoming_steps.len());
+            for ps in &preserved_steps {
+                if let Some(ref id) = ps.id {
+                    if !incoming_ids.contains(id) {
+                        steps.push(ps.clone());
+                    }
                 }
             }
-        }
-        steps.extend(incoming_steps);
+            steps.extend(incoming_steps);
 
-        // Calculate summary
-        let summary = PlanSummary::from_steps(&steps);
+            // Calculate summary
+            let summary = PlanSummary::from_steps(&steps);
 
-        // Update the plan
-        let mut plan = self.plan.write().await;
-        plan.explanation = args.explanation.map(|s| s.trim().to_string());
-        plan.steps = steps;
-        plan.summary = summary;
-        plan.version += 1;
-        plan.updated_at = Utc::now();
+            // Update the bucket
+            entry.explanation = args.explanation.map(|s| s.trim().to_string());
+            entry.steps = steps;
+            entry.summary = summary;
+            entry.version += 1;
+            entry.updated_at = Utc::now();
 
-        tracing::info!(
-            version = plan.version,
-            total = plan.summary.total,
-            completed = plan.summary.completed,
-            "Plan updated"
-        );
+            tracing::info!(
+                stage = %key,
+                version = entry.version,
+                total = entry.summary.total,
+                completed = entry.summary.completed,
+                "Plan updated"
+            );
 
-        let result = plan.clone();
-        drop(plan);
+            entry.clone()
+        };
 
-        self.persist_async(&result);
+        *self.current_stage.write().await = key.clone();
+        self.persist_async(&key, &result);
 
         Ok(result)
     }
 
-    /// Apply a sequence of patch operations to the current plan
+    /// Apply a sequence of patch operations to the given stage's plan
     /// (P0-2 stage 2). Each op lands in order; positions are computed
     /// against the **mutating** in-memory list so dependent ops
     /// (`Add` followed by `Modify` on the new id) work the way an LLM
     /// would expect.
     ///
-    /// Currently does **not** emit `PlanUpdated` nor persist to DB —
-    /// those side-effects come once the wrapper tool lands; until then
-    /// callers are responsible for whatever publishing they need
-    /// (typically: none, since this is exercised by tests only).
+    /// `stage_id` selects the bucket (`None` / `""` = chat-mode). Updates
+    /// `current_stage` and persists the stage's row, mirroring `update_plan`.
     pub async fn apply_patch_ops(
         &self,
         ops: Vec<super::super::PlanPatchOp>,
+        stage_id: Option<&str>,
     ) -> Result<TaskPlan, super::super::PlanError> {
-        let mut plan = self.plan.write().await;
-        let mut steps = plan.steps.clone();
+        let key = stage_id.unwrap_or("").to_string();
 
-        for op in ops {
-            match op {
-                super::super::PlanPatchOp::Add {
-                    after_id,
-                    title,
-                    status,
-                } => {
-                    let trimmed = title.trim();
-                    if trimmed.is_empty() {
-                        // Treat empty inserts as a no-op rather than fail,
-                        // mirroring update_plan's "no whitespace-only steps"
-                        // intent without aborting the whole batch.
-                        continue;
-                    }
-                    let new_step = PlanStep {
-                        id: Some(uuid::Uuid::new_v4().to_string()),
-                        step: trimmed.to_string(),
-                        status: status.unwrap_or(StepStatus::Pending),
-                        failure_kind: None,
-                    };
-                    let pos = match after_id.as_deref() {
-                        Some(aid) => steps
-                            .iter()
-                            .position(|s| s.id.as_deref() == Some(aid))
-                            .map(|i| i + 1)
-                            .unwrap_or_else(|| steps.len()),
-                        None => 0,
-                    };
-                    steps.insert(pos.min(steps.len()), new_step);
-                }
-                super::super::PlanPatchOp::Remove { id } => {
-                    steps.retain(|s| s.id.as_deref() != Some(id.as_str()));
-                }
-                super::super::PlanPatchOp::Modify {
-                    id,
-                    title,
-                    status,
-                    failure_kind,
-                } => {
-                    if let Some(step) = steps
-                        .iter_mut()
-                        .find(|s| s.id.as_deref() == Some(id.as_str()))
-                    {
-                        if let Some(t) = title {
-                            let trimmed = t.trim();
-                            if !trimmed.is_empty() {
-                                step.step = trimmed.to_string();
-                            }
+        let result = {
+            let mut plans = self.plans.write().await;
+            let plan = plans.entry(key.clone()).or_default();
+            let mut steps = plan.steps.clone();
+
+            for op in ops {
+                match op {
+                    super::super::PlanPatchOp::Add {
+                        after_id,
+                        title,
+                        status,
+                    } => {
+                        let trimmed = title.trim();
+                        if trimmed.is_empty() {
+                            // Treat empty inserts as a no-op rather than fail,
+                            // mirroring update_plan's "no whitespace-only steps"
+                            // intent without aborting the whole batch.
+                            continue;
                         }
-                        if let Some(s) = status {
-                            step.status = s;
-                        }
-                        if failure_kind.is_some() {
-                            step.failure_kind = failure_kind;
-                        }
-                    }
-                }
-                super::super::PlanPatchOp::Reorder { id, after_id } => {
-                    if let Some(idx) = steps
-                        .iter()
-                        .position(|s| s.id.as_deref() == Some(id.as_str()))
-                    {
-                        let step = steps.remove(idx);
-                        let new_pos = match after_id.as_deref() {
+                        let new_step = PlanStep {
+                            id: Some(uuid::Uuid::new_v4().to_string()),
+                            step: trimmed.to_string(),
+                            status: status.unwrap_or(StepStatus::Pending),
+                            failure_kind: None,
+                        };
+                        let pos = match after_id.as_deref() {
                             Some(aid) => steps
                                 .iter()
                                 .position(|s| s.id.as_deref() == Some(aid))
@@ -223,39 +200,84 @@ impl PlanManager {
                                 .unwrap_or_else(|| steps.len()),
                             None => 0,
                         };
-                        steps.insert(new_pos.min(steps.len()), step);
+                        steps.insert(pos.min(steps.len()), new_step);
+                    }
+                    super::super::PlanPatchOp::Remove { id } => {
+                        steps.retain(|s| s.id.as_deref() != Some(id.as_str()));
+                    }
+                    super::super::PlanPatchOp::Modify {
+                        id,
+                        title,
+                        status,
+                        failure_kind,
+                    } => {
+                        if let Some(step) = steps
+                            .iter_mut()
+                            .find(|s| s.id.as_deref() == Some(id.as_str()))
+                        {
+                            if let Some(t) = title {
+                                let trimmed = t.trim();
+                                if !trimmed.is_empty() {
+                                    step.step = trimmed.to_string();
+                                }
+                            }
+                            if let Some(s) = status {
+                                step.status = s;
+                            }
+                            if failure_kind.is_some() {
+                                step.failure_kind = failure_kind;
+                            }
+                        }
+                    }
+                    super::super::PlanPatchOp::Reorder { id, after_id } => {
+                        if let Some(idx) = steps
+                            .iter()
+                            .position(|s| s.id.as_deref() == Some(id.as_str()))
+                        {
+                            let step = steps.remove(idx);
+                            let new_pos = match after_id.as_deref() {
+                                Some(aid) => steps
+                                    .iter()
+                                    .position(|s| s.id.as_deref() == Some(aid))
+                                    .map(|i| i + 1)
+                                    .unwrap_or_else(|| steps.len()),
+                                None => 0,
+                            };
+                            steps.insert(new_pos.min(steps.len()), step);
+                        }
                     }
                 }
             }
-        }
 
-        // Validation: same caps as update_plan.
-        if steps.len() > MAX_PLAN_STEPS {
-            return Err(super::super::PlanError::InvalidStepCount(steps.len()));
-        }
-        let in_progress = steps
-            .iter()
-            .filter(|s| s.status == StepStatus::InProgress)
-            .count();
-        if in_progress > 1 {
-            return Err(super::super::PlanError::MultipleInProgress(in_progress));
-        }
+            // Validation: same caps as update_plan.
+            if steps.len() > MAX_PLAN_STEPS {
+                return Err(super::super::PlanError::InvalidStepCount(steps.len()));
+            }
+            let in_progress = steps
+                .iter()
+                .filter(|s| s.status == StepStatus::InProgress)
+                .count();
+            if in_progress > 1 {
+                return Err(super::super::PlanError::MultipleInProgress(in_progress));
+            }
 
-        plan.steps = steps;
-        plan.summary = PlanSummary::from_steps(&plan.steps);
-        plan.version += 1;
-        plan.updated_at = Utc::now();
+            plan.steps = steps;
+            plan.summary = PlanSummary::from_steps(&plan.steps);
+            plan.version += 1;
+            plan.updated_at = Utc::now();
 
-        tracing::info!(
-            version = plan.version,
-            total = plan.summary.total,
-            "Plan updated via patch ops"
-        );
+            tracing::info!(
+                stage = %key,
+                version = plan.version,
+                total = plan.summary.total,
+                "Plan updated via patch ops"
+            );
 
-        let result = plan.clone();
-        drop(plan);
+            plan.clone()
+        };
 
-        self.persist_async(&result);
+        *self.current_stage.write().await = key.clone();
+        self.persist_async(&key, &result);
 
         Ok(result)
     }

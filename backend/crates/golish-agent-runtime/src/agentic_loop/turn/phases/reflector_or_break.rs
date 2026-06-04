@@ -56,6 +56,17 @@ pub async fn run(
 
     state.consecutive_no_tool_turns += 1;
 
+    // Harness stage barrier (design 2026-06-04 · agent-todo stage body): once the
+    // agent has submitted a StageDeliverable, an idle turn means the stage attempt
+    // is complete. Break so the orchestrator runs the authoritative gate and
+    // advances the stage — instead of the reflector nudging the agent to "define
+    // the next stage", which strands it in the current stage forever (the
+    // "stuck in scoping" hang). Scoped to harness stages; the submit tool only
+    // exists there, so `stage_deliverable_submitted` is never set elsewhere.
+    if state.stage_deliverable_submitted && ctx.harness_stage.is_some() {
+        return ReflectorPhaseOutcome::Break;
+    }
+
     match maybe_run_reflector(
         ctx,
         sub_agent_context,
@@ -135,6 +146,86 @@ mod tests {
             state.consecutive_no_tool_turns, 0,
             "tool calls present must reset the no-tool counter"
         );
+    }
+
+    // Harness stage barrier: once the agent has submitted a StageDeliverable, an
+    // idle turn inside a harness stage must BREAK the loop (so the orchestrator
+    // runs the gate + advances) rather than letting the reflector nudge it to keep
+    // working — the root cause of the "stuck in scoping" hang. The reflector is
+    // enabled here, so a break proves the barrier short-circuits ahead of it
+    // (no nudge injected).
+    #[tokio::test]
+    async fn submitted_deliverable_in_harness_stage_breaks_without_nudging() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let mut ctx = test_ctx.as_agentic_context_with_client(&client);
+        ctx.harness_stage = Some(golish_agent_kit::harness::StageKind::Scoping);
+        let mut state = TurnState {
+            stage_deliverable_submitted: true,
+            ..TurnState::default()
+        };
+        let mut history: Vec<Message> = vec![];
+        let sub_ctx = SubAgentContext::default();
+        let cfg = config_with_reflector(true);
+
+        let outcome = run(
+            &mut state,
+            &ctx,
+            &sub_ctx,
+            &cfg,
+            &mut history,
+            false,
+            "I've submitted the stage deliverable.",
+            &[],
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, ReflectorPhaseOutcome::Break),
+            "idle turn after submitting a StageDeliverable in a harness stage must break"
+        );
+        assert_eq!(
+            state.total_reflector_nudges, 0,
+            "the stage barrier must short-circuit before the reflector nudges"
+        );
+    }
+
+    // The same barrier must NOT fire outside a harness stage: with no active stage
+    // the flag is inert, so normal reflector/break behaviour is preserved.
+    #[tokio::test]
+    async fn submitted_flag_without_harness_stage_does_not_force_break() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        assert!(
+            ctx.harness_stage.is_none(),
+            "precondition: no harness stage in this test context"
+        );
+        let mut state = TurnState {
+            reflector_active: false,
+            stage_deliverable_submitted: true,
+            ..TurnState::default()
+        };
+        let mut history: Vec<Message> = vec![];
+        let sub_ctx = SubAgentContext::default();
+        let cfg = config_with_reflector(true);
+
+        let outcome = run(
+            &mut state,
+            &ctx,
+            &sub_ctx,
+            &cfg,
+            &mut history,
+            false,
+            "done",
+            &[],
+        )
+        .await;
+
+        // reflector inactive → normal Break path (not the stage barrier), and the
+        // no-tool counter still increments as usual.
+        assert!(matches!(outcome, ReflectorPhaseOutcome::Break));
+        assert_eq!(state.consecutive_no_tool_turns, 1);
     }
 
     #[tokio::test]

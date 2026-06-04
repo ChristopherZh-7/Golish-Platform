@@ -127,6 +127,8 @@ You are operating inside the **{stage}** stage of an authorized operation. Stay 
 }}
 ```
 
+IMPORTANT — the integers `1`, `2`, `3` in the template above are PLACEHOLDERS for shape only; NEVER copy them. Every evidence id MUST be an actual integer returned by a real tool run (or `record_finding`) in THIS operation — read it from that tool's result. If you have not run any tool yet you have NO evidence ids: run the required tools first. Citing placeholder or guessed ids (1, 2, 3, ...) FAILS the gate.
+
 Gate rules your deliverable MUST satisfy (otherwise it is rejected and you redo the stage):
 - `stage_id` MUST equal "{stage}"; `stage_run_id` MUST be a valid, non-nil UUID v4.
 - Every claim `evidence_ids` and every finding `evidence_refs` MUST be non-empty, and every id used there MUST also appear in the top-level `evidence_refs`.

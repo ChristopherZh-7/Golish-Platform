@@ -98,6 +98,10 @@ pub async fn get_sub_agent_tool_definitions(registry: &SubAgentRegistry) -> Vec<
                     "context": {
                         "type": "string",
                         "description": "Optional additional context to help the sub-agent understand the task"
+                    },
+                    "resume": {
+                        "type": "string",
+                        "description": "Optional. Continue a PREVIOUS run of this sub-agent instead of starting fresh. Pass the `sub_agent_session_id` from an earlier run's result to resume THAT exact worker — it remembers its prior tool runs (including the evidence ids it produced), so you don't lose them. Pass \"latest\" to continue this sub-agent's most recent run. Omit for a brand-new sub-agent. Resume when you need the previous run's results/evidence; start fresh for an unrelated task."
                     }
                 },
                 "required": ["task"]

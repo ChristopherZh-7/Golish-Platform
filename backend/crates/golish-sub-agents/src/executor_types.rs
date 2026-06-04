@@ -77,6 +77,30 @@ pub trait SubAgentChainPersistence: Send + Sync {
         duration_ms: i32,
     ) -> anyhow::Result<()>;
 
+    /// Load the most recent persisted chain for `(session, agent)`, if any, so a
+    /// `resume` delegation can replay the same sub-agent's prior conversation
+    /// (including the tool results / evidence ids it produced). Returns
+    /// `(chain_id, chain_json)`. Default impl: no prior chain (never resumes).
+    async fn chain_load_latest(
+        &self,
+        _session_id: uuid::Uuid,
+        _task_id: Option<uuid::Uuid>,
+        _agent_type: &str,
+    ) -> anyhow::Result<Option<(uuid::Uuid, serde_json::Value)>> {
+        Ok(None)
+    }
+
+    /// Load a SPECIFIC persisted chain by its id, so a `resume` delegation can
+    /// continue an exact prior sub-agent conversation. The id is handed back to
+    /// the orchestrator when the sub-agent finishes, so it can name precisely
+    /// which worker to resume. Default impl: not found.
+    async fn chain_load_by_id(
+        &self,
+        _chain_id: uuid::Uuid,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
+
     async fn load_prompt_template_overrides(&self) -> Vec<(String, String)>;
 }
 
@@ -91,6 +115,21 @@ pub type PostShellHook = Arc<
             Option<String>,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
         + Send
+        + Sync,
+>;
+
+/// Extra tool executor for tools that live OUTSIDE the [`ToolRegistry`]
+/// (graph / memory). Given `(tool_name, args)` it returns
+/// `Some((value, success))` if it handled the call, else `None` to fall through
+/// to the registry. A plain `Fn` so this crate stays free of harness-crate
+/// deps; the runtime builds it with the graph/memory backends wired in.
+pub type SubAgentToolRouter = Arc<
+    dyn Fn(
+            String,
+            serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<(serde_json::Value, bool)>> + Send>,
+        > + Send
         + Sync,
 >;
 
@@ -153,6 +192,15 @@ pub struct SubAgentExecutorContext<'a> {
     pub sub_agent_registry: Option<&'a Arc<RwLock<crate::definition::SubAgentRegistry>>>,
     /// Optional hook called after a successful shell tool execution.
     pub post_shell_hook: Option<PostShellHook>,
+    /// AI-controlled resume handle for this delegation:
+    /// `Some("<chain_id>")` continues that exact prior sub-agent conversation;
+    /// `Some("latest")` continues this agent's most recent chain; `None` is a
+    /// fresh sub-agent (default). Enables "go back to the same worker".
+    pub resume: Option<String>,
+    /// Extra tool executor for tools outside the `ToolRegistry` (graph/memory),
+    /// tried before the registry fallback so a delegated sub-agent can actually
+    /// run them (e.g. `graph_add_entity`) instead of getting "Unknown tool".
+    pub sub_tool_router: Option<SubAgentToolRouter>,
     /// Optional per-stage tool boundary guard (forbidden-only). When the
     /// sub-agent runs inside a harness stage, this blocks tool calls whose
     /// resolved capability is in the stage's forbidden list (e.g. `dig` in

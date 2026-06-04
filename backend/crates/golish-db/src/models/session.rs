@@ -165,6 +165,7 @@ pub struct ExecutionPlan {
     pub steps: serde_json::Value,
     pub status: PlanStatus,
     pub current_step: i32,
+    pub stage_id: Option<String>,
     pub context: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -194,6 +195,7 @@ pub struct NewExecutionPlan {
     pub title: String,
     pub description: String,
     pub steps: serde_json::Value,
+    pub stage_id: Option<String>,
 }
 
 // ── Sub-agent Dispatches (P0-4) ─────────────────────────────────────────

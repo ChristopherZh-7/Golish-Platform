@@ -78,6 +78,37 @@ impl golish_sub_agents::SubAgentChainPersistence for PgChainPersistence {
         Ok(())
     }
 
+    async fn chain_load_latest(
+        &self,
+        session_id: Uuid,
+        _task_id: Option<Uuid>,
+        agent_type: &str,
+    ) -> anyhow::Result<Option<(Uuid, serde_json::Value)>> {
+        // Most recently updated persisted chain for this (session, agent). The
+        // `chain IS NOT NULL` filter skips freshly-created rows that never got
+        // a saved conversation, so resume only picks a chain with real content.
+        let row: Option<(Uuid, Option<serde_json::Value>)> = sqlx::query_as(
+            r#"SELECT id, chain FROM message_chains
+               WHERE session_id = $1 AND agent = $2::agent_type AND chain IS NOT NULL
+               ORDER BY updated_at DESC
+               LIMIT 1"#,
+        )
+        .bind(session_id)
+        .bind(agent_type)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        Ok(row.and_then(|(id, chain)| chain.map(|c| (id, c))))
+    }
+
+    async fn chain_load_by_id(&self, chain_id: Uuid) -> anyhow::Result<Option<serde_json::Value>> {
+        let row: Option<(Option<serde_json::Value>,)> =
+            sqlx::query_as("SELECT chain FROM message_chains WHERE id = $1")
+                .bind(chain_id)
+                .fetch_optional(self.pool.as_ref())
+                .await?;
+        Ok(row.and_then(|(chain,)| chain))
+    }
+
     async fn load_prompt_template_overrides(&self) -> Vec<(String, String)> {
         sqlx::query_as::<_, (String, String)>(
             "SELECT template_name, content FROM prompt_templates WHERE is_active = true",

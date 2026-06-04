@@ -14,45 +14,6 @@ import { readContextUsage, writeContextUsage } from "../contextUsagePersistence"
 import { prettyStageName } from "../StageMarker";
 import type { WorkflowRunSnapshot } from "../WorkflowProgress";
 
-/** Read the `stage_id` (or `stage`) out of a `submit_stage_deliverable` call's args. */
-function parseStageIdFromArgs(args: unknown): string | null {
-  try {
-    const obj = typeof args === "string" ? JSON.parse(args) : args;
-    if (obj && typeof obj === "object") {
-      const rec = obj as Record<string, unknown>;
-      const sid = rec.stage_id ?? rec.stage;
-      if (typeof sid === "string" && sid.trim()) return sid.trim();
-    }
-  } catch {
-    /* non-JSON args — ignore */
-  }
-  return null;
-}
-
-/** Remember the stage a `submit_stage_deliverable` call targets, keyed by request id. */
-function rememberSubmitStage(
-  map: Map<string, string>,
-  toolName: string,
-  requestId: string,
-  args: unknown
-): void {
-  if (toolName !== "submit_stage_deliverable") return;
-  const sid = parseStageIdFromArgs(args);
-  if (sid) map.set(requestId, sid);
-}
-
-/** A `submit_stage_deliverable` result counts as a stage pass only when accepted. */
-function submitResultAccepted(result: unknown): boolean {
-  try {
-    const obj = typeof result === "string" ? JSON.parse(result) : result;
-    return (
-      !!obj && typeof obj === "object" && (obj as Record<string, unknown>).status === "accepted"
-    );
-  } catch {
-    return false;
-  }
-}
-
 interface UseAiChatEventsOptions {
   activeConvId: string | null;
   streamingMsgRef: MutableRefObject<string | null>;
@@ -87,11 +48,8 @@ export function useAiChatEvents({
   const planMessageIdRef = useRef<string | null>(null);
   const retiredCountRef = useRef<number>(0);
   const unlistenRef = useRef<(() => void) | null>(null);
-  // `submit_stage_deliverable` request_id → stage_id, captured at call time so
-  // the accepted tool_result can label the stage-complete milestone.
-  const submitStageByRequestRef = useRef<Map<string, string>>(new Map());
   // convId → last stage_id we emitted a "Stage complete" marker for, so a stage
-  // re-submitted (gate accepts twice) doesn't spam duplicate milestones.
+  // re-passed (gate accepts twice) doesn't spam duplicate milestones.
   const lastStageRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
@@ -157,12 +115,6 @@ export function useAiChatEvents({
               break;
             case "tool_request":
             case "tool_auto_approved": {
-              rememberSubmitStage(
-                submitStageByRequestRef.current,
-                event.tool_name,
-                event.request_id,
-                event.args
-              );
               store.addMessageToolCall(convId, {
                 name: event.tool_name,
                 args:
@@ -172,12 +124,6 @@ export function useAiChatEvents({
               break;
             }
             case "tool_approval_request": {
-              rememberSubmitStage(
-                submitStageByRequestRef.current,
-                event.tool_name,
-                event.request_id,
-                event.args
-              );
               store.addMessageToolCall(convId, {
                 name: event.tool_name,
                 args:
@@ -208,24 +154,10 @@ export function useAiChatEvents({
               const resultStr =
                 typeof event.result === "string" ? event.result : safeStringify(event.result);
               store.updateMessageToolResult(convId, event.tool_name, resultStr, event.success);
-              // A stage *passes* when its `submit_stage_deliverable` is accepted —
-              // surface that as a distinct, prominent milestone (separate from the
-              // per-step "Step complete" markers).
-              if (
-                event.tool_name === "submit_stage_deliverable" &&
-                submitResultAccepted(event.result)
-              ) {
-                const stageId = submitStageByRequestRef.current.get(event.request_id);
-                submitStageByRequestRef.current.delete(event.request_id);
-                if (stageId && lastStageRef.current.get(convId) !== stageId) {
-                  lastStageRef.current.set(convId, stageId);
-                  store.addConversationStageMarker(convId, {
-                    kind: "stage_completed",
-                    label: `Stage complete: ${prettyStageName(stageId)}`,
-                    status: "finished",
-                  });
-                }
-              }
+              // NB: the "Stage complete" milestone is NOT driven from here. A
+              // `submit_stage_deliverable` `accepted` is only the structural
+              // preview; the milestone fires off the backend's authoritative
+              // `stage_passed` TaskProgress (see the `task_progress` case).
               if (modes.pendingApprovalRef.current?.requestId === event.request_id)
                 modes.setPendingApproval(null);
               break;
@@ -267,6 +199,37 @@ export function useAiChatEvents({
               break;
             case "task_progress": {
               const s = event.status;
+              // Authoritative stage pass: the backend emits this from
+              // `consume_gate_outcome` only when the deterministic evidence gate
+              // ACCEPTS the stage. THIS — not the structural
+              // `submit_stage_deliverable` preview — drives the prominent "Stage
+              // complete" milestone + the per-stage card's completed state, so
+              // completion shows only after real evidence is validated. `message`
+              // carries the stage id.
+              if (s === "stage_passed") {
+                const stageId = event.message;
+                if (stageId && lastStageRef.current.get(convId) !== stageId) {
+                  lastStageRef.current.set(convId, stageId);
+                  store.addConversationStageMarker(convId, {
+                    kind: "stage_completed",
+                    label: `Stage complete: ${prettyStageName(stageId)}`,
+                    status: "finished",
+                  });
+                  // Per-stage plan state (stageOrder / plansByStage / passedStages)
+                  // is keyed by the resolved STORE session id — the terminal/PTY id.
+                  // The ai-events registry writes plans under that id (`useAiEvents`
+                  // maps the aiSessionId → termId for conversation-mode sessions), so
+                  // the `passedStages` write MUST use the same resolution. The raw
+                  // `event.session_id` is the aiSessionId, whose `sessions[…]` row
+                  // doesn't exist for conversation-mode chats — writing there would
+                  // silently no-op and leave the stage stuck on "starting…".
+                  const stageStoreSessionId = store.sessions[event.session_id]
+                    ? event.session_id
+                    : (store.conversationTerminals[convId]?.[0] ?? event.session_id);
+                  store.markStagePassed(stageStoreSessionId, stageId);
+                }
+                break;
+              }
               // `finished` is the authoritative end-of-run signal on the event
               // channel. Without resetting here, `taskInProgressRef` only flips
               // back on the `error` event or when the `send_ai_prompt_session`
@@ -390,6 +353,11 @@ export function useAiChatEvents({
               );
               break;
             case "plan_updated": {
+              // Per-stage plan updates (stage_id present) are routed into the
+              // per-stage buckets by the ai-events service handler. Skip the
+              // legacy single-card path here so a harness run doesn't ALSO render
+              // a duplicate InlinePlanCard alongside the per-stage StageRow cards.
+              if (event.stage_id) break;
               const currentConv = useStore.getState().conversations[convId];
               const lastMsg = currentConv?.messages?.[currentConv.messages.length - 1];
               const termIds = useStore.getState().conversationTerminals[convId];

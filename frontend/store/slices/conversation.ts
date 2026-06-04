@@ -298,6 +298,16 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
     set((state) => {
       const conv = state.conversations[convId];
       if (conv) {
+        // Only one assistant message streams at a time. A multi-stage harness run
+        // opens a new assistant message per stage (often with no `completed`
+        // between them, and with stage-divider system messages interleaved), so
+        // clear any stale `isStreaming` on prior messages — otherwise the previous
+        // stage's "Writing response" footer lingers after the run has advanced.
+        if (message.role === "assistant" && message.isStreaming) {
+          for (const m of conv.messages) {
+            if (m.role === "assistant" && m.isStreaming) m.isStreaming = false;
+          }
+        }
         conv.messages.push(message);
       }
     }),
@@ -416,11 +426,26 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
     set((state) => {
       const conv = state.conversations[convId];
       if (!conv) return;
-      const last = conv.messages[conv.messages.length - 1];
-      if (last?.role === "assistant") {
-        if (response !== undefined) last.content = response;
-        if (reasoning !== undefined) last.thinking = reasoning;
-        last.isStreaming = false;
+      // The streaming message isn't always last: stage-divider system messages
+      // can be appended after it within a turn. Finalize the most recent STREAMING
+      // assistant message so its "Writing response" footer clears even when a
+      // marker sits after it; fall back to the last assistant message otherwise.
+      let idx = -1;
+      for (let i = conv.messages.length - 1; i >= 0; i--) {
+        if (conv.messages[i].role === "assistant" && conv.messages[i].isStreaming) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx < 0) {
+        const lastIdx = conv.messages.length - 1;
+        if (conv.messages[lastIdx]?.role === "assistant") idx = lastIdx;
+      }
+      if (idx >= 0) {
+        const target = conv.messages[idx];
+        if (response !== undefined) target.content = response;
+        if (reasoning !== undefined) target.thinking = reasoning;
+        target.isStreaming = false;
       }
       conv.isStreaming = false;
     }),

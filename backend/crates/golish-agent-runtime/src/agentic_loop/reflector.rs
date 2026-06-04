@@ -151,6 +151,8 @@ pub(crate) async fn maybe_run_reflector(
             workspace: ctx.workspace,
             provider_name: ctx.llm.provider_name,
             model_name: ctx.llm.model_name,
+            resume: None,
+            sub_tool_router: None,
             session_id: ctx.events.session_id,
             transcript_base_dir: ctx.events.transcript_base_dir,
             api_request_stats: Some(ctx.api_request_stats),

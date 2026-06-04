@@ -17,7 +17,10 @@ async fn make_plan_with_steps(titles: &[&str]) -> PlanManager {
             })
             .collect(),
     };
-    manager.update_plan(args).await.expect("seed update_plan");
+    manager
+        .update_plan(args, None)
+        .await
+        .expect("seed update_plan");
     manager
 }
 
@@ -29,7 +32,7 @@ async fn add_at_beginning_when_after_id_is_none() {
         title: "Z".to_string(),
         status: None,
     }];
-    let updated = manager.apply_patch_ops(ops).await.unwrap();
+    let updated = manager.apply_patch_ops(ops, None).await.unwrap();
     assert_eq!(updated.steps.len(), 3);
     assert_eq!(updated.steps[0].step, "Z");
     assert_eq!(updated.steps[1].step, "A");
@@ -46,7 +49,7 @@ async fn add_after_existing_step_inserts_in_order() {
         title: "B+".to_string(),
         status: Some(StepStatus::InProgress),
     }];
-    let updated = manager.apply_patch_ops(ops).await.unwrap();
+    let updated = manager.apply_patch_ops(ops, None).await.unwrap();
     assert_eq!(updated.steps.len(), 4);
     assert_eq!(updated.steps[0].step, "A");
     assert_eq!(updated.steps[1].step, "B");
@@ -63,7 +66,7 @@ async fn add_with_unknown_after_id_appends_to_end() {
         title: "Tail".to_string(),
         status: None,
     }];
-    let updated = manager.apply_patch_ops(ops).await.unwrap();
+    let updated = manager.apply_patch_ops(ops, None).await.unwrap();
     assert_eq!(updated.steps.len(), 3);
     assert_eq!(updated.steps.last().unwrap().step, "Tail");
 }
@@ -76,7 +79,7 @@ async fn add_with_whitespace_only_title_is_noop() {
         title: "   \n\t  ".to_string(),
         status: None,
     }];
-    let updated = manager.apply_patch_ops(ops).await.unwrap();
+    let updated = manager.apply_patch_ops(ops, None).await.unwrap();
     assert_eq!(updated.steps.len(), 1);
     assert_eq!(updated.steps[0].step, "A");
 }
@@ -87,7 +90,7 @@ async fn remove_existing_step() {
     let snapshot = manager.snapshot().await;
     let b_id = snapshot.steps[1].id.clone().unwrap();
     let ops = vec![PlanPatchOp::Remove { id: b_id }];
-    let updated = manager.apply_patch_ops(ops).await.unwrap();
+    let updated = manager.apply_patch_ops(ops, None).await.unwrap();
     assert_eq!(updated.steps.len(), 2);
     assert_eq!(updated.steps[0].step, "A");
     assert_eq!(updated.steps[1].step, "C");
@@ -99,7 +102,7 @@ async fn remove_nonexistent_step_is_noop() {
     let ops = vec![PlanPatchOp::Remove {
         id: "ghost".to_string(),
     }];
-    let updated = manager.apply_patch_ops(ops).await.unwrap();
+    let updated = manager.apply_patch_ops(ops, None).await.unwrap();
     assert_eq!(updated.steps.len(), 1);
     assert_eq!(updated.steps[0].step, "A");
 }
@@ -116,7 +119,7 @@ async fn modify_updates_title_status_and_failure_kind() {
         status: Some(StepStatus::Failed),
         failure_kind: Some(FailureKind::Conceptual),
     }];
-    let updated = manager.apply_patch_ops(ops).await.unwrap();
+    let updated = manager.apply_patch_ops(ops, None).await.unwrap();
     assert_eq!(updated.steps[0].step, "New title");
     assert_eq!(updated.steps[0].status, StepStatus::Failed);
     assert_eq!(updated.steps[0].failure_kind, Some(FailureKind::Conceptual));
@@ -131,7 +134,7 @@ async fn modify_with_unknown_id_is_noop() {
         status: None,
         failure_kind: None,
     }];
-    let updated = manager.apply_patch_ops(ops).await.unwrap();
+    let updated = manager.apply_patch_ops(ops, None).await.unwrap();
     assert_eq!(updated.steps[0].step, "A");
 }
 
@@ -144,7 +147,7 @@ async fn reorder_moves_step_to_head_when_after_id_is_none() {
         id: c_id,
         after_id: None,
     }];
-    let updated = manager.apply_patch_ops(ops).await.unwrap();
+    let updated = manager.apply_patch_ops(ops, None).await.unwrap();
     assert_eq!(updated.steps[0].step, "C");
     assert_eq!(updated.steps[1].step, "A");
     assert_eq!(updated.steps[2].step, "B");
@@ -160,7 +163,7 @@ async fn reorder_after_existing_step() {
         id: a_id,
         after_id: Some(c_id),
     }];
-    let updated = manager.apply_patch_ops(ops).await.unwrap();
+    let updated = manager.apply_patch_ops(ops, None).await.unwrap();
     assert_eq!(updated.steps[0].step, "B");
     assert_eq!(updated.steps[1].step, "C");
     assert_eq!(updated.steps[2].step, "A");
@@ -176,7 +179,7 @@ async fn over_max_steps_returns_invalid_step_count() {
             status: None,
         })
         .collect();
-    let res = manager.apply_patch_ops(ops).await;
+    let res = manager.apply_patch_ops(ops, None).await;
     assert!(matches!(res, Err(PlanError::InvalidStepCount(_))));
 }
 
@@ -200,7 +203,7 @@ async fn multiple_in_progress_returns_error() {
             failure_kind: None,
         },
     ];
-    let res = manager.apply_patch_ops(ops).await;
+    let res = manager.apply_patch_ops(ops, None).await;
     assert!(matches!(res, Err(PlanError::MultipleInProgress(2))));
 }
 
@@ -226,7 +229,7 @@ async fn composite_ops_remove_add_modify_applied_in_order() {
         },
     ];
 
-    let updated = manager.apply_patch_ops(ops).await.unwrap();
+    let updated = manager.apply_patch_ops(ops, None).await.unwrap();
     let titles: Vec<&str> = updated.steps.iter().map(|s| s.step.as_str()).collect();
     assert_eq!(titles, vec!["A", "B-prime", "C"]);
     assert_eq!(updated.steps[0].status, StepStatus::Completed);
@@ -237,11 +240,14 @@ async fn version_increments_on_each_apply() {
     let manager = make_plan_with_steps(&["A"]).await;
     let initial = manager.snapshot().await.version;
     let _ = manager
-        .apply_patch_ops(vec![PlanPatchOp::Add {
-            after_id: None,
-            title: "Z".to_string(),
-            status: None,
-        }])
+        .apply_patch_ops(
+            vec![PlanPatchOp::Add {
+                after_id: None,
+                title: "Z".to_string(),
+                status: None,
+            }],
+            None,
+        )
         .await
         .unwrap();
     let after = manager.snapshot().await.version;

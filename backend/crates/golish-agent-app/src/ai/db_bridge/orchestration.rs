@@ -145,6 +145,7 @@ impl GolishDbRepoProvider {
                 steps: p.steps,
                 status: convert_plan_status(p.status),
                 current_step: p.current_step,
+                stage_id: p.stage_id,
             })
             .collect())
     }
@@ -174,6 +175,7 @@ impl GolishDbRepoProvider {
                 title: plan.title,
                 description: plan.description,
                 steps: plan.steps,
+                stage_id: plan.stage_id,
             })
             .await?;
         Ok(ExecutionPlanView {
@@ -183,6 +185,7 @@ impl GolishDbRepoProvider {
             steps: created.steps,
             status: convert_plan_status(created.status),
             current_step: created.current_step,
+            stage_id: created.stage_id,
         })
     }
 

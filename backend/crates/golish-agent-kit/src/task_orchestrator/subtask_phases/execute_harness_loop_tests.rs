@@ -519,6 +519,55 @@ async fn block_holds_cursor() {
     assert_eq!(repo.stage(op).as_deref(), Some("scoping"));
 }
 
+/// A gate PASS routed through `consume_gate_outcome` (the single chokepoint both
+/// gate sites flow through) emits an authoritative `stage_passed` TaskProgress
+/// carrying the stage id. The UI keys the "Stage complete" milestone + per-stage
+/// card completion off this — not the structural `submit_stage_deliverable`
+/// preview — so completion shows only after the real evidence gate accepts the
+/// stage. Uses the terminal `reporting` stage so the transition completes without
+/// pausing on an approval gate.
+#[tokio::test]
+async fn pass_emits_stage_passed_progress() {
+    let op = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "assessment", "reporting");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
+
+    orch.consume_gate_outcome(op, pass(StageKind::Reporting))
+        .await;
+
+    let events = drain(&mut rx);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AiEvent::TaskProgress { status, message, .. }
+                if status == "stage_passed" && message == "reporting"
+        )),
+        "gate PASS must emit a stage_passed TaskProgress carrying the stage id"
+    );
+}
+
+/// A gate BLOCK must NOT emit `stage_passed` — completion is gated on a real
+/// PASS, so a blocked stage shows no "Stage complete".
+#[tokio::test]
+async fn block_emits_no_stage_passed() {
+    let op = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "assessment", "scoping");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
+
+    orch.consume_gate_outcome(op, block(StageKind::Scoping))
+        .await;
+
+    let events = drain(&mut rx);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AiEvent::TaskProgress { status, .. } if status == "stage_passed")),
+        "gate BLOCK must not emit stage_passed"
+    );
+}
+
 /// Entering an approval-gated stage (pentest: vuln_triage → verification) emits
 /// `waiting_approval` and, on a non-affirmative reply, holds the cursor.
 #[tokio::test]

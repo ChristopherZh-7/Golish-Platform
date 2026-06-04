@@ -22,6 +22,12 @@ export interface TaskPlanViewModel {
 export interface StagePlansViewModel {
   stageOrder: string[];
   plansByStage: Record<string, TaskPlanViewModel>;
+  /**
+   * Stages whose authoritative evidence gate PASSED (backend `stage_passed`).
+   * Drives each stage card's "completed" state instead of the model's
+   * self-reported todo statuses.
+   */
+  passedStages: string[];
 }
 
 export function PlanStepIcon({ status, size = "sm" }: { status: string; size?: "sm" | "md" }) {

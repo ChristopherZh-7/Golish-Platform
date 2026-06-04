@@ -122,6 +122,7 @@ pub struct NewExecutionPlan {
     pub title: String,
     pub description: String,
     pub steps: serde_json::Value,
+    pub stage_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -210,6 +211,7 @@ pub struct ExecutionPlanView {
     pub steps: serde_json::Value,
     pub status: PlanStatus,
     pub current_step: i32,
+    pub stage_id: Option<String>,
 }
 
 /// Message chain record.

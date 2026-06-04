@@ -24,6 +24,7 @@ import { useTaskPlanState } from "./hooks/useTaskPlanState";
 import { MessageBlock } from "./MessageBlock";
 import { buildPentestSystemPrompt } from "./pentestSystemPrompt";
 import { StageMarker } from "./StageMarker";
+import { StageProgressBar } from "./StageProgressBar";
 import { useChatAutoScroll } from "./useChatAutoScroll";
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
@@ -144,6 +145,36 @@ export const AIChatPanel = memo(function AIChatPanel() {
     messages,
     planMessageIdRef
   );
+
+  // Sticky "you-are-here" bar visibility. Reveal it only once the inline roadmap
+  // (`[data-stage-roadmap]`) has fully scrolled out of view ABOVE the viewport —
+  // so it never duplicates the roadmap during planning and snaps in Cursor-style
+  // as the user scrolls past it. An IntersectionObserver on the roadmap element is
+  // cheaper and jitter-free vs a scroll listener.
+  const hasStagePlans = !!stagePlans && stagePlans.stageOrder.length > 0;
+  const [roadmapScrolledPast, setRoadmapScrolledPast] = useState(false);
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!hasStagePlans || !container) {
+      setRoadmapScrolledPast(false);
+      return;
+    }
+    const roadmap = container.querySelector("[data-stage-roadmap]");
+    if (!roadmap) {
+      setRoadmapScrolledPast(false);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        // Out of view AND above the viewport top = scrolled past the whole roadmap.
+        const above = entry.boundingClientRect.top < (entry.rootBounds?.top ?? 0);
+        setRoadmapScrolledPast(!entry.isIntersecting && above);
+      },
+      { root: container, threshold: 0 }
+    );
+    observer.observe(roadmap);
+    return () => observer.disconnect();
+  }, [hasStagePlans, planTargetIdx, messages.length, messagesContainerRef]);
 
   // ── Conversation switch: activate terminal + restore execution mode ──
   const terminalRestoreInProgress = useStore((s) => s.terminalRestoreInProgress);
@@ -287,79 +318,88 @@ export const AIChatPanel = memo(function AIChatPanel() {
 
       {/* Messages */}
       {!showHistory && (
-        <div ref={messagesContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden">
-          {messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full select-none gap-4">
-              <div className="flex items-center gap-1.5">
-                {[0, 1, 2].map((i) => (
-                  <div
-                    key={i}
-                    className="w-1.5 h-1.5 rounded-full bg-accent/40 typing-dot"
-                    style={{ animationDelay: `${i * 0.2}s` }}
-                  />
-                ))}
-              </div>
-              <p className="text-[13px] text-muted-foreground/70">{t("ai.placeholder")}</p>
-              {pentestTools.length > 0 && (
-                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/50">
-                  <Wrench className="w-3 h-3" />
-                  <span>
-                    {pentestTools.length} {t("ai.toolsAvailable", "tools available")}
-                  </span>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div>
-              {messages.map((msg, msgIdx) => {
-                if (msg.role === "system") {
-                  return <StageMarker key={msg.id} message={msg} />;
-                }
-                const isPlanTarget = msgIdx === planTargetIdx;
-                return (
-                  <React.Fragment key={msg.id}>
-                    <MessageBlock
-                      message={msg}
-                      taskPlan={isPlanTarget ? taskPlan : null}
-                      stagePlans={isPlanTarget ? stagePlans : null}
-                      planTextOffset={isPlanTarget ? planTextOffsetRef.current : null}
-                      terminalId={activeAiSessionId}
-                      pendingApproval={stablePendingApproval}
-                      approvalMode={modes.approvalMode}
-                      onApprovalModeChange={modes.handleApprovalModeChange}
-                      onApprove={modes.handleToolApprove}
-                      onDeny={modes.handleToolDeny}
+        <div className="relative flex-1 min-h-0 flex flex-col">
+          {hasStagePlans && messages.length > 0 && roadmapScrolledPast && (
+            <StageProgressBar
+              stagePlans={stagePlans!}
+              isRunning={isStreaming}
+              className="absolute top-0 left-0 right-0 z-20"
+            />
+          )}
+          <div ref={messagesContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden">
+            {messages.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full select-none gap-4">
+                <div className="flex items-center gap-1.5">
+                  {[0, 1, 2].map((i) => (
+                    <div
+                      key={i}
+                      className="w-1.5 h-1.5 rounded-full bg-accent/40 typing-dot"
+                      style={{ animationDelay: `${i * 0.2}s` }}
                     />
-                  </React.Fragment>
-                );
-              })}
+                  ))}
+                </div>
+                <p className="text-[13px] text-muted-foreground/70">{t("ai.placeholder")}</p>
+                {pentestTools.length > 0 && (
+                  <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/50">
+                    <Wrench className="w-3 h-3" />
+                    <span>
+                      {pentestTools.length} {t("ai.toolsAvailable", "tools available")}
+                    </span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                {messages.map((msg, msgIdx) => {
+                  if (msg.role === "system") {
+                    return <StageMarker key={msg.id} message={msg} />;
+                  }
+                  const isPlanTarget = msgIdx === planTargetIdx;
+                  return (
+                    <React.Fragment key={msg.id}>
+                      <MessageBlock
+                        message={msg}
+                        taskPlan={isPlanTarget ? taskPlan : null}
+                        stagePlans={isPlanTarget ? stagePlans : null}
+                        planTextOffset={isPlanTarget ? planTextOffsetRef.current : null}
+                        terminalId={activeAiSessionId}
+                        pendingApproval={stablePendingApproval}
+                        approvalMode={modes.approvalMode}
+                        onApprovalModeChange={modes.handleApprovalModeChange}
+                        onApprove={modes.handleToolApprove}
+                        onDeny={modes.handleToolDeny}
+                      />
+                    </React.Fragment>
+                  );
+                })}
 
-              {activeWorkflow && <WorkflowProgress workflow={activeWorkflow} />}
-              {compactionState && (
-                <CompactionNotice
-                  active={compactionState.active}
-                  tokensBefore={compactionState.tokensBefore}
-                />
-              )}
-              {askHumanRequest && (
-                <AskHumanInline
-                  key={askHumanRequest.requestId}
-                  request={askHumanRequest}
-                  onSubmit={handleAskHumanSubmit}
-                  onSkip={handleAskHumanSkip}
-                />
-              )}
-              {showPreparing && (
-                <div className="px-4 py-3">
-                  {/* Cursor-style "Planning" status while the orchestrator plans,
+                {activeWorkflow && <WorkflowProgress workflow={activeWorkflow} />}
+                {compactionState && (
+                  <CompactionNotice
+                    active={compactionState.active}
+                    tokensBefore={compactionState.tokensBefore}
+                  />
+                )}
+                {askHumanRequest && (
+                  <AskHumanInline
+                    key={askHumanRequest.requestId}
+                    request={askHumanRequest}
+                    onSubmit={handleAskHumanSubmit}
+                    onSkip={handleAskHumanSkip}
+                  />
+                )}
+                {showPreparing && (
+                  <div className="px-4 py-3">
+                    {/* Cursor-style "Planning" status while the orchestrator plans,
                       before the first streamed bubble exists. Reuses the same dot+
                       shimmer as the in-bubble status footer. */}
-                  <AgentStatusIndicator phase="planning" />
-                </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-          )}
+                    <AgentStatusIndicator phase="planning" />
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+            )}
+          </div>
         </div>
       )}
 

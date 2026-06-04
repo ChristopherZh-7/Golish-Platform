@@ -79,6 +79,13 @@ export interface Session {
   plansByStage?: Record<string, TaskPlan>;
   /** Order stages first appeared, so the per-stage cards render in run order. */
   stageOrder?: string[];
+  /**
+   * Stages whose authoritative evidence gate PASSED (backend `stage_passed`
+   * TaskProgress, emitted from `consume_gate_outcome`). Drives the per-stage
+   * card's "completed" state instead of the model's self-reported todo statuses,
+   * so a stage only reads as done once the deterministic gate accepts it.
+   */
+  passedStages?: string[];
   detailViewMode?: DetailViewMode;
   toolDetailRequestIds?: string[] | null;
   interactiveMode?: InteractiveModeState | null;

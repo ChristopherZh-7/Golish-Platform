@@ -3,6 +3,7 @@ import { ptyCreate } from "@/lib/api/pty";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
+import { suppressNextTerminalAutoFocus } from "@/lib/terminal/terminalAutoFocus";
 import { useStore } from "@/store";
 
 /**
@@ -40,6 +41,17 @@ export function useCreateTerminalTab() {
         // Link terminal to the active conversation (unless skipped, e.g. during workspace restore)
         if (!skipConversationLink && activeConversationId) {
           addTerminalToConversation(activeConversationId, session.id);
+        }
+
+        // Chat-first focus: when the user explicitly opens a tab (the "+" button
+        // / Cmd+T — i.e. NOT a workspace restore or auto-create-on-send, which
+        // pass `skipConversationLink`), land the cursor in the AI chat panel
+        // rather than letting the terminal grab it on mount.
+        if (!skipConversationLink) {
+          suppressNextTerminalAutoFocus(session.id);
+          requestAnimationFrame(() =>
+            document.querySelector<HTMLTextAreaElement>("[data-ai-chat-input]")?.focus()
+          );
         }
 
         return session.id;

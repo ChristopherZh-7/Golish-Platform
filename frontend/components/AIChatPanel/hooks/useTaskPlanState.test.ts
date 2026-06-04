@@ -15,6 +15,7 @@ import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as ai from "@/lib/ai";
 import { useStore } from "@/store";
+import { writeStagePlans } from "../stagePlanPersistence";
 import { useTaskPlanState } from "./useTaskPlanState";
 
 vi.mock("@/lib/ai", async (importOriginal) => {
@@ -225,5 +226,149 @@ describe("useTaskPlanState · P0-1 fallback fetch", () => {
     expect(useStore.getState().sessions[SID]?.plan).toBeUndefined();
     expect(consoleSpy).not.toHaveBeenCalled();
     consoleSpy.mockRestore();
+  });
+});
+
+function stubStagePlan(version: number, status: "completed" | "in_progress") {
+  return {
+    version,
+    explanation: null,
+    updated_at: "2026-06-04T00:00:00.000Z",
+    steps: [{ id: `s${version}`, step: "step", status }],
+    summary: {
+      total: 1,
+      completed: status === "completed" ? 1 : 0,
+      in_progress: status === "in_progress" ? 1 : 0,
+      pending: 0,
+    },
+  };
+}
+
+describe("useTaskPlanState · per-stage roadmap persistence (refresh restore)", () => {
+  beforeEach(() => {
+    // P0-1 fallback calls getPlan; resolve to a harmless empty value here.
+    (ai.getPlan as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined as never);
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
+
+  it("restores stageOrder, plansByStage AND passedStages (cards + completions + floating-bar source)", async () => {
+    const CONV = "conv-persist";
+    const TERM = "term-persist";
+    useStore.setState({
+      activeConversationId: CONV,
+      conversations: { [CONV]: { aiSessionId: "ai-persist", messages: [] } as any },
+      conversationTerminals: { [CONV]: [TERM] },
+      sessions: { [TERM]: { id: TERM } as any },
+    } as any);
+
+    writeStagePlans(CONV, {
+      stageOrder: ["scoping", "target_intel"],
+      plansByStage: {
+        scoping: stubStagePlan(1, "completed"),
+        target_intel: stubStagePlan(2, "in_progress"),
+      },
+      passedStages: ["scoping"],
+    });
+
+    renderHookEmpty();
+
+    await waitFor(() => {
+      const sess = useStore.getState().sessions[TERM] as any;
+      // Cards + run order
+      expect(sess?.stageOrder).toEqual(["scoping", "target_intel"]);
+      expect(sess?.plansByStage?.target_intel?.version).toBe(2);
+      // "阶段完成" (drives the green check + the floating bar's current-stage calc)
+      expect(sess?.passedStages).toEqual(["scoping"]);
+    });
+  });
+
+  it("does NOT clobber newer in-memory per-stage state with a stale snapshot", async () => {
+    const CONV = "conv-live";
+    const TERM = "term-live";
+    useStore.setState({
+      activeConversationId: CONV,
+      conversations: { [CONV]: { aiSessionId: "ai-live", messages: [] } as any },
+      conversationTerminals: { [CONV]: [TERM] },
+      sessions: {
+        [TERM]: {
+          id: TERM,
+          stageOrder: ["recon"],
+          plansByStage: { recon: stubStagePlan(5, "in_progress") },
+          passedStages: [],
+        } as any,
+      },
+    } as any);
+
+    writeStagePlans(CONV, {
+      stageOrder: ["scoping"],
+      plansByStage: { scoping: stubStagePlan(1, "completed") },
+      passedStages: ["scoping"],
+    });
+
+    renderHookEmpty();
+    await new Promise((r) => setTimeout(r, 20));
+
+    const sess = useStore.getState().sessions[TERM] as any;
+    expect(sess?.stageOrder).toEqual(["recon"]);
+    expect(sess?.passedStages).toEqual([]);
+  });
+});
+
+describe("useTaskPlanState · roadmap anchor stability (per-stage)", () => {
+  const CID2 = "conv-anchor";
+  const SID2 = "ai-anchor";
+
+  beforeEach(() => {
+    (ai.getPlan as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined as never);
+    localStorage.clear();
+    useStore.setState({
+      activeConversationId: CID2,
+      conversations: { [CID2]: { aiSessionId: SID2, messages: [] } as any },
+      conversationTerminals: {},
+      sessions: {
+        [SID2]: {
+          id: SID2,
+          stageOrder: ["scoping", "target_intel"],
+          plansByStage: {
+            scoping: stubStagePlan(0, "completed"),
+            target_intel: stubStagePlan(1, "in_progress"),
+          },
+          passedStages: ["scoping"],
+        } as any,
+      },
+    } as any);
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
+
+  it("anchors the roadmap at the first assistant message, not a later update_plan message", () => {
+    // Scoping (confirm-only) never calls update_plan; stage 2 does. The roadmap
+    // must stay at the first assistant message so it doesn't appear to vanish
+    // when stage 2 plans.
+    const messages = [
+      { id: "u1", role: "user", content: "go", timestamp: 0 },
+      { id: "a1", role: "assistant", content: "thinking", timestamp: 1 },
+      {
+        id: "a2",
+        role: "assistant",
+        content: "planning target intel",
+        timestamp: 2,
+        toolCalls: [{ name: "update_plan", args: "{}", requestId: "r1" }],
+      },
+    ] as never[];
+    const { result } = renderHook(() => {
+      const ref = useRef<string | null>(null);
+      return useTaskPlanState(messages, ref);
+    });
+    expect(result.current.stagePlans).not.toBeNull();
+    expect(result.current.planTargetIdx).toBe(1);
   });
 });

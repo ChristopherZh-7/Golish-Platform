@@ -38,6 +38,7 @@ import { copyToClipboard } from "@/lib/clipboard";
 import { getAgentColor, getAgentIcon } from "@/lib/sub-agent-theme";
 import { safeStringify } from "@/lib/text";
 import { formatDurationShort } from "@/lib/time";
+import { getToolPrimaryArg } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, SubAgentToolCall } from "@/store";
 import { useStore } from "@/store";
@@ -163,17 +164,11 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: Su
     }
   }, [isStreaming]);
 
-  const summaryArg = (() => {
-    const args = tool.args;
-    if (typeof args === "object" && args !== null) {
-      if ("command" in args) return String(args.command);
-      if ("path" in args) return String(args.path);
-      if ("file_path" in args) return String(args.file_path);
-      if ("pattern" in args) return String(args.pattern);
-      if ("url" in args) return String(args.url);
-    }
-    return null;
-  })();
+  // Reuse the shared primary-arg formatter (same as the main timeline cards) so
+  // every collapsed row surfaces a one-line summary. In particular pentest_run
+  // nests the real tool under `tool_name`/`args`, so this renders e.g.
+  // "nmap -sV target" inline without the user expanding the row.
+  const summaryArg = getToolPrimaryArg(tool.name, tool.args);
 
   const shellOutput: string | null = (() => {
     if (!isShellCmd) return null;

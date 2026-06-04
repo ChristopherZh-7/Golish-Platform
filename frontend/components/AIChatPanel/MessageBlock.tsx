@@ -1,4 +1,4 @@
-import { AlertCircle, AlertTriangle, Loader2 } from "lucide-react";
+import { AlertCircle, AlertTriangle } from "lucide-react";
 import React, { memo } from "react";
 import { Markdown } from "@/components/Markdown";
 import { cn } from "@/lib/utils";
@@ -289,15 +289,6 @@ export const MessageBlock = memo(function MessageBlock({
               );
             })}
             {shouldShowPlan && !planInserted && planNode}
-            {!taskPlan &&
-              !hasStagePlans &&
-              !isUser &&
-              message.toolCalls?.some((tc) => tc.name === "update_plan") && (
-              <div className="mx-0 my-1.5 flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--border-subtle)] bg-background/60 text-[11.5px] text-muted-foreground/50">
-                <Loader2 className="w-3 h-3 animate-spin text-accent flex-shrink-0" />
-                <span>Planning…</span>
-              </div>
-            )}
             {pendingCalls.length > 0 && renderPendingApprovalCards()}
             {message.error && (
               <MessageErrorLine

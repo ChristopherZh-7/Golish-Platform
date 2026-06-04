@@ -19,6 +19,7 @@ import {
 } from "@/lib/conversation-db";
 import { onCustomEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
+import { readStageMarkers, spliceStageMarkers } from "@/lib/stage-marker-persistence";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type { Session, UnifiedBlock } from "@/store";
 import type {
@@ -311,7 +312,14 @@ export async function loadFromDb(projectPath: string): Promise<LoadedWorkspaceSt
           convLoadTerminalStates(convRow.id),
         ]);
 
-        const messages = msgRows.sort((a, b) => a.sortOrder - b.sortOrder).map(dbMsgToChatMessage);
+        // Re-splice task-mode stage dividers ("Stage/Step complete" bubbles).
+        // They're `role:"system"` runtime-only messages filtered out of the DB
+        // (`isPersistableMessage`), so they're persisted to localStorage instead
+        // and restored here at their original positions.
+        const messages = spliceStageMarkers(
+          msgRows.sort((a, b) => a.sortOrder - b.sortOrder).map(dbMsgToChatMessage),
+          readStageMarkers(convRow.id)
+        );
 
         const conv: ChatConversation = {
           id: convRow.id,

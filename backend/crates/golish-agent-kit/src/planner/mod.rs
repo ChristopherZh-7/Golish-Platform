@@ -44,6 +44,7 @@ pub trait PlanEventEmitter: Send + Sync + 'static {
         summary: PlanSummary,
         steps: Vec<PlanStep>,
         explanation: Option<String>,
+        stage_id: Option<String>,
     );
 }
 

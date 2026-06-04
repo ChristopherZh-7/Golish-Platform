@@ -221,9 +221,11 @@ impl Tool for SubmitStageDeliverableTool {
                         "status": "needs_fix",
                         "reasons": [format!(
                             "cited evidence ids {fabricated:?} do not exist in the evidence ledger. \
-                             You may only reference ids returned by real tool runs in this \
-                             operation. Re-run the required tools so their output is recorded, \
-                             then cite those real ledger ids."
+                             The ids 1, 2, 3 in the deliverable template are PLACEHOLDERS — never \
+                             copy them. Each evidence id MUST be the exact integer a real tool run \
+                             (or record_finding) returned in THIS operation; read it from that \
+                             tool's result. If you have run tools, cite the ids from their results; \
+                             if not, run the required tools first. Do NOT guess or reuse placeholder ids."
                         )],
                         "fabricated_evidence_refs": fabricated,
                         "note": "fix these and call submit_stage_deliverable again."

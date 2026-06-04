@@ -2,7 +2,7 @@
 //! text, tool calls in the order required by Anthropic + OpenAI Responses).
 
 use rig::completion::{AssistantContent, Message};
-use rig::message::{Reasoning, Text, ToolCall, UserContent};
+use rig::message::{Reasoning, Text, ToolCall};
 
 /// Build assistant content for chat history with proper ordering.
 ///
@@ -55,48 +55,19 @@ pub fn build_assistant_content(
 
 /// Serialize rig Message history to JSON for DB storage.
 pub(crate) fn serialize_chat_history(messages: &[Message]) -> serde_json::Value {
-    let entries: Vec<serde_json::Value> = messages
-        .iter()
-        .filter_map(|msg| match msg {
-            Message::System { content } => Some(serde_json::json!({
-                "role": "system",
-                "content": content,
-            })),
-            Message::User { content } => {
-                let texts: Vec<String> = content
-                    .iter()
-                    .filter_map(|c| match c {
-                        UserContent::Text(t) => Some(t.text.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if texts.is_empty() {
-                    None
-                } else {
-                    Some(serde_json::json!({
-                        "role": "user",
-                        "content": texts.join("\n"),
-                    }))
-                }
-            }
-            Message::Assistant { content, .. } => {
-                let texts: Vec<String> = content
-                    .iter()
-                    .filter_map(|c| match c {
-                        AssistantContent::Text(t) => Some(t.text.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if texts.is_empty() {
-                    None
-                } else {
-                    Some(serde_json::json!({
-                        "role": "assistant",
-                        "content": texts.join("\n"),
-                    }))
-                }
-            }
-        })
-        .collect();
-    serde_json::json!(entries)
+    // Full-fidelity serialization (rig `Message` is `Serialize`): preserves tool
+    // calls AND tool results — so a later `resume` delegation can replay the
+    // exact conversation, including the evidence ids that live in tool results
+    // (the previous text-only encoding dropped them). Falls back to an empty
+    // array if serialization fails, so chain persistence never panics.
+    serde_json::to_value(messages).unwrap_or_else(|_| serde_json::json!([]))
+}
+
+/// Inverse of [`serialize_chat_history`] for resumable sub-agent chains.
+///
+/// Returns an empty history on any deserialization mismatch (e.g. a row written
+/// by the older, lossy text-only encoding), so `resume` degrades gracefully to
+/// a fresh conversation instead of failing the sub-agent.
+pub(crate) fn deserialize_chat_history(value: &serde_json::Value) -> Vec<Message> {
+    serde_json::from_value::<Vec<Message>>(value.clone()).unwrap_or_default()
 }

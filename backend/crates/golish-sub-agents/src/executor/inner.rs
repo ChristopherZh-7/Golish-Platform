@@ -128,13 +128,18 @@ where
 
     let tools = build_tool_definitions(agent_def, &sub_context, &ctx, tool_provider).await;
 
-    let chain_id: Option<Uuid> = maybe_restore_chain(&ctx, parent_context, agent_id).await;
+    let (chain_id, restored_messages): (Option<Uuid>, Vec<Message>) =
+        maybe_restore_chain(&ctx, parent_context, agent_id).await;
 
-    let mut chat_history: Vec<Message> = vec![Message::User {
+    // On `resume`, seed the conversation with the prior chain (incl. tool
+    // results / evidence ids) so the worker continues where it left off; then
+    // append the new task as the next user turn.
+    let mut chat_history: Vec<Message> = restored_messages;
+    chat_history.push(Message::User {
         content: OneOrMany::one(UserContent::Text(Text {
             text: sub_prompt.clone(),
         })),
-    }];
+    });
 
     let mut accumulated_response = String::new();
     let mut iteration = 0;
@@ -359,6 +364,14 @@ where
         process_coder_udiff(&accumulated_response, &workspace, &mut files_modified)
     } else {
         accumulated_response.clone()
+    };
+
+    // Surface the resumable session handle so the orchestrator can later call
+    // this sub-agent again with `resume: "<id>"` to continue THIS exact worker
+    // (which keeps its tool runs + evidence ids), instead of starting fresh.
+    let final_response = match chain_id {
+        Some(cid) => format!("{final_response}\n\n[sub_agent_session_id: {cid}]"),
+        None => final_response,
     };
 
     let _ = ctx.event_tx.send(AiEvent::SubAgentCompleted {

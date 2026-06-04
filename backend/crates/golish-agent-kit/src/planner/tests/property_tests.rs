@@ -116,7 +116,7 @@ proptest! {
                 plan: steps,
             };
 
-            let result = manager.update_plan(args).await;
+            let result = manager.update_plan(args, None).await;
             prop_assert!(result.is_ok(), "Valid plan should succeed: {:?}", result);
             Ok(())
         })?;
@@ -140,7 +140,7 @@ proptest! {
                 plan: steps,
             };
 
-            let result = manager.update_plan(args).await;
+            let result = manager.update_plan(args, None).await;
             prop_assert!(matches!(result, Err(PlanError::InvalidStepCount(_))));
             Ok(())
         })?;
@@ -164,7 +164,7 @@ proptest! {
                 plan: steps,
             };
 
-            let result = manager.update_plan(args).await;
+            let result = manager.update_plan(args, None).await;
             prop_assert!(matches!(result, Err(PlanError::MultipleInProgress(_))));
             Ok(())
         })?;
@@ -186,7 +186,7 @@ proptest! {
                     }],
                 };
 
-                let plan = manager.update_plan(args).await.unwrap();
+                let plan = manager.update_plan(args, None).await.unwrap();
                 prop_assert_eq!(
                     plan.version as usize,
                     expected_version,
@@ -219,7 +219,7 @@ proptest! {
                 }],
             };
 
-            let plan = manager.update_plan(args).await.unwrap();
+            let plan = manager.update_plan(args, None).await.unwrap();
             prop_assert_eq!(
                 &plan.steps[0].step,
                 &content,
@@ -249,7 +249,7 @@ proptest! {
                 }],
             };
 
-            let plan = manager.update_plan(args).await.unwrap();
+            let plan = manager.update_plan(args, None).await.unwrap();
             prop_assert_eq!(
                 plan.explanation,
                 Some(content),
@@ -273,7 +273,7 @@ proptest! {
                     explanation: Some("Will be cleared".to_string()),
                     plan: steps,
                 };
-                let _ = manager.update_plan(args).await;
+                let _ = manager.update_plan(args, None).await;
             }
 
             // Clear
@@ -307,7 +307,7 @@ proptest! {
                 plan: steps,
             };
 
-            manager.update_plan(args).await.unwrap();
+            manager.update_plan(args, None).await.unwrap();
 
             let snapshot1 = manager.snapshot().await;
             let snapshot2 = manager.snapshot().await;

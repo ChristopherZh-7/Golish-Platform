@@ -10,6 +10,7 @@ import { logger } from "@/lib/logger";
 import { appendRecordingData } from "@/lib/terminal/recording";
 import { SyncOutputBuffer } from "@/lib/terminal/SyncOutputBuffer";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
+import { consumeTerminalAutoFocusSuppression } from "@/lib/terminal/terminalAutoFocus";
 import { ThemeManager } from "@/lib/theme";
 import { useRenderMode, useTerminalClearRequest } from "@/store";
 import "@xterm/xterm/css/xterm.css";
@@ -355,8 +356,13 @@ export function Terminal({ sessionId }: TerminalProps) {
       cleanupFnsRef.current.push(unlistenSync);
       cleanupFnsRef.current.push(unlistenOutput);
 
-      // Focus terminal after listeners are ready
-      terminal.focus();
+      // Focus terminal after listeners are ready — UNLESS this session was just
+      // opened as a new tab, where the cursor should land in the AI chat panel
+      // instead (chat-first, see useCreateTerminalTab). One-shot: a later click,
+      // explicit focus, or fullterm transition still focuses the terminal.
+      if (!consumeTerminalAutoFocusSuppression(sessionId)) {
+        terminal.focus();
+      }
 
       // Set up focus event handlers (DEC 1004)
       const handleFocus = () => {

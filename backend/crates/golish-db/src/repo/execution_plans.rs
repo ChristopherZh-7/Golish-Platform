@@ -6,8 +6,8 @@ use crate::models::{ExecutionPlan, NewExecutionPlan, PlanStatus};
 
 pub async fn create(pool: &PgPool, plan: NewExecutionPlan) -> Result<ExecutionPlan> {
     let row = sqlx::query_as::<_, ExecutionPlan>(
-        r#"INSERT INTO execution_plans (session_id, project_path, title, description, steps)
-           VALUES ($1, $2, $3, $4, $5)
+        r#"INSERT INTO execution_plans (session_id, project_path, title, description, steps, stage_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
            RETURNING *"#,
     )
     .bind(plan.session_id)
@@ -15,6 +15,7 @@ pub async fn create(pool: &PgPool, plan: NewExecutionPlan) -> Result<ExecutionPl
     .bind(&plan.title)
     .bind(&plan.description)
     .bind(&plan.steps)
+    .bind(&plan.stage_id)
     .fetch_one(pool)
     .await?;
     Ok(row)

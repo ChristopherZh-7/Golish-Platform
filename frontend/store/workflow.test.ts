@@ -468,4 +468,99 @@ describe("Store Workflow Actions", () => {
       }
     });
   });
+
+  describe("markStagePassed (per-stage roadmap completion)", () => {
+    beforeEach(() => {
+      useStore.setState({ sessions: {} });
+    });
+
+    it("records a passed stage, creating the session row if it does not exist yet", () => {
+      // Regression: `markStagePassed` used to early-return when the session row
+      // was absent, so the authoritative `stage_passed` write was silently
+      // dropped and the per-stage card stayed stuck on "starting…".
+      expect(useStore.getState().sessions[testSessionId]).toBeUndefined();
+
+      useStore.getState().markStagePassed(testSessionId, "scoping");
+
+      expect(useStore.getState().sessions[testSessionId]?.passedStages).toEqual(["scoping"]);
+    });
+
+    it("is idempotent for a repeated stage and appends new ones in run order", () => {
+      useStore.getState().markStagePassed(testSessionId, "scoping");
+      useStore.getState().markStagePassed(testSessionId, "scoping");
+      useStore.getState().markStagePassed(testSessionId, "target_intel");
+
+      expect(useStore.getState().sessions[testSessionId]?.passedStages).toEqual([
+        "scoping",
+        "target_intel",
+      ]);
+    });
+
+    it("co-locates passedStages with the per-stage plan buckets under one session id", () => {
+      // The roadmap reads stageOrder / plansByStage / passedStages from ONE
+      // resolved store session id; setStagePlan + markStagePassed must agree on
+      // that id or a stage never flips from active → passed.
+      useStore.getState().setStagePlan(testSessionId, "scoping", {
+        version: 1,
+        steps: [{ id: "s1", step: "confirm scope", status: "completed" }],
+        summary: { total: 1, completed: 1, in_progress: 0, pending: 0 },
+        explanation: null,
+        updated_at: new Date().toISOString(),
+      });
+      useStore.getState().markStagePassed(testSessionId, "scoping");
+
+      const session = useStore.getState().sessions[testSessionId];
+      expect(session?.stageOrder).toEqual(["scoping"]);
+      expect(session?.plansByStage?.scoping?.version).toBe(1);
+      expect(session?.passedStages).toEqual(["scoping"]);
+    });
+  });
+
+  describe("setStagePlan (seed vs real plan)", () => {
+    beforeEach(() => {
+      useStore.setState({ sessions: {} });
+    });
+
+    const seed = (status: "pending" | "in_progress") => ({
+      version: 0,
+      steps: [{ step: "Target Intel", status }],
+      summary: { total: 1, completed: 0, in_progress: status === "in_progress" ? 1 : 0, pending: status === "pending" ? 1 : 0 },
+      explanation: null,
+      updated_at: "t",
+    });
+    const real = () => ({
+      version: 1,
+      steps: [
+        { id: "1", step: "DNS resolution", status: "in_progress" as const },
+        { id: "2", step: "WHOIS", status: "pending" as const },
+      ],
+      summary: { total: 2, completed: 0, in_progress: 1, pending: 1 },
+      explanation: null,
+      updated_at: "t",
+    });
+
+    it("lets a real plan (v>=1) supersede a v0 seed", () => {
+      useStore.getState().setStagePlan(testSessionId, "target_intel", seed("in_progress"));
+      useStore.getState().setStagePlan(testSessionId, "target_intel", real());
+      expect(useStore.getState().sessions[testSessionId]?.plansByStage?.target_intel?.version).toBe(1);
+    });
+
+    it("does NOT let a v0 re-entry seed downgrade an existing real plan (plan must not 'disappear')", () => {
+      // Regression: a stage re-entry re-emits the v0 entry seed; it used to wipe
+      // the agent's todos and revert the card to "starting…".
+      useStore.getState().setStagePlan(testSessionId, "target_intel", real());
+      useStore.getState().setStagePlan(testSessionId, "target_intel", seed("in_progress"));
+      const plan = useStore.getState().sessions[testSessionId]?.plansByStage?.target_intel;
+      expect(plan?.version).toBe(1);
+      expect(plan?.steps).toHaveLength(2);
+    });
+
+    it("lets a newer v0 seed replace an older v0 seed", () => {
+      useStore.getState().setStagePlan(testSessionId, "target_intel", seed("pending"));
+      useStore.getState().setStagePlan(testSessionId, "target_intel", seed("in_progress"));
+      const plan = useStore.getState().sessions[testSessionId]?.plansByStage?.target_intel;
+      expect(plan?.version).toBe(0);
+      expect(plan?.steps[0].status).toBe("in_progress");
+    });
+  });
 });

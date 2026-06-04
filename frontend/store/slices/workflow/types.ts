@@ -123,6 +123,12 @@ export interface WorkflowActions {
    * task-mode harness stages so each stage renders its own card.
    */
   setStagePlan: (sessionId: string, stageId: string, plan: TaskPlan) => void;
+  /**
+   * Record a stage whose authoritative evidence gate PASSED. Drives the
+   * per-stage card's completed state (not the model's self-reported todos), so a
+   * stage shows done only after the deterministic gate accepts it.
+   */
+  markStagePassed: (sessionId: string, stageId: string) => void;
   syncPlanToPipeline: (sessionId: string, plan: TaskPlan) => void;
 }
 

@@ -19,7 +19,7 @@ pub async fn execute_plan_tool(
         Err(e) => return error_result(format!("Invalid update_plan arguments: {}", e)),
     };
 
-    match plan_manager.update_plan(update_args).await {
+    match plan_manager.update_plan(update_args, stage_id).await {
         Ok(plan) => {
             let _ = event_tx.send(AiEvent::PlanUpdated {
                 version: plan.version,
@@ -89,7 +89,7 @@ pub async fn execute_plan_patch_tool(
 
     let op_count = parsed.ops.len();
 
-    match plan_manager.apply_patch_ops(parsed.ops).await {
+    match plan_manager.apply_patch_ops(parsed.ops, stage_id).await {
         Ok(plan) => {
             let _ = event_tx.send(AiEvent::PlanUpdated {
                 version: plan.version,
@@ -136,7 +136,7 @@ mod patch_tool_tests {
                 })
                 .collect(),
         };
-        manager.update_plan(args).await.unwrap();
+        manager.update_plan(args, None).await.unwrap();
         manager
     }
 
@@ -254,5 +254,32 @@ mod patch_tool_tests {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .contains("Failed to apply plan patch"));
+    }
+
+    #[tokio::test]
+    async fn update_plan_tool_tags_event_with_stage_id() {
+        let manager = Arc::new(PlanManager::new());
+        let (tx, mut rx) = channel();
+        let args = json!({
+            "explanation": "scoping work",
+            "plan": [{ "step": "Document scope", "status": "pending" }]
+        });
+        let (value, success) = execute_plan_tool(&manager, &tx, &args, Some("scoping")).await;
+        assert!(success, "{value}");
+
+        let event = rx.try_recv().expect("must emit PlanUpdated");
+        match event {
+            AiEvent::PlanUpdated { stage_id, .. } => {
+                assert_eq!(stage_id.as_deref(), Some("scoping"));
+            }
+            other => panic!("expected PlanUpdated, got {:?}", other),
+        }
+
+        // Stored under the scoping bucket, isolated from the chat-mode "" bucket.
+        assert_eq!(
+            manager.snapshot_for("scoping").await.unwrap().steps.len(),
+            1
+        );
+        assert!(manager.snapshot_for("").await.is_none());
     }
 }

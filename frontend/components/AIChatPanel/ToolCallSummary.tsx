@@ -20,6 +20,17 @@ export function parseToolPrimary(name: string, argsStr?: string): string | null 
   }
 }
 
+/**
+ * Some tools complete as a CALL (success=true) but carry the real outcome in a
+ * `status` field — e.g. `submit_stage_deliverable` returns
+ * `accepted` / `rejected` / `needs_fix`. Treat a known non-accepted status as a
+ * failure so the card shows ❌ instead of a misleading ✅.
+ */
+export function toolResultIsFailure(result?: string): boolean {
+  if (!result) return false;
+  return /"status"\s*:\s*"(rejected|needs_fix|error|failed)"/i.test(result);
+}
+
 function ToolCallCard({
   tc,
   onClick,
@@ -54,7 +65,7 @@ function ToolCallCard({
   const isNoResult = tc.success === undefined;
   const isExpired = isNoResult && isMessageComplete;
   const isRunning = isNoResult && !isMessageComplete;
-  const isError = tc.success === false;
+  const isError = tc.success === false || toolResultIsFailure(tc.result);
   const isShell = tc.name === "run_command" || tc.name === "run_pty_cmd";
   const primary = parseToolPrimary(tc.name, tc.args);
 
@@ -208,11 +219,16 @@ export function CollapsibleToolCall({
         <ChevronDown className={cn("w-3 h-3 transition-transform", !expanded && "-rotate-90")} />
         <Wrench className="w-3 h-3" />
         <span className="font-mono font-medium">{tc.name}</span>
-        {tc.success !== undefined && (
-          <span className={cn("ml-auto", tc.success ? "text-green-500" : "text-red-500")}>
-            {tc.success ? "\u2713" : "\u2717"}
-          </span>
-        )}
+        {tc.success !== undefined &&
+          (() => {
+            // success=true but a rejected/needs_fix status body still reads ❌.
+            const failed = tc.success === false || toolResultIsFailure(tc.result);
+            return (
+              <span className={cn("ml-auto", failed ? "text-red-500" : "text-green-500")}>
+                {failed ? "\u2717" : "\u2713"}
+              </span>
+            );
+          })()}
       </button>
 
       {expanded && (tc.args || tc.result) && (

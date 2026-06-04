@@ -150,6 +150,8 @@ where
                         workspace: ctx.workspace,
                         provider_name: ctx.provider_name,
                         model_name: ctx.model_name,
+                        resume: None,
+                        sub_tool_router: None,
                         session_id: ctx.session_id,
                         transcript_base_dir: ctx.transcript_base_dir,
                         api_request_stats: ctx.api_request_stats,
@@ -397,12 +399,21 @@ where
                     Err(e) => (serde_json::json!({ "error": e.to_string() }), false),
                 }
             } else {
-                let registry = ctx.tool_registry.read().await;
-                let result = registry.execute_tool(tool_name, tool_args.clone()).await;
-
-                match &result {
-                    Ok(v) => (v.clone(), true),
-                    Err(e) => (serde_json::json!({ "error": e.to_string() }), false),
+                // Try the injected router first (graph/memory tools that live
+                // outside the ToolRegistry); fall through to the registry.
+                let routed = match &ctx.sub_tool_router {
+                    Some(router) => router(tool_name.to_string(), tool_args.clone()).await,
+                    None => None,
+                };
+                match routed {
+                    Some((value, success)) => (value, success),
+                    None => {
+                        let registry = ctx.tool_registry.read().await;
+                        match registry.execute_tool(tool_name, tool_args.clone()).await {
+                            Ok(v) => (v.clone(), true),
+                            Err(e) => (serde_json::json!({ "error": e.to_string() }), false),
+                        }
+                    }
                 }
             }
         })

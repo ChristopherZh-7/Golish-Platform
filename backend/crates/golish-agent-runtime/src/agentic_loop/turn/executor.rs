@@ -261,6 +261,19 @@ where
                 mid_stream_error,
             } = outcome;
 
+            // Harness stage barrier: remember when the agent submits a
+            // StageDeliverable. A later idle turn (in ReflectorOrBreak) then ends
+            // the stage loop so the orchestrator runs the authoritative gate and
+            // advances — instead of the reflector stranding the agent in-stage
+            // (root cause of the "stuck in scoping" hang). `submit_stage_deliverable`
+            // only exists in harness stages, so this is inert elsewhere.
+            if tool_calls_to_execute
+                .iter()
+                .any(|tc| tc.function.name == "submit_stage_deliverable")
+            {
+                turn_state.stage_deliverable_submitted = true;
+            }
+
             // Phase 6: AssistantPush — append assistant content to history.
             assistant_push_phase::run(
                 &mut chat_history,

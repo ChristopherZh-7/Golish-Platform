@@ -41,6 +41,13 @@ pub struct TurnState {
     /// E2 · how many times this run retried after a retriable mid-stream
     /// error left truncated output. Bounded by `MAX_MID_STREAM_RETRIES`.
     pub mid_stream_retries: u32,
+    /// Harness stage barrier: set once the agent dispatches
+    /// `submit_stage_deliverable` during a harness stage. A subsequent idle turn
+    /// then breaks the loop (stage attempt done → orchestrator runs the gate and
+    /// advances the stage) instead of the reflector nudging the agent to keep
+    /// working. Only meaningful while `ctx.harness_stage` is set; that tool only
+    /// exists in harness stages, so this is inert in chat / non-harness runs.
+    pub stage_deliverable_submitted: bool,
 }
 
 impl Default for TurnState {
@@ -52,6 +59,7 @@ impl Default for TurnState {
             total_reflector_nudges: 0,
             repetition_recoveries: 0,
             mid_stream_retries: 0,
+            stage_deliverable_submitted: false,
         }
     }
 }

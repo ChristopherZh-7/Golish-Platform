@@ -110,6 +110,8 @@ impl BridgeAgentExecutor {
             workspace: self.bridge.workspace(),
             provider_name: self.bridge.provider_name(),
             model_name: self.bridge.model_name(),
+            resume: None,
+            sub_tool_router: None,
             session_id: None,
             transcript_base_dir: None,
             api_request_stats: Some(self.bridge.api_request_stats()),

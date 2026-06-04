@@ -46,6 +46,40 @@ where
     let tool_provider = DefaultToolProvider::with_db_tracker(ctx.events.db_tracker);
 
     let task_desc = tool_args.get("task").and_then(|v| v.as_str()).unwrap_or("");
+    // AI-controlled resume: a prior sub-agent session id continues that exact
+    // worker; `true` continues this agent's latest chain; absent/false = fresh.
+    let resume_arg: Option<String> = match tool_args.get("resume") {
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        Some(serde_json::Value::Bool(true)) => Some("latest".to_string()),
+        _ => None,
+    };
+
+    // Route graph tools (which live outside the ToolRegistry) for the delegated
+    // sub-agent, so it can actually run e.g. `graph_add_entity` instead of
+    // getting "Unknown tool". Built only when a graph backend is wired; returns
+    // None for non-graph tools so the executor falls through to the registry.
+    let sub_tool_router: Option<golish_sub_agents::SubAgentToolRouter> =
+        ctx.graph_backend.clone().map(|graph| {
+            let router: golish_sub_agents::SubAgentToolRouter =
+                std::sync::Arc::new(move |name: String, args: serde_json::Value| {
+                    let graph = graph.clone();
+                    Box::pin(async move {
+                        golish_agent_kit::tool_executors::execute_graph_tool(
+                            &name,
+                            &args,
+                            Some(graph.as_ref()),
+                        )
+                        .await
+                    })
+                        as std::pin::Pin<
+                            Box<
+                                dyn std::future::Future<Output = Option<(serde_json::Value, bool)>>
+                                    + Send,
+                            >,
+                        >
+                });
+            router
+        });
     let project_id = {
         let ws = ctx.workspace.read().await;
         ws.to_string_lossy().to_string()
@@ -192,6 +226,8 @@ where
                 workspace: ctx.workspace,
                 provider_name: override_provider,
                 model_name: override_model,
+                resume: resume_arg.clone(),
+                sub_tool_router: sub_tool_router.clone(),
                 session_id: ctx.events.session_id,
                 transcript_base_dir: ctx.events.transcript_base_dir,
                 api_request_stats: Some(ctx.api_request_stats),
@@ -228,6 +264,8 @@ where
                 workspace: ctx.workspace,
                 provider_name: ctx.llm.provider_name,
                 model_name: ctx.llm.model_name,
+                resume: resume_arg.clone(),
+                sub_tool_router: sub_tool_router.clone(),
                 session_id: ctx.events.session_id,
                 transcript_base_dir: ctx.events.transcript_base_dir,
                 api_request_stats: Some(ctx.api_request_stats),
@@ -265,6 +303,8 @@ where
             workspace: ctx.workspace,
             provider_name: ctx.llm.provider_name,
             model_name: ctx.llm.model_name,
+            resume: resume_arg.clone(),
+            sub_tool_router: sub_tool_router.clone(),
             session_id: ctx.events.session_id,
             transcript_base_dir: ctx.events.transcript_base_dir,
             api_request_stats: Some(ctx.api_request_stats),

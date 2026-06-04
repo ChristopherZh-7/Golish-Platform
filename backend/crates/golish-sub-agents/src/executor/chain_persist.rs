@@ -9,36 +9,86 @@
 use rig::completion::Message;
 
 use crate::definition::SubAgentContext;
-use crate::executor_helpers::serialize_chat_history;
+use crate::executor_helpers::{deserialize_chat_history, serialize_chat_history};
 use crate::executor_types::SubAgentExecutorContext;
 
+/// Resolve the chain for this delegation, honoring the AI-controlled
+/// `ctx.resume`:
+/// - `Some("<uuid>")` → continue THAT exact prior chain (replay its messages).
+/// - `Some("latest")`/other non-uuid → continue this agent's most recent chain.
+/// - `None` → create a fresh chain (legacy behavior).
+///
+/// Returns `(chain_id, prior_messages)`. `prior_messages` is empty for a fresh
+/// chain; for a resume it is the full-fidelity replay (incl. tool results /
+/// evidence ids) so the worker remembers what it already did.
 pub(super) async fn maybe_restore_chain(
     ctx: &SubAgentExecutorContext<'_>,
     parent_context: &SubAgentContext,
     agent_id: &str,
-) -> Option<uuid::Uuid> {
-    let persistence = ctx.chain_persistence?;
-    let session_uuid = ctx.session_id.and_then(|s| uuid::Uuid::parse_str(s).ok())?;
+) -> (Option<uuid::Uuid>, Vec<Message>) {
+    let Some(persistence) = ctx.chain_persistence else {
+        return (None, Vec::new());
+    };
+    let Some(session_uuid) = ctx.session_id.and_then(|s| uuid::Uuid::parse_str(s).ok()) else {
+        return (None, Vec::new());
+    };
     let task_uuid = parent_context
         .task_id
         .as_deref()
         .and_then(|s| uuid::Uuid::parse_str(s).ok());
 
+    // Resume: continue a prior worker the AI named.
+    if let Some(resume) = ctx.resume.as_deref() {
+        if let Ok(chain_id) = uuid::Uuid::parse_str(resume) {
+            // Precise: continue this exact chain id.
+            if let Ok(Some(json)) = persistence.chain_load_by_id(chain_id).await {
+                let msgs = deserialize_chat_history(&json);
+                tracing::info!(
+                    "[sub-agent:{}] Resumed chain {} ({} prior messages)",
+                    agent_id,
+                    chain_id,
+                    msgs.len()
+                );
+                return (Some(chain_id), msgs);
+            }
+            tracing::warn!(
+                "[sub-agent:{}] resume id {} not found; starting fresh",
+                agent_id,
+                chain_id
+            );
+        } else if let Ok(Some((chain_id, json))) = persistence
+            .chain_load_latest(session_uuid, task_uuid, agent_id)
+            .await
+        {
+            // "latest": continue this agent's most recent chain.
+            let msgs = deserialize_chat_history(&json);
+            tracing::info!(
+                "[sub-agent:{}] Resumed latest chain {} ({} prior messages)",
+                agent_id,
+                chain_id,
+                msgs.len()
+            );
+            return (Some(chain_id), msgs);
+        } else {
+            tracing::info!(
+                "[sub-agent:{}] no prior chain to resume; starting fresh",
+                agent_id
+            );
+        }
+    }
+
+    // Fresh chain (default / resume miss).
     match persistence
         .chain_create(session_uuid, task_uuid, None, agent_id, None, None)
         .await
     {
         Ok(cid) => {
-            tracing::info!(
-                "[sub-agent:{}] Created/restored persistent chain {}",
-                agent_id,
-                cid
-            );
-            Some(cid)
+            tracing::info!("[sub-agent:{}] Created persistent chain {}", agent_id, cid);
+            (Some(cid), Vec::new())
         }
         Err(e) => {
-            tracing::warn!("[sub-agent:{}] Failed to restore chain: {}", agent_id, e);
-            None
+            tracing::warn!("[sub-agent:{}] Failed to create chain: {}", agent_id, e);
+            (None, Vec::new())
         }
     }
 }

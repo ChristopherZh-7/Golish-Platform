@@ -127,8 +127,34 @@ export function createPlanActions(set: ImmerSet<WorkflowStoreDraft>) {
         // updates must always apply to let a newer seed replace an older one.
         // Any real `update_plan` (version >= 1) then supersedes the seed.
         if (prev && prev.version === plan.version && plan.version !== 0) return;
+        // A version-0 seed must NEVER downgrade an already-real plan (version >= 1):
+        // re-entering a stage (e.g. a gate-BLOCK retry) re-emits the v0 entry seed,
+        // which would otherwise wipe the agent's todos and revert the card to
+        // "starting…" (the plan "disappears").
+        if (prev && prev.version >= 1 && plan.version === 0) return;
         session.plansByStage[stageId] = plan;
         if (!session.stageOrder.includes(stageId)) session.stageOrder.push(stageId);
+      }),
+
+    markStagePassed: (sessionId: string, stageId: string) =>
+      set((state) => {
+        // Mirror `setStagePlan`: create the session row if absent so the
+        // authoritative `stage_passed` write is never silently dropped (the
+        // old early `return` left the stage stuck on "starting…" whenever this
+        // fired before/without a matching session row).
+        if (!state.sessions[sessionId]) {
+          (state.sessions as Record<string, unknown>)[sessionId] = {
+            id: sessionId,
+            tabType: "terminal" as const,
+            inputMode: "terminal" as const,
+            logicalTerminalId: sessionId,
+          };
+        }
+        const session = state.sessions[sessionId] as Record<string, unknown> & {
+          passedStages?: string[];
+        };
+        if (!session.passedStages) session.passedStages = [];
+        if (!session.passedStages.includes(stageId)) session.passedStages.push(stageId);
       }),
 
     syncPlanToPipeline: (sessionId: string, plan: TaskPlan) =>

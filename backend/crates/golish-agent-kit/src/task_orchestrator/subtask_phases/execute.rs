@@ -376,6 +376,17 @@ impl TaskOrchestrator {
                 self.harness_evidence
                     .insert(outcome.gated_stage.as_str().to_string(), summary);
             }
+            // Authoritative "stage passed its evidence gate" signal. The UI keys the
+            // "Stage complete" milestone + per-stage card completion off THIS event
+            // (not the `submit_stage_deliverable` preview, which is only structural),
+            // so completion shows only after the deterministic evidence gate actually
+            // accepts the stage. Reuses TaskProgress (message = stage id) to avoid a
+            // new AiEvent variant + a long exhaustive-match churn.
+            self.emit(AiEvent::TaskProgress {
+                task_id: task_id.to_string(),
+                status: "stage_passed".to_string(),
+                message: outcome.gated_stage.as_str().to_string(),
+            });
         }
         if self.graph_driven {
             let flow = crate::harness::operation_flow::StageFlowOutcome {
@@ -1166,9 +1177,12 @@ fn block_outcome_for_fabricated(outcome: &mut HarnessGateOutcome, fabricated: &[
     outcome.gate_allowed = false;
     let correction = format!(
         "Your StageDeliverable cites evidence ids {fabricated:?} that do NOT exist in the \
-         evidence ledger. You may only reference evidence produced by real tool runs in this \
-         operation. Re-run the required tools so their output is recorded, then resubmit a \
-         StageDeliverable whose evidence_refs are all real ledger ids."
+         evidence ledger. The ids 1, 2, 3 shown in the deliverable template are PLACEHOLDERS — \
+         never copy them. Every evidence id MUST be the exact integer a real tool run (or \
+         record_finding) returned in THIS operation; read it from that tool's result. If you have \
+         already run tools, cite the ids from their results; if not, run the required tools first. \
+         Do NOT guess, increment, or reuse placeholder ids. Then resubmit a StageDeliverable whose \
+         evidence_refs are all real ledger ids."
     );
     outcome.repair_correction = Some(match outcome.repair_correction.take() {
         Some(prev) => format!("{correction}\n\n{prev}"),
