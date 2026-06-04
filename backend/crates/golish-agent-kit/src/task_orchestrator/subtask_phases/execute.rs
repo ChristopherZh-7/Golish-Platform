@@ -414,6 +414,7 @@ impl TaskOrchestrator {
         task_id: Uuid,
         queue: &[PlannedSubtask],
         executor: &dyn AgentExecutor,
+        resume: bool,
     ) -> anyhow::Result<String> {
         use crate::harness::operation_flow::{
             build_runner_graph, ChannelStageRunner, OperationFlowState, StageRunRequest,
@@ -512,7 +513,30 @@ impl TaskOrchestrator {
         let executor_obj =
             crate::harness::graph_engine::Executor::new(graph).with_checkpointer(checkpointer);
         let thread = task_id.to_string();
-        let mut exec_fut = Box::pin(executor_obj.run(OperationFlowState::default(), &thread));
+        // Fresh run starts at the DAG entry; resume continues from the persisted
+        // checkpoint's `next_node` (Task 断线恢复 · L3). Both branches yield the
+        // same future Output, boxed to one type so the select! loop can poll it.
+        // `inject = None`: a plain resume re-enters the saved stage; steering text
+        // is recorded separately (it is not a flow-routing FlowUpdate).
+        let mut exec_fut: std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = crate::harness::graph_engine::Result<
+                            crate::harness::graph_engine::RunOutcome<OperationFlowState>,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > = if resume {
+            tracing::info!(
+                target: "harness::hook",
+                task_id = %task_id,
+                "graph-flow: RESUMING operation from persisted checkpoint"
+            );
+            Box::pin(executor_obj.resume(&thread, None))
+        } else {
+            Box::pin(executor_obj.run(OperationFlowState::default(), &thread))
+        };
 
         // Part 2 · per-stage roadmap (design 2026-06-04 · per-stage-plan-cards):
         // emit a `pending` seed plan for EVERY stage in the projected DAG up
@@ -544,14 +568,16 @@ impl TaskOrchestrator {
             message: "Executor-driven harness flow started".to_string(),
         });
 
-        loop {
+        // The rx arm never breaks (it services stage requests); only the engine-
+        // future arm breaks, carrying the run's terminal outcome out of the loop.
+        let final_outcome = loop {
             tokio::select! {
                 res = &mut exec_fut => {
-                    match res {
+                    match &res {
                         Ok(outcome) => tracing::info!(target: "harness::hook", ?outcome, "graph-flow: executor finished"),
                         Err(e) => tracing::warn!(target: "harness::hook", error = %e, "graph-flow: executor errored"),
                     }
-                    break;
+                    break res;
                 }
                 Some(req) = rx.recv() => {
                     let indices = groups.get(&req.stage).cloned().unwrap_or_default();
@@ -598,6 +624,33 @@ impl TaskOrchestrator {
                     let _ = req.reply.send(outcome);
                 }
             }
+        };
+
+        // L4a (Task 断线恢复): an engine Interrupt means the operation paused for
+        // rework/approval and is RESUMABLE — it must NOT be marked Finished (that
+        // previously made paused ops look complete and unresumable). Mark the task
+        // `waiting` (paused) and return a short paused summary WITHOUT running the
+        // reporter; the next user message resumes from the persisted checkpoint.
+        if let Some(paused) = paused_disposition(&final_outcome) {
+            if let Err(e) = crate::db_shim::tasks::update_status(
+                &*self.repo,
+                task_id,
+                crate::db_traits::TaskStatus::Waiting,
+            )
+            .await
+            {
+                tracing::warn!(
+                    target: "harness::hook",
+                    error = %e,
+                    "graph-flow: failed to mark task waiting on interrupt"
+                );
+            }
+            self.emit(AiEvent::TaskProgress {
+                task_id: task_id.to_string(),
+                status: "waiting".to_string(),
+                message: paused.clone(),
+            });
+            return Ok(paused);
         }
 
         let report = match executor.generate_report(&exec_ctx).await {
@@ -1523,6 +1576,34 @@ fn synthesize_stage_subtask(stage: crate::harness::StageKind, task_input: &str) 
     }
 }
 
+/// L4a (Task 断线恢复): decide whether a terminal engine outcome means the
+/// operation merely *paused* (and is resumable) rather than finished.
+///
+/// `Some(summary)` → the caller marks the task `Waiting` (paused) and returns
+/// `summary` WITHOUT running the reporter, so the next user message resumes from
+/// the persisted checkpoint. `None` → the normal terminal path (run the reporter,
+/// mark `Finished`). Only `Interrupted` pauses; `Completed` / `Failed` / a
+/// transport `Err` fall through (a hard failure is finalized elsewhere). This is
+/// the fix for paused ops previously being marked Finished (and so unresumable).
+fn paused_disposition(
+    outcome: &crate::harness::graph_engine::Result<
+        crate::harness::graph_engine::RunOutcome<
+            crate::harness::operation_flow::OperationFlowState,
+        >,
+    >,
+) -> Option<String> {
+    match outcome {
+        Ok(crate::harness::graph_engine::RunOutcome::Interrupted {
+            reason,
+            resume_from,
+            ..
+        }) => Some(format!(
+            "Operation paused at stage '{resume_from}' ({reason}). Send a message to resume."
+        )),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod dag_driven_helper_tests {
     use super::*;
@@ -1559,6 +1640,47 @@ mod dag_driven_helper_tests {
         // Reporting routes to the analyzer specialist, not the pentester.
         let r = synthesize_stage_subtask(StageKind::Reporting, "example.com");
         assert_eq!(r.agent.as_deref(), Some("analyzer"));
+    }
+
+    /// L4a: only an engine `Interrupted` is a resumable pause (→ task `Waiting`,
+    /// skip the reporter). `Completed`/`Failed` must fall through to the normal
+    /// terminal path so a paused op is never wrongly marked Finished — the very
+    /// bug that made断线后『继续』restart scoping instead of resuming.
+    #[test]
+    fn paused_disposition_pauses_on_interrupt_only() {
+        use crate::harness::graph_engine::{Result as GraphResult, RunOutcome};
+        use crate::harness::operation_flow::OperationFlowState;
+
+        let interrupted: GraphResult<RunOutcome<OperationFlowState>> =
+            Ok(RunOutcome::Interrupted {
+                state: OperationFlowState::default(),
+                reason: "gate blocked".to_string(),
+                resume_from: "enumeration".to_string(),
+            });
+        let p = paused_disposition(&interrupted)
+            .expect("interrupt must yield a paused (resumable) disposition");
+        assert!(p.contains("paused"), "summary must say paused: {p}");
+        assert!(
+            p.contains("enumeration"),
+            "summary must name the resume-from stage: {p}"
+        );
+
+        let completed: GraphResult<RunOutcome<OperationFlowState>> =
+            Ok(RunOutcome::Completed(OperationFlowState::default()));
+        assert!(
+            paused_disposition(&completed).is_none(),
+            "completed must NOT be treated as a pause"
+        );
+
+        let failed: GraphResult<RunOutcome<OperationFlowState>> = Ok(RunOutcome::Failed {
+            state: OperationFlowState::default(),
+            node: "enumeration".to_string(),
+            error: "boom".to_string(),
+        });
+        assert!(
+            paused_disposition(&failed).is_none(),
+            "failed must NOT be treated as a resumable pause"
+        );
     }
 }
 

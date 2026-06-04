@@ -256,7 +256,9 @@ impl TaskOrchestrator {
         // P2 方案 C · the metalcraft Executor drives the operation stage graph.
         // (`execute_subtask_loop` remains the resume path + the
         // run_executor_driven DAG-load-failure fallback.)
-        let outcome = self.run_executor_driven(task.id, &queue, executor).await;
+        let outcome = self
+            .run_executor_driven(task.id, &queue, executor, false)
+            .await;
 
         // P1 · never leave the task zombied in `running`: any error from the
         // execution path finalizes the row as `failed` here (a process killed
@@ -264,6 +266,62 @@ impl TaskOrchestrator {
         // already wrote `finished`, so `fail_task_if_active` skips it.
         if let Err(ref e) = outcome {
             self.fail_task_if_active(task.id, e).await;
+        }
+        outcome
+    }
+
+    /// Resume an interrupted/abandoned harness operation instead of starting a
+    /// new one (Task 断线恢复 · L3).
+    ///
+    /// The entry point ([`crate::task_orchestrator`] caller in `chat.rs`) selects
+    /// this when [`crate::db_shim`]'s `latest_resumable_by_session` finds a
+    /// non-terminal task with a persisted `graph_flow` checkpoint for the chat
+    /// session. Unlike [`Self::run`] this does NOT create a task / session /
+    /// operation_state — they already exist; it re-drives the same operation from
+    /// the checkpoint's `next_node` via `Executor::resume`.
+    ///
+    /// `user_message` is the message that triggered the resume ("继续" / steering
+    /// text / anything). It is recorded for context but is not parsed as a
+    /// keyword — the decision to resume was already made from DB state. (Threading
+    /// steering text into the resumed stage is deferred; see the plan doc risks.)
+    pub async fn resume(
+        &mut self,
+        task_id: Uuid,
+        user_message: &str,
+        executor: &dyn AgentExecutor,
+    ) -> Result<String> {
+        // Re-activate the row: an abandoned op is `running` (zombie) or `waiting`
+        // (paused); a resumed run is `running` again until it completes/pauses.
+        if let Err(e) = tasks::update_status(&*self.repo, task_id, TaskStatus::Running).await {
+            tracing::warn!(
+                target: "harness::hook",
+                task_id = %task_id,
+                error = %e,
+                "resume: failed to set task running (continuing)"
+            );
+        }
+
+        tracing::info!(
+            target: "harness::hook",
+            task_id = %task_id,
+            trigger_len = user_message.len(),
+            "resume: re-driving harness operation from checkpoint"
+        );
+        self.emit(AiEvent::TaskProgress {
+            task_id: task_id.to_string(),
+            status: "running".to_string(),
+            message: "Resuming previous operation from checkpoint...".to_string(),
+        });
+
+        // Graph-flow uses lazy per-stage planning, so the queue is empty on the
+        // run() path too; the per-stage roadmap is re-emitted from the projected
+        // DAG inside run_executor_driven, which rehydrates the UI on resume.
+        let queue: Vec<PlannedSubtask> = Vec::new();
+        let outcome = self
+            .run_executor_driven(task_id, &queue, executor, true)
+            .await;
+        if let Err(ref e) = outcome {
+            self.fail_task_if_active(task_id, e).await;
         }
         outcome
     }
