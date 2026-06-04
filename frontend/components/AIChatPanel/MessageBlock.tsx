@@ -318,15 +318,21 @@ export const MessageBlock = memo(function MessageBlock({
             return null;
           }
 
+          // A delegated sub-agent renders its own inline card with a live status
+          // (spinner + current-activity line), so this footer would just be a
+          // second, less specific "working" indicator for the same wait. Let the
+          // card own that state instead of showing "Delegating to X" for the
+          // whole sub-agent run.
+          if (lastPendingTool?.name.startsWith("sub_agent_")) {
+            return null;
+          }
+
           let phase: AgentStatusPhase;
           let detail: string | undefined;
 
           if (lastPendingTool) {
             const name = lastPendingTool.name;
-            if (name.startsWith("sub_agent_")) {
-              phase = "delegating";
-              detail = name.replace("sub_agent_", "");
-            } else if (name === "update_plan") {
+            if (name === "update_plan") {
               phase = "planning";
             } else if (name === "run_pty_cmd" || name === "run_command") {
               phase = "tool";
