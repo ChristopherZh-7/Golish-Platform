@@ -5,7 +5,6 @@ use std::time::Duration;
 use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
-use tokio::time::timeout;
 
 use golish_core::Tool;
 use golish_pty::PtyManager;
@@ -55,16 +54,6 @@ const DEFAULT_SOFT_TIMEOUT_MS: u64 = 30_000;
 /// Background hard limit: runaway jobs are killed after this so nothing leaks.
 const DEFAULT_HARD_TIMEOUT_MS: u64 = 1_800_000; // 30 min
 
-/// Whether long commands move to the background on soft-timeout (Cursor-style)
-/// instead of being killed. On by default; `GOLISH_TOOL_BACKGROUNDING=off`
-/// restores the legacy "timeout → kill → error" behaviour.
-fn backgrounding_enabled() -> bool {
-    !matches!(
-        std::env::var("GOLISH_TOOL_BACKGROUNDING").ok().as_deref(),
-        Some("off") | Some("0") | Some("false")
-    )
-}
-
 fn env_ms(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
@@ -78,21 +67,17 @@ fn env_ms(key: &str, default: u64) -> u64 {
 /// This deliberately avoids `PtyManager::write`, so AI-originated shell
 /// commands do not create `CommandBlock`s in the user's terminal timeline.
 ///
-/// When backgrounding is enabled (default), the command is spawned through the
-/// [`crate::background_jobs`] manager: if it finishes within the *soft* timeout
-/// the full result is returned as before; otherwise it keeps running in the
-/// background and a `{ status: "backgrounded", job_id }` handle is returned
-/// (success-shaped, so the agentic loop does not treat it as a failure). The AI
-/// polls progress via the `check_job` tool.
+/// The command is spawned through the [`crate::background_jobs`] manager: if it
+/// finishes within the *soft* timeout the full result is returned as before;
+/// otherwise it keeps running in the background and a
+/// `{ status: "backgrounded", job_id }` handle is returned (success-shaped, so
+/// the agentic loop does not treat it as a failure). The AI polls progress via
+/// the `check_job` tool.
 pub async fn run_shell_command_detail(
     command: &str,
     workspace: &Path,
     timeout_ms: u64,
 ) -> Result<Value> {
-    if !backgrounding_enabled() {
-        return run_shell_command_blocking(command, workspace, timeout_ms).await;
-    }
-
     let soft_cap = env_ms("GOLISH_TOOL_SOFT_TIMEOUT_MS", DEFAULT_SOFT_TIMEOUT_MS);
     let soft_ms = timeout_ms.min(soft_cap).max(1);
     // The background hard limit must outlast the caller's timeout so the job can
@@ -160,61 +145,6 @@ pub async fn run_shell_command_detail(
             soft_ms / 1000,
             job_id
         ),
-    }))
-}
-
-/// Legacy blocking execution: wait up to `timeout_ms`, killing the process on
-/// timeout. Used when backgrounding is disabled via env, and as the in-soft-
-/// window fast path is handled by the manager above.
-async fn run_shell_command_blocking(
-    command: &str,
-    workspace: &Path,
-    timeout_ms: u64,
-) -> Result<Value> {
-    let started_at = std::time::Instant::now();
-    let timeout_duration = Duration::from_millis(timeout_ms);
-
-    let mut cmd = shell_command(command);
-    cmd.current_dir(workspace).kill_on_drop(true);
-
-    tracing::info!(
-        "[run_pty_cmd] Executing (blocking) for tool detail: command={}, timeout_ms={}",
-        command,
-        timeout_ms
-    );
-
-    let output_result = timeout(timeout_duration, cmd.output()).await;
-    let duration_ms = started_at.elapsed().as_millis() as u64;
-
-    let output = match output_result {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => {
-            return Ok(json!({
-                "error": format!("Failed to execute command: {e}"),
-                "command": command,
-                "exit_code": 1,
-                "duration_ms": duration_ms,
-            }));
-        }
-        Err(_) => {
-            return Ok(json!({
-                "error": format!("Command timed out after {}ms", timeout_ms),
-                "command": command,
-                "stdout": "",
-                "stderr": "",
-                "exit_code": 124,
-                "timed_out": true,
-                "duration_ms": duration_ms,
-            }));
-        }
-    };
-
-    Ok(json!({
-        "stdout": truncate_output(String::from_utf8_lossy(&output.stdout).into_owned()),
-        "stderr": truncate_output(String::from_utf8_lossy(&output.stderr).into_owned()),
-        "command": command,
-        "exit_code": output.status.code().unwrap_or(-1),
-        "duration_ms": duration_ms,
     }))
 }
 

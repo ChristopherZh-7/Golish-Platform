@@ -169,7 +169,7 @@ async fn maybe_append_background_evidence(
     // Only book cleanly-finished jobs (mirrors the sync path's is_success gate);
     // killed/failed jobs still surface via the note but are not booked as
     // evidence (an aborted scan is not a completed check).
-    if jc.status != JobStatus::Done || !golish_agent_kit::harness::stage_mode_enabled() {
+    if jc.status != JobStatus::Done {
         return None;
     }
 
@@ -406,11 +406,11 @@ async fn register_pentest_tools(
         }
     }
 
-    // C2c · deterministic StageDeliverable submission tool (flag-gated, default
-    // ON). The reporter/orchestrator fills typed args; the handler captures the
-    // structured deliverable into the bridge side-channel for the stage gate,
-    // replacing the fragile "parse a ```json block out of prose" path.
-    if golish_agent_kit::harness::submit_tool_enabled() {
+    // C2c · deterministic StageDeliverable submission tool. The reporter/
+    // orchestrator fills typed args; the handler captures the structured
+    // deliverable into the bridge side-channel for the stage gate, replacing the
+    // fragile "parse a ```json block out of prose" path.
+    {
         // P2 · give the tool a read-only evidence-ledger handle so it can run
         // validate-on-submit (reject fabricated evidence_refs immediately rather
         // than returning a misleading `accepted`).

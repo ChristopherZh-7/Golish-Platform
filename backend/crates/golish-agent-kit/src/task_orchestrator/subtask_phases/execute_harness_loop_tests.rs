@@ -3,9 +3,8 @@
 //! Exercises [`TaskOrchestrator::drive_stage_transition`] — the real glue that
 //! turns a gate outcome into an `operation_state` cursor move — against an
 //! in-memory `operation_state` repo and the live user-input approval channel.
-//! Unlike the orchestrator's full `run()` path, the transition driver does not
-//! gate on `stage_mode_enabled()`, so these tests are deterministic regardless
-//! of the `GOLISH_HARNESS_STAGE_MODE` / `GOLISH_HARNESS_PROFILE` env flags.
+//! The transition driver is independent of `GOLISH_HARNESS_PROFILE`, so these
+//! tests are deterministic regardless of env.
 //!
 //! Covered closed-loop behaviours (Doc 3 §6.2 / C5):
 //! - gate PASS walks the cursor along the profile-projected DAG, including
@@ -568,45 +567,48 @@ async fn block_emits_no_stage_passed() {
     );
 }
 
-/// Entering an approval-gated stage (pentest: vuln_triage → verification) emits
+/// Crossing a 大阶段 boundary (two-level model: prep → active_recon at
+/// target_intel → external_attack_surface, pentest policy on) emits
 /// `waiting_approval` and, on a non-affirmative reply, holds the cursor.
+/// (Intra-phase advances like vuln_triage → verification no longer gate —
+/// approval converged onto phase boundaries.)
 #[tokio::test]
 async fn approval_gate_holds_on_non_affirmative_reply() {
     let op = Uuid::new_v4();
-    let repo = MemRepo::seed(op, "pentest", "vuln_triage");
+    let repo = MemRepo::seed(op, "pentest", "target_intel");
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
 
     orch.user_input_sender().send("no".to_string()).unwrap();
-    orch.drive_stage_transition(op, pass(StageKind::VulnTriage))
+    orch.drive_stage_transition(op, pass(StageKind::TargetIntel))
         .await;
 
     assert_eq!(
         repo.stage(op).as_deref(),
-        Some("vuln_triage"),
+        Some("target_intel"),
         "non-affirmative reply must hold the cursor"
     );
     assert!(saw_waiting_approval(&drain(&mut rx)));
 }
 
-/// Same approval gate, but an affirmative reply resumes the transition and
-/// advances the cursor to the gated stage.
+/// Same phase boundary, but an affirmative reply resumes the transition and
+/// advances the cursor across the 大阶段 boundary.
 #[tokio::test]
 async fn approval_gate_resumes_on_affirmative_reply() {
     let op = Uuid::new_v4();
-    let repo = MemRepo::seed(op, "pentest", "vuln_triage");
+    let repo = MemRepo::seed(op, "pentest", "target_intel");
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
 
     orch.user_input_sender()
         .send("approve".to_string())
         .unwrap();
-    orch.drive_stage_transition(op, pass(StageKind::VulnTriage))
+    orch.drive_stage_transition(op, pass(StageKind::TargetIntel))
         .await;
 
     assert_eq!(
         repo.stage(op).as_deref(),
-        Some("verification"),
+        Some("external_attack_surface"),
         "affirmative reply must resume + advance the cursor"
     );
     assert!(saw_waiting_approval(&drain(&mut rx)));

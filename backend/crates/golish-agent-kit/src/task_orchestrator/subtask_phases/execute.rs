@@ -75,9 +75,9 @@ impl TaskOrchestrator {
         let augmented_description = {
             let mut desc = String::new();
 
-            // C2 · harness stage charter (stage_mode 开 + 该 subtask 归属某 stage 时,
-            // 前置注入允许/禁止工具面 + deliverable/gate 要求).
-            if crate::harness::stage_mode_enabled() {
+            // C2 · harness stage charter (该 subtask 归属某 stage 时, 前置注入
+            // 允许/禁止工具面 + deliverable/gate 要求).
+            {
                 if let Some(hint) = planned.harness_stage.as_ref() {
                     if let Ok(spec) = crate::harness::load_embedded_stage_spec(hint.stage_kind) {
                         desc.push_str(&super::super::prompts::stage_charter(&spec));
@@ -405,15 +405,15 @@ impl TaskOrchestrator {
         }
     }
 
-    /// P2 方案 C · Executor-driven run loop (flag-gated, opt-in).
+    /// P2 方案 C · Executor-driven run loop (stage_mode).
     ///
     /// The metalcraft `Executor` owns the top-level loop, driving the operation
     /// stage graph; a `ChannelStageRunner` turns each stage node into a request
     /// this method services with `&mut self` (running that stage's subtask group
     /// via `execute_single_subtask` with `graph_driven` on). Conditional bail,
-    /// interrupt, and DB checkpoint come from the graph + executor. `run()` only
-    /// takes this path when `operation_flow::graph_flow_enabled()`; otherwise the
-    /// legacy `execute_subtask_loop` runs unchanged (rollback = flag off).
+    /// interrupt, and DB checkpoint come from the graph + executor. On a
+    /// profile/DAG load or graph-build failure it falls back to
+    /// `execute_subtask_loop`.
     pub(crate) async fn run_executor_driven(
         &mut self,
         task_id: Uuid,
@@ -744,8 +744,8 @@ impl TaskOrchestrator {
 
     /// 两级模型 · graph-flow 路径的「跨大阶段审批」闸（设计 2026-06-03）。
     ///
-    /// flag off / gate 没过 / 非跨界 / 无需审批 → 直接放行（返回 `true`）。在把某 stage
-    /// 的 flow outcome 回给 metalcraft 引擎前调用：若这步推进会跨大阶段且需人工批准，
+    /// gate 没过 / 非跨界 / 无需审批 → 直接放行（返回 `true`）。在把某 stage 的 flow
+    /// outcome 回给 metalcraft 引擎前调用：若这步推进会跨大阶段且需人工批准，
     /// 则发 `waiting_approval` 并**阻塞等用户回复**。`false`（未获批）时调用方把 outcome
     /// 降级为 `blocked`，使引擎在当前 stage Interrupt（暂停返工），不跨大阶段。
     async fn two_level_phase_gate(
@@ -756,7 +756,7 @@ impl TaskOrchestrator {
         dag: &crate::harness::AllowedDag,
         profile: Option<&crate::harness::Profile>,
     ) -> bool {
-        if !crate::harness::two_level_enabled() || !outcome.gate_allowed {
+        if !outcome.gate_allowed {
             return true;
         }
         let Some(profile) = profile else {
@@ -859,14 +859,12 @@ impl TaskOrchestrator {
         let dag = graph.project(&profile.allowed_stage_set());
         let decision =
             crate::harness::decide_transition(outcome.gated_stage, outcome.gate_allowed, &dag);
-        // P2 (graph flow) · pick the next stage. With the metalcraft graph-flow
-        // flag ON, a branch routes by progress (no findings → bail to reporting)
-        // instead of always taking the first candidate; flag OFF preserves the
-        // legacy `advance_target` (first-candidate) behaviour exactly.
+        // P2 (graph flow) · pick the next stage. A branch routes by progress
+        // (no findings → bail to reporting) instead of always taking the first
+        // candidate.
         let Some(next) = crate::harness::operation_flow::chosen_next_stage(
             &decision,
             outcome.findings_count > 0,
-            crate::harness::operation_flow::graph_flow_enabled(),
         ) else {
             tracing::info!(
                 target: "harness::hook",
@@ -882,26 +880,18 @@ impl TaskOrchestrator {
         // C5 · approval 闸: 下一 stage 需人工批准 + profile policy 打开 → hold,
         // 发 waiting_approval 事件并**阻塞等用户回复** (user_input_rx). 肯定回复才
         // 推进游标 (resume); 否定 / 通道关闭 / 无交互通道时保持 hold 不推进.
-        // Two-level model (flag on): approval fires only when crossing a大阶段
-        // boundary (de-dup per crossing); legacy (flag off): per-stage approval.
-        let needs_approval = if crate::harness::two_level_enabled() {
-            crate::harness::load_embedded_phase_map()
-                .map(|pm| {
-                    crate::harness::phase_flow::phase_crossing_requires_approval(
-                        &pm,
-                        outcome.gated_stage,
-                        next,
-                        &profile,
-                    )
-                })
-                .unwrap_or(false)
-        } else {
-            crate::harness::load_embedded_stage_spec(next)
-                .map(|next_spec| {
-                    crate::harness::stage_entry_requires_approval(&next_spec, &profile)
-                })
-                .unwrap_or(false)
-        };
+        // Two-level model: approval fires only when crossing a 大阶段 boundary
+        // (de-dup per crossing).
+        let needs_approval = crate::harness::load_embedded_phase_map()
+            .map(|pm| {
+                crate::harness::phase_flow::phase_crossing_requires_approval(
+                    &pm,
+                    outcome.gated_stage,
+                    next,
+                    &profile,
+                )
+            })
+            .unwrap_or(false);
         {
             if needs_approval {
                 tracing::info!(
@@ -1096,13 +1086,11 @@ impl TaskOrchestrator {
         });
     }
 
-    /// P0 Task 6 · evidence「新鲜度」回查 (flag-gated, 默认 OFF): 查 ledger 真实 age,
-    /// 按 `evidence_kinds.json` max_age 拦截**硬过期**证据 (age ≥ 2×max → BLOCK; 软
-    /// 陈旧只 warn)。infra 查询失败只 warn 不误伤; flag 关时整段跳过 (零行为变化)。
+    /// P0 Task 6 · evidence「新鲜度」回查: 查 ledger 真实 age, 按 `evidence_kinds.json`
+    /// max_age 拦截**硬过期**证据 (age ≥ 2×max → BLOCK; 软陈旧只 warn)。infra 查询失败
+    /// 只 warn 不误伤; 无 evidence_refs 时整段跳过。
     async fn enforce_evidence_freshness(&self, outcome: &mut HarnessGateOutcome) {
-        if !crate::harness::evidence_freshness_enforcement_enabled()
-            || outcome.evidence_refs.is_empty()
-        {
+        if outcome.evidence_refs.is_empty() {
             return;
         }
         let kinds_raw = match self.repo.evidence_kinds_for(&outcome.evidence_refs).await {
@@ -1193,14 +1181,12 @@ fn block_outcome_for_fabricated(outcome: &mut HarnessGateOutcome, fabricated: &[
 // ── Harness gate hook (Phase C · Doc 3 §5.2 接入点) ─────────────────────────
 //
 // 仅当满足以下全部条件时, agent_result.content 末尾才会被追加 gate decision JSON:
-//   1. `harness::stage_mode_enabled()` 返回 true (默认 on; 显式 =false 才关)
-//   2. `planned.harness_stage` 非 None
-//   3. agent_result.content 含可解析的 StageDeliverable JSON
+//   1. `planned.harness_stage` 非 None
+//   2. agent_result.content 含可解析的 StageDeliverable JSON
 //      (整体即 JSON, 或 ```json fence 内的 JSON)
 //
 // Phase C: 支持**任意 stage** —— 按 `stage_hint.stage_kind` 从嵌入 registry 载对应
-// StageSpec, 跑通用 gate (`validate_stage_gate`). 任一条件不满足时返回原 content
-// (不破坏旧路径行为).
+// StageSpec, 跑通用 gate (`validate_stage_gate`). 条件不满足时返回原 content.
 //
 // **execute_single_subtask 2 元组返回签名保持不变**: gate decision 文本化嵌入
 // content 末尾兼容; 第二元素 `Option<HarnessGateOutcome>` 驱动 stage 流转.
@@ -1241,9 +1227,6 @@ fn apply_harness_gate_hook(
     exec_ctx: &ExecutionContext,
     content: String,
 ) -> (String, Option<HarnessGateOutcome>) {
-    if !crate::harness::stage_mode_enabled() {
-        return (content, None);
-    }
     let Some(stage_hint) = planned.harness_stage.as_ref() else {
         // Observability (2026-06-01): previously DEBUG, so a stage-less subtask
         // produced ZERO signal at default log level — the gate "silently
@@ -1293,30 +1276,24 @@ fn apply_harness_gate_hook(
         }
     };
 
-    // C2d · per-target gate. When sprint-skeleton enforcement is enabled, attach
-    // the profile's per-stage skeleton so the gate also checks expected
-    // finding-count ranges + min tool invocations (per-target, not just
-    // structural). Flag-gated (default OFF) because it can newly BLOCK runs whose
-    // finding kinds/counts don't match the skeleton; no-op when the profile ships
-    // no skeleton or the stage has no skeleton entry.
-    let harness = if crate::harness::sprint_skeleton_enforcement_enabled() {
-        match crate::harness::load_embedded_sprint_skeleton(profile_id) {
-            Ok(Some(skeleton)) => match skeleton.for_stage(stage_hint.stage_kind) {
-                Some(stage_skel) => {
-                    tracing::info!(
-                        target: "harness::hook",
-                        stage_kind = ?stage_hint.stage_kind,
-                        profile_id = %profile_id,
-                        "sprint-skeleton enforcement ON: gate will check per-target finding ranges"
-                    );
-                    harness.with_skeleton(Some(stage_skel.clone()))
-                }
-                None => harness,
-            },
-            _ => harness,
-        }
-    } else {
-        harness
+    // C2d · per-target gate. Attach the profile's per-stage skeleton so the gate
+    // also checks expected finding-count ranges + min tool invocations
+    // (per-target, not just structural). No-op when the profile ships no skeleton
+    // or the stage has no skeleton entry.
+    let harness = match crate::harness::load_embedded_sprint_skeleton(profile_id) {
+        Ok(Some(skeleton)) => match skeleton.for_stage(stage_hint.stage_kind) {
+            Some(stage_skel) => {
+                tracing::info!(
+                    target: "harness::hook",
+                    stage_kind = ?stage_hint.stage_kind,
+                    profile_id = %profile_id,
+                    "sprint-skeleton enforcement: gate will check per-target finding ranges"
+                );
+                harness.with_skeleton(Some(stage_skel.clone()))
+            }
+            None => harness,
+        },
+        _ => harness,
     };
 
     let deliverable = match parse_deliverable_from_content(&content) {

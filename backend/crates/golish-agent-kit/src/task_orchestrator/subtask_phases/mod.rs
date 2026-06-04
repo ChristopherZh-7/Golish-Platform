@@ -49,7 +49,7 @@ impl TaskOrchestrator {
             harness_profile_id: None,
         };
 
-        // C3/C1 · resolve the operation's profile once (stage_mode only).
+        // C3/C1 · resolve the operation's profile once.
         // `operation_id == task_id`; read the real profile from `operation_state`
         // so (C3) per-tool dispatch can reject intents above the profile's
         // `max_authorization`, and (C1) the gate hook constructs StageHarness with
@@ -58,16 +58,12 @@ impl TaskOrchestrator {
         let (op_max_authz, op_profile_id): (
             Option<crate::harness::AuthorizationLevel>,
             Option<String>,
-        ) = if crate::harness::stage_mode_enabled() {
-            match crate::db_shim::operation_state::get(&*self.repo, task_id).await {
-                Ok(Some(state)) => match crate::harness::load_embedded_profile(&state.profile) {
-                    Ok(Some(p)) => (Some(p.max_authorization), Some(state.profile)),
-                    _ => (None, None),
-                },
+        ) = match crate::db_shim::operation_state::get(&*self.repo, task_id).await {
+            Ok(Some(state)) => match crate::harness::load_embedded_profile(&state.profile) {
+                Ok(Some(p)) => (Some(p.max_authorization), Some(state.profile)),
                 _ => (None, None),
-            }
-        } else {
-            (None, None)
+            },
+            _ => (None, None),
         };
         exec_ctx.harness_profile_id = op_profile_id;
 
@@ -135,13 +131,9 @@ impl TaskOrchestrator {
                 description: planned.description.clone(),
                 agent: planned.agent.clone(),
             });
-            // C3 · thread this subtask's harness stage (stage_mode on only) so the
-            // bridge/agentic loop can enforce the stage forbidden-tool barrier.
-            exec_ctx.harness_stage = if crate::harness::stage_mode_enabled() {
-                planned.harness_stage.as_ref().map(|h| h.stage_kind)
-            } else {
-                None
-            };
+            // C3 · thread this subtask's harness stage so the bridge/agentic loop
+            // can enforce the stage forbidden-tool barrier.
+            exec_ctx.harness_stage = planned.harness_stage.as_ref().map(|h| h.stage_kind);
             // C3 · bundle the authorization context: classify this subtask's
             // intent (deterministic keyword classifier over its description) and
             // pair it with the operation ceiling. Only set when a stage is active

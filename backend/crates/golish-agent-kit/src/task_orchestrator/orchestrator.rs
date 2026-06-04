@@ -107,44 +107,41 @@ impl TaskOrchestrator {
 
         tasks::update_status(&*self.repo, task.id, TaskStatus::Running).await?;
 
-        // Phase C harness: 一个 Task = 一个 operation. stage_mode 开启时建
-        // operation_state 游标, 起点为 DAG entry (scoping); gate 过后由
-        // drive_stage_transition 沿 profile 投影的 DAG 推进. profile 经
+        // Phase C harness: 一个 Task = 一个 operation. 建 operation_state 游标,
+        // 起点为 DAG entry (scoping); gate 过后沿 profile 投影的 DAG 推进. profile 经
         // GOLISH_HARNESS_PROFILE 选择, 未知 id 回退 assessment (typo 不 wedge 启动).
-        // flag OFF 时完全不触碰 DB, 旧路径零影响.
-        if crate::harness::stage_mode_enabled() {
-            // Prefer the per-run picker override; fall back to the env default.
-            // Own the string up front so no borrow of `self` lingers across the
-            // later `&mut self` subtask loop.
-            let configured: String = self
-                .profile_override
-                .clone()
-                .unwrap_or_else(|| crate::harness::active_profile_id().to_string());
-            let profile_id: String = match crate::harness::load_embedded_profile(&configured) {
-                Ok(Some(_)) => configured,
-                _ => {
-                    tracing::warn!(
-                        target: "harness::hook",
-                        configured = %configured,
-                        "unknown harness profile, falling back to assessment"
-                    );
-                    "assessment".to_string()
-                }
-            };
-            if let Err(e) = crate::db_shim::operation_state::insert(
-                &*self.repo,
-                task.id,
-                &profile_id,
-                crate::harness::StageKind::Scoping.as_str(),
-            )
-            .await
-            {
+        //
+        // Prefer the per-run picker override; fall back to the env default. Own the
+        // string up front so no borrow of `self` lingers across the later
+        // `&mut self` subtask loop.
+        let configured: String = self
+            .profile_override
+            .clone()
+            .unwrap_or_else(|| crate::harness::active_profile_id().to_string());
+        let profile_id: String = match crate::harness::load_embedded_profile(&configured) {
+            Ok(Some(_)) => configured,
+            _ => {
                 tracing::warn!(
                     target: "harness::hook",
-                    error = %e,
-                    "operation_state insert failed (continuing)"
+                    configured = %configured,
+                    "unknown harness profile, falling back to assessment"
                 );
+                "assessment".to_string()
             }
+        };
+        if let Err(e) = crate::db_shim::operation_state::insert(
+            &*self.repo,
+            task.id,
+            &profile_id,
+            crate::harness::StageKind::Scoping.as_str(),
+        )
+        .await
+        {
+            tracing::warn!(
+                target: "harness::hook",
+                error = %e,
+                "operation_state insert failed (continuing)"
+            );
         }
 
         self.emit(AiEvent::TaskProgress {
@@ -153,29 +150,10 @@ impl TaskOrchestrator {
             message: "Generating subtasks...".to_string(),
         });
 
-        // A1 · lazy per-stage planning: on the harness graph-flow path the executor
-        // plans each stage on entry (see run_stage_subtasks), so do NOT pre-generate
-        // a flat whole-run plan — start empty and let every projected stage plan
-        // itself. Other paths keep the upfront generator unchanged (legacy / rollback).
-        let lazy_per_stage = crate::harness::stage_mode_enabled()
-            && crate::harness::operation_flow::graph_flow_enabled();
-        let mut generated: Vec<PlannedSubtask> = if lazy_per_stage {
-            Vec::new()
-        } else {
-            match executor.generate_subtasks(task_input).await {
-                Ok(output) => output.subtasks,
-                Err(e) => {
-                    tasks::set_result(
-                        &*self.repo,
-                        task.id,
-                        &format!("Generator failed: {}", e),
-                        TaskStatus::Failed,
-                    )
-                    .await?;
-                    return Err(e.context("Generator failed"));
-                }
-            }
-        };
+        // A1 · lazy per-stage planning: the harness Executor plans each stage on
+        // entry (see run_stage_subtasks), so do NOT pre-generate a flat whole-run
+        // plan — start empty and let every projected stage plan itself.
+        let mut generated: Vec<PlannedSubtask> = Vec::new();
 
         // S3 · the run() path never ran the deterministic stage-tag backfill (only
         // resume() did), so tags depended entirely on the Generator LLM. Backfill
@@ -183,7 +161,7 @@ impl TaskOrchestrator {
         // the active profile's allowed set (forbidden / unreachable) so it is never
         // created-but-orphaned (e.g. a `vuln_triage` subtask under the assessment
         // profile).
-        if crate::harness::stage_mode_enabled() {
+        {
             crate::task_orchestrator::harness_backfill::backfill_harness_stage(&mut generated);
             let profile_id: String = self
                 .profile_override
@@ -255,7 +233,7 @@ impl TaskOrchestrator {
         // P1 · write the initial harness checkpoint (open a stage_run for the
         // entry stage + persist a resume state_blob) so a kill before the first
         // stage transition can still resume from the right place.
-        if crate::harness::stage_mode_enabled() {
+        {
             if let Ok(Some(os)) = crate::db_shim::operation_state::get(&*self.repo, task.id).await {
                 let run_id = uuid::Uuid::new_v4();
                 let _ = crate::db_shim::stage_runs::insert(
@@ -282,17 +260,10 @@ impl TaskOrchestrator {
             }
         }
 
-        // P2 方案 C · when the graph-flow flag is on (and stage_mode), let the
-        // metalcraft Executor drive the operation stage graph; otherwise the
-        // legacy flat subtask loop runs unchanged (default / rollback).
-        let outcome = if crate::harness::stage_mode_enabled()
-            && crate::harness::operation_flow::graph_flow_enabled()
-        {
-            self.run_executor_driven(task.id, &queue, executor).await
-        } else {
-            self.execute_subtask_loop(task.id, &mut queue, 0, executor)
-                .await
-        };
+        // P2 方案 C · the metalcraft Executor drives the operation stage graph.
+        // (`execute_subtask_loop` remains the resume path + the
+        // run_executor_driven DAG-load-failure fallback.)
+        let outcome = self.run_executor_driven(task.id, &queue, executor).await;
 
         // P1 · never leave the task zombied in `running`: any error from the
         // execution path finalizes the row as `failed` here (a process killed
@@ -371,13 +342,12 @@ impl TaskOrchestrator {
         // P1 · restore harness context on resume: the queue was rebuilt from DB
         // rows that don't carry harness_stage, so re-infer each subtask's stage
         // when this is a harness operation. Without this, a resumed run silently
-        // falls back to the non-harness path (no gate / no cursor advance).
-        if crate::harness::stage_mode_enabled()
-            && crate::db_shim::operation_state::get(&*self.repo, task.id)
-                .await
-                .ok()
-                .flatten()
-                .is_some()
+        // loses its gate / cursor advance.
+        if crate::db_shim::operation_state::get(&*self.repo, task.id)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
         {
             crate::task_orchestrator::harness_backfill::backfill_harness_stage(&mut queue);
         }

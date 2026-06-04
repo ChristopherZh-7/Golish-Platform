@@ -43,8 +43,8 @@ pub(crate) fn safe_truncate(s: &str, max: usize) -> &str {
 /// C2 · Operation Harness stage charter — 注入到 subtask 描述顶部.
 ///
 /// 告诉执行 agent 当前 stage 的允许/禁止工具面、必须提交的结构化 deliverable、
-/// 以及确定性 gate 会检查哪些项. 仅在 `stage_mode_enabled()` + subtask 有
-/// `harness_stage` 时由 `execute_single_subtask` 拼到描述前.
+/// 以及确定性 gate 会检查哪些项. 仅在 subtask 有 `harness_stage` 时由
+/// `execute_single_subtask` 拼到描述前.
 pub fn stage_charter(spec: &StageSpec) -> String {
     let allowed = if spec.allowed_tool_types.is_empty() {
         "(none — this stage runs no scan tools)".to_string()
@@ -79,13 +79,9 @@ pub fn stage_charter(spec: &StageSpec) -> String {
         keys.sort();
         format!("[{}]", keys.join(", "))
     };
-    // C2c · submission channel depends on the submit-tool flag: deterministic
-    // tool call (preferred) vs. the legacy "print a ```json block" text path.
-    let submission_instr = if crate::harness::submit_tool_enabled() {
-        "### REQUIRED — submit via the `submit_stage_deliverable` tool\n\nWhen this stage's required tools have actually run, CALL the `submit_stage_deliverable` tool with the fields below as STRUCTURED ARGUMENTS — do NOT print or describe the JSON in prose, and do NOT just delegate \"write the JSON\" to another agent. The runtime validates your submission with the deterministic gate. The deliverable shape:"
-    } else {
-        "### REQUIRED — end your final message with a StageDeliverable JSON block\n\nThere is NO `submit_*` tool to call. The runtime parses your final message for a single fenced ```json block and runs the deterministic gate on it. So after your prose summary, your final message MUST end with one ```json block containing a `StageDeliverable` shaped exactly like this:"
-    };
+    // C2c · deterministic submission channel: the agent CALLS the
+    // `submit_stage_deliverable` tool (typed args), validated by the gate.
+    let submission_instr = "### REQUIRED — submit via the `submit_stage_deliverable` tool\n\nWhen this stage's required tools have actually run, CALL the `submit_stage_deliverable` tool with the fields below as STRUCTURED ARGUMENTS — do NOT print or describe the JSON in prose, and do NOT just delegate \"write the JSON\" to another agent. The runtime validates your submission with the deterministic gate. The deliverable shape:";
     // Per-stage note for scoping. The "do not probe" boundary is now enforced
     // deterministically by the runtime (the stage tool guard resolves
     // pentest_run/shell to their real capability and blocks forbidden ones), so
@@ -170,12 +166,8 @@ pub fn stage_discipline_reminder() -> String {
 - Stay inside this stage's tool boundary: use ONLY the stage's allowed tools and NEVER call a forbidden tool. The runtime blocks forbidden calls anyway — do not waste turns attempting them.
 - If a required tool is unavailable, errors, or returns nothing on two attempts: STOP and record it in `skipped_checks` with the reason ("checked-empty" is NOT the same as "unchecked"). Do NOT install tools, spawn additional sub-agents, or retry the same tool to work around an unavailable capability.
 - The runtime advances stages for you once the deterministic gate passes — do not jump ahead to a later stage."#;
-    // C2c · the deliverable-submission directive depends on the submit-tool flag.
-    let submit = if crate::harness::submit_tool_enabled() {
-        "\n\n### Submit the StageDeliverable by CALLING `submit_stage_deliverable`\nThe stage completes ONLY when you call the `submit_stage_deliverable` tool with the structured fields (stage_id, stage_run_id, claims, evidence_refs, findings). Do NOT just print or describe the JSON, and do NOT only delegate \"write the JSON\" to a sub-agent — if you delegated to a reporter, take its result and call `submit_stage_deliverable` yourself. A prose-only ending leaves the gate with nothing to validate and forces you to redo this entire stage."
-    } else {
-        "\n\n### Your FINAL message MUST end with the StageDeliverable JSON\nThere is NO submit tool. After any prose summary, your final message MUST end with the single fenced ```json block containing the `StageDeliverable` exactly as specified in the stage charter above. A prose-only ending produces NO parseable deliverable, fails the gate, and forces you to redo this entire stage. Always emit the JSON block."
-    };
+    // C2c · the deliverable-submission directive: always CALL the submit tool.
+    let submit = "\n\n### Submit the StageDeliverable by CALLING `submit_stage_deliverable`\nThe stage completes ONLY when you call the `submit_stage_deliverable` tool with the structured fields (stage_id, stage_run_id, claims, evidence_refs, findings). Do NOT just print or describe the JSON, and do NOT only delegate \"write the JSON\" to a sub-agent — if you delegated to a reporter, take its result and call `submit_stage_deliverable` yourself. A prose-only ending leaves the gate with nothing to validate and forces you to redo this entire stage.";
     format!("{boundary}{submit}")
 }
 
@@ -206,7 +198,7 @@ Only plan and act for `{stage_id}`. Do not perform later stages."#
 /// which evidence kinds upstream stages should have produced and can build on
 /// them instead of re-collecting. Empty `inherits_evidence_from` → empty string
 /// (no section emitted). Prepended to the subtask description right after the
-/// stage charter, only under `stage_mode_enabled()`.
+/// stage charter.
 pub fn stage_inherited_evidence(spec: &StageSpec) -> String {
     if spec.inherits_evidence_from.is_empty() {
         return String::new();

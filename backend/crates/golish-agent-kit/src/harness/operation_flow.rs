@@ -27,33 +27,6 @@ use super::operation_graph::AllowedDag;
 use super::stage_transition::TransitionDecision;
 use super::types::StageKind;
 
-/// Feature flag: route the **live** stage transition through the metalcraft
-/// graph-flow conditional routing (bail-to-reporting when a stage makes no
-/// progress) instead of the legacy "always take the first branch candidate".
-///
-/// **Default ON** (2026-06-02, after the Executor-driven path passed live
-/// verification + the plan-progress fix). Kill switch: set
-/// `GOLISH_HARNESS_GRAPH_FLOW=0` (or `false`/`off`/`no`, case-insensitive) to
-/// fall back to the legacy subtask loop. Cached once at first read (LazyLock),
-/// same pattern as [`super::stage_mode_enabled`].
-pub fn graph_flow_enabled() -> bool {
-    use std::sync::LazyLock;
-    static ENABLED: LazyLock<bool> = LazyLock::new(|| {
-        parse_graph_flow_flag(std::env::var("GOLISH_HARNESS_GRAPH_FLOW").ok().as_deref())
-    });
-    *ENABLED
-}
-
-/// Pure parser (env-independent → fully unit-testable). Default ON: only an
-/// explicit falsey value turns it off (kill switch), mirroring
-/// [`super::stage_mode_enabled`].
-fn parse_graph_flow_flag(value: Option<&str>) -> bool {
-    !matches!(
-        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
-        Some("0" | "false" | "off" | "no")
-    )
-}
-
 /// Branch routing rule, single-sourced for both the metalcraft conditional edge
 /// (see [`build_operation_flow_graph`]) and the live driver
 /// ([`chosen_next_stage`]).
@@ -72,19 +45,12 @@ pub fn branch_target(candidates: &[StageKind], made_progress: bool) -> Option<St
 
 /// Decide which stage the cursor advances to after a gate outcome.
 ///
-/// - `graph_flow == false` → identical to the legacy
-///   [`TransitionDecision::advance_target`] (branch takes the first candidate).
-/// - `graph_flow == true` → a [`TransitionDecision::Branch`] routes by
-///   `made_progress` via [`branch_target`]; non-branch decisions are unchanged.
-pub fn chosen_next_stage(
-    decision: &TransitionDecision,
-    made_progress: bool,
-    graph_flow: bool,
-) -> Option<StageKind> {
+/// A [`TransitionDecision::Branch`] routes by `made_progress` via
+/// [`branch_target`] (no findings → bail to reporting); non-branch decisions
+/// resolve via [`TransitionDecision::advance_target`].
+pub fn chosen_next_stage(decision: &TransitionDecision, made_progress: bool) -> Option<StageKind> {
     match decision {
-        TransitionDecision::Branch(candidates) if graph_flow => {
-            branch_target(candidates, made_progress)
-        }
+        TransitionDecision::Branch(candidates) => branch_target(candidates, made_progress),
         other => other.advance_target(),
     }
 }
@@ -530,51 +496,26 @@ mod tests {
     }
 
     #[test]
-    fn chosen_next_stage_only_conditional_when_graph_flow_on() {
+    fn chosen_next_stage_branch_routes_by_progress() {
         let branch = TransitionDecision::Branch(vec![StageKind::Enumeration, StageKind::Reporting]);
-        // graph_flow OFF → legacy first-candidate regardless of progress.
+        // No progress → bail to reporting (the win the legacy first-candidate
+        // path never took).
         assert_eq!(
-            chosen_next_stage(&branch, false, false),
-            Some(StageKind::Enumeration)
-        );
-        // graph_flow ON + no progress → bail to reporting (the win).
-        assert_eq!(
-            chosen_next_stage(&branch, false, true),
+            chosen_next_stage(&branch, false),
             Some(StageKind::Reporting)
         );
-        // graph_flow ON + progress → main path.
+        // Progress → main path (first candidate).
         assert_eq!(
-            chosen_next_stage(&branch, true, true),
+            chosen_next_stage(&branch, true),
             Some(StageKind::Enumeration)
         );
-        // Non-branch decisions are unaffected by the flag.
+        // Non-branch decisions resolve via advance_target.
         assert_eq!(
-            chosen_next_stage(
-                &TransitionDecision::Advance(StageKind::TargetIntel),
-                false,
-                true
-            ),
+            chosen_next_stage(&TransitionDecision::Advance(StageKind::TargetIntel), false),
             Some(StageKind::TargetIntel)
         );
-        assert_eq!(
-            chosen_next_stage(&TransitionDecision::Hold, true, true),
-            None
-        );
-        assert_eq!(
-            chosen_next_stage(&TransitionDecision::Complete, true, true),
-            None
-        );
-    }
-
-    #[test]
-    fn parse_graph_flow_flag_defaults_on() {
-        assert!(parse_graph_flow_flag(None));
-        for off in ["0", "false", "off", "no", "OFF", " No "] {
-            assert!(!parse_graph_flow_flag(Some(off)), "'{off}' must disable");
-        }
-        for on in ["1", "true", "on", "yes", "", "garbage"] {
-            assert!(parse_graph_flow_flag(Some(on)), "'{on}' must stay ON");
-        }
+        assert_eq!(chosen_next_stage(&TransitionDecision::Hold, true), None);
+        assert_eq!(chosen_next_stage(&TransitionDecision::Complete, true), None);
     }
 
     #[tokio::test]
