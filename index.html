@@ -5,10 +5,51 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Golish Platform</title>
+    <style>
+      /* First-paint splash: shows a dark themed background + spinner before the
+         React bundle has parsed/painted, so the Tauri webview never flashes
+         white. React's createRoot() clears these #root children on first
+         commit. Background matches the golish theme token (--background). */
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0d0f12;
+      }
+      #root {
+        height: 100vh;
+      }
+      #app-splash {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #0d0f12;
+      }
+      #app-splash .spinner {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        border: 3px solid rgba(255, 255, 255, 0.12);
+        border-top-color: rgba(255, 255, 255, 0.7);
+        animation: app-splash-spin 0.8s linear infinite;
+      }
+      @keyframes app-splash-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
   </head>
 
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="app-splash"><div class="spinner"></div></div>
+    </div>
     <script type="module" src="/frontend/main.tsx"></script>
   </body>
 </html>

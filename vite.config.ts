@@ -49,6 +49,42 @@ export default defineConfig(async () => ({
     ],
   },
 
+  // Pre-bundle the heavy dependencies up front so the dev server doesn't
+  // transform their (thousands of) internal modules on demand during the first
+  // cold load — and, more importantly, so Vite doesn't *discover* a lazily
+  // imported heavy dep mid-session and trigger a full-page reload (the classic
+  // "long white screen, then it reloads" dev symptom). These are the libraries
+  // that dominate the bundle: xterm, codemirror, milkdown, cytoscape, the
+  // markdown/syntax-highlighter stack, and the command palette.
+  optimizeDeps: {
+    include: [
+      "react",
+      "react-dom",
+      "react-dom/client",
+      "zustand",
+      "immer",
+      "i18next",
+      "react-i18next",
+      "@xterm/xterm",
+      "@xterm/addon-fit",
+      "@xterm/addon-web-links",
+      "@xterm/addon-webgl",
+      "@xterm/addon-serialize",
+      "react-markdown",
+      "remark-gfm",
+      "react-syntax-highlighter",
+      "cytoscape",
+      "@codemirror/state",
+      "@codemirror/view",
+      "@codemirror/language",
+      "@uiw/react-codemirror",
+      "@milkdown/crepe",
+      "@milkdown/kit",
+      "@milkdown/react",
+      "cmdk",
+    ],
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors
