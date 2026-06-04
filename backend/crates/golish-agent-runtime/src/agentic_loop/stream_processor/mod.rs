@@ -27,6 +27,7 @@ use rig::streaming::{StreamedAssistantContent, StreamingCompletionResponse};
 
 use golish_context::token_budget::TokenUsage;
 use golish_core::events::AiEvent;
+use golish_core::{has_complete_tool_args, initial_tool_args_fragment};
 use golish_llm_providers::ProviderStreamQuirks;
 
 use super::context::{emit_event, is_cancelled, AgenticLoopContext};
@@ -349,25 +350,30 @@ where
         has_tool_calls = true;
     }
 
+    // Strip textual tool-call markup from displayed text unconditionally so it
+    // never leaks, regardless of whether a call is recovered below or the
+    // provider already produced native tool calls.
+    let cleaned_text = strip_textual_tool_call_markup(&text_content);
+    let cleaned_accumulated = strip_textual_tool_call_markup(accumulated_response);
+
+    // Recover a textual call to execute only when the provider produced none
+    // (so the same intent is not executed twice).
     if tool_calls_to_execute.is_empty() {
         if let Some(tool_call) = extract_textual_tool_call(&text_content, iteration) {
             let tool_name = tool_call.function.name.clone();
-            let cleaned_text = strip_textual_tool_call_markup(&text_content);
-            let cleaned_accumulated = strip_textual_tool_call_markup(accumulated_response);
-
             tracing::warn!(
                 iteration,
                 tool_name = %tool_name,
                 text_len = text_content.len(),
                 "[tool-adapter] Converted textual XML-style tool call into structured tool call"
             );
-
-            text_content = cleaned_text;
-            *accumulated_response = cleaned_accumulated;
             tool_calls_to_execute.push(tool_call);
             has_tool_calls = true;
         }
     }
+
+    text_content = cleaned_text;
+    *accumulated_response = cleaned_accumulated;
 
     // No usable content + chunk errors observed: surface the error and break.
     if text_content.is_empty() && thinking_content.is_empty() && tool_calls_to_execute.is_empty() {
@@ -439,20 +445,3 @@ async fn wait_for_cancelled(ctx: &AgenticLoopContext<'_>) {
     }
 }
 
-fn has_complete_tool_args(args: &serde_json::Value) -> bool {
-    match args {
-        serde_json::Value::Null => false,
-        serde_json::Value::Object(map) if map.is_empty() => false,
-        serde_json::Value::String(_) => false,
-        _ => true,
-    }
-}
-
-fn initial_tool_args_fragment(args: &serde_json::Value) -> String {
-    match args {
-        serde_json::Value::Null => String::new(),
-        serde_json::Value::Object(map) if map.is_empty() => String::new(),
-        serde_json::Value::String(value) => value.clone(),
-        value => value.to_string(),
-    }
-}

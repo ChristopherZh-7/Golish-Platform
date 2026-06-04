@@ -80,6 +80,41 @@ pub fn strip_textual_tool_call_markup(text: &str) -> String {
     remove_tag_blocks(&without_tool_blocks, "<function=", "</function>")
 }
 
+/// Outcome of finalizing assistant text that may carry textual tool-call markup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinalizedAssistantText {
+    /// Text with all `<tool_call>` / `<function=...>` markup removed. Always safe
+    /// to stream, persist, or return to the user.
+    pub clean_text: String,
+    /// A tool call recovered from the markup, present only when `allow_recovery`
+    /// was set and the text contained a parseable call.
+    pub recovered: Option<TextualToolCall>,
+}
+
+/// Finalize assistant text for display and optional tool recovery in one place.
+///
+/// Stripping markup is **unconditional** — leaked `<tool_call>` markup must never
+/// reach the user, regardless of whether a tool was recovered or the provider
+/// already produced native tool calls. Recovery of a call to execute is gated
+/// behind `allow_recovery`, which callers set to `true` only when no native tool
+/// call was produced (so the same intent is never executed twice).
+///
+/// This is the single entry point every assistant-text finalization site should
+/// route through (main loop, sub-agent loop, tool-less final summary) so no path
+/// can forget to strip markup.
+pub fn finalize_assistant_text(text: &str, allow_recovery: bool) -> FinalizedAssistantText {
+    let recovered = if allow_recovery {
+        select_textual_tool_call(text)
+    } else {
+        None
+    };
+
+    FinalizedAssistantText {
+        clean_text: strip_textual_tool_call_markup(text),
+        recovered,
+    }
+}
+
 fn parse_parameters(body: &str) -> Value {
     let mut args = Map::new();
     let mut search_start = 0;
@@ -189,5 +224,58 @@ mod tests {
         let text =
             "before <tool_call><function=ask_human></function></tool_call> after <function=x>";
         assert_eq!(strip_textual_tool_call_markup(text).trim(), "before  after");
+    }
+
+    #[test]
+    fn finalize_strips_markup_even_when_recovery_disabled() {
+        // Mirrors the tool-less final-summary path and the "native call already
+        // present" path: markup must be stripped, but nothing may be recovered.
+        let text = "I'll read the files.\n\
+<tool_call>\n\
+<function=read_file>\n\
+<parameter=path>a.txt</parameter>\n\
+</function>\n\
+</tool_call>";
+
+        let finalized = finalize_assistant_text(text, false);
+
+        assert_eq!(finalized.recovered, None, "recovery must stay disabled");
+        assert!(
+            !finalized.clean_text.contains("<tool_call>")
+                && !finalized.clean_text.contains("<function="),
+            "markup must be stripped, got: {}",
+            finalized.clean_text
+        );
+        assert!(finalized.clean_text.contains("I'll read the files."));
+    }
+
+    #[test]
+    fn finalize_recovers_and_strips_when_allowed() {
+        let text = "checking.\n\
+<tool_call>\n\
+<function=search_memories>\n\
+<parameter=query>example.com recon</parameter>\n\
+</function>\n\
+</tool_call>";
+
+        let finalized = finalize_assistant_text(text, true);
+
+        let recovered = finalized.recovered.expect("expected recovered call");
+        assert_eq!(recovered.name, "search_memories");
+        assert_eq!(recovered.arguments["query"], "example.com recon");
+        assert!(
+            !finalized.clean_text.contains("<tool_call>")
+                && !finalized.clean_text.contains("<function="),
+            "markup must be stripped even after recovery, got: {}",
+            finalized.clean_text
+        );
+        assert!(finalized.clean_text.contains("checking."));
+    }
+
+    #[test]
+    fn finalize_leaves_plain_prose_untouched() {
+        let finalized = finalize_assistant_text("just a normal answer", true);
+        assert_eq!(finalized.recovered, None);
+        assert_eq!(finalized.clean_text, "just a normal answer");
     }
 }

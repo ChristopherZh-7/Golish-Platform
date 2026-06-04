@@ -39,6 +39,7 @@ pub mod session_manager;
 pub mod skill_provider;
 pub mod textual_tool_call;
 pub mod time;
+pub mod tool_args;
 pub mod utils;
 pub mod vault;
 pub mod web_fetch;
@@ -72,9 +73,10 @@ pub use session_kind::{is_title_gen_session_id, title_gen_session_id, TITLE_GEN_
 pub use session_manager::{SessionManager, SessionManagerFactory};
 pub use skill_provider::{SkillMatch, SkillMetadata, SkillProvider};
 pub use textual_tool_call::{
-    parse_textual_tool_calls, select_textual_tool_call, strip_textual_tool_call_markup,
-    TextualToolCall,
+    finalize_assistant_text, parse_textual_tool_calls, select_textual_tool_call,
+    strip_textual_tool_call_markup, FinalizedAssistantText, TextualToolCall,
 };
+pub use tool_args::{has_complete_tool_args, initial_tool_args_fragment};
 pub use time::{now_ms, now_ts, ts_from_dt};
 pub use tool::Tool;
 pub use tool_name::{ToolCategory, ToolName};

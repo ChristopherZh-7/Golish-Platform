@@ -105,4 +105,10 @@ pub(super) async fn run_final_summary<M>(
             );
         }
     }
+
+    // The tool-less summary call can still emit textual `<tool_call>` markup
+    // (e.g. Xiaomi MiMo). This path has no tool recovery, so strip the markup
+    // unconditionally — `allow_recovery = false` — so it never leaks to the user.
+    *accumulated_response =
+        golish_core::finalize_assistant_text(accumulated_response, false).clean_text;
 }

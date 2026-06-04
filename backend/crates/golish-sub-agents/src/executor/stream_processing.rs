@@ -231,8 +231,15 @@ where
                         current_tool_args.clear();
                     }
 
-                    let has_complete_args = !tool_call.function.arguments.is_null()
-                        && tool_call.function.arguments != serde_json::json!({});
+                    // Treat string and empty args as incomplete streaming
+                    // fragments. Some providers (e.g. Xiaomi MiMo) send the first
+                    // partial JSON fragment as a string; dispatching it as-is
+                    // hands malformed args to the tool handler (e.g.
+                    // search_memories receiving `{"category": ` and failing with
+                    // "requires a non-empty 'query'"). Seed the buffer and let
+                    // deltas complete it, then parse on close.
+                    let has_complete_args =
+                        golish_core::has_complete_tool_args(&tool_call.function.arguments);
 
                     if has_complete_args {
                         tracing::debug!(
@@ -247,11 +254,13 @@ where
                         tool_calls_to_execute.push(tc);
                     } else {
                         tracing::debug!(
-                            "[sub-agent] Tool call has empty args, tracking for delta accumulation"
+                            "[sub-agent] Tool call args incomplete, tracking for delta accumulation"
                         );
                         current_tool_id = Some(tool_call.id.clone());
                         current_tool_call_id = tool_call.call_id.clone();
                         current_tool_name = Some(tool_call.function.name.clone());
+                        current_tool_args =
+                            golish_core::initial_tool_args_fragment(&tool_call.function.arguments);
                     }
                 }
                 StreamedAssistantContent::ToolCallDelta { id, content, .. } => {
@@ -335,36 +344,35 @@ where
         });
     }
 
-    // Textual tool-call recovery (compatibility adapter).
+    // Textual tool-call finalization (compatibility adapter).
     //
     // Some model families (e.g. Xiaomi MiMo) emit tool calls as textual
     // `<tool_call><function=...>` markup instead of native structured calls.
-    // The main agentic loop already recovers these; without the same recovery
-    // here a sub-agent treats the markup as prose, never executes the tool, and
-    // leaks the markup into its response. Only attempt recovery when the
-    // provider produced no native tool calls.
-    if tool_calls_to_execute.is_empty() {
-        if let Some(recovered) = golish_core::select_textual_tool_call(&text_content) {
-            let id = format!("textual-tool-call-{}", Uuid::new_v4());
-            tracing::warn!(
-                agent_id,
-                tool_name = %recovered.name,
-                text_len = text_content.len(),
-                "[sub-agent][tool-adapter] Recovered textual XML-style tool call into structured tool call"
-            );
-            text_content = golish_core::strip_textual_tool_call_markup(&text_content);
-            tool_calls_to_execute.push(ToolCall {
-                id: id.clone(),
-                call_id: Some(id),
-                function: ToolFunction {
-                    name: recovered.name,
-                    arguments: recovered.arguments,
-                },
-                signature: None,
-                additional_params: None,
-            });
-            has_tool_calls = true;
-        }
+    // Stripping the markup is unconditional so it never leaks into the response;
+    // recovering a call to execute only happens when the provider produced no
+    // native tool calls (so the same intent is not executed twice).
+    let finalized =
+        golish_core::finalize_assistant_text(&text_content, tool_calls_to_execute.is_empty());
+    text_content = finalized.clean_text;
+    if let Some(recovered) = finalized.recovered {
+        let id = format!("textual-tool-call-{}", Uuid::new_v4());
+        tracing::warn!(
+            agent_id,
+            tool_name = %recovered.name,
+            text_len = text_content.len(),
+            "[sub-agent][tool-adapter] Recovered textual XML-style tool call into structured tool call"
+        );
+        tool_calls_to_execute.push(ToolCall {
+            id: id.clone(),
+            call_id: Some(id),
+            function: ToolFunction {
+                name: recovered.name,
+                arguments: recovered.arguments,
+            },
+            signature: None,
+            additional_params: None,
+        });
+        has_tool_calls = true;
     }
 
     // Record reasoning/thinking content on the llm_completion span if present.
