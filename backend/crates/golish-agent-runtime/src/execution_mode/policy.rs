@@ -31,6 +31,14 @@ pub struct ToolSelection {
     pub agent_tools: AgentToolSelection,
     pub include_run_command: bool,
     pub include_ask_human: bool,
+    /// Targeted opt-in for the `update_plan` planning/todo tool **without**
+    /// pulling in the rest of a static group. The task-mode depth-0 primary
+    /// runs each harness stage as its own agentic loop and self-manages the
+    /// stage's todo list via `update_plan`, but is otherwise orchestration-only
+    /// (`static_groups::none()`), so it needs this single tool surfaced on its
+    /// own. Chat mode already gets `update_plan` via `static_groups`, so it
+    /// leaves this `false` to avoid a duplicate.
+    pub include_update_plan: bool,
     /// Tool names to forcibly exclude after positive selection has been
     /// applied. Use sparingly — the primary mechanism for "don't expose X"
     /// should be flipping the corresponding `bool` to `false` above.

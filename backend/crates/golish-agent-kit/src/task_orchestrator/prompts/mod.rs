@@ -177,6 +177,27 @@ pub fn stage_discipline_reminder() -> String {
     format!("{boundary}{submit}")
 }
 
+/// Agent-driven stage execution directive (设计 2026-06-04 · D1=B / 阶段内 todo).
+///
+/// 注入到阶段级 agent loop 的描述里：主 agent 在一个 harness 阶段内**自己决定**要不要
+/// 拆 todo、按需派 `sub_agent_*` 完成每一项、最后提交 StageDeliverable，替代旧的
+/// generator 产 JSON 子任务 + 固定子任务循环。与 [`stage_charter`]（工具面 / gate
+/// 要求）和 [`stage_discipline_reminder`]（提交纪律）配套使用。
+pub fn stage_execution_prompt(stage_id: &str) -> String {
+    format!(
+        r#"## STAGE EXECUTION — you own this stage end-to-end
+
+You are now working the `{stage_id}` stage of a structured operation. Decide how much process this stage needs, then drive it to a gated deliverable:
+
+1. **Assess scope first.** If this stage is a quick confirmation or a single obvious action, do it directly — do NOT manufacture busywork or a multi-step plan you don't need.
+2. **Plan only when it helps.** For a stage with real, multi-part work, call `update_plan` to lay out 2-5 concrete todos for THIS stage, keep exactly one `in_progress` at a time, and mark each `completed` as you finish it. Skip `update_plan` entirely for trivial stages.
+3. **Delegate the actual work.** For each todo that needs tool execution, dispatch the right `sub_agent_*` specialist (e.g. `sub_agent_pentester` for recon/scanning). Stay within this stage's allowed tool boundary (see the stage charter above) — the runtime blocks forbidden tools.
+4. **Close the stage.** When the stage's objective is met (or you've recorded honest `skipped_checks` for anything unavailable), submit the StageDeliverable. The deterministic gate validates it and the runtime advances to the next stage for you — do NOT jump ahead.
+
+Only plan and act for `{stage_id}`. Do not perform later stages."#
+    )
+}
+
 /// C6 · cross-stage evidence handoff context (Doc 3 §6.2 handoff).
 ///
 /// Renders the stage's `inherits_evidence_from` so the executing agent knows

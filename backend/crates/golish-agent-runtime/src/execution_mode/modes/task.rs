@@ -55,9 +55,10 @@ impl ExecutionModePolicy for TaskModePolicy {
             // stage gate has nothing to validate and the cursor never advances.
             bridge_tools: BridgeToolSelection {
                 submit_stage_deliverable: true,
-                // Lead-agent decision handoff — only the depth-0 orchestrator may
-                // begin a structured operation; subtask specialists must not.
-                start_operation: true,
+                // D1=B (设计 2026-06-04): the lead decision turn is gone — task mode
+                // enters the harness directly, so the depth-0 primary runs *inside*
+                // a stage and must NOT see `start_operation` (no nested operations).
+                start_operation: false,
                 ..BridgeToolSelection::none()
             },
             runtime_tools: RuntimeToolSelection::none(),
@@ -69,6 +70,10 @@ impl ExecutionModePolicy for TaskModePolicy {
             },
             include_run_command: false,
             include_ask_human: true,
+            // The depth-0 primary runs each harness stage as its own agentic
+            // loop and self-manages that stage's todo list via `update_plan`.
+            // It has no static groups, so surface this one tool explicitly.
+            include_update_plan: true,
             deny_overrides: vec![],
         }
     }
@@ -102,6 +107,8 @@ impl ExecutionModePolicy for TaskModePolicy {
             },
             include_run_command: true,
             include_ask_human: false,
+            // Only the primary owns the plan; specialists never rewrite it.
+            include_update_plan: false,
             deny_overrides: vec!["update_plan".into()],
         }
     }
@@ -135,6 +142,13 @@ mod tests {
         assert!(!s.agent_tools.allow_reflector);
         assert!(s.include_ask_human);
         assert!(!s.include_run_command);
+        // The primary runs each harness stage as its own agentic loop and
+        // self-manages that stage's todo list, so it must expose update_plan
+        // despite being otherwise orchestration-only (no static groups).
+        assert!(
+            s.include_update_plan,
+            "task primary must expose update_plan for stage todo self-management"
+        );
     }
 
     #[tokio::test]
@@ -148,6 +162,7 @@ mod tests {
             "task subtask must expose submit_stage_deliverable for the reporter"
         );
         assert!(s.deny_overrides.iter().any(|n| n == "update_plan"));
+        assert!(!s.include_update_plan, "only the primary owns the plan");
         assert!(!s.include_ask_human);
         assert!(s.include_run_command);
         // Subtask agents must be able to delegate further so the

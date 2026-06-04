@@ -82,46 +82,24 @@ pub async fn send_ai_prompt_session(
                     .map_err(|e| GolishError::Internal(e.to_string()));
             }
 
-            // Lead-agent turn: a visible streaming turn where the orchestrator
-            // thinks, writes a short analysis, and DECIDES — calling the
-            // `start_operation` tool to hand off to the structured planner, or just
-            // answering. Replaces the old invisible binary intent classifier so the
-            // decision (and the thinking behind it) is shown to the user.
-            *bridge.pending_plan_request_handle().write().await = None;
-            let lead_prompt = format!("{LEAD_AGENT_PROMPT}\n\n{prompt}");
-            let lead_result = bridge.execute(&lead_prompt).await.map_err(|e| {
-                tracing::error!(
-                    message = "[send_ai_prompt_session] Lead-agent turn error",
-                    session_id = %session_id,
-                    error = %e,
-                );
-                GolishError::Internal(e.to_string())
-            })?;
-
-            // Did the lead decide to plan? `start_operation` wrote the objective
-            // into the bridge side-channel; if absent, the lead already answered.
-            let plan_req = bridge.pending_plan_request_handle().read().await.clone();
-            match plan_req {
-                Some(req_json) => {
-                    tracing::info!(
-                        message = "[send_ai_prompt_session] Lead agent requested planning — running planner",
+            // D1=B (设计 2026-06-04): task mode goes straight into the operation
+            // harness — there is NO separate "lead decision turn". The harness
+            // cursor starts at `scoping` and the per-stage agent loop drives the
+            // rest. This removes the path where a weak lead turn bypassed
+            // `start_operation` and delegated straight to a `sub_agent_pentester`
+            // (skipping scoping). Casual chat is handled by the greeting fast-path
+            // above and by chat mode.
+            execute_task_mode(bridge, &session_id, &prompt, &state)
+                .await
+                .map_err(|e| {
+                    let error = format!("{:#}", e);
+                    tracing::error!(
+                        message = "[send_ai_prompt_session] Task execution error",
                         session_id = %session_id,
+                        error = %error,
                     );
-                    let seed = build_planner_seed_prompt(&req_json, &prompt);
-                    execute_task_mode(bridge, &session_id, &seed, &state)
-                        .await
-                        .map_err(|e| {
-                            let error = format!("{:#}", e);
-                            tracing::error!(
-                                message = "[send_ai_prompt_session] Task execution error",
-                                session_id = %session_id,
-                                error = %error,
-                            );
-                            GolishError::Internal(error)
-                        })
-                }
-                None => Ok(lead_result),
-            }
+                    GolishError::Internal(error)
+                })
         }
     }
 }
@@ -244,47 +222,6 @@ async fn execute_task_mode(
     }
 
     result
-}
-
-/// Lead-agent instructions injected before the user's prompt for the Task-mode
-/// lead turn. The lead thinks + writes a short analysis, then either calls
-/// `start_operation` (→ structured planner) or answers directly.
-const LEAD_AGENT_PROMPT: &str = "[Lead Agent Instructions]\n\
-You are the lead agent for a pentest operation console. FIRST think about what the \
-user actually wants and the scope. THEN write a short, direct analysis in the user's \
-language. THEN decide:\n\
-- If the request needs a structured multi-stage operation (recon, enumeration, \
-vulnerability work, etc.), call the `start_operation` tool with a refined `objective` \
-and your `analysis`. Do NOT narrate or perform the stages yourself — the planner will.\n\
-- Otherwise (a question, chit-chat, or a one-off lookup), just answer completely and \
-do NOT call start_operation.\n\
-Never invent results. Keep the analysis concise.";
-
-/// Build the planner's wrapped prompt from the lead agent's captured decision.
-/// `req_json` is the `{objective, analysis}` JSON written by the `start_operation`
-/// tool; `execute_task_mode` reads the `[User Message]` section as its task input.
-fn build_planner_seed_prompt(req_json: &str, original_prompt: &str) -> String {
-    let parsed: serde_json::Value =
-        serde_json::from_str(req_json).unwrap_or(serde_json::Value::Null);
-    let objective = parsed
-        .get("objective")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim();
-    if objective.is_empty() {
-        // Defensive: fall back to the original user prompt.
-        return original_prompt.to_string();
-    }
-    let analysis = parsed
-        .get("analysis")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim();
-    if analysis.is_empty() {
-        format!("[User Message]\n{objective}")
-    } else {
-        format!("[User Message]\n{objective}\n\n[Lead Analysis]\n{analysis}")
-    }
 }
 
 /// Cheap, deterministic triage for the obvious cases so we don't pay an LLM
@@ -422,7 +359,7 @@ fn truncate_for_title(s: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod chat_title_tests {
     use super::{
-        build_planner_seed_prompt, deterministic_intent, extract_user_message_from_wrapped_prompt,
+        deterministic_intent, extract_user_message_from_wrapped_prompt,
         is_conversational_planner_failure, truncate_for_title,
     };
     use golish_agent_bridge::bridge_executor::UserIntent;
@@ -468,29 +405,6 @@ mod chat_title_tests {
             extract_user_message_from_wrapped_prompt(prompt),
             "帮我看看example.com"
         );
-    }
-
-    #[test]
-    fn planner_seed_uses_objective_and_analysis() {
-        let req = r#"{"objective":"Recon example.com","analysis":"passive only"}"#;
-        let seed = build_planner_seed_prompt(req, "[User Message]\nsearch ex.com");
-        assert!(seed.contains("[User Message]\nRecon example.com"));
-        assert!(seed.contains("[Lead Analysis]\npassive only"));
-    }
-
-    #[test]
-    fn planner_seed_omits_empty_analysis() {
-        let req = r#"{"objective":"Scan acme.io","analysis":""}"#;
-        assert_eq!(
-            build_planner_seed_prompt(req, "orig"),
-            "[User Message]\nScan acme.io"
-        );
-    }
-
-    #[test]
-    fn planner_seed_falls_back_on_missing_or_malformed() {
-        assert_eq!(build_planner_seed_prompt("{}", "original prompt"), "original prompt");
-        assert_eq!(build_planner_seed_prompt("not json", "orig2"), "orig2");
     }
 
     #[test]

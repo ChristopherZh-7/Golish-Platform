@@ -611,164 +611,69 @@ impl TaskOrchestrator {
     ) -> crate::harness::operation_flow::StageFlowOutcome {
         self.graph_driven = true;
         self.stage_outcome_acc = None;
-        // Resolve the DB subtask rows (created at planning time, in queue order)
-        // so the executor path writes status back the same way the legacy
-        // `execute_subtask_loop` does. Without passing `Some(db_subtask)`,
-        // `execute_single_subtask` skips every status write and the rows stay
-        // `created` forever — the DB, plan card, and anything reading subtask
-        // state never reflect progress.
-        let db_subtasks = subtasks::list_by_task(&*self.repo, task_id)
-            .await
-            .unwrap_or_default();
 
-        // S1+S2 · a stage projected into the DAG but with no planner subtask must
-        // NOT vacuously pass (that is exactly how scoping/target_intel got skipped).
-        // Synthesize one stage-scoped subtask and run it through the normal gate
-        // path so the stage actually executes + gets gated.
-        if indices.is_empty() {
-            tracing::warn!(
-                target: "harness::hook",
-                stage = %stage.as_str(),
-                "dag-strict: projected stage has no planner subtask — synthesizing one (no vacuous pass)"
-            );
-            // A1 · lazy per-stage planning: ask the executor for THIS stage's plan
-            // (2-4 tactical steps ending in submit+verify). Empty / failure → fall
-            // back to a single synthesized subtask so the stage still executes +
-            // gets gated (never a vacuous pass — S1 fail-closed).
-            let upstream = exec_ctx.summary();
-            let lazy = executor
-                .generate_stage_plan(stage, &exec_ctx.task_input, &upstream)
-                .await
-                .unwrap_or_default();
-            let mut stage_plan: Vec<PlannedSubtask> = if lazy.is_empty() {
-                vec![synthesize_stage_subtask(stage, &exec_ctx.task_input)]
-            } else {
-                lazy
-            };
-            // ② A confirm/report-only stage (no scan tools in its whitelist, e.g.
-            // scoping / reporting) is a single deliverable-submission step. A
-            // multi-step tactical plan there only invites a weak model to keep
-            // re-submitting and to spawn off-discipline sub-agents, so collapse it
-            // to one synthesized "do this stage + submit" step.
-            let confirm_only = crate::harness::load_embedded_stage_spec(stage)
-                .map(|s| s.allowed_tool_types.is_empty())
-                .unwrap_or(false);
-            if confirm_only && stage_plan.len() > 1 {
-                stage_plan = vec![synthesize_stage_subtask(stage, &exec_ctx.task_input)];
-            }
-            self.emit(AiEvent::TaskProgress {
-                task_id: task_id.to_string(),
-                status: "running".to_string(),
-                message: format!(
-                    "Stage '{}' plan: {} step(s).",
-                    stage.as_str(),
-                    stage_plan.len()
-                ),
-            });
-            tracing::info!(
-                target: "harness::hook",
-                stage = %stage.as_str(),
-                steps = stage_plan.len(),
-                "lazy per-stage plan generated"
-            );
-            for pt in &stage_plan {
-                exec_ctx.harness_stage = Some(stage);
-                exec_ctx.harness_authz = op_max_authz.map(|max_authorization| {
-                    let intent = crate::harness::IntentClassifier::with_default_keywords()
-                        .classify(&pt.description, stage);
-                    crate::harness::HarnessAuthz {
-                        max_authorization,
-                        intent,
-                    }
-                });
-                exec_ctx.current_subtask = Some(super::super::types::CurrentSubtask {
-                    title: pt.title.clone(),
-                    description: pt.description.clone(),
-                    agent: pt.agent.clone(),
-                });
-                let (result_text, _usage) = self
-                    .execute_single_subtask(pt, exec_ctx, executor, &None, task_id)
-                    .await;
-                self.emit(AiEvent::SubtaskCompleted {
-                    task_id: task_id.to_string(),
-                    subtask_id: String::new(),
-                    title: pt.title.clone(),
-                    result: truncate(&result_text, 500),
-                    stage_kind: Some(stage.as_str().to_string()),
-                });
-                exec_ctx
-                    .completed_results
-                    .push(super::super::types::SubtaskResult {
-                        title: pt.title.clone(),
-                        result: result_text,
-                        token_usage: None,
-                    });
-                // ① short-circuit: the stage gate already PASSED on this subtask,
-                // so the stage's single deliverable is accepted and the stage is
-                // complete. Running the remaining synthesized steps is redundant
-                // (and lets a weak model re-submit / spawn off-discipline
-                // sub-agents, then BLOCK-merges the stage back to failed). Stop
-                // here and let the cursor advance to the next stage.
-                if self
-                    .stage_outcome_acc
-                    .as_ref()
-                    .is_some_and(|o| o.gate_allowed)
-                {
-                    break;
-                }
-            }
-        }
+        // Agent-driven stage body (设计 2026-06-04 · D1=B / 阶段内 todo).
+        //
+        // Instead of asking the generator for JSON subtasks and looping them, run
+        // ONE stage-scoped agentic loop: the depth-0 primary self-manages this
+        // stage's todos via `update_plan`, dispatches `sub_agent_*` specialists per
+        // item, and submits the StageDeliverable. `execute_single_subtask` already
+        // injects the stage charter, runs the reflector + gate + retry loop, and
+        // consumes the gate outcome into `stage_outcome_acc`; we just hand it one
+        // stage-scoped unit of work whose description carries the stage-execution
+        // directive. `indices` / `queue` are unused on this lazy path (the queue is
+        // empty under graph-flow lazy-per-stage planning).
+        let _ = (indices, queue);
 
-        for &idx in indices {
-            let Some(planned) = queue.get(idx).cloned() else {
-                continue;
-            };
-            let db_subtask = db_subtasks.get(idx).cloned();
-            if let Some(ref st) = db_subtask {
-                let _ = subtasks::update_status(&*self.repo, st.id, SubtaskStatus::Running).await;
+        let mut planned = synthesize_stage_subtask(stage, &exec_ctx.task_input);
+        // `synthesize_stage_subtask` already tags `harness_stage`; append the
+        // agent-todo execution directive so the single loop self-plans + submits.
+        planned.description = format!(
+            "{}\n\n{}",
+            planned.description,
+            super::super::prompts::stage_execution_prompt(stage.as_str())
+        );
+
+        exec_ctx.harness_stage = Some(stage);
+        exec_ctx.harness_authz = op_max_authz.map(|max_authorization| {
+            let intent = crate::harness::IntentClassifier::with_default_keywords()
+                .classify(&planned.description, stage);
+            crate::harness::HarnessAuthz {
+                max_authorization,
+                intent,
             }
-            exec_ctx.harness_stage = Some(stage);
-            exec_ctx.harness_authz = op_max_authz.map(|max_authorization| {
-                let intent = crate::harness::IntentClassifier::with_default_keywords()
-                    .classify(&planned.description, stage);
-                crate::harness::HarnessAuthz {
-                    max_authorization,
-                    intent,
-                }
-            });
-            exec_ctx.current_subtask = Some(super::super::types::CurrentSubtask {
+        });
+        exec_ctx.current_subtask = Some(super::super::types::CurrentSubtask {
+            title: planned.title.clone(),
+            description: planned.description.clone(),
+            agent: planned.agent.clone(),
+        });
+
+        self.emit(AiEvent::TaskProgress {
+            task_id: task_id.to_string(),
+            status: "running".to_string(),
+            message: format!("Stage '{}' executing (agent-driven).", stage.as_str()),
+        });
+
+        let (result_text, _usage) = self
+            .execute_single_subtask(&planned, exec_ctx, executor, &None, task_id)
+            .await;
+
+        self.emit(AiEvent::SubtaskCompleted {
+            task_id: task_id.to_string(),
+            subtask_id: String::new(),
+            title: planned.title.clone(),
+            result: truncate(&result_text, 500),
+            stage_kind: Some(stage.as_str().to_string()),
+        });
+        exec_ctx
+            .completed_results
+            .push(super::super::types::SubtaskResult {
                 title: planned.title.clone(),
-                description: planned.description.clone(),
-                agent: planned.agent.clone(),
+                result: result_text,
+                token_usage: None,
             });
-            self.emit_plan_update(queue, idx, StepStatus::InProgress);
-            let (result_text, _usage) = self
-                .execute_single_subtask(&planned, exec_ctx, executor, &db_subtask, task_id)
-                .await;
-            if let Some(ref st) = db_subtask {
-                let _ =
-                    subtasks::set_result(&*self.repo, st.id, &result_text, SubtaskStatus::Finished)
-                        .await;
-            }
-            self.emit(AiEvent::SubtaskCompleted {
-                task_id: task_id.to_string(),
-                subtask_id: db_subtask
-                    .as_ref()
-                    .map(|s| s.id.to_string())
-                    .unwrap_or_default(),
-                title: planned.title.clone(),
-                result: truncate(&result_text, 500),
-                stage_kind: exec_ctx.harness_stage.map(|s| s.as_str().to_string()),
-            });
-            exec_ctx
-                .completed_results
-                .push(super::super::types::SubtaskResult {
-                    title: planned.title.clone(),
-                    result: result_text,
-                    token_usage: None,
-                });
-            self.emit_plan_update(queue, idx, StepStatus::Completed);
-        }
+
         self.graph_driven = false;
         // S1 · a projected stage that produced no gated deliverable must not
         // vacuously PASS — default to BLOCK so the engine interrupts here instead
@@ -1354,24 +1259,46 @@ fn apply_harness_gate_hook(
         harness
     };
 
-    let Some(deliverable) = parse_deliverable_from_content(&content) else {
-        // Only reachable for a stage-TAGGED subtask, so this is a genuine
-        // contract miss (agent didn't end with a ```json StageDeliverable).
-        // S4: fail-closed — return a BLOCK with a repair correction so the
-        // reflector retry loop pushes the agent to actually submit a deliverable,
-        // instead of the old fail-open `None` (which silently skipped the gate and
-        // let the cursor advance on plain narration).
-        tracing::warn!(
-            target: "harness::hook",
-            stage_kind = ?stage_hint.stage_kind,
-            subtask_title = %planned.title,
-            content_len = content.len(),
-            "harness gate: stage-tagged subtask produced no parseable StageDeliverable JSON block — BLOCK (fail-closed)"
-        );
-        return (
-            content,
-            missing_deliverable_gate_outcome(stage_hint.stage_kind),
-        );
+    let deliverable = match parse_deliverable_from_content(&content) {
+        Some(d) => d,
+        None => {
+            // D2 hybrid (设计 2026-06-04): a confirm-only stage (empty
+            // `allowed_tool_types`, e.g. scoping / reporting) has a deliverable
+            // derivable from known operation state, so synthesize a minimal,
+            // gate-passing one instead of dead-locking when a weak model returns
+            // no parseable StageDeliverable (the `content_len=0` deadlock).
+            // Substantive scan / finding-producing stages KEEP the fail-closed
+            // BLOCK — their findings must never be fabricated.
+            let confirm_only = crate::harness::load_embedded_stage_spec(stage_hint.stage_kind)
+                .map(|s| s.allowed_tool_types.is_empty())
+                .unwrap_or(false);
+            if confirm_only {
+                tracing::warn!(
+                    target: "harness::hook",
+                    stage_kind = ?stage_hint.stage_kind,
+                    subtask_title = %planned.title,
+                    content_len = content.len(),
+                    "confirm-only stage produced no parseable StageDeliverable — synthesizing a minimal one (D2 fallback, no deadlock)"
+                );
+                synthesize_confirm_only_deliverable(stage_hint.stage_kind, exec_ctx)
+            } else {
+                // Only reachable for a stage-TAGGED substantive subtask, so this is
+                // a genuine contract miss (agent didn't end with a ```json
+                // StageDeliverable). S4: fail-closed — BLOCK + repair correction so
+                // the reflector retry loop pushes the agent to actually submit one.
+                tracing::warn!(
+                    target: "harness::hook",
+                    stage_kind = ?stage_hint.stage_kind,
+                    subtask_title = %planned.title,
+                    content_len = content.len(),
+                    "harness gate: stage-tagged subtask produced no parseable StageDeliverable JSON block — BLOCK (fail-closed)"
+                );
+                return (
+                    content,
+                    missing_deliverable_gate_outcome(stage_hint.stage_kind),
+                );
+            }
+        }
     };
 
     tracing::info!(
@@ -1579,6 +1506,50 @@ fn parse_deliverable_from_content(content: &str) -> Option<crate::harness::Stage
         }
     }
     None
+}
+
+/// D2 fallback (设计 2026-06-04): build a minimal, gate-passing `StageDeliverable`
+/// for a **confirm-only** stage (empty `allowed_tool_types`, e.g. scoping /
+/// reporting) when the agent produced none. Such stages run no scan tools, so
+/// there is no tool evidence to fabricate — their deliverable is a single
+/// confirmation claim derivable from the operation's known scope/target. A scoping
+/// claim with empty `evidence_ids` passes the gate (scope_check treats scoping
+/// evidence as optional; vacuous_check is satisfied by the one claim; the stage's
+/// `min_invocations` is empty so FakePattern does not fire). This kills the
+/// `content_len=0` deadlock without ever inventing findings for a scanning stage.
+fn synthesize_confirm_only_deliverable(
+    stage: crate::harness::StageKind,
+    exec_ctx: &ExecutionContext,
+) -> crate::harness::StageDeliverable {
+    let subject = {
+        let t = exec_ctx.task_input.trim();
+        if t.is_empty() {
+            "operation scope".to_string()
+        } else {
+            t.to_string()
+        }
+    };
+    let kind = if matches!(stage, crate::harness::StageKind::Scoping) {
+        "scope_confirmed".to_string()
+    } else {
+        format!("{}_completed", stage.as_str())
+    };
+    crate::harness::StageDeliverable {
+        stage_id: stage.as_str().to_string(),
+        stage_run_id: uuid::Uuid::new_v4(),
+        claims: vec![crate::harness::StageClaim {
+            kind,
+            subject,
+            summary: "Backend-synthesized confirmation for a confirm-only stage \
+                      (no scan tools); the agent submitted no parseable StageDeliverable."
+                .to_string(),
+            evidence_ids: vec![],
+        }],
+        evidence_refs: vec![],
+        skipped_checks: vec![],
+        findings: vec![],
+        required_checks_done: vec![],
+    }
 }
 
 /// S4 · the gate outcome when a stage-tagged subtask ends without a parseable

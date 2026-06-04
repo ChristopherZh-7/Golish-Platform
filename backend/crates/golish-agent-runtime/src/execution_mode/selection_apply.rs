@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 
 use golish_agent_kit::tool_definitions::{
-    get_all_tool_definitions_with_config, get_ask_human_tool_definition,
+    get_all_tool_definitions, get_all_tool_definitions_with_config, get_ask_human_tool_definition,
     get_run_command_tool_definition, get_sub_agent_tool_definitions, sanitize_schema,
 };
 use golish_sub_agents::{SubAgentContext, MAX_AGENT_DEPTH};
@@ -43,6 +43,20 @@ pub async fn apply_tool_selection(
     // 2. run_command (the user-visible alias of run_pty_cmd).
     if selection.include_run_command {
         tools.push(get_run_command_tool_definition());
+    }
+
+    // 2b. Targeted `update_plan` opt-in. The task-mode primary is otherwise
+    //     orchestration-only (no static groups) but still needs the planning/todo
+    //     tool to self-manage each harness stage's steps. Pull just that one
+    //     definition (already schema-sanitised by the selection layer) and skip
+    //     if a static group already provided it (e.g. chat mode).
+    if selection.include_update_plan && !tools.iter().any(|t| t.name == "update_plan") {
+        if let Some(def) = get_all_tool_definitions()
+            .into_iter()
+            .find(|t| t.name == "update_plan")
+        {
+            tools.push(def);
+        }
     }
 
     // 3. ask_human is only meaningful for the primary agent (depth==0).

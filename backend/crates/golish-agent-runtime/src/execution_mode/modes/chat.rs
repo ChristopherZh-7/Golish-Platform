@@ -52,6 +52,9 @@ impl ExecutionModePolicy for ChatModePolicy {
             agent_tools: AgentToolSelection::none(),
             include_run_command: true,
             include_ask_human: true,
+            // Chat already gets `update_plan` via the full static groups above;
+            // no targeted opt-in needed (avoids a duplicate definition).
+            include_update_plan: false,
             deny_overrides: vec![],
         }
     }

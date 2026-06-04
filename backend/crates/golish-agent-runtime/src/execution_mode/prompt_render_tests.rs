@@ -13,6 +13,7 @@ fn render_includes_js_collect_when_enabled() {
         agent_tools: AgentToolSelection::none(),
         include_run_command: true,
         include_ask_human: true,
+        include_update_plan: true,
         deny_overrides: vec![],
     };
     let table = render_tool_table_for_prompt(&s);
@@ -64,6 +65,7 @@ fn selection_to_tool_names_matches_render() {
         agent_tools: AgentToolSelection::none(),
         include_run_command: true,
         include_ask_human: true,
+        include_update_plan: true,
         deny_overrides: vec!["update_plan".into()],
     };
     let names = selection_to_tool_names(&s);
