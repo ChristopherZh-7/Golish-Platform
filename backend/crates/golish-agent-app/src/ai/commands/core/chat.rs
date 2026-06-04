@@ -124,14 +124,14 @@ async fn execute_task_mode(
 
     let task_input = extract_user_message_from_wrapped_prompt(prompt);
 
-    // Lazy-create a `sessions` row so that `tasks.session_id` FK
-    // (UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE) is satisfied.
-    // The chat-panel-level string session id (`_session_id`) is not a UUID and
-    // is not currently mirrored into the `sessions` table; mapping it back
-    // requires a separate schema change. Phase 1 keeps task DB rows isolated
-    // per task invocation; future work can dedupe by chat session.
-    let session_row = sessions::create(
+    // Anchor the chat-panel session string to one stable `sessions` row (Task
+    // 断线恢复 · L1). Upserting by `chat_session_key` (instead of creating a row
+    // per message) is what lets us find + resume this chat's prior operation
+    // below; it also satisfies the `tasks.session_id` FK. Same chat session →
+    // same DB session id on every message.
+    let session_row = sessions::upsert_by_chat_key(
         &state.db_pool,
+        _session_id,
         NewSession {
             title: Some(truncate_for_title(task_input, 80)),
             workspace_path: None,
@@ -142,7 +142,7 @@ async fn execute_task_mode(
         },
     )
     .await
-    .context("Failed to create session row for task mode (FK precondition for tasks)")?;
+    .context("Failed to upsert session row for task mode (FK precondition for tasks)")?;
     let uuid_session_id = session_row.id;
     tracing::info!(
         target: "harness::task_mode",
@@ -168,7 +168,34 @@ async fn execute_task_mode(
     orchestrator.set_profile_override(bridge.get_harness_profile().await);
     let executor = BridgeAgentExecutor::new(bridge.clone());
 
-    let result = orchestrator.run(task_input, &executor).await;
+    // Resume-aware entry (Task 断线恢复 · L2): if this chat session has a
+    // non-terminal operation with a persisted harness checkpoint, resume it from
+    // where it left off instead of starting a new run at scoping. The decision is
+    // purely state-driven — the user's text ("继续" / anything / empty) is NOT
+    // parsed as a keyword. `None` (nothing resumable) → fresh run.
+    let resumable =
+        golish_db::repo::tasks::latest_resumable_by_session(&state.db_pool, uuid_session_id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    target: "harness::task_mode",
+                    error = %e,
+                    "resume lookup failed; starting a fresh run"
+                );
+                None
+            });
+
+    let result = match resumable {
+        Some(task) => {
+            tracing::info!(
+                target: "harness::task_mode",
+                task_id = %task.id,
+                "task mode: resuming prior operation for this chat session"
+            );
+            orchestrator.resume(task.id, task_input, &executor).await
+        }
+        None => orchestrator.run(task_input, &executor).await,
+    };
 
     let duration_ms = start_time.elapsed().as_millis() as u64;
 
