@@ -122,7 +122,10 @@ fn plan_edges_empty_without_any_host() {
 fn plan_edges_host_vuln_is_weak_cooccurrence() {
     let h = Uuid::new_v4();
     let vuln = Uuid::new_v4();
-    let edges = plan_cooccurrence_edges(&[ent("host", h, "10.0.0.5"), ent("vulnerability", vuln, "CVE-2021-1")]);
+    let edges = plan_cooccurrence_edges(&[
+        ent("host", h, "10.0.0.5"),
+        ent("vulnerability", vuln, "CVE-2021-1"),
+    ]);
     assert_eq!(edges.len(), 1);
     assert_eq!(edges[0].from, h);
     assert_eq!(edges[0].to, vuln);
@@ -172,7 +175,9 @@ fn plan_edges_two_hosts_one_vuln_yields_two_edges() {
         ent("vulnerability", vuln, "CVE-2021-1"),
     ]);
     assert_eq!(edges.len(), 2);
-    assert!(edges.iter().all(|e| e.rel == "has_vulnerability" && e.to == vuln));
+    assert!(edges
+        .iter()
+        .all(|e| e.rel == "has_vulnerability" && e.to == vuln));
 }
 
 #[test]
@@ -180,7 +185,11 @@ fn plan_edges_are_capped() {
     let h = Uuid::new_v4();
     let mut v = vec![ent("host", h, "10.0.0.5")];
     for i in 0..(MAX_COOC_EDGES + 10) {
-        v.push(ent("vulnerability", Uuid::new_v4(), &format!("CVE-2021-{i}")));
+        v.push(ent(
+            "vulnerability",
+            Uuid::new_v4(),
+            &format!("CVE-2021-{i}"),
+        ));
     }
     assert_eq!(plan_cooccurrence_edges(&v).len(), MAX_COOC_EDGES);
 }

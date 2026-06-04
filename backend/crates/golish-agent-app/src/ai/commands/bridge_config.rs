@@ -435,11 +435,9 @@ async fn register_pentest_tools(
     // turn calls it to begin the structured planner; the Task-mode router reads the
     // captured objective from the bridge side-channel after the lead turn.
     {
-        let tool = std::sync::Arc::new(
-            crate::ai::start_operation_tool::StartOperationTool::new(
-                bridge.pending_plan_request_handle(),
-            ),
-        );
+        let tool = std::sync::Arc::new(crate::ai::start_operation_tool::StartOperationTool::new(
+            bridge.pending_plan_request_handle(),
+        ));
         let mut registry = bridge.tool_registry().write().await;
         tracing::info!("[lead-agent] Registered tool: start_operation");
         registry.register_tool(tool);

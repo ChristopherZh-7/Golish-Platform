@@ -183,7 +183,10 @@ fn host_from_url(url: &str) -> Option<String> {
         .rsplit_once('@')
         .map(|(_, r)| r)
         .unwrap_or(authority);
-    let host = host_port.split_once(':').map(|(h, _)| h).unwrap_or(host_port);
+    let host = host_port
+        .split_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(host_port);
     if host.is_empty() || host.contains(char::is_whitespace) {
         None
     } else {
