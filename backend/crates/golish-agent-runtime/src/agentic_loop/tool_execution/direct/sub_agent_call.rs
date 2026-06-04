@@ -402,13 +402,14 @@ where
                 let response_text = result.response.clone();
                 let pid = project_id_opt.clone();
                 tokio::spawn(async move {
-                    let inserted =
+                    let stats =
                         extract_and_upsert_entities(graph.as_ref(), &response_text, pid.as_deref())
                             .await;
-                    if inserted > 0 {
+                    if stats.nodes > 0 || stats.edges > 0 {
                         tracing::info!(
-                            inserted,
-                            "[kg-extract] auto-upserted entities from sub-agent response"
+                            nodes = stats.nodes,
+                            edges = stats.edges,
+                            "[kg-extract] auto-upserted from sub-agent response"
                         );
                     }
                 });

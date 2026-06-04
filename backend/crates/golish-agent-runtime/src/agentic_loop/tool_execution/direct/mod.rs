@@ -323,16 +323,17 @@ where
                                 Some(pp)
                             };
                             tokio::spawn(async move {
-                                let inserted = extract_and_upsert_entities(
+                                let stats = extract_and_upsert_entities(
                                     graph.as_ref(),
                                     &stdout_owned,
                                     pid_opt.as_deref(),
                                 )
                                 .await;
-                                if inserted > 0 {
+                                if stats.nodes > 0 || stats.edges > 0 {
                                     tracing::info!(
-                                        inserted,
-                                        "[kg-extract] auto-upserted entities from run_pty_cmd stdout"
+                                        nodes = stats.nodes,
+                                        edges = stats.edges,
+                                        "[kg-extract] auto-upserted from run_pty_cmd stdout"
                                     );
                                 }
                             });

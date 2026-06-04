@@ -15,6 +15,18 @@ use uuid::Uuid;
 use super::common::{error_result, extract_string_param, ToolResult};
 use super::graph_trait::{GraphEntityView, GraphKnowledgeBase};
 
+/// Upper bound on auto-derived co-occurrence edges per scan, so one noisy blob
+/// can't explode the graph (host × vulnerability is a cartesian product).
+const MAX_COOC_EDGES: usize = 50;
+
+/// Outcome of a single [`extract_and_upsert_entities`] pass: how many entity
+/// nodes and relation edges were written into the graph.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KgExtractStats {
+    pub nodes: usize,
+    pub edges: usize,
+}
+
 /// Light-weight regex extractor used by `extract_and_upsert_entities` to
 /// scan arbitrary text for things the knowledge graph cares about. The
 /// regexes are intentionally conservative — they should produce zero
@@ -79,22 +91,23 @@ pub fn extract_kg_candidates(text: &str) -> Vec<(String, String)> {
 #[path = "graph_tests.rs"]
 mod extract_tests;
 
-/// Fire-and-forget upsert of regex-extracted entities into the graph.
-/// Caller decides when this runs (typically: post-sub-agent dispatch
-/// with the response payload) and pre-stringifies whatever text it
-/// wants to scan. Failures log a warn and never propagate.
+/// Fire-and-forget upsert of regex-extracted entities into the graph, plus
+/// deterministically derived edges between them (see [`plan_cooccurrence_edges`]).
+/// Caller decides when this runs (typically: post-sub-agent dispatch with the
+/// response payload) and pre-stringifies whatever text it wants to scan.
+/// Failures log a warn and never propagate.
 pub async fn extract_and_upsert_entities(
     graph: &dyn GraphKnowledgeBase,
     text: &str,
     project_id: Option<&str>,
-) -> usize {
+) -> KgExtractStats {
     let candidates = extract_kg_candidates(text);
     if candidates.is_empty() {
-        return 0;
+        return KgExtractStats::default();
     }
-    let mut inserted = 0usize;
+    let project_uuid = project_id.and_then(|p| Uuid::parse_str(p).ok());
+    let mut upserted: Vec<(String, Uuid, String)> = Vec::with_capacity(candidates.len());
     for (entity_type, name) in candidates {
-        let project_uuid = project_id.and_then(|p| Uuid::parse_str(p).ok());
         let props = json!({
             "source": "regex-extracted",
             "auto": true,
@@ -104,20 +117,170 @@ pub async fn extract_and_upsert_entities(
             .upsert_entity(&entity_type, &name, props, project_uuid)
             .await
         {
-            Ok(_) => {
-                inserted += 1;
-            }
+            Ok(ent) => upserted.push((entity_type, ent.id, name)),
             Err(e) => {
                 tracing::warn!(
                     entity_type = entity_type,
                     name = %name,
                     error = %e,
-                    "[kg-extract] upsert failed",
+                    "[kg-extract] entity upsert failed",
                 );
             }
         }
     }
-    inserted
+
+    // Deterministically derive edges from the entities we just upserted
+    // (host-centric star; never a full mesh). Idempotent: upsert_relation
+    // merges on (from, to, relation_type).
+    let planned = plan_cooccurrence_edges(&upserted);
+    let mut edges = 0usize;
+    for edge in &planned {
+        let props = json!({
+            "source": edge.source,
+            "confidence": edge.confidence,
+            "auto": true,
+        });
+        match graph
+            .upsert_relation(edge.from, edge.to, edge.rel, props)
+            .await
+        {
+            Ok(_) => edges += 1,
+            Err(e) => {
+                tracing::warn!(
+                    rel = edge.rel,
+                    error = %e,
+                    "[kg-extract] relation upsert failed",
+                );
+            }
+        }
+    }
+
+    KgExtractStats {
+        nodes: upserted.len(),
+        edges,
+    }
+}
+
+/// A graph edge derived deterministically from co-occurring entities. `rel` is
+/// one of the documented relation types; `source`/`confidence` land in the
+/// edge's `properties` so queries can later filter weak edges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannedEdge {
+    from: Uuid,
+    to: Uuid,
+    rel: &'static str,
+    source: &'static str,
+    confidence: &'static str,
+}
+
+/// Parse the host out of a URL without pulling in a URL crate. Strips scheme,
+/// userinfo, path/query/fragment, and port. Returns `None` for inputs that
+/// don't look like a single host token (empty or containing whitespace).
+fn host_from_url(url: &str) -> Option<String> {
+    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, r)| r)
+        .unwrap_or(authority);
+    let host = host_port.split_once(':').map(|(h, _)| h).unwrap_or(host_port);
+    if host.is_empty() || host.contains(char::is_whitespace) {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
+/// Deterministically plan edges from entities upserted in one scan, using a
+/// host-centric star topology (never a full mesh):
+/// - **R1 (strong)**: a URL endpoint whose parsed host matches a known host
+///   entity → `host -[exposes_endpoint]-> endpoint` (source `url_parse`).
+/// - **R2 (weak)**: every host × vulnerability that co-occur →
+///   `host -[has_vulnerability]-> vulnerability` (source `cooccurrence`).
+/// - **R3 (weak)**: a URL endpoint with no matching host entity → connect it
+///   to every host present (source `cooccurrence`).
+///
+/// No host present → no edges (vuln/endpoint are never inter-connected).
+/// Result is capped at [`MAX_COOC_EDGES`].
+fn plan_cooccurrence_edges(entities: &[(String, Uuid, String)]) -> Vec<PlannedEdge> {
+    let hosts: Vec<(Uuid, String)> = entities
+        .iter()
+        .filter(|(t, _, _)| t == "host")
+        .map(|(_, id, n)| (*id, n.clone()))
+        .collect();
+    if hosts.is_empty() {
+        return Vec::new();
+    }
+    let vulns: Vec<Uuid> = entities
+        .iter()
+        .filter(|(t, _, _)| t == "vulnerability")
+        .map(|(_, id, _)| *id)
+        .collect();
+    let endpoints: Vec<(Uuid, String)> = entities
+        .iter()
+        .filter(|(t, _, _)| t == "endpoint")
+        .map(|(_, id, n)| (*id, n.clone()))
+        .collect();
+
+    let mut edges: Vec<PlannedEdge> = Vec::new();
+
+    // R2 · host × vulnerability co-occurrence.
+    for (hid, _) in &hosts {
+        for vid in &vulns {
+            if hid != vid {
+                edges.push(PlannedEdge {
+                    from: *hid,
+                    to: *vid,
+                    rel: "has_vulnerability",
+                    source: "cooccurrence",
+                    confidence: "low",
+                });
+            }
+        }
+    }
+
+    // R1 / R3 · endpoints.
+    for (eid, url) in &endpoints {
+        let parsed = host_from_url(url);
+        let matched: Vec<Uuid> = match &parsed {
+            Some(h) => hosts
+                .iter()
+                .filter(|(_, hn)| hn == h)
+                .map(|(id, _)| *id)
+                .collect(),
+            None => Vec::new(),
+        };
+        if matched.is_empty() {
+            // R3: no known host owns this URL → co-occurrence with all hosts.
+            for (hid, _) in &hosts {
+                if hid != eid {
+                    edges.push(PlannedEdge {
+                        from: *hid,
+                        to: *eid,
+                        rel: "exposes_endpoint",
+                        source: "cooccurrence",
+                        confidence: "low",
+                    });
+                }
+            }
+        } else {
+            // R1: deterministic host→endpoint ownership.
+            for hid in matched {
+                if &hid != eid {
+                    edges.push(PlannedEdge {
+                        from: hid,
+                        to: *eid,
+                        rel: "exposes_endpoint",
+                        source: "url_parse",
+                        confidence: "high",
+                    });
+                }
+            }
+        }
+    }
+
+    edges.truncate(MAX_COOC_EDGES);
+    edges
 }
 
 /// Execute graph tool calls (graph_add_entity, graph_add_relation,

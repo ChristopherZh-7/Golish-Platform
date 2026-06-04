@@ -27,7 +27,7 @@ mod web;
 
 pub use ask_human::execute_ask_human_tool;
 pub use common::{error_result, extract_string_param, ToolResult};
-pub use graph::{execute_graph_tool, extract_and_upsert_entities, extract_kg_candidates};
+pub use graph::{execute_graph_tool, extract_and_upsert_entities, extract_kg_candidates, KgExtractStats};
 pub use knowledge_base::execute_knowledge_base_tool;
 pub use memory::execute_memory_tool;
 pub use plan::{execute_plan_patch_tool, execute_plan_tool};
