@@ -350,25 +350,24 @@ impl TaskOrchestrator {
         (out, None)
     }
 
-    /// Post-gate handling shared by both gate sites in [`Self::execute_single_subtask`].
+    /// Post-gate handling for the Executor-driven stage loop, shared by both gate
+    /// sites in [`Self::execute_single_subtask`].
     ///
-    /// On PASS, record the stage's deliverable summary for cross-stage handoff.
-    /// Then either (legacy / `graph_driven == false`) drive the per-subtask cursor
-    /// transition, or (P2 方案 C / `graph_driven == true`) accumulate the flow
-    /// outcome for the Executor-driven loop and leave transitions to the graph.
+    /// On PASS, record the stage's deliverable summary for cross-stage handoff,
+    /// then accumulate the flow outcome (gate ANDed, progress ORed across the
+    /// stage's subtasks) into [`Self::stage_outcome_acc`] for `run_stage_subtasks`
+    /// to report to the graph (which owns the actual stage transition).
     async fn consume_gate_outcome(&mut self, task_id: Uuid, outcome: HarnessGateOutcome) {
         // G · observability: log every stage gate decision at the single chokepoint
-        // both gate sites flow through. The graph-driven path only accumulates into
-        // `stage_outcome_acc`, so without this its PASS/BLOCK decisions were invisible
-        // in the logs (only the legacy `drive_stage_transition` path logged cursor
-        // moves). Pure additive INFO — no behaviour change.
+        // both gate sites flow through (the loop only accumulates into
+        // `stage_outcome_acc`, so without this its PASS/BLOCK decisions would be
+        // invisible in the logs). Pure additive INFO — no behaviour change.
         tracing::info!(
             target: "harness::hook",
             task_id = %task_id,
             stage = %outcome.gated_stage.as_str(),
             gate = if outcome.gate_allowed { "PASS" } else { "BLOCK" },
             findings = outcome.findings_count,
-            graph_driven = self.graph_driven,
             "gate decision"
         );
         if outcome.gate_allowed {
@@ -388,21 +387,17 @@ impl TaskOrchestrator {
                 message: outcome.gated_stage.as_str().to_string(),
             });
         }
-        if self.graph_driven {
-            let flow = crate::harness::operation_flow::StageFlowOutcome {
-                gate_allowed: outcome.gate_allowed,
-                made_progress: outcome.findings_count > 0,
-            };
-            self.stage_outcome_acc = Some(match self.stage_outcome_acc.take() {
-                Some(prev) => crate::harness::operation_flow::StageFlowOutcome {
-                    gate_allowed: prev.gate_allowed && flow.gate_allowed,
-                    made_progress: prev.made_progress || flow.made_progress,
-                },
-                None => flow,
-            });
-        } else {
-            self.drive_stage_transition(task_id, outcome).await;
-        }
+        let flow = crate::harness::operation_flow::StageFlowOutcome {
+            gate_allowed: outcome.gate_allowed,
+            made_progress: outcome.findings_count > 0,
+        };
+        self.stage_outcome_acc = Some(match self.stage_outcome_acc.take() {
+            Some(prev) => crate::harness::operation_flow::StageFlowOutcome {
+                gate_allowed: prev.gate_allowed && flow.gate_allowed,
+                made_progress: prev.made_progress || flow.made_progress,
+            },
+            None => flow,
+        });
     }
 
     /// P2 方案 C · Executor-driven run loop (stage_mode).
@@ -411,9 +406,9 @@ impl TaskOrchestrator {
     /// stage graph; a `ChannelStageRunner` turns each stage node into a request
     /// this method services with `&mut self` (running that stage's subtask group
     /// via `execute_single_subtask` with `graph_driven` on). Conditional bail,
-    /// interrupt, and DB checkpoint come from the graph + executor. On a
-    /// profile/DAG load or graph-build failure it falls back to
-    /// `execute_subtask_loop`.
+    /// interrupt, and DB checkpoint come from the graph + executor. A profile/DAG
+    /// load or graph-build failure errors the run (no legacy fallback — surface
+    /// the failure instead of masking it).
     pub(crate) async fn run_executor_driven(
         &mut self,
         task_id: Uuid,
@@ -484,10 +479,10 @@ impl TaskOrchestrator {
                 g.project(&allowed)
             }
             _ => {
-                tracing::warn!(target: "harness::hook", "graph-flow: profile/DAG load failed; falling back to legacy loop");
-                return self
-                    .execute_subtask_loop(task_id, &mut queue.to_vec(), 0, executor)
-                    .await;
+                tracing::error!(target: "harness::hook", "graph-flow: profile/DAG load failed");
+                return Err(anyhow::anyhow!(
+                    "harness graph-flow: profile/DAG load failed for task {task_id}"
+                ));
             }
         };
 
@@ -502,10 +497,10 @@ impl TaskOrchestrator {
         let graph = match build_runner_graph(&dag, runner) {
             Ok(g) => g,
             Err(e) => {
-                tracing::warn!(target: "harness::hook", error = %e, "graph-flow: build_runner_graph failed; falling back to legacy loop");
-                return self
-                    .execute_subtask_loop(task_id, &mut queue.to_vec(), 0, executor)
-                    .await;
+                tracing::error!(target: "harness::hook", error = %e, "graph-flow: build_runner_graph failed");
+                return Err(anyhow::anyhow!(
+                    "harness graph-flow: build_runner_graph failed: {e}"
+                ));
             }
         };
         let checkpointer = std::sync::Arc::new(
@@ -630,9 +625,10 @@ impl TaskOrchestrator {
 
     /// P2 方案 C · run one stage's subtask group under the Executor.
     ///
-    /// Sets `graph_driven` so `execute_single_subtask` accumulates the flow
-    /// outcome (via `consume_gate_outcome`) instead of driving the cursor, then
-    /// returns the merged [`StageFlowOutcome`] for the graph to route on.
+    /// `execute_single_subtask` accumulates the flow outcome (via
+    /// `consume_gate_outcome`) into [`Self::stage_outcome_acc`]; this method reads
+    /// it back and returns the merged [`StageFlowOutcome`] for the graph to route
+    /// on (the graph owns the actual stage transition).
     #[allow(clippy::too_many_arguments)]
     async fn run_stage_subtasks(
         &mut self,
@@ -644,7 +640,6 @@ impl TaskOrchestrator {
         executor: &dyn AgentExecutor,
         task_id: Uuid,
     ) -> crate::harness::operation_flow::StageFlowOutcome {
-        self.graph_driven = true;
         self.stage_outcome_acc = None;
 
         // Agent-driven stage body (设计 2026-06-04 · D1=B / 阶段内 todo).
@@ -731,7 +726,6 @@ impl TaskOrchestrator {
                 token_usage: None,
             });
 
-        self.graph_driven = false;
         // S1 · a projected stage that produced no gated deliverable must not
         // vacuously PASS — default to BLOCK so the engine interrupts here instead
         // of advancing on nothing (the old vacuous `pass_with_progress` is exactly
@@ -817,179 +811,6 @@ impl TaskOrchestrator {
             });
         }
         approved
-    }
-
-    /// Phase 2/C: gate 通过后按 Operation DAG 推进 operation_state 游标 (Doc 3 §6.2).
-    ///
-    /// `operation_id == task_id` (一个 Task = 一个 operation). 读 `operation_state`
-    /// 拿**真实 profile + 当前 stage** (不再硬编码 assessment), 投影 DAG, 用
-    /// [`crate::harness::decide_transition`] 选下一 stage. C5: 若下一 stage 需人工
-    /// 批准则 hold 并发 `waiting_approval` 事件, 不自动推进. Hold / Complete (无下
-    /// 一格) 同样不写.
-    async fn drive_stage_transition(&mut self, operation_id: Uuid, outcome: HarnessGateOutcome) {
-        let state = match crate::db_shim::operation_state::get(&*self.repo, operation_id).await {
-            Ok(Some(s)) => s,
-            Ok(None) => {
-                tracing::warn!(target: "harness::hook", operation_id = %operation_id, "no operation_state row; skip transition");
-                return;
-            }
-            Err(e) => {
-                tracing::warn!(target: "harness::hook", error = %e, "operation_state get failed");
-                return;
-            }
-        };
-        let profile = match crate::harness::load_embedded_profile(&state.profile) {
-            Ok(Some(p)) => p,
-            Ok(None) => {
-                tracing::warn!(target: "harness::hook", profile = %state.profile, "unknown profile in operation_state; skip transition");
-                return;
-            }
-            Err(e) => {
-                tracing::warn!(target: "harness::hook", error = %e, "profile load failed in transition");
-                return;
-            }
-        };
-        let graph = match crate::harness::base_operation_graph() {
-            Ok(g) => g,
-            Err(e) => {
-                tracing::warn!(target: "harness::hook", error = %e, "base operation graph load failed");
-                return;
-            }
-        };
-        let dag = graph.project(&profile.allowed_stage_set());
-        let decision =
-            crate::harness::decide_transition(outcome.gated_stage, outcome.gate_allowed, &dag);
-        // P2 (graph flow) · pick the next stage. A branch routes by progress
-        // (no findings → bail to reporting) instead of always taking the first
-        // candidate.
-        let Some(next) = crate::harness::operation_flow::chosen_next_stage(
-            &decision,
-            outcome.findings_count > 0,
-        ) else {
-            tracing::info!(
-                target: "harness::hook",
-                operation_id = %operation_id,
-                gated_stage = ?outcome.gated_stage,
-                gate_allowed = outcome.gate_allowed,
-                decision = ?decision,
-                "no stage advance (hold/complete)"
-            );
-            return;
-        };
-
-        // C5 · approval 闸: 下一 stage 需人工批准 + profile policy 打开 → hold,
-        // 发 waiting_approval 事件并**阻塞等用户回复** (user_input_rx). 肯定回复才
-        // 推进游标 (resume); 否定 / 通道关闭 / 无交互通道时保持 hold 不推进.
-        // Two-level model: approval fires only when crossing a 大阶段 boundary
-        // (de-dup per crossing).
-        let needs_approval = crate::harness::load_embedded_phase_map()
-            .map(|pm| {
-                crate::harness::phase_flow::phase_crossing_requires_approval(
-                    &pm,
-                    outcome.gated_stage,
-                    next,
-                    &profile,
-                )
-            })
-            .unwrap_or(false);
-        {
-            if needs_approval {
-                tracing::info!(
-                    target: "harness::hook",
-                    operation_id = %operation_id,
-                    from = ?outcome.gated_stage,
-                    to = ?next,
-                    "transition holds for human approval"
-                );
-                self.emit(AiEvent::TaskProgress {
-                    task_id: operation_id.to_string(),
-                    status: "waiting_approval".to_string(),
-                    message: format!(
-                        "Stage {} → {} requires human approval. Reply to approve \
-                         (yes / approve / 继续) or anything else to hold.",
-                        outcome.gated_stage.as_str(),
-                        next.as_str()
-                    ),
-                });
-
-                // Scope the rx borrow to just the recv so we can emit afterwards.
-                let reply = match self.user_input_rx.as_mut() {
-                    Some(rx) => rx.recv().await,
-                    None => None,
-                };
-                let approved = reply
-                    .as_deref()
-                    .map(approval_reply_is_affirmative)
-                    .unwrap_or(false);
-                if approved {
-                    self.emit(AiEvent::TaskProgress {
-                        task_id: operation_id.to_string(),
-                        status: "running".to_string(),
-                        message: format!("Approval granted; advancing to {}.", next.as_str()),
-                    });
-                } else {
-                    tracing::info!(
-                        target: "harness::hook",
-                        operation_id = %operation_id,
-                        to = ?next,
-                        "approval not granted; cursor held"
-                    );
-                    self.emit(AiEvent::TaskProgress {
-                        task_id: operation_id.to_string(),
-                        status: "waiting_approval".to_string(),
-                        message: format!(
-                            "Approval not granted; staying at {}.",
-                            outcome.gated_stage.as_str()
-                        ),
-                    });
-                    return;
-                }
-            }
-        }
-
-        match crate::db_shim::operation_state::advance_stage(
-            &*self.repo,
-            operation_id,
-            next.as_str(),
-        )
-        .await
-        {
-            Ok(()) => tracing::info!(
-                target: "harness::hook",
-                operation_id = %operation_id,
-                from = ?outcome.gated_stage,
-                to = ?next,
-                "operation_state cursor advanced"
-            ),
-            Err(e) => tracing::warn!(target: "harness::hook", error = %e, "advance_stage failed"),
-        }
-
-        // P1 · roll the stage_run + resume checkpoint forward: close the prior
-        // stage's run, open one for `next`, and rewrite state_blob so a process
-        // kill resumes at `next`. Best-effort (warn-free): failures don't block
-        // the transition the cursor already made.
-        let prior: crate::task_orchestrator::harness_resume::HarnessResumeState =
-            serde_json::from_value(state.state_blob.clone()).unwrap_or_default();
-        if let Some(prev_run) = prior.current_stage_run_id {
-            let _ =
-                crate::db_shim::stage_runs::mark_terminal(&*self.repo, prev_run, "completed").await;
-        }
-        let new_run = Uuid::new_v4();
-        let _ =
-            crate::db_shim::stage_runs::insert(&*self.repo, new_run, operation_id, next.as_str())
-                .await;
-        let rs = crate::task_orchestrator::harness_resume::HarnessResumeState {
-            current_stage: next.as_str().to_string(),
-            current_stage_run_id: Some(new_run),
-            completed_count: prior.completed_count + 1,
-            ..prior
-        };
-        let _ = crate::db_shim::operation_state::write_state_blob(
-            &*self.repo,
-            operation_id,
-            serde_json::to_value(&rs).unwrap_or_default(),
-        )
-        .await;
     }
 
     /// P0 · gate evidence 回查: 把交付物里引用、但 ledger 中**不存在**的 evidence

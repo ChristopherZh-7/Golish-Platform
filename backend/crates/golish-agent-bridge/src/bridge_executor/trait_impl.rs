@@ -3,48 +3,13 @@
 use anyhow::{Context, Result};
 
 use golish_agent_kit::task_orchestrator::{
-    backfill_harness_stage, prompts, AgentExecutor, AgentResult, AgentTokenUsage, ExecutionContext,
-    GeneratorOutput, PlannedSubtask, RefinerOutput,
+    prompts, AgentExecutor, AgentResult, AgentTokenUsage, ExecutionContext,
 };
 
-use super::{describe_plan_parse_failure, extract_json_from_response, BridgeAgentExecutor};
+use super::BridgeAgentExecutor;
 
 #[async_trait::async_trait]
 impl AgentExecutor for BridgeAgentExecutor {
-    async fn generate_subtasks(&self, task_input: &str) -> Result<GeneratorOutput> {
-        tracing::info!("[TaskMode/Generator] Decomposing task into subtasks");
-        let response = self
-            .simple_completion_for_phase(
-                prompts::generator_prompt(),
-                task_input,
-                Some("pipeline_generator"),
-            )
-            .await
-            .context("Generator LLM call failed")?;
-
-        let json_str = extract_json_from_response(&response);
-        // A refusal / clarifying question / non-JSON prose response must NOT be
-        // surfaced as a cryptic `expected value at line 1 column 1` serde error.
-        // `describe_plan_parse_failure` splits "model declined" (clean message,
-        // no serde noise) from genuinely malformed JSON (keep the serde detail).
-        let mut output: GeneratorOutput = serde_json::from_str(json_str).map_err(|e| {
-            anyhow::anyhow!(describe_plan_parse_failure(
-                "task planner",
-                &response,
-                json_str,
-                &e,
-            ))
-        })?;
-
-        // Phase 1 MVP · Operation Harness:
-        // LLM may omit `harness_stage` even when subtask matches a known stage.
-        // Run deterministic keyword-based backfill as a safety net. LLM-supplied
-        // values are preserved (backfill only fills `None` slots).
-        let _filled = backfill_harness_stage(&mut output.subtasks);
-
-        Ok(output)
-    }
-
     async fn execute_subtask(
         &self,
         subtask_title: &str,
@@ -151,39 +116,6 @@ impl AgentExecutor for BridgeAgentExecutor {
                 phase: format!("primary_subtask:{}", agent_label),
             },
         ))
-    }
-
-    async fn refine_plan(
-        &self,
-        execution_context: &ExecutionContext,
-        remaining_subtasks: &[PlannedSubtask],
-    ) -> Result<RefinerOutput> {
-        tracing::info!(
-            "[TaskMode/Refiner] Refining plan ({} remaining subtasks)",
-            remaining_subtasks.len()
-        );
-        let remaining_json = serde_json::to_string_pretty(remaining_subtasks)?;
-        let system = prompts::refiner_prompt(&execution_context.summary(), &remaining_json);
-
-        let response = self
-            .simple_completion_for_phase(
-                &system,
-                "Analyze completed work and adjust the remaining plan.",
-                Some("pipeline_refiner"),
-            )
-            .await
-            .context("Refiner LLM call failed")?;
-
-        let json_str = extract_json_from_response(&response);
-        // Same refusal-vs-malformed split as the generator (see generate_subtasks).
-        serde_json::from_str::<RefinerOutput>(json_str).map_err(|e| {
-            anyhow::anyhow!(describe_plan_parse_failure(
-                "plan refiner",
-                &response,
-                json_str,
-                &e,
-            ))
-        })
     }
 
     async fn generate_report(&self, execution_context: &ExecutionContext) -> Result<AgentResult> {

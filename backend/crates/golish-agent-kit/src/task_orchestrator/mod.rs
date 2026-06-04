@@ -1,10 +1,10 @@
-//! Task Orchestrator — PentAGI-style automated task execution.
+//! Task Orchestrator — harness-driven automated task execution.
 //!
-//! Implements the full Task mode state machine:
-//! 1. **Generator**: Decomposes user input into ordered subtasks
-//! 2. **Primary Agent Loop**: Executes each subtask with delegation
-//! 3. **Refiner**: After each subtask, adjusts remaining plan
-//! 4. **Reporter**: Generates a final task report
+//! A Task = one operation driven by the metalcraft Executor over the profile-
+//! projected Operation DAG: each stage self-plans + dispatches specialists,
+//! submits a StageDeliverable, and passes a deterministic evidence gate before
+//! the graph advances (with human approval at 大阶段 boundaries). A final
+//! reporter summarizes the run.
 //!
 //! This module operates at a level above the `AgentBridge`, calling into it
 //! for each agent invocation while managing the overall task lifecycle and DB
@@ -13,13 +13,13 @@
 //! # Submodules
 //!
 //! - [`prompts`]: prompt templates used by the orchestrator phases.
-//! - [`types`]: planning DTOs, cost tracking, execution context, and the
+//! - [`types`]: planning DTO, token usage, execution context, and the
 //!   [`AgentExecutor`] trait.
-//! - [`orchestrator`]: [`TaskOrchestrator`] struct + entry points (`run`,
-//!   `resume`) + event emission helpers.
-//! - [`subtask_phases`]: the heavy execution methods (`execute_subtask_loop`,
-//!   `execute_single_subtask`, `refine_remaining`) on a separate `impl`
-//!   block.
+//! - [`orchestrator`]: [`TaskOrchestrator`] struct + entry point (`run`) +
+//!   event emission helpers.
+//! - [`subtask_phases`]: the Executor-driven operation loop +
+//!   `execute_single_subtask` (per-stage agentic loop + gate) on a separate
+//!   `impl` block.
 //! - [`helpers`]: small free functions shared across the phases.
 //!
 //! `bridge_executor` (the `AgentBridge`-backed implementation of
@@ -42,6 +42,5 @@ mod types;
 pub use harness_backfill::{backfill_harness_stage, infer_harness_stage};
 pub use orchestrator::TaskOrchestrator;
 pub use types::{
-    AgentExecutor, AgentResult, AgentTokenUsage, ExecutionContext, GeneratorOutput, PlannedSubtask,
-    RefinerOutput, SubtaskModification, SubtaskResult, TaskCostTracker,
+    AgentExecutor, AgentResult, AgentTokenUsage, ExecutionContext, PlannedSubtask, SubtaskResult,
 };

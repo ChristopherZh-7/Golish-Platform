@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::db_shim::{subtasks, tasks};
-use crate::db_traits::{DbRepoProvider, NewTask, SubtaskStatus, TaskStatus};
+use crate::db_traits::{DbRepoProvider, NewTask, TaskStatus};
 use golish_core::events::AiEvent;
 use golish_core::plan::{PlanStep, PlanSummary, StepStatus};
 
@@ -46,12 +46,6 @@ pub struct TaskOrchestrator {
     /// `None` = fall back to the `GOLISH_HARNESS_PROFILE` env default
     /// ([`crate::harness::active_profile_id`]).
     pub(super) profile_override: Option<String>,
-    /// P2 方案 C · when true, the metalcraft Executor owns the stage loop, so
-    /// `execute_single_subtask` must NOT drive the per-subtask cursor transition
-    /// (the graph drives transitions); it accumulates the flow outcome into
-    /// [`Self::stage_outcome_acc`] instead. Default false = legacy per-subtask
-    /// transition (`run_executor_driven` sets/clears it around each stage).
-    pub(super) graph_driven: bool,
     /// P2 方案 C · accumulated [`StageFlowOutcome`] for the stage currently being
     /// run under the Executor (merged across that stage's subtasks: gate ANDed,
     /// progress ORed). Read + cleared by `run_stage_subtasks`.
@@ -73,7 +67,6 @@ impl TaskOrchestrator {
             user_input_tx,
             harness_evidence: std::collections::HashMap::new(),
             profile_override: None,
-            graph_driven: false,
             stage_outcome_acc: None,
         }
     }
@@ -301,65 +294,6 @@ impl TaskOrchestrator {
             }
             _ => {}
         }
-    }
-
-    /// Resume a previously interrupted task from the last completed subtask.
-    ///
-    /// Reloads all completed subtask results from the DB and continues
-    /// execution from the next pending subtask.
-    pub async fn resume(&mut self, task_id: Uuid, executor: &dyn AgentExecutor) -> Result<String> {
-        let task = tasks::get(&*self.repo, task_id)
-            .await?
-            .context("Task not found")?;
-
-        if task.status == TaskStatus::Finished {
-            return Ok(task.result.unwrap_or_default());
-        }
-
-        tasks::update_status(&*self.repo, task.id, TaskStatus::Running).await?;
-
-        let db_subtasks = subtasks::list_by_task(&*self.repo, task.id).await?;
-
-        let completed_count = db_subtasks
-            .iter()
-            .filter(|s| s.status == SubtaskStatus::Finished)
-            .count();
-
-        let mut queue: Vec<PlannedSubtask> = db_subtasks
-            .iter()
-            .map(|s| PlannedSubtask {
-                title: s.title.clone().unwrap_or_default(),
-                description: s.description.clone().unwrap_or_default(),
-                agent: s.agent.map(|a| format!("{:?}", a).to_lowercase()),
-                // Phase 1 MVP: 旧路径恢复时不带 harness 信息. harness_stage=None
-                // 等同于走旧 task_orchestrator 行为 (feature flag OFF).
-                harness_stage: None,
-                nl_slice: None,
-                acceptance_criteria: Vec::new(),
-            })
-            .collect();
-
-        // P1 · restore harness context on resume: the queue was rebuilt from DB
-        // rows that don't carry harness_stage, so re-infer each subtask's stage
-        // when this is a harness operation. Without this, a resumed run silently
-        // loses its gate / cursor advance.
-        if crate::db_shim::operation_state::get(&*self.repo, task.id)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-        {
-            crate::task_orchestrator::harness_backfill::backfill_harness_stage(&mut queue);
-        }
-
-        self.emit(AiEvent::TaskResumed {
-            task_id: task.id.to_string(),
-            subtask_index: completed_count,
-            total_subtasks: queue.len(),
-        });
-
-        self.execute_subtask_loop(task.id, &mut queue, completed_count, executor)
-            .await
     }
 
     pub(super) fn emit(&self, event: AiEvent) {

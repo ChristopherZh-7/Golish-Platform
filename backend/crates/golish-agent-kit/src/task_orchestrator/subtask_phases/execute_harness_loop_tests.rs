@@ -1,17 +1,11 @@
-//! Closed-loop integration tests for the harness stage-transition driver.
+//! Tests for the harness post-gate handling + the two-level phase-approval gate.
 //!
-//! Exercises [`TaskOrchestrator::drive_stage_transition`] — the real glue that
-//! turns a gate outcome into an `operation_state` cursor move — against an
-//! in-memory `operation_state` repo and the live user-input approval channel.
-//! The transition driver is independent of `GOLISH_HARNESS_PROFILE`, so these
-//! tests are deterministic regardless of env.
-//!
-//! Covered closed-loop behaviours (Doc 3 §6.2 / C5):
-//! - gate PASS walks the cursor along the profile-projected DAG, including
-//!   branch first-candidate selection and terminal-stage completion;
-//! - gate BLOCK holds the cursor (no advance);
-//! - entering an approval-gated stage pauses on `waiting_approval`, then resumes
-//!   on an affirmative reply / holds on a non-affirmative reply.
+//! Exercises [`TaskOrchestrator::consume_gate_outcome`] (the post-gate chokepoint
+//! that records the cross-stage handoff + emits `stage_passed` + accumulates the
+//! stage flow outcome) and [`TaskOrchestrator::two_level_phase_gate`] (the live
+//! graph-flow human-approval gate at 大阶段 boundaries), against an in-memory repo
+//! + the live user-input approval channel. Plus P3 RAG-prior wiring and
+//! `fail_task_if_active`. Deterministic regardless of `GOLISH_HARNESS_PROFILE`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -462,62 +456,6 @@ fn saw_waiting_approval(events: &[AiEvent]) -> bool {
         .any(|e| matches!(e, AiEvent::TaskProgress { status, .. } if status == "waiting_approval"))
 }
 
-/// PASS at each stage advances the `operation_state` cursor along the
-/// assessment-projected DAG: scoping → target_intel → external_attack_surface →
-/// (branch first) enumeration → reporting, and a terminal PASS at reporting
-/// completes without moving the cursor. Assessment's approval policy is on, so
-/// the intermediate stages pause for approval — pre-feed affirmative replies.
-#[tokio::test]
-async fn pass_walks_cursor_along_assessment_dag() {
-    let op = Uuid::new_v4();
-    let repo = MemRepo::seed(op, "assessment", "scoping");
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mut orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
-
-    // target_intel / external_attack_surface / enumeration each require approval
-    // under the assessment policy; reporting does not.
-    let approvals = orch.user_input_sender();
-    for _ in 0..3 {
-        approvals.send("approve".to_string()).unwrap();
-    }
-
-    orch.drive_stage_transition(op, pass(StageKind::Scoping))
-        .await;
-    assert_eq!(repo.stage(op).as_deref(), Some("target_intel"));
-
-    orch.drive_stage_transition(op, pass(StageKind::TargetIntel))
-        .await;
-    assert_eq!(repo.stage(op).as_deref(), Some("external_attack_surface"));
-
-    // external_attack_surface → {enumeration, reporting}: first candidate wins.
-    orch.drive_stage_transition(op, pass(StageKind::ExternalAttackSurface))
-        .await;
-    assert_eq!(repo.stage(op).as_deref(), Some("enumeration"));
-
-    orch.drive_stage_transition(op, pass(StageKind::Enumeration))
-        .await;
-    assert_eq!(repo.stage(op).as_deref(), Some("reporting"));
-
-    // reporting is terminal in the projected DAG → Complete → cursor unchanged.
-    orch.drive_stage_transition(op, pass(StageKind::Reporting))
-        .await;
-    assert_eq!(repo.stage(op).as_deref(), Some("reporting"));
-}
-
-/// A blocked gate holds the cursor: no advance regardless of available
-/// successors (the approval channel is never even consulted).
-#[tokio::test]
-async fn block_holds_cursor() {
-    let op = Uuid::new_v4();
-    let repo = MemRepo::seed(op, "assessment", "scoping");
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mut orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
-
-    orch.drive_stage_transition(op, block(StageKind::Scoping))
-        .await;
-    assert_eq!(repo.stage(op).as_deref(), Some("scoping"));
-}
-
 /// A gate PASS routed through `consume_gate_outcome` (the single chokepoint both
 /// gate sites flow through) emits an authoritative `stage_passed` TaskProgress
 /// carrying the stage id. The UI keys the "Stage complete" milestone + per-stage
@@ -567,50 +505,71 @@ async fn block_emits_no_stage_passed() {
     );
 }
 
-/// Crossing a 大阶段 boundary (two-level model: prep → active_recon at
-/// target_intel → external_attack_surface, pentest policy on) emits
-/// `waiting_approval` and, on a non-affirmative reply, holds the cursor.
-/// (Intra-phase advances like vuln_triage → verification no longer gate —
-/// approval converged onto phase boundaries.)
+/// The live graph-flow approval gate: crossing a 大阶段 boundary (two-level model:
+/// prep → active_recon at target_intel → external_attack_surface, pentest policy
+/// on) emits `waiting_approval`; a non-affirmative reply withholds approval (the
+/// caller then downgrades the stage outcome to blocked so the engine interrupts).
+/// Intra-phase advances (e.g. vuln_triage → verification) never gate — approval
+/// converged onto phase boundaries.
 #[tokio::test]
-async fn approval_gate_holds_on_non_affirmative_reply() {
+async fn two_level_phase_gate_withholds_on_non_affirmative_reply() {
+    use crate::harness::operation_flow::StageFlowOutcome;
     let op = Uuid::new_v4();
     let repo = MemRepo::seed(op, "pentest", "target_intel");
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
 
+    let graph = crate::harness::base_operation_graph().unwrap();
+    let profile = crate::harness::load_embedded_profile("pentest")
+        .unwrap()
+        .unwrap();
+    let dag = graph.project(&profile.allowed_stage_set());
+
     orch.user_input_sender().send("no".to_string()).unwrap();
-    orch.drive_stage_transition(op, pass(StageKind::TargetIntel))
+    let approved = orch
+        .two_level_phase_gate(
+            op,
+            StageKind::TargetIntel,
+            StageFlowOutcome::pass_with_progress(),
+            &dag,
+            Some(&profile),
+        )
         .await;
 
-    assert_eq!(
-        repo.stage(op).as_deref(),
-        Some("target_intel"),
-        "non-affirmative reply must hold the cursor"
-    );
+    assert!(!approved, "non-affirmative reply must withhold approval");
     assert!(saw_waiting_approval(&drain(&mut rx)));
 }
 
-/// Same phase boundary, but an affirmative reply resumes the transition and
-/// advances the cursor across the 大阶段 boundary.
+/// Same phase boundary, but an affirmative reply grants approval (the caller then
+/// proceeds with the cross-phase advance).
 #[tokio::test]
-async fn approval_gate_resumes_on_affirmative_reply() {
+async fn two_level_phase_gate_approves_on_affirmative_reply() {
+    use crate::harness::operation_flow::StageFlowOutcome;
     let op = Uuid::new_v4();
     let repo = MemRepo::seed(op, "pentest", "target_intel");
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
+
+    let graph = crate::harness::base_operation_graph().unwrap();
+    let profile = crate::harness::load_embedded_profile("pentest")
+        .unwrap()
+        .unwrap();
+    let dag = graph.project(&profile.allowed_stage_set());
 
     orch.user_input_sender()
         .send("approve".to_string())
         .unwrap();
-    orch.drive_stage_transition(op, pass(StageKind::TargetIntel))
+    let approved = orch
+        .two_level_phase_gate(
+            op,
+            StageKind::TargetIntel,
+            StageFlowOutcome::pass_with_progress(),
+            &dag,
+            Some(&profile),
+        )
         .await;
 
-    assert_eq!(
-        repo.stage(op).as_deref(),
-        Some("external_attack_surface"),
-        "affirmative reply must resume + advance the cursor"
-    );
+    assert!(approved, "affirmative reply must grant approval");
     assert!(saw_waiting_approval(&drain(&mut rx)));
 }
 

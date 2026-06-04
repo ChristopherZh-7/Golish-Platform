@@ -1,18 +1,14 @@
 //! Public types and the [`AgentExecutor`] trait used by [`TaskOrchestrator`].
 //!
-//! Includes the planning DTOs (`PlannedSubtask`, `GeneratorOutput`,
-//! `RefinerOutput`, `SubtaskModification`), per-call cost tracking
-//! (`AgentTokenUsage`, `TaskCostTracker`), execution context types
-//! (`ExecutionContext`, `SubtaskResult`, `AgentResult`), and the
-//! [`AgentExecutor`] callback trait that decouples the orchestrator from
-//! `AgentBridge`.
+//! Includes the planning DTO (`PlannedSubtask`), per-call token usage
+//! (`AgentTokenUsage`), execution context types (`ExecutionContext`,
+//! `SubtaskResult`, `AgentResult`), and the [`AgentExecutor`] callback trait
+//! that decouples the orchestrator from `AgentBridge`.
 
 use serde::{Deserialize, Serialize};
 
 use anyhow::Result;
 
-/// Maximum number of subtasks per task (safety limit matching PentAGI's TasksNumberLimit+3).
-pub(super) const MAX_SUBTASKS: usize = 13;
 /// Maximum reflector attempts before giving up (matches PentAGI's maxReflectorCallsPerChain).
 pub(super) const MAX_REFLECTOR_RETRIES: usize = 3;
 
@@ -37,53 +33,6 @@ pub struct PlannedSubtask {
     pub acceptance_criteria: Vec<String>,
 }
 
-/// The generator's response — a list of subtasks.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GeneratorOutput {
-    pub subtasks: Vec<PlannedSubtask>,
-}
-
-/// The refiner's response — structured patch operations on the remaining plan.
-///
-/// Mirrors PentAGI's `SubtaskPatch` pattern: instead of regenerating the entire plan,
-/// the refiner applies surgical operations (add/remove/modify/reorder) which is
-/// more token-efficient and preserves context better.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RefinerOutput {
-    /// Subtasks to add to the queue.
-    #[serde(default)]
-    pub add: Vec<PlannedSubtask>,
-    /// Indices (0-based, relative to remaining queue) to remove.
-    #[serde(default)]
-    pub remove: Vec<usize>,
-    /// Modifications to apply to existing subtasks (by 0-based index in remaining queue).
-    #[serde(default)]
-    pub modify: Vec<SubtaskModification>,
-    /// New ordering of remaining subtasks (0-based indices). If provided, subtasks
-    /// are reordered accordingly before add/remove operations.
-    #[serde(default)]
-    pub reorder: Option<Vec<usize>>,
-    /// Whether the task is considered complete (skip remaining subtasks).
-    #[serde(default)]
-    pub complete: bool,
-}
-
-/// A modification to an existing subtask in the remaining queue.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubtaskModification {
-    /// 0-based index in the remaining queue.
-    pub index: usize,
-    /// New title (if changed).
-    #[serde(default)]
-    pub title: Option<String>,
-    /// New description (if changed).
-    #[serde(default)]
-    pub description: Option<String>,
-    /// New agent assignment (if changed).
-    #[serde(default)]
-    pub agent: Option<String>,
-}
-
 /// Token usage statistics for a single agent call.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentTokenUsage {
@@ -93,30 +42,6 @@ pub struct AgentTokenUsage {
     pub duration_ms: u64,
     /// Agent phase that consumed these tokens (e.g. "generator", "primary_agent", "refiner", "reporter").
     pub phase: String,
-}
-
-/// Accumulated cost tracking across all agent calls in a task.
-#[derive(Debug, Clone, Default)]
-pub struct TaskCostTracker {
-    pub entries: Vec<AgentTokenUsage>,
-}
-
-impl TaskCostTracker {
-    pub fn record(&mut self, entry: AgentTokenUsage) {
-        self.entries.push(entry);
-    }
-
-    pub fn total_input_tokens(&self) -> u64 {
-        self.entries.iter().map(|e| e.input_tokens).sum()
-    }
-
-    pub fn total_output_tokens(&self) -> u64 {
-        self.entries.iter().map(|e| e.output_tokens).sum()
-    }
-
-    pub fn total_duration_ms(&self) -> u64 {
-        self.entries.iter().map(|e| e.duration_ms).sum()
-    }
 }
 
 /// Context accumulated during task execution, passed between agents.
@@ -277,9 +202,6 @@ impl AgentResult {
 /// (PentAGI-style per-chain cost accounting).
 #[async_trait::async_trait]
 pub trait AgentExecutor: Send + Sync {
-    /// Run the generator to decompose the task into subtasks.
-    async fn generate_subtasks(&self, task_input: &str) -> Result<GeneratorOutput>;
-
     /// Execute a single subtask as the primary agent.
     /// Returns the result text and optional token usage.
     /// `agent_type` is the specialist type assigned by the Generator (e.g., "pentester", "coder").
@@ -290,13 +212,6 @@ pub trait AgentExecutor: Send + Sync {
         execution_context: &ExecutionContext,
         agent_type: Option<&str>,
     ) -> Result<AgentResult>;
-
-    /// Run the refiner to adjust the remaining plan.
-    async fn refine_plan(
-        &self,
-        execution_context: &ExecutionContext,
-        remaining_subtasks: &[PlannedSubtask],
-    ) -> Result<RefinerOutput>;
 
     /// Run the reporter to generate the final summary.
     async fn generate_report(&self, execution_context: &ExecutionContext) -> Result<AgentResult>;
