@@ -55,14 +55,24 @@ where
     }
 
     if tool_name == "update_plan" {
-        let (value, success) =
-            execute_plan_tool(ctx.plan_manager, ctx.events.event_tx, tool_args).await;
+        let (value, success) = execute_plan_tool(
+            ctx.plan_manager,
+            ctx.events.event_tx,
+            tool_args,
+            ctx.harness_stage.map(|s| s.as_str()),
+        )
+        .await;
         return Ok(ToolExecutionResult { value, success });
     }
 
     if tool_name == "update_plan_patch" {
-        let (value, success) =
-            execute_plan_patch_tool(ctx.plan_manager, ctx.events.event_tx, tool_args).await;
+        let (value, success) = execute_plan_patch_tool(
+            ctx.plan_manager,
+            ctx.events.event_tx,
+            tool_args,
+            ctx.harness_stage.map(|s| s.as_str()),
+        )
+        .await;
         return Ok(ToolExecutionResult { value, success });
     }
 

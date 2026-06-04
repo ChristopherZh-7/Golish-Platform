@@ -70,6 +70,15 @@ export interface Session {
   plan?: TaskPlan;
   planMessageId?: string | null;
   retiredPlans?: RetiredPlan[];
+  /**
+   * Per-harness-stage plan buckets (task mode, design 2026-06-04). Each
+   * `update_plan` tagged with a `stage_id` lands in its own bucket so the UI
+   * renders one card per stage instead of a single ever-growing list.
+   * Chat / non-harness planning leaves this undefined and uses `plan` above.
+   */
+  plansByStage?: Record<string, TaskPlan>;
+  /** Order stages first appeared, so the per-stage cards render in run order. */
+  stageOrder?: string[];
   detailViewMode?: DetailViewMode;
   toolDetailRequestIds?: string[] | null;
   interactiveMode?: InteractiveModeState | null;

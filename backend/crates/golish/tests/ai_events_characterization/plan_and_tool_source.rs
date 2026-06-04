@@ -38,6 +38,7 @@ fn test_plan_updated_with_explanation_serialization() {
             },
         ],
         explanation: Some("Updated plan based on code analysis results".to_string()),
+        stage_id: None,
     };
     let json = serde_json::to_value(&event).unwrap();
     insta::assert_json_snapshot!(json);
@@ -69,6 +70,7 @@ fn test_plan_updated_without_explanation_serialization() {
             },
         ],
         explanation: None,
+        stage_id: None,
     };
     let json = serde_json::to_value(&event).unwrap();
     insta::assert_json_snapshot!(json);

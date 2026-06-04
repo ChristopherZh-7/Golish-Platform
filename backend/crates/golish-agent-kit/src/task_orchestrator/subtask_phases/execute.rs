@@ -508,6 +508,30 @@ impl TaskOrchestrator {
         let thread = task_id.to_string();
         let mut exec_fut = Box::pin(executor_obj.run(OperationFlowState::default(), &thread));
 
+        // Part 2 · per-stage roadmap (design 2026-06-04 · per-stage-plan-cards):
+        // emit a `pending` seed plan for EVERY stage in the projected DAG up
+        // front, in DAG node order, so the UI shows the full operation roadmap
+        // (scoping → … → reporting) immediately — not-yet-run stages render as
+        // greyed placeholders. When a stage actually runs, its stage-entry
+        // `in_progress` seed (and then the agent's real `update_plan`) supersede
+        // its placeholder in the frontend's per-stage bucket. Version 0 marks a
+        // seed; the frontend always lets a newer seed/real update replace it.
+        for &stage in &dag.nodes {
+            let seed_steps = vec![golish_core::plan::PlanStep {
+                id: None,
+                step: synthesize_stage_subtask(stage, &exec_ctx.task_input).title,
+                status: StepStatus::Pending,
+                failure_kind: None,
+            }];
+            self.emit(AiEvent::PlanUpdated {
+                version: 0,
+                summary: golish_core::plan::PlanSummary::from_steps(&seed_steps),
+                steps: seed_steps,
+                explanation: None,
+                stage_id: Some(stage.as_str().to_string()),
+            });
+        }
+
         self.emit(AiEvent::TaskProgress {
             task_id: task_id.to_string(),
             status: "running".to_string(),
@@ -647,6 +671,28 @@ impl TaskOrchestrator {
             title: planned.title.clone(),
             description: planned.description.clone(),
             agent: planned.agent.clone(),
+        });
+
+        // Per-stage plan card seed (design 2026-06-04 · per-stage-plan-cards):
+        // emit a deterministic, stage-tagged plan the moment we enter the stage
+        // so the UI shows a card for THIS stage immediately — even confirm-only
+        // stages (scoping) that may never call `update_plan` themselves. The
+        // agent's own stage-scoped `update_plan` calls (tagged with the same
+        // stage) then refine/replace this seed in the frontend's per-stage
+        // bucket. Version 0 is a sentinel below the PlanManager's monotonic
+        // counter so a real update always supersedes the seed.
+        let seed_steps = vec![golish_core::plan::PlanStep {
+            id: None,
+            step: planned.title.clone(),
+            status: StepStatus::InProgress,
+            failure_kind: None,
+        }];
+        self.emit(AiEvent::PlanUpdated {
+            version: 0,
+            summary: golish_core::plan::PlanSummary::from_steps(&seed_steps),
+            steps: seed_steps,
+            explanation: None,
+            stage_id: Some(stage.as_str().to_string()),
         });
 
         self.emit(AiEvent::TaskProgress {

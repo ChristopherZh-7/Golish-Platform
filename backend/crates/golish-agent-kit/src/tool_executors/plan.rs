@@ -12,6 +12,7 @@ pub async fn execute_plan_tool(
     plan_manager: &Arc<crate::planner::PlanManager>,
     event_tx: &tokio::sync::mpsc::UnboundedSender<AiEvent>,
     args: &serde_json::Value,
+    stage_id: Option<&str>,
 ) -> ToolResult {
     let update_args: crate::planner::UpdatePlanArgs = match serde_json::from_value(args.clone()) {
         Ok(a) => a,
@@ -25,6 +26,7 @@ pub async fn execute_plan_tool(
                 summary: plan.summary.clone(),
                 steps: plan.steps.clone(),
                 explanation: None,
+                stage_id: stage_id.map(|s| s.to_string()),
             });
 
             (
@@ -72,6 +74,7 @@ pub async fn execute_plan_patch_tool(
     plan_manager: &Arc<crate::planner::PlanManager>,
     event_tx: &tokio::sync::mpsc::UnboundedSender<AiEvent>,
     args: &serde_json::Value,
+    stage_id: Option<&str>,
 ) -> ToolResult {
     let parsed: UpdatePlanPatchArgs = match serde_json::from_value(args.clone()) {
         Ok(a) => a,
@@ -93,6 +96,7 @@ pub async fn execute_plan_patch_tool(
                 summary: plan.summary.clone(),
                 steps: plan.steps.clone(),
                 explanation: plan.explanation.clone(),
+                stage_id: stage_id.map(|s| s.to_string()),
             });
 
             (
@@ -148,7 +152,7 @@ mod patch_tool_tests {
         let manager = seeded_manager(&["A"]).await;
         let (tx, mut rx) = channel();
         let args = json!({ "ops": [] });
-        let (value, success) = execute_plan_patch_tool(&manager, &tx, &args).await;
+        let (value, success) = execute_plan_patch_tool(&manager, &tx, &args, None).await;
         assert!(!success);
         let err = value.get("error").and_then(|v| v.as_str()).unwrap_or("");
         assert!(err.contains("at least one op"));
@@ -164,7 +168,7 @@ mod patch_tool_tests {
                 { "op": "add", "after_id": null, "title": "Z", "status": "pending" }
             ]
         });
-        let (value, success) = execute_plan_patch_tool(&manager, &tx, &args).await;
+        let (value, success) = execute_plan_patch_tool(&manager, &tx, &args, None).await;
         assert!(success, "{value}");
         assert_eq!(value.get("ops_applied").and_then(|v| v.as_u64()), Some(1));
         let snapshot = manager.snapshot().await;
@@ -197,7 +201,7 @@ mod patch_tool_tests {
                 { "op": "add" }
             ]
         });
-        let (value, success) = execute_plan_patch_tool(&manager, &tx, &args).await;
+        let (value, success) = execute_plan_patch_tool(&manager, &tx, &args, None).await;
         assert!(!success);
         assert!(value
             .get("error")
@@ -220,7 +224,7 @@ mod patch_tool_tests {
                   "status": "completed" }
             ]
         });
-        let (value, success) = execute_plan_patch_tool(&manager, &tx, &args).await;
+        let (value, success) = execute_plan_patch_tool(&manager, &tx, &args, None).await;
         assert!(success, "{value}");
         let snapshot = manager.snapshot().await;
         assert_eq!(snapshot.steps.len(), 2);
@@ -243,7 +247,7 @@ mod patch_tool_tests {
                 { "op": "modify", "id": b, "status": "in_progress" }
             ]
         });
-        let (value, success) = execute_plan_patch_tool(&manager, &tx, &args).await;
+        let (value, success) = execute_plan_patch_tool(&manager, &tx, &args, None).await;
         assert!(!success);
         assert!(value
             .get("error")

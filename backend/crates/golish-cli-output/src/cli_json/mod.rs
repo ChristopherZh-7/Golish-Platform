@@ -463,6 +463,7 @@ pub fn convert_to_cli_json(event: &AiEvent) -> CliJsonEvent {
             summary,
             steps,
             explanation,
+            ..
         } => CliJsonEvent::new(
             "plan_updated",
             workflow::plan_updated(*version, summary, steps, explanation),

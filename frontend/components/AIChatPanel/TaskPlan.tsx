@@ -15,6 +15,15 @@ export interface TaskPlanViewModel {
   retiredAt?: string;
 }
 
+/**
+ * Per-harness-stage plan view model (task mode, design 2026-06-04). Each stage
+ * gets its own card rendered by `StagePlanStack`, in `stageOrder` (run order).
+ */
+export interface StagePlansViewModel {
+  stageOrder: string[];
+  plansByStage: Record<string, TaskPlanViewModel>;
+}
+
 export function PlanStepIcon({ status, size = "sm" }: { status: string; size?: "sm" | "md" }) {
   const s = size === "sm" ? "w-3 h-3" : "w-3.5 h-3.5";
   switch (status) {

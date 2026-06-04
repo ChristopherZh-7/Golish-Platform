@@ -435,6 +435,7 @@ impl TaskOrchestrator {
             summary,
             steps,
             explanation: None,
+            stage_id: None,
         });
     }
 }

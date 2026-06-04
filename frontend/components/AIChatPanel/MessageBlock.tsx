@@ -15,7 +15,9 @@ import {
 } from "./ChatSubComponents";
 import { InlinePlanCard } from "./InlinePlanCard";
 import { buildMessageSegments } from "./messageSegments";
+import { StagePlanStack } from "./StagePlanStack";
 import { SubAgentInlineCard } from "./SubAgentInlineCard";
+import type { StagePlansViewModel } from "./TaskPlan";
 
 /**
  * Strip XML-formatted tool call tags that some models (e.g. Mistral)
@@ -76,6 +78,7 @@ export const MessageBlock = memo(function MessageBlock({
   approvalMode,
   onApprovalModeChange,
   taskPlan,
+  stagePlans,
   planTextOffset,
   terminalId,
 }: {
@@ -86,11 +89,15 @@ export const MessageBlock = memo(function MessageBlock({
   approvalMode?: string;
   onApprovalModeChange?: (mode: "ask" | "allowlist" | "run-all") => void;
   taskPlan?: TaskPlanViewModel | null;
+  stagePlans?: StagePlansViewModel | null;
   planTextOffset?: number | null;
   terminalId?: string | null;
 }) {
   const isUser = message.role === "user";
-  const nestedIds = usePlanNestedRequestIds(taskPlan ? (terminalId ?? null) : null);
+  const hasStagePlans = !!stagePlans && stagePlans.stageOrder.length > 0;
+  const nestedIds = usePlanNestedRequestIds(
+    taskPlan || hasStagePlans ? (terminalId ?? null) : null
+  );
 
   const thinkingSegments = message.thinkingSegments;
   const hasThinkingSegments = !!thinkingSegments && thinkingSegments.length > 0;
@@ -172,11 +179,21 @@ export const MessageBlock = memo(function MessageBlock({
         // An empty (lazy) plan with zero steps carries no useful "N / M tasks
         // done" info and used to render a broken "Infinity more" card, so only
         // surface the plan card once it actually has steps.
-        const shouldShowPlan = !isUser && taskPlan && taskPlan.steps.length > 0;
+        const shouldShowPlan =
+          !isUser && (hasStagePlans || (!!taskPlan && taskPlan.steps.length > 0));
+        // Per-stage stack (task mode) vs single card (chat mode). The stack
+        // always anchors at the top of the plan-target block; the inline
+        // offset / plan-marker placement only applies to the single card.
+        const planNode = hasStagePlans ? (
+          <StagePlanStack stagePlans={stagePlans!} />
+        ) : (
+          <InlinePlanCard plan={taskPlan!} />
+        );
         const hasPlanMarker = segments.some((s) => s.kind === "plan_marker");
         // First text segment may not be index 0 once thinking bursts are spliced in.
         const firstTextIdx = segments.findIndex((s) => s.kind === "text");
         const willInsertInline =
+          !hasStagePlans &&
           !!shouldShowPlan &&
           ((planTextOffset != null && planTextOffset > 0 && firstTextIdx !== -1) || hasPlanMarker);
         const showPlanAtTop = !!shouldShowPlan && !willInsertInline;
@@ -184,7 +201,7 @@ export const MessageBlock = memo(function MessageBlock({
 
         return (
           <div className="flex flex-col gap-2">
-            {showPlanAtTop && <InlinePlanCard plan={taskPlan!} />}
+            {showPlanAtTop && planNode}
             {segments.map((seg, idx) => {
               if (seg.kind === "thinking") {
                 return (
@@ -224,7 +241,7 @@ export const MessageBlock = memo(function MessageBlock({
                           <Markdown content={before} />
                         </div>
                       )}
-                      <InlinePlanCard plan={taskPlan!} />
+                      {planNode}
                       {after.trim() && (
                         <div className="text-[12px] text-foreground leading-[1.55]">
                           <Markdown content={after} />
@@ -244,7 +261,7 @@ export const MessageBlock = memo(function MessageBlock({
               if (seg.kind === "plan_marker") {
                 if (!planInserted && shouldShowPlan) {
                   planInserted = true;
-                  return <InlinePlanCard key={`seg-${idx}`} plan={taskPlan!} />;
+                  return <React.Fragment key={`seg-${idx}`}>{planNode}</React.Fragment>;
                 }
                 return null;
               }
@@ -271,8 +288,11 @@ export const MessageBlock = memo(function MessageBlock({
                 />
               );
             })}
-            {shouldShowPlan && !planInserted && <InlinePlanCard plan={taskPlan!} />}
-            {!taskPlan && !isUser && message.toolCalls?.some((tc) => tc.name === "update_plan") && (
+            {shouldShowPlan && !planInserted && planNode}
+            {!taskPlan &&
+              !hasStagePlans &&
+              !isUser &&
+              message.toolCalls?.some((tc) => tc.name === "update_plan") && (
               <div className="mx-0 my-1.5 flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--border-subtle)] bg-background/60 text-[11.5px] text-muted-foreground/50">
                 <Loader2 className="w-3 h-3 animate-spin text-accent flex-shrink-0" />
                 <span>Planning…</span>

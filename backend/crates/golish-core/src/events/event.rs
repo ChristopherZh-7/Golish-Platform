@@ -385,6 +385,12 @@ pub enum AiEvent {
         steps: Vec<crate::plan::PlanStep>,
         /// Optional explanation
         explanation: Option<String>,
+        /// Active harness stage id (`scoping`, `enumeration`, …) when this
+        /// plan update was emitted, so the frontend can bucket each stage's
+        /// todos into its own card. `None` for chat-mode / non-harness
+        /// planning (keeps the legacy single-card behaviour).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stage_id: Option<String>,
     },
 
     // Server tool events (Claude's native web_search/web_fetch)

@@ -171,6 +171,7 @@ fn test_all_events_roundtrip() {
                 },
             ],
             explanation: None,
+            stage_id: None,
         },
     ];
 

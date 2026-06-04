@@ -117,6 +117,12 @@ export interface WorkflowActions {
     currentMessageId?: string | null,
     newMessageId?: string | null
   ) => void;
+  /**
+   * Route a stage-tagged plan update into its per-stage bucket
+   * (`plansByStage[stageId]`) instead of the single session plan. Used by
+   * task-mode harness stages so each stage renders its own card.
+   */
+  setStagePlan: (sessionId: string, stageId: string, plan: TaskPlan) => void;
   syncPlanToPipeline: (sessionId: string, plan: TaskPlan) => void;
 }
 

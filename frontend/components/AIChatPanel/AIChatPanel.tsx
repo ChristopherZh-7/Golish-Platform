@@ -140,7 +140,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
     generateTitleRef: sessionInit.generateTitleRef,
   });
 
-  const { activeAiSessionId, taskPlan, planTargetIdx } = useTaskPlanState(
+  const { activeAiSessionId, taskPlan, stagePlans, planTargetIdx } = useTaskPlanState(
     messages,
     planMessageIdRef
   );
@@ -321,6 +321,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
                     <MessageBlock
                       message={msg}
                       taskPlan={isPlanTarget ? taskPlan : null}
+                      stagePlans={isPlanTarget ? stagePlans : null}
                       planTextOffset={isPlanTarget ? planTextOffsetRef.current : null}
                       terminalId={activeAiSessionId}
                       pendingApproval={stablePendingApproval}

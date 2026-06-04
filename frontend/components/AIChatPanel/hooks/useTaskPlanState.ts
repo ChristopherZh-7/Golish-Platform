@@ -1,7 +1,7 @@
 import { type MutableRefObject, useCallback, useEffect, useMemo } from "react";
 import { getPlan } from "@/lib/ai";
 import { type ChatMessage, useStore } from "@/store";
-import type { TaskPlanViewModel } from "../TaskPlan";
+import type { StagePlansViewModel, TaskPlanViewModel } from "../TaskPlan";
 
 const EMPTY_RETIRED: any[] = [];
 
@@ -35,6 +35,37 @@ export function useTaskPlanState(
     [storePlan]
   );
 
+  // Per-stage plan buckets (task mode, design 2026-06-04). Selected as separate
+  // stable refs (Immer gives a fresh ref only when that stage's data changes),
+  // then combined in a memo so unrelated state changes don't churn.
+  const storeStageOrder = useStore((s) => {
+    if (!s.activeConversationId) return null;
+    const sid = s.conversations[s.activeConversationId]?.aiSessionId;
+    if (sid && s.sessions[sid]?.stageOrder?.length) return s.sessions[sid].stageOrder ?? null;
+    const termId = s.conversationTerminals[s.activeConversationId]?.[0];
+    if (termId && s.sessions[termId]?.stageOrder?.length) return s.sessions[termId].stageOrder ?? null;
+    return null;
+  });
+  const storePlansByStage = useStore((s) => {
+    if (!s.activeConversationId) return null;
+    const sid = s.conversations[s.activeConversationId]?.aiSessionId;
+    if (sid && s.sessions[sid]?.plansByStage) return s.sessions[sid].plansByStage ?? null;
+    const termId = s.conversationTerminals[s.activeConversationId]?.[0];
+    if (termId && s.sessions[termId]?.plansByStage) return s.sessions[termId].plansByStage ?? null;
+    return null;
+  });
+
+  const stagePlans = useMemo<StagePlansViewModel | null>(() => {
+    if (!storeStageOrder?.length || !storePlansByStage) return null;
+    const plansByStage: Record<string, TaskPlanViewModel> = {};
+    for (const sid of storeStageOrder) {
+      const p = storePlansByStage[sid];
+      if (p) plansByStage[sid] = { version: p.version, steps: p.steps, summary: p.summary };
+    }
+    if (Object.keys(plansByStage).length === 0) return null;
+    return { stageOrder: storeStageOrder, plansByStage };
+  }, [storeStageOrder, storePlansByStage]);
+
   // P0-1 fallback fetch: when a conversation activates with an
   // `aiSessionId` but the store has no plan for it (e.g. fresh app start
   // and the `PlanUpdated` broadcast was missed), pull the latest plan
@@ -45,6 +76,9 @@ export function useTaskPlanState(
   useEffect(() => {
     if (!activeAiSessionId) return;
     if (storePlan?.steps && storePlan.steps.length > 0) return;
+    // Per-stage plans present → don't pull the legacy single snapshot; it would
+    // re-introduce a merged single card alongside the per-stage cards.
+    if (storeStageOrder?.length) return;
 
     let cancelled = false;
     const sid = activeAiSessionId;
@@ -70,7 +104,7 @@ export function useTaskPlanState(
     return () => {
       cancelled = true;
     };
-  }, [activeAiSessionId, storePlan]);
+  }, [activeAiSessionId, storePlan, storeStageOrder]);
 
   const storePlanMessageId = useStore((s) => {
     if (!s.activeConversationId) return null;
@@ -108,12 +142,12 @@ export function useTaskPlanState(
       )
         return i;
     }
-    if (taskPlan) {
+    if (taskPlan || (stagePlans && stagePlans.stageOrder.length > 0)) {
       const firstAssistant = messages.findIndex((m) => m.role === "assistant");
       if (firstAssistant >= 0) return firstAssistant;
     }
     return -1;
-  }, [messages, taskPlan, storePlanMessageId, planMessageIdRef.current]);
+  }, [messages, taskPlan, stagePlans, storePlanMessageId, planMessageIdRef.current]);
 
   const retiredPlansByMsg = useMemo(() => {
     const map = new Map<string, TaskPlanViewModel[]>();
@@ -133,6 +167,7 @@ export function useTaskPlanState(
   return {
     activeAiSessionId,
     taskPlan,
+    stagePlans,
     planTargetIdx,
     retiredPlansByMsg,
   };

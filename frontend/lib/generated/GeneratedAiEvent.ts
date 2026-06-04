@@ -174,7 +174,14 @@ steps: Array<PlanStep>,
 /**
  * Optional explanation
  */
-explanation: string | null, } | { "type": "server_tool_started", 
+explanation: string | null, 
+/**
+ * Active harness stage id (`scoping`, `enumeration`, …) when this
+ * plan update was emitted, so the frontend can bucket each stage's
+ * todos into its own card. `None` for chat-mode / non-harness
+ * planning (keeps the legacy single-card behaviour).
+ */
+stage_id?: string | null, } | { "type": "server_tool_started", 
 /**
  * Unique identifier for this tool use
  */

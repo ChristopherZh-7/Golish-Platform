@@ -104,6 +104,33 @@ export function createPlanActions(set: ImmerSet<WorkflowStoreDraft>) {
         }
       }),
 
+    setStagePlan: (sessionId: string, stageId: string, plan: TaskPlan) =>
+      set((state) => {
+        if (!state.sessions[sessionId]) {
+          (state.sessions as Record<string, unknown>)[sessionId] = {
+            id: sessionId,
+            tabType: "terminal" as const,
+            inputMode: "terminal" as const,
+            logicalTerminalId: sessionId,
+          };
+        }
+        const session = state.sessions[sessionId] as Record<string, unknown> & {
+          plansByStage?: Record<string, TaskPlan>;
+          stageOrder?: string[];
+        };
+        if (!session.plansByStage) session.plansByStage = {};
+        if (!session.stageOrder) session.stageOrder = [];
+        const prev = session.plansByStage[stageId];
+        // Drop a same-version replay of a REAL update (version >= 1). Version 0
+        // is the seed sentinel: the op-start roadmap emits a `pending` seed per
+        // stage (v0) and the stage-entry emits an `in_progress` seed (v0), so v0
+        // updates must always apply to let a newer seed replace an older one.
+        // Any real `update_plan` (version >= 1) then supersedes the seed.
+        if (prev && prev.version === plan.version && plan.version !== 0) return;
+        session.plansByStage[stageId] = plan;
+        if (!session.stageOrder.includes(stageId)) session.stageOrder.push(stageId);
+      }),
+
     syncPlanToPipeline: (sessionId: string, plan: TaskPlan) =>
       set((state) => {
         if (!state.timelines[sessionId]) state.timelines[sessionId] = [];

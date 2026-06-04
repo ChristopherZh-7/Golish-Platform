@@ -22,6 +22,12 @@ export const handlePlanUpdated: EventHandler<{
     status: "pending" | "in_progress" | "completed" | "cancelled" | "failed";
   }>;
   explanation: string | null;
+  /**
+   * Active harness stage when this update happened (task mode). When set, the
+   * plan is routed into its per-stage bucket so each stage renders its own
+   * card; absent/null keeps the legacy single-card behaviour (chat mode).
+   */
+  stage_id?: string | null;
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
@@ -37,7 +43,11 @@ export const handlePlanUpdated: EventHandler<{
     updated_at: new Date().toISOString(),
   };
   const state = ctx.getState();
-  state.setPlan(ctx.sessionId, plan);
+  if (event.stage_id) {
+    state.setStagePlan(ctx.sessionId, event.stage_id, plan);
+  } else {
+    state.setPlan(ctx.sessionId, plan);
+  }
 };
 
 /**

@@ -275,6 +275,7 @@ impl TaskOrchestrator {
             summary: final_summary,
             steps: final_steps,
             explanation: Some("Task completed".to_string()),
+            stage_id: None,
         });
 
         self.emit(AiEvent::TaskProgress {

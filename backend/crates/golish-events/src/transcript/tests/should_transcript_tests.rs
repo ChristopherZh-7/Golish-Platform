@@ -308,6 +308,7 @@ fn all_variants() -> Vec<(AiEvent, bool)> {
                 },
                 steps: vec![],
                 explanation: None,
+                stage_id: None,
             },
             true,
         ),
