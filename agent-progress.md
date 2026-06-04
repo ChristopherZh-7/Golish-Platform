@@ -29,6 +29,25 @@
 
 ---
 
+### 2026-06-04 · Task 断线恢复（state-driven resume）实现（MCP-agent-4 · DISPATCH off · 用户「方案 A + 全做 开干」）
+
+- **本轮目标**：修「断线后发『继续』被当新任务从 scoping 重来、不恢复上一个 operation」。
+- **根因（systematic-debugging 第一阶段，已核证据）**：入口 `execute_task_mode`（`chat.rs:113`）每条 task 消息 `sessions::create` 新建 DB session（注释直说"per task invocation"）+ `orchestrator.run()` 新建 task + operation_state 从 `Scoping` 起；`deterministic_intent("继续")` 返回 `None` → 落 execute_task_mode 当任务文本喂 scoping。恢复引擎 `Executor::resume`（`graph_engine/executor.rs:276`）+ `DbFlowCheckpointer`（键=task_id，存 `operation_state.state_blob.graph_flow`）已存在但 `run_executor_driven` 永远 `.run(default)`（从不 `.resume()`）。连带：① Interrupted 被落 Finished（`execute.rs` 收尾）；② reaper 把有 checkpoint 的也判 failed。
+- **方案（A+全做，用户拍板）**：恢复改为**状态驱动**（不特判"继续"关键字）。L1 `sessions.chat_session_key` 锚点（迁移+模型字段+`upsert_by_chat_key`）；L1 入口改 upsert（不再每条新建）；L2 `tasks::latest_resumable_by_session`（status∈running/waiting 且 state_blob 有 graph_flow）+ 入口分流 resume vs run；L3 `TaskOrchestrator::resume` + `run_executor_driven(resume:bool)` 调 `Executor::resume(&thread,None)`；L4a `paused_disposition` → Interrupted 落 `Waiting`（不再 Finished、不跑 reporter）；L4b reaper carve-out（有 checkpoint→pause 为 waiting，无→failed）。
+- **改动文件**：`golish-db/migrations/20260604000002_sessions_chat_session_key.sql`(新)、`golish-db/src/{models/session.rs(+字段),repo/sessions.rs(+upsert+测),repo/tasks.rs(+latest_resumable+reaper carve-out+pause fn+4测),lib.rs(启动调 pause 步)}`、`golish-agent-kit/src/task_orchestrator/{orchestrator.rs(+resume),subtask_phases/execute.rs(run_executor_driven +resume 参数/loop 收尾/paused_disposition+测)}`、`golish-agent-app/src/ai/commands/core/chat.rs(upsert+resume 分流)`。
+- **已记录证据（本机实跑）**：
+  - `cargo check -p golish-db` → exit 0；`cargo check -p golish-agent-kit` → exit 0（无告警）；`cargo check -p golish-agent-app` → exit 0。
+  - `cargo nextest -p golish-db -E 'test(repo::tasks) or test(repo::sessions)'` → **5 passed**（upsert/ latest_resumable / fail_abandoned carve-out / pause SQL-shape）。
+  - `cargo nextest -p golish-agent-kit -E 'test(dag_driven_helper_tests) or test(execute_harness_loop)'` → **11 passed**（含新 `paused_disposition_pauses_on_interrupt_only`，原 harness loop 测无回归）。
+  - `cargo nextest -p golish-agent-kit -p golish-agent-app` → **483 passed / 0 skipped**（全量无回归）。
+  - `cargo fmt --check -p golish-db -p golish-agent-kit -p golish-agent-app` → clean。
+  - `cargo clippy -p golish-db -p golish-agent-kit -p golish-agent-app --all-targets` → 本改动代码零告警；仅 `execute_harness_loop_tests.rs`（**未触碰**，属 plan-roadmap-ux-overhaul in_progress 范围）2 个 pre-existing 告警（`stage` dead_code + doc_lazy_continuation）。
+- **未做 / 风险**：① 手动 E2E（需 just dev 运行时：task『搞一下 example.com』→过 scoping→kill/断线→再发『继续』→观察 resume 续跑而非重新问目标）；② 全量 `just precommit` 未跑（仓库既有 fmt/clippy 历史债 + 多 in_progress 未提交，与本改动无关）；③ **零 commit**（AGENTS.md §2.7 等用户授权）；④ steering（恢复时给新指令）本期仅续跑、不注入引擎 FlowUpdate；歧义"暂停 op+新目标"按"输入态续跑"，执行中遇新目标的二选一 UI 留后续。
+- **plan/feature_list**：`docs/superpowers/plans/2026-06-04-task-resume-after-disconnect.md`（新）；`feature_list.json` 加 `task-resume-after-disconnect-2026-06-04`（in_progress）。
+- **下一步建议**：用户做 E2E 验证 → 授权后整批 commit → 转 passing。
+
+---
+
 ### 2026-06-03 · harness-profile-driven-execution 续推 P1/P2：P2-G 可观测 + P1-E1/E2/E3 provider 韧性（MCP-agent-4 · DISPATCH off · 用户「继续推进 P1/P2」→「E1-E3 全做完」）
 
 - **本轮目标**：接前序 P0+P1-C/D 已完成的状态，继续推进 `docs/design/2026-06-03-harness-profile-driven-execution.md` 的 P1（E provider 韧性）+ P2（F 分诊 / G 可观测）。

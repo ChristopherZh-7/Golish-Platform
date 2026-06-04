@@ -11,6 +11,26 @@
   ],
   "features": [
     {
+      "id": "task-resume-after-disconnect-2026-06-04",
+      "priority": 1,
+      "area": "backend/crates/golish-agent-app/src/ai/commands/core/chat.rs + golish-agent-kit/src/task_orchestrator/{orchestrator.rs,subtask_phases/execute.rs} + golish-db/src/{models/session.rs,repo/sessions.rs,repo/tasks.rs,lib.rs,migrations}",
+      "title": "Task 断线恢复（state-driven resume）：chat 会话锚定一个 operation + 入口判恢复 vs 新建 + 接线 Executor::resume + Interrupted→Waiting + reaper carve-out",
+      "user_visible_behavior": "Task 模式断线/进程被杀后，用户再发任意一条消息（『继续』/任意文本/空）会恢复上一个未完成 operation，从 checkpoint 的下一个 stage 续跑，而不是把『继续』当新任务从 scoping 重来问目标。恢复由 DB 状态决定（不特判『继续』关键字）。chat/非 harness 单卡不变。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "（根因+方案见 plan doc 头部；systematic-debugging 第一阶段已核证据）",
+      "plan": "docs/superpowers/plans/2026-06-04-task-resume-after-disconnect.md（writing-plans · 任务 1-7 逐层）",
+      "verification": [
+        "cargo check -p golish-db -p golish-agent-kit -p golish-agent-app → exit 0",
+        "cargo nextest run -p golish-db → sessions upsert / tasks latest_resumable / reaper carve-out SQL 单测全绿",
+        "cargo nextest run -p golish-agent-kit -E 'test(execute_harness_loop)' → Interrupted→Waiting 新测 + 原测不回归",
+        "cargo clippy -p golish-db -p golish-agent-kit -p golish-agent-app --all-targets -- -D warnings → clean",
+        "手动 E2E（用户·需运行时）：task『搞一下 example.com』→ 过 scoping → kill/断线 → 再发『继续』→ backend.log 出现 resume + 从 scoping 之后的 stage 续跑（非重新 scoping 问目标）"
+      ],
+      "evidence": null,
+      "notes": "2026-06-04 MCP-agent-4（DISPATCH off，用户逐条驱动）。根因：入口 execute_task_mode 每条消息新建 session+task 从 scoping 起，无恢复路径；恢复引擎 Executor::resume+DbFlowCheckpointer 已存在但没接线。方案 A+全做（用户拍板）：L1 加 sessions.chat_session_key 锚点 / L2 入口判 latest_resumable_by_session / L3 orchestrator.resume 接 Executor::resume / L4a Interrupted→Waiting / L4b reaper 对有 checkpoint 的改判 waiting。注意：仓库已有 4 个历史 in_progress（非本条引入）。"
+    },
+    {
       "id": "plan-roadmap-ux-overhaul-2026-06-04",
       "priority": 1,
       "area": "frontend/components/AIChatPanel (StagePlanStack/StageRow/StageProgressBar/PlanStepRow/useAiChatEvents/useTaskPlanState) + frontend/store/slices/conversation + backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs",
