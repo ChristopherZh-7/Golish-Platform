@@ -29,6 +29,26 @@
 
 ---
 
+### 2026-06-04 · MiMo tool-use 出站 500 修复（sub-agent 历史 tool args object 归一化）（MCP-agent-2 · DISPATCH off · 用户「看日志卡知识图谱」→「补 MiMo 兼容层」→「更新进度+commit」）
+
+- **本轮目标**：用户报告 AI「一直卡在知识图谱」。排查 `~/.golish/backend.log` 发现 pentester 子 agent（`mimo-v2.5-pro`）反复刷 reasoning / JSON 修复（21×）/ XML 工具调用恢复（2×），并间歇 HTTP 500 `Can only get item pairs from a mapping`（20×）。用户选「补 MiMo 兼容层」根治。
+- **根因（systematic-debugging 一阶段 + web 实证）**：tool-call 的 `function.arguments` 在 MiMo 单 chunk 把整个 arguments 当裸标量吐（如 `example.com`）时，被 `golish_json_repair::parse_tool_args` 还原成 `Value::String` 而非 object → 进 chat 历史 → 下一轮 replay 给 MiMo → MiMo 服务端 Jinja chat 模板对 arguments 调 `.items()`（要 mapping）→ 抛 `Can only get item pairs from a mapping` → HTTP 500。间歇性源于多数 tool call 的 args 本就是正常 object。`kg-extract` 图谱写入代码本身正常（`inserted=N` 多次成功），**非图谱 bug**。
+- **改动文件（3 源 + 2 文档）**：
+  - `backend/crates/golish-json-repair/src/lib.rs`：新增 `ensure_tool_args_object(Value)->Value` + `parse_tool_args_object(&str)->Value`（保证 object：object 直通 / JSON-object 字符串还原 / 裸标量·数组·null→`{}`）+ 5 单测。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/assistant_message.rs`：`normalize_tool_call_for_history` 改用 `ensure_tool_args_object`（覆盖所有 Value 变体，原仅处理 `String` 且不保证 object）+ 3 单测。
+  - `backend/crates/golish-sub-agents/src/executor_helpers/assistant_content.rs`：`build_assistant_content` 写历史前对每个 tool_call args 归一化（原**完全无**）+ 2 单测。
+- **已记录证据（本机实跑）**：
+  - TDD 红→绿：json-repair 先 stub，4 个 object-保证测试失败（`got String("example.com")` 实锤 bug）→ 实现 → 13/13 绿。
+  - `cd backend && cargo nextest run -p golish-json-repair -p golish-sub-agents -p golish-agent-runtime --status-level fail` → **307 passed / 0 failed**（新增 5 测；既有 `string_tool_arguments_are_normalized_before_history_push` 仍绿，无回归）。
+  - `cargo clippy -p golish-json-repair -p golish-sub-agents -p golish-agent-runtime --all-targets -- -D warnings` → exit 0 零告警。
+  - 改动 3 文件 `rustfmt --check`（edition 2021）→ clean。公共签名未变（仅新增 pub fn），下游无需改。
+- **未做 / 风险**：① 真机 MiMo E2E（需 `just dev` + `XIAOMI_API_KEY` 跑一轮 pentest 确认线上不再 500）未做；② 全量 `just precommit` 未跑——仓库有别会话遗留改动（`frontend/components/AIChatPanel/SubAgentInlineCard.tsx`、`frontend/lib/i18n/en.json`、`zh-CN.json`）+ fmt 漂移（如 `stream_processor/mod.rs:444` 空行），**均非本次 scope，未动也未提交**；③ 可选源头加固：`stream_processor` 5 处累积点 `parse_tool_args`→`parse_tool_args_object` 未做。
+- **feature_list**：归入既有 `agent-tool-use-compatibility-layer`（仍 `blocked`，待真机 E2E），补 2026-06-04 verification 行 + `evidence.sub_agent_outbound_500_fix_2026_06_04`。
+- **commit**：按用户「更新进度+commit」提交本次 **3 源文件 + agent-progress.md + feature_list.json**（未 push；未捎带别会话的 SubAgentInlineCard.tsx/i18n 改动）。
+- **下一步建议**：用户做真机 MiMo E2E；如需源头加固 / 全量 precommit / push 再继续。
+
+---
+
 ### 2026-06-04 · Task 断线恢复（state-driven resume）实现（MCP-agent-4 · DISPATCH off · 用户「方案 A + 全做 开干」）
 
 - **本轮目标**：修「断线后发『继续』被当新任务从 scoping 重来、不恢复上一个 operation」。

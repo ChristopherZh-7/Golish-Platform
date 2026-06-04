@@ -94,10 +94,61 @@ pub(crate) fn push_assistant_message(
     }
 }
 
+/// Guarantee a tool call's `arguments` is a JSON **object** before it enters
+/// chat history. Tool arguments are objects by contract, but some providers
+/// (e.g. Xiaomi MiMo) stream a bare scalar that, replayed as a JSON string on
+/// the next turn, crashes the provider's chat template — `arguments.items()`
+/// raises `Can only get item pairs from a mapping` (HTTP 500). Coercing to an
+/// object here keeps history replay valid for strict providers.
 fn normalize_tool_call_for_history(tool_call: &ToolCall) -> ToolCall {
     let mut normalized = tool_call.clone();
-    if let serde_json::Value::String(args) = &normalized.function.arguments {
-        normalized.function.arguments = golish_json_repair::parse_tool_args(args);
-    }
+    normalized.function.arguments =
+        golish_json_repair::ensure_tool_args_object(normalized.function.arguments);
     normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rig::message::ToolFunction;
+
+    fn tool_call_with_args(arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: "t1".to_string(),
+            call_id: Some("t1".to_string()),
+            function: ToolFunction {
+                name: "graph_add_entity".to_string(),
+                arguments,
+            },
+            signature: None,
+            additional_params: None,
+        }
+    }
+
+    #[test]
+    fn bare_string_arguments_become_object_for_history() {
+        let tc = tool_call_with_args(serde_json::Value::String("example.com".to_string()));
+        let normalized = normalize_tool_call_for_history(&tc);
+        assert!(
+            normalized.function.arguments.is_object(),
+            "string args must be coerced to an object so MiMo history replay does not 500"
+        );
+    }
+
+    #[test]
+    fn json_object_string_arguments_are_recovered_for_history() {
+        let tc = tool_call_with_args(serde_json::Value::String(
+            r#"{"entity_type": "host", "name": "10.0.0.5"}"#.to_string(),
+        ));
+        let normalized = normalize_tool_call_for_history(&tc);
+        assert_eq!(normalized.function.arguments["entity_type"], "host");
+        assert_eq!(normalized.function.arguments["name"], "10.0.0.5");
+    }
+
+    #[test]
+    fn object_arguments_pass_through_for_history() {
+        let tc = tool_call_with_args(serde_json::json!({"name": "x"}));
+        let normalized = normalize_tool_call_for_history(&tc);
+        assert_eq!(normalized.function.arguments["name"], "x");
+    }
 }

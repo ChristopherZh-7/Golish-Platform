@@ -45,9 +45,15 @@ pub fn build_assistant_content(
         }));
     }
 
-    // Add tool calls
+    // Add tool calls. Guarantee `arguments` is a JSON object before it enters
+    // history: some providers (e.g. Xiaomi MiMo) stream a bare scalar as the
+    // whole arguments, which — replayed as a JSON string on the next turn —
+    // crashes the provider's chat template (`arguments.items()` raises
+    // `Can only get item pairs from a mapping`, surfacing as an HTTP 500).
     for tc in tool_calls {
-        content.push(AssistantContent::ToolCall(tc.clone()));
+        let mut tc = tc.clone();
+        tc.function.arguments = golish_json_repair::ensure_tool_args_object(tc.function.arguments);
+        content.push(AssistantContent::ToolCall(tc));
     }
 
     content
@@ -70,4 +76,67 @@ pub(crate) fn serialize_chat_history(messages: &[Message]) -> serde_json::Value 
 /// a fresh conversation instead of failing the sub-agent.
 pub(crate) fn deserialize_chat_history(value: &serde_json::Value) -> Vec<Message> {
     serde_json::from_value::<Vec<Message>>(value.clone()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rig::message::ToolFunction;
+
+    fn tool_call(arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: "t1".to_string(),
+            call_id: Some("t1".to_string()),
+            function: ToolFunction {
+                name: "graph_add_entity".to_string(),
+                arguments,
+            },
+            signature: None,
+            additional_params: None,
+        }
+    }
+
+    fn only_tool_call_args(content: &[AssistantContent]) -> &serde_json::Value {
+        content
+            .iter()
+            .find_map(|c| match c {
+                AssistantContent::ToolCall(tc) => Some(&tc.function.arguments),
+                _ => None,
+            })
+            .expect("expected a tool call in assistant content")
+    }
+
+    #[test]
+    fn bare_string_tool_args_are_coerced_to_object_in_history() {
+        // The Xiaomi MiMo failure mode: a bare scalar streamed as the whole
+        // arguments. If it reaches history as a JSON string, the next-turn
+        // replay 500s the provider's chat template.
+        let content = build_assistant_content(
+            false,
+            "",
+            None,
+            None,
+            "",
+            &[tool_call(serde_json::Value::String(
+                "example.com".to_string(),
+            ))],
+        );
+        assert!(
+            only_tool_call_args(&content).is_object(),
+            "string tool args must be coerced to an object before entering history"
+        );
+    }
+
+    #[test]
+    fn object_tool_args_pass_through_in_history() {
+        let content = build_assistant_content(
+            false,
+            "",
+            None,
+            None,
+            "",
+            &[tool_call(serde_json::json!({"name": "10.0.0.5"}))],
+        );
+        assert_eq!(only_tool_call_args(&content)["name"], "10.0.0.5");
+    }
 }

@@ -24,6 +24,45 @@ pub fn parse_tool_args(args: &str) -> Value {
     })
 }
 
+/// Parse tool-call arguments and guarantee a JSON **object**.
+///
+/// Tool-call arguments are objects by the OpenAI/Anthropic contract. Some
+/// OpenAI-compatible providers (notably Xiaomi MiMo) stream a bare scalar — e.g.
+/// `example.com` — as the entire `function.arguments`. Left as a JSON string it
+/// serializes back onto the wire as a string and crashes the provider's Jinja
+/// chat template on the *next* turn: `arguments.items()` raises
+/// `Can only get item pairs from a mapping` (HTTP 500) during history replay.
+///
+/// Object parses pass through unchanged; any non-object parse collapses to `{}`.
+pub fn parse_tool_args_object(args: &str) -> Value {
+    ensure_tool_args_object(parse_tool_args(args))
+}
+
+/// Coerce an already-parsed value into a tool-call arguments **object**.
+///
+/// - `Object` → unchanged.
+/// - `String` → re-parsed; kept only if it yields an object, otherwise `{}`.
+/// - anything else (array / number / bool / null) → `{}`.
+///
+/// See [`parse_tool_args_object`] for why a non-object would break MiMo replay.
+pub fn ensure_tool_args_object(args: Value) -> Value {
+    match args {
+        Value::Object(_) => args,
+        // A string may itself be a streamed JSON-object fragment ("{...}"): try
+        // to recover it; keep the parse only when it lands on an object.
+        Value::String(s) => {
+            let parsed = parse_tool_args(&s);
+            if parsed.is_object() {
+                parsed
+            } else {
+                Value::Object(serde_json::Map::new())
+            }
+        }
+        // array / number / bool / null are never valid tool arguments.
+        _ => Value::Object(serde_json::Map::new()),
+    }
+}
+
 /// Parse tool call arguments, returning None on failure instead of default.
 ///
 /// Useful when you need to handle parse failures explicitly.
@@ -61,6 +100,7 @@ fn repair_and_parse(args: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_valid_json_passthrough() {
@@ -125,5 +165,55 @@ mod tests {
         let result = parse_tool_args(json);
         // Result may be repaired unexpectedly; just verify we get a value
         assert!(result.is_object() || result.is_null());
+    }
+
+    #[test]
+    fn object_args_object_passes_through() {
+        let v = parse_tool_args_object(r#"{"command": "dig example.com"}"#);
+        assert!(v.is_object());
+        assert_eq!(v["command"], "dig example.com");
+    }
+
+    #[test]
+    fn bare_scalar_arg_collapses_to_object() {
+        // The exact MiMo failure: a single-chunk bare scalar handed in as the
+        // whole arguments. Must become an object so a history replay does not
+        // 500 the provider's chat template.
+        let v = parse_tool_args_object("example.com");
+        assert!(v.is_object(), "expected object, got {v:?}");
+    }
+
+    #[test]
+    fn json_string_literal_arg_collapses_to_object() {
+        let v = parse_tool_args_object(r#""example.com""#);
+        assert!(v.is_object(), "expected object, got {v:?}");
+    }
+
+    #[test]
+    fn null_array_empty_args_collapse_to_object() {
+        assert!(parse_tool_args_object("null").is_object());
+        assert!(parse_tool_args_object("[1, 2, 3]").is_object());
+        assert!(parse_tool_args_object("").is_object());
+    }
+
+    #[test]
+    fn ensure_object_coerces_each_value_variant() {
+        assert_eq!(ensure_tool_args_object(serde_json::json!("x")), json!({}));
+        assert_eq!(ensure_tool_args_object(serde_json::json!(123)), json!({}));
+        assert_eq!(
+            ensure_tool_args_object(serde_json::json!([1, 2])),
+            json!({})
+        );
+        assert_eq!(ensure_tool_args_object(serde_json::json!(null)), json!({}));
+        assert_eq!(
+            ensure_tool_args_object(json!({"a": 1})),
+            json!({"a": 1}),
+            "objects must pass through unchanged"
+        );
+        // A string that itself contains a JSON object is recovered to the object.
+        assert_eq!(
+            ensure_tool_args_object(serde_json::json!("{\"a\": 1}")),
+            json!({"a": 1})
+        );
     }
 }
