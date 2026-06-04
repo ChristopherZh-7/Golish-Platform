@@ -152,13 +152,13 @@
       "format": "text",
       "produces": ["host", "subdomain"],
       "detect": "subfinder|^[\\w\\-]+(\\.[\\w\\-]+)+$",
-      "db_action": "host_add",
+      "db_action": "target_add",
       "patterns": [
         {
           "type": "subdomain",
           "regex": "^([a-zA-Z0-9_\\-\\.]+\\.[a-zA-Z]{2,})$",
           "fields": {
-            "1": "hostname"
+            "hostname": "$1"
           }
         }
       ]

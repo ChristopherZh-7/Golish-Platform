@@ -15,6 +15,7 @@ use crate::state::AppState;
 use crate::tools;
 use golish_recon_app::integrations::capture::CaptureEngine;
 use golish_recon_app::integrations::IntegrationsState;
+use golish_recon_app::organization_recon::OrganizationReconState;
 
 /// Apply plugins, managed state and lifecycle hooks to the given Tauri
 /// builder. The caller is responsible for chaining `invoke_handler`,
@@ -80,6 +81,7 @@ pub(crate) fn configure_builder(
         .manage(Arc::new(FileWatcherState::new()))
         .manage(pentest_state)
         .manage(asset_intel_tools_config)
+        .manage(OrganizationReconState::default())
         .manage(integrations_state)
         .manage(capture_engine)
         .on_window_event(|window, event| {

@@ -150,3 +150,5 @@ resources/wordlists/*
 # bundle next to `index.html`).
 /index-*.js
 /index-*.css
+backend/._target
+.codex/

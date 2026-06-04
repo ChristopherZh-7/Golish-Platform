@@ -125,16 +125,21 @@ pub struct AssetIntelProviderRecord {
     pub evidence: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct AssetIntelHydrateConfig {
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub min_ownership_percent: Option<String>,
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub depth: Option<String>,
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub include_branches: Option<bool>,
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub create_candidates: Option<bool>,
 }
 

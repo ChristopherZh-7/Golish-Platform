@@ -15,7 +15,10 @@
           "path": "{{tools_dir}}/ENScan_GO/config.yaml",
           "format": "yaml",
           "preserve_unknown_keys": true,
-          "backup_on_write": true
+          "backup_on_write": true,
+          "defaults": {
+            "version": 0.7
+          }
         }
       },
       "groups": [
@@ -26,7 +29,7 @@
           "help_url": "https://github.com/wgpsec/ENScan_GO#aqc",
           "fields": [
             {
-              "key": "cookies.aiqicha",
+              "key": "cookies.aqc",
               "label": "Cookie",
               "type": "secret_textarea",
               "placeholder": "BAIDUID=...; BDUSS=...; PSTM=...; ...",
@@ -45,7 +48,7 @@
             "login_url": "https://aiqicha.baidu.com/",
             "success_url_pattern": "(aiqicha|qiye)\\.baidu\\.com/($|\\?|#|home\\b|usercenter\\b|user/|personalcenter\\b)",
             "timeout_secs": 300,
-            "instructions": "登录爱企查账号后（如百度要求手机二次验证，请完成绿码/短信验证直到跳回 aiqicha.baidu.com 首页 或 百度企业 qiye.baidu.com/usercenter 个人中心），Golish 自动提取 .baidu.com 域所有 cookie 拼成完整 Cookie header 写入 cookies.aiqicha 字段。capture 引擎会等到 BDUSS 出现才算登录成功（避免抓未登录态 cookie）。",
+            "instructions": "登录爱企查账号后（如百度要求手机二次验证，请完成绿码/短信验证直到跳回 aiqicha.baidu.com 首页 或 百度企业 qiye.baidu.com/usercenter 个人中心），Golish 自动提取 .baidu.com 域所有 cookie 拼成完整 Cookie header 写入 cookies.aqc 字段。capture 引擎会等到 BDUSS 出现才算登录成功（避免抓未登录态 cookie）。",
             "rules": [
               {
                 "type": "cookie_joined",
@@ -53,7 +56,7 @@
                 "names": [],
                 "sep": "; ",
                 "fmt": "{name}={value}",
-                "target_field": "cookies.aiqicha",
+                "target_field": "cookies.aqc",
                 "required": true,
                 "required_names": ["BDUSS"]
               }

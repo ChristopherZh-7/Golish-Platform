@@ -231,6 +231,7 @@ mod tests {
                     format: ExternalFileFormat::Yaml,
                     preserve_unknown_keys: true,
                     backup_on_write: true,
+                    defaults: Default::default(),
                 },
             },
             groups: vec![IntegrationGroup {

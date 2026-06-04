@@ -6,12 +6,18 @@
  * launch buttons, the last persisted run summary, and the available providers.
  */
 
-import { Loader2, Network, Wifi } from "lucide-react";
+import { Download, Loader2, Network, Shield, Wifi } from "lucide-react";
 import type { AssetIntelProviderDescriptor, AssetIntelRun } from "@/lib/api/asset-intel";
+import type { OrganizationReconRunSnapshot } from "@/lib/api/organization-recon";
 import type { Organization } from "@/lib/api/organizations";
 import { getProviderStatusClass, type HydrateActivity } from "@/lib/target-panel/asset-intel";
 import { isAssetIntelOrgActionItem } from "@/lib/target-panel/engagement";
 import { translateWithFallback } from "@/lib/target-panel/org-fields";
+import {
+  canExportCurrentReconAssets,
+  findReconAssetsWorkbook,
+  isOrganizationReconRunning,
+} from "@/lib/target-panel/organization-recon";
 import type { AssetIntelOrgActionKind, OrgActionItem } from "@/lib/target-panel/types";
 import { cn } from "@/lib/utils";
 import type { EngagementMode } from "./NewEngagementDialog";
@@ -28,6 +34,14 @@ interface AssetIntelActivityPanelProps {
   hydrateError: string | undefined;
   assetProviders: AssetIntelProviderDescriptor[];
   handleRunAssetIntel: (org: Organization, action: AssetIntelOrgActionKind) => void;
+  organizationReconRun: OrganizationReconRunSnapshot | undefined;
+  organizationReconError: string | undefined;
+  hasInScopeTargets: boolean;
+  handleRunOrganizationRecon: (org: Organization, allowActive: boolean) => void;
+  handleExportOrganizationReconAssets: (
+    org: Organization,
+    run?: OrganizationReconRunSnapshot
+  ) => void;
 }
 
 export function AssetIntelActivityPanel({
@@ -42,7 +56,16 @@ export function AssetIntelActivityPanel({
   hydrateError,
   assetProviders,
   handleRunAssetIntel,
+  organizationReconRun,
+  organizationReconError,
+  hasInScopeTargets,
+  handleRunOrganizationRecon,
+  handleExportOrganizationReconAssets,
 }: AssetIntelActivityPanelProps) {
+  const organizationReconRunning = isOrganizationReconRunning(organizationReconRun);
+  const reconAssetsWorkbook = findReconAssetsWorkbook(organizationReconRun);
+  const canExportAssets =
+    Boolean(reconAssetsWorkbook) || canExportCurrentReconAssets(hydrateRun?.status);
   return (
     <section className="rounded border border-border/35 bg-muted/5 p-3">
       <div className="flex items-start justify-between gap-3">
@@ -86,6 +109,101 @@ export function AssetIntelActivityPanel({
                   {action.label}
                 </button>
               ))}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3 rounded border border-border/30 bg-background/25 p-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-[10px] font-medium text-foreground">Staged organization recon</p>
+            <p className="mt-0.5 text-[9px] text-muted-foreground">
+              Online collection is explicit. Active tools additionally require approved in-scope
+              targets.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-[10px] text-blue-300 hover:bg-blue-500/15 disabled:opacity-50"
+              disabled={organizationReconRunning}
+              onClick={() => void handleRunOrganizationRecon(selectedOrg, false)}
+            >
+              {organizationReconRunning ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Network className="h-3 w-3" />
+              )}
+              Run staged recon
+            </button>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-500/15 disabled:opacity-50"
+              disabled={organizationReconRunning || !hasInScopeTargets}
+              title={
+                hasInScopeTargets
+                  ? "Run online collection and authorized active tools"
+                  : "Add an in-scope target to enable active collection"
+              }
+              onClick={() => void handleRunOrganizationRecon(selectedOrg, true)}
+            >
+              <Shield className="h-3 w-3" />
+              Run with active tools
+            </button>
+            {canExportAssets && (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/15"
+                title={
+                  reconAssetsWorkbook
+                    ? `Download ${reconAssetsWorkbook.bytes} bytes from Stage 4 processing`
+                    : "Export current organization assets from the latest completed enrichment"
+                }
+                onClick={() =>
+                  void handleExportOrganizationReconAssets(selectedOrg, organizationReconRun)
+                }
+              >
+                <Download className="h-3 w-3" />
+                Export Excel
+              </button>
+            )}
+          </div>
+        </div>
+        {organizationReconError && (
+          <div className="mt-2 rounded border border-red-500/30 bg-red-500/5 p-2 text-[10px] text-red-300">
+            {organizationReconError}
+          </div>
+        )}
+        {organizationReconRun && (
+          <div className="mt-2 space-y-1">
+            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+              <span>run {organizationReconRun.runId.slice(0, 8)}</span>
+              <span className="uppercase tracking-wide">{organizationReconRun.status}</span>
+            </div>
+            {organizationReconRun.stages.map((stage) => {
+              const errors = organizationReconRun.tasks
+                .filter((task) => task.stage === stage.stage)
+                .flatMap((task) => task.errors);
+              return (
+                <div
+                  key={`${organizationReconRun.runId}:${stage.stage}`}
+                  className={cn(
+                    "rounded border p-2 text-[10px]",
+                    getProviderStatusClass(stage.status)
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">{stage.stage}</span>
+                    <span>{stage.status}</span>
+                  </div>
+                  {errors.length > 0 && (
+                    <p className="mt-1 font-mono text-[9px] opacity-85">
+                      {errors.map((error) => error.code).join(", ")}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

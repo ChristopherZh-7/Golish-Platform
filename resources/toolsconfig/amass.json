@@ -19,13 +19,13 @@
     "launchMode": "cli",
     "name": "amass",
     "output": {
-      "db_action": "host_add",
+      "db_action": "target_add",
       "detect": "amass|^[\\w\\-]+(\\.[\\w\\-]+)+",
       "format": "text",
       "patterns": [
         {
           "fields": {
-            "1": "hostname"
+            "hostname": "$1"
           },
           "regex": "^([a-zA-Z0-9_\\-\\.]+\\.[a-zA-Z]{2,})$",
           "type": "subdomain"

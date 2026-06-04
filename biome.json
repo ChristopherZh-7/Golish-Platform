@@ -74,6 +74,9 @@
   "overrides": [
     {
       "includes": ["frontend/lib/generated/**"],
+      "assist": {
+        "enabled": false
+      },
       "formatter": {
         "enabled": false
       },

@@ -1,6 +1,8 @@
 //! [`Storage`] — where an integration's credentials are persisted
 //! (vault row, external config file, or golish settings.toml path).
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Where credentials are persisted.
@@ -74,6 +76,13 @@ pub struct ExternalFileStorage {
     /// At most 3 backups are kept (oldest rotated out).
     #[serde(default = "default_true")]
     pub backup_on_write: bool,
+
+    /// Schema-owned defaults written on every update before user-provided
+    /// fields. Values preserve their JSON scalar type when rendered into the
+    /// external file, which matters for tools like ENScan_GO that expect
+    /// numeric config versions.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub defaults: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]

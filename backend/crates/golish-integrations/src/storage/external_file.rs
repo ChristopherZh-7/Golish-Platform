@@ -11,7 +11,7 @@
 //! 2. If [`crate::schema::ExternalFileStorage::preserve_unknown_keys`]
 //!    is `true` and the file exists, parse the existing document so
 //!    user-added keys outside our schema survive the write.
-//! 3. Set each declared field at its dotted key path
+//! 3. Set each schema-owned default, then each declared field at its dotted key path
 //!    (`"cookies.aqc"` → `cookies: { aqc: <value> }`). Missing
 //!    intermediate maps are created.
 //! 4. If [`crate::schema::ExternalFileStorage::backup_on_write`] is
@@ -211,6 +211,35 @@ impl ExternalFileBackend {
     /// intermediate key currently holds a non-map value, it's
     /// overwritten (the schema is authoritative for keys it claims).
     fn set_at_path(root: &mut YamlValue, dotted: &str, value: &str) {
+        Self::set_yaml_at_path(root, dotted, YamlValue::String(value.to_string()));
+    }
+
+    fn set_json_at_path(root: &mut YamlValue, dotted: &str, value: &serde_json::Value) {
+        Self::set_yaml_at_path(root, dotted, Self::json_to_yaml(value));
+    }
+
+    fn json_to_yaml(value: &serde_json::Value) -> YamlValue {
+        match value {
+            serde_json::Value::Null => YamlValue::Null,
+            serde_json::Value::Bool(value) => YamlValue::Bool(*value),
+            serde_json::Value::Number(value) => {
+                serde_yaml::to_value(value).unwrap_or(YamlValue::Null)
+            }
+            serde_json::Value::String(value) => YamlValue::String(value.clone()),
+            serde_json::Value::Array(values) => {
+                YamlValue::Sequence(values.iter().map(Self::json_to_yaml).collect())
+            }
+            serde_json::Value::Object(values) => {
+                let mut out = serde_yaml::Mapping::new();
+                for (key, value) in values {
+                    out.insert(YamlValue::String(key.clone()), Self::json_to_yaml(value));
+                }
+                YamlValue::Mapping(out)
+            }
+        }
+    }
+
+    fn set_yaml_at_path(root: &mut YamlValue, dotted: &str, value: YamlValue) {
         if !matches!(root, YamlValue::Mapping(_)) {
             *root = YamlValue::Mapping(Default::default());
         }
@@ -228,7 +257,7 @@ impl ExternalFileBackend {
             };
             let key = YamlValue::String((*part).to_string());
             if is_last {
-                map.insert(key, YamlValue::String(value.to_string()));
+                map.insert(key, value);
                 return;
             }
             // descend / create the intermediate map
@@ -416,19 +445,25 @@ impl StorageBackend for ExternalFileBackend {
             YamlValue::Null
         };
 
-        // 3. Set each field.
+        // 3. Apply schema-owned defaults first. Explicit user fields below
+        // always win when a schema intentionally declares the same path.
+        for (key, value) in &storage.defaults {
+            Self::set_json_at_path(&mut doc, key, value);
+        }
+
+        // 4. Set each field.
         for f in &group.fields {
             if let Some(v) = fields.get(&f.key) {
                 Self::set_at_path(&mut doc, &f.key, v);
             }
         }
 
-        // 4. Backup before overwrite (if enabled and the file exists).
+        // 5. Backup before overwrite (if enabled and the file exists).
         if storage.backup_on_write {
             Self::rolling_backup(&path).await?;
         }
 
-        // 5. Serialize + atomic write.
+        // 6. Serialize + atomic write.
         let bytes = Self::serialize(&doc, storage.format)?;
         Self::atomic_write(&path, &bytes).await?;
         Ok(())

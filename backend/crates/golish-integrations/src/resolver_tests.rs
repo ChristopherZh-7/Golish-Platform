@@ -313,7 +313,7 @@ async fn fixture_enscan_aqc_capture_recipe_loads() {
     // After 2026-05-21 schema fix: AQC must harvest the **full**
     // baidu.com Cookie header (CookieJoined with names=[]) because
     // BDUSS alone trips aiqicha.baidu.com's safety wall. Target
-    // field renamed to `cookies.aiqicha` to match the literal key
+    // field is `cookies.aqc` to match the literal key
     // ENScan v2.0.5 reads from its yaml.
     let cookie_joined_all = recipe.rules.iter().any(|r| match r {
         crate::schema::CaptureRule::CookieJoined {
@@ -321,12 +321,12 @@ async fn fixture_enscan_aqc_capture_recipe_loads() {
             names,
             target_field,
             ..
-        } => domain == ".baidu.com" && names.is_empty() && target_field == "cookies.aiqicha",
+        } => domain == ".baidu.com" && names.is_empty() && target_field == "cookies.aqc",
         _ => false,
     });
     assert!(
         cookie_joined_all,
-        "AQC capture should join every baidu.com cookie into cookies.aiqicha"
+        "AQC capture should join every baidu.com cookie into cookies.aqc"
     );
 }
 
@@ -486,6 +486,7 @@ async fn schema_can_be_round_tripped_through_resolver() {
                 format: ExternalFileFormat::Yaml,
                 preserve_unknown_keys: true,
                 backup_on_write: true,
+                defaults: Default::default(),
             },
         },
         help_url: None,

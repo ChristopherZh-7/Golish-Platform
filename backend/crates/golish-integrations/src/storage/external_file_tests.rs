@@ -1,5 +1,6 @@
 use super::*;
 use crate::schema::{Field, FieldType, IntegrationGroup, IntegrationSchema};
+use serde_json::json;
 use tempfile::TempDir;
 
 fn enscan_tyc_schema(path: &Path) -> IntegrationSchema {
@@ -13,6 +14,7 @@ fn enscan_tyc_schema(path: &Path) -> IntegrationSchema {
                 format: ExternalFileFormat::Yaml,
                 preserve_unknown_keys: true,
                 backup_on_write: true,
+                defaults: HashMap::new(),
             },
         },
         help_url: None,
@@ -71,6 +73,7 @@ fn aqc_schema(path: &Path, preserve: bool) -> IntegrationSchema {
                 format: ExternalFileFormat::Yaml,
                 preserve_unknown_keys: preserve,
                 backup_on_write: true,
+                defaults: HashMap::from([("version".into(), json!(0.7))]),
             },
         },
         help_url: None,
@@ -113,6 +116,56 @@ async fn write_creates_yaml_when_missing() {
     assert!(text.contains("cookies:"));
     assert!(text.contains("aqc:"));
     assert!(text.contains("BAIDUID=1;BDUSS=2"));
+    assert!(text.contains("version: 0.7"));
+}
+
+#[tokio::test]
+async fn write_upgrades_schema_owned_version_default() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.yaml");
+    std::fs::write(&path, "version: '0.6'\ncookies:\n  custom: keep-me\n").unwrap();
+    let schema = aqc_schema(&path, true);
+    let backend = ExternalFileBackend::new();
+    let mut fields = HashMap::new();
+    fields.insert("cookies.aqc".into(), "BAIDUID=1;BDUSS=2".into());
+
+    backend
+        .write("enscan-go", "aqc", &schema, fields)
+        .await
+        .unwrap();
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("version: 0.7"));
+    assert!(!text.contains("version: '0.6'"));
+    assert!(text.contains("custom: keep-me"));
+}
+
+#[tokio::test]
+async fn write_preserves_schema_owned_default_scalar_types() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.yaml");
+    let mut schema = aqc_schema(&path, true);
+    if let Storage::ExternalFile { external_file } = &mut schema.storage {
+        external_file.defaults = HashMap::from([
+            ("version".into(), json!(0.7)),
+            ("feature.enabled".into(), json!(true)),
+            ("note".into(), json!("kept-string")),
+        ]);
+    }
+    let backend = ExternalFileBackend::new();
+    let mut fields = HashMap::new();
+    fields.insert("cookies.aqc".into(), "BAIDUID=1;BDUSS=2".into());
+
+    backend
+        .write("enscan-go", "aqc", &schema, fields)
+        .await
+        .unwrap();
+
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(doc["version"].as_f64(), Some(0.7));
+    assert_eq!(doc["feature"]["enabled"].as_bool(), Some(true));
+    assert_eq!(doc["note"].as_str(), Some("kept-string"));
 }
 
 #[tokio::test]

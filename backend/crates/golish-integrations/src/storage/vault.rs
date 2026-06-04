@@ -421,6 +421,7 @@ mod tests {
                 format: crate::schema::ExternalFileFormat::Yaml,
                 preserve_unknown_keys: true,
                 backup_on_write: true,
+                defaults: Default::default(),
             },
         };
         let err = VaultBackend::storage(&schema).unwrap_err();

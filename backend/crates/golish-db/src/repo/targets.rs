@@ -393,11 +393,7 @@ pub async fn update_status_by_id(pool: &PgPool, id: Uuid, status: &str) -> Resul
 
 /// Overwrite a target's `ports` JSON by id. Mirrors legacy
 /// `db_target_update_recon`.
-pub async fn update_ports_by_id(
-    pool: &PgPool,
-    id: Uuid,
-    ports: &serde_json::Value,
-) -> Result<()> {
+pub async fn update_ports_by_id(pool: &PgPool, id: Uuid, ports: &serde_json::Value) -> Result<()> {
     sqlx::query("UPDATE targets SET ports=$1, updated_at=NOW() WHERE id=$2")
         .bind(ports)
         .bind(id)

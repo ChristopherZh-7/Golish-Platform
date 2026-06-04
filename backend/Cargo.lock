@@ -3214,6 +3214,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dirs",
+ "futures",
  "golish-app-core",
  "golish-core",
  "golish-db",
@@ -3232,8 +3233,10 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "ts-rs",
  "url",
  "uuid",
+ "zip 8.6.0",
 ]
 
 [[package]]
