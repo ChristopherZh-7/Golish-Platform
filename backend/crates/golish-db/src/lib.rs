@@ -84,8 +84,31 @@ impl GolishDb {
         }
 
         // Same fire-and-forget reclaim for tasks: a process killed mid-run can't
-        // finalize its own `tasks` rows, so they leak forever as `running`. Mark
-        // the stale non-terminal ones `failed` on startup so they stop zombieing.
+        // finalize its own `tasks` rows, so they leak forever as `running`.
+        //
+        // Two-step (Task 断线恢复 · L4b): first PAUSE the resumable ones — an
+        // abandoned `running` task that still holds a harness checkpoint is not
+        // dead, it is paused; demote it to `waiting` so it stops zombieing yet
+        // stays resumable on the next user message. THEN fail the truly-dead
+        // ones (no checkpoint). Order matters: pause first, then the fail reaper
+        // (which now skips checkpointed rows) only sweeps the rest.
+        match repo::tasks::pause_resumable_abandoned(
+            &info.pool,
+            Duration::hours(DEFAULT_RECLAIM_THRESHOLD_HOURS),
+        )
+        .await
+        {
+            Ok(n) if n > 0 => {
+                tracing::info!(
+                    paused = n,
+                    "Paused abandoned-but-resumable tasks on startup (kept for resume)"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to pause resumable tasks on startup");
+            }
+        }
         match repo::tasks::fail_abandoned(
             &info.pool,
             Duration::hours(DEFAULT_RECLAIM_THRESHOLD_HOURS),
