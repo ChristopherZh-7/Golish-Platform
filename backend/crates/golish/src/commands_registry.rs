@@ -19,6 +19,7 @@ use commands_facade::indexer::*;
 use commands_facade::integrations::*;
 use commands_facade::intel_providers::*;
 use commands_facade::mcp::*;
+use commands_facade::organization_recon::*;
 use commands_facade::pentest::*;
 use commands_facade::settings::*;
 use commands_facade::sidecar::*;
@@ -147,6 +148,9 @@ fn install_handlers(
         // ── asset_intel (Discover Assets provider abstraction) ─
         asset_intel_list_providers, asset_intel_lookup_company, asset_intel_hydrate,
         asset_intel_hydrate_subsidiaries, asset_intel_enrich_organization, asset_intel_enrich_batch,
+        // ── organization_recon (staged enterprise reconnaissance) ─
+        organization_recon_start_run, organization_recon_get_run, organization_recon_export_assets,
+        organization_recon_export_current_assets,
         // ── intel_providers (ASM platforms · 0.zone / FOFA / Quake / ...) ─
         intel_list_providers, intel_test_connection, intel_query_provider,
         // ── integrations (schema-driven external-service credentials) ─

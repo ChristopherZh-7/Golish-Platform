@@ -1,7 +1,15 @@
 //! Hydrate orchestration: per-org provider runs + engagement promotion.
 //! Moved out of `mod.rs` verbatim.
 
+use std::sync::Arc;
+
+use futures::{stream, StreamExt};
+use tokio::sync::Semaphore;
+
 use super::super::*;
+
+const CLI_PROVIDER_CONCURRENCY: usize = 2;
+const HTTP_PROVIDER_CONCURRENCY: usize = 4;
 
 pub(crate) async fn clear_engagement_candidates_for_org(
     pool: &sqlx::PgPool,
@@ -126,28 +134,62 @@ pub(crate) async fn run_providers_for_org(
     let mut evidence = Vec::new();
     let mut candidates = OrganizationCandidates::default();
     let mut profile_entries: Vec<ProfileFieldEntry> = Vec::new();
-    for tool in &providers {
-        let asset = tool.asset_intel.as_ref().ok_or_else(|| {
-            GolishError::Validation(format!("tool '{}' has no asset_intel descriptor", tool.id))
-        })?;
-        let (status, next_candidates, next_evidence, next_profile) = match &asset.runtime {
-            golish_pentest::models::AssetIntelRuntimeConfig::CliJson { .. } => {
-                run_cli_json_provider(
-                    tool,
-                    scan_tools,
-                    &pentest_config.tools_dir,
-                    &project_root,
-                    &run_id,
-                    company_name,
-                    config,
-                    sink,
-                )
-                .await?
+    let cli_limit = Arc::new(Semaphore::new(CLI_PROVIDER_CONCURRENCY));
+    let http_limit = Arc::new(Semaphore::new(HTTP_PROVIDER_CONCURRENCY));
+    let provider_count = providers.len();
+    let provider_runs = stream::iter(providers.into_iter().map(|tool| {
+        let cli_limit = Arc::clone(&cli_limit);
+        let http_limit = Arc::clone(&http_limit);
+        let project_root = &project_root;
+        let run_id = &run_id;
+        async move {
+            let asset = tool.asset_intel.as_ref().ok_or_else(|| {
+                GolishError::Validation(format!("tool '{}' has no asset_intel descriptor", tool.id))
+            })?;
+            match &asset.runtime {
+                golish_pentest::models::AssetIntelRuntimeConfig::CliJson { .. } => {
+                    let _permit = cli_limit.acquire_owned().await.map_err(|error| {
+                        GolishError::Internal(format!(
+                            "asset intel CLI concurrency limiter closed: {error}"
+                        ))
+                    })?;
+                    run_cli_json_provider(
+                        &tool,
+                        scan_tools,
+                        &pentest_config.tools_dir,
+                        project_root,
+                        run_id,
+                        company_name,
+                        config,
+                        sink,
+                    )
+                    .await
+                }
+                golish_pentest::models::AssetIntelRuntimeConfig::HttpJson { .. } => {
+                    let _permit = http_limit.acquire_owned().await.map_err(|error| {
+                        GolishError::Internal(format!(
+                            "asset intel HTTP concurrency limiter closed: {error}"
+                        ))
+                    })?;
+                    run_http_json_provider(
+                        pool,
+                        &tool,
+                        project_root,
+                        run_id,
+                        company_name,
+                        config,
+                        sink,
+                    )
+                    .await
+                }
             }
-            golish_pentest::models::AssetIntelRuntimeConfig::HttpJson { .. } => {
-                run_http_json_provider(pool, tool, &run_id, company_name, config, sink).await?
-            }
-        };
+        }
+    }))
+    .buffered(provider_count.max(1))
+    .collect::<Vec<_>>()
+    .await;
+    for provider_run in provider_runs {
+        let (status, next_candidates, next_evidence, next_profile) = provider_run?;
         evidence.push(next_evidence);
         if provider_output_is_trusted(&status) {
             merge_candidates(&mut candidates, next_candidates);

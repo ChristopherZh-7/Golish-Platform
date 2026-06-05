@@ -12,8 +12,8 @@
     "tier": "recommended",
     "tags": ["recon", "subdomain", "passive"],
     "install": {
-      "method": "homebrew",
-      "source": "subfinder",
+      "method": "github",
+      "source": "projectdiscovery/subfinder",
       "windows": { "method": "github", "source": "projectdiscovery/subfinder" },
       "linux": { "method": "github", "source": "projectdiscovery/subfinder" }
     },
@@ -152,13 +152,13 @@
       "format": "text",
       "produces": ["host", "subdomain"],
       "detect": "subfinder|^[\\w\\-]+(\\.[\\w\\-]+)+$",
-      "db_action": "host_add",
+      "db_action": "target_add",
       "patterns": [
         {
           "type": "subdomain",
           "regex": "^([a-zA-Z0-9_\\-\\.]+\\.[a-zA-Z]{2,})$",
           "fields": {
-            "1": "hostname"
+            "hostname": "$1"
           }
         }
       ]

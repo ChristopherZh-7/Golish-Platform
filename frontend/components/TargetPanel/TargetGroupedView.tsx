@@ -31,11 +31,14 @@
  *   org/engagement/asset-intel logic lives under `@/lib/target-panel/*`.
  */
 
+import { save } from "@tauri-apps/plugin-dialog";
 import { Building2, Loader2, Network, Plus, Shield } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { assetIntel, organizations as orgsApi } from "@/lib/api";
+import { assetIntel, organizationRecon, organizations as orgsApi } from "@/lib/api";
 import type { AssetIntelRun } from "@/lib/api/asset-intel";
+import type { OrganizationReconRunSnapshot } from "@/lib/api/organization-recon";
 import type { Organization, OrganizationCandidate } from "@/lib/api/organizations";
+import { notify } from "@/lib/notify";
 import type { Target } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
 import {
@@ -56,6 +59,11 @@ import {
   ROOT_PARENT_KEY,
   UNASSIGNED_KEY,
 } from "@/lib/target-panel/org-tree";
+import {
+  applyOrganizationReconEvent,
+  isOrganizationOwnedTarget,
+  suggestedReconAssetsFilename,
+} from "@/lib/target-panel/organization-recon";
 import type { AssetIntelOrgActionKind, WorkspaceTab } from "@/lib/target-panel/types";
 import { InlineCreateOrgForm } from "./InlineOrgForms";
 import { type EngagementMode, NewEngagementDialog } from "./NewEngagementDialog";
@@ -151,6 +159,12 @@ export function TargetGroupedView({
   const [hydrateRuns, setHydrateRuns] = useState<Record<string, AssetIntelRun>>({});
   const [hydrateErrors, setHydrateErrors] = useState<Record<string, string>>({});
   const [hydrateActivity, setHydrateActivity] = useState<Record<string, HydrateActivity>>({});
+  const [organizationReconRuns, setOrganizationReconRuns] = useState<
+    Record<string, OrganizationReconRunSnapshot>
+  >({});
+  const [organizationReconErrors, setOrganizationReconErrors] = useState<Record<string, string>>(
+    {}
+  );
   const [assetProviders, setAssetProviders] = useState<assetIntel.AssetIntelProviderDescriptor[]>(
     []
   );
@@ -192,10 +206,44 @@ export function TargetGroupedView({
     };
   }, []);
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    organizationRecon
+      .listenStream((run) => {
+        if (cancelled) return;
+        setOrganizationReconRuns((prev) => ({
+          ...prev,
+          [run.organizationId]: applyOrganizationReconEvent(prev[run.organizationId], run),
+        }));
+      })
+      .then((next) => {
+        if (cancelled) next();
+        else unlisten = next;
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const orgById = useMemo(() => new Map(orgs.map((org) => [org.id, org])), [orgs]);
+  const visibleTargets = useMemo(
+    () =>
+      targets.filter((target) => {
+        if (!target.organization_id) return true;
+        const org = orgById.get(target.organization_id);
+        if (!org) return true;
+        if (getEffectiveEngagementMode(org, orgs) !== "discover_assets") return true;
+        return isOrganizationOwnedTarget(org, target.value);
+      }),
+    [orgById, orgs, targets]
+  );
   const unassignedLabel = t("targets.unassigned");
   const roots = useMemo(
-    () => buildOrgTree(orgs, targets, unassignedLabel),
-    [orgs, targets, unassignedLabel]
+    () => buildOrgTree(orgs, visibleTargets, unassignedLabel),
+    [orgs, visibleTargets, unassignedLabel]
   );
   const selectedOrg = useMemo(
     () => orgs.find((o) => o.id === selectedOrgId) ?? orgs[0] ?? null,
@@ -204,12 +252,14 @@ export function TargetGroupedView({
   const selectedMode = getEffectiveEngagementMode(selectedOrg ?? undefined, orgs);
   const selectedTargets = useMemo(
     () =>
-      selectedOrg ? targets.filter((target) => target.organization_id === selectedOrg.id) : [],
-    [selectedOrg, targets]
+      selectedOrg
+        ? visibleTargets.filter((target) => target.organization_id === selectedOrg.id)
+        : [],
+    [selectedOrg, visibleTargets]
   );
   const selectedTarget = useMemo(
-    () => targets.find((target) => target.id === selectedTargetId) ?? null,
-    [selectedTargetId, targets]
+    () => visibleTargets.find((target) => target.id === selectedTargetId) ?? null,
+    [selectedTargetId, visibleTargets]
   );
 
   useEffect(() => {
@@ -367,6 +417,48 @@ export function TargetGroupedView({
       }
     },
     [refreshOrgs]
+  );
+
+  const handleRunOrganizationRecon = useCallback(async (org: Organization) => {
+    setSelectedOrgId(org.id);
+    setWorkspaceTab("activity");
+    setOrganizationReconErrors((prev) => {
+      const next = { ...prev };
+      delete next[org.id];
+      return next;
+    });
+    try {
+      const run = await organizationRecon.startRun({
+        organizationId: org.id,
+        allowExternal: true,
+        allowActive: true,
+      });
+      setOrganizationReconRuns((prev) => ({ ...prev, [org.id]: run }));
+    } catch (error) {
+      setOrganizationReconErrors((prev) => ({ ...prev, [org.id]: String(error) }));
+    }
+  }, []);
+
+  const handleExportOrganizationReconAssets = useCallback(
+    async (org: Organization, run?: OrganizationReconRunSnapshot) => {
+      try {
+        const outputPath = await save({
+          defaultPath: suggestedReconAssetsFilename(org.name, run?.runId),
+          filters: [{ name: "Excel workbook", extensions: ["xlsx"] }],
+        });
+        if (!outputPath) return;
+        const result = run
+          ? await organizationRecon.exportAssets(run.runId, outputPath)
+          : await organizationRecon.exportCurrentAssets(org.id, outputPath);
+        const sizeKb = Math.max(1, Math.round(Number(result.bytes) / 1024));
+        notify.success("Recon assets exported", {
+          message: `${sizeKb} KB written to ${result.outputPath}`,
+        });
+      } catch (error) {
+        notify.error("Recon asset export failed", { message: String(error) });
+      }
+    },
+    []
   );
 
   const handleCandidateStatus = useCallback(
@@ -711,6 +803,8 @@ export function TargetGroupedView({
                 hydrateRuns={hydrateRuns}
                 hydrateErrors={hydrateErrors}
                 hydrateActivity={hydrateActivity}
+                organizationReconRuns={organizationReconRuns}
+                organizationReconErrors={organizationReconErrors}
                 hydratingOrgId={hydratingOrgId}
                 hydratingAction={hydratingAction}
                 candidateUpdatingId={candidateUpdatingId}
@@ -719,6 +813,8 @@ export function TargetGroupedView({
                 setExpandedCandidateIds={setExpandedCandidateIds}
                 setEditingTargetId={setEditingTargetId}
                 handleRunAssetIntel={handleRunAssetIntel}
+                handleRunOrganizationRecon={handleRunOrganizationRecon}
+                handleExportOrganizationReconAssets={handleExportOrganizationReconAssets}
                 handlePromoteCandidate={handlePromoteCandidate}
                 handleCandidateStatus={handleCandidateStatus}
               />

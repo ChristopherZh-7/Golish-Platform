@@ -33,6 +33,7 @@ import * as mcp from "./mcp";
 import * as methodology from "./methodology";
 import * as modelRegistry from "./model-registry";
 import * as notes from "./notes";
+import * as organizationRecon from "./organization-recon";
 import * as organizations from "./organizations";
 import * as outputParser from "./output-parser";
 import * as pentestBrowser from "./pentest-browser";
@@ -78,6 +79,7 @@ export {
   wordlist,
   notes,
   organizations,
+  organizationRecon,
   methodology,
   targets,
   vault,
@@ -112,6 +114,7 @@ export const api = {
   wordlist,
   notes,
   organizations,
+  organizationRecon,
   methodology,
   targets,
   vault,

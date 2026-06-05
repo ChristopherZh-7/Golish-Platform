@@ -147,6 +147,53 @@ fn asset_intel_provider_descriptors_load_from_tool_configs() {
 }
 
 #[test]
+fn bundled_quake_asset_intel_config_loads() {
+    let tools_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../resources/toolsconfig");
+    let scan = golish_pentest::scan_toolsconfig(&tools_dir);
+    assert!(scan.success, "toolsconfig scan failed: {:?}", scan.error);
+    let quake = scan
+        .tools
+        .iter()
+        .find(|tool| tool.id == "quake")
+        .expect("bundled quake toolsconfig should load");
+    let asset = quake
+        .asset_intel
+        .as_ref()
+        .expect("quake should expose asset_intel");
+
+    assert_eq!(asset.provider_id, "quake");
+    assert!(
+        !asset.auto.default,
+        "quake should be explicit until a provider picker avoids default missing-key failures"
+    );
+    assert_eq!(
+        asset
+            .requires_integration
+            .as_ref()
+            .map(|req| req.tool_id.as_str()),
+        Some("quake")
+    );
+    assert!(asset.capabilities.iter().any(|cap| cap == "services"));
+    match &asset.runtime {
+        golish_pentest::models::AssetIntelRuntimeConfig::HttpJson { requests } => {
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0].method, "POST");
+            assert_eq!(
+                requests[0].headers.get("X-QuakeToken").map(String::as_str),
+                Some("{{secret:api_key}}")
+            );
+            assert_eq!(requests[0].json["query"], "org: \"{{company_name}}\"");
+            assert_eq!(
+                requests[1].json["query"],
+                "service.http.icp.main_licence.unit: \"{{company_name}}\""
+            );
+        }
+        other => panic!("expected quake http_json runtime, got {other:?}"),
+    }
+}
+
+#[test]
 fn normalize_provider_records_splits_candidates_and_preserves_evidence() {
     let candidates = normalize_provider_records(
         "mock",
@@ -385,10 +432,12 @@ async fn http_json_runtime_posts_fake_data_and_normalizes_candidates() {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .connect_lazy("postgres://golish:golish@127.0.0.1:1/golish")
         .unwrap();
+    let project_root = tempfile::tempdir().unwrap();
 
     let (status, candidates, evidence, _profile) = run_http_json_provider(
         &pool,
         &tool,
+        project_root.path(),
         "run-1",
         "小米",
         &AssetIntelHydrateConfig::default(),
@@ -403,6 +452,109 @@ async fn http_json_runtime_posts_fake_data_and_normalizes_candidates() {
     assert_eq!(candidates.targets[0].label, "Xiaomi");
     assert_eq!(candidates.targets[0].value, "mi.com");
     assert_eq!(evidence["candidateCount"], 2);
+    let output_dir = project_root
+        .path()
+        .join(".golish/tool-output/asset-intel/run-1/fake-http");
+    assert!(output_dir.join("raw/response-domains.json").exists());
+    assert!(output_dir.join("manifest.json").exists());
+}
+
+#[tokio::test]
+async fn http_json_runtime_treats_provider_code_error_as_failed() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf).await.unwrap();
+        let body = serde_json::json!({
+            "code": 1,
+            "message": "该 API Key 不合法或不存在"
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut form = std::collections::HashMap::new();
+    form.insert("query".to_string(), "{{company_name}}".to_string());
+    let tool = ToolConfig {
+        id: "fake-http".into(),
+        name: "Fake HTTP".into(),
+        asset_intel: Some(golish_pentest::models::AssetIntelToolConfig {
+            enabled: true,
+            provider_id: "fake-http".into(),
+            display_name: "Fake HTTP".into(),
+            capabilities: vec!["domains".into()],
+            requires_integration: None,
+            auto: golish_pentest::models::AssetIntelAutoConfig {
+                default: true,
+                priority: 1,
+            },
+            runtime: golish_pentest::models::AssetIntelRuntimeConfig::HttpJson {
+                requests: vec![golish_pentest::models::AssetIntelHttpRequest {
+                    id: "domain".into(),
+                    method: "POST".into(),
+                    url,
+                    headers: std::collections::HashMap::new(),
+                    form,
+                    json: Value::Null,
+                    timeout_secs: 5,
+                }],
+            },
+            normalize: golish_pentest::models::AssetIntelNormalizeConfig {
+                organization: vec![],
+                target: vec![golish_pentest::models::AssetIntelNormalizeRule {
+                    path: "$..data[*]".into(),
+                    label: golish_pentest::models::AssetIntelFieldRef::Field("title".into()),
+                    value: golish_pentest::models::AssetIntelFieldRef::Field("domain".into()),
+                    confidence: 0.72,
+                    when: vec![],
+                }],
+                profile_fields: vec![],
+            },
+            discovery: golish_pentest::models::AssetIntelDiscoveryConfig::default(),
+            lookup: None,
+        }),
+        ..Default::default()
+    };
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://golish:golish@127.0.0.1:1/golish")
+        .unwrap();
+    let project_root = tempfile::tempdir().unwrap();
+
+    let (status, candidates, evidence, _profile) = run_http_json_provider(
+        &pool,
+        &tool,
+        project_root.path(),
+        "run-provider-error",
+        "中国平安",
+        &AssetIntelHydrateConfig::default(),
+        None,
+    )
+    .await
+    .unwrap();
+    server.await.unwrap();
+
+    assert_eq!(status.status, AssetIntelProviderRunState::Failed);
+    assert!(status.message.contains("API Key"));
+    assert!(candidates.targets.is_empty());
+    assert_eq!(evidence["state"], "failed");
+    assert_eq!(evidence["reason"], "unauthorized");
+    assert_eq!(evidence["providerCode"], "1");
+    let manifest_path = evidence["manifestPath"]
+        .as_str()
+        .expect("manifestPath present");
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["status"], "failed");
+    assert_eq!(manifest["errors"][0]["code"], "unauthorized");
 }
 
 #[derive(Debug, Default, Clone)]
@@ -647,6 +799,12 @@ esac
     assert!(evidence["outDir"]
         .as_str()
         .is_some_and(|path| path.ends_with(".golish/tool-output/asset-intel/run-cwd/fake-cli")));
+    let output_dir = project_root
+        .path()
+        .join(".golish/tool-output/asset-intel/run-cwd/fake-cli");
+    assert!(output_dir.join("raw/stdout.log").exists());
+    assert!(output_dir.join("raw/stderr.log").exists());
+    assert!(output_dir.join("manifest.json").exists());
 }
 
 #[test]

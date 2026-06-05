@@ -201,6 +201,76 @@
       "historical_vulns": "Historical vulns",
       "contacts": "Contacts",
       "notes": "Notes"
+    },
+    "organizationRecon": {
+      "title": "Organization asset recon",
+      "description": "Shows live status across passive collection, active collection, processing, and persistence.",
+      "runButton": "Run staged recon",
+      "exportButton": "Export Excel",
+      "exportWorkbookTitle": "Download the Stage 4 asset workbook",
+      "exportCurrentTitle": "Export currently collected organization assets",
+      "runLabel": "run",
+      "progress": "Progress",
+      "currentStep": "Current step",
+      "traceTitle": "Recent execution events",
+      "noTrace": "Waiting for execution events...",
+      "taskLogs": "Task logs",
+      "logOutput": "Live output",
+      "collapsedOutput": "Earlier output collapsed",
+      "taskErrors": "Errors",
+      "taskArtifacts": "Artifacts",
+      "noStageLogs": "No stage logs yet",
+      "noTaskLogs": "No task logs yet",
+      "noTasks": "No tasks yet",
+      "stages": {
+        "passive_internet": "Passive collection",
+        "active_collection": "Active collection",
+        "processing": "Asset processing",
+        "persistence": "Persistence",
+        "enterprise_intel": "Enterprise intel"
+      },
+      "status": {
+        "queued": "queued",
+        "running": "running",
+        "completed": "completed",
+        "partial": "partial",
+        "failed": "failed",
+        "skipped": "skipped",
+        "cancelled": "cancelled"
+      },
+      "trace": {
+        "run_started": "run started",
+        "run_completed": "run completed",
+        "step_started": "step started",
+        "step_log": "record",
+        "step_annotation": "annotation",
+        "step_completed": "step completed",
+        "artifact_created": "artifact"
+      },
+      "operations": {
+        "run": "run",
+        "stepStart": "step start",
+        "stepComplete": "step complete",
+        "annotation": "note",
+        "request": "request",
+        "install": "install",
+        "validation": "validate",
+        "locate": "locate",
+        "execute": "execute",
+        "output": "output",
+        "complete": "complete",
+        "log": "record"
+      },
+      "operationStatus": {
+        "info": "info",
+        "running": "running",
+        "completed": "completed",
+        "checkedEmpty": "empty",
+        "warning": "warning",
+        "error": "error",
+        "skipped": "skipped",
+        "cancelled": "cancelled"
+      }
     }
   },
   "organizations": {

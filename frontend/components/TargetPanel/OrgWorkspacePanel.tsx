@@ -10,6 +10,7 @@
 import { Building2, Crosshair, Globe } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import type { AssetIntelProviderDescriptor, AssetIntelRun } from "@/lib/api/asset-intel";
+import type { OrganizationReconRunSnapshot } from "@/lib/api/organization-recon";
 import type { Organization, OrganizationCandidate } from "@/lib/api/organizations";
 import type { Target } from "@/lib/pentest/types";
 import {
@@ -29,6 +30,7 @@ import {
   translateOrgFieldGroups,
   translateWithFallback,
 } from "@/lib/target-panel/org-fields";
+import { hasExportableCurrentReconAssets } from "@/lib/target-panel/organization-recon";
 import type { AssetIntelOrgActionKind, WorkspaceTab } from "@/lib/target-panel/types";
 import { cn } from "@/lib/utils";
 import { AssetIntelActivityPanel } from "./AssetIntelActivityPanel";
@@ -48,6 +50,8 @@ interface OrgWorkspacePanelProps {
   hydrateRuns: Record<string, AssetIntelRun>;
   hydrateErrors: Record<string, string>;
   hydrateActivity: Record<string, HydrateActivity>;
+  organizationReconRuns: Record<string, OrganizationReconRunSnapshot>;
+  organizationReconErrors: Record<string, string>;
   hydratingOrgId: string | null;
   hydratingAction: AssetIntelOrgActionKind | null;
   candidateUpdatingId: string | null;
@@ -56,6 +60,11 @@ interface OrgWorkspacePanelProps {
   setExpandedCandidateIds: Dispatch<SetStateAction<Set<string>>>;
   setEditingTargetId: Dispatch<SetStateAction<string | null>>;
   handleRunAssetIntel: (org: Organization, action: AssetIntelOrgActionKind) => void;
+  handleRunOrganizationRecon: (org: Organization) => void;
+  handleExportOrganizationReconAssets: (
+    org: Organization,
+    run?: OrganizationReconRunSnapshot
+  ) => void;
   handlePromoteCandidate: (candidate: OrganizationCandidate) => void;
   handleCandidateStatus: (
     candidate: OrganizationCandidate,
@@ -74,6 +83,8 @@ export function OrgWorkspacePanel({
   hydrateRuns,
   hydrateErrors,
   hydrateActivity,
+  organizationReconRuns,
+  organizationReconErrors,
   hydratingOrgId,
   hydratingAction,
   candidateUpdatingId,
@@ -82,6 +93,8 @@ export function OrgWorkspacePanel({
   setExpandedCandidateIds,
   setEditingTargetId,
   handleRunAssetIntel,
+  handleRunOrganizationRecon,
+  handleExportOrganizationReconAssets,
   handlePromoteCandidate,
   handleCandidateStatus,
 }: OrgWorkspacePanelProps) {
@@ -108,6 +121,8 @@ export function OrgWorkspacePanel({
   const hydrateRun = hydrateRuns[selectedOrg.id];
   const hydrateError = hydrateErrors[selectedOrg.id];
   const selectedActivity = hydrateActivity[selectedOrg.id];
+  const organizationReconRun = organizationReconRuns[selectedOrg.id];
+  const organizationReconError = organizationReconErrors[selectedOrg.id];
   const isHydratingSelected = hydratingOrgId === selectedOrg.id;
   const selectedOrgIsChild = Boolean(selectedOrg.parent_id);
   const candidatePhase =
@@ -223,6 +238,11 @@ export function OrgWorkspacePanel({
           hydrateError={hydrateError}
           assetProviders={assetProviders}
           handleRunAssetIntel={handleRunAssetIntel}
+          organizationReconRun={organizationReconRun}
+          organizationReconError={organizationReconError}
+          hasCurrentReconAssets={hasExportableCurrentReconAssets(selectedOrg, selectedTargets)}
+          handleRunOrganizationRecon={handleRunOrganizationRecon}
+          handleExportOrganizationReconAssets={handleExportOrganizationReconAssets}
         />
       )}
 

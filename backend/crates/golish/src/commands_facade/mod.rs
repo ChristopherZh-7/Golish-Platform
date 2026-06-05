@@ -40,6 +40,7 @@ pub mod indexer;
 pub mod integrations;
 pub mod intel_providers;
 pub mod mcp;
+pub mod organization_recon;
 pub mod pentest;
 pub mod settings;
 pub mod sidecar;

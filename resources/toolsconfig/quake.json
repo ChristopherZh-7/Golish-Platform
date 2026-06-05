@@ -1,0 +1,186 @@
+{
+  "tool": {
+    "id": "quake",
+    "name": "360 Quake",
+    "description": "360 Quake cyberspace mapping provider exposed to Asset Intel through a JSON-declared HTTP runtime.",
+    "executable": "",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tags": ["recon", "osint", "asm", "http-json", "credential-required"],
+    "pentestPhase": ["recon"],
+    "tier": "recommended",
+    "asset_intel": {
+      "enabled": true,
+      "provider_id": "quake",
+      "display_name": "360 Quake",
+      "capabilities": ["domains", "ips", "services", "icp"],
+      "requires_integration": {
+        "tool_id": "quake",
+        "group_ids": ["default"]
+      },
+      "auto": {
+        "default": false,
+        "priority": 80
+      },
+      "runtime": {
+        "kind": "http_json",
+        "requests": [
+          {
+            "id": "org",
+            "method": "POST",
+            "url": "https://quake.360.net/api/v3/search/quake_service",
+            "headers": {
+              "Content-Type": "application/json",
+              "User-Agent": "Golish Asset Intel",
+              "X-QuakeToken": "{{secret:api_key}}"
+            },
+            "json": {
+              "query": "org: \"{{company_name}}\"",
+              "start": 0,
+              "size": 100,
+              "ignore_cache": false,
+              "latest": true,
+              "include": [
+                "ip",
+                "port",
+                "transport",
+                "domain",
+                "hostname",
+                "asn",
+                "org",
+                "service.name",
+                "service.http.host",
+                "service.http.title",
+                "service.http.server",
+                "service.http.status_code",
+                "service.cert",
+                "location.country_cn",
+                "location.province_cn",
+                "location.city_cn",
+                "location.isp"
+              ]
+            },
+            "timeout_secs": 45
+          },
+          {
+            "id": "icp_unit",
+            "method": "POST",
+            "url": "https://quake.360.net/api/v3/search/quake_service",
+            "headers": {
+              "Content-Type": "application/json",
+              "User-Agent": "Golish Asset Intel",
+              "X-QuakeToken": "{{secret:api_key}}"
+            },
+            "json": {
+              "query": "service.http.icp.main_licence.unit: \"{{company_name}}\"",
+              "start": 0,
+              "size": 100,
+              "ignore_cache": false,
+              "latest": true,
+              "include": [
+                "ip",
+                "port",
+                "transport",
+                "domain",
+                "hostname",
+                "asn",
+                "org",
+                "service.name",
+                "service.http.host",
+                "service.http.title",
+                "service.http.server",
+                "service.http.status_code",
+                "service.cert",
+                "location.country_cn",
+                "location.province_cn",
+                "location.city_cn",
+                "location.isp"
+              ]
+            },
+            "timeout_secs": 45
+          }
+        ]
+      },
+      "normalize": {
+        "target": [
+          {
+            "path": "$..data[*]",
+            "label": ["service.http.title", "service.http.host", "hostname", "domain", "ip"],
+            "value": ["service.http.host", "hostname", "domain", "ip"],
+            "confidence": 0.72
+          }
+        ],
+        "profile_fields": [
+          {
+            "path": "$..data[*]",
+            "source_field": "domain",
+            "target_field": "domains",
+            "transform": "lower",
+            "when": [{ "field": "domain", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "hostname",
+            "target_field": "domains",
+            "transform": "lower",
+            "when": [{ "field": "hostname", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "service.http.host",
+            "target_field": "domains",
+            "transform": "lower",
+            "when": [{ "field": "service.http.host", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "ip",
+            "target_field": "ip_ranges",
+            "transform": "trim",
+            "when": [{ "field": "ip", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "asn",
+            "target_field": "asns",
+            "transform": "asn",
+            "when": [{ "field": "asn", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": ["service.http.host", "hostname", "domain", "ip"],
+            "target_field": "business_systems",
+            "transform": "trim",
+            "when": [{ "field": "ip", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "service.http.title",
+            "target_field": "quake_http_titles",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "service.http.title", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "service.http.server",
+            "target_field": "quake_http_servers",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "service.http.server", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": "service.name",
+            "target_field": "quake_services",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "service.name", "op": "exists", "value": "" }]
+          }
+        ]
+      }
+    }
+  }
+}

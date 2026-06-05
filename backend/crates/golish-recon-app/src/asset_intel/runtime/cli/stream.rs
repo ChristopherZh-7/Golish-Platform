@@ -2,6 +2,8 @@
 //! accumulator, stdout-line normalization, and `out_dir` artifact scanning.
 
 use super::super::super::*;
+use crate::organization_recon::artifacts::decode_utf8_clean;
+use crate::organization_recon::ReconTaskError;
 
 pub(crate) fn asset_intel_provider_output_dir(
     project_root: &Path,
@@ -42,6 +44,9 @@ pub(crate) struct CliJsonStreamShared {
     /// `OrganizationProfilePatch` after the provider finishes.
     pub(crate) profile_entries: TokioMutex<Vec<ProfileFieldEntry>>,
     pub(crate) progress_buffer: TokioMutex<String>,
+    pub(crate) stdout_raw: TokioMutex<Vec<u8>>,
+    pub(crate) stderr_raw: TokioMutex<Vec<u8>>,
+    pub(crate) diagnostics: TokioMutex<Vec<ReconTaskError>>,
     pub(crate) cancel: AtomicBool,
 }
 
@@ -51,6 +56,9 @@ impl CliJsonStreamShared {
             candidates: TokioMutex::new(OrganizationCandidates::default()),
             profile_entries: TokioMutex::new(Vec::new()),
             progress_buffer: TokioMutex::new(String::new()),
+            stdout_raw: TokioMutex::new(Vec::new()),
+            stderr_raw: TokioMutex::new(Vec::new()),
+            diagnostics: TokioMutex::new(Vec::new()),
             cancel: AtomicBool::new(false),
         }
     }
@@ -124,6 +132,7 @@ pub(crate) async fn handle_stdout_line(
 /// Scan `out_dir` for JSON artifacts that have not been emitted yet; for any
 /// newly-seen file, normalize its contents and emit a Batch with source =
 /// artifact. Mutates `seen` so repeated calls are idempotent.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn scan_new_artifacts(
     out_dir: &Path,
     provider_id: &str,
@@ -132,6 +141,7 @@ pub(crate) async fn scan_new_artifacts(
     seen: &mut HashSet<PathBuf>,
     shared: &CliJsonStreamShared,
     sink: Option<&EventEmitterHandle>,
+    record_errors: bool,
 ) -> Result<(), GolishError> {
     let mut files = Vec::new();
     collect_json_files(out_dir, &mut files)?;
@@ -140,8 +150,8 @@ pub(crate) async fn scan_new_artifacts(
         if !seen.insert(path.clone()) {
             continue;
         }
-        let raw = match fs::read_to_string(&path) {
-            Ok(text) => text,
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
             Err(err) => {
                 tracing::debug!(
                     provider = %provider_id,
@@ -150,11 +160,39 @@ pub(crate) async fn scan_new_artifacts(
                     error = %err,
                     "asset_intel cli_json artifact read failed (skipping)"
                 );
+                if record_errors {
+                    shared.diagnostics.lock().await.push(ReconTaskError::new(
+                        "artifact_read_error",
+                        format!("cannot read artifact '{}': {err}", path.display()),
+                    ));
+                }
+                continue;
+            }
+        };
+        let raw = match decode_utf8_clean(&bytes) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::debug!(
+                    provider = %provider_id,
+                    run_id,
+                    artifact = %path.display(),
+                    error = %error.message,
+                    "asset_intel cli_json artifact decode failed (skipping)"
+                );
+                if record_errors {
+                    shared.diagnostics.lock().await.push(error);
+                }
                 continue;
             }
         };
         let Some((next, profile)) = normalize_json_document(provider_id, run_id, normalize, &raw)
         else {
+            if record_errors {
+                shared.diagnostics.lock().await.push(ReconTaskError::new(
+                    "artifact_parse_error",
+                    format!("cannot normalize artifact '{}'", path.display()),
+                ));
+            }
             continue;
         };
         if !profile.is_empty() {

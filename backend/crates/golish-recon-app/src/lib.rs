@@ -19,6 +19,7 @@ pub mod asset_intel;
 pub mod custom_rules;
 pub mod integrations;
 pub mod intel_providers;
+pub mod organization_recon;
 pub mod organizations;
 pub mod scan_queue;
 pub mod scan_runner;

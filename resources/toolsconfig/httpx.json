@@ -12,8 +12,8 @@
     "tier": "recommended",
     "tags": ["recon", "http", "probe", "fingerprint"],
     "install": {
-      "method": "homebrew",
-      "source": "httpx",
+      "method": "github",
+      "source": "projectdiscovery/httpx",
       "windows": { "method": "github", "source": "projectdiscovery/httpx" },
       "linux": { "method": "github", "source": "projectdiscovery/httpx" }
     },
@@ -183,15 +183,15 @@
       "format": "text",
       "produces": ["url", "host"],
       "detect": "httpx|^https?://",
-      "db_action": "host_add",
+      "db_action": "target_update_recon",
       "patterns": [
         {
           "type": "url",
           "regex": "^(https?://[^\\s]+)\\s+\\[(\\d+)\\](?:\\s+\\[([^\\]]*)\\])?",
           "fields": {
-            "1": "url",
-            "2": "status",
-            "3": "title"
+            "url": "$1",
+            "status": "$2",
+            "title": "$3"
           }
         }
       ]

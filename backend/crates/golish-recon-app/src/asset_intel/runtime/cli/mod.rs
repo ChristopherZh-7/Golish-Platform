@@ -4,6 +4,10 @@
 //! [`stream`] sibling module; this file holds the top-level runner.
 
 use super::super::*;
+use crate::organization_recon::artifacts::{
+    decode_utf8_clean, write_json_manifest, write_raw_bytes,
+};
+use crate::organization_recon::{ReconTaskError, ReconTaskManifest, ReconTaskStatus};
 
 mod stream;
 pub(crate) use stream::*;
@@ -164,12 +168,33 @@ pub(crate) async fn run_cli_json_provider(
         let provider_id = provider_id.clone();
         let run_id = run_id.to_string();
         tokio::spawn(async move {
-            let mut reader = tokio::io::BufReader::new(stream).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
+            let mut reader = tokio::io::BufReader::new(stream);
+            loop {
+                let mut raw = Vec::new();
+                let read = match reader.read_until(b'\n', &mut raw).await {
+                    Ok(read) => read,
+                    Err(error) => {
+                        shared.diagnostics.lock().await.push(ReconTaskError::new(
+                            "stdout_read_error",
+                            format!("cannot read provider stdout: {error}"),
+                        ));
+                        break;
+                    }
+                };
+                if read == 0 {
+                    break;
+                }
+                shared.stdout_raw.lock().await.extend_from_slice(&raw);
+                let line = match decode_utf8_clean(&raw) {
+                    Ok(line) => line,
+                    Err(error) => {
+                        shared.diagnostics.lock().await.push(error);
+                        continue;
+                    }
+                };
                 {
                     let mut buf = shared.progress_buffer.lock().await;
                     buf.push_str(&line);
-                    buf.push('\n');
                 }
                 let emitted = handle_stdout_line(
                     &line,
@@ -204,12 +229,33 @@ pub(crate) async fn run_cli_json_provider(
         let provider_id = provider_id.clone();
         let run_id = run_id.to_string();
         tokio::spawn(async move {
-            let mut reader = tokio::io::BufReader::new(stream).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
+            let mut reader = tokio::io::BufReader::new(stream);
+            loop {
+                let mut raw = Vec::new();
+                let read = match reader.read_until(b'\n', &mut raw).await {
+                    Ok(read) => read,
+                    Err(error) => {
+                        shared.diagnostics.lock().await.push(ReconTaskError::new(
+                            "stderr_read_error",
+                            format!("cannot read provider stderr: {error}"),
+                        ));
+                        break;
+                    }
+                };
+                if read == 0 {
+                    break;
+                }
+                shared.stderr_raw.lock().await.extend_from_slice(&raw);
+                let line = match decode_utf8_clean(&raw) {
+                    Ok(line) => line,
+                    Err(error) => {
+                        shared.diagnostics.lock().await.push(error);
+                        continue;
+                    }
+                };
                 {
                     let mut buf = shared.progress_buffer.lock().await;
                     buf.push_str(&line);
-                    buf.push('\n');
                 }
                 let msg = truncate_progress_line(&line);
                 if msg.is_empty() {
@@ -246,6 +292,7 @@ pub(crate) async fn run_cli_json_provider(
                     &mut seen,
                     &shared,
                     sink.as_ref(),
+                    false,
                 )
                 .await
                 {
@@ -286,19 +333,39 @@ pub(crate) async fn run_cli_json_provider(
                 status: AssetIntelProviderRunState::Failed,
                 message: format!("wait failed: {err}"),
             };
+            let candidates = std::mem::take(&mut *shared.candidates.lock().await);
             let profile_entries = std::mem::take(&mut *shared.profile_entries.lock().await);
+            let stdout_raw = std::mem::take(&mut *shared.stdout_raw.lock().await);
+            let stderr_raw = std::mem::take(&mut *shared.stderr_raw.lock().await);
+            let mut diagnostics = std::mem::take(&mut *shared.diagnostics.lock().await);
+            diagnostics.push(ReconTaskError::new("wait_failed", err.to_string()));
+            let candidate_count = candidates.organizations.len() + candidates.targets.len();
+            let record_count = candidate_count + profile_entries.len();
+            let manifest_path = persist_cli_artifacts(
+                &out_dir,
+                run_id,
+                &provider_id,
+                ReconTaskStatus::Failed,
+                None,
+                record_count,
+                &stdout_raw,
+                &stderr_raw,
+                diagnostics,
+            )?;
             return finish_provider_run(
                 sink,
                 run_id,
                 status,
-                0,
-                OrganizationCandidates::default(),
+                candidate_count,
+                candidates,
                 serde_json::json!({
                     "provider": provider_id,
                     "runId": run_id,
                     "state": "failed",
                     "reason": "wait_failed",
                     "error": err.to_string(),
+                    "candidateCount": candidate_count,
+                    "manifestPath": manifest_path,
                 }),
                 profile_entries,
             );
@@ -313,7 +380,26 @@ pub(crate) async fn run_cli_json_provider(
             let _ = child.kill().await;
             let candidates = std::mem::take(&mut *shared.candidates.lock().await);
             let profile_entries = std::mem::take(&mut *shared.profile_entries.lock().await);
+            let stdout_raw = std::mem::take(&mut *shared.stdout_raw.lock().await);
+            let stderr_raw = std::mem::take(&mut *shared.stderr_raw.lock().await);
+            let mut diagnostics = std::mem::take(&mut *shared.diagnostics.lock().await);
+            diagnostics.push(ReconTaskError::new(
+                "timeout",
+                format!("command timed out after {}s", timeout.as_secs()),
+            ));
             let candidate_count = candidates.organizations.len() + candidates.targets.len();
+            let record_count = candidate_count + profile_entries.len();
+            let manifest_path = persist_cli_artifacts(
+                &out_dir,
+                run_id,
+                &provider_id,
+                ReconTaskStatus::Failed,
+                None,
+                record_count,
+                &stdout_raw,
+                &stderr_raw,
+                diagnostics,
+            )?;
             let status = AssetIntelProviderRunStatus {
                 provider_id: provider_id.clone(),
                 status: AssetIntelProviderRunState::Failed,
@@ -332,6 +418,7 @@ pub(crate) async fn run_cli_json_provider(
                     "reason": "timeout",
                     "timeoutSecs": timeout.as_secs(),
                     "candidateCount": candidate_count,
+                    "manifestPath": manifest_path,
                 }),
                 profile_entries,
             );
@@ -347,6 +434,7 @@ pub(crate) async fn run_cli_json_provider(
         &mut final_seen,
         shared.as_ref(),
         sink,
+        true,
     )
     .await
     {
@@ -361,7 +449,12 @@ pub(crate) async fn run_cli_json_provider(
     let candidates = std::mem::take(&mut *shared.candidates.lock().await);
     let profile_entries = std::mem::take(&mut *shared.profile_entries.lock().await);
     let progress_buffer = std::mem::take(&mut *shared.progress_buffer.lock().await);
+    let stdout_raw = std::mem::take(&mut *shared.stdout_raw.lock().await);
+    let stderr_raw = std::mem::take(&mut *shared.stderr_raw.lock().await);
+    let mut diagnostics = std::mem::take(&mut *shared.diagnostics.lock().await);
     let preview: String = progress_buffer.chars().take(512).collect();
+    let candidate_count = candidates.organizations.len() + candidates.targets.len();
+    let record_count = candidate_count + profile_entries.len();
 
     if !exit_status.success() {
         tracing::warn!(
@@ -370,7 +463,21 @@ pub(crate) async fn run_cli_json_provider(
             exit_code = exit_status.code(),
             "asset_intel cli_json provider exited unsuccessfully"
         );
-        let candidate_count = candidates.organizations.len() + candidates.targets.len();
+        diagnostics.push(ReconTaskError::new(
+            "command_failed",
+            format!("provider command exited with code {:?}", exit_status.code()),
+        ));
+        let manifest_path = persist_cli_artifacts(
+            &out_dir,
+            run_id,
+            &provider_id,
+            ReconTaskStatus::Failed,
+            exit_status.code(),
+            record_count,
+            &stdout_raw,
+            &stderr_raw,
+            diagnostics,
+        )?;
         let status = AssetIntelProviderRunStatus {
             provider_id: provider_id.clone(),
             status: AssetIntelProviderRunState::Failed,
@@ -390,46 +497,132 @@ pub(crate) async fn run_cli_json_provider(
                 "exitCode": exit_status.code(),
                 "preview": preview,
                 "candidateCount": candidate_count,
+                "manifestPath": manifest_path,
             }),
             profile_entries,
         );
     }
 
-    let total = candidates.organizations.len() + candidates.targets.len();
-    let state = if total == 0 {
+    if !diagnostics.is_empty() {
+        let manifest_path = persist_cli_artifacts(
+            &out_dir,
+            run_id,
+            &provider_id,
+            ReconTaskStatus::Failed,
+            exit_status.code(),
+            record_count,
+            &stdout_raw,
+            &stderr_raw,
+            diagnostics,
+        )?;
+        let status = AssetIntelProviderRunStatus {
+            provider_id: provider_id.clone(),
+            status: AssetIntelProviderRunState::Failed,
+            message: format!("{provider_id} completed with invalid output"),
+        };
+        return finish_provider_run(
+            sink,
+            run_id,
+            status,
+            candidate_count,
+            candidates,
+            serde_json::json!({
+                "provider": provider_id,
+                "runId": run_id,
+                "state": "failed",
+                "reason": "invalid_output",
+                "candidateCount": candidate_count,
+                "manifestPath": manifest_path,
+            }),
+            profile_entries,
+        );
+    }
+
+    let state = if record_count == 0 {
         AssetIntelProviderRunState::CheckedEmpty
     } else {
         AssetIntelProviderRunState::Completed
     };
+    let manifest_path = persist_cli_artifacts(
+        &out_dir,
+        run_id,
+        &provider_id,
+        if record_count == 0 {
+            ReconTaskStatus::CheckedEmpty
+        } else {
+            ReconTaskStatus::Completed
+        },
+        exit_status.code(),
+        record_count,
+        &stdout_raw,
+        &stderr_raw,
+        diagnostics,
+    )?;
     tracing::info!(
         provider = %provider_id,
         run_id,
-        candidate_count = total,
+        candidate_count,
+        profile_field_count = profile_entries.len(),
         state = ?state,
         "asset_intel cli_json provider completed"
     );
     let status = AssetIntelProviderRunStatus {
         provider_id: provider_id.clone(),
         status: state,
-        message: if total == 0 {
+        message: if record_count == 0 {
             format!("{provider_id} completed with no candidates")
         } else {
-            format!("{provider_id} normalized {total} candidate(s)")
+            format!("{provider_id} normalized {record_count} record(s)")
         },
     };
     finish_provider_run(
         sink,
         run_id,
         status,
-        total,
+        candidate_count,
         candidates,
         serde_json::json!({
             "provider": provider_id,
             "runId": run_id,
-            "state": if total == 0 { "checked_empty" } else { "completed" },
-            "candidateCount": total,
+            "state": if record_count == 0 { "checked_empty" } else { "completed" },
+            "candidateCount": candidate_count,
+            "profileFieldCount": profile_entries.len(),
             "outDir": out_dir,
+            "manifestPath": manifest_path,
         }),
         profile_entries,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn persist_cli_artifacts(
+    out_dir: &Path,
+    run_id: &str,
+    provider_id: &str,
+    status: ReconTaskStatus,
+    exit_code: Option<i32>,
+    record_count: usize,
+    stdout_raw: &[u8],
+    stderr_raw: &[u8],
+    errors: Vec<ReconTaskError>,
+) -> Result<PathBuf, GolishError> {
+    let mut manifest = ReconTaskManifest::new(run_id, provider_id, "enterprise_intel", provider_id);
+    manifest.status = status;
+    manifest.exit_code = exit_code;
+    manifest.record_count = record_count;
+    manifest.checked_empty = matches!(manifest.status, ReconTaskStatus::CheckedEmpty);
+    manifest.errors = errors;
+    manifest.artifacts.push(write_raw_bytes(
+        out_dir,
+        "raw/stdout.log",
+        stdout_raw,
+        "stdout",
+    )?);
+    manifest.artifacts.push(write_raw_bytes(
+        out_dir,
+        "raw/stderr.log",
+        stderr_raw,
+        "stderr",
+    )?);
+    write_json_manifest(out_dir, &manifest)
 }
