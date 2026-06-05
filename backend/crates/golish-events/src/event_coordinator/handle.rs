@@ -34,6 +34,20 @@ impl CoordinatorHandle {
         });
     }
 
+    /// Persist an event to the transcript only (fire-and-forget).
+    ///
+    /// Unlike [`emit`](Self::emit), this does NOT forward to the frontend or
+    /// assign a sequence number. It exists for events that reach the UI through
+    /// a separate channel (the raw `event_tx` drain) but must still be captured
+    /// in `transcript.json` — e.g. harness decisions. The transcript filter
+    /// ([`should_transcript`](crate::transcript::should_transcript)) still
+    /// applies inside the coordinator.
+    pub fn write_transcript(&self, event: AiEvent) {
+        let _ = self.tx.send(CoordinatorCommand::WriteTranscript {
+            event: Box::new(event),
+        });
+    }
+
     /// Mark the frontend as ready to receive events.
     ///
     /// This flushes any buffered events in sequence order.

@@ -173,10 +173,29 @@ impl AgentBridge {
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
 
+        // Observability (design 2026-06-05 §4.B, risk R1): harness decisions
+        // (`HarnessTrace`) emitted by the orchestrator / background-job listener /
+        // note injector reach the frontend through this raw drain but, unlike
+        // loop events (persisted at their emit site via `emit_to_frontend`) and
+        // main-agent events (persisted via the coordinator's `EmitEvent`), they
+        // had NO transcript-write path — so they never landed in `transcript.json`
+        // and were invisible to `harness_trace` / `just replay` / op_trace.
+        // Persist them via the coordinator's transcript-only write. The
+        // coordinator holds the writer dynamically, so this is correct whether
+        // the writer was set before or after this channel was created. Only
+        // `HarnessTrace` is persisted here to avoid double-writing loop events
+        // (the loop appends those itself); the loop never emits `HarnessTrace`.
+        let coordinator = self.events.coordinator.clone();
+
         let (tx, mut rx) = mpsc::unbounded_channel::<AiEvent>();
 
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
+                if matches!(event, AiEvent::HarnessTrace { .. }) {
+                    if let Some(ref coordinator) = coordinator {
+                        coordinator.write_transcript(event.clone());
+                    }
+                }
                 if let Err(e) = runtime.emit(RuntimeEvent::Ai {
                     session_id: session_id.clone(),
                     event: Box::new(event),

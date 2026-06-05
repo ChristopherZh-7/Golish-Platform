@@ -305,6 +305,78 @@ async fn test_events_before_writer_not_persisted() {
     ));
 }
 
+/// Regression test for the unified-observability persistence gap (design
+/// 2026-06-05 §4.B / risk R1). `HarnessTrace` decisions are emitted through the
+/// raw `event_tx` drain (orchestrator gate, background evidence, note
+/// injection) — they reach the UI but previously had NO transcript-write path,
+/// so gate decisions / evidence never landed in `transcript.json` and were
+/// invisible to `harness_trace` / `just replay` / op_trace. The coordinator's
+/// `write_transcript` must persist them WITHOUT a frontend emit, while still
+/// honouring `should_transcript`.
+#[tokio::test]
+async fn test_write_transcript_persists_harness_trace_without_frontend_emit() {
+    use golish_core::events::HarnessTraceKind;
+
+    let runtime = Arc::new(MockRuntime::new());
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let session_id = "test-harness-trace-persist";
+    let writer = create_test_writer(&temp_dir, session_id).await;
+
+    let handle = EventCoordinator::spawn("test-session".to_string(), runtime.clone(), Some(writer));
+    handle.mark_frontend_ready();
+
+    // A gate decision routed through the transcript-only path.
+    handle.write_transcript(AiEvent::HarnessTrace {
+        operation_id: "op-1".to_string(),
+        stage: "target_intel".to_string(),
+        agent_path: "main".to_string(),
+        trace: HarnessTraceKind::GateDecision {
+            gate: "BLOCK".to_string(),
+            findings: 0,
+            fabricated_evidence_refs: vec![1, 2, 3],
+            available_real_ids: vec![86, 88, 90],
+            first_blocking_reason: Some("fabricated evidence ids".to_string()),
+        },
+    });
+    flush_coordinator(&handle).await;
+
+    let events = crate::transcript::read_transcript(temp_dir.path(), session_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "HarnessTrace must be persisted to transcript"
+    );
+    assert!(matches!(
+        events[0].event,
+        AiEvent::HarnessTrace { ref operation_id, .. } if operation_id == "op-1"
+    ));
+
+    // The transcript-only path must NOT forward to the frontend (the drain
+    // already does that via the runtime); otherwise the UI would double-render.
+    assert_eq!(
+        runtime.emit_count(),
+        0,
+        "write_transcript must not emit to the frontend"
+    );
+
+    // `should_transcript` still applies on this path: a streaming delta dropped.
+    handle.write_transcript(AiEvent::TextDelta {
+        delta: "x".to_string(),
+        accumulated: "x".to_string(),
+    });
+    flush_coordinator(&handle).await;
+    let events = crate::transcript::read_transcript(temp_dir.path(), session_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "TextDelta must be filtered out by should_transcript"
+    );
+}
+
 /// All four filtered event types (TextDelta, Reasoning, SubAgentToolRequest,
 /// SubAgentToolResult) must be excluded from the transcript while other
 /// events pass through.

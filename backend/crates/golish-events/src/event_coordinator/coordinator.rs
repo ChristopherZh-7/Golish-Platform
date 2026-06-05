@@ -72,6 +72,9 @@ impl EventCoordinator {
                 CoordinatorCommand::EmitEvent { event } => {
                     self.handle_emit_event(*event).await;
                 }
+                CoordinatorCommand::WriteTranscript { event } => {
+                    self.write_to_transcript(&event).await;
+                }
                 CoordinatorCommand::MarkFrontendReady => {
                     self.handle_mark_frontend_ready().await;
                 }

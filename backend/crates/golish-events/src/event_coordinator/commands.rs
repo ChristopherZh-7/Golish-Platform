@@ -15,6 +15,13 @@ pub enum CoordinatorCommand {
     /// Boxed to reduce variant size disparity (AiEvent is large).
     EmitEvent { event: Box<AiEvent> },
 
+    /// Persist an AI event to the transcript ONLY — no frontend emit, no
+    /// sequence number. Used by the raw `event_tx` drain to capture harness
+    /// decisions (`HarnessTrace`) that reach the UI through a different channel
+    /// yet must still land in `transcript.json` for the merged op_trace timeline
+    /// (design 2026-06-05 §4.B / R1).
+    WriteTranscript { event: Box<AiEvent> },
+
     /// Mark the frontend as ready to receive events (flushes buffer).
     MarkFrontendReady,
 
