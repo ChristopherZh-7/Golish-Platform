@@ -94,6 +94,7 @@ pub async fn create_default_sub_agents_from_registry(
             "grep_file".into(),
             "search_memories".into(),
             "manage_targets".into(),
+            "list_in_scope_targets".into(),
             "record_finding".into(),
             "vault".into(),
             "js_extract_apis".into(),
@@ -273,6 +274,7 @@ pub async fn create_default_sub_agents_from_registry(
         .with_tools(vec![
             "update_plan".into(), "search_memories".into(), "search_knowledge_base".into(),
             "read_knowledge".into(), "query_target_data".into(),
+            "list_in_scope_targets".into(),
             // C2c · orchestrator may also submit the stage deliverable directly.
             "submit_stage_deliverable".into(),
         ])

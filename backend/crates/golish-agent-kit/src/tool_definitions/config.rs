@@ -71,6 +71,7 @@ impl ToolSelectionConfig {
                 "fingerprint_target".to_string(),
                 "log_scan_result".to_string(),
                 "query_target_data".to_string(),
+                "list_in_scope_targets".to_string(),
             ],
             // Hide run_pty_cmd — we expose it as run_command instead.
             disabled: vec!["run_pty_cmd".to_string()],

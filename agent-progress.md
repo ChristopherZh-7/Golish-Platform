@@ -29,6 +29,18 @@
 
 ---
 
+### 2026-06-06 · 合并同事 recon + 接入 harness（in-scope 资产闭环）（MCP-agent-3 · DISPATCH off · 用户逐条驱动）
+
+- **本轮目标**：把同事 push 的 organization-recon（`feat/recon-service`）合并进 harness 分支且**不恢复已删的 pipeline**；再把 recon 收集的 in-scope 资产接入 harness，让 AI 能取用。
+- **合并**：`git merge --no-commit origin/feat/recon-service`（merge-base 936350ab）。仅 2 个元数据冲突（agent-progress.md / feature_list.json），均**保留两边**。三方合并自动保留 pipeline 删除（42 文件未回归，仅剩 4 个删剩文件）；`commands_registry`/`commands_facade` 无 pipeline 残留。备份分支 `backup/harness-before-recon-merge-20260606`。
+- **接入（3 条路，复用同一端口）**：① **coverage gate** 用 recon 资产当权威分母（`GateContext.in_scope_assets` 活体接线，空→回退自报，绝不空集合白过）；② **阶段上下文**自动注入 in-scope 资产清单（`render_in_scope_assets`，cap 50 + 总数）；③ 新 agent 工具 **`list_in_scope_targets`**（列 id+value+type）配合 `query_target_data` 闭环。底层：`ReconTargetsPort::{in_scope_values,in_scope_targets}` → `targets` 表 `scope='in'`；`DbRepoProvider::{in_scope_assets,in_scope_targets}` 默认 no-op、app 层经端口覆盖。
+- **运行过的验证（已记录证据）**：`cargo check --workspace --all-targets` → exit 0；`cargo nextest -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents -p golish-tools` → **905 passed / 0 failed**；`cargo clippy`（db/app-core/agent-kit/agent-app/agent-runtime/tools/sub-agents）`-D warnings` → exit 0；`cargo fmt --check`（7 crate）→ clean；`just arch` → DAG clean(50)，repo-ownership **7+1 均为 pre-existing/merge**（orchestration.rs operation_state/stage_runs + persistence.rs raw-sql），非本轮引入。
+- **提交记录**：分 3 个 commit 落 `feat/harness-2026-06-01`：`74cb4eca`(merge) / `f95998f9`(gate+注入+tool 后端) / 本轮第三个 commit(tool 暴露给 LLM + 本 progress)。**未 push**。
+- **风险/未做**：`just arch` 7+1 pre-existing 告警未收口；未跑全量 `just precommit`；`target_intel` 阶段本身无 coverage gate（seam 现咬合在 `vuln_triage`）；活体 E2E 未做（需 `just dev` + LLM key 跑一轮看 AI 真调 `list_in_scope_targets` + gate 用真实资产）。
+- **下一步建议**：① 用户做活体 E2E；② 决定是否给 `target_intel` 加 coverage 规则；③ 决定是否收口 arch 告警 / 跑全量 precommit 后再 push。
+
+---
+
 ### 2026-06-05 · 覆盖矩阵 Phase 2 ①③ seam 预埋（GateContext 注入资产/期望技术）（MCP-agent-4 · DISPATCH off · 用户「先预埋可以吗? 等弄好再合并呗」）
 
 - **背景**：Phase 2 ② 落地后，①（coverage_complete 资产从 DB 注入）/③（skeleton 动态 expected_techniques）的**活体**仍阻塞于未合并资产库 + DB §2.7。用户要求**先预埋加性 seam**，等资产库到位再接活体。

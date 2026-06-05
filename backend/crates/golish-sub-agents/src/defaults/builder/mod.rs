@@ -253,6 +253,7 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "search_knowledge_base".to_string(),
             "read_knowledge".to_string(),
             "query_target_data".to_string(),
+            "list_in_scope_targets".to_string(),
         ])
         .with_max_iterations(50)
         .with_idle_timeout(300)

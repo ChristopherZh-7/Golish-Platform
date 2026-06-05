@@ -231,5 +231,14 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
                 "required": ["target_id"]
             }),
         },
+        FunctionDeclaration {
+            name: "list_in_scope_targets".to_string(),
+            description: "List the in-scope targets/assets collected by reconnaissance (organization recon, manual target-add). Returns each target's target_id (UUID), value (domain/IP/URL), and type. Call this FIRST to discover which targets exist, then use query_target_data(target_id) to drill into any one. Takes no arguments.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
     ]
 }

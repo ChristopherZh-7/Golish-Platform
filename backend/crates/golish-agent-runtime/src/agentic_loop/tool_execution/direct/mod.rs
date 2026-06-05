@@ -128,6 +128,7 @@ where
             | "fingerprint_target"
             | "log_scan_result"
             | "query_target_data"
+            | "list_in_scope_targets"
     ) {
         let ws_path = ctx.workspace.read().await;
         let project_path_str = ws_path.to_string_lossy().to_string();
