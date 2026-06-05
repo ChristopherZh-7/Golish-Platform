@@ -14,7 +14,8 @@ pub use domain_event::{DomainEvent, IndexerEvent, PentestEvent, PipelineEvent, S
 pub use event_coordinator::{CoordinatorHandle, CoordinatorState, EventCoordinator};
 pub use op_trace::{
     build_manifest, collect_records, decision_records_json, default_transcript_base,
-    render_timeline, write_trace_artifacts, OperationManifest, TraceRecord,
+    render_timeline, resolve_transcript_base, resolve_transcript_base_for_session,
+    write_trace_artifacts, OperationManifest, TraceRecord,
 };
 pub use transcript::{
     build_summarizer_input, format_for_summarizer, read_transcript, save_summarizer_input,

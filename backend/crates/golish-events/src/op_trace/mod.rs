@@ -58,17 +58,69 @@ pub fn session_dir(base: &Path, session_id: &str) -> PathBuf {
     base.join(session_id)
 }
 
-/// Resolve the transcripts base directory the same way the app does:
-/// `VT_TRANSCRIPT_DIR` env override, else `~/.golish/transcripts`.
-pub fn default_transcript_base() -> PathBuf {
-    if let Some(dir) = std::env::var_os("VT_TRANSCRIPT_DIR") {
-        return PathBuf::from(dir);
-    }
+/// `~/.golish/transcripts` (env `HOME`/`USERPROFILE`), the home-only fallback.
+fn home_transcript_base() -> PathBuf {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     home.join(".golish").join("transcripts")
+}
+
+/// Resolve the transcripts base **the same way the app writes them** (see
+/// `golish-agent-app` session init): `VT_TRANSCRIPT_DIR` env override, else a
+/// real workspace's `{workspace}/.golish/transcripts`, else
+/// `~/.golish/transcripts`.
+///
+/// Read-side resolution (the `harness_trace` tool, op_trace) MUST stay in
+/// lockstep with the write side: a home-only default silently misses every run
+/// launched from a real workspace (the common case), which is exactly the
+/// "no logs" symptom.
+pub fn resolve_transcript_base(workspace: Option<&Path>) -> PathBuf {
+    if let Some(dir) = std::env::var_os("VT_TRANSCRIPT_DIR") {
+        return PathBuf::from(dir);
+    }
+    if let Some(ws) = workspace {
+        let s = ws.as_os_str();
+        if !s.is_empty() && s != "." {
+            return ws.join(".golish").join("transcripts");
+        }
+    }
+    home_transcript_base()
+}
+
+/// Home/env-only base (no workspace context); equals
+/// [`resolve_transcript_base(None)`](resolve_transcript_base). Kept as the
+/// zero-context default for callers that genuinely have no workspace.
+pub fn default_transcript_base() -> PathBuf {
+    resolve_transcript_base(None)
+}
+
+/// Pick the transcripts base that actually holds `session`, for callers with no
+/// running bridge to read the exact base from (`golish --replay`). Honors an
+/// explicit `VT_TRANSCRIPT_DIR`; otherwise tries the passed workspace, the
+/// current dir, then home, and returns the first whose `{base}/{session}`
+/// directory exists (falling back to home).
+pub fn resolve_transcript_base_for_session(session: &str, workspace: Option<&Path>) -> PathBuf {
+    if let Some(dir) = std::env::var_os("VT_TRANSCRIPT_DIR") {
+        return PathBuf::from(dir);
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(ws) = workspace {
+        let s = ws.as_os_str();
+        if !s.is_empty() && s != "." {
+            candidates.push(ws.join(".golish").join("transcripts"));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join(".golish").join("transcripts"));
+    }
+    let home = home_transcript_base();
+    candidates.push(home.clone());
+    candidates
+        .into_iter()
+        .find(|base| session_dir(base, session).is_dir())
+        .unwrap_or(home)
 }
 
 /// Read a JSONL transcript file synchronously into timestamped AI events.

@@ -59,9 +59,12 @@ pub struct Args {
     pub verbose: bool,
 
     /// Replay a run's merged decision timeline (main agent + sub-agents) and
-    /// exit. Pass the chat-session id (the directory name under
-    /// `~/.golish/transcripts`). Reads existing transcripts only — no app
-    /// startup, no DB. See docs/design/2026-06-05-unified-ai-harness-observability.
+    /// exit. Pass the chat-session id (the directory holding `transcript.json`).
+    /// The base is resolved like the app writes it: `VT_TRANSCRIPT_DIR`, else the
+    /// `[WORKSPACE]` arg / current dir's `.golish/transcripts`, else
+    /// `~/.golish/transcripts` — so run it from (or pass) the workspace the run
+    /// used. Reads existing transcripts only — no app startup, no DB. See
+    /// docs/design/2026-06-05-unified-ai-harness-observability.
     #[arg(long, value_name = "SESSION")]
     pub replay: Option<String>,
 }

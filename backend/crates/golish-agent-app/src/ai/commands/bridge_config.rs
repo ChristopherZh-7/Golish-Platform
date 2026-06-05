@@ -458,7 +458,15 @@ async fn register_pentest_tools(
     // instead of the user pointing at log files. Scoped to the current chat
     // session so a no-arg call returns this run.
     {
-        let mut trace_tool = crate::ai::harness_trace_tool::HarnessTraceTool::new();
+        // Read the run's transcripts from the SAME base the writer uses
+        // (workspace-relative for a real workspace); `default_transcript_base`
+        // is home-only and would miss workspace runs — the "no logs" symptom.
+        // The bridge's workspace is set at construction (before this), so it is
+        // available here even though `transcript_base_dir()` is set just after.
+        let workspace = bridge.workspace().read().await.clone();
+        let mut trace_tool = crate::ai::harness_trace_tool::HarnessTraceTool::new().with_base_dir(
+            golish_events::op_trace::resolve_transcript_base(Some(&workspace)),
+        );
         if let Some(sid) = bridge.event_session_id() {
             trace_tool = trace_tool.with_session_id(sid);
         }

@@ -1,7 +1,6 @@
 //! AI session lifecycle and config commands.
 
 use crate::error::GolishError;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tauri::{AppHandle, State};
@@ -92,20 +91,12 @@ pub async fn init_ai_session(
 
     configure_bridge(&mut bridge, &state, &session_id, Some(app_for_tools)).await;
 
-    // Initialize transcript writer for persisting AI events to JSONL
-    // Transcripts are stored in {workspace}/.golish/transcripts/{session_id}/transcript.jsonl
-    // Falls back to ~/.golish/transcripts/ if workspace is "." or env override is set
-    let transcripts_dir = std::env::var("VT_TRANSCRIPT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            if workspace_path.to_string_lossy() != "." {
-                workspace_path.join(".golish/transcripts")
-            } else {
-                dirs::home_dir()
-                    .unwrap_or_default()
-                    .join(".golish/transcripts")
-            }
-        });
+    // Initialize transcript writer for persisting AI events to JSONL.
+    // Resolution is shared with the read side (the `harness_trace` tool and
+    // `golish --replay`) via `resolve_transcript_base`, so writers and readers
+    // never disagree about where a run's transcripts live (workspace-relative
+    // for a real workspace, else `~/.golish/transcripts`).
+    let transcripts_dir = golish_events::op_trace::resolve_transcript_base(Some(&workspace_path));
 
     match TranscriptWriter::new(&transcripts_dir, &session_id).await {
         Ok(writer) => {

@@ -202,7 +202,26 @@ just kill                    清掉残留进程（占用 1420 端口时用）
 
 ---
 
-## 8. 给自己的最后一问（每次提交前默念）
+## 8. 运行日志与产物位置（给后续 Cursor / agent 的指路）
+
+> 本机跑 Golish 时，日志/产物落在**两个不同的根**，分析问题先认准位置：
+
+- **进程级日志（全局，固定在 home）**：`~/.golish/`
+  - `backend.log` — 后端 / agent / harness 全量 tracing（最常用；grep `harness::hook`、`gate BLOCK`、`Transcript writer initialized` 等）
+  - `frontend.log` — 前端运行日志
+  - `mcp-logs.log` — MCP
+  - 旧日志轮转为 `backend.log.<ts>.bak`
+- **AI 事件 transcript（按会话，JSONL，跟着 workspace 走）**：`{workspace}/.golish/transcripts/<session>/transcript.json`
+  - `{workspace}` = 在 Golish 里打开的目录（**不是本开发仓库**）。例：当前测试用的 `/Users/christopherzheng/golish-platform/Test1`
+  - 每会话一个目录；子 agent 在 `subagents/<agent_id>-<parent_req>/transcript.json`
+  - 含 `harness_trace` 事件（gate PASS/BLOCK、evidence_booked、background notes 等）
+  - 解析顺序见 `golish_events::op_trace::resolve_transcript_base`：`VT_TRANSCRIPT_DIR` 覆盖 > `{workspace}/.golish/transcripts` > `~/.golish/transcripts`
+
+> **分析 Golish 运行问题时**：先定位 workspace（用户会给，或看 `~/.golish/backend.log` 里 `Transcript writer initialized ... at "<path>"` 那行），再读对应 `transcript.json`；全局 / 跨会话问题直接 grep `~/.golish/backend.log`。直接读这些文件即可分析，不依赖产品内的 `harness_trace` 工具 / `golish --replay`。
+
+---
+
+## 9. 给自己的最后一问（每次提交前默念）
 
 1. 我跑过验证命令了吗？输出在哪里？
 2. `feature_list.json` 和 `agent-progress.md` 状态对得上吗？

@@ -55,7 +55,15 @@ fn main() {
     // merged decision timeline for a run and exits. It only reads transcripts
     // from disk, so it must short-circuit before any GUI/CLI app bootstrap.
     if let Some(session) = args.replay.as_deref() {
-        let base = golish_events::op_trace::default_transcript_base();
+        // Resolve the base the same way the app writes it: transcripts are
+        // workspace-relative (`{workspace}/.golish/transcripts`) for a real
+        // workspace, so a home-only lookup misses them. Honors VT_TRANSCRIPT_DIR,
+        // else tries the passed workspace / cwd / home and picks the one that
+        // actually holds this session.
+        let base = golish_events::op_trace::resolve_transcript_base_for_session(
+            session,
+            Some(&args.workspace),
+        );
         let _ = golish_events::op_trace::write_trace_artifacts(&base, session);
         print!(
             "{}",
