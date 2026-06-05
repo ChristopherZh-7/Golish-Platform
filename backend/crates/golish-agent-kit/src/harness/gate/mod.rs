@@ -389,4 +389,123 @@ mod tests {
             result.reasons
         );
     }
+
+    // ── coverage matrix 样例接入（设计 2026-06-05-coverage-matrix Task 6 + #4） ──
+    // 用迁移后的 vuln_triage embedded spec（含 expected_techniques + coverage_complete
+    // + found/checked_empty 证据规则）：完整覆盖 → Pass；删一格期望技术 → coverage_complete
+    // Block；checked_empty 清空证据 → found/checked_empty 证据规则 Block（落地用户 #4）。
+
+    #[test]
+    fn vuln_triage_coverage_gate_blocks_on_gap_and_passes_when_complete() {
+        use super::super::resources::load_embedded_stage_spec;
+        use super::super::types::{
+            CoverageCell, CoverageStatus, FindingSeverity, HarnessFinding, StageClaim, StageKind,
+        };
+        use golish_pentest::evidence_ledger::EvidenceAuditId;
+
+        let spec = load_embedded_stage_spec(StageKind::VulnTriage).unwrap();
+        // sanity：样例确实声明了 4 类期望技术（WSTG id）。
+        assert_eq!(spec.expected_techniques.len(), 4);
+
+        let eid = EvidenceAuditId::new(1);
+        let asset = "api.example.com";
+        // 资产对 4 类 WSTG 技术都给了终态（found/checked_empty/n_a），found 挂证据。
+        let full_coverage = vec![
+            CoverageCell {
+                asset: asset.into(),
+                technique: "WSTG-INPV-05".into(),
+                status: CoverageStatus::Found,
+                evidence_refs: vec![eid],
+                note: None,
+            },
+            CoverageCell {
+                asset: asset.into(),
+                technique: "WSTG-INPV-01".into(),
+                status: CoverageStatus::CheckedEmpty,
+                evidence_refs: vec![eid],
+                note: Some("no reflection observed".into()),
+            },
+            CoverageCell {
+                asset: asset.into(),
+                technique: "WSTG-ATHZ-04".into(),
+                status: CoverageStatus::CheckedEmpty,
+                evidence_refs: vec![eid],
+                note: Some("object refs scoped to owner".into()),
+            },
+            CoverageCell {
+                asset: asset.into(),
+                technique: "WSTG-INPV-19".into(),
+                status: CoverageStatus::NotApplicable,
+                evidence_refs: vec![],
+                note: Some("no outbound fetch surface".into()),
+            },
+        ];
+        let pass_deliverable = StageDeliverable {
+            stage_id: "vuln_triage".to_string(),
+            stage_run_id: Uuid::new_v4(),
+            claims: vec![StageClaim {
+                kind: "vuln".into(),
+                subject: asset.into(),
+                summary: "sqli confirmed".into(),
+                evidence_ids: vec![eid],
+            }],
+            evidence_refs: vec![eid],
+            skipped_checks: vec![],
+            findings: vec![HarnessFinding {
+                finding_id: Uuid::new_v4(),
+                kind: "sqli".into(),
+                subject: asset.into(),
+                severity: FindingSeverity::High,
+                evidence_refs: vec![eid],
+            }],
+            required_checks_done: vec![],
+            coverage: full_coverage,
+        };
+        let pass = validate_stage_gate(&pass_deliverable, &spec, None);
+        assert!(
+            pass.allowed,
+            "full coverage should pass: {:?}",
+            pass.reasons
+        );
+
+        // 删掉 SSRF(WSTG-INPV-19) 那格 → coverage_complete 应 Block 且 reason 含缺口。
+        let mut incomplete = pass_deliverable.clone();
+        incomplete.coverage.pop();
+        let blocked = validate_stage_gate(&incomplete, &spec, None);
+        assert!(!blocked.allowed);
+        assert!(
+            blocked
+                .reasons
+                .iter()
+                .any(|r| r.contains("coverage incomplete") && r.contains("WSTG-INPV-19")),
+            "coverage_complete should fire naming the gap: {:?}",
+            blocked.reasons
+        );
+
+        // #4（用户拍板「checked_empty 也要证据」）：把一个 checked_empty 格的证据清空 →
+        // vuln_triage 的 checked_empty 证据规则应 Block（I8：已检查为空 ≠ 未检查）。
+        let mut empty_ce = pass_deliverable.clone();
+        let cleared = empty_ce
+            .coverage
+            .iter_mut()
+            .find(|c| c.status == CoverageStatus::CheckedEmpty)
+            .map(|c| c.evidence_refs.clear());
+        assert!(
+            cleared.is_some(),
+            "fixture must contain a checked_empty cell"
+        );
+        let blocked_ce = validate_stage_gate(&empty_ce, &spec, None);
+        assert!(
+            !blocked_ce.allowed,
+            "checked_empty without evidence must block"
+        );
+        assert!(
+            blocked_ce
+                .reasons
+                .iter()
+                .any(|r| r.contains("checked_empty") && r.contains("must cite evidence")),
+            "checked_empty evidence rule should fire: {:?}",
+            blocked_ce.reasons
+        );
+    }
 }

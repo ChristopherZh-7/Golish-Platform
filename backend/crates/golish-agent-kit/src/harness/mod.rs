@@ -105,9 +105,9 @@ pub use tool_taxonomy::{
     underlying_tool_name,
 };
 pub use types::{
-    AgentContinuity, ExternalAttackSurfaceDeliverable, FindingSeverity, HarnessFinding,
-    HarnessRecoveryActions, HarnessStageHint, IntentAxis, RiskLevel, SkippedCheckRecord,
-    StageClaim, StageDeliverable, StageKind,
+    AgentContinuity, CoverageCell, CoverageStatus, ExternalAttackSurfaceDeliverable,
+    FindingSeverity, HarnessFinding, HarnessRecoveryActions, HarnessStageHint, IntentAxis,
+    RiskLevel, SkippedCheckRecord, StageClaim, StageDeliverable, StageKind,
 };
 
 /// Operation profile selection for stage_mode (Phase C).

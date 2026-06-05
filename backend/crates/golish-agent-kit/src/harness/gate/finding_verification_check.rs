@@ -96,6 +96,7 @@ mod tests {
             min_findings: None,
             min_claims: None,
             gate_rules: vec![],
+            expected_techniques: vec![],
         }
     }
 

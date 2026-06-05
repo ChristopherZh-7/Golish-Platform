@@ -152,15 +152,19 @@ gate 永远跑 **4 个结构性 check**（`schema` / `contract` / `vacuous` / `f
 - `count_at_least`：`{ op, over, where?, min, on_fail }` — 满足 `where` 的元素 ≥ `min`。
 - `for_all`：`{ op, over, where?, require, on_fail }` — 满足 `where` 的每个元素都满足 `require`（空集合为真）。
 - `named_check`：`{ op:"named_check", check, on_fail? }` — 按名调用保留的 Rust 领域 check。`check` ∈ `scope` | `surface_coverage` | `min_invocations`（闭合枚举，写错 fail-closed）。`on_fail` 可选，仅在被调 check 返回 Block 时覆盖其 reason/recovery。这是逃生舱（领域逻辑无法纯数据化时用），不是通用扩展点。
+- `coverage_complete`：`{ op:"coverage_complete", terminal_status?, on_fail }` — 覆盖矩阵完整性（设计 `2026-06-05-coverage-matrix`）。对每个（自报）资产 × `spec.expected_techniques` 的每类技术，`deliverable.coverage` 里必须有一个 `status ∈ terminal_status` 的 cell；缺口（不在矩阵 / 非终态）= `not_attempted` = Block（reason 末尾列前 8 个缺失 `(asset × technique)`）。`terminal_status` 缺省 = 四种终态全算；`spec.expected_techniques` 空 → no-op Pass。资产维度 MVP 取 coverage 自报集合（DB 注入 in-scope 资产全集是后续硬化）。
 
-**over**：`claims` | `findings`
+**over**：`claims` | `findings` | `coverage`
 
 **pred**（用于 `where` / `require`）
 - `{ "pred":"non_empty", "field":<f> }`
-- `{ "pred":"eq", "field":<f>, "value":"<s>" }`
+- `{ "pred":"eq", "field":<f>, "value":"<s>" }`（`field:"status"` 时按 `found|checked_empty|blocked|not_applicable` 文本比较）
 - `{ "pred":"severity_at_least", "min":"info|low|medium|high|critical" }`（仅 findings）
 
-**field**：`kind` | `subject` | `summary` | `evidence_refs`(finding) | `evidence_ids`(claim) | `severity`(finding)
+**field**：`kind` | `subject` | `summary` | `evidence_refs`(finding/coverage) | `evidence_ids`(claim) | `severity`(finding) | `asset`(coverage) | `technique`(coverage) | `status`(coverage)
+
+**StageSpec 配套字段**
+- `expected_techniques`: `Vec<String>` — 本 stage 期望覆盖的技术类，供 `coverage_complete` 核对。值约定为 OWASP WSTG / MITRE ATT&CK id（"挂标准"）；空 = `coverage_complete` no-op。
 
 **on_fail**：`{ reason, hints?, repair_tool_calls?, missing_evidence_kinds? }` → 映射到 `GateCheckOutcome::Block` + `HarnessRecoveryActions`。
 
@@ -173,5 +177,22 @@ gate 永远跑 **4 个结构性 check**（`schema` / `contract` / `vacuous` / `f
     "where":{"pred":"severity_at_least","min":"high"},
     "require":{"pred":"non_empty","field":"evidence_refs"},
     "on_fail":{"reason":"verification: every high/critical finding must carry evidence"} }
+]
+```
+
+**覆盖矩阵样例**（`resources/harness/stages/vuln_triage.json`）：found/checked_empty 格必挂证据（#4：「已检查为空」≠「未检查」，须有证据证明确实测过）+ 每个资产对每类期望技术（WSTG id）都要有终态
+```json
+"expected_techniques": ["WSTG-INPV-05", "WSTG-INPV-01", "WSTG-ATHZ-04", "WSTG-INPV-19"],
+"gate_rules": [
+  { "op":"for_all", "over":"coverage",
+    "where":{"pred":"eq","field":"status","value":"found"},
+    "require":{"pred":"non_empty","field":"evidence_refs"},
+    "on_fail":{"reason":"every 'found' coverage cell must cite evidence"} },
+  { "op":"for_all", "over":"coverage",
+    "where":{"pred":"eq","field":"status","value":"checked_empty"},
+    "require":{"pred":"non_empty","field":"evidence_refs"},
+    "on_fail":{"reason":"every 'checked_empty' coverage cell must cite evidence (I8)"} },
+  { "op":"coverage_complete",
+    "on_fail":{"reason":"coverage incomplete: some (asset × expected technique) cells were never attempted"} }
 ]
 ```

@@ -26,8 +26,32 @@
       "over": "findings",
       "require": { "pred": "non_empty", "field": "evidence_refs" },
       "on_fail": { "reason": "every finding must cite evidence", "hints": ["add evidence to each finding via prior tool calls"] }
+    },
+    {
+      "op": "for_all",
+      "over": "coverage",
+      "where": { "pred": "eq", "field": "status", "value": "found" },
+      "require": { "pred": "non_empty", "field": "evidence_refs" },
+      "on_fail": { "reason": "every 'found' coverage cell must cite evidence", "hints": ["attach a PoC / evidence id to each found cell"] }
+    },
+    {
+      "op": "for_all",
+      "over": "coverage",
+      "where": { "pred": "eq", "field": "status", "value": "checked_empty" },
+      "require": { "pred": "non_empty", "field": "evidence_refs" },
+      "on_fail": { "reason": "every 'checked_empty' coverage cell must cite evidence (I8: checked-empty is NOT unchecked)", "hints": ["attach the scan/probe evidence id proving you actually tested this technique on this asset"] }
+    },
+    {
+      "op": "coverage_complete",
+      "on_fail": {
+        "reason": "coverage incomplete: some (asset \u00d7 expected technique) cells were never attempted",
+        "hints": ["for every in-scope asset, give each expected technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note"]
+      }
     }
   ],
+
+  "$comment_expected_techniques": "技术类对标 OWASP WSTG id（#2 挂标准）：SQLi=WSTG-INPV-05, Reflected XSS=WSTG-INPV-01, IDOR=WSTG-ATHZ-04, SSRF=WSTG-INPV-19。coverage_complete 据此核每个自报资产的覆盖完整性。",
+  "expected_techniques": ["WSTG-INPV-05", "WSTG-INPV-01", "WSTG-ATHZ-04", "WSTG-INPV-19"],
 
   "min_invocations": {},
 

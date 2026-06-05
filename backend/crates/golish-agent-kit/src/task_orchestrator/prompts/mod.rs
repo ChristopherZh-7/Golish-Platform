@@ -62,6 +62,21 @@ pub fn stage_charter(spec: &StageSpec) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
+    // Coverage matrix (设计 2026-06-05): when the stage declares expected
+    // techniques, the `coverage_complete` gate op requires every in-scope asset
+    // to take each technique to a terminal state. Surface that contract so the
+    // agent fills the `coverage` field instead of leaving cells not_attempted.
+    let coverage_line = if spec.expected_techniques.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n- **Coverage (per in-scope asset)** — give EACH of these techniques a terminal status \
+             for EVERY asset via the `coverage` field: {}. Per cell: found+evidence_refs / \
+             checked_empty+evidence_refs / blocked|not_applicable+note. A missing (asset × technique) \
+             = not_attempted = gate BLOCK (\"checked-empty\" is NOT \"unchecked\").",
+            spec.expected_techniques.join(", ")
+        )
+    };
     // Spec-derived minimum tool invocations: the gate's vacuous_check +
     // min_invocations_check are deterministic, so surface the exact requirement
     // to the agent (sorted for stable prompts across HashMap iteration order).
@@ -108,7 +123,7 @@ You are operating inside the **{stage}** stage of an authorized operation. Stay 
 
 - **Allowed tool types** (scan tools — use ONLY these tool types): {allowed}
 - **Minimum tool invocations** (you MUST actually run these): {min_inv}
-- A deterministic gate will check: {checks}. Unverified natural-language claims do NOT pass the gate.
+- A deterministic gate will check: {checks}. Unverified natural-language claims do NOT pass the gate.{coverage_line}
 - Do not escalate authorization or jump to another stage — the runtime advances stages for you once the gate passes.
 {stage_specific}
 {submission_instr}
@@ -142,6 +157,7 @@ Gate rules your deliverable MUST satisfy (otherwise it is rejected and you redo 
         stage = spec.id,
         allowed = allowed,
         checks = checks,
+        coverage_line = coverage_line,
         min_inv = min_inv,
         min_inv_keys_json = min_inv_keys_json,
         submission_instr = submission_instr,
@@ -603,5 +619,31 @@ mod tests {
         let r = stage_discipline_reminder();
         assert!(r.to_lowercase().contains("overrides"));
         assert!(r.to_uppercase().contains("READ THIS LAST"));
+    }
+
+    /// Coverage matrix (设计 2026-06-05): the charter must surface the stage's
+    /// expected techniques + the per-cell coverage contract when set, and stay
+    /// silent (no Coverage bullet) when the stage declares none.
+    #[test]
+    fn stage_charter_lists_expected_techniques_when_set() {
+        use crate::harness::stage_spec::load_stage_spec_from_json;
+
+        let with = load_stage_spec_from_json(
+            r#"{"id":"vuln_triage","kind":"vuln_triage","risk_level":"high",
+                "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+                "expected_techniques":["WSTG-INPV-05","WSTG-ATHZ-04"]}"#,
+        )
+        .unwrap();
+        let charter = stage_charter(&with);
+        assert!(charter.contains("Coverage (per in-scope asset)"));
+        assert!(charter.contains("WSTG-INPV-05"));
+        assert!(charter.contains("WSTG-ATHZ-04"));
+
+        let without = load_stage_spec_from_json(
+            r#"{"id":"scoping","kind":"scoping","risk_level":"low",
+                "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate"}"#,
+        )
+        .unwrap();
+        assert!(!stage_charter(&without).contains("Coverage (per in-scope asset)"));
     }
 }

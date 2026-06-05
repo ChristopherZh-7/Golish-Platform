@@ -17,17 +17,18 @@
       "title": "覆盖矩阵（Coverage Matrix）：交付物结构化 (资产×技术×终态+证据)，让攻击阶段「全面/方法够多/零 not_attempted」成为确定性可校验过关标准。Phase 1 = 数据模型 + gate 积木 (Collection::Coverage + status 谓词 + found/checked_empty 证据规则)",
       "user_visible_behavior": "StageDeliverable 可携带 coverage 矩阵：每格 (asset, technique, status∈{found,checked_empty,blocked,not_applicable}, evidence_refs, note)；缺失=not_attempted=不过关（落地 I8）。gate_rules 可声明 for_all/count over coverage + status 谓词，如『每个 found/checked_empty 格必须挂证据』。[Phase 2] coverage_complete op 按 DB in-scope 资产 × skeleton 动态 expected 核完整性。",
       "status": "blocked",
-      "blocker": "Phase 1（数据模型 + gate 积木 + 证据规则能力）已实现并全绿（见 verification）。Phase 2（coverage_complete 按 DB 资产核完整性 + skeleton 动态生成 expected + WSTG/ATT&CK 标准映射 + submit schema/charter + 样例 stage）blocked 于：① 同事『主动被动信息收集』资产库尚未合并（in-scope 资产全集来源）；② 碰 DB 需用户 §2.7 授权；③ 未 commit 之外——本条已 commit Phase 1。用户拍板完整版（资产从 DB / 挂标准 / skeleton 动态 / checked_empty 也要证据，设计 §6.5）。",
+      "blocker": "Phase 1 + Phase 1.5（确定性 coverage 闸端到端：数据模型 + gate 积木 + coverage_complete op + expected_techniques + submit schema/charter + vuln_triage WSTG 样例 + found/checked_empty 双证据规则【④】）已实现、全绿、已 commit（见 verification）。仅剩 Phase 2 三项硬化 blocked：① coverage_complete 资产维度从 DB 注入 in-scope 资产全集（替代当前自报）；③ skeleton 动态生成 expected_techniques（替代静态 spec 字段）；② technique WSTG/ATT&CK 词典+校验（替代字符串约定）。卡点：同事『主动被动信息收集』资产库尚未合并（in-scope 资产/目标数据来源）+ 碰 DB 需用户 §2.7 授权。用户已拍板完整版（资产从 DB / 挂标准 / skeleton 动态 / checked_empty 也要证据，设计 §6.5）。",
       "design": "docs/design/2026-06-05-coverage-matrix.md（数据模型 §3 + gate 积木 §4 + 决策与分期 §6.5）",
-      "plan": "docs/superpowers/plans/2026-06-05-coverage-matrix.md（writing-plans · Task 1-7；执行状态：T1/T2 Phase1 done，T3-7 Phase2 deferred）",
+      "plan": "docs/superpowers/plans/2026-06-05-coverage-matrix.md（writing-plans · Task 1-7；执行状态：T1-T7 确定性部分全 done（Phase1 ca86a5ec + Phase1.5）；①②③ 硬化 Phase2 deferred）",
       "verification": [
-        "cargo nextest run -p golish-agent-kit -p golish-agent-app --no-fail-fast → 511 tests run: 511 passed, 0 skipped（含 coverage 数据规则 2 新测：found 缺证据 Block、count found；21 StageDeliverable 构造点全部补 coverage 编译通过）",
-        "cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime --all-targets -- -D warnings → exit 0 零告警",
-        "cargo fmt --check → exit 0 clean",
-        "[Phase 2 未做] coverage_complete + DB 资产注入 + skeleton 动态 expected + 标准映射 + 样例 stage + 活体 E2E"
+        "[Phase 1 · ca86a5ec] cargo nextest -p golish-agent-kit -p golish-agent-app → 511/0（数据模型 + gate 积木 + 21 StageDeliverable 构造点补 coverage）",
+        "[Phase 1.5 · 本轮] cargo nextest run -p golish-agent-kit -p golish-agent-app --status-level fail → 522 tests run: 522 passed, 0 skipped（+11 新测：coverage_complete 6 分支 + expected_techniques 解析 + submit coverage + charter + vuln_triage 集成测试含 checked_empty 无证据→Block【④】）",
+        "[Phase 1.5] cargo clippy -p golish-agent-kit -p golish-agent-app --all-targets -- -D warnings → exit 0 零告警",
+        "[Phase 1.5] cargo fmt --check → exit 0 clean；python3 -m json.tool resources/harness/stages/vuln_triage.json → JSON_OK",
+        "[Phase 2 未做] coverage_complete 按 DB in-scope 资产注入 + skeleton 动态 expected + WSTG/ATT&CK 词典校验 + 活体 E2E"
       ],
-      "evidence": "2026-06-05 Phase 1 本机实跑：nextest 511/0；clippy -D warnings 三 crate 零告警；fmt clean。纯加性（coverage #[serde(default)] 空=旧行为）、可回滚。未跑全量 just precommit（纯 Rust 无前端面）。Phase 2 活体价值待资产库 + DB 授权。",
-      "notes": "2026-06-05 MCP-agent-4（DISPATCH off）。架构优化讨论 → 识别交付物太扁是承接复杂攻击场景的瓶颈 → 设计覆盖矩阵。用户拍板完整版但 ①资产从 DB/③skeleton 动态强依赖同事未合的资产库 + §2.7 DB 授权，故诚实分期：本轮实现不依赖资产库的确定性核心（Phase 1），Phase 2 活体接线 deferred。关键：coverage_complete 设计为 eval_with_context 注入 DB 资产集（gate 保持纯函数/可测）。§2.1：本条 blocked，不占 in_progress 槽位。"
+      "evidence": "2026-06-05 Phase 1（ca86a5ec）+ Phase 1.5（本轮 MCP-4 收尾，含 ④ checked_empty 证据规则）本机实跑：nextest 522/0；clippy -D warnings 零告警；fmt clean；vuln_triage.json 合法。纯加性可回滚（coverage #[serde(default)] 空=旧行为；expected_techniques 空=coverage_complete no-op）。未跑全量 just precommit（纯 Rust 无前端面，已覆盖受影响 2 crate）。未 push。Phase 2 活体价值待资产库 + DB §2.7 授权。",
+      "notes": "2026-06-05 MCP-agent-4（DISPATCH off）。架构优化讨论 → 识别交付物太扁是承接复杂攻击场景瓶颈 → 设计覆盖矩阵。用户拍板完整版（资产从 DB / 挂标准 / skeleton 动态 / checked_empty 也要证据 §6.5）。分期：Phase 1（MCP-4 ca86a5ec 数据模型+积木）→ Phase 1.5（MCP-1 起草 coverage_complete/expected_techniques/submit schema/charter/vuln_triage WSTG 样例，未提交即掉线）→ 本轮 MCP-4 复验 + 补 ④（checked_empty 证据规则 + schema/charter 对齐 + 集成测试）+ 收尾提交。①资产从 DB/③skeleton 动态/②WSTG 词典仍 deferred（强依赖同事未合资产库 + §2.7）。coverage_complete 设计为 eval_with_context 注入 DB 资产集（gate 纯函数/可测）。§2.1：本条仍 blocked（Phase 2），不占 in_progress 槽位。"
     },
     {
       "id": "gate-rules-migration-2026-06-05",

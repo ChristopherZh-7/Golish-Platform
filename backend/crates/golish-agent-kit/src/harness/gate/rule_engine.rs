@@ -43,6 +43,16 @@ pub enum GateRule {
         #[serde(default)]
         on_fail: Option<OnFail>,
     },
+    /// Coverage 完整性（设计 2026-06-05-coverage-matrix §4.2）：对每个（自报）资产 ×
+    /// `spec.expected_techniques` 的每类技术，矩阵里必须有一个 status ∈ `terminal_status`
+    /// 的 cell；缺口（不在矩阵 / 非终态）= `not_attempted` = Block。
+    /// `terminal_status=None` → 默认四种终态全算；`spec.expected_techniques` 空 → no-op Pass。
+    /// 资产维度 MVP 取 deliverable.coverage 自报集合（§6.1 的 DB 注入待资产库，见 §8）。
+    CoverageComplete {
+        #[serde(default)]
+        terminal_status: Option<Vec<CoverageStatus>>,
+        on_fail: OnFail,
+    },
 }
 
 /// `named_check` 逃生舱可调的内建 check（闭合枚举 → 写错名 serde 报错 fail-closed）。
@@ -68,9 +78,9 @@ impl GateRule {
     /// agent 面向的 stage charter 用的简短描述（替代旧 `required_checks` 名字列表）。
     pub fn summary(&self) -> String {
         match self {
-            GateRule::CountAtLeast { on_fail, .. } | GateRule::ForAll { on_fail, .. } => {
-                on_fail.reason.clone()
-            }
+            GateRule::CountAtLeast { on_fail, .. }
+            | GateRule::ForAll { on_fail, .. }
+            | GateRule::CoverageComplete { on_fail, .. } => on_fail.reason.clone(),
             GateRule::NamedCheck { check, on_fail } => on_fail
                 .as_ref()
                 .map(|o| o.reason.clone())
@@ -179,6 +189,82 @@ fn eval_one(d: &StageDeliverable, spec: &StageSpec, rule: &GateRule) -> GateChec
                 _ => base,
             }
         }
+        GateRule::CoverageComplete {
+            terminal_status,
+            on_fail,
+        } => coverage_complete(d, spec, terminal_status.as_deref(), on_fail),
+    }
+}
+
+/// 所有 coverage 终态（`terminal_status` 缺省时用）。
+const ALL_TERMINAL: [CoverageStatus; 4] = [
+    CoverageStatus::Found,
+    CoverageStatus::CheckedEmpty,
+    CoverageStatus::Blocked,
+    CoverageStatus::NotApplicable,
+];
+
+/// `coverage_complete` 求值（纯函数，设计 §4.2）。`expected_techniques` 空 → no-op
+/// Pass；否则对（自报）资产 × 期望技术逐格核终态，缺口聚合进 Block reason（前 N 个）。
+fn coverage_complete(
+    d: &StageDeliverable,
+    spec: &StageSpec,
+    terminal_status: Option<&[CoverageStatus]>,
+    on_fail: &OnFail,
+) -> GateCheckOutcome {
+    let techniques = &spec.expected_techniques;
+    if techniques.is_empty() {
+        return GateCheckOutcome::Pass; // no-op：未声明期望技术
+    }
+    let terminal = terminal_status.unwrap_or(&ALL_TERMINAL);
+
+    // 资产维度 = deliverable.coverage 里出现的 distinct asset（first-seen 顺序保证
+    // 确定性输出）。MVP 自报；DB 注入 in-scope 资产全集是后续硬化（设计 §6.1/§8）。
+    let mut assets: Vec<&str> = Vec::new();
+    for cell in &d.coverage {
+        if !assets.contains(&cell.asset.as_str()) {
+            assets.push(cell.asset.as_str());
+        }
+    }
+
+    let mut gaps: Vec<String> = Vec::new();
+    for asset in &assets {
+        for tech in techniques {
+            let covered = d
+                .coverage
+                .iter()
+                .any(|c| c.asset == *asset && c.technique == *tech && terminal.contains(&c.status));
+            if !covered {
+                gaps.push(format!("({asset} × {tech})"));
+            }
+        }
+    }
+
+    if gaps.is_empty() {
+        return GateCheckOutcome::Pass;
+    }
+    const MAX_SHOWN: usize = 8;
+    let shown = gaps
+        .iter()
+        .take(MAX_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let suffix = if gaps.len() > MAX_SHOWN {
+        format!(" (+{} more)", gaps.len() - MAX_SHOWN)
+    } else {
+        String::new()
+    };
+    GateCheckOutcome::Block {
+        reasons: vec![format!(
+            "{}: never attempted {}{}",
+            on_fail.reason, shown, suffix
+        )],
+        recovery: HarnessRecoveryActions {
+            hints: on_fail.hints.clone(),
+            repair_tool_calls: on_fail.repair_tool_calls.clone(),
+            missing_evidence_kinds: on_fail.missing_evidence_kinds.clone(),
+        },
     }
 }
 
@@ -629,5 +715,125 @@ mod tests {
         ]);
         // 只有 1 个 found → Block。
         assert!(!eval(&d, &test_spec(), &[rule])[0].is_pass());
+    }
+
+    // ── coverage_complete op（设计 2026-06-05-coverage-matrix §4.2） ───────────
+
+    /// spec with the given `expected_techniques`（其余走 serde default）。
+    fn spec_with_expected(techs: &[&str]) -> StageSpec {
+        let arr = techs
+            .iter()
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        crate::harness::stage_spec::load_stage_spec_from_json(&format!(
+            r#"{{"id":"vuln_triage","kind":"vuln_triage","risk_level":"high",
+                "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+                "expected_techniques":[{arr}]}}"#
+        ))
+        .expect("spec parses")
+    }
+
+    fn coverage_complete_rule() -> GateRule {
+        parse(
+            r#"{ "op":"coverage_complete",
+                 "on_fail":{"reason":"coverage incomplete","hints":["fill every expected technique"]} }"#,
+        )
+    }
+
+    #[test]
+    fn parses_coverage_complete_rule() {
+        let rule = coverage_complete_rule();
+        assert!(matches!(
+            rule,
+            GateRule::CoverageComplete {
+                terminal_status: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn coverage_complete_bad_terminal_status_fails_closed() {
+        // status 写错值（不在闭合枚举）→ serde 解析报错。
+        assert!(serde_json::from_str::<GateRule>(
+            r#"{ "op":"coverage_complete","terminal_status":["bogus"],
+                 "on_fail":{"reason":"x"} }"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn coverage_complete_noop_when_no_expected_techniques() {
+        // expected_techniques 空（test_spec 无该字段）→ 即使有缺口也 Pass（no-op）。
+        let rule = coverage_complete_rule();
+        let d =
+            deliverable_with_coverage(vec![cov_cell("a", "idor", CoverageStatus::Found, vec![1])]);
+        assert!(eval(&d, &test_spec(), &[rule])[0].is_pass());
+    }
+
+    #[test]
+    fn coverage_complete_blocks_on_missing_technique() {
+        let rule = coverage_complete_rule();
+        let spec = spec_with_expected(&["idor", "xss"]);
+        // 资产 a 只覆盖了 idor，缺 a×xss → Block，reason 含缺失对。
+        let d =
+            deliverable_with_coverage(vec![cov_cell("a", "idor", CoverageStatus::Found, vec![1])]);
+        match &eval(&d, &spec, &[rule])[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons[0].contains("(a × xss)"), "{:?}", reasons);
+            }
+            GateCheckOutcome::Pass => panic!("expected Block on missing technique"),
+        }
+    }
+
+    #[test]
+    fn coverage_complete_passes_when_all_techniques_terminal() {
+        let rule = coverage_complete_rule();
+        let spec = spec_with_expected(&["idor", "xss"]);
+        // 两类技术都有终态（found / checked_empty）→ Pass。
+        let d = deliverable_with_coverage(vec![
+            cov_cell("a", "idor", CoverageStatus::Found, vec![1]),
+            cov_cell("a", "xss", CoverageStatus::CheckedEmpty, vec![1]),
+        ]);
+        assert!(eval(&d, &spec, &[rule])[0].is_pass());
+    }
+
+    #[test]
+    fn coverage_complete_terminal_status_found_only_blocks_checked_empty() {
+        // terminal_status 限定 ["found"] 时，checked_empty 的格不算终态 → 缺口 Block。
+        let rule = parse(
+            r#"{ "op":"coverage_complete","terminal_status":["found"],
+                 "on_fail":{"reason":"coverage incomplete"} }"#,
+        );
+        let spec = spec_with_expected(&["idor", "xss"]);
+        let d = deliverable_with_coverage(vec![
+            cov_cell("a", "idor", CoverageStatus::Found, vec![1]),
+            cov_cell("a", "xss", CoverageStatus::CheckedEmpty, vec![1]),
+        ]);
+        match &eval(&d, &spec, &[rule])[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons[0].contains("(a × xss)"), "{:?}", reasons);
+            }
+            GateCheckOutcome::Pass => panic!("found-only terminal must block checked_empty cell"),
+        }
+    }
+
+    #[test]
+    fn coverage_complete_multi_asset_reports_per_asset_gaps() {
+        let rule = coverage_complete_rule();
+        let spec = spec_with_expected(&["idor"]);
+        // 两个资产，b 缺 idor → 仅 b×idor 缺口。
+        let d = deliverable_with_coverage(vec![
+            cov_cell("a", "idor", CoverageStatus::Found, vec![1]),
+            cov_cell("b", "xss", CoverageStatus::CheckedEmpty, vec![1]),
+        ]);
+        match &eval(&d, &spec, &[rule])[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons[0].contains("(b × idor)"), "{:?}", reasons);
+                assert!(!reasons[0].contains("(a × idor)"), "{:?}", reasons);
+            }
+            GateCheckOutcome::Pass => panic!("expected Block for b×idor gap"),
+        }
     }
 }

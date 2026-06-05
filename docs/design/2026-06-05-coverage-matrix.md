@@ -140,18 +140,24 @@ pub struct CoverageCell {
 
 但完整版的 ①/③ **强依赖同事尚未合并的资产库** + 碰 DB 按 AGENTS.md §2.7 需用户确认。故分两期：
 
-- **Phase 1（本次已实现、不依赖资产库）= 确定性核心**：
+- **Phase 1（2026-06-05 · MCP-4 已提交 `ca86a5ec`）= 数据模型 + 数据积木**：
   - 数据模型 `CoverageStatus` / `CoverageCell` / `StageDeliverable.coverage`（types.rs）。
   - gate 积木 `Collection::Coverage` + `ItemField::{Asset,Technique,Status}` + `Pred::Eq` 支持 status（rule_engine.rs）。
-  - ④ 落地方式：用两条数据规则 `for_all over coverage where status==found require non_empty evidence_refs` + `…where status==checked_empty require non_empty evidence_refs`（MVP 暂用两条；将来加 `member_of` 谓词可合一）。
-  - 验证：单测 + 511 nextest 全绿 + clippy -D + fmt（见 §9 / agent-progress）。
-- **Phase 2（deferred · 待资产库合入 + 用户 DB 确认）= 活体接线**：
-  - `coverage_complete` op：阶段收尾时**外层从 DB 查 in-scope 资产集**，经 `eval_with_context` 注入（gate 仍纯函数）；逐 (asset × expected_technique) 核终态。
-  - ③ skeleton 动态生成 `expected_techniques`（扩 `DefaultSprintContractGenerator`，输入含目标/资产数据）。
-  - ② 把 technique 字符串约束/映射到 WSTG/ATT&CK id（taxonomy 词表 + 校验）。
-  - submit 工具 schema 加 `coverage` + charter 提示（可与 Phase 2 一起，或随样例 stage）。
+  - ④ 落地：数据规则 `for_all over coverage where status==found require non_empty evidence_refs`。
 
-> 即：本次交付**装得下 coverage 的结构 + 证据 gate**；「按 DB 资产核完整性 + 动态期望 + 标准对标」等资产库到位、用户授权 DB 后接上。
+- **Phase 1.5（2026-06-05 · MCP-1 增量 = 确定性 coverage 闸端到端跑通，不依赖资产库）**：
+  - `coverage_complete` op（rule_engine.rs，纯函数）：读 `spec.expected_techniques` × coverage **自报**资产集，逐 (asset × technique) 核终态；缺口聚合进 Block reason（前 8 个）。`terminal_status` 可选、缺省四态；expected 空 → no-op。
+  - `StageSpec.expected_techniques`（stage_spec.rs，静态）。
+  - submit 工具 `coverage` schema + `stage_charter` 当 expected 非空时列出技术 + 每格契约（prompts/mod.rs）。
+  - 样例 `vuln_triage`：`expected_techniques` 用真实 **WSTG id**（②「挂标准」在数据层落地）+ `coverage_complete` + **found + checked_empty 双证据规则（④「checked_empty 也要证据」落地，I8）** + gate 集成测试。
+  - 验证：单测 + nextest（kit+app）全绿 + clippy -D + fmt（见 agent-progress）。
+
+- **Phase 2（deferred · 待资产库合入 + 用户 DB 确认）= 活体接线 + 标准/动态硬化**：
+  - **①** `coverage_complete` 的资产维度从 **DB** 注入 in-scope 资产全集（阶段收尾外层查库 → 经 `eval_with_context` 注入，gate 仍纯函数），替代当前自报集合，堵「少报资产蒙混」（§8）。
+  - **③** skeleton **动态生成** `expected_techniques`（扩 `DefaultSprintContractGenerator`，输入含真实目标/资产数据），替代当前静态 spec 字段。
+  - **②** technique 字符串**约束/映射到 WSTG/ATT&CK 词典 + 校验**（当前仅字符串约定 + 样例用真实 WSTG id）。
+
+> 即：本次（Phase 1.5）coverage 闸已**端到端可用**（自报资产 + 静态期望 + WSTG id 约定）；「按 DB 资产核完整性 + 按目标动态期望 + 标准词典对标」三项硬化待资产库到位、用户授权 DB 后接上。
 
 ---
 

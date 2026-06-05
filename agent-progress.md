@@ -29,6 +29,25 @@
 
 ---
 
+### 2026-06-05 · 覆盖矩阵 Phase 1.5 收尾 + ④ checked_empty 证据（MCP-agent-4 · DISPATCH off · 用户「重新检查我做到哪里了，你一口气做完」）
+
+- **背景**：Phase 1（`ca86a5ec`）由 MCP-4 提交后，**MCP-1 起草了 Phase 1.5**（coverage_complete op + expected_techniques + submit coverage schema + charter 提示 + vuln_triage WSTG 样例 + 一批测试）但**未提交即掉线**（list_sessions：agent-1 online=false/developing，工作树 11 文件悬挂）。本轮 MCP-4 复验 + 补缺口 + 收尾提交。
+- **复验（不采信自称，本机实跑）**：接手 MCP-1 的工作树 WIP → `nextest -p golish-agent-kit -p golish-agent-app` 522/0、clippy -D 零告警、fmt clean，确认其 Phase 1.5 编译+测试真绿。
+- **补的缺口（④「checked_empty 也要证据」）**：发现样例 vuln_triage 只接了 `found→证据`，未接 checked_empty（与用户 #4 拍板不符；charter 已写 checked_empty+evidence 但 gate 没强制）。修：
+  - `resources/harness/stages/vuln_triage.json`：加 `for_all over coverage where status==checked_empty require non_empty evidence_refs` 规则。
+  - `harness_submit_tool.rs`：coverage schema 描述改为「found OR checked_empty 必挂 evidence_refs」（与 charter 对齐）。
+  - `gate/mod.rs`：集成测试扩 checked_empty 清空证据→Block 断言。
+- **运行过的验证（本机实跑，全绿）**：
+  - `python3 -m json.tool resources/harness/stages/vuln_triage.json` → JSON_OK。
+  - `cargo nextest run -p golish-agent-kit -p golish-agent-app --status-level fail` → **522 tests run: 522 passed, 0 skipped**。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-app --all-targets -- -D warnings` → exit 0 零告警；`cargo fmt --check` → clean。
+- **登记同步**：`feature_list.json`（coverage-matrix-2026-06-05：verification/evidence/blocker/notes 更新为 Phase 1+1.5 done、仅 Phase 2 ①②③ blocked）+ 设计 §6.5 + 计划执行状态 + DSL 速查（2026-06-02 §8 样例加 checked_empty 规则）。
+- **commit**：Phase 1.5（MCP-1 WIP）+ ④ 补缺 + 文档/登记 一并 commit 到 `feat/harness-2026-06-01`，**未 push**。
+- **仍 deferred（Phase 2，未做）**：①资产从 DB 注入（eval_with_context，替自报）/ ②WSTG·ATT&CK 词典+校验（替字符串约定）/ ③skeleton 动态生成 expected（替静态 spec）。三项强依赖同事『主动被动信息收集』资产库合入 + §2.7 DB 授权。feature_list 该条仍 blocked（不占 in_progress 槽位）。
+- **下一步建议**：同事资产库合入后开 Phase 2，起手先议定「in-scope 资产查询接口 + evidence_kinds 契约」，再按设计 §6.5 接 coverage_complete 的 DB 资产注入。
+
+---
+
 ### 2026-06-05 · 覆盖矩阵（Coverage Matrix）Phase 1 确定性核心（MCP-agent-4 · DISPATCH off · 用户「出 coverage 设计+计划」→「开干」+ 四问拍板完整版）
 
 - **背景**：承接 gate 数据驱动化讨论，用户问「架构还能怎么优化以承接更复杂攻击场景」。结论：下一个瓶颈是**交付物结构太扁**（只有 claims/findings 平列表），装不下「全面/方法够多」= 资产×技术覆盖矩阵。出设计+计划后用户拍板**完整版**：①资产从 DB ②technique 挂 OWASP WSTG/MITRE ATT&CK ③expected 走 skeleton 动态 ④checked_empty 也要证据。

@@ -191,6 +191,11 @@ impl Tool for SubmitStageDeliverableTool {
                     "type": "array",
                     "description": "Names of the required tools you actually ran (e.g. dns_resolve, http_probe).",
                     "items": { "type": "string" }
+                },
+                "coverage": {
+                    "type": "array",
+                    "description": "Coverage matrix: one cell per (asset, technique) you took to a terminal state. Each {asset, technique, status, evidence_refs?:[int], note?}. status is one of found|checked_empty|blocked|not_applicable. A 'found' OR 'checked_empty' cell MUST cite evidence_refs (PoC for found; the scan/probe evidence proving you actually tested it for checked_empty); blocked/not_applicable MUST give a `note` explaining why — \"checked-empty\" is NOT \"unchecked\". Do NOT list a (asset × technique) you did not attempt: a MISSING cell means not_attempted and FAILS the gate. Use the stage's expected techniques (OWASP WSTG / MITRE ATT&CK ids where given).",
+                    "items": { "type": "object" }
                 }
             },
             "required": ["stage_id", "stage_run_id", "claims", "evidence_refs", "findings"]
@@ -401,6 +406,31 @@ mod tests {
 
         let captured = sink.read().await.clone().expect("deliverable captured");
         assert!(captured.contains("\"stage_id\":\"scoping\""));
+    }
+
+    // Coverage-matrix cells are an additive, optional part of the submission: a
+    // deliverable carrying a `coverage` array parses into StageDeliverable and is
+    // accepted (scoping declares no expected_techniques, so coverage_complete is a
+    // no-op here) — and the captured side-channel JSON includes the coverage.
+    #[tokio::test]
+    async fn accepts_deliverable_with_coverage_cells() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Scoping);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
+
+        let mut args = valid_scoping_args();
+        args["coverage"] = json!([
+            { "asset": "api.example.com", "technique": "WSTG-ATHZ-04",
+              "status": "found", "evidence_refs": [1] },
+            { "asset": "api.example.com", "technique": "WSTG-INPV-05",
+              "status": "checked_empty", "evidence_refs": [1], "note": "no injection observed" }
+        ]);
+        let out = tool.execute(args, Path::new("/tmp")).await.unwrap();
+        assert_eq!(out["status"].as_str(), Some("accepted"));
+
+        let captured = sink.read().await.clone().expect("deliverable captured");
+        assert!(captured.contains("\"coverage\""));
+        assert!(captured.contains("WSTG-ATHZ-04"));
     }
 
     // §8.1 — validate-on-submit BLOCK branch: a vacuous deliverable (parses fine,

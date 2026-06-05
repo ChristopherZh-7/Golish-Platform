@@ -101,6 +101,14 @@ pub struct StageSpec {
     /// 过关标准，由 `super::gate::rule_engine::eval` 执行。缺省空 = 行为与旧版逐字节一致。
     #[serde(default)]
     pub gate_rules: Vec<super::gate::rule_engine::GateRule>,
+
+    /// Coverage matrix（设计 2026-06-05）：本 stage 期望覆盖的技术类清单，由
+    /// `gate_rules` 的 `coverage_complete` op 读取，对每个（自报）资产核对是否每类
+    /// 技术都有终态。缺省空 = `coverage_complete` 视为 no-op（向后兼容）。值约定为
+    /// **OWASP WSTG / MITRE ATT&CK id**（"挂标准"）；MVP 暂不做词典校验，先用字符串
+    /// （taxonomy 词典化 + 动态 skeleton 生成见设计 §6.5，待资产库合入后接）。
+    #[serde(default)]
+    pub expected_techniques: Vec<String>,
 }
 
 fn default_continuity() -> AgentContinuity {
@@ -223,5 +231,22 @@ mod tests {
         }"#;
         let s2 = load_stage_spec_from_json(with_rules).expect("parse with rules");
         assert_eq!(s2.gate_rules.len(), 1);
+    }
+
+    #[test]
+    fn expected_techniques_default_empty_and_parses() {
+        // 缺省：未写 expected_techniques 的 spec 解出空数组（coverage_complete no-op）。
+        let minimal = r#"{"id":"vuln_triage","kind":"vuln_triage","risk_level":"high",
+            "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate"}"#;
+        let s = load_stage_spec_from_json(minimal).expect("parse");
+        assert!(s.expected_techniques.is_empty());
+
+        // 能解析 WSTG / ATT&CK id 字符串数组。
+        let with = r#"{"id":"vuln_triage","kind":"vuln_triage","risk_level":"high",
+            "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+            "expected_techniques":["WSTG-INPV-05","WSTG-ATHZ-04","T1190"]}"#;
+        let s2 = load_stage_spec_from_json(with).expect("parse expected_techniques");
+        assert_eq!(s2.expected_techniques.len(), 3);
+        assert_eq!(s2.expected_techniques[0], "WSTG-INPV-05");
     }
 }

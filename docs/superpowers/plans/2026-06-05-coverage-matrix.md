@@ -6,10 +6,11 @@
 >
 > **加性、可回滚：** coverage 缺省空数组 = 今天行为；空 `expected_techniques` = `coverage_complete` no-op。先加能力，样例 stage 才接。
 
-> **执行状态（2026-06-05 · MCP-agent-4）：** 用户拍板完整版（资产从 DB / technique 挂标准 / expected 走 skeleton / checked_empty 也要证据，见设计 §6.5）。
-> - **✅ Phase 1 已实现并验证（本次，不依赖资产库）：Task 1（数据模型）+ Task 2（Coverage 集合 + status 谓词 + ④ found/checked_empty 证据规则能力）。** 511 nextest 全绿 + clippy -D 零告警 + fmt clean。
-> - **⏸ Phase 2 deferred（Task 3-7 的活体部分）：** `coverage_complete`（需从 DB 注入 in-scope 资产，§2.7 DB 确认）+ skeleton 动态生成 expected（Task 4 的动态版）+ WSTG/ATT&CK 标准映射（Task 2 的 ② 升级）+ submit schema/charter（Task 5）+ 样例 stage（Task 6）。**阻塞于同事资产库合入 + 用户 DB 授权。**
-> 下方 Task 1/2 已落地；Task 3-7 按 Phase 2 触发时执行（其中 Task 3 改为 `eval_with_context` 注入资产；Task 4 改为 skeleton 生成）。
+> **执行状态（2026-06-05）：** 用户拍板完整版（资产从 DB / technique 挂标准 / expected 走 skeleton / checked_empty 也要证据，见设计 §6.5）。
+> - **✅ Phase 1（MCP-4，已提交 `ca86a5ec`）：** Task 1（数据模型）+ Task 2（Coverage 集合 + status 谓词 + ④ found 证据规则）。
+> - **✅ Phase 1.5（MCP-1 起草 + MCP-4 复验收尾提交，确定性 coverage 闸端到端，不依赖资产库）：** Task 3（`coverage_complete` 自报资产版）+ Task 4（`StageSpec.expected_techniques` 静态）+ Task 5（submit `coverage` schema + charter 提示）+ Task 6（`vuln_triage` 样例用真实 WSTG id + 集成测试）+ Task 7（DSL 速查 + 收口）。**④「checked_empty 也要证据」已补**：vuln_triage 加 `checked_empty` 证据规则 + submit schema/charter 对齐（found OR checked_empty 必挂证据）+ 集成测试覆盖（checked_empty 无证据→Block）。MCP-4 实跑复验：nextest（kit+app）**522/0** + clippy -D 零告警 + fmt clean。
+> - **⏸ Phase 2 deferred（三项硬化，阻塞于同事资产库合入 + 用户 DB 授权 §2.7）：** ① `coverage_complete` 资产维度从 **DB** 经 `eval_with_context` 注入（替代自报）；③ skeleton **动态生成** `expected_techniques`（替代静态 spec 字段）；② technique **WSTG/ATT&CK 词典 + 校验**（替代字符串约定）。
+> 下方 Task 1-7 的确定性部分已全部落地；Phase 2 三项按其触发条件接入。
 
 ---
 
