@@ -56,6 +56,17 @@ impl GolishDbRepoProvider {
         Ok(found.into_iter().collect())
     }
 
+    pub(crate) async fn recent_evidence_ids_impl(
+        &self,
+        session_id: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<i64>> {
+        let rows =
+            golish_db::repo::audit::recent_evidence_ids_for_session(&self.pool, session_id, limit)
+                .await?;
+        Ok(rows)
+    }
+
     pub(crate) async fn evidence_kinds_for_impl(
         &self,
         ids: &[i64],
@@ -91,5 +102,9 @@ impl GolishDbRepoProvider {
 impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvider {
     async fn existing_evidence_ids(&self, ids: &[i64]) -> anyhow::Result<HashSet<i64>> {
         self.evidence_existing_ids_impl(ids).await
+    }
+
+    async fn recent_evidence_ids(&self, session_id: &str, limit: i64) -> anyhow::Result<Vec<i64>> {
+        self.recent_evidence_ids_impl(session_id, limit).await
     }
 }

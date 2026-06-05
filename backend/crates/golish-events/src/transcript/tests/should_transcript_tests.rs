@@ -408,6 +408,21 @@ fn all_variants() -> Vec<(AiEvent, bool)> {
             },
             true,
         ),
+        (
+            AiEvent::HarnessTrace {
+                operation_id: "op-1".into(),
+                stage: "target_intel".into(),
+                agent_path: "main>pentester".into(),
+                trace: golish_core::events::HarnessTraceKind::GateDecision {
+                    gate: "BLOCK".into(),
+                    findings: 0,
+                    fabricated_evidence_refs: vec![1],
+                    available_real_ids: vec![86],
+                    first_blocking_reason: None,
+                },
+            },
+            true,
+        ),
     ];
 
     // Compile-time exhaustiveness check: if a new variant is added to AiEvent,
@@ -464,7 +479,8 @@ fn all_variants() -> Vec<(AiEvent, bool)> {
             | AiEvent::TaskProgress { .. }
             | AiEvent::SubtaskCreated { .. }
             | AiEvent::SubtaskCompleted { .. }
-            | AiEvent::ToolBackgroundCompleted { .. } => {}
+            | AiEvent::ToolBackgroundCompleted { .. }
+            | AiEvent::HarnessTrace { .. } => {}
         }
     }
 

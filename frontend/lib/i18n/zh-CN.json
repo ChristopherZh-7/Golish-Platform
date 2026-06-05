@@ -685,7 +685,9 @@
     },
     "subAgent": {
       "delegateTo": "委托给",
-      "viewMore": "详情"
+      "viewMore": "详情",
+      "thinking": "思考中…",
+      "working": "处理中…"
     },
     "subAgentDetail": {
       "notFound": "未找到该 Sub-Agent",

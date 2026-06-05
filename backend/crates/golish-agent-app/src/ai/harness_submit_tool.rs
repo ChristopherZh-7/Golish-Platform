@@ -35,6 +35,15 @@ use golish_core::Tool;
 pub trait EvidenceLedgerQuery: Send + Sync {
     /// Of `ids`, return the subset that actually exists in the evidence ledger.
     async fn existing_evidence_ids(&self, ids: &[i64]) -> Result<HashSet<i64>>;
+
+    /// Recent **real** evidence ids for a chat session (newest first). Used to
+    /// name the actually-citable ledger ids in a fabricated-ref `needs_fix`, so
+    /// the model fills real ids instead of re-copying placeholders. Default empty
+    /// so test doubles / no-DB paths need not implement it.
+    async fn recent_evidence_ids(&self, session_id: &str, limit: i64) -> Result<Vec<i64>> {
+        let _ = (session_id, limit);
+        Ok(Vec::new())
+    }
 }
 
 /// Tool that captures a structured [`StageDeliverable`] into the bridge
@@ -52,6 +61,10 @@ pub struct SubmitStageDeliverableTool {
     /// `accepted` that makes the agent jump ahead before the real gate blocks
     /// it. `None` = skip the check (e.g. tests / no DB), deferring to the gate.
     evidence_repo: Option<Arc<dyn EvidenceLedgerQuery>>,
+    /// 乙 · chat-session string used to scope `recent_evidence_ids` so a
+    /// fabricated-ref `needs_fix` can name the operation's REAL ids. `None` ⇒ no
+    /// id hint (still rejects fabricated refs, just without the suggestion).
+    session_id: Option<String>,
 }
 
 impl SubmitStageDeliverableTool {
@@ -63,6 +76,7 @@ impl SubmitStageDeliverableTool {
             active_stage,
             last_deliverable,
             evidence_repo: None,
+            session_id: None,
         }
     }
 
@@ -70,6 +84,23 @@ impl SubmitStageDeliverableTool {
     pub fn with_evidence_repo(mut self, repo: Arc<dyn EvidenceLedgerQuery>) -> Self {
         self.evidence_repo = Some(repo);
         self
+    }
+
+    /// Scope the real-id suggestion (乙) to this chat session.
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// The operation's REAL evidence ids (newest first) to suggest when the
+    /// model cited fabricated refs. Empty when no repo / no session / infra
+    /// error (the caller degrades to a generic "run the tools first" message).
+    async fn available_real_ids(&self) -> Vec<i64> {
+        let (Some(repo), Some(sid)) = (self.evidence_repo.as_ref(), self.session_id.as_deref())
+        else {
+            return Vec::new();
+        };
+        repo.recent_evidence_ids(sid, 25).await.unwrap_or_default()
     }
 
     /// Cross-check the deliverable's `evidence_refs` against the real ledger.
@@ -217,17 +248,32 @@ impl Tool for SubmitStageDeliverableTool {
                                      the final evidence gate runs at stage close."
                         }));
                     }
+                    // 乙 · don't just scold — name the REAL evidence ids this
+                    // operation already has so the model fills them in instead of
+                    // re-copying placeholders (the recurring weak-model failure).
+                    let available = self.available_real_ids().await;
+                    let reason = if available.is_empty() {
+                        format!(
+                            "cited evidence ids {fabricated:?} do not exist in the evidence ledger. \
+                             No real evidence ids exist for this operation yet — run this stage's \
+                             required tools first, then cite the ids their results return (the \
+                             `_evidence_id` field, or a finished background job's `evidence_id=` \
+                             note). Never invent or copy placeholder ids like 1, 2, 3."
+                        )
+                    } else {
+                        format!(
+                            "cited evidence ids {fabricated:?} do not exist in the evidence ledger. \
+                             Cite ONLY from the REAL evidence ids already recorded for this \
+                             operation (newest first): {available:?}. Pick the ones whose tool \
+                             output backs each claim and put them in BOTH the claim's evidence_ids \
+                             and the top-level evidence_refs. Never invent or copy placeholder ids."
+                        )
+                    };
                     return Ok(json!({
                         "status": "needs_fix",
-                        "reasons": [format!(
-                            "cited evidence ids {fabricated:?} do not exist in the evidence ledger. \
-                             The ids 1, 2, 3 in the deliverable template are PLACEHOLDERS — never \
-                             copy them. Each evidence id MUST be the exact integer a real tool run \
-                             (or record_finding) returned in THIS operation; read it from that \
-                             tool's result. If you have run tools, cite the ids from their results; \
-                             if not, run the required tools first. Do NOT guess or reuse placeholder ids."
-                        )],
+                        "reasons": [reason],
                         "fabricated_evidence_refs": fabricated,
+                        "available_evidence_ids": available,
                         "note": "fix these and call submit_stage_deliverable again."
                     }));
                 }
@@ -360,13 +406,33 @@ mod tests {
         assert!(sink.read().await.is_some());
     }
 
-    /// Minimal [`EvidenceLedgerQuery`] mock: only the ids in the set "exist".
-    struct MockLedger(HashSet<i64>);
+    /// Minimal [`EvidenceLedgerQuery`] mock: `existing` is the set that "exists";
+    /// `recent` is what `recent_evidence_ids` returns (乙 real-id suggestion).
+    struct MockLedger {
+        existing: HashSet<i64>,
+        recent: Vec<i64>,
+    }
+
+    impl MockLedger {
+        fn existing(ids: HashSet<i64>) -> Self {
+            Self {
+                existing: ids,
+                recent: Vec::new(),
+            }
+        }
+    }
 
     #[async_trait::async_trait]
     impl EvidenceLedgerQuery for MockLedger {
         async fn existing_evidence_ids(&self, ids: &[i64]) -> Result<HashSet<i64>> {
-            Ok(ids.iter().copied().filter(|i| self.0.contains(i)).collect())
+            Ok(ids
+                .iter()
+                .copied()
+                .filter(|i| self.existing.contains(i))
+                .collect())
+        }
+        async fn recent_evidence_ids(&self, _session_id: &str, _limit: i64) -> Result<Vec<i64>> {
+            Ok(self.recent.clone())
         }
     }
 
@@ -378,7 +444,7 @@ mod tests {
         *stage.write().await = Some(StageKind::Scoping);
         // valid_scoping_args cites evidence id 1.
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
-            .with_evidence_repo(Arc::new(MockLedger([1].into_iter().collect())));
+            .with_evidence_repo(Arc::new(MockLedger::existing([1].into_iter().collect())));
 
         let out = tool
             .execute(valid_scoping_args(), Path::new("/tmp"))
@@ -397,7 +463,7 @@ mod tests {
         *stage.write().await = Some(StageKind::Scoping);
         // Empty ledger → cited id 1 is fabricated.
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
-            .with_evidence_repo(Arc::new(MockLedger(HashSet::new())));
+            .with_evidence_repo(Arc::new(MockLedger::existing(HashSet::new())));
 
         let out = tool
             .execute(valid_scoping_args(), Path::new("/tmp"))
@@ -409,6 +475,71 @@ mod tests {
             .expect("fabricated list");
         assert_eq!(fabricated, &vec![serde_json::json!(1)]);
         assert!(sink.read().await.is_some());
+    }
+
+    // 乙 · a fabricated-ref needs_fix must NAME the operation's real evidence ids
+    // (scoped by session) so the model re-cites real ids instead of placeholders.
+    #[tokio::test]
+    async fn fabricated_needs_fix_lists_available_real_ids() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Scoping);
+        // Nothing the deliverable cited exists, but the operation DOES have real
+        // ids 88, 86 recorded — they must be surfaced for re-citation.
+        let ledger = MockLedger {
+            existing: HashSet::new(),
+            recent: vec![88, 86],
+        };
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
+            .with_evidence_repo(Arc::new(ledger))
+            .with_session_id("pentest-chat-1");
+
+        let out = tool
+            .execute(valid_scoping_args(), Path::new("/tmp"))
+            .await
+            .unwrap();
+        assert_eq!(out["status"].as_str(), Some("needs_fix"));
+        let available = out["available_evidence_ids"]
+            .as_array()
+            .expect("available_evidence_ids present");
+        assert_eq!(
+            available,
+            &vec![serde_json::json!(88), serde_json::json!(86)]
+        );
+        let reason = out["reasons"][0].as_str().unwrap();
+        assert!(
+            reason.contains("88") && reason.contains("86"),
+            "reason names the real ids: {reason}"
+        );
+    }
+
+    // 乙 · without a session_id the suggestion degrades gracefully (empty list +
+    // "run the tools first" wording), still rejecting the fabricated ref.
+    #[tokio::test]
+    async fn fabricated_needs_fix_without_session_degrades() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Scoping);
+        let ledger = MockLedger {
+            existing: HashSet::new(),
+            recent: vec![88, 86],
+        };
+        // No .with_session_id → available_real_ids() returns empty.
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
+            .with_evidence_repo(Arc::new(ledger));
+
+        let out = tool
+            .execute(valid_scoping_args(), Path::new("/tmp"))
+            .await
+            .unwrap();
+        assert_eq!(out["status"].as_str(), Some("needs_fix"));
+        assert!(out["available_evidence_ids"]
+            .as_array()
+            .expect("available_evidence_ids present")
+            .is_empty());
+        let reason = out["reasons"][0].as_str().unwrap();
+        assert!(
+            reason.contains("No real evidence ids exist"),
+            "degraded reason instructs running tools first: {reason}"
+        );
     }
 
     // Without an evidence repo (None), the check is skipped and a structurally

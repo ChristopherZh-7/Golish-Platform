@@ -283,4 +283,24 @@ stderr_tail: string,
 /**
  * Total wall-clock duration of the job in milliseconds.
  */
-duration_ms: bigint, };
+duration_ms: bigint, } | { "type": "harness_trace", operation_id: string, stage: string, agent_path: string, } & ({ "kind": "gate_decision", 
+/**
+ * `"PASS"` | `"BLOCK"`.
+ */
+gate: string, findings: number, 
+/**
+ * Cited evidence ids that were NOT found in the ledger (fabricated).
+ */
+fabricated_evidence_refs?: number[], 
+/**
+ * Real evidence ids available for this operation at decision time.
+ */
+available_real_ids?: number[], first_blocking_reason?: string | null, } | { "kind": "evidence_booked", tool: string, evidence_id: number, 
+/**
+ * `"sync"` (in-turn tool append) | `"background"` (job listener).
+ */
+source: string, } | { "kind": "deliverable_submitted", 
+/**
+ * `"accepted"` | `"needs_fix"` | `"rejected"` | `"received"`.
+ */
+status: string, cited_evidence_refs: number[], available_real_ids: number[], } | { "kind": "background_notes_injected", count: number, evidence_ids: number[], });

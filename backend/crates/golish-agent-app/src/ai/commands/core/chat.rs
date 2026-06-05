@@ -166,6 +166,10 @@ async fn execute_task_mode(
         ));
     let mut orchestrator = TaskOrchestrator::new(db_repo, uuid_session_id, event_tx);
     orchestrator.set_profile_override(bridge.get_harness_profile().await);
+    // Scope evidence-ledger lookups to THIS chat session so gate repair
+    // corrections can name the operation's real evidence ids (the string
+    // `_session_id` is what both evidence write paths stamp on `audit_log`).
+    orchestrator.set_chat_session_id(_session_id);
     let executor = BridgeAgentExecutor::new(bridge.clone());
 
     // Resume-aware entry (Task 断线恢复 · L2): if this chat session has a

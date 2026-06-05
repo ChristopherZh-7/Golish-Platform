@@ -14,10 +14,12 @@
 mod envelope;
 mod event;
 mod event_dispatch;
+mod harness_trace;
 mod tool_source;
 
 pub use envelope::AiEventEnvelope;
 pub use event::AiEvent;
+pub use harness_trace::{build_agent_path, HarnessTraceKind};
 pub use tool_source::ToolSource;
 
 #[cfg(test)]

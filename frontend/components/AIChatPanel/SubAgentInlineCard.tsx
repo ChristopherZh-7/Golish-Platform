@@ -30,6 +30,15 @@ interface SubAgentInlineCardProps {
   sessionId?: string | null;
 }
 
+/** A one-line description of what a running sub-agent is doing right now. */
+interface SubAgentActivity {
+  kind: "tool" | "thinking" | "streaming" | "working";
+  /** Tool name for kind === "tool". */
+  toolName?: string;
+  /** Primary tool argument (command / target / url …) or text snippet. */
+  detail?: string;
+}
+
 interface ResolvedSubAgent {
   agentId: string;
   agentName: string;
@@ -38,9 +47,74 @@ interface ResolvedSubAgent {
   durationMs?: number;
   toolCount: number;
   error?: string;
+  /** Live activity, only present while the agent is running. */
+  activity?: SubAgentActivity;
 }
 
 const EMPTY_AGENTS: ActiveSubAgent[] = [];
+
+/** Pull the most meaningful argument out of a sub-agent tool call for display. */
+function primaryToolArg(args: Record<string, unknown> | undefined): string | undefined {
+  if (!args || typeof args !== "object") return undefined;
+  for (const key of [
+    "command",
+    "target",
+    "domain",
+    "host",
+    "url",
+    "path",
+    "file_path",
+    "pattern",
+    "query",
+    "name",
+  ]) {
+    const v = (args as Record<string, unknown>)[key];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
+/** Reduce streaming assistant text to a single trailing line for the card. */
+function streamSnippet(text: string): string {
+  const cleaned = text.replace(/<[^>]*>/g, " ");
+  const lines = cleaned
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const last = lines.length > 0 ? lines[lines.length - 1] : cleaned;
+  return last.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Derive what the sub-agent is doing *right now*. Only meaningful while the
+ * agent is running; priority: live tool call → thinking → streaming text →
+ * last finished tool → generic "working".
+ */
+function deriveActivity(a: ActiveSubAgent): SubAgentActivity | undefined {
+  if (a.status !== "running") return undefined;
+
+  for (let i = a.toolCalls.length - 1; i >= 0; i--) {
+    const tc = a.toolCalls[i];
+    if (tc.status === "running") {
+      return { kind: "tool", toolName: tc.name, detail: primaryToolArg(tc.args) };
+    }
+  }
+
+  if (a.thinkingStartedAt != null && a.thinkingEndedAt == null) {
+    return { kind: "thinking" };
+  }
+
+  const stream = a.streamingText?.trim();
+  if (stream) {
+    const detail = streamSnippet(stream);
+    if (detail) return { kind: "streaming", detail };
+  }
+
+  const last = a.toolCalls[a.toolCalls.length - 1];
+  if (last) return { kind: "tool", toolName: last.name, detail: primaryToolArg(last.args) };
+
+  return { kind: "working" };
+}
 
 function deriveFallback(tc: ChatToolCall): ResolvedSubAgent {
   const fallbackName = tc.name.replace(/^sub_agent_/, "") || "subagent";
@@ -100,6 +174,7 @@ function useResolvedSubAgent(
         durationMs: activeAgent.durationMs,
         toolCount: activeAgent.toolCalls?.length ?? 0,
         error: activeAgent.error,
+        activity: deriveActivity(activeAgent),
       };
     }
     return deriveFallback(tc);
@@ -176,6 +251,16 @@ export const SubAgentInlineCard = memo(function SubAgentInlineCard({
   const Icon = getAgentIcon(resolved.agentName);
   const color = getAgentColor(resolved.agentName);
 
+  const activityLabel = useMemo(() => {
+    const act = resolved.activity;
+    if (!act) return null;
+    if (act.kind === "thinking") return t("ai.subAgent.thinking");
+    if (act.kind === "working") return t("ai.subAgent.working");
+    if (act.kind === "streaming") return act.detail || t("ai.subAgent.working");
+    const name = act.toolName?.trim() || t("ai.subAgent.working");
+    return act.detail ? `${name} · ${act.detail}` : name;
+  }, [resolved.activity, t]);
+
   const handleClick = () => {
     if (!sessionId) return;
     const store = useStore.getState();
@@ -243,6 +328,19 @@ export const SubAgentInlineCard = memo(function SubAgentInlineCard({
           title={resolved.task}
         >
           {resolved.task}
+        </div>
+      )}
+
+      {resolved.status === "running" && activityLabel && (
+        <div className="mt-1 ml-5 flex items-center gap-1.5 text-[11px] text-accent/85 min-w-0">
+          <span
+            className="inline-block w-1.5 h-1.5 rounded-full animate-pulse flex-shrink-0"
+            style={{ backgroundColor: color }}
+            aria-hidden="true"
+          />
+          <span className="truncate" title={activityLabel}>
+            {activityLabel}
+          </span>
         </div>
       )}
 

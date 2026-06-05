@@ -51,6 +51,19 @@ fn main() {
     // Parse CLI arguments to determine mode
     let args = Args::parse();
 
+    // Observability (design 2026-06-05): `golish --replay <session>` prints the
+    // merged decision timeline for a run and exits. It only reads transcripts
+    // from disk, so it must short-circuit before any GUI/CLI app bootstrap.
+    if let Some(session) = args.replay.as_deref() {
+        let base = golish_events::op_trace::default_transcript_base();
+        let _ = golish_events::op_trace::write_trace_artifacts(&base, session);
+        print!(
+            "{}",
+            golish_events::op_trace::render_timeline(&base, session)
+        );
+        return;
+    }
+
     // Determine if we should run in headless mode:
     // - Explicit --headless flag
     // - Or -e (execute) or -f (file) flags imply headless

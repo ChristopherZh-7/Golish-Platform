@@ -312,4 +312,3 @@ async fn wait_for_bridge_cancelled(bridge: Arc<AgentBridge>) {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
-

@@ -370,6 +370,36 @@ impl TaskOrchestrator {
             findings = outcome.findings_count,
             "gate decision"
         );
+        // Observability (design 2026-06-05): the gate decision as a first-class
+        // event so it lands in the transcript timeline next to the deliverable's
+        // tool result (BLOCK was previously tracing-only → invisible to any AI
+        // reconstructing the run). `agent_path = "main"`: the gate runs in the
+        // orchestrator. `operation_id` = task id (the harness operation).
+        let first_blocking_reason = if outcome.gate_allowed {
+            None
+        } else {
+            outcome
+                .repair_correction
+                .as_deref()
+                .map(|s| s.lines().next().unwrap_or(s).to_string())
+        };
+        self.emit(AiEvent::HarnessTrace {
+            operation_id: task_id.to_string(),
+            stage: outcome.gated_stage.as_str().to_string(),
+            agent_path: "main".to_string(),
+            trace: golish_core::events::HarnessTraceKind::GateDecision {
+                gate: if outcome.gate_allowed {
+                    "PASS"
+                } else {
+                    "BLOCK"
+                }
+                .to_string(),
+                findings: outcome.findings_count as u32,
+                fabricated_evidence_refs: outcome.fabricated_evidence_refs.clone(),
+                available_real_ids: outcome.available_real_ids.clone(),
+                first_blocking_reason,
+            },
+        });
         if outcome.gate_allowed {
             if let Some(summary) = outcome.evidence_summary.clone() {
                 self.harness_evidence
@@ -905,13 +935,37 @@ impl TaskOrchestrator {
         if fabricated.is_empty() {
             return;
         }
+        // P0+ · the deliverable cited ids that don't exist. The recurring failure
+        // mode (esp. with weaker models) is the agent copying the template
+        // placeholders 1/2/3 because it never learned the REAL ledger ids that
+        // its (often backgrounded) scans produced. Look up this operation's real
+        // evidence ids and name them in the correction so the retry can cite real
+        // ones instead of guessing. Scoped by the chat-session string both
+        // evidence write paths stamp on the ledger; infra failure / no session
+        // just yields an empty hint (still BLOCKs, mirroring fail-open elsewhere).
+        let available_real_ids = match self.chat_session_id.as_deref() {
+            Some(sid) => self
+                .repo
+                .recent_evidence_ids(sid, 25)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        target: "harness::hook",
+                        error = %e,
+                        "real evidence-id lookup failed; correcting without an id hint"
+                    );
+                    Vec::new()
+                }),
+            None => Vec::new(),
+        };
         tracing::warn!(
             target: "harness::hook",
             stage = %outcome.gated_stage.as_str(),
             fabricated = ?fabricated,
+            available_real_ids = ?available_real_ids,
             "gate BLOCK: deliverable cites evidence ids absent from the ledger"
         );
-        block_outcome_for_fabricated(outcome, &fabricated);
+        block_outcome_for_fabricated(outcome, &fabricated, &available_real_ids);
     }
 
     /// P2 · evidence-kind 回查: stage spec 声明的 `required_evidence_kinds` 必须真的
@@ -1035,16 +1089,35 @@ fn fabricated_evidence_ids(cited: &[i64], existing: &std::collections::HashSet<i
 
 /// Pure: flip a gate outcome to BLOCK with an anti-fabrication correction,
 /// preserving any prior correction by prepending the fabrication notice.
-fn block_outcome_for_fabricated(outcome: &mut HarnessGateOutcome, fabricated: &[i64]) {
+///
+/// `available_real_ids` are the operation's actual evidence-ledger ids (newest
+/// first). When non-empty they are named in the correction so the retry can cite
+/// real ids instead of re-guessing template placeholders; when empty the agent
+/// is told to run the required tools first.
+fn block_outcome_for_fabricated(
+    outcome: &mut HarnessGateOutcome,
+    fabricated: &[i64],
+    available_real_ids: &[i64],
+) {
     outcome.gate_allowed = false;
+    outcome.fabricated_evidence_refs = fabricated.to_vec();
+    outcome.available_real_ids = available_real_ids.to_vec();
+    let real_ids_hint = if available_real_ids.is_empty() {
+        "No real evidence ids exist for this operation yet: run this stage's required tools \
+         (e.g. via the pentester) and cite the ids their results return."
+            .to_string()
+    } else {
+        format!(
+            "The REAL evidence ids already recorded for THIS operation (newest first) are {available_real_ids:?}. \
+             Cite ONLY from this set — pick the ones whose tool output backs each claim and put them \
+             in both the claim's evidence_ids and the top-level evidence_refs."
+        )
+    };
     let correction = format!(
         "Your StageDeliverable cites evidence ids {fabricated:?} that do NOT exist in the \
-         evidence ledger. The ids 1, 2, 3 shown in the deliverable template are PLACEHOLDERS — \
-         never copy them. Every evidence id MUST be the exact integer a real tool run (or \
-         record_finding) returned in THIS operation; read it from that tool's result. If you have \
-         already run tools, cite the ids from their results; if not, run the required tools first. \
-         Do NOT guess, increment, or reuse placeholder ids. Then resubmit a StageDeliverable whose \
-         evidence_refs are all real ledger ids."
+         evidence ledger. Never substitute small guessed integers (1, 2, 3, …) for real ids. \
+         {real_ids_hint} Do NOT guess, increment, or reuse placeholder ids. \
+         Then resubmit a StageDeliverable whose evidence_refs are all real ledger ids."
     );
     outcome.repair_correction = Some(match outcome.repair_correction.take() {
         Some(prev) => format!("{correction}\n\n{prev}"),
@@ -1092,6 +1165,13 @@ struct HarnessGateOutcome {
     /// passes its gate but surfaces NO findings can bail to reporting instead of
     /// descending into enumeration/triage (see `operation_flow::chosen_next_stage`).
     findings_count: usize,
+    /// Observability (design 2026-06-05) · when an evidence-existence BLOCK fired,
+    /// the cited ids absent from the ledger (fabricated) and the real ids that
+    /// were available at decision time. Surfaced into the `HarnessTrace`
+    /// GateDecision event so the timeline shows "cited placeholders while real
+    /// ids existed". Empty unless `block_outcome_for_fabricated` ran.
+    fabricated_evidence_refs: Vec<i64>,
+    available_real_ids: Vec<i64>,
 }
 
 /// 返回 `(content, Option<outcome>)`: `None` 表示 hook 透传 (未跑 gate); `Some` 表示
@@ -1297,6 +1377,8 @@ fn apply_harness_gate_hook(
             .map(|s| s.required_evidence_kinds)
             .unwrap_or_default(),
             findings_count: deliverable.findings.len(),
+            fabricated_evidence_refs: Vec::new(),
+            available_real_ids: Vec::new(),
         }),
     )
 }
@@ -1486,6 +1568,8 @@ fn missing_deliverable_gate_outcome(
         evidence_refs: Vec::new(),
         required_evidence_kinds: Vec::new(),
         findings_count: 0,
+        fabricated_evidence_refs: Vec::new(),
+        available_real_ids: Vec::new(),
     })
 }
 
@@ -1890,12 +1974,57 @@ mod harness_gate_hook_tests {
             evidence_refs: vec![1, 999],
             required_evidence_kinds: Vec::new(),
             findings_count: 0,
+            fabricated_evidence_refs: Vec::new(),
+            available_real_ids: Vec::new(),
         };
-        block_outcome_for_fabricated(&mut o, &[999]);
+        block_outcome_for_fabricated(&mut o, &[999], &[]);
         assert!(!o.gate_allowed, "fabricated evidence must BLOCK the gate");
         let c = o.repair_correction.expect("correction set on block");
         assert!(c.contains("999"), "correction names the fabricated id");
         assert!(c.contains("do NOT exist"));
+        // No real ids known → tell the agent to run the tools first.
+        assert!(
+            c.contains("No real evidence ids exist"),
+            "empty real-id set must instruct running tools first: {c}"
+        );
+    }
+
+    #[test]
+    fn block_outcome_for_fabricated_names_real_ids_when_available() {
+        // 甲 (root-cause fix): when the operation already has real evidence ids,
+        // the correction must NAME them so the retry cites real ids instead of
+        // re-copying the template placeholders.
+        let mut o = HarnessGateOutcome {
+            gated_stage: StageKind::TargetIntel,
+            gate_allowed: true,
+            repair_correction: None,
+            evidence_summary: None,
+            evidence_refs: vec![1, 2, 3],
+            required_evidence_kinds: Vec::new(),
+            findings_count: 0,
+            fabricated_evidence_refs: Vec::new(),
+            available_real_ids: Vec::new(),
+        };
+        block_outcome_for_fabricated(&mut o, &[1, 2, 3], &[86, 88, 90]);
+        assert!(!o.gate_allowed);
+        // Observability (design 2026-06-05): the fabricated/available ids are
+        // captured onto the outcome so consume_gate_outcome can surface them in
+        // the HarnessTrace GateDecision event.
+        assert_eq!(o.fabricated_evidence_refs, vec![1, 2, 3]);
+        assert_eq!(o.available_real_ids, vec![86, 88, 90]);
+        let c = o.repair_correction.expect("correction set on block");
+        assert!(
+            c.contains("86") && c.contains("88") && c.contains("90"),
+            "names real ids: {c}"
+        );
+        assert!(
+            c.contains("REAL evidence ids"),
+            "labels them as the real set: {c}"
+        );
+        assert!(
+            !c.contains("No real evidence ids exist"),
+            "must not also emit the empty-set instruction: {c}"
+        );
     }
 
     #[test]
@@ -1908,8 +2037,10 @@ mod harness_gate_hook_tests {
             evidence_refs: vec![5],
             required_evidence_kinds: Vec::new(),
             findings_count: 0,
+            fabricated_evidence_refs: Vec::new(),
+            available_real_ids: Vec::new(),
         };
-        block_outcome_for_fabricated(&mut o, &[5]);
+        block_outcome_for_fabricated(&mut o, &[5], &[]);
         let c = o.repair_correction.unwrap();
         assert!(
             c.contains("PRIOR-GATE-REASON"),

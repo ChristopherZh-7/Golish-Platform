@@ -2570,6 +2570,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tauri",
+ "tempfile",
  "tokio",
  "tracing",
  "ts-rs",

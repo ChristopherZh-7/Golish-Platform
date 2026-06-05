@@ -135,6 +135,56 @@ Rules:
 - **Bare `invoke("some_cmd")` in components** — use
   `api.<domain>.<verb>` so rename-safety and IDE autocomplete work.
 
+## Debugging a harness run (self-discoverable trace)
+
+When a Task-mode pentest run gets stuck (e.g. a stage gate keeps blocking), you
+do **not** need to grep `~/.golish/backend.log` by hand. The harness emits its
+decisions (gate PASS/BLOCK, background evidence booked) as first-class
+`AiEvent::HarnessTrace` events that land in the run transcript, and there is a
+unified, operation-scoped view. Design:
+`docs/design/2026-06-05-unified-ai-harness-observability.md`.
+
+Three self-service steps (no need to point an AI at files):
+
+1. **Read the manifest / call the tool.** The in-product agent can call the
+   `harness_trace` tool (no args → the current run) to get the merged,
+   decision-only timeline of the main agent **and** every sub-agent, each line
+   tagged with an `agent_path` (`main`, `main>pentester`, `main>pentester>reporter`).
+2. **`just replay <session-id>`** — prints the manifest summary + the merged
+   timeline for a run. `<session-id>` is the directory name under
+   `~/.golish/transcripts/`. This reads transcripts only (no app/DB startup) and
+   also writes `manifest.json` + `timeline.jsonl` into that session directory.
+
+   ```bash
+   just replay pentest-chat-abc123
+   ```
+
+   You'll see, e.g., `submit needs_fix cited=[1,2,3]` immediately followed by
+   `gate BLOCK` — the "cited placeholders while real ids existed" failure mode at
+   a glance.
+3. **Need per-check detail?** Raise the log level to show harness decisions while
+   hiding token-level streaming, then grep by operation:
+
+   ```bash
+   RUST_LOG="golish=info,harness=debug" just dev
+   # then:
+   rg "harness::" ~/.golish/backend.log
+   ```
+
+   The `harness=debug` directive surfaces the `harness::hook` / `harness::evidence`
+   / `harness::gate::*` targets; `golish=info` keeps the per-token `trace!` noise
+   off. (Settings: `advanced.log_level` controls the default.)
+
+Trace files per run live next to the transcript:
+
+```text
+~/.golish/transcripts/<session-id>/
+├── transcript.json     # main-agent events (existing)
+├── subagents/<id>/transcript.json   # per sub-agent (existing)
+├── timeline.jsonl      # merged main+subagent+harness, ordered (just replay)
+└── manifest.json       # one-glance summary: status, stages, agent_paths, last_decision
+```
+
 See also:
 - [Browser-only frontend development](browser-dev.md)
 - [Architecture](architecture.md)

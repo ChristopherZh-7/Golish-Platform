@@ -62,6 +62,7 @@ impl AiEvent {
             AiEvent::TaskResumed { .. } => "task_resumed",
             AiEvent::EnricherResult { .. } => "enricher_result",
             AiEvent::ToolBackgroundCompleted { .. } => "tool_background_completed",
+            AiEvent::HarnessTrace { .. } => "harness_trace",
         }
     }
 }

@@ -29,6 +29,92 @@
 
 ---
 
+### 2026-06-05 · 统一 AI+Harness 可观测 P1 + P2 加性事件 实现（MCP-agent-4 · DISPATCH off · 用户「直接全部搞完然后再跑检查」→「一直把所有的都干完」）
+
+- **本轮目标**：把同会话刚写的设计/计划的 **P1 + P2 加性事件（Tasks 6/8/9）** 一口气实现完，最后统一跑检查、修问题。
+- **P2 加性事件（在 P1 基础上续做，用户「把所有的都干完」）**：
+  - **Task 6 · gate 事件带 fabricated/available**：`HarnessGateOutcome` 加 `fabricated_evidence_refs`/`available_real_ids` 两字段（7 处构造点更新，含 lib + 2 个 lib-test 文件 pass/block 助手），`block_outcome_for_fabricated` 填充，`consume_gate_outcome` 的 GateDecision 读出 → 时间线 gate BLOCK 行直接带 `fabricated=[..] available=[..]`。
+  - **Task 8 · submit 结果入时间线**：**不改 submit 工具**（其 6 个返回点 + 无 event sink，风险高；数据本就在 ToolResult JSON）。改在 `op_trace::summarize_event` 对 `submit_stage_deliverable` 的 ToolResult 特判，渲染 `submit <status> fabricated=.. available=..`。于是 timeline 里 submit 行紧贴 gate BLOCK 行，「引占位 vs 真 id」一眼可见。
+  - **Task 9 · BackgroundNotesInjected**：`golish-agent-bridge prepare.rs::append_background_notes` 在注入提示时发该事件（从 note 文本解析 `evidence_id=` 得 ids），与上一轮后台 EvidenceBooked 呼应。
+- **本轮目标（P1 部分，下同原记录）**：把设计/计划的 **P1** 一口气实现完，再统一跑检查、修问题。
+- **已完成（按 plan P1.0-P1.5）**：
+  - **核心类型（golish-core）**：新 `events/harness_trace.rs` = `HarnessTraceKind`（GateDecision/EvidenceBooked/DeliverableSubmitted/BackgroundNotesInjected，ts-rs 导出 `GeneratedHarnessTraceKind`）+ `build_agent_path(parent,current)`（main / main>pentester / main>pentester>reporter）；`AiEvent` 加**单变体** `HarnessTrace { operation_id, stage, agent_path, #[serde(flatten)] trace }`（D2 单臂避免 churn）+ `event_type` arm。补齐被新变体打破的穷尽 match：`golish-cli-output/cli_json`、`golish-events/transcript/summarizer`、`golish-sidecar/capture/context`、`should_transcript_tests`(vec+_assert_exhaustive)。
+  - **op_trace（golish-events 新模块，sync std::fs、session-keyed、lazy-on-read）**：`OperationManifest`/`TraceRecord`/`session_dir`/`default_transcript_base`/`collect_records`（合并主 transcript.json + subagents/*/transcript.json，按 ts 排序，sub-agent 行用事件内 agent_id → `main>{id}`）/`build_manifest`（operation_id/stages/agent_paths/last_decision/status）/`render_timeline`/`decision_records_json`（工具用，按 kind 过滤）/`write_trace_artifacts`（原子写 manifest.json + timeline.jsonl）。
+  - **发射点（additive，零行为变更）**：`consume_gate_outcome`（execute.rs）在既有 tracing 旁 `self.emit` GateDecision（PASS+BLOCK，agent_path=main）；`bridge_config` 后台 job 监听器 append 成功后 `event_tx.send` EvidenceBooked(source=background) —— 这正是此前最隐形的盲点（后台扫描真 id 只在下一轮 note 注入）。
+  - **自助检索**：`golish-agent-app/ai/harness_trace_tool.rs`（`Tool` 实现，注入当前 session，no-arg 返回本次运行决策时间线）+ bridge_config 注册；`golish --replay <session>`（args.rs 加 `--replay`、main.rs 早退分支只读 transcripts 不起 app）+ justfile `replay` recipe。
+  - **文档**：docs/development.md 加「Debugging a harness run」（manifest/replay/工具 三步自助 + `golish=info,harness=debug` profile + op 目录布局）。
+- **执行偏离 plan（已在 plan/feature_list 标，诚实记录）**：
+  - **D5** 用 record-wrapper 思路，未给 51 个 AiEvent 变体加字段（只加 1 个 HarnessTrace 变体）。
+  - **trace 改 session-keyed**（`{base}/{session}/{timeline.jsonl,manifest.json}`，非 `op-<id>/`）——解设计 §5 开放问题①，因 bridge/tool/CLI 只知 chat session 串；operation_id 记在 manifest 内。
+  - **Tasks 6/8/9 + D6 划入 P2**：gate 事件的 fabricated 字段、DeliverableSubmitted 事件、BackgroundNotesInjected 事件、evidence operation_id 改 set_task_context（涉 evidence hash-chain，高风险）——因这些数据 P1 已可从合并 timeline 还原（submit 结果在 ToolResult JSON、sync evidence 在 ToolResult._evidence_id），核心价值不受损。
+  - 顺修 `execute_harness_loop_tests.rs` 2 个 **pre-existing** clippy 告警（stage dead_code + doc_lazy_continuation，阻断 -D warnings 闸）。
+- **运行过的验证（本机实跑，全绿）**：
+  - `cargo nextest run --workspace --status-level fail` → **2905 passed / 0 failed / 7 skipped**（exit 0，无回归）。
+  - 新单测：golish-core harness_trace **6** + golish-events op_trace **5** + should_transcript **+1** + golish-agent-app harness_trace_tool **2** 全绿。
+  - `cargo clippy -p golish-core -p golish-events -p golish-agent-kit -p golish-agent-app -p golish-cli-output -p golish-sidecar -p golish --all-targets -- -D warnings` → **exit 0 零告警**。
+  - `cargo fmt --check`（7 crate）→ clean。
+  - `just gen-types` → `GeneratedAiEvent.ts`(M, harness_trace 渲染为 intersection) + `GeneratedHarnessTraceKind.ts`(new)。
+  - 前端：`just check-fe` exit 0 + `just test-fe` exit 0 + `pnpm typecheck` exit 0。
+- **P2 后复跑验证**：`cargo nextest run --workspace` → **2905 passed / 0 failed**（无回归，gate 多发的 HarnessTrace 事件不破坏既有 consume_gate_outcome 测试）；`clippy -D warnings`（golish-events/agent-kit/agent-bridge/agent-app --all-targets）零告警（修了我新加的 2 处 lib-test HarnessGateOutcome 构造点缺字段）；`fmt --check` clean。
+- **未做 / 风险**：① **活体 E2E 未做**（需 just dev + LLM key 跑 target_intel 制造 BLOCK，肉眼验 manifest/replay/工具/agent_path）；② **零 commit**（§2.7 等授权）；③ `just precommit` 未整跑一条命令（其全部组成步骤已分别绿；check-types 的 `git diff --exit-code` 会因未提交的正确生成文件而非零，提交后即清）；④ **有意识不在盲做范围**：D6（evidence operation_id 改 set_task_context）涉 evidence hash-chain，须配活体 E2E；单一 emit choke-point（D4a）= 纯重构、lazy-merge 已等价交付，不做；P3（DB/replay/diff/metrics/UI）= 2026-05-26 愿景独立 epic。
+- **未提交文件清单**：新增 `backend/crates/golish-core/src/events/harness_trace.rs`、`backend/crates/golish-events/src/op_trace/{mod,tests}.rs`、`backend/crates/golish-agent-app/src/ai/harness_trace_tool.rs`、`frontend/lib/generated/GeneratedHarnessTraceKind.ts`；修改 `golish-core/src/events/{mod,event,event_dispatch}.rs`、`golish-events/src/{lib.rs,transcript/{mod,summarizer,tests/should_transcript_tests}.rs}`、`golish-cli-output/src/cli_json/mod.rs`、`golish-sidecar/src/capture/context.rs`、`golish-agent-kit/src/task_orchestrator/subtask_phases/{execute,execute_harness_loop_tests}.rs`、`golish-agent-bridge/src/agent_bridge/prepare.rs`(P2 Task 9)、`golish-agent-app/{Cargo.toml,src/ai/{mod,commands/bridge_config}.rs}`、`golish/src/{main.rs,cli/args.rs}`、`justfile`、`docs/development.md`、`frontend/lib/generated/GeneratedAiEvent.ts`、`feature_list.json`、`agent-progress.md`。
+- **下一步建议**：用户授权后整批 commit（纯加性、可回滚）；做活体 E2E；再排期 P2（Tasks 6/8/9 + 单一 choke-point + D6）。
+
+---
+
+### 2026-06-05 · 统一 AI+Harness 可观测：设计 + 计划（MCP-agent-4 · DISPATCH off · 用户「思考清楚怎么让 AI 自助找日志、agent+subagent 更好串联，然后写设计和计划」）
+
+- **本轮目标**：不写实现代码，只「想清楚 + 产出设计 + 计划」。用户痛点：调 harness 卡死（target_intel gate）时要 grep 88k 行 backend.log、要手动跨三处拼、还得用户指路。诉求 =①让 AI 自助找日志（非用户指路）②agent/subagent 日志更好串联追踪。
+- **做法（只读调研→写文档）**：3 个 readonly explore 子 agent 带 file:line 实证摸清现状（未改任何代码）：
+  - 现状 3 个互不相连 sink：主 transcript `{base}/{session}/transcript.json`（`golish-events/transcript/mod.rs:83`）/ 每子 agent `subagents/{agent_id}-{parent_request_id}/transcript.json`（`golish-sub-agents/transcript.rs:59`）/ harness 决策仅在 `~/.golish/backend.log` tracing。
+  - 4 个并行 session id（chat 串 / sessions.id Uuid / task.id=operation_id / DbTracker 随机 uuid）**无单一关联键**贯穿 transcript 与 backend.log。
+  - harness 决策只有 gate PASS 是事件（复用 `TaskProgress`，`execute.rs:382` 注释明说为省 exhaustive-match churn 而 defer 专用事件）；BLOCK/evidence 入账/submit 结果/后台 note 注入全是 tracing-only。
+  - 5 条 emit 路径无单一 choke-point（coordinator/loop direct/event_tx/legacy/stream）；`parent_dispatch_id` 列存在但运行时传 None，**无 agent_path**。
+- **产出（2 份文档 + feature_list 1 条）**：
+  - `docs/design/2026-06-05-unified-ai-harness-observability.md`：现状证据图 §2 + 五组件 §4（A operation_id+agent_path 主线 / B `HarnessTrace{kind}` 决策一等事件 / C op 目录 manifest.json+合并 timeline.jsonl / D `harness_trace` 工具+`just replay` / E `harness=debug` 日志 profile）+ 决策表 §5（D1-D6 含推荐）+ 自助协议 §7 + 分期 §8（P1 本轮 / P2 / P3 deferred）+ 风险回滚 §9。父愿景 `2026-05-26-harness-observability-plane.md` 不 supersede，本条落地其 Raw Event Log+Trace Tree 子集。
+  - `docs/superpowers/plans/2026-06-05-unified-ai-harness-observability.md`：writing-plans 规范，P1.0-P1.5 共 16 任务，逐任务 TDD（先红测）+ 文件路径 + 真实代码（新类型全量代码）+ 验证命令 + 单独 commit；含自检段。
+  - `feature_list.json`：加 `unified-ai-harness-observability-2026-06-05`（priority 1, **not_started**），version→0.1.8。
+- **运行过的验证**：`python3 -m json.tool feature_list.json` → VALID JSON（exit 0）。**无代码改动**，故未跑 cargo/just。
+- **提交记录**：**未 commit**（§2.7 等用户授权）。
+- **未提交文件清单**：`?? docs/design/2026-06-05-unified-ai-harness-observability.md`、`?? docs/superpowers/plans/2026-06-05-unified-ai-harness-observability.md`、`M feature_list.json`、`M agent-progress.md`。
+- **诚实边界**：①纯设计/计划，**零实现代码**；②执行前需用户审设计 §5 六决策（尤其 D6 evidence operation_id 改 `set_task_context` 已移 P2，涉 evidence hash-chain 高风险）；③计划里若干「字段名/event sink 句柄以实际为准」处均标注「执行者先 Read 指定 file:line 确认」，非空洞占位。
+- **下一步建议**：用户审设计 §5 决策表 → 拍板后另起会话用 executing-plans 逐任务实现 P1；或先 commit 这 2 文档+feature_list（纯加性、不影响运行代码，安全）。
+
+---
+
+### 2026-06-04 · target_intel 卡 gate 真根因 + 甲修复（证据 id「晚一轮」→ 把真实 id 喂回修复纠正）（MCP-agent-4 · DISPATCH off · 用户「你确定吗，再仔细看，是不是 evidence id 机制本身有问题」→「按甲修复治本」）
+
+- **本轮目标**：用户质疑 MCP-2 的「loop 不退/gate 不跑」判断，凭截图（`fabricated_evidence_refs [1,2,3]` / `needs_fix`）认为根因在**证据 id 机制本身 / 阶段交付物不明确**。要求重查并按「甲」治本。
+- **根因（systematic-debugging 一阶段 · 代码+日志双实证，推翻 MCP-2 两个旧判断）**：
+  - 证据 id = `audit_log.id`（`audit_role='evidence'` 行），扫描工具跑完经 `evidence_append()` 写入；submit 内联 + stage-close gate 都用 `existing_evidence_ids`（`SELECT id ... WHERE audit_role='evidence' AND id=ANY($1)`）回查，cited 里查不到的即 fabricated → BLOCK。机制本身没坏。
+  - 关键发现：扫描超时转**后台 job**，真实 id（20–110+，日志 `background job evidence appended`）只在 job 完成后塞进 `pending_background` 队列，靠 `append_background_notes` **仅在「下一轮」turn 开头**注入系统提示（`prepare.rs`「Drained once per turn」）。但 deliverable 在**同一个 20 分钟 turn**里建+交（`iteration=16`），这一轮真 id 尚未注入 → 模型只有模板占位 `[1]`/`[1,2,3]` → 照抄 → gate 正确判 fabricated。日志 `07:44:22` 铁证：`gate BLOCK ... fabricated=[1]` 的**下一行**才 `Injecting 57 background-job completion note(s)`——真 id 永远晚一拍。
+  - 推翻 MCP-2：① 「loop 不退、gate 不跑」——该轮 `iteration=16, tool_calls=0`（空闲轮）loop 退了、gate 跑了（`harness::hook gate decision`）；② 「dns_resolve taxonomy 误配挡扫描」——扫描成功跑了几十次、真 id 入账了，taxonomy 非卡点。
+- **方案（甲，用户拍板）= 让真实 id 当轮可达 deliverable 构建方**：gate 因 fabricated 拦下时，按 chat session 反查本 operation 的真实 evidence id，写进 repair 纠正（`## IMPORTANT CORRECTION` → 经 reflector 重试灌回 subtask 描述 → 主 agent/子 agent）。比「别抄占位」更可执行（直接给「可引用的真 id 是 [86,88,90]」）。
+- **改动文件（5 crate · 全加性，无破坏性签名变更）**：
+  - `golish-db/src/repo/audit/mod.rs`：新增 `recent_evidence_ids_for_session(pool, session_id, limit)`（`audit_role='evidence' AND session_id=$1 ORDER BY id DESC LIMIT`；两条 evidence 写路径都把 chat session 串写在 `session_id` 列，故按该列覆盖 sync+background）。
+  - `golish-agent-kit/src/db_traits/repo.rs`：trait 加 `recent_evidence_ids`（默认空，测试 double 免实现）。
+  - `golish-agent-app/src/ai/db_bridge/{evidence.rs,mod.rs}`：`GolishDbRepoProvider` 实现 + 接线。
+  - `golish-agent-kit/src/task_orchestrator/orchestrator.rs`：加 `chat_session_id: Option<String>` 字段 + `set_chat_session_id` setter（chat session 串是 evidence 行的 join 键，与 orchestrator 的 Uuid `session_id`≠sessions 行 id 不同）。
+  - `golish-agent-kit/.../subtask_phases/execute.rs`：`enforce_evidence_existence` 反查真实 id；`block_outcome_for_fabricated(outcome, fabricated, available_real_ids)` 把真实 id 写进纠正（空集→「先跑工具」，非空→「只引这批 {ids}」）。
+  - `golish-agent-app/src/ai/commands/core/chat.rs`：`orchestrator.set_chat_session_id(_session_id)`。
+- **已记录证据（本机实跑）**：
+  - TDD：新增 `block_outcome_for_fabricated_names_real_ids_when_available`（真 id 入纠正）+ 更新既有 2 测到新签名。
+  - `cargo nextest run -p golish-agent-kit -p golish-db --status-level fail` → **502 passed / 0 skipped**（exit 0）。
+  - `cargo check -p golish-agent-app --tests` → exit 0（首跑撞 `?` vs DbError 类型不匹配，已修为 `?` 转 anyhow）。
+  - `cargo fmt -p golish-db -p golish-agent-kit -p golish-agent-app --check` → exit 0。
+  - `cargo clippy -p golish-agent-kit -p golish-db --tests` → 见本轮结尾（运行中/已记录）。
+- **未做 / 风险**：① 活体 E2E（需 `just dev` + XIAOMI key 跑一轮 target_intel，确认重试纠正带真 id 后能过 gate）未做；② 这是「治本第一刀」——纠正经主 agent 重试路径可达 submit 方；若 deliverable 由 Level-1 reporter 子 agent 构建，真 id 还需主 agent 转述，**完整传播到子 agent + 模板去占位（乙）= 建议后续**；③ 弱模型 MiMo 仍可能 information-overload，建议配强模型兜底；④ **零 commit**（AGENTS §2.7 等授权）；⑤ 全量 `just precommit` 未跑（仓库既有他会话 fmt/clippy 历史债 + 多 in_progress，与本改动无关；`MemRepo::stage` dead_code 告警 pre-existing，非本次引入）。
+- **乙补充（同会话续 · 用户「现在补乙」）**：甲单独不够（deliverable 由 Level-1 reporter 子 agent 构建，甲纠正未必传到），且用户复测「还是卡」实因①运行 binary 未含改动需重 build ②新会话尚未到 gate BLOCK。补乙=**在 submit 当轮、对调 submit 的任意 agent 直接回真 id**：
+  - `golish-agent-app/harness_submit_tool.rs`：`EvidenceLedgerQuery` trait 加 `recent_evidence_ids`（默认空）；tool 加 `session_id` 字段 + `with_session_id` + `available_real_ids()` 助手；fabricated needs_fix 分支改为「空→先跑工具(指明 `_evidence_id`/后台 `evidence_id=` note 来源)；非空→只引这批真 id [..]」并多回 `available_evidence_ids` 字段 + 2 新测（含 session 降级）。
+  - `golish-agent-app/db_bridge/evidence.rs`：`GolishDbRepoProvider` 的 EvidenceLedgerQuery 接 `recent_evidence_ids_impl`。
+  - `golish-agent-app/commands/bridge_config.rs`：构建 submit tool 时 `.with_session_id(bridge.event_session_id())`。
+  - `golish-agent-kit/task_orchestrator/prompts/mod.rs`：交付物模板去数字占位 `[1]`/`[1,2,3]` → `[<int_id_from_a_real_tool_result>]`；IMPORTANT 段改为指明真 id 三个来源（`_evidence_id` / 后台 job note / gate 回列）。
+  - `execute.rs`：甲纠正文案同步去「1,2,3 模板占位」表述（模板已无）。
+  - 验证：`cargo fmt -p golish-agent-app -p golish-agent-kit --check` clean；`cargo nextest -p golish-agent-app -p golish-agent-kit`（运行中/本轮结尾记）。
+- **下一步建议**：用户**重 build 重起 `just dev`** 后做活体 E2E（target_intel 第一次 BLOCK→needs_fix 带真 id→引真 id→过 gate）；授权后整批 commit（甲+乙）；仍卡再考虑子 agent 真 id 直传 + 强模型兜底。
+
+---
+
 ### 2026-06-04 · MiMo tool-use 出站 500 修复（sub-agent 历史 tool args object 归一化）（MCP-agent-2 · DISPATCH off · 用户「看日志卡知识图谱」→「补 MiMo 兼容层」→「更新进度+commit」）
 
 - **本轮目标**：用户报告 AI「一直卡在知识图谱」。排查 `~/.golish/backend.log` 发现 pentester 子 agent（`mimo-v2.5-pro`）反复刷 reasoning / JSON 修复（21×）/ XML 工具调用恢复（2×），并间歇 HTTP 500 `Can only get item pairs from a mapping`（20×）。用户选「补 MiMo 兼容层」根治。

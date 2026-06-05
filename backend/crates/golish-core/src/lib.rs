@@ -76,8 +76,8 @@ pub use textual_tool_call::{
     finalize_assistant_text, parse_textual_tool_calls, select_textual_tool_call,
     strip_textual_tool_call_markup, FinalizedAssistantText, TextualToolCall,
 };
-pub use tool_args::{has_complete_tool_args, initial_tool_args_fragment};
 pub use time::{now_ms, now_ts, ts_from_dt};
 pub use tool::Tool;
+pub use tool_args::{has_complete_tool_args, initial_tool_args_fragment};
 pub use tool_name::{ToolCategory, ToolName};
 pub use web_fetch::{WebFetchProvider, WebFetchResult};

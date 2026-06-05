@@ -43,15 +43,17 @@ import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, SubAgentToolCall } from "@/store";
 import { useStore } from "@/store";
 
-function stripAgentXmlTags(text: string): string {
+export function stripAgentXmlTags(text: string): string {
   return stripAllAnsi(
     text
       .replace(
         /<\/?(task_assignment|original_request|execution_plan|execution_context|prior_knowledge)>/gi,
         ""
       )
+      .replace(/<tool_call\b[^>]*>[\s\S]*?<\/tool_call>/g, "")
       .replace(/<function=[^>]*>[\s\S]*?(?:<\/function>|$)/g, "")
       .replace(/<parameter=[^>]*>[\s\S]*?<\/parameter>/g, "")
+      .replace(/<\/?tool_call\b[^>]*>/g, "")
       .replace(/<\/?(?:function|parameter)[^>]*>/g, "")
   ).trim();
 }

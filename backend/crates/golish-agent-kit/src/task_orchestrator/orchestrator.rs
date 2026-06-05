@@ -50,6 +50,21 @@ pub struct TaskOrchestrator {
     /// run under the Executor (merged across that stage's subtasks: gate ANDed,
     /// progress ORed). Read + cleared by `run_stage_subtasks`.
     pub(super) stage_outcome_acc: Option<crate::harness::operation_flow::StageFlowOutcome>,
+    /// Chat-session string (e.g. `pentest-chat-…`) used to scope evidence-ledger
+    /// lookups. Both evidence write paths (sync runtime hook + background-job
+    /// listener) stamp this string on `audit_log.session_id`, so it is the join
+    /// key the gate uses to fetch this operation's REAL evidence ids and feed
+    /// them back into a fabricated-ref repair correction. `None` ⇒ no real-id
+    /// suggestion (the gate still BLOCKs fabricated refs, just without a hint).
+    pub(super) chat_session_id: Option<String>,
+    /// C5 · HITL approval channel (the **same coordinator** the `ask_human` tool
+    /// uses). When wired, the two-level phase-boundary approval gate requests a
+    /// Confirm/Skip decision through this coordinator — surfaced as an
+    /// `AskHumanRequest` card the user can click **without** stopping the running
+    /// task — instead of the legacy `user_input_rx` text channel (which has no
+    /// production feeder, so the gate would otherwise wedge forever). `None`
+    /// (e.g. unit tests) → text fallback over `user_input_rx`.
+    pub(super) approval_coordinator: Option<crate::CoordinatorHandle>,
 }
 
 impl TaskOrchestrator {
@@ -68,6 +83,8 @@ impl TaskOrchestrator {
             harness_evidence: std::collections::HashMap::new(),
             profile_override: None,
             stage_outcome_acc: None,
+            chat_session_id: None,
+            approval_coordinator: None,
         }
     }
 
@@ -76,10 +93,26 @@ impl TaskOrchestrator {
         self.user_input_tx.clone()
     }
 
+    /// Set the chat-session string used to scope evidence-ledger lookups (see
+    /// [`Self::chat_session_id`]). Call this right after `new` in the chat
+    /// command so gate repair corrections can name this operation's real
+    /// evidence ids. `None`/unset keeps the prior behaviour (no id hint).
+    pub fn set_chat_session_id(&mut self, chat_session_id: impl Into<String>) {
+        self.chat_session_id = Some(chat_session_id.into());
+    }
+
     /// Override the operation profile for this run (set from the chat-panel mode
     /// picker). `None` keeps the `GOLISH_HARNESS_PROFILE` env default.
     pub fn set_profile_override(&mut self, profile: Option<String>) {
         self.profile_override = profile;
+    }
+
+    /// Wire the HITL coordinator so the two-level phase-approval gate can request
+    /// a clickable Confirm/Skip decision (the shared `ask_human` channel) instead
+    /// of the legacy `user_input_rx` text channel. Call right after [`Self::new`]
+    /// in the chat command. `None` keeps the text fallback (unit tests).
+    pub fn set_approval_coordinator(&mut self, coordinator: Option<crate::CoordinatorHandle>) {
+        self.approval_coordinator = coordinator;
     }
 
     /// Run a full Task mode execution.

@@ -281,6 +281,18 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(ids.iter().copied().collect())
     }
 
+    /// Recent **real** evidence ids (`audit_role='evidence'`) for a chat session,
+    /// newest first. After the gate rejects a deliverable for citing fabricated
+    /// refs, it uses this to tell the agent which real ledger ids it can actually
+    /// cite (so it stops copying the template placeholders 1/2/3). `session_id`
+    /// is the chat-session string both evidence paths stamp on `audit_log`.
+    ///
+    /// Default empty so test doubles need no ledger; the app layer overrides it.
+    async fn recent_evidence_ids(&self, session_id: &str, limit: i64) -> anyhow::Result<Vec<i64>> {
+        let _ = (session_id, limit);
+        Ok(Vec::new())
+    }
+
     // ── Stage runs + checkpoint (P1 · graph/checkpoint) ─────────────────
 
     /// Insert a `stage_runs` row (one stage execution instance). Default no-op

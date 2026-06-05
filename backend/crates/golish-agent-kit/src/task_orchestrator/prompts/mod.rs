@@ -112,18 +112,18 @@ You are operating inside the **{stage}** stage of an authorized operation. Stay 
   "stage_id": "{stage}",
   "stage_run_id": "<random uuid v4>",
   "claims": [
-    {{"kind": "http_service_observed", "subject": "<host>", "summary": "<what was observed>", "evidence_ids": [1]}}
+    {{"kind": "http_service_observed", "subject": "<host>", "summary": "<what was observed>", "evidence_ids": [<int_id_from_a_real_tool_result>]}}
   ],
-  "evidence_refs": [1, 2, 3],
+  "evidence_refs": [<int_id_from_a_real_tool_result>, <int_id_from_another_real_tool_result>],
   "findings": [
-    {{"finding_id": "<random uuid v4>", "kind": "subdomain", "subject": "<host>", "severity": "info", "evidence_refs": [2]}}
+    {{"finding_id": "<random uuid v4>", "kind": "subdomain", "subject": "<host>", "severity": "info", "evidence_refs": [<int_id_from_a_real_tool_result>]}}
   ],
   "skipped_checks": [],
   "required_checks_done": {min_inv_keys_json}
 }}
 ```
 
-IMPORTANT — the integers `1`, `2`, `3` in the template above are PLACEHOLDERS for shape only; NEVER copy them. Every evidence id MUST be an actual integer returned by a real tool run (or `record_finding`) in THIS operation — read it from that tool's result. If you have not run any tool yet you have NO evidence ids: run the required tools first. Citing placeholder or guessed ids (1, 2, 3, ...) FAILS the gate.
+IMPORTANT — every `<int_id_from_a_real_tool_result>` above is a PLACEHOLDER for shape only; NEVER emit it literally and NEVER substitute a small guessed integer (1, 2, 3, …). Each evidence id MUST be an actual integer a real tool run returned in THIS operation — read it from that tool's result: the `_evidence_id` field on a tool result, the `evidence_id=` line in a finished background-job note, or the real ids the gate lists back to you after a rejection. If you have not run any tool yet you have NO evidence ids: run the required tools first. Citing guessed/placeholder ids FAILS the gate.
 
 Gate rules your deliverable MUST satisfy (otherwise it is rejected and you redo the stage):
 - `stage_id` MUST equal "{stage}"; `stage_run_id` MUST be a valid, non-nil UUID v4.

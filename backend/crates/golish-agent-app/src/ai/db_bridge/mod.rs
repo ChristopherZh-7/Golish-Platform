@@ -516,6 +516,10 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.evidence_existing_ids_impl(ids).await
     }
 
+    async fn recent_evidence_ids(&self, session_id: &str, limit: i64) -> anyhow::Result<Vec<i64>> {
+        self.recent_evidence_ids_impl(session_id, limit).await
+    }
+
     async fn evidence_kinds_for(
         &self,
         ids: &[i64],

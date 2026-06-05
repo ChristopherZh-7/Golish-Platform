@@ -19,6 +19,14 @@ dev path="":
 dev-fe:
     pnpm dev
 
+# Replay a run's merged decision timeline (main agent + sub-agents) for debugging.
+# Pass the chat-session id (the dir name under ~/.golish/transcripts). Reads
+# transcripts only — no app/DB startup. See
+# docs/design/2026-06-05-unified-ai-harness-observability.md
+# Usage: just replay <session-id>
+replay session:
+    cd backend && cargo run -q -p golish --bin golish -- --replay {{ session }}
+
 # ============================================
 # Testing
 # ============================================

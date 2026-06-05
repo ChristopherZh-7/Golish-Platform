@@ -125,6 +125,24 @@ fn spawn_background_completion_listener(
                     )
                     .await;
 
+                    // Observability (design 2026-06-05): surface background-job
+                    // evidence as a first-class HarnessTrace so it appears in the
+                    // timeline. This path was the worst blind spot — backgrounded
+                    // scans' real ids previously only reached the agent via a
+                    // next-turn prompt note, invisible to any run reconstruction.
+                    if let Some(eid) = evidence_id {
+                        let _ = event_tx.send(AiEvent::HarnessTrace {
+                            operation_id: session_id.clone(),
+                            stage: String::new(),
+                            agent_path: "main".to_string(),
+                            trace: golish_core::events::HarnessTraceKind::EvidenceBooked {
+                                tool: "background_job".to_string(),
+                                evidence_id: eid,
+                                source: "background".to_string(),
+                            },
+                        });
+                    }
+
                     let note = format_background_note(&jc, evidence_id);
                     match notes.lock() {
                         Ok(mut q) => q.push(note),
@@ -418,15 +436,35 @@ async fn register_pentest_tools(
             std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
                 state.db_pool.clone(),
             ));
-        let tool = std::sync::Arc::new(
-            crate::ai::harness_submit_tool::SubmitStageDeliverableTool::new(
-                bridge.harness_active_stage_handle(),
-                bridge.harness_last_deliverable_handle(),
-            )
-            .with_evidence_repo(evidence_repo),
-        );
+        let mut submit_tool = crate::ai::harness_submit_tool::SubmitStageDeliverableTool::new(
+            bridge.harness_active_stage_handle(),
+            bridge.harness_last_deliverable_handle(),
+        )
+        .with_evidence_repo(evidence_repo);
+        // 乙 · scope the real-id suggestion to this chat session (the string both
+        // evidence write paths stamp on the ledger) so a fabricated-ref needs_fix
+        // can name the operation's real ids.
+        if let Some(sid) = bridge.event_session_id() {
+            submit_tool = submit_tool.with_session_id(sid);
+        }
+        let tool = std::sync::Arc::new(submit_tool);
         let mut registry = bridge.tool_registry().write().await;
         tracing::info!("[harness] Registered tool: submit_stage_deliverable");
+        registry.register_tool(tool);
+    }
+
+    // Observability (design 2026-06-05): self-service run introspection. Lets the
+    // agent read its own merged decision timeline (main + sub-agents) when stuck,
+    // instead of the user pointing at log files. Scoped to the current chat
+    // session so a no-arg call returns this run.
+    {
+        let mut trace_tool = crate::ai::harness_trace_tool::HarnessTraceTool::new();
+        if let Some(sid) = bridge.event_session_id() {
+            trace_tool = trace_tool.with_session_id(sid);
+        }
+        let tool = std::sync::Arc::new(trace_tool);
+        let mut registry = bridge.tool_registry().write().await;
+        tracing::info!("[harness] Registered tool: harness_trace");
         registry.register_tool(tool);
     }
 

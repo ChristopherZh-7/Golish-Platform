@@ -58,3 +58,6 @@ dirs = { workspace = true }
 dotenvy = { workspace = true }
 # agents.rs / check_recon_tools_cmd expose ts-rs wire types to the frontend.
 ts-rs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

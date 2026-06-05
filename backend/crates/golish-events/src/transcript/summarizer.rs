@@ -246,6 +246,26 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
                         .unwrap_or_else(|| "?".to_string())
                 ));
             }
+            AiEvent::HarnessTrace {
+                stage,
+                agent_path,
+                trace,
+                ..
+            } => {
+                use golish_core::events::HarnessTraceKind as K;
+                let summary = match trace {
+                    K::GateDecision { gate, .. } => format!("gate {gate}"),
+                    K::EvidenceBooked { evidence_id, .. } => format!("evidence #{evidence_id}"),
+                    K::DeliverableSubmitted { status, .. } => format!("submit {status}"),
+                    K::BackgroundNotesInjected { count, .. } => format!("notes x{count}"),
+                };
+                let who = if agent_path.is_empty() {
+                    "main"
+                } else {
+                    agent_path
+                };
+                output.push_str(&format!("\n**[Harness {who}]** {stage} · {summary}\n"));
+            }
         }
     }
 

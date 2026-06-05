@@ -491,6 +491,12 @@ pub fn convert_to_cli_json(event: &AiEvent) -> CliJsonEvent {
             }),
         ),
 
+        // ── observability ────────────────────────────────────────────────
+        AiEvent::HarnessTrace { .. } => CliJsonEvent::new(
+            "harness_trace",
+            serde_json::to_value(event).unwrap_or(serde_json::Value::Null),
+        ),
+
         // ── HITL + task mode ─────────────────────────────────────────────
         AiEvent::AskHumanRequest { .. }
         | AiEvent::AskHumanResponse { .. }

@@ -685,7 +685,9 @@
     },
     "subAgent": {
       "delegateTo": "delegated to",
-      "viewMore": "details"
+      "viewMore": "details",
+      "thinking": "thinking…",
+      "working": "working…"
     },
     "subAgentDetail": {
       "notFound": "Sub-agent not found",

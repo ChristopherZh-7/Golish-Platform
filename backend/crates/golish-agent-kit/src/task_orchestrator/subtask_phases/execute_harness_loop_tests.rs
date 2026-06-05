@@ -5,7 +5,7 @@
 //! stage flow outcome) and [`TaskOrchestrator::two_level_phase_gate`] (the live
 //! graph-flow human-approval gate at 大阶段 boundaries), against an in-memory repo
 //! + the live user-input approval channel. Plus P3 RAG-prior wiring and
-//! `fail_task_if_active`. Deterministic regardless of `GOLISH_HARNESS_PROFILE`.
+//!   `fail_task_if_active`. Deterministic regardless of `GOLISH_HARNESS_PROFILE`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -51,6 +51,7 @@ impl MemRepo {
         })
     }
 
+    #[allow(dead_code)]
     fn stage(&self, operation_id: Uuid) -> Option<String> {
         self.op_state
             .lock()
@@ -427,6 +428,8 @@ fn pass(stage: StageKind) -> HarnessGateOutcome {
         evidence_refs: Vec::new(),
         required_evidence_kinds: Vec::new(),
         findings_count: 1,
+        fabricated_evidence_refs: Vec::new(),
+        available_real_ids: Vec::new(),
     }
 }
 
@@ -439,6 +442,8 @@ fn block(stage: StageKind) -> HarnessGateOutcome {
         evidence_refs: Vec::new(),
         required_evidence_kinds: Vec::new(),
         findings_count: 0,
+        fabricated_evidence_refs: Vec::new(),
+        available_real_ids: Vec::new(),
     }
 }
 

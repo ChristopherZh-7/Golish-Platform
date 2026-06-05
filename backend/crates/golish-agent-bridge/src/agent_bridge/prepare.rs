@@ -56,6 +56,31 @@ impl AgentBridge {
             "[agent] Injecting {} background-job completion note(s)",
             notes.len()
         );
+        // Observability (design 2026-06-05): surface the injection as a
+        // HarnessTrace so the timeline shows when background results re-entered
+        // the agent's context (correlate with the EvidenceBooked events emitted
+        // when each job's evidence was booked the prior turn).
+        if let Some(sid) = self.event_session_id().map(str::to_string) {
+            let evidence_ids: Vec<i64> = notes
+                .iter()
+                .filter_map(|n| {
+                    n.split("evidence_id=").nth(1).and_then(|rest| {
+                        let digits: String =
+                            rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                        digits.parse::<i64>().ok()
+                    })
+                })
+                .collect();
+            let _ = self.get_or_create_event_tx().send(AiEvent::HarnessTrace {
+                operation_id: sid,
+                stage: String::new(),
+                agent_path: "main".to_string(),
+                trace: golish_core::events::HarnessTraceKind::BackgroundNotesInjected {
+                    count: notes.len() as u32,
+                    evidence_ids,
+                },
+            });
+        }
         system_prompt.push_str(
             "\n\n## Background jobs finished since your last turn\n\
              These commands had exceeded their soft timeout and were moved to the background; \

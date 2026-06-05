@@ -57,6 +57,13 @@ pub struct Args {
     /// Show verbose output (debug information)
     #[arg(short = 'v', long)]
     pub verbose: bool,
+
+    /// Replay a run's merged decision timeline (main agent + sub-agents) and
+    /// exit. Pass the chat-session id (the directory name under
+    /// `~/.golish/transcripts`). Reads existing transcripts only — no app
+    /// startup, no DB. See docs/design/2026-06-05-unified-ai-harness-observability.
+    #[arg(long, value_name = "SESSION")]
+    pub replay: Option<String>,
 }
 
 impl Args {

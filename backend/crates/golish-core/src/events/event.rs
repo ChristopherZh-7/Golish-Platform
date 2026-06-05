@@ -6,6 +6,7 @@
 //! sections by comments (lifecycle, tool I/O, sub-agents, context, workflow,
 //! plan, server tools, prompt-gen, task-mode).
 
+use super::harness_trace::HarnessTraceKind;
 use super::tool_source::ToolSource;
 use crate::hitl::{ApprovalPattern, RiskLevel};
 use serde::{Deserialize, Serialize};
@@ -536,5 +537,20 @@ pub enum AiEvent {
         stderr_tail: String,
         /// Total wall-clock duration of the job in milliseconds.
         duration_ms: u64,
+    },
+
+    // Observability: first-class harness decision record (design 2026-06-05).
+    /// A harness decision (gate / evidence / submit / background-notes), carried
+    /// with the correlation spine so an AI can thread the main agent and every
+    /// sub-agent into one timeline. `operation_id` = the harness operation (task
+    /// id); `agent_path` is the `>`-joined lineage (`main`, `main>pentester`,
+    /// `main>pentester>reporter`). The actual decision is in [`HarnessTraceKind`].
+    HarnessTrace {
+        operation_id: String,
+        stage: String,
+        #[serde(default)]
+        agent_path: String,
+        #[serde(flatten)]
+        trace: HarnessTraceKind,
     },
 }

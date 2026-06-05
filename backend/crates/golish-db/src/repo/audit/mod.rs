@@ -225,6 +225,35 @@ pub async fn existing_evidence_ids(pool: &PgPool, ids: &[i64]) -> Result<Vec<i64
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+/// 取某 chat session 下最近 `limit` 条**真实** evidence id (`audit_role='evidence'`),
+/// 按 id 倒序 (最新优先).
+///
+/// 用途: harness gate 拦下「引用了不存在 evidence id」的交付物后, 拿这批真实可引用
+/// 的 id 喂回 agent, 让它照填 `evidence_refs` 而不是抄模板占位 (1/2/3). 同步路径
+/// (`golish-agent-runtime` 工具后置) 与后台 job 路径 (`bridge_config` 监听器) 写
+/// evidence 行时都填同一个 chat session 字符串到 `session_id` 列, 故按该列即可覆盖
+/// 两条来源. `limit <= 0` 直接返回空.
+pub async fn recent_evidence_ids_for_session(
+    pool: &PgPool,
+    session_id: &str,
+    limit: i64,
+) -> Result<Vec<i64>> {
+    if limit <= 0 {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        r#"SELECT id FROM audit_log
+           WHERE audit_role = 'evidence' AND session_id = $1
+           ORDER BY id DESC
+           LIMIT $2"#,
+    )
+    .bind(session_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 /// 给一组 evidence `audit_log.id`, 返回每条的 `detail->>'kind'` (可能 NULL).
 ///
 /// P2 verification gate 用它做 evidence-kind 回查: stage 要求的 evidence 种类
