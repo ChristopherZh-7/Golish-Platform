@@ -11,6 +11,25 @@
   ],
   "features": [
     {
+      "id": "gate-rule-engine-2026-06-05",
+      "priority": 2,
+      "area": "backend/crates/golish-agent-kit/src/harness/gate/{rule_engine.rs(new),mod.rs,finding_verification_check.rs} + golish-agent-kit/src/harness/stage_spec.rs + golish-agent-kit/src/task_orchestrator/prompts/mod.rs + golish-agent-app/src/ai/harness_submit_tool.rs + resources/harness/stages/verification.json + docs/design/2026-06-02-harness-stage-spec-reference.md",
+      "title": "数据驱动 gate 规则引擎（gate_rules）：stage JSON 用固定积木 op 声明过关标准，纯函数/DB-free/确定性解释器执行，新增标准零 Rust 改动；附 submit_stage_deliverable 在结构性/空交付被拦时也回吐真实 evidence id",
+      "user_visible_behavior": "harness stage gate 的过关标准可在 stage JSON 用 gate_rules 声明（count_at_least / for_all × non_empty / eq / severity_at_least，over claims|findings），与既有结构 check 并存；空 gate_rules 行为与旧版逐字节一致。verification.json 已加样例：每个 high+ finding 必须挂证据。另外 task 模式 harness 阶段提交结构性/空交付被 Block 时，submit_stage_deliverable 直接回吐本 operation 真实可引用的 evidence id（available_evidence_ids）+ 引导重提，减少弱模型空转找不到 id。",
+      "status": "passing",
+      "design": "docs/design/2026-06-05-gate-rule-engine.md（固定菜单→数据驱动 + DSL §5 + fail-closed §5.4 + 复刻现有标准 §6 + YAGNI 边界）；DSL 速查见 docs/design/2026-06-02-harness-stage-spec-reference.md §8",
+      "plan": "docs/superpowers/plans/2026-06-05-gate-rule-engine.md（writing-plans · Task 1-7 逐任务 TDD）",
+      "verification": [
+        "cargo nextest run -p golish-agent-kit -p golish-agent-app --status-level fail → 502 tests run: 502 passed, 0 skipped（exit 0；含 rule_engine 解析 fail-closed/求值、gate/mod gate_rules 经 aggregate Block 集成、stage_spec gate_rules 默认空+解析、finding_verification 等价性、harness_submit_tool vacuous 回真 id 等新测，无回归）",
+        "cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime --all-targets -- -D warnings → exit 0 零告警",
+        "cargo fmt --check → exit 0 clean",
+        "实现（Task 1-6）已 commit d02dbb46（feat/harness-2026-06-01，未 push）",
+        "全量 just precommit（未跑·纯 Rust 特性无前端面，workspace 重编在本特性面外）"
+      ],
+      "evidence": "2026-06-05 本机实跑：nextest 502/0（golish-agent-kit + golish-agent-app）；clippy -D warnings 三 crate 零告警；fmt --check clean。实现 commit d02dbb46。纯 Rust 特性（无前端改动），未跑全量 just precommit（workspace 重编 + 前端均在本特性面外）；无活体 E2E 需求（纯确定性 gate 逻辑，无 LLM/运行时）。",
+      "notes": "2026-06-05 MCP-agent-4（DISPATCH off）接 MCP-2 上下文收口。设计/计划/Task 1 起手由 MCP-2 产出；Task 1-6 实现代码本会话核对工作树时已就位，遂先按用户『commit 这些改动』提交（d02dbb46）再补 Task 7 验证+登记。引擎要点：rule_engine.rs 纯函数解释器，op/pred/over/field 全 typed enum → 写错名在 StageSpec 反序列化期 fail-closed（被 spec 加载测试抓），字段-集合不匹配求值期返 gate_rule config error Block；validate_stage_gate_with_skeleton 末尾并进 eval，与 4 个结构 check 共存，空 gate_rules no-op 向后兼容。§2.1：本条置 passing，不占 in_progress 槽位（当前 in_progress = arch-crate-per-service-split）。"
+    },
+    {
       "id": "unified-ai-harness-observability-2026-06-05",
       "priority": 1,
       "area": "backend/crates/golish-core/src/events/{harness_trace.rs,event.rs,event_dispatch.rs,mod.rs} + golish-events/src/{op_trace/,transcript/} + golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs + golish-agent-app/src/ai/{harness_trace_tool.rs,harness_submit_tool.rs,commands/bridge_config.rs} + golish-agent-runtime/.../tool_execution/direct/mod.rs + golish-agent-bridge/.../agent_bridge/prepare.rs + golish-sub-agents/src/definition/mod.rs + golish CLI replay + justfile + docs/development.md",

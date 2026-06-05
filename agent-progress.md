@@ -29,6 +29,27 @@
 
 ---
 
+### 2026-06-05 · Gate 数据驱动规则引擎（gate_rules）实现 + 收口（MCP-agent-4 · DISPATCH off · 接 MCP-2 上下文 · 用户「帮我 commit 这些改动，跑动已搞完」→「所有 task 一口气做完再跑测试」）
+
+- **承接背景**：本特性的设计/计划由 MCP-2 在本分支产出（`docs/design/2026-06-05-gate-rule-engine.md` + `docs/superpowers/plans/2026-06-05-gate-rule-engine.md`）并起手 Task 1。MCP-2 把完整上下文转交本会话（MCP-4），要求「所有 task 做完再跑测试」。核对工作树发现 Task 1-6 的实现代码已全部就位，遂先按用户「commit 这些改动」提交，再补齐 Task 7（验证 + 登记）。
+- **本特性做了什么（数据驱动 gate 规则引擎，设计 2026-06-05）**：把 stage gate 的「过关标准」从写死在 Rust `match` 的固定菜单（`required_checks` 字符串只命中预实现 check、未命中被 `_ => continue` 静默吞）升级为 stage JSON 里用固定积木 op 声明的 `gate_rules`，由 `gate/rule_engine.rs::eval`（纯函数 / DB-free / 确定性）执行；空 `gate_rules` 时全链路 no-op（逐字节向后兼容）。
+  - 新 `backend/crates/golish-agent-kit/src/harness/gate/rule_engine.rs`：DSL typed enum（`GateRule`=count_at_least/for_all、`Pred`=non_empty/eq/severity_at_least、`Collection`=claims/findings、`ItemField`、`OnFail`）+ `eval`。fail-closed：未知 op/pred/over/field 在 `StageSpec` 反序列化期即报错；字段-集合不匹配（如对 claims 取 severity）在求值期返回 `gate_rule config error` Block。
+  - `gate/mod.rs::validate_stage_gate_with_skeleton` 末尾并进 `rule_engine::eval(deliverable, &spec.gate_rules)`，与既有 4 个结构 check 共存聚合。
+  - `stage_spec.rs::StageSpec` 加 `#[serde(default)] gate_rules: Vec<GateRule>`。
+  - `resources/harness/stages/verification.json` 加样例规则（finding_verification 的声明式孪生：每个 high+ finding 必须挂 evidence_refs）。
+  - `harness_submit_tool.rs`：结构性/空交付被 Block 时也回吐本 operation 真实 evidence id（`available_evidence_ids`，原先只在 fabricated-ref 分支回），并刷新 prompt 文案引导重提；新增 `vacuous_needs_fix_lists_available_real_ids` 测试。
+  - 文档：`docs/design/2026-06-02-harness-stage-spec-reference.md` §8 加 DSL 速查表；顺手去掉 `stream_processor/mod.rs` 末尾一处多余空行。
+- **commit**：实现（Task 1-6）已提交 `d02dbb46`（`feat(harness): data-driven gate_rules engine + real evidence ids on block`，11 files +1730/-10）于 `feat/harness-2026-06-01`，**未 push**。Task 7 的 progress/feature_list 登记单独 commit。
+- **运行过的验证（本机实跑，全绿）**：
+  - `cd backend && cargo nextest run -p golish-agent-kit -p golish-agent-app --status-level fail` → **502 tests run: 502 passed, 0 skipped**（exit 0；含 rule_engine 单测 + gate/mod 集成 + stage_spec 解析 + finding_verification 等价性 + harness_submit_tool vacuous 真 id 等新测，无回归）。
+  - `cd backend && cargo fmt --check` → **exit 0（clean）**。
+  - `cd backend && cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime --all-targets -- -D warnings` → **exit 0（零告警）**。
+- **已记录证据**：nextest 关键行 `Summary [2.020s] 502 tests run: 502 passed, 0 skipped`；clippy `Finished dev profile ... CLIPPY_EXIT=0`；fmt `FMT_EXIT=0`。
+- **范围/诚实边界**：本特性纯 Rust（无前端改动），故**未跑全量 `just precommit`**（其 test-rust-all 全量重编 50 crate + 跑前端，均在本特性面外）；针对受影响 3 crate 用 nextest + clippy(-D warnings) + fmt 三项覆盖。无需活体 E2E（纯确定性 gate 逻辑，无 LLM/运行时）。
+- **下一步建议**：① 如需绝对完整门禁可 `just precommit`（约 20-30 min，target 之前清空过、偏冷编译）；② push 需用户单独点头（§2.7）；③ 后续可往 DSL 加积木（and/or、evidence KIND、freshness）按设计 §YAGNI 留作扩展。
+
+---
+
 ### 2026-06-05 · 阶段审批闸改用 ask_human 卡片 + 拒绝原因驱动返工（MCP-agent-4 · DISPATCH off · 用户「这个怎么回事 没地方点 approve」→「用 ask_human 搞 yes/no」→「选否要填理由」→「ai 根据拒绝理由回溯想办法」→「提交并更新 progress」）
 
 - **根因（systematic-debugging 第一阶段，已核证据）**：两级模型 graph-flow 审批闸 `two_level_phase_gate`（`execute.rs`）原本发被动 `waiting_approval` TaskProgress + **阻塞等 `user_input_rx`**；但生产 `user_input_sender()` **只在测试里被调用**（`chat.rs::execute_task_mode` 从不捕获它），所以跨大阶段审批一旦触发 = **永久卡死**：没有按钮，且任务运行中底部按钮是「停止」态（要发字得先打断任务）。用户截图的「Waiting for approval 无处可点」正是这个死路。
