@@ -3,27 +3,10 @@ import type { ImmerSet } from "../types";
 import type { WorkflowStoreDraft } from "./types";
 
 export function syncSubAgentToTimeline(
-  subAgentPipelineMap: Record<string, { blockId: string; stepId: string }>,
   timeline: UnifiedBlock[],
   parentRequestId: string,
   agent: ActiveSubAgent
 ): void {
-  const mapping = subAgentPipelineMap[parentRequestId];
-  if (mapping) {
-    const pBlock = timeline.find((b) => b.id === mapping.blockId);
-    if (pBlock && pBlock.type === "pipeline_progress") {
-      const step = pBlock.data.steps.find((s) => s.stepId === mapping.stepId);
-      if (step?.subAgents) {
-        const idx = step.subAgents.findIndex((a) => a.parentRequestId === parentRequestId);
-        if (idx >= 0) {
-          step.subAgents[idx] = { ...agent };
-        } else {
-          step.subAgents.push({ ...agent });
-        }
-        return;
-      }
-    }
-  }
   const block = timeline.find(
     (b) => b.type === "sub_agent_activity" && b.data.parentRequestId === parentRequestId
   );
@@ -174,36 +157,6 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         );
         if (!agentData) return;
 
-        const AI_PREFIXES = ["AI:", "ai:"];
-        let attachedToPipeline = false;
-        for (const block of timeline) {
-          if (block.type !== "pipeline_progress" || block.data.status !== "running") continue;
-          const aiStep = block.data.steps.find(
-            (s) =>
-              s.status === "running" &&
-              (AI_PREFIXES.some((p) => s.command.startsWith(p)) || s.name.includes("(AI)"))
-          );
-          if (aiStep) {
-            if (!aiStep.subAgents) aiStep.subAgents = [];
-            const existingIdx = aiStep.subAgents.findIndex(
-              (a) => a.parentRequestId === agent.parentRequestId
-            );
-            if (existingIdx >= 0) {
-              aiStep.subAgents[existingIdx] = { ...agentData };
-            } else {
-              aiStep.subAgents.push({ ...agentData });
-            }
-            state.subAgentPipelineMap[agent.parentRequestId] = {
-              blockId: block.id,
-              stepId: aiStep.stepId,
-            };
-            attachedToPipeline = true;
-            break;
-          }
-        }
-
-        if (attachedToPipeline) return;
-
         const blockId = `sub-agent-${agent.parentRequestId}`;
         const existingBlock = timeline.find((b) => b.id === blockId);
         if (existingBlock && existingBlock.type === "sub_agent_activity") {
@@ -255,7 +208,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         }
         const timeline = state.timelines[sessionId];
         if (timeline && agent) {
-          syncSubAgentToTimeline(state.subAgentPipelineMap, timeline, parentRequestId, agent);
+          syncSubAgentToTimeline(timeline, parentRequestId, agent);
         }
       }),
 
@@ -280,7 +233,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         }
         const timeline = state.timelines[sessionId];
         if (timeline && agent) {
-          syncSubAgentToTimeline(state.subAgentPipelineMap, timeline, parentRequestId, agent);
+          syncSubAgentToTimeline(timeline, parentRequestId, agent);
         }
       }),
 
@@ -301,7 +254,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         }
         const timeline = state.timelines[sessionId];
         if (timeline && agent) {
-          syncSubAgentToTimeline(state.subAgentPipelineMap, timeline, parentRequestId, agent);
+          syncSubAgentToTimeline(timeline, parentRequestId, agent);
         }
       }),
 
@@ -317,7 +270,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         }
         const timeline = state.timelines[sessionId];
         if (timeline && agent) {
-          syncSubAgentToTimeline(state.subAgentPipelineMap, timeline, parentRequestId, agent);
+          syncSubAgentToTimeline(timeline, parentRequestId, agent);
         }
       }),
 
@@ -337,7 +290,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         }
         const timeline = state.timelines[sessionId];
         if (timeline && agent) {
-          syncSubAgentToTimeline(state.subAgentPipelineMap, timeline, parentRequestId, agent);
+          syncSubAgentToTimeline(timeline, parentRequestId, agent);
         }
       }),
 
@@ -367,7 +320,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         }
         const timeline = state.timelines[sessionId];
         if (timeline && agent) {
-          syncSubAgentToTimeline(state.subAgentPipelineMap, timeline, parentRequestId, agent);
+          syncSubAgentToTimeline(timeline, parentRequestId, agent);
         }
       }),
 
@@ -381,12 +334,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
             tool.streamingOutput = (tool.streamingOutput ?? "") + chunk;
             const timeline = state.timelines[sessionId];
             if (timeline) {
-              syncSubAgentToTimeline(
-                state.subAgentPipelineMap,
-                timeline,
-                agent.parentRequestId,
-                agent
-              );
+              syncSubAgentToTimeline(timeline, agent.parentRequestId, agent);
             }
             return;
           }

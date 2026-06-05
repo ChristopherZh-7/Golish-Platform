@@ -15,11 +15,11 @@ pub use golish_tools::*;
 // (crate-per-service M5), so the historical `crate::tools::scoping` re-export was
 // dropped. The per-domain app crates import `golish_app_core::scoping` directly.
 
-// Penetration testing service (tool mgmt / AI bridge / pipelines / findings /
+// Penetration testing service (tool mgmt / AI bridge / findings /
 // methodology / evidence / security analysis) extracted to the
 // `golish-pentest-app` crate (crate-per-service split M3). Commands reach the
 // aggregate `generate_handler!` via `commands_facade::{pentest,workspace,
-// findings,evidence,pipeline}`. golish-staying `ai/` + startup wiring still call
+// findings,evidence}`. golish-staying `ai/` + startup wiring still call
 // the pentest module at compile time (layer A), so it is re-exported here.
 pub(crate) use golish_pentest_app::pentest;
 

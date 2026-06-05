@@ -189,8 +189,6 @@ const BRIDGE_ROWS: &[ToolRow] = &[
     ToolRow { name: "manage_targets", purpose: "Add / list / update pentest targets." },
     ToolRow { name: "record_finding", purpose: "Record a vulnerability finding." },
     ToolRow { name: "vault", purpose: "Store / retrieve credentials." },
-    ToolRow { name: "run_pipeline", purpose: "Run a predefined recon / scan pipeline." },
-    ToolRow { name: "flow_compose", purpose: "Compose a multi-tool flow declaratively." },
     ToolRow {
         name: "js_collect",
         purpose: "Crawl HTML / inline scripts / build manifests of a target and download all JS chunks into `.golish/captures/<host>/<port>/js/`.",

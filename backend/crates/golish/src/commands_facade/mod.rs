@@ -41,7 +41,6 @@ pub mod integrations;
 pub mod intel_providers;
 pub mod mcp;
 pub mod pentest;
-pub mod pipeline;
 pub mod settings;
 pub mod sidecar;
 pub mod vault;

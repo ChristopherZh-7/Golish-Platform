@@ -55,7 +55,6 @@ golish-synthesis = { path = "../golish-synthesis" }
 golish-skills = { path = "../golish-skills" }
 golish-mcp = { path = "../golish-mcp" }
 golish-pentest = { path = "../golish-pentest" }
-golish-pipeline = { path = "../golish-pipeline" }
 golish-vuln-intel = { path = "../golish-vuln-intel" }
 golish-scan-runner = { path = "../golish-scan-runner" }
 golish-projects = { path = "../golish-projects" }

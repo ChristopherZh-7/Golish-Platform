@@ -10,7 +10,7 @@ pub mod event_coordinator;
 pub mod op_trace;
 pub mod transcript;
 
-pub use domain_event::{DomainEvent, IndexerEvent, PentestEvent, PipelineEvent, SidecarEvent};
+pub use domain_event::{DomainEvent, IndexerEvent, PentestEvent, SidecarEvent};
 pub use event_coordinator::{CoordinatorHandle, CoordinatorState, EventCoordinator};
 pub use op_trace::{
     build_manifest, collect_records, decision_records_json, default_transcript_base,

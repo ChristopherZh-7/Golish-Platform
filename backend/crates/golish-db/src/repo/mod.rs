@@ -19,7 +19,6 @@ pub mod notes;
 pub mod operation_state;
 pub mod organizations;
 pub mod passive_scans;
-pub mod pipelines;
 pub mod prompt_templates;
 pub mod scan_queue;
 pub mod scoped;

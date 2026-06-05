@@ -67,12 +67,11 @@ export function createSessionTerminalActions(
           if (!state.timelines[sessionId]) {
             state.timelines[sessionId] = [];
           }
-          const source = state.pipelineCommandSource[sessionId] ? ("pipeline" as const) : undefined;
           state.timelines[sessionId].push({
             id: blockId,
             type: "command",
             timestamp: new Date().toISOString(),
-            data: { ...block, source },
+            data: { ...block },
           });
         }
 
@@ -179,18 +178,12 @@ export function createSessionTerminalActions(
             if (!state.timelines[sessionId]) {
               state.timelines[sessionId] = [];
             }
-            const source = state.pipelineCommandSource[sessionId]
-              ? ("pipeline" as const)
-              : undefined;
             state.timelines[sessionId].push({
               id: blockId,
               type: "command",
               timestamp: new Date().toISOString(),
-              data: { ...block, source },
+              data: { ...block },
             });
-            if (source === "pipeline") {
-              state.pipelineCommandSource[sessionId] = false;
-            }
           }
 
           markTabNewActivityInDraft(state, sessionId);
@@ -273,11 +266,6 @@ export function createSessionTerminalActions(
     requestTerminalClear: (sessionId: string) =>
       set((state) => {
         state.terminalClearRequest[sessionId] = (state.terminalClearRequest[sessionId] ?? 0) + 1;
-      }),
-
-    setPipelineCommandSource: (sessionId: string, isPipeline: boolean) =>
-      set((state) => {
-        state.pipelineCommandSource[sessionId] = isPipeline;
       }),
 
     // --- Timeline helpers ---

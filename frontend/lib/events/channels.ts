@@ -17,7 +17,6 @@ export const EventChannels = {
   SIDECAR_EVENT: "sidecar-event",
   FILE_CHANGED: "file-changed",
   MCP_EVENT: "mcp-event",
-  PIPELINE_EVENT: "pipeline-event",
   DETACHED_WINDOW_CLOSED: "detached-window-closed",
 } as const;
 

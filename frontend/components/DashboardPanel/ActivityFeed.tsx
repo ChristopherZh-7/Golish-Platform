@@ -8,7 +8,6 @@ export function eventLabel(type: string): string {
   const map: Record<string, string> = {
     target_added: "Target Added",
     target_updated: "Target Updated",
-    pipeline_executed: "Pipeline Executed",
     finding_created: "Finding Reported",
     scan_completed: "Scan Complete",
     credential_added: "Credential Added",
@@ -19,7 +18,7 @@ export function eventLabel(type: string): string {
 export function ActivityDot({ type }: { type: string }) {
   const color = type.includes("finding")
     ? "bg-red-400"
-    : type.includes("pipeline") || type.includes("scan")
+    : type.includes("scan")
       ? "bg-orange-400"
       : type.includes("target")
         ? "bg-blue-400"

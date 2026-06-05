@@ -34,7 +34,6 @@
     "targets": "Targets",
     "methodology": "Methodology",
     "findings": "Findings",
-    "pipelines": "Pipelines",
     "auditLog": "Audit Log",
     "wordlists": "Wordlists",
     "vulnIntel": "Vuln Intel",

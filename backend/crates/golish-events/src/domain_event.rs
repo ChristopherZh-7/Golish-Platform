@@ -33,9 +33,6 @@ pub enum DomainEvent {
     /// Pentest tool lifecycle events (scan started, progress, completed).
     Pentest(PentestEvent),
 
-    /// Pipeline orchestration events (step started, completed, error).
-    Pipeline(PipelineEvent),
-
     /// Code indexer events (indexing started, progress, completed).
     Indexer(IndexerEvent),
 
@@ -48,7 +45,6 @@ impl DomainEvent {
         match self {
             Self::Ai(_) => "ai",
             Self::Pentest(_) => "pentest",
-            Self::Pipeline(_) => "pipeline",
             Self::Indexer(_) => "indexer",
             Self::Sidecar(_) => "sidecar",
         }
@@ -92,35 +88,6 @@ pub enum PentestEvent {
     },
     ToolRemoved {
         tool_id: String,
-    },
-}
-
-/// Pipeline orchestration events — stub for Phase 2 migration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum PipelineEvent {
-    PipelineStarted {
-        pipeline_id: String,
-        name: String,
-    },
-    StepStarted {
-        pipeline_id: String,
-        step_name: String,
-    },
-    StepCompleted {
-        pipeline_id: String,
-        step_name: String,
-    },
-    StepError {
-        pipeline_id: String,
-        step_name: String,
-        error: String,
-    },
-    PipelineCompleted {
-        pipeline_id: String,
-    },
-    PipelineCancelled {
-        pipeline_id: String,
     },
 }
 

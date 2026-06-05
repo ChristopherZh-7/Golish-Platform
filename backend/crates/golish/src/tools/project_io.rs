@@ -141,9 +141,6 @@ pub async fn project_export(
         &mut count,
     )?;
 
-    let pipes = export_table_as_json(pool, "SELECT row_to_json(t) FROM pipelines t").await?;
-    add_json_to_zip(&mut zip, "golish/db/pipelines.json", &pipes, &mut count)?;
-
     let recordings = export_table_as_json(pool, "SELECT row_to_json(t) FROM recordings t").await?;
     add_json_to_zip(
         &mut zip,
@@ -298,7 +295,6 @@ pub async fn project_import(
             "golish/db/methodology_projects.json",
             "methodology_projects",
         ),
-        ("golish/db/pipelines.json", "pipelines"),
         ("golish/db/recordings.json", "recordings"),
         ("golish/db/vuln_feeds.json", "vuln_feeds"),
         ("golish/db/vuln_entries.json", "vuln_entries"),

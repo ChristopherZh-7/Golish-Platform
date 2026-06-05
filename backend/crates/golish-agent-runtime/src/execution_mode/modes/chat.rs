@@ -4,8 +4,6 @@
 //! `js_collect / manage_targets / record_finding / vault / js_extract_apis /
 //! auth_probe` (the `pentest_bridge` tools that the legacy
 //! `tool.name.starts_with("pentest_")` filter was silently dropping).
-//! Note: `run_pipeline` / `flow_compose` (the pipeline tools) are intentionally
-//! NOT exposed to agents.
 
 use async_trait::async_trait;
 
@@ -77,9 +75,6 @@ mod tests {
             "chat must expose js_collect (regression guard for the bug fixed in PR2)"
         );
         assert!(s.bridge_tools.manage_targets);
-        // pipeline tools are intentionally NOT exposed to agents
-        assert!(!s.bridge_tools.run_pipeline);
-        assert!(!s.bridge_tools.flow_compose);
         assert!(s.bridge_tools.auth_probe);
         assert!(s.bridge_tools.record_finding);
         assert!(s.bridge_tools.vault);

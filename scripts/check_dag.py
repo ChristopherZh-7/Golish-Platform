@@ -90,7 +90,6 @@ LAYER_TABLE: dict[str, float] = {
     # L3 Domain services
     "golish-prompts": 3.0,
     "golish-sub-agents": 3.0,
-    "golish-pipeline": 3.0,
     "golish-sidecar": 3.0,
     # L4 Agent stack (three-tier)
     "golish-agent-kit": 4.1,

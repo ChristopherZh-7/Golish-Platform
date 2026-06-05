@@ -11,6 +11,26 @@
   ],
   "features": [
     {
+      "id": "remove-pipeline-2026-06-05",
+      "priority": 2,
+      "area": "backend: golish-pipeline crate (deleted) + golish-pentest-app/{pipeline,pentest_bridge} + golish/{commands_facade,commands_registry} + golish-db pipelines table/repo/model + golish-app-core error + golish-events PipelineEvent + golish-agent-app workflow(run_recon_pipeline) ; frontend: PipelinePanel/ + PipelineProgressBlock/ + ProjectOverview/ + store/slices/workflow/pipeline + store/types/pipeline + lib/api/pipeline + lib/pentest/pipeline-types + events pipeline-event + anchors/persistence/command-source wiring",
+      "title": "移除 Pipeline 功能（前后端全删）：删除 DAG 引擎 crate + 编辑器 UI + pipeline_* 命令 + pipelines 表 + run_pipeline/flow_compose AI 工具 + pipeline_progress 时间线可视化 + recon 进度条孤儿 UI",
+      "user_visible_behavior": "Pipeline 活动栏入口、DAG 编辑器、流水线运行/进度时间线块全部移除；AI 改走 pentest_run 单工具执行（系统提示已重写）。run_recon_pipeline 废弃 stub 与前端 triggerAutoRecon/runReconPipeline 一并删除。pipeline_only sub-agent 标志保留（实为内部编排标志，非 DAG）。pipelines 表新增 forward-only drop migration（会丢历史数据）。",
+      "status": "in_progress",
+      "blocker": "后端 cargo check/clippy/nextest 尚未确认绿（本机另一会话并发 cargo-nextest 占 build lock，排队中）；未跑全量 just precommit；未 commit。前端 just check-fe 已 exit 0。",
+      "design": "docs/design/2026-06-05-remove-pipeline-feature.md（§3 三决策默认全删：D1 删 recon 进度条 / D2 保留 pipeline_only / D3 drop migration）",
+      "plan": "docs/superpowers/plans/2026-06-05-remove-pipeline-feature.md（Phase 0-9；执行状态：后端 0-4 by MCP-2 / 前端 6-8 by MCP-3 / Phase 5 pipeline_only 改为保留 / Phase 9 收口进行中）",
+      "verification": [
+        "just check-fe（biome + tsc）→ exit 0（MCP-3 本机实跑）",
+        "grep -rn [Pp]ipeline frontend → 仅范围外词义残留（shell/codegen/workflow-name/useMemo/sanitize），无 DAG pipeline",
+        "ReadLints 25+ 重改前端文件 → 无错",
+        "后端 cargo check --workspace --all-targets → 进行中（并发 lock 排队，未确认）",
+        "未跑：cargo clippy --workspace -D / nextest --workspace / just test-fe / just precommit"
+      ],
+      "evidence": "2026-06-05 MCP-agent-3：前端 just check-fe exit 0；前端全量 grep pipeline 仅剩 shell/codegen/workflow-name 等范围外词义；ReadLints 无错。后端 Phase 0-4 由 MCP-2 完成但本机 cargo 验证待并发 lock 释放后确认。未 commit、未 push。",
+      "notes": "2026-06-05 MCP-agent-3（DISPATCH off）接 MCP-2 上下文转交。方案 A 全删，先出文档（MCP-2）再开工。D1=删 ProjectOverview recon 进度条（核实为孤儿死代码，后端驱动 run_recon_pipeline 已删）；D2=保留 pipeline_only（执行期读码发现实为内部编排标志，强删会致 orchestrator 自我委派回归，已向用户说明）；D3=新增 drop_pipelines.sql forward-only 迁移。§2.1：本条 in_progress 待后端验证 + commit；与既有 arch-crate-per-service-split 的 in_progress 临时并存（多会话并发现实），本任务收口后回落 passing/blocked。"
+    },
+    {
       "id": "coverage-matrix-2026-06-05",
       "priority": 2,
       "area": "backend/crates/golish-agent-kit/src/harness/types.rs + harness/gate/rule_engine.rs (+ 21 StageDeliverable 构造点) ; [Phase 2] harness/gate/coverage_complete + stage_spec.expected_techniques + sprint_contract generator + harness_submit_tool schema + resources/harness/stages/<attack>.json",

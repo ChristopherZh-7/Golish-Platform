@@ -117,53 +117,6 @@ export type SidecarEventPayload =
   | { event_type: "state_updated"; session_id: string; backend: string };
 
 /**
- * Descriptor of a single pipeline step, included in the initial
- * `status === "started"` pipeline event.
- * Mirrors Rust `golish_pipeline::engine::types::PipelineStepInfo`.
- */
-export interface PipelineStepInfo {
-  id: string;
-  tool_name: string;
-  command_template: string;
-}
-
-/**
- * Parser / output-store statistics attached to a pipeline step result.
- * Mirrors Rust `golish_pipeline::parser::StoreStats`.
- */
-export interface PipelineStoreStats {
-  parsed_count: number;
-  stored_count: number;
-  new_count: number;
-  skipped_count: number;
-  errors: string[];
-}
-
-/**
- * Pipeline lifecycle event emitted on the `pipeline-event` channel.
- * Mirrors Rust `golish_pipeline::engine::types::PipelineEvent`; optional
- * Rust fields (`#[serde(skip_serializing_if = "Option::is_none")]`) are
- * marked optional here to match the wire format.
- */
-export interface PipelineEventPayload {
-  pipeline_id: string;
-  run_id: string;
-  step_id: string;
-  step_index: number;
-  total_steps: number;
-  status: string;
-  tool_name: string;
-  message?: string;
-  store_stats?: PipelineStoreStats;
-  pipeline_name?: string;
-  target?: string;
-  all_steps?: PipelineStepInfo[];
-  output?: string;
-  duration_ms?: number;
-  exit_code?: number | null;
-}
-
-/**
  * Emitted when a detached window (floating tab) is closed by the user.
  * Source: `frontend/components/DetachedView/DetachedView.tsx` calls
  * `emit("detached-window-closed", { session_id })`.
@@ -189,7 +142,6 @@ export interface EventPayloadMap {
   "sidecar-event": SidecarEventPayload;
   "file-changed": FileChangedPayload;
   "mcp-event": McpEventPayload;
-  "pipeline-event": PipelineEventPayload;
   "detached-window-closed": DetachedWindowClosedPayload;
 }
 
@@ -212,21 +164,6 @@ export function isAiEvent(v: unknown): v is AiEvent {
   // Envelope: session_id is always present (added by Tauri event system).
   // Tagged enum: `type` is the discriminant emitted by ts-rs.
   return typeof o.session_id === "string" && typeof o.type === "string";
-}
-
-/** Type guard for `pipeline-event` channel payloads. */
-export function isPipelineEventPayload(v: unknown): v is PipelineEventPayload {
-  if (typeof v !== "object" || v === null) return false;
-  const o = v as Record<string, unknown>;
-  return (
-    typeof o.pipeline_id === "string" &&
-    typeof o.run_id === "string" &&
-    typeof o.step_id === "string" &&
-    typeof o.step_index === "number" &&
-    typeof o.total_steps === "number" &&
-    typeof o.status === "string" &&
-    typeof o.tool_name === "string"
-  );
 }
 
 const SIDECAR_EVENT_TYPES: ReadonlySet<string> = new Set([

@@ -115,8 +115,6 @@ const TOOL_LABELS_STANDARD: Record<string, string> = {
   record_finding: "Record Finding",
   credential_vault: "Credential Vault",
   js_collect: "JS Collect",
-  run_pipeline: "Run Pipeline",
-  flow_compose: "Flow Compose",
   pentest_run: "Pentest Run",
   pentest_list_tools: "List Tools",
   pentest_read_skill: "Read Skill",

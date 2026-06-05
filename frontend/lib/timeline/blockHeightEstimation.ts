@@ -5,7 +5,6 @@ const BASE_HEIGHTS = {
   command: 52, // Header with command text
   agent_message: 80, // Minimal message with border
   system_hook: 44, // Collapsed hook card
-  pipeline_progress: 60, // Header + progress bar
   sub_agent_activity: 52, // Header with agent name + status
   ai_tool_execution: 56, // Header + command preview
 } as const;
@@ -19,7 +18,6 @@ const MAX_HEIGHTS = {
   command: 500,
   agent_message: 800,
   system_hook: 200,
-  pipeline_progress: 400,
   sub_agent_activity: 600,
   ai_tool_execution: 400,
 } as const;
@@ -79,14 +77,6 @@ export function estimateBlockHeight(block: UnifiedBlock): number {
       // Base height plus some for expanded state
       const expandedHeight = hooks.length * 24;
       return Math.min(BASE_HEIGHTS.system_hook + expandedHeight, MAX_HEIGHTS.system_hook);
-    }
-
-    case "pipeline_progress": {
-      const stepCount = block.data.steps.length;
-      return Math.min(
-        BASE_HEIGHTS.pipeline_progress + stepCount * 28 + 24,
-        MAX_HEIGHTS.pipeline_progress
-      );
     }
 
     case "sub_agent_activity": {

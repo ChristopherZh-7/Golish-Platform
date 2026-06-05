@@ -36,7 +36,6 @@ import * as notes from "./notes";
 import * as organizations from "./organizations";
 import * as outputParser from "./output-parser";
 import * as pentestBrowser from "./pentest-browser";
-import * as pipeline from "./pipeline";
 import * as projects from "./projects";
 import * as pty from "./pty";
 import * as security from "./security";
@@ -73,7 +72,6 @@ export {
   auditLog,
   modelRegistry,
   pentestBrowser,
-  pipeline,
   projects,
   outputParser,
   detachedWindow,
@@ -108,7 +106,6 @@ export const api = {
   auditLog,
   modelRegistry,
   pentestBrowser,
-  pipeline,
   projects,
   outputParser,
   detachedWindow,

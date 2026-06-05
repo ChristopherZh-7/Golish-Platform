@@ -180,7 +180,7 @@ pub async fn delete_scoped(
     Ok(res.rows_affected())
 }
 
-// ── JSON `data` blob helpers (methodology / pipelines shape) ─────────────────
+// ── JSON `data` blob helpers (methodology shape) ─────────────────
 
 /// `INSERT INTO <table> (id, data, project_path) … ON CONFLICT (id) DO UPDATE SET
 /// data = $2, updated_at = NOW()`. For tables shaped `(id, data JSONB, project_path)`.
@@ -280,10 +280,10 @@ mod tests {
             build_list_by_project_sql("findings", "created_at DESC"),
             "SELECT * FROM findings WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY created_at DESC"
         );
-        // ... methodology / pipelines used updated_at DESC.
+        // ... methodology_projects used updated_at DESC.
         assert_eq!(
-            build_list_by_project_sql("pipelines", "updated_at DESC"),
-            "SELECT * FROM pipelines WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY updated_at DESC"
+            build_list_by_project_sql("methodology_projects", "updated_at DESC"),
+            "SELECT * FROM methodology_projects WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY updated_at DESC"
         );
     }
 
@@ -306,8 +306,8 @@ mod tests {
             "INSERT INTO methodology_projects (id, data, project_path) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = NOW()"
         );
         assert_eq!(
-            build_get_json_data_scoped_sql("pipelines"),
-            "SELECT data FROM pipelines WHERE id = $1 AND project_path IS NOT DISTINCT FROM $2"
+            build_get_json_data_scoped_sql("methodology_projects"),
+            "SELECT data FROM methodology_projects WHERE id = $1 AND project_path IS NOT DISTINCT FROM $2"
         );
         assert_eq!(
             build_list_json_data_by_project_sql("methodology_projects", "updated_at DESC"),

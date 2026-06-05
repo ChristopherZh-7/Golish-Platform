@@ -37,9 +37,8 @@ function generateSubId(): string {
  * malformed backend payloads (e.g. backend rolled out a new field
  * that broke the wire format).
  *
- * Type guards for the three hot channels (`ai-event`, `pipeline-event`,
- * `sidecar-event`) live in `./payloads.ts`:
- * `isAiEvent` / `isPipelineEventPayload` / `isSidecarEventPayload`.
+ * Type guards for the hot channels (`ai-event`, `sidecar-event`) live in
+ * `./payloads.ts`: `isAiEvent` / `isSidecarEventPayload`.
  *
  * ```ts
  * import { onEvent } from "@/lib/events";

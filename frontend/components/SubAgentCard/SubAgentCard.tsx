@@ -43,7 +43,7 @@ function cleanSubAgentText(text: string): string {
 interface SubAgentCardProps {
   subAgent: ActiveSubAgent;
   autoCollapse?: boolean;
-  /** Compact inline style for nesting inside pipeline steps */
+  /** Compact inline style for nested sub-agent rows */
   compact?: boolean;
   highlighted?: boolean;
   /** Session ID — for AnchorChip lookup. */
@@ -267,7 +267,7 @@ function InterleavedEntries({
   );
 }
 
-/** Compact inline sub-agent row for nesting inside pipeline steps */
+/** Compact inline sub-agent row for nested rendering */
 const CompactSubAgentCard = memo(function CompactSubAgentCard({
   subAgent,
   sessionId,

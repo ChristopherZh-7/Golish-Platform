@@ -34,7 +34,6 @@
     "targets": "目标管理",
     "methodology": "方法论",
     "findings": "漏洞发现",
-    "pipelines": "工具链",
     "auditLog": "操作日志",
     "wordlists": "字典管理",
     "vulnIntel": "漏洞情报",

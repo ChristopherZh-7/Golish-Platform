@@ -25,11 +25,6 @@ export type {
   InputMode,
   InteractiveModeState,
   PendingCommand,
-  PipelineExecution,
-  PipelineStepExecution,
-  // Pipeline
-  PipelineStepStatus,
-  PipelineSubTarget,
   PlanStep,
   PlanSummary,
   ReasoningEffort,

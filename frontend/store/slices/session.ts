@@ -62,8 +62,6 @@ export interface SessionState {
   pendingCommand: Record<string, PendingCommand | null>;
   /** Last command actually sent to the PTY per session. */
   lastSentCommand: Record<string, string | null>;
-  /** Marks the next CommandBlock as pipeline-sourced. */
-  pipelineCommandSource: Record<string, boolean>;
   /** Bumped to ask the terminal renderer to clear (per session). */
   terminalClearRequest: Record<string, number>;
   /** Ordered list of tab IDs (home tab always at index 0 when present). */
@@ -103,7 +101,6 @@ export interface SessionActions {
   setLastSentCommand: (sessionId: string, command: string | null) => void;
   clearBlocks: (sessionId: string) => void;
   requestTerminalClear: (sessionId: string) => void;
-  setPipelineCommandSource: (sessionId: string, isPipeline: boolean) => void;
 
   // Streaming-block helpers
   addStreamingToolBlock: (
@@ -164,7 +161,6 @@ export const initialSessionState: SessionState = {
   streamingBlockRevision: {},
   pendingCommand: {},
   lastSentCommand: {},
-  pipelineCommandSource: {},
   terminalClearRequest: {},
   tabOrder: [],
   tabActivationHistory: [],

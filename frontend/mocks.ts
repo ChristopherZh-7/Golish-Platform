@@ -43,13 +43,10 @@ import {
 import {
   mockCommandBlock,
   mockFullPlanExecution,
-  mockPipelineProgressBlock,
-  mockPlanPipeline,
   mockRunCommandApproval,
   mockShowAllBlocks,
   mockSubAgentBlocks,
   mockToolExecutionBlocks,
-  simulatePipelineFanOut,
 } from "./mocks/showcase";
 import {
   simulateAiResponse,
@@ -89,13 +86,10 @@ export { simulateSubAgent } from "./mocks/simulations";
 export {
   mockCommandBlock,
   mockFullPlanExecution,
-  mockPipelineProgressBlock,
-  mockPlanPipeline,
   mockRunCommandApproval,
   mockShowAllBlocks,
   mockSubAgentBlocks,
   mockToolExecutionBlocks,
-  simulatePipelineFanOut,
 };
 
 // =============================================================================
@@ -982,30 +976,17 @@ export function setupMocks(): void {
         __mockJsHarvest?: typeof simulateJsHarvest;
       }
     ).__mockJsHarvest = simulateJsHarvest;
-    (
-      window as unknown as {
-        __mockPipelineFanOut?: typeof simulatePipelineFanOut;
-      }
-    ).__mockPipelineFanOut = simulatePipelineFanOut;
-
     // Expose per-block-type mock functions for visual QA
     (
       window as unknown as {
         __mockShowAllBlocks?: typeof mockShowAllBlocks;
         __mockCommandBlock?: typeof mockCommandBlock;
-        __mockPipelineBlock?: typeof mockPipelineProgressBlock;
         __mockSubAgentBlocks?: typeof mockSubAgentBlocks;
         __mockToolExecutionBlocks?: typeof mockToolExecutionBlocks;
-        __mockPlanPipeline?: typeof mockPlanPipeline;
       }
     ).__mockShowAllBlocks = mockShowAllBlocks;
     (window as unknown as { __mockCommandBlock?: typeof mockCommandBlock }).__mockCommandBlock =
       mockCommandBlock;
-    (
-      window as unknown as { __mockPipelineBlock?: typeof mockPipelineProgressBlock }
-    ).__mockPipelineBlock = mockPipelineProgressBlock;
-    (window as unknown as { __mockPlanPipeline?: typeof mockPlanPipeline }).__mockPlanPipeline =
-      mockPlanPipeline;
     (
       window as unknown as { __mockSubAgentBlocks?: typeof mockSubAgentBlocks }
     ).__mockSubAgentBlocks = mockSubAgentBlocks;
@@ -1864,51 +1845,6 @@ export function setupMocks(): void {
         return [];
       case "wiki_list":
         return [];
-      case "pipeline_list":
-        return [
-          {
-            id: "recon-basic",
-            name: "Basic Reconnaissance",
-            description: "DNS, subdomains, HTTP probe, ports, tech detection, JS harvest",
-            steps: [
-              {
-                id: "dns_lookup",
-                command_template: "dig +short {target}",
-                tool_name: "dig",
-                args: [],
-              },
-              {
-                id: "subdomain_enum",
-                command_template: "subfinder -d {target} -silent",
-                tool_name: "subfinder",
-                args: [],
-              },
-              {
-                id: "http_probe",
-                command_template: "echo {target} | httpx -silent",
-                tool_name: "httpx",
-                args: [],
-              },
-              {
-                id: "port_scan",
-                command_template: "nmap -sV -T4 {target}",
-                tool_name: "nmap",
-                args: [],
-              },
-              {
-                id: "tech_detect",
-                command_template: "whatweb {target}",
-                tool_name: "whatweb",
-                args: [],
-              },
-              { id: "js_harvest", command_template: "", tool_name: "js_harvest", args: [] },
-            ],
-          },
-        ];
-      case "pipeline_save":
-        return "mock-pipeline-id";
-      case "pipeline_delete":
-        return undefined;
       case "scan_queue_list":
         return [];
       case "scan_queue_upsert":

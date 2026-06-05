@@ -8,7 +8,7 @@
 //!   `classify_input`, `shell_integration_{status,install,uninstall}`
 //! - **History**: `add_command_history`, `add_prompt_history`,
 //!   `load_history`, `search_history`, `clear_history`
-//! - **Recon pipeline**: `run_recon_pipeline`, `check_recon_tools_cmd`
+//! - **Recon tools**: `check_recon_tools_cmd`
 //! - **Themes**: `list_themes`, `read_theme`, `save_theme`,
 //!   `delete_theme`, `save_theme_asset`, `get_theme_asset_path`
 //! - **Frontend log**: `write_frontend_log`

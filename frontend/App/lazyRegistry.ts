@@ -63,12 +63,6 @@ export const FindingsPanelView = lazy(() =>
   }))
 );
 
-export const PipelinePanelView = lazy(() =>
-  import("../components/PipelinePanel/PipelinePanel").then((m) => ({
-    default: m.PipelinePanel,
-  }))
-);
-
 export const AuditLogPanelView = lazy(() =>
   import("../components/AuditLogPanel").then((m) => ({
     default: m.AuditLogPanel,

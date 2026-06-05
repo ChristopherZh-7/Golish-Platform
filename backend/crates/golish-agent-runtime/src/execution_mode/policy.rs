@@ -97,8 +97,6 @@ pub struct BridgeToolSelection {
     pub manage_targets: bool,
     pub record_finding: bool,
     pub vault: bool,
-    pub run_pipeline: bool,
-    pub flow_compose: bool,
     pub js_collect: bool,
     pub js_extract_apis: bool,
     pub auth_probe: bool,
@@ -120,12 +118,6 @@ impl BridgeToolSelection {
             manage_targets: true,
             record_finding: true,
             vault: true,
-            // Pipeline tools are intentionally NOT exposed to agents — the
-            // pipeline feature is not given to the AI. Kept as fields so the
-            // type/registry stay stable, but never enabled in any mode (so they
-            // never reach `enabled_tool_names`, the prompt table, or the gate).
-            run_pipeline: false,
-            flow_compose: false,
             js_collect: true,
             js_extract_apis: true,
             auth_probe: true,
@@ -141,8 +133,6 @@ impl BridgeToolSelection {
             manage_targets: false,
             record_finding: false,
             vault: false,
-            run_pipeline: false,
-            flow_compose: false,
             js_collect: false,
             js_extract_apis: false,
             auth_probe: false,
@@ -163,12 +153,6 @@ impl BridgeToolSelection {
         }
         if self.vault {
             out.push("vault");
-        }
-        if self.run_pipeline {
-            out.push("run_pipeline");
-        }
-        if self.flow_compose {
-            out.push("flow_compose");
         }
         if self.js_collect {
             out.push("js_collect");
@@ -257,9 +241,6 @@ mod tests {
                 "auth_probe",
             ]
         );
-        // pipeline tools are intentionally never exposed to agents
-        assert!(!names.contains(&"run_pipeline"));
-        assert!(!names.contains(&"flow_compose"));
     }
 
     #[test]

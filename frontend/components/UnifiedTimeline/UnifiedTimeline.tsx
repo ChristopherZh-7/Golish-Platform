@@ -207,7 +207,7 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
   const isEmpty = timeline.length === 0 && !hasRunningCommand;
 
   // Terminal view shows only manually typed commands. AI-driven content
-  // (tool executions, pipeline progress, sub-agents) is shown in the
+  // (tool executions, sub-agents) is shown in the
   // right AI chat panel instead.
   const sortedTimeline = timeline;
   const filteredTimeline = useMemo(() => {
@@ -220,7 +220,6 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
     }
     return sortedTimeline.filter((block) => {
       if (block.type !== "command") return false;
-      if (block.data.source === "pipeline") return false;
       if (aiCmdSet.has(block.data.command.trim())) return false;
       return true;
     });

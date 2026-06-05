@@ -7,7 +7,6 @@ import { logger } from "@/lib/logger";
 import { runTauriUnlistenFn } from "@/lib/run-tauri-unlisten";
 import { useAiEvents } from "../../hooks/useAiEvents";
 import { useCreateTerminalTab } from "../../hooks/useCreateTerminalTab";
-import { usePipelineEvents } from "../../hooks/usePipelineEvents";
 import { useTauriEvents } from "../../hooks/useTauriEvents";
 import { createDbAutoSaver, loadFromDb, markDbLoadSucceeded } from "../../lib/conversation-db-sync";
 import { notify } from "../../lib/notify";
@@ -34,7 +33,7 @@ interface UseAppLifecycleProps {
  * Owns every long-lived side-effect attached to the App shell:
  *
  *  - workspace bootstrapping (project restore, terminal creation, DB load)
- *  - Tauri / AI / pipeline event subscriptions
+ *  - Tauri / AI event subscriptions
  *  - DB auto-save + pentest config sync
  *  - system notifications + window focus / visibility tracking
  *  - tab split / detach / credential / recording event listeners
@@ -65,9 +64,6 @@ export function useAppLifecycle({
 
   // Subscribe to AI events for agent mode
   useAiEvents();
-
-  // Subscribe to pipeline progress events (bridges Rust pipeline-event → timeline)
-  usePipelineEvents();
 
   // Tab split/detach/tool-output/recording events
   useTabSplitEvents({ setRightPanelTabs, setRightActiveTab, setShowSplitDropZone });

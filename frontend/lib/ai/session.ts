@@ -123,74 +123,8 @@ export async function runWorkflowToCompletion(sessionId: string): Promise<string
   return invoke("run_workflow_to_completion", { sessionId });
 }
 
-export async function runReconPipeline(
-  targets: string[],
-  projectName: string,
-  projectPath: string,
-  sessionId?: string
-): Promise<string> {
-  return invoke("run_recon_pipeline", {
-    targets,
-    projectName,
-    projectPath,
-    sessionId: sessionId ?? null,
-  });
-}
-
 export async function checkReconTools(): Promise<ReconToolCheck> {
   return invoke("check_recon_tools_cmd");
-}
-
-export async function triggerAutoRecon(
-  sessionId: string,
-  targets: string[],
-  projectName: string,
-  projectPath: string = ""
-): Promise<string> {
-  const summary = await runReconPipeline(targets, projectName, projectPath, sessionId || undefined);
-  console.log(`[recon] Pipeline complete for "${projectName}". Summary:\n`, summary);
-
-  try {
-    const { useStore } = await import("@/store");
-    const store = useStore.getState();
-    const activeConvId = store.activeConversationId;
-    if (activeConvId) {
-      const ts = Date.now();
-      store.addConversationMessage(activeConvId, {
-        id: `recon-summary-${ts}`,
-        role: "assistant" as const,
-        content: `**Recon Complete** — Project "${projectName}"\n\n${summary}`,
-        timestamp: ts,
-      });
-
-      if (sessionId) {
-        try {
-          const aiReady = await isAiSessionInitialized(sessionId);
-          if (aiReady) {
-            const analysisPrompt =
-              `Here are the reconnaissance results for project "${projectName}":\n\n` +
-              `${summary}\n\n` +
-              `Please analyze these findings, highlight any security concerns, and suggest concrete next steps for further investigation.`;
-            store.addConversationMessage(activeConvId, {
-              id: `recon-prompt-${ts}`,
-              role: "user" as const,
-              content: "Please analyze the findings and suggest next steps.",
-              timestamp: ts + 1,
-            });
-            await sendPromptSession(sessionId, analysisPrompt);
-          } else {
-            console.log("[recon] AI session not initialized yet, skipping auto-analysis");
-          }
-        } catch (e) {
-          console.warn("[recon] Failed to send recon summary to AI for analysis:", e);
-        }
-      }
-    }
-  } catch (e) {
-    console.warn("[recon] Failed to inject recon results into chat:", e);
-  }
-
-  return summary;
 }
 
 export async function clearAiConversationSession(sessionId: string): Promise<void> {

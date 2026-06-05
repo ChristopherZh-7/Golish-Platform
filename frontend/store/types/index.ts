@@ -4,7 +4,6 @@
  * Types are organized by domain concern:
  *   plan.ts       — Task plan types (PlanStep, TaskPlan, etc.)
  *   session.ts    — Session & AI config types
- *   pipeline.ts   — Pipeline execution types
  *   tool-call.ts  — Tool call & approval types
  *   streaming.ts  — Streaming block types
  *   workflow.ts   — Workflow execution types
@@ -21,12 +20,6 @@ export type {
   CommandBlock,
   PendingCommand,
 } from "./message";
-export type {
-  PipelineExecution,
-  PipelineStepExecution,
-  PipelineStepStatus,
-  PipelineSubTarget,
-} from "./pipeline";
 export type { PlanStep, PlanSummary, RetiredPlan, StepStatus, TaskPlan } from "./plan";
 export type {
   AgentMode,

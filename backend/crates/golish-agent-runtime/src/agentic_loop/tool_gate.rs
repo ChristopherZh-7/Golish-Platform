@@ -39,12 +39,6 @@ pub fn decide_tool_intent(intent: &ToolIntent, target_registered: bool) -> ToolG
         }
     }
 
-    if intent.name == "run_pipeline" && !target_registered {
-        return ToolGateDecision::Reject {
-            reason: "Cannot run pipeline before target is registered and in scope".to_string(),
-        };
-    }
-
     ToolGateDecision::Allow
 }
 
@@ -109,18 +103,4 @@ mod tests {
         assert_eq!(decide_tool_intent(&intent, false), ToolGateDecision::Allow);
     }
 
-    #[test]
-    fn pipeline_requires_registered_target() {
-        let intent = intent(
-            "run_pipeline",
-            json!({"target": "example.com"}),
-            ToolIntentSource::NativeToolCall,
-        );
-
-        assert!(matches!(
-            decide_tool_intent(&intent, false),
-            ToolGateDecision::Reject { .. }
-        ));
-        assert_eq!(decide_tool_intent(&intent, true), ToolGateDecision::Allow);
-    }
 }

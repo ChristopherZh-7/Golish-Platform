@@ -1,11 +1,5 @@
 import { planStepsStructurallyChanged } from "@/lib/plan-structural-change";
-import type {
-  PipelineExecution,
-  PipelineStepExecution,
-  PipelineStepStatus,
-  StepStatus,
-  TaskPlan,
-} from "../../store-types";
+import type { TaskPlan } from "../../store-types";
 import type { ImmerSet } from "../types";
 import type { WorkflowStoreDraft } from "./types";
 
@@ -155,61 +149,6 @@ export function createPlanActions(set: ImmerSet<WorkflowStoreDraft>) {
         };
         if (!session.passedStages) session.passedStages = [];
         if (!session.passedStages.includes(stageId)) session.passedStages.push(stageId);
-      }),
-
-    syncPlanToPipeline: (sessionId: string, plan: TaskPlan) =>
-      set((state) => {
-        if (!state.timelines[sessionId]) state.timelines[sessionId] = [];
-        const timeline = state.timelines[sessionId];
-
-        const STATUS_MAP: Record<StepStatus, PipelineStepStatus> = {
-          pending: "pending",
-          in_progress: "running",
-          completed: "success",
-          cancelled: "skipped",
-          failed: "failed",
-        };
-
-        const blockId = `plan-pipeline-${sessionId}`;
-        const now = new Date().toISOString();
-
-        const steps: PipelineStepExecution[] = plan.steps.map((s, i) => ({
-          stepId: s.id ?? `plan-step-${i}`,
-          name: s.step,
-          command: "",
-          status: STATUS_MAP[s.status] ?? "pending",
-          startedAt: s.status !== "pending" ? now : undefined,
-        }));
-
-        const anyRunning = plan.summary.in_progress > 0;
-        const allDone = plan.summary.total > 0 && plan.summary.completed === plan.summary.total;
-        const pipelineStatus = allDone ? "completed" : anyRunning ? "running" : "pending";
-
-        const existing = timeline.find((b) => b.id === blockId);
-        if (existing && existing.type === "pipeline_progress") {
-          for (const newStep of steps) {
-            const prev = existing.data.steps.find((s) => s.stepId === newStep.stepId);
-            if (prev?.subAgents) newStep.subAgents = prev.subAgents;
-          }
-          existing.data.steps = steps;
-          existing.data.status = pipelineStatus;
-          if (allDone) existing.data.finishedAt = now;
-        } else if (!existing) {
-          const execution: PipelineExecution = {
-            pipelineId: `plan-${sessionId}`,
-            pipelineName: plan.explanation ?? "Task Plan",
-            target: "",
-            steps,
-            status: pipelineStatus,
-            startedAt: now,
-          };
-          timeline.push({
-            id: blockId,
-            type: "pipeline_progress",
-            timestamp: now,
-            data: execution,
-          });
-        }
       }),
   };
 }

@@ -1,5 +1,4 @@
 import type { AgentMessage, AiToolExecution, CommandBlock } from "./message";
-import type { PipelineExecution } from "./pipeline";
 import type { ActiveSubAgent } from "./sub-agent";
 import type { ToolCall } from "./tool-call";
 
@@ -8,7 +7,7 @@ export type UnifiedBlock =
       id: string;
       type: "command";
       timestamp: string;
-      data: CommandBlock & { source?: "manual" | "pipeline" };
+      data: CommandBlock & { source?: "manual" };
     }
   | {
       id: string;
@@ -27,13 +26,6 @@ export type UnifiedBlock =
       type: "agent_streaming";
       timestamp: string;
       data: { content: string; toolCalls?: ToolCall[] };
-    }
-  | {
-      id: string;
-      type: "pipeline_progress";
-      timestamp: string;
-      data: PipelineExecution;
-      planStepIndex?: number;
     }
   | {
       id: string;

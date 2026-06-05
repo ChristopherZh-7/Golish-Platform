@@ -101,14 +101,6 @@ function restoreTimelineBlocks(
     for (const block of blocks) {
       if (existingIds.has(block.id)) continue;
       const sanitized = { ...block } as any;
-      if (sanitized.type === "pipeline_progress" && sanitized.data?.status === "running") {
-        sanitized.data = { ...sanitized.data, status: "interrupted" };
-        if (Array.isArray(sanitized.data.steps)) {
-          sanitized.data.steps = sanitized.data.steps.map((s: any) =>
-            s.status === "running" || s.status === "pending" ? { ...s, status: "interrupted" } : s
-          );
-        }
-      }
       if (sanitized.type === "ai_tool_execution" && sanitized.data?.status === "running") {
         sanitized.data = { ...sanitized.data, status: "interrupted" };
       }
@@ -122,7 +114,7 @@ function restoreTimelineBlocks(
     }
 
     // Backfill planStepIndex for blocks that lost it (pre-fix data).
-    // Match sub_agent_activity / pipeline_progress blocks to plan steps by
+    // Match sub_agent_activity blocks to plan steps by
     // fuzzy-matching the sub-agent task text against step descriptions.
     const plan = state.sessions[targetSessionId]?.plan;
     if (plan?.steps?.length) {
@@ -135,16 +127,6 @@ function restoreTimelineBlocks(
           if (!task) continue;
           for (let si = 0; si < stepTexts.length; si++) {
             if (task.includes(stepTexts[si]) || stepTexts[si].includes(task.slice(0, 60))) {
-              (block as any).planStepIndex = si;
-              break;
-            }
-          }
-        }
-        if (block.type === "pipeline_progress" && (block as any).planStepIndex == null) {
-          const pName: string = ((block.data as any)?.pipelineName ?? "").toLowerCase();
-          if (!pName) continue;
-          for (let si = 0; si < stepTexts.length; si++) {
-            if (stepTexts[si].includes(pName) || pName.includes(stepTexts[si])) {
               (block as any).planStepIndex = si;
               break;
             }
@@ -308,7 +290,6 @@ export async function disposeAllRuntimeTerminals(): Promise<void> {
       delete s.timelines[sid];
       delete s.pendingCommand[sid];
       delete s.lastSentCommand[sid];
-      delete s.pipelineCommandSource[sid];
       delete s.agentStreamingBuffer[sid];
       delete s.agentStreaming[sid];
       delete s.streamingBlocks[sid];

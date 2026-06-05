@@ -12,7 +12,7 @@ import { memo } from "react";
 import { cn } from "@/lib/utils";
 import { useAnchorFor } from "@/store/selectors";
 
-export type AnchorKind = "tool" | "agent" | "pipeline";
+export type AnchorKind = "tool" | "agent";
 
 interface AnchorChipProps {
   /** 直接传锚点字符串，例如 "T3" / "A1" / "P2" */
@@ -28,15 +28,12 @@ interface AnchorChipProps {
 function classifyAnchor(anchor: string | null | undefined): AnchorKind {
   if (!anchor) return "tool";
   if (anchor.startsWith("A")) return "agent";
-  if (anchor.startsWith("P")) return "pipeline";
   return "tool";
 }
 
 const KIND_CLASS: Record<AnchorKind, string> = {
   agent:
     "border-accent/35 bg-accent/20 text-foreground shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]",
-  pipeline:
-    "border-[var(--ansi-magenta)]/35 bg-[var(--ansi-magenta)]/18 text-foreground shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]",
   tool: "border-border/50 bg-muted/60 text-foreground shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]",
 };
 

@@ -4,15 +4,13 @@
  * Sub-modules:
  *   types.ts      — State & action interfaces, initial state
  *   sub-agent.ts  — Sub-agent lifecycle actions + timeline sync helper
- *   pipeline.ts   — Pipeline timeline block actions
- *   plan.ts       — Plan management actions (setPlan, syncPlanToPipeline)
+ *   plan.ts       — Plan management actions (setPlan, setStagePlan)
  */
 
 export type { WorkflowActions, WorkflowSlice, WorkflowState, WorkflowStoreDraft } from "./types";
 export { initialWorkflowState } from "./types";
 
 import type { SliceCreator } from "../types";
-import { createPipelineActions } from "./pipeline";
 import { createPlanActions } from "./plan";
 import { createSubAgentActions } from "./sub-agent";
 import type { WorkflowSlice, WorkflowStoreDraft } from "./types";
@@ -122,7 +120,6 @@ export const createWorkflowSlice: SliceCreator<WorkflowSlice, WorkflowStoreDraft
   // ── Composed sub-module actions ────────────────────────────────────
 
   ...createSubAgentActions(set),
-  ...createPipelineActions(set),
   ...createPlanActions(set),
 });
 

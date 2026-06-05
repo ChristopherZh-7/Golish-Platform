@@ -14,7 +14,6 @@ golish-tools = { workspace = true }
 golish-skills = { workspace = true }
 golish-pentest = { workspace = true }
 golish-vuln-intel = { workspace = true }
-golish-pipeline = { workspace = true }
 golish-scan-runner = { workspace = true }
 
 # Foundation crate (L1): the EventEmitter trait + path helpers backing the

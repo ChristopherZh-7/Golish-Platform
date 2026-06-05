@@ -33,7 +33,6 @@ export interface SessionStoreDraft {
   streamingBlockRevision: Record<string, number>;
   pendingCommand: Record<string, PendingCommand | null>;
   lastSentCommand: Record<string, string | null>;
-  pipelineCommandSource: Record<string, boolean>;
   terminalClearRequest: Record<string, number>;
   tabOrder: string[];
   tabActivationHistory: string[];

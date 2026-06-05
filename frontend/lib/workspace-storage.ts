@@ -17,15 +17,7 @@ export interface PersistedCommandBlock {
   id: string;
   type: "command";
   timestamp: string;
-  data: CommandBlock & { source?: "manual" | "pipeline" };
-}
-
-export interface PersistedPipelineBlock {
-  id: string;
-  type: "pipeline_progress";
-  timestamp: string;
-  data: import("@/store").PipelineExecution;
-  planStepIndex?: number;
+  data: CommandBlock & { source?: "manual" };
 }
 
 export interface PersistedToolExecBlock {
@@ -46,7 +38,6 @@ export interface PersistedSubAgentBlock {
 
 export type PersistedTimelineBlock =
   | PersistedCommandBlock
-  | PersistedPipelineBlock
   | PersistedToolExecBlock
   | PersistedSubAgentBlock;
 

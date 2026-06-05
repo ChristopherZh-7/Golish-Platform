@@ -258,11 +258,7 @@ function dbBlockToUnifiedBlock(row: TimelineBlockRow): UnifiedBlock {
   };
 
   // Restore planStepIndex from data where it was embedded during save
-  if (
-    (row.blockType === "pipeline_progress" || row.blockType === "sub_agent_activity") &&
-    data &&
-    typeof data === "object"
-  ) {
+  if (row.blockType === "sub_agent_activity" && data && typeof data === "object") {
     const d = data as Record<string, unknown>;
     const stored = d.__planStepIndex as number | undefined;
     if (stored != null) {
@@ -491,10 +487,7 @@ function buildTimelineDbBlocks(
 
     // Embed block-level planStepIndex into data for types that store it outside data
     const anyBlock = block as { planStepIndex?: number };
-    if (
-      (block.type === "pipeline_progress" || block.type === "sub_agent_activity") &&
-      anyBlock.planStepIndex != null
-    ) {
+    if (block.type === "sub_agent_activity" && anyBlock.planStepIndex != null) {
       data = { ...data, __planStepIndex: anyBlock.planStepIndex };
     }
 

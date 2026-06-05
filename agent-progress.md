@@ -29,6 +29,24 @@
 
 ---
 
+### 2026-06-05 · 移除 Pipeline 功能（前后端全删）· MCP-agent-3（DISPATCH off · 接 MCP-2 上下文转交 · 用户「全部搞完再跑编译，太忙了等不了」）
+
+- **背景**：承接 MCP-2 上下文转交。用户要求「把 pipeline 整体逻辑全删，无论前后端」（方案 A 全删）→「先出文档」→「按默认全删并开工」。MCP-2 已出 design/plan 文档并完成后端 Phase 0-4（但**从未 cargo 验证、未 commit**）。本轮 MCP-3 续完前端 Phase 6-8 + 收口。
+- **核对真实状态（非仅凭转录）**：分支 `chore/remove-pipeline`；后端 Phase 0-4 改动 + `golish-pipeline` crate 删除均在工作树、未 commit；`drop_pipelines.sql` 迁移 + 两份文档在。
+- **D2/Phase 5 偏差（读真实代码后确认保留）**：`pipeline_only` **不是** DAG pipeline，而是「不暴露为可委派 `sub_agent_*` 工具」的内部编排标志（使用者 = reflector/refiner/orchestrator，execution loop 内部触发，`definition/mod.rs` doc 注释自证）。强删会把 orchestrator 暴露成可被委派/自我委派 → 真实回归。**保留**该字段（与「全删 DAG pipeline」不冲突），用户知情未反对。
+- **前端 Phase 6（DAG UI/API/事件）**：删 `PipelinePanel/`、`TargetPanel/{PipelineLauncher,pipelineValidation,hooks/usePipelineForm}`、`lib/api/pipeline.ts`、`lib/pentest/pipeline-types.ts`、`hooks/usePipelineEvents.ts`；改 lazyRegistry/AppShell/ActivityBar(含 GitBranch 图标)/useAppLifecycle/i18n(en+zh)/lib/api/index/pentest{api,types}(AiToolMeta+listAiTools)/tools(标签)/error-codes(PIPELINE)/events(channels+payloads+index+listener)/pentestSystemPrompt(run_pipeline→pentest_run 路由重写)/ai/session(删 runReconPipeline+triggerAutoRecon)/ToolCallSummary/tool-handlers(setPipelineSession 分支)/useTargetData。
+- **前端 Phase 7（pipeline_progress 时间线块 + 持久化）**：删 `PipelineProgressBlock/`、`store/slices/workflow/pipeline.ts`、`store/types/pipeline.ts`；改 workflow{index,types,plan(syncPlanToPipeline),sub-agent(subAgentPipelineMap + pipeline 附挂)}、timeline union、store 三 barrel(store-types/types-index/public-api)、workspace-storage(PersistedPipelineBlock)/conversation-db-sync/terminal-restore/blockHeightEstimation、anchors(P#)/AnchorChip、session{,-terminal,-draft-types}(pipelineCommandSource)/CommandBlock(AUTO badge)、mocks{,/showcase}(3 个 mock 函数)。
+- **前端 Phase 8（D1=删 recon 进度条）**：`ProjectOverview/` 全目录（7 文件）经核实为**孤儿死代码**（无任何 importer、`__PENDING_RECON__` 无写入方、其后端驱动 `run_recon_pipeline` 已删）→ 整目录删除（PipelineProgressBar/useReconFeed/types(RECON_STEPS,PipelineProgress)/utils/StepRow/ItemRow/ProjectOverview）。ActivityFeed(pipeline_executed)/AuditLog(pipeline 分类) 展示项清理。
+- **运行过的验证（本机实跑）**：
+  - `just check-fe`（biome + tsc）→ **exit 0**（先 `just fmt-fe` 修 conversation-db-sync 折行 + showcase 末尾空行，再 check-fe 通过；含 `[generate-model-constants]` 预构建）。
+  - 全量 `grep -rn [Pp]ipeline frontend` → 仅剩**范围外**词义（shell pipeline / codegen pipeline / workflow_name "JWT Migration Pipeline" / useMemo pipeline / sanitize-pipeline 注释），无 DAG pipeline 残留。
+  - ReadLints（25+ 重改文件）→ 无错。
+  - 后端 `cargo check --workspace --all-targets`：**进行中**（与另一会话 coverage-matrix 的 cargo-nextest 抢 build lock，排队中，未确认结果）。
+- **现状/风险**：① 后端整体 cargo check / clippy / nextest **尚未确认绿**（环境有并发 cargo 占 lock）；本轮未跑全量 `just precommit`。② **未 commit**（全部改动在工作树）。③ D2 保留 pipeline_only 为执行期偏差（已记录，可逆）。④ `drop_pipelines.sql` 不可逆数据动作，需起 embedded PG 跑一次或 test-rust 覆盖迁移加载确认。
+- **下一步**：后端 check 确认绿 → `cargo clippy --workspace -D warnings` + `nextest --workspace` + `just test-fe` → 全绿后 `just precommit` 收口 → 按 plan 分阶段 commit（**未 push**，push 需用户点头，§2.7）。
+
+---
+
 ### 2026-06-05 · 覆盖矩阵 Phase 1.5 收尾 + ④ checked_empty 证据（MCP-agent-4 · DISPATCH off · 用户「重新检查我做到哪里了，你一口气做完」）
 
 - **背景**：Phase 1（`ca86a5ec`）由 MCP-4 提交后，**MCP-1 起草了 Phase 1.5**（coverage_complete op + expected_techniques + submit coverage schema + charter 提示 + vuln_triage WSTG 样例 + 一批测试）但**未提交即掉线**（list_sessions：agent-1 online=false/developing，工作树 11 文件悬挂）。本轮 MCP-4 复验 + 补缺口 + 收尾提交。

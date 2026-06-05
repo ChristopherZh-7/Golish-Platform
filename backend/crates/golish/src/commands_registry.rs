@@ -20,7 +20,6 @@ use commands_facade::integrations::*;
 use commands_facade::intel_providers::*;
 use commands_facade::mcp::*;
 use commands_facade::pentest::*;
-use commands_facade::pipeline::*;
 use commands_facade::settings::*;
 use commands_facade::sidecar::*;
 use commands_facade::vault::*;
@@ -41,7 +40,7 @@ fn install_handlers(
         list_path_completions, classify_input,
         shell_integration_status, shell_integration_install, shell_integration_uninstall,
         add_command_history, add_prompt_history, load_history, search_history, clear_history,
-        run_recon_pipeline, check_recon_tools_cmd,
+        check_recon_tools_cmd,
         list_themes, read_theme, save_theme, delete_theme, save_theme_asset, get_theme_asset_path,
         write_frontend_log, ime_get_source, ime_set_source,
         // ── ai (agent chat / context / policies) ─────────────────
@@ -163,10 +162,6 @@ fn install_handlers(
         findings_list, findings_add, findings_update, findings_delete,
         findings_import_parsed, findings_add_evidence, findings_remove_evidence,
         findings_evidence_path, findings_deduplicate, findings_for_host,
-        // ── pipeline ─────────────────────────────────────────────
-        pipeline_list, pipeline_save, pipeline_cancel, pipeline_delete,
-        pipeline_load, pipeline_execute, pipeline_list_templates, pipeline_save_template, pipeline_delete_template,
-        pipeline_list_ai_tools,
         // ── vuln-intel ───────────────────────────────────────────
         intel_list_feeds, intel_add_feed, intel_toggle_feed, intel_delete_feed,
         intel_fetch, intel_fetch_page, intel_get_cached,

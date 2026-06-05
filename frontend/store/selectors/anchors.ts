@@ -1,13 +1,12 @@
 /**
  * Anchor Map Selector
  *
- * 给会话内的 tool / sub-agent / pipeline 分配单调递增的"锚点编号"，
+ * 给会话内的 tool / sub-agent 分配单调递增的"锚点编号"，
  * 让用户能在 ChatPanel 的小卡和 DetailView 的大卡之间一眼对上号。
  *
  * 编号规则（按 timeline 顺序遍历）：
  *   - 普通 tool call           → T1, T2, T3, …
  *   - sub-agent invocation     → A1, A2, A3, …
- *   - pipeline run             → P1, P2, P3, …
  *
  * 排除：
  *   - update_plan：不算 tool（属于 plan 维度）
@@ -23,7 +22,7 @@
 import { useStore } from "../index";
 
 export interface AnchorMap {
-  /** requestId → "T3" / "A2" / "P1" */
+  /** requestId → "T3" / "A2" */
   byRequestId: Map<string, string>;
   /** anchor 字符串 → requestId（反查用） */
   byAnchor: Map<string, string>;
@@ -67,7 +66,6 @@ function computeAnchorMap(
   const byAnchor = new Map<string, string>();
   let toolCount = 0;
   let agentCount = 0;
-  let pipelineCount = 0;
 
   for (const block of timeline) {
     if (block.type === "ai_tool_execution") {
@@ -82,9 +80,6 @@ function computeAnchorMap(
       if (name.startsWith("sub_agent_")) {
         agentCount += 1;
         anchor = `A${agentCount}`;
-      } else if (name === "run_pipeline") {
-        pipelineCount += 1;
-        anchor = `P${pipelineCount}`;
       } else {
         toolCount += 1;
         anchor = `T${toolCount}`;
@@ -99,13 +94,6 @@ function computeAnchorMap(
       const anchor = `A${agentCount}`;
       byRequestId.set(requestId, anchor);
       byAnchor.set(anchor, requestId);
-    } else if (block.type === "pipeline_progress") {
-      const id = block.id;
-      if (!id || byRequestId.has(id)) continue;
-      pipelineCount += 1;
-      const anchor = `P${pipelineCount}`;
-      byRequestId.set(id, anchor);
-      byAnchor.set(anchor, id);
     }
   }
 

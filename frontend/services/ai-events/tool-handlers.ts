@@ -4,7 +4,6 @@
  * Handles tool request, approval, auto-approval, and result events.
  */
 
-import { setPipelineSession } from "@/hooks/usePipelineEvents";
 import type { ApprovalPattern, RiskLevel, ToolSource } from "@/lib/ai";
 import { respondToToolApproval } from "@/lib/ai";
 import { logger } from "@/lib/logger";
@@ -98,14 +97,8 @@ export const handleToolRequest: EventHandler<{
 
   // Add to left timeline as a card (main agent tool calls only).
   // Skip sub-agent invocations — they get their own SubAgentCard via sub_agent_started.
-  // Skip run_pipeline "run" calls — they get a PipelineProgressBlock via pipeline-event.
   const isSubAgentCall = event.tool_name.startsWith("sub_agent_");
-  const isPipelineRun =
-    event.tool_name === "run_pipeline" && (event.args as Record<string, unknown>)?.action === "run";
-  if (isPipelineRun) {
-    setPipelineSession(ctx.sessionId);
-  }
-  if ((!source || source.type === "main") && !isSubAgentCall && !isPipelineRun) {
+  if ((!source || source.type === "main") && !isSubAgentCall) {
     state.addToolExecutionBlock(ctx.sessionId, {
       requestId: event.request_id,
       toolName: event.tool_name,
@@ -169,9 +162,7 @@ export const handleToolApprovalRequest: EventHandler<{
   state.addStreamingToolBlock(ctx.sessionId, toolCall);
 
   const isSubAgentCall = event.tool_name.startsWith("sub_agent_");
-  const isPipelineRun =
-    event.tool_name === "run_pipeline" && (event.args as Record<string, unknown>)?.action === "run";
-  if ((!source || source.type === "main") && !isSubAgentCall && !isPipelineRun) {
+  if ((!source || source.type === "main") && !isSubAgentCall) {
     state.addToolExecutionBlock(ctx.sessionId, {
       requestId: event.request_id,
       toolName: event.tool_name,
@@ -258,12 +249,7 @@ export const handleToolAutoApproved: EventHandler<{
   state.addStreamingToolBlock(ctx.sessionId, autoApprovedTool);
 
   const isSubAgentCall = event.tool_name.startsWith("sub_agent_");
-  const isPipelineRun =
-    event.tool_name === "run_pipeline" && (event.args as Record<string, unknown>)?.action === "run";
-  if (isPipelineRun) {
-    setPipelineSession(ctx.sessionId);
-  }
-  if ((!source || source.type === "main") && !isSubAgentCall && !isPipelineRun) {
+  if ((!source || source.type === "main") && !isSubAgentCall) {
     state.addToolExecutionBlock(ctx.sessionId, {
       requestId: event.request_id,
       toolName: event.tool_name,

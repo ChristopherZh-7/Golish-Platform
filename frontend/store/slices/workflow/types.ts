@@ -2,8 +2,6 @@ import type {
   ActiveSubAgent,
   ActiveToolCall,
   ActiveWorkflow,
-  PipelineExecution,
-  PipelineStepExecution,
   Session,
   TaskPlan,
   UnifiedBlock,
@@ -14,13 +12,12 @@ export interface WorkflowState {
   workflowHistory: Record<string, ActiveWorkflow[]>;
   activeSubAgents: Record<string, ActiveSubAgent[]>;
   subAgentBatchCounter: Record<string, number>;
-  subAgentPipelineMap: Record<string, { blockId: string; stepId: string }>;
 }
 
 /**
  * Cross-slice fields accessed by workflow sub-module actions during Immer
  * mutations. Extends WorkflowState with the foreign-slice fields that
- * sub-agent, pipeline, and plan actions read/write.
+ * sub-agent and plan actions read/write.
  */
 export interface WorkflowStoreDraft extends WorkflowState {
   sessions: Record<string, Session>;
@@ -94,23 +91,6 @@ export interface WorkflowActions {
   appendSubAgentToolOutput: (sessionId: string, toolId: string, chunk: string) => void;
   clearActiveSubAgents: (sessionId: string) => void;
 
-  startPipelineExecution: (
-    sessionId: string,
-    execution: PipelineExecution,
-    blockId?: string
-  ) => void;
-  updatePipelineStep: (
-    sessionId: string,
-    executionId: string,
-    stepId: string,
-    update: Partial<PipelineStepExecution>
-  ) => void;
-  completePipelineExecution: (
-    sessionId: string,
-    executionId: string,
-    status: "completed" | "failed"
-  ) => void;
-
   setPlan: (
     sessionId: string,
     plan: TaskPlan,
@@ -129,7 +109,6 @@ export interface WorkflowActions {
    * stage shows done only after the deterministic gate accepts it.
    */
   markStagePassed: (sessionId: string, stageId: string) => void;
-  syncPlanToPipeline: (sessionId: string, plan: TaskPlan) => void;
 }
 
 export interface WorkflowSlice extends WorkflowState, WorkflowActions {}
@@ -139,5 +118,4 @@ export const initialWorkflowState: WorkflowState = {
   workflowHistory: {},
   activeSubAgents: {},
   subAgentBatchCounter: {},
-  subAgentPipelineMap: {},
 };

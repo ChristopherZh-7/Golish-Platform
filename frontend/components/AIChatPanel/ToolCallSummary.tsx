@@ -46,21 +46,7 @@ function ToolCallCard({
   sessionId?: string | null;
   requestId?: string | null;
 }) {
-  let label = getToolLabel(tc.name, "short");
-  if (tc.name === "run_pipeline" && tc.args) {
-    try {
-      const parsed = JSON.parse(tc.args);
-      if (parsed.action === "list") label = "List Pipelines";
-      else if (parsed.action === "run") {
-        const name = (parsed.pipeline_id || "pipeline")
-          .replace(/_/g, " ")
-          .replace(/\b\w/g, (c: string) => c.toUpperCase());
-        label = name;
-      }
-    } catch {
-      /* keep default */
-    }
-  }
+  const label = getToolLabel(tc.name, "short");
   const color = getToolColor(tc.name);
   const isNoResult = tc.success === undefined;
   const isExpired = isNoResult && isMessageComplete;
@@ -380,7 +366,6 @@ export function ToolCallSummary({
     for (const tc of calls) {
       if (!tc.requestId || existingIds.has(tc.requestId)) continue;
       if (tc.name.startsWith("sub_agent_")) continue;
-      if (tc.name === "run_pipeline") continue;
 
       let parsedArgs: Record<string, unknown> = {};
       try {

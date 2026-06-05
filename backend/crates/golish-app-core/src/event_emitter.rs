@@ -2,7 +2,7 @@
 //!
 //! This is the glue between the `tauri::AppHandle`-based event system used
 //! by the desktop shell and the `EventEmitter` trait consumed by business
-//! logic crates (pipeline, scan_runner, vuln_intel, indexer, projects).
+//! logic crates (scan_runner, vuln_intel, indexer, projects).
 //!
 //! It lives in `golish-app-core` (the application-boundary shared crate) so
 //! every per-domain app crate (`golish-vuln-app`, …) can construct it inside

@@ -19,14 +19,13 @@ interface CommandBlockProps {
   block: CommandBlockType;
   sessionId?: string;
   onToggleCollapse: (blockId: string) => void;
-  source?: "manual" | "pipeline";
+  source?: "manual";
 }
 
 export function CommandBlock({
   block,
   sessionId: _sessionId,
   onToggleCollapse,
-  source,
 }: CommandBlockProps) {
   const isSuccess = block.exitCode === 0;
 
@@ -61,11 +60,6 @@ export function CommandBlock({
         >
           {/* Command */}
           <code className="flex-1 truncate text-foreground" style={codeStyle}>
-            {source === "pipeline" && (
-              <span className="inline-flex items-center text-[8px] px-1 py-px rounded bg-blue-500/15 text-blue-400 font-sans font-medium mr-1.5 align-middle leading-none">
-                AUTO
-              </span>
-            )}
             <span className="text-[var(--ansi-green)]">$ </span>
             {block.command || "(empty command)"}
           </code>

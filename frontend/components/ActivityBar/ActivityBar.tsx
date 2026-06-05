@@ -6,7 +6,6 @@ import {
   ClipboardList,
   Crosshair,
   FolderOpen,
-  GitBranch,
   Hammer,
   Home,
   Layers,
@@ -29,7 +28,6 @@ export type ActivityView =
   | "targets"
   | "methodology"
   | "findings"
-  | "pipelines"
   | "auditLog"
   | "wordlists"
   | "vulnIntel"
@@ -41,7 +39,6 @@ type BarItemId =
   | "dashboard"
   | "targets"
   | "findings"
-  | "pipelines"
   | "auditLog"
   | "wordlists"
   | "vulnIntel"
@@ -85,10 +82,7 @@ const LOWER_GROUPS: BarGroup[] = [
     id: "tools",
     icon: Hammer,
     label: "activity.tools",
-    items: [
-      { id: "toolManage", icon: Wrench, label: "activity.toolManage" },
-      { id: "pipelines", icon: GitBranch, label: "activity.pipelines" },
-    ],
+    items: [{ id: "toolManage", icon: Wrench, label: "activity.toolManage" }],
   },
   {
     id: "system",
@@ -132,7 +126,6 @@ const VIEW_ITEMS: BarItemId[] = [
   "dashboard",
   "targets",
   "findings",
-  "pipelines",
   "auditLog",
   "wordlists",
   "vulnIntel",

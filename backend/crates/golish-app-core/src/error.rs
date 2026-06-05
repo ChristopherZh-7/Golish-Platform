@@ -53,9 +53,6 @@ pub enum GolishError {
     VulnIntel(#[from] golish_vuln_intel::VulnIntelError),
 
     #[error("{0}")]
-    Pipeline(#[from] golish_pipeline::PipelineError),
-
-    #[error("{0}")]
     ScanRunner(#[from] golish_scan_runner::ScanRunnerError),
 
     // -- Application-level errors ---------------------------------------------
@@ -94,7 +91,6 @@ impl GolishError {
             Self::Skills(_) => "SKILLS",
             Self::Pentest(_) => "PENTEST",
             Self::VulnIntel(_) => "VULN_INTEL",
-            Self::Pipeline(_) => "PIPELINE",
             Self::ScanRunner(_) => "SCAN_RUNNER",
             Self::SessionNotFound(_) => "SESSION_NOT_FOUND",
             Self::NotFound(_) => "NOT_FOUND",

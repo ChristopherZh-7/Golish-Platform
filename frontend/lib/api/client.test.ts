@@ -23,10 +23,10 @@ describe("parseGolishError", () => {
 
 describe("ApiError", () => {
   it("exposes the parsed code and threads traceId + command + message", () => {
-    const e = new ApiError("pipeline_list", { code: "PIPELINE", message: "boom" }, "ab12cd34");
-    expect(e.code).toBe("PIPELINE");
+    const e = new ApiError("findings_list", { code: "DATABASE", message: "boom" }, "ab12cd34");
+    expect(e.code).toBe("DATABASE");
     expect(e.message).toContain("ab12cd34");
-    expect(e.message).toContain("pipeline_list");
+    expect(e.message).toContain("findings_list");
     expect(e.message).toContain("boom");
   });
 
