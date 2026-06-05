@@ -303,6 +303,7 @@ mod tests {
             }],
             time_budget_minutes: 10,
             min_tool_invocations: std::collections::HashMap::new(),
+            expected_techniques: vec![],
         };
         let d = deliverable_with_findings(0, 0, 0);
         assert!(matches!(

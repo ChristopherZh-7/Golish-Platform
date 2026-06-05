@@ -182,6 +182,16 @@ pub struct CoverageCell {
     /// checked_empty / blocked / not_applicable 的理由。
     #[serde(default)]
     pub note: Option<String>,
+    /// 分母覆盖（设计 2026-06-05-vuln-triage-technique-matrix §5）。
+    /// N：该 (资产×技术) 实际测过的可测单元数。
+    #[serde(default)]
+    pub tested_units: u32,
+    /// M：分母，来自 enumeration 的可测单元清单（接口/参数/路径/服务）。
+    #[serde(default)]
+    pub total_units: u32,
+    /// 抽样时必填的理由；None 时按全覆盖（tested==total）要求（D6）。
+    #[serde(default)]
+    pub sampling_rationale: Option<String>,
 }
 
 /// Doc 3 §4.3 StageDeliverable · 所有 stage 通用的 gate 输入 contract.
@@ -325,6 +335,34 @@ mod tests {
         let back: ExternalAttackSurfaceDeliverable = serde_json::from_str(&s).unwrap();
         assert_eq!(d.evidence_refs.len(), back.evidence_refs.len());
         assert_eq!(d.stage_id, back.stage_id);
+    }
+
+    #[test]
+    fn coverage_cell_denominator_serde_roundtrip_and_default() {
+        let c = CoverageCell {
+            asset: "api.example.com".to_string(),
+            technique: "WSTG-INPV-05".to_string(),
+            status: CoverageStatus::CheckedEmpty,
+            evidence_refs: vec![EvidenceAuditId::new(1)],
+            note: Some("scanned".to_string()),
+            tested_units: 12,
+            total_units: 12,
+            sampling_rationale: None,
+        };
+        let j = serde_json::to_string(&c).unwrap();
+        let back: CoverageCell = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.tested_units, 12);
+        assert_eq!(back.total_units, 12);
+        assert!(back.sampling_rationale.is_none());
+
+        // 旧 JSON（无新字段）→ serde default（0 / 0 / None），向后兼容
+        let old: CoverageCell = serde_json::from_str(
+            r#"{"asset":"a","technique":"t","status":"found","evidence_refs":[1]}"#,
+        )
+        .unwrap();
+        assert_eq!(old.tested_units, 0);
+        assert_eq!(old.total_units, 0);
+        assert!(old.sampling_rationale.is_none());
     }
 
     #[test]

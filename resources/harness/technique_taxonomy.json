@@ -1,0 +1,20 @@
+{
+  "$schema": "../../docs/design/2026-06-05-vuln-triage-technique-matrix.md#3",
+  "$comment": "Technique taxonomy registry (设计 2026-06-05-vuln-triage-technique-matrix §3 + D2「挂标准」). Phase 2 ②：coverage_complete / coverage_denominator 对 id 形态不敏感（D1），本 registry 是「挂标准」的词典——stage spec 的 expected_techniques 必须在此登记，写错 id（typo / 未登记）由 technique_taxonomy::tests::all_embedded_expected_techniques_are_recognized 单测 fail-closed 抓住，杜绝『拼错 WSTG id 造出一个永远覆盖不了的矩阵列』。值约定：OWASP WSTG id / MITRE ATT&CK id（T####）/ GOLISH-* 自定义命名空间（WSTG 没有的类，如 n-day）。新增技术类 = 先在此加一条，再用于 expected_techniques。改本表 = 改 PR（git 版本化，不入 DB）。",
+
+  "WSTG-INPV-05": { "name": "SQL Injection", "standard": "OWASP WSTG" },
+  "WSTG-INPV-01": { "name": "Reflected Cross-Site Scripting", "standard": "OWASP WSTG" },
+  "WSTG-INPV-12": { "name": "Command / Code Injection", "standard": "OWASP WSTG" },
+  "WSTG-INPV-18": { "name": "Server-Side Template Injection (SSTI)", "standard": "OWASP WSTG" },
+  "WSTG-INPV-19": { "name": "Server-Side Request Forgery (SSRF)", "standard": "OWASP WSTG" },
+  "WSTG-ATHZ-04": { "name": "Insecure Direct Object References (IDOR / BOLA)", "standard": "OWASP WSTG" },
+  "WSTG-ATHZ-01": { "name": "Directory Traversal / Local File Include", "standard": "OWASP WSTG" },
+  "WSTG-ATHN-04": { "name": "Authentication Bypass", "standard": "OWASP WSTG" },
+  "WSTG-ATHN-02": { "name": "Default / Weak Credentials", "standard": "OWASP WSTG" },
+  "WSTG-SESS-02": { "name": "Session Management & CSRF", "standard": "OWASP WSTG" },
+  "WSTG-CONF-05": { "name": "Sensitive Exposure / Configuration", "standard": "OWASP WSTG" },
+  "WSTG-CRYP-03": { "name": "Transport Security / Sensitive Data", "standard": "OWASP WSTG" },
+  "WSTG-BUSL": { "name": "Business Logic Abuse", "standard": "OWASP WSTG" },
+  "WSTG-INFO": { "name": "Information Disclosure / Recon", "standard": "OWASP WSTG" },
+  "GOLISH-NDAY": { "name": "Known CVE / n-day", "standard": "GOLISH custom" }
+}

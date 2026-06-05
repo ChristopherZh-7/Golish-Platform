@@ -54,6 +54,7 @@ pub mod stage_harness;
 pub mod stage_spec;
 pub mod stage_transition;
 pub mod surface_mapping;
+pub mod technique_taxonomy;
 pub mod tool_taxonomy;
 pub mod types;
 
@@ -61,9 +62,10 @@ pub mod types;
 mod e2e_tests;
 
 pub use gate::freshness_check::freshness_age_reasons;
+pub use gate::rule_engine::GateContext;
 pub use gate::{
-    validate_external_attack_surface_gate, validate_stage_gate, validate_stage_gate_with_skeleton,
-    GateCheckOutcome, GateResult,
+    validate_external_attack_surface_gate, validate_stage_gate, validate_stage_gate_with_context,
+    validate_stage_gate_with_skeleton, GateCheckOutcome, GateResult,
 };
 pub use intent_classifier::{IntentClassifier, IntentClassifierConfig};
 pub use nl_slice::NlSlice;
@@ -99,6 +101,10 @@ pub use stage_transition::{
 pub use surface_mapping::{
     missing_required_categories, SurfaceCategory, SurfaceCoverage, D2_REQUIRED_CATEGORIES,
     D2_SOFT_CATEGORIES,
+};
+pub use technique_taxonomy::{
+    is_recognized as is_recognized_technique, load_technique_taxonomy, lookup as lookup_technique,
+    TechniqueMeta,
 };
 pub use tool_taxonomy::{
     is_offensive_sub_agent, is_scan_invocation, is_scan_tool_name, stage_allows, tool_category,

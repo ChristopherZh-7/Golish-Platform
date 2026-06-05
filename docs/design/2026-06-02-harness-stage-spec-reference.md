@@ -153,6 +153,7 @@ gate 永远跑 **4 个结构性 check**（`schema` / `contract` / `vacuous` / `f
 - `for_all`：`{ op, over, where?, require, on_fail }` — 满足 `where` 的每个元素都满足 `require`（空集合为真）。
 - `named_check`：`{ op:"named_check", check, on_fail? }` — 按名调用保留的 Rust 领域 check。`check` ∈ `scope` | `surface_coverage` | `min_invocations`（闭合枚举，写错 fail-closed）。`on_fail` 可选，仅在被调 check 返回 Block 时覆盖其 reason/recovery。这是逃生舱（领域逻辑无法纯数据化时用），不是通用扩展点。
 - `coverage_complete`：`{ op:"coverage_complete", terminal_status?, on_fail }` — 覆盖矩阵完整性（设计 `2026-06-05-coverage-matrix`）。对每个（自报）资产 × `spec.expected_techniques` 的每类技术，`deliverable.coverage` 里必须有一个 `status ∈ terminal_status` 的 cell；缺口（不在矩阵 / 非终态）= `not_attempted` = Block（reason 末尾列前 8 个缺失 `(asset × technique)`）。`terminal_status` 缺省 = 四种终态全算；`spec.expected_techniques` 空 → no-op Pass。资产维度 MVP 取 coverage 自报集合（DB 注入 in-scope 资产全集是后续硬化）。
+- `coverage_denominator`：`{ op:"coverage_denominator", min_sample_ratio_pct?, on_fail }` — 分母覆盖（设计 `2026-06-05-vuln-triage-technique-matrix` §5.3）。对每个 `status ∈ {found, checked_empty}` 的 coverage cell 核「面覆盖」：默认全覆盖要求 `tested_units == total_units`；抽样例外要求 `sampling_rationale` 非空且 `tested_units*100 ≥ min_sample_ratio_pct*total_units`。`blocked` / `not_applicable` 免分母；`total_units==0` 的 found/checked_empty 记缺口（应改用 `not_applicable`）。`min_sample_ratio_pct` 缺省 = 100（全覆盖）。reason 末尾列前 8 个缺口（含 `tested N/M`）。分母字段在 `CoverageCell` 上（`tested_units` / `total_units` / `sampling_rationale`，均 `#[serde(default)]`，缺省 `0 / 0 / None` = 旧行为）。
 
 **over**：`claims` | `findings` | `coverage`
 
@@ -180,9 +181,13 @@ gate 永远跑 **4 个结构性 check**（`schema` / `contract` / `vacuous` / `f
 ]
 ```
 
-**覆盖矩阵样例**（`resources/harness/stages/vuln_triage.json`）：found/checked_empty 格必挂证据（#4：「已检查为空」≠「未检查」，须有证据证明确实测过）+ 每个资产对每类期望技术（WSTG id）都要有终态
+**覆盖矩阵样例**（`resources/harness/stages/vuln_triage.json`）：found/checked_empty 格必挂证据（#4：「已检查为空」≠「未检查」，须有证据证明确实测过）+ 每个资产对每类期望技术（WSTG id，现为 15 类记分层）都要有终态 + 每格对着 enumeration 分母测全（`coverage_denominator`，默认全覆盖，抽样需理由）
 ```json
-"expected_techniques": ["WSTG-INPV-05", "WSTG-INPV-01", "WSTG-ATHZ-04", "WSTG-INPV-19"],
+"expected_techniques": [
+  "WSTG-INPV-05", "WSTG-INPV-01", "WSTG-INPV-12", "WSTG-INPV-18", "WSTG-INPV-19",
+  "WSTG-ATHZ-04", "WSTG-ATHZ-01", "WSTG-ATHN-04", "WSTG-ATHN-02", "WSTG-SESS-02",
+  "WSTG-CONF-05", "WSTG-CRYP-03", "WSTG-BUSL", "WSTG-INFO", "GOLISH-NDAY"
+],
 "gate_rules": [
   { "op":"for_all", "over":"coverage",
     "where":{"pred":"eq","field":"status","value":"found"},
@@ -193,6 +198,8 @@ gate 永远跑 **4 个结构性 check**（`schema` / `contract` / `vacuous` / `f
     "require":{"pred":"non_empty","field":"evidence_refs"},
     "on_fail":{"reason":"every 'checked_empty' coverage cell must cite evidence (I8)"} },
   { "op":"coverage_complete",
-    "on_fail":{"reason":"coverage incomplete: some (asset × expected technique) cells were never attempted"} }
+    "on_fail":{"reason":"coverage incomplete: some (asset × expected technique) cells were never attempted"} },
+  { "op":"coverage_denominator", "min_sample_ratio_pct":100,
+    "on_fail":{"reason":"coverage below denominator: a tested/total cell did not cover its enumeration surface and gave no sampling_rationale"} }
 ]
 ```

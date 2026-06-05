@@ -109,6 +109,29 @@ pub fn validate_stage_gate_with_skeleton(
     contract: Option<&SprintContract>,
     skeleton: Option<&StageSkeleton>,
 ) -> GateResult {
+    validate_stage_gate_with_context(
+        deliverable,
+        spec,
+        contract,
+        skeleton,
+        &rule_engine::GateContext::default(),
+    )
+}
+
+/// 同 [`validate_stage_gate_with_skeleton`]，但额外接受 [`rule_engine::GateContext`] 注入
+/// **权威 in-scope 资产集**（①）与/或**动态期望技术**（③）——Phase 2 seam（设计 §6.5）。
+///
+/// 有效上下文合并规则：`ctx` 字段优先；当 `ctx.expected_techniques` 为 `None` 时，回退用
+/// `skeleton.expected_techniques`（③ 动态生成产物，非空才用），再 `None` 由
+/// `coverage_complete` 回退 `spec.expected_techniques`（静态）。资产维度仅取 `ctx.in_scope_assets`
+/// （① 外层查库后注入；活体接线待资产库 + DB §2.7）。gate 仍纯函数 / DB-free。
+pub fn validate_stage_gate_with_context(
+    deliverable: &StageDeliverable,
+    spec: &StageSpec,
+    contract: Option<&SprintContract>,
+    skeleton: Option<&StageSkeleton>,
+    ctx: &rule_engine::GateContext,
+) -> GateResult {
     let mut outcomes = vec![
         schema_check::run(deliverable, spec),
         contract_check::run_with_skeleton(deliverable, contract, skeleton),
@@ -119,13 +142,29 @@ pub fn validate_stage_gate_with_skeleton(
         finding_verification_check::run(deliverable, spec),
     ];
 
+    // ③ seam：skeleton 动态生成的 expected_techniques 在 ctx 未显式指定时作为有效期望技术
+    // 注入 gate（覆盖 spec 静态值）；ctx 显式指定则尊重 ctx。资产维度透传 ctx（①）。
+    let effective_ctx = rule_engine::GateContext {
+        in_scope_assets: ctx.in_scope_assets.clone(),
+        expected_techniques: ctx.expected_techniques.clone().or_else(|| {
+            skeleton
+                .map(|s| s.expected_techniques.clone())
+                .filter(|t| !t.is_empty())
+        }),
+    };
+
     // 语义层 · 过关标准的**唯一入口**（gate-rules-migration 2026-06-05）。旧
     // `required_checks` 固定菜单 match（含 `_ => continue` 静默忽略）已删除：
     // scope / surface_coverage / min_invocations 现以 `named_check` 积木从
     // `gate_rules` 调用，简单标准（claim/finding 证据非空等）用数据积木声明。
     // 写错 op/check 名由 typed-enum 在 spec 加载期 fail-closed。空 gate_rules =
     // 仅跑上面 5 个结构层 check。
-    outcomes.extend(rule_engine::eval(deliverable, spec, &spec.gate_rules));
+    outcomes.extend(rule_engine::eval_with_context(
+        deliverable,
+        spec,
+        &spec.gate_rules,
+        &effective_ctx,
+    ));
 
     aggregate(outcomes)
 }
@@ -245,6 +284,7 @@ mod tests {
             }],
             time_budget_minutes: 10,
             min_tool_invocations: HashMap::new(),
+            expected_techniques: vec![],
         };
         let blocked = validate_stage_gate_with_skeleton(&deliverable, &spec, None, Some(&skeleton));
         assert!(!blocked.allowed);
@@ -390,57 +430,74 @@ mod tests {
         );
     }
 
-    // ── coverage matrix 样例接入（设计 2026-06-05-coverage-matrix Task 6 + #4） ──
-    // 用迁移后的 vuln_triage embedded spec（含 expected_techniques + coverage_complete
-    // + found/checked_empty 证据规则）：完整覆盖 → Pass；删一格期望技术 → coverage_complete
-    // Block；checked_empty 清空证据 → found/checked_empty 证据规则 Block（落地用户 #4）。
+    // ── coverage matrix / technique-matrix 样例接入 ───────────────────────────
+    // coverage-matrix Task 6 + #4 + vuln-triage-technique-matrix T6：用迁移后的
+    // vuln_triage embedded spec（15 expected_techniques + coverage_complete +
+    // found/checked_empty 证据规则 + coverage_denominator）：完整覆盖 → Pass；删一格
+    // 期望技术 → coverage_complete Block；checked_empty 清空证据 → 证据规则 Block；
+    // 某格 tested<total 无 rationale → coverage_denominator Block。
 
-    #[test]
-    fn vuln_triage_coverage_gate_blocks_on_gap_and_passes_when_complete() {
-        use super::super::resources::load_embedded_stage_spec;
-        use super::super::types::{
-            CoverageCell, CoverageStatus, FindingSeverity, HarnessFinding, StageClaim, StageKind,
+    /// 覆盖全部 15 类期望技术的 coverage（found/checked_empty 挂证据 + tested==total
+    /// 满足分母全覆盖；not_applicable 免分母免证据）。供下面两个集成测试复用。
+    fn full_vuln_triage_coverage(
+        asset: &str,
+        eid: golish_pentest::evidence_ledger::EvidenceAuditId,
+    ) -> Vec<super::super::types::CoverageCell> {
+        use super::super::types::{CoverageCell, CoverageStatus};
+        let ce = |tech: &str| CoverageCell {
+            asset: asset.into(),
+            technique: tech.into(),
+            status: CoverageStatus::CheckedEmpty,
+            evidence_refs: vec![eid],
+            note: Some("scanned, no finding".into()),
+            tested_units: 1,
+            total_units: 1,
+            sampling_rationale: None,
         };
-        use golish_pentest::evidence_ledger::EvidenceAuditId;
-
-        let spec = load_embedded_stage_spec(StageKind::VulnTriage).unwrap();
-        // sanity：样例确实声明了 4 类期望技术（WSTG id）。
-        assert_eq!(spec.expected_techniques.len(), 4);
-
-        let eid = EvidenceAuditId::new(1);
-        let asset = "api.example.com";
-        // 资产对 4 类 WSTG 技术都给了终态（found/checked_empty/n_a），found 挂证据。
-        let full_coverage = vec![
+        vec![
             CoverageCell {
                 asset: asset.into(),
                 technique: "WSTG-INPV-05".into(),
                 status: CoverageStatus::Found,
                 evidence_refs: vec![eid],
                 note: None,
+                tested_units: 1,
+                total_units: 1,
+                sampling_rationale: None,
             },
-            CoverageCell {
-                asset: asset.into(),
-                technique: "WSTG-INPV-01".into(),
-                status: CoverageStatus::CheckedEmpty,
-                evidence_refs: vec![eid],
-                note: Some("no reflection observed".into()),
-            },
-            CoverageCell {
-                asset: asset.into(),
-                technique: "WSTG-ATHZ-04".into(),
-                status: CoverageStatus::CheckedEmpty,
-                evidence_refs: vec![eid],
-                note: Some("object refs scoped to owner".into()),
-            },
+            ce("WSTG-INPV-01"),
+            ce("WSTG-INPV-12"),
+            ce("WSTG-INPV-18"),
             CoverageCell {
                 asset: asset.into(),
                 technique: "WSTG-INPV-19".into(),
                 status: CoverageStatus::NotApplicable,
                 evidence_refs: vec![],
                 note: Some("no outbound fetch surface".into()),
+                tested_units: 0,
+                total_units: 0,
+                sampling_rationale: None,
             },
-        ];
-        let pass_deliverable = StageDeliverable {
+            ce("WSTG-ATHZ-04"),
+            ce("WSTG-ATHZ-01"),
+            ce("WSTG-ATHN-04"),
+            ce("WSTG-ATHN-02"),
+            ce("WSTG-SESS-02"),
+            ce("WSTG-CONF-05"),
+            ce("WSTG-CRYP-03"),
+            ce("WSTG-BUSL"),
+            ce("WSTG-INFO"),
+            ce("GOLISH-NDAY"),
+        ]
+    }
+
+    /// vuln_triage 的「全过关」deliverable（1 claim + 1 finding 挂证据 + 15 格全覆盖）。
+    fn vuln_triage_pass_deliverable(
+        asset: &str,
+        eid: golish_pentest::evidence_ledger::EvidenceAuditId,
+    ) -> StageDeliverable {
+        use super::super::types::{FindingSeverity, HarnessFinding, StageClaim};
+        StageDeliverable {
             stage_id: "vuln_triage".to_string(),
             stage_run_id: Uuid::new_v4(),
             claims: vec![StageClaim {
@@ -459,8 +516,23 @@ mod tests {
                 evidence_refs: vec![eid],
             }],
             required_checks_done: vec![],
-            coverage: full_coverage,
-        };
+            coverage: full_vuln_triage_coverage(asset, eid),
+        }
+    }
+
+    #[test]
+    fn vuln_triage_coverage_gate_blocks_on_gap_and_passes_when_complete() {
+        use super::super::resources::load_embedded_stage_spec;
+        use super::super::types::{CoverageStatus, StageKind};
+        use golish_pentest::evidence_ledger::EvidenceAuditId;
+
+        let spec = load_embedded_stage_spec(StageKind::VulnTriage).unwrap();
+        // sanity：样例声明 15 类期望技术（技术矩阵 §3）。
+        assert_eq!(spec.expected_techniques.len(), 15);
+
+        let eid = EvidenceAuditId::new(1);
+        let asset = "api.example.com";
+        let pass_deliverable = vuln_triage_pass_deliverable(asset, eid);
         let pass = validate_stage_gate(&pass_deliverable, &spec, None);
         assert!(
             pass.allowed,
@@ -468,16 +540,16 @@ mod tests {
             pass.reasons
         );
 
-        // 删掉 SSRF(WSTG-INPV-19) 那格 → coverage_complete 应 Block 且 reason 含缺口。
+        // 删掉 GOLISH-NDAY 那格 → coverage_complete 应 Block 且 reason 含缺口。
         let mut incomplete = pass_deliverable.clone();
-        incomplete.coverage.pop();
+        incomplete.coverage.retain(|c| c.technique != "GOLISH-NDAY");
         let blocked = validate_stage_gate(&incomplete, &spec, None);
         assert!(!blocked.allowed);
         assert!(
             blocked
                 .reasons
                 .iter()
-                .any(|r| r.contains("coverage incomplete") && r.contains("WSTG-INPV-19")),
+                .any(|r| r.contains("coverage incomplete") && r.contains("GOLISH-NDAY")),
             "coverage_complete should fire naming the gap: {:?}",
             blocked.reasons
         );
@@ -506,6 +578,131 @@ mod tests {
                 .any(|r| r.contains("checked_empty") && r.contains("must cite evidence")),
             "checked_empty evidence rule should fire: {:?}",
             blocked_ce.reasons
+        );
+    }
+
+    #[test]
+    fn vuln_triage_denominator_blocks_partial_and_passes_when_full() {
+        use super::super::resources::load_embedded_stage_spec;
+        use super::super::types::{CoverageStatus, StageKind};
+        use golish_pentest::evidence_ledger::EvidenceAuditId;
+
+        let spec = load_embedded_stage_spec(StageKind::VulnTriage).unwrap();
+        let eid = EvidenceAuditId::new(1);
+        let asset = "api.example.com";
+
+        // 基线全覆盖（每格 tested==total）→ Pass。
+        let base = vuln_triage_pass_deliverable(asset, eid);
+        assert!(
+            validate_stage_gate(&base, &spec, None).allowed,
+            "full-denominator coverage should pass"
+        );
+
+        // 把一个 checked_empty 格改成 tested 3 / total 5000 且无 rationale →
+        // coverage_denominator 应 Block，reason 含 "3/5000"。
+        let mut partial = base.clone();
+        if let Some(c) = partial
+            .coverage
+            .iter_mut()
+            .find(|c| c.status == CoverageStatus::CheckedEmpty)
+        {
+            c.tested_units = 3;
+            c.total_units = 5000;
+            c.sampling_rationale = None;
+        }
+        let blocked = validate_stage_gate(&partial, &spec, None);
+        assert!(!blocked.allowed);
+        assert!(
+            blocked.reasons.iter().any(|r| r.contains("3/5000")),
+            "coverage_denominator should fire with N/M: {:?}",
+            blocked.reasons
+        );
+
+        // 把该格补成全覆盖（tested==total）→ 重新 Pass（embedded min_sample_ratio_pct=100）。
+        let mut fixed = partial.clone();
+        if let Some(c) = fixed
+            .coverage
+            .iter_mut()
+            .find(|c| c.tested_units == 3 && c.total_units == 5000)
+        {
+            c.tested_units = 5000;
+        }
+        assert!(
+            validate_stage_gate(&fixed, &spec, None).allowed,
+            "tested==total should clear the denominator gate"
+        );
+    }
+
+    // ── Phase 2 ③ seam（设计 §6.5）：skeleton 动态 expected_techniques 驱动 coverage_complete ──
+
+    #[test]
+    fn skeleton_expected_techniques_drive_coverage_complete() {
+        // spec.expected_techniques 空（coverage_complete 本应 no-op），但 skeleton 动态产出
+        // ["WSTG-INPV-05"]，经 validate_stage_gate_with_skeleton → GateContext 注入 →
+        // 资产缺该技术 → Block。证明 skeleton.expected_techniques 能驱动完整性闸（③ 预埋）。
+        use super::super::sprint_contract::StageSkeleton;
+        use super::super::stage_spec::load_stage_spec_from_json;
+        use super::super::types::{CoverageCell, CoverageStatus, StageClaim};
+        use golish_pentest::evidence_ledger::EvidenceAuditId;
+        use std::collections::HashMap;
+
+        // 内联 spec：只挂 coverage_complete 规则、expected_techniques 空。
+        let spec = load_stage_spec_from_json(
+            r#"{"id":"vuln_triage","kind":"vuln_triage","risk_level":"high",
+                "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+                "gate_rules":[{"op":"coverage_complete","on_fail":{"reason":"coverage incomplete"}}]}"#,
+        )
+        .unwrap();
+        let eid = EvidenceAuditId::new(1);
+        let asset = "api.example.com";
+        // 覆盖 WSTG-INPV-01（≠ 期望的 WSTG-INPV-05），非 vacuous（1 claim 挂证据）。
+        let d = StageDeliverable {
+            stage_id: "vuln_triage".to_string(),
+            stage_run_id: Uuid::new_v4(),
+            claims: vec![StageClaim {
+                kind: "vuln".into(),
+                subject: asset.into(),
+                summary: "checked".into(),
+                evidence_ids: vec![eid],
+            }],
+            evidence_refs: vec![eid],
+            skipped_checks: vec![],
+            findings: vec![],
+            required_checks_done: vec![],
+            coverage: vec![CoverageCell {
+                asset: asset.into(),
+                technique: "WSTG-INPV-01".into(),
+                status: CoverageStatus::CheckedEmpty,
+                evidence_refs: vec![eid],
+                note: Some("scanned".into()),
+                tested_units: 1,
+                total_units: 1,
+                sampling_rationale: None,
+            }],
+        };
+
+        // 无 skeleton：spec.expected_techniques 空 → coverage_complete no-op → allowed。
+        assert!(
+            validate_stage_gate(&d, &spec, None).allowed,
+            "empty expected_techniques should be a no-op"
+        );
+
+        // skeleton 动态产 ["WSTG-INPV-05"]：经 ctx 注入 → 资产缺该技术 → Block 含缺口。
+        let skeleton = StageSkeleton {
+            expected_findings: vec![],
+            time_budget_minutes: 5,
+            min_tool_invocations: HashMap::new(),
+            expected_techniques: vec!["WSTG-INPV-05".to_string()],
+        };
+        let blocked = validate_stage_gate_with_skeleton(&d, &spec, None, Some(&skeleton));
+        assert!(!blocked.allowed);
+        assert!(
+            blocked
+                .reasons
+                .iter()
+                .any(|r| r.contains("coverage incomplete") && r.contains("WSTG-INPV-05")),
+            "skeleton-driven coverage_complete should fire: {:?}",
+            blocked.reasons
         );
     }
 }

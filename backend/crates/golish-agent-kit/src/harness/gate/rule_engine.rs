@@ -53,6 +53,16 @@ pub enum GateRule {
         terminal_status: Option<Vec<CoverageStatus>>,
         on_fail: OnFail,
     },
+    /// 分母覆盖（设计 2026-06-05-vuln-triage-technique-matrix §5.3）。对 status ∈
+    /// {found, checked_empty} 的每个 coverage cell 核「面覆盖」：默认全覆盖（D6）要求
+    /// `tested_units == total_units`；抽样例外要求 `sampling_rationale` 非空且
+    /// `tested_units*100 ≥ min_sample_ratio_pct*total_units`。blocked / not_applicable
+    /// 免分母；`total_units==0` 的 found/checked_empty 记缺口（应改用 not_applicable）。
+    CoverageDenominator {
+        #[serde(default = "default_sample_ratio_pct")]
+        min_sample_ratio_pct: u8,
+        on_fail: OnFail,
+    },
 }
 
 /// `named_check` 逃生舱可调的内建 check（闭合枚举 → 写错名 serde 报错 fail-closed）。
@@ -80,7 +90,8 @@ impl GateRule {
         match self {
             GateRule::CountAtLeast { on_fail, .. }
             | GateRule::ForAll { on_fail, .. }
-            | GateRule::CoverageComplete { on_fail, .. } => on_fail.reason.clone(),
+            | GateRule::CoverageComplete { on_fail, .. }
+            | GateRule::CoverageDenominator { on_fail, .. } => on_fail.reason.clone(),
             GateRule::NamedCheck { check, on_fail } => on_fail
                 .as_ref()
                 .map(|o| o.reason.clone())
@@ -140,6 +151,22 @@ pub struct OnFail {
     pub missing_evidence_kinds: Vec<String>,
 }
 
+/// Gate 求值上下文（Phase 2 ①③ seam · 设计 2026-06-05-vuln-triage-technique-matrix §5.5 +
+/// coverage-matrix §6.5）。阶段收尾的**外层**把权威数据注入进来，gate 仍是纯函数 / DB-free：
+///   - `in_scope_assets`：① in-scope 资产全集（外层从 DB / 资产库查得）。`Some` 时
+///     `coverage_complete` 的资产维度用它（堵 agent 少报资产蒙混）；`None` 回退
+///     `deliverable.coverage` 自报集合（现行为）。
+///   - `expected_techniques`：③ 动态生成的期望技术（skeleton 按目标 / 资产产出）。`Some`
+///     时覆盖 `spec.expected_techniques`；`None` 回退 spec（现行为）。
+///
+/// 二者缺省 `None` = 与旧 [`eval`] 逐字节一致。活体注入（DB 资产 / 动态 generator）待资产库
+/// 合入 + DB §2.7（见设计 §6.5 Phase 2）；本结构是**已预埋的 seam**。
+#[derive(Debug, Clone, Default)]
+pub struct GateContext {
+    pub in_scope_assets: Option<Vec<String>>,
+    pub expected_techniques: Option<Vec<String>>,
+}
+
 /// 逐条规则求值，每条产出一个 outcome。数据 op（count_at_least/for_all）是纯函数、
 /// DB-free；`named_check` op 转发到保留的 Rust 领域 check（同样只读 deliverable(+spec
 /// 配置)，无 IO）。`spec` 供 `named_check:min_invocations` 读 `spec.min_invocations`。
@@ -148,13 +175,29 @@ pub fn eval(
     spec: &StageSpec,
     rules: &[GateRule],
 ) -> Vec<GateCheckOutcome> {
+    eval_with_context(deliverable, spec, rules, &GateContext::default())
+}
+
+/// 同 [`eval`]，但接受 [`GateContext`] 注入权威 in-scope 资产集（①）/ 动态期望技术（③）。
+/// Phase 2 seam：外层（阶段收尾）查库后注入，gate 仍纯函数。
+pub fn eval_with_context(
+    deliverable: &StageDeliverable,
+    spec: &StageSpec,
+    rules: &[GateRule],
+    ctx: &GateContext,
+) -> Vec<GateCheckOutcome> {
     rules
         .iter()
-        .map(|r| eval_one(deliverable, spec, r))
+        .map(|r| eval_one(deliverable, spec, ctx, r))
         .collect()
 }
 
-fn eval_one(d: &StageDeliverable, spec: &StageSpec, rule: &GateRule) -> GateCheckOutcome {
+fn eval_one(
+    d: &StageDeliverable,
+    spec: &StageSpec,
+    ctx: &GateContext,
+    rule: &GateRule,
+) -> GateCheckOutcome {
     match rule {
         GateRule::CountAtLeast {
             over,
@@ -192,7 +235,11 @@ fn eval_one(d: &StageDeliverable, spec: &StageSpec, rule: &GateRule) -> GateChec
         GateRule::CoverageComplete {
             terminal_status,
             on_fail,
-        } => coverage_complete(d, spec, terminal_status.as_deref(), on_fail),
+        } => coverage_complete(d, spec, ctx, terminal_status.as_deref(), on_fail),
+        GateRule::CoverageDenominator {
+            min_sample_ratio_pct,
+            on_fail,
+        } => coverage_denominator(d, *min_sample_ratio_pct, on_fail),
     }
 }
 
@@ -204,28 +251,41 @@ const ALL_TERMINAL: [CoverageStatus; 4] = [
     CoverageStatus::NotApplicable,
 ];
 
-/// `coverage_complete` 求值（纯函数，设计 §4.2）。`expected_techniques` 空 → no-op
-/// Pass；否则对（自报）资产 × 期望技术逐格核终态，缺口聚合进 Block reason（前 N 个）。
+/// `coverage_complete` 求值（纯函数，设计 §4.2 + Phase 2 ①③ seam）。期望技术取
+/// `ctx.expected_techniques`（③ 动态注入）否则 `spec.expected_techniques`（静态），空 →
+/// no-op Pass。资产维度取 `ctx.in_scope_assets`（① 权威注入）否则 deliverable.coverage
+/// 自报 distinct asset。对资产 × 期望技术逐格核终态，缺口聚合进 Block reason（前 N 个）。
 fn coverage_complete(
     d: &StageDeliverable,
     spec: &StageSpec,
+    ctx: &GateContext,
     terminal_status: Option<&[CoverageStatus]>,
     on_fail: &OnFail,
 ) -> GateCheckOutcome {
-    let techniques = &spec.expected_techniques;
+    // ③ seam：动态注入的期望技术覆盖 spec 静态值。
+    let techniques: &[String] = match ctx.expected_techniques.as_deref() {
+        Some(t) => t,
+        None => &spec.expected_techniques,
+    };
     if techniques.is_empty() {
         return GateCheckOutcome::Pass; // no-op：未声明期望技术
     }
     let terminal = terminal_status.unwrap_or(&ALL_TERMINAL);
 
-    // 资产维度 = deliverable.coverage 里出现的 distinct asset（first-seen 顺序保证
-    // 确定性输出）。MVP 自报；DB 注入 in-scope 资产全集是后续硬化（设计 §6.1/§8）。
-    let mut assets: Vec<&str> = Vec::new();
-    for cell in &d.coverage {
-        if !assets.contains(&cell.asset.as_str()) {
-            assets.push(cell.asset.as_str());
+    // ① seam：资产维度取 ctx 注入的 in-scope 资产全集（权威，堵少报蒙混）；None 回退
+    // deliverable.coverage 自报 distinct asset（first-seen 顺序保证确定性输出 = 现行为）。
+    let assets: Vec<&str> = match ctx.in_scope_assets.as_deref() {
+        Some(list) => list.iter().map(String::as_str).collect(),
+        None => {
+            let mut self_reported: Vec<&str> = Vec::new();
+            for cell in &d.coverage {
+                if !self_reported.contains(&cell.asset.as_str()) {
+                    self_reported.push(cell.asset.as_str());
+                }
+            }
+            self_reported
         }
-    }
+    };
 
     let mut gaps: Vec<String> = Vec::new();
     for asset in &assets {
@@ -260,6 +320,79 @@ fn coverage_complete(
             "{}: never attempted {}{}",
             on_fail.reason, shown, suffix
         )],
+        recovery: HarnessRecoveryActions {
+            hints: on_fail.hints.clone(),
+            repair_tool_calls: on_fail.repair_tool_calls.clone(),
+            missing_evidence_kinds: on_fail.missing_evidence_kinds.clone(),
+        },
+    }
+}
+
+/// `coverage_denominator` 的 `min_sample_ratio_pct` 缺省 = 100（D6 默认全覆盖）。
+fn default_sample_ratio_pct() -> u8 {
+    100
+}
+
+/// `coverage_denominator` 求值（纯函数，设计 §5.3）。对每个 status ∈
+/// {found, checked_empty} 的 cell 核「面覆盖」：全覆盖（tested==total）或合法抽样
+/// （有 `sampling_rationale` 且 `tested*100 ≥ min_ratio_pct*total`）才算测完；否则记缺口。
+/// blocked / not_applicable 免分母；`total_units==0` 的 found/checked_empty 记缺口
+/// （应改用 not_applicable）。无缺口 → Pass；否则 Block，缺口聚合进 reason（前 N 个）。
+fn coverage_denominator(
+    d: &StageDeliverable,
+    min_ratio_pct: u8,
+    on_fail: &OnFail,
+) -> GateCheckOutcome {
+    let mut gaps: Vec<String> = Vec::new();
+    for c in &d.coverage {
+        if !matches!(
+            c.status,
+            CoverageStatus::Found | CoverageStatus::CheckedEmpty
+        ) {
+            continue; // blocked / not_applicable 免分母
+        }
+        if c.total_units == 0 {
+            gaps.push(format!(
+                "({} × {}): total_units=0 with status {}; use not_applicable if no testable units",
+                c.asset,
+                c.technique,
+                status_to_str(c.status)
+            ));
+            continue;
+        }
+        let full = c.tested_units >= c.total_units;
+        let sampled_ok = c
+            .sampling_rationale
+            .as_ref()
+            .map(|r| !r.trim().is_empty())
+            .unwrap_or(false)
+            && (c.tested_units as u64) * 100 >= (min_ratio_pct as u64) * (c.total_units as u64);
+        if !full && !sampled_ok {
+            gaps.push(format!(
+                "({} × {}): tested {}/{} without sampling_rationale (partial — default is full coverage)",
+                c.asset, c.technique, c.tested_units, c.total_units
+            ));
+        }
+    }
+
+    if gaps.is_empty() {
+        return GateCheckOutcome::Pass;
+    }
+    // 缺口聚合进 reason（与 coverage_complete 同款：前 N 个 + "(+k more)"）。
+    const MAX_SHOWN: usize = 8;
+    let shown = gaps
+        .iter()
+        .take(MAX_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let suffix = if gaps.len() > MAX_SHOWN {
+        format!(" (+{} more)", gaps.len() - MAX_SHOWN)
+    } else {
+        String::new()
+    };
+    GateCheckOutcome::Block {
+        reasons: vec![format!("{}: {}{}", on_fail.reason, shown, suffix)],
         recovery: HarnessRecoveryActions {
             hints: on_fail.hints.clone(),
             repair_tool_calls: on_fail.repair_tool_calls.clone(),
@@ -667,6 +800,9 @@ mod tests {
             status,
             evidence_refs: refs.into_iter().map(EvidenceAuditId::new).collect(),
             note: None,
+            tested_units: 0,
+            total_units: 0,
+            sampling_rationale: None,
         }
     }
 
@@ -834,6 +970,239 @@ mod tests {
                 assert!(!reasons[0].contains("(a × idor)"), "{:?}", reasons);
             }
             GateCheckOutcome::Pass => panic!("expected Block for b×idor gap"),
+        }
+    }
+
+    // ── coverage_denominator op（设计 2026-06-05-vuln-triage-technique-matrix §5.3） ──
+
+    /// coverage cell with denominator fields（分母测试用）。
+    fn cov_cell_dn(
+        asset: &str,
+        technique: &str,
+        status: CoverageStatus,
+        refs: Vec<i64>,
+        tested: u32,
+        total: u32,
+        rationale: Option<&str>,
+    ) -> CoverageCell {
+        CoverageCell {
+            asset: asset.to_string(),
+            technique: technique.to_string(),
+            status,
+            evidence_refs: refs.into_iter().map(EvidenceAuditId::new).collect(),
+            note: None,
+            tested_units: tested,
+            total_units: total,
+            sampling_rationale: rationale.map(str::to_string),
+        }
+    }
+
+    fn denominator_rule(min_ratio: Option<u8>) -> GateRule {
+        let body = match min_ratio {
+            Some(r) => format!(
+                r#"{{ "op":"coverage_denominator","min_sample_ratio_pct":{r},
+                     "on_fail":{{"reason":"coverage below denominator"}} }}"#
+            ),
+            None => r#"{ "op":"coverage_denominator",
+                     "on_fail":{"reason":"coverage below denominator"} }"#
+                .to_string(),
+        };
+        parse(&body)
+    }
+
+    #[test]
+    fn coverage_denominator_default_ratio_is_100() {
+        match denominator_rule(None) {
+            GateRule::CoverageDenominator {
+                min_sample_ratio_pct,
+                ..
+            } => assert_eq!(min_sample_ratio_pct, 100),
+            _ => panic!("expected CoverageDenominator"),
+        }
+    }
+
+    #[test]
+    fn denominator_blocks_partial_without_rationale() {
+        // found cell tested<total 且无 rationale → Block，reason 含 tested N/M。
+        let rule = denominator_rule(None);
+        let d = deliverable_with_coverage(vec![cov_cell_dn(
+            "a",
+            "WSTG-INPV-05",
+            CoverageStatus::Found,
+            vec![1],
+            3,
+            5000,
+            None,
+        )]);
+        match eval_one(&d, &test_spec(), &GateContext::default(), &rule) {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons.iter().any(|r| r.contains("3/5000")), "{reasons:?}");
+            }
+            GateCheckOutcome::Pass => panic!("expected Block on partial coverage"),
+        }
+    }
+
+    #[test]
+    fn denominator_passes_full_and_sampled() {
+        // 全覆盖：tested==total，无需 rationale。
+        let full = deliverable_with_coverage(vec![cov_cell_dn(
+            "a",
+            "WSTG-INPV-05",
+            CoverageStatus::CheckedEmpty,
+            vec![1],
+            5000,
+            5000,
+            None,
+        )]);
+        assert!(eval_one(
+            &full,
+            &test_spec(),
+            &GateContext::default(),
+            &denominator_rule(None)
+        )
+        .is_pass());
+
+        // 抽样：80% ≥ 阈值 80 且声明了 rationale → Pass。
+        let sampled = deliverable_with_coverage(vec![cov_cell_dn(
+            "a",
+            "WSTG-INPV-05",
+            CoverageStatus::CheckedEmpty,
+            vec![1],
+            4000,
+            5000,
+            Some("long-tail low-risk endpoints sampled"),
+        )]);
+        assert!(eval_one(
+            &sampled,
+            &test_spec(),
+            &GateContext::default(),
+            &denominator_rule(Some(80))
+        )
+        .is_pass());
+    }
+
+    #[test]
+    fn denominator_sampled_below_ratio_blocks() {
+        // 有 rationale 但覆盖率不足阈值（2% < 80%）→ 仍 Block。
+        let rule = denominator_rule(Some(80));
+        let d = deliverable_with_coverage(vec![cov_cell_dn(
+            "a",
+            "WSTG-INPV-05",
+            CoverageStatus::CheckedEmpty,
+            vec![1],
+            100,
+            5000,
+            Some("only sampled a handful"),
+        )]);
+        assert!(!eval_one(&d, &test_spec(), &GateContext::default(), &rule).is_pass());
+    }
+
+    #[test]
+    fn denominator_ignores_blocked_and_not_applicable() {
+        // blocked / not_applicable 免分母（即使 tested=0/total=0）→ Pass。
+        let rule = denominator_rule(None);
+        let d = deliverable_with_coverage(vec![
+            cov_cell_dn(
+                "a",
+                "WSTG-INPV-19",
+                CoverageStatus::Blocked,
+                vec![],
+                0,
+                0,
+                None,
+            ),
+            cov_cell_dn(
+                "a",
+                "WSTG-INPV-18",
+                CoverageStatus::NotApplicable,
+                vec![],
+                0,
+                0,
+                None,
+            ),
+        ]);
+        assert!(eval_one(&d, &test_spec(), &GateContext::default(), &rule).is_pass());
+    }
+
+    #[test]
+    fn denominator_blocks_zero_total_for_checked_empty() {
+        // total_units==0 且 status=checked_empty → Block（应改用 not_applicable）。
+        let rule = denominator_rule(None);
+        let d = deliverable_with_coverage(vec![cov_cell_dn(
+            "a",
+            "WSTG-INPV-05",
+            CoverageStatus::CheckedEmpty,
+            vec![1],
+            0,
+            0,
+            None,
+        )]);
+        match eval_one(&d, &test_spec(), &GateContext::default(), &rule) {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(
+                    reasons.iter().any(|r| r.contains("total_units=0")),
+                    "{reasons:?}"
+                );
+            }
+            GateCheckOutcome::Pass => panic!("expected Block for total_units=0 checked_empty"),
+        }
+    }
+
+    // ── Phase 2 ①③ seam：GateContext 注入资产 / 期望技术（设计 §5.5 + coverage-matrix §6.5） ──
+
+    #[test]
+    fn coverage_complete_injected_in_scope_assets_govern_asset_dimension() {
+        // ① seam：注入 in-scope 资产 {a, b}；deliverable 只自报覆盖 a → b×idor 缺口 → Block。
+        // 默认 ctx 时只核自报的 a → Pass。证明资产维度可从外层权威注入（堵少报蒙混）。
+        let rule = coverage_complete_rule();
+        let spec = spec_with_expected(&["idor"]);
+        let d =
+            deliverable_with_coverage(vec![cov_cell("a", "idor", CoverageStatus::Found, vec![1])]);
+
+        // 默认 ctx：自报资产集 = {a}，a 覆盖了 idor → Pass。
+        assert!(eval_with_context(
+            &d,
+            &spec,
+            std::slice::from_ref(&rule),
+            &GateContext::default()
+        )[0]
+        .is_pass());
+
+        // 注入 {a, b}：b×idor 不在矩阵 → Block 含缺口。
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a".to_string(), "b".to_string()]),
+            expected_techniques: None,
+        };
+        match &eval_with_context(&d, &spec, &[rule], &ctx)[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons[0].contains("(b × idor)"), "{reasons:?}");
+            }
+            GateCheckOutcome::Pass => panic!("injected in-scope asset b must be required"),
+        }
+    }
+
+    #[test]
+    fn coverage_complete_ctx_expected_techniques_override_spec() {
+        // ③ seam：spec 无 expected_techniques（no-op），但 ctx 动态注入 ["idor"] →
+        // 仍核完整性 → 资产 a 缺 idor → Block。证明期望技术可由 skeleton / 外层动态注入。
+        let rule = coverage_complete_rule();
+        let spec = test_spec(); // expected_techniques 空
+        let d =
+            deliverable_with_coverage(vec![cov_cell("a", "xss", CoverageStatus::Found, vec![1])]);
+
+        // 默认 ctx：spec 空 → no-op Pass。
+        assert!(eval(&d, &spec, std::slice::from_ref(&rule))[0].is_pass());
+
+        // ctx 注入期望技术 ["idor"]：a 缺 idor → Block。
+        let ctx = GateContext {
+            in_scope_assets: None,
+            expected_techniques: Some(vec!["idor".to_string()]),
+        };
+        match &eval_with_context(&d, &spec, &[rule], &ctx)[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons[0].contains("(a × idor)"), "{reasons:?}");
+            }
+            GateCheckOutcome::Pass => panic!("ctx-injected expected technique must be enforced"),
         }
     }
 }

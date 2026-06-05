@@ -73,7 +73,14 @@ pub fn stage_charter(spec: &StageSpec) -> String {
             "\n- **Coverage (per in-scope asset)** — give EACH of these techniques a terminal status \
              for EVERY asset via the `coverage` field: {}. Per cell: found+evidence_refs / \
              checked_empty+evidence_refs / blocked|not_applicable+note. A missing (asset × technique) \
-             = not_attempted = gate BLOCK (\"checked-empty\" is NOT \"unchecked\").",
+             = not_attempted = gate BLOCK (\"checked-empty\" is NOT \"unchecked\").\n\
+             - **Coverage is measured against a DENOMINATOR** — for each found/checked_empty cell set \
+             `tested_units` and `total_units` (M = the enumerated endpoints/params/services for that \
+             asset×technique, inherited from enumeration). The default requires `tested_units == \
+             total_units` (full coverage). To legitimately sample a huge surface you MUST set \
+             `sampling_rationale` AND meet the coverage ratio; otherwise the cell counts as partial \
+             (not finished) and the gate BLOCKS. Testing 3/5000 endpoints then claiming checked_empty \
+             is false coverage. (blocked / not_applicable cells are exempt from the denominator.)",
             spec.expected_techniques.join(", ")
         )
     };
@@ -638,6 +645,10 @@ mod tests {
         assert!(charter.contains("Coverage (per in-scope asset)"));
         assert!(charter.contains("WSTG-INPV-05"));
         assert!(charter.contains("WSTG-ATHZ-04"));
+        // 分母覆盖契约（设计 2026-06-05-vuln-triage-technique-matrix §5）。
+        assert!(charter.contains("tested_units"));
+        assert!(charter.contains("total_units"));
+        assert!(charter.contains("sampling_rationale"));
 
         let without = load_stage_spec_from_json(
             r#"{"id":"scoping","kind":"scoping","risk_level":"low",

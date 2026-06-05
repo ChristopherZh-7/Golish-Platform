@@ -29,6 +29,13 @@ pub struct StageSkeleton {
     pub time_budget_minutes: u32,
     #[serde(default)]
     pub min_tool_invocations: HashMap<String, u32>,
+    /// Phase 2 ③ seam（设计 2026-06-05-vuln-triage-technique-matrix §5.5 D8 +
+    /// coverage-matrix §6.5）：按目标 / 资产**动态生成**的期望技术类，经 gate 的
+    /// `GateContext` 覆盖 `StageSpec.expected_techniques`（静态）。空 = 回退 spec 静态值
+    /// （现行为）。动态生成器（扩 `DefaultSprintContractGenerator`，输入真实目标 / 资产
+    /// 数据）待资产库到位后填充——本字段是**已预埋的 seam**。
+    #[serde(default)]
+    pub expected_techniques: Vec<String>,
 }
 
 /// Profile-level skeleton · per-stage map.
@@ -319,6 +326,7 @@ mod tests {
             expected_findings: vec![],
             time_budget_minutes: 15,
             min_tool_invocations: std::collections::HashMap::new(),
+            expected_techniques: vec![],
         };
         let text = render_contract_text(StageKind::Reporting, &skeleton, "");
         assert!(text.contains("reporting"));

@@ -51,6 +51,28 @@
       "notes": "2026-06-05 MCP-agent-4（DISPATCH off）。架构优化讨论 → 识别交付物太扁是承接复杂攻击场景瓶颈 → 设计覆盖矩阵。用户拍板完整版（资产从 DB / 挂标准 / skeleton 动态 / checked_empty 也要证据 §6.5）。分期：Phase 1（MCP-4 ca86a5ec 数据模型+积木）→ Phase 1.5（MCP-1 起草 coverage_complete/expected_techniques/submit schema/charter/vuln_triage WSTG 样例，未提交即掉线）→ 本轮 MCP-4 复验 + 补 ④（checked_empty 证据规则 + schema/charter 对齐 + 集成测试）+ 收尾提交。①资产从 DB/③skeleton 动态/②WSTG 词典仍 deferred（强依赖同事未合资产库 + §2.7）。coverage_complete 设计为 eval_with_context 注入 DB 资产集（gate 纯函数/可测）。§2.1：本条仍 blocked（Phase 2），不占 in_progress 槽位。"
     },
     {
+      "id": "vuln-triage-technique-matrix-2026-06-05",
+      "priority": 2,
+      "area": "backend/crates/golish-agent-kit/src/harness/{types.rs (CoverageCell denominator fields), gate/rule_engine.rs (CoverageDenominator op), gate/mod.rs (integration tests), task_orchestrator/prompts/mod.rs (charter)} + golish-agent-app/src/ai/harness_submit_tool.rs (coverage schema desc) + resources/harness/stages/vuln_triage.json + docs/design/2026-06-02-harness-stage-spec-reference.md",
+      "title": "vuln_triage 技术矩阵（15 类记分层 expected_techniques）+ 覆盖矩阵分母覆盖（CoverageCell.tested/total/sampling + coverage_denominator gate op）：让攻击阶段「该测什么 + 每格对着 enumeration 分母测全」成为确定性可校验过关标准，杜绝「跑 3/5000 谎称 checked_empty」假全面。",
+      "user_visible_behavior": "vuln_triage 期望技术从 4 类扩到 15 类外网 web 记分层（WSTG id + GOLISH-NDAY n-day）。CoverageCell 新增 tested_units/total_units/sampling_rationale（#[serde(default)]）。新 gate op coverage_denominator：found/checked_empty 格默认要求 tested==total（全覆盖），抽样须填 sampling_rationale 且达 min_sample_ratio_pct（默认 100），否则 partial→Block；blocked/not_applicable 免分母；total==0 记缺口。charter + submit schema 提示 agent 填分母字段。",
+      "status": "passing",
+      "blocker": "无（受影响 crate 的 nextest+clippy+fmt+json 全绿，见 verification；plan T7.2 明确纯 Rust+JSON 用此即可）。遗留：① 未跑全量 just precommit（共享工作树有并发 remove-pipeline WIP 会拖红，非本任务）；② 未 commit（用户未授权 + 工作树混入 remove-pipeline）；③ Phase 2 三项硬化（DB 资产注入 / skeleton 动态 expected / WSTG·ATT&CK 词典校验）仍 deferred，与 coverage-matrix Phase 2 同批，依赖资产库 + DB §2.7 授权。",
+      "design": "docs/design/2026-06-05-vuln-triage-technique-matrix.md（§3 15 技术类 + §5 分母覆盖 + D1-D8 全 ✅ decided）",
+      "plan": "docs/superpowers/plans/2026-06-05-vuln-triage-technique-matrix.md（executing-plans · T1-T7 全 done；T5 evidence_kinds freshness 按 YAGNI 跳过）",
+      "verification": [
+        "python3 -m json.tool resources/harness/stages/vuln_triage.json → JSON_OK",
+        "cargo nextest run -p golish-agent-kit -p golish-agent-app --status-level fail → 530 tests run: 530 passed, 0 skipped（含 T2 6 单测 + T4 charter 断言 + T6 集成测试：denominator block partial / pass full）",
+        "cargo clippy -p golish-agent-kit -p golish-agent-app --all-targets -- -D warnings → exit 0 零告警",
+        "cargo fmt -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime --check → clean",
+        "[Phase 2 ② · 2026-06-05] technique 词典 + 校验：technique_taxonomy.json(15 id) + technique_taxonomy.rs；cargo nextest -p golish-agent-kit → 493 passed, 0 skipped（含 all_embedded_expected_techniques_are_recognized fail-closed 校验）+ clippy -D 零告警 + fmt clean",
+        "[Phase 2 ①③ seam · 2026-06-05] GateContext{in_scope_assets,expected_techniques} + eval_with_context + validate_stage_gate_with_context + StageSkeleton.expected_techniques（纯加性、默认 None=旧行为）；cargo nextest -p golish-agent-kit → 496 passed, 0 skipped（+3 seam 测：注入资产→block缺口 / ctx期望技术覆盖 / skeleton 驱动）+ clippy -D 零告警 + fmt clean。活体接线（DB 资产查询 / 动态 generator）待资产库",
+        "未跑：全量 just precommit（共享树并发 remove-pipeline WIP 会拖红，非本任务范围）"
+      ],
+      "evidence": "2026-06-05 MCP-agent-4（DISPATCH off）本机实跑全绿：nextest 530/0；clippy -D warnings exit 0；fmt clean；vuln_triage.json 合法。纯加性可回滚（3 cell 字段 #[serde(default)] 缺省 0/0/None=旧行为；coverage_denominator 仅 spec 声明时生效）。未 commit、未 push。",
+      "notes": "2026-06-05 MCP-agent-4 接上一会话 T1 半成品（CoverageCell 3 字段已在盘上、验证被冷编译中止），本轮一口气做完 T2-T7 + 一次性验证。⚠ 范围外解封：并发 remove-pipeline 分支删 run_pipeline 闸却留死参数 target_registered，clippy -D 报 unused 阻塞 agent-app；按 agents-bridge.mdc（用户 finish-green 意图 > 不碰范围外，且非 §5/§2.7）做最小修 _target_registered + 删尾随空行，建议 remove-pipeline owner 彻底移除该参数 + 2 调用点。【Phase 2 ② 已接 · 2026-06-05】technique WSTG/ATT&CK 词典 + fail-closed 校验落地（technique_taxonomy.json/rs，D2「挂标准」）；Phase 2 ①③ 的 **seam 已预埋**（2026-06-05，用户「先预埋等弄好再合并」）：`GateContext`（注入 in_scope_assets/expected_techniques）+ `eval_with_context` + `validate_stage_gate_with_context` + `StageSkeleton.expected_techniques`，纯加性、默认 None=旧行为，mock 测试覆盖（496/0）。仅剩**活体接线** deferred：① 阶段收尾外层查 DB 注入 in-scope 资产；③ 扩 generator 按真实目标/资产产 expected_techniques——二者强依赖同事尚未合并的资产库 + DB §2.7 授权，到位后只改外层调用方、gate 纯函数零改。§2.1：本条 passing 不占 in_progress 槽位。"
+    },
+    {
       "id": "gate-rules-migration-2026-06-05",
       "priority": 2,
       "area": "backend/crates/golish-agent-kit/src/harness/gate/{rule_engine.rs,mod.rs,vacuous_check.rs,scope_check.rs,surface_coverage_check.rs,min_invocations_check.rs,finding_verification_check.rs} + harness/stage_spec.rs + harness/types.rs + harness/stage_harness.rs + harness/e2e_tests.rs + task_orchestrator/prompts/mod.rs + resources/harness/stages/*.json(12)",

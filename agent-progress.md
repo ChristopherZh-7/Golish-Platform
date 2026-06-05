@@ -29,6 +29,74 @@
 
 ---
 
+### 2026-06-05 · 覆盖矩阵 Phase 2 ①③ seam 预埋（GateContext 注入资产/期望技术）（MCP-agent-4 · DISPATCH off · 用户「先预埋可以吗? 等弄好再合并呗」）
+
+- **背景**：Phase 2 ② 落地后，①（coverage_complete 资产从 DB 注入）/③（skeleton 动态 expected_techniques）的**活体**仍阻塞于未合并资产库 + DB §2.7。用户要求**先预埋加性 seam**，等资产库到位再接活体。
+- **做了什么（纯加性、向后兼容、休眠 seam）**：
+  - `gate/rule_engine.rs`：新 `GateContext { in_scope_assets: Option<Vec<String>>, expected_techniques: Option<Vec<String>> }`（Default 全 None = 旧行为）+ `eval_with_context(d, spec, rules, ctx)`；`eval` 改为委托 `eval_with_context(.., &Default)`（签名不变，调用方零改）。`eval_one` / `coverage_complete` 加 ctx 参数：① 资产维度 `ctx.in_scope_assets` 优先于自报；③ 期望技术 `ctx.expected_techniques` 优先于 `spec.expected_techniques`。
+  - `sprint_contract.rs`：`StageSkeleton` 加 `#[serde(default)] expected_techniques: Vec<String>`（③ 动态生成产物的落点）。
+  - `gate/mod.rs`：新 `validate_stage_gate_with_context(d, spec, contract, skeleton, ctx)`——合并 ctx（优先）与 skeleton.expected_techniques（③ 回退）成 effective ctx，走 `eval_with_context`；`validate_stage_gate_with_skeleton` 改为委托它（默认 ctx）；`validate_stage_gate` 不变。
+  - `harness/mod.rs`：re-export `GateContext` + `validate_stage_gate_with_context`。
+  - 补 3 处 `StageSkeleton` 字面构造的 `expected_techniques: vec![]`（gate/mod、sprint_contract、contract_check 测试）。
+- **测试（mock，不依赖 DB/资产库）**：
+  - rule_engine：`coverage_complete_injected_in_scope_assets_govern_asset_dimension`（注入 {a,b}，自报只 a → b 缺口 Block；默认 ctx → Pass）+ `coverage_complete_ctx_expected_techniques_override_spec`（spec 空、ctx 注入 [idor] → 缺 idor Block）。
+  - gate/mod：`skeleton_expected_techniques_drive_coverage_complete`（spec 空 expected、skeleton 动态产 [WSTG-INPV-05] → 经 validate_stage_gate_with_skeleton 注入 → 缺该技术 Block；无 skeleton → no-op allowed）。
+- **运行过的验证（本机实跑，全绿）**：
+  - `cargo nextest run -p golish-agent-kit --status-level fail` → **496 tests run: 496 passed, 0 skipped**（+3 seam 测）。
+  - `cargo clippy -p golish-agent-kit --all-targets -- -D warnings` → exit 0 零告警；`cargo fmt -p golish-agent-kit --check` → clean。
+- **活体仍待（资产库 + DB §2.7）**：① 外层（阶段收尾）查库得 in-scope 资产全集 → 经 `validate_stage_gate_with_context` 注入 `GateContext.in_scope_assets`；③ 扩 `DefaultSprintContractGenerator` 按真实目标/资产产 `skeleton.expected_techniques`。**seam 已就位，活体接线 = 资产库到位后只改外层调用方，gate 纯函数零改**。
+- **提交记录**：**未提交**（用户「等弄好再合并」+ 工作树混 remove-pipeline）。本轮改：`rule_engine.rs`、`sprint_contract.rs`、`gate/mod.rs`、`contract_check.rs`、`harness/mod.rs`。
+- **下一步最佳动作**：资产库合入 + 用户 DB 授权后，① 在阶段收尾调用点查库注入 `GateContext.in_scope_assets`；③ 在 generator 填 `skeleton.expected_techniques`。二者均无需再动 gate。
+
+---
+
+### 2026-06-05 · 覆盖矩阵 Phase 2 ②（technique 词典 + 校验）（MCP-agent-4 · DISPATCH off · 用户「接 Phase 2 硬化」）
+
+- **背景**：上一轮做完 vuln_triage 技术矩阵 + 分母覆盖（T1-T7）后，用户要求「接 Phase 2 硬化」。Phase 2 三项（设计 coverage-matrix §6.5 + vuln-triage §7/§8）：① coverage_complete 资产维度从 **DB** 注入 in-scope 资产全集；② technique **WSTG/ATT&CK 词典 + 校验**；③ skeleton **动态生成** expected_techniques。
+- **可行性勘查（读真实代码）**：
+  - gate 调用链 `stage_harness.rs → validate_stage_gate_with_skeleton`：只拿到 **静态 profile skeleton + 可选 sprint_contract**，**无资产/目标数据流入**；`golish-agent-kit` 无 DB 访问。
+  - `sprint_contract.rs`：skeleton 是 **静态 JSON**（`assessment.sprint_skeleton.json`），`DefaultSprintContractGenerator` 仅确定性渲染，无 per-asset 动态输入。
+  - **结论**：① 需未合并的资产库（in-scope 资产来源）+ DB §2.7 授权；③ 需真实目标/资产数据喂给 generator —— **①③ 的活体价值确实外部阻塞**。**② 自洽、无外部依赖、现在可做**。
+- **本轮实现（② · D2「挂标准」落地为可校验词典）**：
+  - `resources/harness/technique_taxonomy.json`：technique id 词典（15 条：14 WSTG + GOLISH-NDAY，含 name/standard）。
+  - `harness/technique_taxonomy.rs`：`TechniqueMeta` + `load_technique_taxonomy`（跳 `$`-元字段，BTreeMap 确定性）+ 进程缓存 + `is_recognized` / `lookup` + 4 单测。
+  - **fail-closed 校验**：`all_embedded_expected_techniques_are_recognized` 遍历 12 个 embedded stage spec，断言每个 `expected_techniques` 都在词典登记 —— 杜绝「拼错 WSTG id 造出永远覆盖不了的矩阵列」。
+  - `harness/mod.rs` 挂模块 + re-export（`is_recognized_technique` / `lookup_technique` / `load_technique_taxonomy` / `TechniqueMeta`）。
+- **运行过的验证（本机实跑，全绿）**：
+  - `python3 -m json.tool resources/harness/technique_taxonomy.json` → OK。
+  - `cargo nextest run -p golish-agent-kit --status-level fail` → **493 tests run: 493 passed, 0 skipped**（含 4 新 taxonomy 测）。
+  - `cargo clippy -p golish-agent-kit --all-targets -- -D warnings` → exit 0 零告警；`cargo fmt -p golish-agent-kit --check` → clean。
+- **范围**：纯加性（新资源 + 新模块 + 测试，零运行期 gate 行为变更——gate 仍对 id 形态不敏感，校验是测试期 fail-closed 守卫，与 `all_twelve_stage_specs_load` 同款）。本轮**只动 golish-agent-kit**，故验证 scoped 到该 crate。
+- **未做（①③，外部阻塞，非推脱）**：① DB in-scope 资产注入（需资产库合入 + 用户 DB §2.7 授权；gate 侧 `eval_with_context` 种子可加性预埋，但活体不可跑）；③ skeleton 动态 expected_techniques（需真实目标/资产数据喂 generator）。二者都**强依赖同事尚未合并的资产库**。已向用户说明，等资产库到位再接。
+- **提交记录**：**未提交**（用户未授权 commit；工作树仍混 remove-pipeline WIP）。本轮新增/改：`resources/harness/technique_taxonomy.json`、`harness/technique_taxonomy.rs`、`harness/mod.rs`。
+- **下一步最佳动作**：① 资产库合入 + 用户 DB 授权后接 Phase 2 ①（`eval_with_context` 注入 in-scope 资产）；② 同批接 ③（扩 `DefaultSprintContractGenerator` 按资产/目标动态产 expected_techniques）；③ 可选：把 technique 词典接进 charter（展示 id→name）+ submit schema enum 提示。
+
+---
+
+### 2026-06-05 · vuln_triage 技术矩阵 + 分母覆盖（T1-T7 全做完 + 验证）（MCP-agent-4 · DISPATCH off · 用户「不要改一下跑一下编译，所有阶段全部搞定，再跑一次，把这个东西搞完」）
+
+- **背景**：承接 coverage-matrix（Phase 1.5 已落地）。本计划 `docs/superpowers/plans/2026-06-05-vuln-triage-technique-matrix.md`（设计同名 design，D1-D8 全 ✅）给 vuln_triage 配齐 15 类记分层技术 + 给 coverage 矩阵补「分母覆盖」（cell 对着 enumeration 分母报 tested/total，默认全覆盖、抽样需理由，杜绝「跑 3/5000 谎称 checked_empty」）。上一会话写完 T1（CoverageCell 3 字段 + serde 测）但验证被中止（冷编译 ~12min）。本轮一口气做完 T2-T7 + 一次性验证。
+- **已完成（T1-T7）**：
+  - **T1（已在盘上）** `types.rs`：`CoverageCell` 加 `tested_units / total_units / sampling_rationale`（全 `#[serde(default)]`）+ serde 往返/默认值测试。
+  - **T2** `gate/rule_engine.rs`：新 op `GateRule::CoverageDenominator { min_sample_ratio_pct(默认100), on_fail }` + `default_sample_ratio_pct()` + `coverage_denominator()` 纯函数（found/checked_empty 核分母：全覆盖 tested==total 或抽样 rationale+ratio；blocked/not_applicable 免分母；total==0 记缺口）+ `summary()`/`eval_one` 分支 + 6 单测。
+  - **T3** `resources/harness/stages/vuln_triage.json`：`expected_techniques` 4→**15** 类（WSTG id + `GOLISH-NDAY`）；`gate_rules` 追加 `coverage_denominator`（min_sample_ratio_pct=100）。
+  - **T4** `task_orchestrator/prompts/mod.rs`：`stage_charter` 的 coverage 段补「分母/全覆盖/抽样」契约（tested_units/total_units/sampling_rationale）+ 测试加 3 关键词断言。
+  - **T5** `harness_submit_tool.rs`：coverage schema 描述补 tested/total/sampling 指引（items 仍 free-object，serde default 接）。`evidence_kinds.json` freshness **跳过**（YAGNI，证据语义契约走 charter；plan 明确可跳）。
+  - **T6** `gate/mod.rs`：抽 `full_vuln_triage_coverage`/`vuln_triage_pass_deliverable` helper（15 格全覆盖）；改写既有集成测试断言 15 类 + 删 GOLISH-NDAY→coverage_complete Block + 清证据→Block；新增 `vuln_triage_denominator_blocks_partial_and_passes_when_full`（3/5000 无 rationale→Block；补全→Pass）。
+  - **T7** `docs/design/2026-06-02-harness-stage-spec-reference.md` §8 补 `coverage_denominator` op + 更新 vuln_triage 样例（15 类 + denominator 规则）；本 progress + feature_list 登记。
+- **运行过的验证（本机实跑，全绿）**：
+  - `python3 -m json.tool resources/harness/stages/vuln_triage.json` → JSON_OK。
+  - `cargo nextest run -p golish-agent-kit -p golish-agent-app --status-level fail` → **530 tests run: 530 passed, 0 skipped**（冷编译 12m38s）。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-app --all-targets -- -D warnings` → **exit 0 零告警**。
+  - `cargo fmt -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime --check` → clean。
+- **已记录证据**：`530 tests run: 530 passed, 0 skipped`；clippy `Finished` exit 0；fmt clean；vuln_triage.json 合法。纯加性可回滚（3 字段 `#[serde(default)]` 缺省 0/0/None=旧行为；`coverage_denominator` 仅 spec 声明时生效）。
+- **⚠ 范围外触碰（已 surface）**：`golish-agent-runtime/src/agentic_loop/tool_gate.rs` —— **并发的 remove-pipeline 分支**删了 `run_pipeline` 闸（`target_registered` 的唯一用处）却留下该参数 → clippy `-D warnings` 报 `unused variable`，**阻塞 golish-agent-app 的 clippy**（runtime 是其依赖）。按 `.cursor/rules/agents-bridge.mdc`「用户显式 finish-green 意图 > 不碰范围外」+ 该改动非 §5 不变量/非 §2.7 高风险，做最小解封：参数前缀 `_target_registered`（编译器建议的最小修，0 行为变更、可回滚）+ 顺手删 remove-pipeline 删测试留下的尾随空行（fmt）。**建议 remove-pipeline owner 后续直接移除该死参数 + 2 调用点**（tool_dispatch.rs:230 / textual_tool_calls.rs:106）。
+- **提交记录**：**未提交**（用户未授权 commit；且工作树混入大量并发 remove-pipeline WIP，不宜一并提交）。本任务改动文件：`harness/types.rs`(T1)、`harness/gate/rule_engine.rs`、`harness/gate/mod.rs`、`task_orchestrator/prompts/mod.rs`、`ai/harness_submit_tool.rs`、`resources/harness/stages/vuln_triage.json`、`docs/design/2026-06-02-harness-stage-spec-reference.md` + 解封触碰 `agentic_loop/tool_gate.rs`。
+- **已知风险或未解决问题**：① 未跑全量 `just precommit`（共享树有 remove-pipeline 前端/后端 WIP，跑全量会被其未完成项拖红，非本任务；plan T7.2 明确纯 Rust+JSON 用受影响 crate 的 nextest+clippy+fmt 即可）；② 资产维度仍自报、expected 仍静态、technique 仍字符串约定（Phase 2 三项硬化未做，依赖资产库 + DB 授权，与 coverage-matrix Phase 2 同批）。
+- **下一步最佳动作**：① 用户授权后，把本任务 7 个文件**单独拆出** commit（与 remove-pipeline 分开），tool_gate.rs 的解封随 remove-pipeline 走或单列；② remove-pipeline owner 处理 `target_registered` 死参数的彻底移除；③ 资产库合入后接 Phase 2（DB 资产注入 + skeleton 动态 expected + WSTG/ATT&CK 词典）。
+
+---
+
 ### 2026-06-05 · 移除 Pipeline 功能（前后端全删）· MCP-agent-3（DISPATCH off · 接 MCP-2 上下文转交 · 用户「全部搞完再跑编译，太忙了等不了」）
 
 - **背景**：承接 MCP-2 上下文转交。用户要求「把 pipeline 整体逻辑全删，无论前后端」（方案 A 全删）→「先出文档」→「按默认全删并开工」。MCP-2 已出 design/plan 文档并完成后端 Phase 0-4（但**从未 cargo 验证、未 commit**）。本轮 MCP-3 续完前端 Phase 6-8 + 收口。
