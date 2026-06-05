@@ -8,10 +8,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::super::stage_spec::StageSpec;
 use super::super::types::{
     FindingSeverity, HarnessFinding, HarnessRecoveryActions, StageClaim, StageDeliverable,
 };
-use super::GateCheckOutcome;
+use super::{min_invocations_check, scope_check, surface_coverage_check, GateCheckOutcome};
 
 /// 一条规则 = 一个顶层积木 op；求值产出一个 `GateCheckOutcome`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +34,48 @@ pub enum GateRule {
         require: Pred,
         on_fail: OnFail,
     },
+    /// 逃生舱（设计 2026-06-05-gate-rules-migration §5.1）：按名调用保留下来的
+    /// Rust 领域 check。仅 3 个固定值（非通用扩展点）；某 check 被数据化后从枚举删除。
+    /// `on_fail=Some` 时，仅当被调 check 返回 Block 才用它覆盖 reason/recovery。
+    NamedCheck {
+        check: NamedCheckKind,
+        #[serde(default)]
+        on_fail: Option<OnFail>,
+    },
+}
+
+/// `named_check` 逃生舱可调的内建 check（闭合枚举 → 写错名 serde 报错 fail-closed）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NamedCheckKind {
+    Scope,
+    SurfaceCoverage,
+    MinInvocations,
+}
+
+impl NamedCheckKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Scope => "scope",
+            Self::SurfaceCoverage => "surface_coverage",
+            Self::MinInvocations => "min_invocations",
+        }
+    }
+}
+
+impl GateRule {
+    /// agent 面向的 stage charter 用的简短描述（替代旧 `required_checks` 名字列表）。
+    pub fn summary(&self) -> String {
+        match self {
+            GateRule::CountAtLeast { on_fail, .. } | GateRule::ForAll { on_fail, .. } => {
+                on_fail.reason.clone()
+            }
+            GateRule::NamedCheck { check, on_fail } => on_fail
+                .as_ref()
+                .map(|o| o.reason.clone())
+                .unwrap_or_else(|| format!("{} check", check.as_str())),
+        }
+    }
 }
 
 /// MVP 只含有可寻址字段的两个集合（evidence_refs / skipped_checks 的计数已被
@@ -80,12 +123,21 @@ pub struct OnFail {
     pub missing_evidence_kinds: Vec<String>,
 }
 
-/// 纯函数：逐条规则求值，每条产出一个 outcome。无 IO / 无 DB / 确定性。
-pub fn eval(deliverable: &StageDeliverable, rules: &[GateRule]) -> Vec<GateCheckOutcome> {
-    rules.iter().map(|r| eval_one(deliverable, r)).collect()
+/// 逐条规则求值，每条产出一个 outcome。数据 op（count_at_least/for_all）是纯函数、
+/// DB-free；`named_check` op 转发到保留的 Rust 领域 check（同样只读 deliverable(+spec
+/// 配置)，无 IO）。`spec` 供 `named_check:min_invocations` 读 `spec.min_invocations`。
+pub fn eval(
+    deliverable: &StageDeliverable,
+    spec: &StageSpec,
+    rules: &[GateRule],
+) -> Vec<GateCheckOutcome> {
+    rules
+        .iter()
+        .map(|r| eval_one(deliverable, spec, r))
+        .collect()
 }
 
-fn eval_one(d: &StageDeliverable, rule: &GateRule) -> GateCheckOutcome {
+fn eval_one(d: &StageDeliverable, spec: &StageSpec, rule: &GateRule) -> GateCheckOutcome {
     match rule {
         GateRule::CountAtLeast {
             over,
@@ -107,6 +159,19 @@ fn eval_one(d: &StageDeliverable, rule: &GateRule) -> GateCheckOutcome {
             Ok(false) => block_from(on_fail),
             Err(e) => block_config_err(e),
         },
+        GateRule::NamedCheck { check, on_fail } => {
+            let base = match check {
+                NamedCheckKind::Scope => scope_check::run(d),
+                NamedCheckKind::SurfaceCoverage => surface_coverage_check::run(d),
+                NamedCheckKind::MinInvocations => min_invocations_check::run(d, spec),
+            };
+            match (&base, on_fail) {
+                // 仅在该 check 真的 Block 且作者提供了 on_fail 时覆盖其 reason/recovery；
+                // 否则原样沿用 check 自身的结论与 recovery。
+                (GateCheckOutcome::Block { .. }, Some(of)) => block_from(of),
+                _ => base,
+            }
+        }
     }
 }
 
@@ -311,6 +376,16 @@ mod tests {
         serde_json::from_str(json).expect("parse")
     }
 
+    /// Minimal spec for data-op tests (they ignore `spec`); named_check tests
+    /// that need `spec.min_invocations` build their own.
+    fn test_spec() -> StageSpec {
+        crate::harness::stage_spec::load_stage_spec_from_json(
+            r#"{"id":"verification","kind":"verification","risk_level":"critical",
+                "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate"}"#,
+        )
+        .expect("minimal spec parses")
+    }
+
     #[test]
     fn count_at_least_passes_when_enough() {
         let rule = parse(
@@ -322,7 +397,7 @@ mod tests {
             vec![finding("subdomain", FindingSeverity::Info, vec![1])],
             vec![],
         );
-        assert!(eval(&d, &[rule])[0].is_pass());
+        assert!(eval(&d, &test_spec(), &[rule])[0].is_pass());
     }
 
     #[test]
@@ -336,7 +411,7 @@ mod tests {
             vec![finding("http_service", FindingSeverity::Info, vec![1])],
             vec![],
         );
-        match &eval(&d, &[rule])[0] {
+        match &eval(&d, &test_spec(), &[rule])[0] {
             GateCheckOutcome::Block { reasons, .. } => assert_eq!(reasons[0], "need subdomain"),
             GateCheckOutcome::Pass => panic!("expected Block"),
         }
@@ -355,14 +430,14 @@ mod tests {
             vec![finding("rce", FindingSeverity::Critical, vec![])],
             vec![],
         );
-        match &eval(&blocked, std::slice::from_ref(&rule))[0] {
+        match &eval(&blocked, &test_spec(), std::slice::from_ref(&rule))[0] {
             GateCheckOutcome::Block { recovery, .. } => {
                 assert!(recovery.missing_evidence_kinds.contains(&"poc".to_string()))
             }
             GateCheckOutcome::Pass => panic!("expected Block"),
         }
         let ok = deliverable(vec![finding("info", FindingSeverity::Low, vec![])], vec![]);
-        assert!(eval(&ok, &[rule])[0].is_pass());
+        assert!(eval(&ok, &test_spec(), &[rule])[0].is_pass());
     }
 
     #[test]
@@ -372,7 +447,7 @@ mod tests {
                  "require":{"pred":"non_empty","field":"evidence_refs"},
                  "on_fail":{"reason":"x"} }"#,
         );
-        assert!(eval(&deliverable(vec![], vec![]), &[rule])[0].is_pass());
+        assert!(eval(&deliverable(vec![], vec![]), &test_spec(), &[rule])[0].is_pass());
     }
 
     #[test]
@@ -392,9 +467,74 @@ mod tests {
                 evidence_ids: vec![EvidenceAuditId::new(1)],
             }],
         );
-        match &eval(&d, &[rule])[0] {
+        match &eval(&d, &test_spec(), &[rule])[0] {
             GateCheckOutcome::Block { reasons, .. } => assert!(reasons[0].contains("config error")),
             GateCheckOutcome::Pass => panic!("expected config-error Block"),
         }
+    }
+
+    // ── named_check 逃生舱（设计 2026-06-05-gate-rules-migration） ─────────────
+
+    #[test]
+    fn parses_named_check_rule() {
+        let rule: GateRule =
+            serde_json::from_str(r#"{ "op":"named_check","check":"surface_coverage" }"#)
+                .expect("parse");
+        assert!(matches!(
+            rule,
+            GateRule::NamedCheck {
+                check: NamedCheckKind::SurfaceCoverage,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn unknown_named_check_fails_closed() {
+        assert!(
+            serde_json::from_str::<GateRule>(r#"{ "op":"named_check","check":"bogus" }"#).is_err()
+        );
+    }
+
+    #[test]
+    fn named_check_scope_blocks_on_claim_without_evidence() {
+        // 经 named_check 转发到 scope_check：claim 缺 evidence_ids → Block。
+        let rule = parse(r#"{ "op":"named_check","check":"scope" }"#);
+        let d = deliverable(
+            vec![],
+            vec![StageClaim {
+                kind: "http_service".into(),
+                subject: "api.example.com".into(),
+                summary: "200".into(),
+                evidence_ids: vec![],
+            }],
+        );
+        assert!(!eval(&d, &test_spec(), &[rule])[0].is_pass());
+    }
+
+    #[test]
+    fn named_check_surface_coverage_blocks_on_missing_jsapi() {
+        // 经 named_check 转发到 surface_coverage_check：只有 Surface 无 JsApi → Block。
+        let rule = parse(r#"{ "op":"named_check","check":"surface_coverage" }"#);
+        let d = deliverable(
+            vec![finding("http_service", FindingSeverity::Info, vec![1])],
+            vec![],
+        );
+        assert!(!eval(&d, &test_spec(), &[rule])[0].is_pass());
+    }
+
+    #[test]
+    fn named_check_min_invocations_uses_spec_and_blocks_when_tool_absent() {
+        // 经 named_check 转发到 min_invocations_check，读 spec.min_invocations；
+        // required_checks_done 为空 → Block。
+        let spec = crate::harness::stage_spec::load_stage_spec_from_json(
+            r#"{"id":"enumeration","kind":"enumeration","risk_level":"medium",
+                "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+                "min_invocations":{"dns_resolve":1}}"#,
+        )
+        .unwrap();
+        let rule = parse(r#"{ "op":"named_check","check":"min_invocations" }"#);
+        let d = deliverable(vec![], vec![]);
+        assert!(!eval(&d, &spec, &[rule])[0].is_pass());
     }
 }

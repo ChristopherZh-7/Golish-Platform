@@ -144,11 +144,14 @@ gate 永远跑 **4 个结构性 check**（`schema` / `contract` / `vacuous` / `f
 
 ## 8. `gate_rules` DSL 速查（2026-06-05）
 
-声明式过关标准，与 `required_checks` 并存；缺省空数组（不写则行为不变）。引擎：`gate/rule_engine.rs::eval`（纯函数、DB-free、确定性）。完整设计见 `docs/design/2026-06-05-gate-rule-engine.md`。
+> **2026-06-05 迁移**：旧 `required_checks` 固定菜单**已删除**，`gate_rules` 现为过关标准的**唯一入口**（设计 `docs/design/2026-06-05-gate-rules-migration.md`）。`StageSpec` 不再有 `required_checks` 字段。
+
+声明式过关标准；缺省空数组 = 仅跑 5 个结构 check。引擎：`gate/rule_engine.rs::eval(deliverable, spec, rules)`（数据 op 纯函数、DB-free、确定性；named_check 转发到保留的 Rust 领域 check）。
 
 **顶层 op**
 - `count_at_least`：`{ op, over, where?, min, on_fail }` — 满足 `where` 的元素 ≥ `min`。
 - `for_all`：`{ op, over, where?, require, on_fail }` — 满足 `where` 的每个元素都满足 `require`（空集合为真）。
+- `named_check`：`{ op:"named_check", check, on_fail? }` — 按名调用保留的 Rust 领域 check。`check` ∈ `scope` | `surface_coverage` | `min_invocations`（闭合枚举，写错 fail-closed）。`on_fail` 可选，仅在被调 check 返回 Block 时覆盖其 reason/recovery。这是逃生舱（领域逻辑无法纯数据化时用），不是通用扩展点。
 
 **over**：`claims` | `findings`
 

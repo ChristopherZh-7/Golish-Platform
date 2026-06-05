@@ -11,6 +11,25 @@
   ],
   "features": [
     {
+      "id": "gate-rules-migration-2026-06-05",
+      "priority": 2,
+      "area": "backend/crates/golish-agent-kit/src/harness/gate/{rule_engine.rs,mod.rs,vacuous_check.rs,scope_check.rs,surface_coverage_check.rs,min_invocations_check.rs,finding_verification_check.rs} + harness/stage_spec.rs + harness/types.rs + harness/stage_harness.rs + harness/e2e_tests.rs + task_orchestrator/prompts/mod.rs + resources/harness/stages/*.json(12)",
+      "title": "Gate 彻底数据驱动化（B）：删除 required_checks 固定菜单 + _ => continue 静默忽略，gate_rules 成为过关标准唯一入口；新增 named_check 逃生舱承接 scope/surface_coverage/min_invocations 领域 check",
+      "user_visible_behavior": "stage 过关标准只在 stage JSON 的 gate_rules 里声明：简单标准（claim/finding 证据非空）用数据积木 for_all/count_at_least，领域/遗留逻辑（surface_coverage、min_invocations、scope）用 named_check 按名调用。写错 op/check 名在 spec 加载期 fail-closed 报错（不再静默忽略）。gate 的 PASS/BLOCK 决策与迁移前逐字节一致；仅 scope 缺证据的 BLOCK 文案由 scope_check 逐元素消息改为声明式规则 reason。StageSpec 不再有 required_checks 字段。",
+      "status": "passing",
+      "design": "docs/design/2026-06-05-gate-rules-migration.md（承接 2026-06-05-gate-rule-engine.md；§5 named_check + scope 数据化、§6 12-spec 迁移表、§7 行为零变更论证、§8 删除步骤+回滚、§12 实现补遗：vacuous_check/stage_charter 额外消费者）；DSL 速查 docs/design/2026-06-02-harness-stage-spec-reference.md §8",
+      "plan": "docs/superpowers/plans/2026-06-05-gate-rules-migration.md（writing-plans · Task 1-7 · TDD）",
+      "verification": [
+        "cargo nextest run -p golish-agent-kit -p golish-agent-app --no-fail-fast → 509 tests run: 509 passed, 0 skipped（exit 0；含 named_check 4 单测、migrated_eas_scope/migrated_enumeration_min_invocations 等价性、all_twelve_stage_specs_load、e2e gate 全过）",
+        "cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime --all-targets -- -D warnings → exit 0 零告警",
+        "cargo fmt --check → exit 0 clean",
+        "python3 -m json.tool resources/harness/stages/*.json（12 份）→ 全 OK",
+        "全量 just precommit（未跑·纯 Rust 无前端面，workspace 重编在本特性面外）"
+      ],
+      "evidence": "2026-06-05 本机实跑：nextest 509/0；clippy -D warnings 三 crate 零告警；fmt clean；12 spec JSON 校验通过。删 required_checks 字段后全仓无残留读取点（仅注释/字符串，已更新）。决策行为零变更（§7 论证 + 2 条等价性测试），唯 scope BLOCK 文案变更已同步更新对应断言。未跑全量 just precommit（纯 Rust 无前端面）。",
+      "notes": "2026-06-05 MCP-agent-4（DISPATCH off）接 MCP-3 上下文。用户拍板 B（彻底删旧）→「一口气全部搞定」。先设计+计划过目获批再实现（gate 核心链路 + 删代码，AGENTS.md §2.5/§2.7）。关键实现：named_check typed-enum 逃生舱（fail-closed）+ eval 加 spec 入参转发领域 check；scope 数据化为 for_all non_empty（scoping/reporting 豁免=空）；调查发现并迁移两个额外 required_checks 消费者（vacuous_check FakePattern 外门改 min_invocations、stage_charter 提示改 gate_rules summary），行为保持。§2.1：本条 passing，不占 in_progress 槽位（当前 in_progress = arch-crate-per-service-split）。前置 gate-rule-engine-2026-06-05（passing）被本条取代其『与 required_checks 并存』表述。"
+    },
+    {
       "id": "gate-rule-engine-2026-06-05",
       "priority": 2,
       "area": "backend/crates/golish-agent-kit/src/harness/gate/{rule_engine.rs(new),mod.rs,finding_verification_check.rs} + golish-agent-kit/src/harness/stage_spec.rs + golish-agent-kit/src/task_orchestrator/prompts/mod.rs + golish-agent-app/src/ai/harness_submit_tool.rs + resources/harness/stages/verification.json + docs/design/2026-06-02-harness-stage-spec-reference.md",

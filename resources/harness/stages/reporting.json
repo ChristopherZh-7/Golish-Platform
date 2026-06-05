@@ -14,9 +14,8 @@
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
 
-  "required_checks": [
-    "evidence_non_empty"
-  ],
+  "$comment_gate_rules": "reporting synthesizes from inherited evidence; its only old required_check (evidence_non_empty) was a no-op covered by structural checks, so no semantic gate_rules.",
+  "gate_rules": [],
 
   "min_invocations": {},
 

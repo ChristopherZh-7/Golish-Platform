@@ -3,13 +3,12 @@
 //! Phase 1c.5 完整版本:
 //!   (a) NoToolInvocation: deliverable 完全空 (no claim, no finding,
 //!       no skipped_check)
-//!   (b) FakePattern: stage_spec.required_checks 中每个 check 没有对应
-//!       evidence (deliverable.evidence_refs 长度 < min_invocations sum)
+//!   (b) FakePattern: deliverable.evidence_refs 长度 < sum(spec.min_invocations)
 //!   (c) SkipPattern: Other-type skip > spec.max_other_skips 或 evidence_ref
 //!       不在 deliverable.evidence_refs (来自 §8.3 检查)
 //!
-//! 关键: detector 以 `StageSpec.required_checks` 为准绳, **不**读
-//! `deliverable.required_checks_done` (agent 可清空该字段绕过) (Doc 3 §8.3).
+//! 关键: detector 以 spec-side 字段 (`min_invocations` / `max_other_skips`) 为准绳,
+//! **不**读 `deliverable.required_checks_done` (agent 可清空该字段绕过) (Doc 3 §8.3)。
 
 use golish_pentest::evidence_ledger::SkipReason;
 
@@ -31,15 +30,18 @@ pub fn run(deliverable: &ExternalAttackSurfaceDeliverable, spec: &StageSpec) -> 
         missing_kinds.push("http_probe".to_string());
     }
 
-    // (b) FakePattern · stage_spec.required_checks 中每个 check 验 evidence_refs 数量
-    //     Doc 3 §8.3 简化版: total evidence_refs 必须 >= sum(min_invocations).
+    // (b) FakePattern · 简化版: total evidence_refs 必须 >= sum(min_invocations).
     //     真正每个 check 的 tool_call_count 推 Phase 2 接 EvidenceLedger.
-    if !spec.required_checks.is_empty() {
+    //     gate-rules-migration (2026-06-05): 原以 `required_checks` 非空为外门，
+    //     等价改为 `min_invocations` 非空——对全 12 spec 行为逐字节一致（凡有
+    //     min_invocations 的 stage 旧时 required_checks 也非空），且 `required_checks`
+    //     字段已删除。
+    if !spec.min_invocations.is_empty() {
         let required_total: u32 = spec.min_invocations.values().sum();
         let actual_total = deliverable.evidence_refs.len() as u32;
         if required_total > 0 && actual_total < required_total {
             reasons.push(format!(
-                "FakePattern: total evidence_refs ({}) below required_checks min_invocations sum ({})",
+                "FakePattern: total evidence_refs ({}) below min_invocations sum ({})",
                 actual_total, required_total
             ));
             // missing_kinds 提示从 min_invocations.keys() 来

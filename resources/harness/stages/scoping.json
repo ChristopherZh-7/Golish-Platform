@@ -14,9 +14,8 @@
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
 
-  "required_checks": [
-    "scope_status_present"
-  ],
+  "$comment_gate_rules": "scoping is L0 authz-confirmation (no probing); its scope claim needs no tool evidence, so no evidence gate_rules (matches the old scope_check scoping exemption).",
+  "gate_rules": [],
 
   "min_invocations": {},
 

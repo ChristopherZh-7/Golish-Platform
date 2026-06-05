@@ -17,8 +17,6 @@ pub mod scope_check;
 pub mod surface_coverage_check;
 pub mod vacuous_check;
 
-use std::collections::HashSet;
-
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -84,13 +82,13 @@ impl GateResult {
 /// Doc 3 §8.1 通用 gate 入口 (Phase B) · 按 StageSpec 跑结构性 check + spec
 /// 选择的语义 check, 适用任意 stage.
 ///
-/// **结构性 check** (schema / contract / vacuous / freshness) 永远跑: 与 stage
-/// 语义无关, 只看 deliverable 形状 / 契约 / 时效.
+/// **结构性 check** (schema / contract / vacuous / freshness / finding_verification)
+/// 永远跑: 与 stage 语义无关, 只看 deliverable 形状 / 契约 / 时效.
 ///
-/// **语义 check** (scope / surface_coverage / min_invocations) 由
-/// `spec.required_checks` 命名选跑; 多个 required_checks 名映射到同一 check 时
-/// 去重只跑一次. `evidence_non_empty` / `unchecked_distinct_from_checked_empty`
-/// 已被 schema / vacuous 覆盖, 不单独再跑.
+/// **语义层** 由 `spec.gate_rules` 单一声明（gate-rules-migration 2026-06-05）:
+/// 简单标准用数据积木 (count_at_least / for_all), 领域/遗留逻辑 (scope /
+/// surface_coverage / min_invocations) 用 `named_check` 积木按名调用。旧
+/// `required_checks` 固定菜单已删除。
 pub fn validate_stage_gate(
     deliverable: &StageDeliverable,
     spec: &StageSpec,
@@ -121,28 +119,13 @@ pub fn validate_stage_gate_with_skeleton(
         finding_verification_check::run(deliverable, spec),
     ];
 
-    let mut ran: HashSet<&'static str> = HashSet::new();
-    for name in &spec.required_checks {
-        let check_id = match name.as_str() {
-            "scope_status_present" | "out_of_scope_targets_excluded" => "scope",
-            "surface_workbench_coverage" => "surface_coverage",
-            "min_tool_invocations_per_check" => "min_invocations",
-            _ => continue,
-        };
-        if !ran.insert(check_id) {
-            continue;
-        }
-        outcomes.push(match check_id {
-            "scope" => scope_check::run(deliverable),
-            "surface_coverage" => surface_coverage_check::run(deliverable),
-            "min_invocations" => min_invocations_check::run(deliverable, spec),
-            _ => unreachable!(),
-        });
-    }
-
-    // P2 · 数据驱动 gate 规则（设计 2026-06-05）· 声明式 `spec.gate_rules` 附加层,
-    // 与上面的内建语义 check 并存. 空 gate_rules 时此行为 no-op (向后兼容).
-    outcomes.extend(rule_engine::eval(deliverable, &spec.gate_rules));
+    // 语义层 · 过关标准的**唯一入口**（gate-rules-migration 2026-06-05）。旧
+    // `required_checks` 固定菜单 match（含 `_ => continue` 静默忽略）已删除：
+    // scope / surface_coverage / min_invocations 现以 `named_check` 积木从
+    // `gate_rules` 调用，简单标准（claim/finding 证据非空等）用数据积木声明。
+    // 写错 op/check 名由 typed-enum 在 spec 加载期 fail-closed。空 gate_rules =
+    // 仅跑上面 5 个结构层 check。
+    outcomes.extend(rule_engine::eval(deliverable, spec, &spec.gate_rules));
 
     aggregate(outcomes)
 }
@@ -328,5 +311,78 @@ mod tests {
         let blocked = validate_stage_gate(&bad, &spec, None);
         assert!(!blocked.allowed);
         assert!(blocked.reasons.iter().any(|r| r.contains("GATE_RULE")));
+    }
+
+    // ── gate-rules-migration (2026-06-05) 等价性回归 ──────────────────────────
+    // 证明删 required_checks 后，迁移到 gate_rules 的内嵌 spec 仍接住旧 scope /
+    // min_invocations 语义（行为零变更，设计 §7）。
+
+    #[test]
+    fn migrated_eas_scope_rule_blocks_claim_without_evidence() {
+        use super::super::resources::load_embedded_stage_spec;
+        use super::super::types::{StageClaim, StageKind};
+
+        let spec = load_embedded_stage_spec(StageKind::ExternalAttackSurface).unwrap();
+        // 一个缺 evidence_ids 的 claim → 迁移后的 scope×2 数据规则应 Block。
+        let d = StageDeliverable {
+            stage_id: "external_attack_surface".to_string(),
+            stage_run_id: Uuid::new_v4(),
+            claims: vec![StageClaim {
+                kind: "http_service".to_string(),
+                subject: "api.example.com".to_string(),
+                summary: "200".to_string(),
+                evidence_ids: vec![],
+            }],
+            evidence_refs: vec![],
+            skipped_checks: vec![],
+            findings: vec![],
+            required_checks_done: vec![],
+        };
+        let result = validate_stage_gate(&d, &spec, None);
+        assert!(!result.allowed);
+        assert!(
+            result
+                .reasons
+                .iter()
+                .any(|r| r.contains("must cite evidence")),
+            "scope×2 gate_rule should fire: {:?}",
+            result.reasons
+        );
+    }
+
+    #[test]
+    fn migrated_enumeration_named_min_invocations_blocks_when_tool_absent() {
+        use super::super::resources::load_embedded_stage_spec;
+        use super::super::types::{FindingSeverity, HarnessFinding, StageKind};
+        use golish_pentest::evidence_ledger::EvidenceAuditId;
+
+        let spec = load_embedded_stage_spec(StageKind::Enumeration).unwrap();
+        // 非 vacuous + 证据足够过 scope/vacuous，但 required_checks_done 不含 http_probe
+        // → 迁移后的 named_check:min_invocations 应 Block（reason 含 min tool invocations）。
+        let d = StageDeliverable {
+            stage_id: "enumeration".to_string(),
+            stage_run_id: Uuid::new_v4(),
+            claims: vec![],
+            evidence_refs: vec![EvidenceAuditId::new(1)],
+            skipped_checks: vec![],
+            findings: vec![HarnessFinding {
+                finding_id: Uuid::new_v4(),
+                kind: "open_port".to_string(),
+                subject: "api.example.com:443".to_string(),
+                severity: FindingSeverity::Info,
+                evidence_refs: vec![EvidenceAuditId::new(1)],
+            }],
+            required_checks_done: vec![],
+        };
+        let result = validate_stage_gate(&d, &spec, None);
+        assert!(!result.allowed);
+        assert!(
+            result
+                .reasons
+                .iter()
+                .any(|r| r.contains("min tool invocations")),
+            "named_check:min_invocations should fire: {:?}",
+            result.reasons
+        );
     }
 }

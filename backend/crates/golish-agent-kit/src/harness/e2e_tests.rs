@@ -144,14 +144,16 @@ fn e2e_vacuous_deliverable_is_blocked_with_recovery() {
 fn e2e_finding_missing_evidence_refs_blocks_via_scope_and_freshness() {
     let harness = build_harness();
     let mut d = happy_deliverable(Uuid::new_v4());
-    // 故意把第 0 个 finding 的 evidence_refs 清空 → scope_check 拦
+    // 故意把第 0 个 finding 的 evidence_refs 清空 → 迁移后的 scope×2 数据规则拦
+    // (gate-rules-migration 2026-06-05: 决策不变 = 仍 Block；reason 文案由旧 scope_check
+    //  的 "...has empty evidence_refs" 改为声明式规则的 "every finding must cite evidence")。
     d.findings[0].evidence_refs.clear();
     let decision = harness.validate_gate(&d, None);
     assert!(!decision.allowed);
     assert!(decision
         .reasons
         .iter()
-        .any(|r| r.contains("empty evidence_refs")));
+        .any(|r| r.contains("must cite evidence")));
 }
 
 #[test]

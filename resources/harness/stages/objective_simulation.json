@@ -14,10 +14,19 @@
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
 
-  "required_checks": [
-    "scope_status_present",
-    "evidence_non_empty",
-    "out_of_scope_targets_excluded"
+  "gate_rules": [
+    {
+      "op": "for_all",
+      "over": "claims",
+      "require": { "pred": "non_empty", "field": "evidence_ids" },
+      "on_fail": { "reason": "every claim must cite evidence", "hints": ["add evidence to each claim via prior tool calls"] }
+    },
+    {
+      "op": "for_all",
+      "over": "findings",
+      "require": { "pred": "non_empty", "field": "evidence_refs" },
+      "on_fail": { "reason": "every finding must cite evidence", "hints": ["add evidence to each finding via prior tool calls"] }
+    }
   ],
 
   "min_invocations": {},

@@ -51,10 +51,16 @@ pub fn stage_charter(spec: &StageSpec) -> String {
     } else {
         spec.allowed_tool_types.join(", ")
     };
-    let checks = if spec.required_checks.is_empty() {
+    // gate-rules-migration (2026-06-05): pass-criteria moved from `required_checks`
+    // (deleted) to `gate_rules`; surface each rule's short summary to the agent.
+    let checks = if spec.gate_rules.is_empty() {
         "(none)".to_string()
     } else {
-        spec.required_checks.join(", ")
+        spec.gate_rules
+            .iter()
+            .map(|r| r.summary())
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     // Spec-derived minimum tool invocations: the gate's vacuous_check +
     // min_invocations_check are deterministic, so surface the exact requirement

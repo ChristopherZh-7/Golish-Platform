@@ -166,7 +166,9 @@ pub struct StageDeliverable {
     #[serde(default)]
     pub skipped_checks: Vec<SkippedCheckRecord>,
     pub findings: Vec<HarnessFinding>,
-    /// **app-level hint**, gate 用 StageSpec.required_checks 为准.
+    /// **app-level hint**; gate 以 spec 侧字段为准（min_invocations 等经 gate_rules
+    /// 的 named_check 强制），不信此 agent 可清空的字段。min_invocations_check 读它做
+    /// MVP 近似匹配（见该 check）。
     #[serde(default)]
     pub required_checks_done: Vec<String>,
 }

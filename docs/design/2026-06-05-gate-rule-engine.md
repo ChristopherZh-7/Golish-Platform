@@ -5,6 +5,8 @@
 > 关联：`gate/mod.rs::validate_stage_gate_with_skeleton`（调度入口）、`gate/finding_verification_check.rs`（已有的「配置驱动」原型，本设计的范本）、`stage_spec.rs::StageSpec`（加 `gate_rules` 字段）、`resources/harness/stages/*.json`（声明规则）、`types.rs::StageDeliverable`（规则求值的输入 contract）。
 >
 > 本文档是「第 2 步」设计；「第 1 步」（未知 `required_checks` fail-closed + 故意空跑白名单）是独立的便宜安全网，见 §9。
+>
+> **后续（2026-06-05 · B 彻底版）**：用户选择彻底迁移——`required_checks` 固定菜单已被 `docs/design/2026-06-05-gate-rules-migration.md` **整个删除**，`gate_rules` 成为过关标准唯一入口（新增 `named_check` 逃生舱承接 scope/surface_coverage/min_invocations）。本文中「与 `required_checks` 并存 / 渐进迁移」的表述已被该迁移取代。
 
 ---
 

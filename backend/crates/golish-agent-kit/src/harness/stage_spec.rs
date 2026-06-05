@@ -62,8 +62,8 @@ pub struct StageSpec {
     pub deliverable_schema: String,
     pub gate_validator: String,
 
-    #[serde(default)]
-    pub required_checks: Vec<String>,
+    // gate-rules-migration (2026-06-05): 旧 `required_checks: Vec<String>` 固定菜单
+    // 已删除；过关标准统一由下方 `gate_rules` 声明（数据积木 + named_check 逃生舱）。
     #[serde(default)]
     pub min_invocations: HashMap<String, u32>,
 
@@ -161,9 +161,11 @@ mod tests {
     }
 
     #[test]
-    fn external_attack_surface_required_checks_count() {
+    fn external_attack_surface_gate_rules_count() {
+        // gate-rules-migration: eas 过关标准 = scope×2 + named_check:surface_coverage
+        // + named_check:min_invocations = 4 条 gate_rules（取代旧 6 个 required_checks）。
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
-        assert_eq!(s.required_checks.len(), 6);
+        assert_eq!(s.gate_rules.len(), 4);
     }
 
     #[test]
@@ -201,8 +203,11 @@ mod tests {
 
     #[test]
     fn gate_rules_default_empty_and_parses() {
-        // 缺省：未写 gate_rules 的 spec 解出空数组（向后兼容）。
-        let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
+        // 缺省：未写 gate_rules 的 spec 解出空数组（向后兼容）。用最小内联 spec
+        // （eas.json 现已迁移到 gate_rules，不再是“无 gate_rules”的样例）。
+        let minimal = r#"{"id":"scoping","kind":"scoping","risk_level":"low",
+            "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate"}"#;
+        let s = load_stage_spec_from_json(minimal).expect("parse");
         assert!(s.gate_rules.is_empty());
 
         // 能解析内联 gate_rules。

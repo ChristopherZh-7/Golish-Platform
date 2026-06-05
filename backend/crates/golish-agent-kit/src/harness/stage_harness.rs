@@ -72,7 +72,7 @@ impl StageHarness {
 
     /// 验证 deliverable 是否通过 gate.
     ///
-    /// 调用通用 `validate_stage_gate` (按 self.stage_spec 的 required_checks 选 check),
+    /// 调用通用 `validate_stage_gate` (按 self.stage_spec 的 gate_rules 跑结构+语义 check),
     /// 返回 allowed / reasons / recovery.
     pub fn validate_gate(
         &self,

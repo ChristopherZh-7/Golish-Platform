@@ -86,7 +86,6 @@ mod tests {
             allowed_tool_types: vec![],
             deliverable_schema: "StageDeliverable".to_string(),
             gate_validator: "validate_stage_gate".to_string(),
-            required_checks: vec![],
             min_invocations: Default::default(),
             max_other_skips: None,
             human_approval: None,
@@ -184,7 +183,7 @@ mod tests {
                  "on_fail":{"reason":"high+ finding needs evidence"} }"#,
         )
         .unwrap();
-        let engine = &rule_engine::eval(&d, &[gr])[0];
+        let engine = &rule_engine::eval(&d, &spec_with(None), &[gr])[0];
 
         // 两者结论一致：都 Block。
         assert!(

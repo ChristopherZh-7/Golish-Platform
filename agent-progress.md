@@ -29,6 +29,28 @@
 
 ---
 
+### 2026-06-05 · Gate 彻底数据驱动化（删 required_checks 固定菜单 → 单一 gate_rules 入口·B）（MCP-agent-4 · DISPATCH off · 接 MCP-3 上下文 · 用户「B：彻底迁移删旧」→「一口气全部搞定」）
+
+- **承接**：MCP-3 讨论把 gate 过关标准问到「能否全用 JSON 定义」，并已落地第一步 gate_rules 引擎（commit `d02dbb46`/`1add72c8`，与旧 `required_checks` 并存）。本轮用户拍板 **B（彻底删旧）**：删 `required_checks` 字段 + `gate/mod.rs` 的 `_ => continue` 固定菜单 match，让 `gate_rules` 成为唯一入口。先写设计+计划过目获批，再一口气实现+验证。
+- **设计/计划**：`docs/design/2026-06-05-gate-rules-migration.md` + `docs/superpowers/plans/2026-06-05-gate-rules-migration.md`。
+- **做了什么**：
+  - `rule_engine.rs`：新增 `GateRule::NamedCheck { check: NamedCheckKind, on_fail }` 逃生舱（kind = scope/surface_coverage/min_invocations，闭合枚举 fail-closed）+ `GateRule::summary()`；`eval` 签名加 `spec`（named_check 转发到保留的 Rust 领域 check：scope_check/surface_coverage_check/min_invocations_check）。
+  - `gate/mod.rs`：删除 `required_checks` 的 `for name { match … _ => continue }` 整段 + `HashSet ran` + `use HashSet`；`gate_rules` 成为唯一语义层（`eval(deliverable, spec, &spec.gate_rules)`）。
+  - `stage_spec.rs`：删 `pub required_checks: Vec<String>` 字段。
+  - **额外消费者（调查时发现、一并迁移、行为保持）**：① `vacuous_check` FakePattern 外门 `!required_checks.is_empty()` → `!min_invocations.is_empty()`（对全 12 spec 逐字节等价）；② `prompts/mod.rs::stage_charter` 的「gate 会检查」提示行从 `required_checks.join` 改为 `gate_rules.iter().map(summary)`。
+  - **12 份 spec 迁移**：scope（claim/finding 证据非空）→ 两条 `for_all non_empty` 数据规则（scoping/reporting 豁免=空）；surface_coverage/min_invocations → `named_check`；verification 叠加保留其 high+ 证据规则。eas=4 rules、enumeration=3、其余 scope×2 或空。
+  - 注释/字符串中残留 `required_checks` 文案顺手更新（types/stage_harness doc、vacuous reason 串）。
+- **运行过的验证（本机实跑，全绿）**：
+  - `cargo nextest run -p golish-agent-kit -p golish-agent-app --no-fail-fast` → **509 tests run: 509 passed, 0 skipped**（含新 named_check 单测 4 条 + 迁移等价性 2 条 `migrated_eas_scope_*` / `migrated_enumeration_named_min_invocations_*` + `all_twelve_stage_specs_load`）。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime --all-targets -- -D warnings` → **exit 0 零告警**。
+  - `cargo fmt --check` → clean；12 份 spec JSON `python3 -m json.tool` 全 OK。
+- **行为零变更（决策层）+ 一处文案变更（诚实）**：gate 的 PASS/BLOCK 决策逐字节不变；唯一变化是 scope 缺证据的 BLOCK reason 文案（`finding[i] … has empty evidence_refs` → `every finding must cite evidence`），相应更新了 `e2e_finding_missing_evidence_refs_*`（仍验证「缺证据被 Block」）+ 修正 `gate_rules_default_empty_and_parses`（eas 已迁移，改用最小内联 spec 验缺省空）+ `external_attack_surface_required_checks_count` → `…_gate_rules_count`(=4)。
+- **commit**：本轮全部改动（9 Rust + 12 spec + 2 设计/计划 + 本 progress + feature_list）拟一并 commit 到 `feat/harness-2026-06-01`，**未 push**。
+- **范围/边界**：未跑全量 `just precommit`（纯 Rust、零前端面；已用 nextest+clippy+fmt 覆盖受影响 3 crate）。min_invocations 仍是弱 MVP（原样经 named_check 保留，加固另开）；surface_coverage 关键词归类逻辑仍在 Rust（经 named_check）——「95% 数据化、非 100%」如设计所述。
+- **下一步建议**：① 如需绝对完整门禁 `just precommit`；② push 需用户点头；③ 后续可数据化 min_invocations（加 required_checks_done collection + contains 谓词）或给 gate_rules 加 and/or 积木。
+
+---
+
 ### 2026-06-05 · Gate 数据驱动规则引擎（gate_rules）实现 + 收口（MCP-agent-4 · DISPATCH off · 接 MCP-2 上下文 · 用户「帮我 commit 这些改动，跑动已搞完」→「所有 task 一口气做完再跑测试」）
 
 - **承接背景**：本特性的设计/计划由 MCP-2 在本分支产出（`docs/design/2026-06-05-gate-rule-engine.md` + `docs/superpowers/plans/2026-06-05-gate-rule-engine.md`）并起手 Task 1。MCP-2 把完整上下文转交本会话（MCP-4），要求「所有 task 做完再跑测试」。核对工作树发现 Task 1-6 的实现代码已全部就位，遂先按用户「commit 这些改动」提交，再补齐 Task 7（验证 + 登记）。
