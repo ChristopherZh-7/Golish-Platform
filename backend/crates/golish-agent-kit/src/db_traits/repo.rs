@@ -127,6 +127,27 @@ pub trait DbRepoProvider: Send + Sync {
         sections: &[String],
     ) -> anyhow::Result<serde_json::Value>;
 
+    /// In-scope recon assets (`targets.scope='in'` values) for the current
+    /// operation. The harness coverage gate injects these into
+    /// `GateContext.in_scope_assets` so `coverage_complete` measures against the
+    /// authoritative asset set (populated by organization recon / manual
+    /// target-add) instead of the agent's self-reported coverage.
+    ///
+    /// Default empty so test doubles keep the prior self-reported behavior; the
+    /// gate hook only overrides the asset axis when this returns a non-empty set
+    /// (an empty set must never vacuously satisfy `coverage_complete`).
+    async fn in_scope_assets(&self) -> anyhow::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    /// In-scope recon targets as JSON rows (`target_id` / `value` / `type`) so an
+    /// agent tool can enumerate the recon-collected assets, then drill into each
+    /// via [`Self::query_target_data`]. Default empty (test doubles); the app
+    /// layer overrides it through the recon targets service port.
+    async fn in_scope_targets(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+        Ok(Vec::new())
+    }
+
     // ── Tasks & Subtasks ────────────────────────────────────────────────
 
     async fn task_create(&self, task: NewTask) -> anyhow::Result<TaskView>;

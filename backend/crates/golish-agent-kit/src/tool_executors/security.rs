@@ -16,6 +16,7 @@ pub async fn execute_security_analysis_tool(
             | "fingerprint_target"
             | "log_scan_result"
             | "query_target_data"
+            | "list_in_scope_targets"
     );
     if !is_sec_tool {
         return None;
@@ -378,6 +379,21 @@ pub async fn execute_security_analysis_tool(
                 Err(e) => return Some(error_result(format!("Failed to query target data: {}", e))),
             };
 
+            Some((data, true))
+        }
+
+        "list_in_scope_targets" => {
+            let rows = match repo.in_scope_targets().await {
+                Ok(r) => r,
+                Err(e) => {
+                    return Some(error_result(format!(
+                        "Failed to list in-scope targets: {}",
+                        e
+                    )))
+                }
+            };
+            let count = rows.len();
+            let data = json!({ "in_scope_targets": rows, "count": count });
             Some((data, true))
         }
 

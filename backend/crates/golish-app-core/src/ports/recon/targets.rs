@@ -69,6 +69,18 @@ pub trait ReconTargetsPort: Send + Sync {
     /// List targets for an exact `project_path`. Mirrors `db_target_list`.
     async fn target_list(&self, project_path: Option<&str>) -> anyhow::Result<Vec<Target>>;
 
+    /// Distinct in-scope (`scope='in'`) target `value`s within legacy
+    /// visibility. The authoritative in-scope asset set the harness coverage
+    /// gate injects (populated by organization recon / manual target-add).
+    /// `None` project_path = all visible targets (single-workspace default).
+    async fn in_scope_values(&self, project_path: Option<&str>) -> anyhow::Result<Vec<String>>;
+
+    /// In-scope (`scope='in'`) targets as full [`Target`] rows (id + value +
+    /// type) within legacy visibility. Lets an agent enumerate recon-collected
+    /// assets, then drill into each via `query_target_data(target_id)`. `None`
+    /// project_path = all visible targets (single-workspace default).
+    async fn in_scope_targets(&self, project_path: Option<&str>) -> anyhow::Result<Vec<Target>>;
+
     /// Update a target's status by id. Mirrors `db_target_update_status`.
     async fn target_update_status(&self, id: Uuid, status: &str) -> anyhow::Result<()>;
 
@@ -267,6 +279,23 @@ impl ReconTargetsPort for PgReconTargetsAdapter {
             golish_db::repo::targets::list_rows_by_project_exact(self.pool.as_ref(), project_path)
                 .await?;
         Ok(rows.into_iter().map(Target::from).collect())
+    }
+
+    async fn in_scope_values(&self, project_path: Option<&str>) -> anyhow::Result<Vec<String>> {
+        Ok(
+            golish_db::repo::targets::list_in_scope_values(self.pool.as_ref(), project_path)
+                .await?,
+        )
+    }
+
+    async fn in_scope_targets(&self, project_path: Option<&str>) -> anyhow::Result<Vec<Target>> {
+        let rows: Vec<TargetRow> =
+            golish_db::repo::targets::list_rows_legacy(self.pool.as_ref(), project_path).await?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| r.scope == "in")
+            .map(Target::from)
+            .collect())
     }
 
     async fn target_update_status(&self, id: Uuid, status: &str) -> anyhow::Result<()> {

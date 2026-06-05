@@ -5,7 +5,10 @@
 
 use anyhow::{anyhow, Result};
 
-use super::gate::{validate_stage_gate_with_skeleton, GateResult};
+use super::gate::rule_engine::GateContext;
+use super::gate::{
+    validate_stage_gate_with_context, validate_stage_gate_with_skeleton, GateResult,
+};
 use super::profile::Profile;
 use super::sprint_contract::{SprintContract, StageSkeleton};
 use super::stage_spec::StageSpec;
@@ -104,6 +107,36 @@ impl StageHarness {
         );
         result
     }
+
+    /// Like [`Self::validate_gate`] but injects a [`GateContext`] (Phase 2 ①③
+    /// seam activation, design 2026-06-05-coverage-matrix §6.5). When
+    /// `ctx.in_scope_assets` is `Some`, `coverage_complete` measures against that
+    /// authoritative asset set (from the recon-populated `targets` table) instead
+    /// of the agent's self-reported coverage. `GateContext::default()` reproduces
+    /// [`Self::validate_gate`] exactly (backward compatible).
+    pub fn validate_gate_with_context(
+        &self,
+        deliverable: &StageDeliverable,
+        sprint_contract: Option<&SprintContract>,
+        ctx: &GateContext,
+    ) -> GateResult {
+        tracing::info!(
+            target: "harness::stage_harness",
+            stage_kind = ?self.stage_spec.kind,
+            stage_id = %deliverable.stage_id,
+            has_contract = sprint_contract.is_some(),
+            has_skeleton = self.skeleton.is_some(),
+            injected_assets = ctx.in_scope_assets.as_ref().map(|a| a.len()).unwrap_or(0),
+            "validate_gate_with_context entered (gate context injected)"
+        );
+        validate_stage_gate_with_context(
+            deliverable,
+            &self.stage_spec,
+            sprint_contract,
+            self.skeleton.as_ref(),
+            ctx,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -160,5 +193,30 @@ mod tests {
         s.kind = StageKind::Scoping;
         let h = StageHarness::for_stage(StageKind::ExternalAttackSurface, p, s);
         assert!(h.is_err());
+    }
+
+    /// Backward-compat: `validate_gate_with_context` with a default
+    /// [`GateContext`] must reproduce `validate_gate` exactly (the seam only
+    /// changes behavior when assets/techniques are injected). Guards the new
+    /// delegation wrapper added for Phase 2 in-scope-asset injection.
+    #[test]
+    fn validate_gate_with_default_context_matches_validate_gate() {
+        let p = load_profile_from_json(ASSESSMENT_JSON).unwrap();
+        let s = load_stage_spec_from_json(STAGE_JSON).unwrap();
+        let h = StageHarness::for_stage(StageKind::ExternalAttackSurface, p, s).unwrap();
+        let d = StageDeliverable {
+            stage_id: "external_attack_surface".to_string(),
+            stage_run_id: uuid::Uuid::new_v4(),
+            claims: vec![],
+            evidence_refs: vec![],
+            skipped_checks: vec![],
+            findings: vec![],
+            required_checks_done: vec![],
+            coverage: vec![],
+        };
+        let base = h.validate_gate(&d, None);
+        let ctx = h.validate_gate_with_context(&d, None, &GateContext::default());
+        assert_eq!(base.allowed, ctx.allowed);
+        assert_eq!(base.reasons.len(), ctx.reasons.len());
     }
 }

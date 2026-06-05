@@ -16,7 +16,8 @@ use uuid::Uuid;
 use golish_agent_kit::db_traits::*;
 use golish_app_core::ports::pentest::{PentestPlanPort, PgPentestPlanAdapter};
 use golish_app_core::ports::recon::{
-    PgReconAssetsAdapter, PgReconScansAdapter, ReconAssetsPort, ReconScansPort,
+    PgReconAssetsAdapter, PgReconScansAdapter, PgReconTargetsAdapter, ReconAssetsPort,
+    ReconScansPort, ReconTargetsPort,
 };
 use golish_app_core::ports::vuln::{
     PgVulnIntelAdapter, PgWikiKbAdapter, VulnIntelPort, WikiKbPort,
@@ -35,6 +36,9 @@ pub struct GolishDbRepoProvider {
     // (servitization S1-2b) instead of calling `golish_db::repo::<recon>` here.
     recon_scans: Arc<dyn ReconScansPort>,
     recon_assets: Arc<dyn ReconAssetsPort>,
+    // In-scope target reads (harness coverage gate) route through the recon
+    // targets service port (recon-owned), not the targets repo directly.
+    recon_targets: Arc<dyn ReconTargetsPort>,
     // Vuln cross-service reads/writes route through the vuln service ports
     // (servitization S1-2c) instead of calling `golish_db::repo::{vuln_intel,
     // wiki_kb}` here.
@@ -50,6 +54,8 @@ impl GolishDbRepoProvider {
         let recon_scans: Arc<dyn ReconScansPort> = Arc::new(PgReconScansAdapter::new(pool.clone()));
         let recon_assets: Arc<dyn ReconAssetsPort> =
             Arc::new(PgReconAssetsAdapter::new(pool.clone()));
+        let recon_targets: Arc<dyn ReconTargetsPort> =
+            Arc::new(PgReconTargetsAdapter::new(pool.clone()));
         let vuln_intel: Arc<dyn VulnIntelPort> = Arc::new(PgVulnIntelAdapter::new(pool.clone()));
         let wiki_kb: Arc<dyn WikiKbPort> = Arc::new(PgWikiKbAdapter::new(pool.clone()));
         let pentest_plan: Arc<dyn PentestPlanPort> =
@@ -58,6 +64,7 @@ impl GolishDbRepoProvider {
             pool,
             recon_scans,
             recon_assets,
+            recon_targets,
             vuln_intel,
             wiki_kb,
             pentest_plan,
@@ -275,6 +282,14 @@ impl DbRepoProvider for GolishDbRepoProvider {
         sections: &[String],
     ) -> anyhow::Result<serde_json::Value> {
         self.query_target_data_impl(target_id, sections).await
+    }
+
+    async fn in_scope_assets(&self) -> anyhow::Result<Vec<String>> {
+        self.in_scope_assets_impl().await
+    }
+
+    async fn in_scope_targets(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.in_scope_targets_impl().await
     }
 
     // ── Tasks / Subtasks ─────────────────────────────────────

@@ -141,6 +141,14 @@ fn build_list_values_by_project_exact_sql() -> String {
     "SELECT value FROM targets WHERE project_path = $1".to_string()
 }
 
+fn build_list_in_scope_values_legacy_sql() -> String {
+    "SELECT DISTINCT value FROM targets \
+       WHERE scope::text = 'in' \
+         AND ($1 IS NULL OR project_path = $1 OR project_path = '') \
+       ORDER BY value"
+        .to_string()
+}
+
 fn build_clear_by_project_exact_sql() -> String {
     "DELETE FROM targets WHERE project_path = $1".to_string()
 }
@@ -259,6 +267,21 @@ pub async fn list_values_by_project_exact(
     project_path: Option<&str>,
 ) -> Result<Vec<String>> {
     let rows = sqlx::query_scalar::<_, String>(&build_list_values_by_project_exact_sql())
+        .bind(project_path)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}
+
+/// Distinct in-scope (`scope='in'`) target `value`s within legacy visibility.
+/// This is the authoritative in-scope asset set the harness coverage gate uses
+/// (populated by organization recon, manual target-add, etc.). `None`
+/// project_path = all visible targets (single-workspace default).
+pub async fn list_in_scope_values(
+    pool: &PgPool,
+    project_path: Option<&str>,
+) -> Result<Vec<String>> {
+    let rows = sqlx::query_scalar::<_, String>(&build_list_in_scope_values_legacy_sql())
         .bind(project_path)
         .fetch_all(pool)
         .await?;

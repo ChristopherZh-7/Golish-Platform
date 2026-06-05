@@ -253,6 +253,36 @@ pub fn stage_inherited_evidence(spec: &StageSpec) -> String {
     s
 }
 
+/// Phase 2 ①③ seam (agent-facing): inject the authoritative in-scope asset set
+/// (recon-populated `targets.scope='in'`) into the stage description so the
+/// executing agent works through the real assets instead of guessing. Empty
+/// `assets` → empty string (no recon data yet ⇒ no section, no behavior change).
+/// Capped to keep the prompt bounded; the full set is always queryable via the
+/// `list_in_scope_targets` tool.
+pub fn render_in_scope_assets(assets: &[String]) -> String {
+    if assets.is_empty() {
+        return String::new();
+    }
+    const MAX_SHOWN: usize = 50;
+    let total = assets.len();
+    let mut s = String::from(
+        "## IN-SCOPE ASSETS (from reconnaissance)\n\n\
+         These in-scope assets were collected by recon and are authoritative for \
+         coverage. Work through them; use `list_in_scope_targets` for their ids and \
+         `query_target_data(target_id)` for per-asset detail:\n\n",
+    );
+    for a in assets.iter().take(MAX_SHOWN) {
+        s.push_str(&format!("- {a}\n"));
+    }
+    if total > MAX_SHOWN {
+        s.push_str(&format!(
+            "\n(showing first {MAX_SHOWN} of {total} — call `list_in_scope_targets` for the full set)\n"
+        ));
+    }
+    s.push('\n');
+    s
+}
+
 /// C6 · real cross-stage evidence handoff. Unlike [`stage_inherited_evidence`]
 /// (which only lists the *kinds* a stage declares it inherits), this injects the
 /// **actual** gate-passed deliverable summaries produced by upstream stages this

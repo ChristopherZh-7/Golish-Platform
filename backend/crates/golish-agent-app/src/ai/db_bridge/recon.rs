@@ -244,4 +244,25 @@ impl GolishDbRepoProvider {
         }
         Ok(data)
     }
+
+    pub(super) async fn in_scope_assets_impl(&self) -> anyhow::Result<Vec<String>> {
+        // `None` project_path = legacy "all visible" set; the harness has no
+        // per-project key today (chat sessions carry project_path=None), so the
+        // whole-workspace in-scope target set is the authoritative asset axis.
+        self.recon_targets.in_scope_values(None).await
+    }
+
+    pub(super) async fn in_scope_targets_impl(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+        let targets = self.recon_targets.in_scope_targets(None).await?;
+        Ok(targets
+            .into_iter()
+            .map(|t| {
+                json!({
+                    "target_id": t.id,
+                    "value": t.value,
+                    "type": t.target_type.as_str(),
+                })
+            })
+            .collect())
+    }
 }

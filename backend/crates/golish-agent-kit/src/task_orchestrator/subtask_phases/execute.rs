@@ -115,6 +115,14 @@ impl TaskOrchestrator {
                             &spec,
                             &self.harness_evidence,
                         ));
+                        // Phase 2 ①③ seam (agent-facing): inject the authoritative
+                        // in-scope asset list (recon-populated targets.scope='in')
+                        // so the stage agent works the real assets. Empty (no recon
+                        // yet) → no section, no behavior change.
+                        let in_scope_assets = self.repo.in_scope_assets().await.unwrap_or_default();
+                        desc.push_str(&super::super::prompts::render_in_scope_assets(
+                            &in_scope_assets,
+                        ));
                         // P3 · RAG prior: retrieve relevant prior writeups/PoCs
                         // from the wiki KB and inject them so the agent consults
                         // known exploits/findings before testing. (Graph prior
@@ -224,8 +232,13 @@ impl TaskOrchestrator {
                         continue;
                     }
 
-                    let (gated_content, gate_outcome) =
-                        apply_harness_gate_hook(planned, exec_ctx, agent_result.content);
+                    let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned).await;
+                    let (gated_content, gate_outcome) = apply_harness_gate_hook(
+                        planned,
+                        exec_ctx,
+                        agent_result.content,
+                        in_scope_assets,
+                    );
                     if let Some(mut outcome) = gate_outcome {
                         // P0 · reject deliverables citing fabricated evidence ids
                         // (may flip PASS→BLOCK + attach a correction) before the
@@ -363,7 +376,9 @@ impl TaskOrchestrator {
             .unwrap_or_else(|| "Subtask completed without tool usage.".to_string());
         // Loop exhausted: run the gate once on the fallback content (no further
         // retry possible) and drive the transition on whatever it decides.
-        let (out, gate_outcome) = apply_harness_gate_hook(planned, exec_ctx, fallback);
+        let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned).await;
+        let (out, gate_outcome) =
+            apply_harness_gate_hook(planned, exec_ctx, fallback, in_scope_assets);
         if let Some(mut outcome) = gate_outcome {
             self.enforce_evidence_existence(&mut outcome).await;
             self.enforce_evidence_kinds(&mut outcome).await;
@@ -1074,6 +1089,39 @@ impl TaskOrchestrator {
         }
     }
 
+    /// Phase 2 ①③ seam: fetch the authoritative in-scope asset set
+    /// (recon-populated `targets.scope='in'`) for the harness coverage gate.
+    /// Returns `None` when the subtask carries no harness stage, the DB has no
+    /// in-scope assets, or the lookup errors — so `coverage_complete` keeps its
+    /// self-reported fallback. An empty set must NEVER be injected (it would
+    /// vacuously satisfy coverage), hence the explicit non-empty guard.
+    async fn fetch_in_scope_assets_for_gate(
+        &self,
+        planned: &PlannedSubtask,
+    ) -> Option<Vec<String>> {
+        // Only stage-tagged subtasks run a gate; skip the DB hit otherwise.
+        planned.harness_stage.as_ref()?;
+        match self.repo.in_scope_assets().await {
+            Ok(v) if !v.is_empty() => {
+                tracing::info!(
+                    target: "harness::hook",
+                    asset_count = v.len(),
+                    "injecting authoritative in-scope assets into coverage gate"
+                );
+                Some(v)
+            }
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!(
+                    target: "harness::hook",
+                    error = %e,
+                    "in-scope asset lookup failed; coverage gate falls back to self-reported"
+                );
+                None
+            }
+        }
+    }
+
     /// P0 · gate evidence 回查: 把交付物里引用、但 ledger 中**不存在**的 evidence
     /// id 当作伪造 → 翻 BLOCK + 追加纠正喂回 reflector. infra 查询失败只 warn,
     /// 不误伤合法 stage (放行), 避免 DB 抖动卡死流程.
@@ -1358,6 +1406,7 @@ fn apply_harness_gate_hook(
     planned: &PlannedSubtask,
     exec_ctx: &ExecutionContext,
     content: String,
+    in_scope_assets: Option<Vec<String>>,
 ) -> (String, Option<HarnessGateOutcome>) {
     let Some(stage_hint) = planned.harness_stage.as_ref() else {
         // Observability (2026-06-01): previously DEBUG, so a stage-less subtask
@@ -1481,7 +1530,14 @@ fn apply_harness_gate_hook(
         "deliverable parsed, running gate validation"
     );
 
-    let decision = harness.validate_gate(&deliverable, None);
+    // Phase 2 ①③ seam activation: inject the authoritative in-scope asset set
+    // (recon-populated `targets.scope='in'`) so coverage_complete measures real
+    // coverage. `None` (no recon assets yet) falls back to self-reported.
+    let gate_ctx = crate::harness::GateContext {
+        in_scope_assets,
+        expected_techniques: None,
+    };
+    let decision = harness.validate_gate_with_context(&deliverable, None, &gate_ctx);
 
     // P2-c · doer eval: score this deliverable's quality (gate outcome +
     // evidence backing + finding verification) and log it for ranking doer runs.
@@ -1986,7 +2042,7 @@ mod harness_gate_hook_tests {
         let ctx = ExecutionContext::default();
         let content = "anything".to_string();
         assert_eq!(
-            apply_harness_gate_hook(&p, &ctx, content.clone()).0,
+            apply_harness_gate_hook(&p, &ctx, content.clone(), None).0,
             content
         );
     }
@@ -1997,7 +2053,7 @@ mod harness_gate_hook_tests {
         let ctx = ExecutionContext::default();
         let content = "ignore me".to_string();
         assert_eq!(
-            apply_harness_gate_hook(&p, &ctx, content.clone()).0,
+            apply_harness_gate_hook(&p, &ctx, content.clone(), None).0,
             content
         );
     }
