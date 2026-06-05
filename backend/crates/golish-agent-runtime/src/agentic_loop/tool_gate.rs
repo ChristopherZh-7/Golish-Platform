@@ -14,7 +14,7 @@ pub enum ToolGateDecision {
     Reject { reason: String },
 }
 
-pub fn decide_tool_intent(intent: &ToolIntent, target_registered: bool) -> ToolGateDecision {
+pub fn decide_tool_intent(intent: &ToolIntent, _target_registered: bool) -> ToolGateDecision {
     if intent.name == "ask_human" {
         let question = intent
             .args
@@ -102,5 +102,4 @@ mod tests {
 
         assert_eq!(decide_tool_intent(&intent, false), ToolGateDecision::Allow);
     }
-
 }
