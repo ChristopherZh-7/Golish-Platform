@@ -123,7 +123,7 @@ You are operating inside the **{stage}** stage of an authorized operation. Stay 
 }}
 ```
 
-IMPORTANT — every `<int_id_from_a_real_tool_result>` above is a PLACEHOLDER for shape only; NEVER emit it literally and NEVER substitute a small guessed integer (1, 2, 3, …). Each evidence id MUST be an actual integer a real tool run returned in THIS operation — read it from that tool's result: the `_evidence_id` field on a tool result, the `evidence_id=` line in a finished background-job note, or the real ids the gate lists back to you after a rejection. If you have not run any tool yet you have NO evidence ids: run the required tools first. Citing guessed/placeholder ids FAILS the gate.
+IMPORTANT — every `<int_id_from_a_real_tool_result>` above is a PLACEHOLDER for shape only; NEVER emit it literally and NEVER substitute a small guessed integer (1, 2, 3, …). Each evidence id MUST be an actual integer the evidence ledger recorded for a real tool run in THIS operation. Do NOT hunt for ids in raw tool output — scans are recorded to the ledger automatically. The reliable way to get them: after running the required tools, call `submit_stage_deliverable`; if your evidence_ids are missing or wrong it returns this operation's real ids in `available_evidence_ids` — resubmit citing those. (`query_target_data` also shows recorded data.) If you have not run any tool yet you have NO evidence ids: run the required tools first. Citing guessed/placeholder ids FAILS the gate.
 
 Gate rules your deliverable MUST satisfy (otherwise it is rejected and you redo the stage):
 - `stage_id` MUST equal "{stage}"; `stage_run_id` MUST be a valid, non-nil UUID v4.

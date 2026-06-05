@@ -96,6 +96,7 @@ mod tests {
             finding_verification: rule,
             min_findings: None,
             min_claims: None,
+            gate_rules: vec![],
         }
     }
 
@@ -161,5 +162,35 @@ mod tests {
         };
         let d = deliverable(vec![finding(FindingSeverity::Low, vec![])]);
         assert!(run(&d, &spec_with(Some(rule))).is_pass());
+    }
+
+    #[test]
+    fn gate_rule_reproduces_finding_verification_block() {
+        use crate::harness::gate::rule_engine::{self, GateRule};
+
+        // 现状路径：finding_verification min_severity=high，一个无证据的 critical → Block。
+        let legacy_rule = FindingVerificationRule {
+            min_severity: FindingSeverity::High,
+            require_evidence_kinds: vec![],
+        };
+        let d = deliverable(vec![finding(FindingSeverity::Critical, vec![])]);
+        let legacy = run(&d, &spec_with(Some(legacy_rule)));
+
+        // 等价 gate_rule：for_all findings where severity>=high require non_empty evidence_refs。
+        let gr: GateRule = serde_json::from_str(
+            r#"{ "op":"for_all","over":"findings",
+                 "where":{"pred":"severity_at_least","min":"high"},
+                 "require":{"pred":"non_empty","field":"evidence_refs"},
+                 "on_fail":{"reason":"high+ finding needs evidence"} }"#,
+        )
+        .unwrap();
+        let engine = &rule_engine::eval(&d, &[gr])[0];
+
+        // 两者结论一致：都 Block。
+        assert!(
+            !legacy.is_pass(),
+            "legacy finding_verification should Block"
+        );
+        assert!(!engine.is_pass(), "equivalent gate_rule should Block");
     }
 }

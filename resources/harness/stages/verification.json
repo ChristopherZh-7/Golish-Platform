@@ -42,5 +42,16 @@
   "finding_verification": {
     "min_severity": "high",
     "require_evidence_kinds": ["poc", "exploit_verified"]
-  }
+  },
+
+  "$comment_gate_rules": "DSL sample (design 2026-06-05). Declarative twin of finding_verification: every high+ finding must carry at least one evidence ref. Add more rules here to extend pass-criteria with zero Rust.",
+  "gate_rules": [
+    {
+      "op": "for_all",
+      "over": "findings",
+      "where": { "pred": "severity_at_least", "min": "high" },
+      "require": { "pred": "non_empty", "field": "evidence_refs" },
+      "on_fail": { "reason": "verification: every high/critical finding must carry evidence" }
+    }
+  ]
 }

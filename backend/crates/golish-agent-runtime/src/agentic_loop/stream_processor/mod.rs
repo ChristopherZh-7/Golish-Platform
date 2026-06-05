@@ -444,4 +444,3 @@ async fn wait_for_cancelled(ctx: &AgenticLoopContext<'_>) {
         tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
     }
 }
-

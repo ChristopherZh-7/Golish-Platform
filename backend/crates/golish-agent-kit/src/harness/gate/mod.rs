@@ -11,6 +11,7 @@ pub mod contract_check;
 pub mod finding_verification_check;
 pub mod freshness_check;
 pub mod min_invocations_check;
+pub mod rule_engine;
 pub mod schema_check;
 pub mod scope_check;
 pub mod surface_coverage_check;
@@ -139,6 +140,10 @@ pub fn validate_stage_gate_with_skeleton(
         });
     }
 
+    // P2 · 数据驱动 gate 规则（设计 2026-06-05）· 声明式 `spec.gate_rules` 附加层,
+    // 与上面的内建语义 check 并存. 空 gate_rules 时此行为 no-op (向后兼容).
+    outcomes.extend(rule_engine::eval(deliverable, &spec.gate_rules));
+
     aggregate(outcomes)
 }
 
@@ -263,5 +268,65 @@ mod tests {
             .reasons
             .iter()
             .any(|r| r.contains("subdomain") && r.contains("below contract minimum")));
+    }
+
+    #[test]
+    fn gate_rules_block_propagates_through_aggregate() {
+        use super::super::stage_spec::load_stage_spec_from_json;
+        use super::super::types::{FindingSeverity, HarnessFinding, StageClaim};
+        use golish_pentest::evidence_ledger::EvidenceAuditId;
+
+        // spec：一条 gate_rule 要求每个 high+ finding 挂证据；无 required_checks
+        // (隔离 gate_rule 行为：scope_check 不会跑)，其余字段走 serde default。
+        let spec_json = r#"{
+            "id":"verification","kind":"verification","risk_level":"critical",
+            "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+            "gate_rules":[
+              { "op":"for_all","over":"findings",
+                "where":{"pred":"severity_at_least","min":"high"},
+                "require":{"pred":"non_empty","field":"evidence_refs"},
+                "on_fail":{"reason":"GATE_RULE: high+ finding needs evidence"} }
+            ]
+        }"#;
+        let spec = load_stage_spec_from_json(spec_json).unwrap();
+
+        // 基线：1 个挂证据的 critical finding + 1 个挂证据的 claim → 过所有结构 check
+        // 且过 gate_rule。
+        let eid = EvidenceAuditId::new(1);
+        let deliverable = StageDeliverable {
+            stage_id: "verification".to_string(),
+            stage_run_id: Uuid::new_v4(),
+            claims: vec![StageClaim {
+                kind: "exploit".to_string(),
+                subject: "api.example.com".to_string(),
+                summary: "verified".to_string(),
+                evidence_ids: vec![eid],
+            }],
+            evidence_refs: vec![eid],
+            skipped_checks: vec![],
+            findings: vec![HarnessFinding {
+                finding_id: Uuid::new_v4(),
+                kind: "rce".to_string(),
+                subject: "api.example.com".to_string(),
+                severity: FindingSeverity::Critical,
+                evidence_refs: vec![eid],
+            }],
+            required_checks_done: vec![],
+        };
+        let base = validate_stage_gate(&deliverable, &spec, None);
+        assert!(base.allowed, "baseline should pass: {:?}", base.reasons);
+
+        // 追加一个不挂证据的 critical finding → gate_rule 触发 → 整体 Block。
+        let mut bad = deliverable.clone();
+        bad.findings.push(HarnessFinding {
+            finding_id: Uuid::new_v4(),
+            kind: "rce".to_string(),
+            subject: "db.example.com".to_string(),
+            severity: FindingSeverity::Critical,
+            evidence_refs: vec![],
+        });
+        let blocked = validate_stage_gate(&bad, &spec, None);
+        assert!(!blocked.allowed);
+        assert!(blocked.reasons.iter().any(|r| r.contains("GATE_RULE")));
     }
 }

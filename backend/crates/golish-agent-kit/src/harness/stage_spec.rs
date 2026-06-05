@@ -96,6 +96,11 @@ pub struct StageSpec {
     pub min_findings: Option<u32>,
     #[serde(default)]
     pub min_claims: Option<u32>,
+
+    /// P2 · 数据驱动 gate 规则（设计 2026-06-05）。每条规则用固定积木 op 声明一条
+    /// 过关标准，由 `super::gate::rule_engine::eval` 执行。缺省空 = 行为与旧版逐字节一致。
+    #[serde(default)]
+    pub gate_rules: Vec<super::gate::rule_engine::GateRule>,
 }
 
 fn default_continuity() -> AgentContinuity {
@@ -192,5 +197,26 @@ mod tests {
     fn external_attack_surface_max_other_skips() {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
         assert_eq!(s.max_other_skips, Some(2));
+    }
+
+    #[test]
+    fn gate_rules_default_empty_and_parses() {
+        // 缺省：未写 gate_rules 的 spec 解出空数组（向后兼容）。
+        let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
+        assert!(s.gate_rules.is_empty());
+
+        // 能解析内联 gate_rules。
+        let with_rules = r#"{
+            "id":"verification","kind":"verification","risk_level":"critical",
+            "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+            "gate_rules":[
+              { "op":"for_all","over":"findings",
+                "where":{"pred":"severity_at_least","min":"high"},
+                "require":{"pred":"non_empty","field":"evidence_refs"},
+                "on_fail":{"reason":"high+ finding needs evidence"} }
+            ]
+        }"#;
+        let s2 = load_stage_spec_from_json(with_rules).expect("parse with rules");
+        assert_eq!(s2.gate_rules.len(), 1);
     }
 }

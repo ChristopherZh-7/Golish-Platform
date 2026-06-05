@@ -149,7 +149,10 @@ impl Tool for SubmitStageDeliverableTool {
          structured data as arguments (NOT a prose description, NOT a JSON string in \
          text) — stage_id, a random uuid v4 stage_run_id, claims, evidence_refs, and \
          findings. The deterministic gate validates it against the evidence ledger to \
-         advance the stage. This is the ONLY way to complete a stage."
+         advance the stage. This is the ONLY way to complete a stage. Do NOT hunt for \
+         evidence ids in raw tool output — if your evidence_ids are missing or wrong, \
+         this tool returns the operation's real evidence ids (`available_evidence_ids`) \
+         so you can resubmit citing them."
     }
 
     fn parameters(&self) -> Value {
@@ -255,10 +258,10 @@ impl Tool for SubmitStageDeliverableTool {
                     let reason = if available.is_empty() {
                         format!(
                             "cited evidence ids {fabricated:?} do not exist in the evidence ledger. \
-                             No real evidence ids exist for this operation yet — run this stage's \
-                             required tools first, then cite the ids their results return (the \
-                             `_evidence_id` field, or a finished background job's `evidence_id=` \
-                             note). Never invent or copy placeholder ids like 1, 2, 3."
+                             No real evidence ids are recorded for this operation yet — run this \
+                             stage's required tools first, then call submit_stage_deliverable again; \
+                             this tool reports the operation's real evidence ids for you to cite. \
+                             Never invent or copy placeholder ids like 1, 2, 3."
                         )
                     } else {
                         format!(
@@ -277,9 +280,26 @@ impl Tool for SubmitStageDeliverableTool {
                         "note": "fix these and call submit_stage_deliverable again."
                     }));
                 }
+                // F1 · a structural/vacuous block is most often the agent
+                // submitting empty/insufficient `evidence_ids` because it could
+                // not locate them. Surface the operation's REAL ledger ids here
+                // too (not only on the fabricated-ref branch above) so the single
+                // reliable id source is always handed back at the point of
+                // failure — instead of the agent hunting for an id field that the
+                // sub-agent tool path never carries.
+                let available = self.available_real_ids().await;
+                let mut reasons = result.reasons;
+                if !available.is_empty() {
+                    reasons.push(format!(
+                        "This operation's REAL evidence ids (newest first) are {available:?}. \
+                         Put the ones whose tool output backs each claim into BOTH that claim's \
+                         evidence_ids and the top-level evidence_refs, then resubmit. Never invent ids."
+                    ));
+                }
                 return Ok(json!({
                     "status": "needs_fix",
-                    "reasons": result.reasons,
+                    "reasons": reasons,
+                    "available_evidence_ids": available,
                     "note": "fix these and call submit_stage_deliverable again."
                 }));
             }
@@ -537,9 +557,52 @@ mod tests {
             .is_empty());
         let reason = out["reasons"][0].as_str().unwrap();
         assert!(
-            reason.contains("No real evidence ids exist"),
+            reason.contains("No real evidence ids are recorded"),
             "degraded reason instructs running tools first: {reason}"
         );
+    }
+
+    // F1 · a structural/vacuous block (empty evidence) must ALSO surface the
+    // operation's real evidence ids — not only the fabricated-ref branch — so an
+    // agent that submitted empty because it could not find ids is handed them
+    // right at the failure instead of looping to hunt for a non-existent field.
+    #[tokio::test]
+    async fn vacuous_needs_fix_lists_available_real_ids() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Scoping);
+        let ledger = MockLedger {
+            existing: HashSet::new(),
+            recent: vec![644, 646],
+        };
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
+            .with_evidence_repo(Arc::new(ledger))
+            .with_session_id("pentest-chat-1");
+
+        // Empty claims/refs → fails the structural gate (NOT the fabricated-ref
+        // branch, which only fires when ids are actually cited).
+        let args = json!({
+            "stage_id": "scoping",
+            "stage_run_id": "3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
+            "claims": [],
+            "evidence_refs": [],
+            "findings": []
+        });
+        let out = tool.execute(args, Path::new("/tmp")).await.unwrap();
+        assert_eq!(out["status"].as_str(), Some("needs_fix"));
+        let available = out["available_evidence_ids"]
+            .as_array()
+            .expect("available_evidence_ids present on a structural block");
+        assert_eq!(available, &vec![json!(644), json!(646)]);
+        // A real-id hint reason is appended naming the ids.
+        let reasons = out["reasons"].as_array().expect("reasons array");
+        assert!(
+            reasons.iter().any(|r| {
+                let s = r.as_str().unwrap_or("");
+                s.contains("644") && s.contains("646")
+            }),
+            "a reason names the real ids: {reasons:?}"
+        );
+        assert!(sink.read().await.is_some());
     }
 
     // Without an evidence repo (None), the check is skipped and a structurally

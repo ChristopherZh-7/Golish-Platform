@@ -139,3 +139,36 @@ gate 永远跑 **4 个结构性 check**（`schema` / `contract` / `vacuous` / `f
 5. **reporting**：每条 finding 可追溯 evidence + 整改建议的校验。
 
 > 注：很多强校验依赖 **Evidence Ledger（evidence_audit 表）**，目前未建，gate 只能信 AI 自报 evidence_refs——这是把放行标准做「实」的最大前置（见 `2026-06-01-harness-explainer-and-decisions.md`）。
+
+---
+
+## 8. `gate_rules` DSL 速查（2026-06-05）
+
+声明式过关标准，与 `required_checks` 并存；缺省空数组（不写则行为不变）。引擎：`gate/rule_engine.rs::eval`（纯函数、DB-free、确定性）。完整设计见 `docs/design/2026-06-05-gate-rule-engine.md`。
+
+**顶层 op**
+- `count_at_least`：`{ op, over, where?, min, on_fail }` — 满足 `where` 的元素 ≥ `min`。
+- `for_all`：`{ op, over, where?, require, on_fail }` — 满足 `where` 的每个元素都满足 `require`（空集合为真）。
+
+**over**：`claims` | `findings`
+
+**pred**（用于 `where` / `require`）
+- `{ "pred":"non_empty", "field":<f> }`
+- `{ "pred":"eq", "field":<f>, "value":"<s>" }`
+- `{ "pred":"severity_at_least", "min":"info|low|medium|high|critical" }`（仅 findings）
+
+**field**：`kind` | `subject` | `summary` | `evidence_refs`(finding) | `evidence_ids`(claim) | `severity`(finding)
+
+**on_fail**：`{ reason, hints?, repair_tool_calls?, missing_evidence_kinds? }` → 映射到 `GateCheckOutcome::Block` + `HarnessRecoveryActions`。
+
+**fail-closed**：未知 op/pred/over/field → spec 反序列化报错（被 `all_twelve_stage_specs_load` 抓）；字段-集合不匹配（如对 claims 取 severity）→ 求值期返回 `gate_rule config error` Block。绝不静默忽略。
+
+**样例**（`resources/harness/stages/verification.json`）：每个 high+ finding 必须挂证据
+```json
+"gate_rules": [
+  { "op":"for_all", "over":"findings",
+    "where":{"pred":"severity_at_least","min":"high"},
+    "require":{"pred":"non_empty","field":"evidence_refs"},
+    "on_fail":{"reason":"verification: every high/critical finding must carry evidence"} }
+]
+```
