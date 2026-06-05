@@ -14,6 +14,29 @@ use super::super::types::{
 };
 use super::super::TaskOrchestrator;
 
+/// Outcome of asking the human to approve a 大阶段 crossing
+/// ([`TaskOrchestrator::request_phase_approval`]).
+enum PhaseApproval {
+    /// Human approved — proceed across the boundary.
+    Approved,
+    /// Human declined. `Some(note)` carries a reviewer note to feed back to the
+    /// agent as a rework directive; `None` means "just hold" (no note / Skip /
+    /// timeout / no interactive channel).
+    Declined(Option<String>),
+}
+
+/// What the servicer loop should do at a phase boundary
+/// ([`TaskOrchestrator::two_level_phase_gate`]).
+enum PhaseGateDecision {
+    /// No approval needed, or the human approved — let the advance proceed.
+    Allowed,
+    /// Human held the crossing with no rework note — block (engine interrupts).
+    Held,
+    /// Human held the crossing and asked the agent to rework THIS stage first,
+    /// using the carried reviewer note.
+    Rework(String),
+}
+
 impl TaskOrchestrator {
     /// Execute a single subtask with enrichment, planning, reflector retry,
     /// and optional user input pause.
@@ -617,20 +640,52 @@ impl TaskOrchestrator {
                         planner_subtasks = indices.len(),
                         "graph-flow: entering stage"
                     );
-                    let mut outcome = self
-                        .run_stage_subtasks(
-                            req.stage, &indices, queue, &mut exec_ctx, op_max_authz, executor, task_id,
-                        )
-                        .await;
-                    // Two-level model (flag on): hold for human approval before
-                    // crossing a大阶段 boundary. Withheld → downgrade to blocked so
-                    // the engine Interrupts at this stage (no cross-phase advance).
-                    if !self
-                        .two_level_phase_gate(task_id, req.stage, outcome, &dag, op_profile.as_ref())
-                        .await
-                    {
-                        outcome = crate::harness::operation_flow::StageFlowOutcome::blocked();
-                    }
+                    // Two-level model (flag on): run the stage, then hold for human
+                    // approval before crossing a 大阶段 boundary. A decline that
+                    // carries a reviewer note re-runs THIS stage with the note as a
+                    // rework directive (bounded by MAX_HUMAN_REWORKS) so the agent
+                    // backtracks per the human's reason; a bare hold (no note) →
+                    // blocked so the engine Interrupts at this stage.
+                    const MAX_HUMAN_REWORKS: u8 = 3;
+                    let mut human_correction: Option<String> = None;
+                    let mut human_reworks: u8 = 0;
+                    let outcome = loop {
+                        let outcome = self
+                            .run_stage_subtasks(
+                                req.stage, &indices, queue, &mut exec_ctx, op_max_authz,
+                                executor, task_id, human_correction.take().as_deref(),
+                            )
+                            .await;
+                        match self
+                            .two_level_phase_gate(
+                                task_id, req.stage, &outcome, &dag, op_profile.as_ref(),
+                            )
+                            .await
+                        {
+                            PhaseGateDecision::Allowed => break outcome,
+                            PhaseGateDecision::Held => {
+                                break crate::harness::operation_flow::StageFlowOutcome::blocked();
+                            }
+                            PhaseGateDecision::Rework(note) => {
+                                if human_reworks >= MAX_HUMAN_REWORKS {
+                                    self.emit(AiEvent::TaskProgress {
+                                        task_id: task_id.to_string(),
+                                        status: "waiting_approval".to_string(),
+                                        message: format!(
+                                            "Reached the human-rework limit ({}) at {}; holding.",
+                                            MAX_HUMAN_REWORKS,
+                                            req.stage.as_str()
+                                        ),
+                                    });
+                                    break crate::harness::operation_flow::StageFlowOutcome::blocked(
+                                    );
+                                }
+                                human_reworks += 1;
+                                human_correction = Some(note);
+                                // loop: re-run this stage with the reviewer's note
+                            }
+                        }
+                    };
                     // G · observability: the graph-driven path advanced the cursor
                     // silently; mirror the legacy path's "cursor advanced" log so a
                     // run's stage progression is visible end-to-end.
@@ -722,6 +777,7 @@ impl TaskOrchestrator {
         op_max_authz: Option<crate::harness::AuthorizationLevel>,
         executor: &dyn AgentExecutor,
         task_id: Uuid,
+        human_correction: Option<&str>,
     ) -> crate::harness::operation_flow::StageFlowOutcome {
         self.stage_outcome_acc = None;
 
@@ -746,6 +802,23 @@ impl TaskOrchestrator {
             planned.description,
             super::super::prompts::stage_execution_prompt(stage.as_str())
         );
+        // Human-rejection rework (design 2026-06-05): a reviewer declined advancing
+        // past this stage and supplied a note. Prepend it as a high-priority
+        // directive so this re-run directly addresses the human's reason before the
+        // phase transition is re-evaluated.
+        if let Some(note) = human_correction {
+            planned.description = format!(
+                "## A human reviewer held this phase transition\n\
+                 A human reviewer declined advancing past the **{}** stage and asked you to \
+                 rework it first.\n\
+                 Reviewer's note: \"{}\"\n\
+                 Re-examine your work for this stage, directly address the reviewer's note, then \
+                 submit an updated stage deliverable.\n\n{}",
+                stage.as_str(),
+                note,
+                planned.description,
+            );
+        }
 
         exec_ctx.harness_stage = Some(stage);
         exec_ctx.harness_authz = op_max_authz.map(|max_authorization| {
@@ -829,31 +902,31 @@ impl TaskOrchestrator {
         &mut self,
         task_id: Uuid,
         from_stage: crate::harness::StageKind,
-        outcome: crate::harness::operation_flow::StageFlowOutcome,
+        outcome: &crate::harness::operation_flow::StageFlowOutcome,
         dag: &crate::harness::AllowedDag,
         profile: Option<&crate::harness::Profile>,
-    ) -> bool {
+    ) -> PhaseGateDecision {
         if !outcome.gate_allowed {
-            return true;
+            return PhaseGateDecision::Allowed;
         }
         let Some(profile) = profile else {
-            return true;
+            return PhaseGateDecision::Allowed;
         };
         // 引擎将走的下一 stage（与引擎条件边同源 branch_target 规则）。
         let Some(next) = crate::harness::operation_flow::branch_target(
             &dag.next_stages(from_stage),
             outcome.made_progress,
         ) else {
-            return true; // 终点，无跨界
+            return PhaseGateDecision::Allowed; // 终点，无跨界
         };
         let pm = match crate::harness::load_embedded_phase_map() {
             Ok(pm) => pm,
-            Err(_) => return true,
+            Err(_) => return PhaseGateDecision::Allowed,
         };
         if !crate::harness::phase_flow::phase_crossing_requires_approval(
             &pm, from_stage, next, profile,
         ) {
-            return true; // 同大阶段内推进 / 无需审批 → 放行
+            return PhaseGateDecision::Allowed; // 同大阶段内推进 / 无需审批 → 放行
         }
         tracing::info!(
             target: "harness::hook",
@@ -862,6 +935,120 @@ impl TaskOrchestrator {
             to = ?next,
             "two-level phase boundary holds for human approval"
         );
+        match self.request_phase_approval(task_id, from_stage, next).await {
+            PhaseApproval::Approved => {
+                self.emit(AiEvent::TaskProgress {
+                    task_id: task_id.to_string(),
+                    status: "running".to_string(),
+                    message: format!("Approval granted; entering phase via {}.", next.as_str()),
+                });
+                PhaseGateDecision::Allowed
+            }
+            PhaseApproval::Declined(Some(note)) => {
+                self.emit(AiEvent::TaskProgress {
+                    task_id: task_id.to_string(),
+                    status: "waiting_approval".to_string(),
+                    message: format!(
+                        "Held at {}; reworking this stage with your note before re-asking.",
+                        from_stage.as_str()
+                    ),
+                });
+                PhaseGateDecision::Rework(note)
+            }
+            PhaseApproval::Declined(None) => {
+                self.emit(AiEvent::TaskProgress {
+                    task_id: task_id.to_string(),
+                    status: "waiting_approval".to_string(),
+                    message: format!("Approval not granted; holding at {}.", from_stage.as_str()),
+                });
+                PhaseGateDecision::Held
+            }
+        }
+    }
+
+    /// Ask the human to approve crossing a 大阶段 boundary.
+    ///
+    /// **Preferred (interactive) path** — when a HITL coordinator is wired
+    /// ([`TaskOrchestrator::set_approval_coordinator`]): emit an
+    /// [`AiEvent::AskHumanRequest`] (`confirmation`) so the chat panel renders a
+    /// Confirm/Skip card the user clicks **without** stopping the running task. On
+    /// **Skip**, a second `freetext` card asks *why* — the note is returned as
+    /// [`PhaseApproval::Declined`] so the caller can re-run this stage with it as a
+    /// rework directive (the agent backtracks per the human's reason). The answers
+    /// return over the same `respond_to_tool_approval` channel the `ask_human` tool
+    /// uses; a 600s timeout (mirrors `ask_human`) keeps a forgotten card from
+    /// wedging the run.
+    ///
+    /// **Fallback path** — no coordinator (e.g. unit tests): emit the legacy
+    /// `waiting_approval` [`AiEvent::TaskProgress`] and block on `user_input_rx`,
+    /// treating an affirmative reply ([`approval_reply_is_affirmative`]) as grant
+    /// (no rework note on this path).
+    async fn request_phase_approval(
+        &mut self,
+        task_id: Uuid,
+        from_stage: crate::harness::StageKind,
+        next: crate::harness::StageKind,
+    ) -> PhaseApproval {
+        const PHASE_APPROVAL_TIMEOUT_SECS: u64 = 600;
+        if let Some(coordinator) = self.approval_coordinator.clone() {
+            // Step 1 — Confirm/Skip the crossing.
+            let request_id = Uuid::new_v4().to_string();
+            let decision_rx = coordinator.register_approval(request_id.clone());
+            self.emit(AiEvent::AskHumanRequest {
+                request_id,
+                question: format!(
+                    "Approve entering the next phase (crossing {} → {})?",
+                    from_stage.as_str(),
+                    next.as_str()
+                ),
+                input_type: "confirmation".to_string(),
+                options: Vec::new(),
+                context: "Phase-boundary gate: Confirm to let the agent proceed, or \
+                          Skip to hold — you'll then be asked what to rework."
+                    .to_string(),
+            });
+            let approved = matches!(
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(PHASE_APPROVAL_TIMEOUT_SECS),
+                    decision_rx,
+                )
+                .await,
+                Ok(Ok(decision)) if decision.approved
+            );
+            if approved {
+                return PhaseApproval::Approved;
+            }
+
+            // Step 2 — declined: ask WHY so the agent can rework using the note.
+            let reason_id = Uuid::new_v4().to_string();
+            let reason_rx = coordinator.register_approval(reason_id.clone());
+            self.emit(AiEvent::AskHumanRequest {
+                request_id: reason_id,
+                question: format!(
+                    "You held the crossing out of {}. What should the agent reconsider \
+                     or fix? It will rework this stage using your note.",
+                    from_stage.as_str()
+                ),
+                input_type: "freetext".to_string(),
+                options: Vec::new(),
+                context: "Leave empty / Skip to just hold without reworking.".to_string(),
+            });
+            let note = match tokio::time::timeout(
+                std::time::Duration::from_secs(PHASE_APPROVAL_TIMEOUT_SECS),
+                reason_rx,
+            )
+            .await
+            {
+                Ok(Ok(decision)) if decision.approved => decision
+                    .reason
+                    .map(|r| r.trim().to_string())
+                    .filter(|r| !r.is_empty()),
+                _ => None,
+            };
+            return PhaseApproval::Declined(note);
+        }
+
+        // Fallback: legacy text channel (no interactive coordinator; unit tests).
         self.emit(AiEvent::TaskProgress {
             task_id: task_id.to_string(),
             status: "waiting_approval".to_string(),
@@ -876,24 +1063,15 @@ impl TaskOrchestrator {
             Some(rx) => rx.recv().await,
             None => None,
         };
-        let approved = reply
+        if reply
             .as_deref()
             .map(approval_reply_is_affirmative)
-            .unwrap_or(false);
-        if approved {
-            self.emit(AiEvent::TaskProgress {
-                task_id: task_id.to_string(),
-                status: "running".to_string(),
-                message: format!("Approval granted; entering phase via {}.", next.as_str()),
-            });
+            .unwrap_or(false)
+        {
+            PhaseApproval::Approved
         } else {
-            self.emit(AiEvent::TaskProgress {
-                task_id: task_id.to_string(),
-                status: "waiting_approval".to_string(),
-                message: format!("Approval not granted; holding at {}.", from_stage.as_str()),
-            });
+            PhaseApproval::Declined(None)
         }
-        approved
     }
 
     /// P0 · gate evidence 回查: 把交付物里引用、但 ledger 中**不存在**的 evidence

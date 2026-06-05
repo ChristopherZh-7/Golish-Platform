@@ -461,6 +461,59 @@ fn saw_waiting_approval(events: &[AiEvent]) -> bool {
         .any(|e| matches!(e, AiEvent::TaskProgress { status, .. } if status == "waiting_approval"))
 }
 
+/// Block until the next `AskHumanRequest` arrives, returning its `request_id`
+/// (used to resolve that card through the coordinator in the rework test).
+async fn recv_ask_human_request_id(rx: &mut mpsc::UnboundedReceiver<AiEvent>) -> String {
+    loop {
+        match rx.recv().await {
+            Some(AiEvent::AskHumanRequest { request_id, .. }) => return request_id,
+            Some(_) => continue,
+            None => panic!("event channel closed before an AskHumanRequest arrived"),
+        }
+    }
+}
+
+/// Minimal [`GolishRuntime`] so gate tests can spawn a real `EventCoordinator`
+/// (the orchestrator emits the cards over its own `event_tx`; the coordinator is
+/// used only to register + resolve the approval decisions).
+struct GateMockRuntime;
+
+#[async_trait]
+impl golish_core::runtime::GolishRuntime for GateMockRuntime {
+    fn emit(
+        &self,
+        _event: golish_core::runtime::RuntimeEvent,
+    ) -> Result<(), golish_core::runtime::RuntimeError> {
+        Ok(())
+    }
+
+    async fn request_approval(
+        &self,
+        _request_id: String,
+        _tool_name: String,
+        _args: serde_json::Value,
+        _risk_level: String,
+    ) -> Result<golish_core::runtime::ApprovalResult, golish_core::runtime::RuntimeError> {
+        Ok(golish_core::runtime::ApprovalResult::Approved)
+    }
+
+    fn is_interactive(&self) -> bool {
+        true
+    }
+
+    fn auto_approve(&self) -> bool {
+        false
+    }
+
+    async fn shutdown(&self) -> Result<(), golish_core::runtime::RuntimeError> {
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// A gate PASS routed through `consume_gate_outcome` (the single chokepoint both
 /// gate sites flow through) emits an authoritative `stage_passed` TaskProgress
 /// carrying the stage id. The UI keys the "Stage complete" milestone + per-stage
@@ -531,17 +584,22 @@ async fn two_level_phase_gate_withholds_on_non_affirmative_reply() {
     let dag = graph.project(&profile.allowed_stage_set());
 
     orch.user_input_sender().send("no".to_string()).unwrap();
-    let approved = orch
+    let decision = orch
         .two_level_phase_gate(
             op,
             StageKind::TargetIntel,
-            StageFlowOutcome::pass_with_progress(),
+            &StageFlowOutcome::pass_with_progress(),
             &dag,
             Some(&profile),
         )
         .await;
 
-    assert!(!approved, "non-affirmative reply must withhold approval");
+    // On the fallback text channel a non-affirmative reply carries no rework note,
+    // so the gate holds (engine interrupts) rather than requesting a rework.
+    assert!(
+        matches!(decision, super::PhaseGateDecision::Held),
+        "non-affirmative reply must withhold approval"
+    );
     assert!(saw_waiting_approval(&drain(&mut rx)));
 }
 
@@ -564,18 +622,84 @@ async fn two_level_phase_gate_approves_on_affirmative_reply() {
     orch.user_input_sender()
         .send("approve".to_string())
         .unwrap();
-    let approved = orch
+    let decision = orch
         .two_level_phase_gate(
             op,
             StageKind::TargetIntel,
-            StageFlowOutcome::pass_with_progress(),
+            &StageFlowOutcome::pass_with_progress(),
             &dag,
             Some(&profile),
         )
         .await;
 
-    assert!(approved, "affirmative reply must grant approval");
+    assert!(
+        matches!(decision, super::PhaseGateDecision::Allowed),
+        "affirmative reply must grant approval"
+    );
     assert!(saw_waiting_approval(&drain(&mut rx)));
+}
+
+/// Interactive (coordinator) path: declining the crossing and then supplying a
+/// note routes the gate into `Rework(note)` — not a bare hold — so the caller
+/// re-runs THIS stage with the reviewer's reason. Exercises the two-step
+/// ask_human flow end-to-end against a real `EventCoordinator`: confirm card →
+/// declined, then freetext card → note.
+#[tokio::test]
+async fn two_level_phase_gate_reworks_on_declined_with_reason() {
+    use crate::harness::operation_flow::StageFlowOutcome;
+    use golish_core::hitl::ApprovalDecision;
+
+    let op = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "pentest", "target_intel");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
+
+    let coordinator = crate::EventCoordinator::spawn(
+        "phase-approval-test".to_string(),
+        Arc::new(GateMockRuntime),
+        None,
+    );
+    orch.set_approval_coordinator(Some(coordinator.clone()));
+
+    let graph = crate::harness::base_operation_graph().unwrap();
+    let profile = crate::harness::load_embedded_profile("pentest")
+        .unwrap()
+        .unwrap();
+    let dag = graph.project(&profile.allowed_stage_set());
+    let outcome = StageFlowOutcome::pass_with_progress();
+
+    // Decline the confirm card, then answer the follow-up freetext card with a
+    // rework note. Each card's request_id is read off the emitted event so the
+    // coordinator can resolve the exact oneshot the gate is awaiting.
+    let responder = async {
+        let confirm_id = recv_ask_human_request_id(&mut rx).await;
+        coordinator.resolve_approval(ApprovalDecision {
+            request_id: confirm_id,
+            approved: false,
+            reason: None,
+            remember: false,
+            always_allow: false,
+        });
+        let reason_id = recv_ask_human_request_id(&mut rx).await;
+        coordinator.resolve_approval(ApprovalDecision {
+            request_id: reason_id,
+            approved: true,
+            reason: Some("re-scan the open ports you skipped".to_string()),
+            remember: false,
+            always_allow: false,
+        });
+    };
+
+    let gate =
+        orch.two_level_phase_gate(op, StageKind::TargetIntel, &outcome, &dag, Some(&profile));
+    let (decision, ()) = tokio::join!(gate, responder);
+
+    match decision {
+        super::PhaseGateDecision::Rework(note) => {
+            assert_eq!(note, "re-scan the open ports you skipped");
+        }
+        _ => panic!("a declined crossing with a note must route to Rework"),
+    }
 }
 
 /// P3 RAG-prior wiring: inside a harness stage, `execute_single_subtask` pulls

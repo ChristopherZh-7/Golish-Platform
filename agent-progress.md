@@ -29,6 +29,25 @@
 
 ---
 
+### 2026-06-05 · 阶段审批闸改用 ask_human 卡片 + 拒绝原因驱动返工（MCP-agent-4 · DISPATCH off · 用户「这个怎么回事 没地方点 approve」→「用 ask_human 搞 yes/no」→「选否要填理由」→「ai 根据拒绝理由回溯想办法」→「提交并更新 progress」）
+
+- **根因（systematic-debugging 第一阶段，已核证据）**：两级模型 graph-flow 审批闸 `two_level_phase_gate`（`execute.rs`）原本发被动 `waiting_approval` TaskProgress + **阻塞等 `user_input_rx`**；但生产 `user_input_sender()` **只在测试里被调用**（`chat.rs::execute_task_mode` 从不捕获它），所以跨大阶段审批一旦触发 = **永久卡死**：没有按钮，且任务运行中底部按钮是「停止」态（要发字得先打断任务）。用户截图的「Waiting for approval 无处可点」正是这个死路。
+- **修复（用户选 ask_human 路线 + B：拒绝原因回灌返工）**：
+  - **接 HITL coordinator**：`TaskOrchestrator` 加 `approval_coordinator: Option<CoordinatorHandle>` 字段 + `set_approval_coordinator` setter；`chat.rs::execute_task_mode` 把 `bridge.coordinator().cloned()` 传入。复用 `ask_human` 全链路（前端 `respondToToolApproval` → `respond_to_tool_approval` → `coordinator.resolve_approval`），**零新 IPC/ts-rs、零前端改动**。
+  - **两步审批（`execute.rs::request_phase_approval`）**：① `confirmation` 卡（Confirm/Skip）；② Skip → `freetext`「why」卡。返回 `PhaseApproval::{Approved | Declined(Option<note>)}`。600s 超时（对齐 ask_human）防忘点卡死。无 coordinator（单测）回退旧 `user_input_rx` 文本通道（保留既有测试行为）。
+  - **拒绝原因→返工（B）**：`two_level_phase_gate` 改返 `PhaseGateDecision::{Allowed | Held | Rework(note)}`；servicer 循环遇 `Rework(note)` 时把 note 注入 `run_stage_subtasks` 新增的 `human_correction` 参数（拼成「A human reviewer held this phase transition / Reviewer's note: …」高优先级指令）并**重跑当前 stage**，上限 `MAX_HUMAN_REWORKS=3`；空原因/Skip → `Held`（blocked，引擎 Interrupt）。
+  - **UX**：Approve 一键推进；Reject → 必答「该返工什么」→ AI 据原因重跑该 stage → 再问，直到批准或达 3 次上限；全程点卡片按钮，不碰输入框、不用按停止。
+- **运行过的验证（本机实跑，全绿）**：
+  - `cargo nextest -p golish-agent-kit -E 'test(task_orchestrator)|test(harness)'` → **248/248 passed**（含新端到端 `two_level_phase_gate_reworks_on_declined_with_reason`：真 `EventCoordinator` + 两步 ask_human → 断言 `Rework("re-scan the open ports you skipped")`；既有 2 条闸测试更新为新枚举返回 + `&outcome` 借用）。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-app -- -D warnings` + `cargo clippy -p golish-agent-kit --all-targets -- -D warnings`（含新测试代码）→ **exit 0 零告警**。
+  - `cargo check -p golish-agent-kit -p golish-agent-app` → exit 0；`cargo fmt --check` → 仅 1 处**与本次无关的预存漂移**（`golish-agent-runtime/.../stream_processor/mod.rs:444` 双空行，别的 WIP 留下，未动）。
+- **本轮改动文件**：`chat.rs`（+5，接 coordinator）、`execute.rs`（两步审批 + 返工循环 + `PhaseApproval`/`PhaseGateDecision` 枚举 + `run_stage_subtasks` 加 `human_correction`）、`execute_harness_loop_tests.rs`（2 测试更新 + 新 rework 测试 + `GateMockRuntime`/`recv_ask_human_request_id` 助手）。**注**：`orchestrator.rs` 的字段/setter 在本会话编辑期间被**并发会话**的「harness 观测」commit（`86241175`/`ad950431`）卷入 HEAD，故不在本 commit（功能完整、树一致、已编译验证）。
+- **commit**：本轮 3 文件 + 本 progress 一并 commit 到 `feat/harness-2026-06-01`，**未 push**（push 需用户单独点头，AGENTS.md §2.7）。
+- **范围/风险（诚实）**：**未做活体 e2e**（没 `just dev` 真撞闸）；证据 = 编译 + 248 单测 + 真 coordinator 两步集成测试。第二张「原因」卡可 Skip（→ 仅 hold 不返工）；若要「拒绝必须填、不可跳过、同卡完成」需加专用 `approval` 前端卡片类型（后续）。`just precommit` **未全量重跑**（工作树另有并发会话的无关预存 fmt 漂移会让全量门禁红，非本任务引入）。
+- **下一步建议**：① 活体冒烟（`just dev` 真撞闸看 Confirm/Skip → reason → 重跑 → 再问）；② 选做：原因卡强制不可跳过 + 按钮文案 Approve/Reject；③ 若要 precommit 全绿需先收拾那处无关 fmt 漂移（非本任务）。
+
+---
+
 ### 2026-06-05 · 统一 AI+Harness 可观测 P1 + P2 加性事件 实现（MCP-agent-4 · DISPATCH off · 用户「直接全部搞完然后再跑检查」→「一直把所有的都干完」）
 
 - **本轮目标**：把同会话刚写的设计/计划的 **P1 + P2 加性事件（Tasks 6/8/9）** 一口气实现完，最后统一跑检查、修问题。

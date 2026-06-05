@@ -170,6 +170,11 @@ async fn execute_task_mode(
     // corrections can name the operation's real evidence ids (the string
     // `_session_id` is what both evidence write paths stamp on `audit_log`).
     orchestrator.set_chat_session_id(_session_id);
+    // Wire the HITL coordinator so the two-level phase-approval gate can request a
+    // clickable Confirm/Skip decision (the same `ask_human` channel) instead of
+    // the legacy text channel, which has no production feeder and would otherwise
+    // leave the run stuck at "Waiting for approval" with no way to approve.
+    orchestrator.set_approval_coordinator(bridge.coordinator().cloned());
     let executor = BridgeAgentExecutor::new(bridge.clone());
 
     // Resume-aware entry (Task 断线恢复 · L2): if this chat session has a
