@@ -147,6 +147,53 @@ fn asset_intel_provider_descriptors_load_from_tool_configs() {
 }
 
 #[test]
+fn bundled_quake_asset_intel_config_loads() {
+    let tools_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../resources/toolsconfig");
+    let scan = golish_pentest::scan_toolsconfig(&tools_dir);
+    assert!(scan.success, "toolsconfig scan failed: {:?}", scan.error);
+    let quake = scan
+        .tools
+        .iter()
+        .find(|tool| tool.id == "quake")
+        .expect("bundled quake toolsconfig should load");
+    let asset = quake
+        .asset_intel
+        .as_ref()
+        .expect("quake should expose asset_intel");
+
+    assert_eq!(asset.provider_id, "quake");
+    assert!(
+        !asset.auto.default,
+        "quake should be explicit until a provider picker avoids default missing-key failures"
+    );
+    assert_eq!(
+        asset
+            .requires_integration
+            .as_ref()
+            .map(|req| req.tool_id.as_str()),
+        Some("quake")
+    );
+    assert!(asset.capabilities.iter().any(|cap| cap == "services"));
+    match &asset.runtime {
+        golish_pentest::models::AssetIntelRuntimeConfig::HttpJson { requests } => {
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0].method, "POST");
+            assert_eq!(
+                requests[0].headers.get("X-QuakeToken").map(String::as_str),
+                Some("{{secret:api_key}}")
+            );
+            assert_eq!(requests[0].json["query"], "org: \"{{company_name}}\"");
+            assert_eq!(
+                requests[1].json["query"],
+                "service.http.icp.main_licence.unit: \"{{company_name}}\""
+            );
+        }
+        other => panic!("expected quake http_json runtime, got {other:?}"),
+    }
+}
+
+#[test]
 fn normalize_provider_records_splits_candidates_and_preserves_evidence() {
     let candidates = normalize_provider_records(
         "mock",

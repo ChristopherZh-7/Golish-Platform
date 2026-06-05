@@ -8,7 +8,7 @@ use crate::targets::{db_target_list, Target};
 
 use super::export::write_recon_assets_workbook_file;
 use super::runner::normalized_current_asset_records;
-use super::runner::{in_scope_organization_targets, initial_snapshot, OrganizationReconRunner};
+use super::runner::{initial_snapshot, OrganizationReconRunner};
 use super::state::OrganizationReconState;
 use super::types::{
     OrganizationReconExportResult, OrganizationReconRunSnapshot, OrganizationReconStageName,
@@ -33,17 +33,6 @@ pub async fn organization_recon_start_run(
             "organization name is empty; cannot run recon".into(),
         ));
     }
-    if args.allow_active {
-        let targets =
-            in_scope_organization_targets(pool, &organization.project_path, organization_id)
-                .await?;
-        if targets.is_empty() {
-            return Err(GolishError::Validation(
-                "active recon requires at least one organization target with scope=in".into(),
-            ));
-        }
-    }
-
     let run_id = Uuid::new_v4().to_string();
     let snapshot = initial_snapshot(
         run_id.clone(),
@@ -51,6 +40,7 @@ pub async fn organization_recon_start_run(
         organization.project_path.clone(),
     );
     state.insert(snapshot.clone()).await;
+    let snapshot = state.start_run(&run_id).await.unwrap_or(snapshot);
 
     let runner = OrganizationReconRunner {
         pool: pool.clone(),

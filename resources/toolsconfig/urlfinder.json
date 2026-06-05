@@ -1,0 +1,175 @@
+{
+  "tool": {
+    "category": "recon",
+    "description": "Extract URLs, JavaScript endpoints, domains, and sensitive info from web pages.",
+    "executable": "URLFinder/URLFinder",
+    "id": "urlfinder",
+    "install": {
+      "method": "github",
+      "source": "pingc0y/URLFinder"
+    },
+    "launchMode": "cli",
+    "name": "URLFinder",
+    "output": {
+      "db_action": "target_update_recon",
+      "detect": "URLFinder|JS \\+ .*URL|\\\"url\\\"|\\\"domain\\\"",
+      "fields": {
+        "domain": "domain[]",
+        "email": "info.Email[].Email",
+        "phone": "info.Phone[].Phone",
+        "url": "url[].Url"
+      },
+      "format": "json",
+      "produces": [
+        "url",
+        "domain",
+        "leak"
+      ]
+    },
+    "params": [
+      {
+        "description": "Single target URL",
+        "flag": "-u",
+        "label": "URL",
+        "placeholder": "https://www.example.com",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "File with one URL per line",
+        "flag": "-f",
+        "label": "URL File",
+        "placeholder": "url.txt",
+        "type": "string"
+      },
+      {
+        "description": "Treat all URLs in the file as one merged crawl result",
+        "flag": "-ff",
+        "label": "Merged URL File",
+        "placeholder": "url.txt",
+        "type": "string"
+      },
+      {
+        "default": "all",
+        "description": "Status codes to display, or all",
+        "flag": "-s",
+        "label": "Status Codes",
+        "placeholder": "all",
+        "type": "string"
+      },
+      {
+        "default": "3",
+        "description": "Crawl mode",
+        "flag": "-m",
+        "label": "Mode",
+        "options": [
+          {
+            "label": "Normal crawl",
+            "value": "1"
+          },
+          {
+            "label": "Deep crawl",
+            "value": "2"
+          },
+          {
+            "label": "Safe deep crawl",
+            "value": "3"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "description": "Domain regex to keep results in scope",
+        "flag": "-d",
+        "label": "Domain Filter",
+        "placeholder": "example\\.com",
+        "type": "string"
+      },
+      {
+        "default": ".",
+        "description": "Output directory or explicit csv/json/html path",
+        "flag": "-o",
+        "label": "Output",
+        "placeholder": ".",
+        "type": "string"
+      },
+      {
+        "default": "50",
+        "description": "Worker threads",
+        "flag": "-t",
+        "label": "Threads",
+        "type": "string"
+      },
+      {
+        "default": "5",
+        "description": "Request timeout in seconds",
+        "flag": "-time",
+        "label": "Timeout",
+        "type": "string"
+      },
+      {
+        "description": "Maximum crawl count",
+        "flag": "-max",
+        "label": "Max",
+        "type": "string"
+      },
+      {
+        "description": "Proxy URL",
+        "flag": "-x",
+        "label": "Proxy",
+        "placeholder": "http://127.0.0.1:8877",
+        "type": "string"
+      }
+    ],
+    "pentestPhase": [
+      "recon",
+      "enum"
+    ],
+    "runtime": "native",
+    "skills": [
+      {
+        "args": "-u {{url}} -s all -m 3 -o .",
+        "description": "Crawl one URL in safe deep mode and export all results",
+        "id": "safe-url-crawl",
+        "name": "Safe URL crawl",
+        "tags": [
+          "recon",
+          "safe"
+        ]
+      },
+      {
+        "args": "-u {{url}} -s 200,403 -m 3 -o .",
+        "description": "Show only 200 and 403 status results",
+        "id": "status-200-403",
+        "name": "200/403 URL crawl",
+        "tags": [
+          "recon",
+          "filtered"
+        ]
+      },
+      {
+        "args": "-s all -m 3 -ff {{url_file}} -o .",
+        "description": "Treat all URLs in one file as a merged result set",
+        "id": "bulk-merged",
+        "name": "Bulk merged crawl",
+        "tags": [
+          "bulk",
+          "json"
+        ]
+      }
+    ],
+    "subcategory": "url-discovery",
+    "tags": [
+      "recon",
+      "url",
+      "js",
+      "crawler",
+      "active"
+    ],
+    "tier": "recommended",
+    "updateInfo": {
+      "lastUpdated": "2026-06-05",
+      "version": "2023.9.9"
+    }
+  }
+}

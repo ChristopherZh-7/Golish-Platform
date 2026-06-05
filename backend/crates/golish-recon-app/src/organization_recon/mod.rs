@@ -21,8 +21,8 @@ pub use types::{
     NormalizedReconRecord, OrganizationReconEvent, OrganizationReconExportResult,
     OrganizationReconRunSnapshot, OrganizationReconRunStatus, OrganizationReconStageName,
     OrganizationReconStageSnapshot, OrganizationReconStartArgs, OrganizationReconTaskSnapshot,
-    ReconArtifactRef, ReconEvidenceRef, ReconRecordKind, ReconTaskError, ReconTaskManifest,
-    ReconTaskStatus,
+    OrganizationReconTraceEvent, OrganizationReconTraceKind, ReconArtifactRef, ReconEvidenceRef,
+    ReconRecordKind, ReconTaskError, ReconTaskManifest, ReconTaskStatus,
 };
 
 #[doc(hidden)]

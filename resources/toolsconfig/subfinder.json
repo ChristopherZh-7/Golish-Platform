@@ -12,8 +12,8 @@
     "tier": "recommended",
     "tags": ["recon", "subdomain", "passive"],
     "install": {
-      "method": "homebrew",
-      "source": "subfinder",
+      "method": "github",
+      "source": "projectdiscovery/subfinder",
       "windows": { "method": "github", "source": "projectdiscovery/subfinder" },
       "linux": { "method": "github", "source": "projectdiscovery/subfinder" }
     },

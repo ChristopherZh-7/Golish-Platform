@@ -12,8 +12,8 @@
     "tier": "recommended",
     "tags": ["recon", "http", "probe", "fingerprint"],
     "install": {
-      "method": "homebrew",
-      "source": "httpx",
+      "method": "github",
+      "source": "projectdiscovery/httpx",
       "windows": { "method": "github", "source": "projectdiscovery/httpx" },
       "linux": { "method": "github", "source": "projectdiscovery/httpx" }
     },

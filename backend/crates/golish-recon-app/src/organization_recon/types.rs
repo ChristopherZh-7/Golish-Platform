@@ -60,6 +60,34 @@ pub struct OrganizationReconStageSnapshot {
     pub task_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
+pub enum OrganizationReconTraceKind {
+    RunStarted,
+    RunCompleted,
+    StepStarted,
+    StepLog,
+    StepAnnotation,
+    StepCompleted,
+    ArtifactCreated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
+pub struct OrganizationReconTraceEvent {
+    pub id: String,
+    pub kind: OrganizationReconTraceKind,
+    #[ts(type = "number")]
+    pub timestamp: u64,
+    pub stage: Option<OrganizationReconStageName>,
+    pub task_id: Option<String>,
+    pub status: Option<ReconTaskStatus>,
+    pub level: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../../frontend/lib/generated/")]
@@ -71,6 +99,7 @@ pub struct OrganizationReconRunSnapshot {
     pub stages: Vec<OrganizationReconStageSnapshot>,
     pub tasks: Vec<OrganizationReconTaskSnapshot>,
     pub errors: Vec<ReconTaskError>,
+    pub trace_events: Vec<OrganizationReconTraceEvent>,
     #[ts(type = "number")]
     pub created_at: u64,
     #[ts(type = "number")]

@@ -80,7 +80,7 @@ pub(crate) async fn persist_normalized_records(
 
     let mut profile = ProfileAccumulator::from_organization(organization);
     for record in records {
-        if let Some(target_type) = target_type_for_record(record) {
+        if let Some(target_type) = target_type_for_record(organization, record) {
             let existed = persist_target_record(&mut tx, organization, record, target_type).await?;
             if existed {
                 summary.target_existing += 1;
@@ -134,14 +134,153 @@ pub(crate) async fn persist_normalized_records(
     Ok(summary)
 }
 
-fn target_type_for_record(record: &NormalizedReconRecord) -> Option<&'static str> {
+fn target_type_for_record(
+    organization: &golish_db::models::Organization,
+    record: &NormalizedReconRecord,
+) -> Option<&'static str> {
     match record.kind {
-        ReconRecordKind::Domain => Some("domain"),
+        ReconRecordKind::Domain if record_belongs_to_organization(organization, record) => {
+            Some("domain")
+        }
         ReconRecordKind::Ip => Some("ip"),
-        ReconRecordKind::Url => Some("url"),
-        ReconRecordKind::Site if url::Url::parse(&record.value).is_ok() => Some("url"),
+        ReconRecordKind::Url if record_belongs_to_organization(organization, record) => Some("url"),
+        ReconRecordKind::Site
+            if url::Url::parse(&record.value).is_ok()
+                && record_belongs_to_organization(organization, record) =>
+        {
+            Some("url")
+        }
         _ => None,
     }
+}
+
+fn record_belongs_to_organization(
+    organization: &golish_db::models::Organization,
+    record: &NormalizedReconRecord,
+) -> bool {
+    match record.kind {
+        ReconRecordKind::Domain | ReconRecordKind::Url | ReconRecordKind::Site => {
+            value_belongs_to_organization(organization, &record.value)
+        }
+        _ => true,
+    }
+}
+
+fn value_belongs_to_organization(
+    organization: &golish_db::models::Organization,
+    value: &str,
+) -> bool {
+    if value.trim().parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    let Some(host) = normalized_host(value) else {
+        return false;
+    };
+    if is_known_public_non_asset_host(&host) {
+        return false;
+    }
+    let domains = organization_owned_domains(organization);
+    if domains.is_empty() {
+        return false;
+    }
+    domains
+        .iter()
+        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+}
+
+fn organization_owned_domains(organization: &golish_db::models::Organization) -> Vec<String> {
+    let mut domains = Vec::new();
+    collect_owned_domain_values(&mut domains, &organization.domains);
+    if let Some(intel) = organization.intel.as_object() {
+        if let Some(value) = intel.get("app_domains") {
+            collect_owned_domain_values(&mut domains, value);
+        }
+    }
+    domains.sort();
+    domains.dedup();
+    domains
+}
+
+fn collect_owned_domain_values(domains: &mut Vec<String>, value: &Value) {
+    for item in json_atom_values(value) {
+        if let Some(host) = normalized_host(&item) {
+            if !is_known_public_non_asset_host(&host) {
+                domains.push(host);
+            }
+        }
+    }
+}
+
+fn json_atom_values(value: &Value) -> Vec<String> {
+    match value {
+        Value::Null => Vec::new(),
+        Value::String(text) => {
+            if text.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![text.trim().to_string()]
+            }
+        }
+        Value::Array(items) => items.iter().flat_map(json_atom_values).collect(),
+        Value::Object(map) => {
+            for key in ["domain", "url", "host", "value", "name"] {
+                if let Some(value) = map.get(key).and_then(Value::as_str) {
+                    if !value.trim().is_empty() {
+                        return vec![value.trim().to_string()];
+                    }
+                }
+            }
+            map.values().flat_map(json_atom_values).collect()
+        }
+        other => vec![other.to_string()],
+    }
+}
+
+fn normalized_host(value: &str) -> Option<String> {
+    let value = value.trim().trim_end_matches('.').to_ascii_lowercase();
+    if value.is_empty() || value.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    if let Ok(url) = url::Url::parse(&value) {
+        return url
+            .host_str()
+            .map(|host| host.trim_start_matches("www.").to_string());
+    }
+    if looks_like_domain(&value) {
+        return Some(value.trim_start_matches("www.").to_string());
+    }
+    None
+}
+
+fn looks_like_domain(value: &str) -> bool {
+    let value = value.trim().trim_end_matches('.');
+    if value.contains(char::is_whitespace) || !value.contains('.') {
+        return false;
+    }
+    value.split('.').all(|part| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    })
+}
+
+fn is_known_public_non_asset_host(host: &str) -> bool {
+    const PUBLIC_HOSTS: &[&str] = &[
+        "github.com",
+        "gitlab.com",
+        "bitbucket.org",
+        "gitee.com",
+        "126.com",
+        "163.com",
+        "gmail.com",
+        "hotmail.com",
+        "outlook.com",
+        "qq.com",
+    ];
+    PUBLIC_HOSTS
+        .iter()
+        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
 }
 
 fn record_kind_label(kind: &ReconRecordKind) -> &'static str {
@@ -525,6 +664,63 @@ mod tests {
         assert_eq!(profile.intel["mini_programs"], json!(["平安好车主"]));
         assert_eq!(profile.social_accounts, json!(["pingan"]));
         assert_eq!(profile.contacts["email"], json!(["security@example.com"]));
+    }
+
+    #[test]
+    fn target_type_rejects_public_code_host_outside_org_domains() {
+        let org = golish_db::models::Organization {
+            id: Uuid::new_v4(),
+            project_path: "/tmp/project".into(),
+            name: "Org".into(),
+            parent_id: None,
+            description: String::new(),
+            owner: String::new(),
+            sort_order: 0,
+            aliases: Vec::new(),
+            industry: String::new(),
+            tier: String::new(),
+            credit_code: String::new(),
+            domains: json!(["pingan.com.cn"]),
+            ip_ranges: json!([]),
+            asns: json!([]),
+            email_domains: json!(["126.com"]),
+            scope_rules: json!({}),
+            intel: json!({ "app_domains": ["app.pingan.com.cn"] }),
+            notes: String::new(),
+            certificates: json!([]),
+            subsidiaries: json!([]),
+            business_systems: json!([]),
+            cloud_assets: json!([]),
+            github_orgs: json!([]),
+            social_accounts: json!([]),
+            historical_vulns: json!([]),
+            contacts: json!({}),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        assert_eq!(
+            target_type_for_record(
+                &org,
+                &record(
+                    ReconRecordKind::Url,
+                    "https://github.com/example/leak/blob/main/key.txt",
+                    ""
+                )
+            ),
+            None
+        );
+        assert_eq!(
+            target_type_for_record(&org, &record(ReconRecordKind::Domain, "126.com", "")),
+            None
+        );
+        assert_eq!(
+            target_type_for_record(
+                &org,
+                &record(ReconRecordKind::Url, "https://www.pingan.com.cn/", "")
+            ),
+            Some("url")
+        );
     }
 
     #[test]

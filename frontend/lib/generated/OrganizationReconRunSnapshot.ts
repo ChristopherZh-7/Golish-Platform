@@ -2,6 +2,7 @@
 import type { OrganizationReconRunStatus } from "./OrganizationReconRunStatus";
 import type { OrganizationReconStageSnapshot } from "./OrganizationReconStageSnapshot";
 import type { OrganizationReconTaskSnapshot } from "./OrganizationReconTaskSnapshot";
+import type { OrganizationReconTraceEvent } from "./OrganizationReconTraceEvent";
 import type { ReconTaskError } from "./ReconTaskError";
 
-export type OrganizationReconRunSnapshot = { runId: string, organizationId: string, projectPath: string, status: OrganizationReconRunStatus, stages: Array<OrganizationReconStageSnapshot>, tasks: Array<OrganizationReconTaskSnapshot>, errors: Array<ReconTaskError>, createdAt: number, updatedAt: number, };
+export type OrganizationReconRunSnapshot = { runId: string, organizationId: string, projectPath: string, status: OrganizationReconRunStatus, stages: Array<OrganizationReconStageSnapshot>, tasks: Array<OrganizationReconTaskSnapshot>, errors: Array<ReconTaskError>, traceEvents: Array<OrganizationReconTraceEvent>, createdAt: number, updatedAt: number, };

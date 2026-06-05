@@ -30,6 +30,7 @@ import {
   translateOrgFieldGroups,
   translateWithFallback,
 } from "@/lib/target-panel/org-fields";
+import { hasExportableCurrentReconAssets } from "@/lib/target-panel/organization-recon";
 import type { AssetIntelOrgActionKind, WorkspaceTab } from "@/lib/target-panel/types";
 import { cn } from "@/lib/utils";
 import { AssetIntelActivityPanel } from "./AssetIntelActivityPanel";
@@ -59,7 +60,7 @@ interface OrgWorkspacePanelProps {
   setExpandedCandidateIds: Dispatch<SetStateAction<Set<string>>>;
   setEditingTargetId: Dispatch<SetStateAction<string | null>>;
   handleRunAssetIntel: (org: Organization, action: AssetIntelOrgActionKind) => void;
-  handleRunOrganizationRecon: (org: Organization, allowActive: boolean) => void;
+  handleRunOrganizationRecon: (org: Organization) => void;
   handleExportOrganizationReconAssets: (
     org: Organization,
     run?: OrganizationReconRunSnapshot
@@ -239,7 +240,7 @@ export function OrgWorkspacePanel({
           handleRunAssetIntel={handleRunAssetIntel}
           organizationReconRun={organizationReconRun}
           organizationReconError={organizationReconError}
-          hasInScopeTargets={inScopeCount > 0}
+          hasCurrentReconAssets={hasExportableCurrentReconAssets(selectedOrg, selectedTargets)}
           handleRunOrganizationRecon={handleRunOrganizationRecon}
           handleExportOrganizationReconAssets={handleExportOrganizationReconAssets}
         />

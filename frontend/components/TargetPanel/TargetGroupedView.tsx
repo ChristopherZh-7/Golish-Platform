@@ -61,6 +61,7 @@ import {
 } from "@/lib/target-panel/org-tree";
 import {
   applyOrganizationReconEvent,
+  isOrganizationOwnedTarget,
   suggestedReconAssetsFilename,
 } from "@/lib/target-panel/organization-recon";
 import type { AssetIntelOrgActionKind, WorkspaceTab } from "@/lib/target-panel/types";
@@ -227,10 +228,22 @@ export function TargetGroupedView({
     };
   }, []);
 
+  const orgById = useMemo(() => new Map(orgs.map((org) => [org.id, org])), [orgs]);
+  const visibleTargets = useMemo(
+    () =>
+      targets.filter((target) => {
+        if (!target.organization_id) return true;
+        const org = orgById.get(target.organization_id);
+        if (!org) return true;
+        if (getEffectiveEngagementMode(org, orgs) !== "discover_assets") return true;
+        return isOrganizationOwnedTarget(org, target.value);
+      }),
+    [orgById, orgs, targets]
+  );
   const unassignedLabel = t("targets.unassigned");
   const roots = useMemo(
-    () => buildOrgTree(orgs, targets, unassignedLabel),
-    [orgs, targets, unassignedLabel]
+    () => buildOrgTree(orgs, visibleTargets, unassignedLabel),
+    [orgs, visibleTargets, unassignedLabel]
   );
   const selectedOrg = useMemo(
     () => orgs.find((o) => o.id === selectedOrgId) ?? orgs[0] ?? null,
@@ -239,12 +252,14 @@ export function TargetGroupedView({
   const selectedMode = getEffectiveEngagementMode(selectedOrg ?? undefined, orgs);
   const selectedTargets = useMemo(
     () =>
-      selectedOrg ? targets.filter((target) => target.organization_id === selectedOrg.id) : [],
-    [selectedOrg, targets]
+      selectedOrg
+        ? visibleTargets.filter((target) => target.organization_id === selectedOrg.id)
+        : [],
+    [selectedOrg, visibleTargets]
   );
   const selectedTarget = useMemo(
-    () => targets.find((target) => target.id === selectedTargetId) ?? null,
-    [selectedTargetId, targets]
+    () => visibleTargets.find((target) => target.id === selectedTargetId) ?? null,
+    [selectedTargetId, visibleTargets]
   );
 
   useEffect(() => {
@@ -404,28 +419,25 @@ export function TargetGroupedView({
     [refreshOrgs]
   );
 
-  const handleRunOrganizationRecon = useCallback(
-    async (org: Organization, allowActive: boolean) => {
-      setSelectedOrgId(org.id);
-      setWorkspaceTab("activity");
-      setOrganizationReconErrors((prev) => {
-        const next = { ...prev };
-        delete next[org.id];
-        return next;
+  const handleRunOrganizationRecon = useCallback(async (org: Organization) => {
+    setSelectedOrgId(org.id);
+    setWorkspaceTab("activity");
+    setOrganizationReconErrors((prev) => {
+      const next = { ...prev };
+      delete next[org.id];
+      return next;
+    });
+    try {
+      const run = await organizationRecon.startRun({
+        organizationId: org.id,
+        allowExternal: true,
+        allowActive: true,
       });
-      try {
-        const run = await organizationRecon.startRun({
-          organizationId: org.id,
-          allowExternal: true,
-          allowActive,
-        });
-        setOrganizationReconRuns((prev) => ({ ...prev, [org.id]: run }));
-      } catch (error) {
-        setOrganizationReconErrors((prev) => ({ ...prev, [org.id]: String(error) }));
-      }
-    },
-    []
-  );
+      setOrganizationReconRuns((prev) => ({ ...prev, [org.id]: run }));
+    } catch (error) {
+      setOrganizationReconErrors((prev) => ({ ...prev, [org.id]: String(error) }));
+    }
+  }, []);
 
   const handleExportOrganizationReconAssets = useCallback(
     async (org: Organization, run?: OrganizationReconRunSnapshot) => {
