@@ -151,6 +151,39 @@ pub struct HarnessFinding {
     pub evidence_refs: Vec<EvidenceAuditId>,
 }
 
+/// Coverage matrix 单元格状态（设计 `docs/design/2026-06-05-coverage-matrix.md`）。
+///
+/// 缺失（不在矩阵里）≡ `not_attempted` ≡ 不过关——这是 AGENTS.md I8
+/// 「已检查为空 ≠ 未检查」的落地：`CheckedEmpty` 是**显式终态**且须有证据/理由。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageStatus {
+    /// 测了且有发现 → 必须挂 evidence_refs。
+    Found,
+    /// 测了、无发现 → 必须挂 evidence_refs / note（≠ 未测）。
+    CheckedEmpty,
+    /// 被阻断（WAF / 权限 / 越界）→ note 说明。
+    Blocked,
+    /// 该技术对该资产不适用 → note 说明。
+    NotApplicable,
+}
+
+/// Coverage matrix 一个 (资产 × 技术) 单元格。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverageCell {
+    /// 资产标识（如 host / URL）。in-scope 资产全集由 caller 从 DB 注入做完整性核对
+    /// （设计 §6.1，活体接线 deferred 于资产库）。
+    pub asset: String,
+    /// 技术类（MVP 自由字符串；目标 = OWASP WSTG / MITRE ATT&CK id）。
+    pub technique: String,
+    pub status: CoverageStatus,
+    #[serde(default)]
+    pub evidence_refs: Vec<EvidenceAuditId>,
+    /// checked_empty / blocked / not_applicable 的理由。
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
 /// Doc 3 §4.3 StageDeliverable · 所有 stage 通用的 gate 输入 contract.
 ///
 /// 原 `ExternalAttackSurfaceDeliverable`; Phase B 泛化为全 stage 通用 (字段本就
@@ -171,6 +204,10 @@ pub struct StageDeliverable {
     /// MVP 近似匹配（见该 check）。
     #[serde(default)]
     pub required_checks_done: Vec<String>,
+    /// Coverage matrix（设计 2026-06-05）：(资产 × 技术) → 终态 + 证据/理由。
+    /// 缺省空 = 不声明覆盖（向后兼容）。`coverage_complete` gate op 据此核完整性。
+    #[serde(default)]
+    pub coverage: Vec<CoverageCell>,
 }
 
 /// 向后兼容别名 (Phase B 泛化前的名字). 新代码用 `StageDeliverable`.
@@ -282,6 +319,7 @@ mod tests {
             skipped_checks: vec![],
             findings: vec![],
             required_checks_done: vec!["scope_status_present".to_string()],
+            coverage: vec![],
         };
         let s = serde_json::to_string(&d).unwrap();
         let back: ExternalAttackSurfaceDeliverable = serde_json::from_str(&s).unwrap();

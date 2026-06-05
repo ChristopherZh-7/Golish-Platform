@@ -70,6 +70,7 @@ mod tests {
             skipped_checks: vec![],
             findings: vec![],
             required_checks_done: vec![],
+            coverage: vec![],
         }
     }
 

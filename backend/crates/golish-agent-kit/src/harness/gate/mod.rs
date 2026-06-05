@@ -228,6 +228,7 @@ mod tests {
             skipped_checks: vec![],
             findings: vec![],
             required_checks_done: vec![],
+            coverage: vec![],
         };
 
         // Baseline (skeleton = None) passes.
@@ -295,6 +296,7 @@ mod tests {
                 evidence_refs: vec![eid],
             }],
             required_checks_done: vec![],
+            coverage: vec![],
         };
         let base = validate_stage_gate(&deliverable, &spec, None);
         assert!(base.allowed, "baseline should pass: {:?}", base.reasons);
@@ -337,6 +339,7 @@ mod tests {
             skipped_checks: vec![],
             findings: vec![],
             required_checks_done: vec![],
+            coverage: vec![],
         };
         let result = validate_stage_gate(&d, &spec, None);
         assert!(!result.allowed);
@@ -373,6 +376,7 @@ mod tests {
                 evidence_refs: vec![EvidenceAuditId::new(1)],
             }],
             required_checks_done: vec![],
+            coverage: vec![],
         };
         let result = validate_stage_gate(&d, &spec, None);
         assert!(!result.allowed);

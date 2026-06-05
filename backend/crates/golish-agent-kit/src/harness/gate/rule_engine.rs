@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use super::super::stage_spec::StageSpec;
 use super::super::types::{
-    FindingSeverity, HarnessFinding, HarnessRecoveryActions, StageClaim, StageDeliverable,
+    CoverageCell, CoverageStatus, FindingSeverity, HarnessFinding, HarnessRecoveryActions,
+    StageClaim, StageDeliverable,
 };
 use super::{min_invocations_check, scope_check, surface_coverage_check, GateCheckOutcome};
 
@@ -85,6 +86,8 @@ impl GateRule {
 pub enum Collection {
     Claims,
     Findings,
+    /// Coverage matrix 单元格（设计 2026-06-05-coverage-matrix）。
+    Coverage,
 }
 
 /// 叶子谓词，对单个元素求值。
@@ -109,6 +112,10 @@ pub enum ItemField {
     EvidenceRefs,
     EvidenceIds,
     Severity,
+    /// coverage cell 字段（设计 2026-06-05-coverage-matrix）。
+    Asset,
+    Technique,
+    Status,
 }
 
 /// 规则不满足时映射到 `GateCheckOutcome::Block` 的内容。
@@ -178,6 +185,7 @@ fn eval_one(d: &StageDeliverable, spec: &StageSpec, rule: &GateRule) -> GateChec
 enum ItemRef<'a> {
     Claim(&'a StageClaim),
     Finding(&'a HarnessFinding),
+    Coverage(&'a CoverageCell),
 }
 
 impl ItemRef<'_> {
@@ -185,6 +193,7 @@ impl ItemRef<'_> {
         match self {
             ItemRef::Claim(_) => "claim",
             ItemRef::Finding(_) => "finding",
+            ItemRef::Coverage(_) => "coverage cell",
         }
     }
 }
@@ -193,12 +202,14 @@ enum FieldVal<'a> {
     Text(&'a str),
     List(usize),
     Sev(FindingSeverity),
+    Status(CoverageStatus),
 }
 
 fn items<'a>(d: &'a StageDeliverable, c: Collection) -> Vec<ItemRef<'a>> {
     match c {
         Collection::Claims => d.claims.iter().map(ItemRef::Claim).collect(),
         Collection::Findings => d.findings.iter().map(ItemRef::Finding).collect(),
+        Collection::Coverage => d.coverage.iter().map(ItemRef::Coverage).collect(),
     }
 }
 
@@ -244,10 +255,12 @@ fn pred_holds(item: &ItemRef, p: &Pred) -> Result<bool, String> {
             FieldVal::Text(s) => Ok(!s.trim().is_empty()),
             FieldVal::List(len) => Ok(len > 0),
             FieldVal::Sev(_) => Err("non_empty not applicable to severity field".to_string()),
+            FieldVal::Status(_) => Err("non_empty not applicable to status field".to_string()),
         },
         Pred::Eq { field, value } => match resolve(item, *field)? {
             FieldVal::Text(s) => Ok(s == value),
             FieldVal::Sev(sev) => Ok(sev_to_str(sev) == value),
+            FieldVal::Status(st) => Ok(status_to_str(st) == value),
             FieldVal::List(_) => Err(format!("eq not applicable to list field {field:?}")),
         },
         Pred::SeverityAtLeast { min } => match resolve(item, ItemField::Severity)? {
@@ -267,6 +280,12 @@ fn resolve<'a>(item: &ItemRef<'a>, f: ItemField) -> Result<FieldVal<'a>, String>
         (ItemRef::Finding(f), ItemField::Subject) => Ok(FieldVal::Text(&f.subject)),
         (ItemRef::Finding(f), ItemField::EvidenceRefs) => Ok(FieldVal::List(f.evidence_refs.len())),
         (ItemRef::Finding(f), ItemField::Severity) => Ok(FieldVal::Sev(f.severity)),
+        (ItemRef::Coverage(c), ItemField::Asset) => Ok(FieldVal::Text(&c.asset)),
+        (ItemRef::Coverage(c), ItemField::Technique) => Ok(FieldVal::Text(&c.technique)),
+        (ItemRef::Coverage(c), ItemField::Status) => Ok(FieldVal::Status(c.status)),
+        (ItemRef::Coverage(c), ItemField::EvidenceRefs) => {
+            Ok(FieldVal::List(c.evidence_refs.len()))
+        }
         (item, field) => Err(format!(
             "field {:?} not valid for {} item",
             field,
@@ -282,6 +301,15 @@ fn sev_to_str(s: FindingSeverity) -> &'static str {
         FindingSeverity::Medium => "medium",
         FindingSeverity::High => "high",
         FindingSeverity::Critical => "critical",
+    }
+}
+
+fn status_to_str(s: CoverageStatus) -> &'static str {
+    match s {
+        CoverageStatus::Found => "found",
+        CoverageStatus::CheckedEmpty => "checked_empty",
+        CoverageStatus::Blocked => "blocked",
+        CoverageStatus::NotApplicable => "not_applicable",
     }
 }
 
@@ -369,6 +397,7 @@ mod tests {
             skipped_checks: vec![],
             findings,
             required_checks_done: vec![],
+            coverage: vec![],
         }
     }
 
@@ -536,5 +565,69 @@ mod tests {
         let rule = parse(r#"{ "op":"named_check","check":"min_invocations" }"#);
         let d = deliverable(vec![], vec![]);
         assert!(!eval(&d, &spec, &[rule])[0].is_pass());
+    }
+
+    // ── coverage matrix 数据积木（设计 2026-06-05-coverage-matrix） ────────────
+
+    fn cov_cell(
+        asset: &str,
+        technique: &str,
+        status: CoverageStatus,
+        refs: Vec<i64>,
+    ) -> CoverageCell {
+        CoverageCell {
+            asset: asset.to_string(),
+            technique: technique.to_string(),
+            status,
+            evidence_refs: refs.into_iter().map(EvidenceAuditId::new).collect(),
+            note: None,
+        }
+    }
+
+    fn deliverable_with_coverage(cells: Vec<CoverageCell>) -> StageDeliverable {
+        let mut d = deliverable(vec![], vec![]);
+        d.coverage = cells;
+        d
+    }
+
+    #[test]
+    fn coverage_found_cell_must_cite_evidence() {
+        // #4：for_all over coverage where status==found require non_empty evidence_refs。
+        let rule = parse(
+            r#"{ "op":"for_all","over":"coverage",
+                 "where":{"pred":"eq","field":"status","value":"found"},
+                 "require":{"pred":"non_empty","field":"evidence_refs"},
+                 "on_fail":{"reason":"found cell needs evidence"} }"#,
+        );
+        // found 缺证据 → Block。
+        let bad = deliverable_with_coverage(vec![cov_cell(
+            "api.ex.com",
+            "idor",
+            CoverageStatus::Found,
+            vec![],
+        )]);
+        assert!(!eval(&bad, &test_spec(), std::slice::from_ref(&rule))[0].is_pass());
+        // found 有证据 + checked_empty 缺证据（被 where 过滤掉）→ Pass。
+        let ok = deliverable_with_coverage(vec![
+            cov_cell("api.ex.com", "idor", CoverageStatus::Found, vec![1]),
+            cov_cell("api.ex.com", "xss", CoverageStatus::CheckedEmpty, vec![]),
+        ]);
+        assert!(eval(&ok, &test_spec(), &[rule])[0].is_pass());
+    }
+
+    #[test]
+    fn coverage_count_found_status() {
+        // count_at_least over coverage where status==found min 2。
+        let rule = parse(
+            r#"{ "op":"count_at_least","over":"coverage",
+                 "where":{"pred":"eq","field":"status","value":"found"},
+                 "min":2,"on_fail":{"reason":"need >=2 found"} }"#,
+        );
+        let d = deliverable_with_coverage(vec![
+            cov_cell("a", "idor", CoverageStatus::Found, vec![1]),
+            cov_cell("a", "xss", CoverageStatus::CheckedEmpty, vec![1]),
+        ]);
+        // 只有 1 个 found → Block。
+        assert!(!eval(&d, &test_spec(), &[rule])[0].is_pass());
     }
 }

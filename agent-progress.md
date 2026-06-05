@@ -29,6 +29,24 @@
 
 ---
 
+### 2026-06-05 · 覆盖矩阵（Coverage Matrix）Phase 1 确定性核心（MCP-agent-4 · DISPATCH off · 用户「出 coverage 设计+计划」→「开干」+ 四问拍板完整版）
+
+- **背景**：承接 gate 数据驱动化讨论，用户问「架构还能怎么优化以承接更复杂攻击场景」。结论：下一个瓶颈是**交付物结构太扁**（只有 claims/findings 平列表），装不下「全面/方法够多」= 资产×技术覆盖矩阵。出设计+计划后用户拍板**完整版**：①资产从 DB ②technique 挂 OWASP WSTG/MITRE ATT&CK ③expected 走 skeleton 动态 ④checked_empty 也要证据。
+- **设计/计划**：`docs/design/2026-06-05-coverage-matrix.md`（含 §6.5 决策与分期）+ `docs/superpowers/plans/2026-06-05-coverage-matrix.md`。
+- **诚实分期**：完整版 ①/③ 强依赖**同事尚未合并的资产库** + 碰 DB 需 §2.7 用户授权 → 分两期。本轮实现**不依赖资产库的 Phase 1 确定性核心**：
+  - **数据模型**（types.rs）：`CoverageStatus`（found/checked_empty/blocked/not_applicable）+ `CoverageCell{asset,technique,status,evidence_refs,note}` + `StageDeliverable.coverage`（`#[serde(default)]` 加性，缺失=not_attempted=不过关，落地 I8）。
+  - **gate 积木**（rule_engine.rs）：`Collection::Coverage` + `ItemField::{Asset,Technique,Status}` + `Pred::Eq` 支持 status（+ status_to_str）。④ 用两条数据规则 `for_all over coverage where status==found|checked_empty require non_empty evidence_refs` 落地（暂两条，未来加 member_of 合一）。
+  - 补 21 处 `StageDeliverable` 字面构造 `coverage: vec![]`（加字段必然 churn，编译器导出清单逐一补）。
+- **Phase 2 deferred（阻塞于资产库 + DB 授权）**：`coverage_complete` op（阶段收尾从 DB 注入 in-scope 资产经 eval_with_context 核完整性，gate 仍纯函数）+ skeleton 动态生成 expected_techniques + WSTG/ATT&CK 标准映射 + submit schema/charter + 样例 stage。
+- **运行过的验证（本机实跑，全绿）**：
+  - `cargo nextest run -p golish-agent-kit -p golish-agent-app --no-fail-fast` → **511 tests run: 511 passed, 0 skipped**（含新 coverage 数据规则 2 测 + 全 21 构造点编译）。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime --all-targets -- -D warnings` → **exit 0 零告警**；`cargo fmt --check` → clean。
+- **commit**：Phase 1 代码（types + rule_engine + 21 构造点）+ 设计/计划 + 本 progress + feature_list 一并 commit 到 `feat/harness-2026-06-01`，**未 push**。
+- **范围/边界**：纯加性、可回滚（coverage 缺省空 = 旧行为）。未跑全量 just precommit（纯 Rust 无前端面）。Phase 2 是真正「按 DB 资产核完整性」的活体价值，须等同事资产库 + 用户 DB 授权。
+- **下一步建议**：① 同事资产库合入后开 Phase 2（先议定 in-scope 资产查询接口 + evidence_kinds 契约）；② 或先做 member_of 谓词把 ④ 两条规则合一 + 给一个攻击 stage 配 expected_techniques 试跑（不依赖 DB 的部分）。
+
+---
+
 ### 2026-06-05 · Gate 彻底数据驱动化（删 required_checks 固定菜单 → 单一 gate_rules 入口·B）（MCP-agent-4 · DISPATCH off · 接 MCP-3 上下文 · 用户「B：彻底迁移删旧」→「一口气全部搞定」）
 
 - **承接**：MCP-3 讨论把 gate 过关标准问到「能否全用 JSON 定义」，并已落地第一步 gate_rules 引擎（commit `d02dbb46`/`1add72c8`，与旧 `required_checks` 并存）。本轮用户拍板 **B（彻底删旧）**：删 `required_checks` 字段 + `gate/mod.rs` 的 `_ => continue` 固定菜单 match，让 `gate_rules` 成为唯一入口。先写设计+计划过目获批，再一口气实现+验证。

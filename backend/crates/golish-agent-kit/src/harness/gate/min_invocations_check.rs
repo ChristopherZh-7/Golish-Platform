@@ -60,6 +60,7 @@ mod tests {
             skipped_checks: vec![],
             findings: vec![],
             required_checks_done: done.into_iter().map(String::from).collect(),
+            coverage: vec![],
         }
     }
 

@@ -1720,6 +1720,7 @@ fn synthesize_confirm_only_deliverable(
         skipped_checks: vec![],
         findings: vec![],
         required_checks_done: vec![],
+        coverage: vec![],
     }
 }
 
@@ -2094,6 +2095,7 @@ mod harness_gate_hook_tests {
                 evidence_refs: vec![EvidenceAuditId::new(1)],
             }],
             required_checks_done: vec![],
+            coverage: vec![],
         };
         let s = summarize_deliverable(&d);
         assert!(s.contains("http_service_observed"));

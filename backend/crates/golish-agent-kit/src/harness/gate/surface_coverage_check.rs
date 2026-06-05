@@ -115,6 +115,7 @@ mod tests {
             skipped_checks: vec![],
             findings,
             required_checks_done: vec![],
+            coverage: vec![],
         }
     }
 
