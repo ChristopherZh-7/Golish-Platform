@@ -35,6 +35,7 @@
 //! gate check.
 
 pub mod eval;
+pub mod feature_flags;
 pub mod gate;
 pub mod graph_engine;
 pub mod guardrail;

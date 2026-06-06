@@ -169,6 +169,31 @@ pub fn validate_stage_gate_with_context(
     aggregate(outcomes)
 }
 
+/// scoping 人工确认硬门禁规则（设计 2026-06-06-scoping-per-mode-gate-hitl §3.4）。
+///
+/// 由 gate hook 按 `profile.scoping_policy.require_human_scope_approval` 注入（per-profile
+/// 启用，smoke 不注入）：要求 deliverable 至少 1 条 `kind="scope_human_approved"` 的 claim，
+/// 否则 Block，不许离开 scoping。用现有 `count_at_least` 数据积木声明，无需改 gate 引擎。
+pub fn scoping_human_gate_rule() -> rule_engine::GateRule {
+    rule_engine::GateRule::CountAtLeast {
+        over: rule_engine::Collection::Claims,
+        filter: Some(rule_engine::Pred::Eq {
+            field: rule_engine::ItemField::Kind,
+            value: "scope_human_approved".to_string(),
+        }),
+        min: 1,
+        on_fail: rule_engine::OnFail {
+            reason: "scope must be human-confirmed before leaving scoping".to_string(),
+            hints: vec![
+                "call ask_human(input_type=\"scope_review\") and let the user confirm/edit the target list".to_string(),
+                "after the user approves, add a claim {kind:\"scope_human_approved\", subject:<engagement subject>} that cites the ask_human request_id".to_string(),
+            ],
+            repair_tool_calls: vec!["ask_human".to_string()],
+            missing_evidence_kinds: vec![],
+        },
+    }
+}
+
 /// 把多个 check outcome 聚合为单个 GateResult (合并 reasons + recovery).
 fn aggregate(outcomes: Vec<GateCheckOutcome>) -> GateResult {
     let mut reasons = Vec::new();
@@ -292,6 +317,53 @@ mod tests {
             .reasons
             .iter()
             .any(|r| r.contains("subdomain") && r.contains("below contract minimum")));
+    }
+
+    #[test]
+    fn scoping_human_gate_rule_blocks_without_approval_and_passes_with() {
+        use super::super::stage_spec::load_stage_spec_from_json;
+        use super::super::types::StageClaim;
+        use golish_pentest::evidence_ledger::EvidenceAuditId;
+
+        const SCOPING_JSON: &str =
+            include_str!("../../../../../../resources/harness/stages/scoping.json");
+        let mut spec = load_stage_spec_from_json(SCOPING_JSON).unwrap();
+        // What the gate hook injects for a profile with require_human_scope_approval.
+        spec.gate_rules.push(scoping_human_gate_rule());
+
+        // scope_confirmed only (evidence-backed so the baseline gate passes) — the
+        // injected rule must still BLOCK because there is no human-approval claim.
+        let mut d = StageDeliverable {
+            stage_id: "scoping".to_string(),
+            stage_run_id: Uuid::new_v4(),
+            claims: vec![StageClaim {
+                kind: "scope_confirmed".to_string(),
+                subject: "example.com".to_string(),
+                summary: "in scope".to_string(),
+                evidence_ids: vec![EvidenceAuditId::new(1)],
+            }],
+            evidence_refs: vec![EvidenceAuditId::new(1)],
+            skipped_checks: vec![],
+            findings: vec![],
+            required_checks_done: vec![],
+            coverage: vec![],
+        };
+        assert!(
+            !validate_stage_gate(&d, &spec, None).allowed,
+            "scoping must BLOCK without a scope_human_approved claim"
+        );
+
+        // Add the human-approval claim → PASS.
+        d.claims.push(StageClaim {
+            kind: "scope_human_approved".to_string(),
+            subject: "example.com".to_string(),
+            summary: "user approved 3 targets".to_string(),
+            evidence_ids: vec![EvidenceAuditId::new(1)],
+        });
+        assert!(
+            validate_stage_gate(&d, &spec, None).allowed,
+            "scoping must PASS once the user has approved the scope"
+        );
     }
 
     #[test]

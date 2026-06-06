@@ -1461,7 +1461,7 @@ fn apply_harness_gate_hook(
     // also checks expected finding-count ranges + min tool invocations
     // (per-target, not just structural). No-op when the profile ships no skeleton
     // or the stage has no skeleton entry.
-    let harness = match crate::harness::load_embedded_sprint_skeleton(profile_id) {
+    let mut harness = match crate::harness::load_embedded_sprint_skeleton(profile_id) {
         Ok(Some(skeleton)) => match skeleton.for_stage(stage_hint.stage_kind) {
             Some(stage_skel) => {
                 tracing::info!(
@@ -1476,6 +1476,25 @@ fn apply_harness_gate_hook(
         },
         _ => harness,
     };
+
+    // scoping 人工确认硬门禁（设计 2026-06-06-scoping-per-mode-gate-hitl §3.4）：除 smoke 外
+    // （profile.scoping_policy.require_human_scope_approval=true），scoping 通过前 deliverable
+    // 必须带一条 kind="scope_human_approved" 的 claim，否则 gate Block、不许进 target_intel。
+    // 灰度由 GOLISH_SCOPING_HUMAN_GATE 控制（默认开）；规则用现有 count_at_least 积木，不改引擎。
+    if matches!(stage_hint.stage_kind, crate::harness::StageKind::Scoping)
+        && crate::harness::feature_flags::scoping_human_gate_enabled()
+        && harness.profile.scoping_policy.require_human_scope_approval
+    {
+        harness
+            .stage_spec
+            .gate_rules
+            .push(crate::harness::gate::scoping_human_gate_rule());
+        tracing::info!(
+            target: "harness::hook",
+            profile_id = %profile_id,
+            "scoping human-approval hard gate injected (deliverable must carry a scope_human_approved claim)"
+        );
+    }
 
     let deliverable = match parse_deliverable_from_content(&content) {
         Some(d) => d,
