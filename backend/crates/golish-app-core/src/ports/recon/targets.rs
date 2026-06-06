@@ -94,6 +94,17 @@ pub trait ReconTargetsPort: Send + Sync {
         id: Uuid,
         update: &ReconUpdate,
     ) -> anyhow::Result<()>;
+
+    /// Set a target's `scope` ("in"/"out") by id, restricted to `project_path`
+    /// (IDOR guard, AGENTS.md I2). Returns `true` when a target in this project
+    /// was updated, `false` when missing / cross-project. Mirrors the
+    /// `target_update` command's scoped scope write.
+    async fn target_set_scope(
+        &self,
+        id: Uuid,
+        scope: &str,
+        project_path: Option<&str>,
+    ) -> anyhow::Result<bool>;
 }
 
 /// In-proc adapter backed by the embedded Postgres pool.
@@ -304,6 +315,22 @@ impl ReconTargetsPort for PgReconTargetsAdapter {
 
     async fn target_update_recon(&self, id: Uuid, ports: &serde_json::Value) -> anyhow::Result<()> {
         Ok(golish_db::repo::targets::update_ports_by_id(self.pool.as_ref(), id, ports).await?)
+    }
+
+    async fn target_set_scope(
+        &self,
+        id: Uuid,
+        scope: &str,
+        project_path: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let updated = golish_db::repo::targets::update_scope_scoped_legacy(
+            self.pool.as_ref(),
+            id,
+            scope,
+            project_path,
+        )
+        .await?;
+        Ok(updated > 0)
     }
 
     async fn target_update_recon_extended(

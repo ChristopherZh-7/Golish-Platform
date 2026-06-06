@@ -108,6 +108,10 @@ fn build_update_status_scoped_legacy_sql() -> String {
     "UPDATE targets SET status = $1::target_status, updated_at = NOW() WHERE id = $2 AND ($3 IS NULL OR project_path = $3 OR project_path = '')".to_string()
 }
 
+fn build_update_scope_scoped_legacy_sql() -> String {
+    "UPDATE targets SET scope = $1::scope_type, updated_at = NOW() WHERE id = $2 AND ($3 IS NULL OR project_path = $3 OR project_path = '')".to_string()
+}
+
 fn build_list_rows_legacy_sql() -> String {
     format!(
         "SELECT {TARGET_ROW_COLS} FROM targets WHERE ($1 IS NULL OR project_path = $1 OR project_path = '') ORDER BY created_at"
@@ -196,6 +200,26 @@ pub async fn update_status_scoped_legacy(
 ) -> Result<u64> {
     let res = sqlx::query(&build_update_status_scoped_legacy_sql())
         .bind(status)
+        .bind(id)
+        .bind(project_path)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Update `scope` by id (legacy visibility). `scope` ("in"/"out") is bound then
+/// cast to the `scope_type` enum. The `project_path` predicate is the IDOR guard
+/// (AGENTS.md I2) — a cross-project id matches no row. Returns rows affected
+/// (0 == missing or cross-project). Mirrors the `target_update` command's scoped
+/// scope write.
+pub async fn update_scope_scoped_legacy(
+    pool: &PgPool,
+    id: Uuid,
+    scope: &str,
+    project_path: Option<&str>,
+) -> Result<u64> {
+    let res = sqlx::query(&build_update_scope_scoped_legacy_sql())
+        .bind(scope)
         .bind(id)
         .bind(project_path)
         .execute(pool)
@@ -522,6 +546,10 @@ mod tests {
         assert_eq!(
             build_update_status_scoped_legacy_sql(),
             "UPDATE targets SET status = $1::target_status, updated_at = NOW() WHERE id = $2 AND ($3 IS NULL OR project_path = $3 OR project_path = '')"
+        );
+        assert_eq!(
+            build_update_scope_scoped_legacy_sql(),
+            "UPDATE targets SET scope = $1::scope_type, updated_at = NOW() WHERE id = $2 AND ($3 IS NULL OR project_path = $3 OR project_path = '')"
         );
     }
 
