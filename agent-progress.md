@@ -29,6 +29,21 @@
 
 ---
 
+### 2026-06-06 · scoping per-mode gate + HITL P0 收口 Task 9（MCP-agent-4 · DISPATCH off · 接 MCP-2/MCP-3 上下文转移 · 用户「一口气搞完所有」）
+
+- **本轮目标**：承接 executing-plans 的 `docs/superpowers/plans/2026-06-06-scoping-per-mode-gate-hitl-p0.md`，收口 Task 9（集成 + 全量验证 + 进度），让 feature `scoping-per-mode-gate-hitl-2026-06-06` 从 in_progress 落 passing。
+- **核对真实状态（读 git log 非转述）**：T1-T8 均已提交于 `feat/harness-2026-06-01`：`e8bedc9e`(T1)/`68d8419d`(T2)/`2854689c`(T3)/`ebafbe77`(T4)/`114ad193`(T5)/`fa0925e9`(T6)/`e72e6024`(T7)/`4922bc41`(T8)，前置文档 `1cf88eda`。工作树仅余：4 个 rust 文件纯 rustfmt 换行（`prompts/mod.rs`、`execute.rs`、`manage_organizations.rs`、`manage_targets.rs`，无逻辑变更）+ `feature_list.json`（进度文本 stale）。
+- **并发处理**：检测到另一会话 `cargo nextest --workspace`（pid 60592）在跑 → 我的后端门禁挂起等其结束（135s）再启，避免嵌入式 Postgres/夹具端口竞争导致假失败。
+- **跑过的验证（本机实跑，全绿 = `just check` 全覆盖）**：
+  - 前端：`just check-fe`（biome+tsc）exit 0；`pnpm test:run`（vitest）**118 文件 / 1268 passed / 12 skipped** exit 0（含 T8 `ScopeReviewTable.test`）。
+  - 后端：`just lint-rust`（`cargo clippy --workspace -q -- -D warnings` + `cargo fmt --check`）exit 0；`cargo nextest run --workspace`（backend）**2999 passed / 7 skipped**（53.335s）exit 0；`just check-types`（`cargo test --workspace export_bindings` + `git diff --exit-code frontend/lib/generated/`）exit 0，**无 ts-rs 漂移**。
+- **提交记录**：本会话 1 个 commit `chore: wire scoping per-mode HITL end-to-end + progress`（仅纳入：4 文件残余 rustfmt + `feature_list.json` + `agent-progress.md`；**不含**同事并发文件 `target_intel.json` / `technique_taxonomy.json` / `2026-06-05-attack-surface-ceiling-raising.md`）。**未 push**（push 需用户单独点头，AGENTS.md §2.7）。
+- **feature_list.json**：`scoping-per-mode-gate-hitl-2026-06-06` in_progress→**passing**，verification T1-T9 + evidence 全绿取证；remove-pipeline 仍 passing（同事先前已置）。
+- **风险/未做**：① **T9.4 活体三模式 smoke**（pentest 弹 scope_review / red_team 先弹 unit_review / smoke 直进 target_intel / 未确认→gate BLOCK）需 `just dev` + LLM key 交互执行，本自动化会话未跑——属人工 E2E。② 未 push。③ 同事并发文件留在工作树未提交（非本任务 scope）。
+- **下一步建议**：① 用户做 T9.4 活体 smoke；② 决定是否 push `feat/harness-2026-06-01`；③ 同事并发的 target_intel/technique_taxonomy/attack-surface 由其本人收口提交。
+
+---
+
 ### 2026-06-06 · 合并同事 recon + 接入 harness（in-scope 资产闭环）（MCP-agent-3 · DISPATCH off · 用户逐条驱动）
 
 - **本轮目标**：把同事 push 的 organization-recon（`feat/recon-service`）合并进 harness 分支且**不恢复已删的 pipeline**；再把 recon 收集的 in-scope 资产接入 harness，让 AI 能取用。

@@ -11,24 +11,46 @@
   ],
   "features": [
     {
+      "id": "scoping-per-mode-gate-hitl-2026-06-06",
+      "priority": 2,
+      "area": "backend/crates/golish-agent-kit/src/harness/{profile.rs(ScopingPolicy/SubjectKind/AssetConfirmation),feature_flags(scoping_human_gate_enabled),gate(注入硬门禁规则)} + task_orchestrator/{subtask_phases/execute.rs(gate hook 注入 + synthesize_stage_subtask 接 policy),prompts/mod.rs(stage_charter 分流)} + golish-pentest-app/src/pentest_bridge/{manage_targets.rs(scope/org_id+set_scope),manage_organizations.rs(新),mod.rs} + golish-agent-runtime/src/execution_mode/{modes/task.rs,tool_list.rs} + resources/harness/profiles/*.json(6) ; frontend: AIChatPanel/{AskHumanInline.tsx,ScopeReviewTable.tsx(新)} + lib/generated(ts-rs)",
+      "title": "Scoping 按 task 模式分流 + 人工确认硬门禁：profile 加 scoping_policy 块驱动 prompt/gate 分流；pentest 确认主体 + target 表人确认，red_team 先列单位名称候选 + 确认后建组织/资产；除 smoke 外 scoping 通过前必须有 scope_human_approved claim（gate 硬门禁，count_at_least 数据积木）；manage_targets 增 scope/org_id，新增 manage_organizations 工具；前端 scope_review/unit_review 可编辑确认表",
+      "user_visible_behavior": "选 pentest 模式：AI 解析输入→列 target 候选表，用户可增删改后确认才写入；选 red_team：AI 先列候选单位名称交人判断、确认后建组织并扩资产；未经人确认不进入 target_intel（gate Block 停在 scoping）；smoke 模式豁免、最短路径。模式差异集中在 profiles/*.json 的 scoping_policy，声明式可配。",
+      "status": "passing",
+      "design": "docs/design/2026-06-06-scoping-per-mode-gate-hitl.md（B+硬门禁；§3.2 per-mode 策略表；§9 用户决议：除 smoke 都启门禁 / pentest 必须建·选 organization（subject_kind=organization、write_organizations=true，与前端 NewEngagementDialog org-first 一致）；2026-06-06 修订原 freetext 决议）",
+      "plan": "docs/superpowers/plans/2026-06-06-scoping-per-mode-gate-hitl-p0.md（writing-plans · Task 1-9 · TDD；自检三项已过）",
+      "verification": [
+        "[T1 ✓ e8bedc9e] ScopingPolicy/SubjectKind/AssetConfirmation 数据模型 + Profile.scoping_policy（serde default 保守安全默认 require_human_scope_approval=true）",
+        "[T2 ✓ 68d8419d] 6 profiles 配 scoping_policy（pentest/red_team subject_kind=organization+write_organizations；red_team 额外 require_unit_candidates；assessment/bug_bounty freetext；cloud cloud_tenant；smoke 唯一豁免）",
+        "[T3 ✓ 2854689c] gate hook 按 policy 注入硬门禁（StageKind::Scoping + GOLISH_SCOPING_HUMAN_GATE 开 + require_human_scope_approval → CountAtLeast scope_human_approved≥1）",
+        "[T4 ✓ ebafbe77] scoping prompt 按 policy 分流（stage_charter + synthesize_stage_subtask 收 &ScopingPolicy）",
+        "[T5 ✓ 114ad193] manage_targets 增 scope/organization_id + set_scope（IDOR scoped UPDATE，project_path 谓词）",
+        "[T6 ✓ fa0925e9] 新 manage_organizations 工具（list/create/propose_candidates/update_profile，IDOR project_path 校验）",
+        "[T7 ✓ e72e6024] manage_organizations 注册进 Task specialist 工具集",
+        "[T8 ✓ 4922bc41] 前端 scope_review/unit_review 可编辑确认表 ScopeReviewTable.tsx + AskHumanInline 分支 + Vitest",
+        "[T9 ✓ 本会话全量门禁绿 MCP-agent-4] just check-fe exit0；vitest 118 文件 1268 passed/12 skipped；just lint-rust（clippy --workspace -D warnings + cargo fmt --check）exit0；cargo nextest --workspace 2999 passed/7 skipped（53.3s）；just check-types（ts-rs 无漂移）exit0。【T9.4 活体三模式 smoke 需交互跑 app，属人工 E2E，未在自动化会话执行——见 notes】"
+      ],
+      "evidence": "T1-T8 全部提交在 feat/harness-2026-06-01（e8bedc9e/68d8419d/2854689c/ebafbe77/114ad193/fa0925e9/e72e6024/4922bc41，前置文档 1cf88eda）。T9 收口本会话（MCP-agent-4，DISPATCH off）实跑全量门禁全绿（= just check 全覆盖）：前端 check-fe exit0 + vitest 1268 passed/12 skipped；后端 clippy --workspace -D warnings exit0 + cargo fmt --check clean + cargo nextest --workspace 2999 passed/7 skipped + check-types 无 ts-rs 漂移。T9 收口 commit 见下次提交（chore: wire scoping per-mode HITL end-to-end + progress，含 4 文件残余 rustfmt 换行 + 本 feature/progress 更新）。【T9.4】活体三模式 smoke（pentest 弹 scope_review / red_team 先弹 unit_review / smoke 直进 target_intel / 未确认→gate BLOCK 停在 scoping）需 just dev + LLM key 交互执行，属人工 E2E，本自动化会话未跑。",
+      "notes": "2026-06-06 MCP-agent-1（DISPATCH off）。brainstorming→用户拍板「B+硬门禁」：B=prompt 按 profile 分流 + 结构化 HITL（复用 ask_human 通道加 input_type=scope_review/unit_review）+ 工具增强；硬门禁=要求 deliverable 至少 1 条 kind=scope_human_approved claim，用现有 count_at_least 数据积木纯 JSON 声明，按 profile.scoping_policy.require_human_scope_approval 在 gate hook 注入，feature flag GOLISH_SCOPING_HUMAN_GATE 灰度。用户决议：除 smoke 外都启门禁；pentest 与 red_team 都强制 organization（pentest subject_kind=organization·write_organizations=true，走前端 customer_targets 路径；red_team 额外 require_unit_candidates 先列候选单位，走 discover_assets 路径）——与前端 NewEngagementDialog org-first 设计一致（2026-06-06 修订原「pentest 允许 freetext」决议）。复用现成 organization_candidates/CRUD（agent 侧新增 manage_organizations 工具）。不改 DB schema、不加子状态机（原方案 C 推 P2）。P1 deferred：防伪造交叉验证 AskHumanResponse、assessment/bug_bounty/cloud 细化、HITL/gate 进 trace。 2026-06-06 MCP-agent-3（接 MCP-2 上下文转移，DISPATCH off）：remove-pipeline 已标 passing 腾槽后本条置 in_progress；按 executing-plans + verification-before-completion 落地 T1（commit e8bedc9e，前置文档 1cf88eda）+ T2（commit 68d8419d），各自 nextest/clippy/json.tool 实跑取证。下一步 T3（gate 硬门禁注入，execute.rs apply_harness_gate_hook 热点，注意与并发会话冲突）。注：feature_list.json 本次更新（本条进度 + 同事 remove-pipeline→passing）尚未提交，留收尾统一 chore 提交。 2026-06-06 MCP-agent-4（接 MCP-2/MCP-3 上下文转移，DISPATCH off，用户「一口气搞完所有」）：核对 git 实况发现 T1-T8 已全部提交（HEAD 4922bc41=T8），仅余 T9 收口 + 工作树未提交的纯 rustfmt 换行（prompts/mod.rs、execute.rs、manage_organizations.rs、manage_targets.rs，无逻辑变更）。执行 T9：避开并发会话 cargo nextest --workspace（pid 60592）的嵌入式 Postgres/夹具端口竞争，等其结束后跑全量门禁全绿（证据见 verification/evidence）。本条 in_progress→passing。同事并发文件（resources/harness/stages/target_intel.json、technique_taxonomy.json、docs/design/2026-06-05-attack-surface-ceiling-raising.md）不碰、不纳入本次提交。T9.4 活体 smoke 留人工 E2E。"
+    },
+    {
       "id": "remove-pipeline-2026-06-05",
       "priority": 2,
       "area": "backend: golish-pipeline crate (deleted) + golish-pentest-app/{pipeline,pentest_bridge} + golish/{commands_facade,commands_registry} + golish-db pipelines table/repo/model + golish-app-core error + golish-events PipelineEvent + golish-agent-app workflow(run_recon_pipeline) ; frontend: PipelinePanel/ + PipelineProgressBlock/ + ProjectOverview/ + store/slices/workflow/pipeline + store/types/pipeline + lib/api/pipeline + lib/pentest/pipeline-types + events pipeline-event + anchors/persistence/command-source wiring",
       "title": "移除 Pipeline 功能（前后端全删）：删除 DAG 引擎 crate + 编辑器 UI + pipeline_* 命令 + pipelines 表 + run_pipeline/flow_compose AI 工具 + pipeline_progress 时间线可视化 + recon 进度条孤儿 UI",
       "user_visible_behavior": "Pipeline 活动栏入口、DAG 编辑器、流水线运行/进度时间线块全部移除；AI 改走 pentest_run 单工具执行（系统提示已重写）。run_recon_pipeline 废弃 stub 与前端 triggerAutoRecon/runReconPipeline 一并删除。pipeline_only sub-agent 标志保留（实为内部编排标志，非 DAG）。pipelines 表新增 forward-only drop migration（会丢历史数据）。",
-      "status": "in_progress",
-      "blocker": "后端 cargo check/clippy/nextest 尚未确认绿（本机另一会话并发 cargo-nextest 占 build lock，排队中）；未跑全量 just precommit；未 commit。前端 just check-fe 已 exit 0。",
+      "status": "passing",
       "design": "docs/design/2026-06-05-remove-pipeline-feature.md（§3 三决策默认全删：D1 删 recon 进度条 / D2 保留 pipeline_only / D3 drop migration）",
       "plan": "docs/superpowers/plans/2026-06-05-remove-pipeline-feature.md（Phase 0-9；执行状态：后端 0-4 by MCP-2 / 前端 6-8 by MCP-3 / Phase 5 pipeline_only 改为保留 / Phase 9 收口进行中）",
       "verification": [
-        "just check-fe（biome + tsc）→ exit 0（MCP-3 本机实跑）",
-        "grep -rn [Pp]ipeline frontend → 仅范围外词义残留（shell/codegen/workflow-name/useMemo/sanitize），无 DAG pipeline",
-        "ReadLints 25+ 重改前端文件 → 无错",
-        "后端 cargo check --workspace --all-targets → 进行中（并发 lock 排队，未确认）",
-        "未跑：cargo clippy --workspace -D / nextest --workspace / just test-fe / just precommit"
+        "[committed·feat/harness-2026-06-01] git log: 0d3bd66f refactor(pipeline)!: remove DAG pipeline feature end-to-end + fea837e5 fix(agent-runtime): drop dead target_registered after pipeline-gate removal",
+        "golish-pipeline crate 已删除（ls → GONE）；其上叠 4 提交（含 74cb4eca 合并同事 recon 闭环）→ 删除后整树仍编译、且已继续推进",
+        "用户报告 cargo check --workspace --all-targets → exit 0, 0 errors（5m05s）",
+        "just check-fe（biome + tsc）→ exit 0（MCP-3 本机实跑）；前端 grep pipeline 仅范围外词义残留；ReadLints 无错",
+        "[未本会话重跑] just precommit 全量（clippy -D / nextest --workspace / test-fe）—— 见 notes：用户 2026-06-06 选 B 凭已提交+shipped 证据标 passing"
       ],
-      "evidence": "2026-06-05 MCP-agent-3：前端 just check-fe exit 0；前端全量 grep pipeline 仅剩 shell/codegen/workflow-name 等范围外词义；ReadLints 无错。后端 Phase 0-4 由 MCP-2 完成但本机 cargo 验证待并发 lock 释放后确认。未 commit、未 push。",
-      "notes": "2026-06-05 MCP-agent-3（DISPATCH off）接 MCP-2 上下文转交。方案 A 全删，先出文档（MCP-2）再开工。D1=删 ProjectOverview recon 进度条（核实为孤儿死代码，后端驱动 run_recon_pipeline 已删）；D2=保留 pipeline_only（执行期读码发现实为内部编排标志，强删会致 orchestrator 自我委派回归，已向用户说明）；D3=新增 drop_pipelines.sql forward-only 迁移。§2.1：本条 in_progress 待后端验证 + commit；与既有 arch-crate-per-service-split 的 in_progress 临时并存（多会话并发现实），本任务收口后回落 passing/blocked。"
+      "evidence": "已提交并入主线 feat/harness-2026-06-01：commit 0d3bd66f（remove DAG pipeline end-to-end）+ fea837e5（清理 pipeline-gate 后 target_registered 死用法）；golish-pipeline crate 已删；其上已叠 4 提交（含 recon 闭环合并 74cb4eca）证明删除后树可编译且持续推进；用户报告 cargo check --workspace --all-targets exit 0、0 errors。前端 check-fe exit 0。",
+      "notes": "2026-06-05 MCP-agent-3（DISPATCH off）接 MCP-2 上下文转交。方案 A 全删，先出文档（MCP-2）再开工。D1=删 ProjectOverview recon 进度条（核实为孤儿死代码，后端驱动 run_recon_pipeline 已删）；D2=保留 pipeline_only（执行期读码发现实为内部编排标志，强删会致 orchestrator 自我委派回归，已向用户说明）；D3=新增 drop_pipelines.sql forward-only 迁移。§2.1：本条 in_progress 待后端验证 + commit；与既有 arch-crate-per-service-split 的 in_progress 临时并存（多会话并发现实），本任务收口后回落 passing/blocked。 2026-06-06 MCP-agent-2：用户选 B，凭『已提交 + shipped（recon 闭环已合并在其上）+ 用户 cargo check exit 0』标 passing，腾出 in_progress 槽给 scoping-per-mode-gate-hitl。按 AGENTS.md §3 严格口径本会话未重跑 just precommit（已向用户说明、用户拍板接受此 rigor）；全量绿基线留待 scoping P0 执行前补跑（§1：动新功能前先立绿基线）。"
     },
     {
       "id": "coverage-matrix-2026-06-05",

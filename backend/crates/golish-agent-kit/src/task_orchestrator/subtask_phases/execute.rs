@@ -1891,7 +1891,10 @@ fn synthesize_stage_subtask(
                     "2) Call manage_organizations(action=\"propose_candidates\") to list candidate unit/organization names (subsidiaries, aliases), then ask_human(input_type=\"unit_review\") so the user can judge/edit them; create confirmed orgs with manage_organizations(action=\"create\"). ",
                 );
             }
-            if matches!(scoping_policy.asset_confirmation, AssetConfirmation::Interactive) {
+            if matches!(
+                scoping_policy.asset_confirmation,
+                AssetConfirmation::Interactive
+            ) {
                 steps.push_str(
                     "3) Parse the user input into a candidate target list (mark in/out of scope), call ask_human(input_type=\"scope_review\") so the user can add/remove/edit, and ONLY AFTER approval write them via manage_targets(action=\"add\", with scope/organization_id). ",
                 );

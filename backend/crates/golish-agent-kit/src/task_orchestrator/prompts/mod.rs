@@ -701,7 +701,8 @@ mod tests {
                 "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate"}"#,
         )
         .unwrap();
-        assert!(!stage_charter(&without, &ScopingPolicy::default()).contains("Coverage (per in-scope asset)"));
+        assert!(!stage_charter(&without, &ScopingPolicy::default())
+            .contains("Coverage (per in-scope asset)"));
     }
 
     /// scoping 人工确认硬门禁 (设计 2026-06-06 §3.4): charter 的 scoping 段在
