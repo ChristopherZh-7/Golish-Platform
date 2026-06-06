@@ -50,6 +50,71 @@ pub struct ApprovalPolicy {
     pub before_scope_expansion: bool,
 }
 
+/// scoping 阶段的 per-profile 行为策略 (设计 2026-06-06-scoping-per-mode-gate-hitl §3.2).
+///
+/// 容器级 `serde(default)`: 旧 profile JSON 无此块时整体取 [`ScopingPolicy::default`]
+/// (保守安全默认: 要求人工确认 scope); `deny_unknown_fields` 拦住块内字段拼写错误.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ScopingPolicy {
+    /// 是否必须确认主体.
+    pub require_subject: bool,
+    /// 主体形态.
+    pub subject_kind: SubjectKind,
+    /// 红队专用: 先产出「单位名称候选」交人判断 (复用 organization_candidates).
+    pub require_unit_candidates: bool,
+    /// 资产确认方式.
+    pub asset_confirmation: AssetConfirmation,
+    /// 硬门禁开关: true 时 scoping 通过前必须有 `scope_human_approved` claim.
+    pub require_human_scope_approval: bool,
+    /// scoping 是否落组织 (pentest / red_team true).
+    pub write_organizations: bool,
+}
+
+/// scoping 主体形态.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SubjectKind {
+    /// 不要求主体 (smoke).
+    #[default]
+    None,
+    /// 自由文本主体, 记入 claim.subject (assessment / bug_bounty).
+    Freetext,
+    /// 必须建/选 organization (pentest / red_team).
+    Organization,
+    /// 组织或自由文本 (保留枚举值, 当前无 profile 使用).
+    OrganizationOrFreetext,
+    /// 云租户/账号 (cloud_assessment).
+    CloudTenant,
+}
+
+/// scoping 资产确认方式.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetConfirmation {
+    /// 不交互 (smoke).
+    None,
+    /// AI 直接写, 仅记录, 不停下来确认.
+    Auto,
+    /// 列表给人增删改确认 (默认).
+    #[default]
+    Interactive,
+}
+
+impl Default for ScopingPolicy {
+    /// 保守安全默认 (无 scoping_policy 的旧 profile): 要求人工确认 scope.
+    fn default() -> Self {
+        Self {
+            require_subject: false,
+            subject_kind: SubjectKind::Freetext,
+            require_unit_candidates: false,
+            asset_confirmation: AssetConfirmation::Interactive,
+            require_human_scope_approval: true,
+            write_organizations: false,
+        }
+    }
+}
+
 /// Doc 3 §2.1 Profile · resources/harness/profiles/*.json 映射.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
@@ -60,6 +125,9 @@ pub struct Profile {
     pub forbidden_stage_kinds: Vec<StageKind>,
     #[serde(default)]
     pub approval_policy: Option<ApprovalPolicy>,
+    /// scoping 阶段 per-profile 策略 (设计 2026-06-06). 缺省 = `ScopingPolicy::default()`.
+    #[serde(default)]
+    pub scoping_policy: ScopingPolicy,
     #[serde(default)]
     pub cleanup_required: bool,
     #[serde(default)]
@@ -167,5 +235,61 @@ mod tests {
     fn authorization_level_serde_snake_case() {
         let s = serde_json::to_string(&AuthorizationLevel::ActiveRecon).unwrap();
         assert_eq!(s, "\"active_recon\"");
+    }
+
+    #[test]
+    fn scoping_policy_defaults_when_absent() {
+        // 旧 profile JSON 无 scoping_policy → 取安全默认 (require_human_scope_approval=true).
+        let json = r#"{"id":"x","display_name":"X","max_authorization":"active_recon",
+            "allowed_stage_kinds":["scoping"],"forbidden_stage_kinds":[],
+            "approval_policy":{"before_active_scan":true,"before_scope_expansion":true},
+            "cleanup_required":false,"evidence_required":true}"#;
+        let p = load_profile_from_json(json).expect("parse");
+        assert!(p.scoping_policy.require_human_scope_approval);
+        assert_eq!(p.scoping_policy.subject_kind, SubjectKind::Freetext);
+        assert_eq!(
+            p.scoping_policy.asset_confirmation,
+            AssetConfirmation::Interactive
+        );
+        assert!(!p.scoping_policy.require_subject);
+        assert!(!p.scoping_policy.write_organizations);
+    }
+
+    #[test]
+    fn scoping_policy_parses_explicit_block() {
+        // red_team: 强制组织 + 单位候选 + 落组织.
+        let json = r#"{"id":"red_team","display_name":"Red Team","max_authorization":"post_exploit_red_team",
+            "allowed_stage_kinds":["scoping"],"forbidden_stage_kinds":[],
+            "approval_policy":{"before_active_scan":true,"before_scope_expansion":true},
+            "cleanup_required":true,"evidence_required":true,
+            "scoping_policy":{"require_subject":true,"subject_kind":"organization",
+                "require_unit_candidates":true,"asset_confirmation":"interactive",
+                "require_human_scope_approval":true,"write_organizations":true}}"#;
+        let p = load_profile_from_json(json).expect("parse");
+        assert_eq!(p.scoping_policy.subject_kind, SubjectKind::Organization);
+        assert!(p.scoping_policy.require_unit_candidates);
+        assert!(p.scoping_policy.write_organizations);
+        assert!(p.scoping_policy.require_human_scope_approval);
+    }
+
+    #[test]
+    fn scoping_policy_rejects_unknown_field() {
+        // deny_unknown_fields: 块内拼写错误的字段应当报错, 而非被静默忽略.
+        let json = r#"{"id":"x","display_name":"X","max_authorization":"active_recon",
+            "allowed_stage_kinds":["scoping"],"forbidden_stage_kinds":[],
+            "cleanup_required":false,"evidence_required":true,
+            "scoping_policy":{"require_subject":true,"subject_kind":"organization",
+                "require_unit_candidates":false,"asset_confirmation":"interactive",
+                "require_human_scope_approval":true,"write_organizations":true,
+                "typo_field":1}}"#;
+        assert!(load_profile_from_json(json).is_err());
+    }
+
+    #[test]
+    fn scoping_policy_subject_kind_serde_snake_case() {
+        let s = serde_json::to_string(&SubjectKind::OrganizationOrFreetext).unwrap();
+        assert_eq!(s, "\"organization_or_freetext\"");
+        let s2 = serde_json::to_string(&SubjectKind::CloudTenant).unwrap();
+        assert_eq!(s2, "\"cloud_tenant\"");
     }
 }
