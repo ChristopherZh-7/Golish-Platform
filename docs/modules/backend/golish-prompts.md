@@ -49,7 +49,7 @@ owns 跨切面的 prompt 基础设施：贡献者机制、按优先级组装、s
 ## 注意事项 / 坑
 
 - **分层铁律**：本 crate **不依赖** golish-sub-agents（`SubAgentPromptContributor` 已搬到 sub-agents，`create_default_contributors` 在 agent-bridge），别再引回这条 back-edge。
-- 相关：`docs/prompt-contributions.md`、`docs/prompt-generation-ui-plan.md`、`docs/planning-system.md`。
+- 相关：`docs/prompt-contributions.md`、`docs/superpowers/plans/prompt-generation-ui-plan.md`、`docs/planning-system.md`。
 
 ## 测试入口
 

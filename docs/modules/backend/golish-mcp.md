@@ -50,7 +50,7 @@
 
 - 这是 Golish 当 **MCP 客户端**（消费外部 server）；和 `golish-pentest-mcp`（Golish 自己当 **MCP server** 暴露 pentest 工具）方向相反，别混。
 - 项目级 MCP 配置有**信任门禁**（`trust_project_config`），别绕过直接加载不受信配置。
-- 相关：`docs/mcp.md`、`docs/mcp-implementation-plan.md`、`docs/superpowers/plans/2026-05-07-builtin-mcp-auto-init.md`。
+- 相关：`docs/mcp.md`、`docs/superpowers/plans/mcp-implementation-plan.md`、`docs/superpowers/plans/2026-05-07-builtin-mcp-auto-init.md`。
 
 ## 测试入口
 

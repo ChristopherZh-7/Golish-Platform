@@ -403,6 +403,6 @@ After modifying prompts:
 ## Related Documentation
 
 - [prompt-contributions.md](./prompt-contributions.md) - Dynamic contribution system details
-- [system-prompt-design-input.md](./system-prompt-design-input.md) - Original design brief
+- [system-prompt-design-input.md](./design/system-prompt-design-input.md) - Original design brief
 - [agent-modes.md](./agent-modes.md) - Agent mode specifications
 - [ast-grep-tools.md](./ast-grep-tools.md) - AST-based search/replace tools

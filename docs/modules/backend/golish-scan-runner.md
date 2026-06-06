@@ -47,7 +47,7 @@ GUI/AI 调用的各类 pentest 扫描器的调度表。进度通过 `golish_core
 
 - 无 Tauri 依赖：进度走 `EventEmitterHandle`，别直接耦合 Tauri。
 - 扫描产物应能落进 evidence（与 golish-pentest 的 ledger 协作，I7）。
-- 相关：`docs/scan-workflow-implementation.md`。
+- 相关：`docs/superpowers/plans/scan-workflow-implementation.md`。
 
 ## 测试入口
 
