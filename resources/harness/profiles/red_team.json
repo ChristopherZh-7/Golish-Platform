@@ -29,5 +29,14 @@
   },
 
   "cleanup_required": true,
-  "evidence_required": true
+  "evidence_required": true,
+
+  "scoping_policy": {
+    "require_subject": true,
+    "subject_kind": "organization",
+    "require_unit_candidates": true,
+    "asset_confirmation": "interactive",
+    "require_human_scope_approval": true,
+    "write_organizations": true
+  }
 }

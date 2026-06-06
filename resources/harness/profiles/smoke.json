@@ -24,5 +24,14 @@
   ],
 
   "cleanup_required": false,
-  "evidence_required": false
+  "evidence_required": false,
+
+  "scoping_policy": {
+    "require_subject": false,
+    "subject_kind": "none",
+    "require_unit_candidates": false,
+    "asset_confirmation": "none",
+    "require_human_scope_approval": false,
+    "write_organizations": false
+  }
 }
