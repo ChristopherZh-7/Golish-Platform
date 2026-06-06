@@ -103,7 +103,11 @@ impl TaskOrchestrator {
             {
                 if let Some(hint) = planned.harness_stage.as_ref() {
                     if let Ok(spec) = crate::harness::load_embedded_stage_spec(hint.stage_kind) {
-                        desc.push_str(&super::super::prompts::stage_charter(&spec));
+                        let scoping_policy = scoping_policy_for_ctx(exec_ctx);
+                        desc.push_str(&super::super::prompts::stage_charter(
+                            &spec,
+                            &scoping_policy,
+                        ));
                         // C6 · handoff: inject which evidence kinds this stage
                         // inherits from upstream stages (consumes the otherwise
                         // runtime-dead `inherits_evidence_from`).
@@ -614,10 +618,13 @@ impl TaskOrchestrator {
         // `in_progress` seed (and then the agent's real `update_plan`) supersede
         // its placeholder in the frontend's per-stage bucket. Version 0 marks a
         // seed; the frontend always lets a newer seed/real update replace it.
+        // The seed roadmap only renders each stage's title, which is policy-
+        // independent — resolve the scoping policy once before the loop.
+        let scoping_policy = scoping_policy_for_ctx(&exec_ctx);
         for &stage in &dag.nodes {
             let seed_steps = vec![golish_core::plan::PlanStep {
                 id: None,
-                step: synthesize_stage_subtask(stage, &exec_ctx.task_input).title,
+                step: synthesize_stage_subtask(stage, &exec_ctx.task_input, &scoping_policy).title,
                 status: StepStatus::Pending,
                 failure_kind: None,
             }];
@@ -809,7 +816,8 @@ impl TaskOrchestrator {
         // empty under graph-flow lazy-per-stage planning).
         let _ = (indices, queue);
 
-        let mut planned = synthesize_stage_subtask(stage, &exec_ctx.task_input);
+        let scoping_policy = scoping_policy_for_ctx(exec_ctx);
+        let mut planned = synthesize_stage_subtask(stage, &exec_ctx.task_input, &scoping_policy);
         // `synthesize_stage_subtask` already tags `harness_stage`; append the
         // agent-todo execution directive so the single loop self-plans + submits.
         planned.description = format!(
@@ -1832,19 +1840,74 @@ fn missing_deliverable_gate_outcome(
 /// gated instead of being vacuously passed. The description is a per-stage
 /// charter scoped to the operation target (`task_input`); `harness_stage` is set
 /// so the gate hook runs against this stage.
-fn synthesize_stage_subtask(stage: crate::harness::StageKind, task_input: &str) -> PlannedSubtask {
+/// Resolve the operation's scoping policy from the profile threaded via
+/// `exec_ctx` (设计 2026-06-06-scoping-per-mode-gate-hitl §3.3). Falls back to the
+/// conservative `ScopingPolicy::default()` (human gate ON) when no profile id is
+/// set or it cannot be loaded — same fail-safe stance as `apply_harness_gate_hook`.
+fn scoping_policy_for_ctx(exec_ctx: &ExecutionContext) -> crate::harness::profile::ScopingPolicy {
+    exec_ctx
+        .harness_profile_id
+        .as_deref()
+        .and_then(|id| crate::harness::load_embedded_profile(id).ok().flatten())
+        .map(|p| p.scoping_policy)
+        .unwrap_or_default()
+}
+
+fn synthesize_stage_subtask(
+    stage: crate::harness::StageKind,
+    task_input: &str,
+    scoping_policy: &crate::harness::profile::ScopingPolicy,
+) -> PlannedSubtask {
+    use crate::harness::profile::{AssetConfirmation, SubjectKind};
     use crate::harness::StageKind as K;
     let target = task_input.trim();
     let (title, description, agent): (&str, String, &str) = match stage {
-        K::Scoping => (
-            "Scope & Authorization Confirmation",
-            format!(
-                "Confirm and document the engagement scope for `{target}`: in-scope \
-                 targets/domains/IPs, explicit out-of-scope items, the authorization basis, \
-                 and rules of engagement. Do NOT perform any active scanning in this stage."
-            ),
-            "pentester",
-        ),
+        K::Scoping => {
+            // scoping prompt 按 profile 的 scoping_policy 分流 (设计 2026-06-06 §3.3):
+            // 确认主体 → (红队) 列单位候选交人 → 列资产交人增删改 → 人确认后记
+            // scope_human_approved claim. 每步由 policy 字段开关, smoke 全关 = 直接确认.
+            let mut steps = String::new();
+            if scoping_policy.require_subject {
+                steps.push_str(match scoping_policy.subject_kind {
+                    SubjectKind::Organization | SubjectKind::OrganizationOrFreetext => {
+                        if scoping_policy.write_organizations
+                            && !scoping_policy.require_unit_candidates
+                        {
+                            "1) Identify the engagement subject organization; create or select it via manage_organizations(action=\"create\"/\"list\") and CONFIRM it with the user (org-first: every target must link to this organization_id). "
+                        } else {
+                            "1) Identify and CONFIRM the engagement subject (the target organization). "
+                        }
+                    }
+                    SubjectKind::CloudTenant => {
+                        "1) Identify and CONFIRM the cloud tenant/account that is the engagement subject. "
+                    }
+                    SubjectKind::None | SubjectKind::Freetext => {
+                        "1) State and CONFIRM the engagement subject. "
+                    }
+                });
+            }
+            if scoping_policy.require_unit_candidates {
+                steps.push_str(
+                    "2) Call manage_organizations(action=\"propose_candidates\") to list candidate unit/organization names (subsidiaries, aliases), then ask_human(input_type=\"unit_review\") so the user can judge/edit them; create confirmed orgs with manage_organizations(action=\"create\"). ",
+                );
+            }
+            if matches!(scoping_policy.asset_confirmation, AssetConfirmation::Interactive) {
+                steps.push_str(
+                    "3) Parse the user input into a candidate target list (mark in/out of scope), call ask_human(input_type=\"scope_review\") so the user can add/remove/edit, and ONLY AFTER approval write them via manage_targets(action=\"add\", with scope/organization_id). ",
+                );
+            }
+            if scoping_policy.require_human_scope_approval {
+                steps.push_str(
+                    "4) After human approval, record a claim {kind:\"scope_human_approved\", subject:<engagement subject>} citing the ask_human request_id, then submit_stage_deliverable. ",
+                );
+            }
+            steps.push_str("Do NOT perform any active scanning in this stage.");
+            (
+                "Scope & Authorization Confirmation",
+                format!("Confirm and document the engagement scope for `{target}`. {steps}"),
+                "pentester",
+            )
+        }
         K::TargetIntel => (
             "Passive Target Intelligence",
             format!(
@@ -1964,7 +2027,8 @@ mod dag_driven_helper_tests {
 
     #[test]
     fn synthesized_subtask_is_stage_tagged_and_targeted() {
-        let s = synthesize_stage_subtask(StageKind::Scoping, "example.com");
+        let policy = crate::harness::profile::ScopingPolicy::default();
+        let s = synthesize_stage_subtask(StageKind::Scoping, "example.com", &policy);
         assert_eq!(
             s.harness_stage.as_ref().map(|h| h.stage_kind),
             Some(StageKind::Scoping),
@@ -1976,8 +2040,38 @@ mod dag_driven_helper_tests {
         );
         assert!(s.agent.is_some());
         // Reporting routes to the analyzer specialist, not the pentester.
-        let r = synthesize_stage_subtask(StageKind::Reporting, "example.com");
+        let r = synthesize_stage_subtask(StageKind::Reporting, "example.com", &policy);
         assert_eq!(r.agent.as_deref(), Some("analyzer"));
+    }
+
+    /// T4 (设计 2026-06-06 §3.3): scoping 子任务描述随 profile 的 scoping_policy 分流——
+    /// 红队 (require_unit_candidates + human gate) 出 unit_review + scope_review +
+    /// scope_human_approved; smoke (gate off, asset_confirmation=none) 全不出现.
+    #[test]
+    fn scoping_subtask_prompt_varies_by_policy() {
+        use crate::harness::profile::{AssetConfirmation, ScopingPolicy, SubjectKind};
+
+        let red = ScopingPolicy {
+            require_subject: true,
+            subject_kind: SubjectKind::Organization,
+            require_unit_candidates: true,
+            asset_confirmation: AssetConfirmation::Interactive,
+            require_human_scope_approval: true,
+            write_organizations: true,
+        };
+        let s = synthesize_stage_subtask(StageKind::Scoping, "acme corp", &red);
+        assert!(s.description.contains("unit_review"));
+        assert!(s.description.contains("scope_review"));
+        assert!(s.description.contains("scope_human_approved"));
+
+        let smoke = ScopingPolicy {
+            require_human_scope_approval: false,
+            asset_confirmation: AssetConfirmation::None,
+            ..ScopingPolicy::default()
+        };
+        let s2 = synthesize_stage_subtask(StageKind::Scoping, "x", &smoke);
+        assert!(!s2.description.contains("scope_human_approved"));
+        assert!(!s2.description.contains("unit_review"));
     }
 
     /// L4a: only an engine `Interrupted` is a resumable pause (→ task `Waiting`,

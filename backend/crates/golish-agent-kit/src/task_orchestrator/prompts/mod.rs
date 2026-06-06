@@ -6,6 +6,7 @@
 mod pipeline;
 pub use pipeline::*;
 
+use crate::harness::profile::ScopingPolicy;
 use crate::harness::stage_spec::StageSpec;
 
 /// Intent classifier prompt — determines whether a user message in Task mode
@@ -45,7 +46,11 @@ pub(crate) fn safe_truncate(s: &str, max: usize) -> &str {
 /// 告诉执行 agent 当前 stage 的允许/禁止工具面、必须提交的结构化 deliverable、
 /// 以及确定性 gate 会检查哪些项. 仅在 subtask 有 `harness_stage` 时由
 /// `execute_single_subtask` 拼到描述前.
-pub fn stage_charter(spec: &StageSpec) -> String {
+///
+/// `scoping_policy` (设计 2026-06-06 §3.3/§3.4): scoping 段按 profile 策略分流——
+/// `require_human_scope_approval` 时追加「submit 前必须有 scope_human_approved
+/// claim」的硬门禁提醒, 与 gate hook 注入的规则呼应. 非 scoping stage 不读它.
+pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String {
     let allowed = if spec.allowed_tool_types.is_empty() {
         "(none — this stage runs no scan tools)".to_string()
     } else {
@@ -116,12 +121,23 @@ pub fn stage_charter(spec: &StageSpec) -> String {
     // this prose no longer enumerates tool names — it only states intent + the
     // (relaxed) evidence contract that stops the fabricated-evidence retry loop.
     let stage_specific = if spec.kind == crate::harness::StageKind::Scoping {
-        "\n### SCOPING — authorization confirmation ONLY\n\
+        let mut s = String::from(
+            "\n### SCOPING — authorization confirmation ONLY\n\
 - This stage CONFIRMS the target is authorized; it does NOT probe. The runtime enforces the stage's tool boundary, so reconnaissance attempts are blocked here — that work belongs to the next stage.\n\
 - You do NOT need tool evidence here: confirm the authorized scope from the task context (target, exclusions, black-box vs credentialed, objective) and submit. Leave `evidence_refs` empty and use empty `evidence_ids` — the gate does NOT require ledger evidence for scoping.\n\
-- Emit ONE claim with kind \"scope_confirmed\" summarizing the authorized scope, then CALL `submit_stage_deliverable`.\n"
+- Emit ONE claim with kind \"scope_confirmed\" summarizing the authorized scope, then CALL `submit_stage_deliverable`.\n",
+        );
+        // scoping 人工确认硬门禁 (设计 2026-06-06 §3.4): policy 要求时, gate 额外要求一条
+        // scope_human_approved claim — 提前在 charter 里说清「submit 前必须有人确认」,
+        // 与 apply_harness_gate_hook 注入的 scoping_human_gate_rule 呼应.
+        if scoping_policy.require_human_scope_approval {
+            s.push_str(
+                "- HARD GATE — human scope approval REQUIRED: before you `submit_stage_deliverable`, the scope MUST be confirmed by a human. Call `ask_human(input_type=\"scope_review\")`, let the user add/remove/edit the target list, and ONLY after they approve, emit a SECOND claim with kind \"scope_human_approved\" (subject = the engagement subject) that cites the ask_human request_id. Without that claim the deterministic gate BLOCKS and you cannot leave scoping.\n",
+            );
+        }
+        s
     } else {
-        ""
+        String::new()
     };
     format!(
         r#"## OPERATION HARNESS — STAGE CHARTER
@@ -671,7 +687,7 @@ mod tests {
                 "expected_techniques":["WSTG-INPV-05","WSTG-ATHZ-04"]}"#,
         )
         .unwrap();
-        let charter = stage_charter(&with);
+        let charter = stage_charter(&with, &ScopingPolicy::default());
         assert!(charter.contains("Coverage (per in-scope asset)"));
         assert!(charter.contains("WSTG-INPV-05"));
         assert!(charter.contains("WSTG-ATHZ-04"));
@@ -685,6 +701,33 @@ mod tests {
                 "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate"}"#,
         )
         .unwrap();
-        assert!(!stage_charter(&without).contains("Coverage (per in-scope asset)"));
+        assert!(!stage_charter(&without, &ScopingPolicy::default()).contains("Coverage (per in-scope asset)"));
+    }
+
+    /// scoping 人工确认硬门禁 (设计 2026-06-06 §3.4): charter 的 scoping 段在
+    /// `require_human_scope_approval` 时点明硬门禁 + scope_human_approved claim;
+    /// 关 (smoke) 时不出现, 与 gate hook 注入条件一致.
+    #[test]
+    fn stage_charter_scoping_appends_human_gate_when_policy_requires() {
+        use crate::harness::stage_spec::load_stage_spec_from_json;
+
+        let scoping = load_stage_spec_from_json(
+            r#"{"id":"scoping","kind":"scoping","risk_level":"low",
+                "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate"}"#,
+        )
+        .unwrap();
+        // Default policy requires human approval → charter spells out the hard gate.
+        let gated = ScopingPolicy::default();
+        assert!(gated.require_human_scope_approval);
+        let c = stage_charter(&scoping, &gated);
+        assert!(c.contains("scope_human_approved"));
+        assert!(c.contains("ask_human(input_type=\"scope_review\")"));
+
+        // Gate off (smoke) → no human-approval line.
+        let off = ScopingPolicy {
+            require_human_scope_approval: false,
+            ..ScopingPolicy::default()
+        };
+        assert!(!stage_charter(&scoping, &off).contains("scope_human_approved"));
     }
 }
