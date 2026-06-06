@@ -533,7 +533,19 @@ impl TaskOrchestrator {
                 // Previously nothing logged the profile/projection, so a run that
                 // skipped scoping/target_intel (because the planner produced no
                 // subtask for them → vacuous pass) was invisible.
-                let allowed = p.allowed_stage_set();
+                //
+                // 方案 2 · if a stage allowlist is set (headless single/range run),
+                // intersect it so the executable DAG is just that slice; the
+                // slice's terminal has no successors → run finishes it then stops.
+                let mut allowed = p.allowed_stage_set();
+                if let Some(ref allowlist) = self.stage_allowlist {
+                    allowed = allowed.intersection(allowlist).copied().collect();
+                    tracing::info!(
+                        target: "harness::hook",
+                        ?allowlist,
+                        "graph-flow: stage allowlist active (headless slice run)"
+                    );
+                }
                 tracing::info!(
                     target: "harness::hook",
                     profile = %profile_id,
@@ -621,10 +633,17 @@ impl TaskOrchestrator {
         // The seed roadmap only renders each stage's title, which is policy-
         // independent — resolve the scoping policy once before the loop.
         let scoping_policy = scoping_policy_for_ctx(&exec_ctx);
+        let intel_policy = intel_policy_for_ctx(&exec_ctx);
         for &stage in &dag.nodes {
             let seed_steps = vec![golish_core::plan::PlanStep {
                 id: None,
-                step: synthesize_stage_subtask(stage, &exec_ctx.task_input, &scoping_policy).title,
+                step: synthesize_stage_subtask(
+                    stage,
+                    &exec_ctx.task_input,
+                    &scoping_policy,
+                    &intel_policy,
+                )
+                .title,
                 status: StepStatus::Pending,
                 failure_kind: None,
             }];
@@ -817,7 +836,9 @@ impl TaskOrchestrator {
         let _ = (indices, queue);
 
         let scoping_policy = scoping_policy_for_ctx(exec_ctx);
-        let mut planned = synthesize_stage_subtask(stage, &exec_ctx.task_input, &scoping_policy);
+        let intel_policy = intel_policy_for_ctx(exec_ctx);
+        let mut planned =
+            synthesize_stage_subtask(stage, &exec_ctx.task_input, &scoping_policy, &intel_policy);
         // `synthesize_stage_subtask` already tags `harness_stage`; append the
         // agent-todo execution directive so the single loop self-plans + submits.
         planned.description = format!(
@@ -1853,12 +1874,26 @@ fn scoping_policy_for_ctx(exec_ctx: &ExecutionContext) -> crate::harness::profil
         .unwrap_or_default()
 }
 
+/// Resolve the operation's `intel_policy` from the profile threaded via
+/// `exec_ctx` (设计 2026-06-06-intel-stage-ai-driven-per-mode §3.5). Falls back
+/// to the conservative `IntelPolicy::default()` (run passive intel) when no
+/// profile id is set or it cannot be loaded.
+fn intel_policy_for_ctx(exec_ctx: &ExecutionContext) -> crate::harness::profile::IntelPolicy {
+    exec_ctx
+        .harness_profile_id
+        .as_deref()
+        .and_then(|id| crate::harness::load_embedded_profile(id).ok().flatten())
+        .map(|p| p.intel_policy)
+        .unwrap_or_default()
+}
+
 fn synthesize_stage_subtask(
     stage: crate::harness::StageKind,
     task_input: &str,
     scoping_policy: &crate::harness::profile::ScopingPolicy,
+    intel_policy: &crate::harness::profile::IntelPolicy,
 ) -> PlannedSubtask {
-    use crate::harness::profile::{AssetConfirmation, SubjectKind};
+    use crate::harness::profile::{AssetConfirmation, PassiveIntelMode, SubjectKind};
     use crate::harness::StageKind as K;
     let target = task_input.trim();
     let (title, description, agent): (&str, String, &str) = match stage {
@@ -1911,15 +1946,43 @@ fn synthesize_stage_subtask(
                 "pentester",
             )
         }
-        K::TargetIntel => (
-            "Passive Target Intelligence",
-            format!(
-                "Gather passive intelligence on `{target}` (WHOIS, ASN/netblocks, registrant, \
-                 public DNS records, org footprint) without touching the target. Summarize what \
-                 is known before any active recon."
-            ),
-            "pentester",
-        ),
+        K::TargetIntel => {
+            // target_intel prompt 按 intel_policy 分流
+            // (设计 2026-06-06-intel-stage-ai-driven-per-mode §3.5):
+            // 渗透 skip 直接空跑; 红队/评估跑被动 (子公司发现 → 字段富化 → 引证 evidence).
+            let mut steps = String::new();
+            if matches!(intel_policy.passive_intel, PassiveIntelMode::Skip) {
+                steps.push_str(
+                    "Assets were already confirmed during scoping; this engagement SKIPS passive intel. Do NOT run passive providers. Mark each expected intel technique coverage cell as not_applicable with a short note (\"assets confirmed in scoping; passive intel skipped per mode\"), then submit_stage_deliverable.",
+                );
+            } else {
+                let mut n = 1;
+                steps.push_str(&format!(
+                    "{n}) Call recon_list_providers first to see which passive providers have a configured credential; only invoke providers reported as available, and for any expected intel technique with no available provider record its coverage as blocked (no credential configured) — do NOT fabricate. ",
+                ));
+                n += 1;
+                if intel_policy.discover_subsidiaries {
+                    steps.push_str(&format!(
+                        "{n}) Call recon_discover_subsidiaries(organization_id=<confirmed subject org>) to passively enumerate subsidiary/affiliate organizations via enterprise intel (ENScan); review the candidates it records. ",
+                    ));
+                    n += 1;
+                }
+                if intel_policy.enrich_assets {
+                    steps.push_str(&format!(
+                        "{n}) Call recon_enrich_assets(organization_id=<org>) to passively collect domains/IPs/ICP/apps/emails via intel providers (0.zone/quake/…). ",
+                    ));
+                    n += 1;
+                }
+                steps.push_str(&format!(
+                    "{n}) For each in-scope asset, give every expected intel technique (GOLISH-INTEL-DNS/WHOIS/ASN/CT/SUBDOMAIN/OSINT) a terminal coverage status, citing the evidence ids the tools recorded, then submit_stage_deliverable. Do NOT perform active scanning in this stage.",
+                ));
+            }
+            (
+                "Passive Target Intelligence",
+                format!("Gather passive intelligence on `{target}` without touching the target. {steps}"),
+                "pentester",
+            )
+        }
         K::ExternalAttackSurface => (
             "External Attack Surface Mapping",
             format!(
@@ -2031,7 +2094,8 @@ mod dag_driven_helper_tests {
     #[test]
     fn synthesized_subtask_is_stage_tagged_and_targeted() {
         let policy = crate::harness::profile::ScopingPolicy::default();
-        let s = synthesize_stage_subtask(StageKind::Scoping, "example.com", &policy);
+        let intel = crate::harness::profile::IntelPolicy::default();
+        let s = synthesize_stage_subtask(StageKind::Scoping, "example.com", &policy, &intel);
         assert_eq!(
             s.harness_stage.as_ref().map(|h| h.stage_kind),
             Some(StageKind::Scoping),
@@ -2043,7 +2107,7 @@ mod dag_driven_helper_tests {
         );
         assert!(s.agent.is_some());
         // Reporting routes to the analyzer specialist, not the pentester.
-        let r = synthesize_stage_subtask(StageKind::Reporting, "example.com", &policy);
+        let r = synthesize_stage_subtask(StageKind::Reporting, "example.com", &policy, &intel);
         assert_eq!(r.agent.as_deref(), Some("analyzer"));
     }
 
@@ -2052,7 +2116,7 @@ mod dag_driven_helper_tests {
     /// scope_human_approved; smoke (gate off, asset_confirmation=none) 全不出现.
     #[test]
     fn scoping_subtask_prompt_varies_by_policy() {
-        use crate::harness::profile::{AssetConfirmation, ScopingPolicy, SubjectKind};
+        use crate::harness::profile::{AssetConfirmation, IntelPolicy, ScopingPolicy, SubjectKind};
 
         let red = ScopingPolicy {
             require_subject: true,
@@ -2062,7 +2126,8 @@ mod dag_driven_helper_tests {
             require_human_scope_approval: true,
             write_organizations: true,
         };
-        let s = synthesize_stage_subtask(StageKind::Scoping, "acme corp", &red);
+        let intel = IntelPolicy::default();
+        let s = synthesize_stage_subtask(StageKind::Scoping, "acme corp", &red, &intel);
         assert!(s.description.contains("unit_review"));
         assert!(s.description.contains("scope_review"));
         assert!(s.description.contains("scope_human_approved"));
@@ -2072,9 +2137,41 @@ mod dag_driven_helper_tests {
             asset_confirmation: AssetConfirmation::None,
             ..ScopingPolicy::default()
         };
-        let s2 = synthesize_stage_subtask(StageKind::Scoping, "x", &smoke);
+        let s2 = synthesize_stage_subtask(StageKind::Scoping, "x", &smoke, &intel);
         assert!(!s2.description.contains("scope_human_approved"));
         assert!(!s2.description.contains("unit_review"));
+    }
+
+    /// T7 (设计 2026-06-06-intel-stage §3.5): target_intel 子任务描述随 intel_policy
+    /// 分流——红队 (discover+enrich) 出 recon_discover_subsidiaries + recon_enrich_assets;
+    /// 渗透 (passive_intel=skip) 出 not_applicable、不出现 recon 工具.
+    #[test]
+    fn target_intel_prompt_varies_by_intel_policy() {
+        use crate::harness::profile::{IntelPolicy, PassiveIntelMode, ScopingPolicy};
+
+        let scoping = ScopingPolicy::default();
+
+        let red = IntelPolicy {
+            passive_intel: PassiveIntelMode::Run,
+            discover_subsidiaries: true,
+            enrich_assets: true,
+        };
+        let s = synthesize_stage_subtask(StageKind::TargetIntel, "acme corp", &scoping, &red);
+        assert!(s.description.contains("recon_list_providers"));
+        assert!(s.description.contains("recon_discover_subsidiaries"));
+        assert!(s.description.contains("recon_enrich_assets"));
+        assert!(!s.description.contains("not_applicable"));
+
+        let pentest = IntelPolicy {
+            passive_intel: PassiveIntelMode::Skip,
+            discover_subsidiaries: false,
+            enrich_assets: false,
+        };
+        let s2 = synthesize_stage_subtask(StageKind::TargetIntel, "1.2.3.4", &scoping, &pentest);
+        assert!(s2.description.contains("not_applicable"));
+        assert!(!s2.description.contains("recon_list_providers"));
+        assert!(!s2.description.contains("recon_discover_subsidiaries"));
+        assert!(!s2.description.contains("recon_enrich_assets"));
     }
 
     /// L4a: only an engine `Interrupted` is a resumable pause (→ task `Waiting`,

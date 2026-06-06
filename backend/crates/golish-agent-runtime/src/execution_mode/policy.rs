@@ -96,6 +96,14 @@ impl StaticGroupSelection {
 pub struct BridgeToolSelection {
     pub manage_targets: bool,
     pub manage_organizations: bool,
+    /// `recon_discover_subsidiaries` — passive ENScan subsidiary discovery
+    /// (harness target_intel, 设计 2026-06-06-intel-stage-ai-driven-per-mode).
+    pub recon_discover_subsidiaries: bool,
+    /// `recon_enrich_assets` — passive field enrichment (0.zone / quake / …).
+    pub recon_enrich_assets: bool,
+    /// `recon_list_providers` — read-only: which passive providers have a
+    /// configured credential (so the AI invokes only usable ones).
+    pub recon_list_providers: bool,
     pub record_finding: bool,
     pub vault: bool,
     pub js_collect: bool,
@@ -118,6 +126,9 @@ impl BridgeToolSelection {
         Self {
             manage_targets: true,
             manage_organizations: true,
+            recon_discover_subsidiaries: true,
+            recon_enrich_assets: true,
+            recon_list_providers: true,
             record_finding: true,
             vault: true,
             js_collect: true,
@@ -134,6 +145,9 @@ impl BridgeToolSelection {
         Self {
             manage_targets: false,
             manage_organizations: false,
+            recon_discover_subsidiaries: false,
+            recon_enrich_assets: false,
+            recon_list_providers: false,
             record_finding: false,
             vault: false,
             js_collect: false,
@@ -153,6 +167,15 @@ impl BridgeToolSelection {
         }
         if self.manage_organizations {
             out.push("manage_organizations");
+        }
+        if self.recon_discover_subsidiaries {
+            out.push("recon_discover_subsidiaries");
+        }
+        if self.recon_enrich_assets {
+            out.push("recon_enrich_assets");
+        }
+        if self.recon_list_providers {
+            out.push("recon_list_providers");
         }
         if self.record_finding {
             out.push("record_finding");
@@ -234,13 +257,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bridge_all_enabled_lists_seven_tools_in_stable_order() {
+    fn bridge_all_enabled_lists_tools_in_stable_order() {
         let names = BridgeToolSelection::all_enabled().enabled_tool_names();
         assert_eq!(
             names,
             vec![
                 "manage_targets",
                 "manage_organizations",
+                "recon_discover_subsidiaries",
+                "recon_enrich_assets",
+                "recon_list_providers",
                 "record_finding",
                 "vault",
                 "js_collect",

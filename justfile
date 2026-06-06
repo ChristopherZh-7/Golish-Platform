@@ -27,6 +27,16 @@ dev-fe:
 replay session:
     cd backend && cargo run -q -p golish --bin golish -- --replay {{ session }}
 
+# Headless single-stage runner (方案 2): boot the backend without the GUI, run one
+# harness stage — or the scoping..=<to> slice — with a real LLM, print a structured
+# report (gate PASS/BLOCK + tools + evidence), and exit. Auto-approves scoping HITL.
+# Full transcript is written for `just replay` / GUI viewing. Needs an LLM key in
+# ~/.golish/settings.toml. See docs/design/2026-06-06-headless-single-stage-runner.md
+# Usage: just stage <profile> <to-stage> "<objective>"
+# Example: just stage red_team target_intel "recon acme.com"
+stage profile to objective:
+    cd backend && cargo run -q -p golish --bin golish -- --stage-run --profile {{ profile }} --to {{ to }} --auto-approve -e "{{ objective }}"
+
 # ============================================
 # Testing
 # ============================================

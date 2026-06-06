@@ -36,7 +36,9 @@ use golish_app_core::TauriEventEmitter;
 #[derive(Clone)]
 pub struct ToolsConfigState(pub Arc<golish_pentest::ConfigManager>);
 
+mod agent_intel;
 mod asn;
+mod availability;
 mod capability;
 mod commands;
 mod merge;
@@ -48,11 +50,13 @@ mod runtime;
 mod service;
 mod template;
 mod types;
+pub use agent_intel::{run_passive_intel, PassiveIntelPhase, PassiveIntelSummary};
 pub(crate) use asn::{
     collect_public_ips_for_asn_lookup, normalize_asn, parse_team_cymru_asn_response,
     profile_asn_entries_from_mappings, IpAsnMapping, TEAM_CYMRU_ASN_LOOKUP_TIMEOUT_SECS,
     TEAM_CYMRU_WHOIS_ADDR,
 };
+pub use availability::{list_provider_availability, ProviderAvailability};
 #[cfg(test)]
 pub(crate) use capability::{expand_provider_tools, provider_has_subsidiaries};
 pub(crate) use capability::{

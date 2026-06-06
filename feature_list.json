@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
-  "version": "0.1.8",
-  "last_updated": "2026-06-05",
+  "version": "0.1.9",
+  "last_updated": "2026-06-06",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -10,6 +10,74 @@
     "passing"
   ],
   "features": [
+    {
+      "id": "headless-single-stage-runner-2026-06-06",
+      "priority": 2,
+      "area": "backend: golish-agent-kit/src/harness/operation_graph.rs(AllowedDag::slice/ancestors_inclusive/descendants_inclusive) + task_orchestrator/orchestrator.rs(stage_allowlist 字段/setter + run_from_stage/run_stage) + subtask_phases/execute.rs(run_executor_driven 投影交集 allowlist) + golish/src/cli/args.rs(--stage-run/--profile/--from/--to/--only/--org/--target) + golish/src/main.rs(dispatch) + golish/src/stage_run/*(boot/seed/run/report 新模块) + justfile(stage recipe)",
+      "title": "Headless 单阶段实跑器（方案 2）：新增 golish --stage-run 无 GUI 入口，启嵌入式 PG + 真 pentest 工具 + 真 LLM，按 profile 跑 DAG 切片（--to/--only 跳到/只跑指定阶段），打印每阶段 gate PASS/BLOCK+原因/调用工具/evidence 的结构化报告，同时照常落 backend.log + transcript（可 --replay / GUI 回看）",
+      "user_visible_behavior": "`just stage red_team target_intel \"<目标>\"`（或 golish --stage-run --profile <p> --to <stage> [--from|--only] [--org/--target] [--auto-approve] [--json] \"<input>\"）：无 GUI 启动后端，跑 scoping→…→to（或单阶段 --only），跑完终端打印每阶段过没过+原因/工具/evidence id 的精简报告并退出；完整日志（~/.golish/backend.log + 会话 transcript.json）照常落盘，可事后 golish --replay <session> 或在 GUI 打开同一 session 看完整时间线。解决『每次测一个阶段都要 just dev 起整界面 + 手动从 scoping 驱到目标阶段 + 翻日志』的痛点。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "docs/design/2026-06-06-headless-single-stage-runner.md（用户 2026-06-06 在 BaJie MCP-agent-4 会话选定方案 2『headless 实跑』；确认 AppState::new 不需 AppHandle、可复用 configure_bridge(None) 装全部工具；日志两层：终端精简报告 + 完整 transcript/backend.log 可回放）",
+      "plan": "docs/superpowers/plans/2026-06-06-headless-single-stage-runner.md（T1 slice helper → T2 orchestrator seam → T3 CLI args → T4 stage_run 模块 → T5 justfile → T6 收口；TDD，确定性测试不需真 LLM）",
+      "verification": [
+        "[T1 ✓] AllowedDag::slice/ancestors_inclusive/descendants_inclusive + 8 单测（--only⇒{stage}；--to target_intel⇒{scoping,target_intel}；--to eas⇒prefix；--to reporting⇒all；3 错误态 ToNotInDag/FromNotInDag/FromCannotReachTo）；nextest -p golish-agent-kit operation_graph → 23 passed",
+        "[T2 ✓] orchestrator stage_allowlist 字段/setter + run_stage(entry) + run_from_stage 重构（run=run_from_stage(.,Scoping)，零行为变更）；execute.rs 投影 allowed∩allowlist（core transition 零改）；+2 单测（allowlist={target_intel}⇒单节点 entry=terminal；slice⇒scoping entry/intel terminal 无后继）；full kit nextest 523 passed（无回归）",
+        "[T3 ✓] CLI args（--stage-run/--profile/--from/--to/--only(conflicts_with from/to)/--org/--target(repeatable)）+ main.rs dispatch（--replay 式短路）+ 3 解析单测（only/repeated targets/conflict）",
+        "[T4 ✓] stage_run 模块：boot（create_lazy_db_pool+spawn_embedded_pg+wait gate→AppState::new 无 AppHandle→extract_agent_state）+ cli::initialize_agent(CliRuntime) + ai::commands::configure_bridge(None) 装全 pentest 工具 + transcript writer + set Task/profile/AutoApprove + mark_frontend_ready + 事件消费(auto resolve_approval 处理 ask_human HITL + 收集事件) + orchestrate(run_stage) + format_report；7 单测（resolve_slice 4 / resolve_from_to 2 / format_report PASS+BLOCK）；cargo check -p golish exit0",
+        "[T5 ✓] just stage <profile> <to> <objective> recipe（--stage-run --auto-approve -e）",
+        "[T6 后端门禁 ✓ 本会话实跑] cargo check -p golish exit0(1m28s)；clippy -p golish -p golish-agent-kit --all-targets -D warnings exit0 零告警；nextest golish-agent-kit 523 passed/0 + golish stage_run/args 11 passed/0；cargo fmt --check clean；ReadLints 10 文件无错。【未跑】full just precommit（前端 biome/vitest + check-types + 全 workspace nextest）+ 活体 E2E（just stage 实跑，需 LLM key+网络——这正是本功能要替代的人工 E2E）。",
+        "[P1 seeding ✓ 本会话] --org/--target 上游 seeding 已实现：maybe_seed/seed_upstream（organizations::create + PgReconTargetsAdapter::target_add，project_path=workspace，target_add 默认 scope=in）→ build_objective 注入真 organization_id 供 agent 直接调 recon_*；对齐证据：gate in_scope_assets 走 list_in_scope_values($1 IS NULL ⇒ 全 in-scope 集，任意 project_path 可见)，agent manage_targets/manage_organizations 按 workspace project_path 见 seed。+2 单测 build_objective（含 org_id 注入 / -e 优先）；nextest golish stage_run 12 passed；clippy -p golish --all-targets -D warnings exit0 零告警；cargo fmt clean；ReadLints 无错。【剩】full precommit + 活体 E2E（just stage --only target_intel --org ACME --target acme.com，需 LLM key）；--seed <json> 任意上游(prior evidence/claims) 仍 future。"
+      ],
+      "evidence": "本会话（BaJie MCP-agent-4，DISPATCH off，用户驱动 continue）实现 P0 全部代码 + P1 上游 seeding + 后端门禁全绿：cargo check -p golish exit0；clippy -p golish -p golish-agent-kit --all-targets -D warnings exit0 零告警；nextest golish-agent-kit 523 passed（含 +10 slice/projection 测，run_from_stage 重构无回归）；nextest golish stage_run+args 12 passed（含 +2 build_objective seeding 测）；fmt --check clean；ReadLints 无错。设计+计划+T1-T6+P1 seeding 本会话完成。**未 commit**（等用户授权）。剩：full just precommit（前端+check-types+全 workspace）+ 活体 E2E（just stage red_team target_intel / pentest scoping / --only target_intel --org --target，需 LLM key+网络）。--seed <json> 任意上游 future。",
+      "notes": "2026-06-06 BaJie MCP-agent-4（DISPATCH off）。用户痛点：逐阶段测试要 just dev 起 GUI + 手动驱动 + 翻日志，慢/贵/跳不到指定阶段。方案 2 = headless 单/切片阶段实跑（真 LLM/真工具/真 evidence）。关键架构确认：① AppState::new(state/mod.rs:62) 不要 Tauri AppHandle → headless 可建；extract_agent_state() 带 pentest_tool_factory；② configure_bridge(bridge_config.rs:18) 接 app_handle:Option，传 None 可原样装全部 pentest 工具 + DB repo；③ DAG 切片仅在投影时 allowed∩allowlist，core transition 零改；切片 {scoping..=to} 跑完 to 因无后继自然 Complete 停下；④ headless HITL 自动确认复用 CoordinatorHandle::resolve_approval(handle.rs:81)，监听 AskHumanRequest 自动 approve（仅 --auto-approve）。P0 稳定路径：--only scoping 与 --to target_intel（from scoping，免 seeding，scoping 真产出 org/targets 供 intel 消费）。P1 deferred：--seed json 任意上游 + 下游任意 --only（需 org/target/project_path + gate GateContext seeding）。本条与既有多个 in_progress 并存（多会话并发，§2.1）。",
+      "remember": "DAG 切片用 AllowedDag::slice(from,to)=ancestors_inclusive(to)∩descendants_inclusive(from)；orchestrator 只在 run_executor_driven 投影处 allowed∩stage_allowlist（一行），不碰 decide_transition。headless 复用 AppState::new(无 AppHandle)+extract_agent_state+configure_bridge(None)，勿重写工具层。HITL 自动确认=监听 AiEvent::AskHumanRequest → coordinator.resolve_approval。"
+    },
+    {
+      "id": "intel-provider-availability-2026-06-06",
+      "priority": 2,
+      "area": "backend: golish-recon-app/src/asset_intel/availability.rs(新 list_provider_availability facade + credentials_satisfied 纯函数) + asset_intel/mod.rs(导出) + integrations/state.rs(新 pub(crate) collect_in_code_schemas/build_integration_resolver/pick_readonly_backend 复用) + agent_tools/mod.rs(新 ReconListProvidersTool) + golish/src/pentest_tool_factory.rs(注册) + golish-agent-runtime/src/execution_mode/{policy.rs(BridgeToolSelection +recon_list_providers),prompt_render.rs(+BRIDGE_ROW),prompt_render_tests.rs} + golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs(K::TargetIntel 先 recon_list_providers)",
+      "title": "Intel 被动 provider 可用性预检：新增 recon_list_providers agent 工具，让 AI 在 target_intel 调 discover/enrich 前先知道哪些 provider 已配凭据（兼容 ENScan external_file cookie + 0.zone/quake vault api_key），只调 available 的、不可用记 blocked 不伪造",
+      "user_visible_behavior": "Task 模式 target_intel：AI 先调 recon_list_providers 拿到每个被动 provider 的 {phase, capabilities, available, reason}（available 由复用 integrations resolver + backend.read_cleartext 查必填凭据是否非空判定，兼容两种存储），只对 available=true 的调 recon_discover_subsidiaries/recon_enrich_assets；无可用 provider 的情报技术 coverage 记 blocked（没凭据）。解决用户『没会员时盲调没 key 的 provider』痛点——调用前就知道哪些能调。read-only，不跑 provider、不碰目标。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "承接 docs/design/2026-06-06-intel-stage-ai-driven-per-mode.md（用户 2026-06-06 在 BaJie MCP-agent-4 会话口头拍板 option②『加列可用provider』；复用 integrations 统一判定避免只查 vault 误判 ENScan）",
+      "plan": "会话内拍板：facade(credentials_satisfied 纯函数 TDD) → ReconListProvidersTool → 注册(factory/policy/prompt_render) → target_intel prompt 先 list → 验证",
+      "verification": [
+        "[facade ✓] credentials_satisfied 纯函数 4 单测（required 非空/缺失/blank/回退 secret 字段/无可查字段）；cargo nextest -p golish-recon-app credentials_satisfied 等",
+        "[注册 ✓] policy.rs BridgeToolSelection +recon_list_providers（all_enabled/none/enabled_tool_names + 稳定顺序测试）；prompt_render BRIDGE_ROW + prompt_render_tests 断言；selection_apply bridge_allowed 过滤天然纳入",
+        "[prompt ✓] K::TargetIntel 非 skip 分支首步 recon_list_providers + 测试断言（红队含/渗透 skip 不含）",
+        "[门禁 ✓ 本会话实跑] cargo check 四 crate exit0(36s)；cargo clippy -p golish-recon-app -p golish-agent-runtime -p golish-agent-kit -p golish --all-targets -D warnings exit0 零告警(58s)；cargo nextest 三 crate 892 passed/0(含新 4 测)；cargo fmt --check 四 crate clean；ReadLints 无错。",
+        "[未跑] full just precommit（前端 biome/vitest + 全 workspace nextest）+ 活体 E2E（target_intel 实跑 recon_list_providers→只调 available→不可用记 blocked，需 just dev + LLM key）"
+      ],
+      "evidence": "本会话（BaJie MCP-agent-4，DISPATCH off，用户驱动）实跑后端门禁全绿：cargo check 四 crate exit0；clippy --all-targets -D warnings 四 crate exit0 零告警；nextest -p golish-recon-app -p golish-agent-runtime -p golish-agent-kit → 892 passed/0 skipped（较 intel P0 的 888 +4，即新增 credentials_satisfied 单测）；fmt --check clean；ReadLints 无错。**未 commit**（等用户授权）。剩：full just precommit（前端+全 workspace）+ 活体 E2E。",
+      "notes": "2026-06-06 BaJie MCP-agent-4（DISPATCH off）。承接 intel-stage-ai-driven-p0：用户指出『没会员时这些 provider 也要在调用前知道哪些能调』。核码确认现状 gap：select_asset_intel_providers 只按 auto.default 选、不预过滤凭据，AI 是『先都试、没 key 的跑出来标 Unavailable』。方案：复用 integrations 统一判定（resolver get schema → pick_readonly_backend Vault/ExternalFile → read_cleartext 查 group 内 required 字段非空），兼容 ENScan(external_file cookie)/0.zone/quake(vault api_key)——只查 vault 会误判 ENScan 不可用。工具放 recon-app（deps 同现有两 recon 工具 pool+ToolsConfigState），组合根 golish 注册（同唯一干净接缝）；不需 SettingsManager（asset_intel provider 不用 Settings 存储）。read-only 工具、不涉 org 数据故无 IDOR。不改 DB schema、不删 UI、不动前端。下一步：用户授权后统一 commit + full precommit；活体 E2E 留人工。",
+      "remember": "判定 provider『可用』复用 integrations backend.read_cleartext（兼容 vault+external_file），勿只查 vault；credentials_satisfied 是可单测的纯函数（required 非空，回退 secret 字段）。recon_list_providers 与 discover/enrich 三工具同走 pentest_tool_factory::create_bridge_tools 接缝 + BridgeToolSelection 过滤。"
+    },
+    {
+      "id": "intel-stage-ai-driven-p0-2026-06-06",
+      "priority": 2,
+      "area": "backend: golish-agent-kit/src/harness/profile.rs(IntelPolicy/PassiveIntelMode + Profile.intel_policy) + task_orchestrator/subtask_phases/execute.rs(intel_policy_for_ctx + synthesize_stage_subtask K::TargetIntel 按 policy 分流) + golish-recon-app/src/asset_intel/agent_intel.rs(新 run_passive_intel facade) + agent_tools/mod.rs(新 ReconDiscoverSubsidiariesTool/ReconEnrichAssetsTool) + golish-agent-runtime/src/execution_mode/{policy.rs(BridgeToolSelection +recon_discover_subsidiaries/+recon_enrich_assets),prompt_render.rs(BRIDGE_ROWS 2 行)} + agentic_loop/tool_execution/direct/mod.rs(recon 工具 evidence_append 落账块) + golish/src/pentest_tool_factory.rs(组合根注册) + resources/harness/profiles/*.json(6 加 intel_policy)",
+      "title": "Intel 阶段 AI 驱动 P0（被动闭环接入 target_intel）：把同事的 asset-intel 引擎（ENScan 子公司发现 + 0.zone/quake 字段富化）从『只有 GUI 按钮能调』变成 AI agent 工具，由 harness target_intel 阶段驱动；profile 加 intel_policy 分流（渗透 skip 直奔主动 / 红队 discover+enrich）；工具产出自动落账 evidence ledger 以过 coverage_complete gate",
+      "user_visible_behavior": "Task 模式 target_intel 阶段：红队（intel_policy.discover_subsidiaries+enrich_assets）AI 调 recon_discover_subsidiaries（ENScan 找子公司）→ recon_enrich_assets（0.zone/quake 富化域名/IP/ICP/APP/邮箱），结果写回组织 + 落 evidence，coverage 引证后过 gate；渗透（passive_intel=skip）跳过被动、coverage 记 not_applicable 直接进主动 external_attack_surface；前端 recon 按钮 P2 再移除（本期不动前端）。模式差异集中在 profiles/*.json 的 intel_policy，声明式可配。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "docs/design/2026-06-06-intel-stage-ai-driven-per-mode.md（用户 2026-06-06 拍板 Option B：被动闭环→target_intel、主动→external_attack_surface/enumeration；Q1=渗透 passive_intel=skip 空跑过 gate；Q3=主动引擎加 tool_kinds 拆分→ P1；复用同事 asset-intel 引擎不重写）",
+      "plan": "docs/superpowers/plans/2026-06-06-intel-stage-ai-driven-p0.md（writing-plans · Task 1-8 · TDD；自检三项已过）",
+      "verification": [
+        "[T1 ✓] IntelPolicy/PassiveIntelMode + Profile.intel_policy（serde default 保守=run passive）；cargo nextest -p golish-agent-kit intel_policy passive_intel_mode → 4 passed",
+        "[T2 ✓] 6 profiles 配 intel_policy（pentest/smoke=skip；red_team=run+discover+enrich；assessment/bug_bounty/cloud=run+enrich）；7 JSON python json.tool 全 OK；cargo nextest -p golish-agent-kit profile → 21 passed",
+        "[T3 ✓] recon-app run_passive_intel facade（包 scan_toolsconfig + select_subsidiary/enrichment_providers + run_providers_for_org，复用引擎不重写）；cargo check -p golish-recon-app exit0",
+        "[T4 ✓] ReconDiscoverSubsidiariesTool/ReconEnrichAssetsTool（impl golish_core::Tool，IDOR 绑 project_path，结果含 company 供落账取 subject）；nextest agent_intel agent_tools → 3 passed",
+        "[T5 ✓] 注册：BridgeToolSelection +2 字段（all_enabled/none/enabled_tool_names）+ BRIDGE_ROWS 2 行 + 组合根 create_bridge_tools append 2 工具；nextest prompt_render/bridge_/selection_to_tool → 7 passed",
+        "[T6 ✓] tool_execution/direct/mod.rs 新增 evidence_append 块（recon_discover_subsidiaries|recon_enrich_assets 在 harness_stage 内把 JSON 结果序列化落账，subject=company）；cargo check -p golish-agent-runtime exit0",
+        "[T7 ✓] intel_policy_for_ctx + synthesize_stage_subtask K::TargetIntel 按 policy 分流（skip→not_applicable 不调工具；run→recon_discover_subsidiaries+recon_enrich_assets+引证 evidence）；nextest target_intel_prompt 等 → 6 passed",
+        "[T8 收口 ✓ 后端门禁] cargo nextest -p golish-agent-kit -p golish-recon-app -p golish-agent-runtime → 888 passed/0；cargo check -p golish（组合根）exit0；cargo clippy -p golish-agent-kit -p golish-recon-app -p golish-agent-runtime -p golish --all-targets -D warnings → exit0 零告警。【未跑】full just precommit（前端 biome 有 preexisting 警告、全 workspace nextest）+ 活体 E2E（红队弹 recon 工具/渗透 skip/evidence 落账/gate PASS）需 just dev + LLM key 交互。"
+      ],
+      "evidence": "本会话（BaJie MCP-agent-3，DISPATCH off）实跑后端门禁全绿：888 tests passed（golish-agent-kit/recon-app/agent-runtime 三 crate 全量 nextest，0 fail/0 skip）+ 组合根 golish cargo check exit0（56s）+ clippy --all-targets -D warnings 四 crate exit0 零告警（1m54s）。新增/改动文件全部 ReadLints 无错。设计 + P0 计划 + T1-T7 代码 + T8 后端收口本会话完成；**未 commit**（等用户授权统一提交）。剩：full just precommit（含前端/全 workspace）+ 活体三模式 E2E（人工，需 LLM key）。",
+      "notes": "2026-06-06 BaJie MCP-agent-3（DISPATCH off，用户驱动）。承接 scoping-per-mode 的成功模式对称复制到 intel 阶段。用户核心诉求：『同事那套 recon（organization_recon/asset_intel）就是我想要的，GUI 按钮只是过渡，应交给 AI 驱动』。核码证实同事引擎（run_providers_for_org 被动 / run_active_collection 主动）此前仅 Tauri 命令可调，agentic_loop 零引用。Option B（用户推荐）：被动闭环包成 target_intel 工具，主动留 external_attack_surface/enumeration（P1）。关键工程点：① 工具放 recon-app（需 ConfigManager），组合根 golish（唯一同时依赖 agent 与 recon-app）注册，避免 agent-app/pentest-app 反向依赖；② 过 gate evidence 命门——recon 工具 execute 返回 JSON 非 stdout，现有自动落账只抓 run_pty_cmd/pentest_run 的 stdout，故 T6 专门加一段把 JSON 结果落 ledger，AI 才有真 evidence id 引证过 coverage_complete。P1 deferred：recon_active_surface/recon_port_scan 拆 run_active_collection（加 tool_kinds）接 EAS/enumeration + ASN 工具。P2：移除前端 asset_intel_*/organization_recon_* 按钮（需用户 §2.7 确认删 UI）。本条与既有多个 in_progress 并存（多会话并发现实，§2.1）。assessment.sprint_skeleton.json 非 profile（无 id/scoping_policy），不加 intel_policy。",
+      "remember": "组合根 golish/src/pentest_tool_factory.rs::create_bridge_tools 是 agent 工具接 recon-app 引擎的唯一干净接缝；新 recon 工具产出要过 harness gate 必须在 tool_execution/direct/mod.rs 配套加 evidence_append（按工具名硬编码，非泛化）。"
+    },
     {
       "id": "scoping-per-mode-gate-hitl-2026-06-06",
       "priority": 2,

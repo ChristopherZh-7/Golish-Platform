@@ -15,6 +15,7 @@
 //! the `commands_facade` re-exports, which glob each module — including the
 //! `__cmd__$name` macros each `#[tauri::command]` emits.
 
+pub mod agent_tools;
 pub mod asset_intel;
 pub mod custom_rules;
 pub mod integrations;

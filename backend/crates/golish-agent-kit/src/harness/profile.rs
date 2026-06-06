@@ -115,6 +115,44 @@ impl Default for ScopingPolicy {
     }
 }
 
+/// target_intel 阶段的 per-profile 行为策略
+/// (设计 2026-06-06-intel-stage-ai-driven-per-mode §3.2).
+///
+/// 容器级 `serde(default)`: 旧 profile JSON 无此块时整体取 [`IntelPolicy::default`]
+/// (保守默认: 跑被动情报); `deny_unknown_fields` 拦住块内字段拼写错误.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct IntelPolicy {
+    /// 跑被动情报 (run) 还是跳过 (skip, 渗透: 资产明确直奔主动).
+    pub passive_intel: PassiveIntelMode,
+    /// 红队专用: 先做 ENScan 子公司发现.
+    pub discover_subsidiaries: bool,
+    /// 字段富化 (0.zone/quake/fofa…).
+    pub enrich_assets: bool,
+}
+
+/// 被动情报模式.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PassiveIntelMode {
+    /// 跑被动收集 (默认).
+    #[default]
+    Run,
+    /// 跳过被动 (渗透: 资产已在 scoping 确认).
+    Skip,
+}
+
+impl Default for IntelPolicy {
+    /// 保守默认 (旧 profile): 跑被动、不主动发现子公司、做富化.
+    fn default() -> Self {
+        Self {
+            passive_intel: PassiveIntelMode::Run,
+            discover_subsidiaries: false,
+            enrich_assets: true,
+        }
+    }
+}
+
 /// Doc 3 §2.1 Profile · resources/harness/profiles/*.json 映射.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
@@ -128,6 +166,9 @@ pub struct Profile {
     /// scoping 阶段 per-profile 策略 (设计 2026-06-06). 缺省 = `ScopingPolicy::default()`.
     #[serde(default)]
     pub scoping_policy: ScopingPolicy,
+    /// target_intel 阶段 per-profile 策略 (设计 2026-06-06). 缺省 = `IntelPolicy::default()`.
+    #[serde(default)]
+    pub intel_policy: IntelPolicy,
     #[serde(default)]
     pub cleanup_required: bool,
     #[serde(default)]
@@ -291,5 +332,62 @@ mod tests {
         assert_eq!(s, "\"organization_or_freetext\"");
         let s2 = serde_json::to_string(&SubjectKind::CloudTenant).unwrap();
         assert_eq!(s2, "\"cloud_tenant\"");
+    }
+
+    #[test]
+    fn intel_policy_defaults_when_absent() {
+        // 旧 profile JSON 无 intel_policy → 取保守默认 (跑被动, 做富化, 不主动发现子公司).
+        let json = r#"{"id":"x","display_name":"X","max_authorization":"active_recon",
+            "allowed_stage_kinds":["target_intel"],"forbidden_stage_kinds":[],
+            "cleanup_required":false,"evidence_required":true}"#;
+        let p = load_profile_from_json(json).expect("parse");
+        assert_eq!(p.intel_policy.passive_intel, PassiveIntelMode::Run);
+        assert!(!p.intel_policy.discover_subsidiaries);
+        assert!(p.intel_policy.enrich_assets);
+    }
+
+    #[test]
+    fn intel_policy_parses_pentest_skip_and_red_team_full() {
+        // 渗透: passive_intel=skip (资产明确直奔主动).
+        let pentest = r#"{"id":"pentest","display_name":"P","max_authorization":"controlled_exploit",
+            "allowed_stage_kinds":["target_intel"],"forbidden_stage_kinds":[],
+            "cleanup_required":false,"evidence_required":true,
+            "intel_policy":{"passive_intel":"skip","discover_subsidiaries":false,"enrich_assets":false}}"#;
+        let p = load_profile_from_json(pentest).expect("parse");
+        assert_eq!(p.intel_policy.passive_intel, PassiveIntelMode::Skip);
+        assert!(!p.intel_policy.enrich_assets);
+
+        // 红队: 先发现子公司 + 富化字段.
+        let red = r#"{"id":"red_team","display_name":"R","max_authorization":"post_exploit_red_team",
+            "allowed_stage_kinds":["target_intel"],"forbidden_stage_kinds":[],
+            "cleanup_required":true,"evidence_required":true,
+            "intel_policy":{"passive_intel":"run","discover_subsidiaries":true,"enrich_assets":true}}"#;
+        let r = load_profile_from_json(red).expect("parse");
+        assert_eq!(r.intel_policy.passive_intel, PassiveIntelMode::Run);
+        assert!(r.intel_policy.discover_subsidiaries);
+        assert!(r.intel_policy.enrich_assets);
+    }
+
+    #[test]
+    fn intel_policy_rejects_unknown_field() {
+        // deny_unknown_fields: 块内拼写错误的字段应当报错.
+        let json = r#"{"id":"x","display_name":"X","max_authorization":"active_recon",
+            "allowed_stage_kinds":["target_intel"],"forbidden_stage_kinds":[],
+            "cleanup_required":false,"evidence_required":true,
+            "intel_policy":{"passive_intel":"run","discover_subsidiaries":false,
+                "enrich_assets":true,"typo_field":1}}"#;
+        assert!(load_profile_from_json(json).is_err());
+    }
+
+    #[test]
+    fn passive_intel_mode_serde_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&PassiveIntelMode::Run).unwrap(),
+            "\"run\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PassiveIntelMode::Skip).unwrap(),
+            "\"skip\""
+        );
     }
 }

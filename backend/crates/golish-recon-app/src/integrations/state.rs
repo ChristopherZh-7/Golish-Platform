@@ -279,6 +279,48 @@ fn collect_in_code_schemas_and_providers() -> (
     (schemas, registry)
 }
 
+/// Just the in-code integration schemas (the schema half of
+/// [`collect_in_code_schemas_and_providers`]). For read-only callers that need
+/// schemas but not the `IntelProvider` registry — e.g. the agent
+/// provider-availability listing (`recon_list_providers`). Reuses the same
+/// source so the two never drift.
+pub(crate) fn collect_in_code_schemas() -> Vec<ResolvedIntegration> {
+    collect_in_code_schemas_and_providers().0
+}
+
+/// Build a schema resolver over `toolsconfig_dir` + the in-code intel schemas,
+/// matching what [`IntegrationsState::build_default`] wires for the IPC facade.
+/// Used by the agent provider-availability listing to resolve each provider's
+/// integration schema without standing up the full managed state (which needs a
+/// `SettingsManager` that asset-intel providers never use).
+pub(crate) fn build_integration_resolver(
+    toolsconfig_dir: std::path::PathBuf,
+) -> DefaultSchemaResolver {
+    DefaultSchemaResolver::new(Some(toolsconfig_dir), collect_in_code_schemas())
+}
+
+/// Pick the read-side [`StorageBackend`] for a schema's storage variant, reusing
+/// the same backend constructors as [`IntegrationsState::pick_backend`]. Returns
+/// `None` for `Storage::Settings` (no asset-intel provider uses it, and the
+/// availability check has no `SettingsManager`).
+pub(crate) fn pick_readonly_backend(
+    schema: &IntegrationSchema,
+    pool: PgPool,
+    tools_dir: Option<std::path::PathBuf>,
+) -> Option<Box<dyn StorageBackend>> {
+    match &schema.storage {
+        Storage::Vault { .. } => Some(Box::new(VaultBackend::new(pool))),
+        Storage::ExternalFile { .. } => {
+            let mut backend = ExternalFileBackend::new();
+            if let Some(td) = tools_dir {
+                backend = backend.with_tools_dir(td);
+            }
+            Some(Box::new(backend))
+        }
+        Storage::Settings { .. } => None,
+    }
+}
+
 /// `BuiltinDispatcher` impl backed by the `IntelProvider` registry.
 ///
 /// Strategy:

@@ -65,6 +65,11 @@ pub struct TaskOrchestrator {
     /// production feeder, so the gate would otherwise wedge forever). `None`
     /// (e.g. unit tests) → text fallback over `user_input_rx`.
     pub(super) approval_coordinator: Option<crate::CoordinatorHandle>,
+    /// 方案 2 · headless 单/区间阶段实跑的 DAG allowlist. `Some` 时,
+    /// `run_executor_driven` 投影 DAG 用 `profile.allowed ∩ allowlist`, 把可执行
+    /// 阶段裁到一段切片 (`scoping..=to` 或 `{only}`)——切片终点无后继 → 跑完即
+    /// Complete 停下. `None` (默认 / GUI 正常 run) = 用整张 profile DAG, 行为不变.
+    pub(super) stage_allowlist: Option<std::collections::HashSet<crate::harness::StageKind>>,
 }
 
 impl TaskOrchestrator {
@@ -85,6 +90,7 @@ impl TaskOrchestrator {
             stage_outcome_acc: None,
             chat_session_id: None,
             approval_coordinator: None,
+            stage_allowlist: None,
         }
     }
 
@@ -115,11 +121,49 @@ impl TaskOrchestrator {
         self.approval_coordinator = coordinator;
     }
 
+    /// 方案 2 · restrict the executable DAG to a slice of stages. `Some(set)`
+    /// makes `run_executor_driven` project with `profile.allowed ∩ set` so a
+    /// headless run can execute just `{only}` or `scoping..=to` and stop. `None`
+    /// (default) = full profile DAG (GUI / normal `run` behaviour, unchanged).
+    pub fn set_stage_allowlist(
+        &mut self,
+        allowlist: Option<std::collections::HashSet<crate::harness::StageKind>>,
+    ) {
+        self.stage_allowlist = allowlist;
+    }
+
     /// Run a full Task mode execution.
     ///
     /// This is the top-level entry point, equivalent to PentAGI's
-    /// `NewTaskWorker + tw.Run()`.
+    /// `NewTaskWorker + tw.Run()`. The operation cursor starts at the DAG entry
+    /// (`scoping`).
     pub async fn run(&mut self, task_input: &str, executor: &dyn AgentExecutor) -> Result<String> {
+        self.run_from_stage(task_input, executor, crate::harness::StageKind::Scoping)
+            .await
+    }
+
+    /// 方案 2 · headless single/range stage run: start a fresh operation whose
+    /// cursor begins at `entry_stage` (instead of `scoping`). Pair with
+    /// [`Self::set_stage_allowlist`] so the projected DAG's entry is `entry_stage`
+    /// and its terminal is the slice's `to` (run finishes that slice, then stops).
+    pub async fn run_stage(
+        &mut self,
+        entry_stage: crate::harness::StageKind,
+        task_input: &str,
+        executor: &dyn AgentExecutor,
+    ) -> Result<String> {
+        self.run_from_stage(task_input, executor, entry_stage).await
+    }
+
+    /// Shared body for [`Self::run`] / [`Self::run_stage`]: create the task +
+    /// `operation_state` (cursor at `entry_stage`) and drive the executor. The
+    /// only difference between the two callers is the initial cursor stage.
+    async fn run_from_stage(
+        &mut self,
+        task_input: &str,
+        executor: &dyn AgentExecutor,
+        entry_stage: crate::harness::StageKind,
+    ) -> Result<String> {
         let task = tasks::create(
             &*self.repo,
             NewTask {
@@ -134,8 +178,9 @@ impl TaskOrchestrator {
         tasks::update_status(&*self.repo, task.id, TaskStatus::Running).await?;
 
         // Phase C harness: 一个 Task = 一个 operation. 建 operation_state 游标,
-        // 起点为 DAG entry (scoping); gate 过后沿 profile 投影的 DAG 推进. profile 经
-        // GOLISH_HARNESS_PROFILE 选择, 未知 id 回退 assessment (typo 不 wedge 启动).
+        // 起点为 `entry_stage` (正常 run = DAG entry scoping; 方案 2 run_stage = 切片
+        // 入口); gate 过后沿 profile 投影的 DAG 推进. profile 经 GOLISH_HARNESS_PROFILE
+        // 选择, 未知 id 回退 assessment (typo 不 wedge 启动).
         //
         // Prefer the per-run picker override; fall back to the env default. Own the
         // string up front so no borrow of `self` lingers across the later
@@ -159,7 +204,7 @@ impl TaskOrchestrator {
             &*self.repo,
             task.id,
             &profile_id,
-            crate::harness::StageKind::Scoping.as_str(),
+            entry_stage.as_str(),
         )
         .await
         {

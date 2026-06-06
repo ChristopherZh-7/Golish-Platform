@@ -38,5 +38,12 @@
     "asset_confirmation": "interactive",
     "require_human_scope_approval": true,
     "write_organizations": true
+  },
+
+  "$comment_intel_policy": "红队: 先 ENScan 找子公司, 再被动富化字段 (设计 2026-06-06-intel-stage-ai-driven-per-mode).",
+  "intel_policy": {
+    "passive_intel": "run",
+    "discover_subsidiaries": true,
+    "enrich_assets": true
   }
 }

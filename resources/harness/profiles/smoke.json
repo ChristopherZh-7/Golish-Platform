@@ -33,5 +33,12 @@
     "asset_confirmation": "none",
     "require_human_scope_approval": false,
     "write_organizations": false
+  },
+
+  "$comment_intel_policy": "冒烟: 最短路径, 跳过被动情报 (设计 2026-06-06-intel-stage-ai-driven-per-mode).",
+  "intel_policy": {
+    "passive_intel": "skip",
+    "discover_subsidiaries": false,
+    "enrich_assets": false
   }
 }

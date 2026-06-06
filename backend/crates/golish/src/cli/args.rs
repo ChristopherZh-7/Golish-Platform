@@ -67,6 +67,44 @@ pub struct Args {
     /// docs/design/2026-06-05-unified-ai-harness-observability.
     #[arg(long, value_name = "SESSION")]
     pub replay: Option<String>,
+
+    // ---- 方案 2 · headless single/range stage runner ----
+    /// Run a single harness stage (or a `--from`..=`--to` slice) headlessly:
+    /// boot embedded PG + real pentest tools + real LLM, run the slice, print a
+    /// structured report (gate PASS/BLOCK + tools + evidence), then exit. No GUI.
+    /// See docs/design/2026-06-06-headless-single-stage-runner.md.
+    #[arg(long)]
+    pub stage_run: bool,
+
+    /// Harness profile id for `--stage-run` (e.g. assessment / pentest /
+    /// red_team / bug_bounty / cloud_assessment / smoke). Defaults to the
+    /// `GOLISH_HARNESS_PROFILE` env default when omitted.
+    #[arg(long, value_name = "PROFILE")]
+    pub profile: Option<String>,
+
+    /// `--stage-run` slice start stage (defaults to the DAG entry, `scoping`).
+    #[arg(long, value_name = "STAGE")]
+    pub from: Option<String>,
+
+    /// `--stage-run` slice end stage (inclusive). The run stops after this stage
+    /// passes its gate. Required unless `--only` is given.
+    #[arg(long, value_name = "STAGE")]
+    pub to: Option<String>,
+
+    /// `--stage-run` shorthand for `--from X --to X` (run exactly one stage).
+    /// Non-`scoping` single stages need upstream seeding (`--org` / `--target`).
+    #[arg(long, value_name = "STAGE", conflicts_with_all = ["from", "to"])]
+    pub only: Option<String>,
+
+    /// `--stage-run` minimal upstream seed: create/select an organization by name
+    /// (needed by stages that operate on an org, e.g. `target_intel`).
+    #[arg(long, value_name = "NAME")]
+    pub org: Option<String>,
+
+    /// `--stage-run` minimal upstream seed: add an in-scope target (host/domain).
+    /// Repeatable: `--target a.com --target b.com`.
+    #[arg(long, value_name = "HOST")]
+    pub target: Vec<String>,
 }
 
 impl Args {
@@ -129,5 +167,62 @@ mod tests {
     fn test_args_auto_approve() {
         let args = Args::parse_from(["golish", "--auto-approve"]);
         assert!(args.auto_approve);
+    }
+
+    #[test]
+    fn test_args_stage_run_only() {
+        // 方案 2: objective passed via -e (positional is `workspace`).
+        let args = Args::parse_from([
+            "golish",
+            "--stage-run",
+            "--profile",
+            "red_team",
+            "--only",
+            "target_intel",
+            "-e",
+            "scan acme",
+        ]);
+        assert!(args.stage_run);
+        assert_eq!(args.profile.as_deref(), Some("red_team"));
+        assert_eq!(args.only.as_deref(), Some("target_intel"));
+        assert!(args.from.is_none());
+        assert!(args.to.is_none());
+        assert_eq!(args.execute.as_deref(), Some("scan acme"));
+    }
+
+    #[test]
+    fn test_args_stage_run_to_with_repeated_targets() {
+        let args = Args::parse_from([
+            "golish",
+            "--stage-run",
+            "--profile",
+            "assessment",
+            "--to",
+            "target_intel",
+            "--org",
+            "ACME",
+            "--target",
+            "a.com",
+            "--target",
+            "b.com",
+        ]);
+        assert!(args.stage_run);
+        assert_eq!(args.to.as_deref(), Some("target_intel"));
+        assert_eq!(args.org.as_deref(), Some("ACME"));
+        assert_eq!(args.target, vec!["a.com".to_string(), "b.com".to_string()]);
+    }
+
+    #[test]
+    fn test_args_only_conflicts_with_to() {
+        // --only is mutually exclusive with --from/--to.
+        let res = Args::try_parse_from([
+            "golish",
+            "--stage-run",
+            "--only",
+            "scoping",
+            "--to",
+            "reporting",
+        ]);
+        assert!(res.is_err(), "--only with --to must be rejected by clap");
     }
 }

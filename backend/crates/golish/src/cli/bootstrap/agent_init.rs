@@ -16,7 +16,7 @@ use super::super::args::Args;
 
 /// Initialize the AI agent bridge with all dependencies.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn initialize_agent(
+pub(crate) async fn initialize_agent(
     workspace: &Path,
     settings: &GolishSettings,
     args: &Args,

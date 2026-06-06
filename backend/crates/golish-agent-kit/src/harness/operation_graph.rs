@@ -50,6 +50,17 @@ pub enum OperationGraphError {
     Cycle(StageKind),
 }
 
+/// 计算 DAG 切片 (`from`..=`to`) 时的错误 (headless 单/区间阶段实跑 · 方案 2).
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum SliceError {
+    #[error("target stage not in projected DAG: {0:?}")]
+    ToNotInDag(StageKind),
+    #[error("from stage not in projected DAG: {0:?}")]
+    FromNotInDag(StageKind),
+    #[error("from stage {from:?} cannot reach to stage {to:?} along the DAG")]
+    FromCannotReachTo { from: StageKind, to: StageKind },
+}
+
 /// 静态 JSON 字符串 → [`OperationGraph`], 并校验 (未知节点 + 无环).
 ///
 /// 真正从 disk 读由调用方做 (`std::fs::read_to_string`); 单测可无 IO 直接 fixture 验证.
@@ -227,6 +238,87 @@ impl AllowedDag {
             .filter(|&n| self.is_terminal(n))
             .collect()
     }
+
+    /// `start` 及其沿正向边可达的所有后继 (含自身). `start` 不在图里返回空集.
+    ///
+    /// 方案 2 切片用: `descendants_inclusive(from)` = 「from 往后能到的阶段」.
+    pub fn descendants_inclusive(&self, start: StageKind) -> HashSet<StageKind> {
+        let mut seen = HashSet::new();
+        if !self.contains(start) {
+            return seen;
+        }
+        let mut stack = vec![start];
+        while let Some(s) = stack.pop() {
+            if seen.insert(s) {
+                if let Some(neigh) = self.adjacency.get(&s) {
+                    for &n in neigh {
+                        if !seen.contains(&n) {
+                            stack.push(n);
+                        }
+                    }
+                }
+            }
+        }
+        seen
+    }
+
+    /// `target` 及其沿反向边可达的所有前驱 (含自身). `target` 不在图里返回空集.
+    ///
+    /// 方案 2 切片用: `ancestors_inclusive(to)` = 「能走到 to 的阶段」(即 to 的上游闭包).
+    pub fn ancestors_inclusive(&self, target: StageKind) -> HashSet<StageKind> {
+        let mut seen = HashSet::new();
+        if !self.contains(target) {
+            return seen;
+        }
+        let mut rev: HashMap<StageKind, Vec<StageKind>> = HashMap::new();
+        for e in &self.edges {
+            rev.entry(e.to).or_default().push(e.from);
+        }
+        let mut stack = vec![target];
+        while let Some(s) = stack.pop() {
+            if seen.insert(s) {
+                if let Some(preds) = rev.get(&s) {
+                    for &p in preds {
+                        if !seen.contains(&p) {
+                            stack.push(p);
+                        }
+                    }
+                }
+            }
+        }
+        seen
+    }
+
+    /// 方案 2 · headless 单/区间阶段实跑的 DAG 切片.
+    ///
+    /// 返回 `from`..=`to` 路径上的全部阶段 = `ancestors_inclusive(to)` (∩
+    /// `descendants_inclusive(from)` 若给了 `from`). 把它当 allowlist 喂给
+    /// orchestrator 投影 (`allowed ∩ allowlist`) 后, 子图入口=`from`/entry、终点=`to`
+    /// (to 的下游被剪掉), 跑完 `to` 因无后继自然 Complete 停下.
+    ///
+    /// - `from = None` ⇒ 从 DAG 入口起 (= `to` 的全部上游).
+    /// - `--only X` ⇒ `slice(Some(X), X)` = `{X}` (单节点).
+    pub fn slice(
+        &self,
+        from: Option<StageKind>,
+        to: StageKind,
+    ) -> Result<HashSet<StageKind>, SliceError> {
+        if !self.contains(to) {
+            return Err(SliceError::ToNotInDag(to));
+        }
+        let mut set = self.ancestors_inclusive(to);
+        if let Some(f) = from {
+            if !self.contains(f) {
+                return Err(SliceError::FromNotInDag(f));
+            }
+            let fwd = self.descendants_inclusive(f);
+            if !fwd.contains(&to) {
+                return Err(SliceError::FromCannotReachTo { from: f, to });
+            }
+            set.retain(|s| fwd.contains(s));
+        }
+        Ok(set)
+    }
 }
 
 #[cfg(test)]
@@ -381,5 +473,152 @@ mod tests {
         assert_eq!(s, r#"{"from":"scoping","to":"target_intel"}"#);
         let back: StageEdge = serde_json::from_str(&s).unwrap();
         assert_eq!(e, back);
+    }
+
+    // ---- 方案 2 · DAG 切片 (headless 单/区间阶段实跑) ----
+
+    #[test]
+    fn ancestors_inclusive_of_eas_is_recon_prefix() {
+        let dag = assessment_dag();
+        let anc = dag.ancestors_inclusive(StageKind::ExternalAttackSurface);
+        assert_eq!(
+            anc,
+            HashSet::from([
+                StageKind::Scoping,
+                StageKind::TargetIntel,
+                StageKind::ExternalAttackSurface,
+            ])
+        );
+    }
+
+    #[test]
+    fn descendants_inclusive_of_target_intel_reaches_reporting() {
+        let dag = assessment_dag();
+        let desc = dag.descendants_inclusive(StageKind::TargetIntel);
+        // target_intel -> eas -> {enumeration, reporting}; enumeration -> reporting.
+        assert_eq!(
+            desc,
+            HashSet::from([
+                StageKind::TargetIntel,
+                StageKind::ExternalAttackSurface,
+                StageKind::Enumeration,
+                StageKind::Reporting,
+            ])
+        );
+    }
+
+    #[test]
+    fn slice_only_single_stage_is_just_that_stage() {
+        let dag = assessment_dag();
+        let s = dag
+            .slice(Some(StageKind::TargetIntel), StageKind::TargetIntel)
+            .expect("target_intel is in the assessment DAG");
+        assert_eq!(s, HashSet::from([StageKind::TargetIntel]));
+    }
+
+    #[test]
+    fn slice_to_target_intel_from_entry_is_scoping_plus_intel() {
+        let dag = assessment_dag();
+        let s = dag
+            .slice(None, StageKind::TargetIntel)
+            .expect("target_intel reachable from entry");
+        assert_eq!(
+            s,
+            HashSet::from([StageKind::Scoping, StageKind::TargetIntel])
+        );
+    }
+
+    #[test]
+    fn slice_to_eas_from_entry_is_recon_prefix() {
+        let dag = assessment_dag();
+        let s = dag
+            .slice(None, StageKind::ExternalAttackSurface)
+            .expect("eas reachable from entry");
+        assert_eq!(
+            s,
+            HashSet::from([
+                StageKind::Scoping,
+                StageKind::TargetIntel,
+                StageKind::ExternalAttackSurface,
+            ])
+        );
+    }
+
+    #[test]
+    fn slice_to_reporting_covers_all_projected_nodes() {
+        let dag = assessment_dag();
+        let s = dag.slice(None, StageKind::Reporting).expect("reporting");
+        let all: HashSet<StageKind> = dag.nodes.iter().copied().collect();
+        assert_eq!(s, all);
+    }
+
+    #[test]
+    fn slice_to_stage_not_in_dag_errs() {
+        let dag = assessment_dag();
+        assert_eq!(
+            dag.slice(None, StageKind::VulnTriage),
+            Err(SliceError::ToNotInDag(StageKind::VulnTriage))
+        );
+    }
+
+    #[test]
+    fn slice_from_stage_not_in_dag_errs() {
+        let dag = assessment_dag();
+        assert_eq!(
+            dag.slice(Some(StageKind::VulnTriage), StageKind::Reporting),
+            Err(SliceError::FromNotInDag(StageKind::VulnTriage))
+        );
+    }
+
+    #[test]
+    fn slice_from_cannot_reach_to_errs() {
+        let dag = assessment_dag();
+        // reporting is downstream of scoping; you cannot slice "from reporting to scoping".
+        assert_eq!(
+            dag.slice(Some(StageKind::Reporting), StageKind::Scoping),
+            Err(SliceError::FromCannotReachTo {
+                from: StageKind::Reporting,
+                to: StageKind::Scoping,
+            })
+        );
+    }
+
+    #[test]
+    fn project_with_single_stage_allowlist_yields_single_node_run() {
+        // 方案 2 mechanism (what run_executor_driven does): profile.allowed ∩ {only}
+        // → project → single-node DAG whose sole node is both entry and terminal
+        // (the executor runs it once, then RunOutcome::Completed → stops).
+        let p = load_profile_from_json(ASSESSMENT_JSON).expect("assessment profile");
+        let allowed: HashSet<StageKind> = p
+            .allowed_stage_set()
+            .intersection(&HashSet::from([StageKind::TargetIntel]))
+            .copied()
+            .collect();
+        let dag = base().project(&allowed);
+        assert_eq!(dag.nodes, vec![StageKind::TargetIntel]);
+        assert!(dag.edges.is_empty());
+        assert_eq!(dag.entry_points(), vec![StageKind::TargetIntel]);
+        assert_eq!(dag.terminals(), vec![StageKind::TargetIntel]);
+    }
+
+    #[test]
+    fn project_with_slice_allowlist_caps_terminal_at_to() {
+        // slice scoping..=target_intel → project → scoping entry, target_intel
+        // terminal (its downstream eas is dropped → run stops after intel).
+        let p = load_profile_from_json(ASSESSMENT_JSON).expect("assessment profile");
+        let dag_full = base().project(&p.allowed_stage_set());
+        let slice = dag_full.slice(None, StageKind::TargetIntel).unwrap();
+        let allowed: HashSet<StageKind> = p
+            .allowed_stage_set()
+            .intersection(&slice)
+            .copied()
+            .collect();
+        let dag = base().project(&allowed);
+        assert_eq!(dag.entry_points(), vec![StageKind::Scoping]);
+        assert_eq!(dag.terminals(), vec![StageKind::TargetIntel]);
+        assert!(
+            dag.next_stages(StageKind::TargetIntel).is_empty(),
+            "to has no successors in the slice → run finishes intel then stops"
+        );
     }
 }

@@ -30,6 +30,8 @@ mod runner;
 
 pub use args::Args;
 pub use bootstrap::{initialize, CliContext};
+// In-crate only: `stage_run` reuses the CLI's provider-bridge builder.
+pub(crate) use bootstrap::initialize_agent;
 // Re-export from golish-cli-output crate
 pub use crate::cli_output::{convert_to_cli_json, run_event_loop, truncate, CliJsonEvent};
 pub use repl::run_repl;

@@ -4,7 +4,7 @@
 //! as the Tauri GUI application, ensuring feature parity between CLI and GUI.
 
 mod agent_init;
-use agent_init::initialize_agent;
+pub(crate) use agent_init::initialize_agent;
 
 use std::path::PathBuf;
 use std::sync::Arc;

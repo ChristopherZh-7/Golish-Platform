@@ -401,6 +401,58 @@ where
                 }
             }
 
+            // Passive recon agent tools (recon_discover_subsidiaries /
+            // recon_enrich_assets) return a JSON summary (not stdout). Book it to
+            // the ledger so target_intel coverage cells can cite a REAL evidence id
+            // (otherwise the passive-intel deliverable is "fabricated" and the gate
+            // loops). Mirrors the pentest_run block above.
+            if matches!(
+                effective_tool_name,
+                "recon_discover_subsidiaries" | "recon_enrich_assets"
+            ) && is_success
+                && ctx.harness_stage.is_some()
+            {
+                if let Some(tracker) = ctx.events.db_tracker {
+                    if let Some(repo) = tracker.repo() {
+                        let op_id = tracker.task_id().unwrap_or_else(|| tracker.session_uuid());
+                        let ev_subject = v
+                            .get("company")
+                            .and_then(|c| c.as_str())
+                            .filter(|c| !c.is_empty())
+                            .unwrap_or(effective_tool_name);
+                        let ev_raw = serde_json::to_string(&v).unwrap_or_default();
+                        match repo
+                            .evidence_append(
+                                op_id,
+                                None,
+                                ctx.events.session_id,
+                                tracker.project_path(),
+                                effective_tool_name,
+                                effective_tool_name,
+                                ev_subject,
+                                &ev_raw,
+                            )
+                            .await
+                        {
+                            Ok(id) => {
+                                appended_evidence_id = Some(id);
+                                tracing::info!(
+                                    target: "harness::evidence",
+                                    tool = %effective_tool_name,
+                                    evidence_id = id,
+                                    "recon passive evidence appended; surfacing id to agent"
+                                );
+                            }
+                            Err(e) => tracing::warn!(
+                                target: "harness::evidence",
+                                error = %e,
+                                "recon passive evidence append failed (continuing)"
+                            ),
+                        }
+                    }
+                }
+            }
+
             // P1 · surface the appended evidence id so the agent cites a REAL
             // ledger id in its StageDeliverable. Additive `_evidence_id` field;
             // absent when nothing was appended (non-shell tool / no stage).

@@ -16,5 +16,13 @@
   "WSTG-CRYP-03": { "name": "Transport Security / Sensitive Data", "standard": "OWASP WSTG" },
   "WSTG-BUSL": { "name": "Business Logic Abuse", "standard": "OWASP WSTG" },
   "WSTG-INFO": { "name": "Information Disclosure / Recon", "standard": "OWASP WSTG" },
-  "GOLISH-NDAY": { "name": "Known CVE / n-day", "standard": "GOLISH custom" }
+  "GOLISH-NDAY": { "name": "Known CVE / n-day", "standard": "GOLISH custom" },
+
+  "$comment_intel": "\u88ab\u52a8\u60c5\u62a5\u6280\u672f\u7c7b\uff08target_intel \u9636\u6bb5 coverage_complete \u7528\uff09\u3002WSTG \u662f web \u6f0f\u6d1e\u6d4b\u8bd5\u6807\u51c6\u3001\u4e0d\u8986\u76d6\u88ab\u52a8\u60c5\u62a5\uff0c\u6545\u7528 GOLISH-INTEL-* \u81ea\u5b9a\u4e49\u547d\u540d\u7a7a\u95f4\u3002",
+  "GOLISH-INTEL-DNS": { "name": "DNS Records (A/AAAA/MX/NS/TXT/CNAME)", "standard": "GOLISH custom" },
+  "GOLISH-INTEL-WHOIS": { "name": "WHOIS / Registration", "standard": "GOLISH custom" },
+  "GOLISH-INTEL-ASN": { "name": "ASN / Netblock Ownership", "standard": "GOLISH custom" },
+  "GOLISH-INTEL-CT": { "name": "Certificate Transparency", "standard": "GOLISH custom" },
+  "GOLISH-INTEL-SUBDOMAIN": { "name": "Passive Subdomain Enumeration", "standard": "GOLISH custom" },
+  "GOLISH-INTEL-OSINT": { "name": "OSINT Exposure / Leaks", "standard": "GOLISH custom" }
 }

@@ -29,6 +29,76 @@
 
 ---
 
+### 2026-06-06 · Headless 单/区间阶段实跑器 `golish --stage-run`（方案 2 · BaJie MCP-agent-4 · DISPATCH off · 用户驱动）
+
+- **本轮目标**：解决用户痛点「逐阶段测试要 `just dev` 起 GUI + 手动从 scoping 把 AI 驱到目标阶段 + 翻日志，慢/贵/跳不到指定阶段」。用户 brainstorming 后选 **方案 2 = headless 单/区间阶段实跑**（真 LLM/真工具/真 evidence，无 GUI，跑完打印报告即退）。日志选「两个都要」=终端精简报告 + 完整 transcript/backend.log 可 `--replay`/GUI 回看。
+- **关键架构勘探**（3 explore 子代理 + 精读接缝）：`AppState::new`(state/mod.rs:62) **不要 Tauri AppHandle** → headless 可建；`extract_agent_state()` 带 `pentest_tool_factory`；`configure_bridge(...,app_handle:Option)` 传 `None` 原样装全部 pentest 工具；事件经 `CliRuntime` 可消费；`CoordinatorHandle::resolve_approval`(handle.rs:81) + `bridge.respond_to_approval` 可自动确认 ask_human；`ask_human` 先 register 后 emit（无 resolve-before-register 竞态）；DAG 投影 `base_operation_graph().project(allowed)`，切片仅在投影时交集即可、core transition 零改。
+- **已完成（T1-T6）**：
+  - T1 `AllowedDag::slice/ancestors_inclusive/descendants_inclusive`（operation_graph.rs）+ 8 单测。
+  - T2 `TaskOrchestrator` 加 `stage_allowlist` 字段/setter + `run_stage(entry)` + `run_from_stage` 重构（`run`=`run_from_stage(.,Scoping)` 零行为变更）；`run_executor_driven` 投影 `allowed∩allowlist` + 2 单测。
+  - T3 CLI args `--stage-run/--profile/--from/--to/--only(conflicts from/to)/--org/--target(repeatable)` + `main.rs` dispatch（`--replay` 式短路）+ 3 单测。
+  - T4 新模块 `golish/src/stage_run/mod.rs`：boot（lazy pool + spawn_embedded_pg + wait gate → `AppState::new` → `extract_agent_state`）+ `cli::initialize_agent(CliRuntime)` + `ai::commands::configure_bridge(None)` + transcript writer + Task/profile/AutoApprove + `mark_frontend_ready` + 事件消费（auto `respond_to_approval` 处理 ask_human HITL + 收集事件）+ `orchestrate(run_stage)` + `format_report`（gate/工具/evidence/result + replay 提示）；7 单测。
+  - T5 `just stage <profile> <to> <objective>` recipe（`--stage-run --auto-approve -e`）。暴露 `cli::initialize_agent` 为 `pub(crate)`。
+- **运行过的验证（本机实跑 · 已记录证据）**：
+  - `cargo check -p golish` → exit 0（1m28s）。
+  - `cargo clippy -p golish -p golish-agent-kit --all-targets -- -D warnings` → exit 0 零告警。
+  - `cargo nextest -p golish-agent-kit` → **523 passed / 0**（含 +10 slice/projection 测，`run_from_stage` 重构无回归）。
+  - `cargo nextest -p golish`（stage_run + args 过滤）→ **11 passed / 0**。
+  - `cargo fmt --check -p golish -p golish-agent-kit` → clean；ReadLints 10 文件无错；`feature_list.json` 合法。
+- **未做（honest）**：未跑 full `just precommit`（前端 biome/vitest + check-types + 全 workspace nextest）——纯后端新增、无前端/ts-rs 改动。**活体 E2E 未跑**（`just stage red_team target_intel` / `pentest scoping`，需 LLM key + 网络——这正是本功能要替代的人工 E2E）。`--org/--target` 真 seeding 与下游孤立 `--only` **deferred P1**（运行时给 note 提示，设计文档已注）。**未 commit**（等用户授权）。
+- **P1a 上游 seeding（本会话续做 · 用户「开 P1 seeding」）**：实现 `--org/--target` 真 seeding——`maybe_seed`/`seed_upstream`（`organizations::create(project_path=workspace)` + `PgReconTargetsAdapter::target_add`，`target_add` 默认 `scope='in'`）+ `build_objective` 把真 `organization_id` 注入目标语句供 agent 直接调 `recon_*`。**对齐证据**：gate 的 `in_scope_assets` 走 `list_in_scope_values`（SQL `$1 IS NULL ⇒ 全 in-scope 集，任意 project_path 可见`），agent 的 `manage_targets`/`manage_organizations` 按 workspace `project_path` 见 seed——两端都能看到。验证：nextest golish stage_run **12 passed**（+2 `build_objective` seeding 测）；clippy -p golish --all-targets -D warnings exit0 零告警；fmt clean；ReadLints 无错；cargo check -p golish exit0。`--seed <json>` 任意上游(prior evidence/claims) = P1b future。
+- **风险/下一步**：① 用户授权后 commit；② 活体验证 `just stage red_team target_intel "..."` / `pentest scoping "..."` / `golish --stage-run --only target_intel --org ACME --target acme.com`（需 LLM key + 网络）；③ full `just precommit`。
+- **设计/计划**：`docs/design/2026-06-06-headless-single-stage-runner.md`（含 P1a 实现注）、`docs/superpowers/plans/2026-06-06-headless-single-stage-runner.md`；feature_list `headless-single-stage-runner-2026-06-06` = `in_progress`。
+
+---
+
+### 2026-06-06 · Intel 被动 provider 可用性预检 `recon_list_providers`（BaJie MCP-agent-4 · DISPATCH off · 用户驱动）
+
+- **本轮目标**：承接 intel P0。用户在 Q&A 中指出「没会员时这些 provider 也要在调用前知道哪些能调」——核码确认现状 gap：`select_asset_intel_providers` 只按 `auto.default` 选、**不预过滤凭据**，AI 路径是「先都试、没 key 的跑出来标 Unavailable」。用户拍板「加列可用provider」。
+- **方案（会话内确认）**：新增 read-only agent 工具 `recon_list_providers`，调 discover/enrich **之前**先列出每个被动 provider 的 `{phase, capabilities, available, reason}`。`available` **复用 integrations 统一判定**（resolver get schema → 按 storage 选 Vault/ExternalFile backend → `read_cleartext` 查 group 内 `required` 字段非空），**兼容 ENScan(external_file cookie) + 0.zone/quake(vault api_key)**——只查 vault 会误判 ENScan 不可用。
+- **已完成**：
+  - `golish-recon-app/src/asset_intel/availability.rs`（新）：`list_provider_availability(pool, tools)` facade + `ProviderAvailability` + **可单测纯函数 `credentials_satisfied`**（required 非空，回退 secret 字段）。
+  - `integrations/state.rs`：抽 3 个 `pub(crate)` 复用辅助 `collect_in_code_schemas` / `build_integration_resolver` / `pick_readonly_backend`（Vault/ExternalFile，Settings→None；asset_intel provider 不用 SettingsManager）。
+  - `agent_tools/mod.rs`：`ReconListProvidersTool`（无参，返回 providers+available_count+total_count）。
+  - 注册：`pentest_tool_factory.rs` append（deps 同现有两 recon 工具 pool+ToolsConfigState）；`policy.rs` `BridgeToolSelection +recon_list_providers`（all_enabled/none/enabled_tool_names+稳定顺序测试）；`prompt_render.rs` +BRIDGE_ROW + tests；`selection_apply` bridge_allowed 过滤天然纳入。
+  - `execute.rs` `K::TargetIntel` 非 skip 分支首步加 `recon_list_providers`（只调 available、无可用记 blocked 不伪造）+ 测试正/反断言。
+- **运行过的验证（本机实跑 · 已记录证据）**：
+  - `cargo check -p golish-recon-app -p golish-agent-runtime -p golish-agent-kit -p golish` → exit 0（36s）。
+  - `cargo clippy ... --all-targets -- -D warnings` 四 crate → exit 0 零告警（58s）。
+  - `cargo nextest -p golish-recon-app -p golish-agent-runtime -p golish-agent-kit` → **892 passed / 0 skipped**（含新增 4 个 `credentials_satisfied` 单测；intel P0 时为 888）。
+  - `cargo fmt --check` 四 crate → clean（已 `cargo fmt` 应用）；ReadLints 五文件无错；`python3 -m json.tool feature_list.json` → OK。
+- **未做（honest）**：full `just precommit`（前端 biome/vitest + 全 workspace nextest）未跑（纯后端改动，无前端）；活体 E2E（target_intel 实跑 recon_list_providers→只调 available→不可用记 blocked，需 just dev + LLM key）未跑；**未 commit**（等用户授权统一提交）。
+- **feature_list**：新增 `intel-provider-availability-2026-06-06` = `in_progress`（后端门禁全绿，剩 full precommit + E2E + commit）。
+- **下一步**：用户授权后统一 commit；跑 full just precommit；活体三模式 E2E。
+
+---
+
+### 2026-06-06 · Intel 阶段 AI 驱动 P0：被动闭环接入 target_intel（BaJie MCP-agent-3 · DISPATCH off · 用户逐条驱动「一路接完再汇报」）
+
+- **本轮目标**：把同事的 asset-intel 引擎（ENScan 子公司发现 + 0.zone/quake 字段富化）从「只有 GUI 按钮能调」改造成 AI agent 工具，由 harness `target_intel` 阶段驱动；profile 加 `intel_policy` 分流（渗透 skip / 红队 discover+enrich）；工具产出自动落账 evidence 以过 `coverage_complete` gate。**P0 仅被动 + 仅后端**（主动 recon_active_surface/port_scan 留 P1，删前端按钮留 P2）。
+- **设计 + 计划**：新写 `docs/design/2026-06-06-intel-stage-ai-driven-per-mode.md`（用户拍板 Option B：被动→target_intel、主动→external_attack_surface/enumeration；Q1=渗透 passive_intel=skip 空跑过 gate；Q3=主动引擎加 tool_kinds→P1）+ `docs/superpowers/plans/2026-06-06-intel-stage-ai-driven-p0.md`（writing-plans · T1-8 · TDD · 自检三项过）。
+- **已完成（T1-T8，按 TDD）**：
+  - **T1** `harness/profile.rs`：`IntelPolicy{passive_intel(run/skip),discover_subsidiaries,enrich_assets}` + `PassiveIntelMode` + `Profile.intel_policy`（serde default 保守=run）。
+  - **T2** 6 profile JSON 加 `intel_policy`（pentest/smoke=skip；red_team=run+discover+enrich；assessment/bug_bounty/cloud=run+enrich）。`assessment.sprint_skeleton.json` 非 profile，不动。
+  - **T3** `golish-recon-app/src/asset_intel/agent_intel.rs`（新）：`run_passive_intel` facade，包 `scan_toolsconfig_with_status` + `select_subsidiary/enrichment_providers` + `run_providers_for_org`——**复用同事引擎，零重写**。
+  - **T4** `golish-recon-app/src/agent_tools/mod.rs`（新）：`ReconDiscoverSubsidiariesTool` / `ReconEnrichAssetsTool`（impl `golish_core::Tool`，入参 organization_id，IDOR 绑 project_path，结果含 `company` 字段）。
+  - **T5** 注册：`execution_mode/policy.rs` `BridgeToolSelection` +2 字段（all_enabled/none/enabled_tool_names）+ `prompt_render.rs` `BRIDGE_ROWS` +2 行 + **组合根 `golish/src/pentest_tool_factory.rs::create_bridge_tools` append 2 工具**（golish 是唯一同时依赖 agent 与 recon-app 的 crate，避免反向依赖）。
+  - **T6** `agentic_loop/tool_execution/direct/mod.rs`：新增 evidence_append 块——两个 recon 工具 execute 返回 JSON（非 stdout），现有自动落账只抓 run_pty_cmd/pentest_run 的 stdout，故专门把 JSON 结果序列化落 ledger（subject=company），AI 才有真 evidence id 过 coverage gate。**这是「过 gate evidence」的命门**。
+  - **T7** `execute.rs`：`intel_policy_for_ctx` + `synthesize_stage_subtask` 增 `&IntelPolicy` 参数，`K::TargetIntel` 按 policy 分流（skip→coverage 记 not_applicable 不调工具；run→recon_discover_subsidiaries+recon_enrich_assets+引证 evidence）。
+- **运行过的验证（本机实跑 · 已记录证据）**：
+  - `cargo nextest -p golish-agent-kit intel_policy passive_intel_mode` → 4 passed；`... profile` → 21 passed。
+  - `cargo nextest -p golish-recon-app agent_intel agent_tools` → 3 passed。
+  - `cargo nextest -p golish-agent-runtime -E 'test(/prompt_render|bridge_|selection_to_tool/)'` → 7 passed。
+  - `cargo nextest -p golish-agent-kit -E '.../target_intel_prompt|scoping_subtask_prompt...'` → 6 passed。
+  - **后端收口**：`cargo nextest -p golish-agent-kit -p golish-recon-app -p golish-agent-runtime` → **888 passed / 0 failed / 0 skipped**；`cargo check -p golish`（组合根）exit 0（56s）；`cargo clippy -p golish-agent-kit -p golish-recon-app -p golish-agent-runtime -p golish --all-targets -- -D warnings` → **exit 0 零告警**（1m54s）。
+  - 新增/改动文件 ReadLints 全部无错。
+- **提交记录**：**未 commit**（等用户授权统一提交；本轮所有改动挂在工作树）。
+- **未提交文件清单**：新增 `docs/design/2026-06-06-intel-stage-ai-driven-per-mode.md`、`docs/superpowers/plans/2026-06-06-intel-stage-ai-driven-p0.md`、`backend/crates/golish-recon-app/src/asset_intel/agent_intel.rs`、`backend/crates/golish-recon-app/src/agent_tools/mod.rs`；修改 `harness/profile.rs`、`task_orchestrator/subtask_phases/execute.rs`、`asset_intel/mod.rs`、`recon-app/src/lib.rs`、`execution_mode/{policy.rs,prompt_render.rs,prompt_render_tests.rs}`、`tool_execution/direct/mod.rs`、`golish/src/pentest_tool_factory.rs`、`resources/harness/profiles/*.json`(6)、`feature_list.json`、`agent-progress.md`。
+- **已知风险/未做**：① **未跑 full `just precommit`**（前端 biome 有 preexisting 警告、全 workspace nextest 未本轮重跑）——后端触及 crate 已全绿 + clippy -D 零告警，置信高但非全量。② **活体 E2E 未做**：红队模式跑 target_intel 看 AI 真调 recon_discover_subsidiaries/recon_enrich_assets → evidence 落账 → coverage gate PASS；渗透模式 skip 直进主动——需 `just dev` + LLM key + 配好 provider（ENScan/0.zone）。③ provider 无 key 时工具返 Validation error（"no asset-intel provider available"），AI 应记 blocked 不伪造（已在 facade 处理）。④ 前端 recon 按钮仍在（P2 删，需用户 §2.7 确认）。
+- **下一步最佳动作**：① 用户授权后统一 commit（建议 message：`feat(harness): AI-driven passive intel — wire asset-intel engine into target_intel (P0)`）；② 跑 full `just precommit` 兜底；③ 活体 E2E；④ P1：拆 `run_active_collection`（加 tool_kinds）做 `recon_active_surface`/`recon_port_scan` 接 external_attack_surface/enumeration + ASN 工具。
+
+---
+
 ### 2026-06-06 · scoping per-mode gate + HITL P0 收口 Task 9（MCP-agent-4 · DISPATCH off · 接 MCP-2/MCP-3 上下文转移 · 用户「一口气搞完所有」）
 
 - **本轮目标**：承接 executing-plans 的 `docs/superpowers/plans/2026-06-06-scoping-per-mode-gate-hitl-p0.md`，收口 Task 9（集成 + 全量验证 + 进度），让 feature `scoping-per-mode-gate-hitl-2026-06-06` 从 in_progress 落 passing。

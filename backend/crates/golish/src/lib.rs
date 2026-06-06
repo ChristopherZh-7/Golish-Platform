@@ -47,6 +47,7 @@ mod app;
 pub mod cli;
 mod commands;
 mod commands_facade;
+pub mod stage_run;
 
 /// Tauri application entry point for GUI mode.
 ///

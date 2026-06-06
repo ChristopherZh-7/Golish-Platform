@@ -72,6 +72,15 @@ fn main() {
         return;
     }
 
+    // 方案 2 (design 2026-06-06): `golish --stage-run` boots the backend
+    // headlessly, runs one harness stage (or a --from..=--to slice) with a real
+    // LLM, prints a structured report, and exits. Like --replay it must
+    // short-circuit before the GUI/CLI chat branch.
+    if args.stage_run {
+        run_stage_run(args);
+        return;
+    }
+
     // Determine if we should run in headless mode:
     // - Explicit --headless flag
     // - Or -e (execute) or -f (file) flags imply headless
@@ -98,6 +107,17 @@ fn run_cli(args: Args) {
     runtime.block_on(async move {
         if let Err(e) = run_cli_async(args).await {
             eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    });
+}
+
+/// Run the headless single/range stage runner (`--stage-run`, design 2026-06-06).
+fn run_stage_run(args: Args) {
+    let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    runtime.block_on(async move {
+        if let Err(e) = golish_lib::stage_run::run(args).await {
+            eprintln!("Error: {:#}", e);
             std::process::exit(1);
         }
     });

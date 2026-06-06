@@ -39,5 +39,12 @@
     "asset_confirmation": "interactive",
     "require_human_scope_approval": true,
     "write_organizations": false
+  },
+
+  "$comment_intel_policy": "云评估: 跑被动情报富化 (含云资产相关 provider), 不主动发现子公司 (设计 2026-06-06-intel-stage-ai-driven-per-mode).",
+  "intel_policy": {
+    "passive_intel": "run",
+    "discover_subsidiaries": false,
+    "enrich_assets": true
   }
 }
