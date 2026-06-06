@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
   "version": "0.1.9",
-  "last_updated": "2026-06-06",
+  "last_updated": "2026-06-07",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -10,6 +10,27 @@
     "passing"
   ],
   "features": [
+    {
+      "id": "module-cards-system-2026-06-07",
+      "priority": 3,
+      "area": "docs: docs/modules/**（INDEX.md + backend/<crate>.md + backend/<crate>/<submodule>.md + frontend/<子系统>.md）+ AGENTS.md(§1 开工读卡/§2.2/§2.3 改前读改后更新/§2.4 卡住 docs/modules/§4 收尾更新) + docs/design/2026-06-07-module-cards-system.md",
+      "title": "模块卡体系（Agent-Readable Workspace）：给 50 crate + 前端子系统各写一张 AI 可读的标准化 MD 模块卡（职责/接口/依赖/坑/测试入口），集中在 docs/modules/，主索引 INDEX.md 兼当进度跟踪，并接线进 AGENTS.md 工作流形成闭环",
+      "user_visible_behavior": "AI agent 动某模块前先读 docs/modules/INDEX.md 找到对应卡 → 读卡了解职责与影响面 → 改完同 PR 更新卡 + 索引状态列。对齐 Learn Harness Engineering 的 Project 2（Agent-Readable Workspace）。纯文档，不动任何代码/schema/IPC。",
+      "status": "passing",
+      "blocker": null,
+      "design": "docs/design/2026-06-07-module-cards-system.md（用户 2026-06-07 在 BaJie MCP-agent-2 会话拍板：粒度 C=crate+目录子模块、集中式 docs/modules/、主索引、接线进 AGENTS.md）",
+      "plan": "Wave 0 模板打样(golish-tools 全套+INDEX+AGENTS 接线+设计文档) → Wave 1 50 crate 卡 → Wave 2 目录子模块卡 → Wave 3 前端子系统卡。优先序：基础层→领域层→agent 层→app 层→组合根→rig forks→前端。",
+      "verification": [
+        "[Wave 0 ✓] golish-tools crate 卡 + file_ops/directory_ops/ast_grep/definitions 4 子卡（均实读 lib.rs/registry.rs/path_policy.rs/各 mod.rs + grep 依赖，无编造）；INDEX.md 起步；AGENTS.md 5 处接线（实读原文、无编号冲突、不破坏 agents-bridge §引用）；设计文档落地",
+        "[Wave 1 ✓ 2026-06-07] 全部 50 个 backend crate 的 crate 卡已落盘（每张均实读 Cargo.toml + lib.rs + src/ 树 + grep 全量反向依赖，无编造）；INDEX 状态列全部 ✅ 校准。一致性抽查：① for c in backend/crates → 0 MISSING 卡；② ls docs/modules/backend/*.md | wc -l = 50 = crate 数；③ INDEX 除 Frontend(Wave 3) 外无 ⬜",
+        "[Wave 2 ✓ 2026-06-07] 全部 backend 目录子模块卡落盘 = 128 张（基础 15 + 数据 4 + 执行/LLM 17 + 工具/集成 12 + 领域 12 + agent 25 + app 17 + 组合根/rig 22 + golish-tools 4 Wave0），每张实读子模块 mod.rs/入口文件；所有 crate 卡「子模块」表卡片列已接链。验证：`find docs/modules/backend -mindepth 2 -name '*.md' | wc -l`=128；`rg '⬜ Wave 2' docs/modules/backend/*.md`→0；卡间链接 317 条 0 broken",
+        "[Wave 3 ✓ 2026-06-07] 前端 7 个子系统卡落盘（components/hooks/lib/pages/services/store/styles），每张实读 frontend/ 真实结构 + 入口（store/index.ts、lib/api/index.ts、services/index.ts 等）。验证：7 张卡存在、INDEX frontend 行全 ✅、卡间链接 0 broken。**全 3 波完成，总 185 张卡（50 crate + 128 子模块 + 7 前端），0 个 ⬜ 残留**",
+        "[残留 QA · 非阻塞] 各卡『测试入口』命令未逐一实跑（每张均从实读源码撰写，结构/链接已验）；如需更高保证可抽样 cargo nextest -p <crate> <sub> / just test-fe 复核"
+      ],
+      "evidence": "Wave 0（BaJie MCP-agent-2）：golish-tools 全套 5 卡 + INDEX 起步 + AGENTS §1/§2.2/§2.3/§2.4/§4 接线 + 设计文档。Wave 1（2026-06-07 BaJie MCP-agent-3，DISPATCH off，用户『一口气刷完 Wave 1』）：补齐剩余 15 张 crate 卡——agent 4（agent-kit/agent-runtime/agent-bridge/sub-agents）、app 6（app-core/agent-app/pentest-app/recon-app/vuln-app/platform-app）、组合根+rig 5（golish/rig-anthropic-vertex/rig-gemini-vertex/rig-openai-responses/rig-zai-sdk）；并把 INDEX 工具/集成 6 段 + 领域 7 段（早前已落盘但 INDEX 状态列未同步）一并校准到 ✅。验证命令：`for c in $(ls backend/crates); do [ -f docs/modules/backend/$c.md ] || echo MISSING $c; done` → 0 MISSING；`ls docs/modules/backend/*.md | wc -l` → 50。**Wave 2（BaJie MCP-agent-3，用户『开 Wave 2』→『继续刷完剩余 64』）**：128 张 backend 目录子模块卡全落盘（基础15/数据4/执行LLM17/工具集成12/领域12/agent25/app17/组合根rig22 + golish-tools4 Wave0），每张实读子模块 mod.rs/入口；全部 crate 卡子模块表接链。**Wave 3（用户『刷 Wave 3 前端卡』）**：7 张前端子系统卡（实读 frontend/ 真实结构）。最终验证：`find docs/modules/backend -mindepth2 -name '*.md'|wc -l`=128；`rg '⬜ Wave 2' docs/modules/backend`→0；卡间链接 317+ 条 0 broken；feature_list.json valid。**总 185 张卡，全 3 波完成。纯 docs 改动（无代码/schema/IPC），不触发 just precommit 代码门禁。未 commit（等用户授权）。** 注：工作树另有非本任务的 Rust 改动（golish bootstrap/agent_init/stage_run + enscan 产物），系并行会话/跑 app 产生，本任务未触碰。",
+      "notes": "2026-06-07 BaJie MCP-agent-2（DISPATCH off）。与既有多个 in_progress 并存（多会话并发，§2.1）。粒度 C；单文件模块进 crate 卡『关键文件』表不单独成卡；目录模块独立子卡。位置集中 docs/modules/ 镜像 backend/frontend 结构。索引状态列 ✅/🚧/⬜ 兼当进度。依赖图已用一次 grep 全量取得（backend/crates/*/Cargo.toml 内部 golish-/rig- 边）。",
+      "remember": "卡片铁律=实读源码无编造（lib.rs 取职责/pub API/mod 列表，Cargo.toml 取依赖，grep 取被依赖）。改任何模块必须同步更新它的 docs/modules/ 卡 + INDEX 状态列（AGENTS.md §2.4/§4 已强制）。"
+    },
     {
       "id": "headless-single-stage-runner-2026-06-06",
       "priority": 2,

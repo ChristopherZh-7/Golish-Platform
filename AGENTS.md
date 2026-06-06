@@ -26,6 +26,7 @@
    - `agent-progress.md` → 看上一轮留下的状态、blocker、下一步建议
    - `feature_list.json` → 找当前 `in_progress` 的功能（**同一时间只能有一个**）；没有就从优先级最高的 `not_started` 里选
    - 当前会话用户的具体指令
+   - `docs/modules/INDEX.md` → 模块地图入口；按本轮要动的模块找到对应「模块卡」，**动手前先读它**（职责 / 公开接口 / 依赖 / 坑 / 测试入口）。没有卡就先按现有模板补一张再动手
 
 2. **验证基础环境**
    ```bash
@@ -55,6 +56,7 @@
 
 ### 2.2 改 Rust 代码
 
+- **动某 crate / 模块前**，先读 `docs/modules/backend/<crate>.md`（及相关子模块卡）了解职责与影响面；改完后按 §2.4 同步更新该卡
 - 加新 Tauri command 必须按 `docs/development.md` 五步走：函数 → facade `pub use` → registry → 前端 wrapper → ts-rs 类型同步
 - 命令命名 `<domain>_<verb>_<object>`（如 `ai_send_prompt`、`pentest_launch_tool`），禁止 camelCase 或动词在前
 - **禁止**直接在 `backend/crates/golish/src/commands_registry.rs` 加 `use crate::foo::commands::*;` glob，必须走 `commands_facade/<domain>.rs`
@@ -63,6 +65,7 @@
 
 ### 2.3 改前端代码
 
+- **动某前端子系统前**，先读 `docs/modules/frontend/<子系统>.md`；改完后按 §2.4 同步更新该卡
 - 调 Tauri 走 `frontend/lib/api/<domain>.ts`，**禁止**裸 `invoke()`
 - 跨 IPC 类型从 `frontend/lib/generated/`（由 ts-rs 生成）import，不要手写
 - 三态 UI（loading / error / empty）每条异步路径都要画
@@ -73,6 +76,7 @@
 - 设计变更 → `docs/design/YYYY-MM-DD-<topic>.md`（新文件，不覆盖旧设计）
 - 实现计划 → `docs/superpowers/plans/YYYY-MM-DD-<topic>.md`
 - 旧文档作废 → 在头部加 `> Superseded by <新文件>` 注释，不要直接删
+- **模块卡**（agent-readable workspace 的 system-of-record）住在 `docs/modules/`：每个 crate 一张、每个目录子模块一张，入口是主索引 `docs/modules/INDEX.md`。**改了某模块的职责 / 公开接口 / 依赖关系，必须在同一次改动里更新它的卡 + 索引状态列**，让卡始终是「单一事实源」而非孤儿文档
 
 ### 2.5 涉及安全 / pentest 模块
 
@@ -143,9 +147,10 @@ just precommit   # = just check + just test
    - 当前功能的 `status` 改对（`passing` / `blocked` / `in_progress` / `not_started`）
    - 如果是 `passing`，填 `evidence` 字段
    - 如果是 `blocked`，在 `notes` 写清楚阻塞原因和需要的输入
-5. 如果有未 commit 的半成品 → 在 progress 里明确写"以下文件已修改但未提交：..."
+5. 如果本轮动过任何模块 → 更新对应 `docs/modules/` 卡片内容 + `docs/modules/INDEX.md` 状态列
+6. 如果有未 commit 的半成品 → 在 progress 里明确写"以下文件已修改但未提交：..."
 
-**未走完 1-5 不算"会话结束"**。
+**未走完 1-6 不算"会话结束"**。
 
 ---
 

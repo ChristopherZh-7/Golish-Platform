@@ -29,6 +29,73 @@
 
 ---
 
+### 2026-06-07 · 模块卡体系 Wave 3 完成（前端 7 子系统卡 · 全体系收官 · BaJie MCP-agent-3 · DISPATCH off · 用户「刷 Wave 3 前端卡」）
+
+- **本轮目标**：Wave 3 = 前端 `frontend/` 子系统卡，收尾整个模块卡体系。
+- **已完成（7 张，每张实读 frontend 真实结构 + 入口文件）**：
+  - `lib`（api 客户端/generated ts-rs/events/ai/pentest/…，~260 文件）· `store`（Zustand 12 slice + selectors，实读 store/index.ts）· `components`（~39 功能域，404 文件）· `hooks`（32 个，实读 hooks/ 列表）· `services`（ai-events 处理器注册表 + terminal-events，实读 services/index.ts）· `pages`（ComponentTestbed）· `styles`（ansi-colors/grid-terminal/xterm-overrides 3 CSS）
+  - INDEX frontend 表 7 行 ⬜→✅ + 卡片链接；进度段标「全 3 波完成 🎉，185 张」。
+  - 卡内写明前端不变量：禁裸 invoke（走 lib/api/<domain>）、跨 IPC 类型用 lib/generated（ts-rs）、三态 UI、错误码翻译（I1/I3/I5 + AGENTS.md §2.3）。
+- **运行过的验证（本机实跑）**：`ls docs/modules/frontend/*.md|wc -l`=7；`find docs/modules -name '*.md' ! -name INDEX.md|wc -l`=**185**；卡间链接 0 broken；feature_list.json valid。
+- **已记录证据**：见上。纯 docs 改动，未触发 just precommit 代码门禁。**未 commit**（等用户授权）。
+- **提交记录**：**待提交**。本轮新增 7 个 `docs/modules/frontend/*.md` + 改 INDEX + feature_list + 本文件。
+- **已知风险或未解决问题**：① 各卡「测试入口」命令未逐一实跑（每张均从实读源码撰写，结构/链接已验，列为非阻塞 QA）；② 工作树另有**非本任务**的 Rust 改动（golish bootstrap/agent_init/stage_run + enscan 产物），系并行会话/跑 app 产生，commit 时需用户决定是否一并提交。
+- **下一步最佳动作**：① 用户授权后 commit（建议仅 docs/AGENTS/feature_list/progress，排除非本任务 Rust 改动）；②（可选）抽样实跑若干卡测试入口复核；③ 模块卡体系 feature 已置 `passing`，后续按 AGENTS.md §2.4/§4 在改模块时同步维护卡。
+
+---
+
+### 2026-06-07 · 模块卡体系 Wave 2 完成（128 张目录子模块卡 · BaJie MCP-agent-3 · DISPATCH off · 用户「开 Wave 2 子模块卡」→「继续刷完剩余 64 张」）
+
+- **本轮目标**：Wave 2 = 给各 backend crate 的目录子模块写子卡。用户先说「开 Wave 2」，离开期间按指令续刷，回来后「继续刷完剩余 64 张」→ **全部 128 张落盘**。
+- **盘点**：扫 50 crate 的 depth-1 src 子目录，剔除 `tests/` 等非真子系统，得 Wave 2 全量清单。
+- **已完成（128 张子卡 · backend 全覆盖 · 每张实读子模块 `mod.rs`/入口文件）**：
+  - 基础层 15：core（events/session/tool_name）· settings（loader/project/schema）· events（event_coordinator/op_trace/transcript）· models（descriptors/providers）· context（context_manager/token_budget）· cli-output（cli_json）· udiff（applier）
+  - 数据层 4：db（repo/models/embedded）· artifacts（manager）
+  - 执行/LLM 层 17：pty（grid/manager/parser/shell）· sidecar（capture/commits/events/processor/session/state）· synthesis（state）· llm-providers（provider_trait/model_capabilities/deepseek/xiaomi）· prompts（contributors/system_prompt）
+  - 工具/集成 12：web（tavily/tool）· integrations（schema/storage）· intel-providers（zone/fofa/hunter/quake/shodan/shared）· mcp（loader/oauth）
+  - 领域 12：pentest（evidence_ledger/command_builder/runtime/handlers/output_store/tool_manager/tool_package/versions/sploitus）· pentest-domain（models）· projects（file_storage）· scan-runner（nuclei）
+  - agent 层 25：agent-kit 13（task_orchestrator/tool_execution/tool_executors/llm_client/harness/planner/hitl/loop_detection/system_hooks/tool_policy/tool_definitions/db_traits/db_tracking）· agent-runtime 4（agentic_loop/execution_mode/eval_support/test_utils）· agent-bridge 2（agent_bridge/bridge_executor）· sub-agents 4（definition/executor/executor_helpers/defaults）· agent-app 2（ai/conversation_store）
+  - app 层 17：app-core 3（domain/ports/runtime）· pentest-app 5（findings/methodology/pentest/pentest_ai/pentest_bridge）· recon-app 7（targets/asset_intel/integrations/organization_recon/organizations/scan_runner/agent_tools）· vuln-app 2（vuln_intel/wiki）
+  - 组合根/rig 22：golish 17（app/cli/commands/commands_facade/db/history/indexer/mcp/models/projects/pty/settings/sidecar/stage_run/state/telemetry/tools）· rig-anthropic-vertex 2（streaming/types）· rig-gemini-vertex 1（completion）· rig-openai-responses 1（request）· rig-zai-sdk 1（completion）
+  - 全部 crate 卡「子模块」表卡片列 ⬜ Wave 2 → 子卡链接；INDEX 进度段更新为 178/~185、子卡 128、Wave 2 完成。
+  - 顺手纠错：intel-providers 的 fofa/hunter/quake/shodan 实际已完整实现（client/mapper/types），非 crate 卡旧注里的 stub。
+- **运行过的验证（本机实跑 · 已记录证据）**：
+  - `find docs/modules/backend -mindepth 2 -name '*.md' | wc -l` → **128**。
+  - `rg -l "⬜ Wave 2" docs/modules/backend/*.md` → **NONE**（0 残留）。
+  - 卡间链接完整性：扫 backend/*.md + INDEX 的 `](*.md)` 链接 **317 条，0 broken**。
+  - `python3 -c json.load feature_list.json` → valid。
+- **已记录证据**：见上验证命令。纯 docs + feature_list + progress 改动，无代码/schema/IPC 变更，不触发 just precommit 代码门禁。**未 commit**（等用户授权）。
+- **提交记录**：**待提交**。本轮（含半程续刷）共新增 128 个 `docs/modules/backend/<crate>/<sub>.md` + 改全部相关 crate 卡 + INDEX + feature_list + 本文件。
+- **已知风险或未解决问题**：子卡「测试入口」命令未逐一实跑（收口抽查项，列入 feature_list 待跑）；部分子模块源码自带 `#![allow(dead_code)]`/「未集成」注释（sidecar commits/events、artifacts manager、tool_policy、context_manager、file_storage、parser 等），卡内已如实标注。
+- **下一步最佳动作**：① 用户授权后 commit（建议 `docs(modules): Wave 2 complete — 128 backend submodule cards`）；② Wave 3 前端 7 张子系统卡（components/hooks/lib/pages/services/store/styles）；③（可选）抽样实跑若干子卡测试入口验证命令格式正确。
+
+---
+
+### 2026-06-07 · 模块卡体系 Wave 1 收尾（剩余 15 张 crate 卡 + INDEX 校准 · BaJie MCP-agent-3 · DISPATCH off · 用户「一口气刷完 Wave 1」）
+
+- **本轮目标**：把模块卡体系（`docs/modules/`）的 **Wave 1**（50 个 backend crate 的 crate 卡）刷完。接 MCP-agent-2 的 Wave 0（golish-tools 全套 + INDEX 起步 + AGENTS 接线 + 设计文档）。
+- **关键发现**：`INDEX.md` 状态列**落后于实际文件**——工具/集成 6 段（web/integrations/intel-providers/mcp/js-analyzer/auth-probe）+ 领域 7 段（pentest 系/vuln 系/scan/projects）的卡其实已落盘，只是 INDEX 仍标 ⬜。真正缺卡 = 15 个（agent 4 + app 6 + 组合根/rig 5）。
+- **已完成**：
+  - 新写 **15 张 crate 卡**（每张实读 `Cargo.toml` + `lib.rs` + `src/` 树 + grep 全量反向依赖）：
+    - agent 4：`golish-agent-kit`(L4a)/`golish-agent-runtime`(L4b)/`golish-agent-bridge`(L4c)/`golish-sub-agents`(L2)
+    - app 6：`golish-app-core`(L5)/`golish-agent-app`/`golish-pentest-app`/`golish-recon-app`/`golish-vuln-app`/`golish-platform-app`
+    - 组合根+rig 5：`golish`(apex binary)/`rig-anthropic-vertex`/`rig-gemini-vertex`/`rig-openai-responses`/`rig-zai-sdk`
+  - `INDEX.md`：工具/集成 6 + 领域 7 + agent 4 + app 6 + 组合根/rig 5 共 28 行状态列从 ⬜ 校准到 ✅（含一句话职责 + 卡片链接）；进度段更新为「54 张（50 crate + golish-tools 4 子卡），Wave 1 完成」。
+  - `feature_list.json`：`module-cards-system-2026-06-07` 的 verification 加 `[Wave 1 ✓]`、evidence 记本轮产出；`last_updated`→2026-06-07（JSON 合法性已验）。
+- **运行过的验证（本机实跑 · 已记录证据）**：
+  - `for c in $(ls backend/crates); do [ -f docs/modules/backend/$c.md ] || echo MISSING $c; done` → **0 MISSING**。
+  - `ls docs/modules/backend/*.md | wc -l` → **50**（= `ls backend/crates | wc -l` = 50）。
+  - `grep ⬜ docs/modules/INDEX.md` → 仅余 Frontend 7 行（Wave 3，预期待写）。
+  - `python3 -c "import json; json.load(open('feature_list.json'))"` → valid JSON。
+- **已记录证据**：见以上 4 条验证命令输出。纯 `docs/` + `feature_list.json` + `agent-progress.md` 改动，**无任何代码/schema/IPC 变更**，故不触发 `just precommit` 代码门禁（与设计文档 §验证「本任务只动 docs/AGENTS」一致）。
+- **提交记录**：**待提交**（用户未授权 commit）。本轮新增/修改文件：`?? docs/modules/backend/{golish-agent-kit,golish-agent-runtime,golish-agent-bridge,golish-sub-agents,golish-app-core,golish-agent-app,golish-pentest-app,golish-recon-app,golish-vuln-app,golish-platform-app,golish,rig-anthropic-vertex,rig-gemini-vertex,rig-openai-responses,rig-zai-sdk}.md`（15 新卡）、`M docs/modules/INDEX.md`、`M feature_list.json`、`M agent-progress.md`。
+- **已知风险或未解决问题**：
+  - 卡的「测试入口」命令（`cargo nextest run -p <crate>`）未逐一实跑（属 Wave 2/收口阶段抽查项）；命令格式与既有 ✅ 卡一致、crate 名经 `ls backend/crates` 核对存在。
+  - rig fork 卡的「被谁依赖」基于 `Cargo.toml` grep；rig-gemini-vertex / rig-zai-sdk 仅经 `golish-llm-providers` 间接被 agent 栈使用（已在卡内注明）。
+- **下一步最佳动作**：① 用户授权后 commit（建议标题 `docs(modules): Wave 1 complete — 50/50 backend crate cards + INDEX sync`）；② Wave 2 = 各 crate 目录子模块卡（按各卡内「⬜ Wave 2」标记，优先 db/pentest/agent-kit 等大 crate）；③ Wave 3 = 前端 `frontend/` 子系统卡。
+
+---
+
 ### 2026-06-06 · Headless 单/区间阶段实跑器 `golish --stage-run`（方案 2 · BaJie MCP-agent-4 · DISPATCH off · 用户驱动）
 
 - **本轮目标**：解决用户痛点「逐阶段测试要 `just dev` 起 GUI + 手动从 scoping 把 AI 驱到目标阶段 + 翻日志，慢/贵/跳不到指定阶段」。用户 brainstorming 后选 **方案 2 = headless 单/区间阶段实跑**（真 LLM/真工具/真 evidence，无 GUI，跑完打印报告即退）。日志选「两个都要」=终端精简报告 + 完整 transcript/backend.log 可 `--replay`/GUI 回看。
