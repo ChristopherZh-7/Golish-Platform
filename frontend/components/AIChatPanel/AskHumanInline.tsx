@@ -1,7 +1,15 @@
-import { KeyRound, List, MessageSquare, Pencil, ShieldQuestion } from "lucide-react";
+import { KeyRound, List, ListChecks, MessageSquare, Pencil, ShieldQuestion } from "lucide-react";
 import { useState } from "react";
+import { ScopeReviewTable } from "./ScopeReviewTable";
 
-export const ASK_HUMAN_INPUT_TYPES = ["credentials", "choice", "freetext", "confirmation"] as const;
+export const ASK_HUMAN_INPUT_TYPES = [
+  "credentials",
+  "choice",
+  "freetext",
+  "confirmation",
+  "scope_review",
+  "unit_review",
+] as const;
 export type AskHumanInputType = (typeof ASK_HUMAN_INPUT_TYPES)[number];
 
 export interface AskHumanState {
@@ -36,7 +44,19 @@ const INPUT_TYPE_ICONS: Record<string, typeof KeyRound> = {
   choice: List,
   freetext: MessageSquare,
   confirmation: ShieldQuestion,
+  scope_review: ListChecks,
+  unit_review: ListChecks,
 };
+
+/** Parse the AI-proposed `context` JSON for a review table; tolerate bad JSON. */
+function parseReviewContext(context: string): unknown {
+  if (!context.trim()) return [];
+  try {
+    return JSON.parse(context);
+  } catch {
+    return [];
+  }
+}
 
 /** A-Z badges for the first 26 options, then 1-based numbers as a fallback. */
 function optionLabel(index: number): string {
@@ -65,6 +85,7 @@ export function AskHumanInline({
   const [otherText, setOtherText] = useState("");
 
   const Icon = INPUT_TYPE_ICONS[request.inputType] || MessageSquare;
+  const isReviewTable = request.inputType === "scope_review" || request.inputType === "unit_review";
 
   const submitOther = () => {
     const trimmed = otherText.trim();
@@ -92,8 +113,17 @@ export function AskHumanInline({
         AI Needs Your Input
       </div>
       <p className="text-[13px] text-foreground mb-2 whitespace-pre-wrap">{request.question}</p>
-      {request.context && (
+      {request.context && !isReviewTable && (
         <p className="text-[11px] text-muted-foreground/60 mb-2 italic">{request.context}</p>
+      )}
+
+      {isReviewTable && (
+        <ScopeReviewTable
+          kind={request.inputType as "scope_review" | "unit_review"}
+          initial={parseReviewContext(request.context)}
+          onConfirm={(rows) => onSubmit(JSON.stringify(rows))}
+          onSkip={onSkip}
+        />
       )}
 
       {request.inputType === "credentials" && (
@@ -175,25 +205,28 @@ export function AskHumanInline({
         />
       )}
 
-      <div className="flex items-center gap-2">
-        {/* Choice options self-submit on click, so no generic Submit button there. */}
-        {request.inputType !== "choice" && (
+      {/* The review-table branch renders its own Confirm / Skip controls. */}
+      {!isReviewTable && (
+        <div className="flex items-center gap-2">
+          {/* Choice options self-submit on click, so no generic Submit button there. */}
+          {request.inputType !== "choice" && (
+            <button
+              type="button"
+              onClick={handleSubmit}
+              className="px-3 py-1 text-[11px] rounded-md bg-accent text-accent-foreground hover:bg-accent/80 font-medium transition-colors"
+            >
+              {request.inputType === "confirmation" ? "Confirm" : "Submit"}
+            </button>
+          )}
           <button
             type="button"
-            onClick={handleSubmit}
-            className="px-3 py-1 text-[11px] rounded-md bg-accent text-accent-foreground hover:bg-accent/80 font-medium transition-colors"
+            onClick={onSkip}
+            className="px-3 py-1 text-[11px] rounded-md border border-border/50 text-muted-foreground hover:bg-muted/50 transition-colors"
           >
-            {request.inputType === "confirmation" ? "Confirm" : "Submit"}
+            Skip
           </button>
-        )}
-        <button
-          type="button"
-          onClick={onSkip}
-          className="px-3 py-1 text-[11px] rounded-md border border-border/50 text-muted-foreground hover:bg-muted/50 transition-colors"
-        >
-          Skip
-        </button>
-      </div>
+        </div>
+      )}
     </div>
   );
 }
