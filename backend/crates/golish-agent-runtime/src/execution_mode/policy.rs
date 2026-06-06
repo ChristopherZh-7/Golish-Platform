@@ -95,6 +95,7 @@ impl StaticGroupSelection {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BridgeToolSelection {
     pub manage_targets: bool,
+    pub manage_organizations: bool,
     pub record_finding: bool,
     pub vault: bool,
     pub js_collect: bool,
@@ -116,6 +117,7 @@ impl BridgeToolSelection {
     pub const fn all_enabled() -> Self {
         Self {
             manage_targets: true,
+            manage_organizations: true,
             record_finding: true,
             vault: true,
             js_collect: true,
@@ -131,6 +133,7 @@ impl BridgeToolSelection {
     pub const fn none() -> Self {
         Self {
             manage_targets: false,
+            manage_organizations: false,
             record_finding: false,
             vault: false,
             js_collect: false,
@@ -147,6 +150,9 @@ impl BridgeToolSelection {
         let mut out = Vec::new();
         if self.manage_targets {
             out.push("manage_targets");
+        }
+        if self.manage_organizations {
+            out.push("manage_organizations");
         }
         if self.record_finding {
             out.push("record_finding");
@@ -228,12 +234,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bridge_all_enabled_lists_six_tools_in_stable_order() {
+    fn bridge_all_enabled_lists_seven_tools_in_stable_order() {
         let names = BridgeToolSelection::all_enabled().enabled_tool_names();
         assert_eq!(
             names,
             vec![
                 "manage_targets",
+                "manage_organizations",
                 "record_finding",
                 "vault",
                 "js_collect",

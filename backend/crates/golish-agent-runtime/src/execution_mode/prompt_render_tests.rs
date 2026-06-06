@@ -19,6 +19,7 @@ fn render_includes_js_collect_when_enabled() {
     let table = render_tool_table_for_prompt(&s);
     assert!(table.contains("`js_collect`"));
     assert!(table.contains("`manage_targets`"));
+    assert!(table.contains("`manage_organizations`"));
     // pipeline tools are intentionally NOT exposed to agents, even with all
     // bridge tools "enabled"
     assert!(!table.contains("`run_pipeline`"));
@@ -71,6 +72,7 @@ fn selection_to_tool_names_matches_render() {
     let names = selection_to_tool_names(&s);
     assert!(names.contains("js_collect"));
     assert!(names.contains("manage_targets"));
+    assert!(names.contains("manage_organizations"));
     assert!(names.contains("read_file"));
     assert!(names.contains("ask_human"));
     assert!(!names.contains("update_plan"));

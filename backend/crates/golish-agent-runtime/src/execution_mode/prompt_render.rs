@@ -190,7 +190,8 @@ const STATIC_SPLOITUS: &[ToolRow] = &[
 ];
 
 const BRIDGE_ROWS: &[ToolRow] = &[
-    ToolRow { name: "manage_targets", purpose: "Add / list / update pentest targets." },
+    ToolRow { name: "manage_targets", purpose: "Add / list / update pentest targets (scope in/out, link to organization)." },
+    ToolRow { name: "manage_organizations", purpose: "List / create target organizations and propose candidate units for human review during scoping." },
     ToolRow { name: "record_finding", purpose: "Record a vulnerability finding." },
     ToolRow { name: "vault", purpose: "Store / retrieve credentials." },
     ToolRow {
