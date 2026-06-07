@@ -112,7 +112,10 @@ pub async fn run(args: Args) -> Result<()> {
     // 3) Boot embedded Postgres (lazy pool + ready gate, mirroring the GUI) and
     //    build a headless AppState — AppState::new takes no Tauri AppHandle.
     let (db_pool, db_ready) = crate::app::bootstrap::create_lazy_db_pool();
-    crate::app::bootstrap::spawn_embedded_pg(db_ready.clone());
+    // Own the PG handle (don't leak it like the GUI) so we can stop the server
+    // on exit — otherwise each run orphans a postgres holding port 15432 and
+    // blocks the next --stage-run.
+    let pg_handle_rx = crate::app::bootstrap::spawn_embedded_pg_owned(db_ready.clone());
     eprintln!("[stage-run] waiting for embedded Postgres (first run may download pg-embed)...");
     if !wait_for_db(&db_ready).await {
         return Err(anyhow!("embedded Postgres did not become ready in time"));
@@ -145,7 +148,7 @@ pub async fn run(args: Args) -> Result<()> {
 
     let session_id = format!("stage-run-{}", uuid::Uuid::new_v4());
 
-    let (mut bridge, mcp_manager) = crate::cli::initialize_agent(
+    let (mut bridge, mcp_manager) = match crate::cli::initialize_agent(
         &workspace,
         &settings,
         &args,
@@ -154,7 +157,15 @@ pub async fn run(args: Args) -> Result<()> {
         app_state.sidecar_state.clone(),
     )
     .await
-    .context("build agent bridge")?;
+    .context("build agent bridge")
+    {
+        Ok(v) => v,
+        Err(e) => {
+            // Don't orphan the embedded PG we just started.
+            stop_embedded_pg(pg_handle_rx).await;
+            return Err(e);
+        }
+    };
 
     crate::ai::commands::configure_bridge(&mut bridge, &agent_state, &session_id, None).await;
 
@@ -172,6 +183,36 @@ pub async fn run(args: Args) -> Result<()> {
     bridge.set_harness_profile(Some(profile_id.clone())).await;
     if args.auto_approve {
         bridge.set_agent_mode(AgentMode::AutoApprove).await;
+    }
+
+    // Unify the DB tracker's session with the orchestrator's session id (both
+    // resolve the SAME chat-session key) so the harness gate's session-scoped
+    // `tool_calls` cross-check (red_team scoping flow) reads THIS run's tool
+    // calls instead of fail-opening. `set_db_backend` built the tracker with a
+    // random uuid; override it here with the chat-key-resolved session row id —
+    // the same id `orchestrate()` uses (upsert is idempotent on the key).
+    {
+        let model_name = bridge.model_name().to_string();
+        let provider_name = bridge.provider_name().to_string();
+        match golish_db::repo::sessions::upsert_by_chat_key(
+            &db_pool,
+            &session_id,
+            golish_db::models::NewSession {
+                title: Some(format!("stage-run {}", entry_stage.as_str())),
+                workspace_path: None,
+                workspace_label: None,
+                model: Some(model_name),
+                provider: Some(provider_name),
+                project_path: None,
+            },
+        )
+        .await
+        {
+            Ok(row) => bridge.set_tracker_session_uuid(row.id),
+            Err(e) => {
+                tracing::warn!("stage-run: tracker/orchestrator session unify failed: {e}")
+            }
+        }
     }
 
     let bridge = Arc::new(bridge);
@@ -226,7 +267,28 @@ pub async fn run(args: Args) -> Result<()> {
         mgr.shutdown().await;
     }
 
+    // Stop the embedded PG we started so we don't orphan it (headless cleanup;
+    // the GUI keeps PG alive on purpose via the leaking `spawn_embedded_pg`).
+    stop_embedded_pg(pg_handle_rx).await;
+
     result.map(|_| ())
+}
+
+/// Best-effort: stop the embedded PostgreSQL server started for this run.
+///
+/// The handle arrives via the oneshot from
+/// [`spawn_embedded_pg_owned`](crate::app::bootstrap::spawn_embedded_pg_owned).
+/// If startup failed (sender dropped) there is nothing to stop.
+async fn stop_embedded_pg(rx: tokio::sync::oneshot::Receiver<golish_db::GolishDb>) {
+    match rx.await {
+        Ok(mut db) => {
+            db.stop().await;
+            eprintln!("[stage-run] embedded Postgres stopped.");
+        }
+        Err(_) => {
+            tracing::debug!("stage-run: no embedded PG handle to stop (startup failed)");
+        }
+    }
 }
 
 /// Build the [`TaskOrchestrator`] and run the slice via `run_stage`.

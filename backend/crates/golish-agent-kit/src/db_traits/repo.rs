@@ -8,6 +8,18 @@ use uuid::Uuid;
 
 use super::types::*;
 
+/// Real, persisted red_team scoping actions observed for a session (read from
+/// `tool_calls`). The scoping gate uses this to verify the model actually
+/// performed the unit-candidate + organization-creation flow instead of merely
+/// asserting a `scope_human_approved` claim (which a weak model can fabricate).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScopingActionsSeen {
+    /// The model invoked `ask_human(input_type="unit_review")` this run.
+    pub unit_review_invoked: bool,
+    /// The model invoked `manage_organizations(action="create")` this run.
+    pub organization_created: bool,
+}
+
 /// Provides all database repository operations that golish-ai needs.
 ///
 /// The application layer implements this trait. golish-ai callers access
@@ -367,5 +379,22 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<std::collections::HashMap<i64, std::time::Duration>> {
         let _ = ids;
         Ok(std::collections::HashMap::new())
+    }
+
+    /// Cross-verify the red_team scoping flow against this session's REAL
+    /// `tool_calls` (so the gate can reject a deliverable that asserts human
+    /// scope approval without the model having actually run
+    /// `ask_human(input_type="unit_review")` + `manage_organizations(action="create")`).
+    ///
+    /// Returns `None` when verification is impossible (no `tool_calls` recorded
+    /// for this session — test doubles or tracking disabled) so the gate FAILS
+    /// OPEN and never blocks on infra absence, mirroring [`Self::evidence_existing_ids`].
+    /// `Some(seen)` carries the actually-observed actions.
+    async fn scoping_actions_for_session(
+        &self,
+        session_id: Uuid,
+    ) -> anyhow::Result<Option<ScopingActionsSeen>> {
+        let _ = session_id;
+        Ok(None)
     }
 }

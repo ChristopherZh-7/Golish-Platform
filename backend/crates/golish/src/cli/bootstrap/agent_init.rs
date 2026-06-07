@@ -158,8 +158,37 @@ pub(crate) async fn initialize_agent(
             )
             .await?
         }
+        "xiaomi" => {
+            let api_key = resolve_api_key(settings, "xiaomi", args)?;
+
+            if args.verbose {
+                match settings.ai.xiaomi.openai_base_url.as_deref() {
+                    Some(url) => eprintln!("[cli] Xiaomi base URL: {}", url),
+                    None => eprintln!("[cli] Xiaomi base URL: region-derived"),
+                }
+            }
+
+            AgentBridge::new_xiaomi_with_shared_config(
+                workspace.to_path_buf(),
+                &model,
+                &api_key,
+                settings.ai.xiaomi.region.as_deref(),
+                settings.ai.xiaomi.default_protocol.as_deref(),
+                settings.ai.xiaomi.openai_base_url.as_deref(),
+                settings.ai.xiaomi.anthropic_base_url.as_deref(),
+                shared_config,
+                runtime,
+                "cli",
+            )
+            .await?
+        }
         _ => {
             // API key-based providers (openrouter, anthropic, openai, etc.)
+            //
+            // NOTE: `new_with_runtime` ignores `provider` and always builds an
+            // OpenRouter client. Providers that need their own endpoint (xiaomi,
+            // nvidia, zai_sdk, vertex...) must have an explicit arm above, or
+            // they will be silently misrouted to OpenRouter (→ 401/wrong host).
             let api_key = resolve_api_key(settings, &provider, args)?;
 
             AgentBridge::new_with_runtime(
@@ -286,6 +315,7 @@ pub(super) fn resolve_api_key(
         "nvidia" | "nvidia_nim" | "nim" => {
             get_with_env_fallback(&settings.ai.nvidia.api_key, &["NVIDIA_API_KEY"], None)
         }
+        "xiaomi" => get_with_env_fallback(&settings.ai.xiaomi.api_key, &["XIAOMI_API_KEY"], None),
         _ => None,
     };
 

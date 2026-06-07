@@ -135,6 +135,14 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
                 "- HARD GATE — human scope approval REQUIRED: before you `submit_stage_deliverable`, the scope MUST be confirmed by a human. Call `ask_human(input_type=\"scope_review\")`, let the user add/remove/edit the target list, and ONLY after they approve, emit a SECOND claim with kind \"scope_human_approved\" (subject = the engagement subject) that cites the ask_human request_id. Without that claim the deterministic gate BLOCKS and you cannot leave scoping.\n",
             );
         }
+        // red_team (require_unit_candidates): the gate cross-verifies the REAL
+        // unit-candidate flow against this run's tool calls — a claim alone will
+        // NOT pass. State it plainly so the model performs the steps.
+        if scoping_policy.require_unit_candidates {
+            s.push_str(
+                "- HARD GATE — RED-TEAM unit flow is VERIFIED against your actual tool calls (not just claims): you MUST really call `manage_organizations(action=\"propose_candidates\")`, then `ask_human(input_type=\"unit_review\")` for the user to judge candidate units, then `manage_organizations(action=\"create\")` to record the organization. Skipping these and only emitting a scope_human_approved claim will BLOCK the gate.\n",
+            );
+        }
         s
     } else {
         String::new()

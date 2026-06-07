@@ -35,6 +35,26 @@ pub fn select_textual_tool_call(text: &str) -> Option<TextualToolCall> {
         .cloned()
 }
 
+/// Select every textual tool call to execute from `text`.
+///
+/// Like [`select_textual_tool_call`] but returns *all* parsed calls so a turn
+/// that batches multiple `<function=...>` blocks (notably Xiaomi MiMo, which
+/// frequently emits 2–3 in one response) executes them all instead of silently
+/// dropping every call after the first — the dropped calls otherwise force the
+/// model to re-issue them on later turns, inflating iteration count.
+///
+/// The `ask_human` barrier still wins: if any call is an `ask_human`, ONLY that
+/// one is returned so a self-answered follow-up side effect in the same block
+/// cannot bypass the human gate (identical guarantee to
+/// [`select_textual_tool_call`]).
+pub fn select_textual_tool_calls(text: &str) -> Vec<TextualToolCall> {
+    let candidates = parse_textual_tool_calls(text);
+    if let Some(ask) = candidates.iter().find(|call| call.name == "ask_human") {
+        return vec![ask.clone()];
+    }
+    candidates
+}
+
 /// Parse every `<function=...>...</function>` block from `text`.
 pub fn parse_textual_tool_calls(text: &str) -> Vec<TextualToolCall> {
     let mut calls = Vec::new();
@@ -211,6 +231,58 @@ mod tests {
         assert_eq!(call.name, "manage_targets");
         assert_eq!(call.arguments["action"], "add");
         assert_eq!(call.arguments["targets"][0]["value"], "example.com");
+    }
+
+    #[test]
+    fn select_all_returns_every_non_barrier_call_in_order() {
+        // MiMo frequently batches several calls in one turn; all must execute,
+        // not just the first (the silent-drop churn bug).
+        let text = r#"先列候选再创建。
+<tool_call>
+<function=manage_organizations>
+<parameter=action>propose_candidates</parameter>
+<parameter=candidates>["ACME Corp","Example Ltd"]</parameter>
+</function>
+</tool_call>
+<tool_call>
+<function=update_plan>
+<parameter=plan>[{"status":"in_progress","step":"create"}]</parameter>
+</function>
+</tool_call>"#;
+
+        let calls = select_textual_tool_calls(text);
+        assert_eq!(calls.len(), 2, "both batched calls must be returned");
+        assert_eq!(calls[0].name, "manage_organizations");
+        assert_eq!(calls[0].arguments["action"], "propose_candidates");
+        assert_eq!(calls[1].name, "update_plan");
+    }
+
+    #[test]
+    fn select_all_keeps_ask_human_barrier_and_drops_follow_up_side_effects() {
+        // When an ask_human is present the barrier must still win: only the
+        // ask_human runs so a self-answered create cannot bypass the human gate.
+        let text = r#"<tool_call>
+<function=ask_human>
+<parameter=question>确认候选单元?</parameter>
+<parameter=input_type>unit_review</parameter>
+</function>
+</tool_call>
+<tool_call>
+<function=manage_organizations>
+<parameter=action>create</parameter>
+<parameter=name>ACME Corp</parameter>
+</function>
+</tool_call>"#;
+
+        let calls = select_textual_tool_calls(text);
+        assert_eq!(calls.len(), 1, "ask_human barrier must drop the follow-up");
+        assert_eq!(calls[0].name, "ask_human");
+        assert_eq!(calls[0].arguments["input_type"], "unit_review");
+    }
+
+    #[test]
+    fn select_all_empty_without_markup() {
+        assert!(select_textual_tool_calls("plain prose, no tool calls").is_empty());
     }
 
     #[test]

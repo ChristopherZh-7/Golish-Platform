@@ -45,7 +45,7 @@ mod tests;
 use self::chunks::{handle_reasoning, handle_reasoning_delta, handle_text_chunk};
 use self::encrypted::extract_openai_reasoning_encrypted_content;
 use self::span::{record_completion_for_span, record_reasoning_for_span};
-use self::textual_tool_calls::{extract_textual_tool_call, strip_textual_tool_call_markup};
+use self::textual_tool_calls::{extract_textual_tool_calls, strip_textual_tool_call_markup};
 use self::usage::record_token_usage;
 
 const CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
@@ -350,24 +350,53 @@ where
         has_tool_calls = true;
     }
 
+    // [raw-stream] Capture the model's raw assistant text + reasoning for this
+    // turn *before* any markup stripping / textual-XML recovery, so a degraded
+    // provider (e.g. MiMo emitting tool calls as XML-in-content, or with empty /
+    // wrong-action args) can be diagnosed from the actual bytes rather than the
+    // post-adapter structure. Debug-gated + length-capped so it costs nothing at
+    // info level and never floods the log on a long text turn.
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        const RAW_CAP: usize = 16_384;
+        let raw_text: String = text_content.chars().take(RAW_CAP).collect();
+        let raw_thinking: String = thinking_content.chars().take(RAW_CAP).collect();
+        tracing::debug!(
+            iteration,
+            native_tool_calls = tool_calls_to_execute.len(),
+            text_len = text_content.len(),
+            thinking_len = thinking_content.len(),
+            raw_text = %raw_text,
+            raw_thinking = %raw_thinking,
+            "[raw-stream] model assistant output (pre-adapter)"
+        );
+    }
+
     // Strip textual tool-call markup from displayed text unconditionally so it
     // never leaks, regardless of whether a call is recovered below or the
     // provider already produced native tool calls.
     let cleaned_text = strip_textual_tool_call_markup(&text_content);
     let cleaned_accumulated = strip_textual_tool_call_markup(accumulated_response);
 
-    // Recover a textual call to execute only when the provider produced none
-    // (so the same intent is not executed twice).
+    // Recover textual call(s) to execute only when the provider produced none
+    // (so the same intent is not executed twice). A degraded provider (MiMo)
+    // often batches multiple `<function=...>` blocks in one turn; recover them
+    // all (the `ask_human` barrier still collapses to a single call) so they are
+    // not silently dropped and re-issued over later turns.
     if tool_calls_to_execute.is_empty() {
-        if let Some(tool_call) = extract_textual_tool_call(&text_content, iteration) {
-            let tool_name = tool_call.function.name.clone();
+        let recovered = extract_textual_tool_calls(&text_content, iteration);
+        if !recovered.is_empty() {
+            let tool_names: Vec<&str> = recovered
+                .iter()
+                .map(|tc| tc.function.name.as_str())
+                .collect();
             tracing::warn!(
                 iteration,
-                tool_name = %tool_name,
+                recovered = recovered.len(),
+                tools = ?tool_names,
                 text_len = text_content.len(),
-                "[tool-adapter] Converted textual XML-style tool call into structured tool call"
+                "[tool-adapter] Converted textual XML-style tool call(s) into structured tool call(s)"
             );
-            tool_calls_to_execute.push(tool_call);
+            tool_calls_to_execute.extend(recovered);
             has_tool_calls = true;
         }
     }

@@ -70,7 +70,12 @@ impl ToolUseProfile {
         Self {
             mode: ToolCallMode::TextualXmlFallback,
             reliability: ToolCallReliability::NeedsAdapter,
-            supports_required_tool_choice: false,
+            // Raw-SSE probe (2026-06-07) against the MiMo OpenAI- and
+            // Anthropic-compatible endpoints confirmed both accept
+            // `tool_choice=required` and emit native tool calls with populated
+            // arguments — the textual-XML fallback is only a degradation under
+            // load, not a lack of native tool-choice support.
+            supports_required_tool_choice: true,
             supports_parallel_tool_calls: false,
             max_tool_calls_per_turn: 1,
             requires_tool_result_balance: true,
@@ -116,7 +121,9 @@ mod tests {
         let profile = ToolUseProfile::needs_textual_xml_adapter();
         assert_eq!(profile.mode, ToolCallMode::TextualXmlFallback);
         assert_eq!(profile.reliability, ToolCallReliability::NeedsAdapter);
-        assert!(!profile.supports_required_tool_choice);
+        // MiMo accepts `tool_choice=required` (raw-SSE probe 2026-06-07), so an
+        // XML-fallback model can still be forced to native tool calls.
+        assert!(profile.supports_required_tool_choice);
         assert!(!profile.supports_parallel_tool_calls);
         assert_eq!(profile.max_tool_calls_per_turn, 1);
     }

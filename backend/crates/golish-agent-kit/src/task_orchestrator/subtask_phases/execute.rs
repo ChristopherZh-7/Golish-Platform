@@ -250,6 +250,10 @@ impl TaskOrchestrator {
                         self.enforce_evidence_existence(&mut outcome).await;
                         self.enforce_evidence_kinds(&mut outcome).await;
                         self.enforce_evidence_freshness(&mut outcome).await;
+                        // red_team scoping: verify the unit-candidate / org-creation
+                        // flow actually ran (not just a claim) before allowing PASS.
+                        self.enforce_scoping_red_team_flow(&mut outcome, exec_ctx)
+                            .await;
                         // C4 · gate BLOCK with retries left → feed the recovery
                         // correction back into the loop (re-do the subtask) instead
                         // of accepting the blocked result; defer transition until
@@ -387,6 +391,8 @@ impl TaskOrchestrator {
             self.enforce_evidence_existence(&mut outcome).await;
             self.enforce_evidence_kinds(&mut outcome).await;
             self.enforce_evidence_freshness(&mut outcome).await;
+            self.enforce_scoping_red_team_flow(&mut outcome, exec_ctx)
+                .await;
             self.consume_gate_outcome(task_id, outcome).await;
         }
         (out, None)
@@ -1223,6 +1229,57 @@ impl TaskOrchestrator {
         block_outcome_for_fabricated(outcome, &fabricated, &available_real_ids);
     }
 
+    /// Red_team scoping anti-shortcut gate (设计 2026-06-06-scoping-per-mode-gate-hitl
+    /// §3.4 P1 强化). The deterministic gate only checks that a `scope_human_approved`
+    /// claim EXISTS — which a weak model can fabricate without doing the work. For
+    /// red_team profiles (`scoping_policy.require_unit_candidates`) cross-verify
+    /// against this session's REAL `tool_calls` that the model actually invoked
+    /// `ask_human(input_type="unit_review")` AND `manage_organizations(action="create")`.
+    /// Missing either ⇒ flip PASS→BLOCK + corrective hint. Fails OPEN when the
+    /// action set can't be verified (no tool_calls recorded), mirroring the
+    /// evidence cross-checks (never block on infra absence).
+    async fn enforce_scoping_red_team_flow(
+        &self,
+        outcome: &mut HarnessGateOutcome,
+        exec_ctx: &ExecutionContext,
+    ) {
+        // Only a scoping stage that PASSed so far is in scope for this check.
+        if outcome.gated_stage != crate::harness::StageKind::Scoping || !outcome.gate_allowed {
+            return;
+        }
+        if !crate::harness::feature_flags::scoping_human_gate_enabled() {
+            return;
+        }
+        // Only red_team-style profiles (require_unit_candidates) enforce the
+        // unit-candidate + organization-creation flow.
+        if !scoping_policy_for_ctx(exec_ctx).require_unit_candidates {
+            return;
+        }
+        let seen = match self.repo.scoping_actions_for_session(self.session_id).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    target: "harness::hook",
+                    error = %e,
+                    "scoping red_team flow cross-check failed; not blocking on infra error"
+                );
+                return;
+            }
+        };
+        if let Some(correction) = evaluate_red_team_scoping_flow(seen) {
+            tracing::warn!(
+                target: "harness::hook",
+                stage = %outcome.gated_stage.as_str(),
+                "gate BLOCK: red_team scoping skipped the unit-candidate / organization-creation flow"
+            );
+            outcome.gate_allowed = false;
+            outcome.repair_correction = Some(match outcome.repair_correction.take() {
+                Some(prev) => format!("{correction}\n\n{prev}"),
+                None => correction,
+            });
+        }
+    }
+
     /// P2 · evidence-kind 回查: stage spec 声明的 `required_evidence_kinds` 必须真的
     /// 出现在交付物引用的证据里 (查 ledger 的 `detail->>'kind'`). 缺 → BLOCK + 纠正。
     /// infra 查询失败只 warn, 不误伤合法 stage。
@@ -1874,6 +1931,41 @@ fn scoping_policy_for_ctx(exec_ctx: &ExecutionContext) -> crate::harness::profil
         .unwrap_or_default()
 }
 
+/// Pure decision for [`TaskOrchestrator::enforce_scoping_red_team_flow`]: given the
+/// cross-verified scoping actions, return `Some(correction)` when the red_team
+/// unit-candidate / organization-creation flow was skipped (⇒ BLOCK), or `None`
+/// to allow. `None` actions (unverifiable, e.g. no recorded tool_calls) allow
+/// (fail open).
+fn evaluate_red_team_scoping_flow(
+    seen: Option<crate::db_traits::ScopingActionsSeen>,
+) -> Option<String> {
+    let seen = seen?; // unverifiable → fail open (allow)
+    if seen.unit_review_invoked && seen.organization_created {
+        return None;
+    }
+    let mut missing = Vec::new();
+    if !seen.unit_review_invoked {
+        missing.push(
+            "ask_human(input_type=\"unit_review\") for the user to confirm/edit candidate units",
+        );
+    }
+    if !seen.organization_created {
+        missing.push(
+            "a SUCCESSFUL manage_organizations(action=\"create\") that actually records the \
+             organization (a create that returns an error — e.g. a duplicate name — does NOT \
+             count; resolve it and retry)",
+        );
+    }
+    Some(format!(
+        "RED-TEAM SCOPING INCOMPLETE — a `scope_human_approved` claim is present but this run never \
+         performed the required unit-candidate flow. Missing: {}. Before you submit the scoping \
+         deliverable you MUST actually call manage_organizations(action=\"propose_candidates\"), then \
+         ask_human(input_type=\"unit_review\") so the user judges the candidate units, then \
+         manage_organizations(action=\"create\"). A claim alone is not sufficient.",
+        missing.join(" and ")
+    ))
+}
+
 /// Resolve the operation's `intel_policy` from the profile threaded via
 /// `exec_ctx` (设计 2026-06-06-intel-stage-ai-driven-per-mode §3.5). Falls back
 /// to the conservative `IntelPolicy::default()` (run passive intel) when no
@@ -2140,6 +2232,44 @@ mod dag_driven_helper_tests {
         let s2 = synthesize_stage_subtask(StageKind::Scoping, "x", &smoke, &intel);
         assert!(!s2.description.contains("scope_human_approved"));
         assert!(!s2.description.contains("unit_review"));
+    }
+
+    /// 红队 scoping 防偷懒硬门禁 (设计 2026-06-06 §3.4 P1 强化): 仅凭 claim 不够,
+    /// 必须真的 invoke 了 unit_review + 建组织; 缺任一 → BLOCK; 无法核验 (None) → 放行.
+    #[test]
+    fn red_team_scoping_flow_blocks_when_steps_skipped() {
+        use crate::db_traits::ScopingActionsSeen;
+
+        // Both real steps performed → allow.
+        assert!(evaluate_red_team_scoping_flow(Some(ScopingActionsSeen {
+            unit_review_invoked: true,
+            organization_created: true,
+        }))
+        .is_none());
+
+        // Missing unit_review → BLOCK, correction names it.
+        let c = evaluate_red_team_scoping_flow(Some(ScopingActionsSeen {
+            unit_review_invoked: false,
+            organization_created: true,
+        }))
+        .expect("missing unit_review must block");
+        assert!(c.contains("unit_review"));
+
+        // Missing organization create → BLOCK, correction names it.
+        let c2 = evaluate_red_team_scoping_flow(Some(ScopingActionsSeen {
+            unit_review_invoked: true,
+            organization_created: false,
+        }))
+        .expect("missing org-create must block");
+        assert!(c2.contains("manage_organizations(action=\"create\")"));
+
+        // Both missing (the MiMo shortcut) → BLOCK, names both.
+        let c3 = evaluate_red_team_scoping_flow(Some(ScopingActionsSeen::default()))
+            .expect("both missing must block");
+        assert!(c3.contains("unit_review") && c3.contains("create"));
+
+        // Unverifiable (no recorded tool_calls) → fail open (allow).
+        assert!(evaluate_red_team_scoping_flow(None).is_none());
     }
 
     /// T7 (设计 2026-06-06-intel-stage §3.5): target_intel 子任务描述随 intel_policy

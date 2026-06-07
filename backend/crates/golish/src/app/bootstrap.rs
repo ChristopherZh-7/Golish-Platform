@@ -186,6 +186,40 @@ pub(crate) fn spawn_embedded_pg(db_ready: golish_db::DbReadyGate) {
     });
 }
 
+/// Like [`spawn_embedded_pg`] but hands the started [`golish_db::GolishDb`]
+/// handle back to the caller via a oneshot instead of leaking it with
+/// `std::mem::forget`.
+///
+/// The GUI deliberately leaks the handle so the embedded server lives for the
+/// whole app lifetime. The headless `--stage-run` path is short-lived, so it
+/// uses this variant and stops the server on exit — otherwise every run orphans
+/// a `postgres` process holding the data dir + port 15432, blocking the next run.
+pub(crate) fn spawn_embedded_pg_owned(
+    db_ready: golish_db::DbReadyGate,
+) -> tokio::sync::oneshot::Receiver<golish_db::GolishDb> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    async_runtime::spawn(async move {
+        tracing::info!("Starting embedded PostgreSQL database (background, owned handle)...");
+        match golish_db::GolishDb::start(golish_db::DbConfig::default()).await {
+            Ok(db) => {
+                tracing::info!(
+                    has_pgvector = db.has_pgvector,
+                    "Embedded PostgreSQL is fully ready"
+                );
+                db_ready.set_pgvector_available(db.has_pgvector);
+                db_ready.mark_ready();
+                // Hand ownership to the caller so it can stop the server on exit.
+                let _ = tx.send(db);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to start embedded PostgreSQL");
+                db_ready.mark_failed();
+            }
+        }
+    });
+    rx
+}
+
 /// Seed default agent `.md` files on first run.
 pub(crate) fn seed_default_agent_files() {
     if let Err(e) = golish_sub_agents::discovery::seed_default_agent_files() {

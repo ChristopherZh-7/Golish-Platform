@@ -67,6 +67,15 @@ impl DbTracker {
         self.repo.as_deref()
     }
 
+    /// Override the session UUID this tracker stamps on recorded rows
+    /// (`tool_calls`, etc.). Used by the headless `--stage-run` path to unify the
+    /// tracker's session with the orchestrator's `session_id` (resolved from the
+    /// chat-session key) so session-scoped gate cross-checks can read this run's
+    /// tool calls — otherwise the tracker keeps the random uuid it was built with.
+    pub fn set_session_uuid(&mut self, session_uuid: Uuid) {
+        self.session_uuid = session_uuid;
+    }
+
     pub fn with_project_path(mut self, path: Option<String>) -> Self {
         self.project_path = path;
         self

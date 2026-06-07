@@ -59,8 +59,8 @@ pub fn get_ask_human_tool_definition() -> ToolDefinition {
                 },
                 "input_type": {
                     "type": "string",
-                    "enum": ["credentials", "choice", "freetext", "confirmation"],
-                    "description": "Type of input expected. Prefer 'choice' (selection from `options`) or 'confirmation' (yes/no) whenever the answer is enumerable — these render one-click buttons for the user. Use 'credentials' for username/password, and 'freetext' ONLY for genuinely open-ended answers (e.g. arbitrary IPs, domains, or URLs)."
+                    "enum": ["credentials", "choice", "freetext", "confirmation", "unit_review", "scope_review"],
+                    "description": "Type of input expected. Prefer 'choice' (selection from `options`) or 'confirmation' (yes/no) whenever the answer is enumerable — these render one-click buttons for the user. Use 'credentials' for username/password, and 'freetext' ONLY for genuinely open-ended answers (e.g. arbitrary IPs, domains, or URLs). During RED-TEAM scoping use 'unit_review' to have the user confirm/edit the candidate units/organizations you proposed via manage_organizations(action=\"propose_candidates\"), and 'scope_review' to confirm the in-scope assets — for both, pass the items to review as a JSON array in `context`; the UI renders an editable review table."
                 },
                 "options": {
                     "type": "array",

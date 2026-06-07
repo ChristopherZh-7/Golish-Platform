@@ -59,6 +59,20 @@ impl ExecutionModePolicy for TaskModePolicy {
                 // enters the harness directly, so the depth-0 primary runs *inside*
                 // a stage and must NOT see `start_operation` (no nested operations).
                 start_operation: false,
+                // Engagement-scope bookkeeping is orchestration-level work the
+                // depth-0 primary must do itself, not specialist scanning. The
+                // scoping gate HARD-requires manage_organizations(create) (+ the
+                // red_team unit-candidate flow via ask_human(unit_review), already a
+                // depth-0 tool), and target_intel needs the passive recon_* tools.
+                // No specialist sub-agent carries manage_organizations, so without
+                // these at depth 0 the scoping gate is unsatisfiable and the stage
+                // dead-loops on BLOCK→retry (设计 2026-06-06-scoping-per-mode-gate-hitl
+                // §3.4 + 2026-06-06-intel-stage-ai-driven-per-mode §3.5).
+                manage_organizations: true,
+                manage_targets: true,
+                recon_discover_subsidiaries: true,
+                recon_enrich_assets: true,
+                recon_list_providers: true,
                 ..BridgeToolSelection::none()
             },
             runtime_tools: RuntimeToolSelection::none(),
@@ -134,6 +148,19 @@ mod tests {
             s.bridge_tools.submit_stage_deliverable,
             "task primary must expose submit_stage_deliverable (design §4.1)"
         );
+        // Engagement-scope bookkeeping tools must be reachable by the depth-0
+        // primary: the scoping gate hard-requires manage_organizations(create)
+        // and target_intel needs the passive recon_* tools. No specialist
+        // sub-agent carries manage_organizations, so omitting these here makes
+        // the red_team scoping gate unsatisfiable (regression guard 2026-06-07).
+        assert!(
+            s.bridge_tools.manage_organizations,
+            "task primary must expose manage_organizations or the scoping gate dead-loops"
+        );
+        assert!(s.bridge_tools.manage_targets);
+        assert!(s.bridge_tools.recon_discover_subsidiaries);
+        assert!(s.bridge_tools.recon_enrich_assets);
+        assert!(s.bridge_tools.recon_list_providers);
         assert!(s.agent_tools.include_dispatch_tools);
         // Legacy parity: the four "internal" sub-agents are filtered
         // out at the primary layer.

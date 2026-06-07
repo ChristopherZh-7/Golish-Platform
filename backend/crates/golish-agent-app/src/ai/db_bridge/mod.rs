@@ -548,6 +548,24 @@ impl DbRepoProvider for GolishDbRepoProvider {
     ) -> anyhow::Result<std::collections::HashMap<i64, std::time::Duration>> {
         self.evidence_ages_for_impl(ids).await
     }
+
+    async fn scoping_actions_for_session(
+        &self,
+        session_id: Uuid,
+    ) -> anyhow::Result<Option<ScopingActionsSeen>> {
+        let (total, unit_review_invoked, organization_created) =
+            golish_db::repo::tool_calls::scoping_actions_for_session(&self.pool, session_id)
+                .await?;
+        // No recorded tool calls for this session ⇒ verification impossible
+        // (tracking disabled / nothing ran) ⇒ fail open (do not block).
+        if total == 0 {
+            return Ok(None);
+        }
+        Ok(Some(ScopingActionsSeen {
+            unit_review_invoked,
+            organization_created,
+        }))
+    }
 }
 
 /// DB-backed integration tests for the harness `operation_state` stage cursor.

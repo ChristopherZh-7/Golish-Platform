@@ -99,6 +99,19 @@ impl AgentBridge {
         });
     }
 
+    /// Override the DB tracker's session UUID after [`Self::set_db_backend`].
+    ///
+    /// `set_db_backend` builds the tracker with a fresh random session UUID. The
+    /// headless `--stage-run` path calls this with the orchestrator's session id
+    /// (resolved from the chat-session key) so `tool_calls` are recorded under the
+    /// SAME session the harness gate queries — otherwise the red_team scoping
+    /// cross-check finds no tool calls and fail-opens. No-op if no tracker is set.
+    pub fn set_tracker_session_uuid(&mut self, session_uuid: uuid::Uuid) {
+        if let Some(tracker) = self.services.db_tracker.as_mut() {
+            tracker.set_session_uuid(session_uuid);
+        }
+    }
+
     // ========================================================================
     // Optional service wiring
     // ========================================================================

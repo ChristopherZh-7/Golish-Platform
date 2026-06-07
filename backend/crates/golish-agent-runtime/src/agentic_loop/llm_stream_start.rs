@@ -16,7 +16,7 @@
 
 use anyhow::Result;
 use rig::completion::Message;
-use rig::message::UserContent;
+use rig::message::{ToolChoice, UserContent};
 use rig::one_or_many::OneOrMany;
 use rig::streaming::StreamingCompletionResponse;
 use serde_json::json;
@@ -86,6 +86,23 @@ where
         .unwrap_or_else(|_| OneOrMany::one(request_history[0].clone()));
     let request_tools = tools.to_vec();
 
+    // Force native tool calls for the autonomous depth-0 primary inside a
+    // harness stage on providers that otherwise narrate tool calls as
+    // text/XML or empty args under load (see `resolve_stage_tool_choice`).
+    let tool_choice = resolve_stage_tool_choice(
+        ctx.llm.provider_name,
+        ctx.harness_stage.is_some(),
+        config.is_sub_agent,
+        !request_tools.is_empty(),
+    );
+    if tool_choice.is_some() {
+        tracing::info!(
+            provider = ctx.llm.provider_name,
+            harness_stage = ctx.harness_stage.is_some(),
+            "[tool-choice] Forcing tool_choice=required for harness-stage primary"
+        );
+    }
+
     let mut stream_start_failure: Option<(String, StreamStartErrorClassification)> = None;
     let mut started_stream = None;
 
@@ -97,7 +114,7 @@ where
             tools: request_tools.clone(),
             temperature,
             max_tokens: Some(MAX_COMPLETION_TOKENS as u64),
-            tool_choice: None,
+            tool_choice: tool_choice.clone(),
             additional_params: additional_params.clone(),
             model: None,
             output_schema: None,
@@ -341,11 +358,102 @@ fn build_additional_params(ctx: &AgenticLoopContext<'_>) -> Option<serde_json::V
     }
 }
 
+/// Providers whose OpenAI/Anthropic-compatible endpoints accept
+/// `tool_choice=required` and emit cleaner native tool calls when forced.
+///
+/// Xiaomi MiMo narrates tool calls as textual XML (OpenAI protocol) or as
+/// `tool_use` blocks with empty arguments (Anthropic protocol) once the tool
+/// surface + context grow large; a raw-SSE probe (2026-06-07) confirmed both
+/// endpoints accept `tool_choice=required` and then stream native calls with
+/// populated arguments. Listed here so the runtime forces native tool use only
+/// for the providers that need it.
+const FORCE_REQUIRED_TOOL_CHOICE_PROVIDERS: &[&str] = &["xiaomi"];
+
+/// Decide the `tool_choice` for this turn.
+///
+/// Returns `Some(ToolChoice::Required)` only for the autonomous **depth-0
+/// primary running inside a harness stage** on a provider in
+/// [`FORCE_REQUIRED_TOOL_CHOICE_PROVIDERS`]. Inside a harness stage the primary
+/// has no legitimate text-only turn — every action is a tool call (`update_plan`
+/// / `sub_agent_*` / `manage_*` / `ask_human` / `submit_stage_deliverable`), so
+/// forcing native tool calls removes the "prose/XML instead of a tool call"
+/// failure without changing behavior anywhere else:
+///
+/// - chat (no harness stage) keeps provider-default `auto`, preserving the
+///   loop's text-only termination path;
+/// - sub-agents (`is_sub_agent`) keep `auto` so they can return a final text
+///   summary;
+/// - reliable native providers are untouched.
+fn resolve_stage_tool_choice(
+    provider_name: &str,
+    in_harness_stage: bool,
+    is_sub_agent: bool,
+    has_tools: bool,
+) -> Option<ToolChoice> {
+    if in_harness_stage
+        && !is_sub_agent
+        && has_tools
+        && FORCE_REQUIRED_TOOL_CHOICE_PROVIDERS.contains(&provider_name)
+    {
+        Some(ToolChoice::Required)
+    } else {
+        None
+    }
+}
+
 async fn wait_for_cancelled(ctx: &AgenticLoopContext<'_>) {
     loop {
         if is_cancelled(ctx) {
             return;
         }
         tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_stage_tool_choice, ToolChoice};
+
+    #[test]
+    fn forces_required_for_xiaomi_primary_in_harness_stage_with_tools() {
+        assert_eq!(
+            resolve_stage_tool_choice("xiaomi", true, false, true),
+            Some(ToolChoice::Required)
+        );
+    }
+
+    #[test]
+    fn no_force_outside_harness_stage() {
+        // Chat / non-harness task turns keep provider-default `auto`.
+        assert_eq!(
+            resolve_stage_tool_choice("xiaomi", false, false, true),
+            None
+        );
+    }
+
+    #[test]
+    fn no_force_for_sub_agent() {
+        // Sub-agents must be able to end on a text-only summary turn.
+        assert_eq!(resolve_stage_tool_choice("xiaomi", true, true, true), None);
+    }
+
+    #[test]
+    fn no_force_without_tools() {
+        // Forcing a tool call with no tools available would be unsatisfiable.
+        assert_eq!(
+            resolve_stage_tool_choice("xiaomi", true, false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn no_force_for_reliable_providers() {
+        // Reliable native providers keep their existing behavior unchanged.
+        assert_eq!(
+            resolve_stage_tool_choice("anthropic", true, false, true),
+            None
+        );
+        assert_eq!(resolve_stage_tool_choice("openai", true, false, true), None);
+        assert_eq!(resolve_stage_tool_choice("nvidia", true, false, true), None);
     }
 }
