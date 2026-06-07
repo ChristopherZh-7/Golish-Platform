@@ -11,6 +11,25 @@
   ],
   "features": [
     {
+      "id": "harness-passive-active-boundary-2026-06-07",
+      "priority": 2,
+      "area": "backend: resources/harness/stages/{external_attack_surface,target_intel}.json + golish-agent-kit/src/harness/stage_spec.rs(tests) + task_orchestrator/prompts/mod.rs(orchestration charter) + task_orchestrator/subtask_phases/execute.rs(K::ExternalAttackSurface subtask prompt)",
+      "title": "harness 被动/主动阶段边界重构（按『是否接触目标』）：被动子域名枚举 + url-history 收归 target_intel（零接触），external_attack_surface 专做接触目标的主动测绘并从 target_intel 继承子域名 evidence；复用既有 active_scan 审批门；顺手修 charter↔spec 不一致",
+      "user_visible_behavior": "Task 模式 harness 管线：target_intel（被动·零接触）独占 DNS/WHOIS/ASN/CT/被动子域名/url-history/OSINT，subdomain_enum_passive 为其 min-invocation 硬地板；external_attack_surface 不再自枚举子域名，改从 target_intel 继承 host 后只做 http_probe/指纹/截图（接触目标），跨界仍受 active_scan 人工审批。阶段顺序/DAG 不变；纯配置 + charter，0 Rust 业务逻辑改。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "docs/design/2026-06-07-harness-passive-active-boundary.md（用户 2026-06-07 BaJie MCP-agent-3 brainstorming 逐项拍板：Q1 管线=harness、Q2 判据=接触目标、Q3 子域名晋级=复用 active_scan）",
+      "plan": "docs/superpowers/plans/2026-06-07-harness-passive-active-boundary.md（writing-plans · Task 0-5 · TDD；自检三项已过）",
+      "verification": [
+        "[Task1 RED ✓] stage_spec.rs 4 测编码新形状（EAS 无 recon/subdomain+url-history、min_invocations 无 subdomain_enum_passive、inherits 含 subdomain；target_intel 含被动子域名+url-history+subdomain_enum_passive 地板）→ cargo nextest -p golish-agent-kit <4 测> 4 failed exit 100（红确认）",
+        "[Task2-4 GREEN ✓] external_attack_surface.json/target_intel.json 改 + prompts/mod.rs charter + execute.rs EAS 子任务提示 → cargo nextest -p golish-agent-kit 525 passed/0 failed（4 改测过+全 crate无回归）；json.load 两文件 ok",
+        "[Task5 ✓] cargo clippy -p golish-agent-kit --all-targets exit0 零告警；cargo fmt -p golish-agent-kit --check clean；rg 确认改动字符串引用全在 golish-agent-kit 内（无跨 crate 旧形状断言）",
+        "[未跑] full just precommit（前端 biome/vitest + check-types + 全 workspace nextest；工作树有无关 dirty frontend WIP 会混淆）+ 活体 MiMo E2E（golish --stage-run --profile red_team --to external_attack_surface --org 默安科技 --target moresec.cn：确认 target_intel 跑被动子域名、EAS 不再枚举只从继承 evidence 拿 host 探测，烧额度~15min）"
+      ],
+      "evidence": "本会话（BaJie MCP-agent-3，DISPATCH off，brainstorming→writing-plans→executing-plans 全流程）7 commit 落 feat/harness-2026-06-01：123bae72(docs design)/6ccd0465(docs plan)/0308ff00(test RED)/e546fac5(EAS json)/9a7f4ef4(target_intel json)/64c53f82(charter+execute)/9d51012c(rustfmt)。后端门禁全绿：nextest -p golish-agent-kit 525 passed、clippy 零告警、fmt clean、JSON valid。关键勘验：gate 配置驱动改 JSON 即生效0逻辑改；surface_coverage 不依赖 subdomain 故删它不破 EAS gate；inherits_evidence_from.evidence_kinds 是渲染给 agent 的描述性 prompt 标签（非严格匹配 booked kind=工具名）故 'subdomain' 标签正确。未 push。剩 full precommit + 活体 E2E。",
+      "notes": "2026-06-07 BaJie MCP-agent-3（DISPATCH off）。与 intel-stage-ai-driven-p0 正交：那份管『谁驱动+红队/渗透跑哪段』，本份管『被动/主动按什么判据分、哪些工具归哪 stage』。两套被动/主动边界系统中本次只动 harness 12 阶段（系统①），GUI organization_recon runner（系统②，subfinder/amass 在 ActiveCollection）作后续可选第二步对齐。发现但未纳入（计划外）：harness_backfill.rs 关键词 'subdomain enum' 仍映射 external_attack_surface，按新边界更应归 target_intel——待用户决定是否纳入。本条与既有多个 in_progress 并存（多会话并发，§2.1）。"
+    },
+    {
       "id": "module-cards-system-2026-06-07",
       "priority": 3,
       "area": "docs: docs/modules/**（INDEX.md + backend/<crate>.md + backend/<crate>/<submodule>.md + frontend/<子系统>.md）+ AGENTS.md(§1 开工读卡/§2.2/§2.3 改前读改后更新/§2.4 卡住 docs/modules/§4 收尾更新) + docs/design/2026-06-07-module-cards-system.md",

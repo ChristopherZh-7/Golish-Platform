@@ -29,6 +29,31 @@
 
 ---
 
+### 2026-06-07 · harness 被动/主动阶段边界重构（按「是否接触目标」）（BaJie MCP-agent-3 · DISPATCH off · brainstorming→writing-plans→executing-plans 全流程 · 用户逐项拍板 A/A/A→「设计 OK 写 spec」→「commit+出 plan」→「开始执行计划」）
+
+- **本轮目标**：把 harness 12 阶段管线的被动/主动边界改成单一判据「是否接触目标主机」。被动子域名枚举 + url-history 收归 `target_intel`（被动·零接触），`external_attack_surface`(EAS) 专做接触目标的主动测绘并从 target_intel 继承子域名 evidence；复用既有 `active_scan` 审批门。顺手修 charter↔spec 不一致（target_intel.json 早就 expect SUBDOMAIN，但 charter 把它派给 EAS）。
+- **设计决策（用户拍板）**：Q1 目标管线 = harness 12 阶段（非 GUI organization_recon runner）；Q2 判据 = 是否接触目标；Q3 被动发现子域名晋级 = 复用 active_scan 门。设计文档 `docs/design/2026-06-07-harness-passive-active-boundary.md`、计划 `docs/superpowers/plans/2026-06-07-harness-passive-active-boundary.md`。
+- **关键勘验（实读代码）**：① `phase.rs::ALL_STAGES[12]` + `phases.json`(5 Phase) + `operation_graph.json`（阶段顺序不变）；② gate 配置驱动（`gate/mod.rs` 结构性 check 恒跑 + 语义层 `spec.gate_rules` 声明驱动），改 JSON 即生效、0 Rust 逻辑改；③ `surface_coverage_check.rs`：EAS done 只要 Surface+JsApi，**不依赖 subdomain** → 删 subdomain 不破 EAS gate；④ **evidence `kind`=工具名**（`direct/mod.rs:284/379/431`），而 `inherits_evidence_from.evidence_kinds` 是 `stage_inherited_evidence` 渲染给 agent 的**描述性 prompt 标签**（`render_inherited_handoff` 只按 stage_kind 匹配），非严格匹配 → 用 `"subdomain"` 标签正确（设计 §9-1 resolved）。
+- **改动（6 commit，feat/harness-2026-06-01）**：
+  - `123bae72` docs(design)、`6ccd0465` docs(plan)
+  - `0308ff00` test(harness) Task1 RED：stage_spec.rs 4 测编码新形状
+  - `e546fac5` Task2：external_attack_surface.json 删 recon/subdomain+recon/url-history、删 min_invocations.subdomain_enum_passive、inherits 加 "subdomain"
+  - `9a7f4ef4` Task3：target_intel.json min_invocations 加 subdomain_enum_passive:1
+  - `64c53f82` Task4：prompts/mod.rs orchestration charter + execute.rs `K::ExternalAttackSurface` 子任务提示对齐（EAS=接触目标，子域名来自 target_intel 不重枚举）
+  - `9d51012c` Task5：stage_spec 新测 rustfmt
+- **运行过的验证（本机实跑·已记录证据）**：
+  - 红：`cargo nextest -p golish-agent-kit <4 测>` → 4 failed（JSON 未改）exit 100。
+  - 绿：JSON `json.load` ok + `cargo nextest -p golish-agent-kit` → **525 passed / 0 failed**（含 4 改测 + 全 crate 无回归）。
+  - `cargo clippy -p golish-agent-kit --all-targets` → exit 0 **零告警**。
+  - `cargo fmt -p golish-agent-kit --check` → clean（修了新测一处换行）。
+  - 跨 crate：rg 确认 `subdomain_enum_passive/recon\/subdomain/recon\/url-history/passive subdomain enumeration` 引用全在 golish-agent-kit 内（已 525 绿），无其它 crate 断言旧形状。
+- **已记录证据**：见上验证命令输出。
+- **提交记录**：上述 6 commit 已落 `feat/harness-2026-06-01`（**未 push**，git 安全协议）。仅暂存本任务文件；工作树里无关的 frontend/enscan-output/wiki 改动未触碰。
+- **已知风险或未解决问题**：① **未跑 full `just precommit`**（前端 biome/vitest + check-types + 全 workspace nextest）——本轮仅 golish-agent-kit 定向 nextest+clippy+fmt；且工作树有无关 dirty frontend WIP，full precommit 会与之混淆。② **活体 MiMo E2E 未跑**（`golish --stage-run --profile red_team --to external_attack_surface --org 默安科技 --target moresec.cn`，确认 target_intel 跑被动子域名、EAS 不再枚举只从继承 evidence 拿 host 探测）——烧 API 额度 ~15min，待用户授权。
+- **下一步建议**：用户授权后 ①跑活体 E2E 取最终行为证据 ②跑 full just precommit ③决定 push（分支已 ahead origin）。
+
+---
+
 ### 2026-06-07 · 子 agent textual 多调用 gap 收口验证（BaJie MCP-agent-2 · DISPATCH off · 接 MCP-3 上下文转移 · 用户「修遗留 gap（子agent多调用）」→「更新进度+功能清单」）
 
 - **本轮目标**：MCP-3 上下文转移后接续——收口「子 agent 多调用」遗留 gap。主链路（`golish-agent-runtime`）textual 多调用恢复已在 commit `1e2c374c` 落地，但子 agent 路径 `golish-sub-agents/src/executor/stream_processing.rs` 仍走单数 `select_textual_tool_call`，一轮只恢复第一个 `<function=...>` 块、其余静默丢弃 → 逼 MiMo 反复重发、迭代爆炸。
