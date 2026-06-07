@@ -133,6 +133,9 @@ mod tests {
     const EXTERNAL_ATTACK_SURFACE_JSON: &str =
         include_str!("../../../../../resources/harness/stages/external_attack_surface.json");
 
+    const TARGET_INTEL_JSON: &str =
+        include_str!("../../../../../resources/harness/stages/target_intel.json");
+
     #[test]
     fn load_external_attack_surface_basic_shape() {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
@@ -157,7 +160,12 @@ mod tests {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
         assert!(s.allowed_tool_types.contains(&"recon/dns".to_string()));
         assert!(s.allowed_tool_types.contains(&"recon/http".to_string()));
+        assert!(s.allowed_tool_types.contains(&"recon/visual".to_string()));
         assert!(!s.allowed_tool_types.contains(&"web/injection".to_string()));
+        // 边界重构（按是否接触目标）：被动子域名 / url-history 下沉 target_intel，
+        // EAS 不再允许它们（只做接触目标的主动测绘）。
+        assert!(!s.allowed_tool_types.contains(&"recon/subdomain".to_string()));
+        assert!(!s.allowed_tool_types.contains(&"recon/url-history".to_string()));
     }
 
     #[test]
@@ -165,7 +173,8 @@ mod tests {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
         assert_eq!(s.min_invocations.get("dns_resolve"), Some(&1));
         assert_eq!(s.min_invocations.get("http_probe"), Some(&1));
-        assert_eq!(s.min_invocations.get("subdomain_enum_passive"), Some(&1));
+        // 边界重构：被动子域名枚举不再钉为 EAS 硬地板（移交 target_intel）。
+        assert_eq!(s.min_invocations.get("subdomain_enum_passive"), None);
     }
 
     #[test]
@@ -195,6 +204,18 @@ mod tests {
         assert!(inh.evidence_kinds.contains(&"dns_a".to_string()));
         assert!(inh.evidence_kinds.contains(&"asn".to_string()));
         assert!(inh.evidence_kinds.contains(&"whois".to_string()));
+        // 边界重构：EAS 从 target_intel 继承子域名（host 来源），不再自枚举。
+        assert!(inh.evidence_kinds.contains(&"subdomain".to_string()));
+    }
+
+    #[test]
+    fn target_intel_owns_passive_subdomain_and_url_history() {
+        let s = load_stage_spec_from_json(TARGET_INTEL_JSON).expect("parse");
+        // 零接触被动技术全部归 target_intel。
+        assert!(s.allowed_tool_types.contains(&"recon/subdomain".to_string()));
+        assert!(s.allowed_tool_types.contains(&"recon/url-history".to_string()));
+        // 被动子域名枚举设为本阶段硬地板（与从 EAS 删除对称）。
+        assert_eq!(s.min_invocations.get("subdomain_enum_passive"), Some(&1));
     }
 
     #[test]
