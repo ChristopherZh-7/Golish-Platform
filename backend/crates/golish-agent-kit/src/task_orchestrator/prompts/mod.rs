@@ -409,8 +409,8 @@ with the ONE harness stage it belongs to (the full operation DAG is supported).
 **Harness stages** (pick the single best match; omit `harness_stage` entirely if none fit):
 
 - `scoping` — define scope / rules of engagement / authorization boundary (no probing).
-- `target_intel` — passive intel: whois, ASN, DNS records, registrant info. (情报收集)
-- `external_attack_surface` — passive + light-active external recon: subdomain enum (passive + CT logs), DNS resolution, HTTP probing, external port discovery. (资产测绘 / 攻击面 / 外部侦察)
+- `target_intel` — passive intel (zero-touch, no target contact): whois, ASN, DNS records, registrant info, passive subdomain enum (subfinder/amass -passive + CT logs), url-history (gau/waybackurls). (情报收集)
+- `external_attack_surface` — active external recon that contacts already-discovered/approved hosts: DNS resolution, HTTP probing, fingerprinting, screenshots. Subdomains are inherited from upstream `target_intel` (do not re-enumerate here). (资产测绘 / 攻击面 / 外部侦察)
 - `enumeration` — active recon: port scanning, service enumeration/fingerprinting, directory enumeration. (端口扫描 / 目录扫描 / 服务枚举)
 - `vuln_triage` — non-destructive vulnerability identification (nuclei, vuln matching). (漏洞扫描 / 漏洞识别)
 - `verification` — controlled exploit validation / PoC confirmation, approval-gated. (漏洞验证)

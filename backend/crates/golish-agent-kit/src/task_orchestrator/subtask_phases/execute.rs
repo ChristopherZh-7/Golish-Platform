@@ -2078,8 +2078,10 @@ fn synthesize_stage_subtask(
         K::ExternalAttackSurface => (
             "External Attack Surface Mapping",
             format!(
-                "Map the external attack surface of `{target}`: passive subdomain enumeration, \
-                 DNS resolution, and exposed hosts. Passive / low-touch only."
+                "Actively map the external attack surface of the hosts inherited from \
+                 target_intel for `{target}`: DNS resolution, HTTP probing, fingerprinting, \
+                 and screenshots. Subdomains come from upstream target_intel — reuse them, \
+                 do not re-enumerate here."
             ),
             "pentester",
         ),
