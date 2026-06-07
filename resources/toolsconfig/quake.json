@@ -21,7 +21,7 @@
         "group_ids": ["default"]
       },
       "auto": {
-        "default": false,
+        "default": true,
         "priority": 80
       },
       "runtime": {

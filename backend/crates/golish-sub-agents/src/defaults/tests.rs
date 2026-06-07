@@ -109,6 +109,12 @@ fn test_pentester_has_security_tools() {
     assert!(!has_tool(pentester, "flow_compose"));
     assert!(has_tool(pentester, "manage_targets"));
     assert!(has_tool(pentester, "record_finding"));
+    // The pentester runs the harness target_intel stage, so it must carry the
+    // passive asset-intel recon_* tools — otherwise it falls back to manual
+    // `dig` via pentest_run instead of the 0.zone/quake/ENScan provider engine.
+    assert!(has_tool(pentester, "recon_list_providers"));
+    assert!(has_tool(pentester, "recon_discover_subsidiaries"));
+    assert!(has_tool(pentester, "recon_enrich_assets"));
     assert!(!has_tool(pentester, "js_collect"));
     assert!(has_tool(pentester, "search_knowledge_base"));
     assert!(has_tool(pentester, "read_knowledge"));

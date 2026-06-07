@@ -347,31 +347,46 @@ where
     // Textual tool-call finalization (compatibility adapter).
     //
     // Some model families (e.g. Xiaomi MiMo) emit tool calls as textual
-    // `<tool_call><function=...>` markup instead of native structured calls.
-    // Stripping the markup is unconditional so it never leaks into the response;
-    // recovering a call to execute only happens when the provider produced no
-    // native tool calls (so the same intent is not executed twice).
-    let finalized =
-        golish_core::finalize_assistant_text(&text_content, tool_calls_to_execute.is_empty());
-    text_content = finalized.clean_text;
-    if let Some(recovered) = finalized.recovered {
-        let id = format!("textual-tool-call-{}", Uuid::new_v4());
+    // `<tool_call><function=...>` markup instead of native structured calls, and
+    // frequently BATCH several blocks in one turn. Stripping the markup is
+    // unconditional so it never leaks into the response; recovering call(s) to
+    // execute only happens when the provider produced no native tool calls (so
+    // the same intent is not executed twice). Recover ALL of them — not just the
+    // first — each with a distinct id so the loop balances one tool_result per
+    // call; dropped calls otherwise force the model to re-issue them on later
+    // turns. The `ask_human` barrier still collapses to a single call. Mirrors
+    // the main agentic loop's `extract_textual_tool_calls` recovery.
+    let recovered = if tool_calls_to_execute.is_empty() {
+        golish_core::select_textual_tool_calls(&text_content)
+    } else {
+        Vec::new()
+    };
+    text_content = golish_core::strip_textual_tool_call_markup(&text_content);
+    if !recovered.is_empty() {
+        let tool_names: Vec<&str> = recovered.iter().map(|c| c.name.as_str()).collect();
         tracing::warn!(
             agent_id,
-            tool_name = %recovered.name,
+            recovered = recovered.len(),
+            tools = ?tool_names,
             text_len = text_content.len(),
-            "[sub-agent][tool-adapter] Recovered textual XML-style tool call into structured tool call"
+            "[sub-agent][tool-adapter] Recovered textual XML-style tool call(s) into structured tool call(s)"
         );
-        tool_calls_to_execute.push(ToolCall {
-            id: id.clone(),
-            call_id: Some(id),
-            function: ToolFunction {
-                name: recovered.name,
-                arguments: recovered.arguments,
-            },
-            signature: None,
-            additional_params: None,
-        });
+        // Index the synthetic id per call so a batched multi-call turn produces
+        // distinct ids (the loop balances one tool_result per id).
+        let batch = Uuid::new_v4();
+        for (idx, call) in recovered.into_iter().enumerate() {
+            let id = format!("textual-tool-call-{batch}-{idx}");
+            tool_calls_to_execute.push(ToolCall {
+                id: id.clone(),
+                call_id: Some(id),
+                function: ToolFunction {
+                    name: call.name,
+                    arguments: call.arguments,
+                },
+                signature: None,
+                additional_params: None,
+            });
+        }
         has_tool_calls = true;
     }
 
@@ -475,5 +490,81 @@ mod tests {
         assert!(!sr.has_tool_calls);
         assert!(sr.tool_calls.is_empty());
         assert_eq!(sr.text_content, "just a normal answer, no tool markup");
+    }
+
+    #[tokio::test]
+    async fn recovers_all_batched_mimo_textual_tool_calls_in_sub_agent_stream() {
+        // MiMo batches several `<function=...>` blocks in one turn; the sub-agent
+        // adapter must recover ALL of them (not just the first), each with a
+        // distinct id so the loop balances one tool_result per call (the gap the
+        // main loop already closed via select_textual_tool_calls).
+        let markup = "先跑两步。\n\
+<tool_call>\n\
+<function=run_command>\n\
+<parameter=command>dig example.com</parameter>\n\
+</function>\n\
+</tool_call>\n\
+<tool_call>\n\
+<function=update_plan>\n\
+<parameter=plan>[{\"status\":\"in_progress\",\"step\":\"scan\"}]</parameter>\n\
+</function>\n\
+</tool_call>";
+
+        let sr = run(markup).await;
+
+        assert!(sr.has_tool_calls, "expected recovered textual tool calls");
+        assert_eq!(
+            sr.tool_calls.len(),
+            2,
+            "both batched calls must be recovered"
+        );
+        assert_eq!(sr.tool_calls[0].function.name, "run_command");
+        assert_eq!(
+            sr.tool_calls[0].function.arguments["command"],
+            "dig example.com"
+        );
+        assert_eq!(sr.tool_calls[1].function.name, "update_plan");
+        assert_ne!(
+            sr.tool_calls[0].id, sr.tool_calls[1].id,
+            "ids must be distinct per call so tool_results balance"
+        );
+        assert!(
+            !sr.text_content.contains("<tool_call>") && !sr.text_content.contains("<function="),
+            "markup should be stripped, got: {}",
+            sr.text_content
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_human_barrier_drops_follow_up_in_sub_agent_stream() {
+        // An ask_human batched with a follow-up side effect: the barrier must
+        // still win so a self-answered create cannot bypass the human gate.
+        let markup = "需要确认。\n\
+<tool_call>\n\
+<function=ask_human>\n\
+<parameter=question>确认候选单元?</parameter>\n\
+<parameter=input_type>unit_review</parameter>\n\
+</function>\n\
+</tool_call>\n\
+<tool_call>\n\
+<function=manage_organizations>\n\
+<parameter=action>create</parameter>\n\
+<parameter=name>ACME Corp</parameter>\n\
+</function>\n\
+</tool_call>";
+
+        let sr = run(markup).await;
+
+        assert!(sr.has_tool_calls);
+        assert_eq!(
+            sr.tool_calls.len(),
+            1,
+            "ask_human barrier must drop the follow-up"
+        );
+        assert_eq!(sr.tool_calls[0].function.name, "ask_human");
+        assert_eq!(
+            sr.tool_calls[0].function.arguments["input_type"],
+            "unit_review"
+        );
     }
 }

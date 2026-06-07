@@ -29,6 +29,26 @@
 
 ---
 
+### 2026-06-07 · 子 agent textual 多调用 gap 收口验证（BaJie MCP-agent-2 · DISPATCH off · 接 MCP-3 上下文转移 · 用户「修遗留 gap（子agent多调用）」→「更新进度+功能清单」）
+
+- **本轮目标**：MCP-3 上下文转移后接续——收口「子 agent 多调用」遗留 gap。主链路（`golish-agent-runtime`）textual 多调用恢复已在 commit `1e2c374c` 落地，但子 agent 路径 `golish-sub-agents/src/executor/stream_processing.rs` 仍走单数 `select_textual_tool_call`，一轮只恢复第一个 `<function=...>` 块、其余静默丢弃 → 逼 MiMo 反复重发、迭代爆炸。
+- **现状定位**：该修复**已存在于工作区（未提交，git status `M`）**——疑为 MCP-3 实现后未验证即转移。本轮职责 = 按 AGENTS.md §3「无新鲜证据不算完成」做完整验证（不是重写实现）。
+- **改动核对（读码）**：单数 `finalize_assistant_text`→`select_textual_tool_call` 改为复数 `select_textual_tool_calls` + `strip_textual_tool_call_markup`（无条件剥离 markup，永不外泄），恢复全部块，每个分配 `textual-tool-call-{uuid}-{idx}` 独立 id（循环按 id 配平一 tool_result/调用），`ask_human` 屏障仍收敛为 1。与主链路 `extract_textual_tool_intents` 逐行对照一致。
+- **范围确认**：sub-agent 内唯一恢复点 = `stream_processing.rs`；`final_summary.rs:113` 是 `allow_recovery=false` 的最终总结路径（仅剥离 markup、无恢复），正确无需改动。
+- **运行过的验证（本机实跑 · 已记录证据）**：
+  - `cargo nextest run -p golish-sub-agents -p golish-core` → **265 passed / 0 failed**（exit 0；含 4 个 `stream_processing` 测 + 新增 2 测）。
+  - `cargo clippy -p golish-sub-agents --all-targets` → exit 0 **零告警**。
+  - **红-绿**：备份 → 临时回退恢复块为单数 → 批量测试 `recovers_all_batched_mimo_textual_tool_calls_in_sub_agent_stream` **FAIL**（`left:1 right:2`「both batched calls must be recovered」，其余 3 测 PASS）→ 从备份字节级还原（`shasum` 一致）→ 4/4 PASS。证明新测试真正守住该 gap。
+- **已记录证据**：见上验证命令输出。`feature_list.json` `agent-tool-use-compatibility-layer` 的 evidence 加 `sub_agent_textual_multicall_parity_2026_06_07` 子键。
+- **提交记录**：**未 commit**（git 安全协议，等用户授权）。工作树改动：`M backend/crates/golish-sub-agents/src/executor/stream_processing.rs`（+112/−21，含 2 新测）。另有非本任务的并行会话产物（`backend/enscan-output/*`、`enscan.gob`、`resources/wiki/*`）保持 untracked，未触碰。
+- **已知风险或未解决问题**：① 未跑 full `just precommit`（前端 + check-types + 全 workspace），本轮仅定向 crate 验证；② 活体 MiMo E2E（一轮真批量 textual 多调用确认每个 call 都执行、tool_result 配平）需 `just dev`/`just stage` + LLM key，未做。
+- **本会话后续改动（同一 MCP-2 会话，用户连续驱动）**：
+  - **pentester 子 agent 补 recon 工具**：`golish-sub-agents/src/defaults/builder/{registry.rs(live),mod.rs(hardcoded)}` 的 pentester `allowed_tools` 加 `recon_list_providers`/`recon_discover_subsidiaries`/`recon_enrich_assets`；`defaults/tests.rs::test_pentester_has_security_tools` +3 断言锁定。根因：target_intel 派给 pentester 子 agent，其白名单缺 recon_* → 退化成手敲 `dig`。验证：`cargo nextest -p golish-sub-agents` 78 passed；`clippy -p golish-sub-agents --all-targets` 0 告警；ReadLints 无错。活体（`--only target_intel --org 默安科技`，Xiaomi）：pentester 真调 recon_list_providers→recon_enrich_assets→enscan 引擎（4 候选/20 字段/evidence #1115），全程无 dig。
+  - **quake 接进 enrich**：`resources/toolsconfig/quake.json` `asset_intel.auto.default` false→true（quake 早有完整 http_json enrich 描述符，仅 auto 模式 `capability.rs:223-228` 只选 auto.default=true → 被跳过）。纯运行时 JSON（resources/toolsconfig 直读，无需重编译）。活体（用户 GUI 配 0.zone/quake key 后）：recon_list_providers available 2→4；recon_enrich_assets 现跑 quake(http_json org+icp_unit)=**42 候选/803 字段** + 0.zone + enscan，evidence #1133。
+- **提交**：本会话 7 文件一并 commit；run 产物（`backend/enscan-output`、`enscan.gob`、`backend/.golish`、`resources/wiki`）排除。**full `just precommit` 未重跑**——改动为 golish-sub-agents Rust（crate nextest 78 + clippy 已绿）+ quake.json 运行时 JSON（已验合法）+ 文档，无前端/ts-rs/schema 改动；用户明确要求直接提交（agents-bridge.mdc：用户指令本会话优先，已声明此与 AGENTS.md §2.6 的差异）。
+
+---
+
 ### 2026-06-07 · 模块卡体系 Wave 3 完成（前端 7 子系统卡 · 全体系收官 · BaJie MCP-agent-3 · DISPATCH off · 用户「刷 Wave 3 前端卡」）
 
 - **本轮目标**：Wave 3 = 前端 `frontend/` 子系统卡，收尾整个模块卡体系。
