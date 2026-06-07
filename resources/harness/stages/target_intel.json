@@ -57,7 +57,8 @@
   ],
 
   "min_invocations": {
-    "dns_resolve": 1
+    "dns_resolve": 1,
+    "subdomain_enum_passive": 1
   },
 
   "max_other_skips": 2,
