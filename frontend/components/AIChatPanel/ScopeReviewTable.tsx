@@ -1,5 +1,6 @@
-import { Plus, Trash2 } from "lucide-react";
+import { ClipboardList, Upload } from "lucide-react";
 import { useRef, useState } from "react";
+import { cn } from "@/lib/utils";
 
 export type ScopeReviewKind = "scope_review" | "unit_review";
 
@@ -67,12 +68,93 @@ export function normalizeScopeRows(kind: ScopeReviewKind, initial: unknown): Sco
   });
 }
 
+/** Heuristically classify a raw target string into one of the `scope_review`
+ * `type` options so pasted / uploaded targets land on a sensible default. */
+export function detectTargetType(raw: string): string {
+  const v = raw.trim().toLowerCase();
+  if (!v) return "domain";
+  if (/^https?:\/\//.test(v)) return "url";
+  if (v.startsWith("*.")) return "wildcard";
+  if (v.includes("/")) {
+    if (/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(v)) return "cidr";
+    if (v.includes(":") && /^[0-9a-f:]+\/\d{1,3}$/.test(v)) return "cidr";
+    return "url";
+  }
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(v)) return "ip";
+  if (v.includes(":") && /^[0-9a-f:]+$/.test(v)) return "ip";
+  return "domain";
+}
+
+/** Strip leading markdown list markers ("- ", "* ", "1. ", "•") from a line. */
+function stripListMarkers(line: string): string {
+  return line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, "").trim();
+}
+
+/** Pure markdown/punctuation noise that should never become a target. */
+const JUNK_TOKEN = /^[-=#|*_`'"().,;:]+$/;
+/** A scope target always carries a dot, colon or slash (FQDN / IP / CIDR / URL). */
+const TARGET_LIKE = /[.:/]/;
+
 /**
- * Editable confirmation table for the scoping HITL flow (design
- * 2026-06-06-scoping-per-mode-gate-hitl §3.6). The user adds / removes / edits
- * the AI-proposed target list (`scope_review`) or candidate units
- * (`unit_review`); "Confirm" hands the edited rows back so the caller can submit
- * them as the `ask_human` response.
+ * Parse the free-form pasted / uploaded text into rows for submission. For
+ * `scope_review` every whitespace / comma / semicolon / pipe-separated token
+ * that looks like a target becomes a row with an auto-detected type — so a
+ * plain list, a CSV, or even a pasted markdown table all collapse cleanly. For
+ * `unit_review` each non-empty line is treated as one organisation name.
+ */
+export function parseBulkRows(kind: ScopeReviewKind, text: string): ScopeReviewRow[] {
+  const rows: ScopeReviewRow[] = [];
+  const seen = new Set<string>();
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = stripListMarkers(rawLine);
+    if (!line) continue;
+    if (kind === "unit_review") {
+      const key = line.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ name: line, aliases: "", domains: "" });
+      continue;
+    }
+    const tokens = line
+      .split(/[\s,;|]+/)
+      .map((t) =>
+        t
+          .replace(/^[`'"<([]+/, "")
+          .replace(/[`'">)\].,;]+$/, "")
+          .trim()
+      )
+      .filter((t) => t.length > 0 && TARGET_LIKE.test(t) && !JUNK_TOKEN.test(t));
+    for (const token of tokens) {
+      const key = token.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ value: token, type: detectTargetType(token), scope: "in" });
+    }
+  }
+  return rows;
+}
+
+/** Seed the editor textarea with the AI-proposed targets (one per line) so the
+ * user edits them as free text instead of re-typing. Empty when nothing was
+ * proposed. */
+function initialBulkText(kind: ScopeReviewKind, initial: unknown): string {
+  if (!Array.isArray(initial) || initial.length === 0) return "";
+  const firstKey = COLUMNS[kind][0].key;
+  return normalizeScopeRows(kind, initial)
+    .map((row) => (row[firstKey] ?? "").trim())
+    .filter((v) => v.length > 0)
+    .join("\n");
+}
+
+/**
+ * Confirmation editor for the scoping HITL flow (design
+ * 2026-06-06-scoping-per-mode-gate-hitl §3.6). The user reviews / edits the
+ * target list (`scope_review`) or candidate units (`unit_review`) as a single
+ * free-form textarea — one entry per line, or comma / space separated — and can
+ * paste, drag-drop, or upload a `.txt` / `.csv` file. "Confirm" parses the text
+ * into rows (auto-detecting target type) and hands them back as the `ask_human`
+ * response. The box is always expanded; the AI's proposed targets are seeded in
+ * so editing is one keystroke away.
  */
 export function ScopeReviewTable({
   kind,
@@ -85,96 +167,86 @@ export function ScopeReviewTable({
   onConfirm: (rows: ScopeReviewRow[]) => void;
   onSkip: () => void;
 }) {
-  const columns = COLUMNS[kind];
-  // Stable per-row ids so editing/removing a row doesn't make React reconcile by
-  // position (which would carry one row's input state onto its neighbour).
-  const nextId = useRef(0);
-  const [rows, setRows] = useState<{ id: number; cells: ScopeReviewRow }[]>(() =>
-    normalizeScopeRows(kind, initial).map((cells) => ({ id: nextId.current++, cells }))
-  );
+  const [bulkText, setBulkText] = useState(() => initialBulkText(kind, initial));
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const updateCell = (id: number, key: string, value: string) => {
-    setRows((prev) =>
-      prev.map((row) => (row.id === id ? { ...row, cells: { ...row.cells, [key]: value } } : row))
-    );
+  // Read dropped / picked text files into the textarea, appending so multiple
+  // files (or a file plus a manual paste) accumulate rather than overwrite.
+  const handleFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    try {
+      const texts = await Promise.all(Array.from(files).map((file) => file.text()));
+      const joined = texts.join("\n").trim();
+      if (!joined) return;
+      setBulkText((prev) => (prev.trim() ? `${prev}\n${joined}` : joined));
+    } catch {
+      /* ignore unreadable files */
+    }
   };
-  const addRow = () =>
-    setRows((prev) => [...prev, { id: nextId.current++, cells: emptyRow(columns) }]);
-  const removeRow = (id: number) => setRows((prev) => prev.filter((row) => row.id !== id));
 
-  // Drop rows whose first column is blank so the caller never gets empty entries.
-  const handleConfirm = () => {
-    const firstKey = columns[0].key;
-    onConfirm(
-      rows.map((row) => row.cells).filter((cells) => (cells[firstKey] ?? "").trim() !== "")
-    );
-  };
+  const handleConfirm = () => onConfirm(parseBulkRows(kind, bulkText));
 
   return (
     <div className="space-y-2">
-      <table className="w-full text-[12px]">
-        <thead>
-          <tr className="text-left text-muted-foreground">
-            {columns.map((col) => (
-              <th key={col.key} className="pb-1 pr-2 font-medium">
-                {col.label}
-              </th>
-            ))}
-            <th className="pb-1 w-8" aria-label="Remove" />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => (
-            <tr key={row.id}>
-              {columns.map((col) => (
-                <td key={col.key} className="py-0.5 pr-2 align-top">
-                  {col.kind === "select" ? (
-                    <select
-                      aria-label={`${col.label} for row ${i + 1}`}
-                      value={row.cells[col.key] ?? ""}
-                      onChange={(e) => updateCell(row.id, col.key, e.target.value)}
-                      className="w-full px-2 py-1 rounded-md bg-background border border-border/50 text-[12px] focus:outline-none focus:border-accent"
-                    >
-                      {col.options?.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type="text"
-                      aria-label={`${col.label} for row ${i + 1}`}
-                      value={row.cells[col.key] ?? ""}
-                      onChange={(e) => updateCell(row.id, col.key, e.target.value)}
-                      className="w-full px-2 py-1 rounded-md bg-background border border-border/50 text-[12px] focus:outline-none focus:border-accent"
-                    />
-                  )}
-                </td>
-              ))}
-              <td className="py-0.5 align-top">
-                <button
-                  type="button"
-                  aria-label={`Remove row ${i + 1}`}
-                  onClick={() => removeRow(row.id)}
-                  className="p-1 rounded-md text-muted-foreground hover:text-red-400 hover:bg-red-400/10 transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      <button
-        type="button"
-        onClick={addRow}
-        className="flex items-center gap-1 px-2 py-1 text-[11px] rounded-md border border-dashed border-border/50 text-muted-foreground hover:border-accent/40 hover:text-foreground transition-colors"
-      >
-        <Plus className="w-3 h-3" />
-        Add row
-      </button>
+      <div className="rounded-md border border-border/40 bg-background/40">
+        <div className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-medium text-muted-foreground">
+          <ClipboardList className="w-3.5 h-3.5" />
+          {kind === "scope_review"
+            ? "Targets — paste a list or upload a file"
+            : "Units / organizations"}
+        </div>
+        <div className="px-2 pb-2 space-y-1.5">
+          <textarea
+            aria-label="Bulk targets"
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              void handleFiles(e.dataTransfer.files);
+            }}
+            placeholder={
+              kind === "scope_review"
+                ? "One target per line, or comma-separated:\nexample.com\n*.example.com\n10.0.0.0/24\nhttps://app.example.com"
+                : "One organization per line:\nAcme Corp\nAcme Subsidiary"
+            }
+            className={cn(
+              "w-full px-2 py-1.5 rounded-md bg-background border text-[12px] font-mono focus:outline-none focus:border-accent min-h-[120px] resize-y",
+              dragOver ? "border-accent border-dashed" : "border-border/50"
+            )}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1 px-2.5 py-1 text-[11px] rounded-md border border-border/50 text-muted-foreground hover:text-foreground hover:border-accent/40 transition-colors"
+            >
+              <Upload className="w-3 h-3" />
+              Upload file
+            </button>
+            <span className="text-[10px] text-muted-foreground/60">
+              or drag &amp; drop a .txt / .csv
+            </span>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".txt,.csv,.list,.text,text/plain,text/csv"
+              className="hidden"
+              onChange={(e) => {
+                void handleFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+          </div>
+        </div>
+      </div>
 
       <div className="flex items-center gap-2 pt-1">
         <button

@@ -1,7 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { normalizeScopeRows, ScopeReviewTable } from "./ScopeReviewTable";
+import {
+  detectTargetType,
+  normalizeScopeRows,
+  parseBulkRows,
+  ScopeReviewTable,
+} from "./ScopeReviewTable";
 
 describe("normalizeScopeRows", () => {
   it("returns one blank row for non-array / empty input", () => {
@@ -25,60 +30,99 @@ describe("normalizeScopeRows", () => {
   });
 });
 
+describe("detectTargetType", () => {
+  it("classifies common target shapes", () => {
+    expect(detectTargetType("example.com")).toBe("domain");
+    expect(detectTargetType("*.example.com")).toBe("wildcard");
+    expect(detectTargetType("10.0.0.5")).toBe("ip");
+    expect(detectTargetType("10.0.0.0/24")).toBe("cidr");
+    expect(detectTargetType("https://app.example.com")).toBe("url");
+    expect(detectTargetType("app.example.com/login")).toBe("url");
+    expect(detectTargetType("fe80::1")).toBe("ip");
+    expect(detectTargetType("2001:db8::/32")).toBe("cidr");
+  });
+});
+
+describe("parseBulkRows", () => {
+  it("parses a newline + comma list into typed scope rows", () => {
+    const rows = parseBulkRows(
+      "scope_review",
+      "example.com, *.example.com\n10.0.0.0/24\nhttps://app.example.com"
+    );
+    expect(rows).toEqual([
+      { value: "example.com", type: "domain", scope: "in" },
+      { value: "*.example.com", type: "wildcard", scope: "in" },
+      { value: "10.0.0.0/24", type: "cidr", scope: "in" },
+      { value: "https://app.example.com", type: "url", scope: "in" },
+    ]);
+  });
+
+  it("strips markdown bullets and table noise, keeping only target-like tokens", () => {
+    const rows = parseBulkRows(
+      "scope_review",
+      "- example.com\n* api.example.com\n| 1 | pingan.com | domain | in |"
+    );
+    expect(rows.map((r) => r.value)).toEqual(["example.com", "api.example.com", "pingan.com"]);
+  });
+
+  it("treats each line as one organisation for unit_review", () => {
+    const rows = parseBulkRows("unit_review", "Acme Corp\nAcme Subsidiary\n");
+    expect(rows).toEqual([
+      { name: "Acme Corp", aliases: "", domains: "" },
+      { name: "Acme Subsidiary", aliases: "", domains: "" },
+    ]);
+  });
+
+  it("de-duplicates repeated targets case-insensitively", () => {
+    const rows = parseBulkRows("scope_review", "a.com\n10.0.0.1\nA.com\na.com");
+    expect(rows.map((r) => r.value)).toEqual(["a.com", "10.0.0.1"]);
+  });
+});
+
 describe("ScopeReviewTable", () => {
-  it("confirms the edited rows as a JSON-serialisable array", async () => {
+  it("shows the free-text editor expanded by default with no grid", () => {
+    render(
+      <ScopeReviewTable kind="scope_review" initial={[]} onConfirm={vi.fn()} onSkip={vi.fn()} />
+    );
+    // Textarea is visible immediately — no toggle click needed.
+    expect(screen.getByLabelText("Bulk targets")).toBeInTheDocument();
+    // The row-by-row grid is gone.
+    expect(screen.queryByRole("button", { name: "Add row" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Target for row 1")).not.toBeInTheDocument();
+  });
+
+  it("confirms typed targets as parsed, de-duplicated, JSON-serialisable rows", async () => {
     const user = userEvent.setup();
     const onConfirm = vi.fn();
     render(
-      <ScopeReviewTable
-        kind="scope_review"
-        initial={[{ value: "example.com", type: "domain", scope: "in" }]}
-        onConfirm={onConfirm}
-        onSkip={vi.fn()}
-      />
+      <ScopeReviewTable kind="scope_review" initial={[]} onConfirm={onConfirm} onSkip={vi.fn()} />
     );
 
-    // Edit the first target value.
-    const valueInput = screen.getByLabelText("Target for row 1");
-    await user.clear(valueInput);
-    await user.type(valueInput, "api.example.com");
-
-    // Add a second row and fill it.
-    await user.click(screen.getByRole("button", { name: "Add row" }));
-    await user.type(screen.getByLabelText("Target for row 2"), "10.0.0.0/24");
-
+    await user.type(screen.getByLabelText("Bulk targets"), "a.com{Enter}10.0.0.1{Enter}a.com");
     await user.click(screen.getByRole("button", { name: "Confirm" }));
 
     expect(onConfirm).toHaveBeenCalledTimes(1);
     const rows = onConfirm.mock.calls[0][0];
-    expect(rows).toHaveLength(2);
-    expect(rows[0].value).toBe("api.example.com");
-    expect(rows[1].value).toBe("10.0.0.0/24");
-    // The caller submits JSON.stringify(rows); confirm it round-trips.
+    expect(rows).toEqual([
+      { value: "a.com", type: "domain", scope: "in" },
+      { value: "10.0.0.1", type: "ip", scope: "in" },
+    ]);
     expect(() => JSON.parse(JSON.stringify(rows))).not.toThrow();
   });
 
-  it("removes a row and drops blank rows on confirm", async () => {
-    const user = userEvent.setup();
-    const onConfirm = vi.fn();
+  it("seeds the textarea from AI-proposed initial targets", () => {
     render(
       <ScopeReviewTable
         kind="scope_review"
         initial={[
-          { value: "keep.com", type: "domain", scope: "in" },
-          { value: "remove.com", type: "domain", scope: "out" },
+          { value: "example.com", type: "domain", scope: "in" },
+          { value: "*.example.com", type: "wildcard", scope: "in" },
         ]}
-        onConfirm={onConfirm}
+        onConfirm={vi.fn()}
         onSkip={vi.fn()}
       />
     );
-
-    await user.click(screen.getByRole("button", { name: "Remove row 2" }));
-    await user.click(screen.getByRole("button", { name: "Confirm" }));
-
-    const rows = onConfirm.mock.calls[0][0];
-    expect(rows).toHaveLength(1);
-    expect(rows[0].value).toBe("keep.com");
+    expect(screen.getByLabelText("Bulk targets")).toHaveValue("example.com\n*.example.com");
   });
 
   it("invokes onSkip when skipped", async () => {

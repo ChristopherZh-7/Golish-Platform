@@ -4,6 +4,7 @@ import { convDelete } from "@/lib/conversation-db";
 import { logger } from "@/lib/logger";
 import { getAllLeafPanes } from "@/lib/pane-utils";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
+import { suppressTerminalAutoFocus } from "@/lib/terminal/terminalAutoFocus";
 import { resetSessionSequence } from "@/services/ai-events/session-sequence";
 import { useStore } from "@/store";
 import { createNewConversation } from "@/store/slices/conversation";
@@ -16,6 +17,14 @@ export function useChatConversationOps(createTerminalTab: CreateTerminalFn) {
     useStore.getState().addConversation(conv);
     const termId = await createTerminalTab(undefined, true);
     if (termId) {
+      // The chat panel's "+" links the terminal to the just-created conversation
+      // itself, so it passes skipConversationLink=true — which bypasses the
+      // chat-first focus handling inside createTerminalTab. Suppress the new
+      // terminal's auto-focus (for a short startup window covering both the xterm
+      // mount and the UnifiedInput prompt-ready focus) so the cursor stays in the
+      // chat input (focused by handleConvNewChat) instead of jumping to the
+      // terminal a few seconds later.
+      suppressTerminalAutoFocus(termId);
       useStore.getState().addTerminalToConversation(conv.id, termId);
       useStore.getState().setActiveSession(termId);
     }

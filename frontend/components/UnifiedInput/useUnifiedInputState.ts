@@ -14,6 +14,10 @@ import { imeGetSource, imeSetSource } from "@/lib/api/shell";
 import { notify } from "@/lib/notify";
 import type { ToolConfig } from "@/lib/pentest/types";
 import { type CaretSettings, DEFAULT_CARET_SETTINGS, getSettings } from "@/lib/settings";
+import {
+  clearTerminalAutoFocusSuppression,
+  isTerminalAutoFocusSuppressed,
+} from "@/lib/terminal/terminalAutoFocus";
 import { usePendingCommand, useStore } from "@/store";
 import { useUnifiedInputState as useStoreInputState } from "@/store/selectors/unified-input";
 
@@ -301,9 +305,11 @@ export function useInputState({
   }, []);
 
   useEffect(() => {
-    void sessionId;
     void inputMode;
     if (isProcessRunning) return;
+    // Chat-first: a terminal opened from the AI chat panel's "+" must not pull
+    // the cursor out of the chat input during its startup window.
+    if (isTerminalAutoFocusSuppressed(sessionId)) return;
     const handle = requestAnimationFrame(() => textareaRef.current?.focus());
     return () => cancelAnimationFrame(handle);
   }, [sessionId, inputMode, isProcessRunning]);
@@ -312,9 +318,12 @@ export function useInputState({
     if (isProcessRunning) {
       textareaRef.current?.blur();
     } else {
+      // The shell prompt becomes ready a few seconds after the tab is created;
+      // honour the chat-first suppression window so focus doesn't jump here then.
+      if (isTerminalAutoFocusSuppressed(sessionId)) return;
       requestAnimationFrame(() => textareaRef.current?.focus());
     }
-  }, [isProcessRunning]);
+  }, [sessionId, isProcessRunning]);
 
   useEffect(() => {
     adjustTextareaHeight();
@@ -586,6 +595,10 @@ export function useInputState({
 
   const handleFocus = useCallback(() => {
     setIsFocused(true);
+    // The user explicitly focused the terminal input — drop any chat-first
+    // suppression so subsequent auto-focus (e.g. after a command finishes)
+    // behaves normally.
+    clearTerminalAutoFocusSuppression(sessionId);
     imeGetSource()
       .then((src) => {
         if (src && src !== "com.apple.keylayout.ABC") {
@@ -594,7 +607,7 @@ export function useInputState({
         }
       })
       .catch(() => {});
-  }, []);
+  }, [sessionId]);
 
   const handleBlur = useCallback(() => {
     setIsFocused(false);

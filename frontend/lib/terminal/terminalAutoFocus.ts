@@ -1,24 +1,52 @@
 /**
- * One-shot suppression of a terminal's mount auto-focus.
+ * Time-windowed suppression of a terminal session's auto-focus.
  *
  * Chat-first focus: when the user opens a new tab the cursor should land in the
- * AI chat panel, not the terminal. `useCreateTerminalTab` marks the freshly
- * created session here; `Terminal`'s mount effect consumes the mark and skips
- * its single auto-focus call. Everything else (clicking the terminal, explicit
- * focus, fullterm/TUI transitions) still focuses the terminal as before.
+ * AI chat panel, not the terminal. A freshly created terminal grabs focus from
+ * SEVERAL independent sources at DIFFERENT times during startup — the xterm
+ * mount effect, and the `UnifiedInput` textarea's mount + "process finished"
+ * focus effects (the prompt becomes ready a few seconds after the shell spawns).
+ * A one-shot mark only stops the first of these, so focus still jumps to the
+ * terminal a moment later.
+ *
+ * Instead we mark the session as suppressed for a short WINDOW. Every auto-focus
+ * source checks `isTerminalAutoFocusSuppressed` (non-consuming) and skips while
+ * the window is open, so the cursor stays in the chat input throughout startup.
+ * User-initiated focus (clicking the terminal) is never gated — it goes through
+ * the DOM directly — and clears the window early via
+ * `clearTerminalAutoFocusSuppression` so normal terminal focus resumes at once.
  */
 
-const suppressed = new Set<string>();
+const DEFAULT_WINDOW_MS = 6000;
 
-/** Mark a session so the terminal's next mount auto-focus is skipped once. */
-export function suppressNextTerminalAutoFocus(sessionId: string): void {
-  if (sessionId) suppressed.add(sessionId);
+/** Epoch-ms (Date.now) until which a session's auto-focus stays suppressed. */
+const suppressedUntil = new Map<string, number>();
+
+/**
+ * Suppress a terminal session's auto-focus for `windowMs` (default ~6s) so a
+ * chat-first new tab keeps the cursor in the AI chat input even as the terminal
+ * and its input box each try to grab focus during shell startup.
+ */
+export function suppressTerminalAutoFocus(sessionId: string, windowMs = DEFAULT_WINDOW_MS): void {
+  if (sessionId) suppressedUntil.set(sessionId, Date.now() + Math.max(0, windowMs));
 }
 
 /**
- * Consume the suppression for a session. Returns `true` when the caller should
- * skip the mount auto-focus (and clears the mark so later focuses are normal).
+ * True while the session is still inside its suppression window. Non-consuming
+ * (auto-expires) so every async focus attempt during startup is covered, not
+ * just the first one.
  */
-export function consumeTerminalAutoFocusSuppression(sessionId: string): boolean {
-  return suppressed.delete(sessionId);
+export function isTerminalAutoFocusSuppressed(sessionId: string): boolean {
+  const until = suppressedUntil.get(sessionId);
+  if (until === undefined) return false;
+  if (Date.now() >= until) {
+    suppressedUntil.delete(sessionId);
+    return false;
+  }
+  return true;
+}
+
+/** Clear suppression immediately — e.g. the user explicitly focused the terminal. */
+export function clearTerminalAutoFocusSuppression(sessionId: string): void {
+  suppressedUntil.delete(sessionId);
 }

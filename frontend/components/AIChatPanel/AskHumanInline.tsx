@@ -1,5 +1,6 @@
 import { KeyRound, List, ListChecks, MessageSquare, Pencil, ShieldQuestion } from "lucide-react";
 import { useState } from "react";
+import { Markdown } from "@/components/Markdown";
 import { ScopeReviewTable } from "./ScopeReviewTable";
 
 export const ASK_HUMAN_INPUT_TYPES = [
@@ -112,7 +113,12 @@ export function AskHumanInline({
         <Icon className="w-3.5 h-3.5" />
         AI Needs Your Input
       </div>
-      <p className="text-[13px] text-foreground mb-2 whitespace-pre-wrap">{request.question}</p>
+      {/* Render the prompt as Markdown so tables / lists / headings the model
+          emits (e.g. the scoping target table) display structured instead of as
+          raw pipe-delimited text. */}
+      <div className="mb-2 text-[13px]">
+        <Markdown content={request.question} sessionId={request.sessionId} />
+      </div>
       {request.context && !isReviewTable && (
         <p className="text-[11px] text-muted-foreground/60 mb-2 italic">{request.context}</p>
       )}

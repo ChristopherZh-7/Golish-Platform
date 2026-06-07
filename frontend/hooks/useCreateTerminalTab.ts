@@ -3,7 +3,7 @@ import { ptyCreate } from "@/lib/api/pty";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
-import { suppressNextTerminalAutoFocus } from "@/lib/terminal/terminalAutoFocus";
+import { suppressTerminalAutoFocus } from "@/lib/terminal/terminalAutoFocus";
 import { useStore } from "@/store";
 
 /**
@@ -48,7 +48,7 @@ export function useCreateTerminalTab() {
         // pass `skipConversationLink`), land the cursor in the AI chat panel
         // rather than letting the terminal grab it on mount.
         if (!skipConversationLink) {
-          suppressNextTerminalAutoFocus(session.id);
+          suppressTerminalAutoFocus(session.id);
           requestAnimationFrame(() =>
             document.querySelector<HTMLTextAreaElement>("[data-ai-chat-input]")?.focus()
           );
