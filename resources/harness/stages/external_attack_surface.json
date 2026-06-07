@@ -9,7 +9,7 @@
   "requires_stages": ["scoping", "target_intel"],
   "allowed_next_stages": ["enumeration", "reporting"],
 
-  "allowed_tool_types": ["recon/dns", "recon/subdomain", "recon/http", "recon/url-history", "recon/visual"],
+  "allowed_tool_types": ["recon/dns", "recon/http", "recon/visual"],
 
   "deliverable_schema": "ExternalAttackSurfaceDeliverable",
   "gate_validator": "validate_external_attack_surface_gate",
@@ -33,8 +33,7 @@
 
   "min_invocations": {
     "dns_resolve": 1,
-    "http_probe": 1,
-    "subdomain_enum_passive": 1
+    "http_probe": 1
   },
 
   "max_other_skips": 2,
@@ -48,7 +47,7 @@
   "inherits_evidence_from": [
     {
       "stage_kind": "target_intel",
-      "evidence_kinds": ["dns_a", "asn", "whois"]
+      "evidence_kinds": ["dns_a", "asn", "whois", "subdomain"]
     }
   ]
 }
