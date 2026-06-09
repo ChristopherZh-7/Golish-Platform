@@ -1,0 +1,93 @@
+{
+  "tool": {
+    "id": "s3scanner",
+    "name": "S3Scanner",
+    "description": "Scan for open/misconfigured cloud storage buckets (AWS S3, GCP, DigitalOcean, etc.) and dump their permissions.",
+    "executable": "s3scanner",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tier": "recommended",
+    "pentestPhase": ["recon"],
+    "tags": ["recon", "osint", "cloud", "bucket", "s3", "passive"],
+    "install": {
+      "method": "github",
+      "source": "sa7mon/S3Scanner",
+      "windows": { "method": "github", "source": "sa7mon/S3Scanner" },
+      "linux": { "method": "github", "source": "sa7mon/S3Scanner" }
+    },
+    "params": [
+      {
+        "label": "Bucket",
+        "flag": "-bucket",
+        "type": "string",
+        "description": "Single bucket name to check",
+        "placeholder": "acme-backups"
+      },
+      {
+        "label": "Bucket List",
+        "flag": "-bucket-file",
+        "type": "string",
+        "description": "File with one candidate bucket name per line",
+        "placeholder": "buckets.txt"
+      },
+      {
+        "label": "Provider",
+        "flag": "-provider",
+        "type": "select",
+        "description": "Cloud provider to check against",
+        "default": "aws",
+        "options": [
+          { "label": "aws", "value": "aws" },
+          { "label": "gcp", "value": "gcp" },
+          { "label": "digitalocean", "value": "digitalocean" },
+          { "label": "dreamhost", "value": "dreamhost" },
+          { "label": "linode", "value": "linode" }
+        ]
+      },
+      {
+        "label": "Enumerate",
+        "flag": "-enumerate",
+        "type": "boolean",
+        "description": "List objects of any bucket found open"
+      },
+      {
+        "label": "JSON",
+        "flag": "-json",
+        "type": "boolean",
+        "description": "Emit JSON lines"
+      }
+    ],
+    "skills": [
+      {
+        "id": "scan-single",
+        "name": "Check single bucket",
+        "description": "Check one bucket name for existence + public permissions.",
+        "args": "-bucket {{bucket}} -json",
+        "tags": ["passive", "cloud", "osint"]
+      },
+      {
+        "id": "scan-list",
+        "name": "Check bucket list",
+        "description": "Check a candidate-name wordlist (derived from org name/aliases/domains).",
+        "args": "-bucket-file {{bucket_file}} -json",
+        "tags": ["passive", "cloud", "osint"]
+      },
+      {
+        "id": "version",
+        "name": "Version",
+        "description": "Print S3Scanner version (install validation).",
+        "args": "-version",
+        "tags": ["meta"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["bucket", "info"],
+      "detect": "s3scanner|bucket_name|exists|AuthUsers",
+      "patterns": []
+    },
+    "updateInfo": { "lastUpdated": "2026-06-08", "version": "latest" }
+  }
+}

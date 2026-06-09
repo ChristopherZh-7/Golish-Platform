@@ -1,0 +1,89 @@
+{
+  "tool": {
+    "id": "go-dork",
+    "name": "go-dork",
+    "description": "Fast Google/Bing/Shodan dork scanner for Google-hacking queries (exposed files, panels, info). STRATEGY: prefer the built-in brave_search tool for Google dorking (API-backed, reliable) - go-dork is a free scraping fallback that Google frequently rate-limits and OFTEN RETURNS EMPTY RESULTS SILENTLY when blocked. Treat an empty or errored go-dork run as 'blocked, not done' and re-run the same dork query via brave_search before concluding checked-empty. See the dork-strategy skill doc.",
+    "executable": "go-dork",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tier": "optional",
+    "pentestPhase": ["recon"],
+    "tags": ["recon", "osint", "dork", "google-hacking", "passive"],
+    "install": {
+      "method": "github",
+      "source": "dwisiswant0/go-dork",
+      "windows": { "method": "github", "source": "dwisiswant0/go-dork" },
+      "linux": { "method": "github", "source": "dwisiswant0/go-dork" }
+    },
+    "params": [
+      {
+        "label": "Query",
+        "flag": "-q",
+        "type": "string",
+        "required": true,
+        "description": "Dork query (e.g. site:acme.com ext:sql)",
+        "placeholder": "site:acme.com intitle:index.of"
+      },
+      {
+        "label": "Engine",
+        "flag": "-e",
+        "type": "select",
+        "description": "Search engine",
+        "default": "google",
+        "options": [
+          { "label": "google", "value": "google" },
+          { "label": "shodan", "value": "shodan" },
+          { "label": "bing", "value": "bing" },
+          { "label": "duckduckgo", "value": "duckduckgo" },
+          { "label": "yahoo", "value": "yahoo" }
+        ]
+      },
+      {
+        "label": "Pages",
+        "flag": "-p",
+        "type": "string",
+        "description": "Number of result pages",
+        "default": "1",
+        "placeholder": "3"
+      },
+      {
+        "label": "Proxy",
+        "flag": "-x",
+        "type": "string",
+        "description": "HTTP proxy (strongly recommended - Google blocks scraping)",
+        "placeholder": "http://127.0.0.1:8080"
+      }
+    ],
+    "skills": [
+      {
+        "id": "site-dork",
+        "name": "Site dork (Google)",
+        "description": "Run a Google dork against a target. Use a proxy to avoid blocking.",
+        "args": "-q \"{{query}}\" -e google -p 2",
+        "tags": ["passive", "dork", "osint"]
+      },
+      {
+        "id": "exposed-files",
+        "name": "Exposed files on domain",
+        "description": "Find indexable/exposed files on a domain.",
+        "args": "-q \"site:{{domain}} (ext:sql OR ext:env OR ext:bak OR intitle:index.of)\" -e google -p 3",
+        "tags": ["passive", "dork", "osint", "exposure"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["url", "info"],
+      "detect": "go-dork|https?://",
+      "patterns": [
+        {
+          "type": "url",
+          "regex": "^(https?://\\S+)$",
+          "fields": { "url": "$1" }
+        }
+      ]
+    },
+    "updateInfo": { "lastUpdated": "2026-06-08", "version": "1.0.3" }
+  }
+}

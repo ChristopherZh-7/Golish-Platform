@@ -1,0 +1,58 @@
+{
+  "tool": {
+    "id": "holehe",
+    "name": "holehe",
+    "description": "Check whether an email address is registered on 120+ sites (Twitter, Instagram, Imgur, etc.) using password-reset/registration oracles - no password test sent.",
+    "executable": "holehe",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tier": "optional",
+    "pentestPhase": ["recon"],
+    "tags": ["recon", "osint", "email", "people", "passive"],
+    "install": {
+      "method": "pip",
+      "source": "holehe"
+    },
+    "params": [
+      {
+        "label": "Email",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Email address to check",
+        "placeholder": "alice@acme.com"
+      },
+      {
+        "label": "Only Used",
+        "flag": "--only-used",
+        "type": "boolean",
+        "description": "Only show sites where the email is registered"
+      },
+      {
+        "label": "CSV",
+        "flag": "--csv",
+        "type": "boolean",
+        "description": "Write results to a CSV file"
+      }
+    ],
+    "skills": [
+      {
+        "id": "check-email",
+        "name": "Check email exposure",
+        "description": "List sites where an email is registered (only-used).",
+        "args": "{{email}} --only-used",
+        "tags": ["passive", "osint", "email"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["info"],
+      "detect": "holehe|\\[\\+\\]|\\[-\\]",
+      "patterns": []
+    },
+    "updateInfo": { "lastUpdated": "2026-06-08", "version": "latest" }
+  }
+}

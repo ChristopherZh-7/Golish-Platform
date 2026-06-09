@@ -1,0 +1,75 @@
+{
+  "tool": {
+    "id": "metagoofil",
+    "name": "metagoofil",
+    "description": "Find and download public documents (pdf/doc/xls/ppt) for a domain so their metadata (authors, software, paths, emails) can be mined for OSINT.",
+    "executable": "metagoofil/metagoofil.py",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tier": "optional",
+    "pentestPhase": ["recon"],
+    "tags": ["recon", "osint", "metadata", "documents", "people", "passive"],
+    "install": {
+      "method": "github",
+      "source": "opsdisk/metagoofil"
+    },
+    "params": [
+      {
+        "label": "Domain",
+        "flag": "-d",
+        "type": "string",
+        "required": true,
+        "description": "Target domain",
+        "placeholder": "acme.com"
+      },
+      {
+        "label": "File Types",
+        "flag": "-t",
+        "type": "string",
+        "description": "Comma list of extensions",
+        "default": "pdf,doc,docx,xls,xlsx,ppt,pptx",
+        "placeholder": "pdf,docx"
+      },
+      {
+        "label": "Search Limit",
+        "flag": "-l",
+        "type": "string",
+        "description": "Max results to search",
+        "default": "100"
+      },
+      {
+        "label": "Download Limit",
+        "flag": "-n",
+        "type": "string",
+        "description": "Max files to download",
+        "default": "50"
+      },
+      {
+        "label": "Output Dir",
+        "flag": "-o",
+        "type": "string",
+        "description": "Directory to save downloaded docs",
+        "placeholder": "metagoofil-out"
+      }
+    ],
+    "skills": [
+      {
+        "id": "harvest-docs",
+        "name": "Harvest public docs",
+        "description": "Search + download public office/pdf docs for a domain.",
+        "args": "-d {{domain}} -t pdf,doc,docx,xls,xlsx -l 100 -n 50 -o metagoofil-out",
+        "tags": ["passive", "osint", "metadata", "documents"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["info"],
+      "detect": "metagoofil|Downloading|\\[\\+\\]",
+      "patterns": []
+    },
+    "updateInfo": { "lastUpdated": "2026-06-08", "version": "latest" }
+  }
+}

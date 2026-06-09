@@ -1,0 +1,108 @@
+{
+  "tool": {
+    "id": "trufflehog",
+    "name": "trufflehog",
+    "description": "Find, verify and analyze leaked credentials/secrets across git repos, GitHub orgs, filesystems and more (800+ detectors, live verification).",
+    "executable": "trufflehog",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tier": "recommended",
+    "pentestPhase": ["recon"],
+    "tags": ["recon", "osint", "leak", "secret", "git", "passive"],
+    "install": {
+      "method": "github",
+      "source": "trufflesecurity/trufflehog",
+      "windows": { "method": "github", "source": "trufflesecurity/trufflehog" },
+      "linux": { "method": "github", "source": "trufflesecurity/trufflehog" }
+    },
+    "params": [
+      {
+        "label": "Mode",
+        "flag": "",
+        "type": "select",
+        "required": true,
+        "description": "Source to scan",
+        "options": [
+          { "label": "github - scan a GitHub org/user/repo", "value": "github" },
+          { "label": "git - scan a git repo URL/path", "value": "git" },
+          { "label": "filesystem - scan a local directory", "value": "filesystem" }
+        ]
+      },
+      {
+        "label": "Org",
+        "flag": "--org",
+        "type": "string",
+        "description": "GitHub org/user to scan (github mode)",
+        "placeholder": "acme-inc"
+      },
+      {
+        "label": "Repo",
+        "flag": "--repo",
+        "type": "string",
+        "description": "Single repo URL (github mode)",
+        "placeholder": "https://github.com/acme/app"
+      },
+      {
+        "label": "Only Verified",
+        "flag": "--only-verified",
+        "type": "boolean",
+        "description": "Only report secrets that were live-verified (less noise)"
+      },
+      {
+        "label": "No Update",
+        "flag": "--no-update",
+        "type": "boolean",
+        "description": "Skip the self-update check (recommended in CI/managed runs)"
+      }
+    ],
+    "skills": [
+      {
+        "id": "github-org-json",
+        "name": "Scan GitHub org (JSON)",
+        "description": "Scan all public repos of a GitHub org/user for verified secrets; JSONL to stdout.",
+        "args": "github --org={{org}} --json --no-update",
+        "tags": ["passive", "leak", "osint", "github"]
+      },
+      {
+        "id": "git-repo-json",
+        "name": "Scan git repo (JSON)",
+        "description": "Scan a single git repo URL or local path; JSONL to stdout.",
+        "args": "git {{repo}} --json --no-update",
+        "tags": ["passive", "leak", "osint", "git"]
+      },
+      {
+        "id": "filesystem-json",
+        "name": "Scan filesystem (JSON)",
+        "description": "Scan a local directory/working tree; JSONL to stdout.",
+        "args": "filesystem {{source}} --json --no-update",
+        "tags": ["passive", "leak", "osint"]
+      },
+      {
+        "id": "version",
+        "name": "Version",
+        "description": "Print trufflehog version (install validation).",
+        "args": "--version",
+        "tags": ["meta"]
+      }
+    ],
+    "output": {
+      "format": "json_lines",
+      "db_action": "finding_add",
+      "produces": ["secret", "info"],
+      "detect": "trufflehog|DetectorName|SourceMetadata",
+      "fields": {
+        "title": "DetectorName",
+        "template": "DetectorName",
+        "secret": "Redacted",
+        "verified": "Verified",
+        "url": "SourceMetadata.Data.Github.link",
+        "repository": "SourceMetadata.Data.Github.repository",
+        "file": "SourceMetadata.Data.Github.file",
+        "commit": "SourceMetadata.Data.Github.commit"
+      }
+    },
+    "updateInfo": { "lastUpdated": "2026-06-08", "version": "3.95.5" }
+  }
+}

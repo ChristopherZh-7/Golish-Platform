@@ -1,0 +1,65 @@
+{
+  "tool": {
+    "id": "sherlock",
+    "name": "sherlock",
+    "description": "Hunt down a person's accounts across 400+ social networks by username.",
+    "executable": "sherlock",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tier": "optional",
+    "pentestPhase": ["recon"],
+    "tags": ["recon", "osint", "username", "people", "social", "passive"],
+    "install": {
+      "method": "pip",
+      "source": "sherlock-project"
+    },
+    "params": [
+      {
+        "label": "Username",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Username to search for",
+        "placeholder": "acme-admin"
+      },
+      {
+        "label": "Timeout",
+        "flag": "--timeout",
+        "type": "string",
+        "description": "Per-site timeout seconds",
+        "default": "60"
+      },
+      {
+        "label": "CSV",
+        "flag": "--csv",
+        "type": "boolean",
+        "description": "Save results to CSV"
+      },
+      {
+        "label": "Print Found",
+        "flag": "--print-found",
+        "type": "boolean",
+        "description": "Only print found accounts"
+      }
+    ],
+    "skills": [
+      {
+        "id": "find-username",
+        "name": "Find username accounts",
+        "description": "Search a username across social networks; only show hits.",
+        "args": "{{username}} --print-found --timeout 60",
+        "tags": ["passive", "osint", "username"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["info"],
+      "detect": "sherlock|\\[\\+\\]",
+      "patterns": []
+    },
+    "updateInfo": { "lastUpdated": "2026-06-08", "version": "latest" }
+  }
+}

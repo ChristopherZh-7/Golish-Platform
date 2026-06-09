@@ -1,0 +1,52 @@
+{
+  "tool": {
+    "id": "gcpbucketbrute",
+    "name": "GCPBucketBrute",
+    "description": "Enumerate Google Cloud Storage buckets from a keyword and test them for unauthenticated/misconfigured access.",
+    "executable": "GCPBucketBrute/gcpbucketbrute.py",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tier": "optional",
+    "pentestPhase": ["recon"],
+    "tags": ["recon", "osint", "cloud", "bucket", "gcp", "passive"],
+    "install": {
+      "method": "github",
+      "source": "RhinoSecurityLabs/GCPBucketBrute"
+    },
+    "params": [
+      {
+        "label": "Keyword",
+        "flag": "-k",
+        "type": "string",
+        "required": true,
+        "description": "Keyword to mutate into bucket candidates",
+        "placeholder": "acme"
+      },
+      {
+        "label": "Unauthenticated",
+        "flag": "-u",
+        "type": "boolean",
+        "description": "Check without GCP credentials (pure OSINT)"
+      }
+    ],
+    "skills": [
+      {
+        "id": "enum-keyword",
+        "name": "Enumerate GCS buckets (unauth)",
+        "description": "Brute GCS bucket names from a keyword without credentials.",
+        "args": "-k {{keyword}} -u",
+        "tags": ["passive", "cloud", "osint", "gcp"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["bucket", "info"],
+      "detect": "gcpbucketbrute|Bucket|googleapis.com",
+      "patterns": []
+    },
+    "updateInfo": { "lastUpdated": "2026-06-08", "version": "latest" }
+  }
+}

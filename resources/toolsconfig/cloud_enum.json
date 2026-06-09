@@ -1,0 +1,59 @@
+{
+  "tool": {
+    "id": "cloud-enum",
+    "name": "cloud_enum",
+    "description": "Enumerate public cloud resources (AWS S3, Azure blobs, GCP buckets/apps) from keywords derived from a target's name/aliases/domains.",
+    "executable": "cloud_enum/cloud_enum.py",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tier": "recommended",
+    "pentestPhase": ["recon"],
+    "tags": ["recon", "osint", "cloud", "bucket", "passive"],
+    "install": {
+      "method": "github",
+      "source": "initstring/cloud_enum"
+    },
+    "params": [
+      {
+        "label": "Keyword",
+        "flag": "-k",
+        "type": "string",
+        "required": true,
+        "description": "Keyword to mutate (company name / brand / domain) - repeatable",
+        "placeholder": "acme"
+      },
+      {
+        "label": "Keyword File",
+        "flag": "-kf",
+        "type": "string",
+        "description": "File with one keyword per line",
+        "placeholder": "keywords.txt"
+      },
+      {
+        "label": "Quickscan",
+        "flag": "--quickscan",
+        "type": "boolean",
+        "description": "Skip brute mutations (faster)"
+      }
+    ],
+    "skills": [
+      {
+        "id": "enum-keyword",
+        "name": "Enumerate by keyword",
+        "description": "Find public buckets/blobs/apps for a brand/company keyword.",
+        "args": "-k {{keyword}}",
+        "tags": ["passive", "cloud", "osint"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["bucket", "url", "info"],
+      "detect": "cloud_enum|OPEN|Checking for|s3.amazonaws.com|blob.core.windows.net",
+      "patterns": []
+    },
+    "updateInfo": { "lastUpdated": "2026-06-08", "version": "latest" }
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "tool": {
+    "id": "maigret",
+    "name": "maigret",
+    "description": "Collect a dossier on a person by username from 3000+ sites, with extraction of profile info (no API keys needed).",
+    "executable": "maigret",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tier": "optional",
+    "pentestPhase": ["recon"],
+    "tags": ["recon", "osint", "username", "people", "social", "passive"],
+    "install": {
+      "method": "pip",
+      "source": "maigret"
+    },
+    "params": [
+      {
+        "label": "Username",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Username to investigate",
+        "placeholder": "acme-admin"
+      },
+      {
+        "label": "Top Sites",
+        "flag": "--top-sites",
+        "type": "string",
+        "description": "Only check the N most popular sites (faster)",
+        "default": "500"
+      },
+      {
+        "label": "Timeout",
+        "flag": "--timeout",
+        "type": "string",
+        "description": "Per-site timeout seconds",
+        "default": "30"
+      },
+      {
+        "label": "JSON Report",
+        "flag": "--json",
+        "type": "select",
+        "description": "JSON report style",
+        "options": [
+          { "label": "simple", "value": "simple" },
+          { "label": "ndjson", "value": "ndjson" }
+        ]
+      }
+    ],
+    "skills": [
+      {
+        "id": "find-username",
+        "name": "Username dossier (fast)",
+        "description": "Check the top 500 sites for a username.",
+        "args": "{{username}} --top-sites 500 --timeout 30",
+        "tags": ["passive", "osint", "username"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["info"],
+      "detect": "maigret|Found|\\[\\+\\]",
+      "patterns": []
+    },
+    "updateInfo": { "lastUpdated": "2026-06-08", "version": "latest" }
+  }
+}

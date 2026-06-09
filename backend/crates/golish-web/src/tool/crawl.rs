@@ -333,4 +333,26 @@ mod tests {
         assert!(names.contains(&"tavily_crawl".to_string()));
         assert!(names.contains(&"tavily_map".to_string()));
     }
+
+    #[test]
+    fn test_brave_search_documents_dork_strategy() {
+        // The brave_search tool description is the reliable channel that tells the
+        // agent it can run Google-hacking dorks via this API path (and that the
+        // scraping CLI dork tools should fall back here when blocked).
+        let brave = Arc::new(BraveSearchState::from_api_key(None));
+        let tools = create_brave_tools(brave);
+        let tool = tools
+            .iter()
+            .find(|t| t.name() == "brave_search")
+            .expect("brave_search tool present");
+        let desc = tool.description();
+        assert!(
+            desc.contains("dork"),
+            "brave_search description should advertise dork support: {desc}"
+        );
+        assert!(
+            desc.contains("site:"),
+            "brave_search description should give a dork operator example: {desc}"
+        );
+    }
 }

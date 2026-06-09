@@ -1,0 +1,69 @@
+{
+  "tool": {
+    "id": "gitdorker",
+    "name": "GitDorker",
+    "description": "Use GitHub search dorks to surface sensitive info (keys, configs, internal refs) across GitHub for a target. Requires one or more GitHub API tokens.",
+    "executable": "GitDorker/GitDorker.py",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tier": "optional",
+    "pentestPhase": ["recon"],
+    "tags": ["recon", "osint", "leak", "github", "dork", "passive", "credential-required"],
+    "install": {
+      "method": "github",
+      "source": "obheda12/GitDorker"
+    },
+    "params": [
+      {
+        "label": "Token File",
+        "flag": "-tf",
+        "type": "string",
+        "required": true,
+        "description": "File with GitHub API tokens (one per line)",
+        "placeholder": "tokens.txt"
+      },
+      {
+        "label": "Query",
+        "flag": "-q",
+        "type": "string",
+        "required": true,
+        "description": "Target keyword (company/domain/org)",
+        "placeholder": "acme.com"
+      },
+      {
+        "label": "Dorks File",
+        "flag": "-d",
+        "type": "string",
+        "description": "Dork list file",
+        "default": "Dorks/alldorksv3",
+        "placeholder": "Dorks/medium_dorks.txt"
+      },
+      {
+        "label": "Output",
+        "flag": "-o",
+        "type": "string",
+        "description": "Output report basename",
+        "placeholder": "gitdorker-out"
+      }
+    ],
+    "skills": [
+      {
+        "id": "dork-target",
+        "name": "GitHub dork a target",
+        "description": "Run the full dork list against a target keyword (needs token file).",
+        "args": "-tf {{token_file}} -q {{query}} -d Dorks/alldorksv3",
+        "tags": ["passive", "osint", "leak", "github"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["url", "info"],
+      "detect": "GitDorker|github.com|Dork",
+      "patterns": []
+    },
+    "updateInfo": { "lastUpdated": "2026-06-08", "version": "latest" }
+  }
+}

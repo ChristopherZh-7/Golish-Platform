@@ -1,0 +1,75 @@
+{
+  "tool": {
+    "id": "theharvester",
+    "name": "theHarvester",
+    "description": "Passive OSINT gathering of emails, names, subdomains, IPs and URLs from public sources (search engines, certificate transparency, PGP, etc.).",
+    "executable": "theHarvester",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tier": "recommended",
+    "pentestPhase": ["recon"],
+    "tags": ["recon", "osint", "email", "people", "subdomain", "passive"],
+    "install": {
+      "method": "pip",
+      "source": "theHarvester"
+    },
+    "params": [
+      {
+        "label": "Domain",
+        "flag": "-d",
+        "type": "string",
+        "required": true,
+        "description": "Target domain or company name",
+        "placeholder": "acme.com"
+      },
+      {
+        "label": "Sources",
+        "flag": "-b",
+        "type": "string",
+        "description": "Data sources (comma list, or 'all')",
+        "default": "all",
+        "placeholder": "bing,crtsh,duckduckgo"
+      },
+      {
+        "label": "Limit",
+        "flag": "-l",
+        "type": "string",
+        "description": "Limit number of results",
+        "placeholder": "500"
+      },
+      {
+        "label": "JSON/XML Output",
+        "flag": "-f",
+        "type": "string",
+        "description": "Write JSON+XML report to this basename",
+        "placeholder": "harvest"
+      }
+    ],
+    "skills": [
+      {
+        "id": "passive-all",
+        "name": "Passive harvest (all sources)",
+        "description": "Gather emails/subdomains/hosts for a domain from all public sources.",
+        "args": "-d {{domain}} -b all",
+        "tags": ["passive", "osint", "people", "email"]
+      },
+      {
+        "id": "quick-search",
+        "name": "Quick search-engine harvest",
+        "description": "Lighter passive run against the main search engines.",
+        "args": "-d {{domain}} -b bing,duckduckgo,crtsh -l 200",
+        "tags": ["passive", "osint", "fast"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["email", "host", "info"],
+      "detect": "theHarvester|\\[\\*\\] Emails found|\\[\\*\\] Hosts found",
+      "patterns": []
+    },
+    "updateInfo": { "lastUpdated": "2026-06-08", "version": "latest" }
+  }
+}

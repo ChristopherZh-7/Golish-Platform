@@ -1,0 +1,144 @@
+{
+  "tool": {
+    "id": "gitleaks",
+    "name": "gitleaks",
+    "description": "Scan git repos, history and directories for hard-coded secrets (API keys, tokens, .env, AK/SK). Passive OSINT leak detection over an org's public repos.",
+    "executable": "gitleaks",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tier": "recommended",
+    "pentestPhase": ["recon"],
+    "tags": ["recon", "osint", "leak", "secret", "git", "passive"],
+    "install": {
+      "method": "github",
+      "source": "gitleaks/gitleaks",
+      "windows": { "method": "github", "source": "gitleaks/gitleaks" },
+      "linux": { "method": "github", "source": "gitleaks/gitleaks" }
+    },
+    "params": [
+      {
+        "label": "Mode",
+        "flag": "",
+        "type": "select",
+        "required": true,
+        "description": "Scan mode (gitleaks sub-command)",
+        "options": [
+          { "label": "dir - scan files / working tree (no git history)", "value": "dir" },
+          { "label": "git - scan git commit history", "value": "git" },
+          { "label": "stdin - scan piped stdin", "value": "stdin" }
+        ]
+      },
+      {
+        "label": "Source",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Path to the cloned repo / directory to scan",
+        "placeholder": "."
+      },
+      {
+        "label": "Report Format",
+        "flag": "--report-format",
+        "type": "select",
+        "description": "Report output format",
+        "default": "json",
+        "options": [
+          { "label": "json", "value": "json" },
+          { "label": "sarif", "value": "sarif" },
+          { "label": "csv", "value": "csv" }
+        ]
+      },
+      {
+        "label": "Report Path",
+        "flag": "--report-path",
+        "type": "string",
+        "description": "Report file path (use \"-\" for stdout so Golish can parse it)",
+        "placeholder": "-",
+        "default": "-"
+      },
+      {
+        "label": "Redact",
+        "flag": "--redact",
+        "type": "boolean",
+        "description": "Redact secrets from output (recommended - keeps secrets out of storage/logs)"
+      },
+      {
+        "label": "No Banner",
+        "flag": "--no-banner",
+        "type": "boolean",
+        "description": "Suppress ASCII banner (keeps stdout clean JSON)"
+      },
+      {
+        "label": "Exit Code",
+        "flag": "--exit-code",
+        "type": "string",
+        "description": "Exit code when leaks are found (set 0 so findings still flow through)",
+        "placeholder": "0"
+      },
+      {
+        "label": "Config",
+        "flag": "--config",
+        "type": "string",
+        "description": "Custom gitleaks .toml rule config",
+        "placeholder": ".gitleaks.toml"
+      },
+      {
+        "label": "Log Level",
+        "flag": "--log-level",
+        "type": "select",
+        "description": "Log verbosity (written to stderr, not stdout)",
+        "options": [
+          { "label": "info", "value": "info" },
+          { "label": "warn", "value": "warn" },
+          { "label": "error", "value": "error" },
+          { "label": "debug", "value": "debug" }
+        ]
+      }
+    ],
+    "skills": [
+      {
+        "id": "dir-json-redacted",
+        "name": "Scan dir (JSON, redacted)",
+        "description": "Scan a cloned repo / directory working tree for secrets; redacted JSON to stdout. Default safe OSINT preset.",
+        "args": "dir {{source}} --report-format json --report-path - --redact --no-banner --exit-code 0",
+        "tags": ["passive", "leak", "osint", "safe"]
+      },
+      {
+        "id": "git-history-json-redacted",
+        "name": "Scan git history (JSON, redacted)",
+        "description": "Scan the full git commit history of a cloned repo for leaked secrets; redacted JSON to stdout.",
+        "args": "git {{source}} --report-format json --report-path - --redact --no-banner --exit-code 0",
+        "tags": ["passive", "leak", "osint", "history"]
+      },
+      {
+        "id": "version",
+        "name": "Version",
+        "description": "Print gitleaks version (install validation).",
+        "args": "version",
+        "tags": ["meta"]
+      }
+    ],
+    "output": {
+      "format": "json",
+      "db_action": "finding_add",
+      "produces": ["secret", "info"],
+      "detect": "gitleaks|\"RuleID\"|\"Fingerprint\"",
+      "fields": {
+        "title": "RuleID",
+        "template": "RuleID",
+        "description": "Description",
+        "url": "File",
+        "secret": "Secret",
+        "commit": "Commit",
+        "line": "StartLine",
+        "fingerprint": "Fingerprint"
+      }
+    },
+    "updateInfo": {
+      "lastUpdated": "2026-06-08",
+      "version": "8.30.1"
+    }
+  }
+}
