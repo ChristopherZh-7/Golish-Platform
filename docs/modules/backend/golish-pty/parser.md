@@ -12,6 +12,7 @@
 
 - 改 OSC 序列抽取（OSC 133 shell 集成等）、终端区域分割（Prompt/Input/Output）时
 - 改 alt-screen 检测或 TUI 透传逻辑时
+- 改 DSR / 光标位置上报（`CSI 6 n`，Windows PowerShell PSReadLine 启动卡死）处理时
 - agent 抓的命令输出夹带 prompt/转义噪声时
 
 ## 职责
@@ -42,6 +43,7 @@
 - 模块标 `#![allow(dead_code)]`（仅经 Tauri feature 集成）。
 - **alt-screen 必须透传**：TUI（vim/htop）下别过滤，否则丢转义序列；`parse_filtered` 已据 `alternate_screen_active` 决策，改逻辑要保此分支。
 - `prompt_visible` 始终独立 drain（与 alt-screen 无关），前端 fullterm 模式忽略 stdin_wait。
+- **DSR `CSI 6 n` 拦截**：`csi_dispatch` 把光标位置查询识别为 `OscEvent::CursorPositionRequest` 并**消费**该字节（不回显到 output）；真正的回写在 reader 线程 `manager/session_create/util.rs::dispatch_parsed_events`——命令块模式回 `CSI 1;1 R` 到 PTY（prompt/input 区已被过滤，固定光标位足够），alt-screen 模式不应答（原始查询交 GridTerminal 渲染）。**未应答会让 Windows PowerShell PSReadLine 启动时卡死**（Unix shell 不发该查询，所以只在 Windows 复现）。
 
 ## 测试入口
 

@@ -409,6 +409,21 @@ fn test_parse_filtered_suppresses_csi_in_prompt() {
     assert_eq!(result.output, b"");
 }
 
+#[test]
+fn test_parse_filtered_consumes_dsr_cursor_query() {
+    let mut parser = TerminalParser::new();
+    // Output region.
+    parser.parse_filtered(b"\x1b]133;C\x07");
+
+    // The CSI 6 n cursor-position query must be answered out-of-band
+    // (written back to the PTY), never echoed into the rendered output
+    // stream — even when it lands between visible bytes.
+    let result = parser.parse_filtered(b"before\x1b[6nafter");
+    assert_eq!(result.output, b"beforeafter");
+    assert_eq!(result.events.len(), 1);
+    assert!(matches!(result.events[0], OscEvent::CursorPositionRequest));
+}
+
 // ===========================================
 // ESC dispatch passthrough tests
 // ===========================================

@@ -331,6 +331,21 @@ impl Perform for OscPerformer {
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+        // CSI 6 n — Device Status Report (cursor position). Unlike every
+        // other CSI sequence this is a *query*: the program expects the
+        // terminal to write a Cursor Position Report back to the PTY.
+        // Surface it as an event (the reader thread answers on the PTY
+        // master) and consume the bytes so the query is never echoed into
+        // the rendered output. Windows PowerShell's PSReadLine emits this
+        // at start-up and hangs the whole terminal until it is answered.
+        if action == 'n'
+            && intermediates.is_empty()
+            && params.iter().next().and_then(|p| p.first().copied()) == Some(6)
+        {
+            self.events.push(OscEvent::CursorPositionRequest);
+            return;
+        }
+
         // Pass ALL CSI sequences through in the Output region (not just SGR).
         // Previously only action == 'm' was reconstructed; cursor movement (A/B/C/D/H),
         // erase (J/K), and DEC private modes (?1000h, ?1006h, ?2004h) were silently

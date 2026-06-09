@@ -67,6 +67,12 @@ pub enum OscEvent {
     BracketedPasteEnabled,
     /// CSI ? 2004 l - Bracketed paste mode disabled
     BracketedPasteDisabled,
+    /// CSI 6 n - Device Status Report querying the cursor position. This
+    /// is a request: the program expects the terminal to write a Cursor
+    /// Position Report (`CSI <row> ; <col> R`) back to the PTY. Windows
+    /// PowerShell's PSReadLine emits it during start-up and blocks the
+    /// whole shell until it is answered.
+    CursorPositionRequest,
 }
 
 impl OscEvent {
@@ -128,7 +134,8 @@ impl OscEvent {
             | OscEvent::SgrMouseEnabled
             | OscEvent::SgrMouseDisabled
             | OscEvent::BracketedPasteEnabled
-            | OscEvent::BracketedPasteDisabled => return None,
+            | OscEvent::BracketedPasteDisabled
+            | OscEvent::CursorPositionRequest => return None,
         })
     }
 }

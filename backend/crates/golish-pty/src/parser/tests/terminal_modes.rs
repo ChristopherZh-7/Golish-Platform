@@ -205,5 +205,41 @@ fn test_synchronized_output_mixed_with_content() {
 }
 
 // ===========================================
+// Device Status Report (DSR / CSI n) tests
+// ===========================================
+
+#[test]
+fn test_dsr_cursor_position_request() {
+    let mut parser = TerminalParser::new();
+    // ESC [ 6 n - cursor-position query (the sequence PowerShell's
+    // PSReadLine emits at start-up and then blocks on).
+    let events = parser.parse(b"\x1b[6n");
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0], OscEvent::CursorPositionRequest));
+}
+
+#[test]
+fn test_dsr_terminal_status_not_treated_as_cursor_request() {
+    let mut parser = TerminalParser::new();
+    // ESC [ 5 n (terminal status query) is a different DSR and must not
+    // be surfaced as a cursor-position request.
+    let events = parser.parse(b"\x1b[5n");
+    assert!(events
+        .iter()
+        .all(|e| !matches!(e, OscEvent::CursorPositionRequest)));
+}
+
+#[test]
+fn test_dsr_dec_cursor_request_not_intercepted() {
+    let mut parser = TerminalParser::new();
+    // ESC [ ? 6 n (DECXCPR, with the `?` intermediate) is the DEC
+    // private variant; only the plain `CSI 6 n` is intercepted here.
+    let events = parser.parse(b"\x1b[?6n");
+    assert!(events
+        .iter()
+        .all(|e| !matches!(e, OscEvent::CursorPositionRequest)));
+}
+
+// ===========================================
 // OSC 1337 - Virtual Environment tests
 // ===========================================

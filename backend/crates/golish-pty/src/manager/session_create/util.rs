@@ -2,6 +2,7 @@
 //! and the grid-emit cadence constant.
 
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -81,11 +82,68 @@ pub(super) fn dispatch_parsed_events(
             OscEvent::SynchronizedOutputDisabled => {
                 emitter.emit_synchronized_output(session_id, false);
             }
+            OscEvent::CursorPositionRequest => {
+                // Answer the Device Status Report (CSI 6 n) by writing a
+                // Cursor Position Report straight back onto the PTY master.
+                // Without this, Windows PowerShell's PSReadLine blocks at
+                // start-up waiting for the reply and the terminal appears
+                // to hang (Unix shells never send the query, which is why
+                // it only reproduced on Windows).
+                if let Some(reply) =
+                    cursor_position_report(session.alt_screen.load(Ordering::Acquire))
+                {
+                    let mut writer = session.writer.lock();
+                    if let Err(e) = writer.write_all(reply).and_then(|()| writer.flush()) {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            error = %e,
+                            "Failed to write DSR cursor-position report to PTY"
+                        );
+                    }
+                }
+            }
             _ => {
                 if let Some((event_name, payload)) = event.to_command_block_event(session_id) {
                     emitter.emit_command_block(event_name, payload);
                 }
             }
         }
+    }
+}
+
+/// Reply bytes for a `CSI 6 n` (Device Status Report — cursor position)
+/// query, or `None` when the request should be left unanswered here.
+///
+/// In command-block mode we report row 1 / column 1: the prompt and input
+/// regions — where the querying shell positions its line editor using this
+/// report — are filtered out of the rendered timeline, so the exact
+/// main-screen cursor is neither tracked nor visible, and a fixed,
+/// well-formed Cursor Position Report is enough to unblock the shell. While
+/// the session is on its alternate screen the raw query is forwarded to the
+/// GridTerminal renderer instead, so we don't answer it from the reader.
+fn cursor_position_report(alt_screen: bool) -> Option<&'static [u8]> {
+    if alt_screen {
+        None
+    } else {
+        Some(b"\x1b[1;1R".as_slice())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cursor_position_report;
+
+    #[test]
+    fn cursor_position_report_answers_in_command_block_mode() {
+        // Not on the alternate screen → reply with a well-formed Cursor
+        // Position Report so PowerShell's PSReadLine stops blocking.
+        assert_eq!(cursor_position_report(false), Some(b"\x1b[1;1R".as_slice()));
+    }
+
+    #[test]
+    fn cursor_position_report_silent_on_alt_screen() {
+        // On the alternate screen the raw query is forwarded to the
+        // GridTerminal renderer; we must not also answer from the reader.
+        assert_eq!(cursor_position_report(true), None);
     }
 }
