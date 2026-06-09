@@ -11,6 +11,7 @@
 
 pub(crate) mod bootstrap;
 pub(crate) mod mcp_bootstrap;
+#[cfg(target_os = "macos")]
 pub(crate) mod menu;
 pub(crate) mod sidecar_bootstrap;
 pub(crate) mod tauri_app;

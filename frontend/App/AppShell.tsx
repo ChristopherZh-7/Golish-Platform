@@ -14,6 +14,7 @@ import { SETUP_BANNER_NAVIGATE_EVENT } from "../components/HomeView/SetupHealthB
 import { PaneContainer } from "../components/PaneContainer";
 import { SidecarNotifications } from "../components/Sidecar";
 import { TerminalLayer } from "../components/Terminal";
+import { WindowControls } from "../components/WindowControls/WindowControls";
 import { useCreateTerminalTab } from "../hooks/useCreateTerminalTab";
 import { TerminalPortalProvider } from "../hooks/useTerminalPortal";
 import { useStore } from "../store";
@@ -230,7 +231,8 @@ export function AppShell(props: AppShellProps) {
       }
       if (envResult.status === "fulfilled") {
         const env = envResult.value;
-        if (!env.homebrew_installed) rtCount++;
+        // Homebrew is macOS/Linux-only — don't count it as a missing runtime on Windows.
+        if (!isWindows() && !env.homebrew_installed) rtCount++;
         if (!env.conda_installed) rtCount++;
         if (!env.nvm_installed) rtCount++;
         if (!env.java_installed) rtCount++;
@@ -340,14 +342,17 @@ export function AppShell(props: AppShellProps) {
           height: `calc(100vh / ${uiScale})`,
         }}
       >
-        {/* Window drag region — macOS traffic lights (left) / Windows controls (right) */}
+        {/* Window drag region — macOS traffic lights (left) / Windows custom controls (right) */}
         <div
           className={cn(
-            "w-full titlebar-drag flex-shrink-0",
+            "w-full titlebar-drag flex-shrink-0 flex items-center",
             isWindows() ? "h-[32px]" : "h-[38px]"
           )}
           data-tauri-drag-region
-        />
+        >
+          <div className="flex-1" data-tauri-drag-region />
+          <WindowControls />
+        </div>
 
         {/* Content - floating panels */}
         <div className="flex-1 flex overflow-hidden gap-2 px-2 pb-2 min-h-0 relative">
