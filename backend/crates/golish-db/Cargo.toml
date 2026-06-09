@@ -39,6 +39,10 @@ thiserror.workspace = true
 reqwest = { version = "0.12", features = ["json"] }
 async-trait = "0.1"
 
+# ZIP extraction (cross-platform replacement for the `unzip` CLI, which is
+# absent on Windows). Ported from feature/grid-terminal-recover@39b724c7.
+zip = "2"
+
 # Utilities
 uuid.workspace = true
 chrono.workspace = true

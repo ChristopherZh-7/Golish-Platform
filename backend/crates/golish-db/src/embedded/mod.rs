@@ -19,9 +19,55 @@ pub struct EmbeddedPg {
 }
 
 impl EmbeddedPg {
+    /// Tweak the process environment so the embedded PostgreSQL child
+    /// processes produce stable, UTF-8-decodable output.
+    ///
+    /// `pg-embed` 1.0.0 strictly decodes child stdout/stderr as UTF-8.
+    /// On non-English Windows installs (Chinese/Japanese/Korean) the
+    /// default OEM code page is not UTF-8, so localized error messages
+    /// from `initdb.exe` / `postgres.exe` make `pg-embed` blow up with
+    /// `Error reading process output: stream did not contain valid
+    /// UTF-8` → `PgInitFailure`. Forcing the C locale keeps postgres
+    /// messages plain ASCII (always valid UTF-8) and flipping the
+    /// console code page to 65001 makes any stray localized byte still
+    /// land as UTF-8.
+    fn configure_postgres_environment() {
+        std::env::set_var("PGCLIENTENCODING", "UTF8");
+
+        #[cfg(target_os = "windows")]
+        {
+            std::env::set_var("LC_ALL", "C");
+            std::env::set_var("LC_CTYPE", "C");
+            std::env::set_var("LC_MESSAGES", "C");
+            std::env::set_var("LANG", "C");
+
+            // Best-effort: switch the process console code page to UTF-8
+            // (65001) for any postgres message that ignores LC_*. Errors
+            // (e.g. no attached console under Tauri) are ignored.
+            unsafe {
+                extern "system" {
+                    fn SetConsoleOutputCP(wCodePageID: u32) -> i32;
+                    fn SetConsoleCP(wCodePageID: u32) -> i32;
+                }
+                let _ = SetConsoleOutputCP(65001);
+                let _ = SetConsoleCP(65001);
+            }
+        }
+    }
+
     /// Download (if needed), initialize, and start the embedded PostgreSQL server.
-    /// On first run this downloads ~30 MB of PG binaries; subsequent starts are fast.
+    ///
+    /// On first run this downloads ~30 MB of PG binaries; subsequent starts
+    /// are fast. If the first attempt fails with a recoverable error
+    /// (corrupted download, half-initialized data directory, etc.) the
+    /// pg-embed binary cache and the pgdata directory are purged and the
+    /// whole setup is retried once. This avoids requiring users to run a
+    /// manual cleanup script every time the cache or data directory get
+    /// stuck in a bad state — a common failure mode on Windows where
+    /// downloads or unpacks can be interrupted.
     pub async fn start(config: DbConfig) -> Result<Self> {
+        Self::configure_postgres_environment();
+
         info!(
             port = config.port,
             data_dir = %config.pg_data_dir.display(),
@@ -33,17 +79,64 @@ impl EmbeddedPg {
         std::fs::create_dir_all(&config.pg_bin_cache_dir)
             .context("Failed to create PG binary cache directory")?;
 
-        // If binaries aren't extracted in the cache yet, extract from the
-        // downloaded zip before pg-embed's setup() — avoids a slow re-download.
+        match Self::try_setup_and_start(config.clone()).await {
+            Ok(this) => Ok(this),
+            Err(first_err) => {
+                if !Self::is_recoverable_setup_error(&first_err) {
+                    return Err(first_err);
+                }
+
+                warn!(
+                    error = %first_err,
+                    "PG startup failed with a recoverable error; \
+                     purging corrupted state and retrying once"
+                );
+                Self::purge_corrupted_state(&config);
+
+                match Self::try_setup_and_start(config.clone()).await {
+                    Ok(this) => {
+                        info!("Embedded PostgreSQL recovered after self-heal retry");
+                        Ok(this)
+                    }
+                    Err(retry_err) => {
+                        error!(
+                            first_error = %first_err,
+                            retry_error = %retry_err,
+                            "PG startup failed even after self-heal retry"
+                        );
+                        Err(anyhow::anyhow!(
+                            "PostgreSQL failed to start after self-heal retry.\n\
+                             First attempt: {first_err}\n\
+                             Retry attempt: {retry_err}\n\
+                             You may need to manually delete the data directory \
+                             ({}) and the pg-embed cache, or check that the \
+                             download was not blocked by a firewall / anti-virus.",
+                            config.pg_data_dir.display()
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    /// One-shot attempt: download (if needed), initialize, and start the
+    /// embedded PostgreSQL server. Called twice by [`Self::start`] with a
+    /// state purge in between.
+    async fn try_setup_and_start(config: DbConfig) -> Result<Self> {
         let cache_dir = Self::cache_dir();
-        if !cache_dir.join("bin").join("initdb").exists() {
+        let initdb_name = if cfg!(windows) {
+            "initdb.exe"
+        } else {
+            "initdb"
+        };
+        if !cache_dir.join("bin").join(initdb_name).exists() {
             Self::try_extract_from_cache(&config)?;
         }
 
         // macOS: remove quarantine BEFORE setup() — initdb and pg_ctl
         // will fail if Gatekeeper blocks execution of the unsigned binaries.
         // Binaries live in the cache dir, not the database dir.
-        golish_platform::postgres::clear_quarantine_dirs(&Self::cache_dir(), &["bin", "lib"]);
+        golish_platform::postgres::clear_quarantine_dirs(&cache_dir, &["bin", "lib"]);
 
         let pg_settings = PgSettings {
             database_dir: config.pg_data_dir.clone(),
@@ -107,6 +200,52 @@ impl EmbeddedPg {
         Ok(Self { pg, config })
     }
 
+    /// Decide whether an error returned by [`Self::try_setup_and_start`] is
+    /// likely caused by corrupted on-disk state (in which case purging the
+    /// cache + data dir and retrying makes sense) rather than a permanent
+    /// configuration problem (port conflict, missing runtime, etc.).
+    fn is_recoverable_setup_error(err: &anyhow::Error) -> bool {
+        let msg = format!("{err:?}");
+        msg.contains("UnpackFailure")
+            || msg.contains("PgInitFailure")
+            || msg.contains("PgPurgeFailure")
+            || msg.contains("PgStartFailure")
+            // pg-embed wraps zip errors here when the cached download is partial.
+            || msg.contains("invalid zip archive")
+    }
+
+    /// Delete the pg-embed binary cache and the pgdata directory so the
+    /// next [`Self::try_setup_and_start`] starts from a known-clean slate.
+    ///
+    /// We intentionally swallow IO errors here — if a delete fails because
+    /// a stale `postgres.exe` is still locking files, the next setup will
+    /// surface a clearer error than what we could synthesise.
+    fn purge_corrupted_state(config: &DbConfig) {
+        let cache_dir = Self::cache_dir();
+        if cache_dir.exists() {
+            warn!(
+                cache_dir = %cache_dir.display(),
+                "Purging pg-embed binary cache"
+            );
+            if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
+                warn!(error = %e, "Failed to fully purge pg-embed cache directory");
+            }
+        }
+
+        if config.pg_data_dir.exists() {
+            warn!(
+                data_dir = %config.pg_data_dir.display(),
+                "Purging pgdata directory"
+            );
+            if let Err(e) = std::fs::remove_dir_all(&config.pg_data_dir) {
+                warn!(error = %e, "Failed to fully purge pgdata directory");
+            }
+            if let Err(e) = std::fs::create_dir_all(&config.pg_data_dir) {
+                warn!(error = %e, "Failed to recreate pgdata directory after purge");
+            }
+        }
+    }
+
     /// Locate the pg-embed binary cache zip and extract binaries into the
     /// cache directory (NOT into database_dir). pg-embed checks for
     /// `cache_dir/bin/initdb` to decide whether to download.
@@ -119,8 +258,23 @@ impl EmbeddedPg {
             return Ok(());
         }
 
-        if cache_dir.join("bin").join("initdb").exists() {
+        let initdb_name = if cfg!(windows) {
+            "initdb.exe"
+        } else {
+            "initdb"
+        };
+        if cache_dir.join("bin").join(initdb_name).exists() {
             info!("PG binaries already extracted in cache, skipping");
+            return Ok(());
+        }
+
+        let postgres_name = if cfg!(windows) {
+            "postgres.exe"
+        } else {
+            "postgres"
+        };
+        if cache_dir.join("bin").join(postgres_name).exists() {
+            info!("PG binaries already present (possibly in use), skipping extraction");
             return Ok(());
         }
 
@@ -133,15 +287,10 @@ impl EmbeddedPg {
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp)?;
 
-        let status = std::process::Command::new("unzip")
-            .args(["-o", "-q"])
-            .arg(&cache_zip)
-            .arg("-d")
-            .arg(&tmp)
-            .status()
-            .context("Failed to run unzip")?;
-        if !status.success() {
-            warn!("unzip failed with status {status}, skipping cache extraction");
+        let zip_file = std::fs::File::open(&cache_zip).context("Failed to open cached zip")?;
+        let mut archive = zip::ZipArchive::new(zip_file).context("Failed to read zip archive")?;
+        if let Err(e) = archive.extract(&tmp) {
+            warn!("zip extraction failed: {e}, skipping cache extraction");
             let _ = std::fs::remove_dir_all(&tmp);
             return Ok(());
         }
@@ -294,7 +443,12 @@ impl EmbeddedPg {
     /// explicit library path and a log file is more reliable.
     async fn manual_pg_ctl_start(config: &DbConfig) -> Result<()> {
         let cache_dir = Self::cache_dir();
-        let pg_ctl = cache_dir.join("bin").join("pg_ctl");
+        let pg_ctl_name = if cfg!(windows) {
+            "pg_ctl.exe"
+        } else {
+            "pg_ctl"
+        };
+        let pg_ctl = cache_dir.join("bin").join(pg_ctl_name);
         let lib_dir = cache_dir.join("lib");
         let log_file = config.pg_data_dir.join("server.log");
 
