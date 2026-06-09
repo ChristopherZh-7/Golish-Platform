@@ -40,7 +40,7 @@ pub(crate) fn apply_isolation<'a>(
         not(any(target_os = "android", target_os = "ios"))
     ))]
     {
-        return builder.data_directory(_profile_dir.to_path_buf());
+        builder.data_directory(_profile_dir.to_path_buf())
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
