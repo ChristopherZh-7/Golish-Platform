@@ -70,6 +70,19 @@ pub fn toolsconfig_dir() -> Option<PathBuf> {
     resolve_shared_dir("toolsconfig")
 }
 
+/// Directory containing standalone Asset Intel provider descriptors
+/// (0.zone / 360 Quake / FOFA / Hunter / Shodan).
+///
+/// These are JSON `ToolConfig`s with an `asset_intel` block and an empty
+/// `executable` — they're queried through the Asset Intel pipeline, never
+/// installed or launched as CLI tools, so they live outside `toolsconfig`
+/// (which the Tool Manager scans) to keep the two concerns separate.
+/// Resolves from `<project_root>/resources/intel-providers` first,
+/// then falls back to the per-machine app data directory.
+pub fn intel_providers_dir() -> Option<PathBuf> {
+    resolve_shared_dir("intel-providers")
+}
+
 /// Wiki / vulnerability knowledge-base root.
 /// Resolves from `<project_root>/resources/wiki` first,
 /// then falls back to the per-machine app data directory.

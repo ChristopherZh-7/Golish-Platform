@@ -148,10 +148,14 @@ fn asset_intel_provider_descriptors_load_from_tool_configs() {
 
 #[test]
 fn bundled_quake_asset_intel_config_loads() {
-    let tools_dir =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../resources/toolsconfig");
-    let scan = golish_pentest::scan_toolsconfig(&tools_dir);
-    assert!(scan.success, "toolsconfig scan failed: {:?}", scan.error);
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../resources/intel-providers");
+    let scan = golish_pentest::scan_toolsconfig(&dir);
+    assert!(
+        scan.success,
+        "intel-providers scan failed: {:?}",
+        scan.error
+    );
     let quake = scan
         .tools
         .iter()
@@ -164,8 +168,8 @@ fn bundled_quake_asset_intel_config_loads() {
 
     assert_eq!(asset.provider_id, "quake");
     assert!(
-        !asset.auto.default,
-        "quake should be explicit until a provider picker avoids default missing-key failures"
+        asset.auto.default,
+        "quake opts into auto-enrich; recon_list_providers gates on a configured key and the runner records missing-key as unavailable, so default-on no longer risks a hard failure"
     );
     assert_eq!(
         asset
@@ -191,6 +195,56 @@ fn bundled_quake_asset_intel_config_loads() {
         }
         other => panic!("expected quake http_json runtime, got {other:?}"),
     }
+}
+
+#[test]
+fn native_bridge_record_maps_surface_and_profile() {
+    use golish_intel_providers::{ProviderRecord, QueryType};
+    let mut fields = std::collections::HashMap::new();
+    fields.insert("domain".to_string(), "api.example.com".to_string());
+    fields.insert("ip".to_string(), "1.2.3.4".to_string());
+    fields.insert("title".to_string(), "Hello".to_string());
+    let rec = ProviderRecord::new("fofa", QueryType::Site, fields, serde_json::json!({}));
+    let (cand, profile) = bridge_record("fofa", &rec);
+    assert_eq!(cand.expect("candidate").value, "api.example.com");
+    assert!(profile
+        .iter()
+        .any(|p| p.target_field == "domains" && p.value == "api.example.com"));
+    assert!(profile
+        .iter()
+        .any(|p| p.target_field == "ip_ranges" && p.value == "1.2.3.4"));
+    assert!(profile
+        .iter()
+        .any(|p| p.target_field == "fofa_http_titles" && p.value == "Hello"));
+}
+
+#[test]
+fn fofa_toolsconfig_parses_and_is_enrichment_selected() {
+    let json = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../resources/intel-providers/fofa.json"
+    ));
+    let value: serde_json::Value = serde_json::from_str(json).unwrap();
+    let tool: golish_pentest::models::ToolConfig =
+        serde_json::from_value(value["tool"].clone()).unwrap();
+    let asset = tool.asset_intel.clone().expect("asset_intel");
+    assert_eq!(asset.provider_id, "fofa");
+    assert!(asset.auto.default);
+    assert!(!asset.capabilities.iter().any(|c| c == "subsidiaries"));
+    match &asset.runtime {
+        golish_pentest::models::AssetIntelRuntimeConfig::NativeProvider {
+            provider_id,
+            queries,
+        } => {
+            assert_eq!(provider_id, "fofa");
+            assert_eq!(queries.len(), 1);
+            assert_eq!(queries[0].query_type, "site");
+        }
+        other => panic!("expected NativeProvider, got {other:?}"),
+    }
+    // auto-selection: the enrichment phase picks fofa (auto.default + non-subsidiaries).
+    let selected = select_enrichment_providers(std::slice::from_ref(&tool), &[]).expect("select");
+    assert!(selected.iter().any(|t| t.id == "fofa"));
 }
 
 #[test]
@@ -1152,12 +1206,13 @@ fn fixture_discovery_auto_defaults_skip_tyc_until_upstream_is_stable() {
 #[test]
 fn fixture_enrichment_profile_fields_cover_observed_provider_keys() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let toolsconfig_dir = std::path::PathBuf::from(manifest_dir)
+    let resources = std::path::PathBuf::from(manifest_dir)
         .join("..")
         .join("..")
         .join("..")
-        .join("resources")
-        .join("toolsconfig");
+        .join("resources");
+    let toolsconfig_dir = resources.join("toolsconfig");
+    let intel_providers_dir = resources.join("intel-providers");
     if !toolsconfig_dir.exists() {
         eprintln!(
             "fixture skipped: toolsconfig dir not found at {}",
@@ -1165,7 +1220,9 @@ fn fixture_enrichment_profile_fields_cover_observed_provider_keys() {
         );
         return;
     }
-    let scan = golish_pentest::scan_toolsconfig(&toolsconfig_dir);
+    // 0.zone now lives in intel-providers/ while ENScan stays in toolsconfig/;
+    // use the merged loader so both surface like they do in production.
+    let scan = golish_pentest::scan_asset_intel_sources(&toolsconfig_dir, &intel_providers_dir);
     assert!(
         scan.success,
         "toolsconfig scan failed: {:?}",

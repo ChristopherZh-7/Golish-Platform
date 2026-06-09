@@ -182,6 +182,23 @@ pub(crate) async fn run_providers_for_org(
                     )
                     .await
                 }
+                golish_pentest::models::AssetIntelRuntimeConfig::NativeProvider { .. } => {
+                    let _permit = http_limit.acquire_owned().await.map_err(|error| {
+                        GolishError::Internal(format!(
+                            "asset intel HTTP concurrency limiter closed: {error}"
+                        ))
+                    })?;
+                    run_native_provider(
+                        pool,
+                        &tool,
+                        project_root,
+                        run_id,
+                        company_name,
+                        config,
+                        sink,
+                    )
+                    .await
+                }
             }
         }
     }))

@@ -30,6 +30,7 @@ Phase 1 provider-agnostic 资产情报：`run_passive_intel` 等调被动 provid
 |---|---|
 | `mod.rs` | 服务编排 + 候选写入 |
 | `service/` / `runtime/` | 服务层 / 运行时（子进程/取消） |
+| `runtime/{cli,http,native}.rs` | 三种 provider runtime kind：`cli_json`（ENScan）/`http_json`（0.zone/quake）/`native_provider`（fofa/hunter/shodan，桥接 `golish-intel-providers` 注册表） |
 
 ## 依赖
 
@@ -40,6 +41,8 @@ Phase 1 provider-agnostic 资产情报：`run_passive_intel` 等调被动 provid
 - **provider-agnostic**：候选先归一、经用户批准才成 scope——别让发现直接写 scope（绕过审批）。
 - ENScan 经子进程（`tokio::process`）；输出落 projects 文件存储（非 DB 大字段）。
 - 被 `agent_tools`（harness target_intel 阶段）包装成 AI 工具调用。
+- **三个 runtime kind**（`AssetIntelRuntimeConfig`）：`cli_json` / `http_json` / `native_provider`。新加测绘 provider 若 `golish-intel-providers` 注册表已有实现（fofa/hunter/shodan/0.zone/quake），优先写 `native_provider` toolsconfig（复用原生鉴权/编码/字段映射），别在 toolsconfig 用 http_json 重写 API。
+- `native_provider` 凭据走 `read_vault_secret`（与 http_json 同款，含 legacy `name=tool_id` 回退）；无 key → `Unavailable`（不伪造，I8），`provider_output_is_trusted` 仅信 `Completed`/`CheckedEmpty`。
 
 ## 测试入口
 

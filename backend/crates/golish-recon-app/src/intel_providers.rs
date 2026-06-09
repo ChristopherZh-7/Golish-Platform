@@ -68,7 +68,7 @@ impl KeyStore for PgVaultKeyStore {
     }
 }
 
-fn provider_registry() -> HashMap<String, Arc<dyn IntelProvider>> {
+pub(crate) fn provider_registry() -> HashMap<String, Arc<dyn IntelProvider>> {
     let mut m: HashMap<String, Arc<dyn IntelProvider>> = HashMap::new();
     m.insert("0.zone".into(), Arc::new(ZoneProvider::default()));
     m.insert("fofa".into(), Arc::new(FofaProvider::default()));

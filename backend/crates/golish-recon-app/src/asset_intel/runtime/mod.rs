@@ -8,10 +8,12 @@ use super::*;
 pub(crate) mod cli;
 pub(crate) mod http;
 pub(crate) mod lookup;
+pub(crate) mod native;
 
 pub(crate) use cli::*;
 pub(crate) use http::*;
 pub(crate) use lookup::*;
+pub(crate) use native::*;
 
 pub(crate) async fn read_vault_secret(
     pool: &sqlx::PgPool,

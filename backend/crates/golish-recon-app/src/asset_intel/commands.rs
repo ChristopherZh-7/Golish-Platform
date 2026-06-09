@@ -10,7 +10,10 @@ pub async fn asset_intel_list_providers(
     pentest: tauri::State<'_, ToolsConfigState>,
 ) -> Result<Vec<AssetIntelProviderDescriptor>, GolishError> {
     let pentest_config = pentest.0.get().await;
-    let scan = golish_pentest::scan_toolsconfig(&pentest_config.toolsconfig_dir);
+    let scan = golish_pentest::scan_asset_intel_sources(
+        &pentest_config.toolsconfig_dir,
+        &pentest_config.intel_providers_dir,
+    );
     if !scan.success {
         return Err(GolishError::Internal(
             scan.error
@@ -38,7 +41,10 @@ pub async fn asset_intel_lookup_company(
     }
 
     let pentest_config = pentest.0.get().await;
-    let scan = golish_pentest::scan_toolsconfig(&pentest_config.toolsconfig_dir);
+    let scan = golish_pentest::scan_asset_intel_sources(
+        &pentest_config.toolsconfig_dir,
+        &pentest_config.intel_providers_dir,
+    );
     if !scan.success {
         return Err(GolishError::Internal(
             scan.error
@@ -156,7 +162,10 @@ pub async fn asset_intel_hydrate(
     }
 
     let pentest_config = pentest.0.get().await;
-    let scan = golish_pentest::scan_toolsconfig(&pentest_config.toolsconfig_dir);
+    let scan = golish_pentest::scan_asset_intel_sources(
+        &pentest_config.toolsconfig_dir,
+        &pentest_config.intel_providers_dir,
+    );
     if !scan.success {
         return Err(GolishError::Internal(
             scan.error
@@ -210,7 +219,10 @@ pub async fn asset_intel_hydrate_subsidiaries(
     }
 
     let pentest_config = pentest.0.get().await;
-    let scan = golish_pentest::scan_toolsconfig(&pentest_config.toolsconfig_dir);
+    let scan = golish_pentest::scan_asset_intel_sources(
+        &pentest_config.toolsconfig_dir,
+        &pentest_config.intel_providers_dir,
+    );
     if !scan.success {
         return Err(GolishError::Internal(
             scan.error
@@ -289,7 +301,10 @@ pub async fn asset_intel_enrich_organization(
     }
 
     let pentest_config = pentest.0.get().await;
-    let scan = golish_pentest::scan_toolsconfig(&pentest_config.toolsconfig_dir);
+    let scan = golish_pentest::scan_asset_intel_sources(
+        &pentest_config.toolsconfig_dir,
+        &pentest_config.intel_providers_dir,
+    );
     if !scan.success {
         return Err(GolishError::Internal(
             scan.error
@@ -344,7 +359,10 @@ pub async fn asset_intel_enrich_batch(
         })?;
 
     let pentest_config = pentest.0.get().await;
-    let scan = golish_pentest::scan_toolsconfig(&pentest_config.toolsconfig_dir);
+    let scan = golish_pentest::scan_asset_intel_sources(
+        &pentest_config.toolsconfig_dir,
+        &pentest_config.intel_providers_dir,
+    );
     if !scan.success {
         return Err(GolishError::Internal(
             scan.error

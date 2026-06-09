@@ -86,8 +86,9 @@ impl OrganizationReconRunner {
         let mut candidates = OrganizationCandidates::default();
         let mut errors = Vec::new();
         let pentest_config = self.tools.0.get().await;
-        let scan = golish_pentest::scan_toolsconfig_with_status(
+        let scan = golish_pentest::scan_asset_intel_sources_with_status(
             &pentest_config.toolsconfig_dir,
+            &pentest_config.intel_providers_dir,
             pentest_config.tools_dir(),
         );
 

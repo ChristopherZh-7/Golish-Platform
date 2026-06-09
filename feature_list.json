@@ -11,6 +11,28 @@
   ],
   "features": [
     {
+      "id": "native-intel-providers-auto-enrich-2026-06-08",
+      "priority": 2,
+      "area": "backend: golish-pentest-domain/src/models/asset_intel.rs(NativeProvider 变体+NativeProviderQuery) + golish-recon-app/src/asset_intel/runtime/native.rs(新 runner+bridge_record) + asset_intel/service/hydrate.rs(分发) + intel_providers.rs(provider_registry pub(crate)) + resources/toolsconfig/{fofa,hunter,shodan}.json",
+      "title": "fofa/hunter/shodan 接入 target_intel 自动富化（方案 B 原生 provider 桥接）：新增 native_provider runtime kind，runner 调既有 golish-intel-providers 注册表，把 ProviderRecord 桥接成 OrganizationCandidates+ProfileFieldEntry；三家各写 toolsconfig（auto.default=true）",
+      "user_visible_behavior": "harness target_intel 自动富化（recon_enrich_assets）除 0.zone/quake 外，现也按『配了 key 即 available』自动识别并调用 fofa/hunter/shodan（org 名查询模板：fofa org=、shodan org:、hunter icp.name=）。凭据走既有 vault 路径（含 legacy 回退），用户在 Integrations 或 Intel Providers 页配的 key 均可被检测+读取。0.zone/quake/ENScan 不动。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "（方案选型走 brainstorming：http_json 镜像 vs 原生桥接；因 fofa 用 base64+定位数组行套不进 http_json 的 JSONPath normalize，且原生 crate 已实现一遍，用户 2026-06-08 拍板方案 B 原生桥接）",
+      "plan": "docs/superpowers/plans/2026-06-08-native-intel-providers-auto-enrich.md（writing-plans · T0 调查 + T1-T8 · TDD；T0 已实读核实凭据 schema 来自 ProviderMeta.integration_schema 内置合成、两条读取路径均带 legacy 回退）",
+      "verification": [
+        "[T0 ✓ 只读] 实读 integrations/state.rs(build_integration_resolver→collect_in_code_schemas 遍历 5 provider 注入内置 schema)、availability.rs、storage/vault.rs(read_cleartext default 单字段回退 legacy name=tool_id)、runtime/mod.rs(read_vault_secret 同款回退)、fofa/hunter/shodan mod.rs(均 integration_schema=Some)→ 结论：三家无需 toolsconfig integration 块，已配 key 直接可用",
+        "[T1 ✓] AssetIntelRuntimeConfig 加 NativeProvider{provider_id,queries} + NativeProviderQuery → cargo test -p golish-pentest-domain native_provider → 1 passed(parses_native_provider_runtime)",
+        "[T3/T6 ✓] native.rs(run_native_provider+bridge_record) + 三 JSON + 解析/选择测 → cargo test -p golish-recon-app → 160 passed/0 failed(新 native_bridge_record + fofa_toolsconfig_parses_and_is_enrichment_selected 均过)",
+        "[T7 ✓] cargo build -p golish-recon-app lib 0 error/0 warning；cargo clippy -p golish-recon-app -p golish-pentest-domain --all-targets 新文件 native.rs 零告警(其余警告均预存：golish-pentest java/node.rs、tests.rs:611 RecordingEmitter 死码、webview_isolation.rs，会话开始即 dirty)；cargo fmt --check 两 crate clean",
+        "[顺手修 ✓] 预存错位测 bundled_quake_asset_intel_config_loads（断言 quake !auto.default 但 committed JSON 已 default:true，2026-06-07 改 JSON 漏更测）→ 改 assert!(auto.default) → 160/0",
+        "[未跑] full just precommit（被预存 clippy 警告 -D warnings 卡住，非本任务引入）+ 活体 E2E（配 fofa/hunter/shodan key 后 recon_list_providers 显 available、recon_enrich_assets 真跑原生 provider 并落候选/profile）"
+      ],
+      "evidence": "本会话 BaJie MCP-agent-4（DISPATCH off，brainstorming→writing-plans→executing-plans 全流程，用户逐步拍板：方案 B→出计划→先 T0→连续 T1-T6→顺手修 quake）。改动 6 文件：asset_intel.rs(变体)、native.rs(新)、hydrate.rs(分发)、intel_providers.rs(pub(crate))、3 toolsconfig JSON、tests.rs(2 新测+quake 修)、计划文档。验证全绿：golish-recon-app 160 passed/0 failed、golish-pentest-domain native_provider 1 passed、build lib 0 警告、native.rs clippy 零告警、fmt clean。code-audit 收口：IDOR（org 归属在 agent_tools run_phase 已校验，本 runner 不新增写库越权）、凭据不外泄（native.rs tracing 只记 provider/query 不记 key）、I8（无 key→Unavailable 不伪造，provider_output_is_trusted 仅信 Completed/CheckedEmpty）、回滚=删 3 JSON+还原枚举/分发。未 commit（git 安全协议，等用户授权）。",
+      "notes": "2026-06-08 BaJie MCP-agent-4（DISPATCH off）。两套 provider 系统：① 原生 golish-intel-providers 注册表（5 家，经 intel_query_provider Tauri 命令显式调）② harness asset_intel toolsconfig provider（自动识别+自动选）。本次把 fofa/hunter/shodan 从①桥接进②的自动富化。hunter org DSL 用 icp.name= 为推断值，活体需按 hunter 文档校准。AssetIntelProviderRuntimeKind 未加 Native 变体（暂复用 HttpJson 标签避免 ts-rs 改），如需前端精确区分另起任务。与既有多个 in_progress 并存（多会话并发，§2.1）。",
+      "remember": "native_provider runner 复用原生 crate 实现（正确鉴权/编码/字段映射），避免在 toolsconfig 重写 API。新增同类 provider = 注册表已有则只写一个 toolsconfig（runtime.kind=native_provider + queries 模板）。"
+    },
+    {
       "id": "harness-passive-active-boundary-2026-06-07",
       "priority": 2,
       "area": "backend: resources/harness/stages/{external_attack_surface,target_intel}.json + golish-agent-kit/src/harness/stage_spec.rs(tests) + task_orchestrator/prompts/mod.rs(orchestration charter) + task_orchestrator/subtask_phases/execute.rs(K::ExternalAttackSurface subtask prompt)",

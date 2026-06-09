@@ -1,0 +1,30 @@
+{
+  "tool": {
+    "id": "hunter",
+    "name": "奇安信 Hunter",
+    "description": "Qianxin Hunter cyberspace mapping provider exposed to Asset Intel via the native golish-intel-providers registry. Searches the org's surface (domains/IPs/services) and enriches the organization profile.",
+    "executable": "",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tags": ["recon", "osint", "asm", "native-provider", "credential-required"],
+    "pentestPhase": ["recon"],
+    "tier": "recommended",
+    "asset_intel": {
+      "enabled": true,
+      "provider_id": "hunter",
+      "display_name": "奇安信 Hunter",
+      "capabilities": ["domains", "ips", "services"],
+      "requires_integration": { "tool_id": "hunter", "group_ids": ["default"] },
+      "auto": { "default": true, "priority": 65 },
+      "runtime": {
+        "kind": "native_provider",
+        "provider_id": "hunter",
+        "queries": [
+          { "query_type": "site", "template": "icp.name=\"{{company_name}}\"" }
+        ]
+      }
+    }
+  }
+}

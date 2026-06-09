@@ -1,0 +1,30 @@
+{
+  "tool": {
+    "id": "shodan",
+    "name": "Shodan",
+    "description": "Shodan banner mapping provider exposed to Asset Intel via the native golish-intel-providers registry. Searches the org's surface (domains/IPs/services) and enriches the organization profile.",
+    "executable": "",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "osint",
+    "tags": ["recon", "osint", "asm", "native-provider", "credential-required"],
+    "pentestPhase": ["recon"],
+    "tier": "recommended",
+    "asset_intel": {
+      "enabled": true,
+      "provider_id": "shodan",
+      "display_name": "Shodan",
+      "capabilities": ["domains", "ips", "services"],
+      "requires_integration": { "tool_id": "shodan", "group_ids": ["default"] },
+      "auto": { "default": true, "priority": 60 },
+      "runtime": {
+        "kind": "native_provider",
+        "provider_id": "shodan",
+        "queries": [
+          { "query_type": "site", "template": "org:\"{{company_name}}\"" }
+        ]
+      }
+    }
+  }
+}

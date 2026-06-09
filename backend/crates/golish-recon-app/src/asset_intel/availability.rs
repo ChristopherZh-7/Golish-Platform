@@ -81,7 +81,11 @@ pub async fn list_provider_availability(
     tools: ToolsConfigState,
 ) -> Result<Vec<ProviderAvailability>, GolishError> {
     let cfg = tools.0.get().await;
-    let scan = golish_pentest::scan_toolsconfig_with_status(&cfg.toolsconfig_dir, cfg.tools_dir());
+    let scan = golish_pentest::scan_asset_intel_sources_with_status(
+        &cfg.toolsconfig_dir,
+        &cfg.intel_providers_dir,
+        cfg.tools_dir(),
+    );
     if !scan.success {
         return Err(GolishError::Internal(
             scan.error
