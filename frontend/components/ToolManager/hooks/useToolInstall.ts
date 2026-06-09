@@ -15,10 +15,8 @@ import {
   getConfig,
   gitCloneTool,
   installDepFile,
-  installJavaVersion,
   installRequirements,
   installRuntime,
-  listAvailableJava,
   listDepFiles,
   listInstalledJava,
   listPythonEnvs,
@@ -31,6 +29,11 @@ import {
   uninstallToolFiles,
   updateToolExecutable,
 } from "@/lib/pentest/api";
+import {
+  ensureJavaInstalled,
+  mapJavaInstallError,
+  mapJavaProgressStage,
+} from "@/lib/pentest/javaInstaller";
 import { getSettings } from "@/lib/settings";
 import type { ExecPickerState, ToolUpdateInfo } from "../Dialogs";
 import type { ToolWithMeta } from "../OutputParserEditor";
@@ -201,47 +204,19 @@ export function useToolInstall(
             [tool.id]: t("install.missingJava", { ver: requiredMajor }),
           }));
           try {
-            let identifier = "";
-            const available = await listAvailableJava();
-            if (available.success) {
-              const majorMatches = available.versions.filter(
-                (v) => v.version.startsWith(`${requiredMajor}.`) || v.version === requiredMajor
-              );
-              const match =
-                majorMatches.find((v) => v.version.includes("-fx")) ||
-                majorMatches.find((v) => v.version.endsWith("-tem")) ||
-                majorMatches[0];
-              if (match) identifier = match.version;
-            }
-            if (!identifier) {
-              const error = t("install.javaNotFound", { ver: requiredMajor });
-              if (reportError) setError(error);
-              setBusy(null);
-              setInstallProgress((p) => {
-                const n = { ...p };
-                delete n[tool.id];
-                return n;
-              });
-              return { success: false, error };
-            }
-            setInstallProgress((p) => ({
-              ...p,
-              [tool.id]: t("install.installingJava", { id: identifier }),
-            }));
-            const r = await installJavaVersion(identifier, proxyUrl);
-            if (!r.success) {
-              const error = t("install.javaFailed", { ver: requiredMajor, error: r.message });
-              if (reportError) setError(error);
-              setBusy(null);
-              setInstallProgress((p) => {
-                const n = { ...p };
-                delete n[tool.id];
-                return n;
-              });
-              return { success: false, error };
-            }
+            // Delegate to the shared installer which, on Windows, runs the
+            // Temurin → Microsoft.OpenJDK → direct-MSI fallback chain when
+            // winget can't reach GitHub. Ported from grid-terminal-recover@d055e2ce.
+            await ensureJavaInstalled(requiredMajor, {
+              proxyUrl,
+              onProgress: (stage) =>
+                setInstallProgress((p) => ({
+                  ...p,
+                  [tool.id]: mapJavaProgressStage(stage, t),
+                })),
+            });
           } catch (e) {
-            const error = t("install.javaFailed", { ver: requiredMajor, error: e });
+            const error = mapJavaInstallError(String(e), requiredMajor, t);
             if (reportError) setError(error);
             setBusy(null);
             setInstallProgress((p) => {

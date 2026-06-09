@@ -124,6 +124,7 @@ fn install_handlers(
         pentest_set_system_proxy, pentest_clear_system_proxy, pentest_get_system_proxy,
         pentest_list_installed_java, pentest_list_available_java,
         pentest_install_java_version, pentest_uninstall_java_version, pentest_set_default_java,
+        pentest_direct_install_jdk_msi,
         pentest_list_installed_node, pentest_list_available_node,
         pentest_install_node_version, pentest_uninstall_node_version, pentest_use_node_version,
         pentest_list_python_envs, pentest_list_available_python, pentest_create_python_env, pentest_delete_python_env,
