@@ -104,28 +104,72 @@ pub fn get_with_env_fallback(
     default
 }
 
-/// Apply proxy settings as environment variables.
+/// Process-wide proxy env vars owned by [`apply_proxy_env`]. Both the
+/// upper- and lower-case spellings are managed so a rogue inherited value in
+/// either casing can't leak into in-process HTTP clients.
+const PROXY_ENV_VARS: &[&str] = &[
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+];
+
+/// Apply proxy settings as **process-wide** environment variables.
 ///
-/// This sets `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` environment
-/// variables based on the configured network settings. These are picked up
-/// automatically by `reqwest` and other HTTP clients.
+/// The platform `Settings → Network → Proxy` value is the single source of
+/// truth for in-process HTTP clients (LLM API calls, web fetch, telemetry)
+/// that read proxy env vars — the same principle the per-subprocess install
+/// helpers enforce (see
+/// `docs/design/2026-06-10-unified-install-proxy-takeover.md`).
+///
+/// - Proxy configured → set `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` (+ lower
+///   case) and `NO_PROXY`.
+/// - Proxy unset → **remove** all of the above so a stale proxy the process
+///   inherited from the host shell (e.g. a dead `socks5://127.0.0.1:6153`)
+///   can't hijack in-process HTTP. "Not configured" means "direct".
 ///
 /// Should be called early in app startup, after settings are loaded but
 /// before any HTTP clients are created.
 pub fn apply_proxy_env(settings: &GolishSettings) {
-    if let Some(ref proxy_url) = settings.network.proxy_url {
-        if !proxy_url.is_empty() {
-            std::env::set_var("HTTP_PROXY", proxy_url);
-            std::env::set_var("HTTPS_PROXY", proxy_url);
-            std::env::set_var("ALL_PROXY", proxy_url);
-            tracing::info!("Proxy configured: {}", proxy_url);
+    let proxy = settings
+        .network
+        .proxy_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match proxy {
+        Some(proxy_url) => {
+            for var in PROXY_ENV_VARS {
+                std::env::set_var(var, proxy_url);
+            }
+            tracing::info!("Proxy configured process-wide from platform settings");
+        }
+        None => {
+            for var in PROXY_ENV_VARS {
+                std::env::remove_var(var);
+            }
+            tracing::info!(
+                "No platform proxy set; cleared inherited proxy env (process-wide direct)"
+            );
         }
     }
 
-    if let Some(ref no_proxy) = settings.network.no_proxy {
-        if !no_proxy.is_empty() {
-            std::env::set_var("NO_PROXY", no_proxy);
-            tracing::info!("No-proxy list: {}", no_proxy);
+    let no_proxy = settings
+        .network
+        .no_proxy
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match no_proxy {
+        Some(list) => {
+            std::env::set_var("NO_PROXY", list);
+            std::env::set_var("no_proxy", list);
+        }
+        None => {
+            std::env::remove_var("NO_PROXY");
+            std::env::remove_var("no_proxy");
         }
     }
 }
@@ -202,5 +246,77 @@ mod tests {
         assert_eq!(result, Some("from_env".to_string()));
 
         std::env::remove_var("EMPTY_SETTING_TEST");
+    }
+
+    // NOTE: these mutate process-wide env vars. Safe under `cargo nextest`
+    // (one process per test); each test also cleans up after itself.
+    const PROXY_VARS: &[&str] = &[
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ];
+
+    fn clear_proxy_vars() {
+        for v in PROXY_VARS.iter().chain(&["NO_PROXY", "no_proxy"]) {
+            std::env::remove_var(v);
+        }
+    }
+
+    #[test]
+    fn apply_proxy_env_sets_all_vars_when_configured() {
+        clear_proxy_vars();
+        let mut settings = GolishSettings::default();
+        settings.network.proxy_url = Some("http://127.0.0.1:7890".to_string());
+        apply_proxy_env(&settings);
+        for v in PROXY_VARS {
+            assert_eq!(
+                std::env::var(v).ok(),
+                Some("http://127.0.0.1:7890".to_string()),
+                "{v} should be set process-wide"
+            );
+        }
+        clear_proxy_vars();
+    }
+
+    #[test]
+    fn apply_proxy_env_clears_inherited_proxy_when_unset() {
+        // Simulate a rogue inherited proxy (e.g. a dead Surge socks5).
+        for v in PROXY_VARS {
+            std::env::set_var(v, "socks5://127.0.0.1:6153");
+        }
+        let settings = GolishSettings::default(); // proxy_url = None
+        apply_proxy_env(&settings);
+        for v in PROXY_VARS {
+            assert_eq!(
+                std::env::var(v).ok(),
+                None,
+                "{v} should be cleared to force direct"
+            );
+        }
+        clear_proxy_vars();
+    }
+
+    #[test]
+    fn apply_proxy_env_treats_blank_proxy_as_unset() {
+        std::env::set_var("HTTP_PROXY", "socks5://127.0.0.1:6153");
+        let mut settings = GolishSettings::default();
+        settings.network.proxy_url = Some("   ".to_string());
+        apply_proxy_env(&settings);
+        assert_eq!(std::env::var("HTTP_PROXY").ok(), None);
+        clear_proxy_vars();
+    }
+
+    #[test]
+    fn apply_proxy_env_clears_no_proxy_when_unset() {
+        std::env::set_var("NO_PROXY", "example.com");
+        std::env::set_var("no_proxy", "example.com");
+        let settings = GolishSettings::default();
+        apply_proxy_env(&settings);
+        assert_eq!(std::env::var("NO_PROXY").ok(), None);
+        assert_eq!(std::env::var("no_proxy").ok(), None);
+        clear_proxy_vars();
     }
 }
