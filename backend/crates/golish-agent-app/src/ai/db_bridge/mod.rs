@@ -296,6 +296,14 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.in_scope_target_types_impl(org_id).await
     }
 
+    async fn db_truth_facts(
+        &self,
+        org_id: Option<Uuid>,
+        in_scope_assets: &[String],
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        self.db_truth_facts_impl(org_id, in_scope_assets).await
+    }
+
     // ── Tasks / Subtasks ─────────────────────────────────────
     async fn task_create(&self, task: NewTask) -> anyhow::Result<TaskView> {
         self.task_create_impl(task).await

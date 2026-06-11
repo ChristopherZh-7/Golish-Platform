@@ -262,7 +262,9 @@ impl TaskOrchestrator {
                     let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned).await;
                     let in_scope_target_types =
                         self.fetch_in_scope_target_types_for_gate(planned).await;
-                    let evidence_facts = self.fetch_evidence_facts_for_gate(planned).await;
+                    let evidence_facts = self
+                        .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref())
+                        .await;
                     let (gated_content, gate_outcome) = apply_harness_gate_hook(
                         planned,
                         exec_ctx,
@@ -423,7 +425,9 @@ impl TaskOrchestrator {
         // retry possible) and drive the transition on whatever it decides.
         let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned).await;
         let in_scope_target_types = self.fetch_in_scope_target_types_for_gate(planned).await;
-        let evidence_facts = self.fetch_evidence_facts_for_gate(planned).await;
+        let evidence_facts = self
+            .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref())
+            .await;
         let (out, gate_outcome) = apply_harness_gate_hook(
             planned,
             exec_ctx,
@@ -1240,45 +1244,75 @@ impl TaskOrchestrator {
     async fn fetch_evidence_facts_for_gate(
         &self,
         planned: &PlannedSubtask,
+        in_scope_assets: Option<&[String]>,
     ) -> Option<Vec<crate::harness::gate::rule_engine::EvidenceFact>> {
         use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
         planned.harness_stage.as_ref()?;
         let sid = self.chat_session_id.as_deref()?;
-        let rows = match self.repo.evidence_facts_for_session(sid).await {
-            Ok(rows) => rows,
+
+        // ① 账本派生（现有路径）：audit_log 三列齐全的行 → EvidenceFact。
+        let mut facts: Vec<EvidenceFact> = match self.repo.evidence_facts_for_session(sid).await {
+            Ok(rows) => rows
+                .into_iter()
+                .filter_map(|(asset, technique, outcome, evidence_id)| {
+                    // 保守解析：未知 outcome 字符串 → 丢行（不投影），绝不猜。
+                    let outcome = match outcome.as_str() {
+                        "found" => EvidenceOutcome::Found,
+                        "empty" => EvidenceOutcome::Empty,
+                        _ => return None,
+                    };
+                    Some(EvidenceFact {
+                        asset,
+                        technique,
+                        outcome,
+                        evidence_id,
+                    })
+                })
+                .collect(),
             Err(e) => {
                 tracing::warn!(
                     target: "harness::hook",
                     error = %e,
-                    "evidence-facts lookup failed; coverage gate runs without projection"
+                    "evidence-facts lookup failed; coverage gate runs without ledger projection"
                 );
-                return None;
+                Vec::new()
             }
         };
-        let facts: Vec<EvidenceFact> = rows
-            .into_iter()
-            .filter_map(|(asset, technique, outcome, evidence_id)| {
-                // 保守解析：未知 outcome 字符串 → 丢行（不投影），绝不猜。
-                let outcome = match outcome.as_str() {
-                    "found" => EvidenceOutcome::Found,
-                    "empty" => EvidenceOutcome::Empty,
-                    _ => return None,
-                };
-                Some(EvidenceFact {
-                    asset,
-                    technique,
-                    outcome,
-                    evidence_id,
-                })
-            })
-            .collect();
+
+        // ② DB 业务表真值派生（设计 2026-06-12 §5.3）：org 已隔离的 in-scope 资产集上，
+        // 业务表真有数据的 (asset × technique) 作为 Found 合并（只产 Found，哨兵 id=0）。
+        // in_scope_assets 缺失（GUI/chat 路径 org_id=None 且无注入）→ 跳过，退回纯账本
+        // 投影（零回归）。
+        if let Some(assets) = in_scope_assets {
+            match self.repo.db_truth_facts(self.harness_org_id, assets).await {
+                Ok(truth) if !truth.is_empty() => {
+                    let n = truth.len();
+                    facts.extend(db_truth_facts_to_evidence(truth));
+                    tracing::info!(
+                        target: "harness::hook",
+                        db_truth_facts = n,
+                        org_id = ?self.harness_org_id,
+                        "merged DB business-table truth facts into coverage gate (Found only)"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        target: "harness::hook",
+                        error = %e,
+                        "db-truth-facts lookup failed; coverage gate runs without DB projection"
+                    );
+                }
+            }
+        }
+
         if facts.is_empty() {
             return None;
         }
         tracing::info!(
             target: "harness::hook",
             fact_count = facts.len(),
-            "injecting ledger evidence facts into coverage gate (projection)"
+            "injecting merged ledger+DB evidence facts into coverage gate (projection)"
         );
         Some(facts)
     }
@@ -1848,21 +1882,54 @@ fn apply_harness_gate_hook(
                 );
                 synthesize_confirm_only_deliverable(stage_hint.stage_kind, exec_ctx)
             } else {
-                // Only reachable for a stage-TAGGED substantive subtask, so this is
-                // a genuine contract miss (agent didn't end with a ```json
-                // StageDeliverable). S4: fail-closed — BLOCK + repair correction so
-                // the reflector retry loop pushes the agent to actually submit one.
-                tracing::warn!(
-                    target: "harness::hook",
-                    stage_kind = ?stage_hint.stage_kind,
-                    subtask_title = %planned.title,
-                    content_len = content.len(),
-                    "harness gate: stage-tagged subtask produced no parseable StageDeliverable JSON block — BLOCK (fail-closed)"
-                );
-                return (
-                    content,
-                    missing_deliverable_gate_outcome(stage_hint.stage_kind),
-                );
+                // 设计 2026-06-11-substantive-stage-evidence-projection-fallback:
+                // when the stage opts in AND the ledger already holds real evidence
+                // facts for this run, project the deliverable's factual part from
+                // the ledger instead of dead-locking on a weak model that did the
+                // work but never called submit (findings stay empty — never
+                // fabricated). Gate validation still runs unchanged on the
+                // projected deliverable, so missing coverage still BLOCKs.
+                let projection_enabled =
+                    crate::harness::load_embedded_stage_spec(stage_hint.stage_kind)
+                        .map(|s| s.synthesize_from_evidence_when_missing)
+                        .unwrap_or(false);
+                let ledger_facts = evidence_facts.as_deref().filter(|f| !f.is_empty());
+                match (projection_enabled, ledger_facts) {
+                    (true, Some(facts)) => {
+                        tracing::warn!(
+                            target: "harness::hook",
+                            stage_kind = ?stage_hint.stage_kind,
+                            subtask_title = %planned.title,
+                            content_len = content.len(),
+                            fact_count = facts.len(),
+                            "substantive stage produced no parseable StageDeliverable — \
+                             synthesizing one from ledger evidence facts (projection \
+                             fallback; findings stay empty, gate still decides)"
+                        );
+                        synthesize_from_evidence(stage_hint.stage_kind, facts)
+                    }
+                    _ => {
+                        // Only reachable for a stage-TAGGED substantive subtask, so
+                        // this is a genuine contract miss (agent didn't end with a
+                        // ```json StageDeliverable) and either the stage keeps the
+                        // strict contract (opt-in off) or the ledger has no facts
+                        // (no work done — nothing to project). S4: fail-closed —
+                        // BLOCK + repair correction so the reflector retry loop
+                        // pushes the agent to actually submit one.
+                        tracing::warn!(
+                            target: "harness::hook",
+                            stage_kind = ?stage_hint.stage_kind,
+                            subtask_title = %planned.title,
+                            content_len = content.len(),
+                            projection_enabled,
+                            "harness gate: stage-tagged subtask produced no parseable StageDeliverable JSON block — BLOCK (fail-closed)"
+                        );
+                        return (
+                            content,
+                            missing_deliverable_gate_outcome(stage_hint.stage_kind),
+                        );
+                    }
+                }
             }
         }
     };
@@ -1937,7 +2004,10 @@ fn apply_harness_gate_hook(
     let repair_correction = if decision.allowed {
         None
     } else {
-        Some(build_gate_correction(&decision))
+        Some(build_gate_correction(
+            &decision,
+            gate_ctx.evidence_facts.as_deref(),
+        ))
     };
 
     let decision_json = serde_json::to_string_pretty(&decision)
@@ -2011,10 +2081,70 @@ fn summarize_deliverable(d: &crate::harness::StageDeliverable) -> String {
     s
 }
 
+/// 设计 2026-06-12 §5.4 · 被动情报 technique → 具体下一步命令建议（确定性表）。
+/// `None` = 未知 technique（不臆造命令，保守）。`<asset>` 由模型按 in-scope 资产替换。
+fn passive_intel_command_hint(technique: &str) -> Option<&'static str> {
+    match technique {
+        "GOLISH-INTEL-DNS" => Some(
+            "dig <asset> ANY +noall +answer  (use the FULL banner, NOT +short — only full \
+             ANSWER-SECTION rows persist to dns_records and satisfy the gate)",
+        ),
+        "GOLISH-INTEL-SUBDOMAIN" => Some("subfinder -d <asset> -silent"),
+        "GOLISH-INTEL-WHOIS" => Some("whois <asset>"),
+        "GOLISH-INTEL-ASN" => Some(
+            "whois -h whois.cymru.com \" -v <ip>\"  (ASN / netblock ownership for the resolved IP)",
+        ),
+        "GOLISH-INTEL-CT" => {
+            Some("curl -s 'https://crt.sh/?q=<asset>&output=json'  (Certificate Transparency)")
+        }
+        "GOLISH-INTEL-OSINT" => Some("theHarvester -d <asset> -b all  (emails / hosts / leaks)"),
+        _ => None,
+    }
+}
+
+/// 本 PR 灰度的被动情报 technique 全集（target_intel `expected_techniques` 镜像）。
+const PASSIVE_INTEL_TECHNIQUES: &[&str] = &[
+    "GOLISH-INTEL-DNS",
+    "GOLISH-INTEL-WHOIS",
+    "GOLISH-INTEL-ASN",
+    "GOLISH-INTEL-CT",
+    "GOLISH-INTEL-SUBDOMAIN",
+    "GOLISH-INTEL-OSINT",
+];
+
+/// 设计 2026-06-12 §5.4 · 渲染「DB 真值现状」：该 run 已确认有数据的 (asset ×
+/// technique)（仅 `Found`——`Empty` 是「跑了→空」不算「DB 已有数据」，I8）。
+/// `None` = 无 Found 事实（不追加空段）。
+fn build_db_truth_diagnosis(
+    facts: &[crate::harness::gate::rule_engine::EvidenceFact],
+) -> Option<String> {
+    use crate::harness::gate::rule_engine::EvidenceOutcome;
+    let mut found: Vec<String> = facts
+        .iter()
+        .filter(|f| f.outcome == EvidenceOutcome::Found)
+        .map(|f| format!("- {} × {}", f.asset, f.technique))
+        .collect();
+    if found.is_empty() {
+        return None;
+    }
+    found.sort();
+    found.dedup();
+    Some(format!(
+        "\n### DB truth status (already persisted — do NOT re-run these)\n{}\n",
+        found.join("\n")
+    ))
+}
+
 /// C4 · render a harness gate BLOCK decision into a correction message for the
 /// reflector retry loop: the agent re-does the subtask addressing the gate's
 /// reasons + recovery actions and resubmits a fixed `StageDeliverable`.
-fn build_gate_correction(decision: &crate::harness::GateResult) -> String {
+///
+/// 设计 2026-06-12 §5.4 · `evidence_facts`（已注入的账本+DB 真值）非空时，coverage
+/// BLOCK 追加「DB 真值现状 + 每类被动情报缺口的建议命令」诊断段（确定性，不赌 LLM）。
+fn build_gate_correction(
+    decision: &crate::harness::GateResult,
+    evidence_facts: Option<&[crate::harness::gate::rule_engine::EvidenceFact]>,
+) -> String {
     let mut s = String::from(
         "Your stage deliverable was REJECTED by the deterministic harness gate. \
          Fix the issues below and resubmit a corrected StageDeliverable — either by \
@@ -2048,6 +2178,30 @@ fn build_gate_correction(decision: &crate::harness::GateResult) -> String {
                 s.push_str(&format!("- {}\n", h));
             }
         }
+    }
+    // 设计 2026-06-12 §5.4 · 诊断式增强：coverage BLOCK 时附 DB 真值现状 + 每类被动
+    // 情报缺口的具体下一步命令（确定性，不赌 reflector LLM）。非 coverage BLOCK 逐字不变。
+    let is_coverage_block = decision
+        .reasons
+        .iter()
+        .any(|r| r.contains("GOLISH-INTEL-") || r.contains("never attempted"));
+    if let Some(facts) = evidence_facts {
+        if let Some(db_status) = build_db_truth_diagnosis(facts) {
+            s.push_str(&db_status);
+        }
+    }
+    if is_coverage_block {
+        s.push_str("\n### Suggested next commands (run per in-scope asset, replace <asset>)\n");
+        for tech in PASSIVE_INTEL_TECHNIQUES {
+            if let Some(cmd) = passive_intel_command_hint(tech) {
+                s.push_str(&format!("- {tech}: {cmd}\n"));
+            }
+        }
+        s.push_str(
+            "\nAfter running these, re-collect evidence and resubmit. The gate measures the \
+             DATABASE: a technique counts as covered only once its data is actually persisted \
+             (organizations.asns/.certificates, target_assets, dns_records).\n",
+        );
     }
     s
 }
@@ -2140,6 +2294,96 @@ fn synthesize_confirm_only_deliverable(
         required_checks_done: vec![],
         coverage: vec![],
     }
+}
+
+/// 设计 2026-06-11-substantive-stage-evidence-projection-fallback · project the
+/// "factual part" of a StageDeliverable from the session's REAL evidence-ledger
+/// facts when a substantive stage's agent submitted no parseable deliverable.
+///
+/// Invariants (§4 of the design — any violation would fabricate work):
+/// - claims: one per real-ledger `Found` fact (D3, `evidence_id > 0`) — an
+///   `Empty` fact yields NO claim (its CheckedEmpty cell is projected by the
+///   gate's `derive_from_evidence` from the same facts, so I8 holds), and a
+///   DB-truth projection fact (sentinel id 0, design 2026-06-12 §5.3) yields no
+///   claim either (it has no ledger row to cite; it only fills a coverage cell).
+/// - evidence_refs: real ledger ids only (`evidence_id > 0`), deduped — DB-truth
+///   sentinel ids (0) are EXCLUDED so `enforce_evidence_existence` never flags
+///   them as fabricated (design 2026-06-12 §4.1); ledger ids are existence-checkable.
+/// - coverage: left empty (D2) — the gate projects it from `ctx.evidence_facts`;
+///   a second hand-rolled projection here could only drift from it.
+/// - findings: ALWAYS empty (red line) — vulnerability assertions are never
+///   projected; the agent must genuinely report them.
+/// - technique: copied verbatim from the ledger (no filtering) — a dirty value
+///   is surfaced by schema_check's fail-closed taxonomy validation, not hidden.
+fn synthesize_from_evidence(
+    stage: crate::harness::StageKind,
+    facts: &[crate::harness::gate::rule_engine::EvidenceFact],
+) -> crate::harness::StageDeliverable {
+    use crate::harness::gate::rule_engine::EvidenceOutcome;
+    use golish_pentest::evidence_ledger::EvidenceAuditId;
+
+    let claims: Vec<crate::harness::StageClaim> = facts
+        .iter()
+        .filter(|f| f.outcome == EvidenceOutcome::Found && f.evidence_id > 0)
+        .map(|f| crate::harness::StageClaim {
+            kind: format!("{}_evidence", stage.as_str()),
+            subject: f.asset.clone(),
+            summary: format!(
+                "Backend-projected from ledger evidence #{} ({} on {}): the agent ran \
+                 this technique but submitted no parseable StageDeliverable; the claim \
+                 restates the recorded fact. Findings are NEVER projected.",
+                f.evidence_id, f.technique, f.asset
+            ),
+            evidence_ids: vec![EvidenceAuditId::new(f.evidence_id)],
+            technique: Some(f.technique.clone()),
+        })
+        .collect();
+
+    let mut ids: Vec<i64> = facts
+        .iter()
+        .map(|f| f.evidence_id)
+        .filter(|id| *id > 0)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+
+    crate::harness::StageDeliverable {
+        stage_id: stage.as_str().to_string(),
+        stage_run_id: uuid::Uuid::new_v4(),
+        claims,
+        evidence_refs: ids.into_iter().map(EvidenceAuditId::new).collect(),
+        skipped_checks: vec![],
+        findings: vec![],
+        required_checks_done: vec![],
+        coverage: vec![],
+    }
+}
+
+/// 设计 2026-06-12 §5.3 · 把 DB 业务表真值 `(asset, technique)` 转成 `Found`
+/// EvidenceFact，供与账本 facts 合并注入 coverage gate。
+///
+/// 红线：
+/// - outcome 恒 `Found` —— 业务表「有数据」即 Found；本函数永不产 `Empty`
+///   （checked_empty 只能由账本「跑了→空」的真实 outcome 显式产生，I8）。
+/// - `evidence_id` 用哨兵 [`DB_TRUTH_EVIDENCE_ID`]（0）标记「非账本来源」。
+///   `coverage_complete` 投影只看 asset/technique/outcome（不看 id），哨兵无影响；
+///   `synthesize_from_evidence` 用 `id > 0` 过滤哨兵，业务表 fact 绝不进
+///   `evidence_refs` / claims，fabricated-evidence 校验天然不误伤（设计 §4.1）。
+const DB_TRUTH_EVIDENCE_ID: i64 = 0;
+
+fn db_truth_facts_to_evidence(
+    facts: Vec<(String, String)>,
+) -> Vec<crate::harness::gate::rule_engine::EvidenceFact> {
+    use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
+    facts
+        .into_iter()
+        .map(|(asset, technique)| EvidenceFact {
+            asset,
+            technique,
+            outcome: EvidenceOutcome::Found,
+            evidence_id: DB_TRUTH_EVIDENCE_ID,
+        })
+        .collect()
 }
 
 /// S4 · the gate outcome when a stage-tagged subtask ends without a parseable
@@ -2780,11 +3024,98 @@ mod harness_gate_hook_tests {
                 ..Default::default()
             },
         );
-        let c = build_gate_correction(&decision);
+        let c = build_gate_correction(&decision, None);
         assert!(c.contains("REJECTED"));
         assert!(c.contains("scope_status missing"));
         assert!(c.contains("dns_resolve"));
         assert!(c.contains("subdomain"));
+    }
+
+    #[test]
+    fn command_hint_covers_passive_intel_and_warns_dig_full_banner() {
+        assert!(passive_intel_command_hint("GOLISH-INTEL-DNS")
+            .unwrap()
+            .contains("dig"));
+        assert!(
+            passive_intel_command_hint("GOLISH-INTEL-DNS")
+                .unwrap()
+                .contains("+noall +answer"),
+            "DNS hint must steer to full banner so records persist to dns_records"
+        );
+        assert!(passive_intel_command_hint("GOLISH-INTEL-SUBDOMAIN")
+            .unwrap()
+            .contains("subfinder"));
+        assert!(passive_intel_command_hint("GOLISH-INTEL-WHOIS")
+            .unwrap()
+            .contains("whois"));
+        assert!(passive_intel_command_hint("GOLISH-INTEL-CT")
+            .unwrap()
+            .contains("crt.sh"));
+        assert!(passive_intel_command_hint("GOLISH-INTEL-ASN").is_some());
+        assert!(passive_intel_command_hint("GOLISH-INTEL-OSINT").is_some());
+        assert!(
+            passive_intel_command_hint("GOLISH-INTEL-BOGUS").is_none(),
+            "unknown technique → None (no invented command)"
+        );
+    }
+
+    #[test]
+    fn db_truth_diagnosis_lists_found_only_and_none_when_empty() {
+        use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
+        assert!(build_db_truth_diagnosis(&[]).is_none());
+        let facts = vec![
+            EvidenceFact {
+                asset: "moresec.cn".to_string(),
+                technique: "GOLISH-INTEL-DNS".to_string(),
+                outcome: EvidenceOutcome::Found,
+                evidence_id: 0,
+            },
+            EvidenceFact {
+                asset: "moresec.cn".to_string(),
+                technique: "GOLISH-INTEL-ASN".to_string(),
+                outcome: EvidenceOutcome::Empty,
+                evidence_id: 5,
+            },
+        ];
+        let out = build_db_truth_diagnosis(&facts).unwrap();
+        assert!(out.contains("moresec.cn") && out.contains("GOLISH-INTEL-DNS"));
+        assert!(
+            !out.contains("GOLISH-INTEL-ASN"),
+            "Empty fact is not persisted data (I8)"
+        );
+    }
+
+    #[test]
+    fn gate_correction_appends_db_status_and_commands_on_coverage_block() {
+        use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
+        let decision = crate::harness::GateResult::block(
+            vec![
+                "coverage incomplete: never attempted (moresec.cn × GOLISH-INTEL-DNS)".to_string(),
+            ],
+            crate::harness::HarnessRecoveryActions::default(),
+        );
+        let facts = vec![EvidenceFact {
+            asset: "moresec.cn".to_string(),
+            technique: "GOLISH-INTEL-SUBDOMAIN".to_string(),
+            outcome: EvidenceOutcome::Found,
+            evidence_id: 0,
+        }];
+        let c = build_gate_correction(&decision, Some(&facts));
+        assert!(c.contains("DB truth status"), "DB 现状段");
+        assert!(c.contains("GOLISH-INTEL-SUBDOMAIN"), "列已 Found 的类");
+        assert!(c.contains("Suggested next commands"), "命令建议段");
+        assert!(c.contains("dig") && c.contains("subfinder"));
+    }
+
+    #[test]
+    fn gate_correction_unchanged_for_non_coverage_block() {
+        let decision = crate::harness::GateResult::block(
+            vec!["finding count below minimum".to_string()],
+            crate::harness::HarnessRecoveryActions::default(),
+        );
+        let c = build_gate_correction(&decision, None);
+        assert!(!c.contains("Suggested next commands"));
+        assert!(!c.contains("DB truth status"));
     }
 
     #[test]
@@ -2985,5 +3316,252 @@ mod harness_gate_hook_tests {
         let fab_pos = c.find("do NOT exist").expect("fabrication notice present");
         let prior_pos = c.find("PRIOR-GATE-REASON").unwrap();
         assert!(fab_pos < prior_pos, "fabrication notice is prepended");
+    }
+}
+
+// 设计 2026-06-11-substantive-stage-evidence-projection-fallback：substantive 阶段
+// agent 没交 deliverable 时的证据投影兜底。纯函数不变量（§4）+ stage-close 门控
+// 分支（§5.1）。红线：findings 永远不投影；空账本/未 opt-in 保持 fail-closed BLOCK。
+#[cfg(test)]
+mod evidence_projection_fallback_tests {
+    use super::*;
+    use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
+    use crate::harness::{HarnessStageHint, StageKind};
+
+    fn fact(asset: &str, technique: &str, outcome: EvidenceOutcome, id: i64) -> EvidenceFact {
+        EvidenceFact {
+            asset: asset.to_string(),
+            technique: technique.to_string(),
+            outcome,
+            evidence_id: id,
+        }
+    }
+
+    fn planned(stage_kind: StageKind) -> PlannedSubtask {
+        PlannedSubtask {
+            title: "t".to_string(),
+            description: "d".to_string(),
+            agent: None,
+            harness_stage: Some(HarnessStageHint::new(stage_kind)),
+            nl_slice: None,
+            acceptance_criteria: vec![],
+        }
+    }
+
+    // ── synthesize_from_evidence 纯函数（设计 §5.2 / 约束 §4） ──────────────
+
+    #[test]
+    fn projection_never_fabricates_findings_or_coverage() {
+        let facts = vec![
+            fact(
+                "a.example.com",
+                "GOLISH-INTEL-DNS",
+                EvidenceOutcome::Found,
+                7,
+            ),
+            fact(
+                "b.example.com",
+                "GOLISH-INTEL-DNS",
+                EvidenceOutcome::Empty,
+                9,
+            ),
+        ];
+        let d = synthesize_from_evidence(StageKind::TargetIntel, &facts);
+        assert!(
+            d.findings.is_empty(),
+            "findings are NEVER projected (red line §4.2)"
+        );
+        assert!(
+            d.coverage.is_empty(),
+            "coverage stays empty — the gate's derive_from_evidence projects it (D2)"
+        );
+        assert!(d.skipped_checks.is_empty());
+        assert!(d.required_checks_done.is_empty());
+    }
+
+    #[test]
+    fn projection_claims_one_per_found_fact_with_aligned_fields() {
+        let facts = vec![
+            fact(
+                "a.example.com",
+                "GOLISH-INTEL-DNS",
+                EvidenceOutcome::Found,
+                7,
+            ),
+            fact(
+                "b.example.com",
+                "GOLISH-INTEL-SUBDOMAIN",
+                EvidenceOutcome::Found,
+                9,
+            ),
+        ];
+        let d = synthesize_from_evidence(StageKind::TargetIntel, &facts);
+        assert_eq!(d.claims.len(), 2, "one claim per Found fact (D3)");
+        let c = &d.claims[0];
+        assert_eq!(c.subject, "a.example.com");
+        assert_eq!(
+            c.technique.as_deref(),
+            Some("GOLISH-INTEL-DNS"),
+            "claim.technique mirrors the fact so coverage_corroborated aligns by construction"
+        );
+        assert_eq!(c.evidence_ids.len(), 1);
+        assert_eq!(c.evidence_ids[0].as_i64(), 7);
+        assert!(c.summary.contains("#7"), "summary cites the ledger id");
+    }
+
+    #[test]
+    fn projection_empty_fact_yields_no_claim_but_keeps_evidence_ref() {
+        // I8: an Empty fact is a recorded "ran → nothing". Its CheckedEmpty cell is
+        // projected by the gate from the same facts — NOT restated as a claim here —
+        // but its ledger id still belongs in evidence_refs (real, existence-checkable).
+        let facts = vec![fact(
+            "a.example.com",
+            "GOLISH-INTEL-DNS",
+            EvidenceOutcome::Empty,
+            11,
+        )];
+        let d = synthesize_from_evidence(StageKind::TargetIntel, &facts);
+        assert!(d.claims.is_empty(), "Empty facts must not produce claims");
+        assert_eq!(d.evidence_refs.len(), 1);
+        assert_eq!(d.evidence_refs[0].as_i64(), 11);
+    }
+
+    #[test]
+    fn projection_evidence_refs_deduped_and_stage_identity_set() {
+        let facts = vec![
+            fact("a", "GOLISH-INTEL-DNS", EvidenceOutcome::Found, 7),
+            // same ledger row backing a second technique → cited once
+            fact("a", "GOLISH-INTEL-WHOIS", EvidenceOutcome::Found, 7),
+            fact("b", "GOLISH-INTEL-DNS", EvidenceOutcome::Empty, 3),
+        ];
+        let d = synthesize_from_evidence(StageKind::TargetIntel, &facts);
+        let ids: Vec<i64> = d.evidence_refs.iter().map(|e| e.as_i64()).collect();
+        assert_eq!(ids, vec![3, 7], "ids deduped + sorted");
+        assert_eq!(d.stage_id, "target_intel");
+        assert!(!d.stage_run_id.is_nil());
+    }
+
+    // ── DB 业务表真值投影（设计 2026-06-12 §5.3 / 约束 §4） ──────────────────
+
+    #[test]
+    fn db_truth_to_evidence_maps_pairs_to_found_with_sentinel_id() {
+        let pairs = vec![
+            ("moresec.cn".to_string(), "GOLISH-INTEL-ASN".to_string()),
+            (
+                "moresec.cn".to_string(),
+                "GOLISH-INTEL-SUBDOMAIN".to_string(),
+            ),
+        ];
+        let facts = db_truth_facts_to_evidence(pairs);
+        assert_eq!(facts.len(), 2);
+        for f in &facts {
+            assert_eq!(f.outcome, EvidenceOutcome::Found, "DB 投影只产 Found (I8)");
+            assert_eq!(f.evidence_id, 0, "业务表 fact 用哨兵 id=0 (D2)");
+        }
+        assert_eq!(facts[0].asset, "moresec.cn");
+        assert_eq!(facts[0].technique, "GOLISH-INTEL-ASN");
+    }
+
+    #[test]
+    fn db_truth_to_evidence_empty_input_yields_empty() {
+        assert!(db_truth_facts_to_evidence(vec![]).is_empty());
+    }
+
+    #[test]
+    fn synthesize_excludes_db_truth_sentinel_from_refs_and_claims() {
+        // 真实账本 fact（id>0）产 claim + 进 refs；业务表投影 fact（哨兵 id=0）
+        // 不产 claim、不进 refs（D2 / §4.1：fabricated 校验不误伤）。
+        let facts = vec![
+            fact("moresec.cn", "GOLISH-INTEL-DNS", EvidenceOutcome::Found, 42),
+            fact("moresec.cn", "GOLISH-INTEL-ASN", EvidenceOutcome::Found, 0),
+        ];
+        let d = synthesize_from_evidence(StageKind::TargetIntel, &facts);
+        assert_eq!(d.claims.len(), 1, "哨兵 fact 不产 claim");
+        assert_eq!(d.claims[0].technique.as_deref(), Some("GOLISH-INTEL-DNS"));
+        let refs: Vec<i64> = d.evidence_refs.iter().map(|e| e.as_i64()).collect();
+        assert_eq!(refs, vec![42], "evidence_refs 排除哨兵 0");
+    }
+
+    // ── stage-close 门控分支（设计 §5.1） ──────────────────────────────────
+
+    #[test]
+    fn hook_projects_when_stage_opts_in_and_ledger_has_facts() {
+        let p = planned(StageKind::TargetIntel);
+        let ctx = ExecutionContext::default();
+        let facts = vec![
+            fact(
+                "a.example.com",
+                "GOLISH-INTEL-DNS",
+                EvidenceOutcome::Found,
+                7,
+            ),
+            fact(
+                "a.example.com",
+                "GOLISH-INTEL-SUBDOMAIN",
+                EvidenceOutcome::Empty,
+                9,
+            ),
+        ];
+        let (out, outcome) = apply_harness_gate_hook(
+            &p,
+            &ctx,
+            "prose-only report, no JSON".to_string(),
+            None,
+            vec![],
+            Some(facts),
+        );
+        let o = outcome.expect("projection fallback must still run the gate");
+        assert!(
+            !o.missing_deliverable,
+            "projection replaced the missing-deliverable BLOCK path"
+        );
+        assert_eq!(o.gated_stage, StageKind::TargetIntel);
+        assert_eq!(
+            o.evidence_refs,
+            vec![7, 9],
+            "outcome must cite the projected real ledger ids"
+        );
+        assert!(
+            out.contains("## Harness Gate Decision"),
+            "the gate must actually have run on the projected deliverable"
+        );
+    }
+
+    #[test]
+    fn hook_keeps_block_when_ledger_empty_even_if_stage_opts_in() {
+        // §4.5: no facts = no work done — nothing to project, the strict
+        // missing-deliverable BLOCK stands (projection rescues packaging, not work).
+        let p = planned(StageKind::TargetIntel);
+        let ctx = ExecutionContext::default();
+        for facts in [None, Some(vec![])] {
+            let (out, outcome) =
+                apply_harness_gate_hook(&p, &ctx, "prose".to_string(), None, vec![], facts);
+            let o = outcome.expect("stage-tagged unparseable content must produce an outcome");
+            assert!(!o.gate_allowed, "empty ledger → fail-closed BLOCK");
+            assert!(
+                o.missing_deliverable,
+                "must stay on the missing-deliverable repair path"
+            );
+            assert_eq!(out, "prose", "content passes through unchanged on BLOCK");
+        }
+    }
+
+    #[test]
+    fn hook_keeps_block_for_stage_without_opt_in_even_with_facts() {
+        // EAS (substantive, opt-in off) + vuln_triage (finding-producing — the
+        // opt-in must NEVER be on): ledger facts must not soften their contract.
+        let ctx = ExecutionContext::default();
+        for stage in [StageKind::ExternalAttackSurface, StageKind::VulnTriage] {
+            let p = planned(stage);
+            let facts = vec![fact("a", "GOLISH-INTEL-DNS", EvidenceOutcome::Found, 7)];
+            let (_, outcome) =
+                apply_harness_gate_hook(&p, &ctx, "prose".to_string(), None, vec![], Some(facts));
+            let o = outcome.expect("stage-tagged unparseable content must produce an outcome");
+            assert!(!o.gate_allowed, "{stage:?} must keep the fail-closed BLOCK");
+            assert!(
+                o.missing_deliverable,
+                "{stage:?} must stay on the missing-deliverable path"
+            );
+        }
     }
 }

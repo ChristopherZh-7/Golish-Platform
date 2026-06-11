@@ -336,6 +336,26 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// 设计 2026-06-12 §5.3 · DB 业务表真值事实 `(asset, technique)`：业务表里
+    /// `asset` 上 `technique` 真有结构化数据（`organizations.asns`/`.certificates`
+    /// 专列非空、`target_assets(asset_type='subdomain')` 存在、`dns_records` 有记录）。
+    /// coverage gate 外层 hook 把这些转成 `Found` EvidenceFact 合并注入，使 coverage
+    /// 判定以 DB 真值为准。
+    ///
+    /// 只产「有数据」(Found 语义)；DB 无数据**绝不**推断 checked_empty (I8)。
+    /// `in_scope_assets` 是 gate 的权威资产集（保证维度对齐）；空集 → 空结果。
+    /// `org_id` 做 organization 隔离（design 2026-06-09）。
+    ///
+    /// 默认空（test double 零改动）；app 层 `GolishDbRepoProvider` 覆写。
+    async fn db_truth_facts(
+        &self,
+        org_id: Option<Uuid>,
+        in_scope_assets: &[String],
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let _ = (org_id, in_scope_assets);
+        Ok(Vec::new())
+    }
+
     /// Of the given `audit_log.id`s, return the subset that actually exist as
     /// `audit_role='evidence'` rows. The harness gate uses this to reject
     /// deliverables citing fabricated evidence ids.

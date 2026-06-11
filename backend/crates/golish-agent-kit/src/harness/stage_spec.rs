@@ -109,6 +109,15 @@ pub struct StageSpec {
     /// （taxonomy 词典化 + 动态 skeleton 生成见设计 §6.5，待资产库合入后接）。
     #[serde(default)]
     pub expected_techniques: Vec<String>,
+
+    /// 设计 2026-06-11-substantive-stage-evidence-projection-fallback：substantive
+    /// 阶段 agent 没交出可解析 StageDeliverable、但账本里已有该 run 的真实 evidence
+    /// facts 时，允许 harness 从账本投影合成一份 deliverable（claims/evidence_refs
+    /// 来自真实 evidence，**findings 永远空**）走原 gate，替代 missing-deliverable
+    /// 死锁 BLOCK。缺省 false = 原 fail-closed 行为逐字节不变。只对情报/枚举类阶段
+    /// 灰度开启；漏洞类阶段（vuln_triage 等）必须 agent 真报 finding，永不开。
+    #[serde(default)]
+    pub synthesize_from_evidence_when_missing: bool,
 }
 
 fn default_continuity() -> AgentContinuity {
@@ -363,6 +372,42 @@ mod tests {
         }"#;
         let s2 = load_stage_spec_from_json(with_rules).expect("parse with rules");
         assert_eq!(s2.gate_rules.len(), 1);
+    }
+
+    // 设计 2026-06-11-substantive-stage-evidence-projection-fallback：opt-in 门控
+    // 字段缺省必须 false（旧 spec 零行为变化），显式 true 可解析；灰度范围 =
+    // 先只 target_intel（D5），漏洞类 vuln_triage 必须保持 false（红线）。
+    #[test]
+    fn synthesize_from_evidence_when_missing_defaults_false_and_parses() {
+        let minimal = r#"{"id":"vuln_triage","kind":"vuln_triage","risk_level":"high",
+            "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate"}"#;
+        let s = load_stage_spec_from_json(minimal).expect("parse");
+        assert!(
+            !s.synthesize_from_evidence_when_missing,
+            "missing field must default to false (fail-closed legacy behavior)"
+        );
+
+        let with = r#"{"id":"target_intel","kind":"target_intel","risk_level":"low",
+            "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+            "synthesize_from_evidence_when_missing":true}"#;
+        let s2 = load_stage_spec_from_json(with).expect("parse with flag");
+        assert!(s2.synthesize_from_evidence_when_missing);
+    }
+
+    #[test]
+    fn target_intel_enables_projection_fallback_and_vuln_triage_does_not() {
+        let ti = crate::harness::resources::load_embedded_stage_spec(StageKind::TargetIntel)
+            .expect("load target_intel spec");
+        assert!(
+            ti.synthesize_from_evidence_when_missing,
+            "target_intel is the gray-rollout stage for the projection fallback (D5)"
+        );
+        let vt = crate::harness::resources::load_embedded_stage_spec(StageKind::VulnTriage)
+            .expect("load vuln_triage spec");
+        assert!(
+            !vt.synthesize_from_evidence_when_missing,
+            "finding-producing stages must NEVER enable the projection fallback"
+        );
     }
 
     #[test]

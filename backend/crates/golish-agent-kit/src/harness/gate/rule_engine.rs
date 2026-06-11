@@ -1788,4 +1788,39 @@ mod tests {
         ]);
         assert!(eval(&d, &test_spec(), &[rule])[0].is_pass());
     }
+
+    // ── 设计 2026-06-12 §5.3: DB 业务表投影 fact（哨兵 id=0）端到端安全保证 ──
+    // ① coverage_complete derive_from_evidence 用哨兵 fact 补格（投影只看
+    //    asset/technique/outcome，与 evidence_id 无关）；
+    // ② coverage_corroborated 只查自报 coverage cell，投影格不在 d.coverage 里，
+    //    故天然绕过它，不被误 BLOCK（这是 DB 真值投影方案安全的核心保证）。
+    #[test]
+    fn db_truth_sentinel_fact_fills_coverage_without_corroboration_block() {
+        let complete = evidence_derive_rule(None);
+        let corroborated = parse(
+            r#"{ "op":"coverage_corroborated",
+                 "on_fail":{"reason":"found cells must be corroborated by technique-tagged items"} }"#,
+        );
+        // agent 自报 coverage 全空（没写 ASN 格、没 claim）。
+        let d = deliverable_with_coverage(vec![]);
+        // 业务表投影 fact：asset=a × ASN，Found，哨兵 evidence_id=0。
+        let ctx = projection_ctx(
+            &["GOLISH-INTEL-ASN"],
+            Some(vec![fact(
+                "a",
+                "GOLISH-INTEL-ASN",
+                EvidenceOutcome::Found,
+                0,
+            )]),
+        );
+        let outcomes = eval_with_context(&d, &test_spec(), &[complete, corroborated], &ctx);
+        assert!(
+            outcomes[0].is_pass(),
+            "DB-truth sentinel fact (id=0) fills (a × ASN) via derive_from_evidence (projection is id-agnostic)"
+        );
+        assert!(
+            outcomes[1].is_pass(),
+            "coverage_corroborated only inspects self-reported cells; the projected cell is not in d.coverage, so it isn't (and needn't be) corroborated"
+        );
+    }
 }

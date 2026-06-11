@@ -257,6 +257,23 @@ impl GolishDbRepoProvider {
         self.recon_targets.in_scope_values(None, org_id).await
     }
 
+    /// 设计 2026-06-12 §5.3 · DB 业务表真值事实（转 String technique，与 golish-db
+    /// 的 `&'static str` 常量解耦）。`coverage_truth` 是 harness 跨表只读真值投影
+    /// （SHARED repo，类比 audit ledger），直接调 golish-db 而非经 recon CRUD port。
+    pub(super) async fn db_truth_facts_impl(
+        &self,
+        org_id: Option<Uuid>,
+        in_scope_assets: &[String],
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let rows = golish_db::repo::coverage_truth::coverage_truth_facts(
+            &self.pool,
+            org_id,
+            in_scope_assets,
+        )
+        .await?;
+        Ok(rows.into_iter().map(|(a, t)| (a, t.to_string())).collect())
+    }
+
     pub(super) async fn in_scope_targets_impl(&self) -> anyhow::Result<Vec<serde_json::Value>> {
         let targets = self.recon_targets.in_scope_targets(None).await?;
         Ok(targets
