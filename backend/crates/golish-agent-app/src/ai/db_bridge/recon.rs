@@ -270,4 +270,25 @@ impl GolishDbRepoProvider {
             })
             .collect())
     }
+
+    /// P3 Phase B (2026-06-11): distinct `targets.type` of the in-scope assets,
+    /// so the harness coverage gate derives dynamic expected techniques per asset
+    /// class (`technique_resolver`). Reuses the recon targets port (no new SQL /
+    /// schema); dedupes in first-seen order for deterministic output. `org_id`
+    /// narrowing is deferred — chat sessions carry no org binding, so the legacy
+    /// whole-visible set matches `in_scope_targets_impl`.
+    pub(super) async fn in_scope_target_types_impl(
+        &self,
+        _org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<String>> {
+        let targets = self.recon_targets.in_scope_targets(None).await?;
+        let mut types: Vec<String> = Vec::new();
+        for t in targets {
+            let ty = t.target_type.as_str().to_string();
+            if !types.contains(&ty) {
+                types.push(ty);
+            }
+        }
+        Ok(types)
+    }
 }
