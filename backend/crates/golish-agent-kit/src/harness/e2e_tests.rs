@@ -28,8 +28,8 @@ use super::sprint_contract::{
 use super::stage_harness::StageHarness;
 use super::stage_spec::load_stage_spec_from_json;
 use super::types::{
-    ExternalAttackSurfaceDeliverable, FindingSeverity, HarnessFinding, SkippedCheckRecord,
-    StageClaim, StageKind,
+    CoverageCell, CoverageStatus, ExternalAttackSurfaceDeliverable, FindingSeverity,
+    HarnessFinding, SkippedCheckRecord, StageClaim, StageKind,
 };
 
 const ASSESSMENT_PROFILE_JSON: &str =
@@ -98,6 +98,29 @@ fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
         severity: FindingSeverity::Info,
         evidence_refs: vec![http_eid],
     });
+    // EAS (2026-06-09 reorder) declares GOLISH-EAS-{LIVENESS,PORT,
+    // SERVICE-FINGERPRINT} expected techniques + a coverage_complete gate_rule.
+    // A compliant EAS deliverable maps each in-scope asset's liveness/port/
+    // service to a terminal coverage cell — an empty matrix is a gate BLOCK
+    // (coverage-empty-bypass fix, 2026-06-11), so the happy path supplies one.
+    let cell = |technique: &str, status: CoverageStatus| CoverageCell {
+        asset: "api.example.com".to_string(),
+        technique: technique.to_string(),
+        status,
+        evidence_refs: vec![http_eid],
+        note: Some("mapped via httpx".to_string()),
+        tested_units: 1,
+        total_units: 1,
+        sampling_rationale: None,
+    };
+    d.coverage = vec![
+        cell("GOLISH-EAS-LIVENESS", CoverageStatus::Found),
+        cell("GOLISH-EAS-PORT", CoverageStatus::Found),
+        cell(
+            "GOLISH-EAS-SERVICE-FINGERPRINT",
+            CoverageStatus::CheckedEmpty,
+        ),
+    ];
     d
 }
 

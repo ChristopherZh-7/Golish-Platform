@@ -287,6 +287,29 @@ fn coverage_complete(
         }
     };
 
+    // P0 (2026-06-11 coverage-empty-bypass): we already returned Pass above when
+    // `techniques` is empty, so reaching here means the stage DECLARES expected
+    // techniques. An empty asset set at this point means no authoritative
+    // in-scope assets were injected AND the deliverable self-reported no coverage
+    // at all — i.e. the agent omitted the matrix entirely. Treating that as a
+    // vacuous Pass conflates "omitted" with "checked-empty" (AGENTS.md I8) and
+    // lets the whole coverage gate be skipped. Block instead: a coverage-bearing
+    // stage must submit at least one (asset × technique) terminal cell.
+    if assets.is_empty() {
+        return GateCheckOutcome::Block {
+            reasons: vec![format!(
+                "{}: coverage matrix is empty but the stage declares {} expected technique(s) — submit a per-asset terminal cell (found/checked_empty/blocked/not_applicable) for each, omission is not checked-empty (I8)",
+                on_fail.reason,
+                techniques.len()
+            )],
+            recovery: HarnessRecoveryActions {
+                hints: on_fail.hints.clone(),
+                repair_tool_calls: on_fail.repair_tool_calls.clone(),
+                missing_evidence_kinds: on_fail.missing_evidence_kinds.clone(),
+            },
+        };
+    }
+
     let mut gaps: Vec<String> = Vec::new();
     for asset in &assets {
         for tech in techniques {
@@ -972,6 +995,45 @@ mod tests {
             }
             GateCheckOutcome::Pass => panic!("expected Block for b×idor gap"),
         }
+    }
+
+    #[test]
+    fn coverage_complete_blocks_empty_coverage_when_techniques_expected() {
+        // P0 (2026-06-11 coverage-empty-bypass): a coverage-bearing stage
+        // (expected_techniques non-empty) that submits an EMPTY coverage matrix
+        // must BLOCK. Previously, with no injected in_scope_assets, the
+        // self-reported asset set was empty → the asset×technique loop ran zero
+        // times → vacuous Pass, letting an agent skip the matrix entirely. That
+        // conflates "omitted" with "checked-empty" (AGENTS.md I8). Real runs
+        // showed 8/9 target_intel deliverables submitting empty coverage and
+        // passing — this test pins the corrected behavior.
+        let rule = coverage_complete_rule();
+        let spec = spec_with_expected(&["idor", "xss"]);
+        let d = deliverable_with_coverage(vec![]);
+        match &eval(&d, &spec, &[rule])[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(
+                    reasons[0].contains("coverage matrix is empty"),
+                    "{:?}",
+                    reasons
+                );
+            }
+            GateCheckOutcome::Pass => {
+                panic!("empty coverage on a stage that declares expected_techniques must BLOCK")
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_complete_empty_coverage_still_noop_without_expected_techniques() {
+        // Guard the fix's blast radius: a stage with NO expected_techniques (e.g.
+        // scoping) stays a no-op Pass even with empty coverage (backward compat).
+        let rule = coverage_complete_rule();
+        let d = deliverable_with_coverage(vec![]);
+        assert!(
+            eval(&d, &test_spec(), &[rule])[0].is_pass(),
+            "no expected_techniques → empty coverage must remain a no-op Pass"
+        );
     }
 
     // ── coverage_denominator op（设计 2026-06-05-vuln-triage-technique-matrix §5.3） ──
