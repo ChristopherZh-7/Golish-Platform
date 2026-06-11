@@ -46,6 +46,9 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
         "amass" | "subfinder" | "assetfinder" | "sublist3r" | "findomain" => ("recon", "subdomain"),
         "katana" | "hakrawler" | "gospider" => ("recon", "crawler"),
         "gau" | "waybackurls" => ("recon", "url-history"),
+        // whois / ASN lookups are zero-touch (query the registrar/RIR, not the
+        // target's own hosts) → a passive target_intel technique.
+        "whois" | "asn" | "whois-asn" => ("recon", "whois"),
         "enscan_go" | "enscan" | "0.zone" | "0zone" | "zero-zone" => ("recon", "osint"),
         "gowitness" | "aquatone" | "eyewitness" | "cutycapt" => ("recon", "visual"),
         // ── web ──────────────────────────────────────────────────────────────
@@ -191,6 +194,23 @@ mod tests {
 
     fn allow(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn whois_resolves_to_recon_whois() {
+        // P2 (2026-06-11): whois is a zero-touch passive technique (queries the
+        // registrar, not the target's own hosts) and belongs in target_intel.
+        // It was previously absent from the taxonomy, so the stage guard denied
+        // it (deny-by-default) — real runs show `whois` BLOCKED in target_intel.
+        // Map it to a dedicated recon/whois subcategory so target_intel can opt
+        // in and satisfy GOLISH-INTEL-WHOIS/ASN without forcing providers-only.
+        assert_eq!(tool_category("whois"), Some(("recon", "whois")));
+        // and a stage that allows recon/whois permits it
+        assert!(stage_allows(
+            "pentest_run",
+            &json!({"tool_name": "whois"}),
+            &allow(&["recon/whois"])
+        ));
     }
 
     #[test]

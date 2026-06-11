@@ -285,6 +285,9 @@ mod tests {
         assert!(s
             .allowed_tool_types
             .contains(&"recon/url-history".to_string()));
+        // P2 (2026-06-11): whois 是零接触被动技术，归 target_intel（先前缺类型导致
+        // stage guard 误拦 CLI whois）。
+        assert!(s.allowed_tool_types.contains(&"recon/whois".to_string()));
         // 被动子域名枚举设为本阶段硬地板（与从 EAS 删除对称）。
         assert_eq!(s.min_invocations.get("subdomain_enum_passive"), Some(&1));
     }
