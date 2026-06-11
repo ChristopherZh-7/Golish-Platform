@@ -51,8 +51,19 @@ pub enum GateRule {
     CoverageComplete {
         #[serde(default)]
         terminal_status: Option<Vec<CoverageStatus>>,
+        /// P5（2026-06-11）：true 时，technique 标注且 subject == asset 的
+        /// claim/finding 视作该 (asset × technique) 的 found 终态（自动派生）。
+        /// 只补 covered 判定，不扩资产全集（D1）；absence 仍须显式 cell（D2/I8）。
+        /// 缺省 false = 行为与旧版逐字节一致。
+        #[serde(default)]
+        derive_from_items: bool,
         on_fail: OnFail,
     },
+    /// P5（2026-06-11）交叉校验：每个 status == found 的 coverage cell 必须有 ≥1 个
+    /// technique 匹配的 claim/finding 佐证（item.technique == cell.technique 且
+    /// item.subject == cell.asset，精确相等，D5）。found 之外的终态豁免（D3）：
+    /// absence 无结构化观察可佐证，由 cell 自身 evidence/note 规则把关。
+    CoverageCorroborated { on_fail: OnFail },
     /// 分母覆盖（设计 2026-06-05-vuln-triage-technique-matrix §5.3）。对 status ∈
     /// {found, checked_empty} 的每个 coverage cell 核「面覆盖」：默认全覆盖（D6）要求
     /// `tested_units == total_units`；抽样例外要求 `sampling_rationale` 非空且
@@ -91,6 +102,7 @@ impl GateRule {
             GateRule::CountAtLeast { on_fail, .. }
             | GateRule::ForAll { on_fail, .. }
             | GateRule::CoverageComplete { on_fail, .. }
+            | GateRule::CoverageCorroborated { on_fail }
             | GateRule::CoverageDenominator { on_fail, .. } => on_fail.reason.clone(),
             GateRule::NamedCheck { check, on_fail } => on_fail
                 .as_ref()
@@ -234,8 +246,17 @@ fn eval_one(
         }
         GateRule::CoverageComplete {
             terminal_status,
+            derive_from_items,
             on_fail,
-        } => coverage_complete(d, spec, ctx, terminal_status.as_deref(), on_fail),
+        } => coverage_complete(
+            d,
+            spec,
+            ctx,
+            terminal_status.as_deref(),
+            *derive_from_items,
+            on_fail,
+        ),
+        GateRule::CoverageCorroborated { on_fail } => coverage_corroborated(d, on_fail),
         GateRule::CoverageDenominator {
             min_sample_ratio_pct,
             on_fail,
@@ -260,6 +281,7 @@ fn coverage_complete(
     spec: &StageSpec,
     ctx: &GateContext,
     terminal_status: Option<&[CoverageStatus]>,
+    derive_from_items: bool,
     on_fail: &OnFail,
 ) -> GateCheckOutcome {
     // ③ seam：动态注入的期望技术覆盖 spec 静态值。
@@ -313,11 +335,22 @@ fn coverage_complete(
     let mut gaps: Vec<String> = Vec::new();
     for asset in &assets {
         for tech in techniques {
-            let covered = d
+            let declared = d
                 .coverage
                 .iter()
                 .any(|c| c.asset == *asset && c.technique == *tech && terminal.contains(&c.status));
-            if !covered {
+            // P5 派生（D1/D2）：technique 标注且 subject == asset 的 claim/finding 视作
+            // 该 (asset × technique) 的 found 终态；仅当 found 本身属于本规则的 terminal
+            // 集时才生效（terminal_status 收窄时不越权）。absence 仍须显式 cell。
+            let derived =
+                derive_from_items
+                    && terminal.contains(&CoverageStatus::Found)
+                    && (d.claims.iter().any(|c| {
+                        c.subject == *asset && c.technique.as_deref() == Some(tech.as_str())
+                    }) || d.findings.iter().any(|f| {
+                        f.subject == *asset && f.technique.as_deref() == Some(tech.as_str())
+                    }));
+            if !declared && !derived {
                 gaps.push(format!("({asset} × {tech})"));
             }
         }
@@ -424,6 +457,53 @@ fn coverage_denominator(
     }
 }
 
+/// `coverage_corroborated` 求值（纯函数，P5 设计 D3/D5）。每个 status == found 的
+/// coverage cell 必须有 ≥1 个 technique 匹配的 claim/finding 佐证（item.technique ==
+/// cell.technique 且 item.subject == cell.asset，精确相等）。其余终态豁免（absence
+/// 无结构化观察可佐证，由 cell 自身 evidence/note 规则把关）。
+fn coverage_corroborated(d: &StageDeliverable, on_fail: &OnFail) -> GateCheckOutcome {
+    let mut gaps: Vec<String> = Vec::new();
+    for cell in &d.coverage {
+        if cell.status != CoverageStatus::Found {
+            continue;
+        }
+        let corroborated = d.claims.iter().any(|c| {
+            c.subject == cell.asset && c.technique.as_deref() == Some(cell.technique.as_str())
+        }) || d.findings.iter().any(|f| {
+            f.subject == cell.asset && f.technique.as_deref() == Some(cell.technique.as_str())
+        });
+        if !corroborated {
+            gaps.push(format!("({} × {})", cell.asset, cell.technique));
+        }
+    }
+    if gaps.is_empty() {
+        return GateCheckOutcome::Pass;
+    }
+    const MAX_SHOWN: usize = 8;
+    let shown = gaps
+        .iter()
+        .take(MAX_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let suffix = if gaps.len() > MAX_SHOWN {
+        format!(" (+{} more)", gaps.len() - MAX_SHOWN)
+    } else {
+        String::new()
+    };
+    GateCheckOutcome::Block {
+        reasons: vec![format!(
+            "{}: no technique-tagged claim/finding backs {}{}",
+            on_fail.reason, shown, suffix
+        )],
+        recovery: HarnessRecoveryActions {
+            hints: on_fail.hints.clone(),
+            repair_tool_calls: on_fail.repair_tool_calls.clone(),
+            missing_evidence_kinds: on_fail.missing_evidence_kinds.clone(),
+        },
+    }
+}
+
 enum ItemRef<'a> {
     Claim(&'a StageClaim),
     Finding(&'a HarnessFinding),
@@ -522,6 +602,13 @@ fn resolve<'a>(item: &ItemRef<'a>, f: ItemField) -> Result<FieldVal<'a>, String>
         (ItemRef::Finding(f), ItemField::Subject) => Ok(FieldVal::Text(&f.subject)),
         (ItemRef::Finding(f), ItemField::EvidenceRefs) => Ok(FieldVal::List(f.evidence_refs.len())),
         (ItemRef::Finding(f), ItemField::Severity) => Ok(FieldVal::Sev(f.severity)),
+        // P5：technique 可寻址到 claims/findings（None → "" 使 non_empty = "已标注"）。
+        (ItemRef::Claim(c), ItemField::Technique) => {
+            Ok(FieldVal::Text(c.technique.as_deref().unwrap_or("")))
+        }
+        (ItemRef::Finding(f), ItemField::Technique) => {
+            Ok(FieldVal::Text(f.technique.as_deref().unwrap_or("")))
+        }
         (ItemRef::Coverage(c), ItemField::Asset) => Ok(FieldVal::Text(&c.asset)),
         (ItemRef::Coverage(c), ItemField::Technique) => Ok(FieldVal::Text(&c.technique)),
         (ItemRef::Coverage(c), ItemField::Status) => Ok(FieldVal::Status(c.status)),
@@ -1270,5 +1357,224 @@ mod tests {
             }
             GateCheckOutcome::Pass => panic!("ctx-injected expected technique must be enforced"),
         }
+    }
+
+    // ── P5 Task 3: ItemField::Technique resolves on claims/findings ───────────
+
+    #[test]
+    fn technique_field_resolves_on_claims_and_findings() {
+        let rule = parse(
+            r#"{ "op":"for_all","over":"claims",
+                 "require":{"pred":"non_empty","field":"technique"},
+                 "on_fail":{"reason":"claims must be technique-tagged"} }"#,
+        );
+        let mut d = StageDeliverable {
+            stage_id: "vuln_triage".to_string(),
+            stage_run_id: uuid::Uuid::new_v4(),
+            claims: vec![StageClaim {
+                kind: "dns_a_record".to_string(),
+                subject: "example.com".to_string(),
+                summary: "A 1.2.3.4".to_string(),
+                evidence_ids: vec![],
+                technique: Some("GOLISH-INTEL-DNS".to_string()),
+            }],
+            evidence_refs: vec![],
+            skipped_checks: vec![],
+            findings: vec![],
+            required_checks_done: vec![],
+            coverage: vec![],
+        };
+        assert!(eval(&d, &test_spec(), std::slice::from_ref(&rule))[0].is_pass());
+
+        d.claims.push(StageClaim {
+            kind: "untagged".to_string(),
+            subject: "example.com".to_string(),
+            summary: "no technique".to_string(),
+            evidence_ids: vec![],
+            technique: None,
+        });
+        assert!(!eval(&d, &test_spec(), &[rule])[0].is_pass());
+    }
+
+    #[test]
+    fn technique_eq_pred_matches_on_findings() {
+        let rule = parse(
+            r#"{ "op":"count_at_least","over":"findings",
+                 "where":{"pred":"eq","field":"technique","value":"GOLISH-INTEL-SUBDOMAIN"},
+                 "min":1,"on_fail":{"reason":"need a subdomain-technique finding"} }"#,
+        );
+        let d = StageDeliverable {
+            stage_id: "vuln_triage".to_string(),
+            stage_run_id: uuid::Uuid::new_v4(),
+            claims: vec![],
+            evidence_refs: vec![],
+            skipped_checks: vec![],
+            findings: vec![HarnessFinding {
+                finding_id: uuid::Uuid::new_v4(),
+                kind: "subdomain".to_string(),
+                subject: "a.example.com".to_string(),
+                severity: FindingSeverity::Info,
+                evidence_refs: vec![],
+                technique: Some("GOLISH-INTEL-SUBDOMAIN".to_string()),
+            }],
+            required_checks_done: vec![],
+            coverage: vec![],
+        };
+        assert!(eval(&d, &test_spec(), &[rule])[0].is_pass());
+    }
+
+    // ── P5 Task 4: coverage_complete derive_from_items ────────────────────────
+
+    #[test]
+    fn coverage_complete_derive_from_items_fills_gap_from_tagged_claim() {
+        let rule = parse(
+            r#"{ "op":"coverage_complete","derive_from_items":true,
+                 "on_fail":{"reason":"intel coverage incomplete"} }"#,
+        );
+        let spec = spec_with_expected(&["GOLISH-INTEL-DNS", "GOLISH-INTEL-WHOIS"]);
+        let mut d = deliverable_with_coverage(vec![cov_cell(
+            "example.com",
+            "GOLISH-INTEL-WHOIS",
+            CoverageStatus::CheckedEmpty,
+            vec![1],
+        )]);
+        d.claims.push(StageClaim {
+            kind: "dns_a_record".to_string(),
+            subject: "example.com".to_string(),
+            summary: "A 1.2.3.4".to_string(),
+            evidence_ids: vec![],
+            technique: Some("GOLISH-INTEL-DNS".to_string()),
+        });
+        assert!(eval(&d, &spec, &[rule])[0].is_pass());
+    }
+
+    #[test]
+    fn coverage_complete_derive_off_keeps_blocking() {
+        let rule = coverage_complete_rule(); // no derive_from_items
+        let spec = spec_with_expected(&["GOLISH-INTEL-DNS", "GOLISH-INTEL-WHOIS"]);
+        let mut d = deliverable_with_coverage(vec![cov_cell(
+            "example.com",
+            "GOLISH-INTEL-WHOIS",
+            CoverageStatus::CheckedEmpty,
+            vec![1],
+        )]);
+        d.claims.push(StageClaim {
+            kind: "dns_a_record".to_string(),
+            subject: "example.com".to_string(),
+            summary: "A 1.2.3.4".to_string(),
+            evidence_ids: vec![],
+            technique: Some("GOLISH-INTEL-DNS".to_string()),
+        });
+        match &eval(&d, &spec, &[rule])[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(
+                    reasons[0].contains("(example.com × GOLISH-INTEL-DNS)"),
+                    "{reasons:?}"
+                );
+            }
+            GateCheckOutcome::Pass => panic!("derive off must keep current blocking behavior"),
+        }
+    }
+
+    #[test]
+    fn coverage_complete_derive_requires_matching_subject() {
+        let rule = parse(
+            r#"{ "op":"coverage_complete","derive_from_items":true,
+                 "on_fail":{"reason":"intel coverage incomplete"} }"#,
+        );
+        let spec = spec_with_expected(&["GOLISH-INTEL-DNS", "GOLISH-INTEL-WHOIS"]);
+        let mut d = deliverable_with_coverage(vec![cov_cell(
+            "example.com",
+            "GOLISH-INTEL-WHOIS",
+            CoverageStatus::CheckedEmpty,
+            vec![1],
+        )]);
+        d.claims.push(StageClaim {
+            kind: "dns_a_record".to_string(),
+            subject: "other.com".to_string(),
+            summary: "A 5.6.7.8".to_string(),
+            evidence_ids: vec![],
+            technique: Some("GOLISH-INTEL-DNS".to_string()),
+        });
+        match &eval(&d, &spec, &[rule])[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(
+                    reasons[0].contains("(example.com × GOLISH-INTEL-DNS)"),
+                    "{reasons:?}"
+                );
+            }
+            GateCheckOutcome::Pass => panic!("subject mismatch must not derive coverage"),
+        }
+    }
+
+    // ── P5 Task 5: coverage_corroborated ──────────────────────────────────────
+
+    #[test]
+    fn coverage_corroborated_blocks_unbacked_found_cell() {
+        let rule = parse(
+            r#"{ "op":"coverage_corroborated",
+                 "on_fail":{"reason":"found cells must be corroborated by technique-tagged items"} }"#,
+        );
+        let d = deliverable_with_coverage(vec![cov_cell(
+            "example.com",
+            "GOLISH-INTEL-DNS",
+            CoverageStatus::Found,
+            vec![1],
+        )]);
+        match &eval(&d, &test_spec(), &[rule])[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(
+                    reasons[0].contains("(example.com × GOLISH-INTEL-DNS)"),
+                    "{reasons:?}"
+                );
+            }
+            GateCheckOutcome::Pass => panic!("uncorroborated found cell must Block"),
+        }
+    }
+
+    #[test]
+    fn coverage_corroborated_passes_with_matching_tagged_item() {
+        let rule = parse(
+            r#"{ "op":"coverage_corroborated",
+                 "on_fail":{"reason":"found cells must be corroborated by technique-tagged items"} }"#,
+        );
+        let mut d = deliverable_with_coverage(vec![cov_cell(
+            "example.com",
+            "GOLISH-INTEL-DNS",
+            CoverageStatus::Found,
+            vec![1],
+        )]);
+        d.claims.push(StageClaim {
+            kind: "dns_a_record".to_string(),
+            subject: "example.com".to_string(),
+            summary: "A 1.2.3.4".to_string(),
+            evidence_ids: vec![],
+            technique: Some("GOLISH-INTEL-DNS".to_string()),
+        });
+        assert!(eval(&d, &test_spec(), &[rule])[0].is_pass());
+    }
+
+    #[test]
+    fn coverage_corroborated_exempts_non_found_cells() {
+        let rule = parse(
+            r#"{ "op":"coverage_corroborated",
+                 "on_fail":{"reason":"found cells must be corroborated by technique-tagged items"} }"#,
+        );
+        let d = deliverable_with_coverage(vec![
+            cov_cell(
+                "a",
+                "GOLISH-INTEL-DNS",
+                CoverageStatus::CheckedEmpty,
+                vec![1],
+            ),
+            cov_cell("a", "GOLISH-INTEL-WHOIS", CoverageStatus::Blocked, vec![]),
+            cov_cell(
+                "a",
+                "GOLISH-INTEL-ASN",
+                CoverageStatus::NotApplicable,
+                vec![],
+            ),
+        ]);
+        assert!(eval(&d, &test_spec(), &[rule])[0].is_pass());
     }
 }

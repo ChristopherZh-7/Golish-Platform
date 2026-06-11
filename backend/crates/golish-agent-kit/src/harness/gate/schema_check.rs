@@ -4,6 +4,7 @@
 //! Task 1c.5 完整 schema 比对.
 
 use super::super::stage_spec::StageSpec;
+use super::super::technique_taxonomy;
 use super::super::types::{ExternalAttackSurfaceDeliverable, HarnessRecoveryActions};
 use super::GateCheckOutcome;
 
@@ -21,6 +22,32 @@ pub fn run(deliverable: &ExternalAttackSurfaceDeliverable, spec: &StageSpec) -> 
             "deliverable.stage_id ({}) does not match stage_spec.id ({})",
             deliverable.stage_id, spec.id
         ));
+    }
+
+    // P5 (2026-06-11) fail-closed: a claim/finding `technique` (when set) must be a
+    // registered technique_taxonomy id. A typo'd id would silently never match any
+    // coverage cell (derive/corroborate), so reject it at the schema layer rather
+    // than leave a permanent invisible gap. Same philosophy as the spec-side
+    // `all_embedded_expected_techniques_are_recognized` guard.
+    for c in &deliverable.claims {
+        if let Some(t) = c.technique.as_deref() {
+            if !technique_taxonomy::is_recognized(t) {
+                reasons.push(format!(
+                    "claim '{}' carries unregistered technique '{}' — use a registered id from technique_taxonomy.json (e.g. GOLISH-INTEL-DNS / WSTG-INPV-05) or omit the field",
+                    c.kind, t
+                ));
+            }
+        }
+    }
+    for f in &deliverable.findings {
+        if let Some(t) = f.technique.as_deref() {
+            if !technique_taxonomy::is_recognized(t) {
+                reasons.push(format!(
+                    "finding '{}' carries unregistered technique '{}' — use a registered id from technique_taxonomy.json or omit the field",
+                    f.kind, t
+                ));
+            }
+        }
     }
 
     if reasons.is_empty() {
@@ -106,5 +133,47 @@ mod tests {
             }
             _ => panic!("expected Block"),
         }
+    }
+
+    #[test]
+    fn blocks_unregistered_claim_or_finding_technique() {
+        // P5: a typo'd technique id is rejected at the schema layer (fail-closed).
+        let spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
+        let mut d = make_deliverable("external_attack_surface");
+        d.claims.push(StageClaim {
+            kind: "dns_a_record".to_string(),
+            subject: "example.com".to_string(),
+            summary: "A 1.2.3.4".to_string(),
+            evidence_ids: vec![],
+            technique: Some("GOLISH-INTEL-TYPO".to_string()),
+        });
+        match run(&d, &spec) {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons.iter().any(|r| r.contains("GOLISH-INTEL-TYPO")));
+            }
+            GateCheckOutcome::Pass => panic!("unregistered technique must Block"),
+        }
+    }
+
+    #[test]
+    fn passes_registered_or_absent_technique() {
+        // P5: a registered id passes; an untagged (None) claim stays legal.
+        let spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
+        let mut d = make_deliverable("external_attack_surface");
+        d.claims.push(StageClaim {
+            kind: "dns_a_record".to_string(),
+            subject: "example.com".to_string(),
+            summary: "A 1.2.3.4".to_string(),
+            evidence_ids: vec![],
+            technique: Some("GOLISH-INTEL-DNS".to_string()),
+        });
+        d.claims.push(StageClaim {
+            kind: "note".to_string(),
+            subject: "example.com".to_string(),
+            summary: "untagged claim stays legal".to_string(),
+            evidence_ids: vec![],
+            technique: None,
+        });
+        assert!(matches!(run(&d, &spec), GateCheckOutcome::Pass));
     }
 }
