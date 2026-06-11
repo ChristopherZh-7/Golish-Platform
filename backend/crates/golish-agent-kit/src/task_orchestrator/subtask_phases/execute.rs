@@ -262,12 +262,14 @@ impl TaskOrchestrator {
                     let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned).await;
                     let in_scope_target_types =
                         self.fetch_in_scope_target_types_for_gate(planned).await;
+                    let evidence_facts = self.fetch_evidence_facts_for_gate(planned).await;
                     let (gated_content, gate_outcome) = apply_harness_gate_hook(
                         planned,
                         exec_ctx,
                         agent_result.content,
                         in_scope_assets,
                         in_scope_target_types,
+                        evidence_facts,
                     );
                     if let Some(mut outcome) = gate_outcome {
                         // P0 · reject deliverables citing fabricated evidence ids
@@ -421,12 +423,14 @@ impl TaskOrchestrator {
         // retry possible) and drive the transition on whatever it decides.
         let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned).await;
         let in_scope_target_types = self.fetch_in_scope_target_types_for_gate(planned).await;
+        let evidence_facts = self.fetch_evidence_facts_for_gate(planned).await;
         let (out, gate_outcome) = apply_harness_gate_hook(
             planned,
             exec_ctx,
             fallback,
             in_scope_assets,
             in_scope_target_types,
+            evidence_facts,
         );
         if let Some(mut outcome) = gate_outcome {
             self.enforce_evidence_existence(&mut outcome).await;
@@ -1227,6 +1231,58 @@ impl TaskOrchestrator {
         }
     }
 
+    /// PR3 (设计 2026-06-11-coverage-auto-derive) · fetch the session's evidence
+    /// facts (asset, technique, outcome, id) so `coverage_complete` can project
+    /// ledger-proven cells instead of demanding a hand-written matrix. `None`
+    /// when the subtask has no stage / no session / no facts / lookup error —
+    /// every fallback is the projection-off legacy behavior (fail-closed: a
+    /// missing fact never fills a cell).
+    async fn fetch_evidence_facts_for_gate(
+        &self,
+        planned: &PlannedSubtask,
+    ) -> Option<Vec<crate::harness::gate::rule_engine::EvidenceFact>> {
+        use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
+        planned.harness_stage.as_ref()?;
+        let sid = self.chat_session_id.as_deref()?;
+        let rows = match self.repo.evidence_facts_for_session(sid).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(
+                    target: "harness::hook",
+                    error = %e,
+                    "evidence-facts lookup failed; coverage gate runs without projection"
+                );
+                return None;
+            }
+        };
+        let facts: Vec<EvidenceFact> = rows
+            .into_iter()
+            .filter_map(|(asset, technique, outcome, evidence_id)| {
+                // 保守解析：未知 outcome 字符串 → 丢行（不投影），绝不猜。
+                let outcome = match outcome.as_str() {
+                    "found" => EvidenceOutcome::Found,
+                    "empty" => EvidenceOutcome::Empty,
+                    _ => return None,
+                };
+                Some(EvidenceFact {
+                    asset,
+                    technique,
+                    outcome,
+                    evidence_id,
+                })
+            })
+            .collect();
+        if facts.is_empty() {
+            return None;
+        }
+        tracing::info!(
+            target: "harness::hook",
+            fact_count = facts.len(),
+            "injecting ledger evidence facts into coverage gate (projection)"
+        );
+        Some(facts)
+    }
+
     /// P0 · gate evidence 回查: 把交付物里引用、但 ledger 中**不存在**的 evidence
     /// id 当作伪造 → 翻 BLOCK + 追加纠正喂回 reflector. infra 查询失败只 warn,
     /// 不误伤合法 stage (放行), 避免 DB 抖动卡死流程.
@@ -1679,6 +1735,7 @@ fn apply_harness_gate_hook(
     content: String,
     in_scope_assets: Option<Vec<String>>,
     in_scope_target_types: Vec<String>,
+    evidence_facts: Option<Vec<crate::harness::gate::rule_engine::EvidenceFact>>,
 ) -> (String, Option<HarnessGateOutcome>) {
     let Some(stage_hint) = planned.harness_stage.as_ref() else {
         // Observability (2026-06-01): previously DEBUG, so a stage-less subtask
@@ -1832,6 +1889,7 @@ fn apply_harness_gate_hook(
     let gate_ctx = crate::harness::GateContext {
         in_scope_assets,
         expected_techniques,
+        evidence_facts,
     };
     let decision = harness.validate_gate_with_context(&deliverable, None, &gate_ctx);
 
@@ -2653,7 +2711,7 @@ mod harness_gate_hook_tests {
         let ctx = ExecutionContext::default();
         let content = "anything".to_string();
         assert_eq!(
-            apply_harness_gate_hook(&p, &ctx, content.clone(), None, vec![]).0,
+            apply_harness_gate_hook(&p, &ctx, content.clone(), None, vec![], None).0,
             content
         );
     }
@@ -2664,7 +2722,7 @@ mod harness_gate_hook_tests {
         let ctx = ExecutionContext::default();
         let content = "ignore me".to_string();
         assert_eq!(
-            apply_harness_gate_hook(&p, &ctx, content.clone(), None, vec![]).0,
+            apply_harness_gate_hook(&p, &ctx, content.clone(), None, vec![], None).0,
             content
         );
     }

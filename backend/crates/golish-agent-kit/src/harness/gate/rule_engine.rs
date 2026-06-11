@@ -57,6 +57,13 @@ pub enum GateRule {
         /// 缺省 false = 行为与旧版逐字节一致。
         #[serde(default)]
         derive_from_items: bool,
+        /// PR3（设计 2026-06-11-coverage-auto-derive）：true 时，`ctx.evidence_facts`
+        /// 中 asset+technique 精确匹配的账本事实视作该格终态——`Found` 事实 →
+        /// Found 终态、`Empty` 事实 → CheckedEmpty 终态（各自受 `terminal_status`
+        /// 约束；Empty **绝不**当 Found）。只补格、不造完整性（缺事实的格照旧
+        /// 缺口 BLOCK）。缺省 false = 行为与旧版逐字节一致。
+        #[serde(default)]
+        derive_from_evidence: bool,
         on_fail: OnFail,
     },
     /// P5（2026-06-11）交叉校验：每个 status == found 的 coverage cell 必须有 ≥1 个
@@ -177,6 +184,28 @@ pub struct OnFail {
 pub struct GateContext {
     pub in_scope_assets: Option<Vec<String>>,
     pub expected_techniques: Option<Vec<String>>,
+    /// PR3 (设计 2026-06-11-coverage-auto-derive §5.2) · 证据账本投影事实：
+    /// 从 `audit_log` 三列 (`evidence_asset/technique/outcome`) 注入的只读三元组。
+    /// `None` = 不启用投影（与旧行为逐字节一致）；规则侧还需
+    /// `coverage_complete.derive_from_evidence=true` 才消费（双开关，灰度安全）。
+    pub evidence_facts: Option<Vec<EvidenceFact>>,
+}
+
+/// 一条证据投影事实：账本里「在 `asset` 上跑了 `technique`」的确定性记录。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceFact {
+    pub asset: String,
+    pub technique: String,
+    pub outcome: EvidenceOutcome,
+    pub evidence_id: i64,
+}
+
+/// 事实的结局：`Found`（有产出）/ `Empty`（跑了→空 — I8 的被记录事实，
+/// 投影成 CheckedEmpty 终态，**绝不**当 Found）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceOutcome {
+    Found,
+    Empty,
 }
 
 /// 逐条规则求值，每条产出一个 outcome。数据 op（count_at_least/for_all）是纯函数、
@@ -247,6 +276,7 @@ fn eval_one(
         GateRule::CoverageComplete {
             terminal_status,
             derive_from_items,
+            derive_from_evidence,
             on_fail,
         } => coverage_complete(
             d,
@@ -254,6 +284,7 @@ fn eval_one(
             ctx,
             terminal_status.as_deref(),
             *derive_from_items,
+            *derive_from_evidence,
             on_fail,
         ),
         GateRule::CoverageCorroborated { on_fail } => coverage_corroborated(d, on_fail),
@@ -276,12 +307,14 @@ const ALL_TERMINAL: [CoverageStatus; 4] = [
 /// `ctx.expected_techniques`（③ 动态注入）否则 `spec.expected_techniques`（静态），空 →
 /// no-op Pass。资产维度取 `ctx.in_scope_assets`（① 权威注入）否则 deliverable.coverage
 /// 自报 distinct asset。对资产 × 期望技术逐格核终态，缺口聚合进 Block reason（前 N 个）。
+#[allow(clippy::too_many_arguments)]
 fn coverage_complete(
     d: &StageDeliverable,
     spec: &StageSpec,
     ctx: &GateContext,
     terminal_status: Option<&[CoverageStatus]>,
     derive_from_items: bool,
+    derive_from_evidence: bool,
     on_fail: &OnFail,
 ) -> GateCheckOutcome {
     // ③ seam：动态注入的期望技术覆盖 spec 静态值。
@@ -350,7 +383,22 @@ fn coverage_complete(
                     }) || d.findings.iter().any(|f| {
                         f.subject == *asset && f.technique.as_deref() == Some(tech.as_str())
                     }));
-            if !declared && !derived {
+            // PR3 投影（设计 §5.2 + §4 约束）：账本事实 asset+technique 精确匹配时
+            // 视作该格终态 — Found 事实 → Found、Empty 事实 → CheckedEmpty（I8：
+            // 「跑了→空」是被记录的事实，绝不当 Found；各自受 terminal 集约束）。
+            // 缺事实不填格（fail-closed），completeness 本身永不被投影放宽。
+            let derived_from_evidence = derive_from_evidence
+                && ctx.evidence_facts.as_deref().is_some_and(|facts| {
+                    facts.iter().any(|f| {
+                        f.asset == *asset
+                            && f.technique == *tech
+                            && terminal.contains(&match f.outcome {
+                                EvidenceOutcome::Found => CoverageStatus::Found,
+                                EvidenceOutcome::Empty => CoverageStatus::CheckedEmpty,
+                            })
+                    })
+                });
+            if !declared && !derived && !derived_from_evidence {
                 gaps.push(format!("({asset} × {tech})"));
             }
         }
@@ -1013,6 +1061,169 @@ mod tests {
         .is_err());
     }
 
+    // ── PR3 (设计 2026-06-11-coverage-auto-derive §4): derive_from_evidence 投影 ──
+
+    fn evidence_derive_rule(terminal: Option<&str>) -> GateRule {
+        let t = terminal
+            .map(|s| format!(r#""terminal_status":[{s}],"#))
+            .unwrap_or_default();
+        parse(&format!(
+            r#"{{ "op":"coverage_complete",{t}"derive_from_evidence":true,
+                 "on_fail":{{"reason":"coverage incomplete"}} }}"#
+        ))
+    }
+
+    fn fact(asset: &str, technique: &str, outcome: EvidenceOutcome, id: i64) -> EvidenceFact {
+        EvidenceFact {
+            asset: asset.to_string(),
+            technique: technique.to_string(),
+            outcome,
+            evidence_id: id,
+        }
+    }
+
+    /// ctx: 资产轴 {a} + 期望技术 {techs} + 注入的事实。
+    fn projection_ctx(techs: &[&str], facts: Option<Vec<EvidenceFact>>) -> GateContext {
+        GateContext {
+            in_scope_assets: Some(vec!["a".to_string()]),
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: facts,
+        }
+    }
+
+    // 约束1+4：账本有 (a×DNS) 的 Found 事实 → 该格视为已覆盖，空矩阵也 Pass。
+    #[test]
+    fn derive_from_evidence_found_fills_cell() {
+        let rule = evidence_derive_rule(None);
+        let d = deliverable_with_coverage(vec![]); // 模型一格未写
+        let ctx = projection_ctx(
+            &["GOLISH-INTEL-DNS"],
+            Some(vec![fact(
+                "a",
+                "GOLISH-INTEL-DNS",
+                EvidenceOutcome::Found,
+                7,
+            )]),
+        );
+        assert!(
+            eval_with_context(&d, &test_spec(), &[rule], &ctx)[0].is_pass(),
+            "ledger-proven cell must satisfy completeness without a hand-written matrix"
+        );
+    }
+
+    // 约束2 (I8 红线)：Empty 事实 = CheckedEmpty 终态，绝不被当 Found——
+    // terminal 收窄到 ["found"] 时 Empty 事实不算覆盖，缺口仍 BLOCK；
+    // terminal 缺省（含 checked_empty）时才满足。
+    #[test]
+    fn empty_fact_is_checked_empty_not_found() {
+        let d = deliverable_with_coverage(vec![]);
+        let facts = Some(vec![fact(
+            "a",
+            "GOLISH-INTEL-DNS",
+            EvidenceOutcome::Empty,
+            7,
+        )]);
+
+        let narrowed = evidence_derive_rule(Some(r#""found""#));
+        let ctx = projection_ctx(&["GOLISH-INTEL-DNS"], facts.clone());
+        match &eval_with_context(&d, &test_spec(), &[narrowed], &ctx)[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons[0].contains("(a × GOLISH-INTEL-DNS)"), "{reasons:?}");
+            }
+            GateCheckOutcome::Pass => {
+                panic!("an Empty fact must NEVER satisfy a found-only terminal")
+            }
+        }
+
+        let default_terminal = evidence_derive_rule(None);
+        assert!(
+            eval_with_context(&d, &test_spec(), &[default_terminal], &ctx)[0].is_pass(),
+            "Empty fact projects to CheckedEmpty, which the default terminal set accepts"
+        );
+    }
+
+    // 约束2：无任何事实 → not_attempted 缺口照旧 BLOCK（缺证据 ≠ checked_empty）。
+    #[test]
+    fn no_fact_still_blocks() {
+        let rule = evidence_derive_rule(None);
+        let d = deliverable_with_coverage(vec![]);
+        // 事实属于别的格 (b×DNS)，(a×DNS) 仍无事实。
+        let ctx = projection_ctx(
+            &["GOLISH-INTEL-DNS"],
+            Some(vec![fact(
+                "b",
+                "GOLISH-INTEL-DNS",
+                EvidenceOutcome::Found,
+                7,
+            )]),
+        );
+        match &eval_with_context(&d, &test_spec(), &[rule], &ctx)[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons[0].contains("(a × GOLISH-INTEL-DNS)"), "{reasons:?}");
+            }
+            GateCheckOutcome::Pass => {
+                panic!("a cell without any fact must stay a gap (fail-closed)")
+            }
+        }
+    }
+
+    // 约束4：completeness 永不被投影放宽——期望两列、账本只证了一列 → 另一列 BLOCK。
+    #[test]
+    fn evidence_derive_does_not_fabricate_completeness() {
+        let rule = evidence_derive_rule(None);
+        let d = deliverable_with_coverage(vec![]);
+        let ctx = projection_ctx(
+            &["GOLISH-INTEL-DNS", "GOLISH-INTEL-WHOIS"],
+            Some(vec![fact(
+                "a",
+                "GOLISH-INTEL-DNS",
+                EvidenceOutcome::Found,
+                7,
+            )]),
+        );
+        match &eval_with_context(&d, &test_spec(), &[rule], &ctx)[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(
+                    reasons[0].contains("(a × GOLISH-INTEL-WHOIS)")
+                        && !reasons[0].contains("(a × GOLISH-INTEL-DNS)"),
+                    "{reasons:?}"
+                );
+            }
+            GateCheckOutcome::Pass => {
+                panic!("projection must only fill evidenced cells, never completeness")
+            }
+        }
+    }
+
+    // 兼容：derive_from_evidence=false（facts 注入也不消费）/ evidence_facts=None
+    // （开关开了也无可投影）→ 与旧行为一致：缺口 BLOCK。
+    #[test]
+    fn disabled_is_byte_identical() {
+        let d = deliverable_with_coverage(vec![]);
+        let facts = Some(vec![fact(
+            "a",
+            "GOLISH-INTEL-DNS",
+            EvidenceOutcome::Found,
+            7,
+        )]);
+
+        // 规则未开 derive_from_evidence → 注入的 facts 被忽略。
+        let off = coverage_complete_rule();
+        let ctx_with_facts = projection_ctx(&["GOLISH-INTEL-DNS"], facts);
+        assert!(
+            !eval_with_context(&d, &test_spec(), &[off], &ctx_with_facts)[0].is_pass(),
+            "rule with derive_from_evidence=false must ignore injected facts"
+        );
+
+        // 规则开了但 ctx 无 facts → 同样旧行为。
+        let on = evidence_derive_rule(None);
+        let ctx_no_facts = projection_ctx(&["GOLISH-INTEL-DNS"], None);
+        assert!(
+            !eval_with_context(&d, &test_spec(), &[on], &ctx_no_facts)[0].is_pass(),
+            "derive_from_evidence with no facts must keep the legacy gap BLOCK"
+        );
+    }
+
     #[test]
     fn coverage_complete_noop_when_no_expected_techniques() {
         // expected_techniques 空（test_spec 无该字段）→ 即使有缺口也 Pass（no-op）。
@@ -1324,7 +1535,7 @@ mod tests {
         // 注入 {a, b}：b×idor 不在矩阵 → Block 含缺口。
         let ctx = GateContext {
             in_scope_assets: Some(vec!["a".to_string(), "b".to_string()]),
-            expected_techniques: None,
+            ..Default::default()
         };
         match &eval_with_context(&d, &spec, &[rule], &ctx)[0] {
             GateCheckOutcome::Block { reasons, .. } => {
@@ -1348,8 +1559,8 @@ mod tests {
 
         // ctx 注入期望技术 ["idor"]：a 缺 idor → Block。
         let ctx = GateContext {
-            in_scope_assets: None,
             expected_techniques: Some(vec!["idor".to_string()]),
+            ..Default::default()
         };
         match &eval_with_context(&d, &spec, &[rule], &ctx)[0] {
             GateCheckOutcome::Block { reasons, .. } => {

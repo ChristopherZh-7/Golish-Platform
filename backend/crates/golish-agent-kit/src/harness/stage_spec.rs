@@ -309,6 +309,17 @@ mod tests {
             )),
             "target_intel coverage_complete must enable derive_from_items"
         );
+        // PR3 (D-scope 灰度): target_intel 是 evidence 投影的首个灰度阶段。
+        assert!(
+            s.gate_rules.iter().any(|r| matches!(
+                r,
+                crate::harness::gate::rule_engine::GateRule::CoverageComplete {
+                    derive_from_evidence: true,
+                    ..
+                }
+            )),
+            "target_intel coverage_complete must enable derive_from_evidence (PR3 gray rollout)"
+        );
         assert!(
             s.gate_rules.iter().any(|r| matches!(
                 r,

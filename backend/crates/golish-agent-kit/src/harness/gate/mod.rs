@@ -151,6 +151,8 @@ pub fn validate_stage_gate_with_context(
                 .map(|s| s.expected_techniques.clone())
                 .filter(|t| !t.is_empty())
         }),
+        // PR3 · 账本投影事实原样透传（None = 不启用投影）。
+        evidence_facts: ctx.evidence_facts.clone(),
     };
 
     // 语义层 · 过关标准的**唯一入口**（gate-rules-migration 2026-06-05）。旧

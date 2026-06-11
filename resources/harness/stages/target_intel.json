@@ -44,9 +44,10 @@
     {
       "op": "coverage_complete",
       "derive_from_items": true,
+      "derive_from_evidence": true,
       "on_fail": {
         "reason": "intel coverage incomplete: some (in-scope asset \u00d7 expected intel technique) cells were never attempted",
-        "hints": ["for every in-scope asset, give each expected intel technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note", "claims/findings tagged with a `technique` id (GOLISH-INTEL-*) on the same subject auto-derive their cell"]
+        "hints": ["for every in-scope asset, give each expected intel technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note", "claims/findings tagged with a `technique` id (GOLISH-INTEL-*) on the same subject auto-derive their cell", "intel techniques you actually ran are auto-projected from the evidence ledger \u2014 focus on submitting claims citing real evidence ids"]
       }
     },
     {
