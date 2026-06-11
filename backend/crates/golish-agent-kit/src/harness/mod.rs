@@ -55,6 +55,7 @@ pub mod stage_harness;
 pub mod stage_spec;
 pub mod stage_transition;
 pub mod surface_mapping;
+pub mod technique_resolver;
 pub mod technique_taxonomy;
 pub mod tool_taxonomy;
 pub mod types;

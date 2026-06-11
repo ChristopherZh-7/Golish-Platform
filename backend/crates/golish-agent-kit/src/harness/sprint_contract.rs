@@ -114,6 +114,18 @@ pub trait SprintContractGenerator: Send + Sync {
 ///   - planner_llm_id = "deterministic-default" 让 audit_log 上能区分两种版本.
 pub struct DefaultSprintContractGenerator;
 
+impl DefaultSprintContractGenerator {
+    /// ③ seam 动态生成（设计 2026-06-05-coverage-matrix §6.5）：按 stage + 资产类型集
+    /// 产出期望技术清单（委托纯函数 `technique_resolver`）。调用方（gate hook）从
+    /// in-scope 资产的 `targets.type` 算出 `AssetClass` 集。空结果 = 回退 spec 静态值。
+    pub fn expected_techniques_for(
+        stage_kind: StageKind,
+        assets: &[crate::harness::technique_resolver::AssetClass],
+    ) -> Vec<String> {
+        crate::harness::technique_resolver::resolve_expected_techniques(stage_kind, assets)
+    }
+}
+
 #[async_trait]
 impl SprintContractGenerator for DefaultSprintContractGenerator {
     async fn generate(
@@ -318,6 +330,18 @@ mod tests {
         assert_eq!(c1.contract_text, c2.contract_text);
         // id 仍不同 (每次 new uuid v4)
         assert_ne!(c1.id, c2.id);
+    }
+
+    #[test]
+    fn resolver_populates_skeleton_expected_techniques_for_enumeration_ip_only() {
+        use crate::harness::technique_resolver::AssetClass;
+        let techs = DefaultSprintContractGenerator::expected_techniques_for(
+            StageKind::Enumeration,
+            &[AssetClass::Ip],
+        );
+        // 纯 IP → 无 PARAM；DIR / JSAPI 仍在。
+        assert!(!techs.contains(&"GOLISH-ENUM-PARAM".to_string()));
+        assert!(techs.contains(&"GOLISH-ENUM-DIR".to_string()));
     }
 
     #[test]

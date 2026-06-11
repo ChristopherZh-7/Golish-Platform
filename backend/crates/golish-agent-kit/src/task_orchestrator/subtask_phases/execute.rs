@@ -260,11 +260,14 @@ impl TaskOrchestrator {
                     }
 
                     let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned).await;
+                    let in_scope_target_types =
+                        self.fetch_in_scope_target_types_for_gate(planned).await;
                     let (gated_content, gate_outcome) = apply_harness_gate_hook(
                         planned,
                         exec_ctx,
                         agent_result.content,
                         in_scope_assets,
+                        in_scope_target_types,
                     );
                     if let Some(mut outcome) = gate_outcome {
                         // P0 · reject deliverables citing fabricated evidence ids
@@ -417,8 +420,14 @@ impl TaskOrchestrator {
         // Loop exhausted: run the gate once on the fallback content (no further
         // retry possible) and drive the transition on whatever it decides.
         let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned).await;
-        let (out, gate_outcome) =
-            apply_harness_gate_hook(planned, exec_ctx, fallback, in_scope_assets);
+        let in_scope_target_types = self.fetch_in_scope_target_types_for_gate(planned).await;
+        let (out, gate_outcome) = apply_harness_gate_hook(
+            planned,
+            exec_ctx,
+            fallback,
+            in_scope_assets,
+            in_scope_target_types,
+        );
         if let Some(mut outcome) = gate_outcome {
             self.enforce_evidence_existence(&mut outcome).await;
             self.enforce_evidence_kinds(&mut outcome).await;
@@ -1196,6 +1205,28 @@ impl TaskOrchestrator {
         }
     }
 
+    /// P3 ③ seam: fetch the distinct `targets.type` values of the in-scope assets
+    /// so the coverage gate can derive **dynamic** expected techniques. Returns an
+    /// empty vec when the subtask carries no stage, the DB has none, or the lookup
+    /// errors — `gate_expected_techniques` then yields `None` and the gate keeps
+    /// `spec.expected_techniques` (zero behavior change).
+    async fn fetch_in_scope_target_types_for_gate(&self, planned: &PlannedSubtask) -> Vec<String> {
+        if planned.harness_stage.is_none() {
+            return vec![];
+        }
+        match self.repo.in_scope_target_types(self.harness_org_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    target: "harness::hook",
+                    error = %e,
+                    "in-scope target-type lookup failed; coverage gate uses static expected_techniques"
+                );
+                vec![]
+            }
+        }
+    }
+
     /// P0 · gate evidence 回查: 把交付物里引用、但 ledger 中**不存在**的 evidence
     /// id 当作伪造 → 翻 BLOCK + 追加纠正喂回 reflector. infra 查询失败只 warn,
     /// 不误伤合法 stage (放行), 避免 DB 抖动卡死流程.
@@ -1615,11 +1646,39 @@ struct HarnessGateOutcome {
 
 /// 返回 `(content, Option<outcome>)`: `None` 表示 hook 透传 (未跑 gate); `Some` 表示
 /// 跑了 gate, 调用方据此驱动 stage 流转 (推进 operation_state 游标).
+/// P3 ③ seam: map the in-scope assets' `targets.type` values onto this gate's
+/// **dynamic** expected techniques. Returns `None` when there is no asset-type
+/// information so `coverage_complete` falls back to `spec.expected_techniques`
+/// (zero behavior change). Empty result (a stage with no coverage matrix, e.g.
+/// scoping) is also `None`. Delegated to the pure `technique_resolver`.
+fn gate_expected_techniques(
+    stage: crate::harness::StageKind,
+    target_types: &[String],
+) -> Option<Vec<String>> {
+    if target_types.is_empty() {
+        return None;
+    }
+    let classes: Vec<crate::harness::technique_resolver::AssetClass> = target_types
+        .iter()
+        .map(|s| crate::harness::technique_resolver::AssetClass::from_target_type(s))
+        .collect();
+    let techs =
+        crate::harness::sprint_contract::DefaultSprintContractGenerator::expected_techniques_for(
+            stage, &classes,
+        );
+    if techs.is_empty() {
+        None
+    } else {
+        Some(techs)
+    }
+}
+
 fn apply_harness_gate_hook(
     planned: &PlannedSubtask,
     exec_ctx: &ExecutionContext,
     content: String,
     in_scope_assets: Option<Vec<String>>,
+    in_scope_target_types: Vec<String>,
 ) -> (String, Option<HarnessGateOutcome>) {
     let Some(stage_hint) = planned.harness_stage.as_ref() else {
         // Observability (2026-06-01): previously DEBUG, so a stage-less subtask
@@ -1765,9 +1824,14 @@ fn apply_harness_gate_hook(
     // Phase 2 ①③ seam activation: inject the authoritative in-scope asset set
     // (recon-populated `targets.scope='in'`) so coverage_complete measures real
     // coverage. `None` (no recon assets yet) falls back to self-reported.
+    // ③ (P3): dynamic expected techniques derived from the in-scope assets'
+    // `targets.type` — `None` (no type info / non-coverage stage) falls back to
+    // `spec.expected_techniques` (zero behavior change).
+    let expected_techniques =
+        gate_expected_techniques(stage_hint.stage_kind, &in_scope_target_types);
     let gate_ctx = crate::harness::GateContext {
         in_scope_assets,
-        expected_techniques: None,
+        expected_techniques,
     };
     let decision = harness.validate_gate_with_context(&deliverable, None, &gate_ctx);
 
@@ -2476,6 +2540,31 @@ mod dag_driven_helper_tests {
         assert!(!s2.description.contains("recon_enrich_assets"));
     }
 
+    // ── P3 ③ seam: dynamic expected_techniques in the gate hook ───────────────
+
+    #[test]
+    fn gate_expected_techniques_ip_only_enumeration_drops_param() {
+        // IP-only scope → enumeration coverage matrix drops the web-only PARAM
+        // technique (parameter discovery is meaningless without a web service).
+        let t = super::gate_expected_techniques(StageKind::Enumeration, &["ip_address".into()])
+            .expect("ip scope yields a technique set for enumeration");
+        assert!(!t.contains(&"GOLISH-ENUM-PARAM".to_string()));
+        assert!(t.contains(&"GOLISH-ENUM-DIR".to_string()));
+    }
+
+    #[test]
+    fn gate_expected_techniques_none_when_no_target_types() {
+        // No asset-type info → None → coverage_complete keeps spec.expected_techniques
+        // (zero behavior change vs. the pre-P3 hardcoded None).
+        assert!(super::gate_expected_techniques(StageKind::Enumeration, &[]).is_none());
+    }
+
+    #[test]
+    fn gate_expected_techniques_none_for_non_coverage_stage() {
+        // scoping declares no expected techniques → None even with asset types.
+        assert!(super::gate_expected_techniques(StageKind::Scoping, &["domain".into()]).is_none());
+    }
+
     /// L4a: only an engine `Interrupted` is a resumable pause (→ task `Waiting`,
     /// skip the reporter). `Completed`/`Failed` must fall through to the normal
     /// terminal path so a paused op is never wrongly marked Finished — the very
@@ -2557,7 +2646,7 @@ mod harness_gate_hook_tests {
         let ctx = ExecutionContext::default();
         let content = "anything".to_string();
         assert_eq!(
-            apply_harness_gate_hook(&p, &ctx, content.clone(), None).0,
+            apply_harness_gate_hook(&p, &ctx, content.clone(), None, vec![]).0,
             content
         );
     }
@@ -2568,7 +2657,7 @@ mod harness_gate_hook_tests {
         let ctx = ExecutionContext::default();
         let content = "ignore me".to_string();
         assert_eq!(
-            apply_harness_gate_hook(&p, &ctx, content.clone(), None).0,
+            apply_harness_gate_hook(&p, &ctx, content.clone(), None, vec![]).0,
             content
         );
     }

@@ -158,6 +158,17 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// P3 ③ seam: distinct `targets.type` values of the in-scope assets (org
+    /// narrowed), so the harness coverage gate can derive **dynamic** expected
+    /// techniques per asset class (e.g. an IP-only scope drops web-only
+    /// techniques). Default empty so test doubles + the app layer (until it
+    /// overrides via the recon targets port) keep `spec.expected_techniques`
+    /// (zero behavior change). See `technique_resolver`.
+    async fn in_scope_target_types(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {
+        let _ = org_id;
+        Ok(Vec::new())
+    }
+
     /// In-scope recon targets as JSON rows (`target_id` / `value` / `type`) so an
     /// agent tool can enumerate the recon-collected assets, then drill into each
     /// via [`Self::query_target_data`]. Default empty (test doubles); the app
