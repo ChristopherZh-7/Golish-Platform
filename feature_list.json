@@ -11,6 +11,98 @@
   ],
   "features": [
     {
+      "id": "db-truth-driven-gate-coverage-2026-06-12",
+      "priority": 1,
+      "area": "backend: golish-agent-kit/src/harness/gate/{rule_engine.rs(coverage_complete 复用 evidence_facts 通道,从业务表派生 facts),mod.rs} + task_orchestrator/subtask_phases/execute.rs(stage-close hook 查业务表派生 facts 注入 ctx.evidence_facts) + golish-db(按 org/target 查某 technique 有无数据的只读查询) + evidence_facts.rs(provider 路径 technique 标注) + 诊断式 reflector(execute.rs repair 上下文组装)",
+      "title": "DB 真值驱动的 gate coverage + 诊断式 reflector：coverage 判定从『agent 自报/命令派生』升级为『以数据库业务表真实结构化数据为准』(target_assets/organizations.asns/.certificates/dns_records 有真数据才算 Found)；BLOCK 时 reflector 看 DB 缺口给具体下一步命令逐步指导",
+      "user_visible_behavior": "headless --stage-run 跑 target_intel：gate 只认 DB 业务表里真有的数据(agent 硬填 coverage 格蒙混无效)；某 technique DB 无数据→正确 BLOCK 并由 reflector 指出『DB 里 X 为空,对 Y 跑 Z 命令』。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "docs/design/2026-06-12-db-truth-driven-gate-and-diagnostic-reflector.md（§7 决策 2026-06-12 全拍板『全按推荐』：先 target_intel 灰度 / DNS 新建 dns_records 专表、WHOIS·OSINT 复用 organizations 现成字段 / reflector 模型前端可配。核实修正：命令映射对 ASN/CT/OSINT 价值有限→DB 业务表投影优先,最优雅=复用 evidence_facts 通道从业务表派生 facts,gate 纯函数+target_intel.json 零改动,工作落 hook 查库+golish-db 只读查询。含活体盖棺证据+DB 落点覆盖表+三断层）",
+      "plan": null,
+      "verification": [
+        "[活体盖棺·已跑 2026-06-12] --stage-run -p xiaomi -m mimo-v2.5-pro --to target_intel --org 默安科技 --target moresec.cn → scoping PASS / target_intel BLOCK(3 attempt): attempt2 coverage_complete(DNS/WHOIS/ASN/CT/OSINT never attempted,只测 SUBDOMAIN)→attempt3 submit_only=true 锁触发→final coverage_corroborated(found 格无 technique claim 佐证)。验证到: submit-only 锁生效、coverage derive_from_evidence 生效(SUBDOMAIN 被账本投影认)、投影兜底未触发(MiMo 交劣质 deliverable 非漏交)",
+        "[核实·已查 2026-06-12] passive_intel_facts_from_command 只在 3 命令路径触发够不到 provider 路径;recon_enrich evidence 落账 technique 传 None;organizations.asns/.certificates 已有专列,target_assets 有 subdomain,DNS/WHOIS/OSINT 落点不规整",
+        "[未跑] 实现 + TDD + just precommit（建议聚焦会话）"
+      ],
+      "evidence": "2026-06-12 BaJie MCP-agent-4。本轮产出: ① 补跑活体验证用户 06-11 投影兜底改动(已盖棺); ② 写设计文档(经多轮核实修正); ③ PR1 落点核实结论。未改实现代码(核心 gate+hook+DB 查询属 IO 集成,需聚焦会话 TDD 全覆盖)。",
+      "notes": "2026-06-12 BaJie MCP-agent-4（DISPATCH off）。用户诉求: 『想看 DB 字段到底真不真,不是工具调了几次』+『错误时 reflector 诊断式逐步指导交付』。§7 全拍板。关键洞察: 真正命中诉求的是 DB 业务表投影(非命令映射),最优雅是复用现有 evidence_facts 通道从业务表派生 facts→gate 纯函数零改动。红线: 只产 Found、checked_empty 不靠 DB 无数据推断(I8)、findings 永空、gate 纯函数(查库在外层 hook)。",
+      "remember": "实现首步=golish-db 加『按 org/target 查某 technique 有无数据』只读查询(organizations.asns/.certificates 非空→ASN/CT found; target_assets asset_type=subdomain→SUBDOMAIN); execute.rs stage-close hook 合并业务表 facts+账本 facts 注入 ctx.evidence_facts; DNS 需先建 dns_records 专表(schema 改动需 §2.7 确认)。"
+    },
+    {
+      "id": "substantive-stage-evidence-projection-fallback-2026-06-11",
+      "priority": 1,
+      "area": "backend: golish-agent-kit/src/harness/stage_spec.rs(StageSpec +synthesize_from_evidence_when_missing) + golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs(synthesize_from_evidence 纯函数 + substantive missing-deliverable 分支门控投影) + resources/harness/stages/target_intel.json(灰度开关)",
+      "title": "Substantive 阶段证据投影兜底：弱模型干完活（账本有真实 evidence facts）但没调 submit 时，harness 从账本投影合成 deliverable（claims/evidence_refs 来自真实 evidence，findings 永远空）走原 gate，替代 missing-deliverable 死锁 BLOCK",
+      "user_visible_behavior": "headless --stage-run（MiMo 等弱模型）跑 target_intel：agent 产纯文本汇报不调 submit 时，不再三次 repair 耗尽后 pause——只要账本有本 run 真实 evidence，gate 直接对投影 deliverable 终判（证据不足的格仍 BLOCK；漏洞类阶段行为不变）。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "docs/design/2026-06-11-substantive-stage-evidence-projection-fallback.md（live run 实证：OpenAI 端 957 字散文汇报 0 次调 submit、3 attempt 全 BLOCK；D1-D5 已拍板：opt-in spec 字段 / coverage 留空靠 gate derive_from_evidence / 每 Found fact 一 claim / 不做熔断（不管 Anthropic）/ 先只 target_intel）",
+      "plan": "docs/superpowers/plans/2026-06-11-substantive-stage-evidence-projection-fallback.md（任务 1-5；用户指示『全部搞完再编译检测错误，然后自己跑测试』→ 批量实现后统一验证）",
+      "verification": [
+        "[✓] cargo check -p golish-agent-kit → exit 0 (28.32s)",
+        "[✓] cargo clippy -p golish-agent-kit --lib -- -D warnings → exit 0 零告警 (13.27s)",
+        "[✓] cargo nextest run -p golish-agent-kit → 580 passed / 0 failed / 0 skipped（首跑揪出 finding_verification_check.rs 测试辅助 struct literal 缺新字段 E0063，补 false 后绿）",
+        "[✓] 新增 9 测试精确过滤全绿：stage_spec 守卫×2（默认 false/显式 true 解析 + target_intel=true/vuln_triage=false）+ 纯函数不变量×4（findings/coverage 恒空、每 Found 一 claim 字段对齐、Empty 不产 claim 但 id 入 refs、id 去重排序+stage 身份）+ hook 门控×3（opt-in+facts→投影跑 gate(missing_deliverable=false,refs=[7,9])、空账本→原 BLOCK、EAS/vuln_triage 有 facts 也 BLOCK）",
+        "[✓] cargo fmt -p golish-agent-kit → 修 3 处行宽后 --check exit 0；fmt 后复跑 nextest 580 passed",
+        "[✓] ReadLints 3 改动文件 0 错误",
+        "[未跑] just precommit 全量（commit 前需补）",
+        "[活体·后续] 弱模型 + target_intel + moresec.cn 复现：修前 agent 不调 submit → 3 attempt 耗尽 pause；修后账本有 evidence → 投影兜底进 gate 终判"
+      ],
+      "evidence": "2026-06-11 BaJie MCP-agent-4。4 文件改动：stage_spec.rs(+字段 serde default false +2 守卫测试)、execute.rs(+synthesize_from_evidence 纯函数 + substantive 分支门控 match (projection_enabled, ledger_facts) + 7 测试 mod evidence_projection_fallback_tests)、target_intel.json(+synthesize_from_evidence_when_missing:true 灰度)、finding_verification_check.rs(测试辅助补新字段)。验证：nextest 580/580、clippy 零告警、fmt --check exit 0、check exit 0。借用安全：as_deref() 只借 facts，gate_ctx 仍 move evidence_facts。",
+      "notes": "2026-06-11 BaJie MCP-agent-4（DISPATCH off，上下文承接 MCP-3）。红线：findings 永远不投影（vec![]）；CheckedEmpty 只来自真实 empty 行（gate derive_from_evidence 投影，claims 不复述）；空账本不兜底（投影救『打包』不救『干活』）。与既有多个 in_progress 并存（多会话并发，§2.1）。",
+      "remember": "门控读 spec.synthesize_from_evidence_when_missing（serde default false=旧行为逐字节不变）；evidence_refs=全部 facts id 去重排序（Found+Empty），存在性校验必过；technique 原样来自账本不过滤，脏值由 schema_check fail-closed 暴露。"
+    },
+    {
+      "id": "unified-install-proxy-takeover-2026-06-10",
+      "priority": 1,
+      "area": "backend: golish-pentest/src/handlers/{proxy.rs(新),dispatch.rs(apply_proxy 委托+git clone -c),ruby.rs(bundler git env),handlers.rs(pub mod)} + golish-pentest/src/github.rs(github_client None→no_proxy) + golish-pentest-app/src/pentest/packages/install/{mod.rs(git clone/bundler),runtime.rs(pip×4+conda)} + golish-settings/src/loader/env.rs(apply_proxy_env 进程级对称化)",
+      "title": "统一安装代理接管：平台 Settings→Network→Proxy 成为所有联网安装子进程（git/pip/gem/brew/conda/reqwest）的唯一真相源——设了全走它，没设全强制直连（清继承 env + git config 空值覆盖），野代理（残留 ~/.gitconfig http.proxy / 死 Surge socks / 环境变量）不再劫持",
+      "user_visible_behavior": "ToolManager 安装任何工具：平台代理设了 → git clone / pip(含 git+https 嵌套 git) / gem / brew / conda / GitHub API 全部经平台代理；平台代理留空 → 全部强制直连，即使系统残留 git 全局 http.proxy=socks5://127.0.0.1:6153（死代理）也能装上 theHarvester / searchsploit / responder / wpscan(SSL 部分)。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "docs/design/2026-06-10-unified-install-proxy-takeover.md（三类根因：①只设不清的不对称 ②git config 优先级高于 env ③pip --proxy 不传播给 nested git；三种注入机制：直接 git argv -c / 间接 git GIT_CONFIG_* env(git≥2.31，本机 2.50.1) / 通用 HTTP env 对称设清）",
+      "plan": "docs/superpowers/plans/2026-06-10-unified-install-proxy-takeover.md（Task 0-9 · TDD）",
+      "verification": [
+        "[T1 ✓ TDD] cargo nextest run -p golish-pentest proxy → 先红（todo! 桩 7 failed exit 100）后绿（12 passed：normalize/argv/env 设清/GIT_CONFIG_*/不动无关 env）",
+        "[T2-T6 ✓] dispatch.rs(apply_proxy 委托新 helper=15+ 调用点一次接管对称语义 + git clone argv -c) / ruby.rs(bundle install +GIT_CONFIG_*) / github.rs(None→.no_proxy()) / install/mod.rs(git clone -c + bundler) / runtime.rs(pip×4 加 GIT_CONFIG_*+对称 env、conda) → cargo check -p golish-pentest -p golish-pentest-app exit 0 (31s)",
+        "[clippy ✓] cargo clippy -p golish-pentest -p golish-pentest-app --lib -- -D warnings → exit 0 零告警",
+        "[nextest ✓] cargo nextest run -p golish-pentest -p golish-pentest-app → 169 passed / 7 skipped / 0 failed",
+        "[fmt ✓] cargo fmt -p 两 crate -- --check → exit 0",
+        "[T7 ✓ TDD] cargo nextest run -p golish-settings apply_proxy_env → 先红（4 failed：设了只 set 大写/没设不清/no_proxy 不清）后绿；golish-settings 全量 60 passed；clippy -D warnings exit 0；fmt 复检 exit 0",
+        "[E2E-git ✓] GIT_CONFIG_GLOBAL=临时野代理 cfg（socks5://127.0.0.1:6153，不动真实 ~/.gitconfig）：裸 git ls-remote theHarvester → SSL_ERROR_SYSCALL exit 128（复现用户故障）；+`-c http.proxy=` → HEAD 成功 exit 0；+GIT_CONFIG_COUNT/KEY/VALUE 空值 → HEAD 成功 exit 0（pip-nested git 机制坐实）",
+        "[未跑] just precommit 全量（commit 前需补）",
+        "[待用户] GUI 实测：平台代理留空装 theHarvester/searchsploit/responder；设代理装任一工具走代理"
+      ],
+      "evidence": "2026-06-10 BaJie MCP-agent-3。新 helper 模块 proxy.rs(normalize_proxy/apply_http_proxy_env/apply_git_proxy_env/git_proxy_config_args + 11 单测)；apply_proxy 改委托使 conda/nvm/java/ruby/versions 全部既有调用点同获对称语义。Task 7（loader/env.rs apply_proxy_env 进程级对称化）用户『那就搞 7』授权后落地：设→6 大小写变量+NO_PROXY；不设→remove_var 全部（含 NO_PROXY），+4 单测。E2E 三步对照实验见 verification。",
+      "notes": "2026-06-10 BaJie MCP-agent-3（DISPATCH off）。用户拍板「先写详细文档」→「按计划开工」→「那就搞 7」（loader/env.rs 进程级对称化已落地）。副作用（用户已知悉）：以前『终端 HTTP_PROXY=xxx 启动 app 让 AI 走代理但不在平台配』会静默失效——平台留空=AI 也直连（这是『平台 Proxy 唯一真相源』的预期语义）。与既有多个 in_progress 并存（多会话并发，§2.1）。",
+      "remember": "git 代理优先级：-c argv > config 文件 > env；GIT_CONFIG_* 等价 -c 需 git≥2.31；http.proxy 空值=强制直连。gem 权限问题（wpscan FilePermissionError）已由前一批 find_homebrew_gem 修复，不在本条 scope。"
+    },
+    {
+      "id": "coverage-asset-scope-isolation-2026-06-10",
+      "priority": 1,
+      "area": "backend: golish-db/src/repo/targets.rs(list_in_scope_values +org_id) + golish-app-core/src/ports/recon/targets.rs(ReconTargetsPort) + golish-agent-kit/src/db_traits/repo.rs(in_scope_assets) + golish-agent-app/src/ai/db_bridge/{mod,recon}.rs + golish-agent-kit/src/task_orchestrator/{orchestrator.rs(harness_org_id),subtask_phases/execute.rs} + golish/src/stage_run/mod.rs(seed org_id 灌入)",
+      "title": "coverage 资产盘按 operation/organization 隔离：in_scope_assets 加 org_id 过滤链（DB SQL → 端口 → trait → orchestrator harness_org_id → headless seed 灌入），修复跨 org/跨 run 持久 PG 污染导致 coverage 分母爆炸、target_intel gate 无限 BLOCK",
+      "user_visible_behavior": "headless --stage-run --org X 时，coverage gate 的资产分母只含本 org 的 in-scope targets（不再被历史会话/其它 org 的 41 个残留资产撑爆而无限 BLOCK）。org_id=None（GUI/chat 路径）退回旧全局行为，零回归。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "docs/design/2026-06-09-coverage-asset-scope-isolation.md（实测证据：--stage-run --org vulnweb 注入 41 资产、target_intel BLOCK 25min；§9-1 实读拍板：无现成 org 透传链路，照 profile_override 模式新增 harness_org_id）",
+      "plan": "docs/superpowers/plans/2026-06-10-coverage-asset-scope-isolation.md（writing-plans · Task 1-6 · TDD）",
+      "verification": [
+        "[T1 ✓ TDD] cargo nextest run -p golish-db list_in_scope_values_sql_filters → 先红（SQL 无 $2 谓词，1 failed）后绿（1 passed）",
+        "[T2-T5 ✓ 批量实现] 用户 2026-06-10 指示『全部实现完再跑一次，不要一直测试』→ Task 2-5 代码一次改完后统一验证",
+        "[统一验证 ✓] cargo fmt 5 crate + cargo check -p golish-db -p golish-app-core -p golish-agent-kit -p golish-agent-app -p golish → Exit 0 (1m02s)",
+        "[统一验证 ✓] cargo clippy 同 5 crate --lib -D warnings → Exit 0 零告警 (46s)",
+        "[统一验证 ✓] cargo nextest run -p golish-db -p golish-app-core -p golish-agent-kit → 612 passed / 0 failed / 0 skipped",
+        "[ReadLints ✓] 8 个改动文件无 linter 错误",
+        "[未跑] just precommit 全量（用户要求精简验证；commit 前需补跑）",
+        "[活体·可选] clean DB 后 --stage-run --org vulnweb：trace asset_count 只含本 org 资产、target_intel 不再因外部 org 资产 BLOCK"
+      ],
+      "evidence": "2026-06-10 BaJie MCP-agent-3。8 文件改动全链：golish-db(SQL +$2 org 谓词+签名+SQL 单测)→app-core(ReconTargetsPort::in_scope_values +org_id+adapter)→agent-kit(db_traits in_scope_assets(org_id) default 保留空集、orchestrator +harness_org_id 字段/构造/setter 照 profile_override 模式、execute.rs 2 调用点+gate trace 加 org_id 字段)→agent-app(db_bridge mod/recon 透传)→golish(stage_run orchestrate +org_id 参数、seed.org_id 灌入、注释同步)。验证：nextest 612/612 passed、clippy 5 crate 零告警、check Exit 0、ReadLints clean。向后兼容：org_id=None 全链短路回旧全局行为（GUI/chat 不 set）；fetch_in_scope_assets_for_gate 非空守卫保留。",
+      "notes": "2026-06-10 BaJie MCP-agent-3（DISPATCH off）。用户拍板『先实现 coverage 隔离』（JS-API AI 增强排后）。§9-2 缺省策略=None→全局（向后兼容）；§9-3 历史污染清理不入产品。GUI/chat 路径 org 来源 P1 再接（不 set = None = 旧行为）。与既有多个 in_progress 并存（多会话并发，§2.1）。",
+      "remember": "coverage_complete 引擎与 GateContext 不动；fetch_in_scope_assets_for_gate 的『非空才注入』守卫保留（org 下无资产→回退自报集）。"
+    },
+    {
       "id": "native-intel-providers-auto-enrich-2026-06-08",
       "priority": 2,
       "area": "backend: golish-pentest-domain/src/models/asset_intel.rs(NativeProvider 变体+NativeProviderQuery) + golish-recon-app/src/asset_intel/runtime/native.rs(新 runner+bridge_record) + asset_intel/service/hydrate.rs(分发) + intel_providers.rs(provider_registry pub(crate)) + resources/toolsconfig/{fofa,hunter,shodan}.json",

@@ -29,6 +29,61 @@
 
 ---
 
+### 2026-06-12 · DB 真值驱动 gate coverage 全功能落地（PR-A/B/C/D）（BaJie MCP-agent-3 · DISPATCH off · 用户睡前授权自主做完）
+
+- **本轮目标**：用户睡前授权自主把设计 `docs/design/2026-06-12-db-truth-driven-gate-and-diagnostic-reflector.md` 全部 4 块实现完，每 PR 先 plan 后 TDD，`just precommit` 全绿为准，证据写 progress。
+- **已完成（4 PR，均 TDD 先红后绿）**：
+  - **PR-A DB 业务表投影（ASN/CT/SUBDOMAIN）** · plan `docs/superpowers/plans/2026-06-12-db-truth-driven-gate-coverage.md`：golish-db 新建 `repo/coverage_truth.rs`（`organizations.asns/.certificates` 非空→ASN/CT、`target_assets(asset_type='subdomain')`→SUBDOMAIN 的只读查询，SQL builder + `assemble_truth_facts` 纯函数）；`DbRepoProvider::db_truth_facts` 默认空 + `db_bridge/recon.rs` 实现；`execute.rs::fetch_evidence_facts_for_gate` 把业务表 facts（**只产 Found**、哨兵 `evidence_id=0`）合并进 `ctx.evidence_facts`；`synthesize_from_evidence` 加 `evidence_id>0` 过滤守 fabricated 红线（哨兵不进 `evidence_refs`/claims）；rule_engine 集成测试证明哨兵 fact 经 `derive_from_evidence` 投影补格且**不被 `coverage_corroborated` 误伤**（corroborated 只查自报 cell）。`coverage_truth` 加入 `check_repo_ownership.py` SHARED_REPOS（harness 跨表只读投影，类比 audit ledger）。`target_intel.json` 零改动（`derive_from_evidence` 已开）。
+  - **PR-B DNS dns_records 专表** · plan `docs/superpowers/plans/2026-06-12-dns-records-coverage.md`：migration `20260612000001_dns_records.sql`（新表，I10 可重放 `IF NOT EXISTS`，target_id FK）；golish-db `repo/dns_records.rs`（`upsert` + `present_target_values`）；output_store 新增 `dns_record_add` db_action（`dns_records.rs` writer + trait + pg_adapter + dispatch）——**修复 `dig.json` 原 `db_action=host_add` 是个未接的死 action**（dig 输出之前根本没落库，印证设计 §3.2）；`dig.json` 接 `dns_record_add` + 通用 ANSWER SECTION 解析（A/AAAA/NS/MX/TXT/CNAME/SOA/PTR，全量 banner 非 +short）；`coverage_truth` 加 `TECH_DNS` + DNS 维度投影（复用 `dns_records::present_target_values`）。`dns_records` owner=recon。
+  - **PR-C 诊断式 reflector** · plan `docs/superpowers/plans/2026-06-12-diagnostic-reflector.md`：决策=**确定性增强**（不赌独立 reflector LLM，因设计 §8「弱模型救不了吐空」+「reflector 模型前端配置」是既有 `executor.reflect` 不动它）。`build_gate_correction` 在 coverage BLOCK 时追加 ①DB 真值现状（已 Found 的 `asset×technique`，**仅 Found**、Empty 不算 I8）②每类被动情报缺口的具体命令（DNS 强调全量 dig 才落 dns_records / subfinder / whois / crt.sh / theHarvester）。非 coverage BLOCK 逐字不变（零回归）。设计 §5.4③「近期行为」**未做**（需查 tool_calls 历史，跨 repo+噪声大，记为后续）。
+  - **PR-D 接线**：grep 实证 `derive_from_evidence` 只在 `target_intel.json`=**单阶段灰度天然保证**；`expected_techniques` 含 6 类；db_truth 合并对所有 stage 但只 target_intel 消费（technique 维度 + 开关双隔离，无害）。`cargo check --workspace` exit 0（含 golish 主 crate）。
+- **运行过的验证（各 crate，均先红后绿 TDD；证据见 feature_list）**：golish-db nextest `coverage_truth`+`dns_records` **9 passed**；golish-agent-kit nextest **588 passed**（含 PR-A 4 + PR-C 4 新测试）；golish-agent-app **43 passed**；golish-pentest **185 passed**（含 dig ANSWER SECTION 解析）；三 crate `clippy -D warnings` 净 + `fmt` 净；`cargo check --workspace` exit 0；`check_repo_ownership.py` **0 个新违规**；`dig.json` 合法 JSON。**`just precommit` 全量进行中 / 结果待补。**
+- **架构守卫 pre-existing 违规（非本功能、已坐实）**：`git stash` 我的改动后 baseline guard 仍报**完全相同的 11+1** 个 repo-ownership 违规（`stage_run/mod.rs`×3、`orchestration.rs`×6、`manage_organizations.rs`、`db_bridge/mod.rs operation_state`、`persistence.rs` raw-sql）——当前分支 `feat/harness-2026-06-01` 早于 servitization port 化、本就 FAIL，**非我引入**；`just precommit` 不含 arch 不受影响。
+- **commit 计划（待 precommit 绿）**：工作树混入 5+ 会话未提交改动；`execute.rs` 含 06-11 substantive projection（`synthesize_from_evidence`）与我的哨兵过滤同文件、且编译依赖 06-11 的 `stage_spec.rs`/`finding_verification_check.rs` → commit 必带这 3 个 06-11 文件（git 无法分离）。我**只 add 本功能 + 紧编译耦合 harness 文件**，**绝不 add 无关范围外**（toolsconfig/golish-pty/golish-mcp/bootstrap/frontend/CHANGELOG/analysis）。
+- **活体（待用户）**：`XIAOMI_API_KEY` 环境变量**未设**（用户命令里是占位符 `<填我的小米key>`）→ 活体 `--stage-run` 未跑。请用户醒来 `export XIAOMI_API_KEY=<真 key>` 后 setsid 脱管跑 `./target/debug/golish --stage-run -p xiaomi -m mimo-v2.5-pro --to target_intel --org 默安科技 --target moresec.cn --auto-approve --verbose`，grep `merged DB business-table truth facts` 看业务表投影是否生效。
+- **下一步**：① 用户填 `XIAOMI_API_KEY` 跑活体对照；② 设计 §5.4③ 诊断式 reflector「近期行为」增强；③ WHOIS/OSINT 结构化落点（设计 §5.2，仍 organizations JSONB）；④ 决定 commit/push。
+
+---
+
+### 2026-06-12 · DB 真值驱动 gate 设计 + 06-11 投影兜底活体盖棺（BaJie MCP-agent-4 · DISPATCH off）
+
+- **本轮目标**：用户给小米 key 补跑活体，验证 06-11「证据投影兜底」改动是否生效；继而讨论「gate 验证应锚到什么」并产出设计。
+- **已完成**：
+  - **活体盖棺**：`cargo build -p golish`(含工作树全部改动,59.58s exit 0)→ setsid 脱管跑 `--stage-run -p xiaomi -m mimo-v2.5-pro --to target_intel --org 默安科技 --target moresec.cn`(PID 99874,日志 `/tmp/golish-stage-run.log`,transcript `backend/.golish/transcripts/stage-run-b24d6082-*`)。结果 **scoping PASS / target_intel BLOCK(3 attempt)**。关键发现：① 投影兜底(`synthesize_from_evidence_when_missing`)**未触发**——MiMo 交了劣质 deliverable(非漏交)→ 走正常 gate BLOCK+repair（投影兜底只解决「漏交」,解决不了「没干全」）;② submit-only 锁 attempt3 真触发;③ coverage derive_from_evidence 生效(gate 报「5 类 never attempted」非「全缺」=SUBDOMAIN 被账本投影认);④ 根因=MiMo 只真跑 1/6 类情报(json_repair 62 次、反复 gau、试 bash 被 BLOCK)。
+  - **设计文档**：`docs/design/2026-06-12-db-truth-driven-gate-and-diagnostic-reflector.md`——gate coverage 验证锚从「命令派生」升级到「DB 业务表真值」+ 诊断式 reflector。含 DB 落点覆盖表(6 类)、「gate 现在锚命令不锚业务表」、三断层、五红线、四步设计、4-PR 拆分、§7 决策(用户 2026-06-12 全拍板「全按推荐」)。
+  - **PR1 落点核实**：`passive_intel_facts_from_command` 只在 3 命令路径(direct/mod.rs×2,bridge_config.rs)触发,够不到 provider 路径(OSINT 走 recon_enrich provider);ASN whois 变体资产维度(AS 号)与 coverage 域名维度对不齐;CT 无独立命令工具。**结论(已写入设计)：命令映射对 ASN/CT/OSINT 价值有限,真正命中诉求的是 DB 业务表投影,最优雅=复用现有 `evidence_facts` 通道从业务表派生 facts→gate 纯函数+target_intel.json 零改动,工作落 hook 查库+golish-db 只读查询。**
+  - **登记**：feature_list 新条目 `db-truth-driven-gate-coverage-2026-06-12`(not_started)。
+- **运行过的验证**：`cargo build -p golish --bin golish` exit 0(59.58s);活体 stage-run 完整跑完出 stage-run report(`/tmp/golish-stage-run.log`)。
+- **提交记录**：未 commit。本轮新增/改动：`?? docs/design/2026-06-12-db-truth-driven-gate-and-diagnostic-reflector.md`、`M feature_list.json`、`M agent-progress.md`。(工作树另有承接前序会话的大量未提交改动,见各 in_progress 条目)
+- **未提交半成品/下一步**：DB 真值驱动 gate 的**实现未动**(核心 gate+hook+golish-db 查询属 IO 集成,需 TDD 全覆盖+just precommit,建议聚焦会话)。首步=golish-db 加「按 org/target 查 technique 有无数据」只读查询 + execute.rs stage-close hook 合并业务表 facts 注入 `ctx.evidence_facts`(复用现有通道);DNS 需先建 `dns_records` 专表(schema,§2.7 确认)。
+- **已知风险**：用户诉求(DB 真值锚)的正确实现路径已核实并固化进设计;实现阶段守红线(只产 Found、I8 不靠 DB 无数据推 checked_empty、findings 永空、gate 纯函数)。
+
+---
+
+### 2026-06-11 · Substantive 阶段证据投影兜底（BaJie MCP-agent-4 · DISPATCH off · 承接 MCP-3 上下文 · 用户「开始吧 全部搞完再编译检测错误 然后自己跑测试看看结果」）
+
+- **本轮目标**：实现 `docs/design/2026-06-11-substantive-stage-evidence-projection-fallback.md`（D1-D5 已拍板）——弱模型干完活（账本有真实 evidence facts）但没调 submit 时，harness 从账本投影合成 deliverable（findings 永远空）走原 gate，替代 missing-deliverable 死锁 BLOCK。背景：MCP-3 活体实测 MiMo OpenAI 端 target_intel 三次 attempt 全 BLOCK（957 字散文汇报、0 次调 submit），而账本里 13 条 evidence（11 条带 technique/asset/outcome）齐全。
+- **已完成**：
+  - **计划**：`docs/superpowers/plans/2026-06-11-substantive-stage-evidence-projection-fallback.md`（任务 1-5；按用户指示批量实现后统一验证，替代逐任务先红后绿）。
+  - **任务 1**：`golish-agent-kit/src/harness/stage_spec.rs` `StageSpec` 加 `synthesize_from_evidence_when_missing: bool`（serde default false=旧行为逐字节不变）+ 2 守卫测试（默认 false/显式 true；嵌入 spec target_intel=true、vuln_triage=false）。
+  - **任务 2**：`execute.rs` 新增 `synthesize_from_evidence(stage, facts)` 纯函数——claims 只对 Found fact 各产一条（D3，kind=`<stage>_evidence`、subject=fact.asset、technique=Some(fact.technique)、evidence_ids=[fact.id]）；Empty fact 不产 claim（CheckedEmpty 由 gate `derive_from_evidence` 投影，I8 保住）；evidence_refs=全部 facts id 去重排序；coverage 留空（D2 靠 gate 投影）；findings/skipped/required 恒空（红线）；technique 原样不过滤（脏值由 schema_check fail-closed 暴露）。
+  - **任务 3**：`apply_harness_gate_hook` substantive missing-deliverable 分支改 `match (projection_enabled, ledger_facts)`——(true, Some) → warn + 投影进原 gate 流（schema/contract/vacuous/freshness + gate_rules + enforce_evidence_existence 全跑，outcome.missing_deliverable=false）；其余 → 原 fail-closed BLOCK 不动。借用安全：`as_deref()` 只借 facts，后续 `gate_ctx` 仍 move `evidence_facts`。
+  - **任务 4**：`resources/harness/stages/target_intel.json` 加 `"synthesize_from_evidence_when_missing": true`（首个灰度阶段）+ `$comment_synthesize` 注释。
+  - **修复**：首跑 nextest 揪出 `finding_verification_check.rs` 测试辅助 struct literal 缺新字段（E0063）→ 补 `synthesize_from_evidence_when_missing: false`。
+  - **登记**：feature_list 新条目 `substantive-stage-evidence-projection-fallback-2026-06-11`（in_progress，verification/evidence 已填）。
+- **运行过的验证**：
+  - `cargo check -p golish-agent-kit` → exit 0（28.32s）
+  - `cargo clippy -p golish-agent-kit --lib -- -D warnings` → exit 0 零告警（13.27s）
+  - `cargo nextest run -p golish-agent-kit` → **580 passed / 0 failed / 0 skipped**（fmt 修复后复跑同样 580 全绿）
+  - 新增 9 测试精确过滤（`-E 'test(evidence_projection_fallback) + …'`）→ **9/9 passed**：纯函数不变量×4 + hook 门控×3 + spec 守卫×2
+  - `cargo fmt -p golish-agent-kit` 修 3 处行宽 → `--check` exit 0（FMT_OK）
+  - ReadLints 改动文件 → 0 错误
+- **已记录证据**：见 feature_list `substantive-stage-evidence-projection-fallback-2026-06-11` verification/evidence 字段。
+- **提交记录**：未 commit（用户未授权）。改动文件：`?? docs/design/2026-06-11-substantive-stage-evidence-projection-fallback.md`（MCP-3 写）、`?? docs/superpowers/plans/2026-06-11-substantive-stage-evidence-projection-fallback.md`、`M backend/crates/golish-agent-kit/src/harness/stage_spec.rs`、`M backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs`、`M backend/crates/golish-agent-kit/src/harness/gate/finding_verification_check.rs`、`M resources/harness/stages/target_intel.json`、`M feature_list.json`、`M agent-progress.md`。
+- **已知风险或未解决问题**：① `just precommit` 全量未跑（commit 前需补）；② 活体对照验证待跑（弱模型 + target_intel：修后账本有 evidence → 投影兜底进 gate 终判；注意投影兜底≠必过，coverage 缺格仍 BLOCK——本次 moresec 实测 facts 只覆盖 DNS/SUBDOMAIN 两类技术，6 类 expected 下 gate 仍可能 BLOCK 在 coverage_complete，那是「真没测全」的正确 BLOCK，与死锁 BLOCK 的区别是 repair correction 会列出具体缺格）；③ EAS/enumeration 是否跟进开关，等 target_intel 活体验稳后逐个评估。
+
+---
+
 ### 2026-06-11 · 弱模型提交通道：定向 repair + tool_choice 锁 submit（BaJie MCP-agent-2 · DISPATCH off · 用户「改 1+2 都做」）
 
 - **本轮目标**：治「MiMo 活干完了但没调 submit_stage_deliverable → gate BLOCK → repair 把整个阶段重做一遍（多烧 ~6min）」。改 1 = 定向 repair（纠正提示注入账本真实 evidence id，只要求提交）；改 2 = 锁死提交通道（该 repair pass 的 tool_choice 收紧为指定 `submit_stage_deliverable`）。
