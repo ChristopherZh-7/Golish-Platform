@@ -188,7 +188,9 @@ impl Tool for BraveSearchTool {
 
     fn description(&self) -> &'static str {
         "Search the web using Brave Search API. Returns relevant results with titles, URLs, and descriptions. \
-         Use for privacy-focused web search with no tracking."
+         Use for privacy-focused web search with no tracking. Supports Google-hacking dork operators \
+         in the query (e.g. site:example.com filetype:pdf, intitle:, inurl:) — prefer this API path \
+         for dork-based discovery and fall back here when scraping CLI dork tools are blocked."
     }
 
     fn parameters(&self) -> Value {

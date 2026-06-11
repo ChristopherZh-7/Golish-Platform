@@ -220,8 +220,9 @@ mod tests {
             severity: FindingSeverity::Info,
             evidence_refs: vec![EvidenceAuditId::new(1)],
         });
-        // 仅 1 个 evidence, min_invocations sum=3 → FakePattern
-        d.evidence_refs = vec![EvidenceAuditId::new(1)];
+        // 去上阶段工具（2026-06-10）后 EAS min_invocations sum=1 (http_probe)。
+        // 0 个顶层 evidence_refs < sum → FakePattern（有 finding 却无顶层证据 = 疑似编造）。
+        d.evidence_refs = vec![];
         match run(&d, &spec) {
             GateCheckOutcome::Block { reasons, recovery } => {
                 assert!(reasons.iter().any(|r| r.contains("FakePattern")));

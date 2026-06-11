@@ -24,5 +24,15 @@
   "GOLISH-INTEL-ASN": { "name": "ASN / Netblock Ownership", "standard": "GOLISH custom" },
   "GOLISH-INTEL-CT": { "name": "Certificate Transparency", "standard": "GOLISH custom" },
   "GOLISH-INTEL-SUBDOMAIN": { "name": "Passive Subdomain Enumeration", "standard": "GOLISH custom" },
-  "GOLISH-INTEL-OSINT": { "name": "OSINT Exposure / Leaks", "standard": "GOLISH custom" }
+  "GOLISH-INTEL-OSINT": { "name": "OSINT Exposure / Leaks", "standard": "GOLISH custom" },
+
+  "$comment_eas": "external_attack_surface 阶段技术类（定义攻击面，coverage_complete 用）。阶段重排 2026-06-09：端口/服务指纹前移到此（先定义 host×端口×服务×活web，再去 enumeration 枚举内容），见 docs/design/2026-06-09-active-stage-verify-first.md。",
+  "GOLISH-EAS-LIVENESS": { "name": "Active Liveness Verification (DNS resolve + HTTP probe)", "standard": "GOLISH custom" },
+  "GOLISH-EAS-PORT": { "name": "Port / Open Service Enumeration", "standard": "GOLISH custom" },
+  "GOLISH-EAS-SERVICE-FINGERPRINT": { "name": "Service / Version Fingerprinting", "standard": "GOLISH custom" },
+
+  "$comment_enum": "enumeration 阶段技术类（内容枚举，coverage_complete 用）。阶段重排 2026-06-09：在 EAS 摸清的完整服务清单上做内容枚举；JSAPI/DIR/PARAM 产出的可测单元是下游 vuln_triage 覆盖率分母（total_units）来源。",
+  "GOLISH-ENUM-DIR": { "name": "Directory / Path / Endpoint Discovery", "standard": "GOLISH custom" },
+  "GOLISH-ENUM-PARAM": { "name": "Parameter / Input Discovery", "standard": "GOLISH custom" },
+  "GOLISH-ENUM-JSAPI": { "name": "JS Collection / API Endpoint Extraction", "standard": "GOLISH custom" }
 }

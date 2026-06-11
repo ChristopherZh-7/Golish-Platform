@@ -1,0 +1,34 @@
+**Goal:** build the passive, ZERO-TOUCH intelligence picture of the in-scope
+roots — asset inventory, subdomains, DNS/whois/ASN/CT, historical URLs — WITHOUT
+sending any packet that touches the target's own hosts. Liveness/port/service
+checks are NOT done here; they belong to `external_attack_surface` (EAS).
+
+**Recommended sequence (run each technique ONCE per in-scope root):**
+
+1. `recon_enrich_assets` first — ASM/intel providers (quake / 0.zone / enscan)
+   return org, ICP, subdomains, and asset fields in one shot. This is the cheapest,
+   richest source; do it before any CLI tool.
+2. Passive subdomain enumeration — `subfinder -all -recursive` and/or
+   `amass enum -passive`. Run each ONCE on the root domain. Merge + dedupe results.
+3. URL history — `gau` / `waybackurls` on the root for historical endpoints.
+4. (Optional) whois / ASN / CT via providers if not already covered by step 1.
+
+**Efficiency red lines (these are the common failure modes):**
+
+- Run each passive tool ONCE per root, then move on. Do NOT re-run subfinder/amass
+  repeatedly with different flags hunting for more.
+- Do NOT `dig` every discovered subdomain one-by-one. Per-host A-record resolution
+  and liveness is EAS's job (httpx does it in one batch). Resolving 200 hosts with
+  200 `dig` calls here is wasted work and is out of this stage's purpose.
+- Do NOT run `nmap` / port scans / `httpx` live probing — those touch the target
+  and are blocked here. If you feel the urge to "verify a host is up", STOP: that
+  belongs to EAS, which inherits your subdomain evidence.
+
+**Coverage + stop condition:**
+
+- For each in-scope asset, give each expected intel technique (DNS / WHOIS / ASN /
+  CT / SUBDOMAIN / OSINT) a terminal status in `coverage`: found+evidence_refs, or
+  checked_empty+evidence_refs (you actually ran it and it was empty — NOT the same
+  as "unchecked"), or blocked/not_applicable+note.
+- Once providers + one pass of passive subdomain + url-history have run and the
+  asset list is recorded, fill coverage and `submit_stage_deliverable`. Do not loop.

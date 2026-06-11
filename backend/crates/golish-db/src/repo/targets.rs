@@ -149,6 +149,7 @@ fn build_list_in_scope_values_legacy_sql() -> String {
     "SELECT DISTINCT value FROM targets \
        WHERE scope::text = 'in' \
          AND ($1 IS NULL OR project_path = $1 OR project_path = '') \
+         AND ($2 IS NULL OR organization_id = $2) \
        ORDER BY value"
         .to_string()
 }
@@ -300,13 +301,17 @@ pub async fn list_values_by_project_exact(
 /// Distinct in-scope (`scope='in'`) target `value`s within legacy visibility.
 /// This is the authoritative in-scope asset set the harness coverage gate uses
 /// (populated by organization recon, manual target-add, etc.). `None`
-/// project_path = all visible targets (single-workspace default).
+/// project_path = all visible targets (single-workspace default). `org_id`
+/// narrows the set to one organization's in-scope targets (coverage asset-axis
+/// isolation, design 2026-06-09); `None` keeps the legacy whole-DB behaviour.
 pub async fn list_in_scope_values(
     pool: &PgPool,
     project_path: Option<&str>,
+    org_id: Option<Uuid>,
 ) -> Result<Vec<String>> {
     let rows = sqlx::query_scalar::<_, String>(&build_list_in_scope_values_legacy_sql())
         .bind(project_path)
+        .bind(org_id)
         .fetch_all(pool)
         .await?;
     Ok(rows)
@@ -567,6 +572,21 @@ mod tests {
         assert_eq!(
             build_find_row_by_value_legacy_sql(),
             format!("SELECT {cols} FROM targets WHERE value = $1 AND ($2 IS NULL OR project_path = $2 OR project_path = '') LIMIT 1")
+        );
+    }
+
+    #[test]
+    fn list_in_scope_values_sql_filters_scope_project_and_org() {
+        // Coverage asset-axis isolation (design 2026-06-09): the in-scope value
+        // set must be narrowable to one organization so a persistent DB with
+        // residue from other orgs/runs cannot explode the coverage denominator.
+        assert_eq!(
+            build_list_in_scope_values_legacy_sql(),
+            "SELECT DISTINCT value FROM targets \
+               WHERE scope::text = 'in' \
+                 AND ($1 IS NULL OR project_path = $1 OR project_path = '') \
+                 AND ($2 IS NULL OR organization_id = $2) \
+               ORDER BY value"
         );
     }
 

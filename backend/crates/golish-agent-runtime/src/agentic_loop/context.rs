@@ -179,6 +179,12 @@ pub struct AgenticLoopContext<'a> {
     /// run the full pre-action authorizer (allowed_tools confinement + intent vs
     /// ceiling) on real executor tools. `None` = no stage (flag off / non-stage).
     pub harness_authz: Option<golish_agent_kit::harness::HarnessAuthz>,
+    /// 设计 2026-06-11 (weak-model-submit-channel) · `true` only on a targeted
+    /// gate-repair pass whose sole remaining action is the stage submission.
+    /// The completion phase then locks the turn's `tool_choice` to
+    /// `submit_stage_deliverable` (released once it has been dispatched).
+    /// `false` = normal pass, tool_choice behavior unchanged.
+    pub harness_submit_only: bool,
     /// C2c · optional sink for a `StageDeliverable` produced by a delegated
     /// sub-agent (e.g. `reporter`). When set, the sub-agent call handler writes
     /// any result carrying a deliverable signature here, so the Task-mode

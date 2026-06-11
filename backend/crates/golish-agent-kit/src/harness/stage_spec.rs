@@ -158,9 +158,15 @@ mod tests {
     #[test]
     fn external_attack_surface_allowed_tool_types() {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
-        assert!(s.allowed_tool_types.contains(&"recon/dns".to_string()));
+        // 去上阶段工具（2026-06-10）：EAS 不再做被动 DNS（移交 target_intel，复用继承的
+        // dns_a），改用 httpx 一步解析+探测确认存活，杜绝在本阶段重采 dig。
+        assert!(!s.allowed_tool_types.contains(&"recon/dns".to_string()));
         assert!(s.allowed_tool_types.contains(&"recon/http".to_string()));
         assert!(s.allowed_tool_types.contains(&"recon/visual".to_string()));
+        // 阶段重排 2026-06-09：端口扫描前移到 EAS（先定义攻击面再枚举内容）。
+        assert!(s
+            .allowed_tool_types
+            .contains(&"recon/port-scan".to_string()));
         assert!(!s.allowed_tool_types.contains(&"web/injection".to_string()));
         // 边界重构（按是否接触目标）：被动子域名 / url-history 下沉 target_intel，
         // EAS 不再允许它们（只做接触目标的主动测绘）。
@@ -175,7 +181,9 @@ mod tests {
     #[test]
     fn external_attack_surface_min_invocations() {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
-        assert_eq!(s.min_invocations.get("dns_resolve"), Some(&1));
+        // 去上阶段工具（2026-06-10）：dns_resolve 不再是 EAS 硬地板（DNS 在 target_intel
+        // 完成）；存活由 http_probe(httpx) 兜底。
+        assert_eq!(s.min_invocations.get("dns_resolve"), None);
         assert_eq!(s.min_invocations.get("http_probe"), Some(&1));
         // 边界重构：被动子域名枚举不再钉为 EAS 硬地板（移交 target_intel）。
         assert_eq!(s.min_invocations.get("subdomain_enum_passive"), None);
@@ -184,9 +192,64 @@ mod tests {
     #[test]
     fn external_attack_surface_gate_rules_count() {
         // gate-rules-migration: eas 过关标准 = scope×2 + named_check:surface_coverage
-        // + named_check:min_invocations = 4 条 gate_rules（取代旧 6 个 required_checks）。
+        // + named_check:min_invocations + coverage_complete(per-asset liveness,
+        // 2026-06-09) = 5 条 gate_rules。
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
-        assert_eq!(s.gate_rules.len(), 4);
+        assert_eq!(s.gate_rules.len(), 5);
+    }
+
+    // 2026-06-09 verify-first + 阶段重排：EAS = 定义攻击面，必须对每个 in-scope 资产
+    // 把「存活 + 端口 + 服务指纹」纳入过关标准——声明 GOLISH-EAS-{LIVENESS,PORT,
+    // SERVICE-FINGERPRINT} expected techniques + 一条 coverage_complete gate_rule。
+    // 端口/服务从 enumeration 前移到此（先扫端口再去枚举内容）；JS/API 移交 enumeration。
+    #[test]
+    fn external_attack_surface_requires_per_asset_surface_coverage() {
+        let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
+        for tech in [
+            "GOLISH-EAS-LIVENESS",
+            "GOLISH-EAS-PORT",
+            "GOLISH-EAS-SERVICE-FINGERPRINT",
+        ] {
+            assert!(
+                s.expected_techniques.contains(&tech.to_string()),
+                "EAS must declare {tech} as an expected technique"
+            );
+        }
+        assert!(
+            s.gate_rules.iter().any(|r| matches!(
+                r,
+                crate::harness::gate::rule_engine::GateRule::CoverageComplete { .. }
+            )),
+            "EAS gate_rules must include a coverage_complete rule"
+        );
+    }
+
+    // 2026-06-09 verify-first + 阶段重排 · enumeration = 内容枚举：在 EAS 摸清的服务上
+    // 做 JS/API + 目录 + 参数（声明 GOLISH-ENUM-{DIR,PARAM,JSAPI}）。端口/服务前移到
+    // EAS，故本阶段不再含 recon/port-scan。产出的可测单元是 vuln_triage 分母来源。
+    #[test]
+    fn enumeration_requires_per_asset_content_coverage() {
+        let s = crate::harness::resources::load_embedded_stage_spec(StageKind::Enumeration)
+            .expect("load enumeration spec");
+        for tech in ["GOLISH-ENUM-DIR", "GOLISH-ENUM-PARAM", "GOLISH-ENUM-JSAPI"] {
+            assert!(
+                s.expected_techniques.contains(&tech.to_string()),
+                "enumeration must declare {tech} as an expected technique"
+            );
+        }
+        // 阶段重排：端口/服务前移到 EAS，enumeration 不再做端口扫描。
+        assert!(
+            !s.allowed_tool_types
+                .contains(&"recon/port-scan".to_string()),
+            "enumeration must NOT allow port-scan after the 2026-06-09 reorder"
+        );
+        assert!(
+            s.gate_rules.iter().any(|r| matches!(
+                r,
+                crate::harness::gate::rule_engine::GateRule::CoverageComplete { .. }
+            )),
+            "enumeration gate_rules must include a coverage_complete rule"
+        );
     }
 
     #[test]

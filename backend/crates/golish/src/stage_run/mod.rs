@@ -125,8 +125,9 @@ pub async fn run(args: Args) -> Result<()> {
     // P1 · seed minimal upstream (org + in-scope targets) so an isolated
     // downstream stage (e.g. --only target_intel) has real data to work on.
     // Scoped to the workspace project_path the agent's manage_targets /
-    // manage_organizations tools use; the gate's in_scope_assets(None) sees any
-    // in-scope target regardless of project_path.
+    // manage_organizations tools use; the seeded org id is then bound to the
+    // orchestrator so the gate's in_scope_assets(org_id) only sees THIS org's
+    // targets (coverage asset-axis isolation, design 2026-06-09).
     let workspace_str = workspace.to_string_lossy().to_string();
     let seed = maybe_seed(&db_pool, &workspace_str, &args).await;
 
@@ -235,6 +236,7 @@ pub async fn run(args: Args) -> Result<()> {
         entry_stage,
         allowlist,
         &task_input,
+        seed.as_ref().and_then(|s| s.org_id),
     )
     .await;
 
@@ -291,7 +293,9 @@ async fn stop_embedded_pg(rx: tokio::sync::oneshot::Receiver<golish_db::GolishDb
     }
 }
 
-/// Build the [`TaskOrchestrator`] and run the slice via `run_stage`.
+/// Build the [`TaskOrchestrator`] and run the slice via `run_stage`. `org_id`
+/// (from the upstream seed) binds the coverage gate's asset axis to THIS run's
+/// organization (coverage asset-axis isolation, design 2026-06-09).
 #[allow(clippy::too_many_arguments)]
 async fn orchestrate(
     bridge: &Arc<AgentBridge>,
@@ -301,6 +305,7 @@ async fn orchestrate(
     entry_stage: StageKind,
     allowlist: HashSet<StageKind>,
     task_input: &str,
+    org_id: Option<uuid::Uuid>,
 ) -> Result<String> {
     use golish_agent_bridge::bridge_executor::BridgeAgentExecutor;
     use golish_agent_kit::task_orchestrator::TaskOrchestrator;
@@ -331,6 +336,7 @@ async fn orchestrate(
     orchestrator.set_chat_session_id(session_id);
     orchestrator.set_approval_coordinator(bridge.coordinator().cloned());
     orchestrator.set_stage_allowlist(Some(allowlist));
+    orchestrator.set_harness_org_id(org_id);
 
     let executor = BridgeAgentExecutor::new(bridge.clone());
     orchestrator
@@ -433,10 +439,32 @@ async fn seed_upstream(
     let mut org_id: Option<uuid::Uuid> = None;
     let mut org_name_out: Option<String> = None;
     if let Some(name) = org_name.map(str::trim).filter(|s| !s.is_empty()) {
-        let row = golish_db::repo::organizations::create(db_pool, project_path, name, None, "", "")
-            .await
-            .context("seed organization")?;
-        org_id = Some(row.id);
+        // get-or-create: the embedded PG persists across runs, so a repeated
+        // `--org` would hit the `uq_orgs_root_name` unique constraint, abort the
+        // whole seed, drop `org_id`, and silently fall back to the legacy
+        // whole-DB coverage axis (org isolation never exercised). Reuse the
+        // existing root org by name when present.
+        let id =
+            match golish_db::repo::organizations::find_root_id_by_name(db_pool, project_path, name)
+                .await
+                .context("seed organization lookup")?
+            {
+                Some(existing) => existing,
+                None => {
+                    golish_db::repo::organizations::create(
+                        db_pool,
+                        project_path,
+                        name,
+                        None,
+                        "",
+                        "",
+                    )
+                    .await
+                    .context("seed organization")?
+                    .id
+                }
+            };
+        org_id = Some(id);
         org_name_out = Some(name.to_string());
     }
 

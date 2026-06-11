@@ -126,11 +126,12 @@ impl SurfaceCoverage {
     }
 }
 
-/// D2 硬要求 category (design doc 2026-06-01 §D2 option A 精练版):
-/// Surface + JsApi 必须有证据覆盖 (后端数据源经 query_target_data 确实存在:
-/// fingerprints/endpoints/js_analysis).
-pub const D2_REQUIRED_CATEGORIES: &[SurfaceCategory] =
-    &[SurfaceCategory::Surface, SurfaceCategory::JsApi];
+/// D2 硬要求 category（2026-06-09 阶段重排：端口/服务前移到 EAS、JS/API 移交
+/// enumeration，详见 `docs/design/2026-06-09-active-stage-verify-first.md`）：
+/// external_attack_surface 现在只负责「定义攻击面」(Surface = 端口/服务/HTTP/指纹)，
+/// 故 EAS `surface_coverage` 只硬要求 **Surface**。JsApi 的把关由 enumeration 的
+/// `coverage_complete`(GOLISH-ENUM-JSAPI) 承担，不再压在 EAS。
+pub const D2_REQUIRED_CATEGORIES: &[SurfaceCategory] = &[SurfaceCategory::Surface];
 
 /// D2 软要求 category (属 D2 意图但当前无保证后端数据源, 允许 honest-empty).
 pub const D2_SOFT_CATEGORIES: &[SurfaceCategory] = &[SurfaceCategory::Sitemap];
@@ -229,10 +230,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_required_when_only_surface_present() {
+    fn only_surface_satisfies_required_after_jsapi_moved_to_enumeration() {
+        // 2026-06-09 阶段重排：EAS 只硬要求 Surface；JsApi 移交 enumeration。
         let d = deliverable_with(vec![finding("http_service")]);
-        let missing = missing_required_categories(&d);
-        assert_eq!(missing, vec![SurfaceCategory::JsApi]);
+        assert!(missing_required_categories(&d).is_empty());
     }
 
     #[test]

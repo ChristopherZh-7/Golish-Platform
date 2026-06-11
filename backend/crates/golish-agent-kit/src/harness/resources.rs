@@ -25,6 +25,12 @@ macro_rules! profile_json_raw {
     };
 }
 
+macro_rules! stage_methodology_raw {
+    ($p:literal) => {
+        include_str!(concat!("../../../../../resources/harness/stages/", $p))
+    };
+}
+
 /// 按 stage kind 取嵌入的 stage spec JSON 原文.
 ///
 /// 12 个 StageKind 全覆盖 (与 `resources/harness/stages/*.json` 一一对应).
@@ -75,6 +81,26 @@ pub fn profile_json(id: &str) -> Option<&'static str> {
 /// 按 kind 加载 + 解析 stage spec.
 pub fn load_embedded_stage_spec(kind: StageKind) -> Result<StageSpec, StageSpecLoadError> {
     load_stage_spec_from_json(stage_spec_json(kind))
+}
+
+/// 按 stage kind 取嵌入的「阶段方法论 playbook」原文 (`<stage>.methodology.md`).
+///
+/// 与 stage spec JSON 同目录、同 `include_str!` 深度，但与 gate 解耦：playbook 是
+/// **正向方法论指导**（这个阶段怎么高效做、推荐工具序列、效率红线、何时收口），由
+/// [`crate::task_orchestrator::prompts::stage_methodology`] 注入到 charter 之后。
+/// 改它只影响 agent 看到的指导文本，0 Rust 改动、不参与确定性 gate。
+///
+/// 只有写了 playbook 的阶段返回 `Some`；其余返回 `None`（charter 不追加 playbook 段）。
+pub fn stage_methodology_md(kind: StageKind) -> Option<&'static str> {
+    Some(match kind {
+        StageKind::Scoping => stage_methodology_raw!("scoping.methodology.md"),
+        StageKind::TargetIntel => stage_methodology_raw!("target_intel.methodology.md"),
+        StageKind::ExternalAttackSurface => {
+            stage_methodology_raw!("external_attack_surface.methodology.md")
+        }
+        StageKind::Enumeration => stage_methodology_raw!("enumeration.methodology.md"),
+        _ => return None,
+    })
 }
 
 /// 加载 + 校验内嵌的大阶段分组表 (`resources/harness/graph/phases.json`).
@@ -178,5 +204,32 @@ mod tests {
         assert!(load_embedded_sprint_skeleton("does_not_exist")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn stage_methodology_present_for_info_gathering_stages_and_absent_otherwise() {
+        // The four info-gathering / active-mapping stages ship a methodology
+        // playbook; each must be non-empty and carry its stage-specific red line.
+        let scoping = stage_methodology_md(StageKind::Scoping).expect("scoping playbook");
+        assert!(scoping.contains("do NOT probe") || scoping.contains("NO reconnaissance"));
+
+        let ti = stage_methodology_md(StageKind::TargetIntel).expect("target_intel playbook");
+        // The key fix this stage encodes: no one-by-one dig, no active scan here.
+        assert!(ti.contains("subfinder"));
+        assert!(ti.contains("dig"));
+        assert!(ti.to_lowercase().contains("once"));
+
+        let eas = stage_methodology_md(StageKind::ExternalAttackSurface)
+            .expect("external_attack_surface playbook");
+        assert!(eas.contains("httpx"));
+        assert!(eas.contains("skipped_checks"));
+
+        let enumeration =
+            stage_methodology_md(StageKind::Enumeration).expect("enumeration playbook");
+        assert!(enumeration.contains("tested_units"));
+
+        // Stages without a playbook return None (charter appends nothing).
+        assert!(stage_methodology_md(StageKind::Cleanup).is_none());
+        assert!(stage_methodology_md(StageKind::Reporting).is_none());
     }
 }

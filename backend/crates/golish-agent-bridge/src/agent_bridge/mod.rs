@@ -226,6 +226,12 @@ pub struct AgentBridge {
     /// authorizer (allowed_tools confinement + intent vs ceiling) on real
     /// executor tools. `None` = no stage (flag off / non-stage turn / chat mode).
     pub(crate) harness_active_authz: Arc<RwLock<Option<golish_agent_kit::harness::HarnessAuthz>>>,
+    /// 设计 2026-06-11 (weak-model-submit-channel) · `true` only while running a
+    /// targeted gate-repair pass whose sole remaining action is the stage
+    /// submission. Set per-subtask alongside `harness_active_stage`; read by
+    /// `build_loop_context` so the turn's `tool_choice` can be locked to
+    /// `submit_stage_deliverable`. `false` = normal pass.
+    pub(crate) harness_submit_only: Arc<RwLock<bool>>,
 
     /// Per-session selected harness operation profile id (e.g. "assessment" /
     /// "red_team"), chosen via the chat-panel mode picker. `None` = chat mode /

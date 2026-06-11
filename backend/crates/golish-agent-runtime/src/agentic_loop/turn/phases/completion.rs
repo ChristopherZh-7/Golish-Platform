@@ -98,6 +98,12 @@ where
         supports_thinking,
     );
 
+    // 设计 2026-06-11 · targeted gate-repair pass: lock this turn's tool_choice
+    // onto `submit_stage_deliverable`; released once the submit tool has been
+    // dispatched (`stage_deliverable_submitted`) so the loop can wind down
+    // normally instead of being forced into duplicate submissions.
+    let submit_only = ctx.harness_submit_only && !state.stage_deliverable_submitted;
+
     let stream = start_completion_stream(
         ctx,
         config,
@@ -107,6 +113,7 @@ where
         tools,
         &llm_span,
         accumulated_response,
+        submit_only,
     )
     .await?;
 

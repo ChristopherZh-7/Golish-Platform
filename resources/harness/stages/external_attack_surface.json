@@ -1,6 +1,6 @@
 {
   "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: external_attack_surface (Doc 3 §4.1). MVP stage. Doc 3 §4.2 5 个问题: input/output/allowed_tools/done_judgement/failure-out_of_scope.",
+  "$comment": "Stage spec: external_attack_surface — DEFINE the attack surface (liveness + port scan + service fingerprint + HTTP probe + screenshots). 阶段重排 2026-06-09: 端口/服务前移到此 (先定义 host×端口×服务×活web); JS/API 移交 enumeration. 见 docs/design/2026-06-09-active-stage-verify-first.md.",
 
   "id": "external_attack_surface",
   "kind": "external_attack_surface",
@@ -9,7 +9,7 @@
   "requires_stages": ["scoping", "target_intel"],
   "allowed_next_stages": ["enumeration", "reporting"],
 
-  "allowed_tool_types": ["recon/dns", "recon/http", "recon/visual"],
+  "allowed_tool_types": ["recon/port-scan", "recon/http", "recon/visual"],
 
   "deliverable_schema": "ExternalAttackSurfaceDeliverable",
   "gate_validator": "validate_external_attack_surface_gate",
@@ -28,11 +28,23 @@
       "on_fail": { "reason": "every finding must cite evidence", "hints": ["add evidence to each finding via prior tool calls"] }
     },
     { "op": "named_check", "check": "surface_coverage" },
-    { "op": "named_check", "check": "min_invocations" }
+    { "op": "named_check", "check": "min_invocations" },
+    {
+      "op": "coverage_complete",
+      "on_fail": {
+        "reason": "external attack surface incomplete: some in-scope assets were not fully mapped (liveness / port / service-fingerprint)",
+        "hints": [
+          "for EVERY in-scope asset, take each of GOLISH-EAS-LIVENESS (httpx confirms the host is live + resolves its current IP; DNS was already done in target_intel \u2014 REUSE the inherited dns_a, do NOT re-run dig) / GOLISH-EAS-PORT (port scan) / GOLISH-EAS-SERVICE-FINGERPRINT (service/version) to a terminal coverage cell: found+evidence_refs / checked_empty+evidence_refs / blocked|not_applicable+note",
+          "intel-source data (FOFA/Shodan/...) is a lead, not proof \u2014 actively confirm each asset NOW; JS/API extraction happens in the NEXT stage (enumeration) on the services you map here"
+        ]
+      }
+    }
   ],
 
+  "$comment_expected_techniques": "EAS = \u5b9a\u4e49\u653b\u51fb\u9762\uff08\u9636\u6bb5\u91cd\u6392 2026-06-09\uff1a\u7aef\u53e3/\u670d\u52a1\u524d\u79fb\u5230\u6b64\uff09\u3002coverage_complete \u5bf9\u6743\u5a01 in_scope_assets \u9010\u8d44\u4ea7\u6838 LIVENESS+PORT+SERVICE-FINGERPRINT \u7ec8\u6001\uff1b\u6f0f\u4e00\u4e2a = not_attempted = Block\u3002JS/API \u5df2\u79fb\u4ea4 enumeration\u3002",
+  "expected_techniques": ["GOLISH-EAS-LIVENESS", "GOLISH-EAS-PORT", "GOLISH-EAS-SERVICE-FINGERPRINT"],
+
   "min_invocations": {
-    "dns_resolve": 1,
     "http_probe": 1
   },
 

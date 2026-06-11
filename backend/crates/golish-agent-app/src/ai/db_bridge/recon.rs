@@ -245,11 +245,16 @@ impl GolishDbRepoProvider {
         Ok(data)
     }
 
-    pub(super) async fn in_scope_assets_impl(&self) -> anyhow::Result<Vec<String>> {
+    pub(super) async fn in_scope_assets_impl(
+        &self,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<String>> {
         // `None` project_path = legacy "all visible" set; the harness has no
-        // per-project key today (chat sessions carry project_path=None), so the
-        // whole-workspace in-scope target set is the authoritative asset axis.
-        self.recon_targets.in_scope_values(None).await
+        // per-project key today (chat sessions carry project_path=None). `org_id`
+        // narrows the asset axis to the current operation's organization
+        // (coverage asset-axis isolation, design 2026-06-09); `None` keeps the
+        // legacy whole-DB axis.
+        self.recon_targets.in_scope_values(None, org_id).await
     }
 
     pub(super) async fn in_scope_targets_impl(&self) -> anyhow::Result<Vec<serde_json::Value>> {

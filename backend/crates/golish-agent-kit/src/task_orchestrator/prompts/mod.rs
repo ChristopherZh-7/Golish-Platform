@@ -245,6 +245,31 @@ Only plan and act for `{stage_id}`. Do not perform later stages."#
     )
 }
 
+/// Stage methodology playbook (设计 2026-06-11 · stage-level skill 注入).
+///
+/// 与 [`stage_charter`]（边界/否定式约束 + gate 要求）互补：charter 告诉 agent
+/// 「不能用什么 + gate 查什么」，本函数注入「这个阶段**怎么高效做**」的正向方法论
+/// —— 推荐工具序列、效率红线（如 target_intel 禁逐条 dig）、何时收口。内容来自
+/// `resources/harness/stages/<stage>.methodology.md`（[`crate::harness::resources::stage_methodology_md`]），
+/// 改 markdown 即改指导、0 Rust 改动。没写 playbook 的阶段返回空串（不追加段落）。
+///
+/// 这是**指导**而非硬门禁：确定性 gate 仍是唯一过关裁判，playbook 只为减少模型空转
+/// / 越界尝试 / 低效循环（headless MiMo 实测：逐条 dig 22min+、target_intel 误试 nmap）。
+pub fn stage_methodology(spec: &StageSpec) -> String {
+    match crate::harness::resources::stage_methodology_md(spec.kind) {
+        Some(md) if !md.trim().is_empty() => format!(
+            "## STAGE PLAYBOOK — how to do `{stage}` efficiently (methodology)\n\n\
+             {body}\n\n\
+             This playbook is GUIDANCE, not a gate: the deterministic gate still decides \
+             pass/fail. Follow the recommended sequence and stop conditions so you don't waste \
+             turns or stray outside this stage.\n\n",
+            stage = spec.id,
+            body = md.trim(),
+        ),
+        _ => String::new(),
+    }
+}
+
 /// C6 · cross-stage evidence handoff context (Doc 3 §6.2 handoff).
 ///
 /// Renders the stage's `inherits_evidence_from` so the executing agent knows
@@ -410,8 +435,8 @@ with the ONE harness stage it belongs to (the full operation DAG is supported).
 
 - `scoping` — define scope / rules of engagement / authorization boundary (no probing).
 - `target_intel` — passive intel (zero-touch, no target contact): whois, ASN, DNS records, registrant info, passive subdomain enum (subfinder/amass -passive + CT logs), url-history (gau/waybackurls). (情报收集)
-- `external_attack_surface` — active external recon that contacts already-discovered/approved hosts: DNS resolution, HTTP probing, fingerprinting, screenshots. Subdomains are inherited from upstream `target_intel` (do not re-enumerate here). (资产测绘 / 攻击面 / 外部侦察)
-- `enumeration` — active recon: port scanning, service enumeration/fingerprinting, directory enumeration. (端口扫描 / 目录扫描 / 服务枚举)
+- `external_attack_surface` — active recon that DEFINES the attack surface of approved hosts: DNS resolution, port scanning, service/version fingerprinting, HTTP probing, screenshots (host x port x service x live-web). Subdomains inherited from `target_intel` (do not re-enumerate). (资产测绘 / 攻击面 / 端口扫描)
+- `enumeration` — content enumeration on the services mapped by EAS: JS collection + API endpoint extraction, directory/path discovery, parameter discovery. Do NOT re-port-scan (already done in EAS). (目录扫描 / JS-API / 参数发现)
 - `vuln_triage` — non-destructive vulnerability identification (nuclei, vuln matching). (漏洞扫描 / 漏洞识别)
 - `verification` — controlled exploit validation / PoC confirmation, approval-gated. (漏洞验证)
 - `reporting` — synthesize the final report from collected evidence. (报告生成 / 修复建议)
@@ -711,6 +736,49 @@ mod tests {
         .unwrap();
         assert!(!stage_charter(&without, &ScopingPolicy::default())
             .contains("Coverage (per in-scope asset)"));
+    }
+
+    /// 2026-06-09 verify-first（纯 gate 配置版）：给 EAS 加 expected_techniques 后，
+    /// charter **自动**把 GOLISH-EAS-LIVENESS 的逐资产覆盖契约渲染给 agent——
+    /// 证明「核实存活」诉求无需改 charter 代码，纯配置即联动。
+    #[test]
+    fn external_attack_surface_charter_surfaces_liveness_technique() {
+        let spec = crate::harness::resources::load_embedded_stage_spec(
+            crate::harness::types::StageKind::ExternalAttackSurface,
+        )
+        .expect("load eas spec");
+        let charter = stage_charter(&spec, &ScopingPolicy::default());
+        assert!(
+            charter.contains("GOLISH-EAS-LIVENESS"),
+            "EAS charter must surface the liveness technique to the agent"
+        );
+        assert!(charter.contains("Coverage (per in-scope asset)"));
+    }
+
+    /// 阶段级方法论 playbook (设计 2026-06-11): `stage_methodology` 为有 playbook 的
+    /// 阶段渲染「## STAGE PLAYBOOK」段并嵌入 markdown 正文，明确标注是「指导非 gate」；
+    /// 没 playbook 的阶段（如 cleanup）返回空串。
+    #[test]
+    fn stage_methodology_renders_playbook_for_target_intel_and_empty_for_cleanup() {
+        let ti = crate::harness::resources::load_embedded_stage_spec(
+            crate::harness::types::StageKind::TargetIntel,
+        )
+        .expect("load target_intel spec");
+        let m = stage_methodology(&ti);
+        assert!(m.contains("## STAGE PLAYBOOK"));
+        assert!(m.contains("target_intel"));
+        // The key methodology fix must reach the agent: no one-by-one dig.
+        assert!(m.contains("dig"));
+        assert!(m.contains("subfinder"));
+        // Must be clearly framed as guidance, not a hard gate.
+        assert!(m.contains("GUIDANCE") || m.contains("not a gate"));
+
+        // A stage without a methodology file → empty string (no section appended).
+        let cleanup = crate::harness::resources::load_embedded_stage_spec(
+            crate::harness::types::StageKind::Cleanup,
+        )
+        .expect("load cleanup spec");
+        assert!(stage_methodology(&cleanup).is_empty());
     }
 
     /// scoping 人工确认硬门禁 (设计 2026-06-06 §3.4): charter 的 scoping 段在

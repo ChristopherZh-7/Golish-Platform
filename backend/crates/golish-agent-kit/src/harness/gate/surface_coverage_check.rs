@@ -132,18 +132,11 @@ mod tests {
     }
 
     #[test]
-    fn only_surface_blocks_on_missing_jsapi() {
+    fn only_surface_passes_after_jsapi_moved_to_enumeration() {
+        // 2026-06-09 阶段重排：EAS 只硬要求 Surface（JsApi 移交 enumeration 的
+        // coverage_complete(GOLISH-ENUM-JSAPI)），故只有 Surface 也通过。
         let d = deliverable(vec![finding("http_service")]);
-        match run(&d) {
-            GateCheckOutcome::Block { reasons, recovery } => {
-                assert!(reasons.iter().any(|r| r.contains("JsApi")));
-                assert!(recovery
-                    .repair_tool_calls
-                    .iter()
-                    .any(|c| c == "query_target_data"));
-            }
-            _ => panic!("expected Block"),
-        }
+        assert!(matches!(run(&d), GateCheckOutcome::Pass));
     }
 
     #[test]

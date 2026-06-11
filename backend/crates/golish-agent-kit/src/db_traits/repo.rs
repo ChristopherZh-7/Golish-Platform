@@ -145,10 +145,16 @@ pub trait DbRepoProvider: Send + Sync {
     /// authoritative asset set (populated by organization recon / manual
     /// target-add) instead of the agent's self-reported coverage.
     ///
+    /// `org_id` narrows the axis to the operation's organization (coverage
+    /// asset-axis isolation, design 2026-06-09) so a persistent DB carrying
+    /// residue from other orgs/runs cannot explode the denominator; `None` =
+    /// legacy whole-DB set.
+    ///
     /// Default empty so test doubles keep the prior self-reported behavior; the
     /// gate hook only overrides the asset axis when this returns a non-empty set
     /// (an empty set must never vacuously satisfy `coverage_complete`).
-    async fn in_scope_assets(&self) -> anyhow::Result<Vec<String>> {
+    async fn in_scope_assets(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {
+        let _ = org_id;
         Ok(Vec::new())
     }
 

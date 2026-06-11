@@ -46,6 +46,12 @@ pub struct TaskOrchestrator {
     /// `None` = fall back to the `GOLISH_HARNESS_PROFILE` env default
     /// ([`crate::harness::active_profile_id`]).
     pub(super) profile_override: Option<String>,
+    /// Current operation's organization id (coverage asset-axis isolation,
+    /// design 2026-06-09). Passed to `in_scope_assets` lookups so the coverage
+    /// gate's denominator (and the agent-facing in-scope asset prompt section)
+    /// only contains THIS org's in-scope targets instead of the whole persistent
+    /// DB. `None` = legacy whole-DB axis (GUI/chat path until org wiring lands).
+    pub(super) harness_org_id: Option<Uuid>,
     /// P2 方案 C · accumulated [`StageFlowOutcome`] for the stage currently being
     /// run under the Executor (merged across that stage's subtasks: gate ANDed,
     /// progress ORed). Read + cleared by `run_stage_subtasks`.
@@ -87,6 +93,7 @@ impl TaskOrchestrator {
             user_input_tx,
             harness_evidence: std::collections::HashMap::new(),
             profile_override: None,
+            harness_org_id: None,
             stage_outcome_acc: None,
             chat_session_id: None,
             approval_coordinator: None,
@@ -111,6 +118,14 @@ impl TaskOrchestrator {
     /// picker). `None` keeps the `GOLISH_HARNESS_PROFILE` env default.
     pub fn set_profile_override(&mut self, profile: Option<String>) {
         self.profile_override = profile;
+    }
+
+    /// Bind the current operation's organization (coverage asset-axis
+    /// isolation, design 2026-06-09). The coverage gate's asset denominator and
+    /// the agent-facing in-scope asset list are then narrowed to this org's
+    /// in-scope targets. `None` keeps the legacy whole-DB asset axis.
+    pub fn set_harness_org_id(&mut self, org_id: Option<Uuid>) {
+        self.harness_org_id = org_id;
     }
 
     /// Wire the HITL coordinator so the two-level phase-approval gate can request

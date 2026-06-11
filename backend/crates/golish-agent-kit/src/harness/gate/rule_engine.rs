@@ -761,14 +761,15 @@ mod tests {
     }
 
     #[test]
-    fn named_check_surface_coverage_blocks_on_missing_jsapi() {
-        // 经 named_check 转发到 surface_coverage_check：只有 Surface 无 JsApi → Block。
+    fn named_check_surface_coverage_passes_on_surface_only() {
+        // 2026-06-09 阶段重排：EAS surface_coverage 只硬要求 Surface（JsApi 移交
+        // enumeration 的 coverage_complete(GOLISH-ENUM-JSAPI)），故只有 Surface 也通过。
         let rule = parse(r#"{ "op":"named_check","check":"surface_coverage" }"#);
         let d = deliverable(
             vec![finding("http_service", FindingSeverity::Info, vec![1])],
             vec![],
         );
-        assert!(!eval(&d, &test_spec(), &[rule])[0].is_pass());
+        assert!(eval(&d, &test_spec(), &[rule])[0].is_pass());
     }
 
     #[test]

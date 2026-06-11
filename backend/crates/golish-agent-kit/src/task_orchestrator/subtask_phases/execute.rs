@@ -108,6 +108,11 @@ impl TaskOrchestrator {
                             &spec,
                             &scoping_policy,
                         ));
+                        // 阶段级方法论 playbook（设计 2026-06-11）：charter 之后注入
+                        // 「这个阶段怎么高效做」的正向指导（推荐工具序列 / 效率红线 /
+                        // 何时收口），补 charter 只讲约束、不讲方法论的缺口。没写
+                        // playbook 的阶段返回空串。
+                        desc.push_str(&super::super::prompts::stage_methodology(&spec));
                         // C6 · handoff: inject which evidence kinds this stage
                         // inherits from upstream stages (consumes the otherwise
                         // runtime-dead `inherits_evidence_from`).
@@ -120,10 +125,15 @@ impl TaskOrchestrator {
                             &self.harness_evidence,
                         ));
                         // Phase 2 ①③ seam (agent-facing): inject the authoritative
-                        // in-scope asset list (recon-populated targets.scope='in')
-                        // so the stage agent works the real assets. Empty (no recon
-                        // yet) → no section, no behavior change.
-                        let in_scope_assets = self.repo.in_scope_assets().await.unwrap_or_default();
+                        // in-scope asset list (recon-populated targets.scope='in',
+                        // narrowed to the operation's org when bound) so the stage
+                        // agent works the real assets. Empty (no recon yet) → no
+                        // section, no behavior change.
+                        let in_scope_assets = self
+                            .repo
+                            .in_scope_assets(self.harness_org_id)
+                            .await
+                            .unwrap_or_default();
                         desc.push_str(&super::super::prompts::render_in_scope_assets(
                             &in_scope_assets,
                         ));
@@ -167,15 +177,28 @@ impl TaskOrchestrator {
         // recovery message is stashed here and injected on the next iteration so
         // the agent re-does the subtask (distinct from the text-only reflector).
         let mut pending_gate_correction: Option<String> = None;
+        // 设计 2026-06-11 · when the BLOCK was "work done, only the submission is
+        // missing" (targeted repair), the retry pass locks its tool_choice to
+        // `submit_stage_deliverable` so a weak model can't drift into redoing the
+        // stage — it can only submit.
+        let mut pending_submit_only = false;
 
         for reflector_attempt in 0..=MAX_REFLECTOR_RETRIES {
             let exec_result = if let Some(correction) = pending_gate_correction.take() {
+                let submit_only_pass = std::mem::take(&mut pending_submit_only);
                 let augmented_desc = format!(
                     "{}\n\n## IMPORTANT CORRECTION\n\n{}",
                     augmented_description, correction
                 );
+                let mut attempt_ctx = exec_ctx.clone();
+                attempt_ctx.harness_submit_only = submit_only_pass;
                 executor
-                    .execute_subtask(&planned.title, &augmented_desc, exec_ctx, Some(agent_type))
+                    .execute_subtask(
+                        &planned.title,
+                        &augmented_desc,
+                        &attempt_ctx,
+                        Some(agent_type),
+                    )
                     .await
             } else if reflector_attempt == 0 {
                 executor
@@ -254,6 +277,13 @@ impl TaskOrchestrator {
                         // flow actually ran (not just a claim) before allowing PASS.
                         self.enforce_scoping_red_team_flow(&mut outcome, exec_ctx)
                             .await;
+                        // 设计 2026-06-11 · missing-deliverable BLOCK + ledger has
+                        // real evidence → narrow the correction to "ONLY submit,
+                        // citing these ids" and lock the retry pass to the submit
+                        // tool instead of redoing the whole stage.
+                        let submit_only = self
+                            .refine_missing_deliverable_correction(&mut outcome)
+                            .await;
                         // C4 · gate BLOCK with retries left → feed the recovery
                         // correction back into the loop (re-do the subtask) instead
                         // of accepting the blocked result; defer transition until
@@ -264,12 +294,14 @@ impl TaskOrchestrator {
                         {
                             tracing::info!(
                                 "[TaskMode/Harness] Gate BLOCK on '{}' (attempt {}/{}), \
-                                 feeding repair correction back to reflector",
+                                 feeding repair correction back to reflector (submit_only={})",
                                 planned.title,
                                 reflector_attempt + 1,
                                 MAX_REFLECTOR_RETRIES,
+                                submit_only,
                             );
                             pending_gate_correction = outcome.repair_correction.clone();
+                            pending_submit_only = submit_only;
                             last_result = Some(AgentResult {
                                 content: gated_content,
                                 ..agent_result
@@ -392,6 +424,11 @@ impl TaskOrchestrator {
             self.enforce_evidence_kinds(&mut outcome).await;
             self.enforce_evidence_freshness(&mut outcome).await;
             self.enforce_scoping_red_team_flow(&mut outcome, exec_ctx)
+                .await;
+            // No retry left here; run the targeted-repair lookup anyway so the
+            // HarnessTrace GateDecision carries the real available ids.
+            let _ = self
+                .refine_missing_deliverable_correction(&mut outcome)
                 .await;
             self.consume_gate_outcome(task_id, outcome).await;
         }
@@ -521,6 +558,7 @@ impl TaskOrchestrator {
             harness_stage: None,
             harness_authz: None,
             harness_profile_id: op_profile_id.clone(),
+            harness_submit_only: false,
         };
 
         let groups: std::collections::HashMap<crate::harness::StageKind, Vec<usize>> =
@@ -1136,11 +1174,12 @@ impl TaskOrchestrator {
     ) -> Option<Vec<String>> {
         // Only stage-tagged subtasks run a gate; skip the DB hit otherwise.
         planned.harness_stage.as_ref()?;
-        match self.repo.in_scope_assets().await {
+        match self.repo.in_scope_assets(self.harness_org_id).await {
             Ok(v) if !v.is_empty() => {
                 tracing::info!(
                     target: "harness::hook",
                     asset_count = v.len(),
+                    org_id = ?self.harness_org_id,
                     "injecting authoritative in-scope assets into coverage gate"
                 );
                 Some(v)
@@ -1227,6 +1266,57 @@ impl TaskOrchestrator {
             "gate BLOCK: deliverable cites evidence ids absent from the ledger"
         );
         block_outcome_for_fabricated(outcome, &fabricated, &available_real_ids);
+    }
+
+    /// 设计 2026-06-11 (weak-model-submit-channel) · targeted repair for a
+    /// missing-deliverable BLOCK. When the stage ended without a parseable
+    /// `StageDeliverable` but the evidence ledger ALREADY holds real ids for this
+    /// operation (the agent did the work, then narrated instead of submitting),
+    /// rewrite the correction from "re-do the stage" to "ONLY call
+    /// submit_stage_deliverable citing these ids" and return `true` so the retry
+    /// pass can lock its tool_choice to the submit tool (改 2). Ledger empty /
+    /// infra error / no session → keep the original re-do correction and return
+    /// `false` — never imply work was done when it wasn't.
+    async fn refine_missing_deliverable_correction(
+        &self,
+        outcome: &mut HarnessGateOutcome,
+    ) -> bool {
+        if outcome.gate_allowed || !outcome.missing_deliverable {
+            return false;
+        }
+        let Some(sid) = self.chat_session_id.as_deref() else {
+            return false;
+        };
+        let ids = match self.repo.recent_evidence_ids(sid, 25).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(
+                    target: "harness::hook",
+                    error = %e,
+                    "targeted repair: evidence-id lookup failed; keeping the re-do correction"
+                );
+                return false;
+            }
+        };
+        if ids.is_empty() {
+            return false;
+        }
+        // Kind labels make the echo even easier for a weak model ("#1632 (dns_a)").
+        // Lookup failure only drops the labels, not the targeted correction.
+        let kinds = self.repo.evidence_kinds_for(&ids).await.unwrap_or_default();
+        outcome.available_real_ids = ids.clone();
+        outcome.repair_correction = Some(build_submit_only_correction(
+            outcome.gated_stage,
+            &ids,
+            &kinds,
+        ));
+        tracing::info!(
+            target: "harness::hook",
+            stage = %outcome.gated_stage.as_str(),
+            evidence_ids = ?ids,
+            "targeted repair: work already evidenced in the ledger; correction narrowed to submit-only"
+        );
+        true
     }
 
     /// Red_team scoping anti-shortcut gate (设计 2026-06-06-scoping-per-mode-gate-hitl
@@ -1437,6 +1527,36 @@ fn block_outcome_for_fabricated(
     });
 }
 
+/// Pure core of the targeted missing-deliverable repair (设计 2026-06-11): the
+/// correction telling a weak model that the stage work is ALREADY evidenced and
+/// the only remaining action is one `submit_stage_deliverable` call citing the
+/// listed real ledger ids. `kinds` labels each id with its evidence kind when
+/// known so the model can map ids to claims without re-reading tool output.
+fn build_submit_only_correction(
+    stage: crate::harness::StageKind,
+    ids: &[i64],
+    kinds: &std::collections::HashMap<i64, String>,
+) -> String {
+    let id_list = ids
+        .iter()
+        .map(|id| match kinds.get(id) {
+            Some(kind) => format!("#{id} ({kind})"),
+            None => format!("#{id}"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Your '{stage}' stage run ALREADY did the scan work — its results are recorded in the \
+         evidence ledger as: {id_list} (newest first). Do NOT re-run any tools and do NOT redo \
+         the stage. Your ONLY remaining action is to call the `submit_stage_deliverable` tool \
+         ONCE, with a StageDeliverable whose claims/coverage cite these REAL evidence ids — put \
+         the relevant ids in each claim's evidence_ids and all cited ids in the top-level \
+         evidence_refs. Pick only the ids whose tool output actually backs each claim; do NOT \
+         guess, increment, or invent ids.",
+        stage = stage.as_str(),
+    )
+}
+
 // ── Harness gate hook (Phase C · Doc 3 §5.2 接入点) ─────────────────────────
 //
 // 仅当满足以下全部条件时, agent_result.content 末尾才会被追加 gate decision JSON:
@@ -1484,6 +1604,13 @@ struct HarnessGateOutcome {
     /// ids existed". Empty unless `block_outcome_for_fabricated` ran.
     fabricated_evidence_refs: Vec<i64>,
     available_real_ids: Vec<i64>,
+    /// 设计 2026-06-11 (weak-model-submit-channel) · `true` when this BLOCK was
+    /// produced by the missing-deliverable path (stage-tagged subtask ended with
+    /// no parseable `StageDeliverable`). Drives the targeted repair: the caller
+    /// looks up the ledger's real evidence ids and, when work was actually done,
+    /// rewrites the correction to "ONLY submit, do not redo" and locks the retry
+    /// pass's tool_choice to `submit_stage_deliverable`.
+    missing_deliverable: bool,
 }
 
 /// 返回 `(content, Option<outcome>)`: `None` 表示 hook 透传 (未跑 gate); `Some` 表示
@@ -1718,6 +1845,7 @@ fn apply_harness_gate_hook(
             findings_count: deliverable.findings.len(),
             fabricated_evidence_refs: Vec::new(),
             available_real_ids: Vec::new(),
+            missing_deliverable: false,
         }),
     )
 }
@@ -1910,6 +2038,7 @@ fn missing_deliverable_gate_outcome(
         findings_count: 0,
         fabricated_evidence_refs: Vec::new(),
         available_real_ids: Vec::new(),
+        missing_deliverable: true,
     })
 }
 
@@ -2078,18 +2207,23 @@ fn synthesize_stage_subtask(
         K::ExternalAttackSurface => (
             "External Attack Surface Mapping",
             format!(
-                "Actively map the external attack surface of the hosts inherited from \
-                 target_intel for `{target}`: DNS resolution, HTTP probing, fingerprinting, \
-                 and screenshots. Subdomains come from upstream target_intel — reuse them, \
-                 do not re-enumerate here."
+                "DEFINE the external attack surface of the hosts inherited from target_intel \
+                 for `{target}`: PORT SCANNING, service/version fingerprinting, HTTP probing, \
+                 and screenshots — establish host x port x service x live-web. Confirm liveness \
+                 with httpx (it resolves + probes in one shot). DNS resolution and subdomains \
+                 were ALREADY done upstream in target_intel — REUSE the inherited dns_a/subdomain \
+                 evidence, do NOT re-run dig or re-enumerate. JS/API extraction happens in the \
+                 NEXT stage (enumeration) on the services you map here."
             ),
             "pentester",
         ),
         K::Enumeration => (
-            "Service Enumeration",
+            "Content Enumeration",
             format!(
-                "Enumerate services on the in-scope hosts of `{target}`: port scan, \
-                 service/version fingerprinting, and surface the key endpoints."
+                "Enumerate the CONTENT of the services mapped by external_attack_surface for \
+                 `{target}`: JS collection + API endpoint extraction, directory/path discovery, \
+                 and parameter discovery. Ports/services were already mapped upstream — do NOT \
+                 re-port-scan; the units (endpoints/paths/params) you record feed vuln triage."
             ),
             "pentester",
         ),
@@ -2182,6 +2316,42 @@ mod dag_driven_helper_tests {
         assert!(
             o.repair_correction.is_some(),
             "BLOCK must carry a repair correction to drive the reflector retry"
+        );
+        // 设计 2026-06-11 · the flag drives the targeted submit-only repair.
+        assert!(
+            o.missing_deliverable,
+            "missing-deliverable outcome must be marked so the targeted repair can run"
+        );
+    }
+
+    // 设计 2026-06-11 (weak-model-submit-channel) · the targeted correction must
+    // name the real ledger ids (with kind labels when known), forbid re-running
+    // tools, and point at exactly one remaining action: submit_stage_deliverable.
+    #[test]
+    fn submit_only_correction_names_ids_kinds_and_forbids_redo() {
+        let mut kinds = std::collections::HashMap::new();
+        kinds.insert(1632_i64, "dns_a".to_string());
+        kinds.insert(1634_i64, "http_probe".to_string());
+        let c = build_submit_only_correction(StageKind::TargetIntel, &[1634, 1632, 1700], &kinds);
+        assert!(
+            c.contains("#1634 (http_probe)") && c.contains("#1632 (dns_a)"),
+            "ids must carry kind labels when known: {c}"
+        );
+        assert!(
+            c.contains("#1700"),
+            "ids without a known kind are still listed: {c}"
+        );
+        assert!(
+            c.contains("submit_stage_deliverable"),
+            "must name the one remaining action: {c}"
+        );
+        assert!(
+            c.contains("Do NOT re-run any tools"),
+            "must forbid redoing the stage work: {c}"
+        );
+        assert!(
+            c.contains("target_intel"),
+            "must name the stage being repaired: {c}"
         );
     }
 
@@ -2557,6 +2727,7 @@ mod harness_gate_hook_tests {
             findings_count: 0,
             fabricated_evidence_refs: Vec::new(),
             available_real_ids: Vec::new(),
+            missing_deliverable: false,
         };
         block_outcome_for_fabricated(&mut o, &[999], &[]);
         assert!(!o.gate_allowed, "fabricated evidence must BLOCK the gate");
@@ -2585,6 +2756,7 @@ mod harness_gate_hook_tests {
             findings_count: 0,
             fabricated_evidence_refs: Vec::new(),
             available_real_ids: Vec::new(),
+            missing_deliverable: false,
         };
         block_outcome_for_fabricated(&mut o, &[1, 2, 3], &[86, 88, 90]);
         assert!(!o.gate_allowed);
@@ -2620,6 +2792,7 @@ mod harness_gate_hook_tests {
             findings_count: 0,
             fabricated_evidence_refs: Vec::new(),
             available_real_ids: Vec::new(),
+            missing_deliverable: false,
         };
         block_outcome_for_fabricated(&mut o, &[5], &[]);
         let c = o.repair_correction.unwrap();

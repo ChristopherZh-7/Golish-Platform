@@ -42,14 +42,15 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
         // ── recon ────────────────────────────────────────────────────────────
         "dig" | "nslookup" | "host" | "dnsx" | "dnsrecon" => ("recon", "dns"),
         "nmap" | "masscan" | "rustscan" | "naabu" => ("recon", "port-scan"),
-        "httpx" | "curl" | "wget" | "http" => ("recon", "http"),
+        "httpx" | "whatweb" | "curl" | "wget" | "http" => ("recon", "http"),
         "amass" | "subfinder" | "assetfinder" | "sublist3r" | "findomain" => ("recon", "subdomain"),
         "katana" | "hakrawler" | "gospider" => ("recon", "crawler"),
         "gau" | "waybackurls" => ("recon", "url-history"),
         "enscan_go" | "enscan" | "0.zone" | "0zone" | "zero-zone" => ("recon", "osint"),
-        "gowitness" | "aquatone" | "eyewitness" => ("recon", "visual"),
+        "gowitness" | "aquatone" | "eyewitness" | "cutycapt" => ("recon", "visual"),
         // ── web ──────────────────────────────────────────────────────────────
         "ffuf" | "gobuster" | "dirb" | "dirsearch" | "feroxbuster" => ("web", "fuzzer"),
+        "arjun" | "paramspider" | "x8" => ("web", "param"),
         "nikto" | "nuclei" | "dalfox" => ("web", "scanner"),
         "wpscan" => ("web", "cms"),
         "sqlmap" => ("web", "injection"),
@@ -200,6 +201,7 @@ mod tests {
         assert_eq!(tool_category("subfinder"), Some(("recon", "subdomain")));
         assert_eq!(tool_category("sqlmap"), Some(("web", "injection")));
         assert_eq!(tool_category("nuclei"), Some(("web", "scanner")));
+        assert_eq!(tool_category("arjun"), Some(("web", "param")));
         assert_eq!(tool_category("msfconsole"), Some(("exploit", "framework")));
         assert_eq!(
             tool_category("bloodhound-python"),

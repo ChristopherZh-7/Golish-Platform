@@ -366,10 +366,11 @@ mod tests {
     #[test]
     fn harness_authz_allows_scan_tool_in_allowed_types_within_ceiling() {
         use golish_agent_kit::harness::{AuthorizationLevel, HarnessAuthz, IntentAxis, StageKind};
-        // dig resolves to recon/dns, which is in external_attack_surface
-        // allowed_tool_types; PassiveObserve intent is within the assessment
+        // httpx resolves to recon/http, which is in external_attack_surface
+        // allowed_tool_types (阶段重排 2026-06-09: dns moved out of EAS, so dig no
+        // longer qualifies here); PassiveObserve intent is within the assessment
         // ceiling (ActiveRecon) → Allow.
-        let call = make_tool_call("tc-12", "dig");
+        let call = make_tool_call("tc-12", "httpx");
         let authz = HarnessAuthz {
             max_authorization: AuthorizationLevel::ActiveRecon,
             intent: IntentAxis::PassiveObserve,
@@ -382,9 +383,10 @@ mod tests {
     #[test]
     fn harness_authz_rejects_intent_above_ceiling() {
         use golish_agent_kit::harness::{AuthorizationLevel, HarnessAuthz, IntentAxis, StageKind};
-        // dig (recon/dns) is allowed in eas, but ExploitValidation intent exceeds
-        // the assessment ceiling (ActiveRecon) → reject on authorization.
-        let call = make_tool_call("tc-13", "dig");
+        // httpx (recon/http) is allowed in eas (so confinement passes), but
+        // ExploitValidation intent exceeds the assessment ceiling (ActiveRecon)
+        // → reject specifically on authorization.
+        let call = make_tool_call("tc-13", "httpx");
         let authz = HarnessAuthz {
             max_authorization: AuthorizationLevel::ActiveRecon,
             intent: IntentAxis::ExploitValidation,

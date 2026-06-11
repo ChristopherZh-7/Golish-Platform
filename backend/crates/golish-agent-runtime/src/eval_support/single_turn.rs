@@ -185,6 +185,7 @@ where
         web_fetcher: None,
         harness_stage: None,
         harness_authz: None,
+        harness_submit_only: false,
         harness_deliverable_sink: None,
     };
 
@@ -419,6 +420,7 @@ where
         web_fetcher: None,
         harness_stage: None,
         harness_authz: None,
+        harness_submit_only: false,
         harness_deliverable_sink: None,
     };
 

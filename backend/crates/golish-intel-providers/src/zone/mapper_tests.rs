@@ -180,7 +180,7 @@ fn site_mapper_accepts_real_string_status_and_extended_fields() {
         rec.fields.get("organization_name").map(String::as_str),
         Some("Example Corp")
     );
-    assert!(rec.fields.get("technologies").is_some());
+    assert!(rec.fields.contains_key("technologies"));
 }
 
 #[test]

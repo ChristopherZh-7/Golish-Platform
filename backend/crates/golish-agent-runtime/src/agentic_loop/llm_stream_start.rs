@@ -55,6 +55,7 @@ pub(crate) async fn start_completion_stream<M>(
     tools: &[rig::completion::ToolDefinition],
     llm_span: &tracing::Span,
     accumulated_response: &str,
+    submit_only: bool,
 ) -> Result<StreamingCompletionResponse<M::StreamingResponse>>
 where
     M: rig::completion::CompletionModel + Sync,
@@ -69,7 +70,7 @@ where
         None
     };
 
-    let additional_params = build_additional_params(ctx);
+    let mut additional_params = build_additional_params(ctx);
 
     // NVIDIA NIM workaround: see module docs.
     let is_nvidia_provider = ctx.llm.provider_name == "nvidia";
@@ -89,17 +90,52 @@ where
     // Force native tool calls for the autonomous depth-0 primary inside a
     // harness stage on providers that otherwise narrate tool calls as
     // text/XML or empty args under load (see `resolve_stage_tool_choice`).
+    // 设计 2026-06-11 · on a targeted gate-repair pass (`submit_only`) the
+    // choice tightens further to the specific `submit_stage_deliverable` tool.
+    let submit_tool_available = request_tools
+        .iter()
+        .any(|t| t.name == SUBMIT_STAGE_DELIVERABLE_TOOL);
     let tool_choice = resolve_stage_tool_choice(
         ctx.llm.provider_name,
         ctx.harness_stage.is_some(),
         config.is_sub_agent,
         !request_tools.is_empty(),
+        submit_only && submit_tool_available,
     );
-    if tool_choice.is_some() {
+    // rig-core's OpenAI Chat provider hard-errors on `ToolChoice::Specific`,
+    // while its Anthropic provider converts it natively. For OpenAI-protocol
+    // clients, route the named choice through `additional_params` (serde-flatten
+    // merges it top-level into the request body) in OpenAI wire format instead.
+    // Live-probed 2026-06-11: both Xiaomi endpoints accept their respective
+    // named tool_choice wire formats and answer with exactly the named tool.
+    let tool_choice = if matches!(tool_choice, Some(ToolChoice::Specific { .. }))
+        && !ctx.llm.client.read().await.is_anthropic()
+    {
+        let named = json!({
+            "tool_choice": {
+                "type": "function",
+                "function": { "name": SUBMIT_STAGE_DELIVERABLE_TOOL }
+            }
+        });
+        additional_params = Some(match additional_params.take() {
+            Some(serde_json::Value::Object(mut obj)) => {
+                obj.extend(named.as_object().cloned().unwrap_or_default());
+                serde_json::Value::Object(obj)
+            }
+            _ => named,
+        });
+        None
+    } else {
+        tool_choice
+    };
+    if tool_choice.is_some() || submit_only {
         tracing::info!(
             provider = ctx.llm.provider_name,
             harness_stage = ctx.harness_stage.is_some(),
-            "[tool-choice] Forcing tool_choice=required for harness-stage primary"
+            submit_only,
+            submit_tool_available,
+            choice = ?tool_choice,
+            "[tool-choice] Forcing tool_choice for harness-stage primary"
         );
     }
 
@@ -369,33 +405,49 @@ fn build_additional_params(ctx: &AgenticLoopContext<'_>) -> Option<serde_json::V
 /// for the providers that need it.
 const FORCE_REQUIRED_TOOL_CHOICE_PROVIDERS: &[&str] = &["xiaomi"];
 
+/// The stage-submission tool a targeted gate-repair pass locks onto.
+const SUBMIT_STAGE_DELIVERABLE_TOOL: &str = "submit_stage_deliverable";
+
 /// Decide the `tool_choice` for this turn.
 ///
-/// Returns `Some(ToolChoice::Required)` only for the autonomous **depth-0
-/// primary running inside a harness stage** on a provider in
-/// [`FORCE_REQUIRED_TOOL_CHOICE_PROVIDERS`]. Inside a harness stage the primary
-/// has no legitimate text-only turn — every action is a tool call (`update_plan`
-/// / `sub_agent_*` / `manage_*` / `ask_human` / `submit_stage_deliverable`), so
-/// forcing native tool calls removes the "prose/XML instead of a tool call"
-/// failure without changing behavior anywhere else:
+/// Returns `Some` only for the autonomous **depth-0 primary running inside a
+/// harness stage** on a provider in [`FORCE_REQUIRED_TOOL_CHOICE_PROVIDERS`].
+/// Inside a harness stage the primary has no legitimate text-only turn — every
+/// action is a tool call (`update_plan` / `sub_agent_*` / `manage_*` /
+/// `ask_human` / `submit_stage_deliverable`), so forcing native tool calls
+/// removes the "prose/XML instead of a tool call" failure without changing
+/// behavior anywhere else:
 ///
 /// - chat (no harness stage) keeps provider-default `auto`, preserving the
 ///   loop's text-only termination path;
 /// - sub-agents (`is_sub_agent`) keep `auto` so they can return a final text
 ///   summary;
 /// - reliable native providers are untouched.
+///
+/// 设计 2026-06-11 (weak-model-submit-channel) · `submit_only=true` (a targeted
+/// gate-repair pass whose sole remaining action is the stage submission, with
+/// the submit tool present and not yet dispatched) tightens the choice from
+/// `Required` to the specific `submit_stage_deliverable` tool, structurally
+/// preventing a weak model from redoing the stage instead of submitting.
 fn resolve_stage_tool_choice(
     provider_name: &str,
     in_harness_stage: bool,
     is_sub_agent: bool,
     has_tools: bool,
+    submit_only: bool,
 ) -> Option<ToolChoice> {
     if in_harness_stage
         && !is_sub_agent
         && has_tools
         && FORCE_REQUIRED_TOOL_CHOICE_PROVIDERS.contains(&provider_name)
     {
-        Some(ToolChoice::Required)
+        if submit_only {
+            Some(ToolChoice::Specific {
+                function_names: vec![SUBMIT_STAGE_DELIVERABLE_TOOL.to_string()],
+            })
+        } else {
+            Some(ToolChoice::Required)
+        }
     } else {
         None
     }
@@ -412,12 +464,12 @@ async fn wait_for_cancelled(ctx: &AgenticLoopContext<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_stage_tool_choice, ToolChoice};
+    use super::{resolve_stage_tool_choice, ToolChoice, SUBMIT_STAGE_DELIVERABLE_TOOL};
 
     #[test]
     fn forces_required_for_xiaomi_primary_in_harness_stage_with_tools() {
         assert_eq!(
-            resolve_stage_tool_choice("xiaomi", true, false, true),
+            resolve_stage_tool_choice("xiaomi", true, false, true, false),
             Some(ToolChoice::Required)
         );
     }
@@ -426,7 +478,7 @@ mod tests {
     fn no_force_outside_harness_stage() {
         // Chat / non-harness task turns keep provider-default `auto`.
         assert_eq!(
-            resolve_stage_tool_choice("xiaomi", false, false, true),
+            resolve_stage_tool_choice("xiaomi", false, false, true, false),
             None
         );
     }
@@ -434,14 +486,17 @@ mod tests {
     #[test]
     fn no_force_for_sub_agent() {
         // Sub-agents must be able to end on a text-only summary turn.
-        assert_eq!(resolve_stage_tool_choice("xiaomi", true, true, true), None);
+        assert_eq!(
+            resolve_stage_tool_choice("xiaomi", true, true, true, false),
+            None
+        );
     }
 
     #[test]
     fn no_force_without_tools() {
         // Forcing a tool call with no tools available would be unsatisfiable.
         assert_eq!(
-            resolve_stage_tool_choice("xiaomi", true, false, false),
+            resolve_stage_tool_choice("xiaomi", true, false, false, false),
             None
         );
     }
@@ -450,10 +505,50 @@ mod tests {
     fn no_force_for_reliable_providers() {
         // Reliable native providers keep their existing behavior unchanged.
         assert_eq!(
-            resolve_stage_tool_choice("anthropic", true, false, true),
+            resolve_stage_tool_choice("anthropic", true, false, true, false),
             None
         );
-        assert_eq!(resolve_stage_tool_choice("openai", true, false, true), None);
-        assert_eq!(resolve_stage_tool_choice("nvidia", true, false, true), None);
+        assert_eq!(
+            resolve_stage_tool_choice("openai", true, false, true, false),
+            None
+        );
+        assert_eq!(
+            resolve_stage_tool_choice("nvidia", true, false, true, false),
+            None
+        );
+    }
+
+    // 设计 2026-06-11 · a targeted gate-repair pass locks the choice onto the
+    // submit tool — but only under the exact same provider/stage/primary gate
+    // as the Required force.
+    #[test]
+    fn submit_only_tightens_to_specific_submit_tool_for_xiaomi() {
+        assert_eq!(
+            resolve_stage_tool_choice("xiaomi", true, false, true, true),
+            Some(ToolChoice::Specific {
+                function_names: vec![SUBMIT_STAGE_DELIVERABLE_TOOL.to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn submit_only_does_not_leak_outside_the_provider_gate() {
+        // Other providers / sub-agents / no-stage turns never get the lock.
+        assert_eq!(
+            resolve_stage_tool_choice("anthropic", true, false, true, true),
+            None
+        );
+        assert_eq!(
+            resolve_stage_tool_choice("xiaomi", false, false, true, true),
+            None
+        );
+        assert_eq!(
+            resolve_stage_tool_choice("xiaomi", true, true, true, true),
+            None
+        );
+        assert_eq!(
+            resolve_stage_tool_choice("xiaomi", true, false, false, true),
+            None
+        );
     }
 }

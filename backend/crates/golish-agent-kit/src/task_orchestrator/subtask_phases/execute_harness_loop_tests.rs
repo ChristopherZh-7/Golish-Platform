@@ -430,6 +430,7 @@ fn pass(stage: StageKind) -> HarnessGateOutcome {
         findings_count: 1,
         fabricated_evidence_refs: Vec::new(),
         available_real_ids: Vec::new(),
+        missing_deliverable: false,
     }
 }
 
@@ -444,6 +445,7 @@ fn block(stage: StageKind) -> HarnessGateOutcome {
         findings_count: 0,
         fabricated_evidence_refs: Vec::new(),
         available_real_ids: Vec::new(),
+        missing_deliverable: false,
     }
 }
 

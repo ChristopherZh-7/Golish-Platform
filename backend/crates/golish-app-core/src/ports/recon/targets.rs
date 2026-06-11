@@ -73,7 +73,13 @@ pub trait ReconTargetsPort: Send + Sync {
     /// visibility. The authoritative in-scope asset set the harness coverage
     /// gate injects (populated by organization recon / manual target-add).
     /// `None` project_path = all visible targets (single-workspace default).
-    async fn in_scope_values(&self, project_path: Option<&str>) -> anyhow::Result<Vec<String>>;
+    /// `org_id` narrows to one organization's targets (coverage asset-axis
+    /// isolation, design 2026-06-09); `None` = legacy whole-DB set.
+    async fn in_scope_values(
+        &self,
+        project_path: Option<&str>,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<String>>;
 
     /// In-scope (`scope='in'`) targets as full [`Target`] rows (id + value +
     /// type) within legacy visibility. Lets an agent enumerate recon-collected
@@ -292,10 +298,18 @@ impl ReconTargetsPort for PgReconTargetsAdapter {
         Ok(rows.into_iter().map(Target::from).collect())
     }
 
-    async fn in_scope_values(&self, project_path: Option<&str>) -> anyhow::Result<Vec<String>> {
+    async fn in_scope_values(
+        &self,
+        project_path: Option<&str>,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<String>> {
         Ok(
-            golish_db::repo::targets::list_in_scope_values(self.pool.as_ref(), project_path)
-                .await?,
+            golish_db::repo::targets::list_in_scope_values(
+                self.pool.as_ref(),
+                project_path,
+                org_id,
+            )
+            .await?,
         )
     }
 

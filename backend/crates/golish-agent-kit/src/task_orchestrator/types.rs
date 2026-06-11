@@ -71,6 +71,13 @@ pub struct ExecutionContext {
     /// `StageHarness` with the real profile instead of a hardcoded placeholder.
     /// `None` = flag off / no operation_state row (hook falls back to "assessment").
     pub harness_profile_id: Option<String>,
+    /// 设计 2026-06-11 (weak-model-submit-channel) · `true` only on a targeted
+    /// gate-repair retry pass where the stage work is already evidenced in the
+    /// ledger and the ONLY remaining action is the submission. Threaded to the
+    /// bridge → agentic loop so the turn's `tool_choice` is locked to
+    /// `submit_stage_deliverable` (released once it is dispatched). `false` =
+    /// normal pass, no behavior change.
+    pub harness_submit_only: bool,
 }
 
 /// Info about a subtask being currently executed.
