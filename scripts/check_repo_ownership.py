@@ -37,6 +37,7 @@ REPO_OWNER: dict[str, str] = {
     # recon — asset / attack surface
     "targets": "recon",
     "target_assets": "recon",
+    "dns_records": "recon",
     "organizations": "recon",
     "api_endpoints": "recon",
     "sitemap_store": "recon",
@@ -85,9 +86,15 @@ REPO_OWNER: dict[str, str] = {
     "terminal_logs": "platform",
 }
 
-# Cross-cutting repos any service may use (evidence ledger + generic SQL
-# helper). Not owned by a single service.
-SHARED_REPOS: frozenset[str] = frozenset({"audit", "scoped"})
+# Cross-cutting repos any service may use. Not owned by a single service:
+#   audit  — OpenFang evidence ledger (every service appends).
+#   scoped — generic project-scope SQL helper.
+#   coverage_truth — harness coverage gate's READ-ONLY cross-table truth
+#     projection (design 2026-06-12 §5.3). Aggregates organizations/targets/
+#     target_assets/dns_records into "(asset × technique) has real data?" facts
+#     for the harness (an orchestration concern spanning all services), mirroring
+#     how `audit` is a cross-cutting ledger rather than a single service's CRUD.
+SHARED_REPOS: frozenset[str] = frozenset({"audit", "scoped", "coverage_truth"})
 
 # Ordered (first-match-wins) caller-path-prefix -> service domain.
 # Paths are relative to backend/crates/golish/src/.
