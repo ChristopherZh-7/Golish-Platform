@@ -132,6 +132,12 @@ pub struct StageClaim {
     pub subject: String,
     pub summary: String,
     pub evidence_ids: Vec<EvidenceAuditId>,
+    /// P5（2026-06-11）：该 claim 佐证的技术类 id（technique_taxonomy.json 登记，
+    /// 如 GOLISH-INTEL-DNS / WSTG-INPV-05）。None = 未标注（旧数据 / 与 coverage
+    /// 无关的 claim）。Some 时 schema_check 按词典 fail-closed 校验；
+    /// coverage_complete(derive_from_items) / coverage_corroborated 据此关联矩阵。
+    #[serde(default)]
+    pub technique: Option<String>,
 }
 
 /// Doc 3 §4.3 SkippedCheckRecord · reason 引用 Doc 1 §4.6 强制枚举 SkipReason.
@@ -149,6 +155,9 @@ pub struct HarnessFinding {
     pub subject: String,
     pub severity: FindingSeverity,
     pub evidence_refs: Vec<EvidenceAuditId>,
+    /// P5（2026-06-11）：同 [`StageClaim::technique`]。
+    #[serde(default)]
+    pub technique: Option<String>,
 }
 
 /// Coverage matrix 单元格状态（设计 `docs/design/2026-06-05-coverage-matrix.md`）。
@@ -363,6 +372,48 @@ mod tests {
         assert_eq!(old.tested_units, 0);
         assert_eq!(old.total_units, 0);
         assert!(old.sampling_rationale.is_none());
+    }
+
+    #[test]
+    fn stage_claim_and_finding_old_json_without_technique_parses() {
+        // P5 向后兼容：旧 JSON（无 technique 字段）必须照常解析为 None。
+        let c: StageClaim = serde_json::from_str(
+            r#"{"kind":"dns_a_record","subject":"example.com","summary":"A 1.2.3.4","evidence_ids":[1]}"#,
+        )
+        .unwrap();
+        assert!(c.technique.is_none());
+
+        let f: HarnessFinding = serde_json::from_str(
+            r#"{"finding_id":"3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33","kind":"subdomain","subject":"a.example.com","severity":"info","evidence_refs":[1]}"#,
+        )
+        .unwrap();
+        assert!(f.technique.is_none());
+    }
+
+    #[test]
+    fn stage_claim_and_finding_technique_roundtrip() {
+        let c = StageClaim {
+            kind: "dns_a_record".to_string(),
+            subject: "example.com".to_string(),
+            summary: "A 1.2.3.4".to_string(),
+            evidence_ids: vec![EvidenceAuditId::new(1)],
+            technique: Some("GOLISH-INTEL-DNS".to_string()),
+        };
+        let j = serde_json::to_string(&c).unwrap();
+        let back: StageClaim = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.technique.as_deref(), Some("GOLISH-INTEL-DNS"));
+
+        let f = HarnessFinding {
+            finding_id: Uuid::new_v4(),
+            kind: "subdomain".to_string(),
+            subject: "a.example.com".to_string(),
+            severity: FindingSeverity::Info,
+            evidence_refs: vec![EvidenceAuditId::new(1)],
+            technique: Some("GOLISH-INTEL-SUBDOMAIN".to_string()),
+        };
+        let j = serde_json::to_string(&f).unwrap();
+        let back: HarnessFinding = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.technique.as_deref(), Some("GOLISH-INTEL-SUBDOMAIN"));
     }
 
     #[test]

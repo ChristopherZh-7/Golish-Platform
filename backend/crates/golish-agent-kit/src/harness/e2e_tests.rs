@@ -59,6 +59,7 @@ fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
             subject: "api.example.com".to_string(),
             summary: "HTTP/1.1 200 OK".to_string(),
             evidence_ids: vec![http_eid],
+            technique: None,
         }],
         evidence_refs: vec![dns_eid, http_eid, ct_eid],
         skipped_checks: vec![],
@@ -81,6 +82,7 @@ fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
         subject: "api.example.com".to_string(),
         severity: FindingSeverity::Info,
         evidence_refs: vec![dns_eid, ct_eid],
+        technique: None,
     });
     d.findings.push(HarnessFinding {
         finding_id: Uuid::new_v4(),
@@ -88,6 +90,7 @@ fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
         subject: "api.example.com:443".to_string(),
         severity: FindingSeverity::Info,
         evidence_refs: vec![http_eid],
+        technique: None,
     });
     // JS/API finding: 满足 surface_coverage_check 的 JsApi 硬要求
     // (design doc 2026-06-01 §D2 · re-anchor 到 Target Surface Workbench).
@@ -97,6 +100,7 @@ fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
         subject: "api.example.com/v1/login".to_string(),
         severity: FindingSeverity::Info,
         evidence_refs: vec![http_eid],
+        technique: None,
     });
     // EAS (2026-06-09 reorder) declares GOLISH-EAS-{LIVENESS,PORT,
     // SERVICE-FINGERPRINT} expected techniques + a coverage_complete gate_rule.
@@ -192,6 +196,7 @@ fn e2e_finding_references_unknown_evidence_blocks_via_freshness_sanity() {
         subject: "phantom.example.com".to_string(),
         severity: FindingSeverity::Info,
         evidence_refs: vec![EvidenceAuditId::new(9999)],
+        technique: None,
     });
     let decision = harness.validate_gate(&d, None);
     assert!(!decision.allowed);

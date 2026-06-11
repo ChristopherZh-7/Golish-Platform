@@ -204,6 +204,7 @@ mod tests {
             subject: "x.example.com".to_string(),
             severity: FindingSeverity::Info,
             evidence_refs: vec![EvidenceAuditId::new(1)],
+            technique: None,
         }
     }
 
@@ -244,6 +245,7 @@ mod tests {
             subject: "api.example.com/v1".to_string(),
             summary: "GET 200".to_string(),
             evidence_ids: vec![EvidenceAuditId::new(1)],
+            technique: None,
         });
         assert!(missing_required_categories(&d).is_empty());
     }

@@ -266,6 +266,7 @@ mod tests {
             subject: "x.example.com".to_string(),
             severity: FindingSeverity::Info,
             evidence_refs: vec![eid],
+            technique: None,
         });
         assert!(matches!(run(&d, &spec), GateCheckOutcome::Pass));
     }
@@ -282,6 +283,7 @@ mod tests {
             subject: "x.example.com".to_string(),
             severity: FindingSeverity::Info,
             evidence_refs: vec![EvidenceAuditId::new(42)],
+            technique: None,
         });
         match run(&d, &spec) {
             GateCheckOutcome::Block { reasons, .. } => {
@@ -301,6 +303,7 @@ mod tests {
             subject: "x.example.com".to_string(),
             summary: "200 OK".to_string(),
             evidence_ids: vec![EvidenceAuditId::new(99)],
+            technique: None,
         });
         match run(&d, &spec) {
             GateCheckOutcome::Block { reasons, .. } => {
@@ -322,6 +325,7 @@ mod tests {
             subject: "x.example.com".to_string(),
             severity: FindingSeverity::Info,
             evidence_refs: vec![eid],
+            technique: None,
         });
         let mut kinds = std::collections::HashMap::new();
         kinds.insert(eid, "dns_a".to_string()); // 86400s max
@@ -345,6 +349,7 @@ mod tests {
             subject: "x.example.com".to_string(),
             severity: FindingSeverity::Info,
             evidence_refs: vec![eid],
+            technique: None,
         });
         let mut kinds = std::collections::HashMap::new();
         kinds.insert(eid, "http_probe".to_string()); // 21600s max (6h)
@@ -371,6 +376,7 @@ mod tests {
             subject: "x.example.com".to_string(),
             severity: FindingSeverity::Info,
             evidence_refs: vec![eid],
+            technique: None,
         });
         let mut kinds = std::collections::HashMap::new();
         kinds.insert(eid, "http_probe".to_string());
@@ -401,6 +407,7 @@ mod tests {
             subject: "x.example.com".to_string(),
             severity: FindingSeverity::Info,
             evidence_refs: vec![eid],
+            technique: None,
         });
         // 不提供 kind / age → 跳过 freshness 检查仅做 sanity → Pass
         let kinds = std::collections::HashMap::new();

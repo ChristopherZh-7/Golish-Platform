@@ -103,6 +103,7 @@ mod tests {
             subject: "x.example.com".to_string(),
             severity: FindingSeverity::Info,
             evidence_refs: vec![EvidenceAuditId::new(1)],
+            technique: None,
         }
     }
 

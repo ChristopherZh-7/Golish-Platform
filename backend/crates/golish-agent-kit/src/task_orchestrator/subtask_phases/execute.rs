@@ -2068,6 +2068,7 @@ fn synthesize_confirm_only_deliverable(
                       (no scan tools); the agent submitted no parseable StageDeliverable."
                 .to_string(),
             evidence_ids: vec![],
+            technique: None,
         }],
         evidence_refs: vec![],
         skipped_checks: vec![],
@@ -2744,6 +2745,7 @@ mod harness_gate_hook_tests {
                 subject: "api.example.com".to_string(),
                 summary: "200 OK".to_string(),
                 evidence_ids: vec![EvidenceAuditId::new(1)],
+                technique: None,
             }],
             evidence_refs: vec![EvidenceAuditId::new(1), EvidenceAuditId::new(2)],
             skipped_checks: vec![],
@@ -2753,6 +2755,7 @@ mod harness_gate_hook_tests {
                 subject: "api.example.com".to_string(),
                 severity: FindingSeverity::Info,
                 evidence_refs: vec![EvidenceAuditId::new(1)],
+                technique: None,
             }],
             required_checks_done: vec![],
             coverage: vec![],

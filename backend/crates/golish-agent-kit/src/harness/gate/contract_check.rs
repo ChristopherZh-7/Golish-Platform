@@ -171,6 +171,7 @@ mod tests {
                 subject: format!("sub{}.example.com", i),
                 severity: FindingSeverity::Info,
                 evidence_refs: vec![EvidenceAuditId::new(i as i64 + 1)],
+                technique: None,
             });
         }
         for i in 0..http_count {
@@ -180,6 +181,7 @@ mod tests {
                 subject: format!("http{}.example.com", i),
                 severity: FindingSeverity::Info,
                 evidence_refs: vec![EvidenceAuditId::new(i as i64 + 100)],
+                technique: None,
             });
         }
         d.evidence_refs = (1..=(evidence_count as i64))

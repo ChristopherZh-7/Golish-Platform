@@ -156,6 +156,7 @@ mod tests {
             subject: "api.example.com".to_string(),
             severity: FindingSeverity::Info,
             evidence_refs: vec![EvidenceAuditId::new(1)],
+            technique: None,
         });
         // 凑 3 个 evidence_refs 满足 min_invocations sum (dns_resolve+http_probe+subdomain_enum_passive)
         d.evidence_refs = (1..=3).map(EvidenceAuditId::new).collect();
@@ -173,6 +174,7 @@ mod tests {
             subject: "x.example.com".to_string(),
             severity: FindingSeverity::Info,
             evidence_refs: vec![EvidenceAuditId::new(1)],
+            technique: None,
         });
         d.evidence_refs = (1..=3).map(EvidenceAuditId::new).collect();
         // 加 3 个 Other-type skip (max=2)
@@ -202,6 +204,7 @@ mod tests {
             subject: "x.example.com".to_string(),
             summary: "200 OK".to_string(),
             evidence_ids: vec![EvidenceAuditId::new(1)],
+            technique: None,
         });
         // 满足 min_invocations sum=3 (dns_resolve+http_probe+subdomain_enum_passive)
         d.evidence_refs = (1..=3).map(EvidenceAuditId::new).collect();
@@ -219,6 +222,7 @@ mod tests {
             subject: "x.example.com".to_string(),
             severity: FindingSeverity::Info,
             evidence_refs: vec![EvidenceAuditId::new(1)],
+            technique: None,
         });
         // 去上阶段工具（2026-06-10）后 EAS min_invocations sum=1 (http_probe)。
         // 0 个顶层 evidence_refs < sum → FakePattern（有 finding 却无顶层证据 = 疑似编造）。

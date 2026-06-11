@@ -178,6 +178,7 @@ mod tests {
             subject: "s".to_string(),
             summary: "x".to_string(),
             evidence_ids: evidence.into_iter().map(EvidenceAuditId::new).collect(),
+            technique: None,
         }
     }
 
@@ -188,6 +189,7 @@ mod tests {
             subject: "s".to_string(),
             severity: sev,
             evidence_refs: evidence.into_iter().map(EvidenceAuditId::new).collect(),
+            technique: None,
         }
     }
 

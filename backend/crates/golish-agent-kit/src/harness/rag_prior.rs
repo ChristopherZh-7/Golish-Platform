@@ -322,6 +322,7 @@ mod tests {
                     subject: "api.example.com".to_string(),
                     severity: FindingSeverity::Critical,
                     evidence_refs: vec![],
+                    technique: None,
                 },
                 HarnessFinding {
                     finding_id: Uuid::new_v4(),
@@ -329,6 +330,7 @@ mod tests {
                     subject: "www.example.com".to_string(),
                     severity: FindingSeverity::Medium,
                     evidence_refs: vec![],
+                    technique: None,
                 },
             ],
             required_checks_done: vec![],

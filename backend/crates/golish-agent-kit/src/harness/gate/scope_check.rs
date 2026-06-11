@@ -106,6 +106,7 @@ mod tests {
             subject: "api.example.com".to_string(),
             summary: "200 OK".to_string(),
             evidence_ids: vec![EvidenceAuditId::new(1)],
+            technique: None,
         });
         assert!(matches!(run(&d), GateCheckOutcome::Pass));
     }
@@ -118,6 +119,7 @@ mod tests {
             subject: "api.example.com".to_string(),
             summary: "200 OK".to_string(),
             evidence_ids: vec![],
+            technique: None,
         });
         match run(&d) {
             GateCheckOutcome::Block { reasons, .. } => {
@@ -139,6 +141,7 @@ mod tests {
             subject: "example.com".to_string(),
             summary: "authorized target, black-box external".to_string(),
             evidence_ids: vec![],
+            technique: None,
         });
         assert!(matches!(run(&d), GateCheckOutcome::Pass));
     }
@@ -152,6 +155,7 @@ mod tests {
             subject: "api.example.com:443".to_string(),
             severity: FindingSeverity::Info,
             evidence_refs: vec![],
+            technique: None,
         });
         match run(&d) {
             GateCheckOutcome::Block { reasons, .. } => {

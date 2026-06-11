@@ -627,6 +627,7 @@ mod tests {
             subject: "x.example.com".to_string(),
             severity: sev,
             evidence_refs: refs.into_iter().map(EvidenceAuditId::new).collect(),
+            technique: None,
         }
     }
 
@@ -736,6 +737,7 @@ mod tests {
                 subject: "s".into(),
                 summary: "sm".into(),
                 evidence_ids: vec![EvidenceAuditId::new(1)],
+                technique: None,
             }],
         );
         match &eval(&d, &test_spec(), &[rule])[0] {
@@ -778,6 +780,7 @@ mod tests {
                 subject: "api.example.com".into(),
                 summary: "200".into(),
                 evidence_ids: vec![],
+                technique: None,
             }],
         );
         assert!(!eval(&d, &test_spec(), &[rule])[0].is_pass());

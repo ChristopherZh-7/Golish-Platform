@@ -107,6 +107,7 @@ mod tests {
             subject: "api.example.com".to_string(),
             severity: sev,
             evidence_refs: refs.into_iter().map(EvidenceAuditId::new).collect(),
+            technique: None,
         }
     }
 
