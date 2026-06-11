@@ -115,16 +115,17 @@
     ],
     "output": {
       "format": "text",
-      "produces": ["host", "dns_record"],
+      "produces": ["dns_record"],
       "detect": "ANSWER SECTION|IN\\s+(A|AAAA|NS|MX|TXT|CNAME|SOA)\\s",
-      "db_action": "host_add",
+      "db_action": "dns_record_add",
       "patterns": [
         {
-          "type": "a_record",
-          "regex": "^([\\w\\.-]+)\\.\\s+\\d+\\s+IN\\s+A\\s+([\\d\\.]+)$",
+          "type": "dns_record",
+          "regex": "^([\\w.-]+?)\\.?\\s+\\d+\\s+IN\\s+(A|AAAA|NS|MX|TXT|CNAME|SOA|PTR)\\s+(.+)$",
           "fields": {
-            "1": "hostname",
-            "2": "ip"
+            "1": "name",
+            "2": "record_type",
+            "3": "value"
           }
         }
       ]
