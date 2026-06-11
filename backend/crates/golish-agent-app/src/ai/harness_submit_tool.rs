@@ -169,7 +169,7 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "claims": {
                     "type": "array",
-                    "description": "Observations, each {kind, subject, summary, evidence_ids:[int]}; every evidence_id must also appear in evidence_refs.",
+                    "description": "Observations, each {kind, subject, summary, evidence_ids:[int], technique?:string}; every evidence_id must also appear in evidence_refs. When a claim evidences one of the stage's expected techniques, set `technique` to that REGISTERED id (e.g. GOLISH-INTEL-DNS, WSTG-INPV-05) and use the SAME subject string as the coverage cell's asset — technique-tagged claims corroborate 'found' coverage cells and can auto-derive cells you did the work for but forgot to declare. Unregistered ids are rejected.",
                     "items": { "type": "object" }
                 },
                 "evidence_refs": {
@@ -179,7 +179,7 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "findings": {
                     "type": "array",
-                    "description": "Findings, each {finding_id:uuid, kind, subject, severity, evidence_refs:[int]}.",
+                    "description": "Findings, each {finding_id:uuid, kind, subject, severity, evidence_refs:[int], technique?:string}; tag `technique` with the registered technique id the finding evidences (same id namespace as the coverage matrix; omit when none applies).",
                     "items": { "type": "object" }
                 },
                 "skipped_checks": {
@@ -431,6 +431,47 @@ mod tests {
         let captured = sink.read().await.clone().expect("deliverable captured");
         assert!(captured.contains("\"coverage\""));
         assert!(captured.contains("WSTG-ATHZ-04"));
+    }
+
+    // P5 Task 7 · a technique-tagged claim parses, passes the gate preview, and the
+    // tag is carried verbatim into the side-channel JSON for the stage-close gate.
+    #[tokio::test]
+    async fn accepts_technique_tagged_claims_and_captures_them() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Scoping);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
+
+        let mut args = valid_scoping_args();
+        args["claims"][0]["technique"] = json!("GOLISH-INTEL-DNS");
+        let out = tool.execute(args, Path::new("/tmp")).await.unwrap();
+        assert_eq!(out["status"].as_str(), Some("accepted"));
+
+        let captured = sink.read().await.clone().expect("deliverable captured");
+        assert!(captured.contains("GOLISH-INTEL-DNS"));
+    }
+
+    // P5 Task 7 · an unregistered technique id is rejected at submit time
+    // (schema_check runs inside the gate preview), so the model gets an immediate
+    // needs_fix naming the bad id instead of a misleading `accepted`.
+    #[tokio::test]
+    async fn needs_fix_on_unregistered_technique() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Scoping);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
+
+        let mut args = valid_scoping_args();
+        args["claims"][0]["technique"] = json!("GOLISH-INTEL-TYPO");
+        let out = tool.execute(args, Path::new("/tmp")).await.unwrap();
+        assert_eq!(out["status"].as_str(), Some("needs_fix"));
+        let reasons = out["reasons"].as_array().expect("reasons array");
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.as_str().unwrap_or("").contains("GOLISH-INTEL-TYPO")),
+            "a reason must name the unregistered technique: {reasons:?}"
+        );
+        // Still stashed — the stage-close gate hook is authoritative.
+        assert!(sink.read().await.is_some());
     }
 
     // §8.1 — validate-on-submit BLOCK branch: a vacuous deliverable (parses fine,
