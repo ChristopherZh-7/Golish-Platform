@@ -85,7 +85,12 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
              total_units` (full coverage). To legitimately sample a huge surface you MUST set \
              `sampling_rationale` AND meet the coverage ratio; otherwise the cell counts as partial \
              (not finished) and the gate BLOCKS. Testing 3/5000 endpoints then claiming checked_empty \
-             is false coverage. (blocked / not_applicable cells are exempt from the denominator.)",
+             is false coverage. (blocked / not_applicable cells are exempt from the denominator.)\n\
+             - **Tag claims/findings with `technique`** — set each claim's/finding's `technique` field to \
+             the matching expected technique id above, using the SAME `subject` string as the cell's \
+             `asset`. Technique-tagged items corroborate your 'found' coverage cells (a 'found' cell with \
+             NO matching tagged claim/finding on the same asset is rejected) and can auto-derive cells you \
+             did the work for but forgot to declare.",
             spec.expected_techniques.join(", ")
         )
     };
@@ -164,11 +169,11 @@ You are operating inside the **{stage}** stage of an authorized operation. Stay 
   "stage_id": "{stage}",
   "stage_run_id": "<random uuid v4>",
   "claims": [
-    {{"kind": "http_service_observed", "subject": "<host>", "summary": "<what was observed>", "evidence_ids": [<int_id_from_a_real_tool_result>]}}
+    {{"kind": "http_service_observed", "subject": "<host>", "summary": "<what was observed>", "evidence_ids": [<int_id_from_a_real_tool_result>], "technique": "<registered technique id backing this claim — omit if none applies>"}}
   ],
   "evidence_refs": [<int_id_from_a_real_tool_result>, <int_id_from_another_real_tool_result>],
   "findings": [
-    {{"finding_id": "<random uuid v4>", "kind": "subdomain", "subject": "<host>", "severity": "info", "evidence_refs": [<int_id_from_a_real_tool_result>]}}
+    {{"finding_id": "<random uuid v4>", "kind": "subdomain", "subject": "<host>", "severity": "info", "evidence_refs": [<int_id_from_a_real_tool_result>], "technique": "<registered technique id — omit if none applies>"}}
   ],
   "skipped_checks": [],
   "required_checks_done": {min_inv_keys_json}
@@ -736,6 +741,34 @@ mod tests {
         .unwrap();
         assert!(!stage_charter(&without, &ScopingPolicy::default())
             .contains("Coverage (per in-scope asset)"));
+    }
+
+    /// P5（2026-06-11）：声明 expected_techniques 的 stage，charter 必须教 agent 给
+    /// claims/findings 打 technique 标注（派生 + 佐证）；expected_techniques 为空的
+    /// stage 不渲染该教学（与 coverage_line 同生命周期）。
+    #[test]
+    fn stage_charter_mentions_technique_tagging_when_expected() {
+        use crate::harness::stage_spec::load_stage_spec_from_json;
+
+        let spec = load_stage_spec_from_json(
+            r#"{"id":"target_intel","kind":"target_intel","risk_level":"low",
+                "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+                "expected_techniques":["GOLISH-INTEL-DNS","GOLISH-INTEL-WHOIS"]}"#,
+        )
+        .expect("spec parses");
+        let charter = stage_charter(&spec, &ScopingPolicy::default());
+        assert!(
+            charter.contains("Tag claims/findings with `technique`"),
+            "charter must explain technique tagging when expected_techniques set"
+        );
+
+        let without = load_stage_spec_from_json(
+            r#"{"id":"scoping","kind":"scoping","risk_level":"low",
+                "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate"}"#,
+        )
+        .unwrap();
+        assert!(!stage_charter(&without, &ScopingPolicy::default())
+            .contains("Tag claims/findings with `technique`"));
     }
 
     /// 2026-06-09 verify-first（纯 gate 配置版）：给 EAS 加 expected_techniques 后，

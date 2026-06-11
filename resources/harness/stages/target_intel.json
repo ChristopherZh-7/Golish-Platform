@@ -43,9 +43,17 @@
     },
     {
       "op": "coverage_complete",
+      "derive_from_items": true,
       "on_fail": {
         "reason": "intel coverage incomplete: some (in-scope asset \u00d7 expected intel technique) cells were never attempted",
-        "hints": ["for every in-scope asset, give each expected intel technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note"]
+        "hints": ["for every in-scope asset, give each expected intel technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note", "claims/findings tagged with a `technique` id (GOLISH-INTEL-*) on the same subject auto-derive their cell"]
+      }
+    },
+    {
+      "op": "coverage_corroborated",
+      "on_fail": {
+        "reason": "every 'found' intel coverage cell must be corroborated by a technique-tagged claim/finding on the same asset",
+        "hints": ["tag each intel claim/finding with its `technique` id (GOLISH-INTEL-DNS / -WHOIS / -ASN / -CT / -SUBDOMAIN / -OSINT)", "use the SAME subject string as the coverage cell's asset"]
       }
     }
   ],

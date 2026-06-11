@@ -292,6 +292,32 @@ mod tests {
         assert_eq!(s.min_invocations.get("subdomain_enum_passive"), Some(&1));
     }
 
+    // P5（2026-06-11）：target_intel 的 coverage 必须既能从 technique 标注的 claims
+    // 派生（derive_from_items），又对 found cell 做反向佐证（coverage_corroborated）。
+    // 只断言存在性，不锁 gate_rules 总数（避免与 in-flight 规则增删撞车）。
+    #[test]
+    fn target_intel_coverage_derives_and_corroborates() {
+        let s = crate::harness::resources::load_embedded_stage_spec(StageKind::TargetIntel)
+            .expect("load target_intel spec");
+        assert!(
+            s.gate_rules.iter().any(|r| matches!(
+                r,
+                crate::harness::gate::rule_engine::GateRule::CoverageComplete {
+                    derive_from_items: true,
+                    ..
+                }
+            )),
+            "target_intel coverage_complete must enable derive_from_items"
+        );
+        assert!(
+            s.gate_rules.iter().any(|r| matches!(
+                r,
+                crate::harness::gate::rule_engine::GateRule::CoverageCorroborated { .. }
+            )),
+            "target_intel must declare a coverage_corroborated rule"
+        );
+    }
+
     #[test]
     fn external_attack_surface_agent_continuity_single_session() {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
