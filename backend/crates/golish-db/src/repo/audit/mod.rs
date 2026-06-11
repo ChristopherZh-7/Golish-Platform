@@ -170,6 +170,10 @@ pub async fn log_operation_with_lineage(
 /// `audit_role` 固定 `'evidence'` (migration `20260601000001` 加的列, 默认
 /// `'action'`, 老行不破). `RETURNING *` 多出的 `audit_role` 列被 `FromRow`
 /// 忽略 (AuditEntry 不含该字段, 读路径走 detail JSON).
+///
+/// PR2 (设计 2026-06-11 coverage 投影): `technique` / `asset` / `outcome` 写进
+/// migration `20260611000001/2` 的三个 nullable 列 — 不进 `detail` JSON, 哈希链
+/// 输入不变. 全 `None` = 行为与旧签名逐字节一致 (该行不参与 coverage 投影).
 #[allow(clippy::too_many_arguments)]
 pub async fn log_evidence(
     pool: &PgPool,
@@ -183,13 +187,16 @@ pub async fn log_evidence(
     tool_name: Option<&str>,
     detail: &Value,
     run_id: Option<Uuid>,
+    technique: Option<&str>,
+    asset: Option<&str>,
+    outcome: Option<&str>,
 ) -> Result<AuditEntry> {
     let row = sqlx::query_as::<_, AuditEntry>(
         r#"INSERT INTO audit_log
                (action, category, details, project_path, source,
                 target_id, session_id, tool_name, status, detail,
-                run_id, audit_role)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9, $10, 'evidence')
+                run_id, audit_role, evidence_technique, evidence_asset, evidence_outcome)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9, $10, 'evidence', $11, $12, $13)
            RETURNING *"#,
     )
     .bind(action)
@@ -202,6 +209,9 @@ pub async fn log_evidence(
     .bind(tool_name)
     .bind(detail)
     .bind(run_id)
+    .bind(technique)
+    .bind(asset)
+    .bind(outcome)
     .fetch_one(pool)
     .await?;
     Ok(row)
@@ -252,6 +262,30 @@ pub async fn recent_evidence_ids_for_session(
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// PR2 任务 2.5 (设计 2026-06-11 coverage 投影) · 按会话取证据事实四元组
+/// `(asset, technique, outcome, id)` — coverage_complete 的 `derive_from_evidence`
+/// (PR3) 的唯一数据源. 只返回三列齐全的行 (解析不出的行 NULL, 设计 §4 约束 3:
+/// 歧义即不派生); 旧行三列全 NULL 自然排除. 升序 = 链上先后.
+pub async fn evidence_facts_for_session(
+    pool: &PgPool,
+    session_id: &str,
+) -> Result<Vec<(String, String, String, i64)>> {
+    let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+        r#"SELECT evidence_asset, evidence_technique, evidence_outcome, id
+           FROM audit_log
+           WHERE audit_role = 'evidence'
+             AND session_id = $1
+             AND evidence_technique IS NOT NULL
+             AND evidence_asset IS NOT NULL
+             AND evidence_outcome IS NOT NULL
+           ORDER BY id ASC"#,
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
 }
 
 /// 给一组 evidence `audit_log.id`, 返回每条的 `detail->>'kind'` (可能 NULL).

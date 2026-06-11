@@ -201,6 +201,20 @@ async fn maybe_append_background_evidence(
         format!("{}\n[stderr]\n{}", jc.stdout_tail, jc.stderr_tail)
     };
 
+    // PR2 (coverage 投影) · backgrounded scans are the main target_intel evidence
+    // path (subfinder/dig run as jobs); derive (technique, asset, outcome) from
+    // the job's command line. Outcome reads stdout only — stderr noise must not
+    // flip an empty result to "found".
+    let facts =
+        golish_agent_kit::harness::evidence_facts::passive_intel_facts_from_command(&jc.command)
+            .map(|(technique, asset)| {
+                let outcome = golish_agent_kit::harness::evidence_facts::passive_intel_outcome(
+                    technique,
+                    &jc.stdout_tail,
+                );
+                (technique, asset, outcome)
+            });
+
     match db_repo
         .evidence_append(
             op_id,
@@ -211,6 +225,7 @@ async fn maybe_append_background_evidence(
             "background_command",
             &jc.command,
             &raw_output,
+            facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
         )
         .await
     {

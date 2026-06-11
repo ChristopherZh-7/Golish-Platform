@@ -274,6 +274,14 @@ where
                                 .and_then(|c| c.as_str())
                                 .filter(|c| !c.is_empty())
                                 .unwrap_or(effective_tool_name);
+                            // PR2 (coverage 投影) · deterministically derive
+                            // (technique, asset, outcome) from the shell command;
+                            // unmapped commands stay None (never project).
+                            let facts = golish_agent_kit::harness::evidence_facts::passive_intel_facts_from_command(ev_subject)
+                                .map(|(technique, asset)| {
+                                    let outcome = golish_agent_kit::harness::evidence_facts::passive_intel_outcome(technique, &ev_stdout);
+                                    (technique, asset, outcome)
+                                });
                             match repo
                                 .evidence_append(
                                     op_id,
@@ -284,6 +292,7 @@ where
                                     effective_tool_name,
                                     ev_subject,
                                     &ev_stdout,
+                                    facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
                                 )
                                 .await
                             {
@@ -369,6 +378,13 @@ where
                         } else {
                             format!("{pt_tool} {pt_args}")
                         };
+                        // PR2 · "{tool} {args}" has the same shape as a shell
+                        // command line; same deterministic facts derivation.
+                        let facts = golish_agent_kit::harness::evidence_facts::passive_intel_facts_from_command(&ev_subject)
+                            .map(|(technique, asset)| {
+                                let outcome = golish_agent_kit::harness::evidence_facts::passive_intel_outcome(technique, &ev_stdout);
+                                (technique, asset, outcome)
+                            });
                         match repo
                             .evidence_append(
                                 op_id,
@@ -379,6 +395,7 @@ where
                                 pt_tool,
                                 &ev_subject,
                                 &ev_stdout,
+                                facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
                             )
                             .await
                         {
@@ -421,6 +438,10 @@ where
                             .filter(|c| !c.is_empty())
                             .unwrap_or(effective_tool_name);
                         let ev_raw = serde_json::to_string(&v).unwrap_or_default();
+                        // PR2 · subject is a COMPANY name, not an in-scope asset
+                        // (domain/IP) — no deterministic asset, so no facts
+                        // (设计 §4 约束3: 歧义即不派生). Per-asset enrich rows are
+                        // the A1 follow-up.
                         match repo
                             .evidence_append(
                                 op_id,
@@ -431,6 +452,7 @@ where
                                 effective_tool_name,
                                 ev_subject,
                                 &ev_raw,
+                                None,
                             )
                             .await
                         {

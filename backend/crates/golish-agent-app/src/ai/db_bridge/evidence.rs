@@ -27,11 +27,16 @@ impl GolishDbRepoProvider {
         kind: &str,
         subject: &str,
         raw_output: &str,
+        facts: Option<(&str, &str, &str)>,
     ) -> anyhow::Result<i64> {
         // MVP scope service: InMemory default-InScope. The production
         // `organizations.scope_rules` lookup is the deferred Task 7 of the P0
         // plan; swapping it in later does not change this call site.
         let scope = InMemoryScopeService::new(ScopeVersion::new(1));
+        let (technique, asset, outcome) = match facts {
+            Some((t, a, o)) => (Some(t), Some(a), Some(o)),
+            None => (None, None, None),
+        };
         let input = EvidenceInput {
             kind,
             subject,
@@ -41,11 +46,24 @@ impl GolishDbRepoProvider {
             stage_run_id,
             project_path,
             session_id,
+            technique,
+            asset,
+            outcome,
         };
         let eid = append(&self.pool, &scope, input)
             .await
             .map_err(|e| anyhow::anyhow!("evidence append failed: {e}"))?;
         Ok(eid.as_i64())
+    }
+
+    /// PR2 任务 2.5 · 只读投影源: 本会话三列齐全的证据事实.
+    pub(crate) async fn evidence_facts_for_session_impl(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<(String, String, String, i64)>> {
+        let rows =
+            golish_db::repo::audit::evidence_facts_for_session(&self.pool, session_id).await?;
+        Ok(rows)
     }
 
     pub(crate) async fn evidence_existing_ids_impl(

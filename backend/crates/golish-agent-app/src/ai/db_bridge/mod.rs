@@ -514,6 +514,7 @@ impl DbRepoProvider for GolishDbRepoProvider {
         kind: &str,
         subject: &str,
         raw_output: &str,
+        facts: Option<(&str, &str, &str)>,
     ) -> anyhow::Result<i64> {
         self.evidence_append_impl(
             operation_id,
@@ -524,8 +525,16 @@ impl DbRepoProvider for GolishDbRepoProvider {
             kind,
             subject,
             raw_output,
+            facts,
         )
         .await
+    }
+
+    async fn evidence_facts_for_session(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<(String, String, String, i64)>> {
+        self.evidence_facts_for_session_impl(session_id).await
     }
 
     async fn evidence_existing_ids(

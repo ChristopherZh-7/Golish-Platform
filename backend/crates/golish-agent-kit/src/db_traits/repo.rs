@@ -291,6 +291,10 @@ pub trait DbRepoProvider: Send + Sync {
     /// chain (`prev_hash`/`hash` in the detail JSON) plus a current scope
     /// classification. Returns the new evidence `audit_log.id`.
     ///
+    /// PR2 (coverage 投影) · `facts = Some((technique, asset, outcome))` stamps
+    /// the three nullable projection columns (NOT part of the hash-chain detail);
+    /// `None` keeps the row out of the coverage projection (old behavior).
+    ///
     /// Default impl is a no-op returning `0` so test doubles need not wire a
     /// real ledger; the app layer (`GolishDbRepoProvider`) overrides it.
     #[allow(clippy::too_many_arguments)]
@@ -304,6 +308,7 @@ pub trait DbRepoProvider: Send + Sync {
         kind: &str,
         subject: &str,
         raw_output: &str,
+        facts: Option<(&str, &str, &str)>,
     ) -> anyhow::Result<i64> {
         let _ = (
             operation_id,
@@ -314,8 +319,21 @@ pub trait DbRepoProvider: Send + Sync {
             kind,
             subject,
             raw_output,
+            facts,
         );
         Ok(0)
+    }
+
+    /// PR2 任务 2.5 (coverage 投影) · the session's evidence facts
+    /// `(asset, technique, outcome, evidence_id)`, ledger order. Only rows where
+    /// all three projection columns are non-NULL (conservative: unmapped rows
+    /// never project). Default empty so test doubles need no ledger.
+    async fn evidence_facts_for_session(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<(String, String, String, i64)>> {
+        let _ = session_id;
+        Ok(Vec::new())
     }
 
     /// Of the given `audit_log.id`s, return the subset that actually exist as
