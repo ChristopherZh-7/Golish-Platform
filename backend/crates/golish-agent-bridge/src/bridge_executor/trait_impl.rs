@@ -2,11 +2,52 @@
 
 use anyhow::{Context, Result};
 
+use golish_agent_kit::harness::StageKind;
 use golish_agent_kit::task_orchestrator::{
     prompts, AgentExecutor, AgentResult, AgentTokenUsage, ExecutionContext,
 };
 
 use super::BridgeAgentExecutor;
+
+/// PR1 (设计 2026-06-11-coverage-auto-derive §5.1) · whether the deliverable
+/// captured in the side-channel belongs to `stage`. The reflector retry loop
+/// re-enters `execute_subtask` once per gate attempt, so a per-call sink reset
+/// would discard the previous attempt's authoritative submission — exactly the
+/// run that ends `content_len=0` BLOCK after the model already submitted. Same
+/// stage ⇒ keep the capture as a fallback; stage switch / no stage / unparseable
+/// capture ⇒ reset (cross-stage pollution stays impossible).
+fn captured_belongs_to_stage(captured: Option<&str>, stage: Option<StageKind>) -> bool {
+    let (Some(json), Some(stage)) = (captured, stage) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| {
+            v.get("stage_id")
+                .and_then(|s| s.as_str())
+                .map(|s| s == stage.as_str())
+        })
+        .unwrap_or(false)
+}
+
+/// PR1 · final content fed to the stage-close gate. A side-channel capture (the
+/// submit tool's structured, serde-round-tripped submission) is authoritative:
+/// it is appended as a trailing ```json fence, and the gate's parser takes the
+/// LAST parseable fence — so it supersedes any draft in the agent's prose and
+/// covers the `agent_text == ""` weak-model case. No capture ⇒ text unchanged
+/// (stage-close stays fail-closed on prose-only output).
+fn resolve_gate_content(agent_text: &str, side_channel: Option<&str>) -> String {
+    match side_channel {
+        Some(d) if !d.trim().is_empty() => {
+            if d.contains("```json") {
+                format!("{agent_text}\n\n{d}")
+            } else {
+                format!("{agent_text}\n\n```json\n{d}\n```")
+            }
+        }
+        _ => agent_text.to_string(),
+    }
+}
 
 #[async_trait::async_trait]
 impl AgentExecutor for BridgeAgentExecutor {
@@ -79,32 +120,41 @@ impl AgentExecutor for BridgeAgentExecutor {
         // to `submit_stage_deliverable` (work already evidenced, only the
         // submission is missing). Reset per-subtask like the other side-channels.
         *self.bridge.harness_submit_only.write().await = execution_context.harness_submit_only;
-        // C2c · reset the per-subtask deliverable-capture sink before running.
-        *self.bridge.harness_last_deliverable.write().await = None;
+        // C2c/PR1 · reset the deliverable-capture sink — UNLESS the capture
+        // belongs to this very stage: the retry loop re-enters here once per gate
+        // attempt, and a same-stage capture from the previous attempt is the
+        // fallback submission when the model returns empty text this attempt.
+        {
+            let keep = captured_belongs_to_stage(
+                self.bridge.harness_last_deliverable.read().await.as_deref(),
+                execution_context.harness_stage,
+            );
+            if !keep {
+                *self.bridge.harness_last_deliverable.write().await = None;
+            } else {
+                tracing::info!(
+                    "[TaskMode] keeping same-stage StageDeliverable capture across retry attempts"
+                );
+            }
+        }
 
         let content = self.bridge.execute_isolated(&prompt).await?;
 
-        // C2c · The Primary orchestrator often delegates the StageDeliverable to
-        // `sub_agent_reporter` and then narrates instead of inlining the JSON, so
-        // the gate (which parses only this content) would skip with "no parseable
-        // StageDeliverable". If this is a stage subtask and the content has no
-        // deliverable signature, recover the one a sub-agent produced and append
-        // it as a fenced ```json block so the gate can parse it.
+        // C2c/PR1 · The orchestrator often delegates the StageDeliverable to a
+        // sub-agent / the submit tool and then narrates (or says nothing): the
+        // gate parses only this content, so append the captured submission as a
+        // trailing ```json fence. The gate's parser takes the LAST parseable
+        // fence — the structured capture is authoritative over prose drafts.
         let content = if execution_context.harness_stage.is_some() {
-            match self.bridge.harness_last_deliverable.read().await.clone() {
-                Some(deliverable) => {
-                    tracing::info!(
-                        "[TaskMode] Orchestrator omitted StageDeliverable; appending one captured from a sub-agent ({} chars)",
-                        deliverable.len()
-                    );
-                    if deliverable.contains("```json") {
-                        format!("{content}\n\n{deliverable}")
-                    } else {
-                        format!("{content}\n\n```json\n{deliverable}\n```")
-                    }
-                }
-                None => content,
+            let captured = self.bridge.harness_last_deliverable.read().await.clone();
+            if let Some(d) = captured.as_deref() {
+                tracing::info!(
+                    "[TaskMode] appending captured StageDeliverable to gate content ({} chars, agent_text {} chars)",
+                    d.len(),
+                    content.len()
+                );
             }
+            resolve_gate_content(&content, captured.as_deref())
         } else {
             content
         };
@@ -296,5 +346,74 @@ impl AgentExecutor for BridgeAgentExecutor {
                 Ok(None)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DELIVERABLE: &str = r#"{"stage_id":"target_intel","stage_run_id":"3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33","claims":[],"evidence_refs":[],"findings":[]}"#;
+
+    // PR1 · the weak-model failure: empty agent text + a captured structured
+    // submission must still reach the gate as a parseable ```json fence.
+    #[test]
+    fn empty_agent_text_falls_back_to_side_channel() {
+        let out = resolve_gate_content("", Some(DELIVERABLE));
+        assert!(out.contains("```json"));
+        assert!(out.contains("target_intel"));
+    }
+
+    // PR1 · the capture is appended LAST so the gate's last-parseable-fence
+    // parser treats the structured submission as authoritative over any draft
+    // deliverable in the agent's prose.
+    #[test]
+    fn side_channel_is_appended_after_agent_text() {
+        let prose = "draft:\n```json\n{\"stage_id\":\"scoping\"}\n```";
+        let out = resolve_gate_content(prose, Some(DELIVERABLE));
+        let draft_pos = out.find("scoping").unwrap();
+        let capture_pos = out.find("target_intel").unwrap();
+        assert!(
+            capture_pos > draft_pos,
+            "capture must trail the prose draft"
+        );
+    }
+
+    // PR1 · no capture / blank capture → text unchanged (fail-closed at the gate).
+    #[test]
+    fn no_side_channel_returns_text_unchanged() {
+        assert_eq!(resolve_gate_content("prose only", None), "prose only");
+        assert_eq!(resolve_gate_content("prose only", Some("  ")), "prose only");
+    }
+
+    // PR1 · a capture already fenced is appended verbatim (no double fencing).
+    #[test]
+    fn already_fenced_capture_is_not_double_fenced() {
+        let fenced = format!("```json\n{DELIVERABLE}\n```");
+        let out = resolve_gate_content("", Some(&fenced));
+        assert_eq!(out.matches("```json").count(), 1);
+    }
+
+    // PR1c · same-stage capture survives the per-attempt sink reset; anything
+    // else (stage switch / no stage / unparseable) is discarded.
+    #[test]
+    fn capture_kept_only_for_matching_stage() {
+        assert!(captured_belongs_to_stage(
+            Some(DELIVERABLE),
+            Some(StageKind::TargetIntel)
+        ));
+        assert!(!captured_belongs_to_stage(
+            Some(DELIVERABLE),
+            Some(StageKind::Scoping)
+        ));
+        assert!(!captured_belongs_to_stage(Some(DELIVERABLE), None));
+        assert!(!captured_belongs_to_stage(
+            Some("not json"),
+            Some(StageKind::TargetIntel)
+        ));
+        assert!(!captured_belongs_to_stage(
+            None,
+            Some(StageKind::TargetIntel)
+        ));
     }
 }

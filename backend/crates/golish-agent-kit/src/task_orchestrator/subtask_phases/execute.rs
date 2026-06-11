@@ -2014,22 +2014,28 @@ fn approval_reply_is_affirmative(reply: &str) -> bool {
 /// 把 content 解析为 [`crate::harness::StageDeliverable`].
 ///
 /// 两条路径: ① content 整体 (trim 后) 即 JSON; ② content 含 ```json ... ``` fence
-/// 时抽取 fence 内 JSON. 都失败返 None → hook skip (不强制 block).
+/// 时扫描**所有** fence、取**最后一个**能解析的 (PR1 设计 2026-06-11 · 运输鲁棒性:
+/// submit 工具侧信道捕获的权威 deliverable 被 append 在 content 末尾, 不能被模型
+/// 散文里更早出现的解释性/残缺 json 块遮蔽; 多份可解析时最后提交的覆盖早先草稿).
+/// 都失败返 None → hook 按 stage-tagged 与否决定 BLOCK / skip.
 fn parse_deliverable_from_content(content: &str) -> Option<crate::harness::StageDeliverable> {
     if let Ok(d) = serde_json::from_str::<crate::harness::StageDeliverable>(content.trim()) {
         return Some(d);
     }
-    if let Some(start) = content.find("```json") {
-        let after = &content[start + "```json".len()..];
-        if let Some(end) = after.find("```") {
-            if let Ok(d) =
-                serde_json::from_str::<crate::harness::StageDeliverable>(after[..end].trim())
-            {
-                return Some(d);
-            }
+    let mut last_parseable = None;
+    let mut rest = content;
+    while let Some(start) = rest.find("```json") {
+        let after = &rest[start + "```json".len()..];
+        let Some(end) = after.find("```") else {
+            break;
+        };
+        if let Ok(d) = serde_json::from_str::<crate::harness::StageDeliverable>(after[..end].trim())
+        {
+            last_parseable = Some(d);
         }
+        rest = &after[end + "```".len()..];
     }
-    None
+    last_parseable
 }
 
 /// D2 fallback (设计 2026-06-04): build a minimal, gate-passing `StageDeliverable`
@@ -2676,6 +2682,32 @@ mod harness_gate_hook_tests {
     fn parse_deliverable_returns_none_on_non_json_content() {
         assert!(parse_deliverable_from_content("not json").is_none());
         assert!(parse_deliverable_from_content("# markdown header\n\nsome text").is_none());
+    }
+
+    // PR1 (设计 2026-06-11-coverage-auto-derive §5.1 · 运输鲁棒性): the submit-tool
+    // side-channel deliverable is appended at the END of the content. An earlier
+    // explanatory / broken ```json block in the agent's prose must not shadow it —
+    // the parser scans ALL fences, not just the first.
+    #[test]
+    fn parse_deliverable_skips_unparseable_fence_and_finds_later_one() {
+        let deliverable = r#"{"stage_id":"target_intel","stage_run_id":"3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33","claims":[],"evidence_refs":[],"findings":[]}"#;
+        let content = format!(
+            "Analysis summary:\n```json\n{{\"note\": \"not a deliverable\"}}\n```\n\nsubmitted via tool:\n\n```json\n{deliverable}\n```"
+        );
+        let d = parse_deliverable_from_content(&content)
+            .expect("trailing deliverable must be found despite an earlier non-deliverable fence");
+        assert_eq!(d.stage_id, "target_intel");
+    }
+
+    // PR1 · multiple parseable deliverables → the LAST one wins (the side-channel
+    // append happens last = the most recent submission supersedes earlier drafts).
+    #[test]
+    fn parse_deliverable_prefers_last_parseable_fence() {
+        let d1 = r#"{"stage_id":"scoping","stage_run_id":"3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33","claims":[],"evidence_refs":[],"findings":[]}"#;
+        let d2 = r#"{"stage_id":"target_intel","stage_run_id":"4b9b2c7e-2e5c-4f7b-8c3d-1a2e5f0c9d44","claims":[],"evidence_refs":[],"findings":[]}"#;
+        let content = format!("```json\n{d1}\n```\ncorrected later:\n```json\n{d2}\n```");
+        let d = parse_deliverable_from_content(&content).unwrap();
+        assert_eq!(d.stage_id, "target_intel");
     }
 
     #[test]
