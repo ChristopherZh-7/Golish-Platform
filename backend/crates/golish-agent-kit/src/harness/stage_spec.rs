@@ -110,14 +110,6 @@ pub struct StageSpec {
     #[serde(default)]
     pub expected_techniques: Vec<String>,
 
-    /// 设计 2026-06-11-substantive-stage-evidence-projection-fallback：substantive
-    /// 阶段 agent 没交出可解析 StageDeliverable、但账本里已有该 run 的真实 evidence
-    /// facts 时，允许 harness 从账本投影合成一份 deliverable（claims/evidence_refs
-    /// 来自真实 evidence，**findings 永远空**）走原 gate，替代 missing-deliverable
-    /// 死锁 BLOCK。缺省 false = 原 fail-closed 行为逐字节不变。只对情报/枚举类阶段
-    /// 灰度开启；漏洞类阶段（vuln_triage 等）必须 agent 真报 finding，永不开。
-    #[serde(default)]
-    pub synthesize_from_evidence_when_missing: bool,
 }
 
 fn default_continuity() -> AgentContinuity {
@@ -374,40 +366,16 @@ mod tests {
         assert_eq!(s2.gate_rules.len(), 1);
     }
 
-    // 设计 2026-06-11-substantive-stage-evidence-projection-fallback：opt-in 门控
-    // 字段缺省必须 false（旧 spec 零行为变化），显式 true 可解析；灰度范围 =
-    // 先只 target_intel（D5），漏洞类 vuln_triage 必须保持 false（红线）。
+    // 设计 2026-06-12-unified-refiner (PR-R2)：投影兜底 opt-in 字段已删除——旧 spec
+    // 若仍带该键，serde 默认行为（未知字段忽略）必须保证解析不被破坏。
     #[test]
-    fn synthesize_from_evidence_when_missing_defaults_false_and_parses() {
-        let minimal = r#"{"id":"vuln_triage","kind":"vuln_triage","risk_level":"high",
-            "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate"}"#;
-        let s = load_stage_spec_from_json(minimal).expect("parse");
-        assert!(
-            !s.synthesize_from_evidence_when_missing,
-            "missing field must default to false (fail-closed legacy behavior)"
-        );
-
-        let with = r#"{"id":"target_intel","kind":"target_intel","risk_level":"low",
+    fn legacy_projection_flag_in_json_is_ignored_not_fatal() {
+        let with_legacy_key = r#"{"id":"target_intel","kind":"target_intel","risk_level":"low",
             "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
             "synthesize_from_evidence_when_missing":true}"#;
-        let s2 = load_stage_spec_from_json(with).expect("parse with flag");
-        assert!(s2.synthesize_from_evidence_when_missing);
-    }
-
-    #[test]
-    fn target_intel_enables_projection_fallback_and_vuln_triage_does_not() {
-        let ti = crate::harness::resources::load_embedded_stage_spec(StageKind::TargetIntel)
-            .expect("load target_intel spec");
-        assert!(
-            ti.synthesize_from_evidence_when_missing,
-            "target_intel is the gray-rollout stage for the projection fallback (D5)"
-        );
-        let vt = crate::harness::resources::load_embedded_stage_spec(StageKind::VulnTriage)
-            .expect("load vuln_triage spec");
-        assert!(
-            !vt.synthesize_from_evidence_when_missing,
-            "finding-producing stages must NEVER enable the projection fallback"
-        );
+        let s = load_stage_spec_from_json(with_legacy_key)
+            .expect("legacy key must be ignored, not a parse error");
+        assert_eq!(s.id, "target_intel");
     }
 
     #[test]

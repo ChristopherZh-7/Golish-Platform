@@ -1825,72 +1825,23 @@ fn apply_harness_gate_hook(
     let deliverable = match parse_deliverable_from_content(&content) {
         Some(d) => d,
         None => {
-            // D2 hybrid (设计 2026-06-04): a confirm-only stage (empty
-            // `allowed_tool_types`, e.g. scoping / reporting) has a deliverable
-            // derivable from known operation state, so synthesize a minimal,
-            // gate-passing one instead of dead-locking when a weak model returns
-            // no parseable StageDeliverable (the `content_len=0` deadlock).
-            // Substantive scan / finding-producing stages KEEP the fail-closed
-            // BLOCK — their findings must never be fabricated.
-            if confirm_only {
-                tracing::warn!(
-                    target: "harness::hook",
-                    stage_kind = ?stage_hint.stage_kind,
-                    subtask_title = %planned.title,
-                    content_len = content.len(),
-                    "confirm-only stage produced no parseable StageDeliverable — synthesizing a minimal one (D2 fallback, no deadlock)"
-                );
-                synthesize_confirm_only_deliverable(stage_hint.stage_kind, exec_ctx)
-            } else {
-                // 设计 2026-06-11-substantive-stage-evidence-projection-fallback:
-                // when the stage opts in AND the ledger already holds real evidence
-                // facts for this run, project the deliverable's factual part from
-                // the ledger instead of dead-locking on a weak model that did the
-                // work but never called submit (findings stay empty — never
-                // fabricated). Gate validation still runs unchanged on the
-                // projected deliverable, so missing coverage still BLOCKs.
-                let projection_enabled =
-                    crate::harness::load_embedded_stage_spec(stage_hint.stage_kind)
-                        .map(|s| s.synthesize_from_evidence_when_missing)
-                        .unwrap_or(false);
-                let ledger_facts = evidence_facts.as_deref().filter(|f| !f.is_empty());
-                match (projection_enabled, ledger_facts) {
-                    (true, Some(facts)) => {
-                        tracing::warn!(
-                            target: "harness::hook",
-                            stage_kind = ?stage_hint.stage_kind,
-                            subtask_title = %planned.title,
-                            content_len = content.len(),
-                            fact_count = facts.len(),
-                            "substantive stage produced no parseable StageDeliverable — \
-                             synthesizing one from ledger evidence facts (projection \
-                             fallback; findings stay empty, gate still decides)"
-                        );
-                        synthesize_from_evidence(stage_hint.stage_kind, facts)
-                    }
-                    _ => {
-                        // Only reachable for a stage-TAGGED substantive subtask, so
-                        // this is a genuine contract miss (agent didn't end with a
-                        // ```json StageDeliverable) and either the stage keeps the
-                        // strict contract (opt-in off) or the ledger has no facts
-                        // (no work done — nothing to project). S4: fail-closed —
-                        // BLOCK + repair correction so the reflector retry loop
-                        // pushes the agent to actually submit one.
-                        tracing::warn!(
-                            target: "harness::hook",
-                            stage_kind = ?stage_hint.stage_kind,
-                            subtask_title = %planned.title,
-                            content_len = content.len(),
-                            projection_enabled,
-                            "harness gate: stage-tagged subtask produced no parseable StageDeliverable JSON block — BLOCK (fail-closed)"
-                        );
-                        return (
-                            content,
-                            missing_deliverable_gate_outcome(stage_hint.stage_kind, confirm_only),
-                        );
-                    }
-                }
-            }
+            // 设计 2026-06-12-unified-refiner (PR-R2/R3) · missing deliverable 一律
+            // fail-closed BLOCK——后端不再代为合成（既不替 confirm-only 阶段填确认
+            // claim，也不从账本投影）。Refiner 按账本事实路由纠正：confirm-only 或
+            // 账本有真证据 → A 类 submit-only 锁；账本空 → B 类重做。deliverable
+            // 永远出自主 agent 之手（红线，I7）。
+            tracing::warn!(
+                target: "harness::hook",
+                stage_kind = ?stage_hint.stage_kind,
+                subtask_title = %planned.title,
+                content_len = content.len(),
+                confirm_only,
+                "harness gate: stage-tagged subtask produced no parseable StageDeliverable JSON block — BLOCK (fail-closed)"
+            );
+            return (
+                content,
+                missing_deliverable_gate_outcome(stage_hint.stage_kind, confirm_only),
+            );
         }
     };
 
@@ -2083,115 +2034,6 @@ fn parse_deliverable_from_content(content: &str) -> Option<crate::harness::Stage
     last_parseable
 }
 
-/// D2 fallback (设计 2026-06-04): build a minimal, gate-passing `StageDeliverable`
-/// for a **confirm-only** stage (empty `allowed_tool_types`, e.g. scoping /
-/// reporting) when the agent produced none. Such stages run no scan tools, so
-/// there is no tool evidence to fabricate — their deliverable is a single
-/// confirmation claim derivable from the operation's known scope/target. A scoping
-/// claim with empty `evidence_ids` passes the gate (scope_check treats scoping
-/// evidence as optional; vacuous_check is satisfied by the one claim; the stage's
-/// `min_invocations` is empty so FakePattern does not fire). This kills the
-/// `content_len=0` deadlock without ever inventing findings for a scanning stage.
-fn synthesize_confirm_only_deliverable(
-    stage: crate::harness::StageKind,
-    exec_ctx: &ExecutionContext,
-) -> crate::harness::StageDeliverable {
-    let subject = {
-        let t = exec_ctx.task_input.trim();
-        if t.is_empty() {
-            "operation scope".to_string()
-        } else {
-            t.to_string()
-        }
-    };
-    let kind = if matches!(stage, crate::harness::StageKind::Scoping) {
-        "scope_confirmed".to_string()
-    } else {
-        format!("{}_completed", stage.as_str())
-    };
-    crate::harness::StageDeliverable {
-        stage_id: stage.as_str().to_string(),
-        stage_run_id: uuid::Uuid::new_v4(),
-        claims: vec![crate::harness::StageClaim {
-            kind,
-            subject,
-            summary: "Backend-synthesized confirmation for a confirm-only stage \
-                      (no scan tools); the agent submitted no parseable StageDeliverable."
-                .to_string(),
-            evidence_ids: vec![],
-            technique: None,
-        }],
-        evidence_refs: vec![],
-        skipped_checks: vec![],
-        findings: vec![],
-        required_checks_done: vec![],
-        coverage: vec![],
-    }
-}
-
-/// 设计 2026-06-11-substantive-stage-evidence-projection-fallback · project the
-/// "factual part" of a StageDeliverable from the session's REAL evidence-ledger
-/// facts when a substantive stage's agent submitted no parseable deliverable.
-///
-/// Invariants (§4 of the design — any violation would fabricate work):
-/// - claims: one per real-ledger `Found` fact (D3, `evidence_id > 0`) — an
-///   `Empty` fact yields NO claim (its CheckedEmpty cell is projected by the
-///   gate's `derive_from_evidence` from the same facts, so I8 holds), and a
-///   DB-truth projection fact (sentinel id 0, design 2026-06-12 §5.3) yields no
-///   claim either (it has no ledger row to cite; it only fills a coverage cell).
-/// - evidence_refs: real ledger ids only (`evidence_id > 0`), deduped — DB-truth
-///   sentinel ids (0) are EXCLUDED so `enforce_evidence_existence` never flags
-///   them as fabricated (design 2026-06-12 §4.1); ledger ids are existence-checkable.
-/// - coverage: left empty (D2) — the gate projects it from `ctx.evidence_facts`;
-///   a second hand-rolled projection here could only drift from it.
-/// - findings: ALWAYS empty (red line) — vulnerability assertions are never
-///   projected; the agent must genuinely report them.
-/// - technique: copied verbatim from the ledger (no filtering) — a dirty value
-///   is surfaced by schema_check's fail-closed taxonomy validation, not hidden.
-fn synthesize_from_evidence(
-    stage: crate::harness::StageKind,
-    facts: &[crate::harness::gate::rule_engine::EvidenceFact],
-) -> crate::harness::StageDeliverable {
-    use crate::harness::gate::rule_engine::EvidenceOutcome;
-    use golish_pentest::evidence_ledger::EvidenceAuditId;
-
-    let claims: Vec<crate::harness::StageClaim> = facts
-        .iter()
-        .filter(|f| f.outcome == EvidenceOutcome::Found && f.evidence_id > 0)
-        .map(|f| crate::harness::StageClaim {
-            kind: format!("{}_evidence", stage.as_str()),
-            subject: f.asset.clone(),
-            summary: format!(
-                "Backend-projected from ledger evidence #{} ({} on {}): the agent ran \
-                 this technique but submitted no parseable StageDeliverable; the claim \
-                 restates the recorded fact. Findings are NEVER projected.",
-                f.evidence_id, f.technique, f.asset
-            ),
-            evidence_ids: vec![EvidenceAuditId::new(f.evidence_id)],
-            technique: Some(f.technique.clone()),
-        })
-        .collect();
-
-    let mut ids: Vec<i64> = facts
-        .iter()
-        .map(|f| f.evidence_id)
-        .filter(|id| *id > 0)
-        .collect();
-    ids.sort_unstable();
-    ids.dedup();
-
-    crate::harness::StageDeliverable {
-        stage_id: stage.as_str().to_string(),
-        stage_run_id: uuid::Uuid::new_v4(),
-        claims,
-        evidence_refs: ids.into_iter().map(EvidenceAuditId::new).collect(),
-        skipped_checks: vec![],
-        findings: vec![],
-        required_checks_done: vec![],
-        coverage: vec![],
-    }
-}
-
 /// 设计 2026-06-12 §5.3 · 把 DB 业务表真值 `(asset, technique)` 转成 `Found`
 /// EvidenceFact，供与账本 facts 合并注入 coverage gate。
 ///
@@ -2200,8 +2042,8 @@ fn synthesize_from_evidence(
 ///   （checked_empty 只能由账本「跑了→空」的真实 outcome 显式产生，I8）。
 /// - `evidence_id` 用哨兵 [`DB_TRUTH_EVIDENCE_ID`]（0）标记「非账本来源」。
 ///   `coverage_complete` 投影只看 asset/technique/outcome（不看 id），哨兵无影响；
-///   `synthesize_from_evidence` 用 `id > 0` 过滤哨兵，业务表 fact 绝不进
-///   `evidence_refs` / claims，fabricated-evidence 校验天然不误伤（设计 §4.1）。
+///   哨兵 fact 没有可引用的账本行，绝不进任何 deliverable 的 `evidence_refs` /
+///   claims，fabricated-evidence 校验天然不误伤（设计 §4.1）。
 const DB_TRUTH_EVIDENCE_ID: i64 = 0;
 
 fn db_truth_facts_to_evidence(
@@ -3175,11 +3017,11 @@ mod harness_gate_hook_tests {
     }
 }
 
-// 设计 2026-06-11-substantive-stage-evidence-projection-fallback：substantive 阶段
-// agent 没交 deliverable 时的证据投影兜底。纯函数不变量（§4）+ stage-close 门控
-// 分支（§5.1）。红线：findings 永远不投影；空账本/未 opt-in 保持 fail-closed BLOCK。
+// 设计 2026-06-12-unified-refiner (PR-R2/R3)：missing deliverable 一律 fail-closed
+// BLOCK——投影兜底与 confirm-only 合成已删除，后端绝不代为合成 deliverable。
+// DB 真值哨兵投影（PR-A，gate 判错侧）保留。
 #[cfg(test)]
-mod evidence_projection_fallback_tests {
+mod missing_deliverable_fail_closed_tests {
     use super::*;
     use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
     use crate::harness::{HarnessStageHint, StageKind};
@@ -3204,100 +3046,7 @@ mod evidence_projection_fallback_tests {
         }
     }
 
-    // ── synthesize_from_evidence 纯函数（设计 §5.2 / 约束 §4） ──────────────
-
-    #[test]
-    fn projection_never_fabricates_findings_or_coverage() {
-        let facts = vec![
-            fact(
-                "a.example.com",
-                "GOLISH-INTEL-DNS",
-                EvidenceOutcome::Found,
-                7,
-            ),
-            fact(
-                "b.example.com",
-                "GOLISH-INTEL-DNS",
-                EvidenceOutcome::Empty,
-                9,
-            ),
-        ];
-        let d = synthesize_from_evidence(StageKind::TargetIntel, &facts);
-        assert!(
-            d.findings.is_empty(),
-            "findings are NEVER projected (red line §4.2)"
-        );
-        assert!(
-            d.coverage.is_empty(),
-            "coverage stays empty — the gate's derive_from_evidence projects it (D2)"
-        );
-        assert!(d.skipped_checks.is_empty());
-        assert!(d.required_checks_done.is_empty());
-    }
-
-    #[test]
-    fn projection_claims_one_per_found_fact_with_aligned_fields() {
-        let facts = vec![
-            fact(
-                "a.example.com",
-                "GOLISH-INTEL-DNS",
-                EvidenceOutcome::Found,
-                7,
-            ),
-            fact(
-                "b.example.com",
-                "GOLISH-INTEL-SUBDOMAIN",
-                EvidenceOutcome::Found,
-                9,
-            ),
-        ];
-        let d = synthesize_from_evidence(StageKind::TargetIntel, &facts);
-        assert_eq!(d.claims.len(), 2, "one claim per Found fact (D3)");
-        let c = &d.claims[0];
-        assert_eq!(c.subject, "a.example.com");
-        assert_eq!(
-            c.technique.as_deref(),
-            Some("GOLISH-INTEL-DNS"),
-            "claim.technique mirrors the fact so coverage_corroborated aligns by construction"
-        );
-        assert_eq!(c.evidence_ids.len(), 1);
-        assert_eq!(c.evidence_ids[0].as_i64(), 7);
-        assert!(c.summary.contains("#7"), "summary cites the ledger id");
-    }
-
-    #[test]
-    fn projection_empty_fact_yields_no_claim_but_keeps_evidence_ref() {
-        // I8: an Empty fact is a recorded "ran → nothing". Its CheckedEmpty cell is
-        // projected by the gate from the same facts — NOT restated as a claim here —
-        // but its ledger id still belongs in evidence_refs (real, existence-checkable).
-        let facts = vec![fact(
-            "a.example.com",
-            "GOLISH-INTEL-DNS",
-            EvidenceOutcome::Empty,
-            11,
-        )];
-        let d = synthesize_from_evidence(StageKind::TargetIntel, &facts);
-        assert!(d.claims.is_empty(), "Empty facts must not produce claims");
-        assert_eq!(d.evidence_refs.len(), 1);
-        assert_eq!(d.evidence_refs[0].as_i64(), 11);
-    }
-
-    #[test]
-    fn projection_evidence_refs_deduped_and_stage_identity_set() {
-        let facts = vec![
-            fact("a", "GOLISH-INTEL-DNS", EvidenceOutcome::Found, 7),
-            // same ledger row backing a second technique → cited once
-            fact("a", "GOLISH-INTEL-WHOIS", EvidenceOutcome::Found, 7),
-            fact("b", "GOLISH-INTEL-DNS", EvidenceOutcome::Empty, 3),
-        ];
-        let d = synthesize_from_evidence(StageKind::TargetIntel, &facts);
-        let ids: Vec<i64> = d.evidence_refs.iter().map(|e| e.as_i64()).collect();
-        assert_eq!(ids, vec![3, 7], "ids deduped + sorted");
-        assert_eq!(d.stage_id, "target_intel");
-        assert!(!d.stage_run_id.is_nil());
-    }
-
-    // ── DB 业务表真值投影（设计 2026-06-12 §5.3 / 约束 §4） ──────────────────
+    // ── DB 业务表真值投影（设计 2026-06-12 §5.3，保留——gate 判错侧） ────────
 
     #[test]
     fn db_truth_to_evidence_maps_pairs_to_found_with_sentinel_id() {
@@ -3323,101 +3072,61 @@ mod evidence_projection_fallback_tests {
         assert!(db_truth_facts_to_evidence(vec![]).is_empty());
     }
 
-    #[test]
-    fn synthesize_excludes_db_truth_sentinel_from_refs_and_claims() {
-        // 真实账本 fact（id>0）产 claim + 进 refs；业务表投影 fact（哨兵 id=0）
-        // 不产 claim、不进 refs（D2 / §4.1：fabricated 校验不误伤）。
-        let facts = vec![
-            fact("moresec.cn", "GOLISH-INTEL-DNS", EvidenceOutcome::Found, 42),
-            fact("moresec.cn", "GOLISH-INTEL-ASN", EvidenceOutcome::Found, 0),
-        ];
-        let d = synthesize_from_evidence(StageKind::TargetIntel, &facts);
-        assert_eq!(d.claims.len(), 1, "哨兵 fact 不产 claim");
-        assert_eq!(d.claims[0].technique.as_deref(), Some("GOLISH-INTEL-DNS"));
-        let refs: Vec<i64> = d.evidence_refs.iter().map(|e| e.as_i64()).collect();
-        assert_eq!(refs, vec![42], "evidence_refs 排除哨兵 0");
-    }
-
-    // ── stage-close 门控分支（设计 §5.1） ──────────────────────────────────
+    // ── missing deliverable = fail-closed BLOCK（一切 stage，无例外） ────────
 
     #[test]
-    fn hook_projects_when_stage_opts_in_and_ledger_has_facts() {
-        let p = planned(StageKind::TargetIntel);
+    fn hook_blocks_missing_deliverable_even_with_ledger_facts() {
+        // PR-R2 行为变化锚点：target_intel（旧投影兜底的灰度 stage）现在与其它
+        // substantive stage 一致——账本有真证据也不投影，BLOCK 后由 Refiner 的
+        // A 类 submit-only 锁驱动 agent 自己提交（live run 两连截胡的根治）。
         let ctx = ExecutionContext::default();
-        let facts = vec![
-            fact(
-                "a.example.com",
-                "GOLISH-INTEL-DNS",
-                EvidenceOutcome::Found,
-                7,
-            ),
-            fact(
-                "a.example.com",
-                "GOLISH-INTEL-SUBDOMAIN",
-                EvidenceOutcome::Empty,
-                9,
-            ),
-        ];
-        let (out, outcome) = apply_harness_gate_hook(
-            &p,
-            &ctx,
-            "prose-only report, no JSON".to_string(),
-            None,
-            vec![],
-            Some(facts),
-        );
-        let o = outcome.expect("projection fallback must still run the gate");
-        assert!(
-            !o.missing_deliverable,
-            "projection replaced the missing-deliverable BLOCK path"
-        );
-        assert_eq!(o.gated_stage, StageKind::TargetIntel);
-        assert_eq!(
-            o.evidence_refs,
-            vec![7, 9],
-            "outcome must cite the projected real ledger ids"
-        );
-        assert!(
-            out.contains("## Harness Gate Decision"),
-            "the gate must actually have run on the projected deliverable"
-        );
-    }
-
-    #[test]
-    fn hook_keeps_block_when_ledger_empty_even_if_stage_opts_in() {
-        // §4.5: no facts = no work done — nothing to project, the strict
-        // missing-deliverable BLOCK stands (projection rescues packaging, not work).
-        let p = planned(StageKind::TargetIntel);
-        let ctx = ExecutionContext::default();
-        for facts in [None, Some(vec![])] {
+        for stage in [
+            StageKind::TargetIntel,
+            StageKind::ExternalAttackSurface,
+            StageKind::VulnTriage,
+        ] {
+            let p = planned(stage);
+            let facts = vec![fact("a", "GOLISH-INTEL-DNS", EvidenceOutcome::Found, 7)];
             let (out, outcome) =
-                apply_harness_gate_hook(&p, &ctx, "prose".to_string(), None, vec![], facts);
+                apply_harness_gate_hook(&p, &ctx, "prose".to_string(), None, vec![], Some(facts));
             let o = outcome.expect("stage-tagged unparseable content must produce an outcome");
-            assert!(!o.gate_allowed, "empty ledger → fail-closed BLOCK");
+            assert!(!o.gate_allowed, "{stage:?} must fail-closed BLOCK");
             assert!(
                 o.missing_deliverable,
-                "must stay on the missing-deliverable repair path"
+                "{stage:?} must stay on the missing-deliverable path (refiner routes A/B)"
             );
+            assert!(
+                o.repair_correction.is_none(),
+                "rendering belongs to the refiner, not the hook"
+            );
+            assert!(!o.confirm_only_stage, "{stage:?} is substantive");
             assert_eq!(out, "prose", "content passes through unchanged on BLOCK");
         }
     }
 
     #[test]
-    fn hook_keeps_block_for_stage_without_opt_in_even_with_facts() {
-        // EAS (substantive, opt-in off) + vuln_triage (finding-producing — the
-        // opt-in must NEVER be on): ledger facts must not soften their contract.
+    fn hook_blocks_missing_deliverable_for_confirm_only_stage_too() {
+        // PR-R3 行为变化锚点：scoping（confirm-only）不再由后端代填确认 claim——
+        // BLOCK + confirm_only_stage 事实置位，Refiner 的 A 类 confirm-only 变体
+        // 锁 submit 逼 agent 自己提交。
+        let p = planned(StageKind::Scoping);
         let ctx = ExecutionContext::default();
-        for stage in [StageKind::ExternalAttackSurface, StageKind::VulnTriage] {
-            let p = planned(stage);
-            let facts = vec![fact("a", "GOLISH-INTEL-DNS", EvidenceOutcome::Found, 7)];
-            let (_, outcome) =
-                apply_harness_gate_hook(&p, &ctx, "prose".to_string(), None, vec![], Some(facts));
-            let o = outcome.expect("stage-tagged unparseable content must produce an outcome");
-            assert!(!o.gate_allowed, "{stage:?} must keep the fail-closed BLOCK");
-            assert!(
-                o.missing_deliverable,
-                "{stage:?} must stay on the missing-deliverable path"
-            );
-        }
+        let (out, outcome) =
+            apply_harness_gate_hook(&p, &ctx, "prose".to_string(), None, vec![], None);
+        let o = outcome.expect("stage-tagged unparseable content must produce an outcome");
+        assert!(!o.gate_allowed, "confirm-only missing must BLOCK too");
+        assert!(o.missing_deliverable);
+        assert!(
+            o.confirm_only_stage,
+            "scoping must carry the confirm-only fact for the refiner's A-class variant"
+        );
+        let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(None));
+        assert_eq!(
+            d.class,
+            crate::task_orchestrator::refiner::RefineClass::SubmitOnly,
+            "confirm-only missing routes to submit-only"
+        );
+        assert!(d.submit_only_lock, "the retry must lock tool_choice to submit");
+        assert_eq!(out, "prose");
     }
 }

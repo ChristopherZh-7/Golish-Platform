@@ -70,9 +70,6 @@
     "subdomain_enum_passive": 1
   },
 
-  "$comment_synthesize": "设计 2026-06-11-substantive-stage-evidence-projection-fallback：弱模型干完活（账本有真实 evidence facts）但没调 submit 时，harness 从账本投影合成 deliverable（findings 永远空）走原 gate。target_intel 是首个灰度阶段（情报类、findings 常空）；漏洞类阶段永不开。",
-  "synthesize_from_evidence_when_missing": true,
-
   "max_other_skips": 2,
 
   "human_approval": {

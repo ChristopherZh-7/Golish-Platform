@@ -97,7 +97,6 @@ mod tests {
             min_claims: None,
             gate_rules: vec![],
             expected_techniques: vec![],
-            synthesize_from_evidence_when_missing: false,
         }
     }
 
