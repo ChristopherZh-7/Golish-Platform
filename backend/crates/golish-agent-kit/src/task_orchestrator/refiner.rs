@@ -53,8 +53,8 @@ pub(crate) struct RefineInput<'a> {
     pub evidence_kind_labels: &'a HashMap<i64, String>,
     /// enforce_evidence_kinds 置：stage 要求但 deliverable 证据缺失的 kinds。
     pub missing_kinds: &'a [String],
-    /// enforce_evidence_freshness 置：硬过期的 evidence ids。
-    pub expired_ids: &'a [i64],
+    /// enforce_evidence_freshness 置：硬过期证据的描述行（`freshness_age_reasons` 原文）。
+    pub expired: &'a [String],
     /// enforce_scoping_red_team_flow 置：已渲染好的流程纠正（G 类透传）。
     pub red_team_flow_correction: Option<&'a str>,
     /// C 类诊断用（与注入 coverage gate 的同一份，含 DB 真值哨兵 facts）。
@@ -123,7 +123,7 @@ fn classify(input: &RefineInput<'_>) -> RefineClass {
     if reasons_hit_coverage_or_vacuous(input.gate_reasons) {
         return RefineClass::CoverageOrVacuous;
     }
-    if !input.missing_kinds.is_empty() || !input.expired_ids.is_empty() {
+    if !input.missing_kinds.is_empty() || !input.expired.is_empty() {
         return RefineClass::EvidenceQuality;
     }
     if input.red_team_flow_correction.is_some() {
@@ -152,10 +152,10 @@ fn secondary_note(input: &RefineInput<'_>, class: RefineClass) -> Option<String>
     if !input.missing_kinds.is_empty() {
         parts.push(format!("missing evidence kinds {:?}", input.missing_kinds));
     }
-    if !input.expired_ids.is_empty() {
+    if !input.expired.is_empty() {
         parts.push(format!(
-            "hard-expired evidence ids {:?} (re-run those tools for fresh evidence)",
-            input.expired_ids
+            "hard-expired evidence {:?} (re-run those tools for fresh evidence)",
+            input.expired
         ));
     }
     if parts.is_empty() {
@@ -270,12 +270,12 @@ fn render_evidence_quality(input: &RefineInput<'_>) -> String {
             input.missing_kinds
         ));
     }
-    if !input.expired_ids.is_empty() {
+    if !input.expired.is_empty() {
         parts.push(format!(
             "Some cited evidence is hard-expired (older than 2x its max age): {:?}. \
              Re-run the relevant tools so the evidence is fresh, then resubmit a StageDeliverable \
              citing the new evidence ids.",
-            input.expired_ids
+            input.expired
         ));
     }
     parts.join("\n\n")
@@ -399,7 +399,7 @@ mod tests {
             available_real_ids: &[],
             evidence_kind_labels: kinds,
             missing_kinds: &[],
-            expired_ids: &[],
+            expired: &[],
             red_team_flow_correction: None,
             evidence_facts: None,
         }
@@ -505,9 +505,9 @@ mod tests {
     fn secondary_note_appends_when_quality_coexists() {
         let reasons = vec!["deliverable vacuous: no claims".to_string()];
         let kinds = HashMap::new();
-        let expired = [99i64];
+        let expired = ["evidence #99 (dns_a) is hard-expired".to_string()];
         let mut i = base_input(&reasons, &kinds);
-        i.expired_ids = &expired;
+        i.expired = &expired;
         let d = refine(&i);
         assert_eq!(d.class, RefineClass::CoverageOrVacuous);
         assert!(d.correction.contains("Also fix:"));

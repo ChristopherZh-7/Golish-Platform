@@ -228,6 +228,10 @@ pub trait AgentExecutor: Send + Sync {
     /// Returns a corrective message that should be injected as a user message
     /// before retrying the subtask. The reflector acts as a "proxy user" that
     /// guides the agent back to tool usage (PentAGI's Reflector pattern).
+    ///
+    /// Deprecated（设计 2026-06-12-unified-refiner PR-R4）：task_orchestrator 不再
+    /// 调用此方法——text-only 响应改由 `task_orchestrator::refiner::refine_text_only`
+    /// 的确定性模板纠正。实现与本方法的删除留给 bridge 清理 PR。
     async fn reflect(&self, subtask_title: &str, agent_response: &str) -> Result<String>;
 
     /// Enrich a subtask with supplementary context before execution.

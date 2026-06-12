@@ -431,6 +431,13 @@ fn pass(stage: StageKind) -> HarnessGateOutcome {
         fabricated_evidence_refs: Vec::new(),
         available_real_ids: Vec::new(),
         missing_deliverable: false,
+        gate_reasons: Vec::new(),
+        gate_recovery: None,
+        missing_kinds: Vec::new(),
+        expired: Vec::new(),
+        red_team_flow_correction: None,
+        confirm_only_stage: false,
+        evidence_kind_labels: std::collections::HashMap::new(),
     }
 }
 
@@ -446,6 +453,13 @@ fn block(stage: StageKind) -> HarnessGateOutcome {
         fabricated_evidence_refs: Vec::new(),
         available_real_ids: Vec::new(),
         missing_deliverable: false,
+        gate_reasons: Vec::new(),
+        gate_recovery: None,
+        missing_kinds: Vec::new(),
+        expired: Vec::new(),
+        red_team_flow_correction: None,
+        confirm_only_stage: false,
+        evidence_kind_labels: std::collections::HashMap::new(),
     }
 }
 

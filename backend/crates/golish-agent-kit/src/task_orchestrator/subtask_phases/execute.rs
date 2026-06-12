@@ -200,7 +200,11 @@ impl TaskOrchestrator {
                         Some(agent_type),
                     )
                     .await
-            } else if reflector_attempt == 0 {
+            } else {
+                // attempt 0，或上一轮没产生 pending 纠正（不可达于 BLOCK/text-only
+                // 路径——两者都会填 pending_gate_correction）：按原任务描述执行。
+                // 设计 2026-06-12-unified-refiner (PR-R4)：旧的 `executor.reflect()`
+                // LLM 反思分支被删除——text-only 响应改由确定性 F 类模板纠正。
                 executor
                     .execute_subtask(
                         &planned.title,
@@ -209,38 +213,6 @@ impl TaskOrchestrator {
                         Some(agent_type),
                     )
                     .await
-            } else {
-                let prev_response = last_result
-                    .as_ref()
-                    .map(|r| r.content.as_str())
-                    .unwrap_or("");
-                match executor.reflect(&planned.title, prev_response).await {
-                    Ok(correction) => {
-                        tracing::info!(
-                            "[TaskMode/Reflector] Retry {}/{} for '{}': {}",
-                            reflector_attempt,
-                            MAX_REFLECTOR_RETRIES,
-                            planned.title,
-                            truncate(&correction, 200)
-                        );
-                        let augmented_desc = format!(
-                            "{}\n\n## IMPORTANT CORRECTION\n\n{}",
-                            planned.description, correction
-                        );
-                        executor
-                            .execute_subtask(
-                                &planned.title,
-                                &augmented_desc,
-                                exec_ctx,
-                                Some(agent_type),
-                            )
-                            .await
-                    }
-                    Err(e) => {
-                        tracing::warn!("Reflector failed: {}", e);
-                        break;
-                    }
-                }
             };
 
             match exec_result {
@@ -248,13 +220,20 @@ impl TaskOrchestrator {
                     if reflector_attempt < MAX_REFLECTOR_RETRIES
                         && looks_like_text_only_response(&agent_result.content)
                     {
+                        // 设计 2026-06-12-unified-refiner (PR-R4) · F 类：确定性
+                        // 模板取代旧 LLM reflect()——直接灌下一轮纠正。
+                        let decision =
+                            crate::task_orchestrator::refiner::refine_text_only(&planned.title);
                         tracing::info!(
-                            "[TaskMode/Reflector] Subtask '{}' returned text-only response ({} chars), \
-                             triggering reflector (attempt {})",
+                            target: "harness::hook",
+                            class = ?decision.class,
+                            "[TaskMode/Refiner] Subtask '{}' returned text-only response ({} chars), \
+                             feeding deterministic correction (attempt {})",
                             planned.title,
                             agent_result.content.len(),
                             reflector_attempt + 1,
                         );
+                        pending_gate_correction = Some(decision.correction);
                         last_result = Some(agent_result);
                         continue;
                     }
@@ -265,6 +244,9 @@ impl TaskOrchestrator {
                     let evidence_facts = self
                         .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref())
                         .await;
+                    // 设计 2026-06-12-unified-refiner · Refiner C 类诊断与 gate 用
+                    // 同一份证据事实；hook move 走原值，这里留一份给渲染。
+                    let refine_facts = evidence_facts.clone();
                     let (gated_content, gate_outcome) = apply_harness_gate_hook(
                         planned,
                         exec_ctx,
@@ -275,8 +257,7 @@ impl TaskOrchestrator {
                     );
                     if let Some(mut outcome) = gate_outcome {
                         // P0 · reject deliverables citing fabricated evidence ids
-                        // (may flip PASS→BLOCK + attach a correction) before the
-                        // retry decision below.
+                        // (may flip PASS→BLOCK) before the retry decision below.
                         self.enforce_evidence_existence(&mut outcome).await;
                         self.enforce_evidence_kinds(&mut outcome).await;
                         self.enforce_evidence_freshness(&mut outcome).await;
@@ -284,36 +265,42 @@ impl TaskOrchestrator {
                         // flow actually ran (not just a claim) before allowing PASS.
                         self.enforce_scoping_red_team_flow(&mut outcome, exec_ctx)
                             .await;
-                        // 设计 2026-06-11 · missing-deliverable BLOCK + ledger has
-                        // real evidence → narrow the correction to "ONLY submit,
-                        // citing these ids" and lock the retry pass to the submit
-                        // tool instead of redoing the whole stage.
-                        let submit_only = self
-                            .refine_missing_deliverable_correction(&mut outcome)
-                            .await;
-                        // C4 · gate BLOCK with retries left → feed the recovery
-                        // correction back into the loop (re-do the subtask) instead
-                        // of accepting the blocked result; defer transition until
-                        // the gate settles (PASS, or BLOCK with no retries left).
-                        if !outcome.gate_allowed
-                            && reflector_attempt < MAX_REFLECTOR_RETRIES
-                            && outcome.repair_correction.is_some()
-                        {
-                            tracing::info!(
-                                "[TaskMode/Harness] Gate BLOCK on '{}' (attempt {}/{}), \
-                                 feeding repair correction back to reflector (submit_only={})",
-                                planned.title,
-                                reflector_attempt + 1,
-                                MAX_REFLECTOR_RETRIES,
-                                submit_only,
+                        // missing-deliverable 时补查账本真实 ids（A/B 类路由事实）。
+                        self.gather_missing_deliverable_ids(&mut outcome).await;
+                        // 设计 2026-06-12-unified-refiner · BLOCK 的全部事实汇入
+                        // 唯一 Refiner：确定性分类 → 单模板纠正 → submit-only 锁。
+                        if !outcome.gate_allowed {
+                            let decision = crate::task_orchestrator::refiner::refine(
+                                &outcome.as_refine_input(refine_facts.as_deref()),
                             );
-                            pending_gate_correction = outcome.repair_correction.clone();
-                            pending_submit_only = submit_only;
-                            last_result = Some(AgentResult {
-                                content: gated_content,
-                                ..agent_result
-                            });
-                            continue;
+                            tracing::info!(
+                                target: "harness::hook",
+                                stage = %outcome.gated_stage.as_str(),
+                                class = ?decision.class,
+                                submit_only = decision.submit_only_lock,
+                                "refiner decision"
+                            );
+                            outcome.repair_correction = Some(decision.correction);
+                            // C4 · gate BLOCK with retries left → feed the
+                            // correction back into the loop; defer transition until
+                            // the gate settles (PASS, or BLOCK with no retries left).
+                            if reflector_attempt < MAX_REFLECTOR_RETRIES {
+                                tracing::info!(
+                                    "[TaskMode/Harness] Gate BLOCK on '{}' (attempt {}/{}), \
+                                     feeding refiner correction back (submit_only={})",
+                                    planned.title,
+                                    reflector_attempt + 1,
+                                    MAX_REFLECTOR_RETRIES,
+                                    decision.submit_only_lock,
+                                );
+                                pending_gate_correction = outcome.repair_correction.clone();
+                                pending_submit_only = decision.submit_only_lock;
+                                last_result = Some(AgentResult {
+                                    content: gated_content,
+                                    ..agent_result
+                                });
+                                continue;
+                            }
                         }
                         self.consume_gate_outcome(task_id, outcome).await;
                     }
@@ -428,6 +415,7 @@ impl TaskOrchestrator {
         let evidence_facts = self
             .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref())
             .await;
+        let refine_facts = evidence_facts.clone();
         let (out, gate_outcome) = apply_harness_gate_hook(
             planned,
             exec_ctx,
@@ -442,11 +430,23 @@ impl TaskOrchestrator {
             self.enforce_evidence_freshness(&mut outcome).await;
             self.enforce_scoping_red_team_flow(&mut outcome, exec_ctx)
                 .await;
-            // No retry left here; run the targeted-repair lookup anyway so the
-            // HarnessTrace GateDecision carries the real available ids.
-            let _ = self
-                .refine_missing_deliverable_correction(&mut outcome)
-                .await;
+            // No retry left here; gather the ledger facts + render the refiner
+            // correction anyway so the HarnessTrace GateDecision carries the real
+            // available ids and the final blocking reason.
+            self.gather_missing_deliverable_ids(&mut outcome).await;
+            if !outcome.gate_allowed {
+                let decision = crate::task_orchestrator::refiner::refine(
+                    &outcome.as_refine_input(refine_facts.as_deref()),
+                );
+                tracing::info!(
+                    target: "harness::hook",
+                    stage = %outcome.gated_stage.as_str(),
+                    class = ?decision.class,
+                    submit_only = decision.submit_only_lock,
+                    "refiner decision (retries exhausted — trace only)"
+                );
+                outcome.repair_correction = Some(decision.correction);
+            }
             self.consume_gate_outcome(task_id, outcome).await;
         }
         (out, None)
@@ -1389,24 +1389,16 @@ impl TaskOrchestrator {
         block_outcome_for_fabricated(outcome, &fabricated, &available_real_ids);
     }
 
-    /// 设计 2026-06-11 (weak-model-submit-channel) · targeted repair for a
-    /// missing-deliverable BLOCK. When the stage ended without a parseable
-    /// `StageDeliverable` but the evidence ledger ALREADY holds real ids for this
-    /// operation (the agent did the work, then narrated instead of submitting),
-    /// rewrite the correction from "re-do the stage" to "ONLY call
-    /// submit_stage_deliverable citing these ids" and return `true` so the retry
-    /// pass can lock its tool_choice to the submit tool (改 2). Ledger empty /
-    /// infra error / no session → keep the original re-do correction and return
-    /// `false` — never imply work was done when it wasn't.
-    async fn refine_missing_deliverable_correction(
-        &self,
-        outcome: &mut HarnessGateOutcome,
-    ) -> bool {
+    /// 设计 2026-06-12-unified-refiner · missing-deliverable BLOCK 时查账本真实
+    /// ids + kind 标签，作为「事实」填进 outcome——Refiner 据此分类（账本非空 →
+    /// A 类 submit-only 锁；空 → B 类重做）并渲染。查询失败 / 无 session / 账本
+    /// 空 = 不填（B 类自然兜住，never imply work was done when it wasn't）。
+    async fn gather_missing_deliverable_ids(&self, outcome: &mut HarnessGateOutcome) {
         if outcome.gate_allowed || !outcome.missing_deliverable {
-            return false;
+            return;
         }
         let Some(sid) = self.chat_session_id.as_deref() else {
-            return false;
+            return;
         };
         let ids = match self.repo.recent_evidence_ids(sid, 25).await {
             Ok(ids) => ids,
@@ -1414,30 +1406,25 @@ impl TaskOrchestrator {
                 tracing::warn!(
                     target: "harness::hook",
                     error = %e,
-                    "targeted repair: evidence-id lookup failed; keeping the re-do correction"
+                    "refiner fact-gathering: evidence-id lookup failed; redo-class will apply"
                 );
-                return false;
+                return;
             }
         };
         if ids.is_empty() {
-            return false;
+            return;
         }
         // Kind labels make the echo even easier for a weak model ("#1632 (dns_a)").
-        // Lookup failure only drops the labels, not the targeted correction.
-        let kinds = self.repo.evidence_kinds_for(&ids).await.unwrap_or_default();
-        outcome.available_real_ids = ids.clone();
-        outcome.repair_correction = Some(build_submit_only_correction(
-            outcome.gated_stage,
-            &ids,
-            &kinds,
-        ));
+        // Lookup failure only drops the labels, not the submit-only routing.
+        outcome.evidence_kind_labels =
+            self.repo.evidence_kinds_for(&ids).await.unwrap_or_default();
+        outcome.available_real_ids = ids;
         tracing::info!(
             target: "harness::hook",
             stage = %outcome.gated_stage.as_str(),
-            evidence_ids = ?ids,
-            "targeted repair: work already evidenced in the ledger; correction narrowed to submit-only"
+            evidence_ids = ?outcome.available_real_ids,
+            "refiner fact-gathering: work already evidenced in the ledger (submit-only candidate)"
         );
-        true
     }
 
     /// Red_team scoping anti-shortcut gate (设计 2026-06-06-scoping-per-mode-gate-hitl
@@ -1483,11 +1470,9 @@ impl TaskOrchestrator {
                 stage = %outcome.gated_stage.as_str(),
                 "gate BLOCK: red_team scoping skipped the unit-candidate / organization-creation flow"
             );
+            // 设计 2026-06-12-unified-refiner · 只置事实标记，Refiner G 类透传该文本。
             outcome.gate_allowed = false;
-            outcome.repair_correction = Some(match outcome.repair_correction.take() {
-                Some(prev) => format!("{correction}\n\n{prev}"),
-                None => correction,
-            });
+            outcome.red_team_flow_correction = Some(correction);
         }
     }
 
@@ -1525,16 +1510,9 @@ impl TaskOrchestrator {
             missing = ?missing,
             "gate BLOCK: stage requires evidence kinds absent from the deliverable"
         );
+        // 设计 2026-06-12-unified-refiner · 只置事实标记，渲染交 Refiner（E 类）。
         outcome.gate_allowed = false;
-        let correction = format!(
-            "This stage requires evidence of kinds {missing:?}, but the deliverable's evidence \
-             includes none of them. Run the tools that produce these evidence kinds and resubmit \
-             a StageDeliverable that cites them."
-        );
-        outcome.repair_correction = Some(match outcome.repair_correction.take() {
-            Some(prev) => format!("{correction}\n\n{prev}"),
-            None => correction,
-        });
+        outcome.missing_kinds = missing;
     }
 
     /// P0 Task 6 · evidence「新鲜度」回查: 查 ledger 真实 age, 按 `evidence_kinds.json`
@@ -1586,16 +1564,9 @@ impl TaskOrchestrator {
             expired = ?expired,
             "gate BLOCK: deliverable cites hard-expired evidence"
         );
+        // 设计 2026-06-12-unified-refiner · 只置事实标记，渲染交 Refiner（E 类）。
         outcome.gate_allowed = false;
-        let correction = format!(
-            "Some cited evidence is hard-expired (older than 2x its max age): {expired:?}. \
-             Re-run the relevant tools so the evidence is fresh, then resubmit a StageDeliverable \
-             citing the new evidence ids."
-        );
-        outcome.repair_correction = Some(match outcome.repair_correction.take() {
-            Some(prev) => format!("{correction}\n\n{prev}"),
-            None => correction,
-        });
+        outcome.expired = expired;
     }
 }
 
@@ -1610,13 +1581,10 @@ fn fabricated_evidence_ids(cited: &[i64], existing: &std::collections::HashSet<i
         .collect()
 }
 
-/// Pure: flip a gate outcome to BLOCK with an anti-fabrication correction,
-/// preserving any prior correction by prepending the fabrication notice.
-///
-/// `available_real_ids` are the operation's actual evidence-ledger ids (newest
-/// first). When non-empty they are named in the correction so the retry can cite
-/// real ids instead of re-guessing template placeholders; when empty the agent
-/// is told to run the required tools first.
+/// Pure: flip a gate outcome to BLOCK on fabricated evidence refs, recording
+/// the facts (`fabricated_evidence_refs` + `available_real_ids`) for the
+/// unified Refiner's D-class template（设计 2026-06-12-unified-refiner——渲染
+/// 不再在此发生，HarnessTrace 观测字段不变）.
 fn block_outcome_for_fabricated(
     outcome: &mut HarnessGateOutcome,
     fabricated: &[i64],
@@ -1625,57 +1593,6 @@ fn block_outcome_for_fabricated(
     outcome.gate_allowed = false;
     outcome.fabricated_evidence_refs = fabricated.to_vec();
     outcome.available_real_ids = available_real_ids.to_vec();
-    let real_ids_hint = if available_real_ids.is_empty() {
-        "No real evidence ids exist for this operation yet: run this stage's required tools \
-         (e.g. via the pentester) and cite the ids their results return."
-            .to_string()
-    } else {
-        format!(
-            "The REAL evidence ids already recorded for THIS operation (newest first) are {available_real_ids:?}. \
-             Cite ONLY from this set — pick the ones whose tool output backs each claim and put them \
-             in both the claim's evidence_ids and the top-level evidence_refs."
-        )
-    };
-    let correction = format!(
-        "Your StageDeliverable cites evidence ids {fabricated:?} that do NOT exist in the \
-         evidence ledger. Never substitute small guessed integers (1, 2, 3, …) for real ids. \
-         {real_ids_hint} Do NOT guess, increment, or reuse placeholder ids. \
-         Then resubmit a StageDeliverable whose evidence_refs are all real ledger ids."
-    );
-    outcome.repair_correction = Some(match outcome.repair_correction.take() {
-        Some(prev) => format!("{correction}\n\n{prev}"),
-        None => correction,
-    });
-}
-
-/// Pure core of the targeted missing-deliverable repair (设计 2026-06-11): the
-/// correction telling a weak model that the stage work is ALREADY evidenced and
-/// the only remaining action is one `submit_stage_deliverable` call citing the
-/// listed real ledger ids. `kinds` labels each id with its evidence kind when
-/// known so the model can map ids to claims without re-reading tool output.
-fn build_submit_only_correction(
-    stage: crate::harness::StageKind,
-    ids: &[i64],
-    kinds: &std::collections::HashMap<i64, String>,
-) -> String {
-    let id_list = ids
-        .iter()
-        .map(|id| match kinds.get(id) {
-            Some(kind) => format!("#{id} ({kind})"),
-            None => format!("#{id}"),
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "Your '{stage}' stage run ALREADY did the scan work — its results are recorded in the \
-         evidence ledger as: {id_list} (newest first). Do NOT re-run any tools and do NOT redo \
-         the stage. Your ONLY remaining action is to call the `submit_stage_deliverable` tool \
-         ONCE, with a StageDeliverable whose claims/coverage cite these REAL evidence ids — put \
-         the relevant ids in each claim's evidence_ids and all cited ids in the top-level \
-         evidence_refs. Pick only the ids whose tool output actually backs each claim; do NOT \
-         guess, increment, or invent ids.",
-        stage = stage.as_str(),
-    )
 }
 
 // ── Harness gate hook (Phase C · Doc 3 §5.2 接入点) ─────────────────────────
@@ -1732,6 +1649,46 @@ struct HarnessGateOutcome {
     /// rewrites the correction to "ONLY submit, do not redo" and locks the retry
     /// pass's tool_choice to `submit_stage_deliverable`.
     missing_deliverable: bool,
+    // ── 设计 2026-06-12-unified-refiner · 以下为 Refiner 的「事实」输入 ──
+    // gate 与 enforce_* 只置事实标记；纠正文本的渲染权全部上收
+    // `task_orchestrator::refiner`（repair_correction 由它回填）。
+    /// gate 原始拒绝理由（`decision.reasons` 克隆）。
+    gate_reasons: Vec<String>,
+    gate_recovery: Option<crate::harness::HarnessRecoveryActions>,
+    /// enforce_evidence_kinds 置：stage 要求但 deliverable 证据缺失的 kinds。
+    missing_kinds: Vec<String>,
+    /// enforce_evidence_freshness 置：硬过期证据的描述行。
+    expired: Vec<String>,
+    /// enforce_scoping_red_team_flow 置：已渲染好的流程纠正（G 类透传）。
+    red_team_flow_correction: Option<String>,
+    /// `StageSpec.allowed_tool_types.is_empty()`（A 类 confirm-only 变体判定）。
+    confirm_only_stage: bool,
+    /// missing-deliverable 时账本真实 id → kind 标签（A 类模板）。
+    evidence_kind_labels: std::collections::HashMap<i64, String>,
+}
+
+impl HarnessGateOutcome {
+    /// Refiner 的纯输入视图（事实 → 分类/渲染，无 IO）。`facts` 为 stage-close
+    /// hook 注入 coverage gate 的同一份证据事实（C 类诊断用）。
+    fn as_refine_input<'a>(
+        &'a self,
+        facts: Option<&'a [crate::harness::gate::rule_engine::EvidenceFact]>,
+    ) -> crate::task_orchestrator::refiner::RefineInput<'a> {
+        crate::task_orchestrator::refiner::RefineInput {
+            stage: self.gated_stage,
+            gate_reasons: &self.gate_reasons,
+            gate_recovery: self.gate_recovery.as_ref(),
+            missing_deliverable: self.missing_deliverable,
+            confirm_only_stage: self.confirm_only_stage,
+            fabricated_ids: &self.fabricated_evidence_refs,
+            available_real_ids: &self.available_real_ids,
+            evidence_kind_labels: &self.evidence_kind_labels,
+            missing_kinds: &self.missing_kinds,
+            expired: &self.expired,
+            red_team_flow_correction: self.red_team_flow_correction.as_deref(),
+            evidence_facts: facts,
+        }
+    }
 }
 
 /// 返回 `(content, Option<outcome>)`: `None` 表示 hook 透传 (未跑 gate); `Some` 表示
@@ -1859,6 +1816,12 @@ fn apply_harness_gate_hook(
         );
     }
 
+    // StageSpec.allowed_tool_types.is_empty()（scoping / reporting 等确认型阶段）：
+    // missing-deliverable 分支与 Refiner 的 A 类 confirm-only 变体共用此事实。
+    let confirm_only = crate::harness::load_embedded_stage_spec(stage_hint.stage_kind)
+        .map(|s| s.allowed_tool_types.is_empty())
+        .unwrap_or(false);
+
     let deliverable = match parse_deliverable_from_content(&content) {
         Some(d) => d,
         None => {
@@ -1869,9 +1832,6 @@ fn apply_harness_gate_hook(
             // no parseable StageDeliverable (the `content_len=0` deadlock).
             // Substantive scan / finding-producing stages KEEP the fail-closed
             // BLOCK — their findings must never be fabricated.
-            let confirm_only = crate::harness::load_embedded_stage_spec(stage_hint.stage_kind)
-                .map(|s| s.allowed_tool_types.is_empty())
-                .unwrap_or(false);
             if confirm_only {
                 tracing::warn!(
                     target: "harness::hook",
@@ -1926,7 +1886,7 @@ fn apply_harness_gate_hook(
                         );
                         return (
                             content,
-                            missing_deliverable_gate_outcome(stage_hint.stage_kind),
+                            missing_deliverable_gate_outcome(stage_hint.stage_kind, confirm_only),
                         );
                     }
                 }
@@ -1999,17 +1959,8 @@ fn apply_harness_gate_hook(
         );
     }
 
-    // C4 · on BLOCK, render a correction the caller can feed back into the
-    // reflector retry loop (gate→repair). `None` on PASS.
-    let repair_correction = if decision.allowed {
-        None
-    } else {
-        Some(build_gate_correction(
-            &decision,
-            gate_ctx.evidence_facts.as_deref(),
-        ))
-    };
-
+    // 设计 2026-06-12-unified-refiner · BLOCK 时不再在此渲染纠正文本——gate 只
+    // 交「事实」（reasons / recovery），repair_correction 由调用方经 Refiner 回填。
     let decision_json = serde_json::to_string_pretty(&decision)
         .unwrap_or_else(|_| "{\"error\":\"failed to serialize gate decision\"}".to_string());
 
@@ -2022,7 +1973,7 @@ fn apply_harness_gate_hook(
         Some(HarnessGateOutcome {
             gated_stage: stage_hint.stage_kind,
             gate_allowed: decision.allowed,
-            repair_correction,
+            repair_correction: None,
             evidence_summary: Some(summarize_deliverable(&deliverable)),
             evidence_refs: deliverable
                 .evidence_refs
@@ -2038,6 +1989,13 @@ fn apply_harness_gate_hook(
             fabricated_evidence_refs: Vec::new(),
             available_real_ids: Vec::new(),
             missing_deliverable: false,
+            gate_reasons: decision.reasons.clone(),
+            gate_recovery: decision.recovery_actions.clone(),
+            missing_kinds: Vec::new(),
+            expired: Vec::new(),
+            red_team_flow_correction: None,
+            confirm_only_stage: confirm_only,
+            evidence_kind_labels: std::collections::HashMap::new(),
         }),
     )
 }
@@ -2078,131 +2036,6 @@ fn summarize_deliverable(d: &crate::harness::StageDeliverable) -> String {
         s.push('\n');
     }
     s.push_str(&format!("- evidence refs: {}", d.evidence_refs.len()));
-    s
-}
-
-/// 设计 2026-06-12 §5.4 · 被动情报 technique → 具体下一步命令建议（确定性表）。
-/// `None` = 未知 technique（不臆造命令，保守）。`<asset>` 由模型按 in-scope 资产替换。
-fn passive_intel_command_hint(technique: &str) -> Option<&'static str> {
-    match technique {
-        "GOLISH-INTEL-DNS" => Some(
-            "dig <asset> ANY +noall +answer  (use the FULL banner, NOT +short — only full \
-             ANSWER-SECTION rows persist to dns_records and satisfy the gate)",
-        ),
-        "GOLISH-INTEL-SUBDOMAIN" => Some("subfinder -d <asset> -silent"),
-        "GOLISH-INTEL-WHOIS" => Some("whois <asset>"),
-        "GOLISH-INTEL-ASN" => Some(
-            "whois -h whois.cymru.com \" -v <ip>\"  (ASN / netblock ownership for the resolved IP)",
-        ),
-        "GOLISH-INTEL-CT" => {
-            Some("curl -s 'https://crt.sh/?q=<asset>&output=json'  (Certificate Transparency)")
-        }
-        "GOLISH-INTEL-OSINT" => Some("theHarvester -d <asset> -b all  (emails / hosts / leaks)"),
-        _ => None,
-    }
-}
-
-/// 本 PR 灰度的被动情报 technique 全集（target_intel `expected_techniques` 镜像）。
-const PASSIVE_INTEL_TECHNIQUES: &[&str] = &[
-    "GOLISH-INTEL-DNS",
-    "GOLISH-INTEL-WHOIS",
-    "GOLISH-INTEL-ASN",
-    "GOLISH-INTEL-CT",
-    "GOLISH-INTEL-SUBDOMAIN",
-    "GOLISH-INTEL-OSINT",
-];
-
-/// 设计 2026-06-12 §5.4 · 渲染「DB 真值现状」：该 run 已确认有数据的 (asset ×
-/// technique)（仅 `Found`——`Empty` 是「跑了→空」不算「DB 已有数据」，I8）。
-/// `None` = 无 Found 事实（不追加空段）。
-fn build_db_truth_diagnosis(
-    facts: &[crate::harness::gate::rule_engine::EvidenceFact],
-) -> Option<String> {
-    use crate::harness::gate::rule_engine::EvidenceOutcome;
-    let mut found: Vec<String> = facts
-        .iter()
-        .filter(|f| f.outcome == EvidenceOutcome::Found)
-        .map(|f| format!("- {} × {}", f.asset, f.technique))
-        .collect();
-    if found.is_empty() {
-        return None;
-    }
-    found.sort();
-    found.dedup();
-    Some(format!(
-        "\n### DB truth status (already persisted — do NOT re-run these)\n{}\n",
-        found.join("\n")
-    ))
-}
-
-/// C4 · render a harness gate BLOCK decision into a correction message for the
-/// reflector retry loop: the agent re-does the subtask addressing the gate's
-/// reasons + recovery actions and resubmits a fixed `StageDeliverable`.
-///
-/// 设计 2026-06-12 §5.4 · `evidence_facts`（已注入的账本+DB 真值）非空时，coverage
-/// BLOCK 追加「DB 真值现状 + 每类被动情报缺口的建议命令」诊断段（确定性，不赌 LLM）。
-fn build_gate_correction(
-    decision: &crate::harness::GateResult,
-    evidence_facts: Option<&[crate::harness::gate::rule_engine::EvidenceFact]>,
-) -> String {
-    let mut s = String::from(
-        "Your stage deliverable was REJECTED by the deterministic harness gate. \
-         Fix the issues below and resubmit a corrected StageDeliverable — either by \
-         calling the submit_stage_deliverable tool, or by ending your next message \
-         with a corrected ```json StageDeliverable block.\n\n\
-         ### Gate rejection reasons\n",
-    );
-    if decision.reasons.is_empty() {
-        s.push_str("- (no specific reason reported)\n");
-    } else {
-        for r in &decision.reasons {
-            s.push_str(&format!("- {}\n", r));
-        }
-    }
-    if let Some(rec) = decision.recovery_actions.as_ref() {
-        if !rec.repair_tool_calls.is_empty() {
-            s.push_str("\n### Required tool calls (run these, then re-collect evidence)\n");
-            for t in &rec.repair_tool_calls {
-                s.push_str(&format!("- {}\n", t));
-            }
-        }
-        if !rec.missing_evidence_kinds.is_empty() {
-            s.push_str("\n### Missing evidence to collect\n");
-            for k in &rec.missing_evidence_kinds {
-                s.push_str(&format!("- {}\n", k));
-            }
-        }
-        if !rec.hints.is_empty() {
-            s.push_str("\n### Hints\n");
-            for h in &rec.hints {
-                s.push_str(&format!("- {}\n", h));
-            }
-        }
-    }
-    // 设计 2026-06-12 §5.4 · 诊断式增强：coverage BLOCK 时附 DB 真值现状 + 每类被动
-    // 情报缺口的具体下一步命令（确定性，不赌 reflector LLM）。非 coverage BLOCK 逐字不变。
-    let is_coverage_block = decision
-        .reasons
-        .iter()
-        .any(|r| r.contains("GOLISH-INTEL-") || r.contains("never attempted"));
-    if let Some(facts) = evidence_facts {
-        if let Some(db_status) = build_db_truth_diagnosis(facts) {
-            s.push_str(&db_status);
-        }
-    }
-    if is_coverage_block {
-        s.push_str("\n### Suggested next commands (run per in-scope asset, replace <asset>)\n");
-        for tech in PASSIVE_INTEL_TECHNIQUES {
-            if let Some(cmd) = passive_intel_command_hint(tech) {
-                s.push_str(&format!("- {tech}: {cmd}\n"));
-            }
-        }
-        s.push_str(
-            "\nAfter running these, re-collect evidence and resubmit. The gate measures the \
-             DATABASE: a technique counts as covered only once its data is actually persisted \
-             (organizations.asns/.certificates, target_assets, dns_records).\n",
-        );
-    }
     s
 }
 
@@ -2387,24 +2220,17 @@ fn db_truth_facts_to_evidence(
 }
 
 /// S4 · the gate outcome when a stage-tagged subtask ends without a parseable
-/// `StageDeliverable`: a BLOCK + repair correction so the reflector retry loop
-/// pushes the agent to actually submit one (fail-closed). Replaces the old
-/// fail-open skip that let the cursor advance on plain narration.
+/// `StageDeliverable`: a fail-closed BLOCK. The correction text is rendered by
+/// the unified Refiner（A 类 submit-only 或 B 类重做，由账本事实决定）——this
+/// outcome only carries the facts (`missing_deliverable` + `confirm_only_stage`).
 fn missing_deliverable_gate_outcome(
     stage: crate::harness::StageKind,
+    confirm_only: bool,
 ) -> Option<HarnessGateOutcome> {
-    let correction = format!(
-        "Your output for the '{}' stage did not include a parseable StageDeliverable, \
-         so the deterministic harness gate could not run. You MUST submit a StageDeliverable \
-         — either by calling the submit_stage_deliverable tool, or by ending your next message \
-         with a ```json fenced block containing a StageDeliverable (stage_id, stage_run_id, \
-         claims, findings, evidence_refs). Re-do the stage work as needed and resubmit.",
-        stage.as_str()
-    );
     Some(HarnessGateOutcome {
         gated_stage: stage,
         gate_allowed: false,
-        repair_correction: Some(correction),
+        repair_correction: None,
         evidence_summary: None,
         evidence_refs: Vec::new(),
         required_evidence_kinds: Vec::new(),
@@ -2412,6 +2238,13 @@ fn missing_deliverable_gate_outcome(
         fabricated_evidence_refs: Vec::new(),
         available_real_ids: Vec::new(),
         missing_deliverable: true,
+        gate_reasons: Vec::new(),
+        gate_recovery: None,
+        missing_kinds: Vec::new(),
+        expired: Vec::new(),
+        red_team_flow_correction: None,
+        confirm_only_stage: confirm_only,
+        evidence_kind_labels: std::collections::HashMap::new(),
     })
 }
 
@@ -2678,53 +2511,71 @@ mod dag_driven_helper_tests {
     use crate::harness::StageKind;
 
     #[test]
-    fn missing_deliverable_outcome_blocks_with_correction() {
-        let o = missing_deliverable_gate_outcome(StageKind::Enumeration)
+    fn missing_deliverable_outcome_carries_facts_for_the_refiner() {
+        let o = missing_deliverable_gate_outcome(StageKind::Enumeration, false)
             .expect("missing deliverable must produce a BLOCK outcome");
         assert!(
             !o.gate_allowed,
             "missing-deliverable must BLOCK (fail-closed)"
         );
         assert_eq!(o.gated_stage, StageKind::Enumeration);
+        // 设计 2026-06-12-unified-refiner · the outcome carries FACTS only; the
+        // correction text is rendered by the refiner (A/B class by ledger state).
         assert!(
-            o.repair_correction.is_some(),
-            "BLOCK must carry a repair correction to drive the reflector retry"
+            o.repair_correction.is_none(),
+            "rendering moved to the refiner — the outcome must not pre-render"
         );
-        // 设计 2026-06-11 · the flag drives the targeted submit-only repair.
         assert!(
             o.missing_deliverable,
-            "missing-deliverable outcome must be marked so the targeted repair can run"
+            "missing-deliverable outcome must be marked so the refiner can route A/B"
         );
+        assert!(!o.confirm_only_stage);
+        let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(None));
+        assert_eq!(
+            d.class,
+            crate::task_orchestrator::refiner::RefineClass::RedoStage,
+            "empty ledger + substantive stage must route to the redo template"
+        );
+        assert!(d.correction.contains("did not include a parseable StageDeliverable"));
     }
 
-    // 设计 2026-06-11 (weak-model-submit-channel) · the targeted correction must
-    // name the real ledger ids (with kind labels when known), forbid re-running
-    // tools, and point at exactly one remaining action: submit_stage_deliverable.
+    // 设计 2026-06-12-unified-refiner · missing + ledger has real ids ⇒ the
+    // refiner routes to the submit-only template AND requests the tool lock
+    // （投影兜底截胡 bug 的接线级回归锚点）.
     #[test]
-    fn submit_only_correction_names_ids_kinds_and_forbids_redo() {
-        let mut kinds = std::collections::HashMap::new();
-        kinds.insert(1632_i64, "dns_a".to_string());
-        kinds.insert(1634_i64, "http_probe".to_string());
-        let c = build_submit_only_correction(StageKind::TargetIntel, &[1634, 1632, 1700], &kinds);
+    fn missing_with_ledger_ids_routes_to_submit_only_lock() {
+        let mut o = missing_deliverable_gate_outcome(StageKind::TargetIntel, false)
+            .expect("BLOCK outcome");
+        o.available_real_ids = vec![1634, 1632, 1700];
+        o.evidence_kind_labels = std::collections::HashMap::from([
+            (1632_i64, "dns_a".to_string()),
+            (1634_i64, "http_probe".to_string()),
+        ]);
+        let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(None));
+        assert_eq!(
+            d.class,
+            crate::task_orchestrator::refiner::RefineClass::SubmitOnly
+        );
+        assert!(d.submit_only_lock, "the retry pass must lock tool_choice");
         assert!(
-            c.contains("#1634 (http_probe)") && c.contains("#1632 (dns_a)"),
-            "ids must carry kind labels when known: {c}"
+            d.correction.contains("#1634 (http_probe)") && d.correction.contains("#1632 (dns_a)"),
+            "ids must carry kind labels when known: {}",
+            d.correction
         );
         assert!(
-            c.contains("#1700"),
-            "ids without a known kind are still listed: {c}"
+            d.correction.contains("#1700"),
+            "ids without a known kind are still listed: {}",
+            d.correction
         );
         assert!(
-            c.contains("submit_stage_deliverable"),
-            "must name the one remaining action: {c}"
+            d.correction.contains("Do NOT re-run any tools"),
+            "must forbid redoing the stage work: {}",
+            d.correction
         );
         assert!(
-            c.contains("Do NOT re-run any tools"),
-            "must forbid redoing the stage work: {c}"
-        );
-        assert!(
-            c.contains("target_intel"),
-            "must name the stage being repaired: {c}"
+            d.correction.contains("target_intel"),
+            "must name the stage being repaired: {}",
+            d.correction
         );
     }
 
@@ -3012,27 +2863,28 @@ mod harness_gate_hook_tests {
         assert_eq!(d.stage_id, "target_intel");
     }
 
+    // 设计 2026-06-12-unified-refiner · 接线级：gate 的 reasons/recovery 事实经
+    // outcome 进 Refiner 后，Generic 模板必须完整呈现（迁自旧 build_gate_correction 测试）。
     #[test]
-    fn build_gate_correction_includes_reasons_and_recovery() {
-        // C4 · the correction fed back to the reflector must surface the gate's
-        // reasons + required tool calls + missing evidence so the agent can fix it.
-        let decision = crate::harness::GateResult::block(
-            vec!["scope_status missing".to_string()],
-            crate::harness::HarnessRecoveryActions {
-                repair_tool_calls: vec!["dns_resolve".to_string()],
-                missing_evidence_kinds: vec!["subdomain".to_string()],
-                ..Default::default()
-            },
-        );
-        let c = build_gate_correction(&decision, None);
-        assert!(c.contains("REJECTED"));
-        assert!(c.contains("scope_status missing"));
-        assert!(c.contains("dns_resolve"));
-        assert!(c.contains("subdomain"));
+    fn refiner_generic_correction_includes_reasons_and_recovery() {
+        let mut o = missing_deliverable_gate_outcome(StageKind::Scoping, false).unwrap();
+        o.missing_deliverable = false; // 模拟「交了但其它原因 BLOCK」
+        o.gate_reasons = vec!["scope_status missing".to_string()];
+        o.gate_recovery = Some(crate::harness::HarnessRecoveryActions {
+            repair_tool_calls: vec!["dns_resolve".to_string()],
+            missing_evidence_kinds: vec!["subdomain".to_string()],
+            ..Default::default()
+        });
+        let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(None));
+        assert!(d.correction.contains("REJECTED"));
+        assert!(d.correction.contains("scope_status missing"));
+        assert!(d.correction.contains("dns_resolve"));
+        assert!(d.correction.contains("subdomain"));
     }
 
     #[test]
     fn command_hint_covers_passive_intel_and_warns_dig_full_banner() {
+        use crate::task_orchestrator::refiner::passive_intel_command_hint;
         assert!(passive_intel_command_hint("GOLISH-INTEL-DNS")
             .unwrap()
             .contains("dig"));
@@ -3062,6 +2914,7 @@ mod harness_gate_hook_tests {
     #[test]
     fn db_truth_diagnosis_lists_found_only_and_none_when_empty() {
         use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
+        use crate::task_orchestrator::refiner::build_db_truth_diagnosis;
         assert!(build_db_truth_diagnosis(&[]).is_none());
         let facts = vec![
             EvidenceFact {
@@ -3086,36 +2939,40 @@ mod harness_gate_hook_tests {
     }
 
     #[test]
-    fn gate_correction_appends_db_status_and_commands_on_coverage_block() {
+    fn refiner_coverage_block_appends_db_status_and_commands() {
         use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
-        let decision = crate::harness::GateResult::block(
-            vec![
-                "coverage incomplete: never attempted (moresec.cn × GOLISH-INTEL-DNS)".to_string(),
-            ],
-            crate::harness::HarnessRecoveryActions::default(),
-        );
+        let mut o = missing_deliverable_gate_outcome(StageKind::TargetIntel, false).unwrap();
+        o.missing_deliverable = false;
+        o.gate_reasons = vec![
+            "coverage incomplete: never attempted (moresec.cn × GOLISH-INTEL-DNS)".to_string(),
+        ];
         let facts = vec![EvidenceFact {
             asset: "moresec.cn".to_string(),
             technique: "GOLISH-INTEL-SUBDOMAIN".to_string(),
             outcome: EvidenceOutcome::Found,
             evidence_id: 0,
         }];
-        let c = build_gate_correction(&decision, Some(&facts));
-        assert!(c.contains("DB truth status"), "DB 现状段");
-        assert!(c.contains("GOLISH-INTEL-SUBDOMAIN"), "列已 Found 的类");
-        assert!(c.contains("Suggested next commands"), "命令建议段");
-        assert!(c.contains("dig") && c.contains("subfinder"));
+        let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(Some(&facts)));
+        assert!(d.correction.contains("DB truth status"), "DB 现状段");
+        assert!(
+            d.correction.contains("GOLISH-INTEL-SUBDOMAIN"),
+            "列已 Found 的类"
+        );
+        assert!(
+            d.correction.contains("Suggested next commands"),
+            "命令建议段"
+        );
+        assert!(d.correction.contains("dig") && d.correction.contains("subfinder"));
     }
 
     #[test]
-    fn gate_correction_unchanged_for_non_coverage_block() {
-        let decision = crate::harness::GateResult::block(
-            vec!["finding count below minimum".to_string()],
-            crate::harness::HarnessRecoveryActions::default(),
-        );
-        let c = build_gate_correction(&decision, None);
-        assert!(!c.contains("Suggested next commands"));
-        assert!(!c.contains("DB truth status"));
+    fn refiner_generic_block_has_no_diagnosis_sections() {
+        let mut o = missing_deliverable_gate_outcome(StageKind::TargetIntel, false).unwrap();
+        o.missing_deliverable = false;
+        o.gate_reasons = vec!["finding count below minimum".to_string()];
+        let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(None));
+        assert!(!d.correction.contains("Suggested next commands"));
+        assert!(!d.correction.contains("DB truth status"));
     }
 
     #[test]
@@ -3225,32 +3082,47 @@ mod harness_gate_hook_tests {
         assert!(fabricated_evidence_ids(&[], &existing).is_empty());
     }
 
-    #[test]
-    fn block_outcome_for_fabricated_flips_pass_to_block() {
-        // A PASS deliverable citing a fabricated id must flip to BLOCK with a
-        // correction naming the fabricated ids (plan acceptance #2: fake refs
-        // get BLOCKed).
-        let mut o = HarnessGateOutcome {
-            gated_stage: StageKind::ExternalAttackSurface,
+    /// 测试用最小 outcome（设计 2026-06-12-unified-refiner 后 correction 由
+    /// Refiner 渲染，构造处只填事实字段）。
+    fn outcome_for_test(stage: StageKind, evidence_refs: Vec<i64>) -> HarnessGateOutcome {
+        HarnessGateOutcome {
+            gated_stage: stage,
             gate_allowed: true,
             repair_correction: None,
             evidence_summary: None,
-            evidence_refs: vec![1, 999],
+            evidence_refs,
             required_evidence_kinds: Vec::new(),
             findings_count: 0,
             fabricated_evidence_refs: Vec::new(),
             available_real_ids: Vec::new(),
             missing_deliverable: false,
-        };
+            gate_reasons: Vec::new(),
+            gate_recovery: None,
+            missing_kinds: Vec::new(),
+            expired: Vec::new(),
+            red_team_flow_correction: None,
+            confirm_only_stage: false,
+            evidence_kind_labels: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn block_outcome_for_fabricated_flips_pass_to_block() {
+        // A PASS deliverable citing a fabricated id must flip to BLOCK; the
+        // refiner's D-class template names the fabricated ids (plan acceptance
+        // #2: fake refs get BLOCKed).
+        let mut o = outcome_for_test(StageKind::ExternalAttackSurface, vec![1, 999]);
         block_outcome_for_fabricated(&mut o, &[999], &[]);
         assert!(!o.gate_allowed, "fabricated evidence must BLOCK the gate");
-        let c = o.repair_correction.expect("correction set on block");
-        assert!(c.contains("999"), "correction names the fabricated id");
-        assert!(c.contains("do NOT exist"));
+        let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(None));
+        assert_eq!(d.class, crate::task_orchestrator::refiner::RefineClass::Fabricated);
+        assert!(d.correction.contains("999"), "correction names the fabricated id");
+        assert!(d.correction.contains("do NOT exist"));
         // No real ids known → tell the agent to run the tools first.
         assert!(
-            c.contains("No real evidence ids exist"),
-            "empty real-id set must instruct running tools first: {c}"
+            d.correction.contains("No real evidence ids exist"),
+            "empty real-id set must instruct running tools first: {}",
+            d.correction
         );
     }
 
@@ -3259,18 +3131,7 @@ mod harness_gate_hook_tests {
         // 甲 (root-cause fix): when the operation already has real evidence ids,
         // the correction must NAME them so the retry cites real ids instead of
         // re-copying the template placeholders.
-        let mut o = HarnessGateOutcome {
-            gated_stage: StageKind::TargetIntel,
-            gate_allowed: true,
-            repair_correction: None,
-            evidence_summary: None,
-            evidence_refs: vec![1, 2, 3],
-            required_evidence_kinds: Vec::new(),
-            findings_count: 0,
-            fabricated_evidence_refs: Vec::new(),
-            available_real_ids: Vec::new(),
-            missing_deliverable: false,
-        };
+        let mut o = outcome_for_test(StageKind::TargetIntel, vec![1, 2, 3]);
         block_outcome_for_fabricated(&mut o, &[1, 2, 3], &[86, 88, 90]);
         assert!(!o.gate_allowed);
         // Observability (design 2026-06-05): the fabricated/available ids are
@@ -3278,44 +3139,39 @@ mod harness_gate_hook_tests {
         // the HarnessTrace GateDecision event.
         assert_eq!(o.fabricated_evidence_refs, vec![1, 2, 3]);
         assert_eq!(o.available_real_ids, vec![86, 88, 90]);
-        let c = o.repair_correction.expect("correction set on block");
+        let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(None));
         assert!(
-            c.contains("86") && c.contains("88") && c.contains("90"),
-            "names real ids: {c}"
+            d.correction.contains("86") && d.correction.contains("88") && d.correction.contains("90"),
+            "names real ids: {}",
+            d.correction
         );
         assert!(
-            c.contains("REAL evidence ids"),
-            "labels them as the real set: {c}"
+            d.correction.contains("REAL evidence ids"),
+            "labels them as the real set: {}",
+            d.correction
         );
         assert!(
-            !c.contains("No real evidence ids exist"),
-            "must not also emit the empty-set instruction: {c}"
+            !d.correction.contains("No real evidence ids exist"),
+            "must not also emit the empty-set instruction: {}",
+            d.correction
         );
     }
 
     #[test]
-    fn block_outcome_for_fabricated_prepends_to_existing_correction() {
-        let mut o = HarnessGateOutcome {
-            gated_stage: StageKind::ExternalAttackSurface,
-            gate_allowed: false,
-            repair_correction: Some("PRIOR-GATE-REASON".to_string()),
-            evidence_summary: None,
-            evidence_refs: vec![5],
-            required_evidence_kinds: Vec::new(),
-            findings_count: 0,
-            fabricated_evidence_refs: Vec::new(),
-            available_real_ids: Vec::new(),
-            missing_deliverable: false,
-        };
+    fn fabricated_takes_priority_over_other_block_reasons() {
+        // 设计 2026-06-12-unified-refiner · 旧行为是链式 prepend（伪造通知 + 先前
+        // 纠正叠加）；新行为是主因优先级——fabricated 压过其它原因，次因不再整段
+        // 拼接（quality 类并存时由 secondary_note 一行附录兜住，见 refiner 单测）。
+        let mut o = outcome_for_test(StageKind::ExternalAttackSurface, vec![5]);
+        o.gate_allowed = false;
+        o.gate_reasons = vec!["deliverable vacuous: no claims".to_string()];
         block_outcome_for_fabricated(&mut o, &[5], &[]);
-        let c = o.repair_correction.unwrap();
+        let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(None));
+        assert_eq!(d.class, crate::task_orchestrator::refiner::RefineClass::Fabricated);
         assert!(
-            c.contains("PRIOR-GATE-REASON"),
-            "must keep prior correction"
+            d.correction.contains("do NOT exist"),
+            "fabrication template wins as the primary correction"
         );
-        let fab_pos = c.find("do NOT exist").expect("fabrication notice present");
-        let prior_pos = c.find("PRIOR-GATE-REASON").unwrap();
-        assert!(fab_pos < prior_pos, "fabrication notice is prepended");
     }
 }
 
