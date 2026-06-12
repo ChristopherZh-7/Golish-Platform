@@ -261,6 +261,14 @@ where
                 mid_stream_error,
             } = outcome;
 
+            // 设计 2026-06-12 (submit-only-lock-hardening 防御 B) · dispatch 层闭锁
+            // 取值。必须在下面「批次含 submit 则置 stage_deliverable_submitted」之
+            // 前算：这样同一批次里的 submit 仍放过、同批的其它工具（如 textual-adapter
+            // 恢复出来的 update_plan）被拒。API 层 tool_choice 锁不住忽略它的 provider
+            // 走文本通道恢复的调用，这道闸在真正执行前堵死侧门。
+            let submit_only_lock =
+                ctx.harness_submit_only && !turn_state.stage_deliverable_submitted;
+
             // Harness stage barrier: remember when the agent submits a
             // StageDeliverable. A later idle turn (in ReflectorOrBreak) then ends
             // the stage loop so the orchestrator runs the authoritative gate and
@@ -360,6 +368,7 @@ where
                 &hook_registry,
                 &llm_span,
                 &mut chat_history,
+                submit_only_lock,
             )
             .await;
         }

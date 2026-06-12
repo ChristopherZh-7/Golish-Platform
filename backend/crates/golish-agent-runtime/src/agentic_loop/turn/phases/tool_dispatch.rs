@@ -9,7 +9,8 @@
 //! model so it learns to delegate via `sub_agent_*` tools.
 
 use rig::completion::Message;
-use rig::message::ToolCall;
+use rig::message::{Text, ToolCall, ToolResult, ToolResultContent, UserContent};
+use rig::one_or_many::OneOrMany;
 use tracing::Span;
 
 use golish_agent_kit::system_hooks::HookRegistry;
@@ -18,6 +19,7 @@ use golish_core::events::AiEvent;
 use golish_sub_agents::SubAgentContext;
 
 use super::super::super::context::{AgenticLoopContext, LoopCaptureContext};
+use super::super::super::llm_stream_start::SUBMIT_STAGE_DELIVERABLE_TOOL;
 use super::super::super::tool_dispatch::dispatch_tool_calls;
 use super::super::super::tool_gate::{decide_tool_intent, ToolGateDecision};
 use super::super::super::tool_intent::{ToolIntent, ToolIntentSource};
@@ -25,6 +27,12 @@ use super::super::super::unified_helpers::push_unavailable_tool_results;
 
 /// Partition the LLM-issued tool calls into permitted/rejected, surface
 /// errors for the rejected ones, and dispatch the permitted batch.
+///
+/// `submit_only_lock` (设计 2026-06-12 防御 B): when a targeted gate-repair
+/// pass has locked this turn onto `submit_stage_deliverable`, any other tool
+/// call (including ones the textual tool-adapter recovered from prose, which
+/// bypass the API-layer `tool_choice`) is refused here, before it reaches an
+/// executor, and answered with a corrective tool-result.
 #[allow(clippy::too_many_arguments)]
 pub async fn run<M>(
     tool_calls_to_execute: Vec<ToolCall>,
@@ -36,9 +44,31 @@ pub async fn run<M>(
     hook_registry: &HookRegistry,
     llm_span: &Span,
     chat_history: &mut Vec<Message>,
+    submit_only_lock: bool,
 ) where
     M: rig::completion::CompletionModel + Sync,
 {
+    // 防御 B · submit-only 闭锁：锁定期只放过 submit_stage_deliverable，其余（含
+    // textual-adapter 恢复的、本来在 allow-list 里的 update_plan）一律拒 + 回灌定向
+    // 纠正。每个被拒调用配一条 ToolResult，保持 assistant tool_call ↔ tool_result
+    // 配对完整（否则 provider 报错）。
+    let tool_calls_to_execute = if submit_only_lock {
+        let (submit, blocked) = split_for_submit_only(tool_calls_to_execute);
+        if !blocked.is_empty() {
+            let blocked_names: Vec<&str> =
+                blocked.iter().map(|tc| tc.function.name.as_str()).collect();
+            tracing::warn!(
+                target: "agent-observe",
+                blocked = ?blocked_names,
+                "[submit-only-lock] refused non-submit tool call(s) during gate-repair pass"
+            );
+            push_submit_only_rejections(chat_history, &blocked);
+        }
+        submit
+    } else {
+        tool_calls_to_execute
+    };
+
     let mut gated_tool_calls = Vec::new();
     let mut gate_rejected = Vec::new();
     for tc in tool_calls_to_execute {
@@ -275,6 +305,44 @@ fn not_in_whitelist_reason(tool: &str, stage_id: &str) -> String {
     )
 }
 
+/// 防御 B · split a batch into (submit_stage_deliverable calls, everything else).
+/// Pure for unit testing the lock partition independent of dispatch wiring.
+fn split_for_submit_only(calls: Vec<ToolCall>) -> (Vec<ToolCall>, Vec<ToolCall>) {
+    calls
+        .into_iter()
+        .partition(|tc| tc.function.name == SUBMIT_STAGE_DELIVERABLE_TOOL)
+}
+
+/// 防御 B · push one corrective `ToolResult` per blocked call so the assistant
+/// tool_call ↔ tool_result pairing stays intact and the model is told plainly
+/// that only the submission is permitted this turn.
+fn push_submit_only_rejections(chat_history: &mut Vec<Message>, blocked: &[ToolCall]) {
+    let results: Vec<UserContent> = blocked
+        .iter()
+        .map(|tc| {
+            UserContent::ToolResult(ToolResult {
+                id: tc.id.clone(),
+                call_id: Some(tc.id.clone()),
+                content: OneOrMany::one(ToolResultContent::Text(Text {
+                    text: format!(
+                        "Error: '{}' is not allowed right now. This stage's scan work is already \
+                         done and its evidence is recorded. You are in SUBMIT-ONLY mode: the only \
+                         permitted action is calling `{}` once with the real evidence ids. Call \
+                         `{}` now.",
+                        tc.function.name,
+                        SUBMIT_STAGE_DELIVERABLE_TOOL,
+                        SUBMIT_STAGE_DELIVERABLE_TOOL
+                    ),
+                })),
+            })
+        })
+        .collect();
+
+    if let Ok(content) = OneOrMany::many(results) {
+        chat_history.push(Message::User { content });
+    }
+}
+
 fn truncate_for_log(value: &str) -> String {
     const MAX: usize = 160;
     if value.chars().count() <= MAX {
@@ -306,6 +374,14 @@ mod tests {
             },
             signature: None,
             additional_params: None,
+        }
+    }
+
+    fn tool_def(name: &str) -> rig::completion::ToolDefinition {
+        rig::completion::ToolDefinition {
+            name: name.to_string(),
+            description: format!("Mock {name} tool"),
+            parameters: json!({ "type": "object", "properties": {} }),
         }
     }
 
@@ -432,6 +508,7 @@ mod tests {
             &registry,
             &Span::none(),
             &mut history,
+            false,
         )
         .await;
 
@@ -462,6 +539,7 @@ mod tests {
             &registry,
             &Span::none(),
             &mut history,
+            false,
         )
         .await;
 
@@ -504,6 +582,7 @@ mod tests {
             &registry,
             &Span::none(),
             &mut history,
+            false,
         )
         .await;
 
@@ -525,6 +604,118 @@ mod tests {
                 )
             }),
             "recovered ask_human intent should be observable before allow-list filtering"
+        );
+    }
+
+    // ── 设计 2026-06-12 (submit-only-lock-hardening 防御 B) ──────────────────
+
+    #[test]
+    fn split_for_submit_only_partitions_submit_vs_rest() {
+        let (submit, blocked) = split_for_submit_only(vec![
+            make_tool_call("tc-1", "update_plan"),
+            make_tool_call("tc-2", "submit_stage_deliverable"),
+            make_tool_call("tc-3", "sub_agent_pentester"),
+        ]);
+        assert_eq!(submit.len(), 1, "only the submit call is kept");
+        assert_eq!(submit[0].function.name, "submit_stage_deliverable");
+        assert_eq!(blocked.len(), 2, "non-submit calls are blocked");
+    }
+
+    #[tokio::test]
+    async fn submit_only_lock_refuses_non_submit_even_when_allow_listed() {
+        // update_plan IS a normally-allowed orchestration tool, but the
+        // submit-only lock must override the allow-list and refuse it with the
+        // targeted message (not the generic "not available" one).
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let capture = test_ctx.create_capture_context();
+        let model = MockCompletionModel::with_text("ignored");
+        let sub_ctx = SubAgentContext::default();
+        let registry = HookRegistry::new();
+        let mut history: Vec<Message> = vec![];
+        let tools = [tool_def("update_plan")];
+
+        run(
+            vec![make_tool_call("textual-tool-call-1-0", "update_plan")],
+            &tools,
+            &ctx,
+            &capture,
+            &model,
+            &sub_ctx,
+            &registry,
+            &Span::none(),
+            &mut history,
+            true,
+        )
+        .await;
+
+        assert_eq!(history.len(), 1, "the blocked call gets one tool-result");
+        let Message::User { content } = &history[0] else {
+            panic!("expected User message holding ToolResult content");
+        };
+        let text = content
+            .iter()
+            .find_map(|c| match c {
+                UserContent::ToolResult(tr) => tr.content.iter().find_map(|rc| match rc {
+                    ToolResultContent::Text(t) => Some(t.text.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("a textual tool-result");
+        assert!(
+            text.contains("SUBMIT-ONLY"),
+            "rejection must use the submit-only message, got: {text}"
+        );
+        assert!(
+            text.contains("submit_stage_deliverable"),
+            "rejection must name the submit tool"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_only_lock_does_not_refuse_the_submit_call() {
+        // With the lock on, the submit call must survive the lock partition
+        // (it's the one permitted action). Allow-list is left empty so the call
+        // does not reach a real executor; we only assert the lock itself did not
+        // push a SUBMIT-ONLY rejection for it.
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let capture = test_ctx.create_capture_context();
+        let model = MockCompletionModel::with_text("ignored");
+        let sub_ctx = SubAgentContext::default();
+        let registry = HookRegistry::new();
+        let mut history: Vec<Message> = vec![];
+
+        run(
+            vec![make_tool_call("tc-1", "submit_stage_deliverable")],
+            &[],
+            &ctx,
+            &capture,
+            &model,
+            &sub_ctx,
+            &registry,
+            &Span::none(),
+            &mut history,
+            true,
+        )
+        .await;
+
+        let pushed_submit_only_rejection = history.iter().any(|m| match m {
+            Message::User { content } => content.iter().any(|c| match c {
+                UserContent::ToolResult(tr) => tr.content.iter().any(|rc| match rc {
+                    ToolResultContent::Text(t) => t.text.contains("SUBMIT-ONLY"),
+                    _ => false,
+                }),
+                _ => false,
+            }),
+            _ => false,
+        });
+        assert!(
+            !pushed_submit_only_rejection,
+            "the submit call must not be refused by the lock"
         );
     }
 }

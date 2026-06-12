@@ -72,16 +72,20 @@ where
 
     let mut additional_params = build_additional_params(ctx);
 
+    // 设计 2026-06-12 (防御 C) · submit-only 轮把「只准提交」硬约束写进模型可见的
+    // 系统提示（API 层 tool_choice 对忽略它的 provider 无效时兜底）。
+    let effective_system_prompt = compose_system_prompt(system_prompt, submit_only);
+
     // NVIDIA NIM workaround: see module docs.
     let is_nvidia_provider = ctx.llm.provider_name == "nvidia";
     let (preamble, request_history) = if is_nvidia_provider {
         let mut nvidia_history = vec![Message::User {
-            content: OneOrMany::one(UserContent::text(system_prompt)),
+            content: OneOrMany::one(UserContent::text(effective_system_prompt)),
         }];
         nvidia_history.extend(chat_history.iter().cloned());
         (None, nvidia_history)
     } else {
-        (Some(system_prompt.to_string()), chat_history.to_vec())
+        (Some(effective_system_prompt), chat_history.to_vec())
     };
     let request_chat_history = OneOrMany::many(request_history.clone())
         .unwrap_or_else(|_| OneOrMany::one(request_history[0].clone()));
@@ -406,7 +410,28 @@ fn build_additional_params(ctx: &AgenticLoopContext<'_>) -> Option<serde_json::V
 const FORCE_REQUIRED_TOOL_CHOICE_PROVIDERS: &[&str] = &["xiaomi"];
 
 /// The stage-submission tool a targeted gate-repair pass locks onto.
-const SUBMIT_STAGE_DELIVERABLE_TOOL: &str = "submit_stage_deliverable";
+pub(crate) const SUBMIT_STAGE_DELIVERABLE_TOOL: &str = "submit_stage_deliverable";
+
+/// 设计 2026-06-12 (submit-only-lock-hardening 防御 C) · prompt 级硬约束。
+/// API 层 `tool_choice` 对忽略它的 provider（实测 xiaomi/MiMo）形同虚设，所以
+/// 在 submit-only 轮把「只准提交」的指令写进模型看得见的系统提示里兜底。对遵从
+/// `tool_choice` 的 provider 是无害冗余。
+const SUBMIT_ONLY_PROMPT_DIRECTIVE: &str = "\n\n## MANDATORY — SUBMIT-ONLY TURN\n\
+     This stage's scan work is ALREADY complete and its evidence is recorded in the ledger. \
+     Your ENTIRE next response MUST be a single `submit_stage_deliverable` tool call. \
+     Do NOT run tools, do NOT delegate to sub-agents, do NOT call update_plan, and do NOT \
+     write analysis, plans, or narration. Cite ONLY the real evidence ids already provided. \
+     Emit the `submit_stage_deliverable` call now — nothing else.";
+
+/// 设计 2026-06-12 · submit-only 轮在系统提示末尾追加 [`SUBMIT_ONLY_PROMPT_DIRECTIVE`]；
+/// 否则原样返回。纯函数，便于单测。
+pub(crate) fn compose_system_prompt(system_prompt: &str, submit_only: bool) -> String {
+    if submit_only {
+        format!("{system_prompt}{SUBMIT_ONLY_PROMPT_DIRECTIVE}")
+    } else {
+        system_prompt.to_string()
+    }
+}
 
 /// Decide the `tool_choice` for this turn.
 ///
@@ -464,7 +489,29 @@ async fn wait_for_cancelled(ctx: &AgenticLoopContext<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_stage_tool_choice, ToolChoice, SUBMIT_STAGE_DELIVERABLE_TOOL};
+    use super::{
+        compose_system_prompt, resolve_stage_tool_choice, ToolChoice, SUBMIT_STAGE_DELIVERABLE_TOOL,
+    };
+
+    // 设计 2026-06-12 (防御 C) · prompt 级硬约束注入。
+    #[test]
+    fn compose_system_prompt_is_identity_when_not_submit_only() {
+        assert_eq!(compose_system_prompt("base prompt", false), "base prompt");
+    }
+
+    #[test]
+    fn compose_system_prompt_appends_submit_only_directive() {
+        let out = compose_system_prompt("base prompt", true);
+        assert!(out.starts_with("base prompt"), "original prompt preserved");
+        assert!(
+            out.contains("SUBMIT-ONLY TURN"),
+            "submit-only directive injected"
+        );
+        assert!(
+            out.contains(SUBMIT_STAGE_DELIVERABLE_TOOL),
+            "directive names the submit tool the model must call"
+        );
+    }
 
     #[test]
     fn forces_required_for_xiaomi_primary_in_harness_stage_with_tools() {
