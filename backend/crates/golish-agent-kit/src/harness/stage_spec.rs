@@ -109,7 +109,6 @@ pub struct StageSpec {
     /// （taxonomy 词典化 + 动态 skeleton 生成见设计 §6.5，待资产库合入后接）。
     #[serde(default)]
     pub expected_techniques: Vec<String>,
-
 }
 
 fn default_continuity() -> AgentContinuity {
@@ -320,6 +319,18 @@ mod tests {
                 }
             )),
             "target_intel coverage_complete must enable derive_from_evidence (PR3 gray rollout)"
+        );
+        // Phase 0 (2026-06-12-redteam-phase0): target_intel 是 authoritative_found
+        // 的首个灰度阶段——found 对已落点的 4 类技术只认 DB/账本真值。
+        assert!(
+            s.gate_rules.iter().any(|r| matches!(
+                r,
+                crate::harness::gate::rule_engine::GateRule::CoverageComplete {
+                    authoritative_found: true,
+                    ..
+                }
+            )),
+            "target_intel coverage_complete must enable authoritative_found (Phase 0 gray rollout)"
         );
         assert!(
             s.gate_rules.iter().any(|r| matches!(

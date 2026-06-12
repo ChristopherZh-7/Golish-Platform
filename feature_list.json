@@ -11,6 +11,31 @@
   ],
   "features": [
     {
+      "id": "redteam-db-truth-phase0-authoritative-gate-2026-06-12",
+      "priority": 0,
+      "area": "backend: golish-agent-kit/src/harness/gate/rule_engine.rs (CoverageComplete +authoritative_found/+authoritative_techniques; coverage_complete found 终态只认 ctx.evidence_facts 的 Found 事实, checked_empty 收紧为自报+真 Empty 事实) + resources/harness/stages/target_intel.json (灰度开关) + harness/stage_spec.rs (守卫)",
+      "title": "红队 DB 真值闭环 Phase 0：gate 的 found 终态从『模型自报/tagged claim』改为『只认账本/DB 业务表真值』——堵死强模型把 dig 输出改名成 whois/asn/ct/osint 蒙混过 gate（live run stage-run-c4422add 实证）",
+      "user_visible_behavior": "headless --stage-run 跑 target_intel：DNS/SUBDOMAIN/ASN/CT 的 found 格只有 DB/账本真有该 technique 的数据才算数（dig→dns_records、subfinder→target_assets、enrich→organizations.asns/.certificates）；模型自报 found 或仅打 technique 标签不再放行→真没采的格正确 BLOCK。灰度：WHOIS/OSINT 暂留旧自报待 Phase 1 落点。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "docs/design/2026-06-12-redteam-db-truth-master.md (总纲·5 Phase·先准后量) + docs/design/2026-06-12-redteam-phase0-db-truth-authoritative-gate.md",
+      "plan": "docs/superpowers/plans/2026-06-12-redteam-phase0-db-truth-authoritative-gate.md (TDD 4 Task)",
+      "verification": [
+        "[✓] cargo nextest -p golish-agent-kit -E 'test(authoritative)+test(parses_authoritative)' → 7 passed (自报无事实→BLOCK 回归基线 / 有事实→PASS / tagged claim 无事实→不再 found / 灰度 scope / checked_empty 双要 I8 / 缺省零回归 / 字段解析)",
+        "[✓] cargo nextest run -p golish-agent-kit → 607 passed / 0 failed (零回归)",
+        "[✓] cargo clippy -p golish-agent-kit --all-targets -- -D warnings → exit 0 零告警",
+        "[✓] cargo fmt -p golish-agent-kit -- --check → FMT_OK",
+        "[✓] cargo check -p golish → exit 0 (1m17s, agent 链编译通过)",
+        "[✓] python3 -m json.tool resources/harness/stages/target_intel.json → VALID",
+        "[✓] commit 前模块级复验重跑 (2026-06-12 21:15): fmt --check FMT_OK + clippy --all-targets -D warnings CLIPPY_OK + nextest -p golish-agent-kit 607 passed / 0 failed",
+        "[未跑] just precommit 全量 (commit 时被用户中止; 工作树尚有其他任务未提交改动, 待全部 commit 后统一补跑)",
+        "[未跑] 活体对照: deepseek --to target_intel → DNS/SUBDOMAIN PASS, ASN/CT 若 enrich 未落 DB 则正确 BLOCK, 对照 split.log 假过基线"
+      ],
+      "evidence": "2026-06-12 BaJie MCP-agent-3 (DISPATCH off)。活体『假过』根因实证: transcript stage-run-c4422add 的 deliverable 把 dig 输出(evidence 2772-2813)改名成 whois_data_observed/asn_data_observed/... 全报 found, gate 只查存在性放行。Phase 0 把 found 改为只认真值事实。",
+      "notes": "总纲铁律『先准后量』: Phase 0(gate 信任)→ Phase 1(补 WHOIS/OSINT/主动落点)→ Phase 2(子公司进 scoping)→ Phase 3(多 org 轴)→ Phase 4(前端)。Phase 0 单独上会让 OSINT 不可满足→故只先收紧 4 类(DNS/SUBDOMAIN/ASN/CT), 建议 Phase 0+1 对 target_intel 同期上线。红线: I7/I8(checked_empty 必须真 Empty 事实)/gate 纯函数/缺省零回归。",
+      "remember": "改动核心在 coverage_complete() 逐格循环: authoritative=authoritative_found && (techniques None 或含本 tech); found_ok=authoritative?has_fact(Found):(自报||tagged||evidence); empty_ok=authoritative?(自报&&has_fact(Empty)):(自报||evidence)。下一步=Phase 1 给 coverage_truth 加 WHOIS/OSINT+主动 6 维 + 修 endpoint_add/host_add 落库, 然后把 authoritative_techniques 扩到全维。"
+    },
+    {
       "id": "db-truth-driven-gate-coverage-2026-06-12",
       "priority": 1,
       "area": "backend: golish-agent-kit/src/harness/gate/{rule_engine.rs(coverage_complete 复用 evidence_facts 通道,从业务表派生 facts),mod.rs} + task_orchestrator/subtask_phases/execute.rs(stage-close hook 查业务表派生 facts 注入 ctx.evidence_facts) + golish-db(按 org/target 查某 technique 有无数据的只读查询) + evidence_facts.rs(provider 路径 technique 标注) + 诊断式 reflector(execute.rs repair 上下文组装)",

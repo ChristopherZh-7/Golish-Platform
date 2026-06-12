@@ -45,9 +45,12 @@
       "op": "coverage_complete",
       "derive_from_items": true,
       "derive_from_evidence": true,
+      "authoritative_found": true,
+      "authoritative_techniques": ["GOLISH-INTEL-DNS", "GOLISH-INTEL-SUBDOMAIN", "GOLISH-INTEL-ASN", "GOLISH-INTEL-CT"],
+      "$comment_authoritative": "Phase 0 (2026-06-12-redteam-phase0) gray rollout: 'found' for these 4 techniques is decided by DB/ledger truth (real tool run landed in dns_records / target_assets / organizations.asns / organizations.certificates) \u2014 self-reported found cells or technique-tagged claims no longer count. WHOIS/OSINT stay on legacy self-report until Phase 1 adds their landing.",
       "on_fail": {
         "reason": "intel coverage incomplete: some (in-scope asset \u00d7 expected intel technique) cells were never attempted",
-        "hints": ["for every in-scope asset, give each expected intel technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note", "claims/findings tagged with a `technique` id (GOLISH-INTEL-*) on the same subject auto-derive their cell", "intel techniques you actually ran are auto-projected from the evidence ledger \u2014 focus on submitting claims citing real evidence ids"]
+        "hints": ["for every in-scope asset, give each expected intel technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note", "for DNS / SUBDOMAIN / ASN / CT the gate reads the DATABASE, not your self-report: a cell is 'found' only if the real tool actually ran and its data landed (dig\u2192dns_records, subfinder\u2192target_assets, enrich\u2192organizations.asns/.certificates) \u2014 tagging a claim is not enough", "intel techniques you actually ran are auto-projected from the evidence ledger \u2014 run the real tools, do not hand-write found cells"]
       }
     },
     {

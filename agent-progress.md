@@ -29,6 +29,28 @@
 
 ---
 
+### 2026-06-12 · 红队 DB 真值闭环：总纲 + 5 Phase 设计文档 + Phase 0（DB 真值权威 gate）实现（BaJie MCP-agent-3 · DISPATCH off）
+
+- **本轮目标**：承接「deepseek+xiaomi 过了 intel」的活体复盘——评估 intel 字段/逻辑是否支撑完整收集 + 主动收集逻辑对不对；与用户讨论「怎么真正按想法跑完整 + 判断准确」；产出整套设计文档 + 动手实现 Phase 0。
+- **活体复盘（实读 `/tmp/golish-stage-run-split.log` + transcript `stage-run-c4422add`）**：deepseek target_intel PASS（claims=12/findings=3/evidence_refs=12）是**假过**——deliverable 把 2 资产×6 类全报 found，但逐条把 claim 引的 evidence id 追到原始命令发现全程只有 42×dig+1×amass+4×gau+1×recon_enrich_assets，**0 次 whois、0 个 CT/ASN 专用工具**；WHOIS/ASN/CT/OSINT 的 claim 全引的是 dig 输出改名。`db_truth_facts=2`。**根因**：gate 只校验 evidence 存在+claim 自带 technique 标签，从不校验所引 evidence 的真实 technique；coverage_truth 是加性补格不是权威否决。子公司发现工具 `recon_discover_subsidiaries` 注册了但从未被调用（不是 coverage 门槛）。
+- **已完成（设计文档 7 份）**：
+  - 总纲 `docs/design/2026-06-12-redteam-db-truth-master.md`（6 原则「先准后量」+ 5 Phase + 序次铁律 + 跨期依赖 + 3 待拍板决策）
+  - Phase 0 设计 `docs/design/2026-06-12-redteam-phase0-db-truth-authoritative-gate.md` + 计划 `docs/superpowers/plans/2026-06-12-redteam-phase0-db-truth-authoritative-gate.md`
+  - Phase 1 `...-phase1-landing-gaps.md`、Phase 2 `...-phase2-subsidiary-scoping.md`、Phase 3 `...-phase3-multi-org-coverage.md`、Phase 4 `...-phase4-frontend-multi-asset.md`
+- **已完成（Phase 0 实现，TDD）**：`golish-agent-kit/src/harness/gate/rule_engine.rs`——`CoverageComplete` 加 `authoritative_found: bool` + `authoritative_techniques: Option<Vec<String>>`（`#[serde(default)]` 缺省零回归）；`coverage_complete()` 逐格终态重构：**found 在 authoritative 模式下只认 `ctx.evidence_facts` 的 Found 事实**（自报 cell / tagged claim 不再算 found），**checked_empty 收紧为自报+真 Empty 事实**（I8），blocked/n.a. 不变。`resources/harness/stages/target_intel.json` 灰度开 `authoritative_found:true` + `authoritative_techniques:[DNS,SUBDOMAIN,ASN,CT]`（WHOIS/OSINT 待 Phase 1 落点）+ on_fail hints 更新。`stage_spec.rs` 加 authoritative_found 守卫断言。
+- **运行过的验证（实跑）**：
+  - 新增 7 单测精确过滤 → `cargo nextest -p golish-agent-kit -E 'test(authoritative)+test(parses_authoritative)'` **7 passed**（自报无事实→BLOCK 回归基线 / 有事实→PASS / tagged claim 无事实→不再 found / 灰度 scope / checked_empty 双要 I8 / 缺省零回归 / 解析）
+  - `cargo nextest run -p golish-agent-kit` → **607 passed / 0 failed**（零回归）
+  - `cargo clippy -p golish-agent-kit --all-targets -- -D warnings` → exit 0 零告警
+  - `cargo fmt -p golish-agent-kit -- --check` → FMT_OK
+  - `cargo check -p golish` → exit 0（1m17s，整条 agent 链编译通过）
+  - `python3 -m json.tool target_intel.json` → VALID
+- **已记录证据**：见上「运行过的验证」；活体「假过」证据见 transcript `stage-run-c4422add` 的 coverage/claims（offset 126969）。
+- **提交记录**：用户授权（2026-06-12 BaJie MCP-agent-1）后单独成 commit：3 代码文件（rule_engine.rs / stage_spec.rs / target_intel.json）+ 7 份 redteam 文档 + progress/feature_list（仅 Phase 0 段）。commit 前模块级复验重跑：`cargo fmt -p golish-agent-kit --check` FMT_OK + `clippy --all-targets -D warnings` CLIPPY_OK + `nextest -p golish-agent-kit` **607 passed / 0 failed**。`just precommit` 全量在 commit 时被用户中止（工作树尚有其他任务未提交改动），以模块级复验 + 上轮 `cargo check -p golish` exit 0 为据；全量门禁待全部任务 commit 齐后统一补跑。
+- **已知风险/下一步**：① `just precommit` 全量未跑（用户中止；待工作树其他任务 commit 后统一补）；② 活体对照未跑（建议 deepseek `--to target_intel` 看 ASN/CT 若 enrich 未落 DB 会正确 BLOCK、DNS/SUBDOMAIN PASS）；③ **Phase 0 单独上会让 OSINT 不可满足**——故 target_intel 暂只收紧 4 类（DNS/SUBDOMAIN/ASN/CT），WHOIS/OSINT 等 Phase 1 落点到位再纳入；④ 下一步按用户决定推进 Phase 1（落点）。
+
+---
+
 ### 2026-06-12 · DB 真值驱动 gate coverage 全功能落地（PR-A/B/C/D）（BaJie MCP-agent-3 · DISPATCH off · 用户睡前授权自主做完）
 
 - **本轮目标**：用户睡前授权自主把设计 `docs/design/2026-06-12-db-truth-driven-gate-and-diagnostic-reflector.md` 全部 4 块实现完，每 PR 先 plan 后 TDD，`just precommit` 全绿为准，证据写 progress。

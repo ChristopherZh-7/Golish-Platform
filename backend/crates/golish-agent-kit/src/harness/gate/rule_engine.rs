@@ -64,6 +64,16 @@ pub enum GateRule {
         /// 缺口 BLOCK）。缺省 false = 行为与旧版逐字节一致。
         #[serde(default)]
         derive_from_evidence: bool,
+        /// Phase 0（设计 2026-06-12-redteam-phase0）：true 时 `found` 终态只认
+        /// `ctx.evidence_facts` 的 Found 事实——自报 found cell / technique 标注的
+        /// claim/finding 不再单独构成 found；`checked_empty` 收紧为「自报 + 真 Empty
+        /// 事实」（I8）。`blocked`/`not_applicable` 仍自报。缺省 false = 逐字节不变。
+        #[serde(default)]
+        authoritative_found: bool,
+        /// 仅这些 technique 收紧（None = 全部期望技术）。灰度用：落点未到位的技术
+        /// （如 WHOIS/OSINT）暂不收紧，仍走旧自报。
+        #[serde(default)]
+        authoritative_techniques: Option<Vec<String>>,
         on_fail: OnFail,
     },
     /// P5（2026-06-11）交叉校验：每个 status == found 的 coverage cell 必须有 ≥1 个
@@ -277,6 +287,8 @@ fn eval_one(
             terminal_status,
             derive_from_items,
             derive_from_evidence,
+            authoritative_found,
+            authoritative_techniques,
             on_fail,
         } => coverage_complete(
             d,
@@ -285,6 +297,8 @@ fn eval_one(
             terminal_status.as_deref(),
             *derive_from_items,
             *derive_from_evidence,
+            *authoritative_found,
+            authoritative_techniques.as_deref(),
             on_fail,
         ),
         GateRule::CoverageCorroborated { on_fail } => coverage_corroborated(d, on_fail),
@@ -315,6 +329,8 @@ fn coverage_complete(
     terminal_status: Option<&[CoverageStatus]>,
     derive_from_items: bool,
     derive_from_evidence: bool,
+    authoritative_found: bool,
+    authoritative_techniques: Option<&[String]>,
     on_fail: &OnFail,
 ) -> GateCheckOutcome {
     // ③ seam：动态注入的期望技术覆盖 spec 静态值。
@@ -368,37 +384,64 @@ fn coverage_complete(
     let mut gaps: Vec<String> = Vec::new();
     for asset in &assets {
         for tech in techniques {
-            let declared = d
-                .coverage
-                .iter()
-                .any(|c| c.asset == *asset && c.technique == *tech && terminal.contains(&c.status));
+            // Phase 0（设计 2026-06-12-redteam-phase0）：该 technique 是否进入「权威」
+            // 模式（found 只认真值）。authoritative_techniques=None → 全部期望技术；
+            // Some → 仅清单内技术收紧，其余仍走旧自报（灰度）。
+            let authoritative = authoritative_found
+                && authoritative_techniques.is_none_or(|list| list.iter().any(|t| t == tech));
+
+            let cell_status = |want: CoverageStatus| {
+                d.coverage
+                    .iter()
+                    .any(|c| c.asset == *asset && c.technique == *tech && c.status == want)
+            };
+            // 账本/DB 真值通道：asset+technique 精确匹配且 outcome 命中的事实存在？
+            let has_fact = |want: EvidenceOutcome| {
+                ctx.evidence_facts.as_deref().is_some_and(|facts| {
+                    facts
+                        .iter()
+                        .any(|f| f.asset == *asset && f.technique == *tech && f.outcome == want)
+                })
+            };
             // P5 派生（D1/D2）：technique 标注且 subject == asset 的 claim/finding 视作
-            // 该 (asset × technique) 的 found 终态；仅当 found 本身属于本规则的 terminal
-            // 集时才生效（terminal_status 收窄时不越权）。absence 仍须显式 cell。
-            let derived =
-                derive_from_items
-                    && terminal.contains(&CoverageStatus::Found)
-                    && (d.claims.iter().any(|c| {
-                        c.subject == *asset && c.technique.as_deref() == Some(tech.as_str())
-                    }) || d.findings.iter().any(|f| {
-                        f.subject == *asset && f.technique.as_deref() == Some(tech.as_str())
-                    }));
-            // PR3 投影（设计 §5.2 + §4 约束）：账本事实 asset+technique 精确匹配时
-            // 视作该格终态 — Found 事实 → Found、Empty 事实 → CheckedEmpty（I8：
-            // 「跑了→空」是被记录的事实，绝不当 Found；各自受 terminal 集约束）。
-            // 缺事实不填格（fail-closed），completeness 本身永不被投影放宽。
-            let derived_from_evidence = derive_from_evidence
-                && ctx.evidence_facts.as_deref().is_some_and(|facts| {
-                    facts.iter().any(|f| {
-                        f.asset == *asset
-                            && f.technique == *tech
-                            && terminal.contains(&match f.outcome {
-                                EvidenceOutcome::Found => CoverageStatus::Found,
-                                EvidenceOutcome::Empty => CoverageStatus::CheckedEmpty,
-                            })
-                    })
-                });
-            if !declared && !derived && !derived_from_evidence {
+            // found（仅旧自报路径用；authoritative 模式下不再算 found）。
+            let tagged_found = d
+                .claims
+                .iter()
+                .any(|c| c.subject == *asset && c.technique.as_deref() == Some(tech.as_str()))
+                || d.findings
+                    .iter()
+                    .any(|f| f.subject == *asset && f.technique.as_deref() == Some(tech.as_str()));
+
+            // found 终态：
+            // - authoritative：只认真值（账本/DB 的 Found 事实）。自报 cell / tagged
+            //   claim 不再单独构成 found（堵 live run 实证的「dig 输出冒充 whois」）。
+            // - 旧路径：自报 found cell || derive_from_items 的 tagged || derive_from_evidence 真值。
+            let found_ok = terminal.contains(&CoverageStatus::Found)
+                && if authoritative {
+                    has_fact(EvidenceOutcome::Found)
+                } else {
+                    cell_status(CoverageStatus::Found)
+                        || (derive_from_items && tagged_found)
+                        || (derive_from_evidence && has_fact(EvidenceOutcome::Found))
+                };
+            // checked_empty 终态（I8）：
+            // - authoritative：自报 + 真 Empty 账本事实双要（「跑了→空」必须被记录）。
+            // - 旧路径：自报 cell || derive_from_evidence 的 Empty 事实。
+            let empty_ok = terminal.contains(&CoverageStatus::CheckedEmpty)
+                && if authoritative {
+                    cell_status(CoverageStatus::CheckedEmpty) && has_fact(EvidenceOutcome::Empty)
+                } else {
+                    cell_status(CoverageStatus::CheckedEmpty)
+                        || (derive_from_evidence && has_fact(EvidenceOutcome::Empty))
+                };
+            // blocked / not_applicable：自报 + note 的判断态，两路径一致（不收紧）。
+            let other_ok = (terminal.contains(&CoverageStatus::Blocked)
+                && cell_status(CoverageStatus::Blocked))
+                || (terminal.contains(&CoverageStatus::NotApplicable)
+                    && cell_status(CoverageStatus::NotApplicable));
+
+            if !found_ok && !empty_ok && !other_ok {
                 gaps.push(format!("({asset} × {tech})"));
             }
         }
@@ -1089,6 +1132,178 @@ mod tests {
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: facts,
         }
+    }
+
+    // ── Phase 0 (设计 2026-06-12-redteam-phase0): authoritative found ──────────
+    // found 终态只认真值（账本/DB 的 Found 事实）；自报 cell / tagged claim 不再
+    // 单独构成 found。derive_from_items + derive_from_evidence 都开，以证明
+    // authoritative 覆盖（override）它们。
+
+    fn authoritative_rule(techniques: Option<&[&str]>) -> GateRule {
+        let techs = match techniques {
+            Some(t) => {
+                let arr = t
+                    .iter()
+                    .map(|s| format!("\"{s}\""))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(r#","authoritative_techniques":[{arr}]"#)
+            }
+            None => String::new(),
+        };
+        parse(&format!(
+            r#"{{ "op":"coverage_complete","authoritative_found":true,"derive_from_items":true,"derive_from_evidence":true{techs},
+                 "on_fail":{{"reason":"coverage incomplete"}} }}"#
+        ))
+    }
+
+    #[test]
+    fn parses_authoritative_found_fields() {
+        let rule = parse(
+            r#"{ "op":"coverage_complete","authoritative_found":true,
+                 "authoritative_techniques":["GOLISH-INTEL-DNS"],
+                 "on_fail":{"reason":"x"} }"#,
+        );
+        assert!(matches!(
+            rule,
+            GateRule::CoverageComplete {
+                authoritative_found: true,
+                authoritative_techniques: Some(ref t),
+                ..
+            } if t == &vec!["GOLISH-INTEL-DNS".to_string()]
+        ));
+        // 缺省：两字段不写 → false / None（零回归）。
+        assert!(matches!(
+            coverage_complete_rule(),
+            GateRule::CoverageComplete {
+                authoritative_found: false,
+                authoritative_techniques: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn authoritative_found_self_report_without_fact_blocks() {
+        // 回归基线：deepseek live run 把 dig 输出自报成 WHOIS found。
+        let rule = authoritative_rule(None);
+        let d = deliverable_with_coverage(vec![cov_cell(
+            "a",
+            "GOLISH-INTEL-WHOIS",
+            CoverageStatus::Found,
+            vec![1],
+        )]);
+        let ctx = projection_ctx(&["GOLISH-INTEL-WHOIS"], None);
+        assert!(
+            !eval_with_context(&d, &test_spec(), &[rule], &ctx)[0].is_pass(),
+            "authoritative: self-reported found without a Found fact must BLOCK"
+        );
+    }
+
+    #[test]
+    fn authoritative_found_with_fact_passes() {
+        let rule = authoritative_rule(None);
+        let d = deliverable_with_coverage(vec![cov_cell(
+            "a",
+            "GOLISH-INTEL-DNS",
+            CoverageStatus::Found,
+            vec![1],
+        )]);
+        let ctx = projection_ctx(
+            &["GOLISH-INTEL-DNS"],
+            Some(vec![fact(
+                "a",
+                "GOLISH-INTEL-DNS",
+                EvidenceOutcome::Found,
+                7,
+            )]),
+        );
+        assert!(eval_with_context(&d, &test_spec(), &[rule], &ctx)[0].is_pass());
+    }
+
+    #[test]
+    fn authoritative_found_tagged_claim_without_fact_blocks() {
+        // technique 标注的 claim 在旧 derive_from_items 下会放行；authoritative 下不行。
+        let rule = authoritative_rule(None);
+        let mut d = deliverable_with_coverage(vec![]);
+        d.claims.push(StageClaim {
+            kind: "whois_data_observed".to_string(),
+            subject: "a".to_string(),
+            summary: "fabricated whois".to_string(),
+            evidence_ids: vec![],
+            technique: Some("GOLISH-INTEL-WHOIS".to_string()),
+        });
+        let ctx = projection_ctx(&["GOLISH-INTEL-WHOIS"], None);
+        assert!(
+            !eval_with_context(&d, &test_spec(), &[rule], &ctx)[0].is_pass(),
+            "authoritative: a technique-tagged claim is no longer a found source"
+        );
+    }
+
+    #[test]
+    fn authoritative_techniques_scopes_tightening() {
+        // 灰度：只 DNS 收紧；WHOIS 不在清单 → 仍走旧自报，自报 found 算终态。
+        let rule = authoritative_rule(Some(&["GOLISH-INTEL-DNS"]));
+        let d = deliverable_with_coverage(vec![cov_cell(
+            "a",
+            "GOLISH-INTEL-WHOIS",
+            CoverageStatus::Found,
+            vec![1],
+        )]);
+        let ctx = projection_ctx(&["GOLISH-INTEL-WHOIS"], None);
+        assert!(
+            eval_with_context(&d, &test_spec(), &[rule], &ctx)[0].is_pass(),
+            "technique outside authoritative_techniques keeps legacy self-report"
+        );
+    }
+
+    #[test]
+    fn authoritative_checked_empty_requires_empty_fact() {
+        let d = deliverable_with_coverage(vec![cov_cell(
+            "a",
+            "GOLISH-INTEL-WHOIS",
+            CoverageStatus::CheckedEmpty,
+            vec![1],
+        )]);
+        // 无 Empty 事实 → BLOCK（I8：checked_empty 必须有「跑了→空」记录）。
+        let ctx_none = projection_ctx(&["GOLISH-INTEL-WHOIS"], None);
+        assert!(
+            !eval_with_context(&d, &test_spec(), &[authoritative_rule(None)], &ctx_none)[0]
+                .is_pass(),
+            "authoritative checked_empty without an Empty fact must BLOCK (I8)"
+        );
+        // 有 Empty 事实 → PASS。
+        let ctx_empty = projection_ctx(
+            &["GOLISH-INTEL-WHOIS"],
+            Some(vec![fact(
+                "a",
+                "GOLISH-INTEL-WHOIS",
+                EvidenceOutcome::Empty,
+                7,
+            )]),
+        );
+        assert!(
+            eval_with_context(&d, &test_spec(), &[authoritative_rule(None)], &ctx_empty)[0]
+                .is_pass(),
+            "authoritative checked_empty with a real Empty fact passes"
+        );
+    }
+
+    #[test]
+    fn authoritative_off_keeps_legacy_self_report() {
+        // 不开 authoritative_found（缺省）→ 自报 found 仍算终态（零回归）。
+        let rule = parse(
+            r#"{ "op":"coverage_complete","derive_from_items":true,
+                 "on_fail":{"reason":"x"} }"#,
+        );
+        let d = deliverable_with_coverage(vec![cov_cell(
+            "a",
+            "GOLISH-INTEL-WHOIS",
+            CoverageStatus::Found,
+            vec![1],
+        )]);
+        let ctx = projection_ctx(&["GOLISH-INTEL-WHOIS"], None);
+        assert!(eval_with_context(&d, &test_spec(), &[rule], &ctx)[0].is_pass());
     }
 
     // 约束1+4：账本有 (a×DNS) 的 Found 事实 → 该格视为已覆盖，空矩阵也 Pass。
