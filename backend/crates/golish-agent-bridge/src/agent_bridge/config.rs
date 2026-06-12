@@ -67,8 +67,15 @@ impl AgentBridge {
                         &prompt_reg,
                     )
                     .await;
+                // Preserve per-agent model/LLM-param overrides: this reload only
+                // refreshes prompt text from DB templates, and a plain
+                // `register_multiple` would replace the definitions wholesale —
+                // wiping the `model_override` (and temperature/max_tokens/top_p)
+                // that `apply_sub_agent_model_settings` / `set_sub_agent_model`
+                // set. That race made stage-run sub-agents silently fall back to
+                // the main model instead of their configured (e.g. xiaomi) one.
                 let mut reg = sub_reg.write().await;
-                reg.register_multiple(new_agents);
+                reg.register_preserving_overrides(new_agents);
                 tracing::info!("[prompt-registry] Reloaded sub-agents with DB template overrides");
             }
         });

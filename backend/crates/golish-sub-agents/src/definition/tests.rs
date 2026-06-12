@@ -122,6 +122,76 @@ fn test_registry_get_nonexistent() {
     assert!(registry.get("nonexistent").is_none());
 }
 
+// A DB-template reload rebuilds definitions from defaults (no model_override /
+// LLM params) and must NOT wipe runtime overrides applied after construction
+// (the `apply_sub_agent_model_settings` / `set_sub_agent_model` writers). The
+// reload's only job is to refresh the prompt text.
+#[test]
+fn test_register_preserving_overrides_keeps_runtime_overrides() {
+    let mut registry = SubAgentRegistry::new();
+
+    // Simulate startup: register a fresh "coder", then apply runtime overrides.
+    registry.register(SubAgentDefinition::new(
+        "coder",
+        "Coder",
+        "desc",
+        "old prompt",
+    ));
+    {
+        let coder = registry.get_mut("coder").unwrap();
+        coder.set_model_override("xiaomi", "mimo-v2.5-pro");
+        coder.temperature = Some(0.2);
+        coder.max_tokens = Some(4096);
+        coder.top_p = Some(0.9);
+    }
+
+    // Simulate the DB-template reload: fresh defs (no overrides), new prompt,
+    // plus a brand-new agent that has no prior entry to inherit from.
+    let reloaded = vec![
+        SubAgentDefinition::new("coder", "Coder", "desc", "new prompt from DB"),
+        SubAgentDefinition::new("newbie", "Newbie", "desc", "fresh"),
+    ];
+    registry.register_preserving_overrides(reloaded);
+
+    // The prompt refresh landed...
+    let coder = registry.get("coder").unwrap();
+    assert_eq!(coder.system_prompt, "new prompt from DB");
+    // ...but the four runtime override fields survived the reload.
+    assert_eq!(
+        coder.model_override,
+        Some(("xiaomi".to_string(), "mimo-v2.5-pro".to_string()))
+    );
+    assert_eq!(coder.temperature, Some(0.2));
+    assert_eq!(coder.max_tokens, Some(4096));
+    assert_eq!(coder.top_p, Some(0.9));
+
+    // A newly introduced agent has nothing to inherit → stays unoverridden.
+    let newbie = registry.get("newbie").unwrap();
+    assert!(newbie.model_override.is_none());
+    assert!(newbie.temperature.is_none());
+}
+
+// Reverse order (reload runs BEFORE overrides are applied): the reload finds
+// no existing override to carry, and a later override write must still stick.
+#[test]
+fn test_register_preserving_overrides_no_existing_is_noop() {
+    let mut registry = SubAgentRegistry::new();
+    registry.register_preserving_overrides(vec![SubAgentDefinition::new(
+        "coder", "Coder", "desc", "prompt",
+    )]);
+    assert!(registry.get("coder").unwrap().model_override.is_none());
+
+    // Override applied after the reload survives (no further reload clobbers it).
+    registry
+        .get_mut("coder")
+        .unwrap()
+        .set_model_override("xiaomi", "mimo-v2.5-pro");
+    assert_eq!(
+        registry.get("coder").unwrap().model_override,
+        Some(("xiaomi".to_string(), "mimo-v2.5-pro".to_string()))
+    );
+}
+
 // ===========================================
 // SubAgentContext Tests
 // ===========================================

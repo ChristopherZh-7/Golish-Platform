@@ -324,6 +324,31 @@ impl SubAgentRegistry {
             self.register(agent);
         }
     }
+
+    /// Re-register definitions while preserving the per-agent runtime overrides
+    /// applied after construction (model routing + LLM params).
+    ///
+    /// The DB-template reload (`AgentBridge::set_db_backend`) rebuilds
+    /// definitions from defaults — which carry no `model_override` /
+    /// `temperature` / `max_tokens` / `top_p` — so a plain
+    /// [`Self::register_multiple`] would wipe overrides set by
+    /// `apply_sub_agent_model_settings` (startup) or the `set_sub_agent_model`
+    /// command (runtime). The reload's only purpose is to refresh `system_prompt`
+    /// from DB templates, so it must carry those four fields over from the
+    /// existing entry (matched by id). Race-safe: the caller holds the registry
+    /// write lock across this whole call, and the only other writers of those
+    /// fields take the same lock, so the read-existing-then-insert is atomic.
+    pub fn register_preserving_overrides(&mut self, agents: Vec<SubAgentDefinition>) {
+        for mut agent in agents {
+            if let Some(existing) = self.agents.get(&agent.id) {
+                agent.model_override = existing.model_override.clone();
+                agent.temperature = existing.temperature;
+                agent.max_tokens = existing.max_tokens;
+                agent.top_p = existing.top_p;
+            }
+            self.register(agent);
+        }
+    }
 }
 
 /// Maximum sub-agent recursion depth.
