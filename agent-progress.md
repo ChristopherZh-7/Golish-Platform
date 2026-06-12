@@ -29,6 +29,72 @@
 
 ---
 
+### 2026-06-12 · 红队 DB 真值闭环 Phase 3：多 org coverage 轴（方案 A · 调度层逐 org）（BaJie MCP-agent-1 · DISPATCH off）
+
+- **本轮目标**：用户「继续 Phase 3」——按设计 `docs/design/2026-06-12-redteam-phase3-multi-org-coverage.md` 方案 A（推荐起步：调度层逐 org，gate 不动）落地「母先收 → 子逐个收」。先写实现计划 `docs/superpowers/plans/2026-06-12-redteam-phase3-multi-org-coverage.md`（含实读勘查 + 5 决策）再 TDD 动手。
+- **勘查关键结论**：① BLOCK 终态 = orchestrate Err → exit 非 0（engagement 聚合直接复用）；② Phase 2 auto_promote 落 child org 但**不落 targets** → 子 org 趟 target_intel 起步资产轴为空走自报 fallback，agent enrich 落 targets 后下游自动硬化（target_intel 本职，非 blocker）；③ `organizations::list(pool, project_path)` 已有（I2 隔离内置）；④ 共享 session 跨 org 账本事实因 asset 不重叠不互相投影；⑤ 前置 sub_agent override bug 已修复（同日活体验证）。
+- **已完成（Task F+G+H，全在 `golish/src/stage_run/mod.rs`，gate/coverage 引擎零改动）**：
+  - **F 纯函数 ×4**：`child_slice`（子趟 slice：to==scoping→None 只建树；否则 target_intel..=to，永不含 scoping）、`filter_child_orgs`（只留 parent_id 直接子）、`build_child_objective`（含子 org 真实 id + 母名 + THIS subsidiary only 语境）、`subsidiary_summary`（per-org OK/FAILED + engagement x/n 聚合 + INCOMPLETE 标记，空静默）。
+  - **G 编排**：run() 6.5 步——母趟 Ok && include_subsidiaries && seed org 时查 children 串行逐子 orchestrate（独立 task/operation_state、绑子 org_id、include_subsidiaries=false 不递归孙公司、失败不中断兄弟趟）；报告尾部追加 per-org 汇总；exit 聚合（母 Err 优先，否则任一子失败 → `Err("subsidiary stage runs failed: [...]")`）。
+  - **5 决策**（记入计划 §2）：不加新 flag / 串行无上限 / 子趟 entry 固定 target_intel / 子趟不开 SUBSIDIARY gate / 失败聚合不中断。
+- **运行过的验证（实跑，全绿）**：`cargo nextest -p golish` → **219 passed / 0 failed**（+4 新测）；`cargo clippy -p golish --all-targets -- -D warnings` → 零告警；`cargo fmt -p golish --check` → clean；`cargo check -p golish` → exit 0。
+- **提交记录**：**未 commit**（等用户拍板；工作树仍压着 Phase 1/2 等未提交改动）。本轮改动：`M golish/src/stage_run/mod.rs`、`?? docs/superpowers/plans/2026-06-12-redteam-phase3-multi-org-coverage.md`、`M feature_list.json`、`M agent-progress.md`。
+- **已知风险/下一步**：① `just precommit` 全量未跑（commit 前补）；② 活体未跑——需 ENScan 凭据 + 真子公司母企：`--to target_intel --include-subsidiaries --org <母> --target <根域名>` 看母趟建树→逐子趟→per-org 汇总→任一子失败 exit 非 0；③ 方案 B（单趟 org×asset×tech 轴）与 engagement 级进度视图（Phase 4 前端）记后续；④ org 数 × provider 限流：现串行缓解，重负载建议强模型/付费档。
+
+---
+
+### 2026-06-12 · 红队 DB 真值闭环 Phase 2：子公司发现进 scoping（auto-promote 落 child org + SUBSIDIARY 权威 gate + CLI flag）（BaJie MCP-agent-1 · DISPATCH off）
+
+- **本轮目标**：用户「全推 Phase 2（含 gate）」——按 `docs/superpowers/plans/2026-06-12-redteam-phase2-subsidiary-scoping.md`（上轮已落盘，含实读勘查 §0）把「子公司发现 → 持股阈值筛 → 母+合格子落 org 树 → scoping gate DB 真值门槛」全链接通。scoping gate 安全语义变更已获用户明示授权（§2.7）。
+- **接力现状勘定（先盘点再动手）**：上轮中断会话已完成 Task B（`agent_intel.rs` run_passive_intel Subsidiaries 接 `auto_promote_discovered_children` + `promote.rs::select_discovery_policy` + 2 测）、Task C（`scoping.json` allowed_tool_types=["recon/osint"]）、Task D 大半（`coverage_truth.rs` TECH_SUBSIDIARY 常量 + has_subsidiary EXISTS 投影 + TruthInputs 字段 + 3 测；`scoping.json` gate_rules 三条含 authoritative SUBSIDIARY；`orchestrator.rs` SubsidiaryScopePolicy + set_subsidiary_scope；taxonomy 登记）。本轮补齐真实缺口：
+  - **D.2 账本 Empty 派生**：`evidence_facts.rs` 加 `TECH_SUBSIDIARY` 常量 + `subsidiary_discovery_facts(JSON summary)`（promoted_children>0→found；Completed+0→empty；Partial/Failed/字段缺→None fail-closed）+ 3 测；`golish-agent-runtime/direct/mod.rs` recon_discover_subsidiaries 落账分支从 facts=None 改为打三列（enrich 保持 None）。
+  - **D.4 gate hook**：`execute.rs` 加纯函数 `inject_subsidiary_expected_technique`（仅 scoping+policy 时把 SUBSIDIARY 并入动态期望技术；不带 flag 注入前后逐字节一致）+ `project_org_level_subsidiary_facts`（org 级事实「公司名」展开到每个 in-scope asset，幂等，镜像 db_truth_facts 的 has_subsidiary 投影）；`apply_harness_gate_hook` 加 `subsidiary_threshold: Option<u8>` 参数（2 生产调用点传 `harness_subsidiary_policy.map(|p| p.threshold_pct)`，4 测试调用点补 None）+ 注入时 tracing 打 threshold；`fetch_evidence_facts_for_gate` ③ 接展开。+2 测。
+  - **A.2/A.3 CLI**：`cli/args.rs` 加 `--include-subsidiaries`（bool）+ `--subsidiary-threshold <PCT>`（default 50，仅作 run 策略记录，真筛选在 toolsconfig promote_when scale>=51）；`stage_run/mod.rs` orchestrate 加 2 参 + `set_subsidiary_scope` 透传。
+  - **E.1 守卫**：`stage_spec.rs` 加 `scoping_subsidiary_gate_static_premises`（三断言：expected_techniques 静态空 / coverage_complete authoritative 锁 SUBSIDIARY / 白名单含 recon/osint）。
+- **连锁回归修复 ×2（Task C 白名单从空变非空的副作用，都保零回归语义）**：
+  1. `execute.rs` confirm_only 判定：原「allowed_tool_types 空 = 确认型」→ scoping 改为「不带 subsidiary flag 仍是确认型」（unified-refiner A 类 submit-only 路由保留；带 flag 才走 B 类引导跑工具）。
+  2. `tool_list.rs` 零扫描隐藏：原「白名单空才隐藏 scan 执行面」→「白名单全为 API-only 类型（recon/osint）也隐藏」（recon_* 是 registry 直发工具，不需要 pentest_run/run_pty_cmd；scoping 隐藏行为与旧版一致）。
+- **gate 闭环语义（I8 全守）**：没跑 → 无 child org + 无 Empty 事实 → not_attempted BLOCK + hints 引导；跑了有合格子 → auto_promote 落 child org（organizations.parent_id）→ db_truth_facts Found → PASS（authoritative found 只认真值，无需自报）；跑了 0 合格 → summary(promoted_children=0, Completed) → 账本 Empty 事实 → org 级展开到资产轴 → 自报 checked_empty + Empty 双要 → PASS。
+- **运行过的验证（实跑，全绿）**：
+  - `cargo nextest -p golish-agent-kit` → **615 passed / 0 failed**（+8 新测）
+  - `cargo nextest -p golish-agent-runtime -p golish-recon-app -p golish-db` → **470 passed / 0 failed**（含两处接力补的 TruthInputs 测试构造点 has_subsidiary 字段 + 全维度稳定顺序断言更新）
+  - `cargo nextest -p golish` → **215 passed**；`-p golish-pentest` → **127 passed / 7 skipped**
+  - `cargo clippy` 5 crate `--all-targets -- -D warnings` → exit 0 零告警（修 1 处 needless_borrow）
+  - `cargo fmt` 5 crate `--check` → clean
+  - `cargo check -p golish` → exit 0（57s）
+  - `cargo run -p golish -- --help` → `--include-subsidiaries` + `--subsidiary-threshold [default: 50]` 均在
+  - `scoping.json` + `technique_taxonomy.json` → json.load VALID
+  - `check_repo_ownership.py` → 基线一致（11+1 pre-existing，0 新增）
+- **已记录证据**：见上「运行过的验证」。
+- **提交记录**：**未 commit**（沿用本批任务惯例等用户拍板；工作树仍压着 Phase 1 / override 修复 / unified-refiner 等未提交改动）。本轮新改动文件：`M golish-agent-kit/src/harness/evidence_facts.rs`、`M .../subtask_phases/execute.rs`、`M .../harness/stage_spec.rs`、`M golish-agent-runtime/.../direct/mod.rs`、`M golish-agent-runtime/.../tool_list.rs`、`M golish-db/src/repo/coverage_truth.rs`（补 2 测试构造点）、`M golish/src/cli/args.rs`、`M golish/src/stage_run/mod.rs`、`M feature_list.json`、`M agent-progress.md`。
+- **已知风险/下一步**：① `just precommit` 全量未跑（commit 前补）；② 活体未跑——需要「真有子公司的母公司」+ ENScan 凭据：`--stage-run --profile red_team --only scoping --include-subsidiaries --subsidiary-threshold 51 --org <母公司>` 看 organizations 出现母+合格子 + scoping gate 在落库前 BLOCK 后 PASS；不带 flag 跑一遍验零回归；③ threshold engagement 覆盖 toolsconfig 阈值（G2 增强）与 scoping prompt 显式列 SUBSIDIARY 要求记后续；④ Phase 3 = 多 org coverage 轴。
+
+---
+
+### 2026-06-12 · 红队 DB 真值闭环 Phase 1：补落点（主动落库 + coverage_truth 扩 12 维 + WHOIS/OSINT + EAS/enum DB 投影）（BaJie MCP-agent-1 · DISPATCH off）
+
+- **本轮目标**：用户「开始 Phase 1 实现」——按 `docs/design/2026-06-12-redteam-phase1-landing-gaps.md`（+ 复用 `active-collection-db-truth-closure.md` 的 1-A/1-B）补齐 Phase 0 权威 gate 的真值落点，让被要求技术「可被合法满足」。先写可执行计划 `docs/superpowers/plans/2026-06-12-redteam-phase1-landing-gaps.md`（含实施期勘验 6 条修正），再 TDD 实现。
+- **已完成（7 Task，均 TDD/先验证）**：
+  - **Task 1 golish-db**：2 migration（`20260612000002_api_endpoints_unique.sql` = `UNIQUE(target_id,url,method)` 给 endpoint_add 当 ON CONFLICT 锚；`20260612000003_organizations_whois.sql` = `whois JSONB` 可空列，I10 先扩可空）。`coverage_truth.rs` 从 4 维扩到 **12 维**：+`WHOIS`（org.whois 非 NULL/'null'/'{}'）+`OSINT`（intel.records/contacts/social_accounts/business_systems 任一非空）+ 主动 6 维（LIVENESS←targets.http_status/real_ip、PORT←targets.ports、SERVICE-FP←fingerprints、DIR←directory_entries、PARAM←api_endpoints.params、JSAPI←api_endpoints.source∈js_analysis/crawler），全部 org 隔离 + scope='in'；`assemble_truth_facts` 重构为 `TruthInputs` 结构体（避 too_many_arguments）。
+  - **Task 2 golish-pentest**：新建 `output_store/endpoints.rs`（`store_endpoint` + 纯函数 `endpoint_parts` 解析绝对 http(s) URL→host/path/参数名 JSONB 数组，相对/非 http→None 不猜）；接 trait + pg_adapter + `mod.rs` dispatch `"endpoint_add" =>` 分支（修复 6 工具孤儿 action）；`store_directory_entry` 补 `find_or_create_target` 填 target_id（让 `UNIQUE(url,tool) WHERE target_id IS NOT NULL` 去重生效 + DIR 投影 JOIN 命中）。
+  - **Task 3 toolsconfig**：ffuf/gobuster `endpoint_add`→`directory_entry_add` + pattern 字段 `path`→`url`；masscan `host_add`→`target_update_recon`（字段 ip/port/protocol 与现 writer 兼容，零 Rust）；katana/gau/waybackurls/arjun 保持 endpoint_add（接新 writer）。
+  - **Task 4 organizations**：`writers.rs` 加 `merge_whois`（`whois = COALESCE(whois,'{}') || $1` 对象 merge 幂等）；`mod.rs` ROUTED_KEYS 加 5 whois 键 + `collect_whois`（registrar/created/expires/registrant/name_servers→对象，name_servers 逗号切数组），whois 字段不再落 intel catch-all。
+  - **Task 5 evidence_facts**：`passive_intel_outcome` 对 WHOIS 加确定性 empty 形态（no match for/not found/no data found/no entries found→empty，I8）。
+  - **Task 6 stages**：`target_intel.json` authoritative_techniques 4→**全 6 类**（+WHOIS+OSINT）+ comment/hints 更新；`external_attack_surface.json`+`enumeration.json` coverage_complete 开 `derive_from_evidence:true`（**不开 authoritative**——主动命令派生的 Empty 事实源未就绪，见计划勘验4）；`stage_spec.rs` 加守卫 `active_stages_derive_from_evidence_but_not_authoritative`。
+- **运行过的验证（实跑）**：
+  - `cargo nextest -p golish-db -p golish-pentest -p golish-agent-kit` → **806 passed / 0 failed / 7 skipped**（含 coverage_truth 12 维 11 测、endpoint 6 测、organizations whois 3 测、evidence_facts whois empty 测、stage_spec 主动守卫测）
+  - `cargo clippy -p golish-db -p golish-pentest -p golish-agent-kit --all-targets -- -D warnings` → exit 0 零告警
+  - `cargo fmt -p golish-db -p golish-pentest -p golish-agent-kit -- --check` → FMT_OK
+  - `cargo check -p golish` → exit 0（55s，全下游 crate 编译通过）
+  - `python3 scripts/check_repo_ownership.py` → **基线一致**（stash 本次改动前后均报相同 11+1 个 pre-existing 违规，0 个新增；新查询在已 SHARED 的 coverage_truth repo 内）
+  - 7 个改动 toolsconfig + 3 个 stage JSON → 全 `python3 -m json.tool` VALID
+- **已记录证据**：见上「运行过的验证」。
+- **实施期勘验修正（写入计划文档）**：① ffuf/gobuster pattern 字段是 `path` 非 url（已改名）；② arjun 只产 count 无 url（缺 url 的 record 进 errors 不落库，命令回填记后续）；③ masscan 字段与现 writer 兼容零 Rust；④ **主动阶段无 Empty 命令派生源 → EAS/enum 只开 derive_from_evidence 不开 authoritative**（防真跑→空无法 checked_empty 卡死，Phase 1.5 补）；⑤ OSINT provider 落账 facts=None → found 走 DB 投影、enrich 零产出时只能 blocked+note；⑥ JSAPI 本期只查 api_endpoints。
+- **提交记录**：**未 commit**（用户仅说「开始 Phase 1 实现」，未授权 commit；等用户决定）。改动文件：`M coverage_truth.rs`、`?? 2 migration`、`?? endpoints.rs`、`M findings.rs / mod.rs / store_trait.rs / pg_adapter.rs / organizations/{mod,writers,tests}.rs`、`M ffuf/gobuster/masscan.json`、`M evidence_facts.rs`、`M stage_spec.rs`、`M target_intel/external_attack_surface/enumeration.json`、`?? plans/2026-06-12-redteam-phase1-landing-gaps.md`、`M agent-progress.md / feature_list.json`。
+- **已知风险/下一步**：① `just precommit` 全量未跑（commit 前补）；② 活体未跑（建议 deepseek `--to enumeration` 看 api_endpoints/directory_entries count>0 + 主动维度投影补格 + Unknown db_action 归零）；③ **Phase 1.5**：主动工具命令派生 Empty 事实源 → EAS/enum 开 authoritative；④ ffuf/arjun 命令行回填 base URL、js_analysis_results 接 JSAPI、OSINT provider per-asset technique 标注（A1）记后续。
+
+---
+
 ### 2026-06-12 · 红队 DB 真值闭环：总纲 + 5 Phase 设计文档 + Phase 0（DB 真值权威 gate）实现（BaJie MCP-agent-3 · DISPATCH off）
 
 - **本轮目标**：承接「deepseek+xiaomi 过了 intel」的活体复盘——评估 intel 字段/逻辑是否支撑完整收集 + 主动收集逻辑对不对；与用户讨论「怎么真正按想法跑完整 + 判断准确」；产出整套设计文档 + 动手实现 Phase 0。
@@ -48,6 +114,46 @@
 - **已记录证据**：见上「运行过的验证」；活体「假过」证据见 transcript `stage-run-c4422add` 的 coverage/claims（offset 126969）。
 - **提交记录**：用户授权（2026-06-12 BaJie MCP-agent-1）后单独成 commit：3 代码文件（rule_engine.rs / stage_spec.rs / target_intel.json）+ 7 份 redteam 文档 + progress/feature_list（仅 Phase 0 段）。commit 前模块级复验重跑：`cargo fmt -p golish-agent-kit --check` FMT_OK + `clippy --all-targets -D warnings` CLIPPY_OK + `nextest -p golish-agent-kit` **607 passed / 0 failed**。`just precommit` 全量在 commit 时被用户中止（工作树尚有其他任务未提交改动），以模块级复验 + 上轮 `cargo check -p golish` exit 0 为据；全量门禁待全部任务 commit 齐后统一补跑。
 - **已知风险/下一步**：① `just precommit` 全量未跑（用户中止；待工作树其他任务 commit 后统一补）；② 活体对照未跑（建议 deepseek `--to target_intel` 看 ASN/CT 若 enrich 未落 DB 会正确 BLOCK、DNS/SUBDOMAIN PASS）；③ **Phase 0 单独上会让 OSINT 不可满足**——故 target_intel 暂只收紧 4 类（DNS/SUBDOMAIN/ASN/CT），WHOIS/OSINT 等 Phase 1 落点到位再纳入；④ 下一步按用户决定推进 Phase 1（落点）。
+
+---
+
+### 2026-06-12 · submit-only 锁加固（dispatch 闭锁 + prompt 硬约束）+ DeepSeek/MiMo 分工活体（BaJie MCP-agent-3 · DISPATCH off）
+
+- **本轮目标**：承接 session_id 修复后活体观察——submit-only 锁虽触发但 MiMo 逃逸（textual-adapter 恢复的 update_plan 绕过 API tool_choice / prompt 无硬约束）。加固锁 + 换强模型重验。
+- **代码改动（设计 `docs/design/2026-06-12-submit-only-lock-hardening.md`，TDD 先红后绿）**：
+  - **防御 B（dispatch 闭锁）** `golish-agent-runtime/.../turn/phases/tool_dispatch.rs` + `executor.rs`：submit-only 锁生效期，`run` 先 `split_for_submit_only` 切批次，非 `submit_stage_deliverable`（含 textual-adapter 恢复的、本在 allow-list 的 update_plan）全部拒+回灌定向 ToolResult（配对完整），只放 submit。锁值在「批次含 submit 置 submitted」之前取，保证同批 submit 放过、其余拒。
+  - **防御 C（prompt 硬约束）** `llm_stream_start.rs`：`compose_system_prompt(sys, submit_only)` 在 submit-only 轮末尾追加 `SUBMIT_ONLY_PROMPT_DIRECTIVE`（「整轮只准一个 submit 调用」），普通+NVIDIA 两路径都注入；`SUBMIT_STAGE_DELIVERABLE_TOOL` 提 `pub(crate)` 共用。
+  - **DeepSeek CLI arm 补齐** `cli/bootstrap/agent_init.rs`：`initialize_agent` 原无 deepseek 分支（会misroute到OpenRouter→401），补 `deepseek`/`deepseek_api` arm（`new_deepseek_with_shared_config`）+ `resolve_api_key` deepseek 分支（settings/`DEEPSEEK_API_KEY`）。与 GUI `from_provider_config` 对齐。
+- **静态验证（实跑）**：golish-agent-runtime `nextest` **230/230**（含 5 新测试：split_for_submit_only / compose_system_prompt×2 / 锁拒非submit / 锁放submit）；`clippy --all-targets -D` 零告警；fmt clean；`cargo build -p golish` exit 0。
+- **活体（DeepSeek 主控 + MiMo 子agent 分工，绕开 NVIDIA 429）**：用户给新 deepseek key，settings 配 `[ai.sub_agent_models.*]` 9 个子agent→xiaomi/mimo-v2.5-pro，CLI `-p deepseek -m deepseek-chat`。日志 `/tmp/golish-stage-run-split.log`。**结果：scoping PASS → target_intel PASS（findings=3，11947 字 StageDeliverable 真解析通过，evidence 60+ 条全落本 run session）——本会话首次完整 target_intel 干净 PASS。** 证明：① session_id 修复后账本链路通；② DeepSeek 原生 function-call 能交出合格 StageDeliverable 闭环；③ 7 次 429 出现但被重试吸收未致命。
+- **两个发现（后续，非阻塞）**：
+  1. **`sub_agent_models` 覆盖在 stage-run 下未生效**：日志 `[sub-agent:pentester] Executing with main model (no override)`——9 个子agent 全跑在 deepseek（未走 xiaomi），bridge_config 明明 logged「configured to use xiaomi/mimo-v2.5-pro」。`set_model_override` 写进 `bridge.sub_agent_registry()`，但 call 路径 `ctx.sub_agent_registry.get(id)` 读到的 def 无 override → 疑似两 registry 实例 / 快照。GUI 路径是否同病待查。本 run 因全落 capable 的 deepseek 反而 PASS，未阻塞。
+  2. DeepSeek 偶发 429（7 次），被 stream retry 吸收；重 agent 跑建议仍分散负载（待发现 1 修复后真分工）。
+- **提交记录**：未 commit。改动：`M cli/bootstrap/agent_init.rs`（deepseek arm，叠加 session_id 修复）、`M agentic_loop/turn/phases/tool_dispatch.rs`、`M agentic_loop/turn/executor.rs`、`M agentic_loop/llm_stream_start.rs`、`?? docs/design/2026-06-12-submit-only-lock-hardening.md`、`M agent-progress.md`、`M docs/modules/backend/golish/{cli,stage_run}.md`（上一条）。settings.toml（用户机，非仓库）已配 deepseek key + sub_agent_models。
+- **下一步**：① 查 `sub_agent_models` 覆盖在 stage-run 失效的 registry wiring；② 决定 commit（session_id 修复 + 锁加固 + deepseek arm 三块）。
+
+---
+
+### 2026-06-12 · stage-run event_session_id 统一修复（账本 evidence 写读 session 不一致）（BaJie MCP-agent-3 接 MCP-4 上下文 · DISPATCH off）
+
+- **本轮目标**：修复 MCP-4 会话定位的根因——stage-run headless 路径下 `initialize_agent` 构造 bridge 时 `event_session_id` 硬编码 `"cli"`，而 gate/refiner 查账本用 `chat_session_id="stage-run-{uuid}"` → evidence 真落账但查不到（账本 facts=0、refiner `available_real_ids` 恒空、submit-only 锁在 headless 下不可达）。用户拍板「最优雅最干净的方式修复」。
+- **修复方式（源头统一，非 setter 补丁）**：读码核实 `event_session_id` 构造时除存 `events` 外还喂给 `EventCoordinator::spawn`（`constructors/mod.rs:314`），事后补设改不到 coordinator → 必须构造源头传对。三处改动：
+  - `golish/src/cli/bootstrap/agent_init.rs`：`initialize_agent` 签名新增 `event_session_id: &str` + doc 说明「必须与 set_chat_session_id 同值」；5 个 provider arm 的硬编码 `"cli"` → 参数；默认 arm 从 `new_with_runtime`（内部硬编码 `""`，同病）改 `new_openrouter_with_shared_config` 统一风格（顺带用上真实 settings；该 arm 仅 anthropic/openai fallback 且已注明 misroute 到 OpenRouter client，实际不可用路径，行为变化面≈0）。
+  - `golish/src/cli/bootstrap/mod.rs`：REPL/runner 调用处显式传 `"cli"`（单会话语义不变，零行为变化）。
+  - `golish/src/stage_run/mod.rs`：传 `&session_id`（= `stage-run-{uuid}`）+ 注释固化「session 四身份同值」约定（event/evidence、终端 `set_session_id`、orchestrator `set_chat_session_id`、transcript 目录）。
+- **影响面核对（改前全量消费者排查）**：同步 evidence 写入（`direct/mod.rs` 3 处 `ctx.events.session_id`）、background job 归属/listener 过滤/落账（`with_agent_session` 亦源自 event_session_id，三处同步变化自洽）、事件 envelope、compaction transcript 查找（修后反与 transcript 目录对齐）；全仓 `"cli"` 无任何特判；GUI 走 `from_provider_config` 不经此函数零影响。
+- **运行过的验证（静态，已实跑）**：`cargo check -p golish` exit 0；`cargo clippy -p golish --all-targets -- -D warnings` exit 0 零告警；`cargo nextest run -p golish` **215/215 passed**；`cargo fmt -p golish --check` clean；ReadLints 3 文件无错。
+- **活体验证（修复后 stage-run 重跑全程完结，同参数 xiaomi/mimo → 默安 moresec.cn）**：日志 `/tmp/golish-stage-run-sessionfix.log`，对照组=上轮未修复 `/tmp/golish-stage-run-refiner.log`。**六个命中点全部实锤**：
+  1. `EventCoordinator started session_id=stage-run-ad871717-...`（对照组同位置 = `cli`）。
+  2. `backgrounded spawn ... session=Some("stage-run-ad871717-...")` ×50+，零次 `"cli"`（对照组全是 `Some("cli")`）。
+  3. evidence 双路径落账 90 条（同步 `recon_enrich_assets` id=2492 起 + `background job evidence appended` id=2497 起）。
+  4. coverage 注入 `fact_count=84`（账本派生 facts 活了；对照组恒 `fact_count=2` 全靠 DB 真值兜底、账本派生=0）。
+  5. `refiner fact-gathering: work already evidenced in the ledger (submit-only candidate) evidence_ids=[2689..2635]`（25 个真实 id；对照组 `available_real_ids` 恒空）。
+  6. **A 类 submit-only 锁真触发**：`refiner decision stage=target_intel class=SubmitOnly submit_only=true`（对照组同场景只能落 B 类 RedoStage——上一会话定性的「headless 下永远测不出」路径已打通）；锁经 `llm_stream_start` 以 named tool_choice（`additional_params.tool_choice={function:submit_stage_deliverable}`，日志 `choice=None` 是正常形态，named 走 additional_params 不走 rig tool_choice 枚举）下发 LLM。
+- **最终结局**：scoping PASS → target_intel BLOCK 终态（MiMo 干了活、账本 90 条证据，但 3 次 attempt 全程未交出可解析 StageDeliverable，submit-only 锁定下 3 轮 stream 仍吐不出合规 JSON）→ report 印出 A 类模板全文（列 25 个真实 id + 「ONLY submit」指令）。run 干净退出，embedded PG 已停。
+- **新观察（后续议题，非本任务 scope）**：MiMo 在 named tool_choice 强制下仍未能产出可解析 deliverable——需查 transcript 确认是 provider 不支持 named tool_choice 还是吐了烂 JSON；若为前者，submit-only 锁对 xiaomi provider 需要 prompt 级兜底。
+- **模块卡已更新**：`docs/modules/backend/golish/cli.md`（initialize_agent 接口行为）+ `docs/modules/backend/golish/stage_run.md`（session 四身份同值坑位）。
+- **提交记录**：未 commit（等用户决定；工作树另有承接前序会话的未提交改动）。改动文件：`M backend/crates/golish/src/cli/bootstrap/agent_init.rs`、`M backend/crates/golish/src/cli/bootstrap/mod.rs`、`M backend/crates/golish/src/stage_run/mod.rs`、`M docs/modules/backend/golish/{cli,stage_run}.md`、`M agent-progress.md`。
 
 ---
 

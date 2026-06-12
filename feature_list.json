@@ -36,6 +36,79 @@
       "remember": "改动核心在 coverage_complete() 逐格循环: authoritative=authoritative_found && (techniques None 或含本 tech); found_ok=authoritative?has_fact(Found):(自报||tagged||evidence); empty_ok=authoritative?(自报&&has_fact(Empty)):(自报||evidence)。下一步=Phase 1 给 coverage_truth 加 WHOIS/OSINT+主动 6 维 + 修 endpoint_add/host_add 落库, 然后把 authoritative_techniques 扩到全维。"
     },
     {
+      "id": "redteam-db-truth-phase1-landing-gaps-2026-06-12",
+      "priority": 0,
+      "area": "golish-db (2 migration: api_endpoints UNIQUE + organizations.whois; coverage_truth.rs 4→12 维 + TruthInputs 结构体) + golish-pentest (output_store/endpoints.rs 新 endpoint_add writer + dirent target_id 回填 + trait/adapter/dispatch; organizations/writers.rs merge_whois + mod.rs whois 路由; evidence_facts.rs WHOIS empty) + resources/toolsconfig/{ffuf,gobuster,masscan}.json + resources/harness/stages/{target_intel,external_attack_surface,enumeration}.json + harness/stage_spec.rs 守卫",
+      "title": "红队 DB 真值闭环 Phase 1：补落点——主动工具产物真落库（endpoint_add/host_add 孤儿修复）+ coverage_truth 从被动 4 维扩到 12 维（+WHOIS/OSINT/主动 6 维）+ WHOIS 专列路由 + target_intel authoritative 扩全 6 类 + EAS/enumeration 开 DB 真值投影补格",
+      "user_visible_behavior": "headless --stage-run：① enumeration 跑 katana/ffuf/gobuster/arjun → api_endpoints/directory_entries 真落库（不再 Unknown db_action 丢弃），EAS 跑 masscan → targets.ports 落库；② target_intel 的 WHOIS/OSINT found 也只认 DB 真值（whois 命令账本或 organizations.whois 列 / enrich 落 org 列）——纯自报不再放行；③ EAS/enum coverage 缺格时跑真工具落库后自动补 found（derive_from_evidence）；④ 日志 'merged DB business-table truth facts' 主动维度 > 0。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "docs/design/2026-06-12-redteam-phase1-landing-gaps.md (1-C WHOIS/1-D OSINT/1-E 扩维) + docs/design/2026-06-12-active-collection-db-truth-closure.md (1-A 主动落库/1-B 主动 6 维, P0-A/B+P1-C)",
+      "plan": "docs/superpowers/plans/2026-06-12-redteam-phase1-landing-gaps.md (7 Task TDD + 实施期勘验 6 条修正)",
+      "verification": [
+        "[✓] cargo nextest -p golish-db -p golish-pentest -p golish-agent-kit → 806 passed / 0 failed / 7 skipped (coverage_truth 12 维 11 测 + endpoint 6 测 + organizations whois 3 测 + evidence_facts whois empty + stage_spec 主动守卫)",
+        "[✓] cargo clippy -p golish-db -p golish-pentest -p golish-agent-kit --all-targets -- -D warnings → exit 0 零告警",
+        "[✓] cargo fmt -p golish-db -p golish-pentest -p golish-agent-kit -- --check → FMT_OK",
+        "[✓] cargo check -p golish → exit 0 (55s, 全下游 crate 编译)",
+        "[✓] check_repo_ownership.py → 基线一致 (stash 本次改动前后均 11+1 pre-existing, 0 新增; 新查询在已 SHARED 的 coverage_truth repo)",
+        "[✓] 7 toolsconfig + 3 stage JSON → 全 python3 -m json.tool VALID",
+        "[未跑] just precommit 全量 (commit 前补)",
+        "[未跑] 活体: deepseek --to enumeration → api_endpoints/directory_entries count>0, 主动维度投影补格, Unknown db_action 归零"
+      ],
+      "evidence": "2026-06-12 BaJie MCP-agent-1 (DISPATCH off, 接 MCP-3 上下文)。承 Phase 0 commit c20b1d53。实施期勘验修正 6 条写入计划: ffuf/gobuster pattern 字段 path→url; arjun 缺 url 进 errors; masscan 零 Rust; 主动阶段无 Empty 命令派生源故 EAS/enum 只开 derive_from_evidence 不开 authoritative (Phase 1.5 补); OSINT provider facts=None 走 DB 投影; JSAPI 只查 api_endpoints。",
+      "notes": "总纲铁律「先准后量」第 2 期: Phase 0(gate 信任) ✓→ Phase 1(补落点, 本条)→ Phase 2(子公司进 scoping)→ Phase 3(多 org 轴)→ Phase 4(前端)。Phase 0+1 对 target_intel 同期生效 = 6 被动类全 authoritative。红线全守: coverage_truth 只产 Found (I8 DB 无数据绝不推 checked_empty); gate 纯函数 + hook 注入链零改动; findings 不碰; migration I10 可重放; writer 只写真实产物。未 commit (用户仅授权实现)。",
+      "remember": "coverage_truth 扩点: assemble_truth_facts(in_scope, &TruthInputs{4 org bool + 8 HashSet})。endpoint writer 在 output_store/endpoints.rs (endpoint_parts 纯函数解析 URL)。WHOIS empty 在 evidence_facts.rs passive_intel_outcome。EAS/enum 故意不开 authoritative (stage_spec 守卫断言 NOT authoritative)。Phase 1.5 = 主动命令派生 Empty 源 + 开 EAS/enum authoritative。"
+    },
+    {
+      "id": "redteam-db-truth-phase2-subsidiary-scoping-2026-06-12",
+      "priority": 0,
+      "area": "golish-recon-app (asset_intel/agent_intel.rs run_passive_intel Subsidiaries 接 auto_promote_discovered_children + promote.rs select_discovery_policy) + golish-db (coverage_truth.rs TECH_SUBSIDIARY + has_subsidiary EXISTS 投影) + golish-agent-kit (evidence_facts.rs subsidiary_discovery_facts Empty 派生 + execute.rs gate hook 动态注入 SUBSIDIARY 期望技术 + org 级事实展开 + orchestrator.rs SubsidiaryScopePolicy + stage_spec.rs 守卫) + golish-agent-runtime (direct/mod.rs recon_discover_subsidiaries 落账打 facts + tool_list.rs API-only 类型零扫描隐藏) + golish (cli/args.rs --include-subsidiaries/--subsidiary-threshold + stage_run 透传) + resources/harness/stages/scoping.json (allowed_tool_types recon/osint + authoritative SUBSIDIARY gate_rules) + technique_taxonomy.json 登记",
+      "title": "红队 DB 真值闭环 Phase 2：子公司发现进 scoping——engagement 带 --include-subsidiaries 时 scoping 必须『ENScan 子公司发现 → 持股比例阈值筛 → 母+合格子落 organizations org 树』后 gate 才 PASS；harness 路径复用 GUI 已验证 auto-promote 真落 child org；不带 flag 零回归",
+      "user_visible_behavior": "headless --stage-run --include-subsidiaries [--subsidiary-threshold 51]：scoping gate 多一个 GOLISH-INTEL-SUBSIDIARY 维度——agent 必须真跑 recon_discover_subsidiaries（落 child org → DB 真值投影 found）或拿到『跑了→0 合格子』的账本 Empty 事实（自报 checked_empty + Empty 双要, I8）才 PASS；没跑 = not_attempted = BLOCK + hints 引导。harness 子公司发现现在像 GUI 一样把清过阈值(enscan promote_when scale>=51)+存续+去重的候选自动落成 child org（organizations.parent_id）。不带 flag：scoping 行为逐字节不变（hook 不注入 → coverage_complete no-op → confirm-only 语义保留）。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "docs/design/2026-06-12-redteam-phase2-subsidiary-scoping.md + 总纲 docs/design/2026-06-12-redteam-db-truth-master.md",
+      "plan": "docs/superpowers/plans/2026-06-12-redteam-phase2-subsidiary-scoping.md (Task B→C→A+D→E, 含实读勘查 §0)",
+      "verification": [
+        "[✓] cargo nextest -p golish-agent-kit → 615 passed / 0 failed (+8 新测: subsidiary_discovery_facts found/empty/fail-closed ×3, hook 注入+org 级展开 ×2, scoping 守卫 ×1, coverage_truth SUBSIDIARY ×2 已在 db)",
+        "[✓] cargo nextest -p golish-agent-runtime -p golish-recon-app -p golish-db → 470 passed / 0 failed (含 tool_list API-only 隐藏回归测, promote.rs select_discovery_policy 2 测, coverage_truth has_subsidiary 投影测)",
+        "[✓] cargo nextest -p golish → 215 passed; -p golish-pentest → 127 passed / 7 skipped",
+        "[✓] cargo clippy -p golish-agent-kit -p golish-agent-runtime -p golish-recon-app -p golish-db -p golish --all-targets -- -D warnings → exit 0 零告警",
+        "[✓] cargo fmt 5 crate --check → clean",
+        "[✓] cargo check -p golish → exit 0 (57s)",
+        "[✓] golish --help → --include-subsidiaries + --subsidiary-threshold [default: 50] 均在",
+        "[✓] scoping.json + technique_taxonomy.json → python3 json.load VALID",
+        "[✓] check_repo_ownership.py → 基线一致 (11+1 pre-existing, 0 新增)",
+        "[未跑] just precommit 全量 (commit 前补)",
+        "[未跑] 活体: --stage-run --include-subsidiaries --subsidiary-threshold 51 --org <有子公司母公司> → organizations 出现母+合格子(parent_id); 不带 flag scoping 立即 PASS (零回归)"
+      ],
+      "evidence": "2026-06-12 BaJie MCP-agent-1 (DISPATCH off)。用户拍板『全推 Phase 2(含 gate)』(scoping gate 安全语义变更授权, §2.7)。上轮中断会话已做 Task B/C + D 大半(agent_intel auto_promote 接线/scoping.json/coverage_truth 投影/orchestrator 字段), 本轮接力补齐 D.2(账本 Empty 派生+落账接线) D.4(gate hook 注入+org 级展开) A.2/A.3(CLI+透传) E.1(守卫) + 连锁回归修复 2 处。",
+      "notes": "连锁回归修复(Task C 白名单非空副作用): ① execute.rs confirm_only 判定改为『scoping 不带 subsidiary flag 仍是确认型』(unified-refiner A 类路由保留); ② tool_list.rs 零扫描隐藏判定改为『白名单全为 API-only 类型(recon/osint)仍隐藏 scan 执行面』(recon_* 是 registry 直发工具不需要 pentest_run/run_pty_cmd)。gate 闭环: 没跑→无 child org+无 Empty 事实→not_attempted BLOCK; 跑了有合格子→auto_promote 落 child org→db_truth_facts Found→PASS; 跑了 0 合格→summary(promoted_children=0,Completed)→账本 Empty 事实(org 级展开到 in-scope assets)→自报 checked_empty+Empty 双要→PASS (I8)。threshold 默认 50 仅作 run 策略记录(真筛选在 toolsconfig promote_when scale>=51)。I10: 复用 organizations.parent_id 零新 migration。",
+      "remember": "事实派生链: recon_discover_subsidiaries 工具 JSON summary → evidence_facts::subsidiary_discovery_facts (promoted>0→found / Completed+0→empty / Partial·Failed→None) → direct/mod.rs 落账三列 → execute.rs fetch_evidence_facts_for_gate ③ project_org_level_subsidiary_facts 展开公司名→in-scope 资产轴 → rule_engine authoritative 消费。hook 注入: inject_subsidiary_expected_technique(base, stage, require) 仅 scoping+policy 时并入 SUBSIDIARY。Phase 3 = 多 org coverage 轴(母先收→子逐个收)。"
+    },
+    {
+      "id": "redteam-db-truth-phase3-multi-org-coverage-2026-06-12",
+      "priority": 0,
+      "area": "golish/src/stage_run/mod.rs (方案 A 调度层: child_slice/filter_child_orgs/build_child_objective/subsidiary_summary 纯函数 + run() 6.5 步逐子 org 串行 orchestrate + engagement 级 exit 聚合)。gate/coverage 引擎零改动 (复用 06-10 org 隔离)",
+      "title": "红队 DB 真值闭环 Phase 3：多 org coverage 轴(方案 A)——--include-subsidiaries 跑完母 org slice 后,对 Phase 2 落库的每个合格子 org 串行再跑 target_intel..=to(子不重跑 scoping);engagement 级结局 = 母+全部子各自 PASS,任一失败整体 FAILED",
+      "user_visible_behavior": "headless --stage-run --include-subsidiaries --to <stage>: 母趟跑完(scoping 建 org 树 + 母收集)后,stderr 出现 '── subsidiary i/n: <名> (<id>) ──' 逐子 org 跑;每个子趟独立 task/operation_state 绑子 org_id(coverage gate 资产轴/DB 真值投影按 org 隔离);报告尾部多 'subsidiary runs (Phase 3)' per-org OK/FAILED 汇总 + 'engagement: x/n subsidiaries OK';任一子失败 exit 非 0 (engagement INCOMPLETE)。--to scoping 时只建树无子趟;不带 flag 零行为变化。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "docs/design/2026-06-12-redteam-phase3-multi-org-coverage.md (方案 A 推荐起步; 方案 B coverage 轴显式 org×asset×tech 列为后续评估) + 总纲 docs/design/2026-06-12-redteam-db-truth-master.md",
+      "plan": "docs/superpowers/plans/2026-06-12-redteam-phase3-multi-org-coverage.md (Task F 纯函数→G 编排→H 门禁, 含现状勘查与 5 决策)",
+      "verification": [
+        "[✓] cargo nextest -p golish → 219 passed / 0 failed (+4 新测: child_slice scoping→None+不含 scoping / filter_child_orgs 只留直接子 / child_objective 含真实 id+母名+THIS subsidiary / subsidiary_summary 聚合+空静默)",
+        "[✓] cargo clippy -p golish --all-targets -- -D warnings → exit 0 零告警",
+        "[✓] cargo fmt -p golish --check → clean",
+        "[✓] cargo check -p golish → exit 0",
+        "[未跑] just precommit 全量 (commit 前补)",
+        "[未跑] 活体: --stage-run --profile red_team --to target_intel --include-subsidiaries --org <有子公司母企> --target <根域名> → 母 scoping 建树 + 母 target_intel + 每合格子各一趟 target_intel; per-org 汇总; 漏任一子 org exit 非 0; 不带 flag 单趟行为不变"
+      ],
+      "evidence": "2026-06-12 BaJie MCP-agent-1 (DISPATCH off)。用户「继续 Phase 3」。方案 A 落地: gate/coverage_truth/orchestrator 内核零改动——orchestrate() 每子趟换绑 harness_org_id, 06-10 org 隔离让 Phase 0/1/2 真值判定自动按 org 生效。前置 sub_agent override bug 已于同日修复并活体验证 (register_preserving_overrides)。",
+      "notes": "5 决策: ① 不加新 flag (--include-subsidiaries 即 engagement 级语义, --to scoping 自然退化只建树); ② 串行不并发不设上限 (阈值 51% 天然限量, 截断违反「漏 org=BLOCK」); ③ 子趟 entry 固定 target_intel (scoping 是 engagement 级动作); ④ 子趟 include_subsidiaries=false (不递归孙公司, SUBSIDIARY gate 不激活); ⑤ 子趟失败不中断兄弟趟 (一次跑完暴露全部缺口, 最后聚合 Err)。子 org 起步无 targets (Phase 2 auto_promote 不落 targets)→ target_intel 资产轴 fallback 自报, agent enrich 落 targets 后下游 EAS/enum 自动硬化——这是 target_intel 本职非 blocker。共享 session: 跨 org 账本事实因 asset 不重叠不互相投影。",
+      "remember": "编排在 stage_run/mod.rs run() 6.5 步 (母趟 Ok && include_subsidiaries && seed.org_id → organizations::list(project)→filter_child_orgs→循环 orchestrate)。exit 聚合在 run() 尾部 (母 Err 优先, 否则 failed_subs 非空→Err)。方案 B (单趟 org×asset×tech 轴) 与 engagement 级进度视图 (Phase 4 前端) 是后续。活体需 ENScan 凭据+真子公司母企。"
+    },
+    {
       "id": "db-truth-driven-gate-coverage-2026-06-12",
       "priority": 1,
       "area": "backend: golish-agent-kit/src/harness/gate/{rule_engine.rs(coverage_complete 复用 evidence_facts 通道,从业务表派生 facts),mod.rs} + task_orchestrator/subtask_phases/execute.rs(stage-close hook 查业务表派生 facts 注入 ctx.evidence_facts) + golish-db(按 org/target 查某 technique 有无数据的只读查询) + evidence_facts.rs(provider 路径 technique 标注) + 诊断式 reflector(execute.rs repair 上下文组装)",
@@ -1235,6 +1308,26 @@
       ],
       "evidence": "2026-06-03 MCP-agent-2 brainstorming 后写设计+计划（零代码改动）。下一步：用户授权后转 in_progress 执行 Task 1-5。",
       "notes": "2026-06-03 接 MCP-1 上下文转移、修完 sub-agent 撞墙后，用户提出『逐阶段 plan』设想，经 brainstorming 逐点拍板（A 懒生成逐阶段 / 中途更新先 D 主链后 A reflector 增量 / 测试阶段无 flag）。本设计只覆盖 D（主链）；A（reflector 每步增量改本阶段剩余 task，复用 refine_plan）留后续。核心：复用现有 run_stage_subtasks 空阶段分支（execute.rs:596）+ synthesize_stage_subtask 回落（generator 失败/空不空转），把『合成1个』升级为『懒产N个含submit末步』+ run() 跳过上游扁平 generate_subtasks。高风险=动 orchestrator 执行主干，无 flag 直接替换（回滚=git revert）。注意 §2.1 in_progress 槽位已超限，待用户 reconcile。改动未 commit。"
+    },
+    {
+      "id": "unified-refiner-correction-channel-2026-06-12",
+      "priority": 1,
+      "area": "backend: golish-agent-kit/src/task_orchestrator/{refiner.rs(新),subtask_phases/execute.rs(HarnessGateOutcome 事实字段+enforce_* 置标记+两 gate 调用点接线+删两个 synthesize_*+删 reflect() 路径),types.rs,prompts/pipeline.rs} + harness/stage_spec.rs(删 synthesize_from_evidence_when_missing) + target_intel stage spec JSON",
+      "title": "统一 Refiner：gate BLOCK 后纠错收敛为单一通道（确定性分类 D伪造>A只需提交(锁)>B重做>C覆盖/空(诊断)>E质量>G流程>F纯文本 + 每类独立干净 prompt），砍投影兜底与 confirm-only 合成（deliverable 永远出自主 agent），废链式 correction 拼接",
+      "user_visible_behavior": "headless --stage-run：missing-deliverable 时 submit-only 锁真触发（不再被投影兜底截胡）；vacuous BLOCK 的纠正含 DB 真值诊断+具体命令（不再只有通用劝说）；日志每次 BLOCK 出 'refiner decision class=… submit_only=…' 可观测；不再出现 'synthesizing' 合成兜底日志。",
+      "status": "in_progress",
+      "design": "docs/design/2026-06-12-unified-refiner.md（用户 2026-06-12 拍板 D1 收敛范围/D2 refiner 不自己过 gate/D3 两个合成兜底都砍/D4 F类模板化/D5 分类优先级；§1 两连 BLOCK 实锤=投影兜底两次截胡 submit-only 锁+PR-C 诊断错位 vacuous）",
+      "plan": "docs/superpowers/plans/2026-06-12-unified-refiner.md（writing-plans · PR-R1 Task1-4 refiner骨架+模板+事实字段+接线 / PR-R2 Task5 砍投影兜底 / PR-R3 Task6 砍confirm-only合成 / PR-R4 Task7 F类模板化删reflect() / Task8 活体收口）",
+      "verification": [
+        "cargo nextest run -p golish-agent-kit -E 'test(refiner)' → 分类器+模板单测全绿（含锁触发回归锚点、vacuous 附诊断命令断言）",
+        "rg 'synthesize_from_evidence|synthesize_confirm_only' backend/ resources/ → 0 匹配（PR-R2/R3 后）",
+        "rg '\\.reflect\\(' backend/crates/golish-agent-kit/src/ → 0 匹配（PR-R4 后）",
+        "cargo clippy -p golish-agent-kit -- -D warnings → exit 0",
+        "活体对照（同命令 xiaomi/mimo×moresec.cn）：日志 refiner decision 每 BLOCK 必现；missing 场景 class=SubmitOnly submit_only=true；无 synthesizing 日志",
+        "just precommit → 全绿"
+      ],
+      "evidence": "2026-06-12 BaJie MCP-agent-3：写设计+计划（零实现代码改动）。活体两连 BLOCK 实证（log:483-492 attempt1 / log:1341-1353 attempt2，投影兜底两次把 missing_deliverable 置 false 截胡 submit-only 锁）已写入设计 §1。下一步：用户授权后转 in_progress 按计划 Task 1 起步。",
+      "notes": "2026-06-12 BaJie MCP-agent-3（DISPATCH off，接 MCP-1 上下文）。用户原话：『兜底逻辑太多了…只保留一个 refiner 纠错逻辑，每次调用都定好不同阶段什么 prompt 保证干净』。用户接受『refiner 只产纠正+锁决策、deliverable 永远出自主 agent』红线（否决 refiner 自己过 gate——LLM 替 agent 伪造交付破 I7）。gate 判错（vacuous/coverage/fabricated/kinds/freshness/red_team/human-gate）零改动。与 db-truth-driven-gate-coverage-2026-06-12 关系：其 §5.4 诊断式 reflector 被本条 C 类模板吸收（确定性诊断已实现，本条把触发从仅 coverage 扩到 vacuous）；LLM 增强位保留为可选、本期不实现。"
     }
   ]
 }
