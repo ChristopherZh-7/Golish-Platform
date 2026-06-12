@@ -31,11 +31,13 @@
     { "op": "named_check", "check": "min_invocations" },
     {
       "op": "coverage_complete",
+      "derive_from_evidence": true,
+      "$comment_derive": "Phase 1 (2026-06-12-redteam-phase1): DB business-table truth补格 \u2014 GOLISH-EAS-LIVENESS\u2190targets(http_status/real_ip), -PORT\u2190targets.ports, -SERVICE-FINGERPRINT\u2190fingerprints. 真跑工具落库后 coverage 格自动补 found; 不开 authoritative (主动阶段命令派生的 Empty 事实源未就绪, 见 phase1 计划勘验4), 故自报 cell 仍兜底, DB 投影只增不减.",
       "on_fail": {
         "reason": "external attack surface incomplete: some in-scope assets were not fully mapped (liveness / port / service-fingerprint)",
         "hints": [
           "for EVERY in-scope asset, take each of GOLISH-EAS-LIVENESS (httpx confirms the host is live + resolves its current IP; DNS was already done in target_intel \u2014 REUSE the inherited dns_a, do NOT re-run dig) / GOLISH-EAS-PORT (port scan) / GOLISH-EAS-SERVICE-FINGERPRINT (service/version) to a terminal coverage cell: found+evidence_refs / checked_empty+evidence_refs / blocked|not_applicable+note",
-          "intel-source data (FOFA/Shodan/...) is a lead, not proof \u2014 actively confirm each asset NOW; JS/API extraction happens in the NEXT stage (enumeration) on the services you map here"
+          "intel-source data (FOFA/Shodan/...) is a lead, not proof \u2014 actively confirm each asset NOW; the gate auto-projects found cells from DB truth (httpx\u2192targets, naabu/masscan\u2192targets.ports, whatweb/nmap\u2192fingerprints) so running the real tools fills coverage; JS/API extraction happens in the NEXT stage (enumeration)"
         ]
       }
     }

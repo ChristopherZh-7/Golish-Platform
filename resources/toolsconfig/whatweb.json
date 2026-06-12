@@ -1,0 +1,117 @@
+{
+  "tool": {
+    "id": "whatweb",
+    "name": "whatweb",
+    "description": "Web technology fingerprinter - identifies CMS, frameworks, web servers, JS libraries, analytics and WAF from HTTP responses",
+    "executable": "whatweb/whatweb",
+    "runtime": "ruby",
+    "runtimeVersion": "3.2",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "http",
+    "tier": "recommended",
+    "pentestPhase": ["enum"],
+    "tags": ["recon", "http", "fingerprint", "cms"],
+    "install": {
+      "method": "github",
+      "source": "urbanadventurer/WhatWeb",
+      "linux": { "method": "apt", "source": "whatweb" }
+    },
+    "params": [
+      {
+        "label": "Target",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Target URL or host (positional). Accepts comma-separated list or /24 range.",
+        "placeholder": "https://target.com"
+      },
+      {
+        "label": "Aggression",
+        "flag": "-a",
+        "type": "select",
+        "description": "Stealth(1) does one request; higher levels probe more (and louder)",
+        "default": "1",
+        "options": [
+          { "value": "1", "label": "1 - Stealthy (single GET)" },
+          { "value": "3", "label": "3 - Aggressive" },
+          { "value": "4", "label": "4 - Heavy" }
+        ]
+      },
+      {
+        "label": "JSON Log",
+        "flag": "--log-json",
+        "type": "string",
+        "description": "Write structured results to a JSON file",
+        "placeholder": "whatweb.json"
+      },
+      {
+        "label": "User Agent",
+        "flag": "-U",
+        "type": "string",
+        "description": "Custom User-Agent string",
+        "placeholder": "Mozilla/5.0"
+      },
+      {
+        "label": "Max Threads",
+        "flag": "--max-threads",
+        "type": "string",
+        "description": "Concurrent requests",
+        "default": "25"
+      },
+      {
+        "label": "Custom Header",
+        "flag": "-H",
+        "type": "string",
+        "description": "Add a request header (e.g. auth cookie for logged-in fingerprinting)",
+        "placeholder": "Cookie: session=abcd"
+      },
+      {
+        "label": "Verbose",
+        "flag": "-v",
+        "type": "boolean",
+        "description": "Verbose plugin detail"
+      }
+    ],
+    "skills": [
+      {
+        "id": "stealth-fingerprint",
+        "name": "Stealth Fingerprint",
+        "description": "Single-request technology fingerprint of a live host",
+        "args": "-a 1 {{target}}",
+        "tags": ["recon", "fast"]
+      },
+      {
+        "id": "aggressive-fingerprint",
+        "name": "Aggressive Fingerprint",
+        "description": "Deeper plugin probing for CMS/version detail",
+        "args": "-a 3 {{target}}",
+        "tags": ["recon", "thorough"]
+      },
+      {
+        "id": "json-fingerprint",
+        "name": "Fingerprint to JSON",
+        "description": "Structured fingerprint output for downstream parsing",
+        "args": "-a 1 --log-json=whatweb.json {{target}}",
+        "tags": ["recon", "structured"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["fingerprint"],
+      "detect": "WhatWeb|\\[ \\d{3} ",
+      "db_action": "target_update_recon",
+      "patterns": [
+        {
+          "type": "fingerprint",
+          "regex": "^(https?://\\S+)\\s+\\[(\\d{3})\\]\\s+(.+)$",
+          "fields": {
+            "url": "$1",
+            "status": "$2",
+            "technologies": "$3"
+          }
+        }
+      ]
+    }
+  }
+}

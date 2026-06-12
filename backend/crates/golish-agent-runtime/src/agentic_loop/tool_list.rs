@@ -57,17 +57,31 @@ pub(crate) async fn build_tool_list(
 /// tools AND offensive sub-agent dispatchers (pentester / browser) from the
 /// exposed list so the model never attempts (or delegates) work it could only be
 /// denied. No-op when no stage is active or the stage permits ≥1 scan type.
+///
+/// Phase 2 (2026-06-12-redteam-phase2): `recon/osint` is the API-driven passive
+/// class — its tools (`recon_discover_subsidiaries` / `recon_enrich_assets`, the
+/// ENScan providers) are registry tools that never go through a scanner/shell
+/// surface. A stage whose whitelist contains ONLY such API classes (scoping
+/// after the subsidiary gate landed) still has no use for `pentest_run` /
+/// `run_pty_cmd` / offensive sub-agents, so it keeps the zero-scan hiding.
 fn hide_scans_for_zero_scan_stage(
     tools: &mut Vec<rig::completion::ToolDefinition>,
     harness_stage: Option<golish_agent_kit::harness::StageKind>,
 ) {
+    /// Tool types whose tools dispatch via the registry (HTTP API providers),
+    /// not via a scan-execution surface.
+    const API_ONLY_TOOL_TYPES: &[&str] = &["recon/osint"];
     let Some(kind) = harness_stage else {
         return;
     };
     let Ok(spec) = golish_agent_kit::harness::load_embedded_stage_spec(kind) else {
         return;
     };
-    if !spec.allowed_tool_types.is_empty() {
+    let needs_scan_surface = spec
+        .allowed_tool_types
+        .iter()
+        .any(|t| !API_ONLY_TOOL_TYPES.contains(&t.as_str()));
+    if needs_scan_surface {
         return;
     }
     let before = tools.len();
@@ -102,8 +116,9 @@ mod tests {
         }
     }
 
-    /// D1 · a stage with empty `allowed_tool_types` (scoping) hides scan tools but
-    /// keeps meta/control-plane tools; a scan-permitting stage (enumeration) and
+    /// D1 · a stage with no scan-surface tool types (scoping: whitelist is the
+    /// API-only `recon/osint` since Phase 2) hides scan tools but keeps
+    /// meta/control-plane tools; a scan-permitting stage (enumeration) and
     /// the no-stage case leave the list untouched.
     #[test]
     fn hide_scans_strips_scan_tools_only_in_zero_scan_stage() {

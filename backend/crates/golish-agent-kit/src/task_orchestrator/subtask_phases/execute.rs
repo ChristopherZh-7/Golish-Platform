@@ -254,6 +254,7 @@ impl TaskOrchestrator {
                         in_scope_assets,
                         in_scope_target_types,
                         evidence_facts,
+                        self.harness_subsidiary_policy.map(|p| p.threshold_pct),
                     );
                     if let Some(mut outcome) = gate_outcome {
                         // P0 · reject deliverables citing fabricated evidence ids
@@ -423,6 +424,7 @@ impl TaskOrchestrator {
             in_scope_assets,
             in_scope_target_types,
             evidence_facts,
+            self.harness_subsidiary_policy.map(|p| p.threshold_pct),
         );
         if let Some(mut outcome) = gate_outcome {
             self.enforce_evidence_existence(&mut outcome).await;
@@ -1306,6 +1308,15 @@ impl TaskOrchestrator {
             }
         }
 
+        // ③ Phase 2 (2026-06-12-redteam-phase2): GOLISH-INTEL-SUBSIDIARY 是 org 级
+        // 维度——账本事实的 asset 是公司名 (recon_discover_subsidiaries 的 subject),
+        // 不是 in-scope 主机。展开投影到每个 in-scope asset, 让 per-asset coverage
+        // 格能消费 (与 db_truth_facts 的 has_subsidiary org 级投影同构)。Empty 的
+        // 展开是 I8 的关键: 「跑了→0 合格子」才能走 checked_empty 而非 not_attempted。
+        if let Some(assets) = in_scope_assets {
+            project_org_level_subsidiary_facts(&mut facts, assets);
+        }
+
         if facts.is_empty() {
             return None;
         }
@@ -1416,8 +1427,7 @@ impl TaskOrchestrator {
         }
         // Kind labels make the echo even easier for a weak model ("#1632 (dns_a)").
         // Lookup failure only drops the labels, not the submit-only routing.
-        outcome.evidence_kind_labels =
-            self.repo.evidence_kinds_for(&ids).await.unwrap_or_default();
+        outcome.evidence_kind_labels = self.repo.evidence_kinds_for(&ids).await.unwrap_or_default();
         outcome.available_real_ids = ids;
         tracing::info!(
             target: "harness::hook",
@@ -1720,6 +1730,61 @@ fn gate_expected_techniques(
     }
 }
 
+/// Phase 2 (2026-06-12-redteam-phase2) · org 级 SUBSIDIARY 事实展开: 账本里
+/// `GOLISH-INTEL-SUBSIDIARY` 的事实 asset 是公司名, 与 coverage 矩阵的 in-scope
+/// asset 轴对不上——把每条 SUBSIDIARY 事实按 org 级语义复制到全部 in-scope
+/// asset (去重)。纯函数便于单测。
+fn project_org_level_subsidiary_facts(
+    facts: &mut Vec<crate::harness::gate::rule_engine::EvidenceFact>,
+    in_scope_assets: &[String],
+) {
+    use crate::harness::evidence_facts::TECH_SUBSIDIARY;
+    let org_level: Vec<crate::harness::gate::rule_engine::EvidenceFact> = facts
+        .iter()
+        .filter(|f| f.technique == TECH_SUBSIDIARY)
+        .cloned()
+        .collect();
+    for fact in org_level {
+        for asset in in_scope_assets {
+            let exists = facts.iter().any(|f| {
+                f.asset == *asset && f.technique == TECH_SUBSIDIARY && f.outcome == fact.outcome
+            });
+            if !exists {
+                facts.push(crate::harness::gate::rule_engine::EvidenceFact {
+                    asset: asset.clone(),
+                    technique: TECH_SUBSIDIARY.to_string(),
+                    outcome: fact.outcome,
+                    evidence_id: fact.evidence_id,
+                });
+            }
+        }
+    }
+}
+
+/// Phase 2 · scoping gate 的 SUBSIDIARY 期望技术注入: engagement 订阅了子公司
+/// (`--include-subsidiaries`) 且当前 stage 是 scoping → 把 `GOLISH-INTEL-SUBSIDIARY`
+/// 并入 gate 的 expected techniques (静态 spec 留空, 不带 flag 时 hook 不注入 →
+/// coverage_complete no-op → 零回归)。纯函数便于单测。
+fn inject_subsidiary_expected_technique(
+    base: Option<Vec<String>>,
+    stage: crate::harness::StageKind,
+    require_subsidiary: bool,
+) -> Option<Vec<String>> {
+    use crate::harness::evidence_facts::TECH_SUBSIDIARY;
+    if !require_subsidiary || stage != crate::harness::StageKind::Scoping {
+        return base;
+    }
+    let mut techniques = base.unwrap_or_default();
+    if !techniques.iter().any(|t| t == TECH_SUBSIDIARY) {
+        techniques.push(TECH_SUBSIDIARY.to_string());
+    }
+    Some(techniques)
+}
+
+/// `subsidiary_threshold` (Phase 2): `Some(pct)` = the engagement opted into
+/// subsidiary scoping (`--include-subsidiaries --subsidiary-threshold <pct>`) —
+/// scoping's gate then requires the GOLISH-INTEL-SUBSIDIARY dimension. `None`
+/// = legacy scoping (no injection, zero behaviour change).
 fn apply_harness_gate_hook(
     planned: &PlannedSubtask,
     exec_ctx: &ExecutionContext,
@@ -1727,6 +1792,7 @@ fn apply_harness_gate_hook(
     in_scope_assets: Option<Vec<String>>,
     in_scope_target_types: Vec<String>,
     evidence_facts: Option<Vec<crate::harness::gate::rule_engine::EvidenceFact>>,
+    subsidiary_threshold: Option<u8>,
 ) -> (String, Option<HarnessGateOutcome>) {
     let Some(stage_hint) = planned.harness_stage.as_ref() else {
         // Observability (2026-06-01): previously DEBUG, so a stage-less subtask
@@ -1816,11 +1882,19 @@ fn apply_harness_gate_hook(
         );
     }
 
-    // StageSpec.allowed_tool_types.is_empty()（scoping / reporting 等确认型阶段）：
+    // StageSpec.allowed_tool_types.is_empty()（reporting 等确认型阶段）：
     // missing-deliverable 分支与 Refiner 的 A 类 confirm-only 变体共用此事实。
-    let confirm_only = crate::harness::load_embedded_stage_spec(stage_hint.stage_kind)
-        .map(|s| s.allowed_tool_types.is_empty())
-        .unwrap_or(false);
+    // Phase 2 (redteam-phase2)：scoping 的静态白名单已含 recon/osint（子公司发现
+    // 工具），但「要不要真跑工具」是 engagement 级决定——不带
+    // `--include-subsidiaries` 时 scoping 仍是纯授权确认阶段（confirm-only，
+    // 行为与白名单为空时逐字节一致，零回归）；带 flag 才是真工具阶段
+    // （missing deliverable + 账本空 → B 类重做引导跑子公司发现）。
+    let confirm_only = match stage_hint.stage_kind {
+        crate::harness::StageKind::Scoping => subsidiary_threshold.is_none(),
+        _ => crate::harness::load_embedded_stage_spec(stage_hint.stage_kind)
+            .map(|s| s.allowed_tool_types.is_empty())
+            .unwrap_or(false),
+    };
 
     let deliverable = match parse_deliverable_from_content(&content) {
         Some(d) => d,
@@ -1862,8 +1936,24 @@ fn apply_harness_gate_hook(
     // ③ (P3): dynamic expected techniques derived from the in-scope assets'
     // `targets.type` — `None` (no type info / non-coverage stage) falls back to
     // `spec.expected_techniques` (zero behavior change).
-    let expected_techniques =
-        gate_expected_techniques(stage_hint.stage_kind, &in_scope_target_types);
+    // Phase 2 (redteam-phase2): when the engagement opted into subsidiary
+    // scoping, scoping's coverage matrix additionally requires the org-tree
+    // dimension (GOLISH-INTEL-SUBSIDIARY) — without the flag nothing is
+    // injected and scoping's coverage_complete stays a no-op (zero回归).
+    let expected_techniques = inject_subsidiary_expected_technique(
+        gate_expected_techniques(stage_hint.stage_kind, &in_scope_target_types),
+        stage_hint.stage_kind,
+        subsidiary_threshold.is_some(),
+    );
+    if let (Some(pct), crate::harness::StageKind::Scoping) =
+        (subsidiary_threshold, stage_hint.stage_kind)
+    {
+        tracing::info!(
+            target: "harness::hook",
+            subsidiary_threshold_pct = pct,
+            "scoping subsidiary gate active: GOLISH-INTEL-SUBSIDIARY injected into expected techniques"
+        );
+    }
     let gate_ctx = crate::harness::GateContext {
         in_scope_assets,
         expected_techniques,
@@ -2378,7 +2468,9 @@ mod dag_driven_helper_tests {
             crate::task_orchestrator::refiner::RefineClass::RedoStage,
             "empty ledger + substantive stage must route to the redo template"
         );
-        assert!(d.correction.contains("did not include a parseable StageDeliverable"));
+        assert!(d
+            .correction
+            .contains("did not include a parseable StageDeliverable"));
     }
 
     // 设计 2026-06-12-unified-refiner · missing + ledger has real ids ⇒ the
@@ -2386,8 +2478,8 @@ mod dag_driven_helper_tests {
     // （投影兜底截胡 bug 的接线级回归锚点）.
     #[test]
     fn missing_with_ledger_ids_routes_to_submit_only_lock() {
-        let mut o = missing_deliverable_gate_outcome(StageKind::TargetIntel, false)
-            .expect("BLOCK outcome");
+        let mut o =
+            missing_deliverable_gate_outcome(StageKind::TargetIntel, false).expect("BLOCK outcome");
         o.available_real_ids = vec![1634, 1632, 1700];
         o.evidence_kind_labels = std::collections::HashMap::from([
             (1632_i64, "dns_a".to_string()),
@@ -2567,6 +2659,72 @@ mod dag_driven_helper_tests {
         assert!(super::gate_expected_techniques(StageKind::Scoping, &["domain".into()]).is_none());
     }
 
+    // ── Phase 2 (2026-06-12-redteam-phase2): scoping SUBSIDIARY gate wiring ──
+
+    #[test]
+    fn subsidiary_injection_only_for_scoping_with_policy() {
+        use crate::harness::evidence_facts::TECH_SUBSIDIARY;
+        // scoping + policy → SUBSIDIARY 注入 (None base → Some([SUBSIDIARY])).
+        let t = super::inject_subsidiary_expected_technique(None, StageKind::Scoping, true)
+            .expect("scoping with policy injects");
+        assert_eq!(t, vec![TECH_SUBSIDIARY.to_string()]);
+        // 不带 flag (零回归): scoping 注入前后逐字节一致 — None 保持 None.
+        assert!(
+            super::inject_subsidiary_expected_technique(None, StageKind::Scoping, false).is_none()
+        );
+        // 非 scoping stage 不注入 (base 原样透传).
+        let base = Some(vec!["GOLISH-INTEL-DNS".to_string()]);
+        assert_eq!(
+            super::inject_subsidiary_expected_technique(base.clone(), StageKind::TargetIntel, true),
+            base
+        );
+        // base 已含 SUBSIDIARY → 不重复追加.
+        let with = Some(vec![TECH_SUBSIDIARY.to_string()]);
+        assert_eq!(
+            super::inject_subsidiary_expected_technique(with.clone(), StageKind::Scoping, true),
+            with
+        );
+    }
+
+    #[test]
+    fn org_level_subsidiary_facts_project_to_in_scope_assets() {
+        use crate::harness::evidence_facts::TECH_SUBSIDIARY;
+        use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
+        // 账本事实的 asset 是公司名 ("默安科技"), in-scope 资产是域名 — 展开后
+        // 每个 in-scope asset 拿到一条同 outcome 的 SUBSIDIARY 事实 (I8: Empty
+        // 的展开让「跑了→0 合格子」能填 checked_empty 格).
+        let mut facts = vec![EvidenceFact {
+            asset: "默安科技".into(),
+            technique: TECH_SUBSIDIARY.into(),
+            outcome: EvidenceOutcome::Empty,
+            evidence_id: 42,
+        }];
+        let assets = vec!["moresec.cn".to_string(), "moresec.com".to_string()];
+        super::project_org_level_subsidiary_facts(&mut facts, &assets);
+        for asset in &assets {
+            assert!(
+                facts.iter().any(|f| f.asset == *asset
+                    && f.technique == TECH_SUBSIDIARY
+                    && f.outcome == EvidenceOutcome::Empty
+                    && f.evidence_id == 42),
+                "expanded Empty fact missing for {asset}"
+            );
+        }
+        // 幂等: 再跑一遍不重复.
+        let n = facts.len();
+        super::project_org_level_subsidiary_facts(&mut facts, &assets);
+        assert_eq!(facts.len(), n, "projection must be idempotent");
+        // 非 SUBSIDIARY 事实不被展开.
+        let mut other = vec![EvidenceFact {
+            asset: "默安科技".into(),
+            technique: "GOLISH-INTEL-DNS".into(),
+            outcome: EvidenceOutcome::Found,
+            evidence_id: 7,
+        }];
+        super::project_org_level_subsidiary_facts(&mut other, &assets);
+        assert_eq!(other.len(), 1, "non-subsidiary facts must not be projected");
+    }
+
     /// L4a: only an engine `Interrupted` is a resumable pause (→ task `Waiting`,
     /// skip the reporter). `Completed`/`Failed` must fall through to the normal
     /// terminal path so a paused op is never wrongly marked Finished — the very
@@ -2648,7 +2806,7 @@ mod harness_gate_hook_tests {
         let ctx = ExecutionContext::default();
         let content = "anything".to_string();
         assert_eq!(
-            apply_harness_gate_hook(&p, &ctx, content.clone(), None, vec![], None).0,
+            apply_harness_gate_hook(&p, &ctx, content.clone(), None, vec![], None, None).0,
             content
         );
     }
@@ -2659,7 +2817,7 @@ mod harness_gate_hook_tests {
         let ctx = ExecutionContext::default();
         let content = "ignore me".to_string();
         assert_eq!(
-            apply_harness_gate_hook(&p, &ctx, content.clone(), None, vec![], None).0,
+            apply_harness_gate_hook(&p, &ctx, content.clone(), None, vec![], None, None).0,
             content
         );
     }
@@ -2957,8 +3115,14 @@ mod harness_gate_hook_tests {
         block_outcome_for_fabricated(&mut o, &[999], &[]);
         assert!(!o.gate_allowed, "fabricated evidence must BLOCK the gate");
         let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(None));
-        assert_eq!(d.class, crate::task_orchestrator::refiner::RefineClass::Fabricated);
-        assert!(d.correction.contains("999"), "correction names the fabricated id");
+        assert_eq!(
+            d.class,
+            crate::task_orchestrator::refiner::RefineClass::Fabricated
+        );
+        assert!(
+            d.correction.contains("999"),
+            "correction names the fabricated id"
+        );
         assert!(d.correction.contains("do NOT exist"));
         // No real ids known → tell the agent to run the tools first.
         assert!(
@@ -2983,7 +3147,9 @@ mod harness_gate_hook_tests {
         assert_eq!(o.available_real_ids, vec![86, 88, 90]);
         let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(None));
         assert!(
-            d.correction.contains("86") && d.correction.contains("88") && d.correction.contains("90"),
+            d.correction.contains("86")
+                && d.correction.contains("88")
+                && d.correction.contains("90"),
             "names real ids: {}",
             d.correction
         );
@@ -3009,7 +3175,10 @@ mod harness_gate_hook_tests {
         o.gate_reasons = vec!["deliverable vacuous: no claims".to_string()];
         block_outcome_for_fabricated(&mut o, &[5], &[]);
         let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(None));
-        assert_eq!(d.class, crate::task_orchestrator::refiner::RefineClass::Fabricated);
+        assert_eq!(
+            d.class,
+            crate::task_orchestrator::refiner::RefineClass::Fabricated
+        );
         assert!(
             d.correction.contains("do NOT exist"),
             "fabrication template wins as the primary correction"
@@ -3087,8 +3256,15 @@ mod missing_deliverable_fail_closed_tests {
         ] {
             let p = planned(stage);
             let facts = vec![fact("a", "GOLISH-INTEL-DNS", EvidenceOutcome::Found, 7)];
-            let (out, outcome) =
-                apply_harness_gate_hook(&p, &ctx, "prose".to_string(), None, vec![], Some(facts));
+            let (out, outcome) = apply_harness_gate_hook(
+                &p,
+                &ctx,
+                "prose".to_string(),
+                None,
+                vec![],
+                Some(facts),
+                None,
+            );
             let o = outcome.expect("stage-tagged unparseable content must produce an outcome");
             assert!(!o.gate_allowed, "{stage:?} must fail-closed BLOCK");
             assert!(
@@ -3112,7 +3288,7 @@ mod missing_deliverable_fail_closed_tests {
         let p = planned(StageKind::Scoping);
         let ctx = ExecutionContext::default();
         let (out, outcome) =
-            apply_harness_gate_hook(&p, &ctx, "prose".to_string(), None, vec![], None);
+            apply_harness_gate_hook(&p, &ctx, "prose".to_string(), None, vec![], None, None);
         let o = outcome.expect("stage-tagged unparseable content must produce an outcome");
         assert!(!o.gate_allowed, "confirm-only missing must BLOCK too");
         assert!(o.missing_deliverable);
@@ -3126,7 +3302,10 @@ mod missing_deliverable_fail_closed_tests {
             crate::task_orchestrator::refiner::RefineClass::SubmitOnly,
             "confirm-only missing routes to submit-only"
         );
-        assert!(d.submit_only_lock, "the retry must lock tool_choice to submit");
+        assert!(
+            d.submit_only_lock,
+            "the retry must lock tool_choice to submit"
+        );
         assert_eq!(out, "prose");
     }
 }

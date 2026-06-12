@@ -438,10 +438,21 @@ where
                             .filter(|c| !c.is_empty())
                             .unwrap_or(effective_tool_name);
                         let ev_raw = serde_json::to_string(&v).unwrap_or_default();
-                        // PR2 · subject is a COMPANY name, not an in-scope asset
-                        // (domain/IP) — no deterministic asset, so no facts
+                        // PR2 · enrich's subject is a COMPANY name, not an in-scope
+                        // asset (domain/IP) — no deterministic asset, so no facts
                         // (设计 §4 约束3: 歧义即不派生). Per-asset enrich rows are
                         // the A1 follow-up.
+                        // Phase 2 (2026-06-12-redteam-phase2) · subsidiary discovery
+                        // DOES derive an org-level GOLISH-INTEL-SUBSIDIARY fact from
+                        // its structured summary (promoted_children / status): the
+                        // Empty outcome is what lets "ran → 0 qualifying child" be
+                        // checked_empty instead of not_attempted (I8). The gate hook
+                        // re-projects the company-name asset onto in-scope assets.
+                        let facts = (effective_tool_name == "recon_discover_subsidiaries")
+                            .then(|| {
+                                golish_agent_kit::harness::evidence_facts::subsidiary_discovery_facts(v)
+                            })
+                            .flatten();
                         match repo
                             .evidence_append(
                                 op_id,
@@ -452,7 +463,7 @@ where
                                 effective_tool_name,
                                 ev_subject,
                                 &ev_raw,
-                                None,
+                                facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
                             )
                             .await
                         {

@@ -13,6 +13,38 @@
 //!   兜住 — found 格必须有对齐 claim/finding 佐证; 假 empty 没有这层网).
 //! - technique id 必须是 `technique_taxonomy.json` 注册的 `GOLISH-INTEL-*`.
 
+/// Phase 2 (2026-06-12-redteam-phase2): 子公司 / org 树发现 technique id
+/// (scoping 阶段维度; DB 端同名常量是 `golish_db::repo::coverage_truth::TECH_SUBSIDIARY`).
+pub const TECH_SUBSIDIARY: &str = "GOLISH-INTEL-SUBSIDIARY";
+
+/// Phase 2 · 解析 `recon_discover_subsidiaries` 的结构化 JSON summary →
+/// SUBSIDIARY 维度事实 `(technique, asset=公司名, outcome)`.
+///
+/// I8 数据层兑现 (「跑了→0 合格子」≠「没跑」):
+/// - `promoted_children > 0` → `found` (child org 真落库; DB 真值投影会再补强).
+/// - `promoted_children == 0` 且 `status == "Completed"` → `empty` (高置信:
+///   provider 全部跑完、没有候选清过持股阈值/存续筛).
+/// - `Partial` / `Failed` / 字段缺失 → `None` (拿不准不派生, fail-closed —
+///   缺事实的格保持 not_attempted, gate 照旧 BLOCK).
+///
+/// asset 是公司名 (org 级维度的主体是公司, 不是 in-scope 主机); gate 端
+/// (`fetch_evidence_facts_for_gate`) 把 SUBSIDIARY 事实展开投影到每个 in-scope
+/// asset, 与 coverage_truth 的 `has_subsidiary` org 级投影同构.
+pub fn subsidiary_discovery_facts(
+    result: &serde_json::Value,
+) -> Option<(&'static str, String, &'static str)> {
+    let company = result.get("company")?.as_str()?.trim();
+    if company.is_empty() {
+        return None;
+    }
+    let promoted = result.get("promoted_children")?.as_u64()?;
+    if promoted > 0 {
+        return Some((TECH_SUBSIDIARY, company.to_string(), "found"));
+    }
+    let status = result.get("status")?.as_str()?;
+    (status == "Completed").then(|| (TECH_SUBSIDIARY, company.to_string(), "empty"))
+}
+
 /// 解析一条被动情报命令行 → `(注册 technique id, 主资产)`.
 ///
 /// 覆盖 target_intel 灰度 (D-scope) 的常见被动工具; 主动扫描工具 (nmap/httpx…)
@@ -73,6 +105,19 @@ pub fn passive_intel_outcome(technique: &str, raw_output: &str) -> &'static str 
         }
         // dig 全量 banner: 有 QUESTION section 但没有 ANSWER section = 查了无记录.
         if trimmed.contains(";; QUESTION SECTION") && !trimmed.contains(";; ANSWER SECTION") {
+            return "empty";
+        }
+    }
+    if technique == "GOLISH-INTEL-WHOIS" {
+        // whois 确定性「无注册记录」banner (Phase 1, I8 数据层兑现): 跑了 whois
+        // 但该域名/IP 未注册. 多家 whois server 的 not-found 措辞统一在这里收口;
+        // 其余 (拿不准) 仍 found (corroborated gate 兜底假 found, 假 empty 无网).
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.contains("no match for")
+            || lower.contains("not found")
+            || lower.contains("no data found")
+            || lower.contains("no entries found")
+        {
             return "empty";
         }
     }
@@ -173,10 +218,85 @@ mod tests {
             passive_intel_outcome("GOLISH-INTEL-SUBDOMAIN", "www.moresec.cn\nmail.moresec.cn"),
             "found"
         );
-        // 拿不准的形态一律 found (corroborated gate 兜底; 假 empty 无安全网).
+        // whois 拿到真注册数据 = found.
+        let whois_hit =
+            "Domain Name: MORESEC.CN\nRegistrar: Alibaba Cloud\nName Server: dns1.hichina.com";
         assert_eq!(
-            passive_intel_outcome("GOLISH-INTEL-WHOIS", "No match for domain"),
+            passive_intel_outcome("GOLISH-INTEL-WHOIS", whois_hit),
             "found"
+        );
+    }
+
+    #[test]
+    fn whois_not_found_banners_are_empty() {
+        // Phase 1: whois 确定性「无注册记录」措辞 → empty (跑了→空, I8).
+        for banner in [
+            "No match for \"NOTREG.CN\".",
+            "NOT FOUND",
+            "No Data Found",
+            "no entries found in the AfriNIC database",
+        ] {
+            assert_eq!(
+                passive_intel_outcome("GOLISH-INTEL-WHOIS", banner),
+                "empty",
+                "whois not-found banner should be empty: {banner}"
+            );
+        }
+    }
+
+    // ── Phase 2: subsidiary_discovery_facts (recon_discover_subsidiaries JSON) ──
+
+    #[test]
+    fn subsidiary_promoted_children_is_found() {
+        let v = serde_json::json!({
+            "company": "默安科技", "status": "Completed",
+            "phase": "subsidiaries", "promoted_children": 2
+        });
+        assert_eq!(
+            subsidiary_discovery_facts(&v),
+            Some((TECH_SUBSIDIARY, "默安科技".to_string(), "found"))
+        );
+    }
+
+    #[test]
+    fn subsidiary_completed_zero_promoted_is_empty() {
+        // I8: provider 跑完、0 个候选清过阈值 → 高置信 empty (跑了→空 ≠ 没跑).
+        let v = serde_json::json!({
+            "company": "默安科技", "status": "Completed",
+            "phase": "subsidiaries", "promoted_children": 0
+        });
+        assert_eq!(
+            subsidiary_discovery_facts(&v),
+            Some((TECH_SUBSIDIARY, "默安科技".to_string(), "empty"))
+        );
+    }
+
+    #[test]
+    fn subsidiary_partial_failed_or_malformed_derives_nothing() {
+        // Partial/Failed 跑没跑完拿不准 → 不派生 (fail-closed, 格保持 not_attempted).
+        for status in ["Partial", "Failed"] {
+            let v = serde_json::json!({
+                "company": "默安科技", "status": status, "promoted_children": 0
+            });
+            assert_eq!(subsidiary_discovery_facts(&v), None, "status={status}");
+        }
+        // 字段缺失 / 空公司名 → None (绝不猜).
+        assert_eq!(
+            subsidiary_discovery_facts(&serde_json::json!({"status": "Completed"})),
+            None
+        );
+        assert_eq!(
+            subsidiary_discovery_facts(
+                &serde_json::json!({"company": " ", "status": "Completed", "promoted_children": 0})
+            ),
+            None
+        );
+        assert_eq!(
+            subsidiary_discovery_facts(
+                &serde_json::json!({"company": "默安科技", "status": "Completed"})
+            ),
+            None,
+            "missing promoted_children must not derive (older summary shape)"
         );
     }
 }

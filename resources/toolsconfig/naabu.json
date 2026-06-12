@@ -1,0 +1,185 @@
+{
+  "tool": {
+    "category": "recon",
+    "description": "Fast SYN/CONNECT port scanner by ProjectDiscovery - host discovery + port enumeration, designed to pipe into httpx/nuclei",
+    "executable": "naabu",
+    "id": "naabu",
+    "install": {
+      "linux": {
+        "method": "github",
+        "source": "projectdiscovery/naabu"
+      },
+      "method": "homebrew",
+      "source": "naabu",
+      "windows": {
+        "method": "github",
+        "source": "projectdiscovery/naabu"
+      }
+    },
+    "launchMode": "cli",
+    "name": "naabu",
+    "output": {
+      "db_action": "target_update_recon",
+      "detect": "Found \\d+ ports|naabu|\\b\\d{1,3}(?:\\.\\d{1,3}){3}:\\d+\\b",
+      "format": "text",
+      "patterns": [
+        {
+          "fields": {
+            "host": "$1",
+            "port": "$2"
+          },
+          "regex": "^([\\w\\.-]+):(\\d+)$",
+          "type": "open_port"
+        }
+      ],
+      "produces": [
+        "host",
+        "port"
+      ]
+    },
+    "params": [
+      {
+        "description": "Target host, IP, or CIDR to scan",
+        "flag": "-host",
+        "label": "Host",
+        "placeholder": "scanme.nmap.org",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "Port spec (e.g. 80,443,8080 or 1-65535 or - for all)",
+        "flag": "-p",
+        "label": "Ports",
+        "placeholder": "80,443,8080,8443",
+        "type": "string"
+      },
+      {
+        "description": "Scan the most common N ports",
+        "flag": "-top-ports",
+        "label": "Top Ports",
+        "options": [
+          {
+            "label": "Top 100",
+            "value": "100"
+          },
+          {
+            "label": "Top 1000",
+            "value": "1000"
+          },
+          {
+            "label": "All 65535",
+            "value": "full"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "default": "c",
+        "description": "SYN needs root; CONNECT works unprivileged",
+        "flag": "-s",
+        "label": "Scan Type",
+        "options": [
+          {
+            "label": "SYN (fast, needs root)",
+            "value": "s"
+          },
+          {
+            "label": "CONNECT (no root)",
+            "value": "c"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "description": "Packets per second",
+        "flag": "-rate",
+        "label": "Rate",
+        "placeholder": "1000",
+        "type": "string"
+      },
+      {
+        "description": "Worker concurrency",
+        "flag": "-c",
+        "label": "Concurrency",
+        "placeholder": "25",
+        "type": "string"
+      },
+      {
+        "description": "Emit results as JSON lines",
+        "flag": "-json",
+        "label": "JSON Output",
+        "type": "boolean"
+      },
+      {
+        "description": "Only print host:port results (clean for piping)",
+        "flag": "-silent",
+        "label": "Silent",
+        "type": "boolean"
+      },
+      {
+        "description": "Hand discovered ports to nmap for service detection",
+        "flag": "-nmap-cli",
+        "label": "Nmap CLI",
+        "placeholder": "nmap -sV",
+        "type": "string"
+      }
+    ],
+    "pentestPhase": [
+      "enum"
+    ],
+    "runtime": "native",
+    "skills": [
+      {
+        "args": "-host {{target}} -top-ports 100 -s c -silent",
+        "description": "Unprivileged fast scan of the 100 most common ports",
+        "id": "quick-top100",
+        "name": "Quick Top-100 (CONNECT)",
+        "tags": [
+          "recon",
+          "fast"
+        ]
+      },
+      {
+        "args": "-host {{target}} -top-ports 1000 -s c -silent",
+        "description": "CONNECT scan of the top 1000 ports",
+        "id": "top1000",
+        "name": "Top-1000 Ports",
+        "tags": [
+          "recon"
+        ]
+      },
+      {
+        "args": "-host {{target}} -p - -s c -silent",
+        "description": "Full TCP port sweep (slow, thorough)",
+        "id": "full-ports",
+        "name": "All 65535 Ports",
+        "tags": [
+          "thorough",
+          "slow"
+        ]
+      },
+      {
+        "args": "-host {{target}} -top-ports 1000 -s c -nmap-cli 'nmap -sV' -silent",
+        "description": "Discover open ports then fingerprint services with nmap",
+        "id": "naabu-to-nmap",
+        "name": "naabu → nmap -sV",
+        "tags": [
+          "recon",
+          "fingerprint"
+        ]
+      }
+    ],
+    "subcategory": "port-scan",
+    "tags": [
+      "recon",
+      "port-scan",
+      "network",
+      "fast"
+    ],
+    "tier": "recommended",
+    "updateInfo": {
+      "lastUpdated": "2026-06-10",
+      "version": "2.6.1"
+    }
+  }
+}

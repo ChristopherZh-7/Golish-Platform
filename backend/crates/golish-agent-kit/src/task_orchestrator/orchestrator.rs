@@ -18,6 +18,17 @@ use golish_core::plan::{PlanStep, PlanSummary, StepStatus};
 use super::helpers::parse_agent_type;
 use super::types::{AgentExecutor, PlannedSubtask};
 
+/// Phase 2 (2026-06-12-redteam-phase2): when set on a stage run, the scoping
+/// gate requires subsidiary discovery (an org tree landed in the DB) before it
+/// PASSes. `None` = legacy scoping (no subsidiary gate; zero behaviour change).
+#[derive(Debug, Clone, Copy)]
+pub struct SubsidiaryScopePolicy {
+    /// Minimum investment/ownership percentage for a subsidiary to be in scope.
+    /// The threshold filter itself runs in the asset-intel promote layer
+    /// (`auto_promote_child_decisions`); this is surfaced for prompt/diagnostics.
+    pub threshold_pct: u8,
+}
+
 /// The main Task orchestrator.
 ///
 /// Mirrors PentAGI's `taskWorker.Run()` flow:
@@ -52,6 +63,10 @@ pub struct TaskOrchestrator {
     /// only contains THIS org's in-scope targets instead of the whole persistent
     /// DB. `None` = legacy whole-DB axis (GUI/chat path until org wiring lands).
     pub(super) harness_org_id: Option<Uuid>,
+    /// Phase 2 (2026-06-12-redteam-phase2): subsidiary scope policy for this run.
+    /// `Some` activates the scoping gate's `GOLISH-INTEL-SUBSIDIARY` coverage
+    /// dimension (an org tree must land in the DB). `None` keeps legacy scoping.
+    pub(super) harness_subsidiary_policy: Option<SubsidiaryScopePolicy>,
     /// P2 方案 C · accumulated [`StageFlowOutcome`] for the stage currently being
     /// run under the Executor (merged across that stage's subtasks: gate ANDed,
     /// progress ORed). Read + cleared by `run_stage_subtasks`.
@@ -94,6 +109,7 @@ impl TaskOrchestrator {
             harness_evidence: std::collections::HashMap::new(),
             profile_override: None,
             harness_org_id: None,
+            harness_subsidiary_policy: None,
             stage_outcome_acc: None,
             chat_session_id: None,
             approval_coordinator: None,
@@ -126,6 +142,12 @@ impl TaskOrchestrator {
     /// in-scope targets. `None` keeps the legacy whole-DB asset axis.
     pub fn set_harness_org_id(&mut self, org_id: Option<Uuid>) {
         self.harness_org_id = org_id;
+    }
+
+    /// Phase 2: enable subsidiary scoping for this run (org-tree gate). `include`
+    /// false leaves the policy `None` (legacy scoping, zero behaviour change).
+    pub fn set_subsidiary_scope(&mut self, include: bool, threshold_pct: u8) {
+        self.harness_subsidiary_policy = include.then_some(SubsidiaryScopePolicy { threshold_pct });
     }
 
     /// Wire the HITL coordinator so the two-level phase-approval gate can request

@@ -1,0 +1,81 @@
+{
+  "tool": {
+    "id": "cutycapt",
+    "name": "cutycapt",
+    "description": "Qt WebKit web page screenshot utility. NOTE: no Homebrew formula on macOS (Qt4 WebKit, effectively unmaintained) - prefer gowitness for screenshots. Config kept for Linux/CI parity.",
+    "executable": "CutyCapt",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "visual",
+    "tier": "optional",
+    "pentestPhase": ["enum"],
+    "tags": ["recon", "screenshot", "visual"],
+    "install": {
+      "method": "manual",
+      "source": "https://cutycapt.sourceforge.net/ (no macOS Homebrew formula; use gowitness instead)",
+      "linux": { "method": "apt", "source": "cutycapt" }
+    },
+    "params": [
+      {
+        "label": "URL",
+        "flag": "--url",
+        "type": "string",
+        "required": true,
+        "description": "Target URL (CutyCapt expects --url=VALUE)",
+        "placeholder": "https://target.com"
+      },
+      {
+        "label": "Output",
+        "flag": "--out",
+        "type": "string",
+        "required": true,
+        "description": "Output image path (--out=shot.png); extension picks format",
+        "placeholder": "shot.png"
+      },
+      {
+        "label": "Min Width",
+        "flag": "--min-width",
+        "type": "string",
+        "description": "Minimum viewport width",
+        "default": "1024"
+      },
+      {
+        "label": "Delay",
+        "flag": "--delay",
+        "type": "string",
+        "description": "Wait N ms before capture (let JS render)",
+        "placeholder": "1000"
+      },
+      {
+        "label": "User Agent",
+        "flag": "--user-agent",
+        "type": "string",
+        "description": "Custom User-Agent",
+        "placeholder": "Mozilla/5.0"
+      }
+    ],
+    "skills": [
+      {
+        "id": "basic-shot",
+        "name": "Basic Screenshot",
+        "description": "Capture one URL to PNG",
+        "args": "--url={{target}} --out=shot.png",
+        "tags": ["screenshot"]
+      },
+      {
+        "id": "delayed-shot",
+        "name": "Delayed Screenshot",
+        "description": "Wait for JS render then capture",
+        "args": "--url={{target}} --out=shot.png --delay=2000",
+        "tags": ["screenshot", "spa"]
+      }
+    ],
+    "output": {
+      "format": "binary",
+      "produces": ["screenshot"],
+      "detect": "CutyCapt",
+      "patterns": []
+    }
+  }
+}

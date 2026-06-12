@@ -158,6 +158,20 @@ pub(crate) fn auto_promote_child_decisions(
     decisions
 }
 
+/// 从候选 provider 的 discovery 配置里选出第一个开启 `auto_promote` 的；都没有则
+/// 返回 default（`auto_promote=false`）。让 harness 子公司发现路径复用 GUI
+/// `asset_intel_hydrate_subsidiaries` 的 policy 选择（promote 决策仍由
+/// `auto_promote_child_decisions` 纯函数兜底，含 I8 的「跑了→筛掉」vs「没跑」区分）。
+pub(crate) fn select_discovery_policy<'a>(
+    discoveries: impl IntoIterator<Item = &'a golish_pentest::models::AssetIntelDiscoveryConfig>,
+) -> golish_pentest::models::AssetIntelDiscoveryConfig {
+    discoveries
+        .into_iter()
+        .find(|d| d.auto_promote)
+        .cloned()
+        .unwrap_or_default()
+}
+
 pub(crate) fn clear_engagement_candidates_from_intel(
     mut intel: Value,
 ) -> Result<Value, GolishError> {
@@ -171,4 +185,28 @@ pub(crate) fn clear_engagement_candidates_from_intel(
         engagement.remove("candidates");
     }
     Ok(intel)
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::select_discovery_policy;
+
+    fn disc(auto: bool) -> golish_pentest::models::AssetIntelDiscoveryConfig {
+        golish_pentest::models::AssetIntelDiscoveryConfig {
+            auto_promote: auto,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn picks_first_auto_promote_policy() {
+        assert!(select_discovery_policy(&[disc(false), disc(true)]).auto_promote);
+    }
+
+    #[test]
+    fn no_auto_promote_or_empty_yields_default_off() {
+        assert!(!select_discovery_policy(&[disc(false)]).auto_promote);
+        let empty: &[golish_pentest::models::AssetIntelDiscoveryConfig] = &[];
+        assert!(!select_discovery_policy(empty).auto_promote);
+    }
 }

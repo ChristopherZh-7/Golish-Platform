@@ -210,13 +210,13 @@
       "format": "text",
       "produces": ["url", "endpoint"],
       "detect": "ffuf v|\\[Status:",
-      "db_action": "endpoint_add",
+      "db_action": "directory_entry_add",
       "patterns": [
         {
           "type": "endpoint",
           "regex": "(\\S+)\\s+\\[Status:\\s+(\\d+),\\s+Size:\\s+(\\d+),\\s+Words:\\s+(\\d+),\\s+Lines:\\s+(\\d+)",
           "fields": {
-            "1": "path",
+            "1": "url",
             "2": "status",
             "3": "size",
             "4": "words",

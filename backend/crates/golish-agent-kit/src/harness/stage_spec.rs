@@ -341,6 +341,74 @@ mod tests {
         );
     }
 
+    // Phase 1 (2026-06-12-redteam-phase1 §5): EAS / enumeration coverage 必须开
+    // derive_from_evidence，让 coverage_truth 的主动维度（PORT/SERVICE/DIR/PARAM/
+    // JSAPI…）DB 投影能补格。**不开 authoritative**（主动命令派生的 Empty 事实源未
+    // 就绪，见 phase1 计划勘验4）——守卫断言这两点，防回归误开 authoritative。
+    #[test]
+    fn active_stages_derive_from_evidence_but_not_authoritative() {
+        for kind in [StageKind::ExternalAttackSurface, StageKind::Enumeration] {
+            let s = crate::harness::resources::load_embedded_stage_spec(kind)
+                .unwrap_or_else(|_| panic!("load {kind:?} spec"));
+            assert!(
+                s.gate_rules.iter().any(|r| matches!(
+                    r,
+                    crate::harness::gate::rule_engine::GateRule::CoverageComplete {
+                        derive_from_evidence: true,
+                        ..
+                    }
+                )),
+                "{kind:?} coverage_complete must enable derive_from_evidence (Phase 1 DB-truth 补格)"
+            );
+            assert!(
+                !s.gate_rules.iter().any(|r| matches!(
+                    r,
+                    crate::harness::gate::rule_engine::GateRule::CoverageComplete {
+                        authoritative_found: true,
+                        ..
+                    }
+                )),
+                "{kind:?} must NOT enable authoritative_found yet (active Empty fact source not ready)"
+            );
+        }
+    }
+
+    // Phase 2 (2026-06-12-redteam-phase2): scoping 子公司 gate 的零回归静态前提。
+    // 1. 静态 expected_techniques 必须为空——SUBSIDIARY 只由 execute.rs hook 在
+    //    `--include-subsidiaries` 时动态注入; 不带 flag → coverage_complete 看不到
+    //    期望技术 → no-op (旧 scoping 行为逐字节不变)。
+    // 2. coverage_complete 必须 authoritative 且收紧范围锁定 SUBSIDIARY——found
+    //    只认 DB 真值 (organizations.parent_id 有 child org), 自报不算。
+    // 3. allowed_tool_types 含 recon/osint——子公司发现 (ENScan, 工商数据 OSINT,
+    //    非 probing) 可以在 L0 scoping 阶段跑。
+    #[test]
+    fn scoping_subsidiary_gate_static_premises() {
+        let s = crate::harness::resources::load_embedded_stage_spec(StageKind::Scoping)
+            .expect("load scoping spec");
+        assert!(
+            s.expected_techniques.is_empty(),
+            "scoping expected_techniques must stay empty (SUBSIDIARY is hook-injected only; \
+             a static entry would force the subsidiary gate on EVERY engagement)"
+        );
+        assert!(
+            s.gate_rules.iter().any(|r| matches!(
+                r,
+                crate::harness::gate::rule_engine::GateRule::CoverageComplete {
+                    derive_from_evidence: true,
+                    authoritative_found: true,
+                    authoritative_techniques: Some(ref t),
+                    ..
+                } if t == &vec!["GOLISH-INTEL-SUBSIDIARY".to_string()]
+            )),
+            "scoping coverage_complete must be authoritative for exactly GOLISH-INTEL-SUBSIDIARY \
+             (found = DB-landed child org, not self-report)"
+        );
+        assert!(
+            s.allowed_tool_types.iter().any(|t| t == "recon/osint"),
+            "scoping must allow recon/osint so subsidiary discovery (ENScan) can run at L0"
+        );
+    }
+
     #[test]
     fn external_attack_surface_agent_continuity_single_session() {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");

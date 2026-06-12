@@ -72,7 +72,9 @@ pub(crate) use profile_patch::{
 };
 #[cfg(test)]
 pub(crate) use promote::AutoPromoteSkipReason;
-pub(crate) use promote::{auto_promote_child_decisions, clear_engagement_candidates_from_intel};
+pub(crate) use promote::{
+    auto_promote_child_decisions, clear_engagement_candidates_from_intel, select_discovery_policy,
+};
 #[cfg(test)]
 pub(crate) use records::normalize_provider_records;
 pub(crate) use records::{

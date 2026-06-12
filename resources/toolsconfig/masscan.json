@@ -174,7 +174,7 @@
       "format": "text",
       "produces": ["host", "port"],
       "detect": "Discovered open port|masscan",
-      "db_action": "host_add",
+      "db_action": "target_update_recon",
       "patterns": [
         {
           "type": "open_port",

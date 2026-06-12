@@ -1,0 +1,14 @@
+-- Phase 1 (设计 2026-06-12-redteam-phase1 §3): WHOIS structured column.
+--
+-- Before this, whois registration data (registrar / created / expires /
+-- registrant / name servers) had no dedicated column and only fell into the
+-- `organizations.intel` catch-all, which coverage_truth does not query. This
+-- promotes WHOIS to a first-class JSONB column (mirrors asns / certificates)
+-- so the Phase 0 authoritative gate can read GOLISH-INTEL-WHOIS from DB truth.
+--
+-- Shape: { registrar, created, expires, registrant, name_servers: [...], raw_ref }
+--
+-- I10: nullable (no default backfill needed), idempotent. The active write path
+-- (output_store/organizations) merges into it; reads treat NULL/'{}'/'null' as
+-- "no whois data". Safe to replay / roll back (DROP COLUMN).
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS whois JSONB;

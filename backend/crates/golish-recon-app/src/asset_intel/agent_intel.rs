@@ -15,9 +15,12 @@ use uuid::Uuid;
 
 use golish_app_core::GolishError;
 
+use crate::organizations::OrganizationCandidates;
+
 use super::{
-    run_providers_for_org, select_enrichment_providers, select_subsidiary_providers,
-    AssetIntelHydrateConfig, ToolsConfigState,
+    auto_promote_discovered_children, run_providers_for_org, select_discovery_policy,
+    select_enrichment_providers, select_subsidiary_providers, AssetIntelHydrateConfig,
+    ToolsConfigState,
 };
 
 /// Which passive provider phase to run.
@@ -51,6 +54,9 @@ pub struct PassiveIntelSummary {
     pub targets: usize,
     /// Provider ids that were selected and run for this phase.
     pub providers: Vec<String>,
+    /// Phase 2: number of discovered subsidiaries auto-promoted to child orgs
+    /// (subsidiaries phase only; 0 for enrich or when no candidate qualified).
+    pub promoted_children: usize,
 }
 
 /// Run one passive-intel phase (subsidiary discovery or field enrichment)
@@ -94,7 +100,20 @@ pub async fn run_passive_intel(
     }
     let provider_ids: Vec<String> = selected.iter().map(|tool| tool.id.clone()).collect();
 
-    let run = run_providers_for_org(
+    // Phase 2 (G1/G2): in the subsidiaries phase, capture the discovery policy
+    // BEFORE `selected` is moved into `run_providers_for_org`, so we can promote
+    // qualifying candidates to child orgs afterwards (mirrors the GUI path
+    // `asset_intel_hydrate_subsidiaries`). Enrich phase keeps `None` (no promotion).
+    let discovery_policy = (phase == PassiveIntelPhase::Subsidiaries).then(|| {
+        select_discovery_policy(
+            selected
+                .iter()
+                .filter_map(|tool| tool.asset_intel.as_ref())
+                .map(|asset| &asset.discovery),
+        )
+    });
+
+    let mut run = run_providers_for_org(
         None,
         pool.as_ref(),
         &pentest_config,
@@ -106,6 +125,25 @@ pub async fn run_passive_intel(
     )
     .await?;
 
+    // Promote discovered subsidiaries that clear the ownership-percent threshold
+    // into child organizations (parent_id = this org). The pure decision logic
+    // (`auto_promote_child_decisions`) keeps the I8 distinction (ran-but-filtered
+    // vs never-ran); a DB with no matching candidate never promotes.
+    let promoted_children = match discovery_policy {
+        Some(policy) if policy.auto_promote => {
+            let promotion =
+                auto_promote_discovered_children(pool.as_ref(), &org, &run.candidates, &policy)
+                    .await?;
+            run.candidates = OrganizationCandidates::default();
+            promotion
+                .get("created")
+                .and_then(|c| c.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0)
+        }
+        _ => 0,
+    };
+
     Ok(PassiveIntelSummary {
         run_id: run.run_id,
         company: org.name,
@@ -114,6 +152,7 @@ pub async fn run_passive_intel(
         organizations: run.candidates.organizations.len(),
         targets: run.candidates.targets.len(),
         providers: provider_ids,
+        promoted_children,
     })
 }
 
@@ -137,6 +176,7 @@ mod tests {
             organizations: 2,
             targets: 5,
             providers: vec!["0.zone".into()],
+            promoted_children: 0,
         };
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["company"], "Acme");

@@ -46,11 +46,11 @@
       "derive_from_items": true,
       "derive_from_evidence": true,
       "authoritative_found": true,
-      "authoritative_techniques": ["GOLISH-INTEL-DNS", "GOLISH-INTEL-SUBDOMAIN", "GOLISH-INTEL-ASN", "GOLISH-INTEL-CT"],
-      "$comment_authoritative": "Phase 0 (2026-06-12-redteam-phase0) gray rollout: 'found' for these 4 techniques is decided by DB/ledger truth (real tool run landed in dns_records / target_assets / organizations.asns / organizations.certificates) \u2014 self-reported found cells or technique-tagged claims no longer count. WHOIS/OSINT stay on legacy self-report until Phase 1 adds their landing.",
+      "authoritative_techniques": ["GOLISH-INTEL-DNS", "GOLISH-INTEL-SUBDOMAIN", "GOLISH-INTEL-ASN", "GOLISH-INTEL-CT", "GOLISH-INTEL-WHOIS", "GOLISH-INTEL-OSINT"],
+      "$comment_authoritative": "Phase 0+1 (2026-06-12-redteam-phase0/phase1): 'found' for all 6 passive intel techniques is decided by DB/ledger truth, not self-report. Landing per technique: DNS\u2192dns_records (dig), SUBDOMAIN\u2192target_assets (subfinder/amass), ASN/CT\u2192organizations.asns/.certificates (enrich), WHOIS\u2192organizations.whois column or a real `whois` command ledger fact, OSINT\u2192organizations.intel.records/contacts/social_accounts/business_systems (enrich). Tagging a claim or hand-writing a found cell no longer counts.",
       "on_fail": {
         "reason": "intel coverage incomplete: some (in-scope asset \u00d7 expected intel technique) cells were never attempted",
-        "hints": ["for every in-scope asset, give each expected intel technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note", "for DNS / SUBDOMAIN / ASN / CT the gate reads the DATABASE, not your self-report: a cell is 'found' only if the real tool actually ran and its data landed (dig\u2192dns_records, subfinder\u2192target_assets, enrich\u2192organizations.asns/.certificates) \u2014 tagging a claim is not enough", "intel techniques you actually ran are auto-projected from the evidence ledger \u2014 run the real tools, do not hand-write found cells"]
+        "hints": ["for every in-scope asset, give each expected intel technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note", "the gate reads the DATABASE, not your self-report: a cell is 'found' only if the real tool ran and its data landed (dig\u2192dns_records, subfinder\u2192target_assets, enrich\u2192organizations.asns/.certificates/.whois/.intel, whois\u2192whois column or ledger) \u2014 tagging a claim is not enough", "no provider/credential for a technique (e.g. OSINT)? record it blocked+note \u2014 never fabricate; run the real tools to make found cells real"]
       }
     },
     {

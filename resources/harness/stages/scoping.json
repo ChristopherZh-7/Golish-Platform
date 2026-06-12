@@ -9,13 +9,41 @@
   "requires_stages": [],
   "allowed_next_stages": ["target_intel"],
 
-  "allowed_tool_types": [],
+  "$comment_allowed_tool_types": "Phase 2 (2026-06-12-redteam-phase2): subsidiary discovery (ENScan: 爱企查/天眼查/...) is an OSINT query against business-registry data — it DEFINES scope, does not probe the target — so it is allowed at L0 scoping. recon/osint is the tool_type ENScan maps to (tool_taxonomy.rs). The subsidiary coverage gate (see gate_rules + harness hook) only activates when the engagement opts in via --include-subsidiaries; otherwise scoping stays a no-op L0 authz confirmation (zero behaviour change).",
+  "allowed_tool_types": ["recon/osint"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
 
-  "$comment_gate_rules": "scoping is L0 authz-confirmation (no probing); its scope claim needs no tool evidence, so no evidence gate_rules (matches the old scope_check scoping exemption).",
-  "gate_rules": [],
+  "$comment_gate_rules": "Default (no --include-subsidiaries): scoping is L0 authz-confirmation (no probing), scope claim needs no tool evidence — coverage_complete is a no-op because expected_techniques is empty unless the harness hook dynamically injects GOLISH-INTEL-SUBSIDIARY (Phase 2). The evidence rules below only bite cells the model marks found/checked_empty, so they are inert with zero coverage cells.",
+  "gate_rules": [
+    {
+      "op": "for_all",
+      "over": "coverage",
+      "where": { "pred": "eq", "field": "status", "value": "found" },
+      "require": { "pred": "non_empty", "field": "evidence_refs" },
+      "on_fail": { "reason": "every 'found' scoping coverage cell must cite evidence", "hints": ["attach the subsidiary-discovery evidence id (recon_discover_subsidiaries) to each found cell"] }
+    },
+    {
+      "op": "for_all",
+      "over": "coverage",
+      "where": { "pred": "eq", "field": "status", "value": "checked_empty" },
+      "require": { "pred": "non_empty", "field": "evidence_refs" },
+      "on_fail": { "reason": "every 'checked_empty' scoping coverage cell must cite evidence (I8: checked-empty is NOT unchecked)", "hints": ["attach the probe evidence id proving you actually ran subsidiary discovery on this org and it returned no qualifying child"] }
+    },
+    {
+      "op": "coverage_complete",
+      "derive_from_items": true,
+      "derive_from_evidence": true,
+      "authoritative_found": true,
+      "authoritative_techniques": ["GOLISH-INTEL-SUBSIDIARY"],
+      "$comment_authoritative": "Phase 2 (2026-06-12-redteam-phase2): 'found' for GOLISH-INTEL-SUBSIDIARY is decided by DB truth (organizations table has a child org with parent_id = this engagement org), not self-report. expected_techniques is empty in this static spec; the harness hook injects GOLISH-INTEL-SUBSIDIARY ONLY when the engagement set --include-subsidiaries, so without the flag coverage_complete sees no expected techniques and is a no-op (zero回归).",
+      "on_fail": {
+        "reason": "subsidiary scoping incomplete: the org tree was never built (no qualifying child organization landed in the database)",
+        "hints": ["run recon_discover_subsidiaries on the engagement org so the enterprise-intel provider (ENScan) discovers investments/holdings and auto-promotes those clearing the ownership threshold into child organizations", "the gate reads the DATABASE (organizations.parent_id), not your self-report — a cell is 'found' only if a real child org row landed", "discovered subsidiaries but none cleared the threshold? that is checked_empty+evidence, not found — never fabricate"]
+      }
+    }
+  ],
 
   "min_invocations": {},
 

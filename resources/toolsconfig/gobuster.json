@@ -172,13 +172,13 @@
       "format": "text",
       "produces": ["url", "endpoint"],
       "detect": "Gobuster v|Status:\\s+\\d",
-      "db_action": "endpoint_add",
+      "db_action": "directory_entry_add",
       "patterns": [
         {
           "type": "endpoint",
           "regex": "^(\\S+)\\s+\\(Status:\\s+(\\d+)\\)\\s+\\[Size:\\s+(\\d+)\\]",
           "fields": {
-            "1": "path",
+            "1": "url",
             "2": "status",
             "3": "size"
           }

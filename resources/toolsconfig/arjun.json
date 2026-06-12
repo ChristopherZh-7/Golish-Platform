@@ -1,0 +1,138 @@
+{
+  "tool": {
+    "id": "arjun",
+    "name": "Arjun",
+    "description": "HTTP parameter discovery suite - finds hidden/valid GET/POST/JSON/XML request parameters by analysing response anomalies.",
+    "executable": "arjun",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "web",
+    "subcategory": "param",
+    "tier": "recommended",
+    "pentestPhase": ["enum", "vuln_id"],
+    "tags": ["web", "parameter-discovery", "enumeration", "api"],
+    "install": {
+      "method": "pip",
+      "source": "arjun"
+    },
+    "params": [
+      {
+        "label": "URL",
+        "flag": "-u",
+        "type": "string",
+        "required": true,
+        "description": "Target URL/endpoint to discover parameters for",
+        "placeholder": "https://api.target.com/v1/user"
+      },
+      {
+        "label": "Method",
+        "flag": "-m",
+        "type": "select",
+        "description": "Request method to probe parameters with",
+        "default": "GET",
+        "options": [
+          { "value": "GET", "label": "GET" },
+          { "value": "POST", "label": "POST" },
+          { "value": "JSON", "label": "JSON body" },
+          { "value": "XML", "label": "XML body" }
+        ]
+      },
+      {
+        "label": "Import Targets",
+        "flag": "-i",
+        "type": "string",
+        "description": "Import a list of URLs/endpoints from a file (one per line)",
+        "placeholder": "endpoints.txt"
+      },
+      {
+        "label": "Wordlist",
+        "flag": "-w",
+        "type": "string",
+        "description": "Custom parameter wordlist (defaults to Arjun's built-in ~26k list)",
+        "placeholder": "/usr/share/wordlists/params.txt"
+      },
+      {
+        "label": "Output JSON",
+        "flag": "-oJ",
+        "type": "string",
+        "description": "Write discovered parameters to a JSON file",
+        "placeholder": "arjun_out.json"
+      },
+      {
+        "label": "Threads",
+        "flag": "-t",
+        "type": "string",
+        "description": "Number of concurrent threads (default 5)",
+        "default": "5",
+        "placeholder": "5"
+      },
+      {
+        "label": "Delay",
+        "flag": "-d",
+        "type": "string",
+        "description": "Delay between requests in seconds (be polite / avoid WAF)",
+        "placeholder": "0"
+      },
+      {
+        "label": "Timeout",
+        "flag": "-T",
+        "type": "string",
+        "description": "HTTP request timeout in seconds",
+        "default": "15",
+        "placeholder": "15"
+      },
+      {
+        "label": "Stable",
+        "flag": "--stable",
+        "type": "boolean",
+        "description": "Prefer stability over speed (fewer false positives on rate-limited targets)"
+      },
+      {
+        "label": "Headers",
+        "flag": "--headers",
+        "type": "string",
+        "description": "Custom headers (e.g. an auth cookie/token for authenticated endpoints)",
+        "placeholder": "Cookie: session=abcd"
+      }
+    ],
+    "skills": [
+      {
+        "id": "param-discover",
+        "name": "GET Parameter Discovery",
+        "description": "Discover hidden GET parameters on an endpoint",
+        "args": "-u {{target}} -m GET -oJ arjun_out.json",
+        "tags": ["params"]
+      },
+      {
+        "id": "param-discover-post",
+        "name": "POST/JSON Parameter Discovery",
+        "description": "Discover hidden POST/JSON body parameters",
+        "args": "-u {{target}} -m JSON -oJ arjun_out.json",
+        "tags": ["params", "api"]
+      },
+      {
+        "id": "param-bulk",
+        "name": "Bulk Parameter Discovery",
+        "description": "Discover parameters across a list of enumerated endpoints",
+        "args": "-i endpoints.txt -m GET -oJ arjun_out.json",
+        "tags": ["params", "bulk"]
+      }
+    ],
+    "output": {
+      "format": "json",
+      "produces": ["param", "endpoint"],
+      "detect": "Arjun|parameters found|Scanning",
+      "db_action": "endpoint_add",
+      "patterns": [
+        {
+          "type": "param",
+          "regex": "found (\\d+) parameter",
+          "fields": {
+            "1": "count"
+          }
+        }
+      ]
+    }
+  }
+}

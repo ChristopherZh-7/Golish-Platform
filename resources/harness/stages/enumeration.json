@@ -30,11 +30,13 @@
     { "op": "named_check", "check": "min_invocations" },
     {
       "op": "coverage_complete",
+      "derive_from_evidence": true,
+      "$comment_derive": "Phase 1 (2026-06-12-redteam-phase1): DB business-table truth 补格 — GOLISH-ENUM-DIR←directory_entries (ffuf/gobuster), -PARAM←api_endpoints.params (arjun/katana), -JSAPI←api_endpoints.source IN (js_analysis,crawler). 真跑工具落库后 coverage 格自动补 found; 不开 authoritative (主动 Empty 事实源未就绪), 自报 cell 仍兜底.",
       "on_fail": {
         "reason": "content enumeration incomplete: some alive in-scope services were not fully enumerated (js/api / dir / param)",
         "hints": [
           "for EVERY alive web service mapped by EAS, take each of GOLISH-ENUM-JSAPI (js_collect -> js_extract_apis) / GOLISH-ENUM-DIR (dir/path) / GOLISH-ENUM-PARAM (params) to a terminal coverage cell: found+evidence_refs / checked_empty+evidence_refs / not_applicable+note (e.g. PARAM n/a on a static host)",
-          "ports/services were already mapped in EAS — do NOT re-port-scan here; the units (endpoints / paths / params) you record become the vuln_triage coverage denominator — be thorough"
+          "ports/services were already mapped in EAS — do NOT re-port-scan here; the gate auto-projects found cells from DB truth (ffuf/gobuster→directory_entries, katana/arjun→api_endpoints) so running the real tools fills coverage; the units you record become the vuln_triage coverage denominator — be thorough"
         ]
       }
     }

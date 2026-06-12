@@ -385,10 +385,7 @@ mod tests {
     use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
     use std::collections::HashMap;
 
-    fn base_input<'a>(
-        reasons: &'a [String],
-        kinds: &'a HashMap<i64, String>,
-    ) -> RefineInput<'a> {
+    fn base_input<'a>(reasons: &'a [String], kinds: &'a HashMap<i64, String>) -> RefineInput<'a> {
         RefineInput {
             stage: StageKind::TargetIntel,
             gate_reasons: reasons,
@@ -498,7 +495,9 @@ mod tests {
         let kinds = HashMap::new();
         let d = refine(&base_input(&reasons, &kinds));
         assert_eq!(d.class, RefineClass::Generic);
-        assert!(d.correction.contains("finding count below skeleton minimum"));
+        assert!(d
+            .correction
+            .contains("finding count below skeleton minimum"));
     }
 
     #[test]
@@ -598,7 +597,9 @@ mod tests {
         let mut i = base_input(&[], &kinds);
         i.missing_deliverable = true;
         let d = refine(&i);
-        assert!(d.correction.contains("did not include a parseable StageDeliverable"));
+        assert!(d
+            .correction
+            .contains("did not include a parseable StageDeliverable"));
         assert!(d.correction.contains("Re-do the stage work"));
     }
 
