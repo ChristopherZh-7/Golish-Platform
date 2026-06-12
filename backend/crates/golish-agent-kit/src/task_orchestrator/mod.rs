@@ -35,6 +35,7 @@ pub mod harness_backfill;
 pub mod harness_resume;
 mod helpers;
 mod orchestrator;
+pub(crate) mod refiner;
 pub mod stage_execution;
 mod subtask_phases;
 mod types;
