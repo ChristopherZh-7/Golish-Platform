@@ -235,7 +235,8 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
         .clone()
         .unwrap_or_else(|| settings.ai.default_model.clone());
 
-    // Initialize the agent bridge and MCP manager
+    // Initialize the agent bridge and MCP manager. The interactive CLI runs as
+    // a single anonymous session, so "cli" is its event/evidence identity.
     let (bridge, mcp_manager) = initialize_agent(
         &workspace,
         &settings,
@@ -243,6 +244,7 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
         runtime.clone(),
         indexer_state.clone(),
         sidecar_state.clone(),
+        "cli",
     )
     .await?;
 

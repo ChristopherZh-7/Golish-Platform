@@ -39,6 +39,7 @@
 - 真 LLM + 真工具 + 真 evidence（无 GUI）；活体跑需 LLM key + 网络。
 - gate 走确定性 evidence 门（I7/I8）；自动确认仅对 scoping HITL，不放松 gate。
 - feature `headless-single-stage-runner-2026-06-06` 在 feature_list（in_progress）。
+- **session 四身份必须同值**：`initialize_agent(.., &session_id)`（event/evidence 写入）、`set_session_id`（终端）、`set_chat_session_id`（gate/refiner 查账本）、transcript 目录都用同一个 `stage-run-{uuid}`。2026-06-12 前 event 侧残留 `"cli"`，导致 evidence 落账后 gate/refiner 查不到（账本 facts=0、submit-only 锁不可达）。
 
 ## 测试入口
 

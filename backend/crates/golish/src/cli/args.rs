@@ -105,6 +105,22 @@ pub struct Args {
     /// Repeatable: `--target a.com --target b.com`.
     #[arg(long, value_name = "HOST")]
     pub target: Vec<String>,
+
+    /// `--stage-run` Phase 2 (2026-06-12-redteam-phase2): the engagement scope
+    /// includes subsidiaries. Scoping must then build the org tree — run
+    /// subsidiary discovery (ENScan), filter by the ownership threshold, and
+    /// land qualifying child organizations in the DB — before its gate passes.
+    /// Without this flag scoping behaves exactly as before (no subsidiary gate).
+    #[arg(long)]
+    pub include_subsidiaries: bool,
+
+    /// Minimum investment/ownership percent for a subsidiary to be in scope
+    /// (only meaningful with `--include-subsidiaries`). Recorded as the run's
+    /// scope policy for prompts/diagnostics; the actual filter runs in the
+    /// asset-intel promote layer driven by the provider's toolsconfig
+    /// `promote_when` (enscan-go: scale >= 51).
+    #[arg(long, value_name = "PCT", default_value_t = 50)]
+    pub subsidiary_threshold: u8,
 }
 
 impl Args {

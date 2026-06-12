@@ -15,6 +15,15 @@ use golish_core::runtime::GolishRuntime;
 use super::super::args::Args;
 
 /// Initialize the AI agent bridge with all dependencies.
+///
+/// `event_session_id` becomes the bridge's event/evidence session identity: it
+/// is stamped on every evidence-ledger row (`audit_log.session_id`), attributes
+/// background jobs, and tags event envelopes. Callers that run the harness
+/// (e.g. `--stage-run`) MUST pass the same id they later give the
+/// orchestrator via `set_chat_session_id`, because the gate/refiner read the
+/// ledger with `WHERE session_id = <chat_session_id>` — a mismatch makes every
+/// booked evidence id invisible to them. The interactive CLI (REPL/runner)
+/// passes `"cli"` (single-session mode, no session-scoped gate queries).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn initialize_agent(
     workspace: &Path,
@@ -23,6 +32,7 @@ pub(crate) async fn initialize_agent(
     runtime: Arc<dyn GolishRuntime>,
     indexer_state: Arc<IndexerState>,
     sidecar_state: Arc<SidecarState>,
+    event_session_id: &str,
 ) -> Result<(AgentBridge, Option<Arc<golish_mcp::McpManager>>)> {
     // Resolve provider: CLI arg > settings > default
     let provider = args
@@ -80,7 +90,7 @@ pub(crate) async fn initialize_agent(
                 &model,
                 shared_config,
                 runtime,
-                "cli", // CLI mode uses a single session
+                event_session_id,
             )
             .await?
         }
@@ -104,7 +114,7 @@ pub(crate) async fn initialize_agent(
                 None, // source_channel
                 shared_config,
                 runtime,
-                "cli",
+                event_session_id,
             )
             .await?
         }
@@ -127,7 +137,7 @@ pub(crate) async fn initialize_agent(
                 base_url.as_deref(),
                 shared_config,
                 runtime,
-                "cli",
+                event_session_id,
             )
             .await?
         }
@@ -154,7 +164,29 @@ pub(crate) async fn initialize_agent(
                 provider_preferences,
                 shared_config,
                 runtime,
-                "cli",
+                event_session_id,
+            )
+            .await?
+        }
+        "deepseek" | "deepseek_api" => {
+            let api_key = resolve_api_key(settings, "deepseek", args)?;
+            let base_url = settings.ai.deepseek.base_url.clone();
+
+            if args.verbose {
+                match base_url.as_deref() {
+                    Some(url) => eprintln!("[cli] DeepSeek base URL: {}", url),
+                    None => eprintln!("[cli] DeepSeek base URL: default (api.deepseek.com)"),
+                }
+            }
+
+            AgentBridge::new_deepseek_with_shared_config(
+                workspace.to_path_buf(),
+                &model,
+                &api_key,
+                base_url.as_deref(),
+                shared_config,
+                runtime,
+                event_session_id,
             )
             .await?
         }
@@ -178,25 +210,27 @@ pub(crate) async fn initialize_agent(
                 settings.ai.xiaomi.anthropic_base_url.as_deref(),
                 shared_config,
                 runtime,
-                "cli",
+                event_session_id,
             )
             .await?
         }
         _ => {
-            // API key-based providers (openrouter, anthropic, openai, etc.)
+            // API key-based providers (anthropic, openai, etc.)
             //
-            // NOTE: `new_with_runtime` ignores `provider` and always builds an
-            // OpenRouter client. Providers that need their own endpoint (xiaomi,
+            // NOTE: this fallback always builds an OpenRouter client regardless
+            // of `provider`. Providers that need their own endpoint (xiaomi,
             // nvidia, zai_sdk, vertex...) must have an explicit arm above, or
             // they will be silently misrouted to OpenRouter (→ 401/wrong host).
             let api_key = resolve_api_key(settings, &provider, args)?;
 
-            AgentBridge::new_with_runtime(
+            AgentBridge::new_openrouter_with_shared_config(
                 workspace.to_path_buf(),
-                &provider,
                 &model,
                 &api_key,
+                None,
+                shared_config,
                 runtime,
+                event_session_id,
             )
             .await?
         }
@@ -316,6 +350,9 @@ pub(super) fn resolve_api_key(
             get_with_env_fallback(&settings.ai.nvidia.api_key, &["NVIDIA_API_KEY"], None)
         }
         "xiaomi" => get_with_env_fallback(&settings.ai.xiaomi.api_key, &["XIAOMI_API_KEY"], None),
+        "deepseek" | "deepseek_api" => {
+            get_with_env_fallback(&settings.ai.deepseek.api_key, &["DEEPSEEK_API_KEY"], None)
+        }
         _ => None,
     };
 

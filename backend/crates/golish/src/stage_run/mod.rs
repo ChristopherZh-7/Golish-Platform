@@ -149,6 +149,15 @@ pub async fn run(args: Args) -> Result<()> {
 
     let session_id = format!("stage-run-{}", uuid::Uuid::new_v4());
 
+    // `session_id` is this run's single identity across ALL session-keyed
+    // surfaces: the bridge's event/evidence session (evidence ledger rows,
+    // background-job attribution — passed here), the terminal session
+    // (`set_session_id`), the orchestrator's chat session
+    // (`set_chat_session_id`), and the transcript directory. The harness
+    // gate/refiner read the evidence ledger `WHERE session_id = <chat session>`,
+    // so the write side MUST book evidence under the same id — passing
+    // anything else here makes every booked evidence id invisible to them
+    // (ledger facts = 0, submit-only lock unreachable).
     let (mut bridge, mcp_manager) = match crate::cli::initialize_agent(
         &workspace,
         &settings,
@@ -156,6 +165,7 @@ pub async fn run(args: Args) -> Result<()> {
         runtime,
         app_state.indexer_state.clone(),
         app_state.sidecar_state.clone(),
+        &session_id,
     )
     .await
     .context("build agent bridge")
@@ -237,8 +247,81 @@ pub async fn run(args: Args) -> Result<()> {
         allowlist,
         &task_input,
         seed.as_ref().and_then(|s| s.org_id),
+        args.include_subsidiaries,
+        args.subsidiary_threshold,
     )
     .await;
+
+    // 6.5) Phase 3 (2026-06-12-redteam-phase3, 方案 A): after the parent run
+    // succeeded, run the slice's post-scoping stages once per subsidiary org
+    // that Phase 2 landed (organizations.parent_id = parent). Serial on purpose
+    // (provider rate limits); each child run is its own task/operation_state
+    // bound to the child's org id, so the coverage gate's asset axis + DB-truth
+    // projection isolate per org automatically (06-10). A child failure does
+    // not stop its siblings — the engagement aggregates at the end (one run
+    // exposes ALL gaps). Without --include-subsidiaries this whole step is
+    // skipped (zero behaviour change).
+    let mut sub_results: Vec<(String, bool)> = Vec::new();
+    if args.include_subsidiaries && result.is_ok() {
+        match (
+            seed.as_ref().and_then(|s| s.org_id),
+            child_slice(&profile_id, to_stage),
+        ) {
+            (Some(parent_id), Some((child_entry, child_allowlist))) => {
+                let parent_name = seed
+                    .as_ref()
+                    .and_then(|s| s.org_name.clone())
+                    .unwrap_or_else(|| "the engagement parent".into());
+                let children =
+                    match golish_db::repo::organizations::list(&db_pool, &workspace_str).await {
+                        Ok(orgs) => filter_child_orgs(orgs, parent_id),
+                        Err(e) => {
+                            eprintln!(
+                                "[stage-run] subsidiary lookup failed (skipping child runs): {e:#}"
+                            );
+                            Vec::new()
+                        }
+                    };
+                let total = children.len();
+                for (i, child) in children.into_iter().enumerate() {
+                    eprintln!(
+                        "[stage-run] ── subsidiary {}/{}: {} ({}) ──",
+                        i + 1,
+                        total,
+                        child.name,
+                        child.id
+                    );
+                    let child_input = build_child_objective(&child, &parent_name, to_stage);
+                    let r = orchestrate(
+                        &bridge,
+                        &db_pool,
+                        &session_id,
+                        &profile_id,
+                        child_entry,
+                        child_allowlist.clone(),
+                        &child_input,
+                        Some(child.id),
+                        // Subsidiaries do not recurse into grand-children
+                        // (Phase 2 non-goal): no SUBSIDIARY gate on child runs.
+                        false,
+                        args.subsidiary_threshold,
+                    )
+                    .await;
+                    if let Err(e) = &r {
+                        eprintln!("[stage-run] subsidiary '{}' run failed: {e:#}", child.name);
+                    }
+                    sub_results.push((child.name, r.is_ok()));
+                }
+            }
+            (None, _) if args.include_subsidiaries => {
+                eprintln!(
+                    "[stage-run] --include-subsidiaries given but no parent org was seeded \
+                     (--org missing) — skipping subsidiary runs"
+                );
+            }
+            _ => {} // --to scoping: tree-build only, no per-subsidiary stages to run.
+        }
+    }
 
     // Give the event consumer a moment to drain trailing events.
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -263,6 +346,11 @@ pub async fn run(args: Args) -> Result<()> {
         }
     } else {
         println!("{report}");
+        // Phase 3: per-subsidiary engagement aggregate (empty without the flag).
+        let summary = subsidiary_summary(&sub_results);
+        if !summary.is_empty() {
+            println!("{summary}");
+        }
     }
 
     if let Some(mgr) = mcp_manager {
@@ -273,7 +361,22 @@ pub async fn run(args: Args) -> Result<()> {
     // the GUI keeps PG alive on purpose via the leaking `spawn_embedded_pg`).
     stop_embedded_pg(pg_handle_rx).await;
 
-    result.map(|_| ())
+    // Phase 3 engagement aggregation: the parent result decides first; any
+    // failed subsidiary then flips the whole engagement to FAILED ("an org
+    // tree is only covered when EVERY org in it passed", design §2).
+    let failed_subs: Vec<String> = sub_results
+        .iter()
+        .filter(|(_, ok)| !ok)
+        .map(|(name, _)| name.clone())
+        .collect();
+    match result {
+        Err(e) => Err(e),
+        Ok(_) if !failed_subs.is_empty() => Err(anyhow!(
+            "subsidiary stage runs failed: [{}]",
+            failed_subs.join(", ")
+        )),
+        Ok(_) => Ok(()),
+    }
 }
 
 /// Best-effort: stop the embedded PostgreSQL server started for this run.
@@ -296,6 +399,8 @@ async fn stop_embedded_pg(rx: tokio::sync::oneshot::Receiver<golish_db::GolishDb
 /// Build the [`TaskOrchestrator`] and run the slice via `run_stage`. `org_id`
 /// (from the upstream seed) binds the coverage gate's asset axis to THIS run's
 /// organization (coverage asset-axis isolation, design 2026-06-09).
+/// `include_subsidiaries` + `subsidiary_threshold` (Phase 2,
+/// 2026-06-12-redteam-phase2) opt the run into the scoping subsidiary gate.
 #[allow(clippy::too_many_arguments)]
 async fn orchestrate(
     bridge: &Arc<AgentBridge>,
@@ -306,6 +411,8 @@ async fn orchestrate(
     allowlist: HashSet<StageKind>,
     task_input: &str,
     org_id: Option<uuid::Uuid>,
+    include_subsidiaries: bool,
+    subsidiary_threshold: u8,
 ) -> Result<String> {
     use golish_agent_bridge::bridge_executor::BridgeAgentExecutor;
     use golish_agent_kit::task_orchestrator::TaskOrchestrator;
@@ -337,6 +444,7 @@ async fn orchestrate(
     orchestrator.set_approval_coordinator(bridge.coordinator().cloned());
     orchestrator.set_stage_allowlist(Some(allowlist));
     orchestrator.set_harness_org_id(org_id);
+    orchestrator.set_subsidiary_scope(include_subsidiaries, subsidiary_threshold);
 
     let executor = BridgeAgentExecutor::new(bridge.clone());
     orchestrator
@@ -499,6 +607,78 @@ async fn seed_upstream(
         org_name: org_name_out,
         targets_added,
     })
+}
+
+/// Phase 3 (2026-06-12-redteam-phase3, 方案 A) · the stage slice a subsidiary
+/// org run covers: subsidiaries never re-run scoping (authorization + org-tree
+/// construction are engagement-level actions, done once in the parent run), so
+/// the child entry is pinned to `target_intel`. `--to scoping` (tree-build
+/// only) yields `None` — no per-subsidiary runs.
+fn child_slice(profile_id: &str, to: StageKind) -> Option<(StageKind, HashSet<StageKind>)> {
+    if to == StageKind::Scoping {
+        return None;
+    }
+    resolve_slice(profile_id, Some(StageKind::TargetIntel), to).ok()
+}
+
+/// Phase 3 · keep only the direct children of `parent` (the Phase 2 org tree).
+/// Pure filter so the per-subsidiary dispatch is unit-testable; the input list
+/// is already project-scoped by `organizations::list` (I2).
+fn filter_child_orgs(
+    orgs: Vec<golish_db::models::Organization>,
+    parent: uuid::Uuid,
+) -> Vec<golish_db::models::Organization> {
+    orgs.into_iter()
+        .filter(|o| o.parent_id == Some(parent))
+        .collect()
+}
+
+/// Phase 3 · objective for one subsidiary's run. Carries the child's REAL
+/// organization id (so the agent calls `recon_*` / `manage_targets` against it
+/// without guessing) and pins the collection scope to THIS subsidiary only.
+fn build_child_objective(
+    child: &golish_db::models::Organization,
+    parent_name: &str,
+    to: StageKind,
+) -> String {
+    format!(
+        "Run the {} stage for this engagement. Organization: {} (organization_id: {}). \
+         This organization is a subsidiary of {} (already landed in the org tree during \
+         scoping); collect for THIS subsidiary only — discover its own assets (domains, \
+         IPs) and register them as in-scope targets bound to this organization_id.",
+        to.as_str(),
+        child.name,
+        child.id,
+        parent_name,
+    )
+}
+
+/// Phase 3 · per-org engagement summary appended after the main report. Empty
+/// input (no subsidiaries / flag off) renders nothing.
+fn subsidiary_summary(results: &[(String, bool)]) -> String {
+    if results.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n────────── subsidiary runs (Phase 3) ──────────\n");
+    for (name, ok) in results {
+        out.push_str(&format!(
+            "  [{}] {}\n",
+            if *ok { "OK" } else { "FAILED" },
+            name
+        ));
+    }
+    let failed = results.iter().filter(|(_, ok)| !ok).count();
+    out.push_str(&format!(
+        "engagement: {}/{} subsidiaries OK{}\n",
+        results.len() - failed,
+        results.len(),
+        if failed > 0 {
+            " — engagement INCOMPLETE (every org in the tree must pass; see I8)"
+        } else {
+            ""
+        }
+    ));
+    out
 }
 
 /// Build the task objective. When `-e/--execute` is given it wins; otherwise
@@ -842,5 +1022,78 @@ mod tests {
             build_objective(&args, StageKind::Scoping, None),
             "custom obj"
         );
+    }
+
+    // ── Phase 3 (2026-06-12-redteam-phase3, 方案 A): per-subsidiary dispatch ──
+
+    /// Minimal Organization for pure-function tests (serde fills the 18
+    /// `#[serde(default)]` profile fields).
+    fn test_org(name: &str, parent_id: Option<uuid::Uuid>) -> golish_db::models::Organization {
+        serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(),
+            "project_path": "/tmp/p",
+            "name": name,
+            "parent_id": parent_id,
+            "description": "",
+            "owner": "",
+            "sort_order": 0,
+            "created_at": "2026-06-12T00:00:00Z",
+            "updated_at": "2026-06-12T00:00:00Z",
+        }))
+        .expect("test org deserializes")
+    }
+
+    #[test]
+    fn child_slice_none_for_scoping_only_and_skips_scoping_otherwise() {
+        // --to scoping = tree-build only → no per-subsidiary runs.
+        assert!(child_slice("red_team", StageKind::Scoping).is_none());
+        // --to target_intel → child runs cover target_intel only (never scoping).
+        let (entry, allow) =
+            child_slice("red_team", StageKind::TargetIntel).expect("slice resolves");
+        assert_eq!(entry, StageKind::TargetIntel);
+        assert!(allow.contains(&StageKind::TargetIntel));
+        assert!(
+            !allow.contains(&StageKind::Scoping),
+            "subsidiary runs must never re-run scoping (engagement-level stage)"
+        );
+    }
+
+    #[test]
+    fn filter_child_orgs_keeps_direct_children_only() {
+        let parent = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+        let orgs = vec![
+            test_org("root", None),
+            test_org("child-a", Some(parent)),
+            test_org("other-child", Some(other)),
+            test_org("child-b", Some(parent)),
+        ];
+        let children = filter_child_orgs(orgs, parent);
+        let names: Vec<&str> = children.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, vec!["child-a", "child-b"]);
+    }
+
+    #[test]
+    fn child_objective_names_child_id_and_parent() {
+        let child = test_org("默安子公司", Some(uuid::Uuid::new_v4()));
+        let obj = build_child_objective(&child, "默安科技", StageKind::TargetIntel);
+        assert!(obj.contains("Run the target_intel stage"));
+        assert!(obj.contains(&format!("organization_id: {}", child.id)));
+        assert!(obj.contains("默安子公司"));
+        assert!(obj.contains("subsidiary of 默安科技"));
+        assert!(obj.contains("THIS subsidiary only"));
+    }
+
+    #[test]
+    fn subsidiary_summary_renders_aggregate_and_empty_is_silent() {
+        assert!(subsidiary_summary(&[]).is_empty());
+        let s = subsidiary_summary(&[("a".into(), true), ("b".into(), false)]);
+        assert!(s.contains("[OK] a"));
+        assert!(s.contains("[FAILED] b"));
+        assert!(s.contains("1/2 subsidiaries OK"));
+        assert!(s.contains("INCOMPLETE"));
+        let all_ok = subsidiary_summary(&[("a".into(), true)]);
+        assert!(all_ok.contains("1/1 subsidiaries OK"));
+        assert!(!all_ok.contains("INCOMPLETE"));
     }
 }

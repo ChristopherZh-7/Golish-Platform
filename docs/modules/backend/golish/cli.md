@@ -23,7 +23,7 @@
 |---|---|
 | `args`（clap 参数） | CLI 参数（含 `--stage-run` 等） |
 | `runner` / `repl` | headless 执行 / REPL |
-| `bootstrap::initialize_agent`（`pub(crate)`） | 用 CliRuntime 装配 agent |
+| `bootstrap::initialize_agent`（`pub(crate)`） | 用 CliRuntime 装配 agent；调用方显式传 `event_session_id`（evidence 账本/后台任务/事件 envelope 的会话身份）——REPL 传 `"cli"`，stage-run 传与 `set_chat_session_id` 一致的 `stage-run-{uuid}`（gate/refiner 按该 id 查账本，写读必须同 id） |
 
 ## 关键文件
 
