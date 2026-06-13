@@ -1,7 +1,17 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { AskHumanInline, type AskHumanState, resolveAskHumanInputType } from "./AskHumanInline";
+import { listOrganizationCandidates } from "@/lib/api/organizations";
+import {
+  AskHumanInline,
+  type AskHumanState,
+  parseReviewContext,
+  resolveAskHumanInputType,
+} from "./AskHumanInline";
+
+vi.mock("@/lib/api/organizations", () => ({
+  listOrganizationCandidates: vi.fn(),
+}));
 
 function makeRequest(partial: Partial<AskHumanState> = {}): AskHumanState {
   return {
@@ -136,5 +146,115 @@ describe("resolveAskHumanInputType", () => {
   it("never overrides deliberate credentials/confirmation types", () => {
     expect(resolveAskHumanInputType("credentials", ["A"])).toBe("credentials");
     expect(resolveAskHumanInputType("confirmation", ["Yes", "No"])).toBe("confirmation");
+  });
+});
+
+describe("parseReviewContext", () => {
+  it("treats blank context as empty rows", () => {
+    expect(parseReviewContext("")).toEqual({ kind: "rows", rows: [] });
+    expect(parseReviewContext("   ")).toEqual({ kind: "rows", rows: [] });
+  });
+
+  it("extracts an organization_id (snake_case or camelCase) to source rows from the DB", () => {
+    expect(parseReviewContext('{"organization_id":"org-1"}')).toEqual({
+      kind: "org",
+      organizationId: "org-1",
+    });
+    expect(parseReviewContext('{"organizationId":"  org-2  "}')).toEqual({
+      kind: "org",
+      organizationId: "org-2",
+    });
+  });
+
+  it("tolerates a double-encoded JSON string carrying the org id", () => {
+    expect(parseReviewContext(JSON.stringify('{"organization_id":"org-3"}'))).toEqual({
+      kind: "org",
+      organizationId: "org-3",
+    });
+  });
+
+  it("passes a JSON array straight through as rows (back-compat)", () => {
+    expect(parseReviewContext('[{"name":"Acme"}]')).toEqual({
+      kind: "rows",
+      rows: [{ name: "Acme" }],
+    });
+  });
+
+  it("unwraps a wrapped array under items/candidates/units/organizations", () => {
+    expect(parseReviewContext('{"items":[{"name":"A"}]}')).toEqual({
+      kind: "rows",
+      rows: [{ name: "A" }],
+    });
+    expect(parseReviewContext('{"organizations":[{"name":"B"}]}')).toEqual({
+      kind: "rows",
+      rows: [{ name: "B" }],
+    });
+  });
+
+  it("falls back to bulk text for non-JSON or unrecognised payloads", () => {
+    expect(parseReviewContext("Acme Corp\nAcme Sub")).toEqual({
+      kind: "bulk",
+      text: "Acme Corp\nAcme Sub",
+    });
+    expect(parseReviewContext('{"note":"why i need this"}')).toEqual({
+      kind: "bulk",
+      text: '{"note":"why i need this"}',
+    });
+  });
+});
+
+describe("AskHumanInline unit_review (DB-sourced candidates)", () => {
+  function reviewRequest(context: string): AskHumanState {
+    return {
+      requestId: "req-u",
+      sessionId: "sess-u",
+      question: "Confirm the subsidiaries in scope",
+      inputType: "unit_review",
+      options: [],
+      context,
+    };
+  }
+
+  it("loads candidates from the DB by org id and seeds the table with ownership labels", async () => {
+    vi.mocked(listOrganizationCandidates).mockResolvedValue({
+      organizations: [
+        {
+          kind: "organization",
+          label: "n",
+          value: "平安银行股份有限公司",
+          evidence: { raw: { scale: "58%" } },
+        },
+        { kind: "organization", label: "n", value: "平安证券股份有限公司", evidence: {} },
+      ],
+      targets: [],
+    });
+
+    render(
+      <AskHumanInline
+        request={reviewRequest('{"organization_id":"org-123"}')}
+        onSubmit={vi.fn()}
+        onSkip={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Bulk targets")).toHaveValue(
+        "平安银行股份有限公司 (58%)\n平安证券股份有限公司"
+      );
+    });
+    expect(listOrganizationCandidates).toHaveBeenCalledWith("org-123");
+  });
+
+  it("does not hit the DB and seeds from the array when context is a candidate array", () => {
+    vi.mocked(listOrganizationCandidates).mockClear();
+    render(
+      <AskHumanInline
+        request={reviewRequest('[{"name":"Acme Sub (51%)"}]')}
+        onSubmit={vi.fn()}
+        onSkip={vi.fn()}
+      />
+    );
+    expect(screen.getByLabelText("Bulk targets")).toHaveValue("Acme Sub (51%)");
+    expect(listOrganizationCandidates).not.toHaveBeenCalled();
   });
 });

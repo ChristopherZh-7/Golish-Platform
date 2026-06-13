@@ -1,7 +1,14 @@
 import { KeyRound, List, ListChecks, MessageSquare, Pencil, ShieldQuestion } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Markdown } from "@/components/Markdown";
-import { ScopeReviewTable } from "./ScopeReviewTable";
+import { listOrganizationCandidates } from "@/lib/api/organizations";
+import {
+  candidatesToUnitRows,
+  parseBulkRows,
+  type ScopeReviewKind,
+  type ScopeReviewRow,
+  ScopeReviewTable,
+} from "./ScopeReviewTable";
 
 export const ASK_HUMAN_INPUT_TYPES = [
   "credentials",
@@ -49,14 +56,46 @@ const INPUT_TYPE_ICONS: Record<string, typeof KeyRound> = {
   unit_review: ListChecks,
 };
 
-/** Parse the AI-proposed `context` JSON for a review table; tolerate bad JSON. */
-function parseReviewContext(context: string): unknown {
-  if (!context.trim()) return [];
+/** Where a review table's initial rows come from. */
+export type ReviewSource =
+  | { kind: "org"; organizationId: string }
+  | { kind: "rows"; rows: unknown }
+  | { kind: "bulk"; text: string };
+
+/**
+ * Decide where the review table's initial rows come from. Priority:
+ * 1. context carries an `organization_id` → fetch that org's discovered
+ *    candidates from the DB (robust: the agent only had to copy a small id, not
+ *    a fragile 10-18 item array that textual-tool-call models mangle);
+ * 2. context is (or stringifies to) an array / `{items|candidates|units|
+ *    organizations: [...]}` → use it directly (back-compat with the old array
+ *    contract and scope_review);
+ * 3. otherwise treat context as bulk text (one entry per line).
+ *
+ * Tolerant of double-encoded JSON (a JSON string whose value is itself JSON),
+ * which is how some models escape structured arguments.
+ */
+export function parseReviewContext(context: string): ReviewSource {
+  const raw = context.trim();
+  if (!raw) return { kind: "rows", rows: [] };
+  let v: unknown;
   try {
-    return JSON.parse(context);
+    v = JSON.parse(raw);
+    if (typeof v === "string") v = JSON.parse(v);
   } catch {
-    return [];
+    return { kind: "bulk", text: raw };
   }
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    const obj = v as Record<string, unknown>;
+    const orgId = obj.organization_id ?? obj.organizationId;
+    if (typeof orgId === "string" && orgId.trim()) {
+      return { kind: "org", organizationId: orgId.trim() };
+    }
+    const arr = obj.items ?? obj.candidates ?? obj.units ?? obj.organizations;
+    if (Array.isArray(arr)) return { kind: "rows", rows: arr };
+  }
+  if (Array.isArray(v)) return { kind: "rows", rows: v };
+  return { kind: "bulk", text: raw };
 }
 
 /** A-Z badges for the first 26 options, then 1-based numbers as a fallback. */
@@ -87,6 +126,32 @@ export function AskHumanInline({
 
   const Icon = INPUT_TYPE_ICONS[request.inputType] || MessageSquare;
   const isReviewTable = request.inputType === "scope_review" || request.inputType === "unit_review";
+
+  // Resolve where the review table's rows come from (org id → DB, an array, or
+  // bulk text). Memoized so the fetch effect below doesn't re-run every render.
+  const reviewSource = useMemo<ReviewSource>(
+    () => (isReviewTable ? parseReviewContext(request.context) : { kind: "rows", rows: [] }),
+    [isReviewTable, request.context]
+  );
+  const orgId = reviewSource.kind === "org" ? reviewSource.organizationId : null;
+  // For the org-sourced path the candidates load asynchronously from the DB;
+  // null = still loading, [] = loaded-empty / failed. The table is remounted via
+  // `key` once these arrive so its seeded textarea picks them up.
+  const [dbRows, setDbRows] = useState<ScopeReviewRow[] | null>(null);
+  useEffect(() => {
+    if (!orgId) return;
+    let alive = true;
+    listOrganizationCandidates(orgId)
+      .then((c) => {
+        if (alive) setDbRows(candidatesToUnitRows(c.organizations));
+      })
+      .catch(() => {
+        if (alive) setDbRows([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [orgId]);
 
   const submitOther = () => {
     const trimmed = otherText.trim();
@@ -125,8 +190,17 @@ export function AskHumanInline({
 
       {isReviewTable && (
         <ScopeReviewTable
-          kind={request.inputType as "scope_review" | "unit_review"}
-          initial={parseReviewContext(request.context)}
+          // Remount when async DB rows arrive so the table re-seeds its textarea
+          // from the freshly-loaded candidates (it reads `initial` only on mount).
+          key={reviewSource.kind === "org" ? `org-${dbRows ? dbRows.length : "loading"}` : "ctx"}
+          kind={request.inputType as ScopeReviewKind}
+          initial={
+            reviewSource.kind === "org"
+              ? (dbRows ?? [])
+              : reviewSource.kind === "rows"
+                ? reviewSource.rows
+                : parseBulkRows(request.inputType as ScopeReviewKind, reviewSource.text)
+          }
           onConfirm={(rows) => onSubmit(JSON.stringify(rows))}
           onSkip={onSkip}
         />
