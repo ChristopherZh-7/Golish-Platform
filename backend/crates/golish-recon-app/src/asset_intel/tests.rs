@@ -89,12 +89,12 @@ fn provider_output_is_trusted_only_for_successful_terminal_states() {
         message: "empty".into(),
     }));
     assert!(!provider_output_is_trusted(&AssetIntelProviderRunStatus {
-        provider_id: "enscan-go-tyc-discovery".into(),
+        provider_id: "enscan-go".into(),
         status: AssetIntelProviderRunState::Failed,
         message: "command failed after emitting partial stdout".into(),
     }));
     assert!(!provider_output_is_trusted(&AssetIntelProviderRunStatus {
-        provider_id: "enscan-go-kc-discovery".into(),
+        provider_id: "enscan-go".into(),
         status: AssetIntelProviderRunState::Unavailable,
         message: "missing credentials".into(),
     }));
@@ -1165,7 +1165,7 @@ fn expand_provider_tools_skips_disabled_providers() {
 }
 
 #[test]
-fn fixture_discovery_auto_defaults_skip_tyc_until_upstream_is_stable() {
+fn fixture_discovery_default_is_single_type_all_provider() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let toolsconfig_dir = std::path::PathBuf::from(manifest_dir)
         .join("..")
@@ -1194,12 +1194,57 @@ fn fixture_discovery_auto_defaults_skip_tyc_until_upstream_is_stable() {
             .iter()
             .map(|tool| provider_id_for_tool(tool).unwrap())
             .collect::<Vec<_>>(),
-        vec![
-            "enscan-go".to_string(),
-            "enscan-go-kc-discovery".to_string(),
-            "enscan-go-rb-discovery".to_string(),
-        ],
-        "default discovery should skip TYC while ENScan_GO v2.0.5 TYC discovery is unstable"
+        vec!["enscan-go".to_string()],
+        "default discovery is a single enscan-go provider running `-type all` (ENScan dedups across sources internally); the per-source tyc/kc/rb discovery providers were removed"
+    );
+}
+
+/// Regression guard for `recon_lookup_company` (scoping 纠名). ENScan declares
+/// its lookup descriptor INSIDE `asset_intel_providers`, not the single
+/// `asset_intel` field, so `lookup_company_matches` must `expand_provider_tools`
+/// before filtering — otherwise it finds nothing and fails with "no provider
+/// with an enabled lookup descriptor is available" on every scoping run.
+#[test]
+fn fixture_enscan_lookup_descriptor_visible_only_after_expand() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let toolsconfig_dir = std::path::PathBuf::from(manifest_dir)
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("resources")
+        .join("toolsconfig");
+    if !toolsconfig_dir.exists() {
+        eprintln!(
+            "fixture skipped: toolsconfig dir not found at {}",
+            toolsconfig_dir.display()
+        );
+        return;
+    }
+    let scan = golish_pentest::scan_toolsconfig(&toolsconfig_dir);
+    assert!(
+        scan.success,
+        "toolsconfig scan failed: {:?}",
+        scan.error.as_deref()
+    );
+    let has_enabled_lookup = |tools: &[golish_pentest::models::ToolConfig]| {
+        tools.iter().any(|t| {
+            t.asset_intel
+                .as_ref()
+                .and_then(|a| a.lookup.as_ref())
+                .is_some_and(|l| l.enabled)
+        })
+    };
+    // After expand: ENScan's lookup descriptor is visible (lookup selection works).
+    assert!(
+        has_enabled_lookup(&expand_provider_tools(&scan.tools)),
+        "after expand_provider_tools, enscan-go must expose an enabled lookup descriptor for recon_lookup_company"
+    );
+    // Raw (un-expanded) scan does NOT see it — documents WHY the expand is
+    // required (enscan-go uses asset_intel_providers, leaving the single
+    // asset_intel field None).
+    assert!(
+        !has_enabled_lookup(&scan.tools),
+        "enscan-go declares lookup under asset_intel_providers, so the raw scan must not expose it (if it does, revisit whether lookup_company_matches still needs expand)"
     );
 }
 

@@ -72,6 +72,7 @@ impl ExecutionModePolicy for TaskModePolicy {
                 manage_targets: true,
                 recon_discover_subsidiaries: true,
                 recon_enrich_assets: true,
+                recon_lookup_company: true,
                 recon_list_providers: true,
                 ..BridgeToolSelection::none()
             },
@@ -160,6 +161,10 @@ mod tests {
         assert!(s.bridge_tools.manage_targets);
         assert!(s.bridge_tools.recon_discover_subsidiaries);
         assert!(s.bridge_tools.recon_enrich_assets);
+        assert!(
+            s.bridge_tools.recon_lookup_company,
+            "task primary must expose recon_lookup_company or scoping 纠名 (Phase A) is unsatisfiable"
+        );
         assert!(s.bridge_tools.recon_list_providers);
         assert!(s.agent_tools.include_dispatch_tools);
         // Legacy parity: the four "internal" sub-agents are filtered

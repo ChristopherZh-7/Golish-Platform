@@ -8,6 +8,7 @@ pub use pipeline::*;
 
 use crate::harness::profile::ScopingPolicy;
 use crate::harness::stage_spec::StageSpec;
+use crate::harness::types::StageKind;
 
 /// Intent classifier prompt — determines whether a user message in Task mode
 /// is an actionable task or just casual conversation (greeting, question, etc.).
@@ -335,6 +336,21 @@ pub fn render_in_scope_assets(assets: &[String]) -> String {
     }
     s.push('\n');
     s
+}
+
+/// Stage-aware wrapper over [`render_in_scope_assets`] (设计 2026-06-13).
+///
+/// scoping 是 ORG 层（判定「这个集团 org 建了没 / 子公司树完不完整」），不是
+/// ASSET 层。把 recon 收集的 `targets.scope='in'` 资产清单注入 scoping prompt，
+/// 会让上一轮或别的 org 的残留资产冒充「本次权威资产」污染纠名——scoping 时
+/// `harness_org_id=None`，org 过滤关闭，整个工作区 + 历史 `project_path=''` 的
+/// in-scope 资产会被全捞出来。所以 scoping 阶段一律不注入资产；其余阶段透传
+/// 权威清单，行为零变更。
+pub fn render_in_scope_assets_for_stage(stage_kind: StageKind, assets: &[String]) -> String {
+    if stage_kind == StageKind::Scoping {
+        return String::new();
+    }
+    render_in_scope_assets(assets)
 }
 
 /// C6 · real cross-stage evidence handoff. Unlike [`stage_inherited_evidence`]
@@ -678,6 +694,28 @@ Use markdown formatting. Be factual and precise. Reference specific evidence fro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 设计 2026-06-13：scoping 是 ORG 层、不是 ASSET 层。把 recon 资产清单注入
+    /// scoping prompt 会让上一轮/别 org 的脏资产（如残留的 `*.moresec.cn`）冒充
+    /// 「本次权威资产」污染纠名。`render_in_scope_assets_for_stage` 在 scoping
+    /// 阶段必须返回空串；其余阶段照旧注入权威清单（行为零变更）。
+    #[test]
+    fn scoping_stage_never_injects_in_scope_assets() {
+        use crate::harness::types::StageKind;
+        let assets = vec!["moresec.cn".to_string(), "ai.moresec.cn".to_string()];
+        // Scoping: ORG 层，绝不注入资产清单（防跨 engagement 污染）。
+        assert_eq!(
+            render_in_scope_assets_for_stage(StageKind::Scoping, &assets),
+            ""
+        );
+        // 下游阶段仍拿到权威清单。
+        let eas = render_in_scope_assets_for_stage(StageKind::ExternalAttackSurface, &assets);
+        assert!(
+            eas.contains("IN-SCOPE ASSETS"),
+            "non-scoping stages must keep the authoritative in-scope list"
+        );
+        assert!(eas.contains("moresec.cn"));
+    }
 
     /// The final stage-discipline directive must (1) force a parseable
     /// StageDeliverable JSON ending so the deterministic gate stops being

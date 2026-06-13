@@ -7,6 +7,7 @@ pub mod custom_rules;
 pub mod directory_entries;
 pub mod dns_records;
 pub mod endpoint_tests;
+pub mod engagement_truth;
 pub mod evidence_classifications;
 pub mod execution_plans;
 pub mod findings;

@@ -29,7 +29,111 @@
 
 ---
 
-### 2026-06-12 · 红队 DB 真值闭环 Phase 3：多 org coverage 轴（方案 A · 调度层逐 org）（BaJie MCP-agent-1 · DISPATCH off）
+### 2026-06-13 · 修正 ENScan cookie 路径：v2.0.6 fork 从「二进制同目录」读 config（推翻 MCP-2「续」的 `~/.config` 改动）（BaJie MCP-agent-4 · DISPATCH off）
+
+- **本轮目标**：用户活体跑 scoping「搞一下平安」，`recon_lookup_company` 截图 `provider_status: lookup exited with code Some(1)`。MCP-2 已修的两个 bug（lookup descriptor `expand_provider_tools` + cookie 路径）之后**冒出的新症状**，让我定位。
+- **根因（证据化，铁证 = Golish 保存的 enscan 原始 `stderr.log`）**：今天 ~13:59 enscan 二进制从 **v2.0.5（keac 上游）升级到用户自己 fork 的 v2.0.6（ChristopherZh-7）**，而 **v2.0.6 改成从「可执行文件同目录」读 `config.yaml`**（`<exe_dir>/config.yaml` = `{{tools_dir}}/ENScan_GO/config.yaml`），无 `-config` flag（完整 `-h` 核实）、**无回退**（找不到直接 `[FTL] 没有找到配置文件 .../tools/ENScan_GO/config.yaml` → exit 1）。
+  - `11:59` run d979a9c4 用 **v2.0.5** → 成功导出「中国平安…json」；`17:31`/`17:49` run 9f2dc975/e492a012 用 **v2.0.6** → FTL config-not-found → exit 1。cookie 17:32 已新鲜重抓写到 `~/.config/enscan/config.yaml`，但 v2.0.6 去 `tools/ENScan_GO/` 读 → 那里只有二进制 → FTL。
+  - **即 MCP-2「续」（line 47）的判断「v2.0.6 无 -config、只读 ~/.config/enscan」对 v2.0.5 成立、对 v2.0.6 fork 正好反了**；HEAD 原始值 `{{tools_dir}}/ENScan_GO/config.yaml` 本就对 v2.0.6 正确，MCP-2 那次改动是一次回归性 bug。
+- **改（用户拍板「治本走 A」）**：
+  - ① `resources/toolsconfig/enscan-go.json`：`external_file.path` 由 `~/.config/enscan/config.yaml` **改回** `{{tools_dir}}/ENScan_GO/config.yaml`（= HEAD 原值）。
+  - ② `golish-integrations/src/resolver_tests.rs`：回归测试**反转方向**——重命名 `fixture_enscan_storage_path_matches_enscan_native_config` → `fixture_enscan_storage_path_matches_binary_dir_config`，注释/断言改为「bundled fork 无 -config、只从 exe 同目录读 → path 必须 `{{tools_dir}}/ENScan_GO/config.yaml`」，并保留 NOTE 说明上游 ≤v2.0.5 读 `~/.config/enscan`。
+  - ③ 操作桥接（立即解封，非改码）：`cp ~/.config/enscan/config.yaml "{{tools_dir}}/ENScan_GO/config.yaml"` 把现有新鲜 cookie 拷到 v2.0.6 读的位置，使 app 内下次 lookup 立刻能过 config-not-found。
+- **运行过的验证（实跑，全绿）**：
+  - `cargo run --example validate_all_tools -p golish-pentest-domain` → **46/46 ok, 0 fail**（含 enscan-go.json，path 改后仍合法）。
+  - `cargo nextest run -p golish-integrations` → **78 passed / 0 failed**；改名测试单独 `cargo nextest -p golish-integrations fixture_enscan_storage_path_matches_binary_dir_config` → **1 passed**。
+  - `ReadLints`（enscan-go.json + resolver_tests.rs）→ 无错。
+- **风险/欠账**：① cookie 是否过期**未联网实证**（拷贝只解 config-not-found；若 app 内仍 exit 1 但 stderr 变 `cookie expired/安全验证` → 用户点 ⚡ 重抓即可，现在 ⚡ 会直接写到 `{{tools_dir}}/ENScan_GO/config.yaml`）；② **未跑全栈 `just precommit`**（仅针对性套件全绿）；③ **未 commit**；④ 此项改动使 `enscan-go.json` 的 path 又回到与 HEAD 一致（相当于回退 MCP-2 的 path 改，但 MCP-2 新增的回归测试现已改成正确方向）。
+- **下一步**：用户在 app 内重跑「搞一下平安」确认 lookup 过了 config-not-found（出候选选择项）；按需 `just precommit` + commit（本轮 2 文件改动 + 1 操作桥接）。
+
+---
+
+### 2026-06-13 · Scoping 子公司发现改用 ENScan `-type all`（删按源 provider，靠工具自带去重）（BaJie MCP-agent-2 · DISPATCH off）
+
+- **本轮目标**：用户报「子公司创建」有重复/缺失。根因（代码坐实）：scoping 的 `recon_discover_subsidiaries` → `run_passive_intel(Subsidiaries)` → `select_subsidiary_providers` 默认选中 3 个 `auto.default=true` 的按源 discovery provider（aqc prio100 / kc prio90 / rb prio85；tyc default=false 排除），各跑一次 ENScan 单 `-type`，跨源同名公司 `pid` 不同 → Rust 侧 `auto_promote` 的 `dedupe_by:[pid,name]` 跨源去重不掉 → 建出重复子 org。用户拍板「方案 A'」：合并成单次 `-type all`（一次跑全源，靠 ENScan v2.0.6 fork 自带去重），并直接删掉多余按源 provider。
+- **已完成（纯 config + test，无 schema / IPC / gate / availability 改动）**：
+  - `resources/toolsconfig/enscan-go.json`（结构化编辑 · 文件本就是 sort_keys+indent=2 机器格式，round-trip 1231 行全等仅尾换行差）：① 删 3 个 provider `enscan-go-{tyc,kc,rb}-discovery`；② 删 3 个 skill `company-default-json-{tyc,kc,rb}`；③ 改 skill `company-default-json` 的 `-type aqc`→`-type all`；④ 修遗留文案 kc 组 description `v2.0.5`→`v2.0.6`。**保留**：`enscan-go`（发现，现 `-type all`）+ `enscan-go-enrichment`（补字段）+ 全部 `integration.groups`（aqc/tyc/kc/rb/miit 的 cookie + 快捷登录抓取 capture，一个不动）。
+  - `golish-recon-app/src/asset_intel/tests.rs`：fixture 改名 `fixture_discovery_auto_defaults_skip_tyc_until_upstream_is_stable`→`fixture_discovery_default_is_single_type_all_provider` + 断言默认发现集 = `[enscan-go]`；`provider_output_is_trusted_*` 里已删 provider_id 字符串标签清理为 `enscan-go`。
+  - `frontend/components/TargetPanel/TargetGroupedView.actions.test.ts`：候选样例 `source` 已删 id 清理为 `enscan-go`（仅测试数据，不涉逻辑）。
+- **运行过的验证（实跑，全绿）**：
+  - 身份级 diff（按 provider_id / skill id 比对 HEAD，非按数组下标）：仅删 {tyc,kc,rb} 的 provider+skill，**保留 provider 内容零变化**，唯一字段改动 = `company-default-json` 的 `-type aqc`→`all`。
+  - `cargo run --example validate_all_tools -p golish-pentest-domain` → **46/46 ok, 0 fail**（含 enscan-go）
+  - `cargo nextest run -p golish-recon-app asset_intel` → **55 passed**（含改后 fixture + 跨源去重相关测试）
+  - `cargo nextest run -p golish-integrations fixture_enscan` → **3 passed**（aqc/tyc/kc/rb capture 抓取配方完好，证明 cookie 功能未受影响）
+  - `pnpm test:run`（全 FE 套件，vitest 根在仓库根）→ **1293 passed / 12 skipped / 0 failed**
+  - `cargo fmt --check -p golish-recon-app` → exit 0；ReadLints（json + 2 测试文件）→ 无错
+- **风险/欠账**：① 未跑全栈 `just precommit`（仅针对性套件全绿）；② 活体未验（需配 ENScan cookie 跑一次 scoping 确认 `-type all` 实际去重出干净子公司树）——留用户环境；③ **未 commit**；④ `requires_integration` 仍 `[aqc]`（用户选默认①：有 aqc cookie 才算 provider 可用；若要「任一源 cookie 即可用」再小改 `availability.rs` 遍历 group_ids）。
+- **续（活体暴露的第二个 bug · 已修）· ENScan cookie 路径不一致致 scoping 降级手填**：用户活体跑 scoping，AI 建完母 org 后弹「手填子公司列表」，提示 "ENScan is not configured"。根因：`enscan-go.json` 的 `integration.storage.external_file.path` = `{{tools_dir}}/ENScan_GO/config.yaml`，但 **ENScan_GO v2.0.6 无 `-config` 参数**（完整 `-h` 确认），只读原生 `~/.config/enscan/config.yaml`；tools_dir 下该文件不存在 → `recon_list_providers`(`availability.rs`) 永远判「未配置」→ AI 无法 `recon_discover_subsidiaries` → 降级 `ask_human` 手填。且**全仓库设计/测试/`external_file.rs` 注释均用 `~/.config/enscan/config.yaml`**（`docs/design/2026-05-21-integrations.md`、`resolver_tests.rs:485`、`schema/tests.rs:41/50`），唯独 enscan-go.json 是孤儿 tools_dir 值（`git show HEAD` 确认 HEAD 即坏，非 v2.0.6/本次引入）。**修**：① `enscan-go.json` path → `~/.config/enscan/config.yaml`；② 加防回归测试 `golish-integrations resolver_tests::fixture_enscan_storage_path_matches_enscan_native_config`（加载真实 config 断言 storage path）。验证：`validate_all_tools` 46/46 + `cargo nextest -p golish-integrations fixture_enscan` **4 passed**（含新测试）+ ReadLints 无错。**注**：用户 cookie 已在 `~/.config/enscan/config.yaml`（aqc，5/21 旧文件，可能过期需重抓）；路径修对后可用性读对位置 → 有 aqc 即「configured」→ AI 走自动发现（`-type all`）而非手填。**仍未 commit / 未跑全栈 precommit。**
+- **续 2（活体暴露的第三个问题 · 已修）· Target 面板不随 AI 写 org 刷新**：用户反馈 AI 写完数据后切到 Target 面板不刷新。根因：`useTargetData` 刷新触发集只含 `manage_targets`/`record_finding`，不含 scoping 写 org 的 `manage_organizations`/`recon_discover_subsidiaries`；org 树（`TargetGroupedView.refreshOrgs`）只随 `targets.length` 变化刷、`TargetGraphView` 只 mount 加载一次；且面板经 `AppShell` `visitedViews` **常驻挂载**（切走只 opacity 隐藏，切回不重挂载/重取）。**修（前端 4 文件）**：① `useTargetData.ts` REFRESH_TOOLS 加 `manage_organizations`/`recon_discover_subsidiaries`；② `TargetGroupedView.tsx` + ③ `TargetGraphView.tsx` 各加 `ai-event`(org 写工具) + `targets-changed` 监听 → 重载 org（实时刷）；④ 双保险中心化在 `useAppRouting.ts`：`activityView==="targets"` 时发 `targets-changed`（切到面板即重取 targets+org）。**注**：曾试 AppShell overlay 传 `isActive` prop，但与某带 `initialPath` 可选 prop 的 overlay 组件触发 TS 弱类型检测冲突（TS2322），遂回退改用 useAppRouting 中心化方案（更干净、零 AppShell 类型改动）。验证：`just check-fe`（biome+typecheck）exit 0 + `pnpm test:run` **1293 passed / 12 skipped / 0 failed** + ReadLints 无错。**仍未 commit。**
+- **续 3（活体 UX · 已改）· scoping 纠名改用选择项而非自由框**：用户要 AI 用企查查查到候选名后给「选择项」而非自由输入框。查证底座齐全：`ask_human` 后端已支持 `input_type="choice"+options`、工具定义已广告（「答案可枚举即用 choice+options」）、前端 `AskHumanInline` 把 options 渲染成 A/B/C 点选 + Other 兜底（`resolveAskHumanInputType` 甚至在传了 options 时把 freetext 自动升级成 choice）。缺的只是 methodology 没指示。**改**：`scoping.methodology.md` 第 1 步加「lookup 返回候选 → `ask_human(input_type="choice", options=[规范名+信用代码/法人])` 让用户点选；仅 lookup 不可用/空才退回 freetext」。验证：`cargo nextest -p golish-agent-kit stage_methodology_present` **PASS**（嵌入编译 + "do NOT probe" 断言不破）。**注**：methodology 经 `harness/resources.rs` 的 `include_str!` **编译期嵌入** → 需**重新构建**（`just dev` 重启重编）才生效；且 lookup 出候选的前提是 cookie 路径修复后**重启 app** + aqc cookie 未过期。
+- **下一步**：用户决定是否跑 `just precommit` / commit；活体验证需：重启/重编 app → scoping 纠名出选择项 + 子公司去重 + Target 面板实时刷。本会话累计 4 处改动（`-type all` / cookie 路径 / Target 刷新 / 纠名选择项）全未 commit。
+
+---
+
+### 2026-06-13 · 清场脏 scope 数据 + scoping 治本（不注入资产 + R2 复用）（BaJie MCP-agent-3 · DISPATCH off）
+
+- **本轮目标**：用户报 scoping 被上一轮 moresec.cn 残留资产污染（搞「平安」被带偏成「默安」）。先清旧数据，再治本。
+- **① 清场（高风险删 DB，用户明确「都删掉」后执行）**：直连 embedded PG（`127.0.0.1:15432/golish`，psycopg2），删前只读盘点 → 删 → 独立 verify。证据：`organizations` 33→0、`targets` 95→0（scope=in 58 / out 37，散在 12 个测试工作区）、`target_assets/dns_records/api_endpoints` 0→0（FK CASCADE，本就空）；`findings` 97 **未动**（不属 scope 污染）。临时脚本含库密码，跑完即删。
+- **② 治本（设计 `docs/design/2026-06-13-scoping-org-layer-no-asset-injection-and-reuse.md`）**：用户拍板 隔离档=按 org、scoping=ORG 层不看 scope=in、复用策略=R2（命中复用 + 重确认一次）。两处改动：
+  - **改动1（代码·TDD 红→绿）**：`task_orchestrator/prompts/mod.rs` 新增纯函数 `render_in_scope_assets_for_stage(stage_kind, assets)`（`StageKind::Scoping` → 空串，其余透传 `render_in_scope_assets`）；`subtask_phases/execute.rs:137` 唯一注入点改用它。新增单测 `scoping_stage_never_injects_in_scope_assets`。
+  - **改动2（prompt）**：`resources/harness/stages/scoping.methodology.md` 加「STEP 0 — Reuse before rebuild」：先 `manage_organizations(action="list")`，命中已存在 root org → REUSE（不重纠名/不重建）→ 一次 `ask_human` 重确认 → submit；未命中才走原 1-5 建树。复用所需工具（list / create_batch get-or-create）已存在，不加新工具、不改 schema。
+- **运行过的验证（实跑，全绿）**：
+  - 红：`cargo nextest run -p golish-agent-kit scoping_stage_never_injects` → E0425（函数未定义，预期红）
+  - 绿：同命令 → 1 passed
+  - `cargo fmt -p golish-agent-kit -- --check` → FMT_OK（先 `cargo fmt` 修了一处长行换行）
+  - `cargo nextest run -p golish-agent-kit --status-level fail` → **619 passed / 0 failed**
+  - `cargo clippy -p golish-agent-kit --all-targets -- -D warnings` → exit 0 零告警
+- **未动 gate**：scoping 子公司完整度仍由 gate 读 DB 真值（`scoping.json` coverage_complete 读 `organizations.parent_id`）；本切片只改 prompt 注入，不碰 `fetch_in_scope_assets_for_gate`（execute.rs:241/414）/ gate 规则 / DB schema / IPC 类型。
+- **风险/欠账**：① 未跑全栈 `just precommit`（只跑了 scoped `golish-agent-kit`）；② 活体未验（需在带残留工作区跑一次 scoping 确认 prompt 无 IN-SCOPE ASSETS 段 + 复用走重确认）——本机 DB 已清空，活体留用户环境；③ **未 commit**。
+- **下一步**：用户决定是否跑 `just precommit` / commit；本切片是父设计（engagement Phase A）的聚焦 bug-fix 子集，Phase A 其余（`recon_lookup_company` / snapshot / ts-rs）仍按其计划走。
+
+---
+
+### 2026-06-13 · Engagement Phase B+C：会话工人池 fan-out + 总览 UI（BaJie MCP-agent-4 · DISPATCH off · 同会话接力 Phase A）
+
+- **本轮目标**：用户「搞完为止」——按 `docs/superpowers/plans/2026-06-13-engagement-phase-bc-worker-pool.md`（勘验 8 条 + B 期 9 Task + C 期 4 Task）整期铺完 Phase B（后端 worker scope 硬约束 + 前端池）与 Phase C（engagement 总览 UI），末尾统一门禁修错（用户指定节奏，不走 TDD）。
+- **已完成（B1-B12 + C1-C6 全铺）**：
+  - **B 后端**：`golish-agent-kit/harness/slice.rs`（新·`resolve_slice` 从 stage_run 平移下沉，CLI 与 chat 工人共用一份切片逻辑；stage_run 留 anyhow 薄适配零行为变更）；`golish-agent-bridge`（`EngagementWorkerScope{org_id,from,to,include_subsidiaries,threshold_pct}` + config set/get，mirror harness_profile 模式）；`golish-agent-app/ai/commands/engagement_scope.rs`（新·`engagement_set_worker_scope`（校验 UUID/stage/org 存在）+ `engagement_clear_worker_scope` + `engagement_get_worker_scope`，parse_scope 纯函数 2 测）；`core/chat.rs::execute_task_mode`（scope 有值 → `set_harness_org_id` + `set_subsidiary_scope` + `resolve_slice` → `set_stage_allowlist` + `run_stage(entry)`；resume 分支同享 orchestrator 实例级 allowlist——工人硬约束与 headless CLI 同语义）；facade/engagement.rs + commands_registry 注册 3 命令。
+  - **B 前端**：`lib/engagement/pool.ts`（WorkerUnit/STAGE_SLICES/buildReconUnits/buildAttackUnits/buildWorkerPrompt/unitAlreadyCovered/workerTitle 纯函数）+ `pool.test.ts`；`store/slices/engagement-pool.ts`（running/queue/done/concurrency/phase + 全动作）；`spawn.ts`（程序化 conv+pty+initAiSession+auto-approve+setExecutionMode+setWorkerScope+seed+send 全链，复用既有原语）；`runPool.ts`（K 并发主循环：续跑跳过 → Promise.race 收口 → recon passed 把家族 attack 单元入队 → stop 不杀在跑 → 收官汇总）；`lib/api/engagement.ts` + scope wrappers。
+  - **C 前端**：`components/Engagement/EngagementOverview.tsx`（摘要条 + K 输入 + 开始/停止 + org 树折叠表 + 状态徽章 + 行点击钻入工人会话 + 三态）；`engagementOverview.utils.ts`（mergePoolOntoSnapshot DB 真值底+运行态覆盖 + summarize）+ utils 测试；conversation.ts `engagementRole/workerMeta` 字段；AIChatPanel 总览内嵌（overview 会话消息流顶部渲染）；ConversationTabs worker 徽标；`rolePersistence.ts`（localStorage 角色映射，镜像 stage-marker 持久化模式，conv DB 列不动）+ conversation-db-sync 恢复接线。
+- **门禁中修掉的错（统一门禁节奏的「修」段）**：① biome 6 处 import 排序/格式（spawn/runPool/AIChatPanel/conversation-db-sync/EngagementOverview/pool，全自动修复）；② cargo fmt 3 处（engagement_scope.rs ×2 + bridge config.rs）；③ **守卫新增违规 1 条**：`agent-app/engagement_scope.rs` 直用 recon-owned `repo::organizations::get_one` → `engagement_truth` SHARED repo 加 `get_org` 透传，调用点改走 SHARED（ownership 回到 12+1 与 HEAD 基线一致，0 新增）。
+- **运行过的验证（实跑，全绿）**：
+  - `cargo check -p golish-agent-kit -p golish-agent-bridge -p golish-agent-app -p golish` → exit 0（57s）
+  - `cargo nextest run` 同四 crate → **916 passed / 0 failed**；修复后复测 golish-db+agent-app → **120 passed**
+  - `cargo clippy` 同四 crate + golish-db `--all-targets -- -D warnings` → exit 0 零告警
+  - `cargo fmt` 五 crate `--check` → FMT_OK
+  - `just check-fe` → exit 0；`pnpm test` 全量 → **1293 passed / 12 skipped**（122 文件）
+  - `check_repo_ownership.py` → 12+1 与 HEAD 基线一致；`check_dag.py` → ✓ DAG clean (50 crates)
+- **已记录证据**：见上「运行过的验证」。
+- **提交记录**：**未 commit**（沿用本批惯例等用户拍板；工作树同时压着 Phase A 与更早会话改动）。
+- **已知风险/下一步**：① **活体未跑**（B+C DoD 欠账）：GUI scoping→总览→fan-out→K 并发工人→recon 过 gate→attack 入队→收口全链需 ENScan 凭据 + LLM key；② `just precommit` 全量未跑（commit 前统一补）；③ 用户反馈「AI 在前端的时候断掉了」已核实：中断点在前端门禁段，本轮已把前端门禁补跑到全绿，无半成品残留；④ 刷新丢池态为 spec §10 已接受行为（DB 真值续跑判定恢复覆盖）。
+
+---
+
+### 2026-06-13 · Engagement Phase A：scoping 独立化 + 企查查纠名工具链 + 范围锁定信号（BaJie MCP-agent-4 · DISPATCH off · 接 MCP-1 上下文转移）
+
+- **本轮目标**：用户批准 `docs/design/2026-06-13-engagement-scoping-fanout-redesign.md` 后「开始开始搞」——按 §12 Phase A 落地：scoping 全流程（粘名单→纠名→建母 org→议子公司→org 树落库）chat 可跑 + 范围锁定信号可被前端读。先写计划 `docs/superpowers/plans/2026-06-13-engagement-phase-a-scoping.md`（实施期勘验 6 条），再按用户指定工作流「**整期实现→末尾统一门禁→修**」（不走 TDD）。
+- **勘查关键结论**：① spec §11 风险 1 解除——纠名底座已存在（`asset_intel_lookup_company` + ENScan `company-lookup-json` lookup descriptor，返回规范名+credit_code+confidence）；② stash@{0}^3 持有 fleet 全套，仅纯逻辑 4 文件可搬（headless 编排不搬）；③ 守卫 ratchet：golish/src 新文件裸 SQL / 跨域 repo 引用都会触发 → weakness SQL 必须下沉 SHARED repo。
+- **已完成（11 Task 全铺）**：
+  - **golish-db**：新 `repo/engagement_truth.rs`（SHARED：WeaknessCounts 5 维 org 隔离 COUNT + list_orgs 透传；SQL 文本守卫 2 测）+ mod.rs + `check_repo_ownership.py` SHARED_REPOS 登记。
+  - **golish/src/engagement/**（stash fleet 纯逻辑搬回改名）：`scheduler.rs`（stage-agnostic 内核+9 测，Phase B 备）、`weakness.rs`（评分纯函数+org_stage_has_truth oracle，SQL 改走 repo）、`contract.rs`（4 个 ts-rs DTO）、`query.rs`（`engagement_get_snapshot` + build_tree 纯函数）；lib.rs + facade/engagement.rs + commands_registry 接线。
+  - **golish-recon-app**：lookup 核心抽 `asset_intel/service/lookup_core.rs`（free fn `lookup_company_matches`，行为零变更，Tauri 命令瘦壳化）；`agent_tools` 新 `ReconLookupCompanyTool`（name=`recon_lookup_company`，keyword+limit，错误走 {"error"} 模式）。
+  - **golish-pentest-app**：`manage_organizations` 加 `create_batch`（names 1..=200 trim+去重保序 → find_root_id_by_name get-or-create → created/existing/failed 三态，I8 不静默丢；审计 organization_batch_created）。
+  - **golish-agent-runtime**：BridgeToolSelection 加 `recon_lookup_company`（all_enabled/none/enabled_tool_names+顺序测试）；prompt_render BRIDGE_ROWS+1；task.rs depth-0 开启（chat 经 all_enabled 自动暴露）。
+  - **接线**：pentest_tool_factory push 新工具；`scoping.json` coverage_complete hints 头插「先 recon_lookup_company 纠名再 create_batch 再 discover」（gate 语义零改动）。
+  - **前端**：`lib/generated/{EngagementSnapshot,OrgRunStatusDto,OrgTreeNode,OrgWeaknessScore}.ts`（ts-rs 重新生成）+ `lib/api/engagement.ts`（getEngagementSnapshot + flattenTree/sortForest 纯函数）+ index.ts 双处登记。
+- **运行过的验证（统一门禁，全绿）**：
+  - `cargo check` 五 crate（db/recon-app/pentest-app/agent-runtime/golish）→ exit 0（1m33s）
+  - `cargo nextest run` 同五 crate → **761 passed / 0 failed**
+  - `cargo clippy` 同五 crate `--all-targets -- -D warnings` → exit 0 零告警
+  - `cargo fmt --check` → 修 1 处 import 折行后 FMT_OK
+  - `cargo test --workspace export_bindings` → 4 个 engagement 类型按新注释重新生成，无其它 generated 漂移
+  - `just check-fe` → exit 0（biome 修 1 处 sortForest 格式）；`pnpm test` → **1280 passed / 12 skipped**
+  - `check_repo_ownership.py` → 12+1 违规与 **HEAD 基线逐条一致**（`git worktree add /tmp/golish-head-check HEAD` 对照实证，0 新增）
+  - `check_dag.py` → ✓ DAG clean (50 crates)；`scoping.json` json.tool VALID
+- **已记录证据**：见上「运行过的验证」。
+- **提交记录**：**未 commit**（沿用本批惯例等用户拍板；工作树仍压着 preflight/env/enscan.gob/wiki 等其它会话未提交改动）。本轮新增/改动：`?? golish-db/src/repo/engagement_truth.rs`、`?? golish/src/engagement/`(5 文件)、`?? golish/src/commands_facade/engagement.rs`、`?? golish-recon-app/src/asset_intel/service/lookup_core.rs`、`?? frontend/lib/generated/`(4 文件)、`?? frontend/lib/api/engagement.ts`、`?? docs/superpowers/plans/2026-06-13-engagement-phase-a-scoping.md`、`?? docs/design/2026-06-13-engagement-scoping-fanout-redesign.md`(上轮落盘)、`M repo/mod.rs`、`M check_repo_ownership.py`、`M lib.rs`、`M commands_facade/mod.rs`、`M commands_registry.rs`、`M commands.rs`(lookup 瘦身)、`M service/mod.rs`、`M agent_tools/mod.rs`、`M manage_organizations.rs`、`M pentest_tool_factory.rs`、`M policy.rs`、`M prompt_render.rs`、`M prompt_render_tests.rs`、`M task.rs`、`M scoping.json`、`M lib/api/index.ts`、`M feature_list.json`、`M agent-progress.md`。
+- **已知风险/下一步**：① **活体未跑**（Phase A DoD 欠账，需 ENScan AQC cookie）：chat 粘名单→纠名→create_batch→discover_subsidiaries→`engagement_get_snapshot` 全链 + CLI `--to scoping` 零回归对照 → 过了才能把 feature_list 条目转 passing；② `just precommit` 全量未跑（工作树压着多任务改动，commit 前统一补）；③ Phase B = 前端会话工人池 fan-out（scheduler 内核已就位，需 spawn 会话 + K 并发 + 续跑接线）；Phase C = scoping 对话升级总览 UI（contract/query 读模型已就位）。
 
 - **本轮目标**：用户「继续 Phase 3」——按设计 `docs/design/2026-06-12-redteam-phase3-multi-org-coverage.md` 方案 A（推荐起步：调度层逐 org，gate 不动）落地「母先收 → 子逐个收」。先写实现计划 `docs/superpowers/plans/2026-06-12-redteam-phase3-multi-org-coverage.md`（含实读勘查 + 5 决策）再 TDD 动手。
 - **勘查关键结论**：① BLOCK 终态 = orchestrate Err → exit 非 0（engagement 聚合直接复用）；② Phase 2 auto_promote 落 child org 但**不落 targets** → 子 org 趟 target_intel 起步资产轴为空走自报 fallback，agent enrich 落 targets 后下游自动硬化（target_intel 本职，非 blocker）；③ `organizations::list(pool, project_path)` 已有（I2 隔离内置）；④ 共享 session 跨 org 账本事实因 asset 不重叠不互相投影；⑤ 前置 sub_agent override bug 已修复（同日活体验证）。

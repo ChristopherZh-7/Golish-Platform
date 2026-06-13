@@ -23,10 +23,6 @@ pub async fn asset_intel_list_providers(
     Ok(provider_descriptors_from_tools(&scan.tools))
 }
 
-/// Hard cap so frontend lookup modals stay scannable. Per-provider lookups
-/// can exceed this individually; we trim after dedupe.
-const LOOKUP_RESULTS_HARD_CAP: usize = 25;
-
 #[tauri::command]
 pub async fn asset_intel_lookup_company(
     state: tauri::State<'_, DbState>,
@@ -41,93 +37,15 @@ pub async fn asset_intel_lookup_company(
     }
 
     let pentest_config = pentest.0.get().await;
-    let scan = golish_pentest::scan_asset_intel_sources(
-        &pentest_config.toolsconfig_dir,
-        &pentest_config.intel_providers_dir,
-    );
-    if !scan.success {
-        return Err(GolishError::Internal(
-            scan.error
-                .unwrap_or_else(|| "toolsconfig scan failed".into()),
-        ));
-    }
-
-    // Select providers: explicit ids if given (must exist + have lookup),
-    // otherwise every tool with a lookup descriptor regardless of `auto`.
-    // Lookup is meant for "I want to disambiguate" so we don't apply the
-    // auto.priority filter — the user has already opted in by clicking
-    // "Look up company".
-    let selected: Vec<&ToolConfig> = if args.provider_ids.is_empty() {
-        scan.tools
-            .iter()
-            .filter(|t| {
-                t.asset_intel
-                    .as_ref()
-                    .and_then(|a| a.lookup.as_ref())
-                    .is_some_and(|l| l.enabled)
-            })
-            .collect()
-    } else {
-        let mut out = Vec::new();
-        for provider_id in &args.provider_ids {
-            let Some(tool) = scan
-                .tools
-                .iter()
-                .find(|t| provider_id_for_tool(t).as_deref() == Some(provider_id.as_str()))
-            else {
-                return Err(GolishError::NotFound(format!(
-                    "asset intel provider '{provider_id}' is not registered"
-                )));
-            };
-            out.push(tool);
-        }
-        out
-    };
-
-    if selected.is_empty() {
-        return Err(GolishError::Validation(
-            "no asset_intel provider with an enabled lookup descriptor is available".into(),
-        ));
-    }
-
-    let run_id = Uuid::new_v4().to_string();
-    // Lookup writes nothing to organizations.intel; output is a per-call
-    // scratch dir keyed by run_id so concurrent lookups don't collide.
-    let project_root = pentest_config.tools_dir.clone();
-
-    let mut provider_status = Vec::new();
-    let mut all_matches = Vec::new();
-    for tool in selected {
-        let (status, matches) = run_lookup_cli_provider(
-            tool,
-            &scan.tools,
-            &pentest_config.tools_dir,
-            &project_root,
-            &run_id,
-            args.keyword.trim(),
-        )
-        .await?;
-        provider_status.push(status);
-        all_matches.extend(matches);
-    }
-
-    let mut deduped = dedupe_lookup_matches(all_matches);
-    deduped.sort_by(|a, b| {
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let limit = args
-        .limit
-        .unwrap_or(LOOKUP_RESULTS_HARD_CAP)
-        .min(LOOKUP_RESULTS_HARD_CAP);
-    deduped.truncate(limit);
-
-    Ok(AssetIntelLookupResult {
-        run_id,
-        matches: deduped,
-        provider_status,
-    })
+    // Core moved to service/lookup_core.rs so the recon_lookup_company agent
+    // tool (scoping 纠名, 设计 2026-06-13) shares the exact same path.
+    lookup_company_matches(
+        &pentest_config,
+        args.keyword.trim(),
+        &args.provider_ids,
+        args.limit,
+    )
+    .await
 }
 
 /// Legacy single-shot hydrate command.

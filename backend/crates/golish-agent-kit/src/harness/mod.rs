@@ -51,6 +51,7 @@ pub mod pre_action_authorizer;
 pub mod profile;
 pub mod rag_prior;
 pub mod resources;
+pub mod slice;
 pub mod sprint_contract;
 pub mod stage_harness;
 pub mod stage_spec;
@@ -89,6 +90,7 @@ pub use resources::{
     load_embedded_stage_spec, profile_json, sprint_skeleton_json, stage_spec_json,
     EMBEDDED_PROFILE_IDS,
 };
+pub use slice::resolve_slice;
 pub use sprint_contract::{
     DefaultSprintContractGenerator, ExpectedFinding, SprintContract, SprintContractGenerator,
     SprintSkeleton, StageSkeleton,

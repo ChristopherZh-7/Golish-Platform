@@ -35,7 +35,7 @@ pub(crate) struct AutoPromoteChildDecision {
     pub(crate) ownership_percent: Option<f64>,
 }
 
-fn parse_ownership_percent(raw: &str) -> Option<f64> {
+pub(crate) fn parse_ownership_percent(raw: &str) -> Option<f64> {
     let cleaned = raw.trim().trim_end_matches('%').replace(',', "");
     if cleaned.is_empty() {
         return None;
@@ -172,6 +172,38 @@ pub(crate) fn select_discovery_policy<'a>(
         .unwrap_or_default()
 }
 
+/// Override the discovery policy's ownership threshold with a runtime value
+/// (the human-chosen `min_ownership_percent` from scoping). Sets the value on
+/// the existing `ownership_field` gte/gt/eq clause, or appends a `gte` clause
+/// when none exists. Empty/whitespace threshold is a no-op (keeps config
+/// default). Leaves all other promote_when clauses untouched.
+pub(crate) fn apply_ownership_threshold_override(
+    policy: &mut golish_pentest::models::AssetIntelDiscoveryConfig,
+    threshold: &str,
+) {
+    use golish_pentest::models::AssetIntelNormalizeFilterOp as Op;
+    let t = threshold.trim();
+    if t.is_empty() {
+        return;
+    }
+    let field = policy.ownership_field.clone();
+    if let Some(clause) = policy
+        .promote_when
+        .iter_mut()
+        .find(|c| c.field == field && matches!(c.op, Op::Gte | Op::Gt | Op::Eq))
+    {
+        clause.value = t.to_string();
+    } else {
+        policy
+            .promote_when
+            .push(golish_pentest::models::AssetIntelNormalizeFilter {
+                field,
+                op: Op::Gte,
+                value: t.to_string(),
+            });
+    }
+}
+
 pub(crate) fn clear_engagement_candidates_from_intel(
     mut intel: Value,
 ) -> Result<Value, GolishError> {
@@ -208,5 +240,42 @@ mod policy_tests {
         assert!(!select_discovery_policy(&[disc(false)]).auto_promote);
         let empty: &[golish_pentest::models::AssetIntelDiscoveryConfig] = &[];
         assert!(!select_discovery_policy(empty).auto_promote);
+    }
+
+    #[test]
+    fn override_replaces_existing_ownership_gte_value() {
+        use golish_pentest::models::{
+            AssetIntelDiscoveryConfig, AssetIntelNormalizeFilter, AssetIntelNormalizeFilterOp,
+        };
+        let mut policy = AssetIntelDiscoveryConfig {
+            auto_promote: true,
+            ownership_field: "scale".into(),
+            promote_when: vec![AssetIntelNormalizeFilter {
+                field: "scale".into(),
+                op: AssetIntelNormalizeFilterOp::Gte,
+                value: "51".into(),
+            }],
+            ..Default::default()
+        };
+        super::apply_ownership_threshold_override(&mut policy, "100");
+        assert_eq!(policy.promote_when.len(), 1);
+        assert_eq!(policy.promote_when[0].value, "100");
+    }
+
+    #[test]
+    fn override_appends_clause_when_missing_and_noops_on_empty() {
+        use golish_pentest::models::AssetIntelDiscoveryConfig;
+        let mut policy = AssetIntelDiscoveryConfig {
+            auto_promote: true,
+            ownership_field: "scale".into(),
+            promote_when: vec![],
+            ..Default::default()
+        };
+        super::apply_ownership_threshold_override(&mut policy, "  ");
+        assert!(policy.promote_when.is_empty(), "blank threshold is a no-op");
+        super::apply_ownership_threshold_override(&mut policy, "51");
+        assert_eq!(policy.promote_when.len(), 1);
+        assert_eq!(policy.promote_when[0].field, "scale");
+        assert_eq!(policy.promote_when[0].value, "51");
     }
 }

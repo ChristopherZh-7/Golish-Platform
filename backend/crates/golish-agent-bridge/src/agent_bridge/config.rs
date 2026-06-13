@@ -382,6 +382,18 @@ impl AgentBridge {
         self.harness_profile.read().await.clone()
     }
 
+    /// Pin (or clear, with `None`) the engagement worker scope for this
+    /// session (设计 2026-06-13-engagement-scoping-fanout §6.3). Set by the
+    /// fan-out pool right after session init, BEFORE the worker prompt is sent.
+    pub async fn set_engagement_worker_scope(&self, scope: Option<super::EngagementWorkerScope>) {
+        *self.engagement_worker_scope.write().await = scope;
+    }
+
+    /// Get the engagement worker scope pinned on this session, if any.
+    pub async fn get_engagement_worker_scope(&self) -> Option<super::EngagementWorkerScope> {
+        self.engagement_worker_scope.read().await.clone()
+    }
+
     // ========================================================================
     // System prompt (lightweight standalone variant)
     // ========================================================================

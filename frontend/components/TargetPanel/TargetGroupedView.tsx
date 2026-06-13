@@ -38,9 +38,11 @@ import { assetIntel, organizationRecon, organizations as orgsApi } from "@/lib/a
 import type { AssetIntelRun } from "@/lib/api/asset-intel";
 import type { OrganizationReconRunSnapshot } from "@/lib/api/organization-recon";
 import type { Organization, OrganizationCandidate } from "@/lib/api/organizations";
+import { onCustomEvent, onEvent } from "@/lib/events";
 import { notify } from "@/lib/notify";
 import type { Target } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
+import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import {
   applyStreamEvent,
   getNextWorkspaceTabAfterAssetIntelRun,
@@ -227,6 +229,27 @@ export function TargetGroupedView({
       unlisten?.();
     };
   }, []);
+
+  // Live-refresh the org tree when the AI writes orgs (scoping:
+  // manage_organizations / recon_discover_subsidiaries) or on the umbrella
+  // `targets-changed` signal (also fired when the user switches into the Target
+  // view — see TargetPanel). Previously the tree only reloaded on a
+  // targets.length change, so AI-created orgs never appeared until a manual
+  // refresh or the 15s target poll.
+  useEffect(() => {
+    const ORG_WRITE_TOOLS = new Set(["manage_organizations", "recon_discover_subsidiaries"]);
+    const unlistenAi = onEvent("ai-event", (payload) => {
+      const p = payload as { type?: string; tool_name?: string };
+      if (p.type === "tool_result" && p.tool_name && ORG_WRITE_TOOLS.has(p.tool_name)) {
+        refreshOrgs();
+      }
+    });
+    const unlistenChanged = onCustomEvent("targets-changed", () => refreshOrgs());
+    return () => {
+      runTauriUnlistenFromPromise(unlistenAi);
+      runTauriUnlistenFromPromise(unlistenChanged);
+    };
+  }, [refreshOrgs]);
 
   const orgById = useMemo(() => new Map(orgs.map((org) => [org.id, org])), [orgs]);
   const visibleTargets = useMemo(

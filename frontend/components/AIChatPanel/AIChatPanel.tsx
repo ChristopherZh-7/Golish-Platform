@@ -1,7 +1,8 @@
-import { ArrowUp, Image, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Image, Square, Target, Wrench, X } from "lucide-react";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
+import { EngagementOverview } from "@/components/Engagement/EngagementOverview";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
 import { formatModelName } from "@/lib/models";
 import { cn } from "@/lib/utils";
@@ -124,6 +125,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const {
     contextUsage,
     askHumanRequest,
+    lastDiscoverOrgId,
+    lastDiscoverThreshold,
     activeWorkflow,
     compactionState,
     planTextOffsetRef,
@@ -240,6 +243,19 @@ export const AIChatPanel = memo(function AIChatPanel() {
     setShowHistory(false);
   }, []);
 
+  // Toggle the active conversation as the engagement overview (the scoping
+  // chat "upgrades" into the fan-out control surface, 设计 2026-06-13 §5④).
+  const handleToggleEngagementOverview = useCallback(() => {
+    if (!activeConvId) return;
+    const conv = useStore.getState().conversations[activeConvId];
+    if (!conv) return;
+    const next = conv.engagementRole === "overview" ? undefined : ("overview" as const);
+    useStore.getState().updateConversation(activeConvId, { engagementRole: next });
+    import("@/lib/engagement/rolePersistence").then(({ writeEngagementRole }) => {
+      writeEngagementRole(activeConvId, next ? { engagementRole: next } : null);
+    });
+  }, [activeConvId]);
+
   // ── Derived data ─────────────────────────────────────────────────────
   const currentModel = selectedModel?.model ?? "";
   const currentProvider = selectedModel?.provider ?? "";
@@ -326,6 +342,20 @@ export const AIChatPanel = memo(function AIChatPanel() {
               className="absolute top-0 left-0 right-0 z-20"
             />
           )}
+          {/* Engagement overview: the scoping chat upgrades into the fan-out
+              control surface (设计 2026-06-13-engagement-scoping-fanout §5④). */}
+          {activeConv?.engagementRole === "overview" && activeConvId && (
+            <div className="pt-2">
+              <EngagementOverview
+                model={currentModel}
+                provider={currentProvider}
+                profileId={
+                  modes.chatExecutionMode !== "chat" ? modes.chatExecutionMode : "red_team"
+                }
+                conversationId={activeConvId}
+              />
+            </div>
+          )}
           <div ref={messagesContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden">
             {messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full select-none gap-4">
@@ -386,6 +416,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
                     request={askHumanRequest}
                     onSubmit={handleAskHumanSubmit}
                     onSkip={handleAskHumanSkip}
+                    fallbackOrgId={lastDiscoverOrgId}
+                    minOwnershipPercent={lastDiscoverThreshold}
                   />
                 )}
                 {showPreparing && (
@@ -459,6 +491,19 @@ export const AIChatPanel = memo(function AIChatPanel() {
             </div>
             <div className="flex items-center gap-1">
               <ContextUsageRing contextUsage={contextUsage} />
+              <button
+                type="button"
+                title="Engagement overview (scoping → fan-out)"
+                className={cn(
+                  "h-6 w-6 flex items-center justify-center rounded transition-colors",
+                  activeConv?.engagementRole === "overview"
+                    ? "text-primary bg-[var(--bg-hover)]"
+                    : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]"
+                )}
+                onClick={handleToggleEngagementOverview}
+              >
+                <Target className="w-3.5 h-3.5" />
+              </button>
               <button
                 type="button"
                 title={t("ai.uploadImage")}

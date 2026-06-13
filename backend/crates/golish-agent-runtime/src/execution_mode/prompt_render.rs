@@ -194,6 +194,7 @@ const BRIDGE_ROWS: &[ToolRow] = &[
     ToolRow { name: "manage_organizations", purpose: "List / create target organizations and propose candidate units for human review during scoping." },
     ToolRow { name: "recon_discover_subsidiaries", purpose: "Passively discover subsidiary/affiliate orgs of the subject via enterprise intel (ENScan) during target_intel." },
     ToolRow { name: "recon_enrich_assets", purpose: "Passively enrich an org's domains/IPs/ICP/apps/emails via intel providers (0.zone/quake/…) during target_intel." },
+    ToolRow { name: "recon_lookup_company", purpose: "Scoping step 1: resolve a raw company name to canonical registered names (以企查查为准) via enterprise-intel lookup BEFORE creating organizations." },
     ToolRow { name: "recon_list_providers", purpose: "List passive intel providers and whether each has a configured credential; call FIRST in target_intel so you only invoke usable providers and mark the rest blocked." },
     ToolRow { name: "record_finding", purpose: "Record a vulnerability finding." },
     ToolRow { name: "vault", purpose: "Store / retrieve credentials." },

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { sendCustomEvent } from "@/lib/events";
 import type { ActivityView } from "../../components/ActivityBar/ActivityBar";
 import type { PageRoute } from "../../components/CommandPalette";
 
@@ -20,6 +21,17 @@ export function useAppRouting() {
       setVisitedViews((prev) => new Set(prev).add(activityView));
     }
   }, [activityView, visitedViews]);
+
+  // Belt-and-suspenders refresh: the Target panel is kept mounted forever once
+  // visited, so switching back never remounts and stale data lingers. Firing
+  // the umbrella `targets-changed` signal whenever the Target view becomes
+  // active makes it reload targets + org tree (covers anything the AI wrote
+  // while the panel was hidden, even if its ai-event didn't reach the listener).
+  useEffect(() => {
+    if (activityView === "targets") {
+      sendCustomEvent("targets-changed").catch(() => {});
+    }
+  }, [activityView]);
 
   // Allow child components (e.g. TargetPanel) to close the activity overlay
   useEffect(() => {

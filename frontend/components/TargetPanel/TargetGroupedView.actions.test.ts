@@ -535,7 +535,7 @@ describe("getNextWorkspaceTabAfterAssetIntelRun", () => {
           kind: "organization" as const,
           label: "半截输出子公司",
           value: "半截输出子公司",
-          source: "enscan-go-tyc-discovery",
+          source: "enscan-go",
         },
       ],
       targets: [],

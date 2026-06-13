@@ -22,6 +22,7 @@ fn render_includes_js_collect_when_enabled() {
     assert!(table.contains("`manage_organizations`"));
     assert!(table.contains("`recon_discover_subsidiaries`"));
     assert!(table.contains("`recon_enrich_assets`"));
+    assert!(table.contains("`recon_lookup_company`"));
     assert!(table.contains("`recon_list_providers`"));
     // pipeline tools are intentionally NOT exposed to agents, even with all
     // bridge tools "enabled"
@@ -78,6 +79,7 @@ fn selection_to_tool_names_matches_render() {
     assert!(names.contains("manage_organizations"));
     assert!(names.contains("recon_discover_subsidiaries"));
     assert!(names.contains("recon_enrich_assets"));
+    assert!(names.contains("recon_lookup_company"));
     assert!(names.contains("recon_list_providers"));
     assert!(names.contains("read_file"));
     assert!(names.contains("ask_human"));

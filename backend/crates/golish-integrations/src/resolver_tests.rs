@@ -330,6 +330,52 @@ async fn fixture_enscan_aqc_capture_recipe_loads() {
     );
 }
 
+/// Regression guard for the integration ↔ ENScan config-path contract.
+/// The bundled ENScan_GO fork (ChristopherZh-7, v2.0.6+) has NO `-config` flag
+/// and resolves `config.yaml` relative to its OWN executable directory
+/// (`<exe_dir>/config.yaml`), with NO fallback — a missing file there is fatal
+/// (`[FTL] 没有找到配置文件 .../tools/ENScan_GO/config.yaml`, exit 1). Since the
+/// binary installs under `{{tools_dir}}/ENScan_GO/`, the integration storage path
+/// MUST be `{{tools_dir}}/ENScan_GO/config.yaml` so the GUI cookie capture writes
+/// exactly where the binary reads. A `~/.config/...` path silently breaks it:
+/// the capture writes where the fork never looks, ENScan exits 1, and scoping
+/// degrades into a manual-subsidiary prompt.
+///
+/// NOTE: upstream ENScan_GO (keac, ≤ v2.0.5) read `~/.config/enscan/config.yaml`
+/// instead; this contract tracks the fork that Golish actually ships.
+#[tokio::test]
+async fn fixture_enscan_storage_path_matches_binary_dir_config() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let toolsconfig_dir = std::path::PathBuf::from(manifest_dir)
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("resources")
+        .join("toolsconfig");
+    if !toolsconfig_dir.exists() {
+        eprintln!(
+            "fixture skipped: toolsconfig dir not found at {}",
+            toolsconfig_dir.display()
+        );
+        return;
+    }
+    let resolver = DefaultSchemaResolver::new(Some(toolsconfig_dir), vec![]);
+    let resolved = resolver
+        .get("enscan-go")
+        .await
+        .expect("enscan-go integration should load");
+    match &resolved.schema.storage {
+        Storage::ExternalFile { external_file } => assert_eq!(
+            external_file.path, "{{tools_dir}}/ENScan_GO/config.yaml",
+            "the bundled ENScan_GO fork has no -config flag and reads config.yaml \
+             ONLY from its own executable directory; the integration storage path \
+             must be {{tools_dir}}/ENScan_GO/config.yaml so cookie capture lands \
+             where the binary reads (a ~/.config path silently breaks capture + availability)"
+        ),
+        other => panic!("expected ExternalFile storage for enscan-go, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn fixture_enscan_tyc_capture_uses_search_probe_url() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();

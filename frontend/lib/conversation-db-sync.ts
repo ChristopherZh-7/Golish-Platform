@@ -17,6 +17,7 @@ import {
   convSaveBatch,
   type TimelineBlockRow,
 } from "@/lib/conversation-db";
+import { applyPersistedEngagementRole } from "@/lib/engagement/rolePersistence";
 import { onCustomEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
 import { readStageMarkers, spliceStageMarkers } from "@/lib/stage-marker-persistence";
@@ -326,6 +327,9 @@ export async function loadFromDb(projectPath: string): Promise<LoadedWorkspaceSt
           aiInitialized: false,
           isStreaming: false,
         };
+        // Engagement role (overview / worker tags) lives in localStorage, not
+        // the conv DB columns — re-apply it like the stage markers above.
+        applyPersistedEngagementRole(conv);
 
         let terminals: LoadedTerminalData[] = [];
         if (termStates.length > 0) {

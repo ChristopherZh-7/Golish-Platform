@@ -45,7 +45,15 @@ export function useTargetData() {
   }, [loadTargets, workspaceReady]);
 
   useEffect(() => {
-    const REFRESH_TOOLS = new Set(["manage_targets", "record_finding"]);
+    // Scoping/recon write organizations (manage_organizations,
+    // recon_discover_subsidiaries), not just targets — without these the panel
+    // never refreshed after the AI built the org tree.
+    const REFRESH_TOOLS = new Set([
+      "manage_targets",
+      "record_finding",
+      "manage_organizations",
+      "recon_discover_subsidiaries",
+    ]);
     const unlistenAi = onEvent("ai-event", (payload) => {
       const p = payload as { type: string; tool_name?: string };
       if (p.type === "tool_result" && p.tool_name && REFRESH_TOOLS.has(p.tool_name)) {

@@ -22,7 +22,8 @@ use golish_core::Tool;
 
 use crate::asset_intel::ToolsConfigState;
 use crate::asset_intel::{
-    list_provider_availability, run_passive_intel, AssetIntelHydrateConfig, PassiveIntelPhase,
+    list_provider_availability, lookup_company_matches, run_passive_intel, AssetIntelHydrateConfig,
+    PassiveIntelPhase,
 };
 
 /// JSON schema shared by both passive recon tools (free function so it is unit
@@ -34,6 +35,30 @@ fn passive_intel_parameters(subject_hint: &str) -> Value {
             "organization_id": {
                 "type": "string",
                 "description": format!("Organization UUID (the confirmed engagement subject {subject_hint}). Create/select it first via manage_organizations.")
+            }
+        },
+        "required": ["organization_id"]
+    })
+}
+
+/// JSON schema for `recon_discover_subsidiaries`. Adds the scope knobs the
+/// scoping agent must ASK the human for (ownership threshold / branches) — see
+/// scoping.methodology.md. Absent fields fall back to provider-config defaults.
+fn subsidiary_intel_parameters() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "organization_id": {
+                "type": "string",
+                "description": "Organization UUID (the confirmed engagement subject to discover subsidiaries for). Create/select it first via manage_organizations."
+            },
+            "min_ownership_percent": {
+                "type": "string",
+                "description": "Ownership threshold (percent, no % sign), e.g. \"51\" or \"100\". A discovered subsidiary auto-promotes into an in-scope child org only when its ownership >= this value. ASK THE HUMAN for this during scoping and pass their answer. Omit to use the provider default (51)."
+            },
+            "include_branches": {
+                "type": "boolean",
+                "description": "Also collect branch offices (分公司). Default false. Ask the human whether branches are in scope."
             }
         },
         "required": ["organization_id"]
@@ -68,15 +93,22 @@ async fn run_phase(
         Err(e) => return Ok(json!({"error": e.to_string()})),
     }
 
-    match run_passive_intel(
-        Arc::clone(pool),
-        tools.clone(),
-        uid,
-        phase,
-        AssetIntelHydrateConfig::default(),
-    )
-    .await
-    {
+    // Scope knobs (only the subsidiaries tool sends these; enrich omits them so
+    // they parse to None and behaviour is unchanged).
+    let min_ownership_percent = args
+        .get("min_ownership_percent")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let include_branches = args.get("include_branches").and_then(|v| v.as_bool());
+    let config = AssetIntelHydrateConfig {
+        min_ownership_percent,
+        depth: None,
+        include_branches,
+        create_candidates: Some(true),
+    };
+
+    match run_passive_intel(Arc::clone(pool), tools.clone(), uid, phase, config).await {
         Ok(summary) => {
             let mut value = serde_json::to_value(&summary).unwrap_or_else(|_| json!({}));
             if let Some(map) = value.as_object_mut() {
@@ -108,11 +140,11 @@ impl Tool for ReconDiscoverSubsidiariesTool {
     }
 
     fn description(&self) -> &'static str {
-        "Passively discover subsidiary / affiliate organizations of the engagement subject via the enterprise-intel provider (ENScan: 爱企查/天眼查). Use during target_intel for red-team engagements before enriching assets. Writes candidate organizations back to the org for review. Returns a summary with counts and provider ids."
+        "Passively discover subsidiary / affiliate organizations of the engagement subject via the enterprise-intel provider (ENScan: 爱企查/天眼查). Use during target_intel for red-team engagements before enriching assets. Writes candidate organizations back to the org for review. Returns a summary with counts and provider ids. Before calling, ask the human (scoping) whether subsidiaries are in scope and at what ownership threshold; pass min_ownership_percent accordingly."
     }
 
     fn parameters(&self) -> Value {
-        passive_intel_parameters("to discover subsidiaries for")
+        subsidiary_intel_parameters()
     }
 
     async fn execute(&self, args: Value, workspace: &Path) -> Result<Value> {
@@ -165,6 +197,78 @@ impl Tool for ReconEnrichAssetsTool {
             "enrich_assets",
         )
         .await
+    }
+}
+
+/// `recon_lookup_company` — scoping 纠名 step 1 (设计 2026-06-13-engagement-
+/// scoping-fanout §6.2): resolve a raw / colloquial company name to canonical
+/// registered names via the enterprise-intel lookup runtime (ENScan 企查查,
+/// `company-lookup-json`). Read-only: queries the business registry, never
+/// touches the target, writes nothing to organizations.
+pub struct ReconLookupCompanyTool {
+    tools: ToolsConfigState,
+}
+
+impl ReconLookupCompanyTool {
+    pub fn new(tools: ToolsConfigState) -> Self {
+        Self { tools }
+    }
+}
+
+/// JSON schema for `recon_lookup_company` (free function for unit testing).
+fn lookup_company_parameters() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "keyword": {
+                "type": "string",
+                "description": "Raw company name to normalize (e.g. pasted by the user). The lookup queries the business registry and returns canonical registered names."
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max matches to return (default 5, hard cap 25). The first match is the highest-confidence canonical name."
+            }
+        },
+        "required": ["keyword"]
+    })
+}
+
+#[async_trait::async_trait]
+impl Tool for ReconLookupCompanyTool {
+    fn name(&self) -> &'static str {
+        "recon_lookup_company"
+    }
+
+    fn description(&self) -> &'static str {
+        "Scoping STEP 1 — resolve a raw company name to its canonical registered name (以企查查等企业登记数据为准) BEFORE creating organizations. Returns canonical matches with credit_code, legal_representative and confidence (sorted desc). Pick the best match (usually the first) and use its exact `name` for manage_organizations create / create_batch. If no provider credential is configured or there is no match, record that company as 纠名失败/待人工 and ask the user — never guess or invent a canonical name. Read-only: never probes the target, writes nothing."
+    }
+
+    fn parameters(&self) -> Value {
+        lookup_company_parameters()
+    }
+
+    async fn execute(&self, args: Value, _workspace: &Path) -> Result<Value> {
+        let keyword = match args.get("keyword").and_then(|v| v.as_str()) {
+            Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+            _ => return Ok(json!({"error": "'keyword' is required"})),
+        };
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+            .or(Some(5));
+
+        let pentest_config = self.tools.0.get().await;
+        match lookup_company_matches(&pentest_config, &keyword, &[], limit).await {
+            Ok(result) => Ok(json!({
+                "action": "lookup_company",
+                "keyword": keyword,
+                "match_count": result.matches.len(),
+                "matches": result.matches,
+                "provider_status": result.provider_status,
+            })),
+            Err(e) => Ok(json!({"error": e.to_string()})),
+        }
     }
 }
 
@@ -223,5 +327,14 @@ mod tests {
         let required = p["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "organization_id"));
         assert!(p["properties"].get("organization_id").is_some());
+    }
+
+    #[test]
+    fn lookup_schema_requires_keyword_only() {
+        let p = lookup_company_parameters();
+        let required = p["required"].as_array().unwrap();
+        assert_eq!(required.len(), 1);
+        assert!(required.iter().any(|r| r == "keyword"));
+        assert!(p["properties"].get("limit").is_some());
     }
 }

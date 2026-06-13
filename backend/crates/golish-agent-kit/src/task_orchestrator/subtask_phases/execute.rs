@@ -134,7 +134,10 @@ impl TaskOrchestrator {
                             .in_scope_assets(self.harness_org_id)
                             .await
                             .unwrap_or_default();
-                        desc.push_str(&super::super::prompts::render_in_scope_assets(
+                        // 设计 2026-06-13: scoping 是 ORG 层、不是 ASSET 层 → 不注入
+                        // in-scope 资产（防上一轮/别 org 残留污染纠名）；其余阶段照旧。
+                        desc.push_str(&super::super::prompts::render_in_scope_assets_for_stage(
+                            hint.stage_kind,
                             &in_scope_assets,
                         ));
                         // P3 · RAG prior: retrieve relevant prior writeups/PoCs

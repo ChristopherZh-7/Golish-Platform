@@ -1,9 +1,11 @@
 import { AlertTriangle, Loader2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { organizations as orgsApi } from "@/lib/api";
 import type { Organization } from "@/lib/api/organizations";
+import { onCustomEvent, onEvent } from "@/lib/events";
 import type { Target } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
+import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import {
   applyTopologyFocus,
   buildTopologyModel,
@@ -32,28 +34,41 @@ export function TargetGraphView({ targets }: { targets: Target[] }) {
   const [focusNodeId, setFocusNodeId] = useState<string | null>(null);
   const [fitSignal, setFitSignal] = useState(0);
 
-  useEffect(() => {
-    let cancelled = false;
+  const loadOrgs = useCallback(async () => {
     setOrgLoading(true);
     setOrgError(null);
-    orgsApi
-      .listOrganizations(getProjectPath())
-      .then((list) => {
-        if (!cancelled) setOrganizations(list);
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setOrganizations([]);
-          setOrgError(String(error));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setOrgLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+    try {
+      setOrganizations(await orgsApi.listOrganizations(getProjectPath()));
+    } catch (error) {
+      setOrganizations([]);
+      setOrgError(String(error));
+    } finally {
+      setOrgLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadOrgs();
+  }, [loadOrgs]);
+
+  // Refresh the topology when the AI writes orgs (scoping:
+  // manage_organizations / recon_discover_subsidiaries) or on the umbrella
+  // `targets-changed` signal (also fired on switching into the Target view).
+  // Without this the graph loaded orgs once on mount and went stale.
+  useEffect(() => {
+    const ORG_WRITE_TOOLS = new Set(["manage_organizations", "recon_discover_subsidiaries"]);
+    const unlistenAi = onEvent("ai-event", (payload) => {
+      const p = payload as { type?: string; tool_name?: string };
+      if (p.type === "tool_result" && p.tool_name && ORG_WRITE_TOOLS.has(p.tool_name)) {
+        loadOrgs();
+      }
+    });
+    const unlistenChanged = onCustomEvent("targets-changed", () => loadOrgs());
+    return () => {
+      runTauriUnlistenFromPromise(unlistenAi);
+      runTauriUnlistenFromPromise(unlistenChanged);
+    };
+  }, [loadOrgs]);
 
   const fullModel = useMemo(
     () => buildTopologyModel(organizations, targets, { mode, visibility, query }),

@@ -89,6 +89,27 @@ mod terminal_error;
 
 pub use backends::BridgeBackends;
 
+/// Engagement worker scope pinned onto a spawned worker session by the
+/// fan-out pool (设计 2026-06-13-engagement-scoping-fanout §6.3). Read by the
+/// Task-mode router to hard-constrain the run to one org + a stage slice
+/// (`set_harness_org_id` / `set_subsidiary_scope` / `set_stage_allowlist` /
+/// `run_stage`), mirroring the headless `--stage-run` CLI semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngagementWorkerScope {
+    /// The org this worker session is bound to (recon family worker = the
+    /// family root; attack worker = the individual org).
+    pub org_id: uuid::Uuid,
+    /// Slice start (`None` = the projected DAG's natural entry up to `to`).
+    pub from: Option<golish_agent_kit::harness::StageKind>,
+    /// Slice end (inclusive) — the worker's gate-to-release boundary.
+    pub to: golish_agent_kit::harness::StageKind,
+    /// Recon family workers run with subsidiaries included (Phase 3 母先收 →
+    /// 子逐个收); attack workers run a single org.
+    pub include_subsidiaries: bool,
+    /// Ownership threshold recorded for the run (Phase 2 semantics).
+    pub subsidiary_threshold_pct: u8,
+}
+
 // ============================================================================
 // Composed Subsystems
 // ============================================================================
@@ -238,6 +259,14 @@ pub struct AgentBridge {
     /// no profile selected; a Task run with `None` falls back to the
     /// `GOLISH_HARNESS_PROFILE` env default.
     pub(crate) harness_profile: Arc<RwLock<Option<String>>>,
+
+    /// Engagement worker scope (设计 2026-06-13-engagement-scoping-fanout §6.3):
+    /// when the chat session is a spawned worker, the fan-out pool pins it to
+    /// one org + a stage slice before seeding the task prompt. The Task-mode
+    /// router reads this to call `set_harness_org_id` / `set_subsidiary_scope` /
+    /// `set_stage_allowlist` + `run_stage` — the same hard constraints the
+    /// headless `--stage-run` CLI applies. `None` = normal chat/task session.
+    pub(crate) engagement_worker_scope: Arc<RwLock<Option<EngagementWorkerScope>>>,
 
     /// C2c · StageDeliverable captured from a delegated sub-agent (e.g.
     /// `reporter`) during the active subtask. The Primary orchestrator often

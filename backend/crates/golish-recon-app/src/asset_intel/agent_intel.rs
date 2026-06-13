@@ -18,9 +18,9 @@ use golish_app_core::GolishError;
 use crate::organizations::OrganizationCandidates;
 
 use super::{
-    auto_promote_discovered_children, run_providers_for_org, select_discovery_policy,
-    select_enrichment_providers, select_subsidiary_providers, AssetIntelHydrateConfig,
-    ToolsConfigState,
+    apply_ownership_threshold_override, auto_promote_discovered_children, parse_ownership_percent,
+    run_providers_for_org, select_discovery_policy, select_enrichment_providers,
+    select_subsidiary_providers, AssetIntelHydrateConfig, ToolsConfigState,
 };
 
 /// Which passive provider phase to run.
@@ -41,6 +41,18 @@ impl PassiveIntelPhase {
     }
 }
 
+/// One discovered subsidiary candidate surfaced for human review. With
+/// `auto_promote` off, nothing is created until the user picks: the agent passes
+/// these into `ask_human(unit_review)`. `meets_threshold` is computed against the
+/// human-chosen `min_ownership_percent` (default 51) so the agent can pre-select.
+#[derive(Debug, Clone, Serialize)]
+pub struct SubsidiaryCandidate {
+    pub name: String,
+    pub ownership_percent: Option<String>,
+    pub status: Option<String>,
+    pub meets_threshold: bool,
+}
+
 /// Serializable result of one passive-intel run, returned by the agent tool and
 /// booked to the evidence ledger.
 #[derive(Debug, Clone, Serialize)]
@@ -57,6 +69,11 @@ pub struct PassiveIntelSummary {
     /// Phase 2: number of discovered subsidiaries auto-promoted to child orgs
     /// (subsidiaries phase only; 0 for enrich or when no candidate qualified).
     pub promoted_children: usize,
+    /// Subsidiaries phase with auto_promote OFF: the discovered candidates so the
+    /// agent can pass them into `ask_human(unit_review)` for the user to pick.
+    /// Empty for enrich or when candidates were auto-promoted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subsidiaries: Vec<SubsidiaryCandidate>,
 }
 
 /// Run one passive-intel phase (subsidiary discovery or field enrichment)
@@ -105,12 +122,19 @@ pub async fn run_passive_intel(
     // qualifying candidates to child orgs afterwards (mirrors the GUI path
     // `asset_intel_hydrate_subsidiaries`). Enrich phase keeps `None` (no promotion).
     let discovery_policy = (phase == PassiveIntelPhase::Subsidiaries).then(|| {
-        select_discovery_policy(
+        let mut policy = select_discovery_policy(
             selected
                 .iter()
                 .filter_map(|tool| tool.asset_intel.as_ref())
                 .map(|asset| &asset.discovery),
-        )
+        );
+        // Human-chosen ownership threshold (from the discover_subsidiaries tool
+        // args) overrides the provider-config default so the scoping decision
+        // actually drives auto-promotion.
+        if let Some(threshold) = config.min_ownership_percent.as_deref() {
+            apply_ownership_threshold_override(&mut policy, threshold);
+        }
+        policy
     });
 
     let mut run = run_providers_for_org(
@@ -144,6 +168,43 @@ pub async fn run_passive_intel(
         _ => 0,
     };
 
+    // With auto_promote OFF the discovered subsidiaries stay as candidates; surface
+    // them (name + ownership% + status, flagged against the human's threshold) so
+    // the agent can show them in ask_human(unit_review) for the user to pick.
+    let threshold = config
+        .min_ownership_percent
+        .as_deref()
+        .and_then(parse_ownership_percent)
+        .unwrap_or(51.0);
+    let subsidiaries: Vec<SubsidiaryCandidate> = run
+        .candidates
+        .organizations
+        .iter()
+        .map(|c| {
+            let raw = c.evidence.get("raw");
+            let ownership_percent = raw
+                .and_then(|r| r.get("scale"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let status = raw
+                .and_then(|r| r.get("status"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let meets_threshold = ownership_percent
+                .as_deref()
+                .and_then(parse_ownership_percent)
+                .is_some_and(|v| v >= threshold);
+            SubsidiaryCandidate {
+                name: c.value.trim().to_string(),
+                ownership_percent,
+                status,
+                meets_threshold,
+            }
+        })
+        .collect();
+
     Ok(PassiveIntelSummary {
         run_id: run.run_id,
         company: org.name,
@@ -153,6 +214,7 @@ pub async fn run_passive_intel(
         targets: run.candidates.targets.len(),
         providers: provider_ids,
         promoted_children,
+        subsidiaries,
     })
 }
 
@@ -177,11 +239,29 @@ mod tests {
             targets: 5,
             providers: vec!["0.zone".into()],
             promoted_children: 0,
+            subsidiaries: vec![],
         };
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["company"], "Acme");
         assert_eq!(v["phase"], "enrich");
         assert_eq!(v["targets"], 5);
         assert_eq!(v["providers"][0], "0.zone");
+        // Empty subsidiaries is skipped from the JSON so enrich stays clean.
+        assert!(v.get("subsidiaries").is_none());
+    }
+
+    #[test]
+    fn subsidiary_candidate_serializes_with_threshold_flag() {
+        let s = SubsidiaryCandidate {
+            name: "平安银行股份有限公司".into(),
+            ownership_percent: Some("58%".into()),
+            status: Some("在营".into()),
+            meets_threshold: true,
+        };
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["name"], "平安银行股份有限公司");
+        assert_eq!(v["ownership_percent"], "58%");
+        assert_eq!(v["status"], "在营");
+        assert_eq!(v["meets_threshold"], true);
     }
 }

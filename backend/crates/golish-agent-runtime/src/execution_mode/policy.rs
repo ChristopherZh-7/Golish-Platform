@@ -101,6 +101,10 @@ pub struct BridgeToolSelection {
     pub recon_discover_subsidiaries: bool,
     /// `recon_enrich_assets` — passive field enrichment (0.zone / quake / …).
     pub recon_enrich_assets: bool,
+    /// `recon_lookup_company` — scoping 纠名 step 1: resolve raw company names
+    /// to canonical registered names before creating organizations
+    /// (设计 2026-06-13-engagement-scoping-fanout §6.2).
+    pub recon_lookup_company: bool,
     /// `recon_list_providers` — read-only: which passive providers have a
     /// configured credential (so the AI invokes only usable ones).
     pub recon_list_providers: bool,
@@ -128,6 +132,7 @@ impl BridgeToolSelection {
             manage_organizations: true,
             recon_discover_subsidiaries: true,
             recon_enrich_assets: true,
+            recon_lookup_company: true,
             recon_list_providers: true,
             record_finding: true,
             vault: true,
@@ -147,6 +152,7 @@ impl BridgeToolSelection {
             manage_organizations: false,
             recon_discover_subsidiaries: false,
             recon_enrich_assets: false,
+            recon_lookup_company: false,
             recon_list_providers: false,
             record_finding: false,
             vault: false,
@@ -173,6 +179,9 @@ impl BridgeToolSelection {
         }
         if self.recon_enrich_assets {
             out.push("recon_enrich_assets");
+        }
+        if self.recon_lookup_company {
+            out.push("recon_lookup_company");
         }
         if self.recon_list_providers {
             out.push("recon_list_providers");
@@ -266,6 +275,7 @@ mod tests {
                 "manage_organizations",
                 "recon_discover_subsidiaries",
                 "recon_enrich_assets",
+                "recon_lookup_company",
                 "recon_list_providers",
                 "record_finding",
                 "vault",

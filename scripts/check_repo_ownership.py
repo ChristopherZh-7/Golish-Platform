@@ -94,7 +94,13 @@ REPO_OWNER: dict[str, str] = {
 #     target_assets/dns_records into "(asset × technique) has real data?" facts
 #     for the harness (an orchestration concern spanning all services), mirroring
 #     how `audit` is a cross-cutting ledger rather than a single service's CRUD.
-SHARED_REPOS: frozenset[str] = frozenset({"audit", "scoped", "coverage_truth"})
+#   engagement_truth — engagement overview's READ-ONLY cross-table truth
+#     projection (design 2026-06-13-engagement-scoping-fanout §6.4): per-org
+#     weakness counts + org-tree rows for the snapshot/scheduler oracle. Same
+#     orchestration-spanning nature as coverage_truth.
+SHARED_REPOS: frozenset[str] = frozenset(
+    {"audit", "scoped", "coverage_truth", "engagement_truth"}
+)
 
 # Ordered (first-match-wins) caller-path-prefix -> service domain.
 # Paths are relative to backend/crates/golish/src/.

@@ -18,9 +18,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use tokio::sync::mpsc;
 
-use golish_agent_kit::harness::{
-    active_profile_id, base_operation_graph, load_embedded_profile, StageKind,
-};
+use golish_agent_kit::harness::{active_profile_id, StageKind};
 use golish_core::agent_mode::AgentMode;
 use golish_core::events::{AiEvent, HarnessTraceKind};
 use golish_core::hitl::ApprovalDecision;
@@ -30,33 +28,16 @@ use crate::ai::agent_bridge::AgentBridge;
 use crate::cli::Args;
 use crate::runtime::CliRuntime;
 
-/// Resolve the `(entry_stage, allowlist)` for a `--stage-run` slice against the
-/// profile-projected DAG. `entry_stage` is the slice's entry point (where the
-/// `operation_state` cursor begins); `allowlist` is fed to
-/// [`TaskOrchestrator::set_stage_allowlist`](golish_agent_kit::task_orchestrator::TaskOrchestrator::set_stage_allowlist).
+/// `resolve_slice` moved to `golish_agent_kit::harness::slice` (Phase B,
+/// 设计 2026-06-13-engagement-scoping-fanout §6.3) so the engagement worker
+/// sessions (chat task mode) and this headless CLI resolve slices identically.
+/// Thin anyhow adapter kept here so existing call sites / tests read the same.
 fn resolve_slice(
     profile_id: &str,
     from: Option<StageKind>,
     to: StageKind,
 ) -> Result<(StageKind, HashSet<StageKind>)> {
-    let graph = base_operation_graph().map_err(|e| anyhow!("load operation graph: {e}"))?;
-    let profile = load_embedded_profile(profile_id)
-        .map_err(|e| anyhow!("load profile {profile_id}: {e}"))?
-        .ok_or_else(|| anyhow!("unknown harness profile: {profile_id}"))?;
-    let allowed = profile.allowed_stage_set();
-    let dag = graph.project(&allowed);
-    let allowlist = dag
-        .slice(from, to)
-        .map_err(|e| anyhow!("stage slice ({profile_id}): {e}"))?;
-    // Entry = the sliced sub-DAG's entry point (the cursor start).
-    let sliced_allowed: HashSet<StageKind> = allowed.intersection(&allowlist).copied().collect();
-    let entry = graph
-        .project(&sliced_allowed)
-        .entry_points()
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow!("sliced DAG has no entry point"))?;
-    Ok((entry, allowlist))
+    golish_agent_kit::harness::resolve_slice(profile_id, from, to).map_err(|e| anyhow!(e))
 }
 
 /// Parse `--from`/`--to`/`--only` into `(from, to)` stages.

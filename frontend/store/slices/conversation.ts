@@ -119,6 +119,18 @@ export interface ChatConversation {
    * persisted to the conversation DB.
    */
   streamingStartedAt?: number;
+  /**
+   * Engagement role (设计 2026-06-13-engagement-scoping-fanout): `"overview"`
+   * marks the scoping chat that upgrades into the engagement overview;
+   * `"worker"` marks a pool-spawned worker session. Absent for normal chats.
+   */
+  engagementRole?: "overview" | "worker";
+  /** Worker session metadata (set when engagementRole === "worker"). */
+  workerMeta?: {
+    unitId: string;
+    unitKind: "recon_family" | "attack_org";
+    orgName: string;
+  };
 }
 
 // State interface

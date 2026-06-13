@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
   "version": "0.1.9",
-  "last_updated": "2026-06-07",
+  "last_updated": "2026-06-13",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -1328,6 +1328,52 @@
       ],
       "evidence": "2026-06-12 BaJie MCP-agent-3：写设计+计划（零实现代码改动）。活体两连 BLOCK 实证（log:483-492 attempt1 / log:1341-1353 attempt2，投影兜底两次把 missing_deliverable 置 false 截胡 submit-only 锁）已写入设计 §1。下一步：用户授权后转 in_progress 按计划 Task 1 起步。",
       "notes": "2026-06-12 BaJie MCP-agent-3（DISPATCH off，接 MCP-1 上下文）。用户原话：『兜底逻辑太多了…只保留一个 refiner 纠错逻辑，每次调用都定好不同阶段什么 prompt 保证干净』。用户接受『refiner 只产纠正+锁决策、deliverable 永远出自主 agent』红线（否决 refiner 自己过 gate——LLM 替 agent 伪造交付破 I7）。gate 判错（vacuous/coverage/fabricated/kinds/freshness/red_team/human-gate）零改动。与 db-truth-driven-gate-coverage-2026-06-12 关系：其 §5.4 诊断式 reflector 被本条 C 类模板吸收（确定性诊断已实现，本条把触发从仅 coverage 扩到 vacuous）；LLM 增强位保留为可选、本期不实现。"
+    },
+    {
+      "id": "engagement-phase-a-scoping-2026-06-13",
+      "priority": 1,
+      "area": "backend: golish-db/repo/engagement_truth.rs(新·SHARED) + golish/src/engagement/{mod,scheduler,weakness,contract,query}.rs(新·stash fleet 纯逻辑搬回改名) + commands_facade/engagement.rs + golish-recon-app asset_intel/service/lookup_core.rs(新·lookup 核心抽取)+agent_tools(ReconLookupCompanyTool) + golish-pentest-app manage_organizations(create_batch) + golish-agent-runtime execution_mode(policy/prompt_render/task) + scoping.json hints; frontend: lib/generated/{EngagementSnapshot,OrgRunStatusDto,OrgTreeNode,OrgWeaknessScore}.ts + lib/api/engagement.ts",
+      "title": "Engagement Phase A：scoping 独立化 + 企查查纠名工具链 + 范围锁定信号（chat-native 批量红队 第一期）",
+      "user_visible_behavior": "chat 里 AI 具备完整 scoping 工具链：recon_lookup_company 纠名（企查查规范名+信用代码）→ manage_organizations create_batch 批量建母 org（created/existing/failed 三态）→ recon_discover_subsidiaries 子公司落树；前端可调 engagement_get_snapshot 读 org 树+覆盖状态+薄弱度（范围锁定信号）；scoping gate hints 引导先纠名再发现。",
+      "status": "in_progress",
+      "design": "docs/design/2026-06-13-engagement-scoping-fanout-redesign.md（§6.2/§6.4/§12 Phase A；用户 2026-06-13 批准方向+5 默认）",
+      "plan": "docs/superpowers/plans/2026-06-13-engagement-phase-a-scoping.md（实施期勘验 6 条 + 11 Task；验证节奏按用户指定：整期实现→末尾统一门禁→修）",
+      "verification": [
+        "cargo check -p golish-db -p golish-recon-app -p golish-pentest-app -p golish-agent-runtime -p golish → exit 0",
+        "cargo nextest run 同五 crate → 761 passed / 0 failed（含 engagement_truth SQL 守卫、scheduler 搬回 9 测、contract round-trip、create_batch schema、lookup schema、policy 稳定顺序）",
+        "cargo clippy 同五 crate --all-targets -- -D warnings → exit 0 零告警",
+        "cargo test --workspace export_bindings → 4 个 engagement 类型重新生成且无其它 generated 漂移",
+        "just check-fe + test-fe → biome/typecheck exit 0 + 1280 passed / 12 skipped",
+        "check_repo_ownership.py → 与 HEAD 基线逐条一致（12+1 pre-existing，0 新增；git worktree 对照实证）",
+        "check_dag.py → DAG clean (50 crates)",
+        "活体（欠账）：chat 粘名单→纠名→create_batch→discover_subsidiaries→snapshot 全链 + CLI --to scoping 零回归（需 ENScan AQC cookie）"
+      ],
+      "evidence": "2026-06-13 BaJie MCP-agent-4：代码门禁全绿（见 verification 前 7 条，agent-progress.md 同日记录）。活体未跑（需 ENScan 凭据）→ 保持 in_progress，活体过后方可 passing。",
+      "notes": "Phase B（会话工人池 fan-out）/ Phase C（总览 UI）依赖本期：scheduler 内核已搬回备用，contract/query 读模型已就位。"
+    },
+    {
+      "id": "engagement-phase-bc-worker-pool-2026-06-13",
+      "priority": 1,
+      "area": "backend: golish-agent-kit/harness/slice.rs(新·resolve_slice 下沉) + golish/stage_run(改调 kit 版) + golish-agent-bridge(EngagementWorkerScope 字段+set/get) + golish-agent-app ai/commands/engagement_scope.rs(新·3 Tauri 命令) + core/chat.rs(task 路径 worker scope 接线: set_harness_org_id/set_subsidiary_scope/set_stage_allowlist/run_stage) + golish-db repo/engagement_truth.rs(get_org SHARED 透传) + commands_facade/engagement.rs + commands_registry; frontend: lib/engagement/{pool,spawn,runPool,rolePersistence}.ts(新) + store/slices/engagement-pool.ts(新) + lib/api/engagement.ts(scope wrappers) + components/Engagement/{EngagementOverview.tsx,engagementOverview.utils.ts}(新) + AIChatPanel(总览内嵌) + ConversationTabs(worker 徽标) + conversation.ts(engagementRole/workerMeta) + conversation-db-sync(角色恢复)",
+      "title": "Engagement Phase B+C：会话工人池 fan-out（recon 按母公司家族 / attack 按 org，K 受控并发，工位=task resolve）+ scoping 会话升级 engagement 总览 UI（chat-native 批量红队 第二/三期）",
+      "user_visible_behavior": "scoping 锁定范围后，总览卡（嵌在 scoping 会话消息流上方）显示 org 树+状态徽章+活跃 K/队列；点「开始 fan-out」→ 前端按 K 并发把每个母公司家族 spawn 成真·独立 AI 会话（recon 工人 target_intel..=enumeration，含子公司），recon 过 gate 后该家族每个 org 入队 attack 工人（vuln_triage..=reporting）；工人会话被 engagement_set_worker_scope 钉死 org+阶段切片（硬约束，同 CLI --stage-run 语义）；tab 显示 worker 徽标，点总览行可钻入工人会话；已覆盖单元续跑跳过；刷新后池态丢但 DB 真值续跑判定恢复。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "docs/design/2026-06-13-engagement-scoping-fanout-redesign.md（§5/§6.1/§6.3/§12 Phase B+C）",
+      "plan": "docs/superpowers/plans/2026-06-13-engagement-phase-bc-worker-pool.md（实施期勘验 8 条 + B 期 12 文件 9 Task + C 期 6 文件 4 Task）",
+      "verification": [
+        "cargo check -p golish-agent-kit -p golish-agent-bridge -p golish-agent-app -p golish → exit 0 (57s)",
+        "cargo nextest run 同四 crate → 916 passed / 0 failed（含 slice 下沉 3 测、worker scope parse 2 测、stage_run 适配回归）；改动复测 golish-db+agent-app → 120 passed",
+        "cargo clippy 同四 crate + golish-db --all-targets -- -D warnings → exit 0 零告警",
+        "cargo fmt 同五 crate --check → FMT_OK（修 3 处）",
+        "just check-fe → exit 0（biome 修 6 处 import 排序/格式后全绿）",
+        "pnpm test 全量 → 1293 passed / 12 skipped（122 文件，含 pool 纯函数/池 slice/overview utils 新测）",
+        "check_repo_ownership.py → 12+1 与 HEAD 基线一致（本轮引入的 agent->organizations 违规已改走 engagement_truth.get_org SHARED 透传消除）",
+        "check_dag.py → ✓ DAG clean (50 crates)",
+        "活体（欠账）：GUI scoping→总览→开始 fan-out→K 并发工人会话→recon 过 gate→attack 入队→全家族收口（需 ENScan 凭据 + LLM key）"
+      ],
+      "evidence": "2026-06-13 BaJie MCP-agent-4（DISPATCH off，接力同会话 Phase A）：B1-B12 + C1-C6 整期铺完后统一门禁全绿（见 verification 前 8 条）。工人硬约束复用 CLI 已验证链路（resolve_slice 下沉共用 + set_harness_org_id/set_stage_allowlist/run_stage），resume 分支同样重设 allowlist。活体未跑 → 保持 in_progress。",
+      "notes": "工位占用/释放信号 = sendPromptSession 在 task 模式 resolve(operation 跑完)/reject(BLOCK/失败)，无需新事件通道。engagementRole/workerMeta 走 localStorage 角色映射（rolePersistence，镜像 stage-marker 模式）恢复，conv DB 列不动。池循环 runPool 是模块级长 Promise，刷新丢池态（spec §10 接受）。K 默认 3。"
     }
   ]
 }
