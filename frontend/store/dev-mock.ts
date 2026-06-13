@@ -1,4 +1,6 @@
+import type { StageRunRow, TechniqueState } from "@/components/Engagement/StageRunView";
 import { useStore } from "./index";
+import type { SessionStageRun } from "./types/session";
 
 export function installDevTools() {
   if (!import.meta.env.DEV) return;
@@ -205,5 +207,117 @@ export function installDevTools() {
     }
 
     console.log(`[__mockPlan] Injected full "${v}" scenario into session ${sid}, convId=${convId}`);
+  };
+
+  // Inject a mock "stage run" so the StageRunCard (chat) + StageRunView (left
+  // detail pane) can be exercised in the real app shell before backend wiring.
+  // Run `__mockStageRun()` in the dev console.
+  (window as unknown as Record<string, unknown>).__mockStageRun = () => {
+    const state = useStore.getState();
+    const convId = state.activeConversationId;
+    const sid = (convId && state.conversationTerminals[convId]?.[0]) || state.activeSessionId;
+    if (!sid) {
+      console.warn("[__mockStageRun] No active session");
+      return;
+    }
+    const axis = ["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT"];
+    const cov = (...st: TechniqueState[]): Record<string, TechniqueState> => {
+      const o: Record<string, TechniqueState> = {};
+      axis.forEach((t, i) => {
+        o[t] = st[i] ?? "pending";
+      });
+      return o;
+    };
+    const rows: StageRunRow[] = [
+      {
+        id: "root",
+        name: "中国平安保险（集团）股份有限公司",
+        ownershipPercent: null,
+        status: "passed",
+        evidenceCount: 18,
+        coverage: cov("found", "found", "found", "found", "found", "found"),
+        expanded: true,
+        toolLines: [
+          { name: "recon_enrich_assets", detail: "0.zone / quake / ENScan ✓", done: true },
+          { name: "subfinder -all", detail: "pingan.com.cn · 142 子域", done: true },
+          { name: "submit_stage_deliverable", detail: "coverage 6/6 · gate PASS", done: true },
+        ],
+      },
+      {
+        id: "bank",
+        name: "平安银行股份有限公司",
+        ownershipPercent: 58,
+        status: "running",
+        activity: "subfinder -all -recursive · pingan.com.cn",
+        evidenceCount: 9,
+        coverage: cov("found", "found", "found", "checked_empty", "pending", "pending"),
+        expanded: false,
+        toolLines: [],
+      },
+      {
+        id: "life",
+        name: "中国平安人寿保险股份有限公司",
+        ownershipPercent: 99,
+        status: "running",
+        activity: "recon_enrich_assets · quake",
+        evidenceCount: 6,
+        coverage: cov("found", "found", "pending", "pending", "pending", "pending"),
+        expanded: false,
+        toolLines: [],
+      },
+      {
+        id: "pc",
+        name: "中国平安财产保险股份有限公司",
+        ownershipPercent: 99,
+        status: "running",
+        activity: "gau · waybackurls",
+        evidenceCount: 4,
+        coverage: cov("found", "pending", "pending", "pending", "pending", "pending"),
+        expanded: false,
+        toolLines: [],
+      },
+      {
+        id: "sec",
+        name: "平安证券股份有限公司",
+        ownershipPercent: 96,
+        status: "queued",
+        evidenceCount: 0,
+        coverage: cov(),
+        expanded: false,
+        toolLines: [],
+      },
+      {
+        id: "trust",
+        name: "平安信托有限责任公司",
+        ownershipPercent: 99,
+        status: "blocked",
+        evidenceCount: 3,
+        coverage: cov("found", "checked_empty", "blocked", "pending", "pending", "pending"),
+        expanded: false,
+        toolLines: [],
+      },
+      {
+        id: "fund",
+        name: "平安基金管理有限公司",
+        ownershipPercent: 68,
+        status: "pending",
+        evidenceCount: 0,
+        coverage: cov(),
+        expanded: false,
+        toolLines: [],
+      },
+    ];
+    const stageRun: SessionStageRun = {
+      rows,
+      summary: { total: rows.length, covered: 1, active: 3, queued: 1, blocked: 1 },
+      concurrency: 3,
+      stageLabel: "Target Intel",
+      stageTag: "被动 · zero-touch",
+      roleLabel: "Recon",
+      coverageAxis: axis,
+    };
+    state.setSessionStageRun(sid, stageRun);
+    state.setDetailViewMode(sid, "stage-run");
+    console.log(`[__mockStageRun] injected on session ${sid}; chat 卡 + 左详情已就位`);
   };
 }

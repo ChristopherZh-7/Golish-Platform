@@ -32,6 +32,7 @@ export type {
   RenderMode,
   Session,
   SessionMode,
+  SessionStageRun,
   StdinWaitDetector,
   TabType,
 } from "./session";

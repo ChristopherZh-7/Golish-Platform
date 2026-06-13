@@ -34,6 +34,7 @@ export type {
   Session,
   // Session
   SessionMode,
+  SessionStageRun,
   StdinWaitDetector,
   // Plan
   StepStatus,

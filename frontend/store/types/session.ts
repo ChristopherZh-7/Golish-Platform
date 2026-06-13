@@ -1,3 +1,4 @@
+import type { StageRunRow, StageRunSummary } from "@/components/Engagement/StageRunView";
 import type { ReasoningEffort } from "@/lib/ai";
 import type { RetiredPlan, TaskPlan } from "./plan";
 
@@ -42,7 +43,23 @@ export interface AiConfig {
   };
 }
 
-export type DetailViewMode = "timeline" | "tool-detail" | "sub-agent-detail";
+export type DetailViewMode = "timeline" | "tool-detail" | "sub-agent-detail" | "stage-run";
+
+/**
+ * A stage-run shown in the left detail pane (设计 2026-06-13-stage-run-fanout).
+ * Holds the per-org rows + summary + stage config for {@link StageRunView}.
+ * Set on the session that owns the detail pane; the chat's StageRunCard reads
+ * it (via the conversation→terminal mapping) and opens it on click.
+ */
+export interface SessionStageRun {
+  rows: StageRunRow[];
+  summary: StageRunSummary;
+  concurrency: number;
+  stageLabel: string;
+  stageTag?: string;
+  roleLabel: string;
+  coverageAxis: string[];
+}
 
 export interface InteractiveModeState {
   active: boolean;
@@ -88,5 +105,7 @@ export interface Session {
   passedStages?: string[];
   detailViewMode?: DetailViewMode;
   toolDetailRequestIds?: string[] | null;
+  /** Active stage-run shown when `detailViewMode === "stage-run"` (mock + live). */
+  stageRun?: SessionStageRun | null;
   interactiveMode?: InteractiveModeState | null;
 }

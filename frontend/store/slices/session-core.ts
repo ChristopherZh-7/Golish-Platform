@@ -13,6 +13,7 @@ import type {
   RenderMode,
   Session,
   SessionMode,
+  SessionStageRun,
   TabType,
 } from "../store-types";
 import type { SessionStoreDraft } from "./session-draft-types";
@@ -260,6 +261,21 @@ export function createSessionCoreActions(
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].toolDetailRequestIds = requestIds;
         }
+      }),
+
+    setSessionStageRun: (sessionId: string, stageRun: SessionStageRun | null) =>
+      set((state) => {
+        if (state.sessions[sessionId]) {
+          state.sessions[sessionId].stageRun = stageRun;
+        }
+      }),
+
+    toggleStageRunRow: (sessionId: string, rowId: string) =>
+      set((state) => {
+        const sr = state.sessions[sessionId]?.stageRun;
+        if (!sr) return;
+        const row = sr.rows.find((r) => r.id === rowId);
+        if (row) row.expanded = !row.expanded;
       }),
   };
 }

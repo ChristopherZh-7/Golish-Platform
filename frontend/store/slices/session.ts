@@ -26,6 +26,7 @@ import type {
   RenderMode,
   Session,
   SessionMode,
+  SessionStageRun,
   StreamingBlock,
   ToolCallSource,
   UnifiedBlock,
@@ -88,6 +89,10 @@ export interface SessionActions {
   setRenderMode: (sessionId: string, mode: RenderMode) => void;
   setDetailViewMode: (sessionId: string, mode: DetailViewMode) => void;
   setToolDetailRequestIds: (sessionId: string, requestIds: string[] | null) => void;
+  /** Set (or clear) the stage-run shown in this session's detail pane. */
+  setSessionStageRun: (sessionId: string, stageRun: SessionStageRun | null) => void;
+  /** Toggle one stage-run row's inline detail expansion. */
+  toggleStageRunRow: (sessionId: string, rowId: string) => void;
   setInteractiveMode: (sessionId: string, mode: InteractiveModeState | null) => void;
 
   // Terminal lifecycle

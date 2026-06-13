@@ -6,47 +6,25 @@
  * queued counters, concurrency control and the fan-out start/stop switch.
  * Clicking a row drills into that org's worker conversation.
  *
- * Data sources: DB-truth snapshot (engagement_get_snapshot) as the baseline +
- * the live worker-pool slice overlaid (设计 §10 运行时态 vs DB 真值).
+ * This is the SMART container: it owns the data (DB-truth snapshot via
+ * engagement_get_snapshot + the live worker-pool slice overlaid, 设计 §10) and
+ * the fan-out lifecycle, and renders the presentational {@link EngagementInlineCard}
+ * (the worker-card view that reuses the SubAgentInlineCard visual language).
  */
 
-import {
-  AlertTriangle,
-  ChevronDown,
-  ChevronRight,
-  Loader2,
-  Play,
-  RefreshCw,
-  Square,
-  Target,
-} from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { type EngagementSnapshot, getEngagementSnapshot } from "@/lib/api/engagement";
 import { isPoolRunning, startEngagementRun, stopEngagementRun } from "@/lib/engagement/runPool";
 import { logger } from "@/lib/logger";
-import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
-import { buildOverviewRows, type EffectiveStatus, summarizeRows } from "./engagementOverview.utils";
-
-const STATUS_META: Record<EffectiveStatus, { label: string; className: string }> = {
-  passed: { label: "Covered", className: "bg-emerald-500/15 text-emerald-400" },
-  skippedAlreadyComplete: { label: "Covered", className: "bg-emerald-500/15 text-emerald-400" },
-  running: { label: "Running", className: "bg-sky-500/15 text-sky-400" },
-  queued: { label: "Queued", className: "bg-indigo-500/15 text-indigo-400" },
-  blocked: { label: "Blocked", className: "bg-amber-500/15 text-amber-400" },
-  failed: { label: "Failed", className: "bg-red-500/15 text-red-400" },
-  pending: { label: "Pending", className: "bg-slate-500/15 text-slate-400" },
-};
-
-function StatusBadge({ status }: { status: EffectiveStatus }) {
-  const meta = STATUS_META[status] ?? STATUS_META.pending;
-  return (
-    <span className={cn("rounded px-2 py-0.5 text-xs font-medium", meta.className)}>
-      {status === "running" && <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />}
-      {meta.label}
-    </span>
-  );
-}
+import { type EngagementCardRow, EngagementInlineCard } from "./EngagementInlineCard";
+import {
+  activePhaseFor,
+  buildOverviewRows,
+  deriveWorkerActivity,
+  summarizeRows,
+} from "./engagementOverview.utils";
 
 export interface EngagementOverviewProps {
   /** Model + provider the spawned workers run with (the panel's selection). */
@@ -69,6 +47,7 @@ export function EngagementOverview({
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [concurrency, setConcurrency] = useState(3);
+  const [collapsed, setCollapsed] = useState(false);
 
   const pool = useStore((s) => s.engagementPool);
   const conversations = useStore((s) => s.conversations);
@@ -169,162 +148,92 @@ export function EngagementOverview({
   const running = pool.phase === "running" || pool.phase === "stopping";
   const canStart = !running && !!projectPath && (snapshot?.rootCount ?? 0) > 0 && !!model;
 
+  // Map pool-merged rows → presentational worker-card rows. Status/tree/phase/
+  // drill-in are live; the per-worker activity line + tool count are deferred
+  // (they need the worker session's tool stream — separate plumbing).
+  const cardRows: EngagementCardRow[] = useMemo(
+    () =>
+      rows.map((r) => {
+        const workerConv = r.workerConvId ? conversations[r.workerConvId] : undefined;
+        const { activity, toolCount } = deriveWorkerActivity(workerConv);
+        return {
+          id: r.node.organizationId,
+          name: r.node.name,
+          depth: r.depth,
+          ownershipPercent: r.node.ownershipPercent,
+          status: r.effective,
+          hasChildren: r.node.children.length > 0,
+          expanded: expanded.has(r.node.organizationId),
+          drillable: r.workerConvId != null,
+          phase: activePhaseFor(r.node, pool),
+          activity,
+          toolCount,
+        };
+      }),
+    [rows, expanded, pool, conversations]
+  );
+
+  const convByRowId = useMemo(() => {
+    const m: Record<string, string | null> = {};
+    for (const r of rows) m[r.node.organizationId] = r.workerConvId;
+    return m;
+  }, [rows]);
+
+  const onDrillInRow = useCallback(
+    (id: string) => drillIn(convByRowId[id] ?? null),
+    [convByRowId, drillIn]
+  );
+
+  const onConcurrencyChange = useCallback((k: number) => {
+    setConcurrency(k);
+    useStore.getState().poolSetConcurrency(k);
+  }, []);
+
+  if (error) {
+    return (
+      <div className="mx-3 mb-2 flex items-center gap-2 rounded-lg border border-border bg-background/60 px-3 py-2 text-xs text-red-400">
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+        <span className="truncate">{error}</span>
+        <button type="button" onClick={() => void load()} className="underline">
+          retry
+        </button>
+      </div>
+    );
+  }
+
+  if (loading && !snapshot) {
+    return (
+      <div className="mx-3 mb-2 flex items-center gap-2 rounded-lg border border-border bg-background/60 px-3 py-3 text-xs text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading engagement…
+      </div>
+    );
+  }
+
+  if (!snapshot || snapshot.rootCount === 0) {
+    return (
+      <div className="mx-3 mb-2 rounded-lg border border-border bg-background/60 px-3 py-3 text-xs text-muted-foreground">
+        No organizations in scope yet — run scoping in this chat first (paste the company list,
+        normalize names, build the org tree), then fan out.
+      </div>
+    );
+  }
+
   return (
-    <div className="mx-3 mb-2 rounded-lg border border-border bg-background/60 text-foreground">
-      <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <Target className="h-4 w-4 shrink-0 text-primary" />
-          <h3 className="truncate text-xs font-semibold">Engagement</h3>
-          <span className="truncate text-xs text-muted-foreground">
-            {summary.covered}/{summary.totalOrgs} covered
-            {summary.active > 0 && ` · ${summary.active} active`}
-            {summary.queued > 0 && ` · ${summary.queued} queued`}
-            {summary.blocked > 0 && ` · ${summary.blocked} blocked`}
-            {summary.failed > 0 && ` · ${summary.failed} failed`}
-          </span>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <label className="flex items-center gap-1 text-xs text-muted-foreground">
-            K
-            <input
-              type="number"
-              min={1}
-              max={10}
-              value={concurrency}
-              disabled={running}
-              onChange={(e) => {
-                const k = Math.max(1, Math.min(10, Number(e.target.value) || 1));
-                setConcurrency(k);
-                useStore.getState().poolSetConcurrency(k);
-              }}
-              className="w-12 rounded border border-border bg-transparent px-1 py-0.5 text-xs"
-            />
-          </label>
-          {running ? (
-            <button
-              type="button"
-              onClick={stopEngagementRun}
-              className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-amber-400 hover:bg-amber-500/10"
-              title="Finish in-flight workers, stop dequeuing"
-            >
-              <Square className="h-3 w-3" />
-              {pool.phase === "stopping" ? "Stopping…" : "Stop"}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={handleStart}
-              disabled={!canStart}
-              className={cn(
-                "flex items-center gap-1 rounded border px-2 py-1 text-xs",
-                canStart
-                  ? "border-primary text-primary hover:bg-primary/10"
-                  : "cursor-not-allowed border-border text-muted-foreground"
-              )}
-              title={
-                canStart
-                  ? "Fan out workers over the locked scope"
-                  : "Lock a scope (run scoping) and pick a model first"
-              }
-            >
-              <Play className="h-3 w-3" />
-              Fan out
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => void load()}
-            className="rounded border border-border p-1 text-muted-foreground hover:text-foreground"
-            title="Refresh DB snapshot"
-          >
-            <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
-          </button>
-        </div>
-      </header>
-
-      {error && (
-        <div className="flex items-center gap-2 px-3 py-2 text-xs text-red-400">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{error}</span>
-          <button type="button" onClick={() => void load()} className="underline">
-            retry
-          </button>
-        </div>
-      )}
-
-      {!error && loading && !snapshot && (
-        <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading engagement…
-        </div>
-      )}
-
-      {!error && snapshot && snapshot.rootCount === 0 && (
-        <div className="px-3 py-3 text-xs text-muted-foreground">
-          No organizations in scope yet — run scoping in this chat first (paste the company list,
-          normalize names, build the org tree), then fan out.
-        </div>
-      )}
-
-      {!error && snapshot && snapshot.rootCount > 0 && (
-        <div className="max-h-72 overflow-y-auto">
-          <table className="w-full text-xs">
-            <tbody>
-              {rows.map(({ node, depth, effective, workerConvId }) => (
-                <tr
-                  key={node.organizationId}
-                  className={cn(
-                    "border-t border-border/50",
-                    workerConvId && "cursor-pointer hover:bg-muted/40"
-                  )}
-                  onClick={() => drillIn(workerConvId)}
-                >
-                  <td className="px-3 py-1.5">
-                    <div
-                      className="flex min-w-0 items-center gap-1"
-                      style={{ paddingLeft: depth * 16 }}
-                    >
-                      {node.children.length > 0 ? (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggle(node.organizationId);
-                          }}
-                          className="shrink-0 text-muted-foreground hover:text-foreground"
-                        >
-                          {expanded.has(node.organizationId) ? (
-                            <ChevronDown className="h-3 w-3" />
-                          ) : (
-                            <ChevronRight className="h-3 w-3" />
-                          )}
-                        </button>
-                      ) : (
-                        <span className="w-3 shrink-0" />
-                      )}
-                      <span className="truncate">{node.name}</span>
-                      {node.ownershipPercent != null && (
-                        <span className="shrink-0 text-muted-foreground">
-                          {node.ownershipPercent}%
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="w-24 px-2 py-1.5 text-right">
-                    {node.weakness ? (
-                      <span className="text-muted-foreground" title="weakness score">
-                        w={String(node.weakness.total)}
-                      </span>
-                    ) : null}
-                  </td>
-                  <td className="w-24 px-3 py-1.5 text-right">
-                    <StatusBadge status={effective} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
+    <EngagementInlineCard
+      rows={cardRows}
+      summary={summary}
+      running={running}
+      stopping={pool.phase === "stopping"}
+      concurrency={concurrency}
+      collapsed={collapsed}
+      canFanOut={canStart}
+      fanOutDisabledReason="Lock a scope (run scoping) and pick a model first"
+      onFanOut={handleStart}
+      onStop={stopEngagementRun}
+      onConcurrencyChange={onConcurrencyChange}
+      onToggleRow={toggle}
+      onDrillIn={onDrillInRow}
+      onToggleCard={() => setCollapsed((c) => !c)}
+    />
   );
 }

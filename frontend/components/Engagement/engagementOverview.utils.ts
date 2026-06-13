@@ -8,6 +8,7 @@
 
 import type { OrgRunStatusDto, OrgTreeNode } from "@/lib/api/engagement";
 import type { WorkerOutcome, WorkerUnit } from "@/lib/engagement/pool";
+import type { ChatConversation, ChatToolCall } from "@/store/slices/conversation";
 import type { RunningWorker } from "@/store/slices/engagement-pool";
 
 /** Pool-aware display status (superset of the DB snapshot's status). */
@@ -87,6 +88,25 @@ export function workerConvFor(
 }
 
 /**
+ * Which worker phase currently drives this org's row (recon vs attack), if a
+ * worker exists for it. Mirrors {@link effectiveStatusFor}'s priority (live →
+ * queued → outcome, attack preferred over recon) so the phase chip matches the
+ * status badge. Returns undefined for orgs the pool hasn't touched yet.
+ */
+export function activePhaseFor(node: OrgTreeNode, pool: PoolView): "recon" | "attack" | undefined {
+  const ids = unitIdsForOrg(node);
+  for (const id of ids) {
+    if (pool.running[id] || pool.queue.some((u) => u.id === id)) {
+      return id.startsWith("recon:") ? "recon" : "attack";
+    }
+  }
+  for (const id of [...ids].reverse()) {
+    if (pool.outcomes[id]) return id.startsWith("recon:") ? "recon" : "attack";
+  }
+  return undefined;
+}
+
+/**
  * Flatten the org forest into display rows (pre-order, honouring `expanded`)
  * with pool-merged effective statuses.
  */
@@ -156,4 +176,92 @@ export function summarizeRows(allRows: OverviewRow[]): OverviewSummary {
     }
   }
   return s;
+}
+
+/** Live one-line activity + tool count derived from a worker conversation. */
+export interface WorkerActivity {
+  /** What the worker is doing right now (only while it streams a turn). */
+  activity?: string;
+  /** Tool calls booked across the worker's conversation so far. */
+  toolCount: number;
+}
+
+const ACTIVITY_ARG_KEYS = [
+  "command",
+  "target",
+  "domain",
+  "host",
+  "url",
+  "path",
+  "file_path",
+  "pattern",
+  "query",
+  "name",
+] as const;
+
+/** Pull the most telling argument out of a (JSON-string) tool-call args blob. */
+function primaryToolArg(argsJson: string): string | undefined {
+  if (!argsJson) return undefined;
+  try {
+    const parsed = JSON.parse(argsJson) as Record<string, unknown>;
+    for (const key of ACTIVITY_ARG_KEYS) {
+      const v = parsed[key];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+  } catch {
+    // args may be a partial JSON fragment mid-stream — no detail yet.
+  }
+  return undefined;
+}
+
+/** Reduce streaming assistant text to a single trailing line. */
+function lastLine(text: string): string {
+  const cleaned = text.replace(/<[^>]*>/g, " ");
+  const lines = cleaned
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return (lines[lines.length - 1] ?? cleaned).replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Derive a worker's live activity line + tool count from its conversation —
+ * the engagement-level analogue of SubAgentInlineCard's `deriveActivity`. The
+ * activity is only meaningful while the worker is mid-turn (`isStreaming`);
+ * the tool count is always the running total. Priority for the live line:
+ * in-flight tool → last finished tool → thinking → streaming text → generic.
+ */
+export function deriveWorkerActivity(conv: ChatConversation | undefined): WorkerActivity {
+  if (!conv) return { toolCount: 0 };
+
+  let toolCount = 0;
+  let lastRunningTool: ChatToolCall | undefined;
+  let lastTool: ChatToolCall | undefined;
+  for (const m of conv.messages) {
+    if (!m.toolCalls) continue;
+    for (const tc of m.toolCalls) {
+      toolCount += 1;
+      lastTool = tc;
+      // `success === undefined` == still in flight (mirrors ChatToolCall).
+      if (tc.success === undefined) lastRunningTool = tc;
+    }
+  }
+
+  if (!conv.isStreaming) return { toolCount };
+
+  const tc = lastRunningTool ?? lastTool;
+  if (tc) {
+    const arg = primaryToolArg(tc.args);
+    return { activity: arg ? `${tc.name} · ${arg}` : tc.name, toolCount };
+  }
+
+  const last = conv.messages[conv.messages.length - 1];
+  if (last?.role === "assistant") {
+    if (last.thinkingStartedAt != null && last.thinkingEndedAt == null && !last.content) {
+      return { activity: "思考中", toolCount };
+    }
+    const snippet = last.content ? lastLine(last.content) : "";
+    if (snippet) return { activity: snippet, toolCount };
+  }
+  return { activity: "工作中", toolCount };
 }

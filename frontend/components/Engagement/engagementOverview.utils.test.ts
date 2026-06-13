@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { OrgTreeNode } from "@/lib/api/engagement";
 import type { WorkerUnit } from "@/lib/engagement/pool";
+import type { ChatConversation } from "@/store/slices/conversation";
 import {
+  activePhaseFor,
   buildOverviewRows,
+  deriveWorkerActivity,
   effectiveStatusFor,
   type PoolView,
   summarizeRows,
@@ -102,6 +105,87 @@ describe("engagement overview merge", () => {
     expect(summary.totalOrgs).toBe(3);
     expect(summary.covered).toBe(1);
     expect(summary.blocked).toBe(1);
+  });
+
+  it("activePhaseFor reflects the driving unit's kind", () => {
+    const root = node("r1", "母A", "pending");
+    expect(activePhaseFor(root, emptyPool)).toBeUndefined();
+
+    const reconRunning: PoolView = {
+      running: {
+        "recon:r1": { unit: unit("recon:r1", "recon_family", "r1"), convId: "c", startedAt: 1 },
+      },
+      queue: [],
+      outcomes: {},
+    };
+    expect(activePhaseFor(root, reconRunning)).toBe("recon");
+
+    const attackOutcome: PoolView = {
+      running: {},
+      queue: [],
+      outcomes: {
+        "recon:r1": { unitId: "recon:r1", status: "passed" },
+        "attack:r1": { unitId: "attack:r1", status: "blocked" },
+      },
+    };
+    expect(activePhaseFor(root, attackOutcome)).toBe("attack");
+
+    const child = node("c1", "子A1", "pending", [], "r1");
+    expect(activePhaseFor(child, emptyPool)).toBeUndefined();
+  });
+
+  it("deriveWorkerActivity reports tool count + live in-flight tool", () => {
+    const baseConv = (partial: Partial<ChatConversation>): ChatConversation => ({
+      id: "c",
+      title: "t",
+      messages: [],
+      createdAt: 0,
+      aiSessionId: "s",
+      aiInitialized: true,
+      isStreaming: false,
+      ...partial,
+    });
+
+    expect(deriveWorkerActivity(undefined)).toEqual({ toolCount: 0 });
+
+    // Idle worker (not streaming): tool count only, no activity line.
+    const idle = baseConv({
+      isStreaming: false,
+      messages: [
+        {
+          id: "m1",
+          role: "assistant",
+          content: "",
+          timestamp: 0,
+          toolCalls: [
+            { name: "subfinder_enum", args: "{}", success: true },
+            { name: "dns_resolve", args: "{}", success: true },
+          ],
+        },
+      ],
+    });
+    expect(deriveWorkerActivity(idle)).toEqual({ toolCount: 2 });
+
+    // Live worker: in-flight tool (success undefined) drives the activity line.
+    const live = baseConv({
+      isStreaming: true,
+      messages: [
+        {
+          id: "m1",
+          role: "assistant",
+          content: "",
+          timestamp: 0,
+          toolCalls: [
+            { name: "subfinder_enum", args: "{}", success: true },
+            { name: "recon_enrich_assets", args: JSON.stringify({ target: "pingan.com.cn" }) },
+          ],
+        },
+      ],
+    });
+    expect(deriveWorkerActivity(live)).toEqual({
+      activity: "recon_enrich_assets · pingan.com.cn",
+      toolCount: 2,
+    });
   });
 
   it("workerConvId picks the running conversation first", () => {
