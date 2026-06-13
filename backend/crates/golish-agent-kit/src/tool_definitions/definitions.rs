@@ -60,7 +60,7 @@ pub fn get_ask_human_tool_definition() -> ToolDefinition {
                 "input_type": {
                     "type": "string",
                     "enum": ["credentials", "choice", "freetext", "confirmation", "unit_review", "scope_review"],
-                    "description": "Type of input expected. Prefer 'choice' (selection from `options`) or 'confirmation' (yes/no) whenever the answer is enumerable — these render one-click buttons for the user. Use 'credentials' for username/password, and 'freetext' ONLY for genuinely open-ended answers (e.g. arbitrary IPs, domains, or URLs). During RED-TEAM scoping use 'unit_review' to have the user confirm/edit the candidate units/organizations you proposed via manage_organizations(action=\"propose_candidates\"), and 'scope_review' to confirm the in-scope assets — for both, pass the items to review as a JSON array in `context`; the UI renders an editable review table."
+                    "description": "Type of input expected. Prefer 'choice' (selection from `options`) or 'confirmation' (yes/no) whenever the answer is enumerable — these render one-click buttons for the user. Use 'credentials' for username/password, and 'freetext' ONLY for genuinely open-ended answers (e.g. arbitrary IPs, domains, or URLs). During RED-TEAM scoping use 'unit_review' to have the user confirm/edit the discovered subsidiary candidates of the engagement org, and 'scope_review' to confirm the in-scope assets — the UI renders an editable review table. For 'unit_review' pass `context={\"organization_id\":\"<uuid>\"}` (the root org you discovered subsidiaries for) so the table self-loads that org's candidates from the DB; for 'scope_review' pass the target items as a JSON array in `context`."
                 },
                 "options": {
                     "type": "array",
@@ -69,7 +69,7 @@ pub fn get_ask_human_tool_definition() -> ToolDefinition {
                 },
                 "context": {
                     "type": "string",
-                    "description": "Additional context about why you need this information"
+                    "description": "Free-form context for most input types. For 'unit_review' pass a small JSON object {\"organization_id\":\"<uuid>\"} — the review table loads that org's discovered subsidiary candidates from the DB itself (do NOT hand-copy the candidate array; that is fragile). A JSON array of {\"name\":...} items is still accepted as a fallback. For 'scope_review' pass the target items as a JSON array."
                 }
             },
             "required": ["question", "input_type"]
