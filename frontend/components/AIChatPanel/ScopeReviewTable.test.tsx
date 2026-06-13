@@ -2,11 +2,30 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
+  candidatesToUnitRows,
   detectTargetType,
   normalizeScopeRows,
   parseBulkRows,
   ScopeReviewTable,
 } from "./ScopeReviewTable";
+
+describe("candidatesToUnitRows", () => {
+  it("maps org candidates to rows with ownership label and drops empties", () => {
+    const rows = candidatesToUnitRows([
+      {
+        kind: "organization",
+        label: "n",
+        value: "平安银行股份有限公司",
+        evidence: { raw: { scale: "58%" } },
+      },
+      { kind: "organization", label: "n", value: "无比例公司", evidence: {} },
+      { kind: "organization", label: "n", value: "   " },
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].name).toBe("平安银行股份有限公司 (58%)");
+    expect(rows[1].name).toBe("无比例公司");
+  });
+});
 
 describe("normalizeScopeRows", () => {
   it("returns one blank row for non-array / empty input", () => {

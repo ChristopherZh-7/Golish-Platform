@@ -1,5 +1,6 @@
 import { ClipboardList, Upload } from "lucide-react";
 import { useRef, useState } from "react";
+import type { OrganizationCandidate } from "@/lib/api/organizations";
 import { cn } from "@/lib/utils";
 
 export type ScopeReviewKind = "scope_review" | "unit_review";
@@ -102,6 +103,24 @@ const TARGET_LIKE = /[.:/]/;
  * plain list, a CSV, or even a pasted markdown table all collapse cleanly. For
  * `unit_review` each non-empty line is treated as one organisation name.
  */
+/** Map DB engagement candidates (organizations) into unit_review rows. The
+ * ownership percent (from `evidence.raw.scale`) is appended to the name label so
+ * the user can judge at a glance which subsidiaries to keep. Non-org/empty
+ * candidates are dropped. This lets the review table source its rows from the DB
+ * (by org id) instead of relying on the model to copy a candidate array into the
+ * ask_human context — which is fragile with textual tool-call models. */
+export function candidatesToUnitRows(candidates: OrganizationCandidate[]): ScopeReviewRow[] {
+  const rows: ScopeReviewRow[] = [];
+  for (const candidate of candidates) {
+    const name = (candidate.value ?? "").trim();
+    if (!name) continue;
+    const raw = (candidate.evidence as { raw?: { scale?: string } } | undefined)?.raw;
+    const scale = raw?.scale?.trim();
+    rows.push({ name: scale ? `${name} (${scale})` : name, aliases: "", domains: "" });
+  }
+  return rows;
+}
+
 export function parseBulkRows(kind: ScopeReviewKind, text: string): ScopeReviewRow[] {
   const rows: ScopeReviewRow[] = [];
   const seen = new Set<string>();
