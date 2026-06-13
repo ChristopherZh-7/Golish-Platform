@@ -25,4 +25,42 @@ source: string, } | { "kind": "deliverable_submitted",
 /**
  * `"accepted"` | `"needs_fix"` | `"rejected"` | `"received"`.
  */
-status: string, cited_evidence_refs: number[], available_real_ids: number[], } | { "kind": "background_notes_injected", count: number, evidence_ids: number[], };
+status: string, cited_evidence_refs: number[], available_real_ids: number[], } | { "kind": "background_notes_injected", count: number, evidence_ids: number[], } | { "kind": "stage_run_org_progress", 
+/**
+ * The organization this progress row is for.
+ */
+org_id: string, org_name: string, 
+/**
+ * Direct-ownership percentage of this org under the engagement parent
+ * (root org / unknown → `None`).
+ */
+ownership_percent?: number | null, 
+/**
+ * `"passed"` | `"running"` | `"queued"` | `"blocked"` | `"pending"`.
+ */
+status: string, 
+/**
+ * Per-technique terminal state on the coverage axis:
+ * `(technique, "found"|"checked_empty"|"blocked"|"pending")`.
+ */
+coverage: [string, string][], 
+/**
+ * Evidence rows this org's specialist has booked into the ledger.
+ */
+evidence_count: number, 
+/**
+ * Live one-liner while running (e.g. `"subfinder · pingan.com.cn"`).
+ */
+activity?: string | null, 
+/**
+ * Stage display name (e.g. `"Target Intel"`) — for first-frame card build.
+ */
+stage_label: string, 
+/**
+ * Specialist role label (e.g. `"Recon"`) — for first-frame card build.
+ */
+role_label: string, 
+/**
+ * Coverage technique columns for this stage (config-driven) — first frame.
+ */
+coverage_axis: Array<string>, };

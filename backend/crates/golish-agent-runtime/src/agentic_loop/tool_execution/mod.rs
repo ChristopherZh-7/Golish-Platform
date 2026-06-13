@@ -5,7 +5,7 @@
 //! - [`hitl`]: `execute_with_hitl_generic` which wraps the direct path
 //!   with approval prompting.
 
-mod direct;
+pub(crate) mod direct;
 mod hitl;
 
 pub use direct::execute_tool_direct_generic;

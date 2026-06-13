@@ -109,6 +109,22 @@ pub struct StageSpec {
     /// （taxonomy 词典化 + 动态 skeleton 生成见设计 §6.5，待资产库合入后接）。
     #[serde(default)]
     pub expected_techniques: Vec<String>,
+
+    // ── stage_run fan-out 配置（设计 2026-06-13-stage-run-fanout §3.2） ──────────
+    /// The specialist sub-agent slug the `stage_run` tool fans out per org for
+    /// this stage (intel → `recon`, EAS → `prober`, …). `None` = this stage has
+    /// no per-org specialist (e.g. scoping / reporting), so `stage_run` does not
+    /// apply. Config-driven so 12 stages share one mechanism with no new code.
+    #[serde(default)]
+    pub specialist: Option<String>,
+
+    /// Display-only coverage technique columns the `stage_run` view renders per
+    /// org (intel → `["DNS","WHOIS","ASN","CT","SUBDOMAIN","OSINT"]`). Distinct
+    /// from `expected_techniques` (the gate's registered ids): this is the
+    /// human-readable axis shown on each org row. Empty = derive from
+    /// `expected_techniques` at the call site.
+    #[serde(default)]
+    pub coverage_axis: Vec<String>,
 }
 
 fn default_continuity() -> AgentContinuity {
@@ -455,6 +471,28 @@ mod tests {
         let s = load_stage_spec_from_json(with_legacy_key)
             .expect("legacy key must be ignored, not a parse error");
         assert_eq!(s.id, "target_intel");
+    }
+
+    // stage_run fan-out (2026-06-13-stage-run-fanout §3.2): target_intel declares
+    // its per-org specialist (recon) + the display coverage axis; specs that omit
+    // these stay None / empty (back-compat — stage_run simply does not apply).
+    #[test]
+    fn target_intel_declares_stage_run_specialist_and_axis() {
+        let s = load_stage_spec_from_json(TARGET_INTEL_JSON).expect("parse");
+        assert_eq!(s.specialist.as_deref(), Some("recon"));
+        assert_eq!(
+            s.coverage_axis,
+            vec!["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT"]
+        );
+    }
+
+    #[test]
+    fn specialist_and_coverage_axis_default_when_absent() {
+        let minimal = r#"{"id":"scoping","kind":"scoping","risk_level":"low",
+            "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate"}"#;
+        let s = load_stage_spec_from_json(minimal).expect("parse");
+        assert!(s.specialist.is_none());
+        assert!(s.coverage_axis.is_empty());
     }
 
     #[test]

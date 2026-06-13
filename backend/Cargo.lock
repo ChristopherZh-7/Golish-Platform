@@ -2624,6 +2624,7 @@ dependencies = [
  "futures",
  "golish-context",
  "golish-core",
+ "golish-db",
  "golish-events",
  "golish-indexer",
  "golish-json-repair",

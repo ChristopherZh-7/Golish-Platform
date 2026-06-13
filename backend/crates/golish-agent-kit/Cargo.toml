@@ -22,6 +22,10 @@ golish-prompts = { workspace = true }
 # Evidence Ledger types + sanitizer (Phase 1c stage harness gate)
 golish-pentest = { workspace = true }
 
+# Organization model for the shared per-org stage fan-out helpers
+# (already a transitive dep via golish-pentest; declared here for direct use).
+golish-db = { workspace = true }
+
 # JSON repair for malformed LLM output
 golish-json-repair = { path = "../golish-json-repair" }
 

@@ -61,6 +61,40 @@ pub enum HarnessTraceKind {
         #[ts(type = "number[]")]
         evidence_ids: Vec<i64>,
     },
+
+    /// `stage_run` tool: one organization's live progress for the current stage's
+    /// per-org fan-out (design 2026-06-13-stage-run-fanout). The frontend
+    /// `StageRunView` upserts a row per `org_id`; `stage_label`/`role_label`/
+    /// `coverage_axis` let it build the card on the first frame it sees an org.
+    StageRunOrgProgress {
+        /// The organization this progress row is for.
+        org_id: String,
+        org_name: String,
+        /// Direct-ownership percentage of this org under the engagement parent
+        /// (root org / unknown → `None`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ownership_percent: Option<f64>,
+        /// `"passed"` | `"running"` | `"queued"` | `"blocked"` | `"pending"`.
+        status: String,
+        /// Per-technique terminal state on the coverage axis:
+        /// `(technique, "found"|"checked_empty"|"blocked"|"pending")`.
+        #[serde(default)]
+        #[ts(type = "[string, string][]")]
+        coverage: Vec<(String, String)>,
+        /// Evidence rows this org's specialist has booked into the ledger.
+        #[ts(type = "number")]
+        evidence_count: u32,
+        /// Live one-liner while running (e.g. `"subfinder · pingan.com.cn"`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        activity: Option<String>,
+        /// Stage display name (e.g. `"Target Intel"`) — for first-frame card build.
+        stage_label: String,
+        /// Specialist role label (e.g. `"Recon"`) — for first-frame card build.
+        role_label: String,
+        /// Coverage technique columns for this stage (config-driven) — first frame.
+        #[serde(default)]
+        coverage_axis: Vec<String>,
+    },
 }
 
 /// Build a `>`-joined agent lineage string from an optional parent path and the
@@ -155,6 +189,63 @@ mod tests {
         assert_eq!(v["kind"], "background_notes_injected");
         assert_eq!(v["count"], 57);
         assert_eq!(v["evidence_ids"], serde_json::json!([86, 88, 90]));
+    }
+
+    #[test]
+    fn stage_run_org_progress_serializes_with_kind_and_coverage() {
+        let k = HarnessTraceKind::StageRunOrgProgress {
+            org_id: "org-1".into(),
+            org_name: "平安科技".into(),
+            ownership_percent: Some(100.0),
+            status: "running".into(),
+            coverage: vec![
+                ("DNS".into(), "found".into()),
+                ("CT".into(), "pending".into()),
+            ],
+            evidence_count: 3,
+            activity: Some("subfinder · pingan.com.cn".into()),
+            stage_label: "Target Intel".into(),
+            role_label: "Recon".into(),
+            coverage_axis: vec!["DNS".into(), "CT".into()],
+        };
+        let v = serde_json::to_value(&k).unwrap();
+        assert_eq!(v["kind"], "stage_run_org_progress");
+        assert_eq!(v["org_id"], "org-1");
+        assert_eq!(v["status"], "running");
+        assert_eq!(v["evidence_count"], 3);
+        assert_eq!(
+            v["coverage"],
+            serde_json::json!([["DNS", "found"], ["CT", "pending"]])
+        );
+        assert_eq!(v["role_label"], "Recon");
+        // Round-trips back to the same variant.
+        let back: HarnessTraceKind = serde_json::from_value(v).expect("round-trips");
+        assert!(matches!(
+            back,
+            HarnessTraceKind::StageRunOrgProgress {
+                evidence_count: 3,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stage_run_org_progress_omits_empty_optionals() {
+        let k = HarnessTraceKind::StageRunOrgProgress {
+            org_id: "org-2".into(),
+            org_name: "root".into(),
+            ownership_percent: None,
+            status: "queued".into(),
+            coverage: vec![],
+            evidence_count: 0,
+            activity: None,
+            stage_label: "Target Intel".into(),
+            role_label: "Recon".into(),
+            coverage_axis: vec![],
+        };
+        let v = serde_json::to_value(&k).unwrap();
+        assert!(v.get("ownership_percent").is_none());
+        assert!(v.get("activity").is_none());
     }
 
     #[test]

@@ -53,6 +53,7 @@ pub mod rag_prior;
 pub mod resources;
 pub mod slice;
 pub mod sprint_contract;
+pub mod stage_fanout;
 pub mod stage_harness;
 pub mod stage_spec;
 pub mod stage_transition;

@@ -210,7 +210,10 @@ export function installDevTools() {
   };
 
   // Inject a mock "stage run" so the StageRunCard (chat) + StageRunView (left
-  // detail pane) can be exercised in the real app shell before backend wiring.
+  // detail pane) can be exercised in the real app shell.
+  // NOTE: live `stage_run` now drives this view via real `StageRunOrgProgress`
+  // harness-trace events (see services/ai-events/harness-handlers.ts, Task 6);
+  // this remains a dev-console / offline aid for UI work without a backend run.
   // Run `__mockStageRun()` in the dev console.
   (window as unknown as Record<string, unknown>).__mockStageRun = () => {
     const state = useStore.getState();

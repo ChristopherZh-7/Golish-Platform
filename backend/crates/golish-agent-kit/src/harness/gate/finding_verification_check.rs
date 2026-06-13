@@ -97,6 +97,8 @@ mod tests {
             min_claims: None,
             gate_rules: vec![],
             expected_techniques: vec![],
+            specialist: None,
+            coverage_axis: vec![],
         }
     }
 

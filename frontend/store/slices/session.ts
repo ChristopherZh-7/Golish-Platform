@@ -16,6 +16,7 @@
  *   session-helpers.ts   — shared helpers (purge, activity draft, output buffer)
  */
 
+import type { StageRunRow } from "@/components/Engagement/StageRunView";
 import type {
   AgentMode,
   DetailViewMode,
@@ -93,6 +94,23 @@ export interface SessionActions {
   setSessionStageRun: (sessionId: string, stageRun: SessionStageRun | null) => void;
   /** Toggle one stage-run row's inline detail expansion. */
   toggleStageRunRow: (sessionId: string, rowId: string) => void;
+  /**
+   * Upsert one org's live row into this session's stage-run from a
+   * `StageRunOrgProgress` event (design 2026-06-13-stage-run-fanout). Builds the
+   * SessionStageRun on the first frame from `meta`, merges by row id (preserving
+   * the row's expand state + accumulated tool lines), and recomputes the summary.
+   */
+  upsertStageRunRow: (
+    sessionId: string,
+    row: StageRunRow,
+    meta: {
+      stageLabel: string;
+      roleLabel: string;
+      coverageAxis: string[];
+      concurrency?: number;
+      stageTag?: string;
+    }
+  ) => void;
   setInteractiveMode: (sessionId: string, mode: InteractiveModeState | null) => void;
 
   // Terminal lifecycle

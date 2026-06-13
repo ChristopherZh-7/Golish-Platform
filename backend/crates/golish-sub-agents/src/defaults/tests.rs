@@ -1,6 +1,7 @@
 use super::builder::create_default_sub_agents;
 use super::prompts::{
-    build_coder_prompt, build_pentester_prompt, build_planner_prompt, build_researcher_prompt,
+    build_coder_prompt, build_pentester_prompt, build_planner_prompt, build_recon_prompt,
+    build_researcher_prompt,
 };
 
 fn has_tool(agent: &crate::SubAgentDefinition, tool: &str) -> bool {
@@ -10,7 +11,8 @@ fn has_tool(agent: &crate::SubAgentDefinition, tool: &str) -> bool {
 #[test]
 fn test_create_default_sub_agents_count() {
     let agents = create_default_sub_agents();
-    assert_eq!(agents.len(), 13);
+    // 13 base + recon (stage_run passive collector, 2026-06-13-stage-run-fanout).
+    assert_eq!(agents.len(), 14);
 }
 
 #[test]
@@ -24,6 +26,7 @@ fn test_create_default_sub_agents_ids() {
     assert!(ids.contains(&"researcher"));
     assert!(!ids.contains(&"worker"));
     assert!(ids.contains(&"pentester"));
+    assert!(ids.contains(&"recon"));
     assert!(ids.contains(&"memorist"));
     assert!(ids.contains(&"planner"));
     assert!(ids.contains(&"reflector"));
@@ -124,6 +127,47 @@ fn test_pentester_has_security_tools() {
     // makes progress, bounded only by the idle timeout + max_iterations.
     assert_eq!(pentester.timeout_secs, None);
     assert_eq!(pentester.idle_timeout_secs, Some(300));
+}
+
+#[test]
+fn test_recon_has_passive_tools_only() {
+    // stage_run fan-out (2026-06-13-stage-run-fanout D4): Recon is the passive
+    // target_intel collector split out of the Pentester. It must carry the
+    // provider/enrichment recon_* tools + the stage submit tool, and must NOT
+    // carry the Pentester's offensive surface (exploits, graph writes, vault).
+    let agents = create_default_sub_agents();
+    let recon = agents.iter().find(|a| a.id == "recon").unwrap();
+
+    // Passive collection + stage submission tools present.
+    assert!(has_tool(recon, "recon_list_providers"));
+    assert!(has_tool(recon, "recon_discover_subsidiaries"));
+    assert!(has_tool(recon, "recon_enrich_assets"));
+    assert!(has_tool(recon, "manage_targets"));
+    assert!(has_tool(recon, "submit_stage_deliverable"));
+    assert!(has_tool(recon, "record_finding"));
+    assert!(has_tool(recon, "search_knowledge_base"));
+    assert!(has_tool(recon, "read_knowledge"));
+    // pentest_run is allowed but the stage tool-type allowlist (recon/*) keeps it
+    // passive (subfinder / amass -passive / gau).
+    assert!(has_tool(recon, "pentest_run"));
+
+    // Offensive / heavy Pentester-only tools must NOT leak into Recon.
+    assert!(!has_tool(recon, "search_exploits"));
+    assert!(!has_tool(recon, "graph_add_entity"));
+    assert!(!has_tool(recon, "graph_attack_paths"));
+    assert!(!has_tool(recon, "vault"));
+    assert!(!has_tool(recon, "write_knowledge"));
+    assert!(!has_tool(recon, "run_pty_cmd"));
+}
+
+#[test]
+fn test_recon_prompt_is_zero_touch() {
+    let prompt = build_recon_prompt();
+    assert!(prompt.contains("ZERO-TOUCH"));
+    assert!(prompt.contains("recon_enrich_assets"));
+    assert!(prompt.contains("submit_stage_deliverable"));
+    // Passive identity: must not describe itself as doing exploitation.
+    assert!(prompt.contains("passive"));
 }
 
 #[test]

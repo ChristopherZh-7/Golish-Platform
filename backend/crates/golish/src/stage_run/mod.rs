@@ -18,6 +18,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use tokio::sync::mpsc;
 
+use golish_agent_kit::harness::stage_fanout::{build_child_objective, filter_child_orgs};
 use golish_agent_kit::harness::{active_profile_id, StageKind};
 use golish_core::agent_mode::AgentMode;
 use golish_core::events::{AiEvent, HarnessTraceKind};
@@ -602,38 +603,6 @@ fn child_slice(profile_id: &str, to: StageKind) -> Option<(StageKind, HashSet<St
     resolve_slice(profile_id, Some(StageKind::TargetIntel), to).ok()
 }
 
-/// Phase 3 · keep only the direct children of `parent` (the Phase 2 org tree).
-/// Pure filter so the per-subsidiary dispatch is unit-testable; the input list
-/// is already project-scoped by `organizations::list` (I2).
-fn filter_child_orgs(
-    orgs: Vec<golish_db::models::Organization>,
-    parent: uuid::Uuid,
-) -> Vec<golish_db::models::Organization> {
-    orgs.into_iter()
-        .filter(|o| o.parent_id == Some(parent))
-        .collect()
-}
-
-/// Phase 3 · objective for one subsidiary's run. Carries the child's REAL
-/// organization id (so the agent calls `recon_*` / `manage_targets` against it
-/// without guessing) and pins the collection scope to THIS subsidiary only.
-fn build_child_objective(
-    child: &golish_db::models::Organization,
-    parent_name: &str,
-    to: StageKind,
-) -> String {
-    format!(
-        "Run the {} stage for this engagement. Organization: {} (organization_id: {}). \
-         This organization is a subsidiary of {} (already landed in the org tree during \
-         scoping); collect for THIS subsidiary only — discover its own assets (domains, \
-         IPs) and register them as in-scope targets bound to this organization_id.",
-        to.as_str(),
-        child.name,
-        child.id,
-        parent_name,
-    )
-}
-
 /// Phase 3 · per-org engagement summary appended after the main report. Empty
 /// input (no subsidiaries / flag off) renders nothing.
 fn subsidiary_summary(results: &[(String, bool)]) -> String {
@@ -1006,23 +975,9 @@ mod tests {
     }
 
     // ── Phase 3 (2026-06-12-redteam-phase3, 方案 A): per-subsidiary dispatch ──
-
-    /// Minimal Organization for pure-function tests (serde fills the 18
-    /// `#[serde(default)]` profile fields).
-    fn test_org(name: &str, parent_id: Option<uuid::Uuid>) -> golish_db::models::Organization {
-        serde_json::from_value(serde_json::json!({
-            "id": uuid::Uuid::new_v4(),
-            "project_path": "/tmp/p",
-            "name": name,
-            "parent_id": parent_id,
-            "description": "",
-            "owner": "",
-            "sort_order": 0,
-            "created_at": "2026-06-12T00:00:00Z",
-            "updated_at": "2026-06-12T00:00:00Z",
-        }))
-        .expect("test org deserializes")
-    }
+    // `filter_child_orgs` / `build_child_objective` (+ their tests) moved to
+    // `golish_agent_kit::harness::stage_fanout` so the CLI and the chat
+    // `stage_run` tool share one implementation.
 
     #[test]
     fn child_slice_none_for_scoping_only_and_skips_scoping_otherwise() {
@@ -1037,32 +992,6 @@ mod tests {
             !allow.contains(&StageKind::Scoping),
             "subsidiary runs must never re-run scoping (engagement-level stage)"
         );
-    }
-
-    #[test]
-    fn filter_child_orgs_keeps_direct_children_only() {
-        let parent = uuid::Uuid::new_v4();
-        let other = uuid::Uuid::new_v4();
-        let orgs = vec![
-            test_org("root", None),
-            test_org("child-a", Some(parent)),
-            test_org("other-child", Some(other)),
-            test_org("child-b", Some(parent)),
-        ];
-        let children = filter_child_orgs(orgs, parent);
-        let names: Vec<&str> = children.iter().map(|o| o.name.as_str()).collect();
-        assert_eq!(names, vec!["child-a", "child-b"]);
-    }
-
-    #[test]
-    fn child_objective_names_child_id_and_parent() {
-        let child = test_org("默安子公司", Some(uuid::Uuid::new_v4()));
-        let obj = build_child_objective(&child, "默安科技", StageKind::TargetIntel);
-        assert!(obj.contains("Run the target_intel stage"));
-        assert!(obj.contains(&format!("organization_id: {}", child.id)));
-        assert!(obj.contains("默安子公司"));
-        assert!(obj.contains("subsidiary of 默安科技"));
-        assert!(obj.contains("THIS subsidiary only"));
     }
 
     #[test]

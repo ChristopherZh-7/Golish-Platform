@@ -108,6 +108,20 @@ pub async fn apply_tool_selection(
         }
     }
 
+    // 5b. `stage_run` (design 2026-06-13-stage-run-fanout) — the per-org
+    //     specialist fan-out. Not a registry tool (it is routed in the agentic
+    //     loop because it dispatches sub-agents), so its definition is injected
+    //     here. Exposed ONLY to the task-mode PRIMARY agent inside an active
+    //     harness stage: `submit_stage_deliverable` is the task-primary-in-stage
+    //     marker (chat mode leaves it false; specialists run at depth > 0), so
+    //     gating on it + depth 0 keeps `stage_run` off chat and off sub-agents.
+    if selection.bridge_tools.submit_stage_deliverable && sub_agent_context.depth == 0 {
+        tools.push(
+            crate::agentic_loop::tool_execution::direct::stage_run_call::stage_run_tool_definition(
+            ),
+        );
+    }
+
     // 6. Sub-agent dispatch tools — only when the policy enables them
     //    and we still have agent-depth budget.
     if selection.agent_tools.include_dispatch_tools && sub_agent_context.depth + 1 < MAX_AGENT_DEPTH

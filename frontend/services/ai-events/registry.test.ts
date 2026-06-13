@@ -70,11 +70,15 @@ describe("eventHandlerRegistry", () => {
     expect(eventHandlerRegistry.tool_background_completed).toBeDefined();
   });
 
-  it("has exactly 45 registered handlers", () => {
+  it("contains a handler for harness-trace (stage-run progress)", () => {
+    expect(eventHandlerRegistry.harness_trace).toBeDefined();
+  });
+
+  it("has exactly 46 registered handlers", () => {
     const registeredHandlers = Object.keys(eventHandlerRegistry).filter(
       (key) => eventHandlerRegistry[key as keyof EventHandlerRegistry] !== undefined
     );
-    expect(registeredHandlers.length).toBe(45);
+    expect(registeredHandlers.length).toBe(46);
   });
 });
 

@@ -16,8 +16,8 @@ use crate::definition::SubAgentDefinition;
 use super::prompts::{
     build_adviser_prompt, build_browser_prompt, build_coder_prompt, build_enricher_prompt,
     build_installer_prompt, build_memorist_prompt, build_orchestrator_prompt,
-    build_pentester_prompt, build_planner_prompt, build_refiner_prompt, build_reflector_prompt,
-    build_reporter_prompt, build_researcher_prompt,
+    build_pentester_prompt, build_planner_prompt, build_recon_prompt, build_refiner_prompt,
+    build_reflector_prompt, build_reporter_prompt, build_researcher_prompt,
 };
 
 /// Create default sub-agents for common tasks.
@@ -119,6 +119,29 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "enricher".to_string(),
             "browser".to_string(),
         ]),
+        SubAgentDefinition::new(
+            "recon",
+            "Recon",
+            "Passive target-intelligence collector for the target_intel stage. Enriches one organization's footprint via providers (0.zone/quake/ENScan) plus passive subdomain + URL history, and registers discovered assets as in-scope targets. ZERO-TOUCH: no live probing or exploitation — that stays with the Pentester. The stage_run tool fans one Recon out per org.",
+            build_recon_prompt(),
+        )
+        .with_tools(vec![
+            "recon_list_providers".to_string(),
+            "recon_discover_subsidiaries".to_string(),
+            "recon_enrich_assets".to_string(),
+            "manage_targets".to_string(),
+            "list_in_scope_targets".to_string(),
+            // Passive collection only (subfinder / amass -passive / gau); the
+            // stage tool-type allowlist (recon/*) keeps this zero-touch.
+            "pentest_run".to_string(),
+            "submit_stage_deliverable".to_string(),
+            "record_finding".to_string(),
+            "search_knowledge_base".to_string(),
+            "read_knowledge".to_string(),
+        ])
+        .with_max_iterations(40)
+        .with_idle_timeout(300)
+        .with_delegatable_agents(vec!["enricher".to_string(), "memorist".to_string()]),
         SubAgentDefinition::new(
             "memorist",
             "Memorist",

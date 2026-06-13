@@ -2,6 +2,7 @@
  * Session core actions: lifecycle (add / remove / switch) and property setters.
  */
 
+import type { StageRunRow, StageRunSummary } from "@/components/Engagement/StageRunView";
 import { logger } from "@/lib/logger";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import { resetSessionSequence } from "@/services/ai-events/session-sequence";
@@ -19,6 +20,17 @@ import type {
 import type { SessionStoreDraft } from "./session-draft-types";
 import { deleteOutputBuffer, purgeSessionStateInDraft } from "./session-helpers";
 import type { ImmerSet, StateGet } from "./types";
+
+/** Recompute a stage-run summary from its per-org rows (status tallies). */
+function computeStageRunSummary(rows: StageRunRow[]): StageRunSummary {
+  return {
+    total: rows.length,
+    covered: rows.filter((r) => r.status === "passed").length,
+    active: rows.filter((r) => r.status === "running").length,
+    queued: rows.filter((r) => r.status === "queued").length,
+    blocked: rows.filter((r) => r.status === "blocked").length,
+  };
+}
 
 export function createSessionCoreActions(
   set: ImmerSet<SessionStoreDraft>,
@@ -276,6 +288,50 @@ export function createSessionCoreActions(
         if (!sr) return;
         const row = sr.rows.find((r) => r.id === rowId);
         if (row) row.expanded = !row.expanded;
+      }),
+
+    upsertStageRunRow: (
+      sessionId: string,
+      row: StageRunRow,
+      meta: {
+        stageLabel: string;
+        roleLabel: string;
+        coverageAxis: string[];
+        concurrency?: number;
+        stageTag?: string;
+      }
+    ) =>
+      set((state) => {
+        const sess = state.sessions[sessionId];
+        if (!sess) return;
+        if (!sess.stageRun) {
+          sess.stageRun = {
+            rows: [],
+            summary: { total: 0, covered: 0, active: 0, queued: 0, blocked: 0 },
+            concurrency: meta.concurrency ?? 1,
+            stageLabel: meta.stageLabel,
+            stageTag: meta.stageTag,
+            roleLabel: meta.roleLabel,
+            coverageAxis: meta.coverageAxis,
+          };
+        }
+        const sr = sess.stageRun;
+        // The first real frame carries the stage labels/axis — keep them fresh.
+        if (meta.stageLabel) sr.stageLabel = meta.stageLabel;
+        if (meta.roleLabel) sr.roleLabel = meta.roleLabel;
+        if (meta.coverageAxis.length) sr.coverageAxis = meta.coverageAxis;
+        if (meta.concurrency) sr.concurrency = meta.concurrency;
+        if (meta.stageTag) sr.stageTag = meta.stageTag;
+
+        const idx = sr.rows.findIndex((r) => r.id === row.id);
+        if (idx >= 0) {
+          // Preserve UI-local state the event does not carry (expand + tool stream).
+          const prev = sr.rows[idx];
+          sr.rows[idx] = { ...row, expanded: prev.expanded, toolLines: prev.toolLines };
+        } else {
+          sr.rows.push(row);
+        }
+        sr.summary = computeStageRunSummary(sr.rows);
       }),
   };
 }

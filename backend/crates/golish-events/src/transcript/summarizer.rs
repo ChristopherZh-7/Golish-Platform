@@ -258,6 +258,9 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
                     K::EvidenceBooked { evidence_id, .. } => format!("evidence #{evidence_id}"),
                     K::DeliverableSubmitted { status, .. } => format!("submit {status}"),
                     K::BackgroundNotesInjected { count, .. } => format!("notes x{count}"),
+                    K::StageRunOrgProgress {
+                        org_name, status, ..
+                    } => format!("stage_run {org_name} {status}"),
                 };
                 let who = if agent_path.is_empty() {
                     "main"

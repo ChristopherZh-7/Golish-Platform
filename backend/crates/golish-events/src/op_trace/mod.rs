@@ -321,6 +321,12 @@ fn summarize_event(event: &AiEvent) -> String {
                 "submit {status} cited={cited_evidence_refs:?} available={available_real_ids:?}"
             ),
             K::BackgroundNotesInjected { count, .. } => format!("notes injected x{count}"),
+            K::StageRunOrgProgress {
+                org_name,
+                status,
+                evidence_count,
+                ..
+            } => format!("stage_run {org_name}: {status} (evidence x{evidence_count})"),
         },
         AiEvent::TaskProgress {
             status, message, ..

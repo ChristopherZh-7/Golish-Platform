@@ -68,6 +68,10 @@
     "GOLISH-INTEL-CT", "GOLISH-INTEL-SUBDOMAIN", "GOLISH-INTEL-OSINT"
   ],
 
+  "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout §3.2): specialist = the per-org sub-agent the stage_run tool fans out (intel → recon, the passive collector split from Pentester); coverage_axis = the human-readable technique columns the StageRunView renders per org row.",
+  "specialist": "recon",
+  "coverage_axis": ["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT"],
+
   "min_invocations": {
     "dns_resolve": 1,
     "subdomain_enum_passive": 1

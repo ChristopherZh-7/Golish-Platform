@@ -23,6 +23,11 @@ use golish_agent_kit::tool_executors::{
 mod sub_agent_call;
 use self::sub_agent_call::execute_sub_agent_call;
 
+// `pub(crate)` so `execution_mode::selection_apply` can pull the tool definition
+// (co-located with its handler) when exposing `stage_run` to the primary agent.
+pub(crate) mod stage_run_call;
+use self::stage_run_call::execute_stage_run;
+
 /// Execute a tool directly for generic models (after approval or auto-approved).
 pub async fn execute_tool_direct_generic<M>(
     tool_name: &str,
@@ -181,6 +186,14 @@ where
         if let Some((value, success)) = executor.execute_tool(tool_name, tool_args).await {
             return Ok(ToolExecutionResult { value, success });
         }
+    }
+
+    // `stage_run` — fan the current stage's specialist out per in-scope org
+    // (design 2026-06-13-stage-run-fanout). Special-cased here (like
+    // `sub_agent_*`) because it dispatches sub-agents per org, which needs the
+    // agentic-loop context a registry tool cannot reach.
+    if tool_name == "stage_run" {
+        return execute_stage_run(tool_args, ctx, model, context, tool_id).await;
     }
 
     if tool_name.starts_with("sub_agent_") {
