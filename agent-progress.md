@@ -29,6 +29,27 @@
 
 ---
 
+### 2026-06-13 · Stage Run 扇出引擎（后端 agentic-loop handler + 前端单卡 + MiMo 活体）（BaJie MCP-agent-2 · DISPATCH off · 用户授权全自动）
+
+- **本轮目标**：用户给「stage-run 扇出」设计 + 计划(Task 1-8)，要我接手实现 + 验证 + 提交，再用小米 MiMo key 后端活体测逻辑。接手时上个会话已 commit 设计 + 前端(`1f5ce7b9`)、写好计划、做完 Task 1(stage_fanout 抽取, 未提交)。
+- **已完成(Task 1-7)**：
+  - **Task1** 抽取共享 fan-out(`stage_fanout.rs`, 继承 + 验证)。
+  - **Task2** `HarnessTraceKind::StageRunOrgProgress` 事件(+golish-events `op_trace`/`summarizer` 两处 match 臂)。
+  - **Task3** Recon 专家 sub-agent(从 Pentester 拆出的零接触收集者, builder + registry + prompt + 工具守卫测试; **不动** Pentester 避免回归)。
+  - **Task5** `StageSpec.specialist/coverage_axis` + `target_intel.json`(recon + 6 轴)。
+  - **Task4(核心)** agentic-loop handler `direct/stage_run_call.rs`：读 spec → 按 org **串行**派 recon(复用 `execute_sub_agent_call`, 非 re-entrant run_stage)→ emit 进度 → 聚合 → `{passed,gaps}`; 路由 `direct/mod.rs`; 暴露 `selection_apply`(`submit_stage_deliverable && depth0`)。**关键发现**：plan 设想的「注册工具」方案走不通(注册型 `Tool` 拿不到 AgenticLoopContext/model 无法派 sub-agent), 改成 agentic-loop 特判分支(用户拍板方案 A)。
+  - **Task6** 前端：`gen-types` + `upsertStageRunRow` + `harness-handlers.ts`(harness_trace → StageRunView) + registry; charter 写进 `target_intel.methodology.md`(Task4 step6 + Task7 闭环)。
+- **运行过的验证(实跑, 全绿)**：
+  - `cargo nextest`: stage_fanout/recon/specialist/target_intel/create_default_sub_agents(8) + stage_run_call(5) + methodology(2) PASS
+  - `just precommit`: fmt + check-fe + test-fe + lint-rust(clippy -D warnings) + test-rust-all(全量 nextest) 全绿; check-types 提交 bindings 后 exit 0
+  - `just check-fe`(biome+tsc) + vitest harness-handlers(3) + registry(19, 计数 45→46) 全绿
+  - **活体 MiMo**(`stage-run-0502d294`, `mimo-v2.5-pro`): 新代码加载 + 运行无崩(recon 专家创建/harness_trace 注册/Xiaomi client); scoping 用 ENScan 找到 16 子公司候选 + 建树; **target_intel→stage_run 触发观测待 MiMo 慢跑(进行中)**
+- **提交记录**：commit `d613cc19`(branch `feat/stage-run-fanout`, 32 files +1385/-89, **未 push**); feature_list + 本 progress 条目另提交。
+- **已知风险/follow-up**：① org 列表暂从工具参数取(主 agent 传 scoping 建的树), DB 直取是硬化; ② 『过』= recon sub-agent 成功, per-org 确定性 gate(`validate_stage_gate_with_context`+`db_truth`)是硬化; ③ CLI `--stage-run --include-subsidiaries` 的 Phase3 逐子循环与 stage_run 在 CLI 路径并存 = 潜在双扇出(chat 路径无此问题); K 并发(JoinSet + execute_sub_agent per org)是后续。
+- **下一步**：观察活体 MiMo 跑到 target_intel 是否触发 stage_run + recon 扇出; 按发现做硬化; push 需用户点头。
+
+---
+
 ### 2026-06-13 · 修正 ENScan cookie 路径：v2.0.6 fork 从「二进制同目录」读 config（推翻 MCP-2「续」的 `~/.config` 改动）（BaJie MCP-agent-4 · DISPATCH off）
 
 - **本轮目标**：用户活体跑 scoping「搞一下平安」，`recon_lookup_company` 截图 `provider_status: lookup exited with code Some(1)`。MCP-2 已修的两个 bug（lookup descriptor `expand_provider_tools` + cookie 路径）之后**冒出的新症状**，让我定位。

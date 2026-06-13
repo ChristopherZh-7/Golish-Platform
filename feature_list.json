@@ -11,6 +11,26 @@
   ],
   "features": [
     {
+      "id": "stage-run-fanout-backend-2026-06-13",
+      "priority": 1,
+      "area": "backend: golish-agent-kit/harness/{stage_fanout.rs(new),stage_spec.rs(+specialist/coverage_axis)} + golish-core/events/harness_trace.rs(+StageRunOrgProgress) + golish-events/{op_trace,transcript/summarizer}(match arms) + golish-sub-agents/defaults(recon specialist builder+registry+prompt) + golish-agent-runtime/agentic_loop/tool_execution/direct/stage_run_call.rs(new handler)+mod.rs(route)+execution_mode/selection_apply.rs(expose) + resources/harness/stages/{target_intel.json,target_intel.methodology.md}; frontend: lib/generated(ts-rs regen) + services/ai-events/harness-handlers.ts(new)+registry + store/slices/session{,-core}.ts(upsertStageRunRow)",
+      "title": "Stage Run 扇出引擎：主 agent 在 target_intel 调 stage_run → agentic-loop handler 按 org 串行派 Recon 专家(从 Pentester 拆出) → 各过各 gate → emit StageRunOrgProgress → 前端 StageRunView 单卡实时刷新 + 门禁闭环({passed,gaps}, 只重跑没过的 org)",
+      "user_visible_behavior": "chat task 模式进 target_intel：主 agent 看 charter → 多 org 时调 stage_run(orgs=[母+子]) → 工具按 org 串行派 recon 专家(零接触被动收集) → 每 org emit StageRunOrgProgress(org/status/coverage/evidence) → 前端单卡 StageRunView 实时刷新(替 __mockStageRun) → 聚合『每 org 都过』→ 返回 {passed,gaps[]}，没过则主 agent 只重跑 gaps 里的 org。stage_run 仅 task 主 agent(depth0 + 在阶段内)可见。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "docs/design/2026-06-13-stage-run-fanout-design.md",
+      "plan": "docs/superpowers/plans/2026-06-13-stage-run-backend.md (Task 1-8)",
+      "verification": [
+        "[✓] Task 1-7 编译+单测: cargo nextest stage_fanout/recon/specialist/target_intel/create_default_sub_agents(8) + stage_run_call handler(5) + methodology(2) 全 PASS",
+        "[✓] just precommit: fmt + check-fe + test-fe(vitest) + lint-rust(clippy -D warnings) + test-rust-all(nextest 全量) 全绿; check-types 提交 bindings 后 exit 0",
+        "[✓] 前端: just check-fe(biome+tsc) + vitest harness-handlers(3) + registry(19, 计数 45→46) 全绿; gen-types exit 0",
+        "[进行中] 活体 MiMo: golish --stage-run --profile red_team --to target_intel --org 中国平安 --include-subsidiaries -p xiaomi -m mimo-v2.5-pro --auto-approve → 新代码加载+运行无崩(recon 专家创建/harness_trace 注册/Xiaomi client); scoping 用 ENScan 找到 16 子公司候选+建树; target_intel→stage_run 触发观测待 MiMo 慢跑完成"
+      ],
+      "evidence": "2026-06-13 BaJie MCP-agent-2 (DISPATCH off, 用户授权全自动 finish+precommit+commit+MiMo 后端测试)。commit d613cc19 (branch feat/stage-run-fanout, 32 files +1385/-89, 未 push)。precommit 全绿(check-types 提交后 exit 0)。活体 MiMo run stage-run-0502d294 进行中(scoping 16 子候选, 用 mimo-v2.5-pro)。",
+      "notes": "架构: stage_run 是 agentic-loop 特判分支(不是注册工具)——注册型 Tool::execute 拿不到 AgenticLoopContext/model 无法派 sub-agent, re-entrant run_stage 又不安全(同 bridge 阶段态/会话历史/取消标志); handler 复用 execute_sub_agent_call 串行派 recon(安全)。已知 follow-up(t4h): ① org 列表暂从工具参数取(主 agent 传 scoping 建的树), DB 直取是硬化; ② 『过』= recon sub-agent 成功, per-org 确定性 gate(validate_stage_gate_with_context+db_truth)是硬化; ③ CLI --stage-run --include-subsidiaries 的 Phase3 逐子循环与 stage_run 在 CLI 路径并存=潜在双扇出(chat 路径无此问题); K 并发(JoinSet+execute_sub_agent per org)是后续。",
+      "remember": "stage_run 暴露门控在 selection_apply.rs: bridge_tools.submit_stage_deliverable && depth==0(task 主 agent 在阶段内)。charter 在 target_intel.methodology.md(多 org 用 stage_run + gaps 闭环)。handler: golish-agent-runtime/.../direct/stage_run_call.rs(execute_stage_run + stage_run_tool_definition)。事件 HarnessTraceKind::StageRunOrgProgress → 前端 services/ai-events/harness-handlers.ts → store upsertStageRunRow → StageRunView。specialist/coverage_axis 配置在 StageSpec + target_intel.json。"
+    },
+    {
       "id": "redteam-db-truth-phase0-authoritative-gate-2026-06-12",
       "priority": 0,
       "area": "backend: golish-agent-kit/src/harness/gate/rule_engine.rs (CoverageComplete +authoritative_found/+authoritative_techniques; coverage_complete found 终态只认 ctx.evidence_facts 的 Found 事实, checked_empty 收紧为自报+真 Empty 事实) + resources/harness/stages/target_intel.json (灰度开关) + harness/stage_spec.rs (守卫)",
