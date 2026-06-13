@@ -1,11 +1,14 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 import {
   candidatesToUnitRows,
   detectTargetType,
   normalizeScopeRows,
   parseBulkRows,
+  parseOwnershipPercent,
+  type ScopeReviewHandle,
   ScopeReviewTable,
 } from "./ScopeReviewTable";
 
@@ -24,6 +27,36 @@ describe("candidatesToUnitRows", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0].name).toBe("平安银行股份有限公司 (58%)");
     expect(rows[1].name).toBe("无比例公司");
+  });
+
+  it("drops below-threshold and unknown-ownership candidates when a threshold is given", () => {
+    const rows = candidatesToUnitRows(
+      [
+        { kind: "organization", label: "n", value: "平安银行", evidence: { raw: { scale: "58%" } } },
+        {
+          kind: "organization",
+          label: "n",
+          value: "平安好医生",
+          evidence: { raw: { scale: "39.41%" } },
+        },
+        { kind: "organization", label: "n", value: "无比例公司", evidence: {} },
+        { kind: "organization", label: "n", value: "平安证券", evidence: { raw: { scale: "100%" } } },
+      ],
+      51
+    );
+    // Only the ≥51% ones with a parseable scale survive — no hand-deletion.
+    expect(rows.map((r) => r.name)).toEqual(["平安银行 (58%)", "平安证券 (100%)"]);
+  });
+});
+
+describe("parseOwnershipPercent", () => {
+  it("parses percent strings (mirrors backend parse_ownership_percent) and rejects junk", () => {
+    expect(parseOwnershipPercent("58%")).toBe(58);
+    expect(parseOwnershipPercent("99.8809%")).toBeCloseTo(99.8809);
+    expect(parseOwnershipPercent("12,345")).toBe(12345);
+    expect(parseOwnershipPercent("")).toBeNull();
+    expect(parseOwnershipPercent(undefined)).toBeNull();
+    expect(parseOwnershipPercent("n/a")).toBeNull();
   });
 });
 
@@ -150,5 +183,30 @@ describe("ScopeReviewTable", () => {
     render(<ScopeReviewTable kind="unit_review" initial={[]} onConfirm={vi.fn()} onSkip={onSkip} />);
     await user.click(screen.getByRole("button", { name: "Skip" }));
     expect(onSkip).toHaveBeenCalledTimes(1);
+  });
+
+  it("exposes an imperative confirm() that submits the latest edited text", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    const ref = createRef<ScopeReviewHandle>();
+    render(
+      <ScopeReviewTable
+        ref={ref}
+        kind="scope_review"
+        initial={[]}
+        onConfirm={onConfirm}
+        onSkip={vi.fn()}
+      />
+    );
+
+    // Edit after mount, then confirm via the handle (mirrors the auto-confirm
+    // countdown path) — it must use the current text, not the empty seed.
+    await user.type(screen.getByLabelText("Bulk targets"), "late.example.com");
+    ref.current?.confirm();
+
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(onConfirm).toHaveBeenCalledWith([
+      { value: "late.example.com", type: "domain", scope: "in" },
+    ]);
   });
 });

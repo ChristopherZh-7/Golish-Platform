@@ -14,6 +14,50 @@ import { readContextUsage, writeContextUsage } from "../contextUsagePersistence"
 import { prettyStageName } from "../StageMarker";
 import type { WorkflowRunSnapshot } from "../WorkflowProgress";
 
+/** Pull a UUID `organization_id` out of a tool call's args (string-encoded JSON
+ * or an already-parsed object). Returns null when absent or not a UUID, so a
+ * mangled/placeholder value never poisons the unit_review fallback. */
+function extractOrgId(args: unknown): string | null {
+  let obj: unknown = args;
+  if (typeof args === "string") {
+    try {
+      obj = JSON.parse(args);
+    } catch {
+      return null;
+    }
+  }
+  if (!obj || typeof obj !== "object") return null;
+  const raw = (obj as Record<string, unknown>).organization_id;
+  if (typeof raw !== "string") return null;
+  const id = raw.trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ? id : null;
+}
+
+/** Pull the `min_ownership_percent` (number or "51"/"51%" string) the agent
+ * passed to `recon_discover_subsidiaries`, so the unit_review table can hide
+ * sub-threshold candidates instead of making the user hand-delete them. Null
+ * when absent/unparseable (→ no filtering). */
+function extractMinOwnership(args: unknown): number | null {
+  let obj: unknown = args;
+  if (typeof args === "string") {
+    try {
+      obj = JSON.parse(args);
+    } catch {
+      return null;
+    }
+  }
+  if (!obj || typeof obj !== "object") return null;
+  const raw = (obj as Record<string, unknown>).min_ownership_percent;
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  if (typeof raw === "string") {
+    const cleaned = raw.trim().replace(/%$/, "");
+    if (!cleaned) return null;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 interface UseAiChatEventsOptions {
   activeConvId: string | null;
   streamingMsgRef: MutableRefObject<string | null>;
@@ -38,6 +82,16 @@ export function useAiChatEvents({
     maxTokens: number;
   } | null>(null);
   const [askHumanRequest, setAskHumanRequest] = useState<AskHumanState | null>(null);
+  // The org id the engine actually ran subsidiary discovery for, captured from
+  // the `recon_discover_subsidiaries` tool call (a validated required arg). The
+  // unit_review box falls back to this when the model fails to thread a usable
+  // organization_id into the ask_human context (mimo's textual tool calls mangle
+  // it — see the DB-sourced-candidates flow). One company per session ⇒ this is
+  // unambiguous.
+  const [lastDiscoverOrgId, setLastDiscoverOrgId] = useState<string | null>(null);
+  // Ownership threshold from the last subsidiary discovery, so the unit_review
+  // table only lists candidates meeting it (the user asked for "≥51%", not "all").
+  const [lastDiscoverThreshold, setLastDiscoverThreshold] = useState<number | null>(null);
   const [activeWorkflow, setActiveWorkflow] = useState<WorkflowRunSnapshot | null>(null);
   const [compactionState, setCompactionState] = useState<{
     active: boolean;
@@ -121,6 +175,12 @@ export function useAiChatEvents({
                   typeof event.args === "string" ? event.args : JSON.stringify(event.args, null, 2),
                 requestId: event.request_id,
               });
+              if (event.tool_name === "recon_discover_subsidiaries") {
+                const orgId = extractOrgId(event.args);
+                if (orgId) setLastDiscoverOrgId(orgId);
+                const threshold = extractMinOwnership(event.args);
+                if (threshold != null) setLastDiscoverThreshold(threshold);
+              }
               break;
             }
             case "tool_approval_request": {
@@ -281,6 +341,9 @@ export function useAiChatEvents({
               taskInProgressRef.current = false;
               store.setMessageError(convId, event.message, classifyErrorSeverity(event.message));
               streamingMsgRef.current = null;
+              // The run is ending — any pending ask_human box is now stale, so
+              // clear it instead of leaving it dangling with no way to resolve.
+              setAskHumanRequest(null);
               break;
             case "ask_human_request": {
               const askOptions = event.options ?? [];
@@ -440,6 +503,10 @@ export function useAiChatEvents({
   // tab switch, instead of reading "unavailable" until the next warning event.
   useEffect(() => {
     setContextUsage(activeConvId ? readContextUsage(activeConvId) : null);
+    // Drop the captured discover org on conversation switch so one chat's
+    // engagement subject never leaks into another's unit_review fallback.
+    setLastDiscoverOrgId(null);
+    setLastDiscoverThreshold(null);
   }, [activeConvId]);
 
   const handleAskHumanSubmit = useCallback(
@@ -480,6 +547,8 @@ export function useAiChatEvents({
   return {
     contextUsage,
     askHumanRequest,
+    lastDiscoverOrgId,
+    lastDiscoverThreshold,
     activeWorkflow,
     compactionState,
     planTextOffsetRef,

@@ -290,6 +290,30 @@ pub async fn find_root_id_by_name(
     Ok(id)
 }
 
+fn build_find_child_id_by_name_sql() -> String {
+    "SELECT id FROM organizations WHERE project_path = $1 AND name = $2 AND parent_id = $3 LIMIT 1"
+        .to_string()
+}
+
+/// Find a child organization id by exact name *under a specific parent* within a
+/// project. Powers the bulk get-or-create of approved subsidiaries (so re-running
+/// scoping reuses an existing child instead of duplicating it). `None` == no such
+/// child yet under that parent.
+pub async fn find_child_id_by_name(
+    pool: &PgPool,
+    project_path: &str,
+    name: &str,
+    parent_id: Uuid,
+) -> Result<Option<Uuid>> {
+    let id = sqlx::query_scalar::<_, Uuid>(&build_find_child_id_by_name_sql())
+        .bind(project_path)
+        .bind(name)
+        .bind(parent_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +323,17 @@ mod tests {
         assert_eq!(
             build_find_root_id_by_name_sql(),
             "SELECT id FROM organizations WHERE project_path = $1 AND name = $2 AND parent_id IS NULL LIMIT 1"
+        );
+    }
+
+    #[test]
+    fn find_child_id_by_name_sql_scopes_to_parent() {
+        // Child lookup must bind parent_id (not NULL) so bulk subsidiary
+        // get-or-create reuses the right child and never collides with a
+        // same-named root or a child under a different parent.
+        assert_eq!(
+            build_find_child_id_by_name_sql(),
+            "SELECT id FROM organizations WHERE project_path = $1 AND name = $2 AND parent_id = $3 LIMIT 1"
         );
     }
 }

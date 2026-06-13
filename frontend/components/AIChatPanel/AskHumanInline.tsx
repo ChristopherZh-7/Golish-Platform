@@ -1,10 +1,12 @@
 import { KeyRound, List, ListChecks, MessageSquare, Pencil, ShieldQuestion } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
 import { listOrganizationCandidates } from "@/lib/api/organizations";
+import { cn } from "@/lib/utils";
 import {
   candidatesToUnitRows,
   parseBulkRows,
+  type ScopeReviewHandle,
   type ScopeReviewKind,
   type ScopeReviewRow,
   ScopeReviewTable,
@@ -103,14 +105,85 @@ function optionLabel(index: number): string {
   return index < 26 ? String.fromCharCode(65 + index) : String(index + 1);
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A real organization UUID — guards the unit_review DB fetch so a placeholder
+ * (`"<id>"`) or a Python-ish `"None"` the model emits never gets queried. */
+function isUuid(value: string | null | undefined): value is string {
+  return !!value && UUID_RE.test(value.trim());
+}
+
+/**
+ * How long the ask_human box waits before auto-running its default action.
+ * Cursor-style: a progress bar counts this down so a request a user never gets
+ * around to doesn't dangle forever (the backend gives up after 600s and the AI
+ * moves on, but nothing used to clear the stuck box).
+ */
+export const ASK_HUMAN_COUNTDOWN_MS = 60_000;
+const COUNTDOWN_TICK_MS = 100;
+
+/**
+ * Pausable countdown that fires `onExpire` exactly once when it reaches zero.
+ * `paused` freezes the remaining time (hover / focus); `resetKey` restarts it
+ * (a new request id). Returns the milliseconds left so the caller can render a
+ * progress bar. The latest `onExpire` is kept in a ref so re-creating the
+ * callback every render (it closes over editable form state) never restarts or
+ * double-fires the timer.
+ */
+function useAutoConfirmCountdown(
+  durationMs: number,
+  paused: boolean,
+  resetKey: string,
+  onExpire: () => void
+): number {
+  const [remaining, setRemaining] = useState(durationMs);
+  const firedRef = useRef(false);
+  const onExpireRef = useRef(onExpire);
+  onExpireRef.current = onExpire;
+
+  useEffect(() => {
+    firedRef.current = false;
+    setRemaining(durationMs);
+  }, [resetKey, durationMs]);
+
+  const expired = remaining <= 0;
+
+  // Depend on the `expired` boolean (not `remaining`) so the interval lives
+  // across ticks and is torn down exactly once when the clock hits zero.
+  useEffect(() => {
+    if (paused || expired) return;
+    const id = setInterval(() => {
+      setRemaining((r) => Math.max(0, r - COUNTDOWN_TICK_MS));
+    }, COUNTDOWN_TICK_MS);
+    return () => clearInterval(id);
+  }, [paused, expired]);
+
+  useEffect(() => {
+    if (expired && !firedRef.current) {
+      firedRef.current = true;
+      onExpireRef.current();
+    }
+  }, [expired]);
+
+  return remaining;
+}
+
 export function AskHumanInline({
   request,
   onSubmit,
   onSkip,
+  fallbackOrgId,
+  minOwnershipPercent,
 }: {
   request: AskHumanState;
   onSubmit: (response: string) => void;
   onSkip: () => void;
+  /** Authoritative engagement org id captured from the `recon_discover_subsidiaries`
+   * call, used to source unit_review candidates when the model didn't thread a
+   * valid `organization_id` into the ask_human context. */
+  fallbackOrgId?: string | null;
+  /** Ownership threshold from the discovery call — unit_review candidates below it
+   * are hidden so the user doesn't hand-delete sub-threshold rows. */
+  minOwnershipPercent?: number | null;
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -133,7 +206,17 @@ export function AskHumanInline({
     () => (isReviewTable ? parseReviewContext(request.context) : { kind: "rows", rows: [] }),
     [isReviewTable, request.context]
   );
-  const orgId = reviewSource.kind === "org" ? reviewSource.organizationId : null;
+  // Resolve which org to source candidates from. Prefer a VALID uuid the model
+  // put in context; otherwise (unit_review only) fall back to the org subsidiary
+  // discovery actually ran for. This makes the table robust to the model passing
+  // a placeholder / "None" / nothing — the proximate cause of the empty table.
+  const contextOrgId =
+    reviewSource.kind === "org" && isUuid(reviewSource.organizationId)
+      ? reviewSource.organizationId
+      : null;
+  const orgId =
+    contextOrgId ??
+    (request.inputType === "unit_review" && isUuid(fallbackOrgId) ? fallbackOrgId : null);
   // For the org-sourced path the candidates load asynchronously from the DB;
   // null = still loading, [] = loaded-empty / failed. The table is remounted via
   // `key` once these arrive so its seeded textarea picks them up.
@@ -143,7 +226,10 @@ export function AskHumanInline({
     let alive = true;
     listOrganizationCandidates(orgId)
       .then((c) => {
-        if (alive) setDbRows(candidatesToUnitRows(c.organizations));
+        // Filter to the discovery threshold only for unit_review (subsidiary
+        // ownership); scope_review rows have no ownership semantics.
+        const threshold = request.inputType === "unit_review" ? minOwnershipPercent : null;
+        if (alive) setDbRows(candidatesToUnitRows(c.organizations, threshold));
       })
       .catch(() => {
         if (alive) setDbRows([]);
@@ -151,7 +237,7 @@ export function AskHumanInline({
     return () => {
       alive = false;
     };
-  }, [orgId]);
+  }, [orgId, minOwnershipPercent, request.inputType]);
 
   const submitOther = () => {
     const trimmed = otherText.trim();
@@ -172,8 +258,87 @@ export function AskHumanInline({
     }
   };
 
+  // Auto-confirm countdown (Cursor-style). It pauses while the user hovers the
+  // box or has any field focused so reading/editing never triggers a submit.
+  const reviewTableRef = useRef<ScopeReviewHandle>(null);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const paused = hovered || focused;
+
+  // Some inputs (the options-less "Other" field) autofocus on mount. That mount
+  // focus must NOT pause the clock, otherwise an unattended box would dangle
+  // forever — the exact bug this countdown fixes. Arm focus-pausing one tick
+  // after mount so only focus/typing the user actually triggers counts.
+  const focusArmedRef = useRef(false);
+  useEffect(() => {
+    const id = setTimeout(() => {
+      focusArmedRef.current = true;
+    }, 0);
+    return () => clearTimeout(id);
+  }, []);
+
+  // When the clock runs out, perform the box's primary affirmative action — the
+  // same thing the user clicking the main button (or the first choice) would do.
+  // If that action is currently a no-op (an empty "Other" field), fall back to
+  // Skip so the request still resolves and the box clears.
+  const performDefaultAction = useCallback(() => {
+    switch (request.inputType) {
+      case "scope_review":
+      case "unit_review":
+        reviewTableRef.current?.confirm();
+        break;
+      case "choice":
+        if (request.options.length > 0) onSubmit(request.options[0]);
+        else if (otherText.trim()) onSubmit(otherText.trim());
+        else onSkip();
+        break;
+      case "confirmation":
+        onSubmit("yes");
+        break;
+      case "freetext":
+        onSubmit(freetext);
+        break;
+      case "credentials":
+        onSubmit(JSON.stringify({ username, password }));
+        break;
+      default:
+        onSkip();
+    }
+  }, [
+    request.inputType,
+    request.options,
+    otherText,
+    freetext,
+    username,
+    password,
+    onSubmit,
+    onSkip,
+  ]);
+
+  const remainingMs = useAutoConfirmCountdown(
+    ASK_HUMAN_COUNTDOWN_MS,
+    paused,
+    request.requestId,
+    performDefaultAction
+  );
+  const countdownPct = Math.max(0, Math.min(100, (remainingMs / ASK_HUMAN_COUNTDOWN_MS) * 100));
+  const countdownSeconds = Math.ceil(remainingMs / 1000);
+
   return (
-    <div className="mx-4 my-2 rounded-lg border border-[#e0af68]/30 bg-[#e0af68]/5 p-3">
+    <div
+      className="mx-4 my-2 rounded-lg border border-[#e0af68]/30 bg-[#e0af68]/5 p-3"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => {
+        if (focusArmedRef.current) setFocused(true);
+      }}
+      // Typing in an already-(auto)focused field also means the user is editing,
+      // so pause even if no fresh focus event fired.
+      onKeyDownCapture={() => setFocused(true)}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
+      }}
+    >
       <div className="flex items-center gap-2 text-[12px] font-medium text-[#e0af68] mb-2">
         <Icon className="w-3.5 h-3.5" />
         AI Needs Your Input
@@ -190,16 +355,19 @@ export function AskHumanInline({
 
       {isReviewTable && (
         <ScopeReviewTable
+          ref={reviewTableRef}
           // Remount when async DB rows arrive so the table re-seeds its textarea
           // from the freshly-loaded candidates (it reads `initial` only on mount).
-          key={reviewSource.kind === "org" ? `org-${dbRows ? dbRows.length : "loading"}` : "ctx"}
+          key={orgId ? `org-${dbRows ? dbRows.length : "loading"}` : "ctx"}
           kind={request.inputType as ScopeReviewKind}
           initial={
-            reviewSource.kind === "org"
+            orgId
               ? (dbRows ?? [])
               : reviewSource.kind === "rows"
                 ? reviewSource.rows
-                : parseBulkRows(request.inputType as ScopeReviewKind, reviewSource.text)
+                : reviewSource.kind === "bulk"
+                  ? parseBulkRows(request.inputType as ScopeReviewKind, reviewSource.text)
+                  : []
           }
           onConfirm={(rows) => onSubmit(JSON.stringify(rows))}
           onSkip={onSkip}
@@ -307,6 +475,25 @@ export function AskHumanInline({
           </button>
         </div>
       )}
+
+      {/* Cursor-style auto-confirm countdown. The pause-on-hover/focus handlers
+          live on the box wrapper above, so reading or editing freezes it. */}
+      <div className="mt-2.5 select-none">
+        <div className="h-1 w-full overflow-hidden rounded-full bg-border/40">
+          <div
+            className={cn(
+              "h-full rounded-full transition-[width] duration-100 ease-linear",
+              paused ? "bg-muted-foreground/40" : "bg-[#e0af68]"
+            )}
+            style={{ width: `${countdownPct}%` }}
+          />
+        </div>
+        <div className="mt-1 text-[10px] text-muted-foreground/60">
+          {paused
+            ? "Paused — auto-confirm resumes when you move away"
+            : `Auto-confirming in ${countdownSeconds}s`}
+        </div>
+      </div>
     </div>
   );
 }

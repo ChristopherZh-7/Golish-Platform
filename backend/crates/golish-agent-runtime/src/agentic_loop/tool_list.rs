@@ -50,7 +50,39 @@ pub(crate) async fn build_tool_list(
     // per-call guard already blocks them, but hiding them stops the model from
     // wasting turns trying a tool it could only ever be denied.
     hide_scans_for_zero_scan_stage(&mut tools, ctx.harness_stage);
+    // Scoping is org-tree-only: the in-scope target list (domains / IPs / URLs)
+    // is recorded in the NEXT stage (target_intel), never here. Hide
+    // `manage_targets` so the model literally cannot turn discovered subsidiaries
+    // into targets or pop a target `scope_review` during scoping (user directive
+    // 2026-06-13; methodology backstop at the tool boundary).
+    hide_manage_targets_in_scoping(&mut tools, ctx.harness_stage);
     tools
+}
+
+/// Remove `manage_targets` from the exposed list when the active harness stage is
+/// `scoping`. Scoping locks the ORG TREE; recording individual targets is the
+/// job of `target_intel`. Hiding the tool here enforces that boundary even if the
+/// model ignores the methodology. No-op for every other stage (and when no stage
+/// is active), so target recording stays available downstream.
+fn hide_manage_targets_in_scoping(
+    tools: &mut Vec<rig::completion::ToolDefinition>,
+    harness_stage: Option<golish_agent_kit::harness::StageKind>,
+) {
+    if !matches!(
+        harness_stage,
+        Some(golish_agent_kit::harness::StageKind::Scoping)
+    ) {
+        return;
+    }
+    let before = tools.len();
+    tools.retain(|t| t.name != "manage_targets");
+    if tools.len() != before {
+        tracing::debug!(
+            target: "harness::hook",
+            stage = "scoping",
+            "tool-list: hid manage_targets (scoping is org-tree-only; targets belong to target_intel)"
+        );
+    }
 }
 
 /// D1 · when an active harness stage allows no scan tools, strip scan-execution
@@ -162,6 +194,45 @@ mod tests {
         let mut tools3 = vec![td("pentest_run")];
         hide_scans_for_zero_scan_stage(&mut tools3, None);
         assert_eq!(tools3.len(), 1, "no stage → no filtering");
+    }
+
+    /// `manage_targets` is hidden in scoping (org-tree-only) but kept everywhere
+    /// else (target_intel records the in-scope target list) and when no stage is
+    /// active. manage_organizations + ask_human always survive scoping.
+    #[test]
+    fn manage_targets_hidden_only_in_scoping() {
+        use golish_agent_kit::harness::StageKind;
+
+        let base = || {
+            vec![
+                td("manage_targets"),
+                td("manage_organizations"),
+                td("ask_human"),
+                td("recon_discover_subsidiaries"),
+            ]
+        };
+
+        let mut scoping = base();
+        hide_manage_targets_in_scoping(&mut scoping, Some(StageKind::Scoping));
+        let names: Vec<&str> = scoping.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            !names.contains(&"manage_targets"),
+            "manage_targets must be hidden in scoping: {names:?}"
+        );
+        assert!(
+            names.contains(&"manage_organizations") && names.contains(&"ask_human"),
+            "org/ask tools must survive scoping: {names:?}"
+        );
+
+        // target_intel keeps manage_targets (that's where the target list lands).
+        let mut ti = base();
+        hide_manage_targets_in_scoping(&mut ti, Some(StageKind::TargetIntel));
+        assert!(ti.iter().any(|t| t.name == "manage_targets"));
+
+        // no active stage → untouched.
+        let mut none = base();
+        hide_manage_targets_in_scoping(&mut none, None);
+        assert!(none.iter().any(|t| t.name == "manage_targets"));
     }
     use golish_agent_kit::execution_mode::ExecutionMode;
     use golish_agent_kit::tool_definitions::{ToolPreset, ToolSelectionConfig};

@@ -1,4 +1,4 @@
-import { act, render, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import type { MutableRefObject } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -101,5 +101,99 @@ describe("useAiChatEvents — task preparing lifecycle", () => {
     // A subtask (not the whole task) completing keeps the spinner armed.
     fire({ type: "completed", response: "subtask done", reasoning: null });
     expect(isStreaming()).toBe(true);
+  });
+});
+
+function AskHumanHarness() {
+  const { askHumanRequest, lastDiscoverOrgId, lastDiscoverThreshold } = useAiChatEvents({
+    activeConvId: CONV,
+    streamingMsgRef: ref<string | null>(null),
+    taskInProgressRef: ref(false),
+    modes: { setPendingApproval: vi.fn(), pendingApprovalRef: ref(null) },
+    generateTitleRef: ref(null),
+  });
+  return (
+    <div>
+      <div data-testid="ask-human">{askHumanRequest ? "present" : "absent"}</div>
+      <div data-testid="discover-org">{lastDiscoverOrgId ?? "none"}</div>
+      <div data-testid="discover-threshold">{lastDiscoverThreshold ?? "none"}</div>
+    </div>
+  );
+}
+
+describe("useAiChatEvents — ask_human lifecycle", () => {
+  beforeEach(() => {
+    aiMock.cb = null;
+    setup();
+  });
+
+  const fire = (e: Record<string, unknown>) =>
+    act(() => {
+      aiMock.cb?.({ session_id: CONV, ...e });
+    });
+
+  it("clears a pending ask_human box when the run errors out (no dangling box)", async () => {
+    // Regression: the backend's ask_human timeout sends no event and the box was
+    // only cleared on submit/skip, so an errored run left it stuck forever.
+    render(<AskHumanHarness />);
+    await waitFor(() => expect(aiMock.cb).toBeTruthy());
+
+    fire({
+      type: "ask_human_request",
+      request_id: "r-err",
+      question: "Which scope?",
+      input_type: "freetext",
+      options: [],
+      context: "",
+    });
+    expect(screen.getByTestId("ask-human")).toHaveTextContent("present");
+
+    fire({ type: "error", message: "model exploded" });
+    expect(screen.getByTestId("ask-human")).toHaveTextContent("absent");
+  });
+
+  it("captures the org id from a recon_discover_subsidiaries tool call (unit_review fallback)", async () => {
+    render(<AskHumanHarness />);
+    await waitFor(() => expect(aiMock.cb).toBeTruthy());
+
+    fire({
+      type: "tool_auto_approved",
+      tool_name: "recon_discover_subsidiaries",
+      request_id: "d1",
+      args: { organization_id: "140315f6-990e-4c5c-a04b-73b14310bf22", min_ownership_percent: 51 },
+    });
+    expect(screen.getByTestId("discover-org")).toHaveTextContent(
+      "140315f6-990e-4c5c-a04b-73b14310bf22"
+    );
+    expect(screen.getByTestId("discover-threshold")).toHaveTextContent("51");
+  });
+
+  it("captures a string min_ownership_percent from discover (e.g. \"51%\")", async () => {
+    render(<AskHumanHarness />);
+    await waitFor(() => expect(aiMock.cb).toBeTruthy());
+
+    fire({
+      type: "tool_auto_approved",
+      tool_name: "recon_discover_subsidiaries",
+      request_id: "d3",
+      args: JSON.stringify({
+        organization_id: "140315f6-990e-4c5c-a04b-73b14310bf22",
+        min_ownership_percent: "51%",
+      }),
+    });
+    expect(screen.getByTestId("discover-threshold")).toHaveTextContent("51");
+  });
+
+  it("ignores a non-uuid organization_id from discover so it never poisons the fallback", async () => {
+    render(<AskHumanHarness />);
+    await waitFor(() => expect(aiMock.cb).toBeTruthy());
+
+    fire({
+      type: "tool_auto_approved",
+      tool_name: "recon_discover_subsidiaries",
+      request_id: "d2",
+      args: { organization_id: "None" },
+    });
+    expect(screen.getByTestId("discover-org")).toHaveTextContent("none");
   });
 });

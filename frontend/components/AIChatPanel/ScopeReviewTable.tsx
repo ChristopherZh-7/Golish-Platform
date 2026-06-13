@@ -1,9 +1,15 @@
 import { ClipboardList, Upload } from "lucide-react";
-import { useRef, useState } from "react";
+import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 import type { OrganizationCandidate } from "@/lib/api/organizations";
 import { cn } from "@/lib/utils";
 
 export type ScopeReviewKind = "scope_review" | "unit_review";
+
+/** Imperative handle so a parent (the ask_human countdown) can confirm the
+ * table's *current* edited text without lifting its textarea state up. */
+export interface ScopeReviewHandle {
+  confirm: () => void;
+}
 
 /** A single editable row — a flat string map keyed by the active columns. */
 export type ScopeReviewRow = Record<string, string>;
@@ -109,13 +115,41 @@ const TARGET_LIKE = /[.:/]/;
  * candidates are dropped. This lets the review table source its rows from the DB
  * (by org id) instead of relying on the model to copy a candidate array into the
  * ask_human context — which is fragile with textual tool-call models. */
-export function candidatesToUnitRows(candidates: OrganizationCandidate[]): ScopeReviewRow[] {
+/** Parse an ownership-percent string ("58%", "99.8809%", "12,345") into a number.
+ * Mirrors the backend `parse_ownership_percent` (promote.rs) so the unit_review
+ * threshold filter matches the discovery `meets_threshold` decision exactly.
+ * Returns null when there is no parseable value (treated as below threshold). */
+export function parseOwnershipPercent(raw: string | null | undefined): number | null {
+  if (!raw) return null;
+  const cleaned = raw.trim().replace(/%$/, "").replace(/,/g, "");
+  if (!cleaned) return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Map DB engagement candidates (organizations) into unit_review rows. The
+ * ownership percent (from `evidence.raw.scale`) is appended to the name label so
+ * the user can judge at a glance which subsidiaries to keep. Non-org/empty
+ * candidates are dropped. When `minOwnershipPercent` is given, candidates whose
+ * ownership is below it (or unknown) are dropped too — so a "≥51%" discovery
+ * doesn't make the user hand-delete the sub-threshold rows. This lets the review
+ * table source its rows from the DB (by org id) instead of relying on the model
+ * to copy a candidate array into the ask_human context — which is fragile with
+ * textual tool-call models. */
+export function candidatesToUnitRows(
+  candidates: OrganizationCandidate[],
+  minOwnershipPercent?: number | null
+): ScopeReviewRow[] {
   const rows: ScopeReviewRow[] = [];
   for (const candidate of candidates) {
     const name = (candidate.value ?? "").trim();
     if (!name) continue;
     const raw = (candidate.evidence as { raw?: { scale?: string } } | undefined)?.raw;
     const scale = raw?.scale?.trim();
+    if (minOwnershipPercent != null) {
+      const pct = parseOwnershipPercent(scale);
+      if (pct == null || pct < minOwnershipPercent) continue;
+    }
     rows.push({ name: scale ? `${name} (${scale})` : name, aliases: "", domains: "" });
   }
   return rows;
@@ -175,20 +209,26 @@ function initialBulkText(kind: ScopeReviewKind, initial: unknown): string {
  * response. The box is always expanded; the AI's proposed targets are seeded in
  * so editing is one keystroke away.
  */
-export function ScopeReviewTable({
-  kind,
-  initial,
-  onConfirm,
-  onSkip,
-}: {
-  kind: ScopeReviewKind;
-  initial: unknown;
-  onConfirm: (rows: ScopeReviewRow[]) => void;
-  onSkip: () => void;
-}) {
+export const ScopeReviewTable = forwardRef<
+  ScopeReviewHandle,
+  {
+    kind: ScopeReviewKind;
+    initial: unknown;
+    onConfirm: (rows: ScopeReviewRow[]) => void;
+    onSkip: () => void;
+  }
+>(function ScopeReviewTable({ kind, initial, onConfirm, onSkip }, ref) {
   const [bulkText, setBulkText] = useState(() => initialBulkText(kind, initial));
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleConfirm = () => onConfirm(parseBulkRows(kind, bulkText));
+
+  // Expose `confirm()` so the parent's auto-confirm countdown submits the
+  // user's latest edits (parsed from the textarea), identical to clicking
+  // "Confirm". Re-created when the edited text changes so it never confirms a
+  // stale snapshot.
+  useImperativeHandle(ref, () => ({ confirm: handleConfirm }), [kind, bulkText, onConfirm]);
 
   // Read dropped / picked text files into the textarea, appending so multiple
   // files (or a file plus a manual paste) accumulate rather than overwrite.
@@ -203,8 +243,6 @@ export function ScopeReviewTable({
       /* ignore unreadable files */
     }
   };
-
-  const handleConfirm = () => onConfirm(parseBulkRows(kind, bulkText));
 
   return (
     <div className="space-y-2">
@@ -285,4 +323,4 @@ export function ScopeReviewTable({
       </div>
     </div>
   );
-}
+});
