@@ -154,6 +154,52 @@ behaviour change):
   OSINT always-on for every engagement.
 
 ### Validation (this session)
-- Full `just precommit` run once after all edits — see `agent-progress.md` for the
-  captured command + exit code (the §6 line above predates an actual captured run;
-  this session records the real one).
+- `just precommit` after all edits: `fmt` + `check-fe` + `test-fe` + `lint-rust`
+  (clippy `--workspace -D warnings`) all PASS; `test-rust-all` (workspace nextest)
+  was aborted mid-run by the user (`nextest -p golish-agent-kit -p golish-sub-agents`
+  = 706/706 already covers the touched crates).
+
+## 8. Raw-log re-verification (req: conclude from `~/.golish/backend.log`, not the transcript)
+
+Re-checked the run directly in the raw `~/.golish/backend.log` (session
+`pentest-chat-1781436545266-1`, 2026-06-14 11:29–11:47; the session's lines begin
+at `backend.log:357039`). This **corrects one earlier verdict** that had been read
+off the transcript:
+
+- **#4 CONFIRMED.** Only `scoping` reached a gate:
+  `harness::hook: gate decision: PASS stage_id=scoping ... claims=2 findings=0`
+  @ 11:31:44. The single executed `submit_stage_deliverable`
+  (`[tool-dispatch] Executing tool: name=submit_stage_deliverable ... args_len=1159`
+  @ 11:31:36) was scoping's. **No `target_intel` gate decision and no `target_intel`
+  submit appear** — the run died ~11:47 during recon. Not a bug.
+- **#3 CONFIRMED.** Heavy repeated `dig` (328 `dig` log lines in the window) + amass
+  (50). The efficiency red lines existed; the model ignored them.
+- **#6 CORRECTED — OSINT *did* run.** The recon sub-agent executed the OSINT
+  provider repeatedly during `target_intel`:
+  `golish_recon_app::asset_intel::runtime::cli: running asset_intel cli_json provider
+  provider=enscan-go` @ 11:32:55 (completed 11:33:22), then `provider=enscan-go-enrichment`
+  @ 11:33:25 (completed 11:34:08) and again @ 11:45:04 (completed 11:45:48). The
+  earlier "OSINT never ran" reading was a **transcript-visibility artifact**: ENScan
+  runs via the `recon_enrich_assets` provider path (`asset_intel` runtime), which
+  logs to backend.log but is NOT surfaced as a visible `pentest_run` tool call in the
+  chat transcript. So #6 is a *visibility* gap, not a *not-called* gap. The §7 prompt
+  change (OSINT = required coverage) is still valid defensive guidance, but the real
+  run DID exercise OSINT.
+- Also seen: 3 `stage_guard ... BLOCKED` (curl / python3 / check_job) — the model
+  probing disallowed tools; the guard worked as designed.
+
+**Implication.** The dominant failure was run inefficiency / stall during recon
+(#3 + deepseek-v4-flash reliability), NOT missing OSINT. #2 (context/output bump) +
+#3 (resume + once-per-root) + #5 (no garbled tail) target the real failure.
+
+### Decisions taken on the two open items (req: decide what you can)
+- **B (OSINT hard floor) — DECLINED.** OSINT is already exercised via the provider
+  path (raw-log proof above); forcing `osint_enum` would add friction for
+  non-China engagements without fixing the real issue. Kept the prompt nudge only.
+- **A1 (org-level resume oracle) — left as documented default-off follow-up, not
+  rushed.** `org_stage_has_truth` does not yet exist (only doc-comment placeholders
+  in `engagement_truth.rs` + `fleet.rs`); building it is a from-scratch DB-truth
+  query + scheduler wiring with real "what counts as done" semantics. The per-target
+  resume already shipped (#3, `manage_targets` status lifecycle) satisfies the
+  literal ask ("先看每个目标的状态，做过别重做"), so A1 is an additive optimization,
+  not a fix the 6 issues require.
