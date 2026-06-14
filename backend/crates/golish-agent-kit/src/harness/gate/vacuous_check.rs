@@ -14,14 +14,27 @@ use golish_pentest::evidence_ledger::SkipReason;
 
 use super::super::stage_spec::StageSpec;
 use super::super::types::{ExternalAttackSurfaceDeliverable, HarnessRecoveryActions};
+use super::rule_engine::EvidenceFact;
 use super::GateCheckOutcome;
 
-pub fn run(deliverable: &ExternalAttackSurfaceDeliverable, spec: &StageSpec) -> GateCheckOutcome {
+pub fn run(
+    deliverable: &ExternalAttackSurfaceDeliverable,
+    spec: &StageSpec,
+    evidence_facts: Option<&[EvidenceFact]>,
+) -> GateCheckOutcome {
+    // design 2026-06-15 §5 PR2: facts-only opt-in 阶段，账本/DB 已有本 run 真实事实
+    // 时，deliverable 的「事实部分」由 DB 真值裁决（coverage_complete authoritative），
+    // 故 (a) NoToolInvocation + (b) FakePattern 这两个「防空交付」启发式由 DB 真值满足，
+    // 不再逼弱模型手抄交付物。completeness 仍由 coverage_complete 把关（per in-scope
+    // 资产 × 期望技术）。DB 真值为空（没干活）则 db_truth_backed=false、照旧拦截。
+    let db_truth_backed = spec.facts_from_db_truth && evidence_facts.is_some_and(|f| !f.is_empty());
+
     let mut reasons = Vec::new();
     let mut missing_kinds = Vec::new();
 
     // (a) Vacuous · 完全空交付 (无 claim 无 finding 无 skipped_checks)
-    if deliverable.claims.is_empty()
+    if !db_truth_backed
+        && deliverable.claims.is_empty()
         && deliverable.findings.is_empty()
         && deliverable.skipped_checks.is_empty()
     {
@@ -36,7 +49,7 @@ pub fn run(deliverable: &ExternalAttackSurfaceDeliverable, spec: &StageSpec) -> 
     //     等价改为 `min_invocations` 非空——对全 12 spec 行为逐字节一致（凡有
     //     min_invocations 的 stage 旧时 required_checks 也非空），且 `required_checks`
     //     字段已删除。
-    if !spec.min_invocations.is_empty() {
+    if !db_truth_backed && !spec.min_invocations.is_empty() {
         let required_total: u32 = spec.min_invocations.values().sum();
         let actual_total = deliverable.evidence_refs.len() as u32;
         if required_total > 0 && actual_total < required_total {
@@ -135,7 +148,7 @@ mod tests {
     fn empty_deliverable_is_vacuous() {
         let spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
         let d = empty_deliverable();
-        match run(&d, &spec) {
+        match run(&d, &spec, None) {
             GateCheckOutcome::Block { reasons, recovery } => {
                 assert!(reasons[0].contains("vacuous"));
                 assert!(recovery
@@ -160,7 +173,7 @@ mod tests {
         });
         // 凑 3 个 evidence_refs 满足 min_invocations sum (dns_resolve+http_probe+subdomain_enum_passive)
         d.evidence_refs = (1..=3).map(EvidenceAuditId::new).collect();
-        assert!(matches!(run(&d, &spec), GateCheckOutcome::Pass));
+        assert!(matches!(run(&d, &spec, None), GateCheckOutcome::Pass));
     }
 
     #[test]
@@ -187,7 +200,7 @@ mod tests {
                 },
             });
         }
-        match run(&d, &spec) {
+        match run(&d, &spec, None) {
             GateCheckOutcome::Block { reasons, .. } => {
                 assert!(reasons.iter().any(|r| r.contains("SkipPattern")));
             }
@@ -208,7 +221,7 @@ mod tests {
         });
         // 满足 min_invocations sum=3 (dns_resolve+http_probe+subdomain_enum_passive)
         d.evidence_refs = (1..=3).map(EvidenceAuditId::new).collect();
-        assert!(matches!(run(&d, &spec), GateCheckOutcome::Pass));
+        assert!(matches!(run(&d, &spec, None), GateCheckOutcome::Pass));
     }
 
     #[test]
@@ -227,7 +240,7 @@ mod tests {
         // 去上阶段工具（2026-06-10）后 EAS min_invocations sum=1 (http_probe)。
         // 0 个顶层 evidence_refs < sum → FakePattern（有 finding 却无顶层证据 = 疑似编造）。
         d.evidence_refs = vec![];
-        match run(&d, &spec) {
+        match run(&d, &spec, None) {
             GateCheckOutcome::Block { reasons, recovery } => {
                 assert!(reasons.iter().any(|r| r.contains("FakePattern")));
                 // missing_evidence_kinds 含 min_invocations.keys()
@@ -240,5 +253,38 @@ mod tests {
             }
             _ => panic!("expected Block"),
         }
+    }
+
+    #[test]
+    fn facts_from_db_truth_satisfies_vacuous_for_empty_deliverable() {
+        use super::super::rule_engine::{EvidenceFact, EvidenceOutcome};
+        let mut spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
+        spec.facts_from_db_truth = true;
+        let d = empty_deliverable();
+        let facts = vec![EvidenceFact {
+            asset: "example.com".to_string(),
+            technique: "GOLISH-INTEL-DNS".to_string(),
+            outcome: EvidenceOutcome::Found,
+            evidence_id: 42,
+        }];
+        // Real DB/ledger facts present → empty deliverable is NOT vacuous (facts come
+        // from DB truth; completeness is enforced by coverage_complete elsewhere).
+        assert!(matches!(
+            run(&d, &spec, Some(&facts)),
+            GateCheckOutcome::Pass
+        ));
+        // No facts (nothing actually ran) → still BLOCK even with the flag on.
+        match run(&d, &spec, Some(&[])) {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons.iter().any(|r| r.contains("vacuous")));
+            }
+            _ => panic!("expected Block when DB truth is empty"),
+        }
+        // Flag OFF + facts present → relaxation gated off, empty still BLOCKs.
+        spec.facts_from_db_truth = false;
+        assert!(matches!(
+            run(&d, &spec, Some(&facts)),
+            GateCheckOutcome::Block { .. }
+        ));
     }
 }

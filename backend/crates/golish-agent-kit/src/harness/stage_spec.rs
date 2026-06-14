@@ -125,6 +125,15 @@ pub struct StageSpec {
     /// `expected_techniques` at the call site.
     #[serde(default)]
     pub coverage_axis: Vec<String>,
+
+    /// Facts-from-DB-truth opt-in (design 2026-06-15 §5 PR2). When true AND the gate
+    /// is handed real DB/ledger evidence facts, `vacuous_check` treats the stage's
+    /// facts as coming from DB truth (`coverage_complete` adjudicates), so an
+    /// otherwise-empty deliverable is not "vacuous". Completeness is still enforced
+    /// by `coverage_complete` (per in-scope asset × expected technique). Default
+    /// false = byte-for-byte unchanged. Enable only for facts-only intel/recon stages.
+    #[serde(default)]
+    pub facts_from_db_truth: bool,
 }
 
 fn default_continuity() -> AgentContinuity {

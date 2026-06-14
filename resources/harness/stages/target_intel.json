@@ -79,6 +79,8 @@
   },
 
   "max_other_skips": 2,
+  "$comment_facts_from_db_truth": "design 2026-06-15-db-truth-single-source-deliverable §5 PR2: target_intel is facts-only — coverage/claims/evidence are adjudicated from DB truth (coverage_complete authoritative + coverage_truth). With this on, vacuous_check is satisfied by real DB/ledger evidence facts so a weak model need not hand-copy a deliverable; completeness is still enforced by coverage_complete per (in-scope asset × technique). Empty DB truth still blocks.",
+  "facts_from_db_truth": true,
 
   "human_approval": {
     "required_before": ["active_scan"]

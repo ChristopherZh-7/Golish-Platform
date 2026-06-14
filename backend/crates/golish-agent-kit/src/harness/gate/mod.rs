@@ -135,7 +135,7 @@ pub fn validate_stage_gate_with_context(
     let mut outcomes = vec![
         schema_check::run(deliverable, spec),
         contract_check::run_with_skeleton(deliverable, contract, skeleton),
-        vacuous_check::run(deliverable, spec),
+        vacuous_check::run(deliverable, spec, ctx.evidence_facts.as_deref()),
         freshness_check::run(deliverable, spec),
         // P2 · config-driven verification (no-op unless the stage spec declares
         // finding_verification / min_findings / min_claims).

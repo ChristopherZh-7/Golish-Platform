@@ -99,6 +99,7 @@ mod tests {
             expected_techniques: vec![],
             specialist: None,
             coverage_axis: vec![],
+            facts_from_db_truth: false,
         }
     }
 
