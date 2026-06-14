@@ -29,6 +29,22 @@
 
 ---
 
+### 2026-06-14 · DeepSeek run 复盘 6 条收口（#1/#2/#5 基线 commit + #4 复核 + #3/#6 prompt 层）（BaJie MCP-agent-1 · DISPATCH off · 接 MCP-4 上下文转移 · 用户「全部搞完、拿不准的留给我、用原始 backend.log、先 commit 再改」）
+
+- **本轮目标**：接 MCP-4 上下文转移，把对 `deepseek-v4-flash` run（`pentest-chat-1781436545266-1`）的 6 条复盘（设计文档 `docs/design/2026-06-14-deepseek-run-review-fixes.md`）全部收口。用户铁律：证据用**原始 `~/.golish/backend.log`**、**改前先 commit 未提交的**、**测试全做完再一次性跑**、能拿主意自己修、拿不准留给用户。
+- **先 commit 基线（守「先 commit 再改」）**：工作树原有未提交的 #1（每个工具卡的审批开关）+ #5（DeepSeek Anthropic-式 `<invoke>` 工具调用 markup 清洗）+ 设计文档 → 拆 2 commit：`01edd1eb`（4 文件代码：textual_tool_call.rs +255 含 7 新测 / ToolCallSummary / MessageBlock / SubAgentDetailView）+ `4240849b`（设计文档）。#2（DeepSeek 上下文 128k→1M/64K）此前已单独 commit `da74bd16`。
+- **#4 复核 = 非 bug（零改动，证据化）**：直接读 `resources/harness/stages/target_intel.json` gate_rules——`for_all claims require non_empty evidence_ids`、`for_all findings require evidence_refs`、`found`+`checked_empty` 覆盖格都要 `evidence_refs`、`coverage_complete` 是 `authoritative_found:true`+`derive_from_evidence:true`（读 DB/账本真值）。gate 本就强制证据；那次 run 是**根本没跑到 gate**（无 `submit_stage_deliverable`，backend.log 11:47 还在 spawn amass）。设计文档 §1 判断成立，不改。
+- **#3 + #6 = prompt 层收口（低风险可逆，commit `3299c598`）**：
+  - **#3 续跑跳过**：`target_intel.methodology.md` + `build_recon_prompt()`（execution_planning.rs）加「开跑前 `list_in_scope_targets`/`search_knowledge_base`，已到 `passive`+ 的 in-scope 目标跳过、只补缺技术」。接上**已上线**的 per-target status 生命周期（`manage_targets` 的 list-看-status-跳过指引）→ per-target 续跑端到端通。
+  - **#6 OSINT**：methodology 第 4 步把 OSINT 从「(optional)」提为**必做覆盖技术**（ENScan via `recon_enrich_assets` 出 org/联系人/社媒/业务系统；无 provider 则 `blocked+note`，禁止静默跳）；recon prompt 同步。deferred 硬门槛理由就地写进 `target_intel.json` 的 `$comment_min_invocations`。
+- **跑过的验证（实跑）**：① `nextest -p golish-agent-kit -p golish-sub-agents` → **706/706**（含 recon prompt zero-touch 测 + target_intel methodology playbook 测 + min_invocations gate 测）；② `python3 -m json.tool target_intel.json` 合法、methodology 关键词 subfinder/once/dig/OSINT/Resume 全在；③ ReadLints execution_planning.rs 无错；④ `just precommit` 跑到 **fmt ✓ / check-fe ✓ / test-fe ✓ / lint-rust（clippy --workspace -D warnings）✓**，到 **test-rust-all（全 workspace nextest）被用户中止**（~4 分钟处）。clippy 全 workspace 过 = 全仓带改动可编译 + lint 干净。
+- **提交记录**：`01edd1eb`（#1+#5 代码）+ `4240849b`（设计文档基线）+ `3299c598`（#3/#6 prompt 收口 + 设计文档 §7）。均落 branch `feat/stage-run-fanout`，**未 push**。
+- **要用户拍板（拿不准，按指示留给用户）**：① **A1·机构级断点续跑 oracle**（#3 深层）——给 `run_fleet_scheduler` 接 DB 真值 oracle（今只 `AlwaysRunOracle`），建议默认关的 `--resume` 开关，怕跳过该重跑的；② **B·OSINT 硬门槛**（#6 深层）——把 `osint_enum:1` 设成跟 DNS/子域一样的硬 `min_invocations` floor，ENScan 偏国内企业未必每次该强制，建议先靠 prompt。两项均写进设计文档 §7。
+- **风险 / 欠账**：① 全量 `just precommit` 的 `test-rust-all` 未跑完（用户中止）——但 fmt/fe/clippy(workspace) + 触碰两 crate nextest 全绿，改动只在 agent-kit 资源 + sub-agents prompt，全 workspace nextest 失败概率低；下一轮或用户补跑兜底；② #6 ENScan_GO 本机 `~/.golish/tools/` 不存在（tools_dir 解析到用户 run 环境别处；设计文档据 MCP-4 活体证据说已装）；③ 活体未跑（prompt 改动要真 LLM run 才眼见效果）；④ 未 push。
+- **下一步**：用户定 A1/B + 决定补跑完整 `test-rust-all` / 是否 push；之后按 A1/B 决策推进深层硬化。
+
+---
+
 ### 2026-06-14 · stage_run 逐公司钻取 + 聊天卡进度 + 目标状态按阶段细分（BaJie MCP-agent-4 · DISPATCH off · 用户逐步授权→「全部搞完」全权）
 
 - **本轮目标**：接 MCP-1 上下文继续 stage_run「逐公司钻取」，随后用户追加两项：① 聊天里 stage_run 工具卡显示「几/几 完成」进度；② 目标徽章从单一 `Recon Done` 改为**按真实阶段细分**，并作为 **AI 跨阶段跳过已完成目标的信号**（per-target 续跑）。用户最后说「你全部搞完 我出去了」→ 全权完成（含已确认的 DB migration）。

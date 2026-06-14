@@ -1,6 +1,6 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "last_updated": "2026-06-14",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
@@ -10,6 +10,28 @@
     "passing"
   ],
   "features": [
+    {
+      "id": "deepseek-run-review-fixes-2026-06-14",
+      "priority": 1,
+      "area": "frontend: components/AIChatPanel/ToolCallSummary.tsx (#1 ApprovalModeInlineDropdown on every ToolCallCard), MessageBlock.tsx (#1 thread approvalMode + #5 stripToolCallXml Anthropic dialect), SubAgentDetailView.tsx (#5 stripAgentXmlTags Anthropic dialect); backend: golish-core/src/textual_tool_call.rs (#5 parse+strip <invoke> dialect, 7 new tests), golish-models/src/capabilities.rs (#2 deepseek_defaults 1M/64K, prior commit da74bd16), golish-sub-agents/src/defaults/prompts/execution_planning.rs (#3/#6 recon prompt), resources/harness/stages/target_intel.{json,methodology.md} (#3 resume-skip + #6 OSINT required)",
+      "title": "DeepSeek run 复盘 6 条收口（run pentest-chat-1781436545266-1 / deepseek-v4-flash）：#1 每个工具卡的审批开关 / #2 上下文 128k→1M / #3 run stage 续跑跳过已做目标 / #4 完成要证据(复核非bug) / #5 结尾乱码(Anthropic-式 <invoke> markup 泄漏) / #6 OSINT 没被调用。",
+      "user_visible_behavior": "聊天里每个工具调用卡都带 Run-Everything/Ask 开关(不再只在 pending/工具栏); DeepSeek V4 用满 1M 上下文/64K 输出不再早截断; 子 agent/最终输出不再泄漏 <tool_calls><invoke name=..> 乱码; recon 跑 target_intel 时先看目标 status 跳过已做的、并把 OSINT 当必做覆盖跑(无 provider 才 blocked+note)。",
+      "status": "blocked",
+      "blocker": "等用户拍 2 个产品决策(设计文档 §7): A1 机构级断点续跑 oracle(run_fleet_scheduler 接 DB 真值 oracle, 建议默认关 --resume) + B OSINT 硬 min_invocations floor(osint_enum:1, ENScan 偏国内企业未必每次强制, 建议先靠 prompt)。另: 全量 just precommit 的 test-rust-all 被用户中止(~4min), 待补跑兜底/或用户已自行处理。",
+      "design": "docs/design/2026-06-14-deepseek-run-review-fixes.md (§1 逐条判定 + §2 #1/#2/#5 + §7 本会话 #3/#4/#6 + 2 deferred 决策)",
+      "plan": "接 MCP-4 上下文 -> 先 commit 基线(#1/#5/doc) -> #4 读 gate 源码复核 -> #3/#6 prompt 层(methodology+recon prompt) -> 全量 precommit(被中止) -> commit + 留 A1/B 给用户",
+      "verification": [
+        "[✓] cargo nextest -p golish-agent-kit -p golish-sub-agents: 706/706 (含 recon prompt zero-touch / target_intel methodology playbook / min_invocations gate 测)",
+        "[✓] python3 -m json.tool target_intel.json 合法; methodology 保留 subfinder/once/dig 关键词 + 新增 OSINT/Resume",
+        "[✓] ReadLints execution_planning.rs 无错",
+        "[✓] just precommit 跑到 fmt✓/check-fe✓/test-fe✓/lint-rust(clippy --workspace -D warnings)✓",
+        "[中止] test-rust-all (全 workspace nextest) 被用户在 ~4min 处中止 — 触碰的 agent-kit/sub-agents 已单独全绿, 其余 crate 不读这些资源/prompt",
+        "[未跑·用户环境] 活体: deepseek run 看每卡审批开关 / 不再乱码 / recon 跑 OSINT + 跳过已做目标"
+      ],
+      "evidence": "2026-06-14 BaJie MCP-agent-1 (DISPATCH off, 接 MCP-4 上下文转移). #4 复核: 直接读 target_intel.json gate_rules 确认 claims/findings/found/checked_empty 全要 evidence_refs + coverage_complete authoritative_found(读DB真值), 那次 run 根本没到 gate(无 submit_stage_deliverable, backend.log 11:47 还在 spawn amass) -> 非 bug 零改. #3: prompt 接已上线 per-target status 生命周期(manage_targets list-看-status-跳过). #6: methodology 第4步 OSINT 从 optional 提为 required. commit 01edd1eb(#1+#5)+4240849b(doc)+3299c598(#3/#6+doc§7); #2 此前 da74bd16. branch feat/stage-run-fanout, 未 push.",
+      "notes": "用户铁律(MCP-4 转交): 证据用原始 ~/.golish/backend.log 非 transcript; 改前先 commit 未提交的; 测试全做完再一次性跑; 能拿主意自己修, 拿不准留给用户. #1/#2/#5 在接手前已做(工作树未提交+da74bd16), 本会话先 commit 基线再做 #3/#4/#6. ENScan_GO 本机 ~/.golish/tools 不存在(tools_dir 解析到用户 run 环境别处; 设计文档据 MCP-4 活体证据说已装).",
+      "remember": "DeepSeek run review: #1 ToolCallSummary.ApprovalModeInlineDropdown 渲染在每个 ToolCallCard; #5 textual_tool_call.rs 解析+剥离 <tool_calls><invoke name=..><parameter name=..> Anthropic 方言(deepseek native_best_effort 降级时泄漏), 前端 stripToolCallXml/stripAgentXmlTags 同步; #2 deepseek_defaults 1M/64K; #3/#6 是 prompt 层(target_intel.methodology.md + build_recon_prompt). 深层 A1(org-resume oracle)/B(osint hard floor) deferred 待用户."
+    },
     {
       "id": "stage-run-org-drilldown-2026-06-14",
       "priority": 1,
