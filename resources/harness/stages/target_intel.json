@@ -72,6 +72,7 @@
   "specialist": "recon",
   "coverage_axis": ["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT"],
 
+  "$comment_min_invocations": "Hard floors (gate BLOCKs if the deliverable does not register the tool): DNS + passive subdomain are mandatory on every engagement. OSINT (osint_enum) is NOT a hard floor on purpose — ENScan_GO is China-corp-focused and not every engagement has an OSINT provider/credential; OSINT stays a REQUIRED coverage cell (expected_techniques + authoritative_techniques below) that may be terminal as blocked+note when no provider is available. See docs/design/2026-06-14-deepseek-run-review-fixes.md OPEN DECISION B before promoting osint_enum to a hard floor.",
   "min_invocations": {
     "dns_resolve": 1,
     "subdomain_enum_passive": 1

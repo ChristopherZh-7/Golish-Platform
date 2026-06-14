@@ -23,10 +23,21 @@ one-organization engagement (or when `stage_run` is unavailable).
 2. Passive subdomain enumeration — `subfinder -all -recursive` and/or
    `amass enum -passive`. Run each ONCE on the root domain. Merge + dedupe results.
 3. URL history — `gau` / `waybackurls` on the root for historical endpoints.
-4. (Optional) whois / ASN / CT via providers if not already covered by step 1.
+4. OSINT / WHOIS / ASN / CT land via `recon_enrich_assets` (step 1): ENScan returns
+   org records / contacts / social accounts / business systems (= OSINT);
+   quake / 0.zone return ASN / CT / WHOIS. **OSINT is a REQUIRED coverage technique**
+   (`GOLISH-INTEL-OSINT`, read from `organizations.intel`), not optional — confirm
+   the enrich actually produced OSINT data for this org. If your providers returned
+   no OSINT (no provider/credential), record OSINT `blocked+note` with the reason;
+   never silently skip it.
 
 **Efficiency red lines (these are the common failure modes):**
 
+- Resume — skip already-done work: before collecting, call `list_in_scope_targets`
+  and check the org's existing assets / ledger (`search_knowledge_base`). For any
+  in-scope target already at `passive` or later (this stage already ran for it), do
+  NOT re-collect — reuse the prior evidence. Re-run only the assets/techniques that
+  still lack a terminal coverage status.
 - Run each passive tool ONCE per root, then move on. Do NOT re-run subfinder/amass
   repeatedly with different flags hunting for more.
 - Do NOT `dig` every discovered subdomain one-by-one. Per-host A-record resolution

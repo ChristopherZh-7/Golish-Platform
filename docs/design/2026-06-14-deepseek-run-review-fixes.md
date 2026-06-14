@@ -106,3 +106,54 @@ ran OSINT and the run never reached the gate.
 ## 6. Validation
 - `just precommit` run after all edits (see `agent-progress.md` for the captured
   command + result).
+
+## 7. Follow-up session (2026-06-14, BaJie MCP-agent-1) — #3 / #4 / #6 closed at the decidable layer
+
+User directive: *finish everything you can decide; defer only genuine product
+calls; conclude from the raw `~/.golish/backend.log`, not the transcript.* #1/#2/#5
+were committed first as a clean baseline (`01edd1eb` code + `4240849b` doc), then:
+
+### #4 — re-verified NOT a bug (no code change)
+Re-read the gate config directly: `resources/harness/stages/target_intel.json`
+`gate_rules` already enforce evidence — `for_all claims require non_empty
+evidence_ids`, `for_all findings require evidence_refs`, every `found` **and**
+`checked_empty` coverage cell requires `evidence_refs`, and `coverage_complete`
+is `authoritative_found:true` + `derive_from_evidence:true` (reads DB/ledger
+truth, not self-report). The reviewed run simply never reached the gate (no
+`submit_stage_deliverable`). Verdict from §1 stands; nothing to change.
+
+### #3 (A2) + #6 — prompt-layer fixes shipped (low-risk, reversible)
+Both `target_intel` prompts already carried the "run each technique once / don't
+loop dig" line and listed OSINT as a coverage cell, yet the model still re-ran
+`dig` 69× and never produced OSINT. The decidable hardening (no engine/gate
+behaviour change):
+- **#3 resume/skip** — `target_intel.methodology.md` + `build_recon_prompt()`
+  now tell the agent to `list_in_scope_targets` / `search_knowledge_base` first
+  and **skip in-scope targets already at `passive`+** (this stage already ran for
+  them). This rides the per-target status lifecycle already shipped in
+  `manage_targets` (`new→passive→active→enumerated→vuln_scan→verified`, with the
+  in-tool "read each target's status to SKIP targets already at/after the stage"
+  guidance) — so per-target resume is now wired end-to-end at the prompt layer.
+- **#6 OSINT** — methodology step 4 promoted OSINT from "(optional)" to a
+  **required** coverage technique: `recon_enrich_assets` (ENScan) must yield
+  org records / contacts / social accounts / business systems; if no
+  provider/credential, record OSINT `blocked+note` — never silently skip. Same
+  line added to `build_recon_prompt()`. The deferred hard-floor rationale is now
+  documented inline in `target_intel.json` (`$comment_min_invocations`).
+
+### STILL OPEN — needs your call (deferred, with recommendation)
+- **A1 · org-level resume oracle (#3).** Wire a DB-truth `org_stage_has_truth`
+  oracle into `run_fleet_scheduler` (today only `AlwaysRunOracle`). Risk: skipping
+  an org that *should* re-run on stale truth. *Recommendation:* implement gated
+  behind a default-OFF `--resume`/setting so it never changes default behaviour;
+  needs your yes before I touch the scheduler core.
+- **B · OSINT hard floor (#6).** Promote `osint_enum:1` into
+  `target_intel.json.min_invocations` (as hard as DNS/subdomain). Trade-off:
+  ENScan_GO is China-corp-focused; not every engagement wants OSINT forced.
+  *Recommendation:* keep the prompt nudge for now; only add the floor if you want
+  OSINT always-on for every engagement.
+
+### Validation (this session)
+- Full `just precommit` run once after all edits — see `agent-progress.md` for the
+  captured command + exit code (the §6 line above predates an actual captured run;
+  this session records the real one).
