@@ -27,6 +27,10 @@ use golish_core::runtime::{GolishRuntime, RuntimeEvent};
 
 use crate::ai::agent_bridge::AgentBridge;
 use crate::cli::Args;
+use crate::engagement::scheduler::{
+    run_fleet_scheduler, FleetConfig, FleetMode, FleetReport, OrgCompletionOracle, OrgRunExecutor,
+    OrgRunTask, WeaknessScorer,
+};
 use crate::runtime::CliRuntime;
 
 /// `resolve_slice` moved to `golish_agent_kit::harness::slice` (Phase B,
@@ -243,7 +247,7 @@ pub async fn run(args: Args) -> Result<()> {
     // not stop its siblings — the engagement aggregates at the end (one run
     // exposes ALL gaps). Without --include-subsidiaries this whole step is
     // skipped (zero behaviour change).
-    let mut sub_results: Vec<(String, bool)> = Vec::new();
+    let mut fleet_report: Option<FleetReport> = None;
     if args.include_subsidiaries && result.is_ok() {
         match (
             seed.as_ref().and_then(|s| s.org_id),
@@ -264,35 +268,50 @@ pub async fn run(args: Args) -> Result<()> {
                             Vec::new()
                         }
                     };
-                let total = children.len();
-                for (i, child) in children.into_iter().enumerate() {
+                if !children.is_empty() {
+                    // 收敛到共享调度内核 `run_fleet_scheduler`（方案 C / fleet Phase B,
+                    // 计划 docs/superpowers/plans/2026-06-14-engagement-fleet-scheduler-convergence.md）：
+                    // 每个子公司构造成一个 OrgRunTask，per-org 跑一个完整 run_stage（独立
+                    // gate + org 隔离），与未来 chat 后端扇出共用同一条调度路径，CLI 因此真
+                    // 测生产调度逻辑。串行（concurrency=1）—— 共享同一个 bridge 下并行
+                    // run_stage 会互相覆盖 harness 阶段态/会话历史/取消标志，不安全。
+                    let tasks: Vec<OrgRunTask> = children
+                        .iter()
+                        .map(|child| OrgRunTask {
+                            org_id: child.id,
+                            org_name: child.name.clone(),
+                            parent_id: Some(parent_id),
+                            entry_stage: child_entry,
+                            to_stage,
+                            allowlist: child_allowlist.clone(),
+                            objective: build_child_objective(child, &parent_name, to_stage),
+                        })
+                        .collect();
                     eprintln!(
-                        "[stage-run] ── subsidiary {}/{}: {} ({}) ──",
-                        i + 1,
-                        total,
-                        child.name,
-                        child.id
+                        "[stage-run] dispatching {} subsidiary run(s) via fleet scheduler (serial)",
+                        tasks.len()
                     );
-                    let child_input = build_child_objective(&child, &parent_name, to_stage);
-                    let r = orchestrate(
-                        &bridge,
-                        &db_pool,
-                        &session_id,
-                        &profile_id,
-                        child_entry,
-                        child_allowlist.clone(),
-                        &child_input,
-                        Some(child.id),
-                        // Subsidiaries do not recurse into grand-children
-                        // (Phase 2 non-goal): no SUBSIDIARY gate on child runs.
-                        false,
-                        args.subsidiary_threshold,
+                    let executor = CliOrgRunExecutor {
+                        bridge: bridge.clone(),
+                        db_pool: db_pool.clone(),
+                        session_id: session_id.clone(),
+                        profile_id: profile_id.clone(),
+                        subsidiary_threshold: args.subsidiary_threshold,
+                    };
+                    let report = run_fleet_scheduler(
+                        FleetConfig {
+                            concurrency: 1,
+                            mode: FleetMode::Checklist,
+                        },
+                        tasks,
+                        &executor,
+                        // T1 行为保持：照跑所有子公司（DB 真值续跑 oracle = T3）。
+                        &AlwaysRunOracle,
+                        // checklist 模式不评分；NoopScorer 仅满足签名。
+                        &NoopScorer,
                     )
                     .await;
-                    if let Err(e) = &r {
-                        eprintln!("[stage-run] subsidiary '{}' run failed: {e:#}", child.name);
-                    }
-                    sub_results.push((child.name, r.is_ok()));
+                    fleet_report = Some(report);
                 }
             }
             (None, _) if args.include_subsidiaries => {
@@ -328,10 +347,11 @@ pub async fn run(args: Args) -> Result<()> {
         }
     } else {
         println!("{report}");
-        // Phase 3: per-subsidiary engagement aggregate (empty without the flag).
-        let summary = subsidiary_summary(&sub_results);
-        if !summary.is_empty() {
-            println!("{summary}");
+        // 子公司 engagement 聚合（无 --include-subsidiaries 时为 None）。
+        if let Some(fr) = &fleet_report {
+            if !fr.outcomes.is_empty() {
+                println!("{}", fr.render());
+            }
         }
     }
 
@@ -346,11 +366,16 @@ pub async fn run(args: Args) -> Result<()> {
     // Phase 3 engagement aggregation: the parent result decides first; any
     // failed subsidiary then flips the whole engagement to FAILED ("an org
     // tree is only covered when EVERY org in it passed", design §2).
-    let failed_subs: Vec<String> = sub_results
-        .iter()
-        .filter(|(_, ok)| !ok)
-        .map(|(name, _)| name.clone())
-        .collect();
+    let failed_subs: Vec<String> = fleet_report
+        .as_ref()
+        .map(|fr| {
+            fr.outcomes
+                .iter()
+                .filter(|o| !o.status.is_covered())
+                .map(|o| o.org_name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
     match result {
         Err(e) => Err(e),
         Ok(_) if !failed_subs.is_empty() => Err(anyhow!(
@@ -358,6 +383,58 @@ pub async fn run(args: Args) -> Result<()> {
             failed_subs.join(", ")
         )),
         Ok(_) => Ok(()),
+    }
+}
+
+/// CLI 侧的 [`OrgRunExecutor`]：把「跑一个 org 的 stage 切片」委托给 [`orchestrate`]
+/// （= 一个完整 `run_stage`，独立 gate + org 隔离）。fleet 调度内核借用它逐 org 串行
+/// 调用（concurrency=1），是 chat 后端扇出未来共用的同一 per-org 原语（方案 C）。
+struct CliOrgRunExecutor {
+    bridge: Arc<AgentBridge>,
+    db_pool: Arc<sqlx::PgPool>,
+    session_id: String,
+    profile_id: String,
+    subsidiary_threshold: u8,
+}
+
+#[async_trait::async_trait]
+impl OrgRunExecutor for CliOrgRunExecutor {
+    async fn run_org(&self, task: &OrgRunTask) -> Result<String> {
+        orchestrate(
+            &self.bridge,
+            &self.db_pool,
+            &self.session_id,
+            &self.profile_id,
+            task.entry_stage,
+            task.allowlist.clone(),
+            &task.objective,
+            Some(task.org_id),
+            // 子公司不再下探孙公司（Phase 2 非目标）：child run 不开 SUBSIDIARY gate。
+            false,
+            self.subsidiary_threshold,
+        )
+        .await
+    }
+}
+
+/// T1 行为保持：CLI 照跑所有子公司（embedded PG 跨次持久，重跑会重跑全部）。DB 真值
+/// 续跑 oracle 是 T3 的硬化项。
+struct AlwaysRunOracle;
+
+#[async_trait::async_trait]
+impl OrgCompletionOracle for AlwaysRunOracle {
+    async fn is_already_complete(&self, _org_id: uuid::Uuid, _to: StageKind) -> bool {
+        false
+    }
+}
+
+/// checklist 模式不评分（funnel 才用）；仅满足 [`run_fleet_scheduler`] 签名。
+struct NoopScorer;
+
+#[async_trait::async_trait]
+impl WeaknessScorer for NoopScorer {
+    async fn score(&self, _org_id: uuid::Uuid) -> i64 {
+        0
     }
 }
 
@@ -601,34 +678,6 @@ fn child_slice(profile_id: &str, to: StageKind) -> Option<(StageKind, HashSet<St
         return None;
     }
     resolve_slice(profile_id, Some(StageKind::TargetIntel), to).ok()
-}
-
-/// Phase 3 · per-org engagement summary appended after the main report. Empty
-/// input (no subsidiaries / flag off) renders nothing.
-fn subsidiary_summary(results: &[(String, bool)]) -> String {
-    if results.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from("\n────────── subsidiary runs (Phase 3) ──────────\n");
-    for (name, ok) in results {
-        out.push_str(&format!(
-            "  [{}] {}\n",
-            if *ok { "OK" } else { "FAILED" },
-            name
-        ));
-    }
-    let failed = results.iter().filter(|(_, ok)| !ok).count();
-    out.push_str(&format!(
-        "engagement: {}/{} subsidiaries OK{}\n",
-        results.len() - failed,
-        results.len(),
-        if failed > 0 {
-            " — engagement INCOMPLETE (every org in the tree must pass; see I8)"
-        } else {
-            ""
-        }
-    ));
-    out
 }
 
 /// Build the task objective. When `-e/--execute` is given it wins; otherwise
@@ -992,18 +1041,5 @@ mod tests {
             !allow.contains(&StageKind::Scoping),
             "subsidiary runs must never re-run scoping (engagement-level stage)"
         );
-    }
-
-    #[test]
-    fn subsidiary_summary_renders_aggregate_and_empty_is_silent() {
-        assert!(subsidiary_summary(&[]).is_empty());
-        let s = subsidiary_summary(&[("a".into(), true), ("b".into(), false)]);
-        assert!(s.contains("[OK] a"));
-        assert!(s.contains("[FAILED] b"));
-        assert!(s.contains("1/2 subsidiaries OK"));
-        assert!(s.contains("INCOMPLETE"));
-        let all_ok = subsidiary_summary(&[("a".into(), true)]);
-        assert!(all_ok.contains("1/1 subsidiaries OK"));
-        assert!(!all_ok.contains("INCOMPLETE"));
     }
 }
