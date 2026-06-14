@@ -51,6 +51,8 @@ export interface PersistedTerminalData {
   executionMode?: string;
   retiredPlansJson?: unknown;
   planMessageId?: string | null;
+  /** Live `stage_run` per-org fan-out snapshot (SessionStageRun) to rehydrate. */
+  stageRunJson?: unknown;
   timelineBlocks?: PersistedTimelineBlock[];
 }
 

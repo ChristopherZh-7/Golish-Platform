@@ -53,6 +53,10 @@ export interface TerminalStateRow {
   executionMode: string | null;
   retiredPlansJson: unknown | null;
   planMessageId: string | null;
+  /** Live `stage_run` per-org fan-out snapshot (SessionStageRun), persisted so
+   * the chat tool card's covered/queued/blocked styling + detail rows survive
+   * a restart. Null on rows saved before this column existed. */
+  stageRunJson: unknown | null;
 }
 
 export interface WorkspacePreferences {

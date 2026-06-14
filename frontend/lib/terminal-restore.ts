@@ -14,7 +14,7 @@ import { getAllLeafPanes } from "@/lib/pane-utils";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type { PersistedTerminalData, PersistedTimelineBlock } from "@/lib/workspace-storage";
 import { useStore } from "@/store";
-import type { ActiveSubAgent } from "@/store/store-types";
+import type { ActiveSubAgent, SessionStageRun } from "@/store/store-types";
 
 type CreateTerminalFn = (
   workingDirectory?: string,
@@ -66,6 +66,17 @@ function restoreRetiredPlans(sessionId: string, termInfo: PersistedTerminalData)
       }
     }
   });
+}
+
+/**
+ * Restore a session's live `stage_run` per-org fan-out snapshot so the chat
+ * tool card's covered/active/queued/blocked styling + progress bar and the
+ * per-org detail rows come back after a panel close / restart (instead of the
+ * run reading as a bare "Expired" tool card with the in-memory state lost).
+ */
+function restoreStageRun(sessionId: string, termInfo: PersistedTerminalData) {
+  if (!termInfo.stageRunJson) return;
+  useStore.getState().setSessionStageRun(sessionId, termInfo.stageRunJson as SessionStageRun);
 }
 
 /** Rebuild activeSubAgents from timeline sub_agent_activity blocks so subagent state is restored after restart. */
@@ -170,6 +181,7 @@ export async function restoreTerminalForConv(
     }
     restoreSessionMode(existingTermId, termInfo);
     restoreRetiredPlans(existingTermId, termInfo);
+    restoreStageRun(existingTermId, termInfo);
     restoreTimelineBlocks(termInfo.timelineBlocks, existingTermId);
     restoreActiveSubAgents(existingTermId);
     return;
@@ -190,6 +202,7 @@ export async function restoreTerminalForConv(
   }
   restoreSessionMode(termId, termInfo);
   restoreRetiredPlans(termId, termInfo);
+  restoreStageRun(termId, termInfo);
   restoreTimelineBlocks(termInfo.timelineBlocks, termId);
   restoreActiveSubAgents(termId);
 }

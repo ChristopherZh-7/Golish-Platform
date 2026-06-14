@@ -81,6 +81,18 @@ async function withRetry<T>(
 }
 
 /**
+ * Compact signal for a session's live `stage_run` so a status transition
+ * (queued -> running -> passed) reliably triggers a save even when nothing else
+ * changed — otherwise the persisted snapshot would lag the visible styling.
+ */
+function stageRunFingerprint(sr: Session["stageRun"]): string {
+  if (!sr) return "";
+  const s = sr.summary;
+  const rows = sr.rows.map((r) => `${r.id}:${r.status}`).join(",");
+  return `${sr.requestId ?? ""}|${s.total}/${s.covered}/${s.active}/${s.queued}/${s.blocked}|${rows}`;
+}
+
+/**
  * Build a lightweight fingerprint that captures actual content changes,
  * not just collection sizes. Uses a fast incremental hash (djb2) so we
  * avoid serializing the entire store on every tick.
@@ -142,6 +154,7 @@ function buildChangeFingerprint(state: {
           feed(sess.executionMode ?? "");
           feed(String(sess.retiredPlans?.length ?? 0));
           feed(sess.planMessageId ?? "");
+          feed(stageRunFingerprint(sess.stageRun));
         }
       }
     }
@@ -181,6 +194,8 @@ export interface LoadedTerminalData {
   executionMode: string | null;
   retiredPlansJson: unknown | null;
   planMessageId: string | null;
+  /** Live `stage_run` per-org fan-out snapshot (SessionStageRun) to rehydrate. */
+  stageRunJson: unknown | null;
 }
 
 export function dbMsgToChatMessage(row: ChatMessageRow): ChatMessage {
@@ -345,6 +360,7 @@ export async function loadFromDb(projectPath: string): Promise<LoadedWorkspaceSt
                 executionMode: ts.executionMode ?? null,
                 retiredPlansJson: ts.retiredPlansJson ?? null,
                 planMessageId: ts.planMessageId ?? null,
+                stageRunJson: ts.stageRunJson ?? null,
               } satisfies LoadedTerminalData;
             })
           );
@@ -450,6 +466,7 @@ function convFingerprint(
       feed(sess.executionMode ?? "");
       feed(String(sess.retiredPlans?.length ?? 0));
       feed(sess.planMessageId ?? "");
+      feed(stageRunFingerprint(sess.stageRun));
     }
   }
   return String(h);
@@ -572,6 +589,7 @@ async function saveConversationsToDb(
         executionMode: sess.executionMode ?? null,
         retiredPlansJson: sess.retiredPlans?.length ? sess.retiredPlans : null,
         planMessageId: sess.planMessageId ?? null,
+        stageRunJson: sess.stageRun ?? null,
       });
 
       const timeline = timelines[tid];

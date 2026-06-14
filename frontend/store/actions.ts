@@ -175,6 +175,7 @@ export async function openProject(
             planJson: t.planJson ?? undefined,
             executionMode: t.executionMode ?? undefined,
             retiredPlansJson: t.retiredPlansJson ?? undefined,
+            stageRunJson: t.stageRunJson ?? undefined,
             timelineBlocks: t.timelineBlocks.map(
               (b) =>
                 ({

@@ -84,6 +84,11 @@ pub struct TerminalStateRow {
     pub execution_mode: Option<String>,
     pub retired_plans_json: Option<serde_json::Value>,
     pub plan_message_id: Option<String>,
+    /// Live `stage_run` per-org fan-out snapshot (SessionStageRun) so the chat
+    /// tool card's covered/queued/blocked styling + per-org detail rows survive
+    /// a restart. Nullable; absent on rows saved before this column existed.
+    #[serde(default)]
+    pub stage_run_json: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -364,8 +369,8 @@ pub async fn conv_save_terminal_state(
     }
 
     sqlx::query(
-        r#"INSERT INTO terminal_state (session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        r#"INSERT INTO terminal_state (session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id, stage_run_json)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
            ON CONFLICT (session_id) DO UPDATE SET
              working_directory = EXCLUDED.working_directory,
              scrollback = EXCLUDED.scrollback,
@@ -374,6 +379,7 @@ pub async fn conv_save_terminal_state(
              execution_mode = EXCLUDED.execution_mode,
              retired_plans_json = EXCLUDED.retired_plans_json,
              plan_message_id = EXCLUDED.plan_message_id,
+             stage_run_json = EXCLUDED.stage_run_json,
              updated_at = NOW()"#,
     )
     .bind(&terminal.session_id)
@@ -385,6 +391,7 @@ pub async fn conv_save_terminal_state(
     .bind(&terminal.execution_mode)
     .bind(&terminal.retired_plans_json)
     .bind(&terminal.plan_message_id)
+    .bind(&terminal.stage_run_json)
     .execute(&mut *tx)
     .await
 ?;
@@ -399,8 +406,8 @@ pub async fn conv_load_terminal_states(
     conversation_id: String,
 ) -> Result<Vec<TerminalStateRow>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>, Option<serde_json::Value>, Option<String>, Option<serde_json::Value>, Option<String>)>(
-        r#"SELECT session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id
+    let rows = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>, Option<serde_json::Value>, Option<String>, Option<serde_json::Value>, Option<String>, Option<serde_json::Value>)>(
+        r#"SELECT session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id, stage_run_json
            FROM terminal_state
            WHERE conversation_id = $1"#,
     )
@@ -422,6 +429,7 @@ pub async fn conv_load_terminal_states(
                 execution_mode,
                 retired_plans_json,
                 plan_message_id,
+                stage_run_json,
             )| {
                 TerminalStateRow {
                     session_id,
@@ -433,6 +441,7 @@ pub async fn conv_load_terminal_states(
                     execution_mode,
                     retired_plans_json,
                     plan_message_id,
+                    stage_run_json,
                 }
             },
         )
