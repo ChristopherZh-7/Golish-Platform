@@ -85,3 +85,5 @@
 6. **母子「家族关联」缺失**：扁平 per-org 跑，子公司发现有了，但母子间资产关联图（共享域/品牌/信任链/同 IP 段）没显式建模；cross-org 撞同一资产的归属/去重无策略。
 
 > 另记：上游 `scoping` 的 red_team `unit-candidate / organization-creation flow` 检查（`evaluate_red_team_scoping_flow`，要求 `unit_review_invoked && organization_created`，且 create 撞重名不算）对弱模型 + 持久 PG（org 已存在→create 重名）很脆，活体常卡 scoping。非本 scope，但影响活体推进。
+>
+> **[2026-06-14 已修一半]** 上面这条 `organization_created` 脆点已修：`golish-pentest-app/manage_organizations.rs` 单个 `create` 改 **get-or-create**（撞重名 → parent-scoped 查出已存在 org 返回其 id 作 success，而非吞成 `{"error"}` 无 id），持久 PG 重跑不再因「母公司已存在→create 重名→organization_created=false」卡 scoping。防作弊不破（仍须真调 create + `ask_human(unit_review)`；gate 仍查表确认 id 真存在）。验证：`nextest -p golish-pentest-app manage_organizations` 4/4（含 `existing_org_create_result_is_gate_countable`）+ clippy -D 0。**未修的另一半**：`unit_review_invoked` 仍要求本 session 真发 `ask_human(input_type="unit_review")`——弱模型若跳过人审仍会卡（这是有意的防偷懒，非 bug）。

@@ -29,7 +29,7 @@
 
 ---
 
-### 2026-06-14 · 逐子进度 eprintln 补回（T1 收敛后丢的中途可见性）（BaJie MCP-agent-3 · DISPATCH off · 用户「加逐子进度 eprintln」）
+### 2026-06-14 · 逐子进度 eprintln 补回 + scoping create get-or-create 修复（BaJie MCP-agent-3 · DISPATCH off · 用户逐步授权）
 
 - **本轮目标**：T1 把 CLI 子公司扇出从手写 Rust 循环换成 `run_fleet_scheduler` 后，丢了旧循环里的 `── subsidiary i/N: 名 ──` 逐子 eprintln（调度内核 IO-free，只在最后出 FleetReport）→ headless 跑 6 子时 CLI 中途看不到「第几个子」。用户要补回逐子进度。
 - **根因/设计**：`golish/engagement/scheduler.rs` 内核刻意零 IO + 全 trait 注入（executor/oracle/scorer）。补回进度的最干净落点 = **加第 4 个注入 trait `FleetProgress`**（与既有设计一致，副作用外置故内核仍可纯单测），而非在 executor 里塞 eprintln + 跨阶段计数（executor 不知 total、run_engagement_fleet 里 recon/attack 两阶段复用同一 executor 会让计数串味）。只有调度器知道 `total`，i/N 才准。
@@ -41,6 +41,16 @@
 - **commit 记录**：未 commit（等用户）。改动叠在 branch `feat/stage-run-fanout`（HEAD 仍 `e25da493`/`b26375ad`/`a6b34641` 序列上）。
 - **风险 / follow-up**：① 只动调度器进度通道，gate/coverage/续跑/聚合逻辑零改动，行为等价（progress 是纯旁路上报）。② GUI 单卡路径传 NoopProgress，零行为变化。③ 活体复看需重跑 `--stage-run --include-subsidiaries`（当前活体 run 211846 是旧二进制、看不到新行）。④ 全量 `just precommit` 本轮未重跑（仅 3 文件局部，组件级已全绿）。
 - **下一步**：用户决定是否 commit（建议单独 commit 这条 UX 修复）+ 是否重跑活体看逐子行；之后回到 fleet 主线 T4.4 活体 / T7 收口。
+
+#### 追加 · scoping `manage_organizations(create)` 改 get-or-create（修活体 scoping 反复 BLOCK 的根因）
+
+- **触发**：看活体 run(211846) 日志时发现母 scoping 反复 BLOCK（`red_team scoping skipped the unit-candidate / organization-creation flow`）。用户追问根因 → 我读 gate 源码（`golish-agent-kit/.../execute.rs::evaluate_red_team_scoping_flow` + `golish-db/repo/tool_calls.rs::scoping_actions_for_session`/`org_id_from_create_result`）定位。
+- **根因**：red_team scoping 流程门要求 `organization_created=true` = 本 session 有一次**成功**的 `manage_organizations(action="create")`（返回真 id 且 org 行存在）。但**持久/重用 PG**里母公司上几次跑已建过 → 这次 `create` 撞**重名唯一约束** → 工具把 DB 错误吞成 `{"error":...}`（无 id）→ gate 判 `organization_created=false` → 即使 org 在库也反复 BLOCK。这就是之前记的 follow-up「red_team unit-candidate 对弱模型+持久 PG 很脆」。
+- **修复（方案 ①·用户选定，单文件）**：`golish-pentest-app/src/pentest_bridge/manage_organizations.rs` 把单个 `"create"` 分支改成 **get-or-create**（与同文件 `create_batch` 早已有的 get-or-create 一致）：先按 parent-scoped 查同名 org（`organizations::find_child_id_by_name` / `find_root_id_by_name`），命中 → 返回它的 id 作 success（新增纯 helper `existing_org_create_result(id,name)`，返回 `{"action":"create","id","name","existing":true}`、**无 error 字段**），未命中才走原 `create`。lookup Err 兜底 fall through 到 create（不静默放行）。
+- **为何不破防作弊**：agent 这次仍必须真调一次 create（没调 = 无记录 = false）+ 仍需 `ask_human(unit_review)`（独立信号未动）；gate 还会再查 organizations 表确认 id 真存在。get-or-create 是「确保存在」的正确幂等语义。I7/I8「试过≠真落库」对「完全跳过 create」仍成立。
+- **验证（实跑全绿）**：`cargo nextest -p golish-pentest-app manage_organizations` → **4/4**（含新测 `existing_org_create_result_is_gate_countable`：断言 reuse 结果有可解析 id + 无 error，对齐 golish-db `org_id_from_create_result` 的判定）；`cargo clippy -p golish-pentest-app --lib --tests -- -D warnings` → 0 告警；ReadLints clean。
+- **未 commit**（等用户）。这条与逐子 eprintln 是两个独立修复。
+- **下一步**：用户决定 commit（建议这条单独一个 commit）+ 是否清/换库 or 直接重跑活体验证母 scoping 不再卡。
 
 ---
 
