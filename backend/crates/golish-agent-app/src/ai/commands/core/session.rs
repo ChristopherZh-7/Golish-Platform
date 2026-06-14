@@ -97,6 +97,10 @@ pub async fn init_ai_session(
     // never disagree about where a run's transcripts live (workspace-relative
     // for a real workspace, else `~/.golish/transcripts`).
     let transcripts_dir = golish_events::op_trace::resolve_transcript_base(Some(&workspace_path));
+    // Let the per-run tracing log layer (golish::telemetry::session_log) co-locate
+    // each run's `run.log` next to this `transcript.json` without re-resolving the
+    // workspace.
+    golish_events::op_trace::set_active_transcript_base(transcripts_dir.clone());
 
     match TranscriptWriter::new(&transcripts_dir, &session_id).await {
         Ok(writer) => {

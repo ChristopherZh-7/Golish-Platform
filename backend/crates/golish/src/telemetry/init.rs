@@ -125,6 +125,7 @@ pub fn init_tracing(
         Registry::default()
             .with(filter)
             .with(file_layer)
+            .with(super::session_log::SessionLogLayer::new())
             .with(fmt_layer)
             .with(otel_layer)
             .try_init()
@@ -146,6 +147,7 @@ pub fn init_tracing(
         Registry::default()
             .with(filter)
             .with(file_layer)
+            .with(super::session_log::SessionLogLayer::new())
             .with(fmt_layer)
             .try_init()
             .map_err(|e| format!("Failed to initialize tracing: {}", e))?;

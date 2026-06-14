@@ -221,8 +221,12 @@ just kill                    清掉残留进程（占用 1420 端口时用）
   - 每会话一个目录；子 agent 在 `subagents/<agent_id>-<parent_req>/transcript.json`
   - 含 `harness_trace` 事件（gate PASS/BLOCK、evidence_booked、background notes 等）
   - 解析顺序见 `golish_events::op_trace::resolve_transcript_base`：`VT_TRANSCRIPT_DIR` 覆盖 > `{workspace}/.golish/transcripts` > `~/.golish/transcripts`
+- **单 run 全量可读日志（调试首选，按会话）**：`{workspace}/.golish/transcripts/<session>/run.log`
+  - 由 `golish::telemetry::session_log::SessionLogLayer` 写：把 `backend.log` 里属于该 run 的全部 tracing 事件（主 agent + 每个子 agent + `[tool-dispatch]` 工具调用 + `harness::hook` gate/evidence + LLM）按时间线汇到一个文件，每行带 span 路径（如 `chat_message:agent:sub_agent`）。
+  - 路由依据 span 上的 `langfuse.session.id`；写入 base 由 `op_trace::set_active_transcript_base`（会话初始化时设）= 与 `transcript.json` 同目录。
+  - **调试一个 run 时先读这份 `run.log`**（不用在 87MB 的全局 `backend.log` 里 grep 捞单会话）。
 
-> **分析 Golish 运行问题时**：先定位 workspace（用户会给，或看 `~/.golish/backend.log` 里 `Transcript writer initialized ... at "<path>"` 那行），再读对应 `transcript.json`；全局 / 跨会话问题直接 grep `~/.golish/backend.log`。直接读这些文件即可分析，不依赖产品内的 `harness_trace` 工具 / `golish --replay`。
+> **分析 Golish 运行问题时**：先定位 workspace（用户会给，或看 `~/.golish/backend.log` 里 `Transcript writer initialized ... at "<path>"` 那行），再读对应 run 的 `run.log`（单 run 全量）/ `transcript.json`（结构化）；全局 / 跨会话问题才 grep `~/.golish/backend.log`。直接读这些文件即可分析，不依赖产品内的 `harness_trace` 工具 / `golish --replay`。
 
 ---
 

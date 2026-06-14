@@ -19,6 +19,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 use chrono::{DateTime, Utc};
 use golish_core::events::{build_agent_path, AiEvent};
@@ -94,6 +95,30 @@ pub fn resolve_transcript_base(workspace: Option<&Path>) -> PathBuf {
 /// zero-context default for callers that genuinely have no workspace.
 pub fn default_transcript_base() -> PathBuf {
     resolve_transcript_base(None)
+}
+
+/// Process-global "active" transcripts base, set by the app at session init so
+/// out-of-band writers (e.g. the per-run tracing log layer in
+/// `golish::telemetry::session_log`) co-locate their `run.log` next to
+/// `transcript.json` without re-resolving the workspace. Falls back to the home
+/// base when unset.
+static ACTIVE_TRANSCRIPT_BASE: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+/// Record the transcripts base the app is actively writing to (call at session
+/// init, right after [`resolve_transcript_base`]).
+pub fn set_active_transcript_base(base: PathBuf) {
+    if let Ok(mut guard) = ACTIVE_TRANSCRIPT_BASE.write() {
+        *guard = Some(base);
+    }
+}
+
+/// The active transcripts base if the app registered one, else the home base.
+pub fn active_transcript_base_or_home() -> PathBuf {
+    ACTIVE_TRANSCRIPT_BASE
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .unwrap_or_else(home_transcript_base)
 }
 
 /// Pick the transcripts base that actually holds `session`, for callers with no

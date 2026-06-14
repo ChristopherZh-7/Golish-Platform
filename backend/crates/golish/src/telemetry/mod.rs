@@ -8,9 +8,11 @@ mod filter;
 mod guard;
 mod init;
 mod langfuse;
+mod session_log;
 mod stats;
 
 pub use guard::TelemetryGuard;
 pub use init::init_tracing;
 pub use langfuse::LangfuseConfig;
+pub use session_log::SessionLogLayer;
 pub use stats::{TelemetryStats, TelemetryStatsSnapshot};
