@@ -50,11 +50,19 @@ export function stripAgentXmlTags(text: string): string {
         /<\/?(task_assignment|original_request|execution_plan|execution_context|prior_knowledge)>/gi,
         ""
       )
+      // Anthropic-style tool-call markup (DeepSeek V4 leaks this into agent text
+      // when its native tool-call channel degrades): strip the full wrapper +
+      // invoke blocks first (complete or unterminated/streaming), then any
+      // leftover tags below.
+      .replace(/<tool_calls\b[^>]*>[\s\S]*?(?:<\/tool_calls>|$)/g, "")
+      .replace(/<invoke\b[^>]*>[\s\S]*?(?:<\/invoke>|$)/g, "")
+      // MiMo / GLM `<function=...>` dialect.
       .replace(/<tool_call\b[^>]*>[\s\S]*?<\/tool_call>/g, "")
       .replace(/<function=[^>]*>[\s\S]*?(?:<\/function>|$)/g, "")
-      .replace(/<parameter=[^>]*>[\s\S]*?<\/parameter>/g, "")
-      .replace(/<\/?tool_call\b[^>]*>/g, "")
-      .replace(/<\/?(?:function|parameter)[^>]*>/g, "")
+      // `<parameter=key>` (MiMo) and `<parameter name="key">` (Anthropic) values.
+      .replace(/<parameter[=\s][^>]*>[\s\S]*?(?:<\/parameter>|$)/g, "")
+      .replace(/<\/?tool_calls?\b[^>]*>/g, "")
+      .replace(/<\/?(?:function|parameter|invoke)[^>]*>/g, "")
   ).trim();
 }
 

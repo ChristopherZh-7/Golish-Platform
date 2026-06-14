@@ -1,10 +1,17 @@
 //! Pure parser for textual (pseudo-XML) tool calls.
 //!
-//! Some model families (notably Xiaomi MiMo) express tool calls as
-//! `<tool_call><function=name><parameter=key>value</parameter></function></tool_call>`
-//! markup embedded in assistant text instead of emitting native structured
-//! tool calls. Runtimes that only collect native tool calls would otherwise
-//! leak this markup as prose and never execute the tool.
+//! Some model families express tool calls as pseudo-XML markup embedded in
+//! assistant text instead of emitting native structured tool calls. Runtimes
+//! that only collect native tool calls would otherwise leak this markup as prose
+//! and never execute the tool. Two dialects are recognized:
+//!
+//! - **MiMo / GLM** `<function=name>`:
+//!   `<tool_call><function=name><parameter=key>value</parameter></function></tool_call>`
+//! - **Anthropic-style** `<invoke name=...>` (emitted as text by DeepSeek V4
+//!   `native_best_effort` models when their native tool-call channel degrades):
+//!   `<tool_calls><invoke name="name"><parameter name="key">value</parameter></invoke></tool_calls>`
+//!   The `<parameter>` tag may carry extra attributes (e.g. `string="true"`),
+//!   which are ignored — only the `name` attribute and inner value matter.
 //!
 //! This module is intentionally dependency-light (serde_json + std only) so it
 //! can be shared by both the main agentic loop (`golish-agent-runtime`) and the
@@ -55,8 +62,19 @@ pub fn select_textual_tool_calls(text: &str) -> Vec<TextualToolCall> {
     candidates
 }
 
-/// Parse every `<function=...>...</function>` block from `text`.
+/// Parse every textual tool call from `text`, across both supported dialects
+/// (`<function=...>` MiMo/GLM and `<invoke name=...>` Anthropic-style). Calls
+/// are returned in dialect order (function-style first, then invoke-style); the
+/// `ask_human` barrier in [`select_textual_tool_call(s)`] still applies across
+/// the combined set.
 pub fn parse_textual_tool_calls(text: &str) -> Vec<TextualToolCall> {
+    let mut calls = parse_function_style_tool_calls(text);
+    calls.extend(parse_invoke_style_tool_calls(text));
+    calls
+}
+
+/// Parse every `<function=name>...</function>` block (MiMo / GLM dialect).
+fn parse_function_style_tool_calls(text: &str) -> Vec<TextualToolCall> {
     let mut calls = Vec::new();
     let mut search_start = 0;
 
@@ -92,12 +110,63 @@ pub fn parse_textual_tool_calls(text: &str) -> Vec<TextualToolCall> {
     calls
 }
 
-/// Remove `<tool_call>...</tool_call>` and `<function=...>...</function>` markup
-/// from `text` so leaked markup is not shown to the user. Unterminated blocks
-/// are dropped from the opening tag onward.
+/// Parse every `<invoke name="...">...</invoke>` block (Anthropic-style dialect).
+///
+/// Inner parameters use `<parameter name="key">value</parameter>` (the tag may
+/// carry extra attributes such as `string="true"`, which are ignored). This is
+/// the shape DeepSeek V4 (`native_best_effort`) leaks into assistant text when
+/// its native tool-call channel degrades.
+fn parse_invoke_style_tool_calls(text: &str) -> Vec<TextualToolCall> {
+    let mut calls = Vec::new();
+    let mut search_start = 0;
+
+    while let Some(rel) = text[search_start..].find("<invoke") {
+        let invoke_start = search_start + rel;
+        let attrs_start = invoke_start + "<invoke".len();
+        let Some(tag_end_rel) = text[attrs_start..].find('>') else {
+            break;
+        };
+        let tag_end = attrs_start + tag_end_rel;
+        let name = extract_quoted_attr(&text[attrs_start..tag_end], "name").unwrap_or_default();
+
+        let body_start = tag_end + 1;
+        let Some(body_end_rel) = text[body_start..].find("</invoke>") else {
+            break;
+        };
+        let body_end = body_start + body_end_rel;
+        if name.is_empty() {
+            search_start = body_end + "</invoke>".len();
+            continue;
+        }
+        let body = &text[body_start..body_end];
+        let raw_span = text[invoke_start..body_end + "</invoke>".len()].to_string();
+
+        calls.push(TextualToolCall {
+            name,
+            arguments: parse_invoke_parameters(body),
+            raw_span,
+        });
+        search_start = body_end + "</invoke>".len();
+    }
+
+    calls
+}
+
+/// Remove every textual tool-call dialect's markup from `text` so leaked markup
+/// is not shown to the user: the MiMo `<tool_call>` / `<function=...>` shape and
+/// the Anthropic-style `<tool_calls>` / `<invoke ...>` / `<parameter ...>` shape.
+/// Unterminated blocks are dropped from the opening tag onward.
 pub fn strip_textual_tool_call_markup(text: &str) -> String {
-    let without_tool_blocks = remove_tag_blocks(text, "<tool_call", "</tool_call>");
-    remove_tag_blocks(&without_tool_blocks, "<function=", "</function>")
+    // Order matters: strip the plural Anthropic `<tool_calls>` wrapper before the
+    // singular MiMo `<tool_call>` — the latter's open prefix `<tool_call` is a
+    // prefix of `<tool_calls`, so doing it first would mis-span a plural wrapper.
+    let s = remove_tag_blocks(text, "<tool_calls", "</tool_calls>");
+    let s = remove_tag_blocks(&s, "<tool_call", "</tool_call>");
+    let s = remove_tag_blocks(&s, "<invoke", "</invoke>");
+    let s = remove_tag_blocks(&s, "<function=", "</function>");
+    // Drop any orphaned `<parameter ...>...</parameter>` left outside a block
+    // (e.g. a streamed leak whose enclosing invoke/function was already removed).
+    remove_tag_blocks(&s, "<parameter", "</parameter>")
 }
 
 /// Outcome of finalizing assistant text that may carry textual tool-call markup.
@@ -171,6 +240,67 @@ fn parse_parameter_value(key: &str, raw_value: &str) -> Value {
     }
 
     serde_json::from_str(raw_value).unwrap_or_else(|_| Value::String(raw_value.to_string()))
+}
+
+/// Parse `<parameter name="key">value</parameter>` pairs (Anthropic-style).
+///
+/// The opening tag may carry extra attributes (e.g. `string="true"`); only the
+/// `name` attribute is read for the key and the inner text for the value.
+fn parse_invoke_parameters(body: &str) -> Value {
+    let mut args = Map::new();
+    let mut search_start = 0;
+
+    while let Some(param_rel) = body[search_start..].find("<parameter") {
+        let param_start = search_start + param_rel;
+        let attrs_start = param_start + "<parameter".len();
+        let Some(tag_end_rel) = body[attrs_start..].find('>') else {
+            break;
+        };
+        let tag_end = attrs_start + tag_end_rel;
+        let key = extract_quoted_attr(&body[attrs_start..tag_end], "name");
+
+        let value_start = tag_end + 1;
+        let Some(value_end_rel) = body[value_start..].find("</parameter>") else {
+            break;
+        };
+        let value_end = value_start + value_end_rel;
+        let raw_value = body[value_start..value_end].trim();
+        if let Some(k) = key.filter(|k| !k.is_empty()) {
+            args.insert(k.clone(), parse_parameter_value(&k, raw_value));
+        }
+        search_start = value_end + "</parameter>".len();
+    }
+
+    Value::Object(args)
+}
+
+/// Extract the value of a quoted attribute (`key="value"` or `key='value'`) from
+/// an opening-tag attribute slice. Returns `None` if the attribute is absent or
+/// unquoted. Only matches standalone attributes (preceded by start/whitespace)
+/// so `name=` is not found inside another attribute's value.
+fn extract_quoted_attr(attrs: &str, key: &str) -> Option<String> {
+    let mut search = 0;
+    while let Some(rel) = attrs[search..].find(key) {
+        let kpos = search + rel;
+        let preceded_ok = kpos == 0 || attrs[..kpos].ends_with(char::is_whitespace);
+        let after = kpos + key.len();
+        let rest = attrs[after..].trim_start();
+        if preceded_ok {
+            if let Some(rest) = rest.strip_prefix('=') {
+                let rest = rest.trim_start();
+                let quote = rest.chars().next()?;
+                if quote == '"' || quote == '\'' {
+                    let val = &rest[quote.len_utf8()..];
+                    if let Some(end) = val.find(quote) {
+                        return Some(val[..end].to_string());
+                    }
+                }
+                return None;
+            }
+        }
+        search = after;
+    }
+    None
 }
 
 fn remove_tag_blocks(text: &str, open_prefix: &str, close_tag: &str) -> String {
@@ -349,5 +479,108 @@ mod tests {
         let finalized = finalize_assistant_text("just a normal answer", true);
         assert_eq!(finalized.recovered, None);
         assert_eq!(finalized.clean_text, "just a normal answer");
+    }
+
+    // ── Anthropic-style `<invoke name=...>` dialect (DeepSeek V4 leak) ──────────
+
+    #[test]
+    fn parses_invoke_style_tool_call_with_extra_attributes() {
+        // Exact shape leaked by deepseek-v4-flash into the target_intel sub-agent
+        // output (the `string="true"` attribute must be ignored).
+        let text = r#"Let me read the amass output.
+<tool_calls>
+<invoke name="pentest_run">
+<parameter name="args" string="true">/tmp/pingan_amass.txt 2>/dev/null || echo "File not found"</parameter>
+<parameter name="tool_name" string="true">dig</parameter>
+</invoke>
+</tool_calls>"#;
+
+        let call = select_textual_tool_call(text).expect("expected invoke-style call");
+        assert_eq!(call.name, "pentest_run");
+        assert_eq!(call.arguments["tool_name"], "dig");
+        assert_eq!(
+            call.arguments["args"],
+            "/tmp/pingan_amass.txt 2>/dev/null || echo \"File not found\""
+        );
+        assert!(call.raw_span.contains("<invoke name=\"pentest_run\">"));
+    }
+
+    #[test]
+    fn strips_invoke_style_and_tool_calls_wrapper() {
+        let text = "Recon summary done.\n\
+<tool_calls>\n\
+<invoke name=\"pentest_run\">\n\
+<parameter name=\"tool_name\" string=\"true\">dig</parameter>\n\
+</invoke>\n\
+</tool_calls>";
+
+        let stripped = strip_textual_tool_call_markup(text);
+        assert!(!stripped.contains("<invoke"), "leaked invoke: {stripped}");
+        assert!(
+            !stripped.contains("<parameter"),
+            "leaked parameter: {stripped}"
+        );
+        assert!(
+            !stripped.contains("tool_calls"),
+            "leaked wrapper: {stripped}"
+        );
+        assert!(stripped.contains("Recon summary done."));
+    }
+
+    #[test]
+    fn strips_unterminated_invoke_leak_from_open_tag_onward() {
+        // A truncated turn (e.g. hitting max_tokens) can leave an unterminated
+        // `<tool_calls>` / `<invoke>` — everything from the open tag is dropped.
+        let text = "Partial answer.\n<tool_calls>\n<invoke name=\"pentest_run\">\n<parameter name=\"args\">/tmp/x";
+        let stripped = strip_textual_tool_call_markup(text);
+        assert_eq!(stripped.trim(), "Partial answer.");
+    }
+
+    #[test]
+    fn finalize_strips_invoke_leak_when_recovery_disabled() {
+        let text = "done.\n<tool_calls><invoke name=\"x\"><parameter name=\"a\">1</parameter></invoke></tool_calls>";
+        let finalized = finalize_assistant_text(text, false);
+        assert_eq!(finalized.recovered, None, "recovery must stay disabled");
+        assert!(!finalized.clean_text.contains("<invoke"));
+        assert!(finalized.clean_text.contains("done."));
+    }
+
+    #[test]
+    fn finalize_recovers_invoke_style_when_allowed() {
+        let text = "checking.\n<invoke name=\"search_memories\"><parameter name=\"query\">acme recon</parameter></invoke>";
+        let finalized = finalize_assistant_text(text, true);
+        let recovered = finalized.recovered.expect("expected recovered invoke call");
+        assert_eq!(recovered.name, "search_memories");
+        assert_eq!(recovered.arguments["query"], "acme recon");
+        assert!(!finalized.clean_text.contains("<invoke"));
+        assert!(finalized.clean_text.contains("checking."));
+    }
+
+    #[test]
+    fn invoke_ask_human_barrier_wins_over_follow_up() {
+        let text = r#"<tool_calls>
+<invoke name="ask_human">
+<parameter name="question">add example.com?</parameter>
+</invoke>
+<invoke name="manage_targets">
+<parameter name="action">add</parameter>
+</invoke>
+</tool_calls>"#;
+        let calls = select_textual_tool_calls(text);
+        assert_eq!(calls.len(), 1, "ask_human barrier must drop the follow-up");
+        assert_eq!(calls[0].name, "ask_human");
+    }
+
+    #[test]
+    fn extract_quoted_attr_handles_quotes_and_absence() {
+        assert_eq!(
+            extract_quoted_attr(" name=\"args\" string=\"true\"", "name").as_deref(),
+            Some("args")
+        );
+        assert_eq!(
+            extract_quoted_attr(" name='single'", "name").as_deref(),
+            Some("single")
+        );
+        assert_eq!(extract_quoted_attr(" string=\"true\"", "name"), None);
     }
 }

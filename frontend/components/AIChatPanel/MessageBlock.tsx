@@ -56,13 +56,20 @@ function MessageErrorLine({
 
 function stripToolCallXml(text: string): string {
   let cleaned = text
+    // Anthropic-style markup (DeepSeek V4 leak): wrapper + invoke blocks first.
+    .replace(/<tool_calls\b[^>]*>[\s\S]*?<\/tool_calls>/g, "")
+    .replace(/<invoke\b[^>]*>[\s\S]*?<\/invoke>/g, "")
     .replace(/<tool_call\b[^>]*>[\s\S]*?<\/tool_call>/g, "")
     .replace(/<execute>[\s\S]*?<\/execute>/g, "")
     .replace(/<function=[^>]*>[\s\S]*?<\/function>/g, "")
-    .replace(/<\/?tool_call\b[^>]*>/g, "")
-    .replace(/<\/function>/g, "");
+    .replace(/<\/?tool_calls?\b[^>]*>/g, "")
+    .replace(/<\/(?:function|invoke)>/g, "");
 
-  const incompleteIdx = cleaned.search(/<(?:tool_call\b|execute|function[=\s]|parameter[=\s])/);
+  // Truncate at an incomplete (streaming) opening of any known tool-call markup
+  // so a half-emitted block never flashes as prose mid-stream.
+  const incompleteIdx = cleaned.search(
+    /<(?:tool_calls?\b|execute|invoke\b|function[=\s]|parameter[=\s])/
+  );
   if (incompleteIdx !== -1) {
     cleaned = cleaned.slice(0, incompleteIdx);
   }
@@ -288,6 +295,8 @@ export const MessageBlock = memo(function MessageBlock({
                   toolCalls={seg.calls}
                   requestIds={seg.requestIds}
                   isMessageComplete={messageComplete}
+                  approvalMode={approvalMode}
+                  onApprovalModeChange={onApprovalModeChange}
                 />
               );
             })}

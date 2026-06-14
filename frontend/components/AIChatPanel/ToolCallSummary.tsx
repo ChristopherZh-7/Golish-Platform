@@ -1,4 +1,13 @@
-import { CheckCircle2, ChevronDown, Clock, Loader2, Wrench, XCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  ChevronDown,
+  Clock,
+  Loader2,
+  ShieldCheck,
+  Wrench,
+  XCircle,
+  Zap,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import {
@@ -10,6 +19,72 @@ import {
 import { getToolColor, getToolLabel, getToolPrimaryArg } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
+
+type ApprovalMode = "ask" | "run-all";
+
+/**
+ * Compact tool-approval mode switch rendered inline on a tool-call card / row.
+ *
+ * Shared by the per-tool pending-approval card ([`CollapsibleToolCall`]) and the
+ * always-visible timeline card ([`ToolCallCard`]) so the "Run Everything / Ask
+ * Every Time" control is reachable from *every* tool call, not just the toolbar
+ * or a pending approval. `stopPropagation` keeps clicks from also toggling the
+ * card's detail pane.
+ */
+function ApprovalModeInlineDropdown({
+  approvalMode,
+  onApprovalModeChange,
+}: {
+  approvalMode?: string;
+  onApprovalModeChange: (mode: ApprovalMode) => void;
+}) {
+  const isRunAll = approvalMode === "run-all";
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Tool approval mode"
+          onClick={(e) => e.stopPropagation()}
+          className={cn(
+            "flex items-center gap-1 text-[10px] transition-colors",
+            isRunAll
+              ? "text-[var(--ansi-yellow)]/80 hover:text-[var(--ansi-yellow)]"
+              : "text-muted-foreground/50 hover:text-muted-foreground"
+          )}
+        >
+          {isRunAll ? <Zap className="w-2.5 h-2.5" /> : <ShieldCheck className="w-2.5 h-2.5" />}
+          {isRunAll ? "Run Everything" : "Ask Every Time"}
+          <ChevronDown className="w-2.5 h-2.5" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        className="bg-card border-[var(--border-medium)] min-w-[160px]"
+      >
+        {[
+          { id: "ask" as const, label: "Ask Every Time" },
+          { id: "run-all" as const, label: "Run Everything" },
+        ].map((opt) => (
+          <DropdownMenuItem
+            key={opt.id}
+            onClick={(e) => {
+              e.stopPropagation();
+              onApprovalModeChange(opt.id);
+            }}
+            className={cn(
+              "text-xs cursor-pointer",
+              approvalMode === opt.id && "bg-accent/10 text-accent"
+            )}
+          >
+            {opt.label}
+            {approvalMode === opt.id && <span className="ml-auto text-accent">✓</span>}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 export function parseToolPrimary(name: string, argsStr?: string): string | null {
   if (!argsStr) return null;
@@ -38,6 +113,8 @@ function ToolCallCard({
   isSelected,
   sessionId,
   requestId,
+  approvalMode,
+  onApprovalModeChange,
 }: {
   tc: { name: string; args?: string; result?: string; success?: boolean };
   onClick: () => void;
@@ -45,6 +122,8 @@ function ToolCallCard({
   isSelected?: boolean;
   sessionId?: string | null;
   requestId?: string | null;
+  approvalMode?: string;
+  onApprovalModeChange?: (mode: ApprovalMode) => void;
 }) {
   const label = getToolLabel(tc.name, "short");
   const color = getToolColor(tc.name);
@@ -68,9 +147,16 @@ function ToolCallCard({
   });
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
       className={cn(
         "w-full rounded-lg border bg-background/50 px-3 py-2 text-left transition-colors cursor-pointer group",
         isSelected && "ring-1 ring-accent/50 border-accent/40 bg-accent/5",
@@ -149,7 +235,15 @@ function ToolCallCard({
           {primary}
         </div>
       )}
-    </button>
+      {onApprovalModeChange && (
+        <div className="mt-1.5 flex justify-end">
+          <ApprovalModeInlineDropdown
+            approvalMode={approvalMode}
+            onApprovalModeChange={onApprovalModeChange}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -363,6 +457,8 @@ export function ToolCallSummary({
   toolCalls,
   requestIds,
   isMessageComplete,
+  approvalMode,
+  onApprovalModeChange,
 }: {
   toolCalls: Array<{
     name: string;
@@ -373,6 +469,8 @@ export function ToolCallSummary({
   }>;
   requestIds?: string[];
   isMessageComplete?: boolean;
+  approvalMode?: string;
+  onApprovalModeChange?: (mode: ApprovalMode) => void;
 }) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const sessionId = useStore((s) => s.activeSessionId);
@@ -467,6 +565,8 @@ export function ToolCallSummary({
             isSelected={selectedIdx === i}
             sessionId={sessionId}
             requestId={tc.requestId ?? requestIds?.[i] ?? null}
+            approvalMode={approvalMode}
+            onApprovalModeChange={onApprovalModeChange}
           />
         );
       })}
