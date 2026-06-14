@@ -180,7 +180,7 @@ fn bundled_quake_asset_intel_config_loads() {
     );
     assert!(asset.capabilities.iter().any(|cap| cap == "services"));
     match &asset.runtime {
-        golish_pentest::models::AssetIntelRuntimeConfig::HttpJson { requests } => {
+        golish_pentest::models::AssetIntelRuntimeConfig::HttpJson { requests, .. } => {
             assert_eq!(requests.len(), 2);
             assert_eq!(requests[0].method, "POST");
             assert_eq!(
@@ -466,6 +466,8 @@ async fn http_json_runtime_posts_fake_data_and_normalizes_candidates() {
                     json: Value::Null,
                     timeout_secs: 5,
                 }],
+                request_delay_ms: None,
+                max_retries: None,
             },
             normalize: golish_pentest::models::AssetIntelNormalizeConfig {
                 organization: vec![],
@@ -511,6 +513,152 @@ async fn http_json_runtime_posts_fake_data_and_normalizes_candidates() {
         .join(".golish/tool-output/asset-intel/run-1/fake-http");
     assert!(output_dir.join("raw/response-domains.json").exists());
     assert!(output_dir.join("manifest.json").exists());
+}
+
+#[tokio::test]
+async fn http_json_runtime_keeps_partial_data_when_one_request_drops_body() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Three sequential requests; the middle one (query_type=site) promises a
+    // body via Content-Length but drops the connection mid-stream, which is
+    // exactly the reqwest "error decoding response body" that zeroed 0.zone
+    // enrichment in production. The fix must keep request #1 + #3 data and end
+    // the provider as a *trusted* Completed (not Failed → discarded).
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let mut bytes = Vec::new();
+            loop {
+                let n = stream.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&buf[..n]);
+                let req = String::from_utf8_lossy(&bytes);
+                if req.contains("query_type=domain")
+                    || req.contains("query_type=site")
+                    || req.contains("query_type=apk")
+                {
+                    break;
+                }
+            }
+            let req = String::from_utf8_lossy(&bytes).into_owned();
+            if req.contains("query_type=site") {
+                // Promise 4096 bytes, send a sliver, then drop → truncated body.
+                let head = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 4096\r\nConnection: close\r\n\r\n";
+                stream.write_all(head.as_bytes()).await.unwrap();
+                stream.write_all(b"{\"code\":0,\"data\":[").await.unwrap();
+                stream.flush().await.unwrap();
+                drop(stream);
+                continue;
+            }
+            let (domain, title) = if req.contains("query_type=apk") {
+                ("c.com", "C")
+            } else {
+                ("a.com", "A")
+            };
+            let body = serde_json::json!({
+                "code": 0,
+                "data": [ { "domain": domain, "title": title } ],
+                "message": "ok"
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.flush().await.unwrap();
+        }
+    });
+
+    let make_req = |id: &str| golish_pentest::models::AssetIntelHttpRequest {
+        id: id.into(),
+        method: "POST".into(),
+        url: url.clone(),
+        headers: std::collections::HashMap::new(),
+        form: {
+            let mut f = std::collections::HashMap::new();
+            f.insert("query".to_string(), "{{company_name}}".to_string());
+            f.insert("query_type".to_string(), id.to_string());
+            f
+        },
+        json: Value::Null,
+        timeout_secs: 5,
+    };
+    let tool = ToolConfig {
+        id: "fake-http".into(),
+        name: "Fake HTTP".into(),
+        asset_intel: Some(golish_pentest::models::AssetIntelToolConfig {
+            enabled: true,
+            provider_id: "fake-http".into(),
+            display_name: "Fake HTTP".into(),
+            capabilities: vec!["domains".into()],
+            requires_integration: None,
+            auto: golish_pentest::models::AssetIntelAutoConfig {
+                default: true,
+                priority: 1,
+            },
+            runtime: golish_pentest::models::AssetIntelRuntimeConfig::HttpJson {
+                requests: vec![make_req("domain"), make_req("site"), make_req("apk")],
+                // Keep the test fast + focused on the abort-vs-continue behavior
+                // (retry path is covered separately by the transport classifier).
+                request_delay_ms: None,
+                max_retries: Some(0),
+            },
+            normalize: golish_pentest::models::AssetIntelNormalizeConfig {
+                organization: vec![],
+                target: vec![golish_pentest::models::AssetIntelNormalizeRule {
+                    path: "$..data[*]".into(),
+                    label: golish_pentest::models::AssetIntelFieldRef::Field("title".into()),
+                    value: golish_pentest::models::AssetIntelFieldRef::Field("domain".into()),
+                    confidence: 0.72,
+                    when: vec![],
+                }],
+                profile_fields: vec![],
+            },
+            discovery: golish_pentest::models::AssetIntelDiscoveryConfig::default(),
+            lookup: None,
+        }),
+        ..Default::default()
+    };
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://golish:golish@127.0.0.1:1/golish")
+        .unwrap();
+    let project_root = tempfile::tempdir().unwrap();
+
+    let (status, candidates, evidence, _profile) = run_http_json_provider(
+        &pool,
+        &tool,
+        project_root.path(),
+        "run-partial",
+        "小米",
+        &AssetIntelHydrateConfig::default(),
+        None,
+    )
+    .await
+    .unwrap();
+    server.await.unwrap();
+
+    assert_eq!(
+        status.status,
+        AssetIntelProviderRunState::Completed,
+        "partial success must remain trusted, got: {status:?}"
+    );
+    assert_eq!(candidates.targets.len(), 2);
+    let values: Vec<&str> = candidates
+        .targets
+        .iter()
+        .map(|t| t.value.as_str())
+        .collect();
+    assert!(values.contains(&"a.com"), "domain request data kept");
+    assert!(values.contains(&"c.com"), "apk request data kept");
+    assert_eq!(evidence["failedRequests"], 1);
+    assert_eq!(evidence["state"], "completed");
 }
 
 #[tokio::test]
@@ -561,6 +709,8 @@ async fn http_json_runtime_treats_provider_code_error_as_failed() {
                     json: Value::Null,
                     timeout_secs: 5,
                 }],
+                request_delay_ms: None,
+                max_retries: None,
             },
             normalize: golish_pentest::models::AssetIntelNormalizeConfig {
                 organization: vec![],
@@ -600,8 +750,14 @@ async fn http_json_runtime_treats_provider_code_error_as_failed() {
     assert!(status.message.contains("API Key"));
     assert!(candidates.targets.is_empty());
     assert_eq!(evidence["state"], "failed");
-    assert_eq!(evidence["reason"], "unauthorized");
-    assert_eq!(evidence["providerCode"], "1");
+    assert_eq!(evidence["failedRequests"], 1);
+    // Per-request evidence now carries the classification + provider detail.
+    assert_eq!(evidence["requests"][0]["status"], "failed");
+    assert_eq!(evidence["requests"][0]["reason"], "unauthorized");
+    assert!(evidence["requests"][0]["error"]
+        .as_str()
+        .expect("request error string")
+        .contains("code 1"));
     let manifest_path = evidence["manifestPath"]
         .as_str()
         .expect("manifestPath present");
@@ -1453,6 +1609,80 @@ fn fixture_enrichment_profile_fields_cover_observed_provider_keys() {
     }
 }
 
+/// End-to-end: a `query_type=apk` 微信公众号 row (carries `msg.wechat_id`,
+/// has no `msg.app_url`) must hydrate the org's `wechat_official_accounts`
+/// intel list — these used to be silently dropped because the only apk rule
+/// was gated on `msg.app_url`. A plain `site` row (no `msg.wechat_id`) must
+/// NOT produce a wechat entry, so SEO titles can't pollute the field.
+#[test]
+fn zone_apk_wechat_official_account_maps_to_profile_field() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let resources = std::path::PathBuf::from(manifest_dir)
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("resources");
+    let toolsconfig_dir = resources.join("toolsconfig");
+    let intel_providers_dir = resources.join("intel-providers");
+    if !intel_providers_dir.exists() {
+        eprintln!(
+            "fixture skipped: intel-providers dir not found at {}",
+            intel_providers_dir.display()
+        );
+        return;
+    }
+    let scan = golish_pentest::scan_asset_intel_sources(&toolsconfig_dir, &intel_providers_dir);
+    assert!(
+        scan.success,
+        "toolsconfig scan failed: {:?}",
+        scan.error.as_deref()
+    );
+    let expanded = expand_provider_tools(&scan.tools);
+    let zone = expanded
+        .iter()
+        .find(|tool| provider_id_for_tool(tool).as_deref() == Some("0.zone"))
+        .and_then(|tool| tool.asset_intel.as_ref())
+        .expect("0.zone provider fixture");
+
+    let wechat_raw = serde_json::json!({
+        "data": [{
+            "title": "平安银行",
+            "msg": { "wechat_id": "PINGANBANK", "introduction": "平安银行官方公众号" }
+        }]
+    });
+    let entries = extract_profile_field_entries(&zone.normalize.profile_fields, &wechat_raw);
+    assert!(
+        entries.iter().any(|e| {
+            e.target_field == "wechat_official_accounts"
+                && e.value == "平安银行"
+                && matches!(
+                    e.target_kind,
+                    golish_pentest::models::AssetIntelProfileFieldTarget::Intel
+                )
+        }),
+        "0.zone apk 公众号 (msg.wechat_id, no app_url) must map -> wechat_official_accounts; got {entries:?}"
+    );
+    assert!(
+        !entries.iter().any(|e| e.target_field == "mobile_apps"),
+        "公众号 without msg.app_url must not land in mobile_apps; got {entries:?}"
+    );
+
+    let site_raw = serde_json::json!({
+        "data": [{
+            "title": "Some Web Page SEO Title",
+            "url": "https://example.com",
+            "domain": "example.com"
+        }]
+    });
+    let site_entries = extract_profile_field_entries(&zone.normalize.profile_fields, &site_raw);
+    assert!(
+        !site_entries
+            .iter()
+            .any(|e| e.target_field == "wechat_official_accounts"),
+        "site rows without msg.wechat_id must not pollute wechat_official_accounts; got {site_entries:?}"
+    );
+}
+
 #[test]
 fn select_enrichment_providers_excludes_subsidiaries_capable_tools() {
     let tools = two_phase_fixture_tools();
@@ -1897,6 +2127,40 @@ fn build_profile_patch_dedupes_app_intel_array_fields() {
     assert_eq!(
         intel["app_domains"],
         serde_json::json!(["https://com.dfwe"])
+    );
+}
+
+#[test]
+fn build_profile_patch_collects_wechat_official_accounts_as_array() {
+    // 公众号 entries fold into an `intel.wechat_official_accounts` array
+    // (case-insensitive dedupe), not a single scalar override — an org can
+    // own several official accounts.
+    let entries = vec![
+        ProfileFieldEntry {
+            target_kind: golish_pentest::models::AssetIntelProfileFieldTarget::Intel,
+            target_field: "wechat_official_accounts".into(),
+            value: "平安银行".into(),
+        },
+        ProfileFieldEntry {
+            target_kind: golish_pentest::models::AssetIntelProfileFieldTarget::Intel,
+            target_field: "wechat_official_accounts".into(),
+            value: "平安银行".into(),
+        },
+        ProfileFieldEntry {
+            target_kind: golish_pentest::models::AssetIntelProfileFieldTarget::Intel,
+            target_field: "wechat_official_accounts".into(),
+            value: "平安证券".into(),
+        },
+    ];
+
+    let patch = build_profile_patch_from_entries(&serde_json::json!({}), &entries)
+        .expect("patch build ok")
+        .expect("wechat official account entries should produce a patch");
+    let intel = patch.intel.expect("intel patched");
+
+    assert_eq!(
+        intel["wechat_official_accounts"],
+        serde_json::json!(["平安银行", "平安证券"])
     );
 }
 

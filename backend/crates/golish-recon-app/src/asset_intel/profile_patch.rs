@@ -178,6 +178,7 @@ pub(crate) fn build_profile_patch_from_entries(
                 | "mobile_apps"
                 | "mini_programs"
                 | "app_domains"
+                | "wechat_official_accounts"
                 | "exposed_emails"
                 | "code_leaks"
                 | "mail_mx"

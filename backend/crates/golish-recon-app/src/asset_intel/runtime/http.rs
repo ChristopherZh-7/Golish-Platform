@@ -8,6 +8,31 @@ use crate::organization_recon::{
     ReconArtifactRef, ReconTaskError, ReconTaskManifest, ReconTaskStatus,
 };
 
+/// Default per-request transient-error retries when the descriptor's
+/// `max_retries` is unset. Permanent failures (auth/quota/non-2xx/parse) are
+/// never retried.
+const DEFAULT_HTTP_MAX_RETRIES: u32 = 2;
+
+/// Fixed backoff between transient-error retries of a single request.
+const HTTP_RETRY_BACKOFF_MS: u64 = 750;
+
+/// Outcome of a single http_json request after retries. `Success` carries the
+/// normalized contribution; `Failed` records why and whether the failure is
+/// provider-wide (auth/quota) so the caller can stop early without burning the
+/// rest of a paid quota.
+enum RequestOutcome {
+    Success {
+        http_status_code: u16,
+        candidates: OrganizationCandidates,
+        profile: Vec<ProfileFieldEntry>,
+    },
+    Failed {
+        reason: String,
+        message: String,
+        fatal: bool,
+    },
+}
+
 pub(crate) async fn run_http_json_provider(
     pool: &sqlx::PgPool,
     tool: &ToolConfig,
@@ -34,13 +59,19 @@ pub(crate) async fn run_http_json_provider(
     let (provider_id, display_name) = provider_identity(tool, asset);
     let out_dir = asset_intel_provider_output_dir(project_root, run_id, &provider_id);
     fs::create_dir_all(&out_dir)?;
-    let golish_pentest::models::AssetIntelRuntimeConfig::HttpJson { requests } = &asset.runtime
+    let golish_pentest::models::AssetIntelRuntimeConfig::HttpJson {
+        requests,
+        request_delay_ms,
+        max_retries,
+    } = &asset.runtime
     else {
         return Err(GolishError::Validation(format!(
             "tool '{}' is not an http_json provider",
             tool.id
         )));
     };
+    let request_delay = Duration::from_millis(request_delay_ms.unwrap_or(0));
+    let max_retries = max_retries.unwrap_or(DEFAULT_HTTP_MAX_RETRIES);
 
     // Sequential per-request loop; accumulator stays here so every early
     // return path can hand whatever has already been hydrated up to the
@@ -111,7 +142,20 @@ pub(crate) async fn run_http_json_provider(
     let mut candidates = OrganizationCandidates::default();
     let mut request_evidence = Vec::new();
     let mut artifacts = Vec::new();
-    for request in requests {
+    let mut request_errors: Vec<ReconTaskError> = Vec::new();
+    // Run *every* request and keep whatever succeeds. The legacy loop returned
+    // (and the downstream trust gate then discarded) on the first request
+    // error, so a single flaky 0.zone request ("error decoding response body"
+    // on a large/slow body) silently dropped the other six query types. Now a
+    // failure is logged + recorded and the loop continues; the provider only
+    // ends `Failed` when *nothing* succeeded.
+    let mut any_request_succeeded = false;
+    'requests: for (index, request) in requests.iter().enumerate() {
+        if index > 0 && !request_delay.is_zero() {
+            // Rate-limit pacing: keep back-to-back requests under the upstream
+            // ceiling (0.zone ≤ 2 req/s) so the server doesn't drop big bodies.
+            tokio::time::sleep(request_delay).await;
+        }
         emit_event(
             sink,
             AssetIntelStreamEvent::ProviderProgress {
@@ -121,351 +165,90 @@ pub(crate) async fn run_http_json_provider(
                 stream: AssetIntelStreamSource::System,
             },
         );
-        let method = reqwest::Method::from_bytes(request.method.as_bytes())
-            .map_err(|err| GolishError::Validation(format!("bad HTTP method: {err}")))?;
-        let url = render_http_template(&request.url, company_name, config, &secrets);
-        let timeout_secs = request.timeout_secs.clamp(1, 120);
-        tracing::info!(
-            provider = %provider_id,
+
+        let (artifact, outcome) = run_one_http_request(
+            &client,
+            request,
+            company_name,
+            config,
+            &secrets,
+            &asset.normalize,
+            &provider_id,
             run_id,
-            request_id = %request.id,
-            timeout_secs,
-            "running asset_intel http_json request"
-        );
-        let mut builder = client
-            .request(method, &url)
-            .timeout(Duration::from_secs(timeout_secs));
-        for (name, value) in &request.headers {
-            builder = builder.header(
-                name,
-                render_http_template(value, company_name, config, &secrets),
-            );
-        }
-        if !request.form.is_empty() {
-            let form: HashMap<String, String> = request
-                .form
-                .iter()
-                .map(|(key, value)| {
-                    (
-                        key.clone(),
-                        render_http_template(value, company_name, config, &secrets),
-                    )
-                })
-                .collect();
-            let mut encoded = url::form_urlencoded::Serializer::new(String::new());
-            for (key, value) in &form {
-                encoded.append_pair(key, value);
-            }
-            builder = builder
-                .header(
-                    reqwest::header::CONTENT_TYPE,
-                    "application/x-www-form-urlencoded",
-                )
-                .body(encoded.finish());
-        } else if !request.json.is_null() {
-            builder = builder.json(&render_http_json_value(
-                &request.json,
-                company_name,
-                config,
-                &secrets,
-            ));
+            &out_dir,
+            max_retries,
+        )
+        .await?;
+        let response_path = artifact.as_ref().map(|item| item.path.clone());
+        if let Some(item) = artifact {
+            artifacts.push(item);
         }
 
-        let response = match builder.send().await {
-            Ok(response) => response,
-            Err(err) => {
+        match outcome {
+            RequestOutcome::Success {
+                http_status_code,
+                candidates: delta,
+                profile,
+            } => {
+                any_request_succeeded = true;
+                profile_entries.extend(profile);
+                let added_total = delta.organizations.len() + delta.targets.len();
+                if added_total > 0 {
+                    let mut emitted = OrganizationCandidates::default();
+                    for item in delta.organizations.iter() {
+                        emitted.organizations.push(item.clone());
+                    }
+                    for item in delta.targets.iter() {
+                        emitted.targets.push(item.clone());
+                    }
+                    merge_candidates(&mut candidates, delta);
+                    emit_event(
+                        sink,
+                        AssetIntelStreamEvent::ProviderBatch {
+                            run_id: run_id.to_string(),
+                            provider_id: provider_id.clone(),
+                            candidates: emitted,
+                            source: AssetIntelBatchSource::Http,
+                            artifact: response_path.clone(),
+                            request_id: Some(request.id.clone()),
+                        },
+                    );
+                }
+                request_evidence.push(serde_json::json!({
+                    "requestId": request.id,
+                    "status": "ok",
+                    "httpStatus": http_status_code,
+                    "artifact": response_path,
+                }));
+            }
+            RequestOutcome::Failed {
+                reason,
+                message,
+                fatal,
+            } => {
                 tracing::warn!(
                     provider = %provider_id,
                     run_id,
                     request_id = %request.id,
-                    error = %err,
-                    "asset_intel http_json request failed"
+                    reason = %reason,
+                    error = %message,
+                    fatal,
+                    "asset_intel http_json request failed; keeping data from other requests"
                 );
-                let status = AssetIntelProviderRunStatus {
-                    provider_id: provider_id.clone(),
-                    status: AssetIntelProviderRunState::Failed,
-                    message: format!("request '{}' failed: {err}", request.id),
-                };
-                let count = candidates.organizations.len() + candidates.targets.len();
-                let reason = classify_transport_error(&err);
-                let manifest_path = persist_http_artifacts(
-                    &out_dir,
-                    run_id,
-                    &provider_id,
-                    ReconTaskStatus::Failed,
-                    count + profile_entries.len(),
-                    artifacts,
-                    vec![ReconTaskError::new(reason, err.to_string())],
-                )?;
-                return finish_provider_run(
-                    sink,
-                    run_id,
-                    status,
-                    count,
-                    candidates,
-                    serde_json::json!({
-                        "provider": provider_id,
-                        "runId": run_id,
-                        "state": "failed",
-                        "reason": reason,
-                        "requestId": request.id,
-                        "error": err.to_string(),
-                        "candidateCount": count,
-                        "manifestPath": manifest_path,
-                    }),
-                    profile_entries,
-                );
-            }
-        };
-        let http_status = response.status();
-        let body_bytes = match response.bytes().await {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                let count = candidates.organizations.len() + candidates.targets.len();
-                let manifest_path = persist_http_artifacts(
-                    &out_dir,
-                    run_id,
-                    &provider_id,
-                    ReconTaskStatus::Failed,
-                    count + profile_entries.len(),
-                    artifacts,
-                    vec![ReconTaskError::new("transport_error", err.to_string())],
-                )?;
-                let status = AssetIntelProviderRunStatus {
-                    provider_id: provider_id.clone(),
-                    status: AssetIntelProviderRunState::Failed,
-                    message: format!("cannot read response '{}': {err}", request.id),
-                };
-                return finish_provider_run(
-                    sink,
-                    run_id,
-                    status,
-                    count,
-                    candidates,
-                    serde_json::json!({
-                        "provider": provider_id,
-                        "runId": run_id,
-                        "state": "failed",
-                        "reason": "transport_error",
-                        "requestId": request.id,
-                        "error": err.to_string(),
-                        "candidateCount": count,
-                        "manifestPath": manifest_path,
-                    }),
-                    profile_entries,
-                );
-            }
-        };
-        let response_artifact = write_raw_bytes(
-            &out_dir,
-            format!("raw/response-{}.json", artifact_name(&request.id)),
-            &body_bytes,
-            "http_response",
-        )?;
-        let response_path = response_artifact.path.clone();
-        artifacts.push(response_artifact);
-        let body = match decode_utf8_clean(&body_bytes) {
-            Ok(body) => body,
-            Err(error) => {
-                let count = candidates.organizations.len() + candidates.targets.len();
-                let manifest_path = persist_http_artifacts(
-                    &out_dir,
-                    run_id,
-                    &provider_id,
-                    ReconTaskStatus::Failed,
-                    count + profile_entries.len(),
-                    artifacts,
-                    vec![error.clone()],
-                )?;
-                let status = AssetIntelProviderRunStatus {
-                    provider_id: provider_id.clone(),
-                    status: AssetIntelProviderRunState::Failed,
-                    message: format!("response '{}' is not valid UTF-8", request.id),
-                };
-                return finish_provider_run(
-                    sink,
-                    run_id,
-                    status,
-                    count,
-                    candidates,
-                    serde_json::json!({
-                        "provider": provider_id,
-                        "runId": run_id,
-                        "state": "failed",
-                        "reason": error.code,
-                        "requestId": request.id,
-                        "candidateCount": count,
-                        "manifestPath": manifest_path,
-                    }),
-                    profile_entries,
-                );
-            }
-        };
-        let preview: String = body.chars().take(512).collect();
-        if !http_status.is_success() {
-            tracing::warn!(
-                provider = %provider_id,
-                run_id,
-                request_id = %request.id,
-                status = http_status.as_u16(),
-                "asset_intel http_json request returned non-success status"
-            );
-            let status = AssetIntelProviderRunStatus {
-                provider_id: provider_id.clone(),
-                status: AssetIntelProviderRunState::Failed,
-                message: format!("request '{}' returned HTTP {http_status}", request.id),
-            };
-            let count = candidates.organizations.len() + candidates.targets.len();
-            let reason = classify_http_status(http_status);
-            let manifest_path = persist_http_artifacts(
-                &out_dir,
-                run_id,
-                &provider_id,
-                ReconTaskStatus::Failed,
-                count + profile_entries.len(),
-                artifacts,
-                vec![ReconTaskError::new(
-                    reason,
-                    format!("HTTP {}", http_status.as_u16()),
-                )],
-            )?;
-            return finish_provider_run(
-                sink,
-                run_id,
-                status,
-                count,
-                candidates,
-                serde_json::json!({
-                    "provider": provider_id,
-                    "runId": run_id,
-                    "state": "failed",
+                request_evidence.push(serde_json::json!({
+                    "requestId": request.id,
+                    "status": "failed",
                     "reason": reason,
-                    "requestId": request.id,
-                    "status": http_status.as_u16(),
-                    "preview": preview,
-                    "candidateCount": count,
-                    "manifestPath": manifest_path,
-                }),
-                profile_entries,
-            );
-        }
-        if let Some(error) = detect_provider_api_error(&body) {
-            tracing::warn!(
-                provider = %provider_id,
-                run_id,
-                request_id = %request.id,
-                provider_code = %error.code,
-                message = %error.message,
-                "asset_intel http_json provider returned application-level error"
-            );
-            let count = candidates.organizations.len() + candidates.targets.len();
-            let reason = classify_provider_api_error(&error);
-            let manifest_path = persist_http_artifacts(
-                &out_dir,
-                run_id,
-                &provider_id,
-                ReconTaskStatus::Failed,
-                count + profile_entries.len(),
-                artifacts,
-                vec![ReconTaskError::new(
-                    reason,
-                    format!("provider returned code {}: {}", error.code, error.message),
-                )],
-            )?;
-            let status = AssetIntelProviderRunStatus {
-                provider_id: provider_id.clone(),
-                status: AssetIntelProviderRunState::Failed,
-                message: format!("request '{}' provider error: {}", request.id, error.message),
-            };
-            return finish_provider_run(
-                sink,
-                run_id,
-                status,
-                count,
-                candidates,
-                serde_json::json!({
-                    "provider": provider_id,
-                    "runId": run_id,
-                    "state": "failed",
-                    "reason": reason,
-                    "requestId": request.id,
-                    "providerCode": error.code,
-                    "error": error.message,
-                    "candidateCount": count,
-                    "manifestPath": manifest_path,
-                    "preview": preview,
-                }),
-                profile_entries,
-            );
-        }
-
-        let Some((next, profile)) =
-            normalize_json_document(&provider_id, run_id, &asset.normalize, &body)
-        else {
-            let count = candidates.organizations.len() + candidates.targets.len();
-            let manifest_path = persist_http_artifacts(
-                &out_dir,
-                run_id,
-                &provider_id,
-                ReconTaskStatus::Failed,
-                count + profile_entries.len(),
-                artifacts,
-                vec![ReconTaskError::new(
-                    "parse_error",
-                    format!("response '{}' is not valid JSON", request.id),
-                )],
-            )?;
-            let status = AssetIntelProviderRunStatus {
-                provider_id: provider_id.clone(),
-                status: AssetIntelProviderRunState::Failed,
-                message: format!("response '{}' is not valid JSON", request.id),
-            };
-            return finish_provider_run(
-                sink,
-                run_id,
-                status,
-                count,
-                candidates,
-                serde_json::json!({
-                    "provider": provider_id,
-                    "runId": run_id,
-                    "state": "failed",
-                    "reason": "parse_error",
-                    "requestId": request.id,
-                    "candidateCount": count,
-                    "manifestPath": manifest_path,
-                }),
-                profile_entries,
-            );
-        };
-        profile_entries.extend(profile);
-        let added_total = next.organizations.len() + next.targets.len();
-        if added_total > 0 {
-            let mut delta = OrganizationCandidates::default();
-            for item in next.organizations.iter() {
-                delta.organizations.push(item.clone());
+                    "error": message,
+                }));
+                request_errors.push(ReconTaskError::new(reason, message));
+                if fatal {
+                    // Auth / quota errors are provider-wide: the rest of the
+                    // batch would fail identically and burn paid quota.
+                    break 'requests;
+                }
             }
-            for item in next.targets.iter() {
-                delta.targets.push(item.clone());
-            }
-            merge_candidates(&mut candidates, next);
-            emit_event(
-                sink,
-                AssetIntelStreamEvent::ProviderBatch {
-                    run_id: run_id.to_string(),
-                    provider_id: provider_id.clone(),
-                    candidates: delta,
-                    source: AssetIntelBatchSource::Http,
-                    artifact: Some(response_path.clone()),
-                    request_id: Some(request.id.clone()),
-                },
-            );
         }
-        request_evidence.push(serde_json::json!({
-            "requestId": request.id,
-            "status": http_status.as_u16(),
-            "artifact": response_path,
-        }));
     }
 
     if let Some(evidence) =
@@ -476,37 +259,51 @@ pub(crate) async fn run_http_json_provider(
 
     let candidate_count = candidates.organizations.len() + candidates.targets.len();
     let record_count = candidate_count + profile_entries.len();
-    let state = if record_count == 0 {
-        AssetIntelProviderRunState::CheckedEmpty
-    } else {
-        AssetIntelProviderRunState::Completed
+    let failed_requests = request_errors.len();
+    // Surfaced in the top-level status message when *nothing* succeeded, so an
+    // all-failed run (e.g. a bad API key) still explains itself instead of a
+    // bare "all N requests errored".
+    let first_error_detail = request_errors
+        .first()
+        .map(|error| format!("{}: {}", error.code, error.message));
+    let (state, manifest_status) = summarize_http_run(any_request_succeeded, record_count);
+    let state_label = match state {
+        AssetIntelProviderRunState::Completed => "completed",
+        AssetIntelProviderRunState::CheckedEmpty => "checked_empty",
+        _ => "failed",
     };
     let manifest_path = persist_http_artifacts(
         &out_dir,
         run_id,
         &provider_id,
-        if record_count == 0 {
-            ReconTaskStatus::CheckedEmpty
-        } else {
-            ReconTaskStatus::Completed
-        },
+        manifest_status,
         record_count,
         artifacts,
-        Vec::new(),
+        request_errors,
     )?;
     tracing::info!(
         provider = %provider_id,
         run_id,
         candidate_count,
         profile_field_count = profile_entries.len(),
+        failed_requests,
         state = ?state,
-        "asset_intel http_json provider completed"
+        "asset_intel http_json provider finished"
     );
     let status = AssetIntelProviderRunStatus {
         provider_id: provider_id.clone(),
         status: state,
-        message: if record_count == 0 {
+        message: if !any_request_succeeded {
+            match &first_error_detail {
+                Some(detail) => format!("{provider_id} failed: {detail}"),
+                None => format!("{provider_id} failed: all {failed_requests} request(s) errored"),
+            }
+        } else if record_count == 0 {
             format!("{provider_id} completed with no candidates")
+        } else if failed_requests > 0 {
+            format!(
+                "{provider_id} normalized {record_count} record(s); {failed_requests} request(s) failed"
+            )
         } else {
             format!("{provider_id} normalized {record_count} record(s)")
         },
@@ -520,14 +317,289 @@ pub(crate) async fn run_http_json_provider(
         serde_json::json!({
             "provider": provider_id,
             "runId": run_id,
-            "state": if record_count == 0 { "checked_empty" } else { "completed" },
+            "state": state_label,
             "candidateCount": candidate_count,
             "profileFieldCount": profile_entries.len(),
+            "failedRequests": failed_requests,
             "requests": request_evidence,
             "manifestPath": manifest_path,
         }),
         profile_entries,
     )
+}
+
+/// Issue one http_json request (with transient-error retries) and turn the
+/// response into a [`RequestOutcome`]. The raw response body is always
+/// persisted as an artifact when it was read, regardless of how parsing goes,
+/// so failures keep their evidence. This never early-returns on a per-request
+/// problem — the caller decides how to aggregate.
+#[allow(clippy::too_many_arguments)]
+async fn run_one_http_request(
+    client: &reqwest::Client,
+    request: &golish_pentest::models::AssetIntelHttpRequest,
+    company_name: &str,
+    config: &AssetIntelHydrateConfig,
+    secrets: &HashMap<String, String>,
+    normalize: &golish_pentest::models::AssetIntelNormalizeConfig,
+    provider_id: &str,
+    run_id: &str,
+    out_dir: &Path,
+    max_retries: u32,
+) -> Result<(Option<ReconArtifactRef>, RequestOutcome), GolishError> {
+    let method = match reqwest::Method::from_bytes(request.method.as_bytes()) {
+        Ok(method) => method,
+        Err(err) => {
+            return Ok((
+                None,
+                RequestOutcome::Failed {
+                    reason: "bad_request".into(),
+                    message: format!("bad HTTP method '{}': {err}", request.method),
+                    fatal: false,
+                },
+            ));
+        }
+    };
+    let url = render_http_template(&request.url, company_name, config, secrets);
+    let timeout_secs = request.timeout_secs.clamp(1, 120);
+    tracing::info!(
+        provider = %provider_id,
+        run_id,
+        request_id = %request.id,
+        timeout_secs,
+        "running asset_intel http_json request"
+    );
+    let mut builder = client
+        .request(method, &url)
+        .timeout(Duration::from_secs(timeout_secs));
+    for (name, value) in &request.headers {
+        builder = builder.header(
+            name,
+            render_http_template(value, company_name, config, secrets),
+        );
+    }
+    if !request.form.is_empty() {
+        let form: HashMap<String, String> = request
+            .form
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.clone(),
+                    render_http_template(value, company_name, config, secrets),
+                )
+            })
+            .collect();
+        let mut encoded = url::form_urlencoded::Serializer::new(String::new());
+        for (key, value) in &form {
+            encoded.append_pair(key, value);
+        }
+        builder = builder
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(encoded.finish());
+    } else if !request.json.is_null() {
+        builder = builder.json(&render_http_json_value(
+            &request.json,
+            company_name,
+            config,
+            secrets,
+        ));
+    }
+
+    // Send + read the body, retrying only transient transport failures
+    // (timeout / connection reset / "error decoding response body").
+    let mut attempt: u32 = 0;
+    let (http_status, body_bytes) = loop {
+        let Some(attempt_builder) = builder.try_clone() else {
+            // In-memory bodies always clone; this only trips for streaming
+            // bodies we never build. Degrade to a single best-effort attempt.
+            match builder.send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    match response.bytes().await {
+                        Ok(bytes) => break (status, bytes),
+                        Err(err) => {
+                            return Ok((
+                                None,
+                                RequestOutcome::Failed {
+                                    reason: classify_transport_error(&err).into(),
+                                    message: err.to_string(),
+                                    fatal: false,
+                                },
+                            ));
+                        }
+                    }
+                }
+                Err(err) => {
+                    return Ok((
+                        None,
+                        RequestOutcome::Failed {
+                            reason: classify_transport_error(&err).into(),
+                            message: err.to_string(),
+                            fatal: false,
+                        },
+                    ));
+                }
+            }
+        };
+        match attempt_builder.send().await {
+            Ok(response) => {
+                let status = response.status();
+                match response.bytes().await {
+                    Ok(bytes) => break (status, bytes),
+                    Err(err) => {
+                        if is_retryable_transport(&err) && attempt < max_retries {
+                            attempt += 1;
+                            tracing::warn!(
+                                provider = %provider_id,
+                                run_id,
+                                request_id = %request.id,
+                                attempt,
+                                error = %err,
+                                "retrying asset_intel http_json request after body read error"
+                            );
+                            tokio::time::sleep(Duration::from_millis(HTTP_RETRY_BACKOFF_MS)).await;
+                            continue;
+                        }
+                        return Ok((
+                            None,
+                            RequestOutcome::Failed {
+                                reason: classify_transport_error(&err).into(),
+                                message: err.to_string(),
+                                fatal: false,
+                            },
+                        ));
+                    }
+                }
+            }
+            Err(err) => {
+                if is_retryable_transport(&err) && attempt < max_retries {
+                    attempt += 1;
+                    tracing::warn!(
+                        provider = %provider_id,
+                        run_id,
+                        request_id = %request.id,
+                        attempt,
+                        error = %err,
+                        "retrying asset_intel http_json request after send error"
+                    );
+                    tokio::time::sleep(Duration::from_millis(HTTP_RETRY_BACKOFF_MS)).await;
+                    continue;
+                }
+                return Ok((
+                    None,
+                    RequestOutcome::Failed {
+                        reason: classify_transport_error(&err).into(),
+                        message: err.to_string(),
+                        fatal: false,
+                    },
+                ));
+            }
+        }
+    };
+
+    // Persist the raw body as evidence before parsing — even failures keep it.
+    let response_artifact = write_raw_bytes(
+        out_dir,
+        format!("raw/response-{}.json", artifact_name(&request.id)),
+        &body_bytes,
+        "http_response",
+    )?;
+
+    let body = match decode_utf8_clean(&body_bytes) {
+        Ok(body) => body,
+        Err(error) => {
+            return Ok((
+                Some(response_artifact),
+                RequestOutcome::Failed {
+                    reason: error.code,
+                    message: error.message,
+                    fatal: false,
+                },
+            ));
+        }
+    };
+    if !http_status.is_success() {
+        let reason = classify_http_status(http_status);
+        let preview: String = body.chars().take(512).collect();
+        return Ok((
+            Some(response_artifact),
+            RequestOutcome::Failed {
+                reason: reason.into(),
+                message: format!("HTTP {} · {preview}", http_status.as_u16()),
+                fatal: is_provider_fatal(reason),
+            },
+        ));
+    }
+    if let Some(error) = detect_provider_api_error(&body) {
+        let reason = classify_provider_api_error(&error);
+        return Ok((
+            Some(response_artifact),
+            RequestOutcome::Failed {
+                reason: reason.into(),
+                message: format!("provider returned code {}: {}", error.code, error.message),
+                fatal: is_provider_fatal(reason),
+            },
+        ));
+    }
+    let Some((next, profile)) = normalize_json_document(provider_id, run_id, normalize, &body)
+    else {
+        return Ok((
+            Some(response_artifact),
+            RequestOutcome::Failed {
+                reason: "parse_error".into(),
+                message: format!("response '{}' is not valid JSON", request.id),
+                fatal: false,
+            },
+        ));
+    };
+    Ok((
+        Some(response_artifact),
+        RequestOutcome::Success {
+            http_status_code: http_status.as_u16(),
+            candidates: next,
+            profile,
+        },
+    ))
+}
+
+/// Whether a reqwest error is a *transient* transport failure worth retrying.
+/// Notably covers "error decoding response body" (`is_body`/`is_decode`) — the
+/// failure mode that silently zeroed 0.zone enrichment.
+fn is_retryable_transport(err: &reqwest::Error) -> bool {
+    err.is_timeout() || err.is_connect() || err.is_request() || err.is_body() || err.is_decode()
+}
+
+/// Reasons that are provider-wide (every remaining request would fail the same
+/// way), so the runner should stop instead of burning the rest of a paid quota.
+fn is_provider_fatal(reason: &str) -> bool {
+    matches!(reason, "unauthorized" | "quota_exceeded")
+}
+
+/// Map a finished request loop into the provider's terminal state.
+///
+/// `any_request_succeeded` is the gate: a partially-successful run is
+/// `Completed` (so the trust gate keeps the data we did get), an all-empty but
+/// reachable run is `CheckedEmpty`, and only a run where every request errored
+/// is `Failed`.
+fn summarize_http_run(
+    any_request_succeeded: bool,
+    record_count: usize,
+) -> (AssetIntelProviderRunState, ReconTaskStatus) {
+    if !any_request_succeeded {
+        (AssetIntelProviderRunState::Failed, ReconTaskStatus::Failed)
+    } else if record_count == 0 {
+        (
+            AssetIntelProviderRunState::CheckedEmpty,
+            ReconTaskStatus::CheckedEmpty,
+        )
+    } else {
+        (
+            AssetIntelProviderRunState::Completed,
+            ReconTaskStatus::Completed,
+        )
+    }
 }
 
 fn artifact_name(request_id: &str) -> String {
@@ -654,4 +726,48 @@ fn persist_http_artifacts(
     manifest.artifacts = artifacts;
     manifest.errors = errors;
     write_json_manifest(out_dir, &manifest)
+}
+
+#[cfg(test)]
+mod http_runner_tests {
+    use super::*;
+
+    #[test]
+    fn summarize_failed_when_no_request_succeeded() {
+        let (state, manifest) = summarize_http_run(false, 0);
+        assert_eq!(state, AssetIntelProviderRunState::Failed);
+        assert_eq!(manifest, ReconTaskStatus::Failed);
+        // Even if some earlier provider data lingered in the counter, a run
+        // where every request errored is still Failed (untrusted downstream).
+        let (state, _) = summarize_http_run(false, 9);
+        assert_eq!(state, AssetIntelProviderRunState::Failed);
+    }
+
+    #[test]
+    fn summarize_checked_empty_when_reachable_but_no_records() {
+        let (state, manifest) = summarize_http_run(true, 0);
+        assert_eq!(state, AssetIntelProviderRunState::CheckedEmpty);
+        assert_eq!(manifest, ReconTaskStatus::CheckedEmpty);
+    }
+
+    #[test]
+    fn summarize_completed_when_partial_success_has_records() {
+        // The whole point of the fix: one failed request among several does
+        // not stop the run from being a trusted Completed when others produced
+        // records.
+        let (state, manifest) = summarize_http_run(true, 5);
+        assert_eq!(state, AssetIntelProviderRunState::Completed);
+        assert_eq!(manifest, ReconTaskStatus::Completed);
+    }
+
+    #[test]
+    fn provider_fatal_only_for_auth_and_quota() {
+        assert!(is_provider_fatal("unauthorized"));
+        assert!(is_provider_fatal("quota_exceeded"));
+        assert!(!is_provider_fatal("transport_error"));
+        assert!(!is_provider_fatal("timeout"));
+        assert!(!is_provider_fatal("rate_limited"));
+        assert!(!is_provider_fatal("server_error"));
+        assert!(!is_provider_fatal("parse_error"));
+    }
 }

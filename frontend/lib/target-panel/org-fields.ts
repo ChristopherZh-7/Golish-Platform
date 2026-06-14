@@ -76,6 +76,7 @@ const INTEL_FIELD_LABELS: Record<string, string> = {
   mobile_apps: "Mobile apps",
   mini_programs: "Mini programs",
   app_domains: "App domains",
+  wechat_official_accounts: "WeChat official accounts",
 };
 
 const INTEL_DISPLAY_ORDER = [
@@ -98,7 +99,12 @@ const LEAKAGE_INTEL_KEYS = ["exposed_emails", "email_leakage_total", "code_leaks
 
 const DNS_INTEL_KEYS = ["mail_mx"] as const;
 
-const APP_INTEL_KEYS = ["mobile_apps", "mini_programs", "app_domains"] as const;
+const APP_INTEL_KEYS = [
+  "mobile_apps",
+  "mini_programs",
+  "app_domains",
+  "wechat_official_accounts",
+] as const;
 
 function intelGet(org: OrgFieldInput, key: string): unknown {
   const intel = org.intel;
@@ -167,6 +173,7 @@ const INTEL_RECORD_LABELS: Record<string, string> = {
   mobile_apps: "Mobile apps",
   mini_programs: "Mini programs",
   app_domains: "App domains",
+  wechat_official_accounts: "WeChat official accounts",
 };
 
 export function getOrgFieldIntelRecords(

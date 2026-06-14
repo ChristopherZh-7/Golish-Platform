@@ -361,6 +361,7 @@ describe("getOrgFieldGroups", () => {
         mobile_apps: ["小米实况麻将"],
         mini_programs: ["小米商城"],
         app_domains: ["https://com.dfwe"],
+        wechat_official_accounts: ["平安银行"],
         exposed_emails: ["alice@example.com"],
         email_leakage_total: "2",
         code_leaks: ["https://github.com/acme/leak.txt"],
@@ -428,6 +429,7 @@ describe("getOrgFieldGroups", () => {
       "mobile_apps",
       "mini_programs",
       "app_domains",
+      "wechat_official_accounts",
     ]);
     expect(apps?.fields.every((field) => field.filled)).toBe(true);
 

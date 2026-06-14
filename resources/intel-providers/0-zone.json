@@ -26,6 +26,8 @@
       },
       "runtime": {
         "kind": "http_json",
+        "request_delay_ms": 700,
+        "max_retries": 2,
         "requests": [
           {
             "id": "domain",
@@ -57,7 +59,7 @@
               "pagesize": "40",
               "zone_key_id": "{{secret:api_key}}"
             },
-            "timeout_secs": 30
+            "timeout_secs": 60
           },
           {
             "id": "apk",
@@ -121,7 +123,7 @@
               "pagesize": "40",
               "zone_key_id": "{{secret:api_key}}"
             },
-            "timeout_secs": 30
+            "timeout_secs": 90
           },
           {
             "id": "member",
@@ -228,6 +230,14 @@
             "target_kind": "intel",
             "transform": "trim",
             "when": [{ "field": "msg.app_url", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
+            "source_field": ["title", "msg.wechat_id"],
+            "target_field": "wechat_official_accounts",
+            "target_kind": "intel",
+            "transform": "trim",
+            "when": [{ "field": "msg.wechat_id", "op": "exists", "value": "" }]
           },
           {
             "path": "$..data[*]",
