@@ -23,7 +23,8 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use golish_agent_kit::harness::{
-    load_embedded_stage_spec, validate_stage_gate, StageDeliverable, StageKind,
+    load_embedded_stage_spec, validate_stage_gate_with_context, EvidenceFact, GateContext,
+    StageDeliverable, StageKind,
 };
 use golish_core::Tool;
 
@@ -43,6 +44,18 @@ pub trait EvidenceLedgerQuery: Send + Sync {
     async fn recent_evidence_ids(&self, session_id: &str, limit: i64) -> Result<Vec<i64>> {
         let _ = (session_id, limit);
         Ok(Vec::new())
+    }
+
+    /// PR3 coverage projection · the session's evidence facts
+    /// `(asset, technique, outcome)` derived from the audit-log columns. The
+    /// submit-time gate preview feeds these into the coverage gate so an
+    /// `authoritative_found` stage (e.g. target_intel) can credit a `found` cell
+    /// from REAL ledger truth — instead of rejecting every found cell because the
+    /// preview ran on an empty context. Default empty so test doubles / no-DB
+    /// paths simply skip the projection (gate falls back to its prior behaviour).
+    async fn evidence_facts(&self, session_id: &str) -> Vec<EvidenceFact> {
+        let _ = session_id;
+        Vec::new()
     }
 }
 
@@ -133,6 +146,27 @@ impl SubmitStageDeliverableTool {
                 );
                 Vec::new()
             }
+        }
+    }
+
+    /// Build the gate context for the submit-time preview by projecting the
+    /// session's evidence facts into it. Without this the preview runs on an
+    /// empty (`default`) context, so a stage with `authoritative_found` (e.g.
+    /// target_intel) rejects EVERY `found` coverage cell as "never attempted" —
+    /// even when the tool already ran and the fact is in the ledger — which traps
+    /// per-org recon sub-agents in an endless resubmit loop. Mirrors the
+    /// authoritative-found wiring the main-agent stage-close hook already has.
+    async fn gate_context(&self) -> GateContext {
+        let facts = match (self.evidence_repo.as_ref(), self.session_id.as_deref()) {
+            (Some(repo), Some(sid)) => {
+                let f = repo.evidence_facts(sid).await;
+                (!f.is_empty()).then_some(f)
+            }
+            _ => None,
+        };
+        GateContext {
+            evidence_facts: facts,
+            ..Default::default()
         }
     }
 }
@@ -295,7 +329,13 @@ impl Tool for SubmitStageDeliverableTool {
             // 甲 · structural/semantic gate preview (no DB). The authoritative
             // evidence-ledger cross-check runs at stage close in the gate hook.
             if let Ok(spec) = load_embedded_stage_spec(kind) {
-                let result = validate_stage_gate(&deliverable, &spec, None);
+                // Project the session's ledger evidence-facts into the gate so an
+                // authoritative_found stage credits real `found` cells (the
+                // per-org recon "never attempted" loop fix). Empty/no-DB ⇒ default
+                // context = prior behaviour.
+                let ctx = self.gate_context().await;
+                let result =
+                    validate_stage_gate_with_context(&deliverable, &spec, None, None, &ctx);
                 // Stash the canonical JSON regardless — the stage-close gate is
                 // authoritative; a structural block still informs the agent now.
                 if let Ok(json_str) = serde_json::to_string(&deliverable) {
@@ -575,6 +615,7 @@ mod tests {
     struct MockLedger {
         existing: HashSet<i64>,
         recent: Vec<i64>,
+        facts: Vec<EvidenceFact>,
     }
 
     impl MockLedger {
@@ -582,6 +623,7 @@ mod tests {
             Self {
                 existing: ids,
                 recent: Vec::new(),
+                facts: Vec::new(),
             }
         }
     }
@@ -597,6 +639,9 @@ mod tests {
         }
         async fn recent_evidence_ids(&self, _session_id: &str, _limit: i64) -> Result<Vec<i64>> {
             Ok(self.recent.clone())
+        }
+        async fn evidence_facts(&self, _session_id: &str) -> Vec<EvidenceFact> {
+            self.facts.clone()
         }
     }
 
@@ -652,6 +697,7 @@ mod tests {
         let ledger = MockLedger {
             existing: HashSet::new(),
             recent: vec![88, 86],
+            facts: Vec::new(),
         };
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
             .with_evidence_repo(Arc::new(ledger))
@@ -685,6 +731,7 @@ mod tests {
         let ledger = MockLedger {
             existing: HashSet::new(),
             recent: vec![88, 86],
+            facts: Vec::new(),
         };
         // No .with_session_id → available_real_ids() returns empty.
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
@@ -717,6 +764,7 @@ mod tests {
         let ledger = MockLedger {
             existing: HashSet::new(),
             recent: vec![644, 646],
+            facts: Vec::new(),
         };
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
             .with_evidence_repo(Arc::new(ledger))
@@ -762,6 +810,72 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out["status"].as_str(), Some("accepted"));
+    }
+
+    // 正法 (2026-06-14) · the submit-time preview must credit an authoritative
+    // `found` coverage cell from a REAL ledger evidence-fact. target_intel runs
+    // coverage_complete with authoritative_found=true, so a `found` DNS cell is
+    // valid only when a ledger fact (asset × technique × Found) exists. The bug:
+    // the preview ran on a `None`/default GateContext (no facts), so it rejected
+    // EVERY found cell as "never attempted" — trapping per-org recon sub-agents in
+    // an endless resubmit loop even though the dig fact was already in the ledger
+    // (confirmed: 5 (pingan.com × DNS × found) rows in the live audit_log).
+    #[tokio::test]
+    async fn target_intel_found_cell_credited_from_evidence_facts() {
+        use golish_agent_kit::harness::EvidenceOutcome;
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::TargetIntel);
+
+        // The ledger holds the real DNS fact for pingan.com (the dig already ran)
+        // and recognises the cited evidence ids. Two ids so the deliverable clears
+        // target_intel's min_invocations sum (dns_resolve + subdomain_enum_passive).
+        let ledger = MockLedger {
+            existing: [100, 101].into_iter().collect(),
+            recent: vec![101, 100],
+            facts: vec![EvidenceFact {
+                asset: "pingan.com".into(),
+                technique: "GOLISH-INTEL-DNS".into(),
+                outcome: EvidenceOutcome::Found,
+                evidence_id: 100,
+            }],
+        };
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
+            .with_evidence_repo(Arc::new(ledger))
+            .with_session_id("pentest-chat-1");
+
+        // DNS found (now backed by a real fact) + the other 5 expected techniques
+        // marked blocked (terminal, no fact needed) = full coverage for pingan.com.
+        let blocked = |t: &str| {
+            json!({ "asset": "pingan.com", "technique": t, "status": "blocked",
+                    "note": "no provider/tool registered for this technique" })
+        };
+        let args = json!({
+            "stage_id": "target_intel",
+            "stage_run_id": "3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
+            "claims": [{
+                "kind": "dns_a_record", "subject": "pingan.com",
+                "summary": "pingan.com A 183.62.123.62", "evidence_ids": [100],
+                "technique": "GOLISH-INTEL-DNS"
+            }],
+            "evidence_refs": [100, 101],
+            "findings": [],
+            "coverage": [
+                { "asset": "pingan.com", "technique": "GOLISH-INTEL-DNS",
+                  "status": "found", "evidence_refs": [100] },
+                blocked("GOLISH-INTEL-WHOIS"), blocked("GOLISH-INTEL-ASN"),
+                blocked("GOLISH-INTEL-CT"), blocked("GOLISH-INTEL-SUBDOMAIN"),
+                blocked("GOLISH-INTEL-OSINT")
+            ],
+            "skipped_checks": [],
+            "required_checks_done": ["dns_resolve", "subdomain_enum_passive"]
+        });
+
+        let out = tool.execute(args, Path::new("/tmp")).await.unwrap();
+        assert_eq!(
+            out["status"].as_str(),
+            Some("accepted"),
+            "DNS found must be credited from the ledger fact, not rejected as never-attempted: {out:?}"
+        );
     }
 
     // Fix1 (2026-06-14) · the parameters schema must spell out the nested shapes

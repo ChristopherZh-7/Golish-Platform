@@ -125,4 +125,37 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
     async fn recent_evidence_ids(&self, session_id: &str, limit: i64) -> anyhow::Result<Vec<i64>> {
         self.recent_evidence_ids_impl(session_id, limit).await
     }
+
+    async fn evidence_facts(
+        &self,
+        session_id: &str,
+    ) -> Vec<golish_agent_kit::harness::EvidenceFact> {
+        use golish_agent_kit::harness::{EvidenceFact, EvidenceOutcome};
+        match self.evidence_facts_for_session_impl(session_id).await {
+            Ok(rows) => rows
+                .into_iter()
+                .filter_map(|(asset, technique, outcome, evidence_id)| {
+                    let outcome = match outcome.as_str() {
+                        "found" => EvidenceOutcome::Found,
+                        "empty" => EvidenceOutcome::Empty,
+                        _ => return None,
+                    };
+                    Some(EvidenceFact {
+                        asset,
+                        technique,
+                        outcome,
+                        evidence_id,
+                    })
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    target: "harness::submit_tool",
+                    error = %e,
+                    "evidence_facts_for_session failed; submit gate preview runs without projection"
+                );
+                Vec::new()
+            }
+        }
+    }
 }
