@@ -9,6 +9,7 @@ pub use crate::ai::commands::engagement_scope::{
     engagement_clear_worker_scope, engagement_get_worker_scope, engagement_set_worker_scope,
 };
 pub use crate::engagement::query::engagement_get_snapshot;
+pub use crate::engagement::run_command::engagement_run_fleet;
 
 #[doc(hidden)]
 pub use crate::ai::commands::engagement_scope::{

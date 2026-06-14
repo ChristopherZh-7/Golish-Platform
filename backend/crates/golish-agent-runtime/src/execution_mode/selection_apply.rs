@@ -108,13 +108,15 @@ pub async fn apply_tool_selection(
         }
     }
 
-    // 5b. `stage_run` (design 2026-06-13-stage-run-fanout) — the per-org
-    //     specialist fan-out. Not a registry tool (it is routed in the agentic
-    //     loop because it dispatches sub-agents), so its definition is injected
-    //     here. Exposed ONLY to the task-mode PRIMARY agent inside an active
-    //     harness stage: `submit_stage_deliverable` is the task-primary-in-stage
-    //     marker (chat mode leaves it false; specialists run at depth > 0), so
-    //     gating on it + depth 0 keeps `stage_run` off chat and off sub-agents.
+    // 5b. `stage_run` (design 2026-06-13-stage-run-fanout) — 旧的「in-stage、agent
+    //     驱动、sub_agent per org」多 org 扇出。**DEPRECATED**（方案 C / fleet Phase B,
+    //     计划 2026-06-14-engagement-fleet-scheduler-convergence）：多 org 扇出已统一为
+    //     后端 `golish::engagement::fleet_run::run_engagement_fleet`（每 org 一个完整
+    //     run_stage，经 run_fleet_scheduler）。此注入**暂保留**以兼容旧前端 worker-pool
+    //     回滚路径（recon_family 在一次 run 内靠它收子公司）；T4.4 活体验证新路径后，连
+    //     handler + 路由一并摘除。
+    //     仅注入给 task-mode PRIMARY agent（`submit_stage_deliverable` + depth 0；chat
+    //     模式与 sub-agent 拿不到）。
     if selection.bridge_tools.submit_stage_deliverable && sub_agent_context.depth == 0 {
         tools.push(
             crate::agentic_loop::tool_execution::direct::stage_run_call::stage_run_tool_definition(

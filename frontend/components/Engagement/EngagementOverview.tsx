@@ -14,8 +14,11 @@
 
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { type EngagementSnapshot, getEngagementSnapshot } from "@/lib/api/engagement";
-import { isPoolRunning, startEngagementRun, stopEngagementRun } from "@/lib/engagement/runPool";
+import {
+  type EngagementSnapshot,
+  engagementRunFleet,
+  getEngagementSnapshot,
+} from "@/lib/api/engagement";
 import { logger } from "@/lib/logger";
 import { useStore } from "@/store";
 import { type EngagementCardRow, EngagementInlineCard } from "./EngagementInlineCard";
@@ -36,18 +39,14 @@ export interface EngagementOverviewProps {
   conversationId: string;
 }
 
-export function EngagementOverview({
-  model,
-  provider,
-  profileId = "red_team",
-  conversationId,
-}: EngagementOverviewProps) {
+export function EngagementOverview({ model, conversationId }: EngagementOverviewProps) {
   const [snapshot, setSnapshot] = useState<EngagementSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [concurrency, setConcurrency] = useState(3);
   const [collapsed, setCollapsed] = useState(false);
+  const [fleetRunning, setFleetRunning] = useState(false);
 
   const pool = useStore((s) => s.engagementPool);
   const conversations = useStore((s) => s.conversations);
@@ -77,13 +76,13 @@ export function EngagementOverview({
     void load();
   }, [load]);
 
-  // While the pool runs, refresh the DB baseline periodically so freshly
-  // landed truth (passed stages) shows up without manual refreshes.
+  // While the backend fleet runs, refresh the DB baseline periodically so
+  // freshly landed truth (passed stages) shows up without manual refreshes.
   useEffect(() => {
-    if (pool.phase !== "running" && pool.phase !== "stopping") return;
+    if (!fleetRunning) return;
     const interval = setInterval(() => void load(), 10_000);
     return () => clearInterval(interval);
-  }, [pool.phase, load]);
+  }, [fleetRunning, load]);
 
   const findConvByUnit = useCallback(
     (unitId: string): string | null => {
@@ -130,23 +129,32 @@ export function EngagementOverview({
   }, []);
 
   const handleStart = useCallback(() => {
-    if (!projectPath || isPoolRunning()) return;
-    startEngagementRun({
-      projectPath,
-      concurrency,
-      overviewConvId: conversationId,
-      profileId,
-      model,
-      provider,
-      thresholdPct: 51,
-    }).catch((e) => {
-      logger.error("[engagement] run failed:", e);
-      setError(e instanceof Error ? e.message : String(e));
-    });
-  }, [projectPath, concurrency, conversationId, profileId, model, provider]);
+    if (!projectPath || fleetRunning) return;
+    // 方案 C：后端驱动整支 fleet（取代前端 runPool.ts 的 JS 调度），在本 engagement
+    // 会话（scoping 对话）的 bridge 上跑 —— 逐 org 进度走 StageRunOrgProgress 事件 →
+    // 单卡渲染。session_id = 该对话的 aiSessionId（后端据此取 bridge）。
+    const sessionId = conversations[conversationId]?.aiSessionId;
+    if (!sessionId) {
+      setError("engagement session not initialized yet — open this chat first");
+      return;
+    }
+    setFleetRunning(true);
+    engagementRunFleet({ sessionId, projectPath, subsidiaryThresholdPct: 51 })
+      .then((r) => logger.info("[engagement] fleet run complete", r))
+      .catch((e) => {
+        logger.error("[engagement] run failed:", e);
+        setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => setFleetRunning(false));
+  }, [projectPath, fleetRunning, conversationId, conversations]);
 
-  const running = pool.phase === "running" || pool.phase === "stopping";
-  const canStart = !running && !!projectPath && (snapshot?.rootCount ?? 0) > 0 && !!model;
+  const handleStop = useCallback(() => {
+    // 后端 fleet 取消尚未实现（T4.4 跟进）；前端 JS 池已停用。
+    logger.warn("[engagement] backend fleet run cancellation not yet supported");
+  }, []);
+
+  const running = fleetRunning;
+  const canStart = !fleetRunning && !!projectPath && (snapshot?.rootCount ?? 0) > 0 && !!model;
 
   // Map pool-merged rows → presentational worker-card rows. Status/tree/phase/
   // drill-in are live; the per-worker activity line + tool count are deferred
@@ -223,13 +231,13 @@ export function EngagementOverview({
       rows={cardRows}
       summary={summary}
       running={running}
-      stopping={pool.phase === "stopping"}
+      stopping={false}
       concurrency={concurrency}
       collapsed={collapsed}
       canFanOut={canStart}
       fanOutDisabledReason="Lock a scope (run scoping) and pick a model first"
       onFanOut={handleStart}
-      onStop={stopEngagementRun}
+      onStop={handleStop}
       onConcurrencyChange={onConcurrencyChange}
       onToggleRow={toggle}
       onDrillIn={onDrillInRow}

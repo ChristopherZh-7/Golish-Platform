@@ -27,9 +27,9 @@ use golish_core::runtime::{GolishRuntime, RuntimeEvent};
 
 use crate::ai::agent_bridge::AgentBridge;
 use crate::cli::Args;
+use crate::engagement::fleet_run::{AlwaysRunOracle, NoopScorer, OrgFleetExecutor};
 use crate::engagement::scheduler::{
-    run_fleet_scheduler, FleetConfig, FleetMode, FleetReport, OrgCompletionOracle, OrgRunExecutor,
-    OrgRunTask, WeaknessScorer,
+    run_fleet_scheduler, FleetConfig, FleetMode, FleetReport, OrgRunTask,
 };
 use crate::runtime::CliRuntime;
 
@@ -291,12 +291,14 @@ pub async fn run(args: Args) -> Result<()> {
                         "[stage-run] dispatching {} subsidiary run(s) via fleet scheduler (serial)",
                         tasks.len()
                     );
-                    let executor = CliOrgRunExecutor {
+                    let executor = OrgFleetExecutor {
                         bridge: bridge.clone(),
                         db_pool: db_pool.clone(),
                         session_id: session_id.clone(),
                         profile_id: profile_id.clone(),
                         subsidiary_threshold: args.subsidiary_threshold,
+                        // CLI 无单卡：不 emit StageRunOrgProgress（事件只进 transcript，无害）。
+                        emit_progress: false,
                     };
                     let report = run_fleet_scheduler(
                         FleetConfig {
@@ -386,58 +388,6 @@ pub async fn run(args: Args) -> Result<()> {
     }
 }
 
-/// CLI 侧的 [`OrgRunExecutor`]：把「跑一个 org 的 stage 切片」委托给 [`orchestrate`]
-/// （= 一个完整 `run_stage`，独立 gate + org 隔离）。fleet 调度内核借用它逐 org 串行
-/// 调用（concurrency=1），是 chat 后端扇出未来共用的同一 per-org 原语（方案 C）。
-struct CliOrgRunExecutor {
-    bridge: Arc<AgentBridge>,
-    db_pool: Arc<sqlx::PgPool>,
-    session_id: String,
-    profile_id: String,
-    subsidiary_threshold: u8,
-}
-
-#[async_trait::async_trait]
-impl OrgRunExecutor for CliOrgRunExecutor {
-    async fn run_org(&self, task: &OrgRunTask) -> Result<String> {
-        orchestrate(
-            &self.bridge,
-            &self.db_pool,
-            &self.session_id,
-            &self.profile_id,
-            task.entry_stage,
-            task.allowlist.clone(),
-            &task.objective,
-            Some(task.org_id),
-            // 子公司不再下探孙公司（Phase 2 非目标）：child run 不开 SUBSIDIARY gate。
-            false,
-            self.subsidiary_threshold,
-        )
-        .await
-    }
-}
-
-/// T1 行为保持：CLI 照跑所有子公司（embedded PG 跨次持久，重跑会重跑全部）。DB 真值
-/// 续跑 oracle 是 T3 的硬化项。
-struct AlwaysRunOracle;
-
-#[async_trait::async_trait]
-impl OrgCompletionOracle for AlwaysRunOracle {
-    async fn is_already_complete(&self, _org_id: uuid::Uuid, _to: StageKind) -> bool {
-        false
-    }
-}
-
-/// checklist 模式不评分（funnel 才用）；仅满足 [`run_fleet_scheduler`] 签名。
-struct NoopScorer;
-
-#[async_trait::async_trait]
-impl WeaknessScorer for NoopScorer {
-    async fn score(&self, _org_id: uuid::Uuid) -> i64 {
-        0
-    }
-}
-
 /// Best-effort: stop the embedded PostgreSQL server started for this run.
 ///
 /// The handle arrives via the oneshot from
@@ -461,7 +411,7 @@ async fn stop_embedded_pg(rx: tokio::sync::oneshot::Receiver<golish_db::GolishDb
 /// `include_subsidiaries` + `subsidiary_threshold` (Phase 2,
 /// 2026-06-12-redteam-phase2) opt the run into the scoping subsidiary gate.
 #[allow(clippy::too_many_arguments)]
-async fn orchestrate(
+pub(crate) async fn orchestrate(
     bridge: &Arc<AgentBridge>,
     db_pool: &Arc<sqlx::PgPool>,
     session_id: &str,

@@ -1,5 +1,12 @@
 //! `execute_stage_run` — the `stage_run` tool handler.
 //!
+//! ⚠ **DEPRECATED**（方案 C / fleet Phase B,计划
+//! `docs/superpowers/plans/2026-06-14-engagement-fleet-scheduler-convergence.md`）：
+//! 多 org 扇出已统一到后端 `golish::engagement::fleet_run::run_engagement_fleet`
+//! （每 org 一个完整 `run_stage`，经 `run_fleet_scheduler`；CLI 与 GUI 共用）。本工具
+//! （in-stage、sub_agent per org）仅暂保留以兼容旧前端 worker-pool 回滚路径，待 T4.4
+//! 活体验证新路径后整体移除（selection_apply 注入 + direct/mod.rs 路由 + 本文件）。
+//!
 //! `stage_run` brings the CLI `--stage-run --include-subsidiaries` behaviour
 //! into chat: for the CURRENT harness stage, fan the stage's **specialist**
 //! (intel→`recon`, config-driven via `StageSpec::specialist`) out across every

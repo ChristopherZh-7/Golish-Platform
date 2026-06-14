@@ -47,7 +47,7 @@
 - **T4 · chat 接 scheduler**（依赖 Q1）：
   - (a)：新增后端 engagement-run 入口，跑 `run_fleet_scheduler`；前端改为「启动+看单卡」；`StageRunOrgProgress` 事件由 executor 内 emit。
   - (b)：worker pool 内部统一到共享 executor 语义。
-- **T5 · 处理 `stage_run` 工具**（依赖 Q2）：deprecated 或保留为别名；改 `selection_apply` 注入条件。
+- **T5 · 处理 `stage_run` 工具**：**决定 = deprecate now, hard-remove in T4.4**。已在 `selection_apply` 注入点 + `stage_run_call` handler 标 DEPRECATED（超集为 `run_engagement_fleet`）；注入**暂留**以兼容旧前端 worker-pool 回滚路径（recon_family 靠它收子公司），T4.4 活体验证新路径后，连 injection + `direct/mod.rs` 路由 + 文件一并摘除。
 - **T6 · 前端**：单卡（`StageRunView`）事件来源对齐统一路径；去掉重复/失效路径。
 - **T7 · 收口**：`just precommit` 全绿；更新 `agent-progress.md` / `feature_list.json` / 模块卡 / 本计划状态。
 
@@ -68,6 +68,6 @@
 - [ ] T2 共享 executor
 - [ ] T3 DB 续跑 oracle
 - [ ] T4 chat 接 scheduler（待 Q1）
-- [ ] T5 stage_run 工具去留（待 Q2）
+- [~] T5 stage_run 工具去留（已 deprecate；硬移除待 T4.4 活体验证后）
 - [ ] T6 前端
 - [ ] T7 收口

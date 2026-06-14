@@ -154,7 +154,7 @@ pub fn classify_run_error(err: &anyhow::Error) -> OrgRunStatus {
 }
 
 /// engagement 级聚合报告。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FleetReport {
     pub outcomes: Vec<OrgRunOutcome>,
 }

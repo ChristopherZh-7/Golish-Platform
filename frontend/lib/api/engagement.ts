@@ -1,7 +1,9 @@
+import type { EngagementRunReportDto } from "@/lib/generated/EngagementRunReportDto";
 import type { EngagementSnapshot } from "@/lib/generated/EngagementSnapshot";
 import type { OrgTreeNode } from "@/lib/generated/OrgTreeNode";
 import { invoke } from "./client";
 
+export type { EngagementRunReportDto } from "@/lib/generated/EngagementRunReportDto";
 export type { EngagementSnapshot } from "@/lib/generated/EngagementSnapshot";
 export type { OrgRunStatusDto } from "@/lib/generated/OrgRunStatusDto";
 export type { OrgTreeNode } from "@/lib/generated/OrgTreeNode";
@@ -59,6 +61,29 @@ export async function getEngagementSnapshot(args?: {
     projectPath: args?.projectPath ?? null,
     mode: args?.mode ?? null,
     toStage: args?.toStage ?? null,
+  });
+}
+
+/**
+ * Backend-driven engagement fan-out (方案 C / fleet Phase B). Runs the whole
+ * fleet on the backend via `run_fleet_scheduler` (recon → attack, one full
+ * `run_stage` per org), the same per-org scheduling the headless CLI exercises.
+ * Per-org progress streams back as `StageRunOrgProgress` events (the single
+ * card); this resolves when the fleet finishes with the two-phase summary.
+ *
+ * Replaces the frontend JS pool loop (`lib/engagement/runPool.ts`): the
+ * scheduling now lives in the backend so CLI and GUI run identical logic.
+ */
+export async function engagementRunFleet(args: {
+  /** The engagement session's AI session id (conversation.aiSessionId). */
+  sessionId: string;
+  projectPath: string;
+  subsidiaryThresholdPct?: number;
+}): Promise<EngagementRunReportDto> {
+  return invoke<EngagementRunReportDto>("engagement_run_fleet", {
+    sessionId: args.sessionId,
+    projectPath: args.projectPath,
+    subsidiaryThresholdPct: args.subsidiaryThresholdPct ?? null,
   });
 }
 

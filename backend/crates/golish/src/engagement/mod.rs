@@ -15,6 +15,8 @@
 //!   「范围已锁定」信号 + 总览读模型（Phase C 的 scoping 对话升级总览用它渲染）。
 
 pub mod contract;
+pub mod fleet_run;
 pub mod query;
+pub mod run_command;
 pub mod scheduler;
 pub mod weakness;

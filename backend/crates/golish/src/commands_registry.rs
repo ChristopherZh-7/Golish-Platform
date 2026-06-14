@@ -155,6 +155,7 @@ fn install_handlers(
         organization_recon_export_current_assets,
         // ── engagement (chat-native scoping/fan-out) ─
         engagement_get_snapshot,
+        engagement_run_fleet,
         engagement_set_worker_scope, engagement_get_worker_scope, engagement_clear_worker_scope,
         // ── intel_providers (ASM platforms · 0.zone / FOFA / Quake / ...) ─
         intel_list_providers, intel_test_connection, intel_query_provider,
