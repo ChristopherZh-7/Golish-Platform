@@ -43,29 +43,57 @@ pub const TECH_ENUM_DIR: &str = "GOLISH-ENUM-DIR";
 pub const TECH_ENUM_PARAM: &str = "GOLISH-ENUM-PARAM";
 pub const TECH_ENUM_JSAPI: &str = "GOLISH-ENUM-JSAPI";
 
-/// org 级情报存量（一次查询返回四个 bool）：
-/// - `has_asn` / `has_ct`：`asns` / `certificates` JSONB 数组非空。
+/// 某 JSONB 列「有内容」的 shape 无关判据：把 SQL NULL / `'null'` / `'[]'` /
+/// `'{}'` 视为空，其余视为有内容（对齐 `has_whois` 的比较式判据）。
+///
+/// 关键约束：**绝不**对该列调 `jsonb_array_length`——后者遇非数组（例如
+/// `contacts` 被 recon 写成对象 `{email:[...]}`）会抛
+/// `cannot get array length of a non-array`，使整条 presence 查询失败、
+/// `coverage_truth_facts` 返回 Err、db_truth 投影被整体丢弃，scoping 子公司
+/// gate 因此误判 not_attempted。比较式判据对数组/对象/标量/NULL 都安全，且
+/// Postgres 不保证 `AND` 短路，故不能用 `jsonb_typeof(x)='array' AND jsonb_array_length(x)`。
+fn jsonb_non_empty(col: &str) -> String {
+    format!(
+        "({col} IS NOT NULL AND {col} <> 'null'::jsonb \
+          AND {col} <> '[]'::jsonb AND {col} <> '{{}}'::jsonb)"
+    )
+}
+
+/// org 级情报存量（一次查询返回五个 bool）：
+/// - `has_asn` / `has_ct`：`asns` / `certificates` 列非空。
 /// - `has_whois`：`whois` 专列非 NULL 且非 `'null'`/`'{}'`（Phase 1）。
-/// - `has_osint`：`intel.records` / `contacts` / `social_accounts` /
+/// - `has_osint`：`intel.records`（数组）/ `contacts`（对象）/ `social_accounts` /
 ///   `business_systems` 任一非空（OSINT 经 provider enrich 落这些列；Phase 1）。
+/// - `has_subsidiary`：存在任意 child org（scoping 用；Phase 2）。
+///
+/// 列存量判定一律走 [`jsonb_non_empty`]（不裸调 `jsonb_array_length`）；唯一保留
+/// 的 `jsonb_array_length` 是 `intel->'records'`，且有 `CASE WHEN jsonb_typeof =
+/// 'array'` 守卫，对非数组安全。
 fn build_org_intel_presence_sql() -> String {
-    "SELECT (jsonb_array_length(asns) > 0) AS has_asn, \
-            (jsonb_array_length(certificates) > 0) AS has_ct, \
-            (whois IS NOT NULL AND whois <> 'null'::jsonb AND whois <> '{}'::jsonb) AS has_whois, \
-            (COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(intel->'records') = 'array' \
-                          THEN intel->'records' END), 0) > 0 \
-             OR jsonb_array_length(contacts) > 0 \
-             OR jsonb_array_length(social_accounts) > 0 \
-             OR jsonb_array_length(business_systems) > 0) AS has_osint, \
-            (EXISTS(SELECT 1 FROM organizations child \
-                      WHERE child.parent_id = organizations.id)) AS has_subsidiary \
-       FROM organizations WHERE id = $1"
-        .to_string()
+    format!(
+        "SELECT {has_asn} AS has_asn, \
+                {has_ct} AS has_ct, \
+                (whois IS NOT NULL AND whois <> 'null'::jsonb AND whois <> '{{}}'::jsonb) AS has_whois, \
+                (COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(intel->'records') = 'array' \
+                              THEN intel->'records' END), 0) > 0 \
+                 OR {has_contacts} \
+                 OR {has_social} \
+                 OR {has_business}) AS has_osint, \
+                (EXISTS(SELECT 1 FROM organizations child \
+                          WHERE child.parent_id = organizations.id)) AS has_subsidiary \
+           FROM organizations WHERE id = $1",
+        has_asn = jsonb_non_empty("asns"),
+        has_ct = jsonb_non_empty("certificates"),
+        has_contacts = jsonb_non_empty("contacts"),
+        has_social = jsonb_non_empty("social_accounts"),
+        has_business = jsonb_non_empty("business_systems"),
+    )
 }
 
 /// 通用模板：该 org 下 scope='in' 的 target 中，满足 `extra` 条件的 `value` 集合。
 /// `$1 IS NULL` 时不按 org 过滤（退回全局 scope='in'）。`extra` 形如
-/// `"AND jsonb_array_length(t.ports) > 0"` 或 `"JOIN fingerprints f ON ..."`。
+/// `"AND jsonb_typeof(t.ports) = 'array' AND t.ports <> '[]'::jsonb"` 或
+/// `"JOIN fingerprints f ON ..."`。
 fn build_in_scope_values_sql(join: &str, filter: &str) -> String {
     format!(
         "SELECT DISTINCT t.value FROM targets t {join} \
@@ -87,9 +115,14 @@ fn build_liveness_values_sql() -> String {
     build_in_scope_values_sql("", "AND (t.http_status IS NOT NULL OR t.real_ip <> '')")
 }
 
-/// EAS-PORT：端口扫描结果（`ports` JSONB 数组非空）。
+/// EAS-PORT：端口扫描结果（`ports` 为非空 JSONB 数组）。判空走 `jsonb_typeof =
+/// 'array'` + 比较式（不裸调 `jsonb_array_length`，否则非数组 `ports` 会抛
+/// `cannot get array length of a non-array`），与 `engagement_truth` 同款守卫。
 fn build_port_values_sql() -> String {
-    build_in_scope_values_sql("", "AND jsonb_array_length(t.ports) > 0")
+    build_in_scope_values_sql(
+        "",
+        "AND jsonb_typeof(t.ports) = 'array' AND t.ports <> '[]'::jsonb",
+    )
 }
 
 /// EAS-SERVICE-FINGERPRINT：该 host 有服务/版本指纹行。
@@ -103,10 +136,12 @@ fn build_dir_values_sql() -> String {
 }
 
 /// ENUM-PARAM：该 host 有带参端点（arjun/katana → api_endpoints.params 非空）。
+/// 判空同 [`build_port_values_sql`]：`jsonb_typeof = 'array'` + 比较式，避免对
+/// 非数组 `params` 调 `jsonb_array_length` 抛错。
 fn build_param_values_sql() -> String {
     build_in_scope_values_sql(
         "JOIN api_endpoints ae ON ae.target_id = t.id",
-        "AND jsonb_array_length(ae.params) > 0",
+        "AND jsonb_typeof(ae.params) = 'array' AND ae.params <> '[]'::jsonb",
     )
 }
 
@@ -318,15 +353,63 @@ mod tests {
     #[test]
     fn org_intel_presence_sql_reads_all_four_org_columns() {
         let sql = build_org_intel_presence_sql();
-        assert!(sql.contains("jsonb_array_length(asns) > 0"));
-        assert!(sql.contains("jsonb_array_length(certificates) > 0"));
+        // 五个 org 级列都参与判定（列名出现）。
+        for col in [
+            "asns",
+            "certificates",
+            "contacts",
+            "social_accounts",
+            "business_systems",
+        ] {
+            assert!(sql.contains(col), "missing column {col}: {sql}");
+        }
         assert!(sql.contains("whois IS NOT NULL"));
-        // OSINT 多源任一非空。
+        // OSINT 多源任一非空（intel->records 走 jsonb_typeof 守卫的 array_length）。
         assert!(sql.contains("intel->'records'"));
-        assert!(sql.contains("jsonb_array_length(contacts) > 0"));
-        assert!(sql.contains("jsonb_array_length(social_accounts) > 0"));
-        assert!(sql.contains("jsonb_array_length(business_systems) > 0"));
         assert!(sql.contains("FROM organizations WHERE id = $1"));
+    }
+
+    /// shape 无关空判据自身的守卫：永不调 `jsonb_array_length`，且把
+    /// NULL/`'null'`/`'[]'`/`'{}'` 全判空（数组/对象/标量列共用）。
+    #[test]
+    fn jsonb_non_empty_avoids_array_length_and_guards_all_empty_shapes() {
+        let pred = jsonb_non_empty("contacts");
+        assert!(
+            !pred.contains("jsonb_array_length"),
+            "must not call jsonb_array_length: {pred}"
+        );
+        assert!(pred.contains("contacts IS NOT NULL"));
+        assert!(pred.contains("contacts <> 'null'::jsonb"));
+        assert!(pred.contains("contacts <> '[]'::jsonb"));
+        assert!(pred.contains("contacts <> '{}'::jsonb"));
+    }
+
+    /// 回归（既有 bug `cannot get array length of a non-array`）：org-level
+    /// presence 查询绝不能对可能为非数组的列裸调 `jsonb_array_length`。`contacts`
+    /// 经 recon 写成对象 `{email:[...]}`，裸调会让整条查询抛错 → db_truth 投影被丢
+    /// → scoping 子公司 gate 误判 not_attempted → BLOCK。唯一允许的 array_length 是
+    /// `intel->'records'`（带 `jsonb_typeof = 'array'` 守卫，对非数组安全）。
+    #[test]
+    fn org_intel_presence_sql_never_array_length_on_unguarded_columns() {
+        let sql = build_org_intel_presence_sql();
+        for col in [
+            "asns",
+            "certificates",
+            "contacts",
+            "social_accounts",
+            "business_systems",
+        ] {
+            let needle = format!("jsonb_array_length({col})");
+            assert!(!sql.contains(&needle), "unguarded {needle}: {sql}");
+            // 每列都用 shape 无关比较式判空（对象/数组/NULL 均安全）。
+            assert!(
+                sql.contains(&format!("{col} <> '[]'::jsonb"))
+                    && sql.contains(&format!("{col} <> '{{}}'::jsonb")),
+                "missing shape-agnostic empty check for {col}: {sql}"
+            );
+        }
+        // 唯一允许的 array_length 必须带 jsonb_typeof 守卫。
+        assert!(sql.contains("jsonb_typeof(intel->'records') = 'array'"));
     }
 
     #[test]
@@ -360,15 +443,25 @@ mod tests {
     #[test]
     fn active_dimension_sqls_target_the_right_tables() {
         assert!(build_liveness_values_sql().contains("t.http_status IS NOT NULL OR t.real_ip"));
-        assert!(build_port_values_sql().contains("jsonb_array_length(t.ports) > 0"));
+        assert!(build_port_values_sql()
+            .contains("jsonb_typeof(t.ports) = 'array' AND t.ports <> '[]'::jsonb"));
         assert!(build_service_fp_values_sql().contains("JOIN fingerprints f ON f.target_id = t.id"));
         assert!(build_dir_values_sql().contains("JOIN directory_entries de ON de.target_id = t.id"));
         let param = build_param_values_sql();
         assert!(param.contains("JOIN api_endpoints ae ON ae.target_id = t.id"));
-        assert!(param.contains("jsonb_array_length(ae.params) > 0"));
+        assert!(param.contains("jsonb_typeof(ae.params) = 'array' AND ae.params <> '[]'::jsonb"));
         let jsapi = build_jsapi_values_sql();
         assert!(jsapi.contains("JOIN api_endpoints ae ON ae.target_id = t.id"));
         assert!(jsapi.contains("ae.source IN ('js_analysis', 'crawler')"));
+    }
+
+    /// 回归：per-asset 维度 SQL 也不能对可能为非数组的 `ports`/`params` 裸调
+    /// `jsonb_array_length`（同 org-level presence 的 crash 类），否则会让整条
+    /// `coverage_truth_facts` 抛错、db_truth 投影整体失效。
+    #[test]
+    fn active_dimension_sqls_never_array_length_unguarded() {
+        assert!(!build_port_values_sql().contains("jsonb_array_length(t.ports)"));
+        assert!(!build_param_values_sql().contains("jsonb_array_length(ae.params)"));
     }
 
     #[test]
