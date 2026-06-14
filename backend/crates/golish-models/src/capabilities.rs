@@ -291,14 +291,22 @@ impl ModelCapabilities {
     }
 
     /// Create capabilities for DeepSeek direct API models.
+    ///
+    /// Values track the official DeepSeek API (api-docs.deepseek.com): the
+    /// current `deepseek-v4-flash` / `deepseek-v4-pro` models (which the legacy
+    /// `deepseek-chat` / `deepseek-reasoner` names now alias) ship a 1M context
+    /// window with up to 384K max output. The previous 128K/8K values were the
+    /// stale V3.1-era limits.
     pub fn deepseek_defaults() -> Self {
         Self {
             supports_temperature: true,
             supports_thinking_history: true,
             supports_vision: false,
             tool_use_profile: ToolUseProfile::native_best_effort(),
-            context_window: 128_000,
-            max_output_tokens: 8_192,
+            context_window: 1_000_000,
+            // Official ceiling is 384K; 64K is a generous, cost-aware default
+            // (8x the old 8K cap that was truncating long agent turns).
+            max_output_tokens: 65_536,
             ..Default::default()
         }
     }
