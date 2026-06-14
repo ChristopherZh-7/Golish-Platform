@@ -27,8 +27,8 @@ use golish_db::models::Organization;
 
 use crate::ai::agent_bridge::AgentBridge;
 use crate::engagement::scheduler::{
-    run_fleet_scheduler, FleetConfig, FleetMode, FleetReport, OrgCompletionOracle, OrgRunExecutor,
-    OrgRunTask, WeaknessScorer,
+    run_fleet_scheduler, FleetConfig, FleetMode, FleetProgress, FleetReport, NoopProgress,
+    OrgCompletionOracle, OrgRunExecutor, OrgRunOutcome, OrgRunStatus, OrgRunTask, WeaknessScorer,
 };
 
 /// recon 阶段切片端点（对齐前端 `STAGE_SLICES.recon_family`）。
@@ -107,9 +107,14 @@ fn build_phase_tasks(
 
 /// recon 阶段任务：每个 in-scope org 一个（`target_intel..=enumeration`）。
 fn recon_fleet_tasks(orgs: &[Organization], profile_id: &str) -> Result<Vec<OrgRunTask>> {
-    build_phase_tasks(orgs, profile_id, RECON_FROM, RECON_TO, recon_objective, |_| {
-        true
-    })
+    build_phase_tasks(
+        orgs,
+        profile_id,
+        RECON_FROM,
+        RECON_TO,
+        recon_objective,
+        |_| true,
+    )
 }
 
 /// attack 阶段任务：只对 recon 已覆盖的 org（`vuln_triage..=reporting`）。
@@ -172,7 +177,11 @@ impl OrgFleetExecutor {
 impl OrgRunExecutor for OrgFleetExecutor {
     async fn run_org(&self, task: &OrgRunTask) -> Result<String> {
         if self.emit_progress {
-            self.emit(task, "running", Some(format!("running {}", task.to_stage.as_str())));
+            self.emit(
+                task,
+                "running",
+                Some(format!("running {}", task.to_stage.as_str())),
+            );
         }
         let result = crate::stage_run::orchestrate(
             &self.bridge,
@@ -218,6 +227,38 @@ impl WeaknessScorer for NoopScorer {
     }
 }
 
+/// headless（CLI `--stage-run` / 无单卡）逐 org 进度：在每个 org 进 executor 前后打
+/// `[stage-run] ── <label> i/N: 名 → … ──`，恢复 T1 把手写循环换成调度器后丢的那条
+/// 逐子可见性。GUI 走单卡（`StageRunOrgProgress`）→ 不用它（传 `NoopProgress`）。
+/// `label` 让调用方区分语义：子公司扇出 = "subsidiary"，engagement 全 org = "org"。
+pub(crate) struct CliFleetProgress {
+    pub label: &'static str,
+}
+
+impl FleetProgress for CliFleetProgress {
+    fn on_org_start(&self, index: usize, total: usize, task: &OrgRunTask) {
+        eprintln!(
+            "[stage-run] ── {} {index}/{total}: {} → running {} ──",
+            self.label,
+            task.org_name,
+            task.to_stage.as_str(),
+        );
+    }
+
+    fn on_org_done(&self, index: usize, total: usize, outcome: &OrgRunOutcome) {
+        let tag = match outcome.status {
+            OrgRunStatus::Passed => "PASS",
+            OrgRunStatus::SkippedAlreadyComplete => "SKIP(done)",
+            OrgRunStatus::Blocked => "BLOCK",
+            OrgRunStatus::Failed => "FAIL",
+        };
+        eprintln!(
+            "[stage-run] ── {} {index}/{total}: {} → {tag} ──",
+            self.label, outcome.org_name,
+        );
+    }
+}
+
 /// 一次 engagement fleet 跑完的两阶段聚合（recon + attack）。
 #[derive(Debug, Clone, Default)]
 pub struct EngagementFleetReport {
@@ -260,11 +301,26 @@ pub async fn run_engagement_fleet(
         concurrency: 1,
         mode: FleetMode::Checklist,
     };
+    // GUI（emit_progress=true）靠单卡看进度 → noop；headless 复用本驱动时逐 org 打
+    // eprintln（这里全 org 含母公司，故 label="org"，非 "subsidiary"）。
+    let cli_progress = CliFleetProgress { label: "org" };
+    let progress: &dyn FleetProgress = if emit_progress {
+        &NoopProgress
+    } else {
+        &cli_progress
+    };
 
     // Phase 1 · recon（每个 org 各跑一次 target_intel..=enumeration）。
     let recon_tasks = recon_fleet_tasks(&orgs, profile_id)?;
-    let recon = run_fleet_scheduler(config, recon_tasks, &executor, &AlwaysRunOracle, &NoopScorer)
-        .await;
+    let recon = run_fleet_scheduler(
+        config,
+        recon_tasks,
+        &executor,
+        &AlwaysRunOracle,
+        &NoopScorer,
+        progress,
+    )
+    .await;
 
     // Phase 2 · attack（只对 recon 已覆盖的 org 跑 vuln_triage..=reporting）。
     let covered: HashSet<Uuid> = recon
@@ -277,7 +333,15 @@ pub async fn run_engagement_fleet(
     let attack = if attack_tasks.is_empty() {
         FleetReport::default()
     } else {
-        run_fleet_scheduler(config, attack_tasks, &executor, &AlwaysRunOracle, &NoopScorer).await
+        run_fleet_scheduler(
+            config,
+            attack_tasks,
+            &executor,
+            &AlwaysRunOracle,
+            &NoopScorer,
+            progress,
+        )
+        .await
     };
 
     Ok(EngagementFleetReport { recon, attack })

@@ -27,7 +27,7 @@ use golish_core::runtime::{GolishRuntime, RuntimeEvent};
 
 use crate::ai::agent_bridge::AgentBridge;
 use crate::cli::Args;
-use crate::engagement::fleet_run::{AlwaysRunOracle, NoopScorer, OrgFleetExecutor};
+use crate::engagement::fleet_run::{AlwaysRunOracle, CliFleetProgress, NoopScorer, OrgFleetExecutor};
 use crate::engagement::scheduler::{
     run_fleet_scheduler, FleetConfig, FleetMode, FleetReport, OrgRunTask,
 };
@@ -311,6 +311,11 @@ pub async fn run(args: Args) -> Result<()> {
                         &AlwaysRunOracle,
                         // checklist 模式不评分；NoopScorer 仅满足签名。
                         &NoopScorer,
+                        // CLI 无单卡 → 逐子打 eprintln（恢复 T1 前的「── subsidiary i/N ──」
+                        // 中途可见性，调度器把 eprintln 副作用外置到此 progress 实现）。
+                        &CliFleetProgress {
+                            label: "subsidiary",
+                        },
                     )
                     .await;
                     fleet_report = Some(report);

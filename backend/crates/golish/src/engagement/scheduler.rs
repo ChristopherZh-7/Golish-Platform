@@ -122,6 +122,27 @@ pub trait WeaknessScorer: Send + Sync {
     async fn score(&self, org_id: Uuid) -> i64;
 }
 
+/// 注入：逐 org 进度上报。调度内核保持 **IO-free**（设计 §3.3）—— eprintln / 事件等
+/// 副作用全外置到实现里，故本文件依旧零 IO、可纯单测。headless CLI 用
+/// [`crate::engagement::fleet_run::CliFleetProgress`] 打 `── subsidiary i/N ──` 恢复
+/// 中途可见性（T1 把手写循环换成本调度器后丢的那条逐子进度）；GUI 走单卡
+/// （`StageRunOrgProgress` 事件）→ 传 [`NoopProgress`]。`index`/`total` 为 1-based 的
+/// org 序（checklist 串行下即真实顺序；funnel/并发下 index 仍唯一、顺序不保证）。
+pub trait FleetProgress: Send + Sync {
+    /// 第 `index`/`total` 个 org 即将进入 executor 跑（被续跑跳过的 org **不**触发）。
+    fn on_org_start(&self, index: usize, total: usize, task: &OrgRunTask);
+    /// 第 `index`/`total` 个 org 跑出终态（含续跑跳过 → `SkippedAlreadyComplete`）。
+    fn on_org_done(&self, index: usize, total: usize, outcome: &OrgRunOutcome);
+}
+
+/// 不上报任何进度（GUI 单卡路径 / 单测默认）。
+pub struct NoopProgress;
+
+impl FleetProgress for NoopProgress {
+    fn on_org_start(&self, _index: usize, _total: usize, _task: &OrgRunTask) {}
+    fn on_org_done(&self, _index: usize, _total: usize, _outcome: &OrgRunOutcome) {}
+}
+
 /// 按模式排序任务（纯函数，IO-free）。checklist 保持输入序（母先子后由调用方保证）；
 /// funnel 按预算好的薄弱度分降序（同分按名稳定）。`scores` 缺项视作 0。
 pub fn order_tasks(
@@ -220,13 +241,15 @@ impl FleetReport {
 }
 
 /// 跑整支舰队：funnel 先评分排序 → 受控并发执行（续跑跳过已完整 + 失败隔离）。
-/// 借用 executor/oracle/scorer（`buffer_unordered` 不 spawn，无 `'static` 要求）。
+/// 借用 executor/oracle/scorer/progress（`buffer_unordered` 不 spawn，无 `'static` 要求）。
+/// `progress` 逐 org 上报（CLI eprintln / GUI noop），副作用外置故内核仍零 IO。
 pub async fn run_fleet_scheduler(
     config: FleetConfig,
     tasks: Vec<OrgRunTask>,
     executor: &dyn OrgRunExecutor,
     oracle: &dyn OrgCompletionOracle,
     scorer: &dyn WeaknessScorer,
+    progress: &dyn FleetProgress,
 ) -> FleetReport {
     // 1) funnel 模式预算薄弱度分（checklist 跳过，零额外查询）。
     let scores: HashMap<Uuid, i64> = if config.mode == FleetMode::Funnel {
@@ -241,36 +264,44 @@ pub async fn run_fleet_scheduler(
 
     // 2) 排序。
     let ordered = order_tasks(tasks, config.mode, &scores);
+    let total = ordered.len();
 
-    // 3) 受控并发执行：续跑跳过 + 失败隔离（一个 Err 不中断其余）。
+    // 3) 受控并发执行：续跑跳过 + 失败隔离（一个 Err 不中断其余）。逐 org 经 `progress`
+    //    上报（headless 打 eprintln 恢复中途可见性；GUI 单卡走 NoopProgress）。
     let concurrency = config.concurrency.max(1);
-    let outcomes: Vec<OrgRunOutcome> = stream::iter(ordered.into_iter().map(|task| async move {
-        if oracle.is_already_complete(task.org_id, task.to_stage).await {
-            return OrgRunOutcome {
-                org_id: task.org_id,
-                org_name: task.org_name,
-                status: OrgRunStatus::SkippedAlreadyComplete,
-                detail: None,
+    let outcomes: Vec<OrgRunOutcome> =
+        stream::iter(ordered.into_iter().enumerate().map(|(i, task)| async move {
+            let index = i + 1;
+            let outcome = if oracle.is_already_complete(task.org_id, task.to_stage).await {
+                OrgRunOutcome {
+                    org_id: task.org_id,
+                    org_name: task.org_name,
+                    status: OrgRunStatus::SkippedAlreadyComplete,
+                    detail: None,
+                }
+            } else {
+                progress.on_org_start(index, total, &task);
+                match executor.run_org(&task).await {
+                    Ok(_) => OrgRunOutcome {
+                        org_id: task.org_id,
+                        org_name: task.org_name,
+                        status: OrgRunStatus::Passed,
+                        detail: None,
+                    },
+                    Err(e) => OrgRunOutcome {
+                        org_id: task.org_id,
+                        org_name: task.org_name,
+                        status: classify_run_error(&e),
+                        detail: Some(format!("{e:#}")),
+                    },
+                }
             };
-        }
-        match executor.run_org(&task).await {
-            Ok(_) => OrgRunOutcome {
-                org_id: task.org_id,
-                org_name: task.org_name,
-                status: OrgRunStatus::Passed,
-                detail: None,
-            },
-            Err(e) => OrgRunOutcome {
-                org_id: task.org_id,
-                org_name: task.org_name,
-                status: classify_run_error(&e),
-                detail: Some(format!("{e:#}")),
-            },
-        }
-    }))
-    .buffer_unordered(concurrency)
-    .collect()
-    .await;
+            progress.on_org_done(index, total, &outcome);
+            outcome
+        }))
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
 
     FleetReport { outcomes }
 }
@@ -332,6 +363,27 @@ mod tests {
         }
     }
 
+    /// 记录每次 start/done 回调的 (index, total, org_name[, status])。
+    #[derive(Default)]
+    struct SpyProgress {
+        starts: Mutex<Vec<(usize, usize, String)>>,
+        dones: Mutex<Vec<(usize, usize, String, OrgRunStatus)>>,
+    }
+    impl FleetProgress for SpyProgress {
+        fn on_org_start(&self, index: usize, total: usize, task: &OrgRunTask) {
+            self.starts
+                .lock()
+                .unwrap()
+                .push((index, total, task.org_name.clone()));
+        }
+        fn on_org_done(&self, index: usize, total: usize, outcome: &OrgRunOutcome) {
+            self.dones
+                .lock()
+                .unwrap()
+                .push((index, total, outcome.org_name.clone(), outcome.status));
+        }
+    }
+
     #[tokio::test]
     async fn failure_isolation_and_status_classification() {
         let tasks = vec![
@@ -352,6 +404,7 @@ mod tests {
             &exec,
             &AllIncomplete,
             &ZeroScore,
+            &NoopProgress,
         )
         .await;
         // 全部跑到（失败不中断兄弟）。
@@ -391,6 +444,7 @@ mod tests {
             &exec,
             &SkipNamed(vec![done_id]),
             &ZeroScore,
+            &NoopProgress,
         )
         .await;
         // 已完整的不进 executor。
@@ -407,6 +461,43 @@ mod tests {
         assert_eq!(by("pending"), OrgRunStatus::Passed);
         // covered 计数含「续跑跳过」。
         assert!(report.is_complete());
+    }
+
+    #[tokio::test]
+    async fn progress_reports_index_total_and_skips_dont_start() {
+        // serial checklist：done 被续跑跳过（不进 executor、不 on_org_start），
+        // run1 正常跑。两者都 on_org_done，index/total 取静态 org 序（1-based）。
+        let done = task("done", StageKind::TargetIntel);
+        let run1 = task("run1", StageKind::TargetIntel);
+        let done_id = done.org_id;
+        let exec = MockExec {
+            calls: Mutex::new(vec![]),
+        };
+        let spy = SpyProgress::default();
+        let _ = run_fleet_scheduler(
+            FleetConfig {
+                concurrency: 1,
+                mode: FleetMode::Checklist,
+            },
+            vec![done, run1],
+            &exec,
+            &SkipNamed(vec![done_id]),
+            &ZeroScore,
+            &spy,
+        )
+        .await;
+        // on_org_start 只对真正进 executor 的 org（done 被跳过 → 不 start）。
+        let starts = spy.starts.lock().unwrap().clone();
+        assert_eq!(starts, vec![(2, 2, "run1".to_string())]);
+        // on_org_done 对所有 org（含跳过），index/total/status 正确。
+        let dones = spy.dones.lock().unwrap().clone();
+        assert_eq!(dones.len(), 2);
+        assert!(dones
+            .iter()
+            .any(|d| *d == (1, 2, "done".into(), OrgRunStatus::SkippedAlreadyComplete)));
+        assert!(dones
+            .iter()
+            .any(|d| *d == (2, 2, "run1".into(), OrgRunStatus::Passed)));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
   "version": "0.1.9",
-  "last_updated": "2026-06-13",
+  "last_updated": "2026-06-14",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -10,6 +10,29 @@
     "passing"
   ],
   "features": [
+    {
+      "id": "engagement-fleet-scheduler-convergence-2026-06-14",
+      "priority": 1,
+      "area": "backend: golish/src/engagement/{fleet_run.rs(new run_engagement_fleet 两阶段驱动+OrgFleetExecutor+CliFleetProgress),run_command.rs(new engagement_run_fleet 命令+EngagementRunReportDto ts-rs),scheduler.rs(FleetReport derive Default+FleetProgress/NoopProgress 注入 trait+逐 org index/total 上报),mod.rs} + golish/src/stage_run/mod.rs(CLI 复用 OrgFleetExecutor, orchestrate pub(crate), 传 CliFleetProgress 逐子 eprintln) + golish/src/commands_{facade/engagement,registry}.rs(注册命令) + golish-agent-runtime/{execution_mode/selection_apply.rs,agentic_loop/tool_execution/direct/stage_run_call.rs}(stage_run DEPRECATED 标注); frontend: lib/api/engagement.ts(engagementRunFleet wrapper)+lib/generated/EngagementRunReportDto.ts(gen)+components/Engagement/EngagementOverview.tsx(fan-out 改调后端命令)",
+      "title": "方案 C / fleet Phase B：CLI 与 GUI 多 org 扇出收敛到后端 run_fleet_scheduler——把前端 runPool.ts 的两阶段 JS 调度搬进后端 run_engagement_fleet（每 org 一个完整 run_stage+独立 gate），CLI(--stage-run)与 GUI(engagement_run_fleet 命令)共用同一调度,CLI 因此真测生产逻辑;旧 in-stage stage_run 工具弃用",
+      "user_visible_behavior": "GUI scoping 锁定后点 fan-out → 调后端 engagement_run_fleet(取代前端 JS 池) → 后端在会话 bridge 上 recon(每 org)→attack(每 recon-覆盖 org) 串行跑,逐 org emit StageRunOrgProgress → StageRunView 单卡照旧实时刷新;CLI --stage-run --include-subsidiaries 的子公司扇出走同一 run_fleet_scheduler。两边 per-org = 一个完整 run_stage+独立 gate。",
+      "status": "in_progress",
+      "blocker": null,
+      "design": "复用 docs/design/2026-06-13-engagement-scoping-fanout-redesign.md §6.4 (Phase B) + 2026-06-12-engagement-fleet-orchestration",
+      "plan": "docs/superpowers/plans/2026-06-14-engagement-fleet-scheduler-convergence.md (T1-T7 + Q1=后端主导)",
+      "verification": [
+        "[✓] db_truth SQL 修复: cargo nextest -p golish-db 79/0 + clippy 0 + 3 回归 (commit e25da493)",
+        "[✓] T1 CLI→scheduler: nextest -p golish stage_run scheduler 20/0 + clippy 0 (commit b26375ad)",
+        "[✓] T4.1 fleet_run + T4.2 命令: nextest -p golish fleet_run+run_command+scheduler+stage_run 全绿 + clippy 0 + gen-types 出 EngagementRunReportDto.ts (commit a6b34641)",
+        "[✓] T4.3 前端: just check-fe(biome+tsc) + test-fe 绿; T5 stage_run deprecate: cargo check -p golish-agent-runtime exit 0 (comment-only)",
+        "[✓] T1 UX 回归补回 逐子进度 eprintln: 调度器加 FleetProgress 注入 trait(IO-free 内核, CLI=CliFleetProgress 打 '── subsidiary i/N: 名 → running/PASS/BLOCK/FAIL/SKIP ──', GUI=NoopProgress); nextest -p golish engagement stage_run 40/0 (含新 progress_reports_index_total_and_skips_dont_start) + clippy -p golish --lib --tests -D 0 告警",
+        "[T7 跑] just precommit 全量 (结果见 evidence)",
+        "[未跑·用户环境] T4.4 活体: GUI fan-out → engagement_run_fleet 真跑(session→bridge/单卡刷新/长跑 UX); 过后硬删 stage_run injection+路由+文件 + 后端取消"
+      ],
+      "evidence": "2026-06-14 BaJie MCP-agent-3 (DISPATCH off, 用户逐步授权). commit e25da493(db-truth)→b26375ad(T1)→a6b34641(fleet Phase B 13f +605/-96), branch feat/stage-run-fanout 未 push. 组件级验证全绿(见 verification); 全量 precommit T7 跑(结果待填). 活体 T4.4 待用户环境.",
+      "notes": "方案 C 选型(用户 2026-06-14): 不把 CLI 降级成 chat 的 sub_agent 扇出,而是两边都走后端 run_fleet_scheduler 每 org run_stage。Q1=后端主导(前端只启动,后端调度,单卡靠事件)。现状曾有 4 套 per-org 机制(CLI Phase3 / chat stage_run 工具 / 前端 worker pool / 未接线的 scheduler 内核),本工作把 scheduler 内核接成唯一驱动。stage_run 工具 deprecate 但注入暂留兼容旧 worker-pool 回滚,T4.4 后硬删。后端 fleet 单会话 bridge 串行(K 并发待 per-run bridge 隔离); AlwaysRunOracle(DB 续跑 oracle=T3 硬化)。",
+      "remember": "后端驱动 golish/engagement/fleet_run.rs::run_engagement_fleet(recon target_intel..=enumeration→attack vuln_triage..=reporting, 每 org run_fleet_scheduler)。命令 engagement_run_fleet(golish/engagement/run_command.rs)经 commands_facade/engagement + registry 注册,入参{sessionId,projectPath,subsidiaryThresholdPct?}。前端 api engagementRunFleet→EngagementOverview.handleStart(用对话 aiSessionId)。CLI stage_run/mod.rs 复用 OrgFleetExecutor(emit_progress=false)。逐子进度: 调度器 run_fleet_scheduler 第 4 个注入 trait FleetProgress(on_org_start/on_org_done, 副作用外置→内核仍零 IO), CLI 传 CliFleetProgress{label}(headless eprintln 'i/N'), GUI 传 NoopProgress(走单卡); run_engagement_fleet 按 emit_progress 二选一; i/N 由调度器静态 org 序给; 续跑跳过的 org 只 on_org_done。stage_run 工具硬删点: selection_apply.rs 注入 + direct/mod.rs 路由 + stage_run_call.rs。回滚: runPool.ts 仍在,revert EngagementOverview 即回前端 JS 池。"
+    },
     {
       "id": "stage-run-fanout-backend-2026-06-13",
       "priority": 1,

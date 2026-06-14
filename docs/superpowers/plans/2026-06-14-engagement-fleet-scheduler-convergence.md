@@ -42,6 +42,7 @@
   - oracle：T1 先用 always-incomplete（行为保持：照跑所有 children）；DB 续跑 oracle 留 T3。
   - 报告：`FleetReport.render()` 替 `subsidiary_summary`；engagement 成败聚合改读 `FleetReport`。
   - 验证：`cargo nextest -p golish`（stage_run + scheduler 单测）+ clippy + ReadLints。**行为等价**（串行、跑全部 children、失败隔离、全过才算成功）。
+  - **T1 UX 回归补回（2026-06-14）**：T1 用 `run_fleet_scheduler` 替换手写循环后，丢了旧循环里的 `── subsidiary i/N: 名 ──` 逐子 eprintln（调度内核 IO-free，只在最后出 FleetReport）→ headless 跑 6 子时 CLI 中途看不到「第几个子」。修复：调度器加第 4 个注入 trait `FleetProgress`（`on_org_start`/`on_org_done`，副作用外置故内核仍零 IO），CLI 传 `CliFleetProgress{label:"subsidiary"}` 打逐子进度（含终态 PASS/BLOCK/FAIL/SKIP）、GUI 传 `NoopProgress`（走单卡）。i/N 由调度器静态 org 序给（scheduler 知 total）。验证：`nextest -p golish engagement stage_run` 40/0（含新增 `progress_reports_index_total_and_skips_dont_start` 验 index/total + 跳过不 start）+ `clippy -p golish --lib --tests -D` 0 告警。
 - **T2 · 抽 `OrgRunExecutor` 到可共享位置**（若 chat 选 (a)）：把 executor/oracle 语义放到 chat 后端也能用的层（可能 `golish/src/engagement/` 下新模块），CLI 与 chat 共用。
 - **T3 · DB 续跑 oracle**：实现 `DbCompletionOracle`（用 `engagement/weakness.rs::org_stage_has_truth`），CLI/chat 都接；CLI 可加 `--no-resume` 关掉。
 - **T4 · chat 接 scheduler**（依赖 Q1）：
@@ -71,3 +72,16 @@
 - [~] T5 stage_run 工具去留（已 deprecate；硬移除待 T4.4 活体验证后）
 - [ ] T6 前端
 - [ ] T7 收口
+
+## 附录 · target_intel 阶段缺口（2026-06-14 活体观察 → follow-up，按价值排）
+
+> 本会话用小米 MiMo 活体跑 `--stage-run --to target_intel --include-subsidiaries`（默安科技 + 6 子，经 run_fleet_scheduler 串行）时观察到的 **target_intel 情报质量缺口**，与 fleet 收敛正交，单独记为 follow-up。
+
+1. **基本工商信息不进 gate（最该先补）**：`gate` 只判 6 维（ASN/CT/WHOIS/OSINT/SUBDOMAIN/DNS），但 enrich 落库的 ICP 备案 / `credit_code` / 行业 / App / 小程序 / `email_domains` / `ip_ranges` 这些「收了不强制、漏了不挡」。建议把关键几项纳入 gate / deliverable 必填，或报告强制列「查了/没查」。
+2. **`checked_empty` 比 `found` 弱（最该先补）**：`found` 已锁 DB 真值（本会话修的 db_truth）；但「没数据→checked_empty」仍靠弱模型诚实跑工具+如实报（MiMo 可能空报蒙混）。需用 tool-invocation evidence 硬绑 checked_empty（I8「查过为空 ≠ 没查」要可证）。
+3. **OSINT 维度太粗**：一个 bool 囊括 `intel.records`/`contacts`/`social_accounts`/`business_systems`；邮箱/泄露/业务系统/社交价值不同却合并成「有 OSINT 就过」，子类不可见、不可分别要求。
+4. **DNS/SUBDOMAIN 维度太粗**：DNS 只判「有记录」，不分 MX/NS/TXT(SPF/DMARC)/CNAME；SUBDOMAIN 不分被动来源、不去重 CT 来源。
+5. **per-org 确定性 gate + DB 续跑 oracle（= 计划内 T3）**：现 `AlwaysRunOracle` 每次重跑全部 org（无续跑跳过，浪费 LLM）；per-org「过」目前 = run_stage PASS，可加按 org_id 读 DB 真值的确定性 gate（`org_stage_has_truth`）。
+6. **母子「家族关联」缺失**：扁平 per-org 跑，子公司发现有了，但母子间资产关联图（共享域/品牌/信任链/同 IP 段）没显式建模；cross-org 撞同一资产的归属/去重无策略。
+
+> 另记：上游 `scoping` 的 red_team `unit-candidate / organization-creation flow` 检查（`evaluate_red_team_scoping_flow`，要求 `unit_review_invoked && organization_created`，且 create 撞重名不算）对弱模型 + 持久 PG（org 已存在→create 重名）很脆，活体常卡 scoping。非本 scope，但影响活体推进。

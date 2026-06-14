@@ -29,6 +29,39 @@
 
 ---
 
+### 2026-06-14 · 逐子进度 eprintln 补回（T1 收敛后丢的中途可见性）（BaJie MCP-agent-3 · DISPATCH off · 用户「加逐子进度 eprintln」）
+
+- **本轮目标**：T1 把 CLI 子公司扇出从手写 Rust 循环换成 `run_fleet_scheduler` 后，丢了旧循环里的 `── subsidiary i/N: 名 ──` 逐子 eprintln（调度内核 IO-free，只在最后出 FleetReport）→ headless 跑 6 子时 CLI 中途看不到「第几个子」。用户要补回逐子进度。
+- **根因/设计**：`golish/engagement/scheduler.rs` 内核刻意零 IO + 全 trait 注入（executor/oracle/scorer）。补回进度的最干净落点 = **加第 4 个注入 trait `FleetProgress`**（与既有设计一致，副作用外置故内核仍可纯单测），而非在 executor 里塞 eprintln + 跨阶段计数（executor 不知 total、run_engagement_fleet 里 recon/attack 两阶段复用同一 executor 会让计数串味）。只有调度器知道 `total`，i/N 才准。
+- **已完成（3 文件，未 commit）**：
+  - `scheduler.rs`：新增 `FleetProgress` trait（`on_org_start`/`on_org_done`，带 1-based `index`/`total`）+ `NoopProgress`；`run_fleet_scheduler` 加第 6 参 `progress: &dyn FleetProgress`，`enumerate` 出 index、`total=ordered.len()`，进 executor 前 `on_org_start`、出终态后 `on_org_done`（续跑跳过的 org 只 done 不 start）。
+  - `fleet_run.rs`：新增 `CliFleetProgress{label}`（headless 打 `[stage-run] ── <label> i/N: 名 → running/PASS/BLOCK/FAIL/SKIP(done) ──`）；`run_engagement_fleet` 按 `emit_progress` 二选一（GUI=`NoopProgress` 走单卡 / headless=`CliFleetProgress{label:"org"}`，全 org 含母故 label 非 subsidiary）。
+  - `stage_run/mod.rs`：子公司扇出调用传 `&CliFleetProgress{label:"subsidiary"}`（保留原 "dispatching N" 头一行）。
+- **跑过的验证（实跑，全绿）**：`cargo nextest -p golish engagement stage_run` → **40 passed / 0 failed**（含新增 `engagement::scheduler::tests::progress_reports_index_total_and_skips_dont_start`：验 SpyProgress 收到正确 index/total + 续跑跳过的 org 不 on_org_start）；`cargo clippy -p golish --lib --tests -- -D warnings` → exit 0 零告警；ReadLints 三文件 clean。
+- **commit 记录**：未 commit（等用户）。改动叠在 branch `feat/stage-run-fanout`（HEAD 仍 `e25da493`/`b26375ad`/`a6b34641` 序列上）。
+- **风险 / follow-up**：① 只动调度器进度通道，gate/coverage/续跑/聚合逻辑零改动，行为等价（progress 是纯旁路上报）。② GUI 单卡路径传 NoopProgress，零行为变化。③ 活体复看需重跑 `--stage-run --include-subsidiaries`（当前活体 run 211846 是旧二进制、看不到新行）。④ 全量 `just precommit` 本轮未重跑（仅 3 文件局部，组件级已全绿）。
+- **下一步**：用户决定是否 commit（建议单独 commit 这条 UX 修复）+ 是否重跑活体看逐子行；之后回到 fleet 主线 T4.4 活体 / T7 收口。
+
+---
+
+### 2026-06-14 · fleet Phase B：CLI+GUI 多 org 扇出收敛到后端 run_fleet_scheduler + db_truth SQL bug 修复（BaJie MCP-agent-3 · DISPATCH off · 用户逐步授权）
+
+- **本轮目标**：① 修 scoping 子公司 gate 的 db_truth SQL bug（`cannot get array length of a non-array`）；② 用户要「CLI 所有逻辑跟 GUI 一样」——把多 org 扇出统一到后端调度（方案 C / fleet Phase B = 既有 engagement-fleet 设计的 Phase B 接线）。
+- **已完成 + 验证（均已 commit，branch `feat/stage-run-fanout`，未 push）**：
+  - **db_truth SQL 修复**（`e25da493`）：`golish-db/coverage_truth.rs::build_org_intel_presence_sql` 对 asns/certificates/contacts/social_accounts/business_systems 裸调 `jsonb_array_length`；`contacts` 被 recon（ProfileAccumulator）写成对象 `{email:[...]}` → Postgres 抛 `cannot get array length of a non-array` → 整条 presence 查询失败 → `db_truth_facts` 返 Err → harness hook 丢 DB 投影 → scoping 子公司 gate 误判 not_attempted → BLOCK（9 子已落库也没用）。改用 shape 无关比较式判空 `jsonb_non_empty`（NULL/`'null'`/`'[]'`/`'{}'` 判空，永不调 array_length；Postgres 不保证 AND 短路故不能用 typeof 守卫+array_length）；同 db_truth 路径的 port/param 查询同款加固。验证：`cargo nextest -p golish-db` **79/0**、`clippy -p golish-db` 0 warning、+3 回归测试、ReadLints clean。
+  - **T1 CLI 子公司扇出 → 共享 scheduler**（`b26375ad`）：`golish/stage_run/mod.rs` step 6.5 手写 Rust 循环 → `run_fleet_scheduler`（行为等价：串行 concurrency=1、跑全部子、每 org 独立 gate、全过才算 engagement 成功；用 FleetReport 聚合，删旧 subsidiary_summary）。验证：`nextest -p golish stage_run scheduler` **20/0**、clippy 0。
+  - **fleet Phase B**（`a6b34641`，13 文件 +605/-96）：
+    - **T4.1** 后端 `golish/engagement/fleet_run.rs`：`run_engagement_fleet` 两阶段驱动（recon `target_intel..=enumeration` 每 org → attack `vuln_triage..=reporting` 每 recon-覆盖 org），每 org 一个完整 `run_stage` + 独立 gate，经 `run_fleet_scheduler`（checklist 母先子后）。共享 `OrgFleetExecutor`（`emit_progress=true` 时逐 org emit `StageRunOrgProgress` 喂前端单卡）；**CLI `--stage-run` 复用同一执行器（去 T1 重复版 = T2 一起做了）**。FleetReport derive Default；`stage_run::orchestrate` 改 pub(crate)。
+    - **T4.2** `engagement_run_fleet` Tauri 命令（`golish/engagement/run_command.rs`）+ `EngagementRunReportDto`（ts-rs）经 facade+registry 接线（同 development.md 五步走）；在会话 bridge 上跑 fleet，入参 `{sessionId, projectPath, subsidiaryThresholdPct?}`。
+    - **T4.3** 前端 `EngagementOverview.handleStart` 改调 `engagement_run_fleet`（api wrapper `engagementRunFleet`，用对话 `aiSessionId` 作 session_id）取代前端 `runPool.ts` JS 池；本地 `fleetRunning` 控按钮态；`runPool.ts` 原样保留（不再 import）→ 回滚 = 只 revert 一文件。
+    - **T5** in-stage `stage_run` 工具标 **DEPRECATED**（被 fleet 取代）：`selection_apply.rs` 注入点 + `stage_run_call.rs` handler 文档；注入**暂留**兼容旧 worker-pool 回滚路径（recon_family 靠它收子公司），T4.4 活体验证后连 injection+`direct/mod.rs` 路由+文件硬删。
+- **跑过的验证（实跑，全绿）**：`cargo nextest -p golish`（fleet_run+run_command+stage_run+scheduler）、`clippy -p golish` 0 warning、`cargo check -p golish-agent-runtime` exit 0、`just check-fe`（biome+tsc）+ `just test-fe` 绿、`just gen-types` 出 `frontend/lib/generated/EngagementRunReportDto.ts`、ReadLints clean。**T7：全量 `just precommit` 本轮已跑**（结果待补：见 commit/feature_list）。
+- **commit 记录**：`e25da493`（db-truth）→ `b26375ad`（T1）→ `a6b34641`（fleet Phase B）。计划：`docs/superpowers/plans/2026-06-14-engagement-fleet-scheduler-convergence.md`（T1–T7 + Q1=后端主导 + 现状 4 套机制 map）。
+- **风险 / follow-up**：① **T4.4 活体验证（用户环境，离线测不了）**：GUI 点 fan-out 真跑——该对话 session 能取到 bridge？单卡 StageRunView 随 `StageRunOrgProgress` 刷新？长跑 invoke 按钮态？过了才硬删 stage_run + 加后端 fleet 取消。② T6 前端打磨（去旧 pool UI/EngagementOverview 残留、进度细节）。③ 后端 fleet 在单会话 bridge 串行跑、共享会话历史（同 CLI 既有形态）；K 并发待 per-run bridge 隔离（设计目标 2）。④ `AlwaysRunOracle`（照跑全部）；DB 真值续跑 oracle（`org_stage_has_truth`）是硬化（T3）。
+- **下一步**：用户活体验证 T4.4 → 硬删 stage_run + 后端取消 → T6 前端 → push（需用户点头）。
+
+---
+
 ### 2026-06-13 · Stage Run 扇出引擎（后端 agentic-loop handler + 前端单卡 + MiMo 活体）（BaJie MCP-agent-2 · DISPATCH off · 用户授权全自动）
 
 - **本轮目标**：用户给「stage-run 扇出」设计 + 计划(Task 1-8)，要我接手实现 + 验证 + 提交，再用小米 MiMo key 后端活体测逻辑。接手时上个会话已 commit 设计 + 前端(`1f5ce7b9`)、写好计划、做完 Task 1(stage_fanout 抽取, 未提交)。
