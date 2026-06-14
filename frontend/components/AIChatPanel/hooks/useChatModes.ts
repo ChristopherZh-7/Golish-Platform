@@ -9,7 +9,7 @@ import { flushDbSave } from "@/lib/conversation-db-sync";
 import { useStore } from "@/store";
 import { readLastExecutionMode, writeLastExecutionMode } from "../executionModePicker.utils";
 
-type ApprovalMode = "ask" | "allowlist" | "run-all";
+type ApprovalMode = "ask" | "run-all";
 
 export function useChatModes() {
   const [chatAgentMode, setChatAgentMode] = useState<AgentMode>("default");
@@ -114,6 +114,21 @@ export function useChatModes() {
     setPendingApproval(null);
   }, []);
 
+  // Cursor-style "allow this command": approve now AND remember so this tool
+  // auto-runs next time (backend adds it to the always-allow / learned set).
+  const handleToolApproveAlways = useCallback((requestId: string) => {
+    const pa = pendingApprovalRef.current;
+    if (!pa) return;
+    respondToToolApproval(pa.sessionId, {
+      request_id: requestId,
+      approved: true,
+      reason: null,
+      remember: true,
+      always_allow: true,
+    }).catch(console.error);
+    setPendingApproval(null);
+  }, []);
+
   return {
     chatAgentMode,
     chatExecutionMode,
@@ -128,6 +143,7 @@ export function useChatModes() {
     handleAgentModeChange,
     handleExecutionModeChange,
     handleToolApprove,
+    handleToolApproveAlways,
     handleToolDeny,
   };
 }

@@ -74,6 +74,7 @@ export const MessageBlock = memo(function MessageBlock({
   message,
   pendingApproval,
   onApprove,
+  onApproveAlways,
   onDeny,
   approvalMode,
   onApprovalModeChange,
@@ -85,9 +86,10 @@ export const MessageBlock = memo(function MessageBlock({
   message: ChatMessage;
   pendingApproval?: { requestId: string; toolName: string } | null;
   onApprove?: (requestId: string) => void;
+  onApproveAlways?: (requestId: string) => void;
   onDeny?: (requestId: string) => void;
   approvalMode?: string;
-  onApprovalModeChange?: (mode: "ask" | "allowlist" | "run-all") => void;
+  onApprovalModeChange?: (mode: "ask" | "run-all") => void;
   taskPlan?: TaskPlanViewModel | null;
   stagePlans?: StagePlansViewModel | null;
   planTextOffset?: number | null;
@@ -157,6 +159,7 @@ export const MessageBlock = memo(function MessageBlock({
                   tc={tc}
                   approval={pendingApproval}
                   onApprove={onApprove}
+                  onApproveAlways={onApproveAlways}
                   onDeny={onDeny}
                   approvalMode={approvalMode}
                   onApprovalModeChange={onApprovalModeChange}

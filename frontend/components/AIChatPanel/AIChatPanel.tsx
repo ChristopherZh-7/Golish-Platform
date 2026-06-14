@@ -7,6 +7,7 @@ import { formatModelName } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { type ChatMessage, useStore } from "@/store";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
+import { ApprovalModeSelector } from "./ApprovalModeSelector";
 import { ChatModelSelector } from "./ChatModelSelector";
 import { AskHumanInline, CompactionNotice, WorkflowProgress } from "./ChatSubComponents";
 import { ContextUsageRing } from "./ContextUsageRing";
@@ -76,7 +77,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const storeApprovalMode = useStore((s) => s.approvalMode);
   useEffect(() => {
     if (storeApprovalMode)
-      modes.setApprovalMode(storeApprovalMode as "ask" | "allowlist" | "run-all");
+      modes.setApprovalMode(storeApprovalMode === "run-all" ? "run-all" : "ask");
   }, [storeApprovalMode, modes.setApprovalMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updateConv = useStore.getState().updateConversation;
@@ -369,6 +370,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
                         approvalMode={modes.approvalMode}
                         onApprovalModeChange={modes.handleApprovalModeChange}
                         onApprove={modes.handleToolApprove}
+                        onApproveAlways={modes.handleToolApproveAlways}
                         onDeny={modes.handleToolDeny}
                       />
                     </React.Fragment>
@@ -452,6 +454,10 @@ export const AIChatPanel = memo(function AIChatPanel() {
                 chatExecutionMode={modes.chatExecutionMode}
                 onExecutionModeChange={modes.handleExecutionModeChange}
                 onAgentModeChange={modes.handleAgentModeChange}
+              />
+              <ApprovalModeSelector
+                approvalMode={modes.approvalMode}
+                onApprovalModeChange={modes.handleApprovalModeChange}
               />
               <ChatModelSelector
                 modelDisplay={modelDisplay}

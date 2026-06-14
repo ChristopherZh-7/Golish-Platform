@@ -214,6 +214,7 @@ export function CollapsibleToolCall({
   tc,
   approval,
   onApprove,
+  onApproveAlways,
   onDeny,
   approvalMode,
   onApprovalModeChange,
@@ -221,9 +222,10 @@ export function CollapsibleToolCall({
   tc: { name: string; args?: string; result?: string; success?: boolean };
   approval?: { requestId: string } | null;
   onApprove?: (requestId: string) => void;
+  onApproveAlways?: (requestId: string) => void;
   onDeny?: (requestId: string) => void;
   approvalMode?: string;
-  onApprovalModeChange?: (mode: "ask" | "allowlist" | "run-all") => void;
+  onApprovalModeChange?: (mode: "ask" | "run-all") => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const isPending = !!approval;
@@ -302,6 +304,19 @@ export function CollapsibleToolCall({
           >
             Deny
           </button>
+          {onApproveAlways && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onApproveAlways(approval.requestId);
+              }}
+              title={`Always allow ${tc.name} — auto-run it from now on`}
+              className="ml-auto px-2.5 py-1 text-[11px] rounded text-muted-foreground/70 hover:text-foreground hover:bg-[#3b4261]/60 transition-colors"
+            >
+              ✓ Always allow
+            </button>
+          )}
         </div>
       )}
 
@@ -313,11 +328,7 @@ export function CollapsibleToolCall({
               onClick={(e) => e.stopPropagation()}
               className="flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
             >
-              {approvalMode === "run-all"
-                ? "Run Everything"
-                : approvalMode === "allowlist"
-                  ? "Use Allowlist"
-                  : "Ask Every Time"}
+              {approvalMode === "run-all" ? "Run Everything" : "Ask Every Time"}
               <ChevronDown className="w-2.5 h-2.5" />
             </button>
           </DropdownMenuTrigger>
@@ -327,7 +338,6 @@ export function CollapsibleToolCall({
           >
             {[
               { id: "ask" as const, label: "Ask Every Time" },
-              { id: "allowlist" as const, label: "Use Allowlist" },
               { id: "run-all" as const, label: "Run Everything" },
             ].map((opt) => (
               <DropdownMenuItem

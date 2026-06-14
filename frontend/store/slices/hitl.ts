@@ -38,7 +38,10 @@ export const createHitlSlice: SliceCreator<HitlSlice> = (set) => ({
 
   setApprovalMode: (mode) =>
     set((state) => {
-      state.approvalMode = mode;
+      // Migration: the removed "allowlist" mode was a no-op alias of "ask"
+      // (backend mapped both to `default`). Coerce any persisted value so a
+      // stale pref never leaves the dropdown with no selected option.
+      state.approvalMode = mode === "allowlist" ? "ask" : mode;
     }),
 
   setPendingToolApproval: (sessionId, tool) =>

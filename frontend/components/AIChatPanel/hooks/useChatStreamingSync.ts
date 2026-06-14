@@ -6,7 +6,7 @@ import { restoreBatchTerminals } from "@/lib/terminal-restore";
 import { useStore } from "@/store";
 import { getConfiguredProviders } from "../providerConfig";
 
-type ApprovalMode = "ask" | "allowlist" | "run-all";
+type ApprovalMode = "ask" | "run-all";
 type SelectedModel = { model: string; provider: string } | null;
 type CreateTerminalTab = (path?: string, autoActivate?: boolean) => Promise<string | null>;
 
