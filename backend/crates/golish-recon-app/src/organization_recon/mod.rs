@@ -14,6 +14,10 @@ mod runner;
 mod state;
 pub(crate) mod types;
 
+// Shared coverage-gate landing (design 2026-06-15 §5 PR1): reused by the agent
+// enrich path (`asset_intel`) so passive intel lands in the gate-read tables.
+pub(crate) use persistence::land_target_intel_coverage;
+
 pub use commands::*;
 pub use runner::ORGANIZATION_RECON_EVENT;
 pub use state::OrganizationReconState;

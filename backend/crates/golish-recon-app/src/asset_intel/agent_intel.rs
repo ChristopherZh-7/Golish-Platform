@@ -205,6 +205,48 @@ pub async fn run_passive_intel(
         })
         .collect();
 
+    // Coverage-gate landing (design 2026-06-15-db-truth-single-source-deliverable
+    // §5 PR1): enrich wrote domains/subdomains into `organizations.domains`, but the
+    // target_intel coverage gate reads per-asset / org-level business tables. Reuse
+    // the org-recon landing hooks so techniques that actually ran land where the gate
+    // looks. Enrich phase only (subsidiaries phase produces no per-asset coverage);
+    // reload the org first to pick up the freshly-written domains; fully non-fatal.
+    if phase == PassiveIntelPhase::Enrich {
+        match golish_db::repo::organizations::get_one(pool.as_ref(), organization_id).await {
+            Ok(Some(fresh)) => {
+                let subdomain_hosts: Vec<String> = fresh
+                    .domains
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let landed = crate::organization_recon::land_target_intel_coverage(
+                    pool.as_ref(),
+                    &fresh,
+                    &run.run_id,
+                    &subdomain_hosts,
+                )
+                .await;
+                tracing::info!(
+                    run_id = %run.run_id,
+                    subdomains = landed.subdomains,
+                    dns_records = landed.dns_records,
+                    certificates = landed.certificates,
+                    whois = landed.whois,
+                    "target_intel coverage landing (agent path)"
+                );
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, "reload org for coverage landing failed")
+            }
+        }
+    }
+
     Ok(PassiveIntelSummary {
         run_id: run.run_id,
         company: org.name,

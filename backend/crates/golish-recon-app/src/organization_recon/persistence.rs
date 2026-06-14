@@ -134,69 +134,98 @@ pub(crate) async fn persist_normalized_records(
     write_audit(&mut tx, organization, run_id, &summary, manifest_path).await?;
     tx.commit().await?;
 
-    // Coverage-gate landing (design 2026-06-14-target-intel-landing-and-tools §2③):
-    // enrich stores org-owned subdomains as their own top-level `targets` rows, but
-    // the target_intel SUBDOMAIN coverage cell is read from
-    // `target_assets(asset_type='subdomain')` children of the in-scope root
-    // (`coverage_truth::build_subdomain_target_values_sql`). Promote them here so a
-    // technique that actually ran becomes authoritatively `found`. Additive +
-    // non-fatal: a landing miss must never roll back the recon persistence above.
-    match land_subdomain_assets(pool, organization, run_id, records).await {
-        Ok(landed) if landed > 0 => tracing::info!(
-            organization_id = %organization.id,
-            landed,
-            "landed subdomain target_assets for target_intel coverage gate"
-        ),
-        Ok(_) => {}
-        Err(error) => tracing::warn!(
-            organization_id = %organization.id,
-            %error,
-            "subdomain target_assets landing failed (recon persistence already committed)"
-        ),
-    }
-
-    // DNS landing (design §2③): resolve in-scope domain targets into `dns_records`
-    // so the GOLISH-INTEL-DNS coverage cell becomes authoritatively `found`.
-    match land_dns_records(pool, organization).await {
-        Ok(landed) if landed > 0 => tracing::info!(
-            organization_id = %organization.id,
-            landed,
-            "landed dns_records for target_intel coverage gate"
-        ),
-        Ok(_) => {}
-        Err(error) => tracing::warn!(
-            organization_id = %organization.id,
-            %error,
-            "dns_records landing failed (recon persistence already committed)"
-        ),
-    }
-
-    // CT + WHOIS landing (design §2③): fill the org-level certificates / whois
-    // columns the target_intel CT/WHOIS coverage cells read.
-    match land_ct_and_whois(pool, organization).await {
-        Ok((ct, whois)) if ct > 0 || whois => tracing::info!(
-            organization_id = %organization.id,
-            cert_names = ct,
-            whois_landed = whois,
-            "landed CT/WHOIS for target_intel coverage gate"
-        ),
-        Ok(_) => {}
-        Err(error) => tracing::warn!(
-            organization_id = %organization.id,
-            %error,
-            "CT/WHOIS landing failed (recon persistence already committed)"
-        ),
-    }
+    // Coverage-gate landing (design 2026-06-14-target-intel-landing-and-tools §2③,
+    // unified in 2026-06-15-db-truth-single-source-deliverable §5 PR1): promote the
+    // org-recon `Domain` records into the per-asset / org-level tables the
+    // target_intel coverage gate actually reads. Shared with the agent enrich path
+    // via `land_target_intel_coverage`. Non-fatal: a landing miss never rolls back
+    // the recon persistence already committed above.
+    let subdomain_hosts: Vec<String> = records
+        .iter()
+        .filter(|r| matches!(r.kind, ReconRecordKind::Domain))
+        .map(|r| r.value.clone())
+        .collect();
+    let landed = land_target_intel_coverage(pool, organization, run_id, &subdomain_hosts).await;
+    tracing::info!(
+        organization_id = %organization.id,
+        subdomains = landed.subdomains,
+        dns_records = landed.dns_records,
+        certificates = landed.certificates,
+        whois = landed.whois,
+        "target_intel coverage landing (org-recon path)"
+    );
 
     Ok(summary)
 }
 
-/// Pair each org-owned **subdomain** record with the in-scope **root** domain it
-/// belongs to (longest owned suffix wins). Pure (no IO) for unit testing. Records
-/// whose host equals an owned root, or that belong to no owned root, are dropped.
+/// What a single coverage-landing pass wrote into the gate-read tables.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct CoverageLandingSummary {
+    pub subdomains: usize,
+    pub dns_records: usize,
+    pub certificates: usize,
+    pub whois: bool,
+}
+
+/// Land one passive-intel collection's results into the business tables the
+/// `target_intel` coverage gate reads (design 2026-06-15 §5 PR1). Shared by the GUI
+/// org-recon path (`persist_normalized_records`) and the agent enrich path
+/// (`asset_intel::run_passive_intel`). Each hook is independent and non-fatal: a
+/// failure is logged and skipped, never rolling back already-committed recon data.
+/// `subdomain_hosts` are candidate hosts to promote to `target_assets`
+/// (org-recon: `Domain` record values; agent path: `organizations.domains`).
+pub(crate) async fn land_target_intel_coverage(
+    pool: &sqlx::PgPool,
+    organization: &golish_db::models::Organization,
+    run_id: &str,
+    subdomain_hosts: &[String],
+) -> CoverageLandingSummary {
+    let subdomains = land_subdomain_assets(pool, organization, run_id, subdomain_hosts)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                organization_id = %organization.id,
+                %error,
+                "subdomain target_assets landing failed (recon persistence already committed)"
+            );
+            0
+        });
+    let dns_records = land_dns_records(pool, organization)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                organization_id = %organization.id,
+                %error,
+                "dns_records landing failed (recon persistence already committed)"
+            );
+            0
+        });
+    let (certificates, whois) = land_ct_and_whois(pool, organization)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                organization_id = %organization.id,
+                %error,
+                "CT/WHOIS landing failed (recon persistence already committed)"
+            );
+            (0, false)
+        });
+    CoverageLandingSummary {
+        subdomains,
+        dns_records,
+        certificates,
+        whois,
+    }
+}
+
+/// Pair each candidate **host** with the org-owned **root** domain it belongs to
+/// (longest owned suffix wins). Pure (no IO) for unit testing. Hosts that equal an
+/// owned root, or that belong to no owned root, are dropped. Callers pre-filter to
+/// the right values (org-recon path: `Domain`-kind record values; agent path:
+/// `organizations.domains`).
 fn collect_subdomain_pairs(
     organization: &golish_db::models::Organization,
-    records: &[NormalizedReconRecord],
+    hosts: &[String],
 ) -> Vec<(String, String)> {
     let roots = organization_owned_domains(organization);
     if roots.is_empty() {
@@ -204,11 +233,8 @@ fn collect_subdomain_pairs(
     }
     let mut seen = HashSet::new();
     let mut pairs = Vec::new();
-    for record in records {
-        if !matches!(record.kind, ReconRecordKind::Domain) {
-            continue;
-        }
-        let Some(host) = normalized_host(&record.value) else {
+    for raw in hosts {
+        let Some(host) = normalized_host(raw) else {
             continue;
         };
         // Host that *is* an owned root is the asset itself, not a subdomain of it.
@@ -236,9 +262,9 @@ async fn land_subdomain_assets(
     pool: &sqlx::PgPool,
     organization: &golish_db::models::Organization,
     run_id: &str,
-    records: &[NormalizedReconRecord],
+    subdomain_hosts: &[String],
 ) -> Result<usize, GolishError> {
-    let pairs = collect_subdomain_pairs(organization, records);
+    let pairs = collect_subdomain_pairs(organization, subdomain_hosts);
     if pairs.is_empty() {
         return Ok(0);
     }
@@ -1210,21 +1236,22 @@ mod tests {
     #[test]
     fn collect_subdomain_pairs_maps_owned_subdomains_to_root() {
         let org = org_with_domains(json!(["pingan.com"]));
-        let records = vec![
-            record(ReconRecordKind::Domain, "life.pingan.com", "domains"),
-            record(ReconRecordKind::Domain, "stock.pingan.com", "domains"),
+        let hosts: Vec<String> = [
+            "life.pingan.com",
+            "stock.pingan.com",
             // root itself → not a subdomain of itself
-            record(ReconRecordKind::Domain, "pingan.com", "domains"),
+            "pingan.com",
             // www is normalized to the root → dropped
-            record(ReconRecordKind::Domain, "www.pingan.com", "domains"),
+            "www.pingan.com",
             // duplicate → deduped
-            record(ReconRecordKind::Domain, "life.pingan.com", "domains"),
-            // not a domain record → ignored
-            record(ReconRecordKind::Ip, "1.2.3.4", "ip_ranges"),
+            "life.pingan.com",
             // unrelated apex (not a subdomain of an owned root) → dropped
-            record(ReconRecordKind::Domain, "notpingan.com", "domains"),
-        ];
-        let mut pairs = collect_subdomain_pairs(&org, &records);
+            "notpingan.com",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let mut pairs = collect_subdomain_pairs(&org, &hosts);
         pairs.sort();
         assert_eq!(
             pairs,
@@ -1238,13 +1265,9 @@ mod tests {
     #[test]
     fn collect_subdomain_pairs_prefers_longest_owned_root() {
         let org = org_with_domains(json!(["pingan.com", "sub.pingan.com"]));
-        let records = vec![record(
-            ReconRecordKind::Domain,
-            "a.sub.pingan.com",
-            "domains",
-        )];
+        let hosts = vec!["a.sub.pingan.com".to_string()];
         assert_eq!(
-            collect_subdomain_pairs(&org, &records),
+            collect_subdomain_pairs(&org, &hosts),
             vec![(
                 "sub.pingan.com".to_string(),
                 "a.sub.pingan.com".to_string()
@@ -1255,8 +1278,8 @@ mod tests {
     #[test]
     fn collect_subdomain_pairs_empty_without_owned_roots() {
         let org = org_with_domains(json!([]));
-        let records = vec![record(ReconRecordKind::Domain, "life.pingan.com", "domains")];
-        assert!(collect_subdomain_pairs(&org, &records).is_empty());
+        let hosts = vec!["life.pingan.com".to_string()];
+        assert!(collect_subdomain_pairs(&org, &hosts).is_empty());
     }
 
     #[test]
