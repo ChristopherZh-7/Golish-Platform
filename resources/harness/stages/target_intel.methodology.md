@@ -56,11 +56,23 @@ one-organization engagement (or when `stage_run` is unavailable).
   CT / OSINT is fabricated coverage and the gate's corroboration check rejects it —
   this is the #1 cause of repeated `needs_fix`.
 
-**Coverage + stop condition:**
+**Coverage + submission (this stage reads coverage from the DATABASE):**
 
-- For each in-scope asset, give each expected intel technique (DNS / WHOIS / ASN /
-  CT / SUBDOMAIN / OSINT) a terminal status in `coverage`: found+evidence_refs, or
-  checked_empty+evidence_refs (you actually ran it and it was empty — NOT the same
-  as "unchecked"), or blocked/not_applicable+note.
-- Once providers + one pass of passive subdomain + url-history have run and the
-  asset list is recorded, fill coverage and `submit_stage_deliverable`. Do not loop.
+- target_intel coverage is adjudicated from DB truth. Once a technique actually RAN
+  and its data LANDED (subdomains → `target_assets`, DNS → `dns_records`,
+  ASN/CT/WHOIS → `organizations.asns/.certificates/.whois`, OSINT →
+  `organizations.intel`), the gate marks that (asset × technique) cell `found` on its
+  own. You do NOT need to hand-write `found` cells or cite their evidence_ids — the
+  platform reads them from the DB. Your job is to make each technique truly run/land.
+- `submit_stage_deliverable` is therefore a thin checkpoint. Put in `coverage` ONLY
+  the cells the DB cannot derive:
+  - `checked_empty` + evidence_refs — you actually ran the technique and it returned
+    nothing (NOT "unchecked"; this is the I8 distinction and still needs the probe
+    evidence id).
+  - `blocked` / `not_applicable` + note — no provider/credential, or it does not apply.
+  Leave `found` cells out (the DB supplies them); `claims` may be empty; put real
+  vulnerabilities (rare in passive intel) in `findings`.
+- Stop condition: once providers + one pass of passive subdomain + url-history have
+  run AND every expected technique has either landed in the DB or been recorded as
+  checked_empty / blocked / not_applicable, call `submit_stage_deliverable` ONCE. Do
+  not loop hand-building a big matrix — the gate reads the DB, not your self-report.
