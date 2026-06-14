@@ -28,6 +28,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { ThinkingBlock } from "@/components/AIChatPanel/ThinkingBlock";
 import { Markdown } from "@/components/Markdown";
+import { ReconIntelSummaryLine } from "@/components/ReconIntelSummaryLine";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -224,6 +225,7 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: Su
             </span>
           )}
         </CollapsibleTrigger>
+        <ReconIntelSummaryLine name={tool.name} result={tool.result} className="px-3 pb-1.5" />
         <CollapsibleContent>
           <div className="px-4 pb-3 space-y-2.5 text-xs overflow-hidden border-t border-border/20 pt-2.5">
             {isShellCmd && shellOutput && (

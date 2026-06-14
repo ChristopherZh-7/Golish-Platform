@@ -10,6 +10,7 @@ import {
   Globe,
   Network,
   Pencil,
+  Radar,
   Search,
   Terminal,
   Wrench,
@@ -35,6 +36,8 @@ const TOOL_COLORS: Record<string, string> = {
   web_fetch: "var(--ansi-magenta)",
   manage_targets: "var(--ansi-cyan)",
   record_finding: "#f59e0b",
+  recon_enrich_assets: "var(--ansi-magenta)",
+  recon_discover_subsidiaries: "var(--ansi-magenta)",
 };
 
 const TOOL_ICONS: Record<string, LucideIcon> = {
@@ -52,6 +55,8 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
   web_search_answer: Globe,
   web_fetch: Globe,
   manage_targets: Network,
+  recon_enrich_assets: Radar,
+  recon_discover_subsidiaries: Radar,
 };
 
 export function getToolColor(name: string): string {
@@ -100,6 +105,8 @@ const TOOL_LABELS_SHORT: Record<string, string> = {
   web_fetch: "Fetch",
   manage_targets: "Targets",
   record_finding: "Finding",
+  recon_enrich_assets: "Enrich",
+  recon_discover_subsidiaries: "Subsidiaries",
 };
 
 const TOOL_LABELS_STANDARD: Record<string, string> = {
@@ -118,6 +125,8 @@ const TOOL_LABELS_STANDARD: Record<string, string> = {
   pentest_run: "Pentest Run",
   pentest_list_tools: "List Tools",
   pentest_read_skill: "Read Skill",
+  recon_enrich_assets: "Enrich Assets",
+  recon_discover_subsidiaries: "Discover Subsidiaries",
 };
 
 export function getToolLabel(name: string, variant: "short" | "standard" = "standard"): string {
@@ -272,4 +281,64 @@ export function getRiskLevel(toolName: string): RiskLevel {
 export function isDangerousTool(toolName: string, riskLevel?: RiskLevel): boolean {
   const level = riskLevel ?? getRiskLevel(toolName);
   return DANGEROUS_TOOLS.includes(toolName) || level === "high" || level === "critical";
+}
+
+/** Passive-intel tools whose result carries the list of providers that ran. */
+const RECON_INTEL_TOOLS = new Set(["recon_enrich_assets", "recon_discover_subsidiaries"]);
+
+/** A passive-intel provider id is OSINT (ENScan enterprise/people/social intel). */
+function isOsintProvider(id: string): boolean {
+  return id.toLowerCase().startsWith("enscan");
+}
+
+/** Which passive-intel providers actually ran for a recon-intel tool call. */
+export interface ReconIntelSummary {
+  /** Provider ids that ran (e.g. "enscan-go-enrichment", "0.zone"). */
+  providers: string[];
+  /** True if an OSINT provider (ENScan) ran. */
+  osint: boolean;
+  /** Assets (targets) landed by this run. */
+  targets: number;
+  /** Organizations touched/created. */
+  organizations: number;
+  /** Subsidiaries auto-promoted to child orgs (subsidiaries phase). */
+  promotedChildren: number;
+}
+
+/**
+ * Surface which passive-intel providers actually ran for a `recon_enrich_assets`
+ * / `recon_discover_subsidiaries` tool call (the backend `PassiveIntelSummary`
+ * carries them in `providers`). This makes OSINT (ENScan) execution visible in
+ * the chat instead of staying hidden behind the provider path — provider runs
+ * log to backend.log but otherwise never surface as a visible tool call.
+ *
+ * Returns null for any other tool, or a result with no non-empty `providers`
+ * list. Accepts the result as a JSON string (timeline cards) or an already
+ * parsed object (sub-agent tool calls).
+ */
+export function getReconIntelSummary(name: string, result: unknown): ReconIntelSummary | null {
+  if (!RECON_INTEL_TOOLS.has(name)) return null;
+  let obj: Record<string, unknown> | null = null;
+  if (typeof result === "string") {
+    try {
+      obj = JSON.parse(result) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  } else if (result && typeof result === "object") {
+    obj = result as Record<string, unknown>;
+  }
+  if (!obj) return null;
+  const raw = obj.providers;
+  if (!Array.isArray(raw)) return null;
+  const providers = raw.filter((p): p is string => typeof p === "string" && p.length > 0);
+  if (providers.length === 0) return null;
+  const num = (key: string): number => (typeof obj?.[key] === "number" ? (obj[key] as number) : 0);
+  return {
+    providers,
+    osint: providers.some(isOsintProvider),
+    targets: num("targets"),
+    organizations: num("organizations"),
+    promotedChildren: num("promoted_children"),
+  };
 }

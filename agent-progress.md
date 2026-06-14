@@ -29,6 +29,32 @@
 
 ---
 
+### 2026-06-14 · OSINT 可视化全量验证 + commit 收口（BaJie MCP-agent-4 · DISPATCH off · 用户「你自己想办法给全部都搞完，不要再问我，我出去了」全权）
+
+- **本轮目标**：接 MCP-3 断点——OSINT 调用可视化（`ReconIntelSummaryLine` + `getReconIntelSummary`）实现已在工作树、前端局部验证过，但**全量 `just precommit` 未跑、未 commit**（历轮一直卡在「等用户点头」）。用户全权授权收口：跑全量验证 + commit。
+- **已完成**：① 跑**全量 `just precommit`**（补齐此前一直缺的那一步）；② 把 OSINT 可视化的**本职 7 文件**按 scope commit（显式 `git add` 指定路径，**不含**他人在途改动，见风险）；③ 据实更新 `feature_list.json`（OSINT 条目 verification 的 precommit 行从「未跑」改实测全绿）+ 本 progress 新增本条。
+- **运行过的验证（实跑·有据）**：`just precommit` → **`✓ All checks passed!` exit 0**（~12min）：`fmt`✓(3s) / `check-fe`✓(13s, biome+tsc) / `test-fe`✓(28s) / `lint-rust`✓(8s, clippy `--workspace -D warnings` 0 告警) / `test-rust-all`✓(306s, workspace nextest 全过) / `check-types`✓(ts-rs bindings 无漂移) + `test` 腿(test-fe+test-rust)✓(51s)。完整日志 `/tmp/golish-precommit.log`。
+- **已记录证据**：见上 precommit 分步耗时 + `✓ All checks passed!` + exit 0；commit 前 `git status` 确认仅 staged 本职 7 文件（OSINT 5 代码 + agent-progress + feature_list），并发改动未 staged。
+- **提交记录**：本会话 commit OSINT 可视化 7 文件（message `feat(ai-chat): surface passive-intel/OSINT providers on recon tool cards`），branch `feat/stage-run-fanout`，**未 push**（AGENTS.md §2.7 远端推送红线，用户未显式授权 push，留单命令待点头）。
+- **已知风险或未解决问题**：⚠ **并发改动（非本轮 scope，未纳入本次 commit）**：precommit 跑完瞬间（mtime 22:00:47，紧接 precommit 结束的 22:00:40）检测到另一并发 actor（另一 BaJie 会话或用户编辑器）正把旧工具栏 `ApprovalModeSelector` 从 `AIChatPanel.tsx` 摘除并**删除** `ApprovalModeSelector.tsx`（DeepSeek review #1 把审批开关下放到每张工具卡后，工具栏那常驻开关变冗余）。这两处改动**留在工作树未提交**，交还该 actor 收口；本会话只 commit OSINT 7 文件，未触碰它们。② push 未做（红线）。③ 活体（真 deepseek run 跑 OSINT 看紫色 OSINT 徽章）在用户环境未验。
+- **下一步最佳动作**：① 并发 actor / 用户给 `ApprovalModeSelector` 摘除那条单独 commit + 跑 precommit；② 用户点头后 `git push`（本会话已备命令）；③ 可选活体复看 OSINT 徽章。
+- **已参考技能**：无（role-skills 目录本机不可达——`mcp-server/role-skills/` 为 bajie 服务端内部路径，本工作区 Glob 多模式均 0 命中；按通用前端工程 + AGENTS.md/clean-state-checklist 收口口径执行，遵「未读不引」）。
+
+---
+
+### 2026-06-14 · OSINT 调用可视化收口（接 MCP-1 断点前半成品 + 修 format + 验证）（BaJie MCP-agent-3 · DISPATCH off · 接 MCP-1 上下文转移 · 用户「接着做完 OSINT 可视化」）
+
+- **本轮目标**：DeepSeek run review #6 的后续——让 ENScan/OSINT 等 passive-intel provider 的执行在聊天里**看得见**（此前 `recon_enrich_assets`/`recon_discover_subsidiaries` 只把 provider 跑没跑落 `~/.golish/backend.log`，工具卡上完全看不出跑过 OSINT）。MCP-1 在断点前已把实现写进工作树但未提交、未验证、遗留 2 处 format 错。
+- **接住的半成品（MCP-1 工作树未提交）**：新组件 `frontend/components/ReconIntelSummaryLine.tsx`（OSINT 雷达徽章 + provider id chips + 计数）+ `frontend/lib/tools.ts`（`getReconIntelSummary` 解析器 + `ReconIntelSummary` 类型 + recon 工具 color/icon/label）+ `frontend/lib/tools.test.ts`（+4 case）+ 两处接线（`ToolCallSummary.tsx` 的 ToolCallCard、`SubAgentDetailView.tsx` 的子 agent 工具行）。
+- **数据契约端到端核实（改前定位 / 未跑不报）**：后端 `golish-recon-app/src/asset_intel/agent_intel.rs::PassiveIntelSummary`（`#[derive(Serialize)]`）真出 `providers/targets/organizations/promoted_children`（snake_case），`agent_tools/mod.rs:113` `serde_json::to_value(&summary)` + 插 `action` 落工具 result；单测 `summary_serializes_with_camel_friendly_fields` 锁 wire 形状。前端 `getReconIntelSummary` 读的正是这些字段 → 链路通。错误结果 `{error:..}` 无 providers → 返 null → 不渲染（优雅降级）。**后端零改动。**
+- **本会话改动（仅修 MCP-1 遗留的 2 处 biome format，无逻辑改）**：`ReconIntelSummaryLine.tsx`（`counts.length > 0 && (...)` 折成单行）+ `tools.ts`（`num` 箭头函数体加括号折单行）。
+- **跑过的验证（实跑·有据）**：① `just test-fe` → **122 files / 1322 passed | 12 skipped**（含 `frontend/lib/tools.test.ts` 10 tests = getReconIntelSummary 4 + getToolPrimaryArg 6），format 修复后复跑仍 exit 0；② `just check-fe`（biome check + tsc typecheck）→ **exit 0**（修 format 前 biome 报这 2 处、修后全绿）；③ ReadLints 两文件无错；④ `git status` 仅 5 个预期文件改动（`ReconIntelSummaryLine.tsx` 新增 + 4 改），`models.generated.ts` 重生成无 diff。
+- **未做/边界**：未跑全量 `just precommit`（纯前端改动未触碰 Rust，test-rust-all 不相关）；未 commit、未 push（按 AGENTS.md §2.7 等用户点头）；活体（真 deepseek run 跑 OSINT 看徽章）在用户环境。
+- **下一步建议**：用户确认后 commit（建议 message `feat(ai-chat): surface passive-intel/OSINT providers on recon tool cards`）；可选活体复测。
+- **已参考技能**：无（role-skills 目录本机不可达——manifest 的 `mcp-server/role-skills/` 为 bajie 服务端内部路径，本工作区 Glob/find 均未找到；故按通用前端工程判断 + AGENTS.md/code-audit 收口口径执行，未 Read 技能 raw，遵「未读不引」）。
+
+---
+
 ### 2026-06-14 · DeepSeek run 复盘 6 条收口（#1/#2/#5 基线 commit + #4 复核 + #3/#6 prompt 层）（BaJie MCP-agent-1 · DISPATCH off · 接 MCP-4 上下文转移 · 用户「全部搞完、拿不准的留给我、用原始 backend.log、先 commit 再改」）
 
 - **本轮目标**：接 MCP-4 上下文转移，把对 `deepseek-v4-flash` run（`pentest-chat-1781436545266-1`）的 6 条复盘（设计文档 `docs/design/2026-06-14-deepseek-run-review-fixes.md`）全部收口。用户铁律：证据用**原始 `~/.golish/backend.log`**、**改前先 commit 未提交的**、**测试全做完再一次性跑**、能拿主意自己修、拿不准留给用户。

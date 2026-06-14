@@ -33,6 +33,27 @@
       "remember": "DeepSeek run review: #1 ToolCallSummary.ApprovalModeInlineDropdown 渲染在每个 ToolCallCard; #5 textual_tool_call.rs 解析+剥离 <tool_calls><invoke name=..><parameter name=..> Anthropic 方言(deepseek native_best_effort 降级时泄漏), 前端 stripToolCallXml/stripAgentXmlTags 同步; #2 deepseek_defaults 1M/64K; #3/#6 是 prompt 层(target_intel.methodology.md + build_recon_prompt). 深层 A1(org-resume oracle)/B(osint hard floor) deferred 待用户."
     },
     {
+      "id": "osint-call-visibility-2026-06-14",
+      "priority": 1,
+      "area": "frontend: components/ReconIntelSummaryLine.tsx (new — OSINT 徽章 + provider chips + counts), lib/tools.ts (getReconIntelSummary 解析器 + ReconIntelSummary 类型 + recon_enrich_assets/recon_discover_subsidiaries 的 color/icon/label), lib/tools.test.ts (getReconIntelSummary 4 case), components/AIChatPanel/ToolCallSummary.tsx (ToolCallCard 接 ReconIntelSummaryLine), components/SubAgentDetailView/SubAgentDetailView.tsx (子 agent 工具行接 ReconIntelSummaryLine). 后端零改动 — 复用既有 PassiveIntelSummary(providers/targets/organizations/promoted_children) 已序列化进工具 result.",
+      "title": "OSINT 调用可视化（DeepSeek run review #6 后续）：让 ENScan/OSINT 等 passive-intel provider 的执行在聊天里看得见——之前 recon_enrich_assets/recon_discover_subsidiaries 只把 provider 跑没跑落 backend.log，工具卡上看不出跑了 OSINT。",
+      "user_visible_behavior": "recon_enrich_assets / recon_discover_subsidiaries 工具卡(聊天时间线 + 子 agent 详情)下方多一行 chip：跑了 ENScan 时显紫色『OSINT』雷达徽章 + 各 provider id chip(enscan-go/0.zone/quake…) + 『N assets · M orgs · K subsidiaries』计数；出错或无 provider 列表时不渲染(优雅降级)。",
+      "status": "passing",
+      "design": "无单独设计文档(轻量前端可见性增强); 数据契约见 golish-recon-app/src/asset_intel/agent_intel.rs::PassiveIntelSummary + agent_tools/mod.rs run_phase(serde_json::to_value 落工具 result)。",
+      "plan": "接 MCP-1 断点前写入工作树的半成品(ReconIntelSummaryLine + tools.ts 解析 + 测试 + 两处接线) -> 核后端 PassiveIntelSummary 真序列化 providers/targets/organizations/promoted_children -> 修 MCP-1 遗留的 2 处 biome format -> just check-fe + test-fe 验证收口。",
+      "verification": [
+        "[✓] backend 数据契约核实: PassiveIntelSummary(#[derive(Serialize)]) 出 providers/targets/organizations/promoted_children(snake_case), agent_tools/mod.rs:113 serde_json::to_value(&summary) 落工具 result; 单测 summary_serializes_with_camel_friendly_fields 锁 wire 形状",
+        "[✓] just test-fe: 全绿 (122 files, 1322 passed | 12 skipped); 含 frontend/lib/tools.test.ts 10 tests (getReconIntelSummary 4 + getToolPrimaryArg 6)",
+        "[✓] just check-fe (biome check + tsc typecheck): exit 0 (修 ReconIntelSummaryLine.tsx + tools.ts 2 处 format 后)",
+        "[✓] ReadLints ReconIntelSummaryLine.tsx + tools.ts: 无错",
+        "[✓] git status: 仅 5 个预期文件改动 (ReconIntelSummaryLine.tsx 新增 + 4 改); models.generated.ts 重生成无 diff",
+        "[✓] just precommit 全绿 (BaJie MCP-agent-4 收口, ~12min): fmt+check-fe+test-fe+lint-rust(clippy --workspace -D warnings 0 告警)+test-rust-all(workspace nextest 306s 全过)+check-types(ts-rs 无漂移), ✓ All checks passed! exit 0 (日志 /tmp/golish-precommit.log); [未跑·用户环境] 活体: deepseek run 跑 OSINT 看工具卡 OSINT 徽章"
+      ],
+      "evidence": "2026-06-14 BaJie MCP-agent-3 (DISPATCH off, 接 MCP-1 上下文转移). 实现主体由 MCP-1 在断点前写入工作树(未提交); 本会话核数据契约端到端(后端 PassiveIntelSummary -> tool result JSON -> getReconIntelSummary 解析 -> ReconIntelSummaryLine 渲染 -> ToolCallSummary/SubAgentDetailView 两处接线), 修 2 处 biome format, 跑 check-fe/test-fe 全绿收口. 2026-06-14 BaJie MCP-agent-4 续: 跑全量 just precommit 全绿 (✓ All checks passed! exit 0) + commit 本职 7 文件 (feat(ai-chat): surface passive-intel/OSINT providers on recon tool cards, branch feat/stage-run-fanout); 未 push.",
+      "notes": "OSINT 判定 = provider id 以 'enscan' 开头(isOsintProvider); RECON_INTEL_TOOLS = {recon_enrich_assets, recon_discover_subsidiaries}; 解析兼容 result 为 JSON string(时间线卡) 或已解析 object(子 agent). 错误结果 {error:..} 无 providers -> 返 null -> 不渲染. ReconIntelSummaryLine 在 SubAgentDetailView 放 CollapsibleTrigger 之后/CollapsibleContent 之前 = 始终可见(不用展开).",
+      "remember": "OSINT 可视化: 前端组件 ReconIntelSummaryLine + lib/tools.ts getReconIntelSummary 读 PassiveIntelSummary 的 providers/targets/organizations/promoted_children; 后端零改(数据本就在 tool result). 接在 ToolCallSummary(ToolCallCard) + SubAgentDetailView(子 agent 工具行)."
+    },
+    {
       "id": "stage-run-org-drilldown-2026-06-14",
       "priority": 1,
       "area": "frontend: services/ai-events/harness-handlers.ts(+.test) (read agent_request_id), components/Engagement/StageRunOrgRows.tsx (agentRequestId + clickable rows + onDrillIn), components/ToolCallDetailView/ToolCallDetailView.tsx (drill -> push id + sub-agent-detail), components/SubAgentDetailView/SubAgentDetailView.tsx (back-nav returns to tool-detail when popped top is not a sub-agent), components/AIChatPanel/ToolCallSummary.tsx (stage_run chat card shows covered/total + counts + progress bar); backend: golish/src/stage_run/fleet.rs (fix pre-existing missing agent_request_id field); ts-rs regen GeneratedAiEvent/GeneratedHarnessTraceKind (agent_request_id)",
