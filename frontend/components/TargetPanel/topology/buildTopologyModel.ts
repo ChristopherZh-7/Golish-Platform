@@ -125,7 +125,7 @@ export function buildTopologyModel(
           target,
           metrics: {
             evidence: evidenceCount,
-            findings: target.status === "tested" ? 1 : 0,
+            findings: target.status === "verified" ? 1 : 0,
           },
         },
         start
@@ -434,9 +434,11 @@ function estimateEvidenceCount(target: Target) {
 }
 
 function evidenceLabel(target: Target, count: number) {
-  if (target.status === "tested") return "tested";
-  if (target.status === "recondone") return "recon done";
-  if (target.status === "recon") return "recon";
+  if (target.status === "verified") return "verified";
+  if (target.status === "vuln_scan") return "vuln scan";
+  if (target.status === "enumerated") return "enumerated";
+  if (target.status === "active") return "active recon";
+  if (target.status === "passive") return "passive recon";
   return count > 0 ? `${count} evidence` : "no evidence";
 }
 

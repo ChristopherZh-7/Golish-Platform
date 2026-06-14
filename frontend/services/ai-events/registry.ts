@@ -119,7 +119,7 @@ export const eventHandlerRegistry: EventHandlerRegistry = {
   compaction_failed: handleCompactionFailed,
   tool_response_truncated: handleToolResponseTruncated,
 
-  // Harness observability events (stage-run per-org progress → StageRunView)
+  // Harness observability events (stage-run per-org progress → tool-call detail)
   harness_trace: handleHarnessTrace,
 
   // Plan events

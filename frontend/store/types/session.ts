@@ -1,4 +1,4 @@
-import type { StageRunRow, StageRunSummary } from "@/components/Engagement/StageRunView";
+import type { StageRunRow, StageRunSummary } from "@/components/Engagement/StageRunOrgRows";
 import type { ReasoningEffort } from "@/lib/ai";
 import type { RetiredPlan, TaskPlan } from "./plan";
 
@@ -43,22 +43,23 @@ export interface AiConfig {
   };
 }
 
-export type DetailViewMode = "timeline" | "tool-detail" | "sub-agent-detail" | "stage-run";
+export type DetailViewMode = "timeline" | "tool-detail" | "sub-agent-detail";
 
 /**
- * A stage-run shown in the left detail pane (设计 2026-06-13-stage-run-fanout).
- * Holds the per-org rows + summary + stage config for {@link StageRunView}.
- * Set on the session that owns the detail pane; the chat's StageRunCard reads
- * it (via the conversation→terminal mapping) and opens it on click.
+ * A stage-run's live per-org fan-out (设计 2026-06-13-stage-run-fanout). Holds the
+ * per-org rows + summary + stage config for {@link StageRunOrgRows}, which renders
+ * inside the standard tool-call detail pane when the selected tool is `stage_run`.
+ * `requestId` ties this run to its `stage_run` tool execution so the detail only
+ * shows these rows on the matching tool row.
  */
 export interface SessionStageRun {
   rows: StageRunRow[];
   summary: StageRunSummary;
-  concurrency: number;
   stageLabel: string;
-  stageTag?: string;
   roleLabel: string;
   coverageAxis: string[];
+  /** The `stage_run` tool call's requestId this run belongs to, if known. */
+  requestId?: string;
 }
 
 export interface InteractiveModeState {
@@ -105,7 +106,11 @@ export interface Session {
   passedStages?: string[];
   detailViewMode?: DetailViewMode;
   toolDetailRequestIds?: string[] | null;
-  /** Active stage-run shown when `detailViewMode === "stage-run"` (mock + live). */
+  /**
+   * Live per-org progress for this session's current `stage_run` tool call.
+   * Rendered inside the standard tool-call detail pane (ToolCallDetailView) for
+   * the matching `stage_run` tool row.
+   */
   stageRun?: SessionStageRun | null;
   interactiveMode?: InteractiveModeState | null;
 }

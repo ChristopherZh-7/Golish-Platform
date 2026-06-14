@@ -186,7 +186,14 @@ pub async fn move_to(pool: &PgPool, id: Uuid, new_parent: Option<Uuid>) -> Resul
     Ok(())
 }
 
-/// Cascade-deletes via ON DELETE CASCADE (subtree drops too).
+/// Hard-deletes an organization. DB foreign keys cascade the rest: the org
+/// self-FK (`parent_id ON DELETE CASCADE`) drops the whole sub-tree, and
+/// `targets.organization_id ON DELETE CASCADE` (migration
+/// `20260614000002_targets_org_cascade_delete`) deletes every target owned by
+/// the org or any descendant — which in turn cascades the targets'
+/// recon/scan/dns/security-analysis rows. So deleting a parent org wipes its
+/// entire branch; deleting a child org wipes just that child's targets.
+/// Findings/audit keep history (their `target_id` is ON DELETE SET NULL).
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
     super::scoped::delete_by_id(pool, "organizations", id).await?;
     Ok(())

@@ -8,6 +8,22 @@ use uuid::Uuid;
 
 use golish_pentest::evidence_ledger::EvidenceAuditId;
 
+/// serde helper: accept an explicit JSON `null` as the type's `Default` value.
+///
+/// Weak models routinely emit `null` for an "N/A" optional field (e.g.
+/// `tested_units: null`, `coverage: null`) instead of omitting it. A bare
+/// `#[serde(default)]` only covers a *missing* key, so an explicit `null` still
+/// fails with `invalid type: null, expected u32 / a sequence` — which sent the
+/// model into a submit→reject retry loop. Pair this with `default` on optional
+/// fields so both "missing" and "null" collapse to the default.
+fn null_as_default<'de, D, T>(de: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(de)?.unwrap_or_default())
+}
+
 /// Stage 种类 · 与 resources/harness/graph/operation_graph.json 的 nodes 一致.
 ///
 /// Phase 1c MVP 仅实现 `ExternalAttackSurface`; 其它 stage 占位, 推 Phase 2-4.
@@ -186,17 +202,17 @@ pub struct CoverageCell {
     /// 技术类（MVP 自由字符串；目标 = OWASP WSTG / MITRE ATT&CK id）。
     pub technique: String,
     pub status: CoverageStatus,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub evidence_refs: Vec<EvidenceAuditId>,
     /// checked_empty / blocked / not_applicable 的理由。
     #[serde(default)]
     pub note: Option<String>,
     /// 分母覆盖（设计 2026-06-05-vuln-triage-technique-matrix §5）。
     /// N：该 (资产×技术) 实际测过的可测单元数。
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub tested_units: u32,
     /// M：分母，来自 enumeration 的可测单元清单（接口/参数/路径/服务）。
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub total_units: u32,
     /// 抽样时必填的理由；None 时按全覆盖（tested==total）要求（D6）。
     #[serde(default)]
@@ -215,17 +231,17 @@ pub struct StageDeliverable {
     pub stage_run_id: Uuid,
     pub claims: Vec<StageClaim>,
     pub evidence_refs: Vec<EvidenceAuditId>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub skipped_checks: Vec<SkippedCheckRecord>,
     pub findings: Vec<HarnessFinding>,
     /// **app-level hint**; gate 以 spec 侧字段为准（min_invocations 等经 gate_rules
     /// 的 named_check 强制），不信此 agent 可清空的字段。min_invocations_check 读它做
     /// MVP 近似匹配（见该 check）。
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub required_checks_done: Vec<String>,
     /// Coverage matrix（设计 2026-06-05）：(资产 × 技术) → 终态 + 证据/理由。
     /// 缺省空 = 不声明覆盖（向后兼容）。`coverage_complete` gate op 据此核完整性。
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub coverage: Vec<CoverageCell>,
 }
 
@@ -372,6 +388,34 @@ mod tests {
         assert_eq!(old.tested_units, 0);
         assert_eq!(old.total_units, 0);
         assert!(old.sampling_rationale.is_none());
+    }
+
+    // Fix6 (2026-06-14): weak models emit explicit `null` for "N/A" optional
+    // fields instead of omitting them. `null_as_default` must collapse those to
+    // the default instead of failing `invalid type: null, expected u32/sequence`
+    // (the observed scoping submit→reject loop: tested_units:null, coverage:null).
+    #[test]
+    fn explicit_null_on_optional_fields_collapses_to_default() {
+        // CoverageCell with null numeric + null evidence_refs parses (not an error).
+        let cell: CoverageCell = serde_json::from_str(
+            r#"{"asset":"a","technique":"t","status":"found",
+                "evidence_refs":null,"tested_units":null,"total_units":null}"#,
+        )
+        .expect("null optional fields must parse, not error");
+        assert_eq!(cell.tested_units, 0);
+        assert_eq!(cell.total_units, 0);
+        assert!(cell.evidence_refs.is_empty());
+
+        // StageDeliverable with null coverage / skipped_checks / required_checks_done.
+        let d: StageDeliverable = serde_json::from_str(
+            r#"{"stage_id":"scoping","stage_run_id":"3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
+                "claims":[],"evidence_refs":[],"findings":[],
+                "coverage":null,"skipped_checks":null,"required_checks_done":null}"#,
+        )
+        .expect("null coverage/skipped_checks/required_checks_done must parse");
+        assert!(d.coverage.is_empty());
+        assert!(d.skipped_checks.is_empty());
+        assert!(d.required_checks_done.is_empty());
     }
 
     #[test]

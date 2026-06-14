@@ -13,12 +13,16 @@ import { cn } from "@/lib/utils";
 import { TargetDetailView } from "./TargetDetail";
 import { TYPE_ICONS } from "./targetTypeIcons";
 
+// Stage-aligned target lifecycle (design 2026-06-14-target-status-stage-aligned):
+// new < passive < active < enumerated < vuln_scan < verified. Colour ramps with
+// progress so a glance down the list shows how far each target has gone.
 const STATUS_CONFIG: Record<TargetStatus, { label: string; color: string; bg: string }> = {
   new: { label: "New", color: "text-gray-400", bg: "bg-gray-500/10" },
-  recon: { label: "Recon", color: "text-blue-400", bg: "bg-blue-500/10" },
-  recondone: { label: "Recon Done", color: "text-cyan-400", bg: "bg-cyan-500/10" },
-  scanning: { label: "Scanning", color: "text-yellow-400", bg: "bg-yellow-500/10" },
-  tested: { label: "Tested", color: "text-green-400", bg: "bg-green-500/10" },
+  passive: { label: "Passive", color: "text-blue-400", bg: "bg-blue-500/10" },
+  active: { label: "Active", color: "text-cyan-400", bg: "bg-cyan-500/10" },
+  enumerated: { label: "Enumerated", color: "text-violet-400", bg: "bg-violet-500/10" },
+  vuln_scan: { label: "Vuln Scan", color: "text-yellow-400", bg: "bg-yellow-500/10" },
+  verified: { label: "Verified", color: "text-green-400", bg: "bg-green-500/10" },
 };
 
 interface TargetTreeRowProps {

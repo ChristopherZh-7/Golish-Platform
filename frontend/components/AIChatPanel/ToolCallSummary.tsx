@@ -55,6 +55,18 @@ function ToolCallCard({
   const isShell = tc.name === "run_command" || tc.name === "run_pty_cmd";
   const primary = parseToolPrimary(tc.name, tc.args);
 
+  // For a `stage_run` tool card, surface its live per-org fan-out progress
+  // (covered/total + running/queued/blocked) inline, so the count is visible at
+  // a glance without opening the detail pane. Matched to THIS tool row by
+  // requestId (the same tie the detail pane uses).
+  const stageRunSummary = useStore((s) => {
+    if (tc.name !== "stage_run" || !sessionId) return null;
+    const sr = s.sessions[sessionId]?.stageRun;
+    if (!sr || sr.summary.total === 0) return null;
+    if (sr.requestId && requestId && sr.requestId !== requestId) return null;
+    return sr.summary;
+  });
+
   return (
     <button
       type="button"
@@ -98,6 +110,32 @@ function ToolCallCard({
           )}
         </div>
       </div>
+      {stageRunSummary && (
+        <div className="mt-1.5 space-y-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px]">
+            <span className="font-medium text-foreground/70">
+              {stageRunSummary.covered}/{stageRunSummary.total} 覆盖
+            </span>
+            {stageRunSummary.active > 0 && (
+              <span className="text-sky-400">{stageRunSummary.active} 进行</span>
+            )}
+            {stageRunSummary.queued > 0 && (
+              <span className="text-indigo-400">{stageRunSummary.queued} 排队</span>
+            )}
+            {stageRunSummary.blocked > 0 && (
+              <span className="text-amber-400">{stageRunSummary.blocked} 阻塞</span>
+            )}
+          </div>
+          <div className="h-1 w-full overflow-hidden rounded-full bg-muted/40">
+            <div
+              className="h-full rounded-full bg-[var(--success)]/70 transition-all"
+              style={{
+                width: `${Math.round((stageRunSummary.covered / stageRunSummary.total) * 100)}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
       {primary && (
         <div
           className={cn(

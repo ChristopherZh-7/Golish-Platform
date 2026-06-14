@@ -10,6 +10,13 @@
 //!
 //! See `docs/design/2026-06-06-headless-single-stage-runner.md`.
 
+pub(crate) mod fleet;
+/// Stage-agnostic per-org scheduling kernel (K-controlled concurrency, resume
+/// skip, failure isolation). A general, unit-tested component owned by
+/// `stage_run`; exposed `pub` so its full tested API isn't flagged as crate-dead
+/// even though the CLI subsidiary fan-out currently drives only the checklist path.
+pub mod scheduler;
+
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -27,11 +34,11 @@ use golish_core::runtime::{GolishRuntime, RuntimeEvent};
 
 use crate::ai::agent_bridge::AgentBridge;
 use crate::cli::Args;
-use crate::engagement::fleet_run::{AlwaysRunOracle, CliFleetProgress, NoopScorer, OrgFleetExecutor};
-use crate::engagement::scheduler::{
+use crate::runtime::CliRuntime;
+use crate::stage_run::fleet::{AlwaysRunOracle, CliFleetProgress, NoopScorer, OrgFleetExecutor};
+use crate::stage_run::scheduler::{
     run_fleet_scheduler, FleetConfig, FleetMode, FleetReport, OrgRunTask,
 };
-use crate::runtime::CliRuntime;
 
 /// `resolve_slice` moved to `golish_agent_kit::harness::slice` (Phase B,
 /// 设计 2026-06-13-engagement-scoping-fanout §6.3) so the engagement worker

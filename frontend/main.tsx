@@ -23,29 +23,6 @@ async function initApp(): Promise<void> {
   const { setupGlobalErrorHandlers, ErrorBoundary } = await import("./components/ErrorBoundary");
   setupGlobalErrorHandlers();
 
-  // Dev-only design previews (?preview=<name>): render a single prototype view
-  // in the real app theme via `just dev-fe`, before wiring to the live backend.
-  // Stripped from production via the DEV guard.
-  if (import.meta.env.DEV) {
-    const previewName = new URLSearchParams(window.location.search).get("preview");
-    if (previewName === "intel" || previewName === "stage-run") {
-      const [{ StageRunPreviewView }, { ThemeProvider }] = await Promise.all([
-        import("./components/Engagement/StageRun.preview"),
-        import("./hooks/useTheme"),
-      ]);
-      ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-        <React.StrictMode>
-          <ErrorBoundary>
-            <ThemeProvider defaultThemeId="golish">
-              <StageRunPreviewView />
-            </ThemeProvider>
-          </ErrorBoundary>
-        </React.StrictMode>
-      );
-      return;
-    }
-  }
-
   const detached = getDetachedParams();
 
   if (detached) {

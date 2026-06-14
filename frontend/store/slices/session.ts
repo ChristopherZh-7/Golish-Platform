@@ -16,7 +16,7 @@
  *   session-helpers.ts   — shared helpers (purge, activity draft, output buffer)
  */
 
-import type { StageRunRow } from "@/components/Engagement/StageRunView";
+import type { StageRunRow } from "@/components/Engagement/StageRunOrgRows";
 import type {
   AgentMode,
   DetailViewMode,
@@ -90,15 +90,13 @@ export interface SessionActions {
   setRenderMode: (sessionId: string, mode: RenderMode) => void;
   setDetailViewMode: (sessionId: string, mode: DetailViewMode) => void;
   setToolDetailRequestIds: (sessionId: string, requestIds: string[] | null) => void;
-  /** Set (or clear) the stage-run shown in this session's detail pane. */
+  /** Set (or clear) the live stage-run progress for this session. */
   setSessionStageRun: (sessionId: string, stageRun: SessionStageRun | null) => void;
-  /** Toggle one stage-run row's inline detail expansion. */
-  toggleStageRunRow: (sessionId: string, rowId: string) => void;
   /**
    * Upsert one org's live row into this session's stage-run from a
    * `StageRunOrgProgress` event (design 2026-06-13-stage-run-fanout). Builds the
-   * SessionStageRun on the first frame from `meta`, merges by row id (preserving
-   * the row's expand state + accumulated tool lines), and recomputes the summary.
+   * SessionStageRun on the first frame from `meta` (tying it to the matching
+   * `stage_run` tool call), merges by row id, and recomputes the summary.
    */
   upsertStageRunRow: (
     sessionId: string,
@@ -107,8 +105,6 @@ export interface SessionActions {
       stageLabel: string;
       roleLabel: string;
       coverageAxis: string[];
-      concurrency?: number;
-      stageTag?: string;
     }
   ) => void;
   setInteractiveMode: (sessionId: string, mode: InteractiveModeState | null) => void;

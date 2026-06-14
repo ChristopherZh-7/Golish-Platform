@@ -450,7 +450,20 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
 
   const navigateBack = useCallback(() => {
     if (requestIds && requestIds.length > 1) {
-      useStore.getState().setToolDetailRequestIds(sessionId, requestIds.slice(0, -1));
+      const popped = requestIds.slice(0, -1);
+      const newTop = popped[popped.length - 1];
+      const store = useStore.getState();
+      store.setToolDetailRequestIds(sessionId, popped);
+      // If the level we popped back to isn't a sub-agent (e.g. the `stage_run`
+      // tool row a per-org drill-in started from), return to the tool-call
+      // detail instead of staying here — otherwise this pane would look up a
+      // sub-agent that doesn't exist for that requestId and render empty.
+      const stillSubAgent = (store.activeSubAgents[sessionId] ?? []).some(
+        (a) => a.parentRequestId === newTop
+      );
+      if (!stillSubAgent) {
+        store.setDetailViewMode(sessionId, "tool-detail");
+      }
       return;
     }
     setDetailViewMode(sessionId, "timeline");

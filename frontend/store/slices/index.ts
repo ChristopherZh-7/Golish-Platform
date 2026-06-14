@@ -75,18 +75,6 @@ export {
   type DialogState,
   initialDialogState,
 } from "./dialog";
-// Engagement worker-pool slice
-export {
-  createEngagementPoolSlice,
-  type EngagementPoolActions,
-  type EngagementPoolPhase,
-  type EngagementPoolSlice,
-  type EngagementPoolState,
-  initialEngagementPoolState,
-  type RunningWorker,
-  selectPoolActiveCount,
-  selectPoolQueueLength,
-} from "./engagement-pool";
 // HITL slice
 export {
   createHitlSlice,

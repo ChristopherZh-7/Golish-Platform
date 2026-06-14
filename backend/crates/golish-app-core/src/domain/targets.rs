@@ -125,34 +125,51 @@ impl Scope {
     }
 }
 
+/// A target's furthest-completed pentest stage, aligned to the harness pipeline
+/// (design 2026-06-14-target-status-stage-aligned). Doubles as the AI's
+/// per-target resume/skip signal: before running a stage on a target, the agent
+/// skips it when its status is already at/after that stage. Ordered
+/// `new < passive < active < enumerated < vuln_scan < verified`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ts_rs::TS)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub enum TargetStatus {
+    /// Discovered, no work done yet.
     New,
-    Recon,
-    ReconDone,
-    Scanning,
-    Tested,
+    /// Passive recon done (no direct contact) — recon `PassiveInternet`.
+    Passive,
+    /// Active recon done (ports/services/tech) — recon `ActiveCollection`.
+    Active,
+    /// Enumeration done (dirs/params/JS-API) — stage `Enumeration`.
+    Enumerated,
+    /// Vulnerability scan done — stage `VulnTriage`.
+    VulnScan,
+    /// Verified / actively tested — stage `Verification`.
+    Verified,
 }
 
 impl TargetStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::New => "new",
-            Self::Recon => "recon",
-            Self::ReconDone => "recon_done",
-            Self::Scanning => "scanning",
-            Self::Tested => "tested",
+            Self::Passive => "passive",
+            Self::Active => "active",
+            Self::Enumerated => "enumerated",
+            Self::VulnScan => "vuln_scan",
+            Self::Verified => "verified",
         }
     }
+    /// Parse from the DB/tool string. Also accepts the legacy coarse values
+    /// (`recon`/`recon_done`/`scanning`/`tested`) so any pre-migration string
+    /// still maps onto the stage-aligned lifecycle.
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
-            "recon" => Self::Recon,
-            "recon_done" => Self::ReconDone,
-            "scanning" => Self::Scanning,
-            "tested" => Self::Tested,
+            "passive" | "recon" => Self::Passive,
+            "active" | "recon_done" => Self::Active,
+            "enumerated" => Self::Enumerated,
+            "vuln_scan" | "scanning" => Self::VulnScan,
+            "verified" | "tested" => Self::Verified,
             _ => Self::New,
         }
     }
@@ -238,4 +255,65 @@ pub struct DirectoryEntry {
     pub content_type: String,
     pub tool: String,
     pub created_at: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_status_as_str_matches_db_enum_values() {
+        // as_str() must equal the Postgres `target_status` enum members exactly
+        // (the migration's CREATE TYPE list); they are bound as `$1::target_status`.
+        assert_eq!(TargetStatus::New.as_str(), "new");
+        assert_eq!(TargetStatus::Passive.as_str(), "passive");
+        assert_eq!(TargetStatus::Active.as_str(), "active");
+        assert_eq!(TargetStatus::Enumerated.as_str(), "enumerated");
+        assert_eq!(TargetStatus::VulnScan.as_str(), "vuln_scan");
+        assert_eq!(TargetStatus::Verified.as_str(), "verified");
+    }
+
+    #[test]
+    fn target_status_serde_wire_form_equals_as_str() {
+        // rename_all = "snake_case" → the serialized wire form (what the frontend
+        // sees) equals the DB value, so there is one representation everywhere.
+        for s in [
+            TargetStatus::New,
+            TargetStatus::Passive,
+            TargetStatus::Active,
+            TargetStatus::Enumerated,
+            TargetStatus::VulnScan,
+            TargetStatus::Verified,
+        ] {
+            let wire = serde_json::to_value(&s).unwrap();
+            assert_eq!(wire, serde_json::Value::String(s.as_str().to_string()));
+        }
+    }
+
+    #[test]
+    fn target_status_from_str_roundtrips_new_values() {
+        for s in [
+            "new",
+            "passive",
+            "active",
+            "enumerated",
+            "vuln_scan",
+            "verified",
+        ] {
+            assert_eq!(TargetStatus::from_str(s).as_str(), s);
+        }
+    }
+
+    #[test]
+    fn target_status_from_str_maps_legacy_values() {
+        // Pre-migration strings still map onto the stage-aligned lifecycle so any
+        // lingering old value (transcripts/cached JSON) resolves correctly.
+        assert_eq!(TargetStatus::from_str("recon"), TargetStatus::Passive);
+        assert_eq!(TargetStatus::from_str("recon_done"), TargetStatus::Active);
+        assert_eq!(TargetStatus::from_str("scanning"), TargetStatus::VulnScan);
+        assert_eq!(TargetStatus::from_str("tested"), TargetStatus::Verified);
+        // Unknown / empty falls back to New.
+        assert_eq!(TargetStatus::from_str("bogus"), TargetStatus::New);
+        assert_eq!(TargetStatus::from_str(""), TargetStatus::New);
+    }
 }

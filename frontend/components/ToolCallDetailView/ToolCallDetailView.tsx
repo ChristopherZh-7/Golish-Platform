@@ -12,9 +12,10 @@
  * and tool-call detail views.
  */
 import { ArrowLeft, CheckCircle2, Clock, Loader2, Wrench, XCircle } from "lucide-react";
-import { memo, useMemo } from "react";
+import { memo, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Ansi } from "@/components/Ansi";
+import { StageRunOrgRows } from "@/components/Engagement/StageRunOrgRows";
 import { Markdown } from "@/components/Markdown";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
@@ -287,7 +288,31 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     return null;
   });
 
+  // A `stage_run` tool is "just a tool, with a bit more state": its live per-org
+  // fan-out renders here in the standard detail pane (设计 2026-06-13-stage-run,
+  // superseded the bespoke StageRunCard/StageRunView). Only attach the rows to the
+  // matching tool row — when the run's requestId is known and differs, skip.
+  const stageRun = useStore((s) => {
+    const sr = s.sessions[sessionId]?.stageRun ?? null;
+    if (!sr) return null;
+    if (sr.requestId && targetRequestId && sr.requestId !== targetRequestId) return null;
+    return sr;
+  });
+
   const navigateBack = () => setDetailViewMode(sessionId, "timeline");
+
+  // Drill from a `stage_run` per-org row into that org's specialist sub-agent:
+  // push its `agentRequestId` onto the detail stack and switch to the sub-agent
+  // pane (same pattern as clicking a sub-agent card). `SubAgentDetailView`'s back
+  // nav pops the stack back to this `stage_run` tool row (the org list).
+  const handleDrillIntoOrg = useCallback(
+    (agentRequestId: string) => {
+      const store = useStore.getState();
+      store.setToolDetailRequestIds(sessionId, [...(requestIds ?? []), agentRequestId]);
+      store.setDetailViewMode(sessionId, "sub-agent-detail");
+    },
+    [sessionId, requestIds]
+  );
 
   const toolColor = useMemo(
     () => (execution ? getToolColor(execution.toolName) : undefined),
@@ -299,6 +324,12 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
   );
 
   if (!execution) {
+    // The tool execution block can lag the Details click — `stage_run` is
+    // loop-routed and long-running, so its requestId / timeline block may not
+    // have landed when the user clicks. Show the live per-org rows if we already
+    // have them, otherwise a loading state while the block resolves — instead of
+    // a bare "no tool executions" message that reads as an unresponsive button.
+    const stageRunReady = Boolean(stageRun && stageRun.rows.length > 0);
     return (
       <div className="h-full flex flex-col bg-card">
         <div className="flex items-center gap-3 px-3 py-2 border-b border-[var(--border-subtle)] flex-shrink-0">
@@ -311,9 +342,32 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
             {t("ai.toolDetail.backToTerminal")}
           </button>
         </div>
-        <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground/60">
-          {t("ai.toolDetail.noToolExecutions")}
-        </div>
+        {stageRunReady && stageRun ? (
+          <div className="flex-1 overflow-y-auto px-4 py-3">
+            <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
+              逐 org 进度
+            </div>
+            <StageRunOrgRows
+              rows={stageRun.rows}
+              summary={stageRun.summary}
+              stageLabel={stageRun.stageLabel}
+              roleLabel={stageRun.roleLabel}
+              coverageAxis={stageRun.coverageAxis}
+              onDrillIn={handleDrillIntoOrg}
+            />
+          </div>
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground/60">
+            {targetRequestId ? (
+              <span className="flex items-center gap-2">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                {t("ai.toolDetail.loading")}
+              </span>
+            ) : (
+              t("ai.toolDetail.noToolExecutions")
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -403,6 +457,22 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
             )}
           </div>
         </div>
+
+        {execution.toolName === "stage_run" && stageRun && stageRun.rows.length > 0 && (
+          <div className="px-4 py-3 border-b border-border/20">
+            <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
+              逐 org 进度
+            </div>
+            <StageRunOrgRows
+              rows={stageRun.rows}
+              summary={stageRun.summary}
+              stageLabel={stageRun.stageLabel}
+              roleLabel={stageRun.roleLabel}
+              coverageAxis={stageRun.coverageAxis}
+              onDrillIn={handleDrillIntoOrg}
+            />
+          </div>
+        )}
 
         {intent && (
           <div className="px-4 py-3 border-b border-border/20">

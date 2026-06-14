@@ -63,13 +63,21 @@ pub enum HarnessTraceKind {
     },
 
     /// `stage_run` tool: one organization's live progress for the current stage's
-    /// per-org fan-out (design 2026-06-13-stage-run-fanout). The frontend
-    /// `StageRunView` upserts a row per `org_id`; `stage_label`/`role_label`/
-    /// `coverage_axis` let it build the card on the first frame it sees an org.
+    /// per-org fan-out (design 2026-06-13-stage-run-fanout). The frontend upserts a
+    /// row per `org_id` into the `stage_run` tool's detail pane; `stage_label`/
+    /// `role_label`/`coverage_axis` let it build the row on the first frame it sees
+    /// an org, and `agent_request_id` ties the row to that org's specialist
+    /// sub-agent so the UI can drill into the org's own conversation + tool calls.
     StageRunOrgProgress {
         /// The organization this progress row is for.
         org_id: String,
         org_name: String,
+        /// The per-org specialist sub-agent's `parent_request_id`. Lets the UI
+        /// link this org row to its sub-agent (its AI conversation / tool calls /
+        /// reasoning) so each org is independently drill-in-able. `None` when the
+        /// row is emitted before/without a dispatched sub-agent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_request_id: Option<String>,
         /// Direct-ownership percentage of this org under the engagement parent
         /// (root org / unknown → `None`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -196,6 +204,7 @@ mod tests {
         let k = HarnessTraceKind::StageRunOrgProgress {
             org_id: "org-1".into(),
             org_name: "平安科技".into(),
+            agent_request_id: Some("req-1::org::org-1".into()),
             ownership_percent: Some(100.0),
             status: "running".into(),
             coverage: vec![
@@ -218,6 +227,7 @@ mod tests {
             serde_json::json!([["DNS", "found"], ["CT", "pending"]])
         );
         assert_eq!(v["role_label"], "Recon");
+        assert_eq!(v["agent_request_id"], "req-1::org::org-1");
         // Round-trips back to the same variant.
         let back: HarnessTraceKind = serde_json::from_value(v).expect("round-trips");
         assert!(matches!(
@@ -234,6 +244,7 @@ mod tests {
         let k = HarnessTraceKind::StageRunOrgProgress {
             org_id: "org-2".into(),
             org_name: "root".into(),
+            agent_request_id: None,
             ownership_percent: None,
             status: "queued".into(),
             coverage: vec![],
@@ -246,6 +257,7 @@ mod tests {
         let v = serde_json::to_value(&k).unwrap();
         assert!(v.get("ownership_percent").is_none());
         assert!(v.get("activity").is_none());
+        assert!(v.get("agent_request_id").is_none());
     }
 
     #[test]

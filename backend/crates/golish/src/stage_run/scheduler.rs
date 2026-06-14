@@ -124,7 +124,7 @@ pub trait WeaknessScorer: Send + Sync {
 
 /// 注入：逐 org 进度上报。调度内核保持 **IO-free**（设计 §3.3）—— eprintln / 事件等
 /// 副作用全外置到实现里，故本文件依旧零 IO、可纯单测。headless CLI 用
-/// [`crate::engagement::fleet_run::CliFleetProgress`] 打 `── subsidiary i/N ──` 恢复
+/// [`crate::stage_run::fleet::CliFleetProgress`] 打 `── subsidiary i/N ──` 恢复
 /// 中途可见性（T1 把手写循环换成本调度器后丢的那条逐子进度）；GUI 走单卡
 /// （`StageRunOrgProgress` 事件）→ 传 [`NoopProgress`]。`index`/`total` 为 1-based 的
 /// org 序（checklist 串行下即真实顺序；funnel/并发下 index 仍唯一、顺序不保证）。
@@ -377,10 +377,12 @@ mod tests {
                 .push((index, total, task.org_name.clone()));
         }
         fn on_org_done(&self, index: usize, total: usize, outcome: &OrgRunOutcome) {
-            self.dones
-                .lock()
-                .unwrap()
-                .push((index, total, outcome.org_name.clone(), outcome.status));
+            self.dones.lock().unwrap().push((
+                index,
+                total,
+                outcome.org_name.clone(),
+                outcome.status,
+            ));
         }
     }
 

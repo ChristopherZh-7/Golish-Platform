@@ -32,6 +32,7 @@ describe("handleHarnessTrace", () => {
         kind: "stage_run_org_progress",
         org_id: "org-1",
         org_name: "平安科技",
+        agent_request_id: "op::org::org-1",
         ownership_percent: 100,
         status: "running",
         coverage: [
@@ -52,6 +53,7 @@ describe("handleHarnessTrace", () => {
     expect(sid).toBe("sess-1");
     expect(row.id).toBe("org-1");
     expect(row.name).toBe("平安科技");
+    expect(row.agentRequestId).toBe("op::org::org-1");
     expect(row.ownershipPercent).toBe(100);
     expect(row.status).toBe("running");
     expect(row.evidenceCount).toBe(3);

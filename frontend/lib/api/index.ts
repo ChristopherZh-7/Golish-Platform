@@ -22,7 +22,6 @@ import * as assetIntel from "./asset-intel";
 import * as auditLog from "./audit-log";
 import * as context from "./context";
 import * as conversationDb from "./conversation-db";
-import * as engagement from "./engagement";
 import * as fileEditor from "./file-editor";
 import * as files from "./files";
 import * as findings from "./findings";
@@ -69,7 +68,6 @@ export {
   securityAnalysis,
   vulnIntel,
   conversationDb,
-  engagement,
   findings,
   history,
   auditLog,
@@ -105,7 +103,6 @@ export const api = {
   securityAnalysis,
   vulnIntel,
   conversationDb,
-  engagement,
   findings,
   history,
   auditLog,

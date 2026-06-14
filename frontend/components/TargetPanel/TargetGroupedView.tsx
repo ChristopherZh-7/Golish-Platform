@@ -38,7 +38,7 @@ import { assetIntel, organizationRecon, organizations as orgsApi } from "@/lib/a
 import type { AssetIntelRun } from "@/lib/api/asset-intel";
 import type { OrganizationReconRunSnapshot } from "@/lib/api/organization-recon";
 import type { Organization, OrganizationCandidate } from "@/lib/api/organizations";
-import { onCustomEvent, onEvent } from "@/lib/events";
+import { onCustomEvent, onEvent, sendCustomEvent } from "@/lib/events";
 import { notify } from "@/lib/notify";
 import type { Target } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
@@ -57,6 +57,7 @@ import {
 import { translateWithFallback } from "@/lib/target-panel/org-fields";
 import {
   buildOrgTree,
+  countOrgDeletionImpact,
   type OrgTreeNode,
   ROOT_PARENT_KEY,
   UNASSIGNED_KEY,
@@ -611,16 +612,25 @@ export function TargetGroupedView({
 
   const handleDeleteOrg = useCallback(
     async (id: string, name: string) => {
-      const confirmMsg = t("organizations.deleteConfirm").replace("{{name}}", name);
+      // Deleting an org cascades to its descendant orgs AND all their targets
+      // (DB FKs, migration 20260614000002). Warn with the blast radius up front.
+      const { subOrgCount, targetCount } = countOrgDeletionImpact(orgs, targets, id);
+      const confirmMsg = t("organizations.deleteConfirm")
+        .replace("{{name}}", name)
+        .replace("{{subOrgCount}}", String(subOrgCount))
+        .replace("{{targetCount}}", String(targetCount));
       if (!confirm(confirmMsg)) return;
       try {
         await orgsApi.deleteOrganization(id);
         await refreshOrgs();
+        // Targets are cascade-deleted server-side; reload them so the UI drops
+        // the removed rows instead of leaving them stale.
+        sendCustomEvent("targets-changed").catch(() => {});
       } catch (e) {
         alert(String(e));
       }
     },
-    [refreshOrgs, t]
+    [orgs, targets, refreshOrgs, t]
   );
 
   const handleAddTargetSubmit = useCallback(

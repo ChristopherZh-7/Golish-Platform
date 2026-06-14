@@ -10,10 +10,6 @@ pub mod context;
 pub mod core;
 pub mod debug;
 pub mod dispatch;
-// Engagement worker-scope commands (设计 2026-06-13 Phase B). Deliberately NOT
-// glob-re-exported below: the `golish` facade exposes them under the
-// `engagement` domain (commands_facade/engagement.rs), not the `ai` domain.
-pub mod engagement_scope;
 pub mod graph;
 pub mod hitl;
 pub mod loop_detection;

@@ -31,6 +31,13 @@ status: string, cited_evidence_refs: number[], available_real_ids: number[], } |
  */
 org_id: string, org_name: string, 
 /**
+ * The per-org specialist sub-agent's `parent_request_id`. Lets the UI
+ * link this org row to its sub-agent (its AI conversation / tool calls /
+ * reasoning) so each org is independently drill-in-able. `None` when the
+ * row is emitted before/without a dispatched sub-agent.
+ */
+agent_request_id?: string | null, 
+/**
  * Direct-ownership percentage of this org under the engagement parent
  * (root org / unknown → `None`).
  */

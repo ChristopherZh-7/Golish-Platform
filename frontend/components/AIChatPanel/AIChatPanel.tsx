@@ -1,11 +1,8 @@
-import { ArrowUp, Image, Square, Target, Wrench, X } from "lucide-react";
+import { ArrowUp, Image, Square, Wrench, X } from "lucide-react";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
-import { EngagementOverview } from "@/components/Engagement/EngagementOverview";
-import { StageRunCard } from "@/components/Engagement/StageRunCard";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
-import { getEngagementSnapshot } from "@/lib/api/engagement";
 import { formatModelName } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { type ChatMessage, useStore } from "@/store";
@@ -45,18 +42,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
   );
   const messages = activeConv?.messages ?? EMPTY_MESSAGES;
   const isStreaming = activeConv?.isStreaming ?? false;
-  const projectPath = useStore((s) => s.currentProjectPath);
-
-  // Stage-run card lives in the chat; the heavy view lives in the LEFT detail
-  // pane bound to this conversation's terminal session (设计 2026-06-13-stage-run).
-  const conversationTerminals = useStore((s) => s.conversationTerminals);
-  const stageRunTermSid = activeConvId ? (conversationTerminals[activeConvId]?.[0] ?? null) : null;
-  const stageRun = useStore((s) =>
-    stageRunTermSid ? (s.sessions[stageRunTermSid]?.stageRun ?? null) : null
-  );
-  const stageRunOpen = useStore((s) =>
-    stageRunTermSid ? s.sessions[stageRunTermSid]?.detailViewMode === "stage-run" : false
-  );
 
   const storeAiModel = useStore((s) => s.selectedAiModel);
   const [selectedModel, setSelectedModel] = useState<{ model: string; provider: string } | null>(
@@ -257,47 +242,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
     setShowHistory(false);
   }, []);
 
-  // Toggle the active conversation as the engagement overview (the scoping
-  // chat "upgrades" into the fan-out control surface, 设计 2026-06-13 §5④).
-  const handleToggleEngagementOverview = useCallback(() => {
-    if (!activeConvId) return;
-    const conv = useStore.getState().conversations[activeConvId];
-    if (!conv) return;
-    const next = conv.engagementRole === "overview" ? undefined : ("overview" as const);
-    useStore.getState().updateConversation(activeConvId, { engagementRole: next });
-    import("@/lib/engagement/rolePersistence").then(({ writeEngagementRole }) => {
-      writeEngagementRole(activeConvId, next ? { engagementRole: next } : null);
-    });
-  }, [activeConvId]);
-
-  // Auto-upgrade the active scoping chat into the engagement overview once the
-  // org tree is locked (snapshot rootCount > 0), so the inline card appears on
-  // its own instead of hiding behind the 🎯 toggle (设计 §5④ / phase-bc plan
-  // C-T3「rootCount>0 时自动」). Guards: pentest chats only, never re-tag a
-  // worker/overview chat or an empty chat, and at most one overview per project.
-  useEffect(() => {
-    if (!activeConvId || !activeConv) return;
-    if (activeConv.engagementRole) return;
-    if (isStreaming || activeConv.messages.length === 0) return;
-    if (pentestTools.length === 0) return;
-    if (conversations.some((c) => c.engagementRole === "overview")) return;
-    let cancelled = false;
-    void getEngagementSnapshot({ projectPath: projectPath ?? undefined })
-      .then((snap) => {
-        if (cancelled || snap.rootCount <= 0) return;
-        useStore.getState().updateConversation(activeConvId, { engagementRole: "overview" });
-        void import("@/lib/engagement/rolePersistence").then(({ writeEngagementRole }) =>
-          writeEngagementRole(activeConvId, { engagementRole: "overview" })
-        );
-      })
-      .catch(() => {
-        /* non-engagement project: no scope yet — leave the chat as a plain chat */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeConvId, activeConv, isStreaming, conversations, pentestTools.length, projectPath]);
-
   // ── Derived data ─────────────────────────────────────────────────────
   const currentModel = selectedModel?.model ?? "";
   const currentProvider = selectedModel?.provider ?? "";
@@ -431,36 +375,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
                   );
                 })}
 
-                {/* Engagement overview woven INTO the chat stream (not pinned):
-                    the scoping chat upgrades into the fan-out control surface
-                    (设计 2026-06-13-engagement-scoping-fanout §2.2/§5④). */}
-                {activeConv?.engagementRole === "overview" && activeConvId && (
-                  <EngagementOverview
-                    model={currentModel}
-                    provider={currentProvider}
-                    profileId={
-                      modes.chatExecutionMode !== "chat" ? modes.chatExecutionMode : "red_team"
-                    }
-                    conversationId={activeConvId}
-                  />
-                )}
-
-                {/* Stage-run card: opens the per-org synchronized view in the
-                    LEFT detail pane (设计 2026-06-13-stage-run-fanout §3.3). */}
-                {stageRun && stageRunTermSid && (
-                  <StageRunCard
-                    stageLabel={stageRun.stageLabel}
-                    roleTag={`${stageRun.roleLabel}${stageRun.stageTag ? ` · ${stageRun.stageTag}` : ""}`}
-                    summary={stageRun.summary}
-                    open={stageRunOpen}
-                    onOpen={() =>
-                      useStore
-                        .getState()
-                        .setDetailViewMode(stageRunTermSid, stageRunOpen ? "timeline" : "stage-run")
-                    }
-                  />
-                )}
-
                 {activeWorkflow && <WorkflowProgress workflow={activeWorkflow} />}
                 {compactionState && (
                   <CompactionNotice
@@ -549,19 +463,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
             </div>
             <div className="flex items-center gap-1">
               <ContextUsageRing contextUsage={contextUsage} />
-              <button
-                type="button"
-                title="Engagement overview (scoping → fan-out)"
-                className={cn(
-                  "h-6 w-6 flex items-center justify-center rounded transition-colors",
-                  activeConv?.engagementRole === "overview"
-                    ? "text-primary bg-[var(--bg-hover)]"
-                    : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]"
-                )}
-                onClick={handleToggleEngagementOverview}
-              >
-                <Target className="w-3.5 h-3.5" />
-              </button>
               <button
                 type="button"
                 title={t("ai.uploadImage")}

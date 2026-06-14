@@ -96,3 +96,42 @@ export function countAllTargets(node: OrgTreeNode): { total: number; inScope: nu
   }
   return { total, inScope };
 }
+
+/**
+ * Blast radius of deleting an organization. Mirrors the DB cascade
+ * (`organizations.parent_id` + `targets.organization_id`, both ON DELETE
+ * CASCADE): deleting an org drops every descendant org and every target owned
+ * by the org or any descendant. Used to warn the user up front in the delete
+ * confirm dialog.
+ *
+ * `subOrgCount` excludes the org itself (it's the count of descendant orgs);
+ * `targetCount` is every target attached anywhere in the subtree.
+ */
+export function countOrgDeletionImpact(
+  orgs: Organization[],
+  targets: Target[],
+  orgId: string
+): { subOrgCount: number; targetCount: number } {
+  const childrenByParent = new Map<string, string[]>();
+  for (const o of orgs) {
+    if (!o.parent_id) continue;
+    const siblings = childrenByParent.get(o.parent_id);
+    if (siblings) siblings.push(o.id);
+    else childrenByParent.set(o.parent_id, [o.id]);
+  }
+
+  const subtree = new Set<string>();
+  const stack = [orgId];
+  while (stack.length > 0) {
+    const id = stack.pop() as string;
+    if (subtree.has(id)) continue;
+    subtree.add(id);
+    for (const child of childrenByParent.get(id) ?? []) stack.push(child);
+  }
+
+  const targetCount = targets.filter(
+    (t) => t.organization_id != null && subtree.has(t.organization_id)
+  ).length;
+  // subtree always contains orgId itself; descendants are the rest.
+  return { subOrgCount: Math.max(0, subtree.size - 1), targetCount };
+}

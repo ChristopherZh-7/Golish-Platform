@@ -1,11 +1,8 @@
 //! `execute_stage_run` — the `stage_run` tool handler.
 //!
-//! ⚠ **DEPRECATED**（方案 C / fleet Phase B,计划
-//! `docs/superpowers/plans/2026-06-14-engagement-fleet-scheduler-convergence.md`）：
-//! 多 org 扇出已统一到后端 `golish::engagement::fleet_run::run_engagement_fleet`
-//! （每 org 一个完整 `run_stage`，经 `run_fleet_scheduler`；CLI 与 GUI 共用）。本工具
-//! （in-stage、sub_agent per org）仅暂保留以兼容旧前端 worker-pool 回滚路径，待 T4.4
-//! 活体验证新路径后整体移除（selection_apply 注入 + direct/mod.rs 路由 + 本文件）。
+//! 在 chat 的 task 模式里把当前 harness 阶段的多 org / 子公司扇出做完（in-stage、
+//! sub_agent per org）。曾经的后端 engagement fleet（overview 一把梭）已移除，本工具
+//! 是 chat 内多 org 扇出的现行路径。
 //!
 //! `stage_run` brings the CLI `--stage-run --include-subsidiaries` behaviour
 //! into chat: for the CURRENT harness stage, fan the stage's **specialist**
@@ -100,23 +97,63 @@ fn role_label_for(specialist: &str) -> String {
 
 /// Build the per-org objective for the specialist (pins the org id + scope to
 /// THIS org only, so the specialist registers assets against the right org).
-fn build_org_objective(stage: StageKind, unit: &OrgUnit) -> String {
-    format!(
+///
+/// The objective also front-loads the stage's COVERAGE CONTRACT (`expected_techniques`)
+/// and tool boundary (`allowed_tool_types`) so the specialist fills the coverage
+/// matrix and stays in-stage BEFORE submitting — instead of learning the gate's
+/// requirements only after the deliverable is rejected (the observed retry loop:
+/// "intel coverage incomplete: never attempted (asset × technique)").
+fn build_org_objective(
+    stage: StageKind,
+    unit: &OrgUnit,
+    expected_techniques: &[String],
+    allowed_tool_types: &[String],
+) -> String {
+    let mut obj = format!(
         "Run the {} stage for this engagement. Organization: {} (organization_id: {}). \
          Collect for THIS organization only — discover its own assets and register them as \
          in-scope targets bound to this organization_id, then submit the stage deliverable.",
         stage.as_str(),
         unit.name,
         unit.id,
-    )
+    );
+    if !allowed_tool_types.is_empty() {
+        obj.push_str(&format!(
+            " TOOLS: in the {} stage you may only use these tool types: [{}]. If a tool is \
+             blocked by the stage boundary, switch technique or submit your deliverable — do NOT \
+             retry the blocked tool. Long scans may be backgrounded on a soft timeout: poll with \
+             check_job, never re-run the same command.",
+            stage.as_str(),
+            allowed_tool_types.join(", "),
+        ));
+    }
+    if !expected_techniques.is_empty() {
+        obj.push_str(&format!(
+            " COVERAGE CONTRACT (this stage is GATED on it): the expected techniques are [{}]. \
+             For EVERY in-scope asset you discover/confirm, add ONE coverage cell per technique to \
+             your StageDeliverable with a terminal status: found (cite real evidence_refs from the \
+             tool run) | checked_empty (cite the probe evidence proving you ran it) | \
+             blocked/not_applicable (give a note). A MISSING (asset × technique) cell counts as \
+             not_attempted and FAILS the gate. Tag each corroborating claim/finding with the SAME \
+             technique id and the SAME asset as its subject. Always cite the REAL evidence ids your \
+             tools returned — never placeholder ids like 1, 2, 3.",
+            expected_techniques.join(", "),
+        ));
+    }
+    obj
 }
 
 /// Emit a [`HarnessTraceKind::StageRunOrgProgress`] for one org row.
+///
+/// `agent_request_id` is the org's specialist sub-agent's `parent_request_id`
+/// (its `sub_agent_*` events share it), letting the UI drill from the org row
+/// into that org's own conversation + tool calls.
 #[allow(clippy::too_many_arguments)]
 fn emit_org_progress(
     ctx: &AgenticLoopContext<'_>,
     stage: StageKind,
     unit: &OrgUnit,
+    agent_request_id: &str,
     status: &str,
     activity: Option<String>,
     evidence_count: u32,
@@ -131,6 +168,7 @@ fn emit_org_progress(
         trace: HarnessTraceKind::StageRunOrgProgress {
             org_id: unit.id.clone(),
             org_name: unit.name.clone(),
+            agent_request_id: Some(agent_request_id.to_string()),
             ownership_percent: unit.ownership_percent,
             status: status.to_string(),
             coverage: Vec::new(),
@@ -211,11 +249,40 @@ where
     let mut gaps: Vec<Value> = Vec::new();
     let mut passed_count = 0usize;
 
+    // Seed EVERY org as a queued row up-front so the UI's covered/total denominator
+    // reflects the FULL fan-out immediately. Without this, serial execution emits
+    // one row at a time, so the count visibly grows from "0/1" instead of showing
+    // "0/N" — exactly the "怎么就记录了这么点" the user saw. Each org flips to
+    // running → passed/blocked as the serial loop reaches it (merged by org id).
     for unit in &units {
+        let org_request_id = format!("{tool_id}::org::{}", unit.id);
         emit_org_progress(
             ctx,
             stage,
             unit,
+            &org_request_id,
+            "queued",
+            None,
+            0,
+            &stage_label,
+            &role_label,
+            &coverage_axis,
+        );
+    }
+
+    for unit in &units {
+        // Distinct per-org `parent_request_id` so each org's specialist sub-agent
+        // is tracked independently in the UI (the frontend keys sub-agents by
+        // `parent_request_id`; reusing the stage_run `tool_id` for every org would
+        // collapse them into one). The UI links the org row to this id via the
+        // `agent_request_id` field on the StageRunOrgProgress event.
+        let org_request_id = format!("{tool_id}::org::{}", unit.id);
+
+        emit_org_progress(
+            ctx,
+            stage,
+            unit,
+            &org_request_id,
             "running",
             Some(format!("dispatching {role_label}")),
             0,
@@ -224,10 +291,22 @@ where
             &coverage_axis,
         );
 
-        let objective = build_org_objective(stage, unit);
+        let objective = build_org_objective(
+            stage,
+            unit,
+            &spec.expected_techniques,
+            &spec.allowed_tool_types,
+        );
         let sub_args = json!({ "task": objective });
-        let result =
-            execute_sub_agent_call(&sub_agent_tool, &sub_args, ctx, model, context, tool_id).await;
+        let result = execute_sub_agent_call(
+            &sub_agent_tool,
+            &sub_args,
+            ctx,
+            model,
+            context,
+            &org_request_id,
+        )
+        .await;
 
         let ok = matches!(&result, Ok(r) if r.success);
         if ok {
@@ -236,6 +315,7 @@ where
                 ctx,
                 stage,
                 unit,
+                &org_request_id,
                 "passed",
                 None,
                 0,
@@ -258,6 +338,7 @@ where
                 ctx,
                 stage,
                 unit,
+                &org_request_id,
                 "blocked",
                 None,
                 0,
@@ -384,10 +465,35 @@ mod tests {
             name: "ACME".to_string(),
             ownership_percent: None,
         };
-        let obj = build_org_objective(StageKind::TargetIntel, &unit);
+        // No techniques / tools → bare objective (back-compat shape, no contract).
+        let obj = build_org_objective(StageKind::TargetIntel, &unit, &[], &[]);
         assert!(obj.contains("organization_id: abc"));
         assert!(obj.contains("THIS organization only"));
         assert!(obj.contains("target_intel"));
+        assert!(!obj.contains("COVERAGE CONTRACT"));
+    }
+
+    #[test]
+    fn build_org_objective_front_loads_coverage_contract_and_tools() {
+        let unit = OrgUnit {
+            id: "abc".to_string(),
+            name: "ACME".to_string(),
+            ownership_percent: None,
+        };
+        let techniques = vec![
+            "GOLISH-INTEL-DNS".to_string(),
+            "GOLISH-INTEL-WHOIS".to_string(),
+        ];
+        let tools = vec!["recon/dns".to_string(), "recon/subdomain".to_string()];
+        let obj = build_org_objective(StageKind::TargetIntel, &unit, &techniques, &tools);
+        // Coverage contract names the expected techniques + the gate consequence.
+        assert!(obj.contains("COVERAGE CONTRACT"));
+        assert!(obj.contains("GOLISH-INTEL-DNS"));
+        assert!(obj.contains("GOLISH-INTEL-WHOIS"));
+        assert!(obj.contains("FAILS the gate"));
+        // Tool boundary is listed so the specialist stays in-stage + poll guidance.
+        assert!(obj.contains("recon/dns"));
+        assert!(obj.contains("check_job"));
     }
 
     #[test]

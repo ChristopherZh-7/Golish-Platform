@@ -2,7 +2,7 @@
  * Session core actions: lifecycle (add / remove / switch) and property setters.
  */
 
-import type { StageRunRow, StageRunSummary } from "@/components/Engagement/StageRunView";
+import type { StageRunRow, StageRunSummary } from "@/components/Engagement/StageRunOrgRows";
 import { logger } from "@/lib/logger";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import { resetSessionSequence } from "@/services/ai-events/session-sequence";
@@ -282,14 +282,6 @@ export function createSessionCoreActions(
         }
       }),
 
-    toggleStageRunRow: (sessionId: string, rowId: string) =>
-      set((state) => {
-        const sr = state.sessions[sessionId]?.stageRun;
-        if (!sr) return;
-        const row = sr.rows.find((r) => r.id === rowId);
-        if (row) row.expanded = !row.expanded;
-      }),
-
     upsertStageRunRow: (
       sessionId: string,
       row: StageRunRow,
@@ -297,22 +289,32 @@ export function createSessionCoreActions(
         stageLabel: string;
         roleLabel: string;
         coverageAxis: string[];
-        concurrency?: number;
-        stageTag?: string;
       }
     ) =>
       set((state) => {
         const sess = state.sessions[sessionId];
         if (!sess) return;
         if (!sess.stageRun) {
+          // Tie this run to its `stage_run` tool call so the standard tool-call
+          // detail pane only shows these rows on the matching tool row. The
+          // `stage_run` tool_request always lands in the timeline before the
+          // first per-org progress frame, so scan back for the latest one.
+          const timeline = state.timelines[sessionId] ?? [];
+          let requestId: string | undefined;
+          for (let i = timeline.length - 1; i >= 0; i--) {
+            const block = timeline[i];
+            if (block.type === "ai_tool_execution" && block.data.toolName === "stage_run") {
+              requestId = block.data.requestId;
+              break;
+            }
+          }
           sess.stageRun = {
             rows: [],
             summary: { total: 0, covered: 0, active: 0, queued: 0, blocked: 0 },
-            concurrency: meta.concurrency ?? 1,
             stageLabel: meta.stageLabel,
-            stageTag: meta.stageTag,
             roleLabel: meta.roleLabel,
             coverageAxis: meta.coverageAxis,
+            requestId,
           };
         }
         const sr = sess.stageRun;
@@ -320,14 +322,10 @@ export function createSessionCoreActions(
         if (meta.stageLabel) sr.stageLabel = meta.stageLabel;
         if (meta.roleLabel) sr.roleLabel = meta.roleLabel;
         if (meta.coverageAxis.length) sr.coverageAxis = meta.coverageAxis;
-        if (meta.concurrency) sr.concurrency = meta.concurrency;
-        if (meta.stageTag) sr.stageTag = meta.stageTag;
 
         const idx = sr.rows.findIndex((r) => r.id === row.id);
         if (idx >= 0) {
-          // Preserve UI-local state the event does not carry (expand + tool stream).
-          const prev = sr.rows[idx];
-          sr.rows[idx] = { ...row, expanded: prev.expanded, toolLines: prev.toolLines };
+          sr.rows[idx] = row;
         } else {
           sr.rows.push(row);
         }

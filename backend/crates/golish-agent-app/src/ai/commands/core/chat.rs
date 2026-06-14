@@ -177,35 +177,6 @@ async fn execute_task_mode(
     // leave the run stuck at "Waiting for approval" with no way to approve.
     orchestrator.set_approval_coordinator(bridge.coordinator().cloned());
 
-    // Engagement worker scope (设计 2026-06-13-engagement-scoping-fanout §6.3):
-    // when the fan-out pool pinned this session to one org + a stage slice,
-    // apply the same hard constraints the headless `--stage-run` CLI uses —
-    // org-isolated gate axis, subsidiary policy, and a projected-DAG slice the
-    // cursor cannot leave. The slice resolves against the session's profile.
-    let worker_scope = bridge.get_engagement_worker_scope().await;
-    let worker_slice = match &worker_scope {
-        Some(ws) => {
-            orchestrator.set_harness_org_id(Some(ws.org_id));
-            orchestrator.set_subsidiary_scope(ws.include_subsidiaries, ws.subsidiary_threshold_pct);
-            let profile_id = profile_override
-                .clone()
-                .unwrap_or_else(|| golish_agent_kit::harness::active_profile_id().to_string());
-            let (entry, allowlist) =
-                golish_agent_kit::harness::resolve_slice(&profile_id, ws.from, ws.to)
-                    .map_err(|e| anyhow::anyhow!("engagement worker slice: {e}"))?;
-            orchestrator.set_stage_allowlist(Some(allowlist));
-            tracing::info!(
-                target: "engagement::worker",
-                org_id = %ws.org_id,
-                entry = entry.as_str(),
-                to = ws.to.as_str(),
-                include_subsidiaries = ws.include_subsidiaries,
-                "task mode: engagement worker scope applied"
-            );
-            Some(entry)
-        }
-        None => None,
-    };
     let executor = BridgeAgentExecutor::new(bridge.clone());
 
     // Resume-aware entry (Task 断线恢复 · L2): if this chat session has a
@@ -225,20 +196,16 @@ async fn execute_task_mode(
                 None
             });
 
-    let result = match (resumable, worker_slice) {
-        (Some(task), _) => {
+    let result = match resumable {
+        Some(task) => {
             tracing::info!(
                 target: "harness::task_mode",
                 task_id = %task.id,
                 "task mode: resuming prior operation for this chat session"
             );
-            // The worker slice (stage allowlist / org axis) was already applied
-            // to this orchestrator instance above, so a resumed worker run keeps
-            // the same hard constraints.
             orchestrator.resume(task.id, task_input, &executor).await
         }
-        (None, Some(entry)) => orchestrator.run_stage(entry, task_input, &executor).await,
-        (None, None) => orchestrator.run(task_input, &executor).await,
+        None => orchestrator.run(task_input, &executor).await,
     };
 
     let duration_ms = start_time.elapsed().as_millis() as u64;

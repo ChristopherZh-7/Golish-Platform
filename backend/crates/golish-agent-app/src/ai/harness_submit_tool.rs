@@ -156,12 +156,17 @@ impl Tool for SubmitStageDeliverableTool {
     }
 
     fn parameters(&self) -> Value {
+        // Every nested item is spelled out (not a bare `{"type":"object"}`) so the
+        // model fills the EXACT shape instead of guessing — the recurring failure
+        // mode was the `skipped_checks[].reason` SkipReason enum (internally tagged
+        // by `kind`) and the coverage-cell fields, which an opaque object schema
+        // left the model to invent and repeatedly fail on.
         json!({
             "type": "object",
             "properties": {
                 "stage_id": {
                     "type": "string",
-                    "description": "The current stage id, e.g. \"external_attack_surface\"."
+                    "description": "The current stage id, e.g. \"target_intel\", \"external_attack_surface\". Must equal the active stage."
                 },
                 "stage_run_id": {
                     "type": "string",
@@ -169,33 +174,88 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "claims": {
                     "type": "array",
-                    "description": "Observations, each {kind, subject, summary, evidence_ids:[int], technique?:string}; every evidence_id must also appear in evidence_refs. When a claim evidences one of the stage's expected techniques, set `technique` to that REGISTERED id (e.g. GOLISH-INTEL-DNS, WSTG-INPV-05) and use the SAME subject string as the coverage cell's asset — technique-tagged claims corroborate 'found' coverage cells and can auto-derive cells you did the work for but forgot to declare. Unregistered ids are rejected.",
-                    "items": { "type": "object" }
+                    "description": "Observations. EVERY claim must cite real evidence_ids (also include them in top-level evidence_refs). When a claim evidences one of the stage's expected techniques, set `technique` to that REGISTERED id (e.g. GOLISH-INTEL-DNS, WSTG-INPV-05) and use the SAME `subject` string as the matching coverage cell's `asset` — technique-tagged claims corroborate 'found' coverage cells. Unregistered technique ids are rejected.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": { "type": "string", "description": "Observation kind, e.g. \"dns_a_record\", \"subdomain\", \"discovery\"." },
+                            "subject": { "type": "string", "description": "What the claim is about (host / URL / asset). Match the coverage cell's `asset` when technique-tagged." },
+                            "summary": { "type": "string", "description": "One-line human-readable summary." },
+                            "evidence_ids": { "type": "array", "items": { "type": "integer" }, "description": "Real evidence-ledger ids backing this claim. Never use placeholder ids like 1,2,3." },
+                            "technique": { "type": "string", "description": "Optional REGISTERED technique id this claim evidences (omit when none applies)." }
+                        },
+                        "required": ["kind", "subject", "summary", "evidence_ids"]
+                    }
                 },
                 "evidence_refs": {
                     "type": "array",
-                    "description": "All evidence-ledger ids cited by claims/findings (>= the sum of minimum tool invocations).",
+                    "description": "All evidence-ledger ids cited by claims/findings/coverage (>= the sum of minimum tool invocations). Use the REAL ids returned by your tool calls — never placeholders.",
                     "items": { "type": "integer" }
                 },
                 "findings": {
                     "type": "array",
-                    "description": "Findings, each {finding_id:uuid, kind, subject, severity, evidence_refs:[int], technique?:string}; tag `technique` with the registered technique id the finding evidences (same id namespace as the coverage matrix; omit when none applies).",
-                    "items": { "type": "object" }
+                    "description": "Security findings. Every finding must cite evidence_refs.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "finding_id": { "type": "string", "description": "A random UUID v4 for this finding." },
+                            "kind": { "type": "string", "description": "Finding kind, e.g. \"open_port\", \"exposed_admin\"." },
+                            "subject": { "type": "string", "description": "Affected asset (host / URL)." },
+                            "severity": { "type": "string", "enum": ["info", "low", "medium", "high", "critical"], "description": "Finding severity." },
+                            "evidence_refs": { "type": "array", "items": { "type": "integer" }, "description": "Real evidence-ledger ids proving this finding." },
+                            "technique": { "type": "string", "description": "Optional REGISTERED technique id this finding evidences." }
+                        },
+                        "required": ["finding_id", "kind", "subject", "severity", "evidence_refs"]
+                    }
+                },
+                "coverage": {
+                    "type": "array",
+                    "description": "Coverage matrix: ONE cell per (asset × technique) you took to a terminal state. STAGES THAT RUN NO TOOLS (e.g. scoping, reporting) produce no evidence — submit an EMPTY array [] and do NOT invent cells (a 'found'/'checked_empty' cell ALWAYS needs real evidence_refs, so an evidence-less cell here just fails the gate). For tool stages: for EACH in-scope asset, give EVERY expected technique a cell — a MISSING (asset × technique) means not_attempted and FAILS the gate. A 'found' or 'checked_empty' cell MUST cite evidence_refs (PoC for found; the scan/probe evidence proving you tested it for checked_empty); 'blocked'/'not_applicable' MUST give a `note`. \"checked-empty\" is NOT \"unchecked\". For found/checked_empty cells with an enumerated denominator ALSO set tested_units/total_units; the gate requires full coverage (tested_units==total_units) unless you set sampling_rationale. Omit optional fields you don't use — never pass null.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "asset": { "type": "string", "description": "Asset identifier (host / URL). Match a claim's `subject`." },
+                            "technique": { "type": "string", "description": "REGISTERED technique id (e.g. GOLISH-INTEL-DNS, WSTG-INPV-05)." },
+                            "status": { "type": "string", "enum": ["found", "checked_empty", "blocked", "not_applicable"], "description": "Terminal state for this (asset × technique)." },
+                            "evidence_refs": { "type": "array", "items": { "type": "integer" }, "description": "Required for found/checked_empty: real evidence ids proving the work." },
+                            "note": { "type": "string", "description": "Required for blocked/not_applicable: why." },
+                            "tested_units": { "type": "integer", "description": "How many enumerated units you actually tested for this asset×technique." },
+                            "total_units": { "type": "integer", "description": "Denominator: total enumerated units for this asset×technique." },
+                            "sampling_rationale": { "type": "string", "description": "Required when tested_units < total_units: why sampling is justified." }
+                        },
+                        "required": ["asset", "technique", "status"]
+                    }
                 },
                 "skipped_checks": {
                     "type": "array",
-                    "description": "Deliberately skipped checks, each {check, reason}. \"checked-empty\" is NOT the same as \"unchecked\".",
-                    "items": { "type": "object" }
+                    "description": "Deliberately skipped checks. \"checked-empty\" is NOT \"unchecked\". As an agent you normally use reason.kind = \"other\" with an explanation AND an evidence_ref pointing to the real audit-log error line; the other reason kinds are auto-filled by tooling.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "check": { "type": "string", "description": "Name of the check you skipped." },
+                            "reason": {
+                                "type": "object",
+                                "description": "A SkipReason, internally tagged by `kind`. As an agent use kind=\"other\": { \"kind\": \"other\", \"explanation\": \"...\", \"evidence_ref\": <real evidence id> }.",
+                                "properties": {
+                                    "kind": { "type": "string", "enum": ["other", "rate_limited", "scope_restriction", "env_unavailable", "user_requested"], "description": "Which SkipReason variant." },
+                                    "explanation": { "type": "string", "description": "kind=other: free-text reason." },
+                                    "evidence_ref": { "type": "integer", "description": "kind=other: real evidence-ledger id anchoring the skip." },
+                                    "tool": { "type": "string", "description": "kind=rate_limited/env_unavailable: the tool." },
+                                    "after_attempts": { "type": "integer", "description": "kind=rate_limited: attempts before giving up." },
+                                    "restricted_target": { "type": "string", "description": "kind=scope_restriction: the out-of-scope target." },
+                                    "error_chain": { "type": "array", "items": { "type": "string" }, "description": "kind=env_unavailable: the error chain." },
+                                    "user_msg_id": { "type": "string", "description": "kind=user_requested: the user message id." }
+                                },
+                                "required": ["kind"]
+                            }
+                        },
+                        "required": ["check", "reason"]
+                    }
                 },
                 "required_checks_done": {
                     "type": "array",
                     "description": "Names of the required tools you actually ran (e.g. dns_resolve, http_probe).",
                     "items": { "type": "string" }
-                },
-                "coverage": {
-                    "type": "array",
-                    "description": "Coverage matrix: one cell per (asset, technique) you took to a terminal state. Each {asset, technique, status, evidence_refs?:[int], note?}. status is one of found|checked_empty|blocked|not_applicable. A 'found' OR 'checked_empty' cell MUST cite evidence_refs (PoC for found; the scan/probe evidence proving you actually tested it for checked_empty); blocked/not_applicable MUST give a `note` explaining why — \"checked-empty\" is NOT \"unchecked\". Do NOT list a (asset × technique) you did not attempt: a MISSING cell means not_attempted and FAILS the gate. Use the stage's expected techniques (OWASP WSTG / MITRE ATT&CK ids where given). For each found/checked_empty cell ALSO set `tested_units` and `total_units` (how many enumerated units you tested vs the total enumerated for that asset×technique); the gate requires full coverage (tested_units==total_units) unless you set `sampling_rationale` and meet the coverage ratio. Testing a few of thousands then marking checked_empty is false coverage.",
-                    "items": { "type": "object" }
                 }
             },
             "required": ["stage_id", "stage_run_id", "claims", "evidence_refs", "findings"]
@@ -294,6 +354,19 @@ impl Tool for SubmitStageDeliverableTool {
                 // sub-agent tool path never carries.
                 let available = self.available_real_ids().await;
                 let mut reasons = result.reasons;
+                // No-tool stage trap: a stage with no expected techniques (e.g.
+                // scoping / reporting) has NO coverage matrix — but weak models
+                // still invent evidence-less coverage cells, which then fail the
+                // "found/checked_empty needs evidence" rule forever. Point them
+                // straight at the fix instead of letting them flail.
+                if spec.expected_techniques.is_empty() && !deliverable.coverage.is_empty() {
+                    reasons.push(
+                        "This stage declares NO expected techniques and runs no tools, so it has \
+                         no coverage matrix. Resubmit with coverage: [] (remove the invented \
+                         cells) — a 'found'/'checked_empty' cell ALWAYS requires real evidence."
+                            .to_string(),
+                    );
+                }
                 if !available.is_empty() {
                     reasons.push(format!(
                         "This operation's REAL evidence ids (newest first) are {available:?}. \
@@ -689,6 +762,85 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out["status"].as_str(), Some("accepted"));
+    }
+
+    // Fix1 (2026-06-14) · the parameters schema must spell out the nested shapes
+    // the model kept guessing wrong — especially `skipped_checks[].reason` (the
+    // SkipReason enum, internally tagged by `kind`), the coverage cell `status`
+    // enum and the finding `severity` enum. A regression to opaque
+    // `{"type":"object"}` items reintroduces the submit-reject retry loop.
+    #[test]
+    fn parameters_spell_out_nested_enum_shapes() {
+        let (stage, sink) = handles();
+        let tool = SubmitStageDeliverableTool::new(stage, sink);
+        let p = tool.parameters();
+
+        // skipped_checks.reason is a structured object with a `kind` enum listing
+        // the real SkipReason variants (this is the exact field the model failed).
+        let reason = &p["properties"]["skipped_checks"]["items"]["properties"]["reason"];
+        assert_eq!(reason["type"], json!("object"));
+        let kinds = reason["properties"]["kind"]["enum"]
+            .as_array()
+            .expect("reason.kind enum");
+        for variant in [
+            "other",
+            "rate_limited",
+            "scope_restriction",
+            "env_unavailable",
+            "user_requested",
+        ] {
+            assert!(
+                kinds.iter().any(|v| v == variant),
+                "reason.kind enum must list {variant}: {kinds:?}"
+            );
+        }
+
+        // coverage cell status enum + claims/findings items are real objects.
+        let status = &p["properties"]["coverage"]["items"]["properties"]["status"];
+        for s in ["found", "checked_empty", "blocked", "not_applicable"] {
+            assert!(
+                status["enum"].as_array().unwrap().iter().any(|v| v == s),
+                "coverage status enum must list {s}"
+            );
+        }
+        let severity = &p["properties"]["findings"]["items"]["properties"]["severity"];
+        assert!(severity["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "critical"));
+        assert_eq!(
+            p["properties"]["claims"]["items"]["type"],
+            json!("object"),
+            "claims items must be a typed object, not opaque"
+        );
+        // claims items must actually declare properties (not be an empty object).
+        assert!(p["properties"]["claims"]["items"]["properties"]["evidence_ids"].is_object());
+    }
+
+    // Fix7 (2026-06-14): a no-tool stage (scoping has empty expected_techniques)
+    // that receives an invented evidence-less coverage cell must be told to
+    // resubmit with coverage: [] — instead of looping forever on the generic
+    // "every 'found' cell must cite evidence" reject (the observed scoping loop).
+    #[tokio::test]
+    async fn no_tool_stage_invented_coverage_gets_empty_coverage_hint() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Scoping);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
+
+        let mut args = valid_scoping_args();
+        args["coverage"] = json!([
+            { "asset": "ACME", "technique": "scoping", "status": "found", "evidence_refs": [] }
+        ]);
+        let out = tool.execute(args, Path::new("/tmp")).await.unwrap();
+        assert_eq!(out["status"].as_str(), Some("needs_fix"));
+        let reasons = out["reasons"].as_array().expect("reasons array");
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.as_str().unwrap_or("").contains("coverage: []")),
+            "must hint to resubmit with empty coverage: {reasons:?}"
+        );
     }
 
     // No active stage (e.g. flag on but stage not yet published): the tool still

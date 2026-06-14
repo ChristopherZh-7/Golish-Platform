@@ -1,4 +1,4 @@
-import type { StageRunRow, TechniqueState } from "@/components/Engagement/StageRunView";
+import type { StageRunRow, TechniqueState } from "@/components/Engagement/StageRunOrgRows";
 import { useStore } from "./index";
 import type { SessionStageRun } from "./types/session";
 
@@ -209,9 +209,10 @@ export function installDevTools() {
     console.log(`[__mockPlan] Injected full "${v}" scenario into session ${sid}, convId=${convId}`);
   };
 
-  // Inject a mock "stage run" so the StageRunCard (chat) + StageRunView (left
-  // detail pane) can be exercised in the real app shell.
-  // NOTE: live `stage_run` now drives this view via real `StageRunOrgProgress`
+  // Inject a mock "stage run" so the converged UI (a `stage_run` tool row whose
+  // STANDARD tool-call detail pane renders the per-org fan-out) can be exercised
+  // in the real app shell.
+  // NOTE: live `stage_run` drives this view via real `StageRunOrgProgress`
   // harness-trace events (see services/ai-events/harness-handlers.ts, Task 6);
   // this remains a dev-console / offline aid for UI work without a backend run.
   // Run `__mockStageRun()` in the dev console.
@@ -239,12 +240,6 @@ export function installDevTools() {
         status: "passed",
         evidenceCount: 18,
         coverage: cov("found", "found", "found", "found", "found", "found"),
-        expanded: true,
-        toolLines: [
-          { name: "recon_enrich_assets", detail: "0.zone / quake / ENScan ✓", done: true },
-          { name: "subfinder -all", detail: "pingan.com.cn · 142 子域", done: true },
-          { name: "submit_stage_deliverable", detail: "coverage 6/6 · gate PASS", done: true },
-        ],
       },
       {
         id: "bank",
@@ -254,8 +249,6 @@ export function installDevTools() {
         activity: "subfinder -all -recursive · pingan.com.cn",
         evidenceCount: 9,
         coverage: cov("found", "found", "found", "checked_empty", "pending", "pending"),
-        expanded: false,
-        toolLines: [],
       },
       {
         id: "life",
@@ -265,8 +258,6 @@ export function installDevTools() {
         activity: "recon_enrich_assets · quake",
         evidenceCount: 6,
         coverage: cov("found", "found", "pending", "pending", "pending", "pending"),
-        expanded: false,
-        toolLines: [],
       },
       {
         id: "pc",
@@ -276,8 +267,6 @@ export function installDevTools() {
         activity: "gau · waybackurls",
         evidenceCount: 4,
         coverage: cov("found", "pending", "pending", "pending", "pending", "pending"),
-        expanded: false,
-        toolLines: [],
       },
       {
         id: "sec",
@@ -286,8 +275,6 @@ export function installDevTools() {
         status: "queued",
         evidenceCount: 0,
         coverage: cov(),
-        expanded: false,
-        toolLines: [],
       },
       {
         id: "trust",
@@ -296,8 +283,6 @@ export function installDevTools() {
         status: "blocked",
         evidenceCount: 3,
         coverage: cov("found", "checked_empty", "blocked", "pending", "pending", "pending"),
-        expanded: false,
-        toolLines: [],
       },
       {
         id: "fund",
@@ -306,21 +291,27 @@ export function installDevTools() {
         status: "pending",
         evidenceCount: 0,
         coverage: cov(),
-        expanded: false,
-        toolLines: [],
       },
     ];
+    // Seed a real `stage_run` tool execution block, then attach the per-org rows
+    // to it and open the standard tool-call detail — the converged product path.
+    const requestId = `mock-stage-run-${Date.now()}`;
+    state.addToolExecutionBlock(sid, {
+      requestId,
+      toolName: "stage_run",
+      args: { stage: "target_intel" },
+    });
     const stageRun: SessionStageRun = {
       rows,
       summary: { total: rows.length, covered: 1, active: 3, queued: 1, blocked: 1 },
-      concurrency: 3,
       stageLabel: "Target Intel",
-      stageTag: "被动 · zero-touch",
       roleLabel: "Recon",
       coverageAxis: axis,
+      requestId,
     };
     state.setSessionStageRun(sid, stageRun);
-    state.setDetailViewMode(sid, "stage-run");
-    console.log(`[__mockStageRun] injected on session ${sid}; chat 卡 + 左详情已就位`);
+    state.setToolDetailRequestIds(sid, [requestId]);
+    state.setDetailViewMode(sid, "tool-detail");
+    console.log(`[__mockStageRun] injected on session ${sid}; stage_run 工具行 + 标准详情已就位`);
   };
 }
