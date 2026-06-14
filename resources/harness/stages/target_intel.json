@@ -9,7 +9,7 @@
   "requires_stages": ["scoping"],
   "allowed_next_stages": ["external_attack_surface"],
 
-  "allowed_tool_types": ["recon/dns", "recon/subdomain", "recon/osint", "recon/url-history", "recon/whois"],
+  "allowed_tool_types": ["recon/dns", "recon/subdomain", "recon/osint", "recon/url-history", "recon/whois", "recon/asn", "recon/ct"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",

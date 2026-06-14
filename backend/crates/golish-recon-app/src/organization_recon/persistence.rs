@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use golish_app_core::GolishError;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -131,7 +133,408 @@ pub(crate) async fn persist_normalized_records(
     profile.write(&mut tx, organization.id).await?;
     write_audit(&mut tx, organization, run_id, &summary, manifest_path).await?;
     tx.commit().await?;
+
+    // Coverage-gate landing (design 2026-06-14-target-intel-landing-and-tools §2③):
+    // enrich stores org-owned subdomains as their own top-level `targets` rows, but
+    // the target_intel SUBDOMAIN coverage cell is read from
+    // `target_assets(asset_type='subdomain')` children of the in-scope root
+    // (`coverage_truth::build_subdomain_target_values_sql`). Promote them here so a
+    // technique that actually ran becomes authoritatively `found`. Additive +
+    // non-fatal: a landing miss must never roll back the recon persistence above.
+    match land_subdomain_assets(pool, organization, run_id, records).await {
+        Ok(landed) if landed > 0 => tracing::info!(
+            organization_id = %organization.id,
+            landed,
+            "landed subdomain target_assets for target_intel coverage gate"
+        ),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            organization_id = %organization.id,
+            %error,
+            "subdomain target_assets landing failed (recon persistence already committed)"
+        ),
+    }
+
+    // DNS landing (design §2③): resolve in-scope domain targets into `dns_records`
+    // so the GOLISH-INTEL-DNS coverage cell becomes authoritatively `found`.
+    match land_dns_records(pool, organization).await {
+        Ok(landed) if landed > 0 => tracing::info!(
+            organization_id = %organization.id,
+            landed,
+            "landed dns_records for target_intel coverage gate"
+        ),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            organization_id = %organization.id,
+            %error,
+            "dns_records landing failed (recon persistence already committed)"
+        ),
+    }
+
+    // CT + WHOIS landing (design §2③): fill the org-level certificates / whois
+    // columns the target_intel CT/WHOIS coverage cells read.
+    match land_ct_and_whois(pool, organization).await {
+        Ok((ct, whois)) if ct > 0 || whois => tracing::info!(
+            organization_id = %organization.id,
+            cert_names = ct,
+            whois_landed = whois,
+            "landed CT/WHOIS for target_intel coverage gate"
+        ),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            organization_id = %organization.id,
+            %error,
+            "CT/WHOIS landing failed (recon persistence already committed)"
+        ),
+    }
+
     Ok(summary)
+}
+
+/// Pair each org-owned **subdomain** record with the in-scope **root** domain it
+/// belongs to (longest owned suffix wins). Pure (no IO) for unit testing. Records
+/// whose host equals an owned root, or that belong to no owned root, are dropped.
+fn collect_subdomain_pairs(
+    organization: &golish_db::models::Organization,
+    records: &[NormalizedReconRecord],
+) -> Vec<(String, String)> {
+    let roots = organization_owned_domains(organization);
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    let mut seen = HashSet::new();
+    let mut pairs = Vec::new();
+    for record in records {
+        if !matches!(record.kind, ReconRecordKind::Domain) {
+            continue;
+        }
+        let Some(host) = normalized_host(&record.value) else {
+            continue;
+        };
+        // Host that *is* an owned root is the asset itself, not a subdomain of it.
+        if roots.iter().any(|root| root == &host) {
+            continue;
+        }
+        let Some(root) = roots
+            .iter()
+            .filter(|root| host.ends_with(&format!(".{root}")))
+            .max_by_key(|root| root.len())
+        else {
+            continue;
+        };
+        if seen.insert((root.clone(), host.clone())) {
+            pairs.push((root.clone(), host));
+        }
+    }
+    pairs
+}
+
+/// Persist `(root, subdomain)` pairs as `target_assets(asset_type='subdomain')`
+/// children of the root's in-scope target. Returns how many landed. Roots with no
+/// existing target row are skipped (we never invent an in-scope root here).
+async fn land_subdomain_assets(
+    pool: &sqlx::PgPool,
+    organization: &golish_db::models::Organization,
+    run_id: &str,
+    records: &[NormalizedReconRecord],
+) -> Result<usize, GolishError> {
+    let pairs = collect_subdomain_pairs(organization, records);
+    if pairs.is_empty() {
+        return Ok(0);
+    }
+    let metadata = json!({ "source": "organization_recon", "run_id": run_id });
+    let mut root_targets: HashMap<String, Option<Uuid>> = HashMap::new();
+    let mut landed = 0usize;
+    for (root, subdomain) in pairs {
+        let target_id = match root_targets.get(&root) {
+            Some(cached) => *cached,
+            None => {
+                let resolved: Option<Uuid> = sqlx::query_scalar(
+                    r#"SELECT id FROM targets
+                       WHERE value = $1
+                         AND project_path IS NOT DISTINCT FROM $2
+                       ORDER BY (scope::text = 'in') DESC, updated_at DESC
+                       LIMIT 1"#,
+                )
+                .bind(&root)
+                .bind(&organization.project_path)
+                .fetch_optional(pool)
+                .await?;
+                root_targets.insert(root.clone(), resolved);
+                resolved
+            }
+        };
+        let Some(target_id) = target_id else {
+            continue;
+        };
+        match golish_db::repo::target_assets::upsert(
+            pool,
+            target_id,
+            Some(organization.project_path.as_str()),
+            "subdomain",
+            &subdomain,
+            None,
+            None,
+            None,
+            None,
+            &metadata,
+        )
+        .await
+        {
+            Ok(_) => landed += 1,
+            Err(error) => tracing::warn!(
+                %root,
+                %subdomain,
+                %error,
+                "target_assets subdomain upsert failed"
+            ),
+        }
+    }
+    Ok(landed)
+}
+
+/// Resolve in-scope **domain** targets of this org that have no DNS record yet and
+/// land their A/AAAA answers into `dns_records` — the table the target_intel DNS
+/// coverage cell reads (`dns_records::present_target_values` /
+/// `coverage_truth`). enrich records carry domains and IPs unpaired, so we do a
+/// bounded best-effort resolve (the honest way to produce real A records). DNS
+/// resolution is standard `recon/dns`; failures/timeouts are skipped, never fatal.
+async fn land_dns_records(
+    pool: &sqlx::PgPool,
+    organization: &golish_db::models::Organization,
+) -> Result<usize, GolishError> {
+    const MAX_RESOLVE: i64 = 128;
+    let targets: Vec<(Uuid, String)> = sqlx::query_as(
+        r#"SELECT t.id, t.value FROM targets t
+           WHERE t.organization_id = $1
+             AND t.scope::text = 'in'
+             AND t.target_type::text = 'domain'
+             AND NOT EXISTS (SELECT 1 FROM dns_records dr WHERE dr.target_id = t.id)
+           ORDER BY t.updated_at DESC
+           LIMIT $2"#,
+    )
+    .bind(organization.id)
+    .bind(MAX_RESOLVE)
+    .fetch_all(pool)
+    .await?;
+    if targets.is_empty() {
+        return Ok(0);
+    }
+    let mut set = tokio::task::JoinSet::new();
+    for (target_id, value) in targets {
+        set.spawn(async move {
+            let host = normalized_host(&value)?;
+            let lookup = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                tokio::net::lookup_host(format!("{host}:0")),
+            )
+            .await
+            .ok()?
+            .ok()?;
+            let records: Vec<(Uuid, &'static str, String, String)> = lookup
+                .map(|addr| {
+                    let ip = addr.ip();
+                    let record_type = if ip.is_ipv4() { "A" } else { "AAAA" };
+                    (target_id, record_type, host.clone(), ip.to_string())
+                })
+                .collect();
+            Some(records)
+        });
+    }
+    let mut landed = 0usize;
+    while let Some(joined) = set.join_next().await {
+        let Ok(Some(records)) = joined else {
+            continue;
+        };
+        for (target_id, record_type, name, value) in records {
+            if golish_db::repo::dns_records::upsert(
+                pool,
+                target_id,
+                organization.project_path.as_str(),
+                record_type,
+                &name,
+                &value,
+                "resolver",
+            )
+            .await
+            .is_ok()
+            {
+                landed += 1;
+            }
+        }
+    }
+    Ok(landed)
+}
+
+/// JSONB "has content" predicate matching `coverage_truth`'s emptiness semantics
+/// (NULL / `null` / `[]` / `{}` / blank string = empty).
+fn json_value_is_empty(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Array(items) => items.is_empty(),
+        Value::Object(map) => map.is_empty(),
+        Value::String(text) => text.trim().is_empty(),
+        _ => false,
+    }
+}
+
+/// Best-effort registrable ("apex") domain without a full public-suffix list:
+/// keep the last 2 labels, or the last 3 when the apex is a known two-level TLD
+/// (e.g. `a.pingan.com.cn` → `pingan.com.cn`, `life.pingan.com` → `pingan.com`).
+fn registrable_domain(host: &str) -> String {
+    const SECOND_LEVEL: &[&str] = &["com", "net", "org", "gov", "edu", "co", "ac"];
+    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
+    let len = labels.len();
+    if len >= 3 {
+        let tld = labels[len - 1];
+        let sld = labels[len - 2];
+        if tld.len() == 2 && SECOND_LEVEL.contains(&sld) {
+            return labels[len - 3..].join(".");
+        }
+    }
+    if len >= 2 {
+        return labels[len - 2..].join(".");
+    }
+    host.to_string()
+}
+
+/// Unique registrable apex domains owned by the org (capped), for CT/WHOIS queries.
+fn registrable_domains(organization: &golish_db::models::Organization) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for host in organization_owned_domains(organization) {
+        let apex = registrable_domain(&host);
+        if !apex.is_empty() && !out.contains(&apex) {
+            out.push(apex);
+        }
+        if out.len() >= 3 {
+            break;
+        }
+    }
+    out
+}
+
+/// Land CT (crt.sh) → `organizations.certificates` and WHOIS (RDAP) →
+/// `organizations.whois` — the org-level columns the target_intel CT/WHOIS
+/// coverage cells read (`coverage_truth::build_org_intel_presence_sql`). HTTP,
+/// bounded, best-effort: only fills columns that are currently empty; failures are
+/// skipped, never fatal. (`whois` is a schema-ahead column not on the model, so it
+/// is read/written via direct SQL.) Returns (cert_names_landed, whois_landed).
+async fn land_ct_and_whois(
+    pool: &sqlx::PgPool,
+    organization: &golish_db::models::Organization,
+) -> Result<(usize, bool), GolishError> {
+    let need_ct = json_value_is_empty(&organization.certificates);
+    let whois_existing: Option<Value> =
+        sqlx::query_scalar::<_, Option<Value>>("SELECT whois FROM organizations WHERE id = $1")
+            .bind(organization.id)
+            .fetch_one(pool)
+            .await?;
+    let need_whois = whois_existing.as_ref().is_none_or(json_value_is_empty);
+    if !need_ct && !need_whois {
+        return Ok((0, false));
+    }
+    let domains = registrable_domains(organization);
+    if domains.is_empty() {
+        return Ok((0, false));
+    }
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("golish-recon/1.0")
+        .build()
+    else {
+        return Ok((0, false));
+    };
+
+    let mut cert_names: Vec<String> = Vec::new();
+    if need_ct {
+        for domain in &domains {
+            if cert_names.len() >= 1000 {
+                break;
+            }
+            let url = format!("https://crt.sh/?q=%25.{domain}&output=json");
+            let Ok(resp) = client.get(&url).send().await else {
+                continue;
+            };
+            let Ok(text) = resp.text().await else {
+                continue;
+            };
+            let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            for item in items {
+                let Some(name_value) = item.get("name_value").and_then(Value::as_str) else {
+                    continue;
+                };
+                for raw in name_value.split('\n') {
+                    let name = raw.trim().trim_start_matches("*.").to_ascii_lowercase();
+                    if !name.is_empty() && !cert_names.iter().any(|existing| existing == &name) {
+                        cert_names.push(name);
+                        if cert_names.len() >= 1000 {
+                            break;
+                        }
+                    }
+                }
+                if cert_names.len() >= 1000 {
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut whois_value: Option<Value> = None;
+    if need_whois {
+        for domain in &domains {
+            let url = format!("https://rdap.org/domain/{domain}");
+            let Ok(resp) = client.get(&url).send().await else {
+                continue;
+            };
+            if !resp.status().is_success() {
+                continue;
+            }
+            let Ok(text) = resp.text().await else {
+                continue;
+            };
+            if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                if value.is_object() && !json_value_is_empty(&value) {
+                    whois_value = Some(value);
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut ct_landed = 0usize;
+    if need_ct && !cert_names.is_empty() {
+        let mut merged = organization
+            .certificates
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        for name in &cert_names {
+            if !merged
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|existing| existing.eq_ignore_ascii_case(name))
+            {
+                merged.push(Value::String(name.clone()));
+            }
+        }
+        ct_landed = cert_names.len();
+        sqlx::query("UPDATE organizations SET certificates = $1, updated_at = NOW() WHERE id = $2")
+            .bind(Value::Array(merged))
+            .bind(organization.id)
+            .execute(pool)
+            .await?;
+    }
+    let whois_landed = whois_value.is_some();
+    if let Some(value) = whois_value {
+        sqlx::query("UPDATE organizations SET whois = $1, updated_at = NOW() WHERE id = $2")
+            .bind(value)
+            .bind(organization.id)
+            .execute(pool)
+            .await?;
+    }
+    Ok((ct_landed, whois_landed))
 }
 
 fn target_type_for_record(
@@ -769,5 +1172,109 @@ mod tests {
             json["recordResults"][2]["error"],
             "no persistence mapping for port record"
         );
+    }
+
+    fn org_with_domains(domains: Value) -> golish_db::models::Organization {
+        golish_db::models::Organization {
+            id: Uuid::new_v4(),
+            project_path: "/tmp/project".into(),
+            name: "Org".into(),
+            parent_id: None,
+            description: String::new(),
+            owner: String::new(),
+            sort_order: 0,
+            aliases: Vec::new(),
+            industry: String::new(),
+            tier: String::new(),
+            credit_code: String::new(),
+            domains,
+            ip_ranges: json!([]),
+            asns: json!([]),
+            email_domains: json!([]),
+            scope_rules: json!([]),
+            intel: json!({}),
+            notes: String::new(),
+            certificates: json!([]),
+            subsidiaries: json!([]),
+            business_systems: json!([]),
+            cloud_assets: json!([]),
+            github_orgs: json!([]),
+            social_accounts: json!([]),
+            historical_vulns: json!([]),
+            contacts: json!({}),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn collect_subdomain_pairs_maps_owned_subdomains_to_root() {
+        let org = org_with_domains(json!(["pingan.com"]));
+        let records = vec![
+            record(ReconRecordKind::Domain, "life.pingan.com", "domains"),
+            record(ReconRecordKind::Domain, "stock.pingan.com", "domains"),
+            // root itself → not a subdomain of itself
+            record(ReconRecordKind::Domain, "pingan.com", "domains"),
+            // www is normalized to the root → dropped
+            record(ReconRecordKind::Domain, "www.pingan.com", "domains"),
+            // duplicate → deduped
+            record(ReconRecordKind::Domain, "life.pingan.com", "domains"),
+            // not a domain record → ignored
+            record(ReconRecordKind::Ip, "1.2.3.4", "ip_ranges"),
+            // unrelated apex (not a subdomain of an owned root) → dropped
+            record(ReconRecordKind::Domain, "notpingan.com", "domains"),
+        ];
+        let mut pairs = collect_subdomain_pairs(&org, &records);
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![
+                ("pingan.com".to_string(), "life.pingan.com".to_string()),
+                ("pingan.com".to_string(), "stock.pingan.com".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_subdomain_pairs_prefers_longest_owned_root() {
+        let org = org_with_domains(json!(["pingan.com", "sub.pingan.com"]));
+        let records = vec![record(
+            ReconRecordKind::Domain,
+            "a.sub.pingan.com",
+            "domains",
+        )];
+        assert_eq!(
+            collect_subdomain_pairs(&org, &records),
+            vec![(
+                "sub.pingan.com".to_string(),
+                "a.sub.pingan.com".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn collect_subdomain_pairs_empty_without_owned_roots() {
+        let org = org_with_domains(json!([]));
+        let records = vec![record(ReconRecordKind::Domain, "life.pingan.com", "domains")];
+        assert!(collect_subdomain_pairs(&org, &records).is_empty());
+    }
+
+    #[test]
+    fn registrable_domain_handles_two_level_tlds() {
+        assert_eq!(registrable_domain("life.pingan.com"), "pingan.com");
+        assert_eq!(registrable_domain("pingan.com"), "pingan.com");
+        assert_eq!(registrable_domain("a.b.pingan.com.cn"), "pingan.com.cn");
+        assert_eq!(registrable_domain("pingan.com.cn"), "pingan.com.cn");
+        assert_eq!(registrable_domain("example.org"), "example.org");
+    }
+
+    #[test]
+    fn json_value_is_empty_matches_coverage_semantics() {
+        assert!(json_value_is_empty(&json!(null)));
+        assert!(json_value_is_empty(&json!([])));
+        assert!(json_value_is_empty(&json!({})));
+        assert!(json_value_is_empty(&json!("  ")));
+        assert!(!json_value_is_empty(&json!(["AS1"])));
+        assert!(!json_value_is_empty(&json!({ "handle": "X" })));
     }
 }

@@ -23,13 +23,15 @@ one-organization engagement (or when `stage_run` is unavailable).
 2. Passive subdomain enumeration — `subfinder -all -recursive` and/or
    `amass enum -passive`. Run each ONCE on the root domain. Merge + dedupe results.
 3. URL history — `gau` / `waybackurls` on the root for historical endpoints.
-4. OSINT / WHOIS / ASN / CT land via `recon_enrich_assets` (step 1): ENScan returns
-   org records / contacts / social accounts / business systems (= OSINT);
-   quake / 0.zone return ASN / CT / WHOIS. **OSINT is a REQUIRED coverage technique**
-   (`GOLISH-INTEL-OSINT`, read from `organizations.intel`), not optional — confirm
-   the enrich actually produced OSINT data for this org. If your providers returned
-   no OSINT (no provider/credential), record OSINT `blocked+note` with the reason;
-   never silently skip it.
+4. OSINT / WHOIS / ASN / CT / DNS / SUBDOMAIN land via `recon_enrich_assets`
+   (step 1): one call writes the data the gate reads — subdomains →
+   `target_assets`, DNS A/AAAA → `dns_records`, ASN/CT/WHOIS →
+   `organizations.asns/.certificates/.whois` (CT/WHOIS have a crt.sh/RDAP fallback
+   when providers return nothing), OSINT → `organizations.intel`. **OSINT is a
+   REQUIRED coverage technique** (`GOLISH-INTEL-OSINT`), not optional — confirm the
+   enrich actually produced OSINT data for this org. If a technique genuinely has no
+   data (no provider/credential, nothing in CT/RDAP), record it `blocked+note` with
+   the reason; never silently skip it and never fabricate it.
 
 **Efficiency red lines (these are the common failure modes):**
 
@@ -46,6 +48,13 @@ one-organization engagement (or when `stage_run` is unavailable).
 - Do NOT run `nmap` / port scans / `httpx` live probing — those touch the target
   and are blocked here. If you feel the urge to "verify a host is up", STOP: that
   belongs to EAS, which inherits your subdomain evidence.
+- Do NOT pipe tool output through `| head` / `| tail` or otherwise truncate it —
+  truncated output cannot be parsed and will NOT land in the database the gate reads.
+- Do NOT reuse one technique's evidence for another cell. Each coverage cell must
+  cite evidence produced by THAT technique's own run (DNS evidence backs only the
+  DNS cell, CT evidence only CT, …). Citing the same evidence_id across DNS / ASN /
+  CT / OSINT is fabricated coverage and the gate's corroboration check rejects it —
+  this is the #1 cause of repeated `needs_fix`.
 
 **Coverage + stop condition:**
 
