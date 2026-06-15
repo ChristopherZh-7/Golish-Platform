@@ -515,8 +515,7 @@ mod tests {
         assert_eq!(s.specialist.as_deref(), Some("recon"));
         assert_eq!(
             s.coverage_axis,
-            // Host-aware 2c-3 added the IP-native columns (RDNS / IP-WHOIS).
-            vec!["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT", "RDNS", "IPWHOIS"]
+            vec!["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT"]
         );
     }
 

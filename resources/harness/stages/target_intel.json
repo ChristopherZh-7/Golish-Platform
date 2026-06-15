@@ -49,8 +49,8 @@
       "derive_from_items": true,
       "derive_from_evidence": true,
       "authoritative_found": true,
-      "authoritative_techniques": ["GOLISH-INTEL-DNS", "GOLISH-INTEL-SUBDOMAIN", "GOLISH-INTEL-ASN", "GOLISH-INTEL-CT", "GOLISH-INTEL-WHOIS", "GOLISH-INTEL-OSINT", "GOLISH-INTEL-RDNS", "GOLISH-INTEL-IPWHOIS"],
-      "$comment_authoritative": "Phase 0+1 (2026-06-12-redteam-phase0/phase1): 'found' is decided by DB/ledger truth, not self-report. Landing per technique: DNS\u2192dns_records (dig), SUBDOMAIN\u2192target_assets (subfinder/amass), ASN/CT\u2192organizations.asns/.certificates (enrich), WHOIS\u2192organizations.whois column or a real `whois` command ledger fact, OSINT\u2192organizations.intel.records/contacts/social_accounts/business_systems (enrich). Host-aware 2c-3 IP-native: RDNS\u2192dns_records record_type='PTR' (land_rdns), IPWHOIS\u2192targets.ip_whois (land_ip_whois RDAP) \u2014 these are matrix-applied to IP/CIDR only (see host_aware_coverage). Tagging a claim or hand-writing a found cell no longer counts.",
+      "authoritative_techniques": ["GOLISH-INTEL-DNS", "GOLISH-INTEL-SUBDOMAIN", "GOLISH-INTEL-ASN", "GOLISH-INTEL-CT", "GOLISH-INTEL-WHOIS", "GOLISH-INTEL-OSINT"],
+      "$comment_authoritative": "Phase 0+1 (2026-06-12-redteam-phase0/phase1): 'found' for all 6 passive intel techniques is decided by DB/ledger truth, not self-report. Landing per technique: DNS\u2192dns_records (dig), SUBDOMAIN\u2192target_assets (subfinder/amass), ASN/CT\u2192organizations.asns/.certificates (enrich), WHOIS\u2192organizations.whois column or a real `whois` command ledger fact, OSINT\u2192organizations.intel.records/contacts/social_accounts/business_systems (enrich). Tagging a claim or hand-writing a found cell no longer counts.",
       "on_fail": {
         "reason": "intel coverage incomplete: some (in-scope asset \u00d7 expected intel technique) cells were never attempted",
         "hints": ["for every in-scope asset, give each expected intel technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note", "the gate reads the DATABASE, not your self-report: a cell is 'found' only if the real tool ran and its data landed (dig\u2192dns_records, subfinder\u2192target_assets, enrich\u2192organizations.asns/.certificates/.whois/.intel, whois\u2192whois column or ledger) \u2014 tagging a claim is not enough", "no provider/credential for a technique (e.g. OSINT)? record it blocked+note \u2014 never fabricate; run the real tools to make found cells real"]
@@ -68,13 +68,12 @@
   "$comment_expected_techniques": "\u88ab\u52a8\u60c5\u62a5\u6280\u672f\u7c7b\uff08GOLISH-INTEL-* \u547d\u540d\u7a7a\u95f4\uff0c\u767b\u8bb0\u4e8e technique_taxonomy.json\uff09\u3002coverage_complete \u636e\u6b64\u6838\u6bcf\u4e2a in-scope \u8d44\u4ea7\u662f\u5426\u6bcf\u7c7b\u60c5\u62a5\u6280\u672f\u90fd\u6709\u7ec8\u6001\uff1bin-scope \u8d44\u4ea7\u96c6\u7531 harness \u5916\u5c42\u4ece recon \u8d44\u4ea7\u5e93\uff08targets.scope='in'\uff09\u6ce8\u5165 GateContext\uff0c\u7f3a\u5219\u56de\u9000\u81ea\u62a5\u3002\u65e0 coverage_denominator\uff08\u88ab\u52a8\u60c5\u62a5\u65e0 enumeration \u5206\u6bcd\uff09\u3002",
   "expected_techniques": [
     "GOLISH-INTEL-DNS", "GOLISH-INTEL-WHOIS", "GOLISH-INTEL-ASN",
-    "GOLISH-INTEL-CT", "GOLISH-INTEL-SUBDOMAIN", "GOLISH-INTEL-OSINT",
-    "GOLISH-INTEL-RDNS", "GOLISH-INTEL-IPWHOIS"
+    "GOLISH-INTEL-CT", "GOLISH-INTEL-SUBDOMAIN", "GOLISH-INTEL-OSINT"
   ],
 
   "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout §3.2): specialist = the per-org sub-agent the stage_run tool fans out (intel → recon, the passive collector split from Pentester); coverage_axis = the human-readable technique columns the StageRunView renders per org row.",
   "specialist": "recon",
-  "coverage_axis": ["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT", "RDNS", "IPWHOIS"],
+  "coverage_axis": ["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT"],
 
   "$comment_min_invocations": "Hard floors (gate BLOCKs if the deliverable does not register the tool): DNS + passive subdomain are mandatory on every engagement. OSINT (osint_enum) is NOT a hard floor on purpose — ENScan_GO is China-corp-focused and not every engagement has an OSINT provider/credential; OSINT stays a REQUIRED coverage cell (expected_techniques + authoritative_techniques below) that may be terminal as blocked+note when no provider is available. See docs/design/2026-06-14-deepseek-run-review-fixes.md OPEN DECISION B before promoting osint_enum to a hard floor.",
   "min_invocations": {
@@ -86,7 +85,7 @@
   "$comment_facts_from_db_truth": "design 2026-06-15-db-truth-single-source-deliverable §5 PR2: target_intel is facts-only — coverage/claims/evidence are adjudicated from DB truth (coverage_complete authoritative + coverage_truth). With this on, vacuous_check is satisfied by real DB/ledger evidence facts so a weak model need not hand-copy a deliverable; completeness is still enforced by coverage_complete per (in-scope asset × technique). Empty DB truth still blocks.",
   "facts_from_db_truth": true,
 
-  "$comment_host_aware_coverage": "design 2026-06-15-host-aware-coverage (2a/2c): coverage_complete holds each in-scope asset only to the intel techniques that apply to its class. Domain-only (SUBDOMAIN / forward-DNS / CT) are NOT asked of a bare IP/CIDR; WHOIS/ASN/OSINT apply to every class; IP-native (RDNS=IP only, IPWHOIS=IP/CIDR) are REQUIRED of IP/CIDR and dropped for domain/url (2c-3). Class is authoritative from targets.type (2c-1), falling back to value inference then Other (full set, fail-safe — never relaxes the gate). NOTE 2c-3 requires a live --stage-run PASS/BLOCK parity + sign-off before relying on it (design §6).",
+  "$comment_host_aware_coverage": "design 2026-06-15-host-aware-coverage (Phase 2a): coverage_complete holds each in-scope asset only to the intel techniques that apply to its class — a bare IP/CIDR is NOT asked for SUBDOMAIN / forward-DNS / CT (domain-only concepts); WHOIS/ASN/OSINT still apply to every class. Fixes IPs being permanently 'incomplete'. Asset class is inferred from the asset value (IpAddr/url/cidr/else domain); unknown keeps the full set (fail-safe, never relaxes the gate).",
   "host_aware_coverage": true,
 
   "human_approval": {

@@ -29,20 +29,17 @@
 
 ---
 
-### 2026-06-15 · Host-aware coverage 2c-3b gate 翻转（IP 必做 RDNS/IPWHOIS，TDD 绿，待活体 parity）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「全部搞完」）
+### 2026-06-15 · 回退 2c-3b 做 stage_run 回归 A/B 诊断（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「撤回 2c-3b 做 A/B」）
 
-- **本轮目标**：翻转 gate baseline，让 in-scope IP/CIDR 必做 IP 原生技术（RDNS/IPWHOIS）。用户「全部搞完」= 含 2c-3b sign-off（已知会 BLOCK 无数据 IP）。
-- **改动（6 文件，已 commit 见下）**：
-  - `golish-agent-kit/src/harness/technique_resolver.rs`：`stage_baseline(TargetIntel)` += RDNS/IPWHOIS（→8）；`technique_applies` 加 `RDNS=>Ip`（裸 IP，CIDR 无单一 PTR 故排除）+ `IPWHOIS=>Ip|Cidr`；新测 target_intel_requires_ip_native_for_ip_not_domain；更新 2a 测（resolve len 6→8、Other len 6→8、Cidr≠Ip 改断言）。
-  - `golish-agent-kit/src/harness/gate/rule_engine.rs`：端到端 parity 测 host_aware_2c3_requires_ip_native_for_ip（IP 缺 RDNS/IPWHOIS→BLOCK、齐→PASS；域名永不被要求）。
-  - `golish-agent-kit/src/harness/stage_spec.rs`：coverage_axis 测更新（8 列）。
-  - `resources/harness/stages/target_intel.json`：expected_techniques + **authoritative_techniques**（truth 强制）+ coverage_axis 各 +RDNS/IPWHOIS；comment 更新。
-  - `resources/harness/technique_taxonomy.json`：登记 GOLISH-INTEL-RDNS/IPWHOIS（all_embedded_expected_techniques_are_recognized 要求）。
-- **关键决策**：RDNS=>Ip only（netblock 无单一 PTR）、IPWHOIS=>Ip|Cidr（RDAP 支持网段）。authoritative_techniques 也加这两项 → IP 原生格走 DB 真值（land_rdns/land_ip_whois 落的），非自报。
-- **TDD / 验证（有据）**：resolver 新测先红（/tmp/ak-2c3b-red.log：ip 无 RDNS）→ 实现 → 全量 `nextest -p golish-agent-kit --no-fail-fast` **637/637**（/tmp/ak-2c3b-2.log EXIT=0；含 all_twelve_stage_specs 加载 8 技术 + taxonomy recognized + 更新的 stage_spec axis 测）。修了 1 个过期断言 target_intel_declares_stage_run_specialist_and_axis（axis 6→8）。JSON 双校验 OK。ReadLints 无错。无 Rust API 变更 → app 链不受影响。
-- **行为影响（重要·诚实）**：**这是真行为变更**——flag 已开的 target_intel 上，in-scope IP 现必须有 RDNS（裸 IP）+ IPWHOIS（IP/CIDR）才 PASS；无则 BLOCK。数据由 2c-3a 采集器（recon 时）落。单测证 gate 逻辑，但 **设计 §6 的活体 --stage-run PASS/BLOCK parity 未跑**（需运行 app + 真实 engagement，本会话 env 无法跑）→ 上线依赖前必须由用户跑活体 parity + 最终 sign-off。
-- **未做 / 下一步**：活体 parity（env 阻塞）；全量 precommit；push（§2.7 待用户）。可选：refiner passive_intel_command_hint（RDNS→dig -x / IPWHOIS→whois）+ evidence_facts 标注（agent 手动满足路径，非必需——内置采集器 + facts_from_db_truth 是主路径）。
-- **已参考技能**：无（executing-plans + TDD 先红后绿 + verification 跑测拿证据[637/637]；未 Read 本地 skill raw；mcp-server/role-skills/ 为空 Glob 0）。
+- **起因**：用户报 bug——「改了之后 AI 不走 runstage（stage_run）了」。读最新一次活体跑日志（`Test1/.golish/transcripts/pentest-chat-1781507323871-1/run.log`，今天 15:08 本地，带我的改动）取证：
+  - AI 用 `recon_enrich_assets`（agent path）+ 派 `sub_agent_pentester`（派错，该 recon）做 target_intel，子 agent 在 target_intel 阶段试 chmod/check_job 被 stage_guard 挡回，原地打转；**没调 stage_run**。
+  - coverage gate **无任何拦截记录**（无 incomplete / 无 RDNS/IPWHOIS block / 无报错）；`injecting authoritative in-scope assets` 日志本轮缺席（无 in-scope 资产注入）。
+  - **前后对比**：backend.log 显示 `Executing tool: name=stage_run` 在我改之前 3 次跑（6-14 16:22/16:23、6-15 01:50 UTC）都有；改之后这次没有。时间上与我的改动吻合。
+- **判断**：未见我的改动机制性卡 gate / 报错；区别在模型工具选择。最可能 = 我把 target_intel 技术清单 6→8（加 RDNS/IPWHOIS）+ 改 coverage_axis/注释，改了模型在该阶段看到的提示，弱模型（deepseek-v4-flash）工具选择漂了；不排除模型随机性。风险点指向 2c-3b（a3bb618c，正是之前说需活体 parity+sign-off 的块）。
+- **本轮动作（A/B 诊断）**：`git revert -n a3bb618c`（撤回 2c-3b 全部：technique_resolver baseline+矩阵+测、target_intel.json expected/authoritative/coverage_axis、taxonomy、stage_spec axis 测）→ **保留 findings_allowed**（它在 stage_run 用过的几次跑 + bug 跑里都在，是常量，撤了会污染 A/B；revert 顺带删了它故手动补回）→ commit。其余 2c-1/2c-2/2c-3a（存储+采集器）**保留**。
+- **验证**：`python3 json.tool target_intel.json` OK（expected/axis 回 6，findings_allowed 在）；`nextest -p golish-agent-kit` **635/635**（回到 2c-3b 前的绿态）。
+- **下一步**：用户**重新构建 + 再跑一次**：① stage_run 回来 → 是 2c-3b 提示改动惹的，再想怎么加不影响模型（如不改 expected_techniques 仅靠 truth、或拆 prompt）；② 还是不调 → 与我的改动无关，是模型/别因。a3bb618c 仍在 git 历史，A/B 后可 `git revert` 该 revert 复原。
+- **已参考技能**：无（systematic-debugging 精神：先读真实日志取证、A/B 隔离变量再下结论；未 Read 本地 skill raw；mcp-server/role-skills/ 为空 Glob 0）。
 
 ---
 

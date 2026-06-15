@@ -27,8 +27,6 @@
   "GOLISH-INTEL-OSINT": { "name": "OSINT Exposure / Leaks", "standard": "GOLISH custom" },
   "GOLISH-INTEL-URLHISTORY": { "name": "URL History / Archived Endpoints (wayback/url-history)", "standard": "GOLISH custom" },
   "GOLISH-INTEL-SUBSIDIARY": { "name": "Subsidiary / Org-Tree Discovery (企查查/天眼查 investment+holdings)", "standard": "GOLISH custom" },
-  "GOLISH-INTEL-RDNS": { "name": "Reverse DNS / PTR (host-aware 2c-3, IP assets)", "standard": "GOLISH custom" },
-  "GOLISH-INTEL-IPWHOIS": { "name": "RIR / Netblock IP-WHOIS (host-aware 2c-3, IP/CIDR assets)", "standard": "GOLISH custom" },
 
   "$comment_eas": "external_attack_surface 阶段技术类（定义攻击面，coverage_complete 用）。阶段重排 2026-06-09：端口/服务指纹前移到此（先定义 host×端口×服务×活web，再去 enumeration 枚举内容），见 docs/design/2026-06-09-active-stage-verify-first.md。",
   "GOLISH-EAS-LIVENESS": { "name": "Active Liveness Verification (DNS resolve + HTTP probe)", "standard": "GOLISH custom" },

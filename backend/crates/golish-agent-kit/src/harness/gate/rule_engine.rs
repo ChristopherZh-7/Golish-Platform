@@ -1261,62 +1261,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn host_aware_2c3_requires_ip_native_for_ip() {
-        // 2c-3b：flag 开后 in-scope IP 必须有 RDNS + IP-WHOIS（外加 org 级
-        // WHOIS/ASN/OSINT）；缺则 BLOCK、齐则 PASS。域名永不被要求 IP 原生对。
-        let techs = [
-            "GOLISH-INTEL-DNS",
-            "GOLISH-INTEL-SUBDOMAIN",
-            "GOLISH-INTEL-CT",
-            "GOLISH-INTEL-WHOIS",
-            "GOLISH-INTEL-ASN",
-            "GOLISH-INTEL-OSINT",
-            "GOLISH-INTEL-RDNS",
-            "GOLISH-INTEL-IPWHOIS",
-        ];
-        // 域名满足其 6 项；IP 先只有 org 级 3 项（无 RDNS/IPWHOIS）。
-        let mut facts: Vec<EvidenceFact> = [
-            "GOLISH-INTEL-DNS",
-            "GOLISH-INTEL-SUBDOMAIN",
-            "GOLISH-INTEL-CT",
-            "GOLISH-INTEL-WHOIS",
-            "GOLISH-INTEL-ASN",
-            "GOLISH-INTEL-OSINT",
-        ]
-        .iter()
-        .map(|t| fact("a.com", t, EvidenceOutcome::Found, 1))
-        .collect();
-        for t in ["GOLISH-INTEL-WHOIS", "GOLISH-INTEL-ASN", "GOLISH-INTEL-OSINT"] {
-            facts.push(fact("1.2.3.4", t, EvidenceOutcome::Found, 1));
-        }
-        let d = deliverable_with_coverage(vec![]);
-        let spec = target_intel_spec(true);
-        let mk_ctx = |facts: Vec<EvidenceFact>| GateContext {
-            in_scope_assets: Some(vec!["a.com".to_string(), "1.2.3.4".to_string()]),
-            asset_types: None, // from_value: a.com→Domain, 1.2.3.4→Ip
-            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
-            evidence_facts: Some(facts),
-        };
-
-        // IP 缺 RDNS + IPWHOIS → BLOCK。
-        let ctx_missing = mk_ctx(facts.clone());
-        assert!(
-            !eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &ctx_missing)[0].is_pass(),
-            "IP missing RDNS/IPWHOIS must BLOCK"
-        );
-
-        // 给 IP 补上 RDNS + IPWHOIS → PASS（域名仍只核它的 6 项）。
-        let mut facts_full = facts;
-        facts_full.push(fact("1.2.3.4", "GOLISH-INTEL-RDNS", EvidenceOutcome::Found, 1));
-        facts_full.push(fact("1.2.3.4", "GOLISH-INTEL-IPWHOIS", EvidenceOutcome::Found, 1));
-        let ctx_full = mk_ctx(facts_full);
-        assert!(
-            eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &ctx_full)[0].is_pass(),
-            "IP with RDNS/IPWHOIS (+ org-level) must PASS; domain never needs the IP-native pair"
-        );
-    }
-
     // ── Phase 0 (设计 2026-06-12-redteam-phase0): authoritative found ──────────
     // found 终态只认真值（账本/DB 的 Found 事实）；自报 cell / tagged claim 不再
     // 单独构成 found。derive_from_items + derive_from_evidence 都开，以证明
