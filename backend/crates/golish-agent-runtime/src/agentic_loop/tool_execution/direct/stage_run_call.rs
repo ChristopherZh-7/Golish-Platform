@@ -332,7 +332,7 @@ where
     let coverage_axis = spec.coverage_axis.clone();
 
     // 2. Per-org units (from the engagement org tree the agent built in scoping).
-    let units = parse_org_units(tool_args);
+    let mut units = parse_org_units(tool_args);
     if units.is_empty() {
         return Ok(ToolExecutionResult {
             value: json!({
@@ -343,6 +343,58 @@ where
             }),
             success: false,
         });
+    }
+
+    // 2b. Engagement-org isolation (设计 2026-06-15-engagement-org-isolation):
+    // confine the fan-out to the scoping-confirmed root org's subtree (root +
+    // subsidiaries). Drop any requested org outside it — a sibling engagement's
+    // org left in the same workspace (the "测 example 串成平安" bug) must never
+    // get a specialist dispatched against it. Enforced only when a root org is
+    // bound AND its subtree is readable; otherwise fail-open to legacy behavior
+    // (test doubles / no-DB return an empty subtree → no confinement).
+    if let Some(root) = ctx.harness_org_id {
+        if let Some(repo) = ctx.events.db_tracker.and_then(|t| t.repo()) {
+            let allowed: std::collections::HashSet<uuid::Uuid> = repo
+                .org_subtree_ids(root)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            if !allowed.is_empty() {
+                let before = units.len();
+                let mut rejected: Vec<String> = Vec::new();
+                units.retain(|u| match uuid::Uuid::parse_str(&u.id) {
+                    Ok(id) if allowed.contains(&id) => true,
+                    _ => {
+                        rejected.push(u.name.clone());
+                        false
+                    }
+                });
+                if !rejected.is_empty() {
+                    tracing::warn!(
+                        target: "harness::stage_run",
+                        root_org = %root,
+                        rejected = ?rejected,
+                        "stage_run dropped {}/{} org(s) outside the engagement org subtree",
+                        rejected.len(),
+                        before
+                    );
+                }
+                if units.is_empty() {
+                    return Ok(ToolExecutionResult {
+                        value: json!({
+                            "error": format!(
+                                "None of the requested organizations are within this engagement's \
+                                 scope (root org {root} plus its subsidiaries). Rejected: {rejected:?}. \
+                                 Pass only orgs from THIS engagement's scoping-confirmed org tree."
+                            ),
+                            "passed": false
+                        }),
+                        success: false,
+                    });
+                }
+            }
+        }
     }
 
     // 3. Serial fan-out: dispatch the specialist sub-agent once per org. Serial

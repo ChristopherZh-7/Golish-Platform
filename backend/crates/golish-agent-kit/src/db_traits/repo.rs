@@ -390,6 +390,19 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): every
+    /// org id in the subtree rooted at `root_id` — the scoping-confirmed
+    /// engagement root plus its descendants (via `parent_id`). The stage_run
+    /// fan-out uses it to drop any requested org OUTSIDE the current engagement's
+    /// tree (a sibling engagement's org left in the same workspace). Default empty
+    /// (test doubles); the app layer overrides it via the recon organizations
+    /// repo. Empty ⇒ caller fails OPEN to legacy behavior (no confinement), so
+    /// non-DB contexts are unaffected.
+    async fn org_subtree_ids(&self, root_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
+        let _ = root_id;
+        Ok(Vec::new())
+    }
+
     /// Phase 1.5 阶段过门：批量取 `org_stage_completions` 行 `(organization_id, passed_at)`
     /// （收尾 gate 走 repo 通道，取不到 tracking trait 的 `recent_org_stage_completion`）。
     /// 无行的 org 自然缺席（调用方据此判缺口）。默认空。

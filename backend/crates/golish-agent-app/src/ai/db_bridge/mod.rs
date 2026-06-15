@@ -315,6 +315,10 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.in_scope_org_ids_impl(project_path).await
     }
 
+    async fn org_subtree_ids(&self, root_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
+        self.org_subtree_ids_impl(root_id).await
+    }
+
     async fn org_stage_completions_get(
         &self,
         stage_kind: &str,

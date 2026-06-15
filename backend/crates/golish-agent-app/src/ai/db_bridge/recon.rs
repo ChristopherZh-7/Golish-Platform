@@ -351,6 +351,17 @@ impl GolishDbRepoProvider {
         Ok(golish_db::repo::organizations::in_scope_ids(&self.pool, project_path).await?)
     }
 
+    /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): the
+    /// subtree (root + descendants) of the scoping-confirmed engagement root org,
+    /// so the stage_run fan-out confines dispatch to THIS engagement's tree and a
+    /// sibling engagement's org (left in the same workspace) is never targeted.
+    pub(super) async fn org_subtree_ids_impl(
+        &self,
+        root_id: Uuid,
+    ) -> anyhow::Result<Vec<Uuid>> {
+        Ok(golish_db::repo::organizations::subtree_ids(&self.pool, root_id).await?)
+    }
+
     /// Phase 1.5 阶段过门：批量取 per-org 完成账本行 `(organization_id, passed_at)`（收尾
     /// gate 经 repo 通道核「全 org 新鲜 PASS」）。逐 id 取（org 量级小），无行的 org 自然缺席。
     pub(super) async fn org_stage_completions_get_impl(
