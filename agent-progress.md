@@ -29,6 +29,22 @@
 
 ---
 
+### 2026-06-15 · Host-aware coverage Phase 2c 规划（design + plan，零代码）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「规划 2c（写 design/plan）」）
+
+- **本轮目标**：用户问「2c 是啥」答疑后让我规划 2c。用 writing-plans 技能（**已 Read** `.cursor/skills/writing-plans/SKILL.md`）写 design + plan，**零生产代码**。
+- **改前读真代码取证（未读不引）**：`GateContext`(rule_engine.rs:194)={in_scope_assets, expected_techniques, evidence_facts}**无类型轴**；`coverage_complete`(rule_engine.rs:325) 2a/2b 用 `from_value` 推断 class；hook `apply_harness_gate_hook`(execute.rs:1960) 建 GateContext，`fetch_in_scope_target_types_for_gate`(1226)/`gate_expected_techniques`(1714) 只产 union headline、不入 per-asset loop；`db_traits::in_scope_targets`(repo.rs:176) 返 untyped `serde_json::Value` 且**未按 org 收窄**；`assemble_truth_facts`(coverage_truth.rs:176) 把 ASN/CT/WHOIS/OSINT/SUBSIDIARY **无差别盖每资产**（含 IP）。
+- **产出（2 新 doc + feature_list + 本记录，零代码）**：
+  - `docs/design/2026-06-15-host-aware-coverage-2c.md`：§1 2a/2b 遗留 3 证据；§3 三子相（2c-1 权威类型轴 / 2c-2 truth 投影修正 / 2c-3 IP 原生技术）；§4 seam；§5 开放项默认；§6 parity+sign-off；§7 touch points；§8 风险；§9 自检。
+  - `docs/superpowers/plans/2026-06-15-host-aware-coverage-2c.md`：2c-1 Task 1.1-1.4 + 2c-2 Task 2.1-2.2 全 TDD（带真实代码/验证命令/commit）；2c-3 = Task 3.0 调研 spike → 单独 spec（recon 采集器是独立子系统，按 writing-plans 拆）。
+  - `feature_list.json`：新增 `host-aware-coverage-2c-2026-06-15` = `not_started`；并把 host-aware 条目里过期的「[未做] 2b」更正为「2b 矩阵已落 e12a7638 / flag 未翻」。
+- **关键设计简化（优于设计 §4.1）**：复用既有 `technique_applies(spec.kind, class, tech)` 矩阵 + 权威 class（`from_target_type` → `from_value` → `Other` fail-safe 链），**舍弃** §4.1 的 `expected_by_type` map——更少面、单一矩阵、已单测。
+- **运行过的验证**：`python3 json.load feature_list.json` → OK（63 features，2c 在）；`json.tool target_intel.json` → OK。本轮零代码、无测可跑。
+- **未做 / 边界**：实现未开始（计划态）；2c 动 harness 核心 + truth + recon 采集器，**需用户 sign-off**（§6）才进实现；2c-3 须先做 Task 3.0 recon 采集器调研再单独立 spec。未 commit 时点见下条 commit 记录。
+- **下一步建议**：① 用户审 2c design（尤其 §3 三子相划分、§5 复用 technique_applies 决策）；② 同意后按 plan 先做 2c-1（权威类型轴，低风险）；③ 或先收尾 2b（写 rule_engine parity 测 + 协调翻 flag）；④ push 累计 commit。
+- **已参考技能**：`.cursor/skills/writing-plans`（must·**已 Read**，按其头部/任务结构/禁占位符/自检写 design+plan）；`.cursor/skills/test-driven-development`（conditional·plan 内每任务先红后绿，未重读 raw）；`mcp-server/role-skills/` 为空（Glob 0）。
+
+---
+
 ### 2026-06-15 · Host-aware coverage 2b 核心（EAS+enum 矩阵，TDD 绿，inert）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「后面的不搞了吗?」）
 
 - **本轮目标**：2a commit 后用户催继续，做 Phase 2b 的安全核心（按 `docs/design/2026-06-15-host-aware-coverage.md` §3.2/§3.3 矩阵 + 计划 2b sketch）。
