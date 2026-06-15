@@ -1,4 +1,4 @@
-import { FileCode2, Globe, Loader2, Radar, RefreshCw, Search } from "lucide-react";
+import { ArrowLeft, FileCode2, Globe, Loader2, Radar, RefreshCw, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Target } from "@/lib/pentest/types";
 import { cn } from "@/lib/utils";
@@ -21,9 +21,21 @@ import { SURFACE_TABS, type SurfaceTab } from "./surface/types";
 export function TargetSurfaceWorkbench({
   target,
   onUpdateNotes,
+  onBack,
+  backLabel,
+  relatedDomains,
+  onSelectDomain,
 }: {
   target: Target;
   onUpdateNotes: (id: string, notes: string) => void;
+  // When the workbench was reached by drilling in from a host (IP) panel, the
+  // parent passes `onBack` so the user can return to the host's member list.
+  onBack?: () => void;
+  backLabel?: string;
+  // When the subject is an IP/host, the parent passes the domains that resolve
+  // to it; the Surface tab renders them as a clickable "domains" block.
+  relatedDomains?: Target[];
+  onSelectDomain?: (id: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<SurfaceTab>("surface");
   const { data, loading, error, reload } = useTargetSurfaceData(target.id);
@@ -44,7 +56,7 @@ export function TargetSurfaceWorkbench({
     [sensitiveFindings]
   );
   const tabCounts: Partial<Record<SurfaceTab, number>> = {
-    surface: target.ports.length + data.fingerprints.length,
+    surface: target.ports.length + data.fingerprints.length + (relatedDomains?.length ?? 0),
     sitemap: sitemapItems.length,
     "js-api": apiEndpoints.length + jsResults.length,
     sensitive: sensitiveCount,
@@ -61,6 +73,17 @@ export function TargetSurfaceWorkbench({
         <div className="flex items-start justify-between gap-2.5">
           <div className="min-w-0">
             <div className="flex items-center gap-2 min-w-0">
+              {onBack && (
+                <button
+                  type="button"
+                  onClick={onBack}
+                  className="inline-flex h-5 flex-shrink-0 items-center gap-0.5 rounded border border-border/30 bg-background/20 px-1.5 text-[10px] text-muted-foreground hover:bg-muted/25 hover:text-foreground"
+                  title={backLabel ?? "Back"}
+                >
+                  <ArrowLeft className="w-3 h-3" />
+                  {backLabel && <span className="max-w-[120px] truncate">{backLabel}</span>}
+                </button>
+              )}
               <Globe className="w-3.5 h-3.5 text-accent flex-shrink-0" />
               <h3 className="truncate text-[13px] font-semibold text-foreground">{target.value}</h3>
               <span
@@ -153,6 +176,8 @@ export function TargetSurfaceWorkbench({
             jsCount={jsResults.length}
             fingerprints={data.fingerprints}
             loading={loading}
+            relatedDomains={relatedDomains}
+            onSelectDomain={onSelectDomain}
           />
         )}
         {activeTab === "sitemap" && <SitemapTab items={sitemapItems} loading={loading} />}

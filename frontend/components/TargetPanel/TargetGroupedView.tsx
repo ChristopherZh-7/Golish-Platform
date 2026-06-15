@@ -57,7 +57,6 @@ import {
 import { translateWithFallback } from "@/lib/target-panel/org-fields";
 import {
   buildHostTree,
-  buildOrgTree,
   countOrgDeletionImpact,
   type OrgTreeNode,
   ROOT_PARENT_KEY,
@@ -69,7 +68,6 @@ import {
   suggestedReconAssetsFilename,
 } from "@/lib/target-panel/organization-recon";
 import type { AssetIntelOrgActionKind, WorkspaceTab } from "@/lib/target-panel/types";
-import { cn } from "@/lib/utils";
 import { InlineCreateOrgForm } from "./InlineOrgForms";
 import { type EngagementMode, NewEngagementDialog } from "./NewEngagementDialog";
 import { OrgTreeSidebar } from "./OrgTreeSidebar";
@@ -126,6 +124,43 @@ interface TargetGroupedViewProps {
   onUpdateNotes: (id: string, notes: string) => void;
 }
 
+/**
+ * Build a throwaway IP target for a host node that has no tracked IP row of its
+ * own (a "resolution-only" IP, discovered only via some domain's `real_ip`, or
+ * the synthetic "unresolved" bucket). The empty `id` makes
+ * `useTargetSurfaceData` short-circuit to empty (no IPC); scope mirrors whether
+ * any resolving domain is in scope. Lets such nodes reuse the same workbench.
+ */
+function makeSyntheticHostTarget(host: OrgTreeNode, domains: Target[]): Target {
+  return {
+    id: "",
+    name: host.name,
+    type: "ip",
+    value: host.name,
+    tags: [],
+    notes: "",
+    scope: domains.some((d) => d.scope === "in") ? "in" : "out",
+    status: "new",
+    grp: "",
+    owner: "",
+    time_window_start: null,
+    time_window_end: null,
+    organization_id: null,
+    source: "resolved",
+    parent_id: null,
+    real_ip: "",
+    cdn_waf: "",
+    http_title: "",
+    http_status: null,
+    webserver: "",
+    os_info: "",
+    content_type: "",
+    created_at: 0,
+    updated_at: 0,
+    ports: [],
+  };
+}
+
 export function TargetGroupedView({
   targets,
   t,
@@ -144,10 +179,11 @@ export function TargetGroupedView({
   const [newEngagementMode, setNewEngagementMode] = useState<EngagementMode>("customer_targets");
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
+  // The selected synthetic host/bucket node id. When set (and no target is
+  // drilled in), the right panel shows that IP's `TargetSurfaceWorkbench`, whose
+  // Surface tab lists the domains that resolve to it.
+  const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("overview");
-  // Tree grouping: "byType" = the classic org→assets flat tree; "byIp" = the
-  // IP-centric host tree (design 2026-06-15 Phase 1).
-  const [viewMode, setViewMode] = useState<"byType" | "byIp">("byType");
 
   // Inline editor / creator state — only one can be open at a time. `ROOT_PARENT_KEY`
   // is used by `addingChildTo` to mean "creating a new top-level org".
@@ -271,12 +307,11 @@ export function TargetGroupedView({
   );
   const unassignedLabel = t("targets.unassigned");
   const unresolvedLabel = t("targets.unresolvedGroup");
+  // Single IP-centric tree: orgs spine → IP host nodes (domains live in the
+  // right-hand workbench's "domains" block, not nested in the tree).
   const roots = useMemo(
-    () =>
-      viewMode === "byIp"
-        ? buildHostTree(orgs, visibleTargets, unassignedLabel, unresolvedLabel)
-        : buildOrgTree(orgs, visibleTargets, unassignedLabel),
-    [viewMode, orgs, visibleTargets, unassignedLabel, unresolvedLabel]
+    () => buildHostTree(orgs, visibleTargets, unassignedLabel, unresolvedLabel),
+    [orgs, visibleTargets, unassignedLabel, unresolvedLabel]
   );
   const selectedOrg = useMemo(
     () => orgs.find((o) => o.id === selectedOrgId) ?? orgs[0] ?? null,
@@ -295,6 +330,54 @@ export function TargetGroupedView({
     [selectedTargetId, visibleTargets]
   );
 
+  // Flatten the synthetic host/bucket nodes for O(1) lookup of the selected one,
+  // so the right-hand workbench can show its IP + the domains resolving to it.
+  const hostNodeById = useMemo(() => {
+    const map = new Map<string, OrgTreeNode>();
+    const walk = (nodes: OrgTreeNode[]) => {
+      for (const node of nodes) {
+        if (node.kind === "host" || node.kind === "bucket") map.set(node.id, node);
+        walk(node.children);
+      }
+    };
+    walk(roots);
+    return map;
+  }, [roots]);
+  const selectedHost = selectedHostId ? (hostNodeById.get(selectedHostId) ?? null) : null;
+
+  // The host panel reuses `TargetSurfaceWorkbench`. Its subject is the IP's own
+  // tracked target row when one exists; for a "resolution-only" IP (only
+  // referenced via a domain's real_ip, never scanned itself) we synthesise a
+  // throwaway IP target with an empty id so the surface hook short-circuits.
+  const hostIpTarget = useMemo(
+    () =>
+      selectedHost
+        ? (selectedHost.targets.find(
+            (target) => target.type === "ip" && target.value === selectedHost.name
+          ) ?? null)
+        : null,
+    [selectedHost]
+  );
+  const hostDomains = useMemo(
+    () =>
+      selectedHost
+        ? selectedHost.targets
+            .filter((target) => target.id !== hostIpTarget?.id)
+            .sort((a, b) => a.value.localeCompare(b.value))
+        : [],
+    [selectedHost, hostIpTarget]
+  );
+  const hostWorkbenchTarget = useMemo<Target | null>(() => {
+    if (!selectedHost) return null;
+    return hostIpTarget ?? makeSyntheticHostTarget(selectedHost, hostDomains);
+  }, [selectedHost, hostIpTarget, hostDomains]);
+
+  // Drop a host id that no longer exists (e.g. after the tree rebuilds on a
+  // data refresh) so the right panel doesn't dangle.
+  useEffect(() => {
+    if (selectedHostId && !hostNodeById.has(selectedHostId)) setSelectedHostId(null);
+  }, [selectedHostId, hostNodeById]);
+
   useEffect(() => {
     if (!selectedOrgId && orgs.length > 0) {
       setSelectedOrgId(orgs[0].id);
@@ -312,7 +395,11 @@ export function TargetGroupedView({
   }, [selectedTargetId, targets]);
 
   useEffect(() => {
+    // Skip while drilling in from a host (IP) panel: there the selected target
+    // is scoped to the host, not to `selectedOrg`, so a cross-org mismatch is
+    // expected and must not deselect it.
     if (
+      !selectedHostId &&
       selectedOrg &&
       selectedTarget &&
       selectedTarget.organization_id &&
@@ -320,7 +407,7 @@ export function TargetGroupedView({
     ) {
       setSelectedTargetId(null);
     }
-  }, [selectedOrg, selectedTarget]);
+  }, [selectedOrg, selectedTarget, selectedHostId]);
 
   const toggleCollapse = useCallback((id: string) => {
     setCollapsed((prev) => {
@@ -706,32 +793,6 @@ export function TargetGroupedView({
             .replace("{{orgs}}", String(orgs.length))
             .replace("{{targets}}", String(targets.length))}
         </span>
-        <div className="ml-auto flex items-center gap-0.5 rounded border border-border/40 p-0.5">
-          <button
-            type="button"
-            onClick={() => setViewMode("byType")}
-            className={cn(
-              "rounded px-2 py-0.5 text-[10px] transition-colors",
-              viewMode === "byType"
-                ? "bg-muted/40 text-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            {translateWithFallback(t, "targets.viewByType", "By type")}
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewMode("byIp")}
-            className={cn(
-              "rounded px-2 py-0.5 text-[10px] transition-colors",
-              viewMode === "byIp"
-                ? "bg-muted/40 text-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            {translateWithFallback(t, "targets.viewByIp", "By IP")}
-          </button>
-        </div>
       </div>
 
       {addingChildTo === ROOT_PARENT_KEY && (
@@ -837,6 +898,8 @@ export function TargetGroupedView({
             editingTargetId={editingTargetId}
             setEditingTargetId={setEditingTargetId}
             selectedTargetId={selectedTargetId}
+            selectedHostId={selectedHostId}
+            setSelectedHostId={setSelectedHostId}
             onToggleScope={onToggleScope}
             onDelete={onDelete}
             onUpdateNotes={onUpdateNotes}
@@ -858,7 +921,19 @@ export function TargetGroupedView({
           />
           <div className="min-h-0 overflow-hidden bg-background/20">
             {selectedTarget ? (
-              <TargetSurfaceWorkbench target={selectedTarget} onUpdateNotes={onUpdateNotes} />
+              <TargetSurfaceWorkbench
+                target={selectedTarget}
+                onUpdateNotes={onUpdateNotes}
+                onBack={selectedHost ? () => setSelectedTargetId(null) : undefined}
+                backLabel={selectedHost ? t("targets.backToHost") : undefined}
+              />
+            ) : selectedHost && hostWorkbenchTarget ? (
+              <TargetSurfaceWorkbench
+                target={hostWorkbenchTarget}
+                onUpdateNotes={hostIpTarget ? onUpdateNotes : () => {}}
+                relatedDomains={hostDomains}
+                onSelectDomain={(id) => setSelectedTargetId(id)}
+              />
             ) : (
               <OrgWorkspacePanel
                 selectedOrg={selectedOrg}

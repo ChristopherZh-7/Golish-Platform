@@ -61,6 +61,11 @@ interface OrgTreeProps {
   editingTargetId: string | null;
   setEditingTargetId: Dispatch<SetStateAction<string | null>>;
   selectedTargetId: string | null;
+  // IP-centric view: the currently selected synthetic host/bucket node id. Host
+  // & bucket nodes are leaves here — clicking one opens that IP's workbench on
+  // the right (whose Surface tab lists the domains) instead of nesting rows.
+  selectedHostId: string | null;
+  setSelectedHostId: Dispatch<SetStateAction<string | null>>;
   onToggleScope: (target: Target) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onUpdateNotes: (id: string, notes: string) => void;
@@ -113,6 +118,8 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
     editingTargetId,
     setEditingTargetId,
     selectedTargetId,
+    selectedHostId,
+    setSelectedHostId,
     onToggleScope,
     onDelete,
     onUpdateNotes,
@@ -210,6 +217,10 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
   const kind = node.kind ?? "org";
   const isOrg = kind === "org";
   const isHost = kind === "host";
+  const isBucket = kind === "bucket";
+  // Host & bucket nodes are selectable leaves in the IP view: clicking selects
+  // them (→ that IP's workbench on the right) rather than expanding nested rows.
+  const isLeafSelectable = isHost || isBucket;
 
   // Asset sub-group state. Membership in `collapsed` flips the size-based
   // default, so an untouched large group starts folded while an untouched small
@@ -233,6 +244,39 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
     isChild: Boolean(orgRow?.parent_id),
   });
 
+  // The flat list of asset rows (+ "show more"), shared by both the org-level
+  // "资产" sub-group and the bare host/bucket rendering below.
+  const assetRows = (
+    <>
+      {visibleAssets.map((target) => (
+        <TargetTreeRow
+          key={target.id}
+          target={target}
+          t={t}
+          editingTargetId={editingTargetId}
+          selectedTargetId={selectedTargetId}
+          setSelectedTargetId={setSelectedTargetId}
+          setSelectedOrgId={setSelectedOrgId}
+          setEditingTargetId={setEditingTargetId}
+          onToggleScope={onToggleScope}
+          onDelete={onDelete}
+          onUpdateNotes={onUpdateNotes}
+        />
+      ))}
+      {totalAssets > ASSET_PREVIEW_LIMIT && (
+        <button
+          type="button"
+          onClick={() => toggleCollapse(assetMoreKey)}
+          className="px-2 py-0.5 text-left text-[10px] text-accent/80 hover:text-accent"
+        >
+          {showAllAssets
+            ? t("targets.assetsShowLess")
+            : `${t("targets.assetsShowMore")} (+${hiddenAssetCount})`}
+        </button>
+      )}
+    </>
+  );
+
   return (
     <div key={node.id}>
       {isEditingThis ? (
@@ -251,27 +295,38 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
         <div
           className={cn(
             "flex items-center gap-1 px-2 py-1 hover:bg-muted/15 transition-colors group rounded",
-            selectedOrgId === node.id && !isUnassigned && "bg-muted/15"
+            selectedOrgId === node.id && !isUnassigned && "bg-muted/15",
+            isLeafSelectable && selectedHostId === node.id && "bg-muted/20"
           )}
           style={{ paddingLeft: `${8 + depth * 16}px` }}
         >
           <button
             type="button"
             onClick={() => {
+              if (isLeafSelectable) {
+                // IP / bucket leaf: select it so the right panel lists its
+                // member domains/URLs; no nested rows to expand.
+                setSelectedHostId(node.id);
+                setSelectedTargetId(null);
+                return;
+              }
               if (isOrg && !isUnassigned) {
                 setSelectedOrgId(node.id);
                 setSelectedTargetId(null);
+                setSelectedHostId(null);
               }
               toggleCollapse(node.id);
             }}
             className="flex items-center gap-2 flex-1 text-left min-w-0"
           >
-            <ChevronDown
-              className={cn(
-                "w-3 h-3 text-muted-foreground/60 transition-transform flex-shrink-0",
-                isCollapsed && "-rotate-90"
-              )}
-            />
+            {!isLeafSelectable && (
+              <ChevronDown
+                className={cn(
+                  "w-3 h-3 text-muted-foreground/60 transition-transform flex-shrink-0",
+                  isCollapsed && "-rotate-90"
+                )}
+              />
+            )}
             {isHost ? (
               <Network className="w-3 h-3 text-blue-400/70 flex-shrink-0" />
             ) : !isOrg || isUnassigned ? (
@@ -394,7 +449,11 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
 
       {!isCollapsed && (
         <div className="space-y-px">
-          {node.targets.length > 0 && (
+          {isOrg && node.targets.length > 0 && (
+            // Org node: keep the collapsible "资产" sub-group so a large asset
+            // list can be folded independently of the org's sub-orgs. Host /
+            // bucket nodes intentionally render no nested rows — their domains
+            // live in the right-hand workbench's Surface "domains" block instead.
             <div className="space-y-px">
               <button
                 type="button"
@@ -419,32 +478,7 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
                   className="space-y-px py-0.5"
                   style={{ paddingLeft: `${8 + (depth + 1) * 16}px` }}
                 >
-                  {visibleAssets.map((target) => (
-                    <TargetTreeRow
-                      key={target.id}
-                      target={target}
-                      t={t}
-                      editingTargetId={editingTargetId}
-                      selectedTargetId={selectedTargetId}
-                      setSelectedTargetId={setSelectedTargetId}
-                      setSelectedOrgId={setSelectedOrgId}
-                      setEditingTargetId={setEditingTargetId}
-                      onToggleScope={onToggleScope}
-                      onDelete={onDelete}
-                      onUpdateNotes={onUpdateNotes}
-                    />
-                  ))}
-                  {totalAssets > ASSET_PREVIEW_LIMIT && (
-                    <button
-                      type="button"
-                      onClick={() => toggleCollapse(assetMoreKey)}
-                      className="px-2 py-0.5 text-left text-[10px] text-accent/80 hover:text-accent"
-                    >
-                      {showAllAssets
-                        ? t("targets.assetsShowLess")
-                        : `${t("targets.assetsShowMore")} (+${hiddenAssetCount})`}
-                    </button>
-                  )}
+                  {assetRows}
                 </div>
               )}
             </div>
