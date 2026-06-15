@@ -131,6 +131,15 @@ pub mod operation_state {
         repo.operation_state_write_state_blob(operation_id, state_blob)
             .await
     }
+
+    pub async fn set_engagement_org(
+        repo: &dyn DbRepoProvider,
+        operation_id: Uuid,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<()> {
+        repo.operation_state_set_engagement_org(operation_id, org_id)
+            .await
+    }
 }
 
 pub mod stage_runs {

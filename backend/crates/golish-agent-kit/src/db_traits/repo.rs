@@ -228,6 +228,17 @@ pub trait DbRepoProvider: Send + Sync {
         operation_id: Uuid,
         new_stage: &str,
     ) -> anyhow::Result<()>;
+    /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): persist
+    /// this operation's bound engagement root org id. Default no-op (test doubles);
+    /// the app layer writes `operation_state.engagement_org_id`.
+    async fn operation_state_set_engagement_org(
+        &self,
+        operation_id: Uuid,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<()> {
+        let _ = (operation_id, org_id);
+        Ok(())
+    }
 
     // ── Message Chains ──────────────────────────────────────────────────
 

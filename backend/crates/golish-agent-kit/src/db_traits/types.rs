@@ -229,6 +229,10 @@ pub struct OperationStateView {
     pub operation_id: Uuid,
     pub profile: String,
     pub current_stage: String,
+    /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): the
+    /// scoping-confirmed root org this operation is bound to. `None` = not yet
+    /// bound (legacy whole-DB axis).
+    pub engagement_org_id: Option<uuid::Uuid>,
     /// Harness-private resume state (JSONB). Carries `HarnessResumeState`
     /// (current stage run id + queue titles + completed count) for kill→resume.
     pub state_blob: serde_json::Value,

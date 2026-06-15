@@ -404,6 +404,15 @@ impl DbRepoProvider for GolishDbRepoProvider {
             .await
     }
 
+    async fn operation_state_set_engagement_org(
+        &self,
+        operation_id: Uuid,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<()> {
+        self.operation_state_set_engagement_org_impl(operation_id, org_id)
+            .await
+    }
+
     async fn stage_run_insert(
         &self,
         id: Uuid,

@@ -23,6 +23,11 @@ pub struct OperationStateRow {
     pub last_scope_version: Option<i64>,
     pub state_blob: serde_json::Value,
     pub superseded_by: Option<Uuid>,
+    /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): the
+    /// scoping-confirmed root organization id this operation is bound to. Fan-out
+    /// / in-scope reads confine to its subtree (root + subsidiaries). `None` = not
+    /// yet bound (legacy whole-DB axis).
+    pub engagement_org_id: Option<Uuid>,
 }
 
 /// 创建一个新 operation_state 行 (新 operation 入口).
@@ -50,7 +55,7 @@ pub async fn get(pool: &PgPool, operation_id: Uuid) -> Result<Option<OperationSt
     let row = sqlx::query_as::<_, OperationStateRow>(
         r#"SELECT operation_id, profile, current_stage, stage_started_at,
                   last_evidence_audit_id, last_classification_id,
-                  last_scope_version, state_blob, superseded_by
+                  last_scope_version, state_blob, superseded_by, engagement_org_id
            FROM operation_state
            WHERE operation_id = $1"#,
     )
@@ -138,6 +143,26 @@ pub async fn write_state_blob(
     Ok(())
 }
 
+/// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): bind this
+/// operation to its scoping-confirmed engagement root org (or clear with `None`).
+/// Read back via [`get`] → `OperationStateRow::engagement_org_id`.
+pub async fn set_engagement_org(
+    pool: &PgPool,
+    operation_id: Uuid,
+    engagement_org_id: Option<Uuid>,
+) -> Result<()> {
+    sqlx::query(
+        r#"UPDATE operation_state
+           SET engagement_org_id = $2
+           WHERE operation_id = $1"#,
+    )
+    .bind(operation_id)
+    .bind(engagement_org_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +179,7 @@ mod tests {
             last_scope_version: Some(3),
             state_blob: serde_json::json!({"sprint_id": "abc"}),
             superseded_by: None,
+            engagement_org_id: Some(Uuid::new_v4()),
         };
         let json = serde_json::to_string(&row).expect("serialize");
         let back: OperationStateRow = serde_json::from_str(&json).expect("deserialize");

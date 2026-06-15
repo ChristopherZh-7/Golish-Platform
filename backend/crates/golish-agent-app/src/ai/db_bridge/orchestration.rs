@@ -30,8 +30,19 @@ impl GolishDbRepoProvider {
             operation_id: r.operation_id,
             profile: r.profile,
             current_stage: r.current_stage,
+            engagement_org_id: r.engagement_org_id,
             state_blob: r.state_blob,
         }))
+    }
+
+    pub(super) async fn operation_state_set_engagement_org_impl(
+        &self,
+        operation_id: Uuid,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<()> {
+        golish_db::repo::operation_state::set_engagement_org(&self.pool, operation_id, org_id)
+            .await?;
+        Ok(())
     }
 
     pub(super) async fn stage_run_insert_impl(

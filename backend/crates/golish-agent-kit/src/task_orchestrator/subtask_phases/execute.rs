@@ -629,6 +629,27 @@ impl TaskOrchestrator {
             .flatten()
             .map(|t| t.input)
             .unwrap_or_default();
+        // Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): bind
+        // this operation to its scoping-confirmed engagement root org. Prefer the
+        // explicitly-set id (CLI seed path) and persist it to operation_state for
+        // resume; otherwise recover the previously-persisted id (resume path).
+        // `None` ⇒ no binding yet (legacy whole-DB axis; downstream fails open).
+        self.harness_org_id = match self.harness_org_id {
+            Some(id) => {
+                let _ = crate::db_shim::operation_state::set_engagement_org(
+                    &*self.repo,
+                    task_id,
+                    Some(id),
+                )
+                .await;
+                Some(id)
+            }
+            None => crate::db_shim::operation_state::get(&*self.repo, task_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|s| s.engagement_org_id),
+        };
         let mut exec_ctx = ExecutionContext {
             completed_results: Vec::new(),
             task_input,

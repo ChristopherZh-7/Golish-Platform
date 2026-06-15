@@ -41,6 +41,7 @@ impl MemRepo {
                 operation_id,
                 profile: profile.to_string(),
                 current_stage: current_stage.to_string(),
+                engagement_org_id: None,
                 state_blob: serde_json::Value::Null,
             },
         );
@@ -108,6 +109,7 @@ impl DbRepoProvider for MemRepo {
                 operation_id,
                 profile: profile.to_string(),
                 current_stage: current_stage.to_string(),
+                engagement_org_id: None,
                 state_blob: serde_json::Value::Null,
             },
         );
