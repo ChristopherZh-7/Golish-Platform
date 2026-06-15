@@ -222,6 +222,69 @@ async fn resume_skip_passed_at(
         .then_some(passed_at)
 }
 
+/// Phase 2 闸1·A-lite: max gate attempts per org before giving up to `gaps`
+/// (1 initial dispatch + 2 feedback retries). Exceeding it still records a gap so
+/// the main agent's gap-closure loop can take over.
+const MAX_ORG_GATE_ATTEMPTS: usize = 3;
+
+/// Next action for an org after one attempt's gate verdict (pure control-flow,
+/// unit-tested). `max_attempts == 1` (the no-DB fallback path) makes a BLOCK
+/// terminal so eval/headless runs never retry.
+#[derive(Debug, PartialEq, Eq)]
+enum OrgAttemptOutcome {
+    /// Gate passed — count the org + write the completion ledger.
+    Passed,
+    /// Gate blocked with attempts left — re-dispatch the specialist with `feedback`.
+    Retry { feedback: String },
+    /// Gate blocked with no attempts left — record a gap carrying `reasons`.
+    Exhausted { reasons: Vec<String> },
+}
+
+/// Decide what to do after a per-org attempt produced `verdict`. `attempt` is the
+/// 1-based number of the attempt that just ran; `max_attempts` is the cap.
+fn next_org_action(
+    verdict: &OrgVerdict,
+    attempt: usize,
+    max_attempts: usize,
+) -> OrgAttemptOutcome {
+    match verdict {
+        OrgVerdict::Pass => OrgAttemptOutcome::Passed,
+        OrgVerdict::Block { reasons } => {
+            if attempt < max_attempts {
+                OrgAttemptOutcome::Retry {
+                    feedback: gate_retry_feedback(attempt + 1, max_attempts, reasons),
+                }
+            } else {
+                OrgAttemptOutcome::Exhausted {
+                    reasons: reasons.clone(),
+                }
+            }
+        }
+    }
+}
+
+/// Build the feedback block appended to the specialist's objective on a retry,
+/// naming the gate's BLOCK reasons so it closes exactly those gaps. `attempt` is
+/// the (1-based) NEXT attempt number being launched.
+fn gate_retry_feedback(attempt: usize, max_attempts: usize, reasons: &[String]) -> String {
+    let reasons_block = if reasons.is_empty() {
+        "the per-org stage gate did not pass (no specific reasons returned)".to_string()
+    } else {
+        reasons
+            .iter()
+            .map(|r| format!("- {r}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!(
+        "## GATE FEEDBACK — retry {attempt}/{max_attempts}\n\n\
+         Your previous deliverable for THIS organization did NOT pass the per-org \
+         stage gate. The evidence you already collected is saved in the ledger — do \
+         NOT redo it; focus only on closing these specific gaps, then submit the \
+         StageDeliverable again:\n\n{reasons_block}"
+    )
+}
+
 /// Handle the `stage_run` tool call: per-org serial specialist fan-out.
 pub(super) async fn execute_stage_run<M>(
     tool_args: &Value,
@@ -343,135 +406,172 @@ where
             continue;
         }
 
-        emit_org_progress(
-            ctx,
-            stage,
-            unit,
-            &org_request_id,
-            "running",
-            Some(format!("dispatching {role_label}")),
-            0,
-            &stage_label,
-            &role_label,
-            &coverage_axis,
-        );
-
-        let objective = build_org_objective(
-            stage,
-            unit,
-            &spec.expected_techniques,
-            &spec.allowed_tool_types,
-        );
-        let sub_args = json!({ "task": objective });
-        let result = execute_sub_agent_call(
-            &sub_agent_tool,
-            &sub_args,
-            ctx,
-            model,
-            context,
-            &org_request_id,
-        )
-        .await;
-
-        let sub_ok = matches!(&result, Ok(r) if r.success);
-
-        // Take THIS org's own deliverable: serial execution means the side-channel
-        // slot currently holds this org's last submit (the next org overwrites it).
-        let org_deliverable: Option<StageDeliverable> = match ctx.harness_deliverable_sink.as_ref()
-        {
-            Some(sink) => sink
-                .read()
-                .await
-                .as_deref()
-                .and_then(|s| serde_json::from_str::<StageDeliverable>(s).ok()),
-            None => None,
-        };
-        // Clear after taking so the next org cannot reuse this org's residue.
-        if let Some(sink) = ctx.harness_deliverable_sink.as_ref() {
-            *sink.write().await = None;
-        }
-
-        // Authoritative verdict: this org passes only when its OWN deliverable
-        // clears a DB-truth gate for THIS org. Without a repo (pure-eval/headless
-        // contexts) or a parseable deliverable, fall back to the sub-agent success
-        // flag so regression/eval paths keep working (real runs always have DB).
-        let verdict = match (
-            ctx.events.db_tracker.and_then(|t| t.repo()),
-            org_deliverable.as_ref(),
-        ) {
-            (Some(repo), Some(deliv)) => {
-                let org_uuid = uuid::Uuid::parse_str(&unit.id).ok();
-                let session = ctx.events.session_id.unwrap_or("");
-                let gate = evaluate_org_stage_gate(repo, org_uuid, session, stage, deliv).await;
-                decide_org_verdict(&gate)
-            }
-            _ => {
-                if sub_ok {
-                    OrgVerdict::Pass
+        // Phase 2 闸1·A-lite: run this org's dispatch→gate inside a bounded retry
+        // loop. A BLOCK re-dispatches the SAME specialist with the gate's reasons as
+        // feedback — the already-collected evidence stays in the ledger and the gate
+        // reads it cumulatively, so a fresh re-run only needs to close the named
+        // gaps. Only a PASS counts + writes the ledger; exhausting the attempts
+        // records a gap for the main agent's gap-closure loop. The no-DB fallback
+        // path uses max_attempts=1 so eval/headless never retries.
+        let mut attempt = 0usize;
+        let mut feedback: Option<String> = None;
+        loop {
+            attempt += 1;
+            emit_org_progress(
+                ctx,
+                stage,
+                unit,
+                &org_request_id,
+                "running",
+                Some(if attempt == 1 {
+                    format!("dispatching {role_label}")
                 } else {
-                    OrgVerdict::Block {
-                        reasons: vec!["sub-agent did not complete".to_string()],
-                    }
-                }
-            }
-        };
+                    format!("retry {attempt}/{MAX_ORG_GATE_ATTEMPTS}: closing gate gaps")
+                }),
+                0,
+                &stage_label,
+                &role_label,
+                &coverage_axis,
+            );
 
-        match verdict {
-            OrgVerdict::Pass => {
-                passed_count += 1;
-                // Record this org's pass into the resume ledger so a later run can
-                // skip it (upsert latest). Fail-open: no db_tracker / unparseable id
-                // → just don't record (re-runs simply won't skip).
-                if let (Some(tracker), Ok(org_id)) =
-                    (ctx.events.db_tracker, uuid::Uuid::parse_str(&unit.id))
-                {
-                    tracker
-                        .record_org_stage_completion(org_id, stage.as_str(), Some(&org_request_id))
-                        .await;
-                }
-                emit_org_progress(
-                    ctx,
+            let objective = {
+                let base = build_org_objective(
                     stage,
                     unit,
-                    &org_request_id,
-                    "passed",
-                    None,
-                    0,
-                    &stage_label,
-                    &role_label,
-                    &coverage_axis,
+                    &spec.expected_techniques,
+                    &spec.allowed_tool_types,
                 );
-            }
-            OrgVerdict::Block { reasons } => {
-                // Prefer the gate's own reasons; fall back to the sub-agent's
-                // response/error when the block came from the success-flag path.
-                let detail = if reasons.is_empty() {
-                    match &result {
-                        Ok(r) => r
-                            .value
-                            .get("response")
-                            .or_else(|| r.value.get("error"))
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.chars().take(300).collect::<String>())
-                            .unwrap_or_default(),
-                        Err(e) => e.to_string(),
-                    }
-                } else {
-                    reasons.join("; ").chars().take(300).collect::<String>()
+                match &feedback {
+                    Some(fb) => format!("{base}\n\n{fb}"),
+                    None => base,
+                }
+            };
+            let sub_args = json!({ "task": objective });
+            let result = execute_sub_agent_call(
+                &sub_agent_tool,
+                &sub_args,
+                ctx,
+                model,
+                context,
+                &org_request_id,
+            )
+            .await;
+
+            let sub_ok = matches!(&result, Ok(r) if r.success);
+
+            // Take THIS org's own deliverable: serial execution means the
+            // side-channel slot currently holds this org's last submit.
+            let org_deliverable: Option<StageDeliverable> =
+                match ctx.harness_deliverable_sink.as_ref() {
+                    Some(sink) => sink
+                        .read()
+                        .await
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str::<StageDeliverable>(s).ok()),
+                    None => None,
                 };
-                emit_org_progress(
-                    ctx,
-                    stage,
-                    unit,
-                    &org_request_id,
-                    "blocked",
-                    None,
-                    0,
-                    &stage_label,
-                    &role_label,
-                    &coverage_axis,
-                );
-                gaps.push(json!({ "org_id": unit.id, "org_name": unit.name, "detail": detail }));
+            // Clear after taking so the next attempt/org cannot reuse this residue.
+            if let Some(sink) = ctx.harness_deliverable_sink.as_ref() {
+                *sink.write().await = None;
+            }
+
+            // Authoritative verdict + whether it came from the real DB gate. Without
+            // a repo (pure-eval/headless) or a parseable deliverable, fall back to
+            // the sub-agent success flag so regression/eval paths keep working.
+            let (verdict, from_gate) = match (
+                ctx.events.db_tracker.and_then(|t| t.repo()),
+                org_deliverable.as_ref(),
+            ) {
+                (Some(repo), Some(deliv)) => {
+                    let org_uuid = uuid::Uuid::parse_str(&unit.id).ok();
+                    let session = ctx.events.session_id.unwrap_or("");
+                    let gate =
+                        evaluate_org_stage_gate(repo, org_uuid, session, stage, deliv).await;
+                    (decide_org_verdict(&gate), true)
+                }
+                _ => {
+                    let v = if sub_ok {
+                        OrgVerdict::Pass
+                    } else {
+                        OrgVerdict::Block {
+                            reasons: vec!["sub-agent did not complete".to_string()],
+                        }
+                    };
+                    (v, false)
+                }
+            };
+
+            // Only the real DB gate earns retries; the fallback path is terminal.
+            let max_attempts = if from_gate { MAX_ORG_GATE_ATTEMPTS } else { 1 };
+            match next_org_action(&verdict, attempt, max_attempts) {
+                OrgAttemptOutcome::Passed => {
+                    passed_count += 1;
+                    // Record this org's pass into the resume ledger so a later run
+                    // can skip it (upsert latest). Fail-open: no db_tracker /
+                    // unparseable id → just don't record (re-runs won't skip).
+                    if let (Some(tracker), Ok(org_id)) =
+                        (ctx.events.db_tracker, uuid::Uuid::parse_str(&unit.id))
+                    {
+                        tracker
+                            .record_org_stage_completion(
+                                org_id,
+                                stage.as_str(),
+                                Some(&org_request_id),
+                            )
+                            .await;
+                    }
+                    emit_org_progress(
+                        ctx,
+                        stage,
+                        unit,
+                        &org_request_id,
+                        "passed",
+                        None,
+                        0,
+                        &stage_label,
+                        &role_label,
+                        &coverage_axis,
+                    );
+                    break;
+                }
+                OrgAttemptOutcome::Retry { feedback: fb } => {
+                    feedback = Some(fb);
+                    continue;
+                }
+                OrgAttemptOutcome::Exhausted { reasons } => {
+                    // Prefer the gate's own reasons; fall back to the sub-agent's
+                    // response/error when the block came from the success-flag path.
+                    let detail = if reasons.is_empty() {
+                        match &result {
+                            Ok(r) => r
+                                .value
+                                .get("response")
+                                .or_else(|| r.value.get("error"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.chars().take(300).collect::<String>())
+                                .unwrap_or_default(),
+                            Err(e) => e.to_string(),
+                        }
+                    } else {
+                        reasons.join("; ").chars().take(300).collect::<String>()
+                    };
+                    emit_org_progress(
+                        ctx,
+                        stage,
+                        unit,
+                        &org_request_id,
+                        "blocked",
+                        None,
+                        0,
+                        &stage_label,
+                        &role_label,
+                        &coverage_axis,
+                    );
+                    gaps.push(
+                        json!({ "org_id": unit.id, "org_name": unit.name, "detail": detail }),
+                    );
+                    break;
+                }
             }
         }
     }
@@ -704,5 +804,55 @@ mod tests {
             now,
             ttl
         ));
+    }
+
+    #[test]
+    fn next_org_action_pass_is_passed() {
+        assert_eq!(next_org_action(&OrgVerdict::Pass, 1, 3), OrgAttemptOutcome::Passed);
+        assert_eq!(next_org_action(&OrgVerdict::Pass, 3, 3), OrgAttemptOutcome::Passed);
+    }
+
+    #[test]
+    fn next_org_action_block_with_attempts_left_retries_with_named_reasons() {
+        let v = OrgVerdict::Block {
+            reasons: vec!["missing GOLISH-INTEL-DNS on a.com".to_string()],
+        };
+        match next_org_action(&v, 1, 3) {
+            OrgAttemptOutcome::Retry { feedback } => {
+                assert!(
+                    feedback.contains("missing GOLISH-INTEL-DNS on a.com"),
+                    "feedback names the gap: {feedback}"
+                );
+                assert!(feedback.contains("retry 2/3"), "feedback names attempt: {feedback}");
+            }
+            other => panic!("expected Retry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn next_org_action_block_on_last_attempt_is_exhausted() {
+        let v = OrgVerdict::Block {
+            reasons: vec!["coverage incomplete".to_string()],
+        };
+        assert_eq!(
+            next_org_action(&v, 3, 3),
+            OrgAttemptOutcome::Exhausted {
+                reasons: vec!["coverage incomplete".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn next_org_action_no_db_fallback_does_not_retry() {
+        // max_attempts == 1 (no-repo fallback path): a BLOCK is terminal, never retried.
+        let v = OrgVerdict::Block {
+            reasons: vec!["sub-agent did not complete".to_string()],
+        };
+        assert_eq!(
+            next_org_action(&v, 1, 1),
+            OrgAttemptOutcome::Exhausted {
+                reasons: vec!["sub-agent did not complete".to_string()]
+            }
+        );
     }
 }
