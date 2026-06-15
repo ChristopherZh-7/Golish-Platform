@@ -11,6 +11,27 @@
   ],
   "features": [
     {
+      "id": "engagement-org-isolation-2026-06-15",
+      "priority": 1,
+      "area": "backend: golish-db/repo/{organizations.rs(subtree_ids WITH RECURSIVE),operation_state.rs(engagement_org_id 列+set_engagement_org)} + migration 20260615000003_operation_state_engagement_org; golish-agent-kit/{db_traits/{repo.rs,types.rs},db_shim.rs,task_orchestrator/{types.rs(ExecutionContext.harness_org_id),subtask_phases/execute.rs(harness_org_id 解析+extract_engagement_org_if_scoping+consume_gate_outcome 绑定+HarnessGateOutcome.engagement_org_id),prompts/mod.rs(scoping claim subject=org_id),tool_executors/security.rs(list_in_scope_targets org 过滤)}}; golish-agent-runtime/agentic_loop/{context.rs(AgenticLoopContext.harness_org_id),tool_execution/direct/{mod.rs,stage_run_call.rs(units 子树过滤)}}; golish-agent-bridge/{agent_bridge/{mod,constructors,prepare},bridge_executor/trait_impl}(harness_active_org_id 侧信道); golish-agent-app/ai/db_bridge/{mod,recon,orchestration}(impl)",
+      "title": "engagement-org 范围隔离治本：修『同 workspace 历史 org(平安)串入本次 engagement(example) scope』根因。engagement = scoping 确认的 root org 子树；所有 in-scope/扇出查询按其过滤，org_id 缺失 fail-open。",
+      "user_visible_behavior": "stage-run/engagement 只在『本次 scoping 确认的 root org 及其子公司子树』内工作：stage_run 扇出拒绝越界 org(run.log: `stage_run dropped N org(s) outside the engagement org subtree`)、list_in_scope_targets 只列本子树、主 agent 注入的 in-scope 资产按 org 过滤。CLI seed 路径用 seed org 锚定；chat 路径 scoping gate PASS 时从 scope claim 的 org_id subject 自动锚定(持久化到 operation_state.engagement_org_id)。",
+      "status": "passing",
+      "design": "内嵌(engagement=root org 子树,复用 organizations.parent_id,不恢复 2026-05-17 删的 engagements 表)",
+      "plan": "core1(harness_org_id 管道)→core2(stage_run 子树过滤)→core3(list_in_scope_targets org 过滤)→core0(operation_state engagement_org_id 列 + scoping 锚定 A1/A3/A2-CLI/A2-chat)",
+      "verification": [
+        "[✓] cargo check --all-targets (agent-app/agent-runtime/agent-kit/db) → exit 0 (56s/27s/12s 三批)",
+        "[✓] cargo nextest: core1-3 批(db+agent-kit+agent-runtime) 973 passed / core0 批(db+agent-kit+agent-app) 779 passed / A2-chat 批(agent-kit) 646 passed(含新增 subtree_ids + 2 extract_engagement_org 测) 全 0 skipped 无回归",
+        "[✓] cargo clippy agent-kit/app/runtime/bridge --all-targets --no-deps -D warnings → exit 0 零告警",
+        "[✓] org 子树 SQL 真实数据验证(嵌入式 PG 15432): subtree(example-intel-test)=1、subtree(中国平安集团)=11",
+        "[未跑] just precommit 全量(pre-existing golish-db assemble_truth_facts 死码阻断 -D warnings)",
+        "[未验·用户环境] 活体: 重启 app apply migration 后重跑 example stage-run 看平安不再串入 + chat scoping A2-chat 绑定"
+      ],
+      "evidence": "2026-06-15 BaJie MCP-agent-4(DISPATCH off, 用户「全部搞完、优雅干净、代价无所谓」). 根因证据链: run.log(worker 跑 `subfinder -d pingan.com -d pingan.com.cn -d pa18.com -d example.com`) + DB 物证(targets/organizations: 平安 11 org/30 域名 + example-intel-test 独立 root 同 project_path=Test1). 6 commit 落 feat/stage-run-fanout(baseline e93b2b55 + core1 f92d535f + core2 362237c2 + core3 46b93776 + core0 3b6f1880 + A2-chat c1489eb7), 未 push. 详见 agent-progress.md 最新一条.",
+      "notes": "engagement 边界用 root org 子树(organizations.parent_id 天然分隔平安/example), 不恢复 2026-05-17 删的 engagements 元信息表, 只在 operation_state 加 1 个 nullable org_id 指针列(migration 20260615000003). 隔离统一收敛 org_id 维度, 缺失 fail-open(不破坏 chat/eval/test 双桩). core3a(去 SQL OR project_path='' 兜底)评估后不做(主路径不走 + 反伤无主历史查询). **migration 需 app 重启 apply**. A2-chat 的 agent 遵守度(scoping 填 org_id 作 claim subject)需真 LLM 验证, fail-open 兜底. pre-existing assemble_truth_facts 死码(非本轮)阻断全量 precommit. I10: migration 仅加 nullable 列, 向后兼容.",
+      "remember": "engagement-org isolation: engagement=scoping 确认 root org 子树. core1 harness_org_id 贯穿(ExecutionContext→AgentBridge.harness_active_org_id→AgenticLoopContext); core2 stage_run_call units 按 DbRepoProvider::org_subtree_ids 过滤(→organizations::subtree_ids WITH RECURSIVE); core3 in_scope_targets 加 org_id(GolishDbRepoProvider 按 subtree 过滤, security.rs execute_security_analysis_tool 传 ctx.harness_org_id); core0 operation_state.engagement_org_id 列(migration 20260615000003)+run_executor_driven 解析(self.harness_org_id.or(operation_state)+持久化)+consume_gate_outcome scoping PASS extract_engagement_org_if_scoping(claim UUID subject)绑定. fail-open 全程. 验证 973/779/646 nextest + clippy 4crate -D 绿 + 真实数据 subtree 1/11."
+    },
+    {
       "id": "stage-run-per-org-gate-2026-06-15",
       "priority": 1,
       "area": "backend: golish-agent-kit/src/harness/org_gate.rs (Phase1 evaluate_org_stage_gate + Phase1.5 stage_pass_token/extract_pass_token/STAGE_RUN_PASS_TOKEN_KIND + 共享 STAGE_COMPLETION_TTL_SECS/completion_is_fresh), db_traits/repo.rs (+in_scope_org_ids/+org_stage_completions_get default 空), task_orchestrator/subtask_phases/execute.rs (try_specialist_stage_gate/verify_stage_run_pass_token/render_specialist_gate + 两 gate 调用点 specialist 分支 + fan-out BLOCK 绕过 refiner), Cargo.toml(+sha2); golish-db/src/repo/organizations.rs(+in_scope_ids); golish-agent-runtime/.../stage_run_call.rs (per-org gate 取代 result.success + 发 pass_token); golish-agent-app/src/ai/db_bridge/{mod,recon}.rs (impl 两 repo 方法). 计划 docs/superpowers/plans/2026-06-15-stage-run-per-org-gate.md",

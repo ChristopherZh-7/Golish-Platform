@@ -29,6 +29,34 @@
 
 ---
 
+### 2026-06-15 · engagement-org 隔离治本（"测 example 串成平安"根因 + core0/1/2/3）（BaJie MCP-agent-4 · DISPATCH off · 用户「全部搞完、优雅干净、代价无所谓」）
+
+- **本轮目标**：修用户报的"测 example stage-run 却串进历史平安数据"，根因调查 + 治本（engagement-org 范围隔离）。
+- **根因（证据链）**：同一 workspace（`project_path=.../Test1`）+ 跨 run 持久化的嵌入式 PG 里堆了上次测平安留下的 11 个平安 org + 30 个平安域名（`scope='in'`）；本次 example 建了独立 root org `example-intel-test`（子树仅自己）。但多个"查 in-scope/org"入口在 `org_id` 缺失时回退"整库可见"（legacy whole-DB axis）→ 主 agent 看到全库平安 org → 喂进 `stage_run` 扇出 → 平安 worker 测平安。**run.log 实证**：worker 跑 `subfinder -d pingan.com -d pingan.com.cn -d pa18.com -d example.com`。**DB 物证**：targets/organizations 查询确认平安 11 org/30 域名 + example 独立 root 同 project_path。
+- **已完成（6 commit · branch `feat/stage-run-fanout`）**：
+  - `e93b2b55` baseline（用户要求先 commit 工作树所有在途改动）
+  - `f92d535f` **core1**：engagement org id 贯穿 agentic loop（`ExecutionContext.harness_org_id` → `AgentBridge.harness_active_org_id` 侧信道 → `AgenticLoopContext.harness_org_id`，复刻 harness_stage 同路）
+  - `362237c2` **core2**：`stage_run` 扇出按 engagement org 子树过滤 units（越界 org 拒掉）+ `DbRepoProvider::org_subtree_ids`（`organizations::subtree_ids` WITH RECURSIVE）
+  - `46b93776` **core3**：`list_in_scope_targets` 按子树过滤（原 `in_scope_targets` trait 无 org_id 参数 → 返回整库；现 `GolishDbRepoProvider` 按 subtree 过滤，`execute_security_analysis_tool` 透传 `ctx.harness_org_id`）
+  - `3b6f1880` **core0(A1+A3+A2-CLI)**：`operation_state += engagement_org_id`（migration `20260615000003`，nullable）+ repo set/get + view；orchestrator `run_executor_driven` 解析（CLI seed 优先 + 持久化；resume 读回）
+  - `c1489eb7` **core0(A2-chat)**：scoping gate PASS 时从 deliverable scope claim 的 UUID subject 提取 engagement org（`extract_engagement_org_if_scoping`）→ 绑定 `harness_org_id` + 写 operation_state（`HarnessGateOutcome.engagement_org_id` + `consume_gate_outcome`）；scoping prompt 引导 agent 用 organization_id 作 claim subject
+- **关键设计决策**：engagement 边界 = scoping 确认的 root org **子树**（`organizations.parent_id` 天然分隔平安/example，无需恢复 2026-05-17 删的 engagements 元信息表，只在 operation_state 加 1 个 nullable root-org 指针列）；隔离统一收敛 `org_id` 维度，缺失时 **fail-open**（不破坏 chat/eval/test 双桩）。core3a（去 SQL `OR project_path=''` 兜底）评估后**不做**（主路径不走它 + 反伤无主历史数据查询）。
+- **运行过的验证（实跑）**：
+  - `cargo check --all-targets`（agent-app/agent-runtime/agent-kit/db）→ exit 0（56s / 27s / 12s 三批）
+  - `cargo nextest`：core1-3 批（db+agent-kit+agent-runtime）**973 passed**；core0 批（db+agent-kit+agent-app）**779 passed**；A2-chat 批（agent-kit）**646 passed**（含新增 subtree_ids SQL shape + 2 个 extract_engagement_org 测）；全 0 skipped 无回归
+  - `cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-agent-bridge --all-targets --no-deps -D warnings` → exit 0 零告警
+  - org 子树 SQL 真实数据验证（端口 15432 嵌入式 PG）：`subtree(example-intel-test)=1`、`subtree(中国平安集团)=11`
+- **已记录证据**：见上"运行过的验证" + run.log 实证 + DB 物证
+- **提交记录**：6 commit（见"已完成"），HEAD `c1489eb7`，**未 push**
+- **已知风险/未解决**：
+  - migration `20260615000003` 需 app 重启 apply（当前端口 15432 嵌入式 PG 还没 apply 新列；apply 前旧进程跑 operation_state 查询会缺列报错）
+  - A2-chat 的 agent 遵守度（scoping 时填 org_id 作 claim subject）需真 LLM 跑 chat scoping 验证；fail-open 保证不填也不破坏
+  - pre-existing：golish-db `assemble_truth_facts` dead_code（2c-3b revert 遗留，非本轮）→ 全 workspace clippy `-D` / precommit 红；本轮用 `--no-deps` 隔离验证本人 crate 干净
+  - 未跑全量 `just precommit`（被上述 pre-existing 阻断 + 前端无关）；未 push
+- **下一步最佳动作**：① 重启 app 让 migration 生效；② 重跑 example stage-run，确认 run.log 出现 `stage_run dropped N org(s) outside the engagement org subtree` 且平安不再串入；③ 真 LLM 跑 chat scoping 验证 A2-chat 绑定；④ 团队决定清 pre-existing `assemble_truth_facts` 死码后跑全量 precommit + push
+
+---
+
 ### 2026-06-15 · stage_run per-org gate（Phase 1 验证）+ 阶段过门 hash 令牌（Phase 1.5 实现）（BaJie MCP-agent-4 · DISPATCH off · 接 MCP-1→MCP-4 上下文转移 · 用户「一次性全部搞定」）
 
 - **本轮目标**：把 chat `stage_run` 的「每个 org 各过各 gate」做实（Phase 1，验证 MCP-1 已落代码），再加「fan-out 阶段跑完 stage_run 即过」的防伪 hash 令牌闭环（Phase 1.5 / 用户「法子二」= B-recompute）。计划：`docs/superpowers/plans/2026-06-15-stage-run-per-org-gate.md`。
