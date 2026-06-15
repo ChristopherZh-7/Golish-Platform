@@ -29,6 +29,23 @@
 
 ---
 
+### 2026-06-15 · Host-aware coverage 2c-3 调研 spike + spec（零代码）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「做 2c-3 调研 spike」）
+
+- **本轮目标**：按 plan 2c Task 3.0 做 IP 原生技术（RDNS/IP-WHOIS）的只读调研 spike → 产出 design+plan（零代码）。
+- **调研方式**：派 explore 子 agent 实证 recon 被动情报采集器框架（DNS/CT/WHOIS/subdomain 怎么跑/落库/调度）+ PTR/IP-WHOIS 存储缺口。带 file:line 证据回报。
+- **关键发现**：
+  - 被动情报「分裂人格」：org 级（CT/域名 WHOIS/ASN/OSINT→organizations.* 列→has_* 盖全资产）vs per-asset（forward DNS/subdomain→dns_records/target_assets→*_values 集→按 t.value 盖）。
+  - **PTR 零迁移**：`dns_records.record_type` 是 free TEXT（migration 20260612000001 注释已列 PTR），但 PTR 行须挂到 **IP target 的 target_id**（coverage 键 t.value）。现 `land_dns_records` 只解析 domain，无反查 → 需新 `land_rdns`。
+  - **IP-WHOIS 无存储**：organizations.whois 是域名 RDAP（org 级，粒度错）；Team Cymru 只 IP→ASN（org 级 asns）。grep `rdap.org/ip`/`ip_whois` 零命中 → 需新 `targets.ip_whois JSONB` 迁移（§2.7 sign-off + I10 expand-first）。
+  - 采集器无统一 registry，4 条并行机制；最净插入点 = `land_target_intel_coverage` hook（仿 land_dns_records/land_ct_and_whois）。
+  - coverage_truth 扩展点：TruthInputs +rdns_values/ipwhois_values、build_rdns/ipwhois_values_sql（仿 build_in_scope_values_sql）、assemble_truth_facts_typed per-asset push、coverage_truth_facts fetch；technique_resolver baseline += 2 id、matrix RDNS/IPWHOIS=>Ip|Cidr。
+- **产出（2 新 doc，零代码）**：`docs/design/2026-06-15-host-aware-coverage-2c3-ip-native.md`（§3 存储决策 + §4 采集器 + §5 gate/truth + §6 rollout/risk + §7 touch points + §9 分 2c-3a 存储采集 / 2c-3b gate 翻转）；`docs/superpowers/plans/...-2c3-ip-native.md`（2c-3a Task A.1-A.4 + 2c-3b Task B.1-B.3 全 TDD 带代码/SQL/验证/commit）。
+- **运行过的验证**：`python3 json.load feature_list.json` OK。本轮零代码。
+- **未做 / 下一步**：2c-3 实现整体**待用户 sign-off**（迁移 §2.7 + baseline 会 BLOCK 无数据 IP + 新主动网络采集器）。先 2c-3a（存储+采集器，inert）再 2c-3b（baseline 翻转 + 活体 parity）。
+- **已参考技能**：`.cursor/skills/writing-plans`（must·已 Read 本会话早些时候，按其结构写 design+plan）；`mcp-server/role-skills/` 为空 Glob 0。
+
+---
+
 ### 2026-06-15 · Host-aware coverage 2c-2 实现（truth 投影按类型，TDD 绿）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「继续 2c-2」）
 
 - **本轮目标**：按 plan 2c-2——`assemble_truth_facts` 按资产类型不给 IP/CIDR 盖域名专属 org 事实（CT），让证据账本/coverage% 干净。
