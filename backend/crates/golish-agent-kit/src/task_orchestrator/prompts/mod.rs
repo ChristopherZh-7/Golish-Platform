@@ -131,14 +131,14 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
             "\n### SCOPING — authorization confirmation ONLY\n\
 - This stage CONFIRMS the target is authorized; it does NOT probe. The runtime enforces the stage's tool boundary, so reconnaissance attempts are blocked here — that work belongs to the next stage.\n\
 - You do NOT need tool evidence here: confirm the authorized scope from the task context (target, exclusions, black-box vs credentialed, objective) and submit. Leave `evidence_refs` empty and use empty `evidence_ids` — the gate does NOT require ledger evidence for scoping.\n\
-- Emit ONE claim with kind \"scope_confirmed\" summarizing the authorized scope, then CALL `submit_stage_deliverable`.\n",
+- Emit ONE claim with kind \"scope_confirmed\" summarizing the authorized scope. If you created or confirmed an engagement organization via manage_organizations, set this claim's `subject` to that organization_id (the UUID) so the whole engagement binds to it (downstream stages then scope to that org's subtree only); otherwise use the engagement subject name. Then CALL `submit_stage_deliverable`.\n",
         );
         // scoping 人工确认硬门禁 (设计 2026-06-06 §3.4): policy 要求时, gate 额外要求一条
         // scope_human_approved claim — 提前在 charter 里说清「submit 前必须有人确认」,
         // 与 apply_harness_gate_hook 注入的 scoping_human_gate_rule 呼应.
         if scoping_policy.require_human_scope_approval {
             s.push_str(
-                "- HARD GATE — human scope approval REQUIRED: before you `submit_stage_deliverable`, the scope MUST be confirmed by a human. Call `ask_human(input_type=\"scope_review\")`, let the user add/remove/edit the target list, and ONLY after they approve, emit a SECOND claim with kind \"scope_human_approved\" (subject = the engagement subject) that cites the ask_human request_id. Without that claim the deterministic gate BLOCKS and you cannot leave scoping.\n",
+                "- HARD GATE — human scope approval REQUIRED: before you `submit_stage_deliverable`, the scope MUST be confirmed by a human. Call `ask_human(input_type=\"scope_review\")`, let the user add/remove/edit the target list, and ONLY after they approve, emit a SECOND claim with kind \"scope_human_approved\" (subject = the engagement subject's organization_id, the UUID created via manage_organizations, so the engagement binds to that org) that cites the ask_human request_id. Without that claim the deterministic gate BLOCKS and you cannot leave scoping.\n",
             );
         }
         // red_team (require_unit_candidates): the gate cross-verifies the REAL

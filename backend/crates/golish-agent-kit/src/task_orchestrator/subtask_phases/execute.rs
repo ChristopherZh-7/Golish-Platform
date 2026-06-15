@@ -565,6 +565,20 @@ impl TaskOrchestrator {
             },
         });
         if outcome.gate_allowed {
+            // Engagement-org isolation (设计 2026-06-15-engagement-org-isolation):
+            // scoping confirmed the engagement's root org — bind it now + persist
+            // to operation_state so every downstream stage's fan-out / in-scope
+            // reads confine to its subtree (chat path; the CLI seed path bound it
+            // up-front). Idempotent: re-binding the same id is harmless.
+            if let Some(org) = outcome.engagement_org_id {
+                self.harness_org_id = Some(org);
+                let _ = crate::db_shim::operation_state::set_engagement_org(
+                    &*self.repo,
+                    task_id,
+                    Some(org),
+                )
+                .await;
+            }
             if let Some(summary) = outcome.evidence_summary.clone() {
                 self.harness_evidence
                     .insert(outcome.gated_stage.as_str().to_string(), summary);
@@ -1874,6 +1888,13 @@ struct HarnessGateOutcome {
     confirm_only_stage: bool,
     /// missing-deliverable 时账本真实 id → kind 标签（A 类模板）。
     evidence_kind_labels: std::collections::HashMap<i64, String>,
+    /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): when a
+    /// scoping deliverable confirmed the engagement subject org, its
+    /// `organization_id` (parsed from the scope claim subject). On PASS the
+    /// orchestrator binds it as `harness_org_id` + persists it to operation_state
+    /// so downstream stages confine to that org's subtree. `None` = not scoping /
+    /// no org id in the claim (fail-open).
+    engagement_org_id: Option<uuid::Uuid>,
 }
 
 impl HarnessGateOutcome {
@@ -2215,6 +2236,10 @@ fn apply_harness_gate_hook(
         Some(HarnessGateOutcome {
             gated_stage: stage_hint.stage_kind,
             gate_allowed: decision.allowed,
+            engagement_org_id: extract_engagement_org_if_scoping(
+                stage_hint.stage_kind,
+                &deliverable,
+            ),
             repair_correction: None,
             evidence_summary: Some(summarize_deliverable(&deliverable)),
             evidence_refs: deliverable
@@ -2270,6 +2295,7 @@ fn render_specialist_gate(
         Some(HarnessGateOutcome {
             gated_stage: stage,
             gate_allowed: allowed,
+            engagement_org_id: None,
             repair_correction: None,
             evidence_summary: Some(summarize_deliverable(deliverable)),
             evidence_refs: Vec::new(),
@@ -2293,6 +2319,31 @@ fn render_specialist_gate(
 /// cross-stage handoff store. Lists the first few claims + findings (kind +
 /// subject) and the evidence-ref count so a downstream stage sees what upstream
 /// actually produced without re-reading the full deliverable JSON.
+/// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): pull the
+/// scoping-confirmed engagement root org id out of a scoping deliverable. The
+/// agent sets the confirmed `organization_id` as the `subject` of its scope claim
+/// (`scope_confirmed` / `scope_human_approved` / `engagement_org`); we take the
+/// first such claim whose subject parses as a UUID. `None` (stage ≠ scoping, or no
+/// UUID subject) ⇒ no binding (fail-open: legacy whole-DB behavior is unchanged).
+fn extract_engagement_org_if_scoping(
+    stage: crate::harness::StageKind,
+    deliverable: &crate::harness::StageDeliverable,
+) -> Option<uuid::Uuid> {
+    if stage != crate::harness::StageKind::Scoping {
+        return None;
+    }
+    deliverable
+        .claims
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.kind.as_str(),
+                "scope_confirmed" | "scope_human_approved" | "engagement_org"
+            )
+        })
+        .find_map(|c| uuid::Uuid::parse_str(c.subject.trim()).ok())
+}
+
 fn summarize_deliverable(d: &crate::harness::StageDeliverable) -> String {
     const MAX_ITEMS: usize = 6;
     let mut s = String::new();
@@ -2410,6 +2461,7 @@ fn missing_deliverable_gate_outcome(
     Some(HarnessGateOutcome {
         gated_stage: stage,
         gate_allowed: false,
+        engagement_org_id: None,
         repair_correction: None,
         evidence_summary: None,
         evidence_refs: Vec::new(),
@@ -3336,6 +3388,7 @@ mod harness_gate_hook_tests {
         HarnessGateOutcome {
             gated_stage: stage,
             gate_allowed: true,
+            engagement_org_id: None,
             repair_correction: None,
             evidence_summary: None,
             evidence_refs,

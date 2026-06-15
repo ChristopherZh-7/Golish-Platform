@@ -425,6 +425,7 @@ fn pass(stage: StageKind) -> HarnessGateOutcome {
     HarnessGateOutcome {
         gated_stage: stage,
         gate_allowed: true,
+        engagement_org_id: None,
         repair_correction: None,
         evidence_summary: None,
         evidence_refs: Vec::new(),
@@ -447,6 +448,7 @@ fn block(stage: StageKind) -> HarnessGateOutcome {
     HarnessGateOutcome {
         gated_stage: stage,
         gate_allowed: false,
+        engagement_org_id: None,
         repair_correction: None,
         evidence_summary: None,
         evidence_refs: Vec::new(),
@@ -805,4 +807,58 @@ async fn fail_task_if_active_does_not_clobber_finished() {
         "a terminal status must never be clobbered"
     );
     assert_eq!(repo.task_result(task_id).as_deref(), Some("real report"));
+}
+
+// ── Engagement-org isolation (设计 2026-06-15-engagement-org-isolation) ──────
+// `extract_engagement_org_if_scoping` pulls the scoping-confirmed engagement root
+// org id (UUID claim subject) out of a scoping deliverable; the orchestrator binds
+// + persists it so downstream stages confine to that org's subtree. Pure logic.
+
+fn scoping_deliverable_with_claim(kind: &str, subject: &str) -> crate::harness::StageDeliverable {
+    crate::harness::StageDeliverable {
+        stage_id: "scoping".to_string(),
+        stage_run_id: Uuid::new_v4(),
+        claims: vec![crate::harness::StageClaim {
+            kind: kind.to_string(),
+            subject: subject.to_string(),
+            summary: "scope".to_string(),
+            evidence_ids: vec![],
+            technique: None,
+        }],
+        evidence_refs: vec![],
+        skipped_checks: vec![],
+        findings: vec![],
+        required_checks_done: vec![],
+        coverage: vec![],
+    }
+}
+
+#[test]
+fn extract_engagement_org_pulls_uuid_subject_from_scoping_claim() {
+    let org = Uuid::new_v4();
+    let d = scoping_deliverable_with_claim("scope_human_approved", &org.to_string());
+    assert_eq!(
+        super::extract_engagement_org_if_scoping(StageKind::Scoping, &d),
+        Some(org),
+        "a scoping deliverable's UUID claim subject is the engagement org binding"
+    );
+}
+
+#[test]
+fn extract_engagement_org_fails_open_on_non_uuid_or_non_scoping() {
+    // Legacy domain-text subject → no binding (fail-open to whole-DB axis).
+    let d = scoping_deliverable_with_claim("scope_confirmed", "example.com");
+    assert_eq!(
+        super::extract_engagement_org_if_scoping(StageKind::Scoping, &d),
+        None,
+        "non-UUID subject must not bind an engagement org"
+    );
+    // UUID subject but a non-scoping stage → no binding.
+    let org = Uuid::new_v4();
+    let d = scoping_deliverable_with_claim("scope_confirmed", &org.to_string());
+    assert_eq!(
+        super::extract_engagement_org_if_scoping(StageKind::TargetIntel, &d),
+        None,
+        "only the scoping stage binds the engagement org"
+    );
 }
