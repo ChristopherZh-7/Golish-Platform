@@ -145,6 +145,7 @@ where
                 ctx.events.db_tracker,
                 Some(project_path_str.as_str()),
                 ctx.events.session_id,
+                ctx.harness_org_id,
             )
             .await
         {

@@ -289,10 +289,37 @@ impl GolishDbRepoProvider {
         Ok(rows.into_iter().map(|(a, t)| (a, t.to_string())).collect())
     }
 
-    pub(super) async fn in_scope_targets_impl(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+    pub(super) async fn in_scope_targets_impl(
+        &self,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
         let targets = self.recon_targets.in_scope_targets(None).await?;
+        // Engagement-org isolation (设计 2026-06-15-engagement-org-isolation):
+        // confine the listing to the scoping-confirmed engagement org subtree
+        // (root + subsidiaries). `None` org = legacy whole-visible set (chat /
+        // pre-scoping). Once an org is bound, targets with no org binding are
+        // excluded (fail-closed: an unowned row is not "this engagement's").
+        let allowed: Option<std::collections::HashSet<String>> = match org_id {
+            Some(root) => Some(
+                golish_db::repo::organizations::subtree_ids(&self.pool, root)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|u| u.to_string())
+                    .collect(),
+            ),
+            None => None,
+        };
         Ok(targets
             .into_iter()
+            .filter(|t| match &allowed {
+                Some(set) => t
+                    .organization_id
+                    .as_deref()
+                    .map(|o| set.contains(o))
+                    .unwrap_or(false),
+                None => true,
+            })
             .map(|t| {
                 json!({
                     "target_id": t.id,

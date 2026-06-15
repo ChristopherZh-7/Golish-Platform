@@ -7,6 +7,10 @@ pub async fn execute_security_analysis_tool(
     db_tracker: Option<&crate::db_tracking::DbTracker>,
     project_path: Option<&str>,
     session_id: Option<&str>,
+    // Engagement-org isolation (设计 2026-06-15): the scoping-confirmed engagement
+    // root org. `list_in_scope_targets` confines its listing to this org's subtree
+    // so a sibling engagement's targets left in the same workspace never surface.
+    harness_org_id: Option<uuid::Uuid>,
 ) -> Option<ToolResult> {
     let is_sec_tool = matches!(
         tool_name,
@@ -383,7 +387,7 @@ pub async fn execute_security_analysis_tool(
         }
 
         "list_in_scope_targets" => {
-            let rows = match repo.in_scope_targets().await {
+            let rows = match repo.in_scope_targets(harness_org_id).await {
                 Ok(r) => r,
                 Err(e) => {
                     return Some(error_result(format!(

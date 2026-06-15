@@ -288,8 +288,8 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.in_scope_assets_impl(org_id).await
     }
 
-    async fn in_scope_targets(&self) -> anyhow::Result<Vec<serde_json::Value>> {
-        self.in_scope_targets_impl().await
+    async fn in_scope_targets(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.in_scope_targets_impl(org_id).await
     }
 
     async fn in_scope_target_types(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {

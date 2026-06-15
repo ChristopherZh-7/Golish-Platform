@@ -185,7 +185,8 @@ pub trait DbRepoProvider: Send + Sync {
     /// agent tool can enumerate the recon-collected assets, then drill into each
     /// via [`Self::query_target_data`]. Default empty (test doubles); the app
     /// layer overrides it through the recon targets service port.
-    async fn in_scope_targets(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+    async fn in_scope_targets(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<serde_json::Value>> {
+        let _ = org_id;
         Ok(Vec::new())
     }
 
