@@ -33,4 +33,5 @@ pub use types::{
 pub use commands::{
     __cmd__organization_recon_export_assets, __cmd__organization_recon_export_current_assets,
     __cmd__organization_recon_get_run, __cmd__organization_recon_start_run,
+    __cmd__recon_backfill_real_ip,
 };

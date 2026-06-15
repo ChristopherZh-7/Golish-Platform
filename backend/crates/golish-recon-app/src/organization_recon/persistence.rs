@@ -200,16 +200,17 @@ pub(crate) async fn land_target_intel_coverage(
             );
             0
         });
-    let (certificates, whois) = land_ct_and_whois(pool, organization)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(
-                organization_id = %organization.id,
-                %error,
-                "CT/WHOIS landing failed (recon persistence already committed)"
-            );
-            (0, false)
-        });
+    let (certificates, whois) =
+        land_ct_and_whois(pool, organization)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    organization_id = %organization.id,
+                    %error,
+                    "CT/WHOIS landing failed (recon persistence already committed)"
+                );
+                (0, false)
+            });
     CoverageLandingSummary {
         subdomains,
         dns_records,
@@ -372,6 +373,14 @@ async fn land_dns_records(
         let Ok(Some(records)) = joined else {
             continue;
         };
+        // Primary IP for the host tree (design 2026-06-15 Phase 0): first IPv4 (A)
+        // answer, else the first answer. Captured before the consuming upsert loop
+        // below moves `records`.
+        let primary_ip: Option<(Uuid, String)> = records
+            .iter()
+            .find(|(_, record_type, _, _)| *record_type == "A")
+            .or_else(|| records.first())
+            .map(|(target_id, _, _, ip)| (*target_id, ip.clone()));
         for (target_id, record_type, name, value) in records {
             if golish_db::repo::dns_records::upsert(
                 pool,
@@ -387,6 +396,9 @@ async fn land_dns_records(
             {
                 landed += 1;
             }
+        }
+        if let Some((target_id, ip)) = primary_ip {
+            let _ = golish_db::repo::targets::set_real_ip_by_id(pool, target_id, &ip).await;
         }
     }
     Ok(landed)
@@ -1268,10 +1280,7 @@ mod tests {
         let hosts = vec!["a.sub.pingan.com".to_string()];
         assert_eq!(
             collect_subdomain_pairs(&org, &hosts),
-            vec![(
-                "sub.pingan.com".to_string(),
-                "a.sub.pingan.com".to_string()
-            )]
+            vec![("sub.pingan.com".to_string(), "a.sub.pingan.com".to_string())]
         );
     }
 

@@ -81,6 +81,14 @@ interface OrgTreeProps {
   t: (key: string) => string;
 }
 
+// Assets (`node.targets`) live in their own collapsible sub-group so an org with
+// a huge asset list can be folded without also hiding its subsidiaries
+// (`node.children`, which stay under the separate org-level toggle). Groups
+// larger than this start collapsed; the preview cap keeps even an expanded group
+// from flooding the sidebar until the user asks for the rest.
+const ASSET_GROUP_DEFAULT_COLLAPSE = 20;
+const ASSET_PREVIEW_LIMIT = 15;
+
 function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreeProps) {
   const {
     node,
@@ -197,6 +205,25 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
   const isCollapsed = collapsed.has(node.id);
   const counts = countAllTargets(node);
   const isUnassigned = node.id === UNASSIGNED_KEY;
+  // Synthetic IP-centric nodes (`buildHostTree`): host = an IP group, bucket =
+  // catch-all (e.g. unresolved). Only real org nodes carry org-level actions.
+  const kind = node.kind ?? "org";
+  const isOrg = kind === "org";
+  const isHost = kind === "host";
+
+  // Asset sub-group state. Membership in `collapsed` flips the size-based
+  // default, so an untouched large group starts folded while an untouched small
+  // group starts open; `assets-more:` overrides the preview cap on demand.
+  const assetKey = `assets:${node.id}`;
+  const assetMoreKey = `assets-more:${node.id}`;
+  const totalAssets = node.targets.length;
+  const assetsDefaultCollapsed = totalAssets > ASSET_GROUP_DEFAULT_COLLAPSE;
+  const assetsCollapsed = collapsed.has(assetKey)
+    ? !assetsDefaultCollapsed
+    : assetsDefaultCollapsed;
+  const showAllAssets = collapsed.has(assetMoreKey);
+  const visibleAssets = showAllAssets ? node.targets : node.targets.slice(0, ASSET_PREVIEW_LIMIT);
+  const hiddenAssetCount = totalAssets - visibleAssets.length;
   const isEditingThis = editingOrgId === node.id;
   const orgRow = orgs.find((o) => o.id === node.id);
   const engagementMode = getEffectiveEngagementMode(orgRow, orgs);
@@ -231,7 +258,7 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
           <button
             type="button"
             onClick={() => {
-              if (!isUnassigned) {
+              if (isOrg && !isUnassigned) {
                 setSelectedOrgId(node.id);
                 setSelectedTargetId(null);
               }
@@ -245,81 +272,92 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
                 isCollapsed && "-rotate-90"
               )}
             />
-            {isUnassigned ? (
+            {isHost ? (
+              <Network className="w-3 h-3 text-blue-400/70 flex-shrink-0" />
+            ) : !isOrg || isUnassigned ? (
               <FolderOpen className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" />
             ) : (
               <Building2 className="w-3 h-3 text-accent/70 flex-shrink-0" />
             )}
-            <span className="text-[11px] font-medium text-foreground truncate">{node.name}</span>
-            <span className="text-[10px] text-muted-foreground/55 tabular-nums">
+            <span className="min-w-0 truncate text-[11px] font-medium text-foreground">
+              {node.name}
+            </span>
+            <span className="flex-shrink-0 text-[10px] text-muted-foreground/55 tabular-nums">
               {counts.total}
             </span>
             {counts.inScope > 0 && (
-              <span className="rounded bg-green-500/10 px-1 py-0.5 text-[9px] text-green-400">
+              <span className="flex-shrink-0 whitespace-nowrap rounded bg-green-500/10 px-1 py-0.5 text-[9px] text-green-400">
                 {counts.inScope} in
               </span>
             )}
             {showModeBadge && (
-              <span className={cn("text-[9px] px-1 py-0.5 rounded", badge.className)}>
+              <span
+                className={cn(
+                  "flex-shrink-0 whitespace-nowrap rounded px-1 py-0.5 text-[9px]",
+                  badge.className
+                )}
+              >
                 {badge.label}
               </span>
             )}
             {!isUnassigned && node.children.length > 0 && (
-              <span className="inline-flex items-center whitespace-nowrap text-[9px] text-muted-foreground/50">
+              <span className="inline-flex flex-shrink-0 items-center whitespace-nowrap text-[9px] text-muted-foreground/50">
                 · {node.children.length} sub
               </span>
             )}
           </button>
 
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-            {isUnassigned ? (
-              <button
-                type="button"
-                className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-accent"
-                onClick={() => handleStartAddTarget(node.id)}
-                title={t("targets.addTarget")}
-              >
-                <Crosshair className="w-3 h-3" />
-              </button>
-            ) : (
-              <>
-                {renderOrgActionButton(actionModel.primary, node)}
-                {actionModel.secondary && renderOrgActionButton(actionModel.secondary, node)}
-              </>
-            )}
-            {!isUnassigned && (
-              <>
-                <div className="w-px h-3 bg-border/40 mx-0.5" />
+          {isOrg && (
+            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+              {isUnassigned ? (
                 <button
                   type="button"
-                  className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-blue-400"
-                  onClick={() => {
-                    setSelectedOrgId(node.id);
-                    setWorkspaceTab("fields");
-                  }}
-                  title={t("organizations.profile.openButton")}
+                  className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-accent"
+                  onClick={() => handleStartAddTarget(node.id)}
+                  title={t("targets.addTarget")}
                 >
-                  <Info className="w-3 h-3" />
+                  <Crosshair className="w-3 h-3" />
                 </button>
-                <button
-                  type="button"
-                  className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground"
-                  onClick={() => handleStartEditOrg(node)}
-                  title={t("organizations.edit")}
-                >
-                  <Pencil className="w-3 h-3" />
-                </button>
-                <button
-                  type="button"
-                  className="p-1 rounded hover:bg-red-500/20 text-muted-foreground hover:text-red-400"
-                  onClick={() => handleDeleteOrg(node.id, node.name)}
-                  title={t("organizations.delete")}
-                >
-                  <Trash2 className="w-3 h-3" />
-                </button>
-              </>
-            )}
-          </div>
+              ) : (
+                <>
+                  {renderOrgActionButton(actionModel.primary, node)}
+                  {actionModel.secondary && renderOrgActionButton(actionModel.secondary, node)}
+                </>
+              )}
+              {!isUnassigned && (
+                <>
+                  <div className="w-px h-3 bg-border/40 mx-0.5" />
+                  <button
+                    type="button"
+                    className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-blue-400"
+                    onClick={() => {
+                      setSelectedOrgId(node.id);
+                      setWorkspaceTab("fields");
+                    }}
+                    title={t("organizations.profile.openButton")}
+                  >
+                    <Info className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground"
+                    onClick={() => handleStartEditOrg(node)}
+                    title={t("organizations.edit")}
+                  >
+                    <Pencil className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    className="p-1 rounded hover:bg-red-500/20 text-muted-foreground hover:text-red-400"
+                    onClick={() => handleDeleteOrg(node.id, node.name)}
+                    title={t("organizations.delete")}
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -357,22 +395,58 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
       {!isCollapsed && (
         <div className="space-y-px">
           {node.targets.length > 0 && (
-            <div className="space-y-px py-0.5" style={{ paddingLeft: `${8 + (depth + 1) * 16}px` }}>
-              {node.targets.map((target) => (
-                <TargetTreeRow
-                  key={target.id}
-                  target={target}
-                  t={t}
-                  editingTargetId={editingTargetId}
-                  selectedTargetId={selectedTargetId}
-                  setSelectedTargetId={setSelectedTargetId}
-                  setSelectedOrgId={setSelectedOrgId}
-                  setEditingTargetId={setEditingTargetId}
-                  onToggleScope={onToggleScope}
-                  onDelete={onDelete}
-                  onUpdateNotes={onUpdateNotes}
+            <div className="space-y-px">
+              <button
+                type="button"
+                onClick={() => toggleCollapse(assetKey)}
+                className="flex w-full items-center gap-1.5 rounded px-2 py-0.5 text-left text-muted-foreground/70 hover:bg-muted/10"
+                style={{ paddingLeft: `${8 + (depth + 1) * 16}px` }}
+              >
+                <ChevronDown
+                  className={cn(
+                    "h-3 w-3 flex-shrink-0 transition-transform",
+                    assetsCollapsed && "-rotate-90"
+                  )}
                 />
-              ))}
+                <Crosshair className="h-3 w-3 flex-shrink-0" />
+                <span className="text-[10px] font-medium">{t("targets.assetsGroup")}</span>
+                <span className="text-[10px] tabular-nums text-muted-foreground/55">
+                  {totalAssets}
+                </span>
+              </button>
+              {!assetsCollapsed && (
+                <div
+                  className="space-y-px py-0.5"
+                  style={{ paddingLeft: `${8 + (depth + 1) * 16}px` }}
+                >
+                  {visibleAssets.map((target) => (
+                    <TargetTreeRow
+                      key={target.id}
+                      target={target}
+                      t={t}
+                      editingTargetId={editingTargetId}
+                      selectedTargetId={selectedTargetId}
+                      setSelectedTargetId={setSelectedTargetId}
+                      setSelectedOrgId={setSelectedOrgId}
+                      setEditingTargetId={setEditingTargetId}
+                      onToggleScope={onToggleScope}
+                      onDelete={onDelete}
+                      onUpdateNotes={onUpdateNotes}
+                    />
+                  ))}
+                  {totalAssets > ASSET_PREVIEW_LIMIT && (
+                    <button
+                      type="button"
+                      onClick={() => toggleCollapse(assetMoreKey)}
+                      className="px-2 py-0.5 text-left text-[10px] text-accent/80 hover:text-accent"
+                    >
+                      {showAllAssets
+                        ? t("targets.assetsShowLess")
+                        : `${t("targets.assetsShowMore")} (+${hiddenAssetCount})`}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
           {node.children.map((child) => (

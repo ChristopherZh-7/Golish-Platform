@@ -104,6 +104,21 @@ pub async fn organization_recon_export_current_assets(
     })
 }
 
+/// Backfill `targets.real_ip` from existing `dns_records` A answers (no new DNS
+/// resolution). One-off migration aid + manual refresh for the IP-centric host
+/// tree (design 2026-06-15 Phase 0). Returns the number of target rows updated.
+/// `project_path = None` = all visible targets.
+#[tauri::command]
+pub async fn recon_backfill_real_ip(
+    db: tauri::State<'_, DbState>,
+    project_path: Option<String>,
+) -> Result<u64, GolishError> {
+    let pool = db.pool_ready().await?;
+    let updated =
+        golish_db::repo::targets::backfill_real_ip_from_dns(pool, project_path.as_deref()).await?;
+    Ok(updated)
+}
+
 async fn organization_targets(
     pool: &sqlx::PgPool,
     project_path: &str,

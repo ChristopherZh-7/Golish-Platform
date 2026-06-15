@@ -383,7 +383,27 @@ fn coverage_complete(
 
     let mut gaps: Vec<String> = Vec::new();
     for asset in &assets {
-        for tech in techniques {
+        // Host-aware coverage (design 2026-06-15 §4.0): when enabled, hold each
+        // asset only to the techniques that apply to its class (a bare IP is not
+        // asked for SUBDOMAIN/DNS/CT). Flag off ⇒ the full `techniques` list for
+        // every asset (byte-identical to before). `Other`/unknown keeps the full
+        // list (fail-safe: an unclassified asset is never under-checked).
+        let asset_techniques: Vec<&String> = if spec.host_aware_coverage {
+            let class = crate::harness::technique_resolver::AssetClass::from_value(asset);
+            techniques
+                .iter()
+                .filter(|t| {
+                    crate::harness::technique_resolver::technique_applies(
+                        spec.kind,
+                        class,
+                        t.as_str(),
+                    )
+                })
+                .collect()
+        } else {
+            techniques.iter().collect()
+        };
+        for tech in asset_techniques {
             // Phase 0（设计 2026-06-12-redteam-phase0）：该 technique 是否进入「权威」
             // 模式（found 只认真值）。authoritative_techniques=None → 全部期望技术；
             // Some → 仅清单内技术收紧，其余仍走旧自报（灰度）。
@@ -1132,6 +1152,60 @@ mod tests {
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: facts,
         }
+    }
+
+    // ── Host-aware coverage (design 2026-06-15-host-aware-coverage, Phase 2a) ──
+
+    /// target_intel spec with the host-aware flag set (kind drives the matrix).
+    fn target_intel_spec(host_aware: bool) -> StageSpec {
+        crate::harness::stage_spec::load_stage_spec_from_json(&format!(
+            r#"{{"id":"target_intel","kind":"target_intel","risk_level":"low",
+                "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+                "host_aware_coverage":{host_aware}}}"#
+        ))
+        .expect("target_intel spec parses")
+    }
+
+    #[test]
+    fn host_aware_coverage_relaxes_ip_not_domain() {
+        // 设计 §6 parity：开关开后唯一变化 = 裸 IP 的域名专属格（SUBDOMAIN/DNS/CT）
+        // BLOCK→PASS；域名仍核全 6 项。
+        let techs = [
+            "GOLISH-INTEL-DNS",
+            "GOLISH-INTEL-SUBDOMAIN",
+            "GOLISH-INTEL-CT",
+            "GOLISH-INTEL-WHOIS",
+            "GOLISH-INTEL-ASN",
+            "GOLISH-INTEL-OSINT",
+        ];
+        // domain 有全部 6 个 Found 事实；IP 只有 WHOIS/ASN/OSINT（org 级）。
+        let mut facts: Vec<EvidenceFact> = techs
+            .iter()
+            .map(|t| fact("a.com", t, EvidenceOutcome::Found, 1))
+            .collect();
+        for t in ["GOLISH-INTEL-WHOIS", "GOLISH-INTEL-ASN", "GOLISH-INTEL-OSINT"] {
+            facts.push(fact("1.2.3.4", t, EvidenceOutcome::Found, 1));
+        }
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string(), "1.2.3.4".to_string()]),
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: Some(facts),
+        };
+        let d = deliverable_with_coverage(vec![]);
+
+        // Flag OFF：IP 缺 SUBDOMAIN/DNS/CT → BLOCK。
+        let spec_off = target_intel_spec(false);
+        assert!(
+            !eval_with_context(&d, &spec_off, &[evidence_derive_rule(None)], &ctx)[0].is_pass(),
+            "host-aware off: bare IP held to domain-only techniques → BLOCK"
+        );
+
+        // Flag ON：IP 只核 WHOIS/ASN/OSINT（都 Found）；域名仍全 6（都 Found）→ PASS。
+        let spec_on = target_intel_spec(true);
+        assert!(
+            eval_with_context(&d, &spec_on, &[evidence_derive_rule(None)], &ctx)[0].is_pass(),
+            "host-aware on: IP no longer asked for SUBDOMAIN/DNS/CT → PASS"
+        );
     }
 
     // ── Phase 0 (设计 2026-06-12-redteam-phase0): authoritative found ──────────

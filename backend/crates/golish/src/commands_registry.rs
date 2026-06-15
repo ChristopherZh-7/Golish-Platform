@@ -151,7 +151,7 @@ fn install_handlers(
         asset_intel_hydrate_subsidiaries, asset_intel_enrich_organization, asset_intel_enrich_batch,
         // ── organization_recon (staged enterprise reconnaissance) ─
         organization_recon_start_run, organization_recon_get_run, organization_recon_export_assets,
-        organization_recon_export_current_assets,
+        organization_recon_export_current_assets, recon_backfill_real_ip,
         // ── intel_providers (ASM platforms · 0.zone / FOFA / Quake / ...) ─
         intel_list_providers, intel_test_connection, intel_query_provider,
         // ── integrations (schema-driven external-service credentials) ─

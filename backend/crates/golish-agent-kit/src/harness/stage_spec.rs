@@ -134,10 +134,34 @@ pub struct StageSpec {
     /// false = byte-for-byte unchanged. Enable only for facts-only intel/recon stages.
     #[serde(default)]
     pub facts_from_db_truth: bool,
+
+    /// Host-aware coverage (design 2026-06-15-host-aware-coverage, Phase 2a):
+    /// when true, `coverage_complete` holds each in-scope asset only to the
+    /// techniques that apply to its class (a bare IP is not asked for
+    /// SUBDOMAIN/DNS/CT). Default false = byte-for-byte unchanged; enable only
+    /// on a stage with a green PASS/BLOCK parity test.
+    #[serde(default)]
+    pub host_aware_coverage: bool,
+
+    /// Whether this stage's deliverable may carry security `findings` (design
+    /// 2026-06-15-recon-stage-findings-suppression). Discovery / recon stages
+    /// (scoping / target_intel / external_attack_surface / enumeration) set this
+    /// `false`: their deliverable is observations (`claims`) + a coverage matrix,
+    /// NOT vulnerabilities, so a weak model dumping junk into `findings` there is
+    /// noise. The `submit_stage_deliverable` tool drops findings for such a stage
+    /// (and tells the model to put discoveries in `claims`). Vulnerability stages
+    /// (vuln_triage / verification) keep the default `true`. Default true =
+    /// back-compat (old specs / vuln stages unaffected).
+    #[serde(default = "default_findings_allowed")]
+    pub findings_allowed: bool,
 }
 
 fn default_continuity() -> AgentContinuity {
     AgentContinuity::SingleSession
+}
+
+fn default_findings_allowed() -> bool {
+    true
 }
 
 #[derive(Debug, Error)]
@@ -519,5 +543,51 @@ mod tests {
         let s2 = load_stage_spec_from_json(with).expect("parse expected_techniques");
         assert_eq!(s2.expected_techniques.len(), 3);
         assert_eq!(s2.expected_techniques[0], "WSTG-INPV-05");
+    }
+
+    // 2026-06-15-recon-stage-findings-suppression: the new findings_allowed flag
+    // defaults true (back-compat) and parses an explicit false.
+    #[test]
+    fn findings_allowed_defaults_true_and_parses_false() {
+        let minimal = r#"{"id":"vuln_triage","kind":"vuln_triage","risk_level":"high",
+            "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate"}"#;
+        let s = load_stage_spec_from_json(minimal).expect("parse");
+        assert!(
+            s.findings_allowed,
+            "omitted findings_allowed must default to true (back-compat)"
+        );
+
+        let with = r#"{"id":"target_intel","kind":"target_intel","risk_level":"low",
+            "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+            "findings_allowed":false}"#;
+        let s2 = load_stage_spec_from_json(with).expect("parse findings_allowed");
+        assert!(!s2.findings_allowed);
+    }
+
+    // 2026-06-15-recon-stage-findings-suppression: discovery/recon stages declare
+    // findings_allowed=false (deliverable = claims + coverage, not vulns); the
+    // vulnerability stages keep the default true.
+    #[test]
+    fn recon_stages_disallow_findings_vuln_stages_allow() {
+        use crate::harness::resources::load_embedded_stage_spec;
+        for kind in [
+            StageKind::Scoping,
+            StageKind::TargetIntel,
+            StageKind::ExternalAttackSurface,
+            StageKind::Enumeration,
+        ] {
+            let s = load_embedded_stage_spec(kind).unwrap_or_else(|_| panic!("load {kind:?}"));
+            assert!(
+                !s.findings_allowed,
+                "recon stage {kind:?} must set findings_allowed=false"
+            );
+        }
+        for kind in [StageKind::VulnTriage, StageKind::Verification] {
+            let s = load_embedded_stage_spec(kind).unwrap_or_else(|_| panic!("load {kind:?}"));
+            assert!(
+                s.findings_allowed,
+                "vulnerability stage {kind:?} must keep findings_allowed=true"
+            );
+        }
     }
 }

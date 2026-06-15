@@ -16,6 +16,13 @@ export const ROOT_PARENT_KEY = "__root__";
 export interface OrgTreeNode {
   id: string;
   name: string;
+  /**
+   * Node kind. `"org"` (default/undefined) is a real organization row;
+   * `"host"` is a synthetic IP/host group (IP-centric view); `"bucket"` is a
+   * synthetic catch-all group (e.g. unresolved domains). Only org nodes carry
+   * org-level actions in the sidebar.
+   */
+  kind?: "org" | "host" | "bucket";
   children: OrgTreeNode[];
   targets: Target[];
 }
@@ -84,6 +91,73 @@ export function buildOrgTree(
     roots.push(unassigned);
   }
   return roots;
+}
+
+/** Key for the synthetic "unresolved" bucket (domains/URLs with no `real_ip`). */
+export const UNRESOLVED_KEY = "__unresolved__";
+
+/**
+ * IP/host-centric view (design 2026-06-15 Option B, Phase 1): build the same org
+ * spine as {@link buildOrgTree}, but regroup each org's flat target list into
+ * synthetic **host** nodes keyed by IP. IP-type targets seed their own host node
+ * (by `value`); domains/URLs attach to the host of their resolved `real_ip`.
+ * Anything without a resolved IP lands in a per-org "unresolved" **bucket** so
+ * nothing is hidden (AGENTS.md I8: unchecked ≠ empty). `dns_records` stays the
+ * M:N truth; this tree is a derived projection over `targets.real_ip`.
+ */
+export function buildHostTree(
+  orgs: Organization[],
+  targets: Target[],
+  unassignedLabel: string,
+  unresolvedLabel: string
+): OrgTreeNode[] {
+  const base = buildOrgTree(orgs, targets, unassignedLabel);
+
+  const regroup = (node: OrgTreeNode): OrgTreeNode => {
+    const flat = node.targets;
+    const hosts = new Map<string, OrgTreeNode>();
+    const ensureHost = (ip: string): OrgTreeNode => {
+      let host = hosts.get(ip);
+      if (!host) {
+        host = { id: `host:${node.id}:${ip}`, name: ip, kind: "host", children: [], targets: [] };
+        hosts.set(ip, host);
+      }
+      return host;
+    };
+
+    // IP targets seed host nodes keyed by their own value.
+    for (const target of flat) {
+      if (target.type === "ip") ensureHost(target.value).targets.push(target);
+    }
+    // Domains/URLs attach to the host of their resolved IP; else unresolved.
+    const unresolved: Target[] = [];
+    for (const target of flat) {
+      if (target.type === "ip") continue;
+      const ip = (target.real_ip ?? "").trim();
+      if (ip) ensureHost(ip).targets.push(target);
+      else unresolved.push(target);
+    }
+
+    const hostChildren = [...hosts.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const buckets: OrgTreeNode[] = [];
+    if (unresolved.length > 0) {
+      buckets.push({
+        id: `${UNRESOLVED_KEY}:${node.id}`,
+        name: unresolvedLabel,
+        kind: "bucket",
+        children: [],
+        targets: unresolved,
+      });
+    }
+
+    return {
+      ...node,
+      targets: [],
+      children: [...hostChildren, ...buckets, ...node.children.map(regroup)],
+    };
+  };
+
+  return base.map(regroup);
 }
 
 export function countAllTargets(node: OrgTreeNode): { total: number; inScope: number } {

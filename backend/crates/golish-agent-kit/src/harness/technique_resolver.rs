@@ -27,6 +27,32 @@ impl AssetClass {
         }
     }
 
+    /// Host-aware coverage (design 2026-06-15 §4.0): infer the asset class from a
+    /// target **value** string (the form carried in `GateContext.in_scope_assets`),
+    /// so the gate can classify without an authoritative `targets.type` on the
+    /// axis. Conservative: an unrecognized non-empty value falls through to
+    /// `Domain` (the strict, full-technique set for intel) and empty → `Other` —
+    /// neither relaxes the gate.
+    pub fn from_value(value: &str) -> Self {
+        let v = value.trim();
+        if v.is_empty() {
+            return Self::Other;
+        }
+        let lower = v.to_ascii_lowercase();
+        if lower.starts_with("http://") || lower.starts_with("https://") {
+            return Self::Url;
+        }
+        if v.parse::<std::net::IpAddr>().is_ok() {
+            return Self::Ip;
+        }
+        if let Some((addr, prefix)) = v.split_once('/') {
+            if addr.parse::<std::net::IpAddr>().is_ok() && prefix.parse::<u8>().is_ok() {
+                return Self::Cidr;
+            }
+        }
+        Self::Domain
+    }
+
     /// 该资产是否可能承载 web 服务（决定 PARAM / JSAPI / DIR 等 web 技术是否要求）。
     fn maybe_web(self) -> bool {
         matches!(self, Self::Domain | Self::Url | Self::Other)
@@ -80,6 +106,41 @@ pub fn resolve_expected_techniques(stage: StageKind, assets: &[AssetClass]) -> V
         .collect()
 }
 
+/// Host-aware coverage (design 2026-06-15 §3): whether `tech` (one of `stage`'s
+/// baseline techniques) applies to a single asset of `class`. Phase 2a only
+/// differentiates `TargetIntel`; other stages return `true` (no-op until 2b).
+/// `Other` keeps every technique (fail-safe: an unclassified asset is never
+/// under-checked).
+pub fn technique_applies(stage: StageKind, class: AssetClass, tech: &str) -> bool {
+    use AssetClass::*;
+    if matches!(class, Other) {
+        return true;
+    }
+    match stage {
+        StageKind::TargetIntel => match tech {
+            // Subdomain enumeration only makes sense for a domain.
+            "GOLISH-INTEL-SUBDOMAIN" => matches!(class, Domain),
+            // Forward DNS + cert transparency are domain/host concepts; a bare
+            // IP/CIDR has neither a self-keyed forward A record nor a CT log.
+            "GOLISH-INTEL-DNS" | "GOLISH-INTEL-CT" => matches!(class, Domain | Url),
+            // WHOIS / ASN / OSINT apply to every class (org/netblock-wide).
+            _ => true,
+        },
+        // 2b: EAS / enumeration matrices land here.
+        _ => true,
+    }
+}
+
+/// Convenience: the subset of `stage`'s baseline that applies to `class`
+/// (= [`technique_applies`] over [`stage_baseline`]). For tests/diagnostics.
+pub fn techniques_for(stage: StageKind, class: AssetClass) -> Vec<String> {
+    stage_baseline(stage)
+        .into_iter()
+        .filter(|t| technique_applies(stage, class, t))
+        .map(String::from)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +187,54 @@ mod tests {
         assert_eq!(AssetClass::from_target_type("url"), AssetClass::Url);
         // 未知 → Other（保守：当作可能有 web，不缩小技术集）
         assert_eq!(AssetClass::from_target_type("weird"), AssetClass::Other);
+    }
+
+    // ── Host-aware coverage (design 2026-06-15 §3, Phase 2a) ──────────────────
+
+    #[test]
+    fn from_value_classifies_ip_url_cidr_domain() {
+        assert_eq!(AssetClass::from_value("1.2.3.4"), AssetClass::Ip);
+        assert_eq!(AssetClass::from_value("2606:4700::1111"), AssetClass::Ip);
+        assert_eq!(AssetClass::from_value("https://a.com/x"), AssetClass::Url);
+        assert_eq!(AssetClass::from_value("10.0.0.0/24"), AssetClass::Cidr);
+        assert_eq!(AssetClass::from_value("a.example.com"), AssetClass::Domain);
+        assert_eq!(AssetClass::from_value(""), AssetClass::Other);
+    }
+
+    #[test]
+    fn target_intel_drops_domain_only_techniques_for_ip() {
+        let ip = techniques_for(StageKind::TargetIntel, AssetClass::Ip);
+        assert!(!ip.contains(&"GOLISH-INTEL-SUBDOMAIN".to_string()));
+        assert!(!ip.contains(&"GOLISH-INTEL-DNS".to_string()));
+        assert!(!ip.contains(&"GOLISH-INTEL-CT".to_string()));
+        assert!(ip.contains(&"GOLISH-INTEL-WHOIS".to_string()));
+        assert!(ip.contains(&"GOLISH-INTEL-ASN".to_string()));
+        assert!(ip.contains(&"GOLISH-INTEL-OSINT".to_string()));
+        // CIDR matches IP.
+        assert_eq!(
+            techniques_for(StageKind::TargetIntel, AssetClass::Cidr),
+            techniques_for(StageKind::TargetIntel, AssetClass::Ip)
+        );
+        // Domain keeps all 6.
+        assert_eq!(techniques_for(StageKind::TargetIntel, AssetClass::Domain).len(), 6);
+        // URL keeps host intel (DNS/CT) but not subdomain enumeration.
+        let url = techniques_for(StageKind::TargetIntel, AssetClass::Url);
+        assert!(!url.contains(&"GOLISH-INTEL-SUBDOMAIN".to_string()));
+        assert!(url.contains(&"GOLISH-INTEL-DNS".to_string()));
+        assert!(url.contains(&"GOLISH-INTEL-CT".to_string()));
+    }
+
+    #[test]
+    fn other_class_keeps_full_set_failsafe() {
+        assert_eq!(techniques_for(StageKind::TargetIntel, AssetClass::Other).len(), 6);
+    }
+
+    #[test]
+    fn non_target_intel_stage_keeps_all_techniques_in_2a() {
+        // 2a only differentiates target_intel; EAS keeps its full set per class.
+        assert_eq!(
+            techniques_for(StageKind::ExternalAttackSurface, AssetClass::Ip).len(),
+            techniques_for(StageKind::ExternalAttackSurface, AssetClass::Domain).len()
+        );
     }
 }

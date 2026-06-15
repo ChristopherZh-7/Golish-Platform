@@ -522,6 +522,43 @@ pub async fn update_recon_extended_by_id(
     Ok(())
 }
 
+// ── IP-centric host tree: primary resolved IP (design 2026-06-15 Phase 0) ────
+
+fn build_backfill_real_ip_sql() -> String {
+    "UPDATE targets t SET real_ip = sub.ip, updated_at = NOW() \
+       FROM (SELECT DISTINCT ON (target_id) target_id, value AS ip \
+               FROM dns_records WHERE record_type = 'A' \
+               ORDER BY target_id, created_at) sub \
+      WHERE t.id = sub.target_id AND t.real_ip = '' \
+        AND ($1 IS NULL OR t.project_path = $1)"
+        .to_string()
+}
+
+/// Set a target's primary resolved IP (`real_ip`) by id. No project scope — the
+/// caller owns the id (recon DNS landing). Idempotent: re-running overwrites.
+/// Unlike [`update_recon_extended_by_id`] this is an unconditional single-column
+/// write used by the host-tree resolution path.
+pub async fn set_real_ip_by_id(pool: &PgPool, id: Uuid, real_ip: &str) -> Result<()> {
+    sqlx::query("UPDATE targets SET real_ip = $1, updated_at = NOW() WHERE id = $2")
+        .bind(real_ip)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Backfill `real_ip` from the first (earliest) A record already in
+/// `dns_records`, for targets that have none yet (`real_ip = ''`). Requires **no
+/// new DNS resolution** — derives purely from stored answers. Returns the number
+/// of target rows updated. `project_path = None` = all visible targets.
+pub async fn backfill_real_ip_from_dns(pool: &PgPool, project_path: Option<&str>) -> Result<u64> {
+    let res = sqlx::query(&build_backfill_real_ip_sql())
+        .bind(project_path)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,6 +645,19 @@ mod tests {
             build_exists_by_value_exact_sql(),
             "SELECT EXISTS(SELECT 1 FROM targets WHERE value = $1 AND project_path = $2)"
         );
+    }
+
+    #[test]
+    fn backfill_real_ip_sql_picks_first_a_record_for_unset_targets() {
+        // Host-tree primary IP (design 2026-06-15 Phase 0): pick the earliest A
+        // record per target, only fill targets that have no real_ip yet, and
+        // honour the project_path filter (NULL = all).
+        let sql = build_backfill_real_ip_sql();
+        assert!(sql.contains("DISTINCT ON (target_id)"));
+        assert!(sql.contains("record_type = 'A'"));
+        assert!(sql.contains("ORDER BY target_id, created_at"));
+        assert!(sql.contains("t.real_ip = ''"));
+        assert!(sql.contains("($1 IS NULL OR t.project_path = $1)"));
     }
 
     #[test]

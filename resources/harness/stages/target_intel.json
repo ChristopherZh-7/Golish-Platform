@@ -82,6 +82,9 @@
   "$comment_facts_from_db_truth": "design 2026-06-15-db-truth-single-source-deliverable §5 PR2: target_intel is facts-only — coverage/claims/evidence are adjudicated from DB truth (coverage_complete authoritative + coverage_truth). With this on, vacuous_check is satisfied by real DB/ledger evidence facts so a weak model need not hand-copy a deliverable; completeness is still enforced by coverage_complete per (in-scope asset × technique). Empty DB truth still blocks.",
   "facts_from_db_truth": true,
 
+  "$comment_host_aware_coverage": "design 2026-06-15-host-aware-coverage (Phase 2a): coverage_complete holds each in-scope asset only to the intel techniques that apply to its class — a bare IP/CIDR is NOT asked for SUBDOMAIN / forward-DNS / CT (domain-only concepts); WHOIS/ASN/OSINT still apply to every class. Fixes IPs being permanently 'incomplete'. Asset class is inferred from the asset value (IpAddr/url/cidr/else domain); unknown keeps the full set (fail-safe, never relaxes the gate).",
+  "host_aware_coverage": true,
+
   "human_approval": {
     "required_before": ["active_scan"]
   },

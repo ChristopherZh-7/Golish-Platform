@@ -22,7 +22,7 @@
 | 符号 | 说明 |
 |---|---|
 | `OrganizationReconState` | 运行时状态 |
-| `commands::*` | 组织 recon Tauri 命令 |
+| `commands::*` | 组织 recon Tauri 命令（含 `recon_backfill_real_ip`：从已有 `dns_records` A 记录回填 `targets.real_ip`，IP-centric 树 Phase 0） |
 | `ORGANIZATION_RECON_EVENT` | 进度事件名 |
 | `NormalizedReconRecord` / `OrganizationReconRunSnapshot` / `OrganizationReconStageName` / `OrganizationReconRunStatus` / `OrganizationReconExportResult` | 归一记录 / 快照 / 阶段 / 状态 / 导出 |
 
@@ -42,6 +42,7 @@
 
 - 归一记录/artifact 契约要与 asset-intel adapter 共用——改契约会影响两边 evidence 格式一致性。
 - 分阶段 runner 长耗 + 可取消；进度经 `ORGANIZATION_RECON_EVENT` 发前端。
+- `persistence.rs::land_dns_records` 解析域名落 `dns_records` 后，会顺手把首个 A（否则首条）答案写进 `targets.real_ip`（host-tree 主 IP，设计 2026-06-15 Phase 0）；存量数据用 `recon_backfill_real_ip` 命令一次性回填（不重新解析）。
 
 ## 测试入口
 

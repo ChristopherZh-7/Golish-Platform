@@ -56,6 +56,7 @@ import {
 } from "@/lib/target-panel/engagement";
 import { translateWithFallback } from "@/lib/target-panel/org-fields";
 import {
+  buildHostTree,
   buildOrgTree,
   countOrgDeletionImpact,
   type OrgTreeNode,
@@ -68,6 +69,7 @@ import {
   suggestedReconAssetsFilename,
 } from "@/lib/target-panel/organization-recon";
 import type { AssetIntelOrgActionKind, WorkspaceTab } from "@/lib/target-panel/types";
+import { cn } from "@/lib/utils";
 import { InlineCreateOrgForm } from "./InlineOrgForms";
 import { type EngagementMode, NewEngagementDialog } from "./NewEngagementDialog";
 import { OrgTreeSidebar } from "./OrgTreeSidebar";
@@ -143,6 +145,9 @@ export function TargetGroupedView({
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("overview");
+  // Tree grouping: "byType" = the classic org→assets flat tree; "byIp" = the
+  // IP-centric host tree (design 2026-06-15 Phase 1).
+  const [viewMode, setViewMode] = useState<"byType" | "byIp">("byType");
 
   // Inline editor / creator state — only one can be open at a time. `ROOT_PARENT_KEY`
   // is used by `addingChildTo` to mean "creating a new top-level org".
@@ -265,9 +270,13 @@ export function TargetGroupedView({
     [orgById, orgs, targets]
   );
   const unassignedLabel = t("targets.unassigned");
+  const unresolvedLabel = t("targets.unresolvedGroup");
   const roots = useMemo(
-    () => buildOrgTree(orgs, visibleTargets, unassignedLabel),
-    [orgs, visibleTargets, unassignedLabel]
+    () =>
+      viewMode === "byIp"
+        ? buildHostTree(orgs, visibleTargets, unassignedLabel, unresolvedLabel)
+        : buildOrgTree(orgs, visibleTargets, unassignedLabel),
+    [viewMode, orgs, visibleTargets, unassignedLabel, unresolvedLabel]
   );
   const selectedOrg = useMemo(
     () => orgs.find((o) => o.id === selectedOrgId) ?? orgs[0] ?? null,
@@ -697,6 +706,32 @@ export function TargetGroupedView({
             .replace("{{orgs}}", String(orgs.length))
             .replace("{{targets}}", String(targets.length))}
         </span>
+        <div className="ml-auto flex items-center gap-0.5 rounded border border-border/40 p-0.5">
+          <button
+            type="button"
+            onClick={() => setViewMode("byType")}
+            className={cn(
+              "rounded px-2 py-0.5 text-[10px] transition-colors",
+              viewMode === "byType"
+                ? "bg-muted/40 text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {translateWithFallback(t, "targets.viewByType", "By type")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("byIp")}
+            className={cn(
+              "rounded px-2 py-0.5 text-[10px] transition-colors",
+              viewMode === "byIp"
+                ? "bg-muted/40 text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {translateWithFallback(t, "targets.viewByIp", "By IP")}
+          </button>
+        </div>
       </div>
 
       {addingChildTo === ROOT_PARENT_KEY && (

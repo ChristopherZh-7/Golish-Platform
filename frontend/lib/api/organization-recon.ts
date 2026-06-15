@@ -57,6 +57,17 @@ export async function exportCurrentAssets(
   });
 }
 
+/**
+ * Backfill `targets.real_ip` from existing `dns_records` A answers (no new DNS
+ * resolution). One-off migration aid + manual refresh for the IP-centric host
+ * tree. Returns the number of target rows updated. Omit `projectPath` for all.
+ */
+export async function backfillRealIp(projectPath?: string): Promise<number> {
+  return invoke<number>("recon_backfill_real_ip", {
+    projectPath: projectPath ?? null,
+  });
+}
+
 export async function listenStream(
   onEvent: (run: OrganizationReconRunSnapshot) => void
 ): Promise<() => void> {

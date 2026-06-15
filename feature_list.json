@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
   "version": "0.1.10",
-  "last_updated": "2026-06-14",
+  "last_updated": "2026-06-15",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -10,6 +10,49 @@
     "passing"
   ],
   "features": [
+    {
+      "id": "ip-centric-asset-model-2026-06-15",
+      "priority": 1,
+      "area": "backend: golish-db/src/repo/targets.rs (set_real_ip_by_id + build_backfill_real_ip_sql + backfill_real_ip_from_dns + SQL-shape 测), golish-recon-app/src/organization_recon/{persistence.rs(land_dns_records 落 primary real_ip),commands.rs(recon_backfill_real_ip 命令),mod.rs(__cmd__ 导出)}, golish/src/commands_registry.rs(注册 ident); frontend: lib/api/organization-recon.ts(backfillRealIp wrapper). 设计/计划 docs/{design,superpowers/plans}/2026-06-15-ip-centric-asset-model.md",
+      "title": "IP-centric 资产树（方案 B）：org 下把域名/IP 平铺树改成主机/IP 为中心（每个 IP 挂解析到它的域名 + URL）。Phase 0 后端落 targets.real_ip（解析时写 + 存量回填）✓；Phase 1 前端 IP 归组树 + 按类型/按 IP 切换 ✓；Phase 2 host-aware coverage（deferred，动 harness 核心，单独立项）。",
+      "user_visible_behavior": "Phase 0（无 UI 变化）：组织 recon 解析域名时把首个 A 记录写进 targets.real_ip；新增 recon_backfill_real_ip 命令（+前端 backfillRealIp wrapper）从已有 dns_records A 记录一次性回填存量（不重新解析）。Phase 1（本轮）：目标面板工具栏多『按类型/按 IP』切换；选『按 IP』后域名/URL 按 targets.real_ip 挂到对应 IP 主机节点（Network 图标、无 org 操作），未解析域名进『未解析域名』桶（不隐藏，I8）。需先有 real_ip 数据（recon 解析或 recon_backfill_real_ip 回填）才非空。",
+      "status": "in_progress",
+      "design": "docs/design/2026-06-15-ip-centric-asset-model.md（方案 B；§4 Phase 0/1/2；§6 5 默认拍板）",
+      "plan": "docs/superpowers/plans/2026-06-15-ip-centric-asset-model.md（Phase 0 Task 0.1-0.3 完成；Phase 1 Task 1.1-1.5 未做；Phase 2 deferred）",
+      "verification": [
+        "[✓] cargo nextest -p golish-db targets: 12/12 passed（含新 backfill_real_ip_sql_picks_first_a_record_for_unset_targets SQL-shape 测）",
+        "[✓] cargo nextest -p golish-recon-app organization_recon: 52/52 passed（land_dns_records 改动无回归）",
+        "[✓] cargo check -p golish: exit 0（generate_handler! 解析 recon_backfill_real_ip → 注册链通）",
+        "[✓] cargo clippy -p golish-db -p golish-recon-app --all-targets: exit 0 零告警",
+        "[✓] just check-fe（biome + tsc）: exit 0（Phase 0 wrapper + Phase 1 树/切换 类型通）",
+        "[✓] Phase 1 TDD: pnpm test:run host-tree 2 例（域名挂 real_ip 主机节点 + 未解析桶 + org spine 保持）红→绿; 全量 just test-fe 1324 passed / 12 skipped / 123 files 无回归",
+        "[未跑] just precommit 全量（test-rust-all 重）; [未跑·用户环境] 活体: 调 recon_backfill_real_ip 回填后切『按 IP』看域名挂到 IP 节点 / 未解析桶",
+        "[deferred] Phase 2 host-aware coverage（单独 spec+plan+TDD，动 harness 核心需用户点头）"
+      ],
+      "evidence": "2026-06-15 BaJie MCP-agent-2（DISPATCH off, 接 MCP-1 上下文转移）. Phase 0 三 task 全实现+验证（见 verification）. 实现偏差（优于计划字面）: land_dns_records 在消费 records 的 for 循环前先捕获 primary_ip(Option<(Uuid,String)>) 再 set_real_ip_by_id, 规避计划 snippet 的 borrow-after-move. 前置事实核实: real_ip 列 TEXT NOT NULL DEFAULT ''（migration 20260413000001）、dns_records.created_at 存在（20260612000001）→ 回填 SQL DISTINCT ON(target_id) ORDER BY created_at 取最早 A 记录有效. Phase 1（前端·同会话续 · 用户「接着做 Phase 1 前端」）: org-tree.ts 加 OrgTreeNode.kind('org'|'host'|'bucket') + buildHostTree（按 real_ip 归组: IP target 自成 host 节点, 域名/url 挂其 real_ip 的 host, 无 real_ip 进未解析桶; 关键修正: 字段是 target.type 非计划字面的 target_type, TargetType IP='ip'）; OrgTreeSidebar 渲染 host(Network 图标)/bucket(FolderOpen)、无 org 操作（{isOrg && 操作区}, biome 自动重排缩进）; TargetGroupedView 加 viewMode + 工具栏『按类型/按 IP』切换; i18n en/zh-CN 加 viewByType/viewByIp/unresolvedGroup. 验证 host-tree 2 测红→绿 + test-fe 1324 全过 + check-fe(biome+tsc) exit 0. 未 commit, 未 push.",
+      "notes": "命令命名 recon_backfill_real_ip = <domain>_<verb>_<object>（I4）. 路由: commands.rs 写命令 → mod.rs pub use commands::* + 显式 #[doc(hidden)] pub use __cmd__recon_backfill_real_ip → facade organization_recon.rs glob re-export → commands_registry.rs generate_handler! 列 ident. 前端 wrapper 走 lib/api/organization-recon.ts（M2 不裸 invoke）, projectPath?->null. 模块卡 organization_recon.md 已更新.",
+      "remember": "IP-centric Phase 0: targets.real_ip = host-tree 主 IP. golish_db::repo::targets::{set_real_ip_by_id(无 scope, 调用方持 id), backfill_real_ip_from_dns(从 dns_records A 回填, 仅 real_ip='' 才填, project_path=None=全部)}. land_dns_records 解析时落 primary real_ip. 命令 recon_backfill_real_ip / 前端 backfillRealIp. Phase 1 已做(前端 buildHostTree[按 target.real_ip 归组, 字段是 target.type] + OrgTreeSidebar host/bucket 渲染 + TargetGroupedView viewMode 切换 + i18n viewByType/viewByIp/unresolvedGroup). Phase 2(host-aware coverage, 动 harness 核心需用户点头) 仍未做."
+    },
+    {
+      "id": "host-aware-coverage-2026-06-15",
+      "priority": 2,
+      "area": "(设计先行·零代码) backend: golish-agent-kit/src/harness/{gate/rule_engine.rs(GateContext +asset 类型/+per-type 矩阵; coverage_complete 按资产类型选技术), technique_resolver.rs(techniques_for(stage,AssetClass) 矩阵), sprint_contract.rs} + task_orchestrator/subtask_phases/execute.rs(gate hook 注入 per-asset type) + db_traits/repo.rs(in_scope_targets typed) + (full) golish-db/src/repo/coverage_truth.rs + resources/harness/stages/*.json(按类型期望 + 灰度开关)",
+      "title": "Host-aware coverage（IP-centric Phase 2 / 方案 C）：coverage gate 的期望技术从『一份清单 × 每个资产』改成『按资产类型(域名/IP/URL)分技术矩阵』——IP 不再被要求子域名/证书/正向DNS，域名不再被要求端口扫描。动 harness 核心(I7/I8)。",
+      "user_visible_behavior": "headless --stage-run / task 跑 target_intel：in-scope 的 IP 不再因『子域名/DNS』两格永远缺而无限 BLOCK 或被瞎填；域名仍核全 6 项被动情报。EAS/enumeration 同理按类型核（端口/服务=主机级，目录/参数/JS=URL级）。灰度默认关，开关 + before/after parity 验证后才生效。",
+      "status": "in_progress",
+      "design": "docs/design/2026-06-15-host-aware-coverage.md（§1 现状证据 + §3 技术×类型矩阵 + §4.0 精简实现 + §5 2a/2b/2c 分期 + §6 flag/parity 风险 + §8 4 开放项）",
+      "plan": "docs/superpowers/plans/2026-06-15-host-aware-coverage.md（Phase 2a 全任务 A.1-A.4 带 TDD/代码/验证/commit；2b/2c sketch）。用户已按默认拍板(2a only / drop-only / URL 继承域名 / classify-from-value)。",
+      "verification": [
+        "[✓] Phase 2a 实现已落 + 验证绿。cargo nextest -p golish-agent-kit（technique_resolver/host_aware/coverage_complete/stage_spec 过滤）→ 48/48 passed（含新 from_value/techniques_for/other_failsafe/non_target_intel + parity host_aware_coverage_relaxes_ip_not_domain；既有 coverage_complete/stage_spec 全过无回归）",
+        "[✓] 启用 flag 后 cargo nextest -p golish-agent-kit（all_twelve_stage_specs/host_aware/target_intel）→ 13/13 passed（all_twelve_stage_specs_load_and_kind_matches 确认 target_intel.json 带新字段正常加载）",
+        "[✓] python3 json.load target_intel.json → host_aware_coverage=True；StageSpec 全字面量仅 2 处(struct def + finding_verification_check 测，已补字段)，无其它 crate 构造全字面量 → golish 编译链不破",
+        "[未跑] just precommit 全量（本机 cargo 跑被环境/并发 lock 频繁打断，test-rust-all 太重）; [未跑·用户环境] 活体: --stage-run target_intel 带混合 域名+IP scope，看 IP 不再因 SUBDOMAIN/DNS/CT 永远 BLOCK",
+        "[未做] Phase 2b（EAS+enum 矩阵）+ 2c（authoritative type 轴 + IP 原生技术）"
+      ],
+      "evidence": "2026-06-15 BaJie MCP-agent-2（DISPATCH off）. 设计（用户「去写 Phase 2 设计」）后用户「实现 2a」→ 按计划 TDD 实现并验证绿。改动(未 commit): technique_resolver.rs(+from_value 按值分类/+technique_applies 矩阵/+techniques_for + 4 测), stage_spec.rs(+host_aware_coverage flag #[serde(default)] bool + 解析测), gate/finding_verification_check.rs(全字面量补 host_aware_coverage:false), gate/rule_engine.rs(coverage_complete 内层循环 flag 开时按 AssetClass::from_value 过滤 techniques + parity 测), resources/harness/stages/target_intel.json(host_aware_coverage:true + comment). 关键: 比设计 §4.1 typed-axis 更简——coverage_complete 本就有 &StageSpec(含 kind)+ctx.in_scope_assets，故零 GateContext/hook/DB 改动。环境注意: 本机 cargo 跑被并发(另一 agent 跑 agent-kit nextest)+环境 kill 多次打断，最终用后台 + /tmp 日志跑过(48 + 13 全绿)。",
+      "notes": "前置 = ip-centric Phase 0/1（real_ip + IP 树, 已做）. 注入链: execute.rs fetch_in_scope_assets_for_gate/fetch_in_scope_target_types_for_gate → apply_harness_gate_hook → GateContext. AssetClass::from_target_type 已存在(domain/ip/url/cidr/other). (value,type) 数据可经 db_traits in_scope_targets 拿. 推荐先做 2a(仅 target_intel, drop IP 的域名专属项, 不加新采集器, 低风险). fail-safe: 未知类型→保留全清单(绝不放松).",
+      "remember": "Host-aware coverage = IP-centric Phase 2. **2a 已实现+验证绿(未 commit)**: technique_resolver::{AssetClass::from_value(按值判类型), technique_applies(stage,class,tech) 矩阵, techniques_for}; StageSpec.host_aware_coverage flag(默认关, target_intel.json 已开); coverage_complete 内层循环 flag 开时按资产类型过滤 techniques(关=逐字节不变, Other/未知=全清单 fail-safe). target_intel 矩阵: 域名核全 6; IP/CIDR 掉 SUBDOMAIN/DNS/CT 留 WHOIS/ASN/OSINT; URL 掉 SUBDOMAIN 留其余. 实现比设计 §4.1 简(零 GateContext/hook/DB 改, 因 coverage_complete 本就有 spec+in_scope_assets). 2b(EAS+enum)/2c(authoritative type 轴+IP 原生技术)未做. 设计/计划 docs/{design,superpowers/plans}/2026-06-15-host-aware-coverage.md."
+    },
     {
       "id": "deepseek-run-review-fixes-2026-06-14",
       "priority": 1,
