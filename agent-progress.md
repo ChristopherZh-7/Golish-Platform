@@ -29,6 +29,20 @@
 
 ---
 
+### 2026-06-15 · Host-aware coverage 2b 核心（EAS+enum 矩阵，TDD 绿，inert）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「后面的不搞了吗?」）
+
+- **本轮目标**：2a commit 后用户催继续，做 Phase 2b 的安全核心（按 `docs/design/2026-06-15-host-aware-coverage.md` §3.2/§3.3 矩阵 + 计划 2b sketch）。
+- **改动（1 文件，已 commit 见下）**：`golish-agent-kit/src/harness/technique_resolver.rs`——`technique_applies` 加 EAS + Enumeration 两 stage 矩阵：
+  - EAS（§3.2，host-level）：LIVENESS 全类适用；PORT / SERVICE-FINGERPRINT 对 **URL** 不适用（URL 端点本身非端口扫描/服务指纹目标，其 host 由 host/IP 资产覆盖）；Domain/IP/CIDR 留全 3。
+  - Enumeration（§3.3，web-level）：DIR/PARAM/JSAPI 仅 Domain|Url 适用；裸 IP/CIDR 全掉（既有 scope 级 no-web PARAM 规则的 per-asset 化）。
+  - `Other`/未知仍留全集（fail-safe，函数顶部既有短路）。
+- **TDD（先红后绿·有据）**：先加 `eas_drops_port_and_service_fp_for_url_only` + `enumeration_is_web_only_per_asset` → `nextest -p golish-agent-kit technique_resolver` **2 红**（/tmp/ak-2b-red.log：url 含 PORT、enum IP 非空）→ 实现 → **11/11 绿**（/tmp/ak-2b-green.log，EXIT=0）。改名旧 `non_target_intel_..._in_2a` → `eas_does_not_differentiate_ip_from_domain`（2b 后该名失准）。ReadLints 无错。
+- **关键边界（重要）**：本轮**只落 inert 矩阵谓词**——EAS/enum stage 的 `host_aware_coverage` flag **未开**（`external_attack_surface.json`/`enumeration.json` 当前有他会话未提交改动，避免冲突 + 设计 §6 要求 flag 翻转前做 PASS/BLOCK parity 测 + 用户 sign-off）。故对线上行为**零影响**（target_intel 仅走 TargetIntel 分支；EAS/enum 因 flag 关不调用过滤）。
+- **未做 / 下一步（2b 收尾）**：① `rule_engine.rs` 加 EAS/enum 的 parity 测（仿 2a `host_aware_coverage_relaxes_ip_not_domain`）；② 与改 EAS/enum JSON 的会话协调后翻 flag；③ 用户 sign-off（harness 核心，§6）；④ 之后 2c（authoritative type 轴 + IP 原生技术 + truth 投影）。未跑全量 precommit（磁盘紧 + 多 agent）。未 push。
+- **已参考技能**：无（按 TDD 先红后绿 + executing-plans 逐增量 + verification-before-completion 跑测拿证据[红 2 / 绿 11]的精神执行；未 Read 本地 skill raw；`mcp-server/role-skills/` 为空 Glob 0）。
+
+---
+
 ### 2026-06-15 · IP-centric Phase 0/1 + host-aware-coverage 2a 一并 commit（BaJie MCP-agent-4 · DISPATCH off · 接 MCP-2 上下文转移 · 用户「commit Phase 0/1+2a」）
 
 - **本轮目标**：用户接 MCP-2 上下文后指示把 IP-centric Phase 0/1（real_ip 落点 + 前端 IP 树）+ host-aware-coverage Phase 2a 一并 commit。

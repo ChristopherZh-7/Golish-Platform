@@ -107,10 +107,10 @@ pub fn resolve_expected_techniques(stage: StageKind, assets: &[AssetClass]) -> V
 }
 
 /// Host-aware coverage (design 2026-06-15 §3): whether `tech` (one of `stage`'s
-/// baseline techniques) applies to a single asset of `class`. Phase 2a only
-/// differentiates `TargetIntel`; other stages return `true` (no-op until 2b).
-/// `Other` keeps every technique (fail-safe: an unclassified asset is never
-/// under-checked).
+/// baseline techniques) applies to a single asset of `class`. Differentiates
+/// `TargetIntel` (2a), `ExternalAttackSurface` + `Enumeration` (2b); any other
+/// stage returns `true` (no-op). `Other` keeps every technique (fail-safe: an
+/// unclassified asset is never under-checked).
 pub fn technique_applies(stage: StageKind, class: AssetClass, tech: &str) -> bool {
     use AssetClass::*;
     if matches!(class, Other) {
@@ -126,7 +126,20 @@ pub fn technique_applies(stage: StageKind, class: AssetClass, tech: &str) -> boo
             // WHOIS / ASN / OSINT apply to every class (org/netblock-wide).
             _ => true,
         },
-        // 2b: EAS / enumeration matrices land here.
+        // Host-aware coverage 2b (design 2026-06-15 §3.2): EAS is host-level.
+        // LIVENESS applies to anything with a host; PORT / SERVICE-FINGERPRINT
+        // are host-level too, but a single URL endpoint is not itself a
+        // port-scan / service-fingerprint target (its host is covered by the
+        // host/IP asset). Domain/IP/CIDR keep all three.
+        StageKind::ExternalAttackSurface => match tech {
+            "GOLISH-EAS-PORT" | "GOLISH-EAS-SERVICE-FINGERPRINT" => !matches!(class, Url),
+            _ => true,
+        },
+        // Host-aware coverage 2b (design 2026-06-15 §3.3): content enumeration
+        // (DIR / PARAM / JSAPI) is web-level — only a web-capable asset (domain
+        // or URL) is a content-enumeration target; a bare IP/CIDR is not (the
+        // per-asset form of the existing scope-level no-web PARAM drop).
+        StageKind::Enumeration => matches!(class, Domain | Url),
         _ => true,
     }
 }
@@ -230,11 +243,44 @@ mod tests {
     }
 
     #[test]
-    fn non_target_intel_stage_keeps_all_techniques_in_2a() {
-        // 2a only differentiates target_intel; EAS keeps its full set per class.
+    fn eas_does_not_differentiate_ip_from_domain() {
+        // EAS is host-level: IP and domain both keep the full host set (only a
+        // bare URL endpoint drops PORT / SERVICE-FINGERPRINT — see the 2b test).
         assert_eq!(
             techniques_for(StageKind::ExternalAttackSurface, AssetClass::Ip).len(),
             techniques_for(StageKind::ExternalAttackSurface, AssetClass::Domain).len()
         );
+    }
+
+    // ── Host-aware coverage 2b: EAS + enumeration matrices (design §3.2/§3.3) ──
+
+    #[test]
+    fn eas_drops_port_and_service_fp_for_url_only() {
+        use StageKind::ExternalAttackSurface as Eas;
+        // A bare URL endpoint is not itself a port-scan / service-fingerprint
+        // target (its host is covered via the host/IP asset); it keeps LIVENESS.
+        let url = techniques_for(Eas, AssetClass::Url);
+        assert!(url.contains(&"GOLISH-EAS-LIVENESS".to_string()));
+        assert!(!url.contains(&"GOLISH-EAS-PORT".to_string()));
+        assert!(!url.contains(&"GOLISH-EAS-SERVICE-FINGERPRINT".to_string()));
+        // domain / ip / cidr are host-level → keep all 3.
+        assert_eq!(techniques_for(Eas, AssetClass::Domain).len(), 3);
+        assert_eq!(techniques_for(Eas, AssetClass::Ip).len(), 3);
+        assert_eq!(techniques_for(Eas, AssetClass::Cidr).len(), 3);
+        // fail-safe: unknown keeps the full set.
+        assert_eq!(techniques_for(Eas, AssetClass::Other).len(), 3);
+    }
+
+    #[test]
+    fn enumeration_is_web_only_per_asset() {
+        use StageKind::Enumeration as Enum;
+        // Content enumeration (DIR/PARAM/JSAPI) is web-level: domain + URL get
+        // the full set; a bare IP/CIDR is not a content-enumeration target.
+        assert_eq!(techniques_for(Enum, AssetClass::Domain).len(), 3);
+        assert_eq!(techniques_for(Enum, AssetClass::Url).len(), 3);
+        assert!(techniques_for(Enum, AssetClass::Ip).is_empty());
+        assert!(techniques_for(Enum, AssetClass::Cidr).is_empty());
+        // fail-safe: unknown keeps the full set (never under-checked).
+        assert_eq!(techniques_for(Enum, AssetClass::Other).len(), 3);
     }
 }
