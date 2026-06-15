@@ -29,6 +29,23 @@
 
 ---
 
+### 2026-06-15 · Host-aware coverage 2c-3b gate 翻转（IP 必做 RDNS/IPWHOIS，TDD 绿，待活体 parity）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「全部搞完」）
+
+- **本轮目标**：翻转 gate baseline，让 in-scope IP/CIDR 必做 IP 原生技术（RDNS/IPWHOIS）。用户「全部搞完」= 含 2c-3b sign-off（已知会 BLOCK 无数据 IP）。
+- **改动（6 文件，已 commit 见下）**：
+  - `golish-agent-kit/src/harness/technique_resolver.rs`：`stage_baseline(TargetIntel)` += RDNS/IPWHOIS（→8）；`technique_applies` 加 `RDNS=>Ip`（裸 IP，CIDR 无单一 PTR 故排除）+ `IPWHOIS=>Ip|Cidr`；新测 target_intel_requires_ip_native_for_ip_not_domain；更新 2a 测（resolve len 6→8、Other len 6→8、Cidr≠Ip 改断言）。
+  - `golish-agent-kit/src/harness/gate/rule_engine.rs`：端到端 parity 测 host_aware_2c3_requires_ip_native_for_ip（IP 缺 RDNS/IPWHOIS→BLOCK、齐→PASS；域名永不被要求）。
+  - `golish-agent-kit/src/harness/stage_spec.rs`：coverage_axis 测更新（8 列）。
+  - `resources/harness/stages/target_intel.json`：expected_techniques + **authoritative_techniques**（truth 强制）+ coverage_axis 各 +RDNS/IPWHOIS；comment 更新。
+  - `resources/harness/technique_taxonomy.json`：登记 GOLISH-INTEL-RDNS/IPWHOIS（all_embedded_expected_techniques_are_recognized 要求）。
+- **关键决策**：RDNS=>Ip only（netblock 无单一 PTR）、IPWHOIS=>Ip|Cidr（RDAP 支持网段）。authoritative_techniques 也加这两项 → IP 原生格走 DB 真值（land_rdns/land_ip_whois 落的），非自报。
+- **TDD / 验证（有据）**：resolver 新测先红（/tmp/ak-2c3b-red.log：ip 无 RDNS）→ 实现 → 全量 `nextest -p golish-agent-kit --no-fail-fast` **637/637**（/tmp/ak-2c3b-2.log EXIT=0；含 all_twelve_stage_specs 加载 8 技术 + taxonomy recognized + 更新的 stage_spec axis 测）。修了 1 个过期断言 target_intel_declares_stage_run_specialist_and_axis（axis 6→8）。JSON 双校验 OK。ReadLints 无错。无 Rust API 变更 → app 链不受影响。
+- **行为影响（重要·诚实）**：**这是真行为变更**——flag 已开的 target_intel 上，in-scope IP 现必须有 RDNS（裸 IP）+ IPWHOIS（IP/CIDR）才 PASS；无则 BLOCK。数据由 2c-3a 采集器（recon 时）落。单测证 gate 逻辑，但 **设计 §6 的活体 --stage-run PASS/BLOCK parity 未跑**（需运行 app + 真实 engagement，本会话 env 无法跑）→ 上线依赖前必须由用户跑活体 parity + 最终 sign-off。
+- **未做 / 下一步**：活体 parity（env 阻塞）；全量 precommit；push（§2.7 待用户）。可选：refiner passive_intel_command_hint（RDNS→dig -x / IPWHOIS→whois）+ evidence_facts 标注（agent 手动满足路径，非必需——内置采集器 + facts_from_db_truth 是主路径）。
+- **已参考技能**：无（executing-plans + TDD 先红后绿 + verification 跑测拿证据[637/637]；未 Read 本地 skill raw；mcp-server/role-skills/ 为空 Glob 0）。
+
+---
+
 ### 2026-06-15 · Host-aware coverage 2c-3a 采集器（land_rdns + land_ip_whois，编译+回归绿）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「全部搞完」）
 
 - **本轮目标**：补 2c-3a 采集器（land_rdns/land_ip_whois），接入 land_target_intel_coverage hook，落 PTR + ip_whois 数据。

@@ -70,6 +70,9 @@ fn stage_baseline(stage: StageKind) -> Vec<&'static str> {
             "GOLISH-INTEL-CT",
             "GOLISH-INTEL-SUBDOMAIN",
             "GOLISH-INTEL-OSINT",
+            // Host-aware 2c-3 IP-native (applied to IP/CIDR only by technique_applies).
+            "GOLISH-INTEL-RDNS",
+            "GOLISH-INTEL-IPWHOIS",
         ],
         StageKind::ExternalAttackSurface => vec![
             "GOLISH-EAS-LIVENESS",
@@ -123,6 +126,10 @@ pub fn technique_applies(stage: StageKind, class: AssetClass, tech: &str) -> boo
             // Forward DNS + cert transparency are domain/host concepts; a bare
             // IP/CIDR has neither a self-keyed forward A record nor a CT log.
             "GOLISH-INTEL-DNS" | "GOLISH-INTEL-CT" => matches!(class, Domain | Url),
+            // Host-aware 2c-3 IP-native: reverse DNS needs a single IP (a CIDR
+            // netblock has no single PTR); IP-WHOIS (RIR) covers IP + netblock.
+            "GOLISH-INTEL-RDNS" => matches!(class, Ip),
+            "GOLISH-INTEL-IPWHOIS" => matches!(class, Ip | Cidr),
             // WHOIS / ASN / OSINT apply to every class (org/netblock-wide).
             _ => true,
         },
@@ -161,11 +168,12 @@ mod tests {
 
     #[test]
     fn target_intel_returns_all_intel_techniques() {
-        // 任意资产类型，target_intel 都核全部 6 类被动情报技术。
+        // target_intel 基线 = 6 被动情报 + 2 IP 原生（RDNS/IPWHOIS，2c-3）= 8。
+        // resolve_expected_techniques 是 scope 并集 headline（不按单资产裁剪）。
         let t = resolve_expected_techniques(StageKind::TargetIntel, &[AssetClass::Domain]);
         assert!(t.contains(&"GOLISH-INTEL-DNS".to_string()));
         assert!(t.contains(&"GOLISH-INTEL-WHOIS".to_string()));
-        assert_eq!(t.len(), 6);
+        assert_eq!(t.len(), 8);
     }
 
     #[test]
@@ -223,12 +231,12 @@ mod tests {
         assert!(ip.contains(&"GOLISH-INTEL-WHOIS".to_string()));
         assert!(ip.contains(&"GOLISH-INTEL-ASN".to_string()));
         assert!(ip.contains(&"GOLISH-INTEL-OSINT".to_string()));
-        // CIDR matches IP.
-        assert_eq!(
-            techniques_for(StageKind::TargetIntel, AssetClass::Cidr),
-            techniques_for(StageKind::TargetIntel, AssetClass::Ip)
-        );
-        // Domain keeps all 6.
+        // CIDR matches IP except reverse-DNS (a netblock has no single PTR).
+        let cidr = techniques_for(StageKind::TargetIntel, AssetClass::Cidr);
+        assert!(!cidr.contains(&"GOLISH-INTEL-RDNS".to_string()));
+        assert!(cidr.contains(&"GOLISH-INTEL-IPWHOIS".to_string()));
+        assert!(cidr.contains(&"GOLISH-INTEL-WHOIS".to_string()));
+        // Domain keeps its 6 passive-intel techniques (IP-native dropped).
         assert_eq!(techniques_for(StageKind::TargetIntel, AssetClass::Domain).len(), 6);
         // URL keeps host intel (DNS/CT) but not subdomain enumeration.
         let url = techniques_for(StageKind::TargetIntel, AssetClass::Url);
@@ -239,7 +247,8 @@ mod tests {
 
     #[test]
     fn other_class_keeps_full_set_failsafe() {
-        assert_eq!(techniques_for(StageKind::TargetIntel, AssetClass::Other).len(), 6);
+        // Other ⇒ 保留全基线（6 被动 + 2 IP 原生 = 8），fail-safe 绝不放松。
+        assert_eq!(techniques_for(StageKind::TargetIntel, AssetClass::Other).len(), 8);
     }
 
     #[test]
@@ -282,5 +291,27 @@ mod tests {
         assert!(techniques_for(Enum, AssetClass::Cidr).is_empty());
         // fail-safe: unknown keeps the full set (never under-checked).
         assert_eq!(techniques_for(Enum, AssetClass::Other).len(), 3);
+    }
+
+    // ── Host-aware coverage 2c-3b: IP-native required techniques ──────────────
+
+    #[test]
+    fn target_intel_requires_ip_native_for_ip_not_domain() {
+        use StageKind::TargetIntel as Ti;
+        // IP gets both IP-native techniques (reverse DNS + RIR IP-WHOIS).
+        let ip = techniques_for(Ti, AssetClass::Ip);
+        assert!(ip.contains(&"GOLISH-INTEL-RDNS".to_string()));
+        assert!(ip.contains(&"GOLISH-INTEL-IPWHOIS".to_string()));
+        // CIDR: IP-WHOIS applies (netblock RDAP) but reverse-DNS does not
+        // (a netblock has no single PTR).
+        let cidr = techniques_for(Ti, AssetClass::Cidr);
+        assert!(cidr.contains(&"GOLISH-INTEL-IPWHOIS".to_string()));
+        assert!(!cidr.contains(&"GOLISH-INTEL-RDNS".to_string()));
+        // domain / url: neither IP-native technique applies.
+        for class in [AssetClass::Domain, AssetClass::Url] {
+            let t = techniques_for(Ti, class);
+            assert!(!t.contains(&"GOLISH-INTEL-RDNS".to_string()));
+            assert!(!t.contains(&"GOLISH-INTEL-IPWHOIS".to_string()));
+        }
     }
 }
