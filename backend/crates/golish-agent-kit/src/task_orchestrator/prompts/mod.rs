@@ -276,6 +276,39 @@ pub fn stage_methodology(spec: &StageSpec) -> String {
     }
 }
 
+/// Slim orchestration note for a stage whose work is delegated to a per-org
+/// `specialist` via `stage_run` (设计 2026-06-15).
+///
+/// 与 [`stage_methodology`] 互斥：方法论 playbook（这个阶段「怎么做」的脏活）属于
+/// **干活的 worker**（由 `stage_run` 的 `build_org_objective` 注入到 specialist 子
+/// agent），主 agent 不再重复携带。主 agent 只需要这份编排提示：用 `stage_run` 按
+/// org 扇出 → gap 循环 → 全过后收口交付。无 `specialist` 的阶段返回空串（主 agent
+/// 自己干，仍走 [`stage_methodology`]）。
+pub fn stage_specialist_orchestration(spec: &StageSpec) -> String {
+    let Some(specialist) = spec
+        .specialist
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return String::new();
+    };
+    format!(
+        "## DELEGATE `{stage}` — fan out with `stage_run`\n\n\
+         This stage has a per-org specialist (`{specialist}`). Do NOT collect the \
+         intelligence yourself: call `stage_run` with your full in-scope organization \
+         tree (the parent + subsidiaries you built in scoping). It runs `{specialist}` \
+         once per org — each isolated and gated on its own evidence — and returns \
+         `{{ passed, gaps[] }}`. If `passed` is false, call `stage_run` again with \
+         `orgs` set to ONLY the blocked org(s) and repeat until every org passes (the \
+         gate-closure loop); ask the human only if an org keeps failing. Once every org \
+         passes, submit the `{stage}` StageDeliverable to close — coverage is read from \
+         the DB the specialists populated, so you do not re-collect or hand-build it.\n\n",
+        stage = spec.id,
+        specialist = specialist,
+    )
+}
+
 /// C6 · cross-stage evidence handoff context (Doc 3 §6.2 handoff).
 ///
 /// Renders the stage's `inherits_evidence_from` so the executing agent knows

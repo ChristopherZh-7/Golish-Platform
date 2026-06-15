@@ -341,4 +341,31 @@ impl GolishDbRepoProvider {
             .map(|t| (t.value, t.target_type.as_str().to_string()))
             .collect())
     }
+
+    /// Phase 1.5 阶段过门：列全库（或指定 project）的 organization id。组织树属 recon 资产
+    /// 域；chat 走整库口径（project_path=None），与 `in_scope_assets_impl` 同口径。
+    pub(super) async fn in_scope_org_ids_impl(
+        &self,
+        project_path: Option<&str>,
+    ) -> anyhow::Result<Vec<Uuid>> {
+        Ok(golish_db::repo::organizations::in_scope_ids(&self.pool, project_path).await?)
+    }
+
+    /// Phase 1.5 阶段过门：批量取 per-org 完成账本行 `(organization_id, passed_at)`（收尾
+    /// gate 经 repo 通道核「全 org 新鲜 PASS」）。逐 id 取（org 量级小），无行的 org 自然缺席。
+    pub(super) async fn org_stage_completions_get_impl(
+        &self,
+        stage_kind: &str,
+        org_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<(Uuid, chrono::DateTime<chrono::Utc>)>> {
+        let mut out = Vec::with_capacity(org_ids.len());
+        for &org in org_ids {
+            if let Some(row) =
+                golish_db::repo::org_stage_completions::get(&self.pool, org, stage_kind).await?
+            {
+                out.push((row.organization_id, row.passed_at));
+            }
+        }
+        Ok(out)
+    }
 }

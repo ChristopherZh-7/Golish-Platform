@@ -88,6 +88,30 @@ pub async fn list(pool: &PgPool, project_path: &str) -> Result<Vec<Organization>
     Ok(rows)
 }
 
+/// List every in-scope organization id for the harness fan-out stage-pass gate.
+/// `None` project_path = whole-DB axis (chat sessions carry no project key, the
+/// same legacy axis `targets` in-scope reads use); `Some(p)` filters to that
+/// project. The harness uses this to verify EVERY in-scope org freshly passed a
+/// fan-out stage's per-org gate before the stage closes (design 2026-06-15).
+pub async fn in_scope_ids(pool: &PgPool, project_path: Option<&str>) -> Result<Vec<Uuid>> {
+    let ids = match project_path {
+        Some(p) => {
+            sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM organizations WHERE project_path = $1 ORDER BY id",
+            )
+            .bind(p)
+            .fetch_all(pool)
+            .await?
+        }
+        None => {
+            sqlx::query_scalar::<_, Uuid>("SELECT id FROM organizations ORDER BY id")
+                .fetch_all(pool)
+                .await?
+        }
+    };
+    Ok(ids)
+}
+
 pub async fn create(
     pool: &PgPool,
     project_path: &str,

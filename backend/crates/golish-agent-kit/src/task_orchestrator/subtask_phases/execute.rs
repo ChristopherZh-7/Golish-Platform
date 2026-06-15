@@ -112,7 +112,26 @@ impl TaskOrchestrator {
                         // 「这个阶段怎么高效做」的正向指导（推荐工具序列 / 效率红线 /
                         // 何时收口），补 charter 只讲约束、不讲方法论的缺口。没写
                         // playbook 的阶段返回空串。
-                        desc.push_str(&super::super::prompts::stage_methodology(&spec));
+                        //
+                        // 例外（设计 2026-06-15）：有 `specialist` 的阶段（如 target_intel
+                        // → recon）由 stage_run 把 specialist 按 org 扇出；真正干活 + 提交 +
+                        // 过 gate 的是那个 worker 子 agent。recon「怎么做」的方法论因此注入
+                        // 给 worker（见 stage_run 的 build_org_objective）。主 agent 这里只拿
+                        // 一份精简编排提示（扇出 + gap 循环 + 收口），不再重复脏活方法论。
+                        // 无 specialist 的阶段（主 agent 自己干）照旧注入完整 playbook。
+                        if spec
+                            .specialist
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .is_none()
+                        {
+                            desc.push_str(&super::super::prompts::stage_methodology(&spec));
+                        } else {
+                            desc.push_str(
+                                &super::super::prompts::stage_specialist_orchestration(&spec),
+                            );
+                        }
                         // C6 · handoff: inject which evidence kinds this stage
                         // inherits from upstream stages (consumes the otherwise
                         // runtime-dead `inherits_evidence_from`).
@@ -251,16 +270,27 @@ impl TaskOrchestrator {
                     // 设计 2026-06-12-unified-refiner · Refiner C 类诊断与 gate 用
                     // 同一份证据事实；hook move 走原值，这里留一份给渲染。
                     let refine_facts = evidence_facts.clone();
-                    let (gated_content, gate_outcome) = apply_harness_gate_hook(
-                        planned,
-                        exec_ctx,
-                        agent_result.content,
-                        in_scope_assets,
-                        asset_types,
-                        in_scope_target_types,
-                        evidence_facts,
-                        self.harness_subsidiary_policy.map(|p| p.threshold_pct),
-                    );
+                    // Phase 1.5: fan-out 阶段收尾改判 stage_run pass_token（B-recompute），
+                    // 跳过整阶段 coverage；非 fan-out / 不可解析交付物走常规 gate。
+                    let mut specialist_gated = false;
+                    let (gated_content, gate_outcome) = if let Some(res) = self
+                        .try_specialist_stage_gate(planned, &agent_result.content)
+                        .await
+                    {
+                        specialist_gated = true;
+                        res
+                    } else {
+                        apply_harness_gate_hook(
+                            planned,
+                            exec_ctx,
+                            agent_result.content,
+                            in_scope_assets,
+                            asset_types,
+                            in_scope_target_types,
+                            evidence_facts,
+                            self.harness_subsidiary_policy.map(|p| p.threshold_pct),
+                        )
+                    };
                     if let Some(mut outcome) = gate_outcome {
                         // P0 · reject deliverables citing fabricated evidence ids
                         // (may flip PASS→BLOCK) before the retry decision below.
@@ -276,31 +306,40 @@ impl TaskOrchestrator {
                         // 设计 2026-06-12-unified-refiner · BLOCK 的全部事实汇入
                         // 唯一 Refiner：确定性分类 → 单模板纠正 → submit-only 锁。
                         if !outcome.gate_allowed {
-                            let decision = crate::task_orchestrator::refiner::refine(
-                                &outcome.as_refine_input(refine_facts.as_deref()),
-                            );
-                            tracing::info!(
-                                target: "harness::hook",
-                                stage = %outcome.gated_stage.as_str(),
-                                class = ?decision.class,
-                                submit_only = decision.submit_only_lock,
-                                "refiner decision"
-                            );
-                            outcome.repair_correction = Some(decision.correction);
+                            // Phase 1.5: fan-out token BLOCK 不走 refiner——refiner 可能置
+                            // submit_only_lock，会把主 agent 锁进「只能重交」而无法再调
+                            // stage_run（死锁）。直接喂 gate 的「重跑 stage_run」事实、
+                            // submit_only=false，让它能再扇出。
+                            let (correction, submit_only) = if specialist_gated {
+                                (outcome.gate_reasons.join("\n"), false)
+                            } else {
+                                let decision = crate::task_orchestrator::refiner::refine(
+                                    &outcome.as_refine_input(refine_facts.as_deref()),
+                                );
+                                tracing::info!(
+                                    target: "harness::hook",
+                                    stage = %outcome.gated_stage.as_str(),
+                                    class = ?decision.class,
+                                    submit_only = decision.submit_only_lock,
+                                    "refiner decision"
+                                );
+                                (decision.correction, decision.submit_only_lock)
+                            };
+                            outcome.repair_correction = Some(correction);
                             // C4 · gate BLOCK with retries left → feed the
                             // correction back into the loop; defer transition until
                             // the gate settles (PASS, or BLOCK with no retries left).
                             if reflector_attempt < MAX_REFLECTOR_RETRIES {
                                 tracing::info!(
                                     "[TaskMode/Harness] Gate BLOCK on '{}' (attempt {}/{}), \
-                                     feeding refiner correction back (submit_only={})",
+                                     feeding correction back (submit_only={})",
                                     planned.title,
                                     reflector_attempt + 1,
                                     MAX_REFLECTOR_RETRIES,
-                                    decision.submit_only_lock,
+                                    submit_only,
                                 );
                                 pending_gate_correction = outcome.repair_correction.clone();
-                                pending_submit_only = decision.submit_only_lock;
+                                pending_submit_only = submit_only;
                                 last_result = Some(AgentResult {
                                     content: gated_content,
                                     ..agent_result
@@ -423,16 +462,25 @@ impl TaskOrchestrator {
             .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref())
             .await;
         let refine_facts = evidence_facts.clone();
-        let (out, gate_outcome) = apply_harness_gate_hook(
-            planned,
-            exec_ctx,
-            fallback,
-            in_scope_assets,
-            asset_types,
-            in_scope_target_types,
-            evidence_facts,
-            self.harness_subsidiary_policy.map(|p| p.threshold_pct),
-        );
+        // Phase 1.5: fan-out 阶段收尾改判 stage_run pass_token；非 fan-out 走常规 gate。
+        let mut specialist_gated = false;
+        let (out, gate_outcome) = if let Some(res) =
+            self.try_specialist_stage_gate(planned, &fallback).await
+        {
+            specialist_gated = true;
+            res
+        } else {
+            apply_harness_gate_hook(
+                planned,
+                exec_ctx,
+                fallback,
+                in_scope_assets,
+                asset_types,
+                in_scope_target_types,
+                evidence_facts,
+                self.harness_subsidiary_policy.map(|p| p.threshold_pct),
+            )
+        };
         if let Some(mut outcome) = gate_outcome {
             self.enforce_evidence_existence(&mut outcome).await;
             self.enforce_evidence_kinds(&mut outcome).await;
@@ -444,17 +492,22 @@ impl TaskOrchestrator {
             // available ids and the final blocking reason.
             self.gather_missing_deliverable_ids(&mut outcome).await;
             if !outcome.gate_allowed {
-                let decision = crate::task_orchestrator::refiner::refine(
-                    &outcome.as_refine_input(refine_facts.as_deref()),
-                );
-                tracing::info!(
-                    target: "harness::hook",
-                    stage = %outcome.gated_stage.as_str(),
-                    class = ?decision.class,
-                    submit_only = decision.submit_only_lock,
-                    "refiner decision (retries exhausted — trace only)"
-                );
-                outcome.repair_correction = Some(decision.correction);
+                let correction = if specialist_gated {
+                    outcome.gate_reasons.join("\n")
+                } else {
+                    let decision = crate::task_orchestrator::refiner::refine(
+                        &outcome.as_refine_input(refine_facts.as_deref()),
+                    );
+                    tracing::info!(
+                        target: "harness::hook",
+                        stage = %outcome.gated_stage.as_str(),
+                        class = ?decision.class,
+                        submit_only = decision.submit_only_lock,
+                        "refiner decision (retries exhausted — trace only)"
+                    );
+                    decision.correction
+                };
+                outcome.repair_correction = Some(correction);
             }
             self.consume_gate_outcome(task_id, outcome).await;
         }
@@ -1268,6 +1321,99 @@ impl TaskOrchestrator {
         }
     }
 
+    /// Phase 1.5 · fan-out（specialist）阶段的**阶段收尾**不再跑整阶段 coverage gate（冗余——
+    /// 每个 org 已在 Phase 1 各过各 per-org gate；且整库资产轴 org_id=None 会分母爆炸），改判
+    /// stage_run 的 pass_token：收尾 gate 拿 per-org 完成账本**重算**令牌比对（B-recompute），
+    /// 全 in-scope org 新鲜 PASS 且令牌对上才放行。返回 `None` = 非 fan-out 阶段 / 交付物不可
+    /// 解析（交回常规 gate 处理：后者对缺交付物 fail-closed BLOCK）。
+    async fn try_specialist_stage_gate(
+        &self,
+        planned: &PlannedSubtask,
+        content: &str,
+    ) -> Option<(String, Option<HarnessGateOutcome>)> {
+        let stage = planned.harness_stage.as_ref()?.stage_kind;
+        let is_fanout = crate::harness::load_embedded_stage_spec(stage)
+            .map(|s| s.specialist.is_some())
+            .unwrap_or(false);
+        if !is_fanout {
+            return None;
+        }
+        let deliverable = parse_deliverable_from_content(content)?;
+        Some(
+            self.verify_stage_run_pass_token(stage, content, &deliverable)
+                .await,
+        )
+    }
+
+    /// B-recompute 校验：核「全 in-scope org 都在 TTL 内 PASS」+「主 agent 带回的 pass_token
+    /// == 收尾 gate 当场对账本重算的值」。令牌由 stage_run 确定性代码对 `org_stage_completions`
+    /// 账本算出，agent 看不到也造不出 `passed_at` → 盖不了章。任一不满足 → BLOCK 并提示只重跑
+    /// 缺口 org 的 stage_run（不绑 session：两路径 session 维度可能不一致，防伪靠账本真值）。
+    async fn verify_stage_run_pass_token(
+        &self,
+        stage: crate::harness::StageKind,
+        content: &str,
+        deliverable: &crate::harness::StageDeliverable,
+    ) -> (String, Option<HarnessGateOutcome>) {
+        use crate::harness::org_gate::{
+            completion_is_fresh, extract_pass_token, stage_pass_token, STAGE_COMPLETION_TTL_SECS,
+        };
+        // 整库口径（与 in_scope_assets 一致；chat 会话无 project key）。
+        let org_ids = self.repo.in_scope_org_ids(None).await.unwrap_or_default();
+        if org_ids.is_empty() {
+            return render_specialist_gate(
+                content,
+                stage,
+                false,
+                vec!["cannot verify stage completion: no in-scope organizations resolved — run \
+                      scoping to build the org tree first"
+                    .to_string()],
+                deliverable,
+            );
+        }
+        let now = chrono::Utc::now();
+        let fresh: Vec<(uuid::Uuid, chrono::DateTime<chrono::Utc>)> = self
+            .repo
+            .org_stage_completions_get(stage.as_str(), &org_ids)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, at)| completion_is_fresh(*at, now, STAGE_COMPLETION_TTL_SECS))
+            .collect();
+        let have: std::collections::HashSet<uuid::Uuid> = fresh.iter().map(|(o, _)| *o).collect();
+        let missing: Vec<uuid::Uuid> =
+            org_ids.iter().copied().filter(|o| !have.contains(o)).collect();
+        if !missing.is_empty() {
+            return render_specialist_gate(
+                content,
+                stage,
+                false,
+                vec![format!(
+                    "stage not complete: {} of {} in-scope orgs have not freshly passed this \
+                     stage's per-org gate — re-run stage_run for the missing org(s): {:?}",
+                    missing.len(),
+                    org_ids.len(),
+                    missing
+                )],
+                deliverable,
+            );
+        }
+        let expected = stage_pass_token(stage, &fresh);
+        let reasons = match extract_pass_token(deliverable) {
+            Some(tok) if tok == expected => {
+                return render_specialist_gate(content, stage, true, vec![], deliverable);
+            }
+            Some(_) => vec!["stage_run pass_token mismatch (stale or wrong stage) — re-run \
+                             stage_run for this stage and submit the fresh pass_token it returns"
+                .to_string()],
+            None => vec!["missing stage_run pass_token — call stage_run for this stage, then \
+                          submit a claim {kind:\"stage_run_pass_token\", summary:<pass_token>} \
+                          from its result"
+                .to_string()],
+        };
+        render_specialist_gate(content, stage, false, reasons, deliverable)
+    }
+
     /// PR3 (设计 2026-06-11-coverage-auto-derive) · fetch the session's evidence
     /// facts (asset, technique, outcome, id) so `coverage_complete` can project
     /// ledger-proven cells instead of demanding a hand-written matrix. `None`
@@ -2069,6 +2215,53 @@ fn apply_harness_gate_hook(
             expired: Vec::new(),
             red_team_flow_correction: None,
             confirm_only_stage: confirm_only,
+            evidence_kind_labels: std::collections::HashMap::new(),
+        }),
+    )
+}
+
+/// Phase 1.5 · 构造 fan-out 阶段 token gate 的 outcome（PASS/BLOCK）。复刻 apply_harness_gate_hook
+/// 的「## Harness Gate Decision」渲染 + HarnessGateOutcome 形状，但 `evidence_refs` /
+/// `required_evidence_kinds` 留空——per-org 证据已在 Phase 1 各自过 gate，阶段收尾只认账本聚合
+/// （令牌），不再要求主 agent 交付物带证据；空字段也让收尾的 evidence 强制（existence/kinds/
+/// freshness）对本 outcome 一律 no-op。
+fn render_specialist_gate(
+    content: &str,
+    stage: crate::harness::StageKind,
+    allowed: bool,
+    reasons: Vec<String>,
+    deliverable: &crate::harness::StageDeliverable,
+) -> (String, Option<HarnessGateOutcome>) {
+    let decision = serde_json::json!({
+        "allowed": allowed,
+        "gate": "stage_run_pass_token",
+        "reasons": reasons.clone(),
+    });
+    let decision_json = serde_json::to_string_pretty(&decision)
+        .unwrap_or_else(|_| "{\"error\":\"failed to serialize gate decision\"}".to_string());
+    let mut out = content.to_string();
+    out.push_str("\n\n## Harness Gate Decision\n\n```json\n");
+    out.push_str(&decision_json);
+    out.push_str("\n```\n");
+    (
+        out,
+        Some(HarnessGateOutcome {
+            gated_stage: stage,
+            gate_allowed: allowed,
+            repair_correction: None,
+            evidence_summary: Some(summarize_deliverable(deliverable)),
+            evidence_refs: Vec::new(),
+            required_evidence_kinds: Vec::new(),
+            findings_count: deliverable.findings.len(),
+            fabricated_evidence_refs: Vec::new(),
+            available_real_ids: Vec::new(),
+            missing_deliverable: false,
+            gate_reasons: reasons,
+            gate_recovery: None,
+            missing_kinds: Vec::new(),
+            expired: Vec::new(),
+            red_team_flow_correction: None,
+            confirm_only_stage: false,
             evidence_kind_labels: std::collections::HashMap::new(),
         }),
     )

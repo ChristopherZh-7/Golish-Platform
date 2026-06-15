@@ -45,6 +45,7 @@ pub mod nl_slice;
 pub mod operation_flow;
 pub mod operation_graph;
 pub mod operation_mermaid;
+pub mod org_gate;
 pub mod phase;
 pub mod phase_flow;
 pub mod pre_action_authorizer;
@@ -78,6 +79,7 @@ pub use operation_graph::{
     base_operation_graph, load_operation_graph_from_json, AllowedDag, OperationGraph,
     OperationGraphError, StageEdge,
 };
+pub use org_gate::{evaluate_org_stage_gate, OrgVerdict};
 pub use phase::{load_phase_map_from_json, Phase, PhaseMap, PhaseMapError};
 pub use phase_flow::{
     decide_phase_step, next_phase, pending_phase_approval, phase_is_complete, PhaseStep,
@@ -88,8 +90,8 @@ pub use profile::{
 };
 pub use resources::{
     load_embedded_phase_map, load_embedded_profile, load_embedded_sprint_skeleton,
-    load_embedded_stage_spec, profile_json, sprint_skeleton_json, stage_spec_json,
-    EMBEDDED_PROFILE_IDS,
+    load_embedded_stage_spec, profile_json, sprint_skeleton_json, stage_methodology_md,
+    stage_spec_json, EMBEDDED_PROFILE_IDS,
 };
 pub use slice::resolve_slice;
 pub use sprint_contract::{

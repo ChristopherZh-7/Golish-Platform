@@ -25,7 +25,14 @@ use anyhow::Result;
 use rig::completion::CompletionModel as RigCompletionModel;
 use serde_json::{json, Value};
 
-use golish_agent_kit::harness::{load_embedded_stage_spec, StageKind};
+use golish_agent_kit::harness::org_gate::{
+    completion_is_fresh, decide_org_verdict, stage_pass_token, STAGE_COMPLETION_TTL_SECS,
+    STAGE_RUN_PASS_TOKEN_KIND,
+};
+use golish_agent_kit::harness::{
+    evaluate_org_stage_gate, load_embedded_stage_spec, stage_methodology_md, OrgVerdict,
+    StageDeliverable, StageKind,
+};
 use golish_core::events::{AiEvent, HarnessTraceKind};
 use golish_sub_agents::SubAgentContext;
 
@@ -140,6 +147,21 @@ fn build_org_objective(
             expected_techniques.join(", "),
         ));
     }
+    // The recon "how-to" playbook belongs to the WORKER that actually collects
+    // (this specialist sub-agent), not the orchestrator. Append the stage
+    // methodology here — recommended tool sequence / efficiency red lines /
+    // coverage contract — so the worker gets it; the main agent no longer carries
+    // it for specialist stages (see task_orchestrator subtask_phases::execute).
+    if let Some(md) = stage_methodology_md(stage)
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+    {
+        obj.push_str(&format!(
+            "\n\n## HOW TO RUN {} (methodology — follow this)\n\n{}",
+            stage.as_str(),
+            md,
+        ));
+    }
     obj
 }
 
@@ -180,6 +202,24 @@ fn emit_org_progress(
         },
     };
     let _ = ctx.events.event_tx.send(event);
+}
+
+/// Resume-skip lookup: returns the prior `passed_at` iff this org already passed
+/// `stage` within the TTL window, so the caller can skip re-dispatching the
+/// specialist. Fail-open: no `db_tracker` (pure-eval contexts), unparseable org
+/// id, no ledger row, or a stale row → `None` (run normally).
+async fn resume_skip_passed_at(
+    ctx: &AgenticLoopContext<'_>,
+    stage: StageKind,
+    unit: &OrgUnit,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let tracker = ctx.events.db_tracker?;
+    let org_id = uuid::Uuid::parse_str(&unit.id).ok()?;
+    let passed_at = tracker
+        .recent_org_stage_completion(org_id, stage.as_str())
+        .await?;
+    completion_is_fresh(passed_at, chrono::Utc::now(), STAGE_COMPLETION_TTL_SECS)
+        .then_some(passed_at)
 }
 
 /// Handle the `stage_run` tool call: per-org serial specialist fan-out.
@@ -278,6 +318,31 @@ where
         // `agent_request_id` field on the StageRunOrgProgress event.
         let org_request_id = format!("{tool_id}::org::{}", unit.id);
 
+        // Resume-skip: if this org already passed THIS stage within the TTL
+        // window, count it covered and DON'T re-dispatch the specialist — the
+        // fix for "为什么还带着已完成的 org 重新跑 / 很多操作重复做". Fail-open
+        // (no db_tracker / unparseable id / stale row → run; see helper).
+        if let Some(passed_at) = resume_skip_passed_at(ctx, stage, unit).await {
+            passed_count += 1;
+            emit_org_progress(
+                ctx,
+                stage,
+                unit,
+                &org_request_id,
+                "passed",
+                Some(format!(
+                    "已完成于 {} · 跳过重跑（{}d 内已通过本阶段）",
+                    passed_at.format("%Y-%m-%d %H:%M UTC"),
+                    STAGE_COMPLETION_TTL_SECS / 86_400
+                )),
+                0,
+                &stage_label,
+                &role_label,
+                &coverage_axis,
+            );
+            continue;
+        }
+
         emit_org_progress(
             ctx,
             stage,
@@ -308,51 +373,147 @@ where
         )
         .await;
 
-        let ok = matches!(&result, Ok(r) if r.success);
-        if ok {
-            passed_count += 1;
-            emit_org_progress(
-                ctx,
-                stage,
-                unit,
-                &org_request_id,
-                "passed",
-                None,
-                0,
-                &stage_label,
-                &role_label,
-                &coverage_axis,
-            );
-        } else {
-            let detail = match &result {
-                Ok(r) => r
-                    .value
-                    .get("response")
-                    .or_else(|| r.value.get("error"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.chars().take(300).collect::<String>())
-                    .unwrap_or_default(),
-                Err(e) => e.to_string(),
-            };
-            emit_org_progress(
-                ctx,
-                stage,
-                unit,
-                &org_request_id,
-                "blocked",
-                None,
-                0,
-                &stage_label,
-                &role_label,
-                &coverage_axis,
-            );
-            gaps.push(json!({ "org_id": unit.id, "org_name": unit.name, "detail": detail }));
+        let sub_ok = matches!(&result, Ok(r) if r.success);
+
+        // Take THIS org's own deliverable: serial execution means the side-channel
+        // slot currently holds this org's last submit (the next org overwrites it).
+        let org_deliverable: Option<StageDeliverable> = match ctx.harness_deliverable_sink.as_ref()
+        {
+            Some(sink) => sink
+                .read()
+                .await
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<StageDeliverable>(s).ok()),
+            None => None,
+        };
+        // Clear after taking so the next org cannot reuse this org's residue.
+        if let Some(sink) = ctx.harness_deliverable_sink.as_ref() {
+            *sink.write().await = None;
+        }
+
+        // Authoritative verdict: this org passes only when its OWN deliverable
+        // clears a DB-truth gate for THIS org. Without a repo (pure-eval/headless
+        // contexts) or a parseable deliverable, fall back to the sub-agent success
+        // flag so regression/eval paths keep working (real runs always have DB).
+        let verdict = match (
+            ctx.events.db_tracker.and_then(|t| t.repo()),
+            org_deliverable.as_ref(),
+        ) {
+            (Some(repo), Some(deliv)) => {
+                let org_uuid = uuid::Uuid::parse_str(&unit.id).ok();
+                let session = ctx.events.session_id.unwrap_or("");
+                let gate = evaluate_org_stage_gate(repo, org_uuid, session, stage, deliv).await;
+                decide_org_verdict(&gate)
+            }
+            _ => {
+                if sub_ok {
+                    OrgVerdict::Pass
+                } else {
+                    OrgVerdict::Block {
+                        reasons: vec!["sub-agent did not complete".to_string()],
+                    }
+                }
+            }
+        };
+
+        match verdict {
+            OrgVerdict::Pass => {
+                passed_count += 1;
+                // Record this org's pass into the resume ledger so a later run can
+                // skip it (upsert latest). Fail-open: no db_tracker / unparseable id
+                // → just don't record (re-runs simply won't skip).
+                if let (Some(tracker), Ok(org_id)) =
+                    (ctx.events.db_tracker, uuid::Uuid::parse_str(&unit.id))
+                {
+                    tracker
+                        .record_org_stage_completion(org_id, stage.as_str(), Some(&org_request_id))
+                        .await;
+                }
+                emit_org_progress(
+                    ctx,
+                    stage,
+                    unit,
+                    &org_request_id,
+                    "passed",
+                    None,
+                    0,
+                    &stage_label,
+                    &role_label,
+                    &coverage_axis,
+                );
+            }
+            OrgVerdict::Block { reasons } => {
+                // Prefer the gate's own reasons; fall back to the sub-agent's
+                // response/error when the block came from the success-flag path.
+                let detail = if reasons.is_empty() {
+                    match &result {
+                        Ok(r) => r
+                            .value
+                            .get("response")
+                            .or_else(|| r.value.get("error"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.chars().take(300).collect::<String>())
+                            .unwrap_or_default(),
+                        Err(e) => e.to_string(),
+                    }
+                } else {
+                    reasons.join("; ").chars().take(300).collect::<String>()
+                };
+                emit_org_progress(
+                    ctx,
+                    stage,
+                    unit,
+                    &org_request_id,
+                    "blocked",
+                    None,
+                    0,
+                    &stage_label,
+                    &role_label,
+                    &coverage_axis,
+                );
+                gaps.push(json!({ "org_id": unit.id, "org_name": unit.name, "detail": detail }));
+            }
         }
     }
 
     // 4. Aggregate: engagement passes only when EVERY org passed (design §2).
     let passed = gaps.is_empty();
-    let summary = format!(
+
+    // Phase 1.5 阶段过门令牌：仅当本阶段**全 in-scope org**（不只本次 `units`——D11 只重跑
+    // 缺口 org 的场景也要看累积账本是否齐）都已 fresh PASS 时，对账本回读值算一个确定性 hash
+    // 令牌随返回带回主 agent；收尾 gate 拿同一张账本重算比对（B-recompute）。无 repo / 核不到
+    // 全集 / 某 org 缺失或过期 → 不发令牌（收尾 gate 会 fail-closed 引导重跑）。
+    let pass_token: Option<String> = if passed {
+        match ctx.events.db_tracker.and_then(|t| t.repo()) {
+            Some(repo) => {
+                let org_ids = repo.in_scope_org_ids(None).await.unwrap_or_default();
+                if org_ids.is_empty() {
+                    None
+                } else {
+                    let now = chrono::Utc::now();
+                    let fresh: Vec<(uuid::Uuid, chrono::DateTime<chrono::Utc>)> = repo
+                        .org_stage_completions_get(stage.as_str(), &org_ids)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|(_, at)| completion_is_fresh(*at, now, STAGE_COMPLETION_TTL_SECS))
+                        .collect();
+                    let have: std::collections::HashSet<uuid::Uuid> =
+                        fresh.iter().map(|(o, _)| *o).collect();
+                    if org_ids.iter().all(|o| have.contains(o)) {
+                        Some(stage_pass_token(stage, &fresh))
+                    } else {
+                        None
+                    }
+                }
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    let mut summary = format!(
         "stage_run {}: {}/{} orgs passed{}",
         stage.as_str(),
         passed_count,
@@ -366,6 +527,14 @@ where
             )
         }
     );
+    if let Some(token) = pass_token.as_deref() {
+        summary.push_str(&format!(
+            " — every in-scope org passed this stage's per-org gate. To CLOSE this stage, submit your StageDeliverable with a claim {{\"kind\":\"{}\",\"subject\":\"{}\",\"summary\":\"{}\"}}; the stage gate re-derives this pass_token from the DB ledger and BLOCKS without it.",
+            STAGE_RUN_PASS_TOKEN_KIND,
+            stage.as_str(),
+            token
+        ));
+    }
 
     Ok(ToolExecutionResult {
         value: json!({
@@ -376,6 +545,7 @@ where
             "passed_orgs": passed_count,
             "gaps": gaps,
             "summary": summary,
+            "pass_token": pass_token,
         }),
         success: true,
     })
@@ -502,5 +672,37 @@ mod tests {
         assert_eq!(def.name, "stage_run");
         let required = def.parameters["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "orgs"));
+    }
+
+    #[test]
+    fn completion_freshness_respects_ttl() {
+        let now = chrono::Utc::now();
+        let ttl = STAGE_COMPLETION_TTL_SECS;
+        // Just now → fresh.
+        assert!(completion_is_fresh(now, now, ttl));
+        // 1 day ago under a 7d TTL → fresh (resume-skip applies).
+        assert!(completion_is_fresh(
+            now - chrono::Duration::days(1),
+            now,
+            ttl
+        ));
+        // Exactly at the TTL boundary → still fresh (<=).
+        assert!(completion_is_fresh(
+            now - chrono::Duration::seconds(ttl),
+            now,
+            ttl
+        ));
+        // 8 days ago under a 7d TTL → stale (re-test).
+        assert!(!completion_is_fresh(
+            now - chrono::Duration::days(8),
+            now,
+            ttl
+        ));
+        // Future timestamp (clock skew) → treated as fresh, never re-runs early.
+        assert!(completion_is_fresh(
+            now + chrono::Duration::hours(1),
+            now,
+            ttl
+        ));
     }
 }

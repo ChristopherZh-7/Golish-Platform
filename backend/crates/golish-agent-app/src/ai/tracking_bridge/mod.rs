@@ -347,4 +347,42 @@ impl DbTrackingBackend for PgTrackingBackend {
     async fn load_prompt_template_overrides(&self) -> Vec<(String, String)> {
         self.load_prompt_template_overrides_impl().await
     }
+
+    async fn record_org_stage_completion(
+        &self,
+        organization_id: Uuid,
+        stage_kind: &str,
+        stage_run_id: Option<&str>,
+    ) {
+        if let Err(error) = golish_db::repo::org_stage_completions::upsert(
+            self.pool.as_ref(),
+            organization_id,
+            stage_kind,
+            stage_run_id,
+        )
+        .await
+        {
+            tracing::warn!(%organization_id, stage_kind, %error, "record_org_stage_completion failed");
+        }
+    }
+
+    async fn recent_org_stage_completion(
+        &self,
+        organization_id: Uuid,
+        stage_kind: &str,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        match golish_db::repo::org_stage_completions::get(
+            self.pool.as_ref(),
+            organization_id,
+            stage_kind,
+        )
+        .await
+        {
+            Ok(row) => row.map(|r| r.passed_at),
+            Err(error) => {
+                tracing::warn!(%organization_id, stage_kind, %error, "recent_org_stage_completion failed");
+                None
+            }
+        }
+    }
 }

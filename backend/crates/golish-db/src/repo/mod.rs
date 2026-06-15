@@ -20,6 +20,7 @@ pub mod methodology;
 pub mod msg_logs;
 pub mod notes;
 pub mod operation_state;
+pub mod org_stage_completions;
 pub mod organizations;
 pub mod passive_scans;
 pub mod prompt_templates;

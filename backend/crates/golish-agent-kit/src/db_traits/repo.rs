@@ -381,6 +381,27 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(ids.iter().copied().collect())
     }
 
+    /// Phase 1.5 阶段过门：本 engagement 在-scope 的 organization id 列表（scoping 建的
+    /// org 树）。`project_path=None` = 整库口径（chat 会话无 project key，与 `in_scope_assets`
+    /// 一致）。fan-out 阶段收尾用它核「全 org 都过」。默认空 ⇒ 调用方 fail-closed（核不到
+    /// 全集就不放行）。
+    async fn in_scope_org_ids(&self, project_path: Option<&str>) -> anyhow::Result<Vec<Uuid>> {
+        let _ = project_path;
+        Ok(Vec::new())
+    }
+
+    /// Phase 1.5 阶段过门：批量取 `org_stage_completions` 行 `(organization_id, passed_at)`
+    /// （收尾 gate 走 repo 通道，取不到 tracking trait 的 `recent_org_stage_completion`）。
+    /// 无行的 org 自然缺席（调用方据此判缺口）。默认空。
+    async fn org_stage_completions_get(
+        &self,
+        stage_kind: &str,
+        org_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<(Uuid, chrono::DateTime<chrono::Utc>)>> {
+        let _ = (stage_kind, org_ids);
+        Ok(Vec::new())
+    }
+
     /// Recent **real** evidence ids (`audit_role='evidence'`) for a chat session,
     /// newest first. After the gate rejects a deliverable for citing fabricated
     /// refs, it uses this to tell the agent which real ledger ids it can actually

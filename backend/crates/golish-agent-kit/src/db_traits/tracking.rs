@@ -5,6 +5,7 @@
 //! memory storage/search operations used by `golish-ai`.
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::types::{BriefingPlan, MemoryHit, ScoredMemoryHit};
@@ -199,4 +200,32 @@ pub trait DbTrackingBackend: Send + Sync {
     async fn ensure_session(&self, session_id: Uuid);
 
     async fn load_prompt_template_overrides(&self) -> Vec<(String, String)>;
+
+    // ── Per-(org, stage) completion ledger (stage_run resume-skip) ───────
+    //
+    // Default impls are no-op / "never completed" so backends that don't care
+    // (tests, headless mocks) compile unchanged; the real `PgTrackingBackend`
+    // overrides them against `org_stage_completions`.
+
+    /// Record that `organization_id` passed `stage_kind` (its own gate) now.
+    async fn record_org_stage_completion(
+        &self,
+        organization_id: Uuid,
+        stage_kind: &str,
+        stage_run_id: Option<&str>,
+    ) {
+        let _ = (organization_id, stage_kind, stage_run_id);
+    }
+
+    /// Most recent pass timestamp for `(organization_id, stage_kind)`, or `None`
+    /// if the org has never completed this stage. TTL/freshness is the caller's
+    /// policy (compare `passed_at` against now).
+    async fn recent_org_stage_completion(
+        &self,
+        organization_id: Uuid,
+        stage_kind: &str,
+    ) -> Option<DateTime<Utc>> {
+        let _ = (organization_id, stage_kind);
+        None
+    }
 }

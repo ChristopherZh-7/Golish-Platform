@@ -113,6 +113,32 @@ impl DbTracker {
         &self.backend
     }
 
+    /// stage_run resume ledger: record that `org_id` passed `stage_kind` (its own
+    /// gate) now. Awaited (low-frequency, correctness-sensitive) rather than
+    /// fire-and-forget so the row is durable before the run reports the org passed.
+    pub async fn record_org_stage_completion(
+        &self,
+        org_id: Uuid,
+        stage_kind: &str,
+        stage_run_id: Option<&str>,
+    ) {
+        self.backend
+            .record_org_stage_completion(org_id, stage_kind, stage_run_id)
+            .await;
+    }
+
+    /// stage_run resume ledger: most recent pass timestamp for `(org_id,
+    /// stage_kind)`, or `None` if never completed. TTL is the caller's policy.
+    pub async fn recent_org_stage_completion(
+        &self,
+        org_id: Uuid,
+        stage_kind: &str,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.backend
+            .recent_org_stage_completion(org_id, stage_kind)
+            .await
+    }
+
     pub fn ready_gate(&self) -> &dyn DbReadinessGate {
         &*self.ready_gate
     }
