@@ -232,6 +232,12 @@ pub struct AgentBridge {
     /// `build_loop_context` so the turn's `tool_choice` can be locked to
     /// `submit_stage_deliverable`. `false` = normal pass.
     pub(crate) harness_submit_only: Arc<RwLock<bool>>,
+    /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): the
+    /// scoping-confirmed root organization id of the active operation. Set
+    /// per-subtask alongside `harness_active_stage`; read by `build_loop_context`
+    /// so fan-out / in-scope reads confine to this org's subtree (root + subs).
+    /// `None` = no bound org (legacy whole-DB axis / chat / pre-scoping turn).
+    pub(crate) harness_active_org_id: Arc<RwLock<Option<uuid::Uuid>>>,
 
     /// Per-session selected harness operation profile id (e.g. "assessment" /
     /// "red_team"), chosen via the chat-panel mode picker. `None` = chat mode /

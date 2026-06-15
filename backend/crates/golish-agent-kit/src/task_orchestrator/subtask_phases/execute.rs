@@ -638,6 +638,7 @@ impl TaskOrchestrator {
             harness_authz: None,
             harness_profile_id: op_profile_id.clone(),
             harness_submit_only: false,
+            harness_org_id: self.harness_org_id,
         };
 
         let groups: std::collections::HashMap<crate::harness::StageKind, Vec<usize>> =

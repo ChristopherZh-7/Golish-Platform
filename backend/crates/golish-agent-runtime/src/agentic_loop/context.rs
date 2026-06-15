@@ -192,6 +192,11 @@ pub struct AgenticLoopContext<'a> {
     /// orchestrator narrated instead of inlining the JSON. `None` = no capture
     /// (non-stage turn / chat mode).
     pub harness_deliverable_sink: Option<std::sync::Arc<tokio::sync::RwLock<Option<String>>>>,
+    /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): the
+    /// scoping-confirmed root organization id of the active operation, used to
+    /// confine fan-out / in-scope reads to this org's subtree (root + subs).
+    /// `None` = no bound org (legacy whole-DB axis; flag off / chat / pre-scoping).
+    pub harness_org_id: Option<uuid::Uuid>,
 }
 
 /// Check cancellation flag; returns true when the user has requested a stop.

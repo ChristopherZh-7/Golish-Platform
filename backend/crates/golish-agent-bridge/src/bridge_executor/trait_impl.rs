@@ -116,6 +116,9 @@ impl AgentExecutor for BridgeAgentExecutor {
         // (authz). `None` when stage_mode is off or the subtask has no stage.
         *self.bridge.harness_active_stage.write().await = execution_context.harness_stage;
         *self.bridge.harness_active_authz.write().await = execution_context.harness_authz;
+        // Engagement-org isolation: publish the scoping-confirmed root org id so
+        // the agentic loop's fan-out / in-scope reads confine to its subtree.
+        *self.bridge.harness_active_org_id.write().await = execution_context.harness_org_id;
         // 设计 2026-06-11 · targeted gate-repair pass: lock the loop's tool_choice
         // to `submit_stage_deliverable` (work already evidenced, only the
         // submission is missing). Reset per-subtask like the other side-channels.

@@ -78,6 +78,13 @@ pub struct ExecutionContext {
     /// `submit_stage_deliverable` (released once it is dispatched). `false` =
     /// normal pass, no behavior change.
     pub harness_submit_only: bool,
+    /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): the
+    /// scoping-confirmed root organization id of THIS operation. Threaded to the
+    /// bridge → agentic loop so fan-out / in-scope reads confine to this org's
+    /// subtree (root + subsidiaries) and never leak a sibling engagement's org
+    /// tree left in the same workspace. `None` = no bound org (legacy whole-DB
+    /// axis; flag off / pre-scoping).
+    pub harness_org_id: Option<uuid::Uuid>,
 }
 
 /// Info about a subtask being currently executed.
