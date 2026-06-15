@@ -8,7 +8,12 @@ import { runTauriUnlistenFn } from "@/lib/run-tauri-unlisten";
 import { useAiEvents } from "../../hooks/useAiEvents";
 import { useCreateTerminalTab } from "../../hooks/useCreateTerminalTab";
 import { useTauriEvents } from "../../hooks/useTauriEvents";
-import { createDbAutoSaver, loadFromDb, markDbLoadSucceeded } from "../../lib/conversation-db-sync";
+import {
+  createDbAutoSaver,
+  loadedToPersistedTerminalData,
+  loadFromDb,
+  markDbLoadSucceeded,
+} from "../../lib/conversation-db-sync";
 import { notify } from "../../lib/notify";
 import { updateConfig as updatePentestConfig } from "../../lib/pentest/api";
 import { getSettings } from "../../lib/settings";
@@ -149,22 +154,7 @@ export function useAppLifecycle({
                   import("@/lib/workspace-storage").PersistedTerminalData[]
                 > = {};
                 for (const [convId, terminals] of Object.entries(saved.terminalData)) {
-                  termRestoreData[convId] = terminals.map((t) => ({
-                    logicalTerminalId: t.sessionId,
-                    workingDirectory: t.workingDirectory,
-                    scrollback: t.scrollback,
-                    customName: t.customName ?? undefined,
-                    planJson: t.planJson ?? undefined,
-                    executionMode: t.executionMode ?? undefined,
-                    retiredPlansJson: t.retiredPlansJson ?? undefined,
-                    timelineBlocks: t.timelineBlocks.map((b) => ({
-                      id: b.id,
-                      type: b.type as any,
-                      timestamp: b.timestamp ?? new Date().toISOString(),
-                      data: b.data as any,
-                      batchId: (b as { batchId?: string }).batchId,
-                    })),
-                  }));
+                  termRestoreData[convId] = terminals.map(loadedToPersistedTerminalData);
                 }
                 useStore.getState().setPendingTerminalRestoreData(termRestoreData);
               }

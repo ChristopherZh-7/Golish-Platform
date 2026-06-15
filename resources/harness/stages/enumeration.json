@@ -14,6 +14,9 @@
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
 
+  "$comment_findings_allowed": "Content-enumeration stage: the deliverable is js/api/dir/param coverage (testable units feeding vuln_triage), NOT vulnerabilities. submit_stage_deliverable drops any findings submitted here and tells the model to put discoveries in claims. Design 2026-06-15-recon-stage-findings-suppression.",
+  "findings_allowed": false,
+
   "gate_rules": [
     {
       "op": "for_all",

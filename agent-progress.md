@@ -29,6 +29,29 @@
 
 ---
 
+### 2026-06-15 · stage_run per-org gate（Phase 1 验证）+ 阶段过门 hash 令牌（Phase 1.5 实现）（BaJie MCP-agent-4 · DISPATCH off · 接 MCP-1→MCP-4 上下文转移 · 用户「一次性全部搞定」）
+
+- **本轮目标**：把 chat `stage_run` 的「每个 org 各过各 gate」做实（Phase 1，验证 MCP-1 已落代码），再加「fan-out 阶段跑完 stage_run 即过」的防伪 hash 令牌闭环（Phase 1.5 / 用户「法子二」= B-recompute）。计划：`docs/superpowers/plans/2026-06-15-stage-run-per-org-gate.md`。
+- **已完成**：
+  - **Phase 1（验证 MCP-1 代码，未改）**：`harness/org_gate.rs`（`evaluate_org_stage_gate` per-org 权威 gate + `decide_org_verdict`/`facts_from_rows`）+ `stage_run_call.rs` 用 per-org gate PASS 取代 `result.success` 决定 passed/写账本。
+  - **Phase 1.5 Task 5（token 基建）**：`org_gate.rs` +`STAGE_RUN_PASS_TOKEN_KIND`/`stage_pass_token`（sha256(stage + 升序 org passed_at 微秒)，**不绑 session**）/`extract_pass_token`/共享 `STAGE_COMPLETION_TTL_SECS`+`completion_is_fresh`（stage_run 端改 import 同源，删本地副本）+5 单测；`db_traits/repo.rs` +`in_scope_org_ids`/`org_stage_completions_get`（default 空，测桩零改）；`golish-db/repo/organizations.rs` +`in_scope_ids`；`db_bridge/{mod,recon}.rs` 实现两方法（走 `&self.pool`→golish_db repo）；`golish-agent-kit/Cargo.toml` +sha2。
+  - **Phase 1.5 Task 6（stage_run 发令牌）**：聚合处全 in-scope org fresh-PASS 时回读账本算 token，随返回 JSON `pass_token` + summary 提示主 agent 收尾带回。
+  - **Phase 1.5 Task 7（收尾 gate 验令牌）**：`execute.rs` +`try_specialist_stage_gate`/`verify_stage_run_pass_token`（B-recompute：拿 `org_stage_completions` 账本重算令牌比对，全 org 新鲜 PASS+令牌对上才放行；否则 BLOCK 提示只重跑缺口 org）+free fn `render_specialist_gate`（evidence_refs/required_kinds 留空→收尾 enforcements 对其 no-op）；两处 gate 调用点加 specialist 早分支；**fan-out BLOCK 绕过 refiner**（否则 refiner 可能置 submit_only_lock 把主 agent 锁成「只能重交」→ 调不了 stage_run 死锁）。
+- **运行过的验证（有据）**：
+  - `cargo nextest run -p golish-agent-kit` → **644 passed / 0 skipped**（含 org_gate 9 测；execute/gate/coverage 全无回归）。terminal 291561。
+  - `cargo nextest run -p golish-agent-runtime stage_run` → **7 passed / 231 skipped**（completion_freshness 经共享 import 仍绿）。
+  - `cargo check -p golish-agent-app` → exit 0（db_bridge 两 impl + organizations::in_scope_ids 编译过）。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-runtime -p golish-agent-app --all-targets --no-deps -- -D warnings` → exit 0 零告警（terminal 745688）。
+  - `ReadLints` 6 文件无错。
+- **已记录证据**：上述命令 + 退出码；644/7/exit0/clippy0。
+- **关键设计决策（偏离计划字面，已记）**：① 真正实现 `DbRepoProvider` 的是 `ai/db_bridge::GolishDbRepoProvider`（**干净文件**，非计划写的 tracking_bridge）；② org 无 operation_id，按 project_path+父子树存 → `in_scope_org_ids(None)`=整库 org（与 in_scope_assets 同口径）；③ token **不绑 session**（runtime stage_run 与 orchestrator gate 的 session 维度可能不一致致死锁；防伪靠 agent 看不到/造不出的 passed_at + TTL）；④ **不新建『存 hash』表**（B-recompute 拿账本当真值当场重算）。
+- **提交记录**：**待提交**（工作树混着别会话未提交的 org 账本 + host-aware-coverage 等改动；待用户定 commit 策略，只提交本轮 8 文件：org_gate.rs / harness/mod.rs / db_traits/repo.rs / stage_run_call.rs / execute.rs / db_bridge/{mod,recon}.rs / organizations.rs / Cargo.toml）。
+- **已知风险/未解决**：① **pre-existing 阻断**：`golish-db/repo/coverage_truth.rs:209 assemble_truth_facts` 被上一轮 2c-3b revert（a3bb618c）孤立成死码 → 全 workspace `clippy -D warnings`/`just precommit` 已红（非本轮引入；本轮用 `--no-deps` 隔离验证本人 3 crate 干净）。待团队决定 re-apply 2c-3b 或清该函数。② 未跑全量 `just precommit`（本机 cargo 与并发 `cargo run` 频繁抢编译锁，单 run 9-18min；且被①阻断）。③ **活体未跑**（需 app + 真实多 org engagement 看主 agent 拿 pass_token 收尾过门 / 对不上重跑）。④ Phase 2（闸 1：逼子 agent 过关才收工）仍 deferred。
+- **下一步最佳动作**：① 用户定 commit 策略 → 提交本轮 8 文件；② 修 pre-existing golish-db 孤儿死码后再跑全量 precommit；③ 活体验证 stage_run pass_token 闭环。
+- **已参考技能**：(项目).cursor/skills/{executing-plans,test-driven-development,verification-before-completion}（本会话已 Read）；test-release/code-audit（已 Read，收口）。
+
+---
+
 ### 2026-06-15 · 回退 2c-3b 做 stage_run 回归 A/B 诊断（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「撤回 2c-3b 做 A/B」）
 
 - **起因**：用户报 bug——「改了之后 AI 不走 runstage（stage_run）了」。读最新一次活体跑日志（`Test1/.golish/transcripts/pentest-chat-1781507323871-1/run.log`，今天 15:08 本地，带我的改动）取证：

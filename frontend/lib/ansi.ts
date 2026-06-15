@@ -171,6 +171,40 @@ export function stripOscSequences(str: string): string {
 }
 
 /**
+ * Collapse runs of terminal progress-bar lines (e.g. amass/nuclei
+ * `[------>] 100.00% 4 p/s 4 / 4`) down to just the final frame, so periodic
+ * progress spam doesn't flood the output panel. A line counts as progress when
+ * it carries a percentage next to a `[...]`/dashed bar, or is overwhelmingly bar
+ * characters (`-`/`=`). Non-progress lines pass through untouched.
+ */
+export function collapseProgressBars(str: string): string {
+  if (!str.includes("\n")) return str;
+  const isProgress = (line: string): boolean => {
+    const t = line.trim();
+    if (!t) return false;
+    if (/\d{1,3}(?:\.\d+)?%/.test(t) && /[-=]{6,}/.test(t)) return true;
+    const bars = (t.match(/[-=]/g) || []).length;
+    return bars >= 16 && bars / t.length > 0.6;
+  };
+  const lines = str.split("\n");
+  const out: string[] = [];
+  let pending: string | null = null;
+  for (const line of lines) {
+    if (isProgress(line)) {
+      pending = line;
+      continue;
+    }
+    if (pending !== null) {
+      out.push(pending);
+      pending = null;
+    }
+    out.push(line);
+  }
+  if (pending !== null) out.push(pending);
+  return out.join("\n");
+}
+
+/**
  * Expand literal tab characters the way a terminal would, while keeping ANSI
  * SGR sequences in place. Browser tab rendering can drift when output is
  * split into ANSI spans; terminal output is more stable as explicit spaces.

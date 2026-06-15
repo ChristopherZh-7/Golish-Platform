@@ -112,6 +112,34 @@ pub async fn in_scope_ids(pool: &PgPool, project_path: Option<&str>) -> Result<V
     Ok(ids)
 }
 
+fn build_subtree_ids_sql() -> String {
+    // Recursive walk DOWN the self-FK parent chain: seed = the root org row,
+    // then every org whose parent is already in the set. Yields root + all
+    // descendants so an engagement read stays inside the scoping-confirmed tree.
+    "WITH RECURSIVE subtree AS ( \
+         SELECT id FROM organizations WHERE id = $1 \
+         UNION ALL \
+         SELECT o.id FROM organizations o \
+           JOIN subtree s ON o.parent_id = s.id \
+       ) SELECT id FROM subtree"
+        .to_string()
+}
+
+/// Every organization id in the subtree rooted at `root_id` — the root itself
+/// plus all descendants reachable via `parent_id`. Engagement-org isolation
+/// (设计 2026-06-15-engagement-org-isolation) uses this to confine a fan-out /
+/// in-scope read to the scoping-confirmed org and its subsidiaries, so a sibling
+/// engagement's org tree (e.g. a previously-tested company left in the same
+/// workspace) can never leak into the current run's scope. Returns an empty vec
+/// if `root_id` does not exist.
+pub async fn subtree_ids(pool: &PgPool, root_id: Uuid) -> Result<Vec<Uuid>> {
+    let ids = sqlx::query_scalar::<_, Uuid>(&build_subtree_ids_sql())
+        .bind(root_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(ids)
+}
+
 pub async fn create(
     pool: &PgPool,
     project_path: &str,
@@ -365,6 +393,21 @@ mod tests {
         assert_eq!(
             build_find_child_id_by_name_sql(),
             "SELECT id FROM organizations WHERE project_path = $1 AND name = $2 AND parent_id = $3 LIMIT 1"
+        );
+    }
+
+    #[test]
+    fn subtree_ids_sql_walks_parent_chain_from_root() {
+        // Engagement-org isolation (设计 2026-06-15-engagement-org-isolation):
+        // confine a fan-out / in-scope read to the scoping-confirmed root org
+        // PLUS every descendant, via the self-FK parent chain, so it can never
+        // reach a sibling engagement's org tree. Recursive seed binds $1 = root.
+        let sql = build_subtree_ids_sql();
+        assert!(sql.contains("WITH RECURSIVE"), "must recurse: {sql}");
+        assert!(sql.contains("WHERE id = $1"), "seed binds root id: {sql}");
+        assert!(
+            sql.contains("o.parent_id = s.id"),
+            "recursion follows parent_id down the tree: {sql}"
         );
     }
 }

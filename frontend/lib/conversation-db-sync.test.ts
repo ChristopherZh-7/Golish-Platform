@@ -5,6 +5,8 @@ import {
   chatMessageToDbRow,
   dbMsgToChatMessage,
   isPersistableMessage,
+  type LoadedTerminalData,
+  loadedToPersistedTerminalData,
 } from "./conversation-db-sync";
 
 function chatMessage(overrides: Partial<ChatMessage>): ChatMessage {
@@ -157,5 +159,68 @@ describe("error severity re-derivation on restore", () => {
   it("leaves severity undefined when there is no error", () => {
     const restored = dbMsgToChatMessage(chatRow({ content: "hi" }));
     expect(restored.errorSeverity).toBeUndefined();
+  });
+});
+
+function loadedTerminal(overrides: Partial<LoadedTerminalData> = {}): LoadedTerminalData {
+  return {
+    sessionId: "logical-1",
+    workingDirectory: "/proj",
+    scrollback: "",
+    customName: null,
+    timelineBlocks: [],
+    planJson: null,
+    executionMode: null,
+    retiredPlansJson: null,
+    planMessageId: null,
+    stageRunJson: null,
+    ...overrides,
+  };
+}
+
+describe("loadedToPersistedTerminalData", () => {
+  // Regression: the boot-time restore path used to drop stageRunJson, so a
+  // persisted stage_run came back as a bare "Expired" card (no progress bar /
+  // per-org rows) after reopening the app. The mapper is the single source of
+  // truth both restore paths go through, so this guards against re-introducing
+  // the field-drop.
+  it("carries the persisted stage_run snapshot into the restore shape", () => {
+    const stageRun = {
+      requestId: "req-7",
+      rows: [{ id: "org-1", name: "Acme", status: "passed" }],
+      summary: { total: 1, covered: 1, active: 0, queued: 0, blocked: 0 },
+      stageLabel: "target_intel",
+      roleLabel: "recon",
+      coverageAxis: ["dns"],
+    };
+    const persisted = loadedToPersistedTerminalData(loadedTerminal({ stageRunJson: stageRun }));
+    expect(persisted.stageRunJson).toEqual(stageRun);
+    expect(persisted.logicalTerminalId).toBe("logical-1");
+  });
+
+  it("maps logicalTerminalId from the loaded sessionId and preserves core fields", () => {
+    const persisted = loadedToPersistedTerminalData(
+      loadedTerminal({
+        sessionId: "sess-abc",
+        workingDirectory: "/x",
+        executionMode: "task",
+        planJson: { steps: [] },
+      })
+    );
+    expect(persisted.logicalTerminalId).toBe("sess-abc");
+    expect(persisted.workingDirectory).toBe("/x");
+    expect(persisted.executionMode).toBe("task");
+    expect(persisted.planJson).toEqual({ steps: [] });
+  });
+
+  // Regression: planMessageId was dropped by BOTH restore paths, so a retired
+  // plan card lost its anchor message on restart. Carried through the mapper.
+  it("carries planMessageId so a retired plan re-anchors after restart", () => {
+    const persisted = loadedToPersistedTerminalData(loadedTerminal({ planMessageId: "msg-42" }));
+    expect(persisted.planMessageId).toBe("msg-42");
+  });
+
+  it("normalizes a missing stage_run to undefined (legacy rows restore cleanly)", () => {
+    expect(loadedToPersistedTerminalData(loadedTerminal()).stageRunJson).toBeUndefined();
   });
 });

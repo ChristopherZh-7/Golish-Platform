@@ -228,7 +228,7 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "findings": {
                     "type": "array",
-                    "description": "Security findings. Every finding must cite evidence_refs.",
+                    "description": "Security findings (vulnerabilities). ONLY for vulnerability stages (vuln_triage / verification). Recon / discovery stages (scoping, target_intel, external_attack_surface, enumeration) take NO findings: submit [] and record discoveries (hosts / services / exposures) as claims + coverage cells instead — any findings sent in those stages are DROPPED. Every finding must cite evidence_refs.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -300,7 +300,7 @@ impl Tool for SubmitStageDeliverableTool {
         // Force structured emission: parse the args into the canonical type. A
         // prose / malformed submission is rejected with actionable feedback so
         // the model retries with real fields (immediate-feedback = option 甲).
-        let deliverable: StageDeliverable = match serde_json::from_value(args) {
+        let mut deliverable: StageDeliverable = match serde_json::from_value(args) {
             Ok(d) => d,
             Err(e) => {
                 return Ok(json!({
@@ -329,6 +329,20 @@ impl Tool for SubmitStageDeliverableTool {
             // 甲 · structural/semantic gate preview (no DB). The authoritative
             // evidence-ledger cross-check runs at stage close in the gate hook.
             if let Ok(spec) = load_embedded_stage_spec(kind) {
+                // Recon/discovery stages declare `findings_allowed=false`: their
+                // deliverable is observations (`claims`) + a coverage matrix, NOT
+                // vulnerabilities. Drop any `findings` a (weak) model dumped here so
+                // junk never pollutes the stored deliverable or the stage-close gate;
+                // the accept note tells the model to put discoveries in `claims`.
+                // Design 2026-06-15-recon-stage-findings-suppression.
+                let dropped_findings = if !spec.findings_allowed && !deliverable.findings.is_empty()
+                {
+                    let n = deliverable.findings.len();
+                    deliverable.findings.clear();
+                    n
+                } else {
+                    0
+                };
                 // Project the session's ledger evidence-facts into the gate so an
                 // authoritative_found stage credits real `found` cells (the
                 // per-org recon "never attempted" loop fix). Empty/no-DB ⇒ default
@@ -350,11 +364,18 @@ impl Tool for SubmitStageDeliverableTool {
                     // stage-close gate blocks it on the same fabrication).
                     let fabricated = self.fabricated_refs(&deliverable).await;
                     if fabricated.is_empty() {
-                        return Ok(json!({
-                            "status": "accepted",
-                            "note": "structure OK and all cited evidence exists in the ledger; \
-                                     the final evidence gate runs at stage close."
-                        }));
+                        let mut note = "structure OK and all cited evidence exists in the ledger; \
+                                        the final evidence gate runs at stage close."
+                            .to_string();
+                        if dropped_findings > 0 {
+                            note.push_str(&format!(
+                                " NOTE: this stage does not take security findings — \
+                                 {dropped_findings} finding(s) you submitted were DROPPED. \
+                                 Record discoveries (hosts / services / exposures) as `claims` \
+                                 and coverage cells, not `findings`."
+                            ));
+                        }
+                        return Ok(json!({ "status": "accepted", "note": note }));
                     }
                     // 乙 · don't just scold — name the REAL evidence ids this
                     // operation already has so the model fills them in instead of
@@ -955,6 +976,66 @@ mod tests {
                 .any(|r| r.as_str().unwrap_or("").contains("coverage: []")),
             "must hint to resubmit with empty coverage: {reasons:?}"
         );
+    }
+
+    // 2026-06-15-recon-stage-findings-suppression: a recon/discovery stage
+    // (scoping, findings_allowed=false) DROPS any submitted findings — they never
+    // reach the stored deliverable — and the accept note tells the model so.
+    #[tokio::test]
+    async fn recon_stage_drops_findings_and_notes_it() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Scoping);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
+
+        let mut args = valid_scoping_args();
+        args["findings"] = json!([{
+            "finding_id": "11111111-1111-1111-1111-111111111111",
+            "kind": "exposed_admin",
+            "subject": "example.com",
+            "severity": "high",
+            "evidence_refs": [1]
+        }]);
+        let out = tool.execute(args, Path::new("/tmp")).await.unwrap();
+        assert_eq!(out["status"].as_str(), Some("accepted"));
+        assert!(
+            out["note"].as_str().unwrap_or("").contains("DROPPED"),
+            "accept note must mention dropped findings: {out:?}"
+        );
+        // Stashed deliverable was sanitized: no findings reach the stage-close gate.
+        let captured = sink.read().await.clone().expect("captured");
+        let parsed: StageDeliverable = serde_json::from_str(&captured).expect("parse stashed");
+        assert!(
+            parsed.findings.is_empty(),
+            "findings must be dropped from the stashed recon deliverable"
+        );
+    }
+
+    // 2026-06-15-recon-stage-findings-suppression: a vulnerability stage
+    // (vuln_triage, findings_allowed=true) RETAINS findings — drop only applies to
+    // recon stages. Asserted on the stashed deliverable regardless of gate outcome.
+    #[tokio::test]
+    async fn vuln_stage_keeps_findings() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::VulnTriage);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
+
+        let args = json!({
+            "stage_id": "vuln_triage",
+            "stage_run_id": "3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
+            "claims": [],
+            "evidence_refs": [1],
+            "findings": [{
+                "finding_id": "11111111-1111-1111-1111-111111111111",
+                "kind": "sqli",
+                "subject": "api.example.com",
+                "severity": "high",
+                "evidence_refs": [1]
+            }]
+        });
+        let _ = tool.execute(args, Path::new("/tmp")).await.unwrap();
+        let captured = sink.read().await.clone().expect("captured");
+        let parsed: StageDeliverable = serde_json::from_str(&captured).expect("parse stashed");
+        assert_eq!(parsed.findings.len(), 1, "vuln stage must keep findings");
     }
 
     // No active stage (e.g. flag on but stage not yet published): the tool still

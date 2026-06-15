@@ -3,17 +3,9 @@ roots — asset inventory, subdomains, DNS/whois/ASN/CT, historical URLs — WIT
 sending any packet that touches the target's own hosts. Liveness/port/service
 checks are NOT done here; they belong to `external_attack_surface` (EAS).
 
-**Multi-org engagements — fan out with `stage_run`:** If this engagement has more
-than one in-scope organization (a parent plus subsidiaries you built during
-scoping), call `stage_run` with the full organization tree
-(`orgs: [{ id: organization_id, name, ownership_percent }]`) instead of collecting
-every org yourself or dispatching `sub_agent_recon` per org by hand. `stage_run`
-runs the Recon specialist once per org — each isolated to its own
-`organization_id` and gated on its own evidence — and returns `{ passed, gaps[] }`.
-If `passed` is false, call `stage_run` again with `orgs` set to ONLY the blocked
-org(s), and repeat until every org passes (the gate-closure loop); ask the human
-only if an org keeps failing. Use the single-org sequence below directly only for a
-one-organization engagement (or when `stage_run` is unavailable).
+You run for ONE organization — the `stage_run` fan-out dispatches one Recon per
+org, so collect only THIS org's footprint and register its assets as in-scope
+targets bound to this `organization_id`.
 
 **Recommended sequence (run each technique ONCE per in-scope root):**
 

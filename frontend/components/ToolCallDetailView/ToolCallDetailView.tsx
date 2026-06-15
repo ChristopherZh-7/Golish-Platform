@@ -16,10 +16,16 @@ import { memo, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Ansi } from "@/components/Ansi";
 import { StageRunOrgRows } from "@/components/Engagement/StageRunOrgRows";
+import { JsonView } from "@/components/JsonView/JsonView";
 import { Markdown } from "@/components/Markdown";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
-import { expandTerminalTabs, stripAllAnsi, stripOscSequences } from "@/lib/ansi";
+import {
+  collapseProgressBars,
+  expandTerminalTabs,
+  stripAllAnsi,
+  stripOscSequences,
+} from "@/lib/ansi";
 import { safeStringify } from "@/lib/text";
 import { formatDurationLong } from "@/lib/time";
 import { formatCommandForDisplay, getToolColor, getToolLabel } from "@/lib/tools";
@@ -89,8 +95,21 @@ function RecordTable({ value }: { value: Record<string, unknown> }) {
   return (
     <div className="divide-y divide-border/15">
       {entries.map(([key, val]) => {
+        // Objects/arrays → rich collapsible JsonView (tree + auto-table for arrays
+        // of flat objects). Strings/scalars keep the ANSI/newline-aware key/value
+        // rendering below (important for stdout-style fields).
+        if (val !== null && typeof val === "object") {
+          return (
+            <div key={key} className="px-3 py-2">
+              <span className="text-[10px] font-mono text-[var(--ansi-cyan)]/70">{key}</span>
+              <div className="mt-1">
+                <JsonView value={val} />
+              </div>
+            </div>
+          );
+        }
         const isString = typeof val === "string";
-        const strValue = isString ? (val as string) : JSON.stringify(val, null, 2);
+        const strValue = isString ? (val as string) : String(val);
         const isLong = strValue.length > 120 || strValue.includes("\n");
         return (
           <div
@@ -101,7 +120,7 @@ function RecordTable({ value }: { value: Record<string, unknown> }) {
               {key}
             </span>
             {isLong ? (
-              <pre className="mt-1 text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all max-h-60 overflow-auto leading-relaxed">
+              <pre className="mt-1 text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-words max-h-60 overflow-auto leading-relaxed">
                 {isString ? renderMaybeAnsi(strValue) : strValue}
               </pre>
             ) : (
@@ -120,7 +139,7 @@ function ToolArgsTable({ args }: { args: unknown }) {
   const normalized = normalizeToolArgs(args);
   if (normalized.kind === "raw") {
     return (
-      <pre className="px-3 py-2 text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all max-h-48 overflow-auto leading-relaxed">
+      <pre className="px-3 py-2 text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-words max-h-48 overflow-auto leading-relaxed">
         {normalized.value}
       </pre>
     );
@@ -174,9 +193,19 @@ function ToolResultDisplay({ result }: { result: unknown }) {
     );
   }
 
+  // Top-level arrays (e.g. a list result) → collapsible JsonView (auto-table for
+  // arrays of flat objects).
+  if (Array.isArray(value)) {
+    return (
+      <div className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-[480px] overflow-auto">
+        <JsonView value={value} />
+      </div>
+    );
+  }
+
   const text = safeStringify(value, 8000);
   return (
-    <pre className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-[480px] overflow-auto text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all leading-relaxed">
+    <pre className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-[480px] overflow-auto text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-words leading-relaxed">
       {typeof value === "string" ? renderMaybeAnsi(text) : text}
     </pre>
   );
@@ -397,7 +426,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
   // otherwise raw escape sequences (e.g. 256-colour `wttr.in` art) leak into the
   // panel as literal `\x1b[38;5;…m` text instead of rendering as colours.
   const cleanedShellOutput = shellOutput
-    ? expandTerminalTabs(stripOscSequences(shellOutput))
+    ? expandTerminalTabs(collapseProgressBars(stripOscSequences(shellOutput)))
     : null;
   const displayShellOutput =
     cleanedShellOutput && cleanedShellOutput.length > 8000

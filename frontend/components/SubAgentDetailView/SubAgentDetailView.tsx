@@ -27,14 +27,14 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { ThinkingBlock } from "@/components/AIChatPanel/ThinkingBlock";
+import { JsonView } from "@/components/JsonView/JsonView";
 import { Markdown } from "@/components/Markdown";
-import { ReconIntelSummaryLine } from "@/components/ReconIntelSummaryLine";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { StatusIcon } from "@/components/ui/StatusIcon";
-import { stripAllAnsi } from "@/lib/ansi";
+import { collapseProgressBars, stripAllAnsi } from "@/lib/ansi";
 import { copyToClipboard } from "@/lib/clipboard";
 import { getAgentColor, getAgentIcon } from "@/lib/sub-agent-theme";
 import { safeStringify } from "@/lib/text";
@@ -96,36 +96,8 @@ const AgentOutputBlock = memo(function AgentOutputBlock({
 /* ─── Structured args display ─── */
 
 function ToolArgsTable({ args }: { args: Record<string, unknown> }) {
-  const entries = Object.entries(args);
-  if (entries.length === 0) return null;
-
-  return (
-    <div className="divide-y divide-border/15">
-      {entries.map(([key, value]) => {
-        const strValue = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-        const isLong = strValue.length > 120 || strValue.includes("\n");
-        return (
-          <div
-            key={key}
-            className={cn("px-3", isLong ? "py-2" : "py-1.5 flex items-baseline gap-3")}
-          >
-            <span className="text-[10px] font-mono text-[var(--ansi-cyan)]/70 flex-shrink-0">
-              {key}
-            </span>
-            {isLong ? (
-              <pre className="mt-1 text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all max-h-32 overflow-auto leading-relaxed">
-                {strValue}
-              </pre>
-            ) : (
-              <span className="text-[11px] font-mono text-foreground/80 truncate" title={strValue}>
-                {strValue}
-              </span>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
+  if (Object.keys(args).length === 0) return null;
+  return <JsonView value={args} className="px-3 py-2" />;
 }
 
 /* ─── Tool result display ─── */
@@ -146,8 +118,34 @@ const ToolResultDisplay = memo(function ToolResultDisplay({ result }: { result: 
     );
   }
 
+  // Structured result (object/array, or a JSON string) → collapsible JsonView;
+  // plain text stays a <pre>.
+  let structured: unknown;
+  if (result !== null && typeof result === "object") {
+    structured = result;
+  } else if (typeof result === "string") {
+    const trimmed = result.trim();
+    const looksJson =
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]"));
+    if (looksJson) {
+      try {
+        structured = JSON.parse(trimmed);
+      } catch {
+        structured = undefined;
+      }
+    }
+  }
+  if (structured !== undefined) {
+    return (
+      <div className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-64 overflow-auto">
+        <JsonView value={structured} />
+      </div>
+    );
+  }
+
   return (
-    <pre className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-64 overflow-auto text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all leading-relaxed">
+    <pre className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-64 overflow-auto text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-words leading-relaxed">
       {safeStringify(result, 5000)}
     </pre>
   );
@@ -183,10 +181,17 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: Su
 
   const shellOutput: string | null = (() => {
     if (!isShellCmd) return null;
-    if (tool.streamingOutput) return tool.streamingOutput;
-    if (!tool.result || typeof tool.result !== "object") return null;
-    const r = tool.result as Record<string, unknown>;
-    return (r.stdout as string) || (r.output as string) || null;
+    let raw: string | null;
+    if (tool.streamingOutput) {
+      raw = tool.streamingOutput;
+    } else if (tool.result && typeof tool.result === "object") {
+      const r = tool.result as Record<string, unknown>;
+      raw = (r.stdout as string) || (r.output as string) || null;
+    } else {
+      raw = null;
+    }
+    // Collapse progress-bar spam (amass/nuclei "[--->] 100%") to the final frame.
+    return raw ? collapseProgressBars(raw) : null;
   })();
 
   return (
@@ -225,7 +230,6 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: Su
             </span>
           )}
         </CollapsibleTrigger>
-        <ReconIntelSummaryLine name={tool.name} result={tool.result} className="px-3 pb-1.5" />
         <CollapsibleContent>
           <div className="px-4 pb-3 space-y-2.5 text-xs overflow-hidden border-t border-border/20 pt-2.5">
             {isShellCmd && shellOutput && (

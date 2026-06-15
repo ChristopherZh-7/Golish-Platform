@@ -1,5 +1,5 @@
 import { logger } from "@/lib/logger";
-import type { PersistedTerminalData, PersistedTimelineBlock } from "@/lib/workspace-storage";
+import type { PersistedTerminalData } from "@/lib/workspace-storage";
 import { useStore } from "./index";
 import type { AgentMessage, TabType } from "./store-types";
 
@@ -135,7 +135,7 @@ export async function openProject(
   try {
     const [
       { disposeAllRuntimeTerminals },
-      { clearSaveFingerprints, loadFromDb, markDbLoadSucceeded },
+      { clearSaveFingerprints, loadedToPersistedTerminalData, loadFromDb, markDbLoadSucceeded },
       { loadWorkspaceState, setLastProjectName, toChatConversation },
       { createNewConversation },
     ] = await Promise.all([
@@ -167,26 +167,7 @@ export async function openProject(
       if (Object.keys(saved.terminalData).length > 0) {
         const termRestoreData: Record<string, PersistedTerminalData[]> = {};
         for (const [convId, terminals] of Object.entries(saved.terminalData)) {
-          termRestoreData[convId] = terminals.map((t) => ({
-            logicalTerminalId: t.sessionId,
-            workingDirectory: t.workingDirectory,
-            scrollback: t.scrollback,
-            customName: t.customName ?? undefined,
-            planJson: t.planJson ?? undefined,
-            executionMode: t.executionMode ?? undefined,
-            retiredPlansJson: t.retiredPlansJson ?? undefined,
-            stageRunJson: t.stageRunJson ?? undefined,
-            timelineBlocks: t.timelineBlocks.map(
-              (b) =>
-                ({
-                  id: b.id,
-                  type: b.type,
-                  timestamp: b.timestamp ?? new Date().toISOString(),
-                  data: b.data,
-                  batchId: (b as { batchId?: string }).batchId,
-                }) as PersistedTimelineBlock
-            ),
-          }));
+          termRestoreData[convId] = terminals.map(loadedToPersistedTerminalData);
         }
         useStore.getState().setPendingTerminalRestoreData(termRestoreData);
       }

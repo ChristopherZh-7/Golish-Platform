@@ -14,6 +14,9 @@
   "deliverable_schema": "ExternalAttackSurfaceDeliverable",
   "gate_validator": "validate_external_attack_surface_gate",
 
+  "$comment_findings_allowed": "Attack-surface mapping stage: the deliverable is liveness/port/service coverage, NOT vulnerabilities. submit_stage_deliverable drops any findings submitted here and tells the model to put discoveries in claims. Design 2026-06-15-recon-stage-findings-suppression.",
+  "findings_allowed": false,
+
   "gate_rules": [
     {
       "op": "for_all",

@@ -7,7 +7,6 @@ import { formatModelName } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { type ChatMessage, useStore } from "@/store";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
-import { ApprovalModeSelector } from "./ApprovalModeSelector";
 import { ChatModelSelector } from "./ChatModelSelector";
 import { AskHumanInline, CompactionNotice, WorkflowProgress } from "./ChatSubComponents";
 import { ContextUsageRing } from "./ContextUsageRing";
@@ -454,10 +453,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
                 chatExecutionMode={modes.chatExecutionMode}
                 onExecutionModeChange={modes.handleExecutionModeChange}
                 onAgentModeChange={modes.handleAgentModeChange}
-              />
-              <ApprovalModeSelector
-                approvalMode={modes.approvalMode}
-                onApprovalModeChange={modes.handleApprovalModeChange}
               />
               <ChatModelSelector
                 modelDisplay={modelDisplay}

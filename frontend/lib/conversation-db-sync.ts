@@ -21,6 +21,7 @@ import { onCustomEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
 import { readStageMarkers, spliceStageMarkers } from "@/lib/stage-marker-persistence";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
+import type { PersistedTerminalData, PersistedTimelineBlock } from "@/lib/workspace-storage";
 import type { Session, UnifiedBlock } from "@/store";
 import type {
   ChatConversation,
@@ -196,6 +197,37 @@ export interface LoadedTerminalData {
   planMessageId: string | null;
   /** Live `stage_run` per-org fan-out snapshot (SessionStageRun) to rehydrate. */
   stageRunJson: unknown | null;
+}
+
+/**
+ * Single source of truth for converting a DB-loaded terminal record into the
+ * restore-time shape consumed by `restoreBatchTerminals`. Both restore entry
+ * points (boot-time `useAppLifecycle`, project-switch `openProject`) must go
+ * through this so a newly persisted field can't be carried by one path and
+ * silently dropped by the other (the drift that lost `stageRunJson` on reopen).
+ */
+export function loadedToPersistedTerminalData(t: LoadedTerminalData): PersistedTerminalData {
+  return {
+    logicalTerminalId: t.sessionId,
+    workingDirectory: t.workingDirectory,
+    scrollback: t.scrollback,
+    customName: t.customName ?? undefined,
+    planJson: t.planJson ?? undefined,
+    executionMode: t.executionMode ?? undefined,
+    retiredPlansJson: t.retiredPlansJson ?? undefined,
+    planMessageId: t.planMessageId ?? undefined,
+    stageRunJson: t.stageRunJson ?? undefined,
+    timelineBlocks: t.timelineBlocks.map(
+      (b) =>
+        ({
+          id: b.id,
+          type: b.type,
+          timestamp: b.timestamp ?? new Date().toISOString(),
+          data: b.data,
+          batchId: (b as { batchId?: string }).batchId,
+        }) as PersistedTimelineBlock
+    ),
+  };
 }
 
 export function dbMsgToChatMessage(row: ChatMessageRow): ChatMessage {

@@ -11,6 +11,28 @@
   ],
   "features": [
     {
+      "id": "stage-run-per-org-gate-2026-06-15",
+      "priority": 1,
+      "area": "backend: golish-agent-kit/src/harness/org_gate.rs (Phase1 evaluate_org_stage_gate + Phase1.5 stage_pass_token/extract_pass_token/STAGE_RUN_PASS_TOKEN_KIND + 共享 STAGE_COMPLETION_TTL_SECS/completion_is_fresh), db_traits/repo.rs (+in_scope_org_ids/+org_stage_completions_get default 空), task_orchestrator/subtask_phases/execute.rs (try_specialist_stage_gate/verify_stage_run_pass_token/render_specialist_gate + 两 gate 调用点 specialist 分支 + fan-out BLOCK 绕过 refiner), Cargo.toml(+sha2); golish-db/src/repo/organizations.rs(+in_scope_ids); golish-agent-runtime/.../stage_run_call.rs (per-org gate 取代 result.success + 发 pass_token); golish-agent-app/src/ai/db_bridge/{mod,recon}.rs (impl 两 repo 方法). 计划 docs/superpowers/plans/2026-06-15-stage-run-per-org-gate.md",
+      "title": "stage_run 每个 org 各过各权威 gate（Phase 1）+ fan-out 阶段『跑完 stage_run 即过』的防伪 hash 令牌闭环（Phase 1.5 / B-recompute）。修『org 通过=子 agent 跑完(success) 而非真过 gate』+『单槽 deliverable N org 互相覆盖』根因。",
+      "user_visible_behavior": "stage_run 对每个 in-scope org 跑完专家后，立刻用该 org 自己的交付过一次注入该 org DB 真值的权威 gate；只有 gate PASS 才算该 org 通过、才写 7 天完成账本（BLOCK 进 gaps、不写账本、可被『只重跑缺口 org』闭环再测）。全 org 都新鲜 PASS 时 stage_run 返回一个由账本算出的 pass_token；主 agent 收尾阶段提交带该 token 的 claim，收尾 gate 拿账本重算比对，对上+全 org 新鲜 PASS 才放行该 specialist 阶段（跳过整阶段 coverage），对不上/缺 org 则 BLOCK 提示重跑 stage_run。agent 看不到也造不出 passed_at → 盖不了章。",
+      "status": "in_progress",
+      "design": "docs/design/(沿用 2026-06-13-stage-run-fanout-design.md D9/D11) + 计划内嵌设计",
+      "plan": "docs/superpowers/plans/2026-06-15-stage-run-per-org-gate.md（Phase1 Task1-4 + Phase1.5 Task5-8 全 TDD/代码/验证/commit；Phase2 闸1 单列 deferred）",
+      "verification": [
+        "[✓] cargo nextest -p golish-agent-kit → 644 passed/0 skipped（含 org_gate 9 测：verdict/facts/db_truth/token 顺序无关+binds+passed_at 变/extract trim+空/freshness TTL；execute/gate/coverage 无回归）terminal 291561",
+        "[✓] cargo nextest -p golish-agent-runtime stage_run → 7 passed/231 skipped（freshness 经共享 import 仍绿）",
+        "[✓] cargo check -p golish-agent-app → exit 0（db_bridge 两 impl + organizations::in_scope_ids 编译过）",
+        "[✓] cargo clippy -p golish-agent-kit -p golish-agent-runtime -p golish-agent-app --all-targets --no-deps -- -D warnings → exit 0 零告警 terminal 745688",
+        "[✓] ReadLints 6 文件无错",
+        "[未跑] just precommit 全量（被 pre-existing golish-db assemble_truth_facts 死码阻断 + 本机 cargo 并发抢锁）",
+        "[未跑·用户环境] 活体：多 org engagement 跑 target_intel，看 stage_run 发 pass_token、主 agent 收尾过门、缺口 org BLOCK 重跑"
+      ],
+      "evidence": "2026-06-15 BaJie MCP-agent-4（DISPATCH off, 接 MCP-1→MCP-4 上下文转移, 用户『一次性全部搞定』）. Phase1 验证 MCP-1 已落代码绿; Phase1.5 Task5-7 全实现+验证绿（见 verification）. 设计偏差(优于计划字面): ① DbRepoProvider 真实现是 ai/db_bridge::GolishDbRepoProvider 非计划写的 tracking_bridge; ② org 无 operation_id→in_scope_org_ids(project_path) 整库口径(=in_scope_assets); ③ token 不绑 session(两路径 session 维度可能不一致致死锁; 防伪靠 passed_at+TTL); ④ 不新建存 hash 表(B-recompute 拿 org_stage_completions 账本重算); ⑤ fan-out BLOCK 绕过 refiner(避免 submit_only_lock 锁死主 agent 调不了 stage_run). 未 commit(工作树混别会话改动, 待用户定策略). 详见 agent-progress.md 最新一条.",
+      "notes": "8 个本轮文件: org_gate.rs(新 untracked) / harness/mod.rs / db_traits/repo.rs / stage_run_call.rs / execute.rs / db_bridge/{mod,recon}.rs / organizations.rs / golish-agent-kit Cargo.toml. **pre-existing 阻断**: golish-db/repo/coverage_truth.rs:209 assemble_truth_facts 被 2c-3b revert(a3bb618c) 孤立成死码 → 全 workspace clippy -D/precommit 已红(非本轮; 用 --no-deps 隔离验证). I8: 只认账本 PASS 行=过, 无行=未过. I10: 无 schema 改动(只读 org_stage_completions + organizations).",
+      "remember": "stage_run per-org gate + pass_token. **Phase1**(MCP-1 落, 本轮验证): org_gate::evaluate_org_stage_gate per-org 权威 gate; stage_run_call 用 gate PASS 取代 result.success. **Phase1.5**(本轮 B-recompute): org_gate::stage_pass_token(stage, &[(org,passed_at)]) sha256 不绑 session; extract_pass_token 读保留 claim; STAGE_RUN_PASS_TOKEN_KIND='stage_run_pass_token'; 共享 STAGE_COMPLETION_TTL_SECS/completion_is_fresh(stage_run+gate 同源). repo: in_scope_org_ids(project_path=None=整库)/org_stage_completions_get 在 DbRepoProvider(default 空)+GolishDbRepoProvider(db_bridge/recon.rs)实现; organizations::in_scope_ids. stage_run 全 fresh-PASS 发 pass_token(JSON+summary). execute.rs try_specialist_stage_gate→verify_stage_run_pass_token(拿账本重算比对)+render_specialist_gate(空 refs/kinds→enforcements no-op); fan-out BLOCK 绕 refiner(submit_only=false 防死锁). 验证: kit 644/runtime stage_run 7/app check/clippy --no-deps 全绿. 待: commit(8 文件)/precommit(被 golish-db 孤儿死码阻断)/活体. Phase2 闸1 deferred."
+    },
+    {
       "id": "ip-centric-asset-model-2026-06-15",
       "priority": 1,
       "area": "backend: golish-db/src/repo/targets.rs (set_real_ip_by_id + build_backfill_real_ip_sql + backfill_real_ip_from_dns + SQL-shape 测), golish-recon-app/src/organization_recon/{persistence.rs(land_dns_records 落 primary real_ip),commands.rs(recon_backfill_real_ip 命令),mod.rs(__cmd__ 导出)}, golish/src/commands_registry.rs(注册 ident); frontend: lib/api/organization-recon.ts(backfillRealIp wrapper). 设计/计划 docs/{design,superpowers/plans}/2026-06-15-ip-centric-asset-model.md",

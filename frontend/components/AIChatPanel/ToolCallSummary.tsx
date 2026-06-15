@@ -9,7 +9,6 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { ReconIntelSummaryLine } from "@/components/ReconIntelSummaryLine";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import {
   DropdownMenu,
@@ -236,7 +235,6 @@ function ToolCallCard({
           {primary}
         </div>
       )}
-      <ReconIntelSummaryLine name={tc.name} result={tc.result} className="mt-1.5" />
       {onApprovalModeChange && (
         <div className="mt-1.5 flex justify-end">
           <ApprovalModeInlineDropdown

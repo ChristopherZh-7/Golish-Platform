@@ -67,6 +67,19 @@ where
         BARRIER_TOOL_NAME, BARRIER_TOOL_NAME
     ));
 
+    // Observability aid: a sub-agent's fully-assembled system prompt is otherwise
+    // NOT captured anywhere (its per-sub-agent transcript logs only tool
+    // calls/results, and backend.log never records prompts). Dump it here — with
+    // the advertised tool list — so a run's backend.log / run.log shows exactly
+    // what each sub-agent received. `target` is greppable: `sub_agent::prompt_dump`.
+    tracing::info!(
+        target: "sub_agent::prompt_dump",
+        agent_id = %agent_id,
+        allowed_tools = ?agent_def.allowed_tools,
+        prompt_len = effective.len(),
+        "[sub-agent-prompt-dump] assembled system prompt for '{agent_id}':\n{effective}"
+    );
+
     effective
 }
 

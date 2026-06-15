@@ -48,10 +48,6 @@
             "value": "enum"
           },
           {
-            "label": "intel - org/ASN/whois recon",
-            "value": "intel"
-          },
-          {
             "label": "track - delta between scans",
             "value": "track"
           },
@@ -114,33 +110,6 @@
         "type": "string"
       },
       {
-        "description": "ASN to query (intel mode)",
-        "flag": "-asn",
-        "label": "ASN",
-        "placeholder": "13335",
-        "type": "string"
-      },
-      {
-        "description": "CIDR to enumerate (intel mode)",
-        "flag": "-cidr",
-        "label": "CIDR",
-        "placeholder": "10.0.0.0/16",
-        "type": "string"
-      },
-      {
-        "description": "(intel) include reverse whois",
-        "flag": "-whois",
-        "label": "Whois",
-        "type": "boolean"
-      },
-      {
-        "description": "(intel) organization name to whois",
-        "flag": "-org",
-        "label": "Org",
-        "placeholder": "Cloudflare",
-        "type": "string"
-      },
-      {
         "description": "Output JSONL file",
         "flag": "-json",
         "label": "Output JSON",
@@ -199,26 +168,6 @@
         "name": "Brute force subdomains",
         "tags": [
           "brute"
-        ]
-      },
-      {
-        "args": "intel -org \"{{org}}\" -whois",
-        "description": "Reverse whois on org name",
-        "id": "intel-org",
-        "name": "Intel by organization",
-        "tags": [
-          "intel",
-          "osint"
-        ]
-      },
-      {
-        "args": "intel -asn {{asn}}",
-        "description": "Find domains hosted on ASN",
-        "id": "intel-asn",
-        "name": "Intel by ASN",
-        "tags": [
-          "intel",
-          "asn"
         ]
       },
       {

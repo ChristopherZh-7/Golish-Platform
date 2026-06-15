@@ -15,6 +15,9 @@
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
 
+  "$comment_findings_allowed": "Recon/scoping stage: the deliverable is scope confirmation + (optional) subsidiary coverage, NOT vulnerabilities. submit_stage_deliverable drops any findings submitted here and tells the model to put discoveries in claims. Design 2026-06-15-recon-stage-findings-suppression.",
+  "findings_allowed": false,
+
   "$comment_gate_rules": "Default (no --include-subsidiaries): scoping is L0 authz-confirmation (no probing), scope claim needs no tool evidence — coverage_complete is a no-op because expected_techniques is empty unless the harness hook dynamically injects GOLISH-INTEL-SUBSIDIARY (Phase 2). The evidence rules below only bite cells the model marks found/checked_empty, so they are inert with zero coverage cells.",
   "gate_rules": [
     {
