@@ -177,13 +177,32 @@ pub(crate) fn assemble_truth_facts(
     in_scope_assets: &[String],
     inputs: &TruthInputs<'_>,
 ) -> Vec<(String, &'static str)> {
+    // Backward-compatible: no per-asset type info ⇒ keep every fact (fail-safe).
+    assemble_truth_facts_typed(in_scope_assets, &[], inputs)
+}
+
+/// 2c-2 (设计 2026-06-15-host-aware-coverage-2c §4.3): type-aware projection.
+/// `types[i]` is `in_scope_assets[i]` 的 `targets.type`；域名专属 org 事实（CT）
+/// **不**盖到 IP/CIDR 资产上（cert transparency 对裸 IP 无意义）。缺/未知类型 ⇒
+/// 当作非 IP（保留全部事实——fail-safe 倾向多报、绝不少报，不放松 gate）。
+pub(crate) fn assemble_truth_facts_typed(
+    in_scope_assets: &[String],
+    types: &[String],
+    inputs: &TruthInputs<'_>,
+) -> Vec<(String, &'static str)> {
     let mut facts = Vec::new();
-    for asset in in_scope_assets {
+    for (i, asset) in in_scope_assets.iter().enumerate() {
+        // 2c-2: 该资产是否 IP/CIDR（按权威 type）；缺/未知 ⇒ 非 IP（保留全部，fail-safe）。
+        let ip_like = matches!(
+            types.get(i).map(String::as_str),
+            Some("ip" | "ipv4" | "ipv6" | "ip_address" | "cidr" | "range" | "netblock")
+        );
         // org 级存量：命中即对每个 in-scope 资产产同一 technique。
         if inputs.has_asn {
             facts.push((asset.clone(), TECH_ASN));
         }
-        if inputs.has_ct {
+        // CT 是域名专属（cert transparency 对裸 IP 无意义）→ 不盖 IP/CIDR。
+        if inputs.has_ct && !ip_like {
             facts.push((asset.clone(), TECH_CT));
         }
         if inputs.has_whois {
@@ -242,10 +261,14 @@ async fn fetch_values(pool: &PgPool, sql: &str, org_id: Option<Uuid>) -> Result<
 /// `in_scope_assets` 是 coverage gate 实际遍历的权威资产集（org 已隔离），保证与
 /// `coverage_complete` 的 asset 维度对齐。`org_id=None` 时不查 org 级情报（ASN/CT/
 /// WHOIS/OSINT 不投影），per-asset 维度退回全局 scope='in'。空 in-scope → 直接返回空。
+///
+/// 2c-2: `types[i]` = `in_scope_assets[i]` 的 `targets.type`；CT 等域名专属 org 事实
+/// 不投影到 IP/CIDR（缺/未知类型 ⇒ 当作非 IP，保留全部，fail-safe）。
 pub async fn coverage_truth_facts(
     pool: &PgPool,
     org_id: Option<Uuid>,
     in_scope_assets: &[String],
+    types: &[String],
 ) -> Result<Vec<(String, &'static str)>> {
     if in_scope_assets.is_empty() {
         return Ok(Vec::new());
@@ -272,8 +295,9 @@ pub async fn coverage_truth_facts(
     let dir_values = fetch_values(pool, &build_dir_values_sql(), org_id).await?;
     let param_values = fetch_values(pool, &build_param_values_sql(), org_id).await?;
     let jsapi_values = fetch_values(pool, &build_jsapi_values_sql(), org_id).await?;
-    Ok(assemble_truth_facts(
+    Ok(assemble_truth_facts_typed(
         in_scope_assets,
+        types,
         &TruthInputs {
             has_asn,
             has_ct,
@@ -348,6 +372,24 @@ mod tests {
         let assets = vec!["moresec.cn".to_string()];
         let facts = assemble_truth_facts(&assets, &inputs);
         assert!(!facts.iter().any(|(_, t)| *t == TECH_SUBSIDIARY));
+    }
+
+    #[test]
+    fn assemble_skips_ct_for_ip_assets() {
+        // 2c-2: CT 是域名专属 org 事实——域名拿到 CT，IP 不拿；ASN 两者都拿（org 级）。
+        let empty = subs(&[]);
+        let mut inputs = empty_inputs(&empty);
+        inputs.has_ct = true;
+        inputs.has_asn = true;
+        let assets = vec!["a.com".to_string(), "1.2.3.4".to_string()];
+        let types = vec!["domain".to_string(), "ip".to_string()];
+        let facts = assemble_truth_facts_typed(&assets, &types, &inputs);
+        assert!(facts.contains(&("a.com".to_string(), TECH_CT)));
+        assert!(!facts.contains(&("1.2.3.4".to_string(), TECH_CT)));
+        assert!(facts.contains(&("1.2.3.4".to_string(), TECH_ASN)));
+        // 缺类型 ⇒ 当作非 IP，保留 CT（fail-safe，绝不少报）。
+        let facts_untyped = assemble_truth_facts_typed(&assets, &[], &inputs);
+        assert!(facts_untyped.contains(&("1.2.3.4".to_string(), TECH_CT)));
     }
 
     #[test]

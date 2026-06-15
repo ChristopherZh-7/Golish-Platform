@@ -265,10 +265,25 @@ impl GolishDbRepoProvider {
         org_id: Option<Uuid>,
         in_scope_assets: &[String],
     ) -> anyhow::Result<Vec<(String, String)>> {
+        // 2c-2 (设计 host-aware-coverage-2c §4.3): align each in-scope asset to
+        // its targets.type so coverage_truth drops domain-only org facts (CT) on
+        // IP assets. Missing type → "" (non-IP, keep all — fail-safe). Reuses the
+        // 2c-1 typed in-scope read.
+        let type_map: std::collections::HashMap<String, String> = self
+            .in_scope_typed_assets_impl(org_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let types: Vec<String> = in_scope_assets
+            .iter()
+            .map(|a| type_map.get(a).cloned().unwrap_or_default())
+            .collect();
         let rows = golish_db::repo::coverage_truth::coverage_truth_facts(
             &self.pool,
             org_id,
             in_scope_assets,
+            &types,
         )
         .await?;
         Ok(rows.into_iter().map(|(a, t)| (a, t.to_string())).collect())

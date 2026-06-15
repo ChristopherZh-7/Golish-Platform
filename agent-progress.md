@@ -29,6 +29,20 @@
 
 ---
 
+### 2026-06-15 · Host-aware coverage 2c-2 实现（truth 投影按类型，TDD 绿）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「继续 2c-2」）
+
+- **本轮目标**：按 plan 2c-2——`assemble_truth_facts` 按资产类型不给 IP/CIDR 盖域名专属 org 事实（CT），让证据账本/coverage% 干净。
+- **改动（2 文件，已 commit 见下）**：
+  - `golish-db/src/repo/coverage_truth.rs`：`assemble_truth_facts` 拆成 **thin wrapper**（传 `&[]` types = 保留全部，**9 个既有测零改**，向后兼容）+ 新 `assemble_truth_facts_typed(assets, types, inputs)`（`types[i]∈{ip/ipv4/ipv6/ip_address/cidr/range/netblock}` → 不给该资产盖 `TECH_CT`；缺/未知类型 = 非 IP，保留全部，fail-safe）；`coverage_truth_facts` 加 `types: &[String]` 参数并改调 typed；新测 `assemble_skips_ct_for_ip_assets`。
+  - `golish-agent-app/src/ai/db_bridge/recon.rs::db_truth_facts_impl`：经 2c-1 的 `in_scope_typed_assets_impl` 建 value→type map，按 `in_scope_assets` 顺序对齐成 `types` 喂入 `coverage_truth_facts`（缺 = "" = 非 IP，fail-safe）。
+- **实现决策（少改）**：用 wrapper + typed 双函数，避免改 9 个既有 assemble 测（它们继续走 wrapper=保留全部，验证向后兼容）；只有 `coverage_truth_facts` 这唯一生产调用方切到 typed（全 backend 仅 1 caller，grep 实证）。
+- **TDD（先红后绿·有据）**：先加 typed（placeholder `let _ = types;` CT 不门控）+ 新测 → 红（/tmp/db-2c2-red.log：`!facts.contains((1.2.3.4, CT))` 失败 17/18 其余绿）→ 实现 `enumerate + ip_like + && !ip_like` → 绿。验证 `nextest -p golish-db coverage_truth` **18/18**（/tmp/2c2-final.log DB=0）+ `cargo check -p golish-agent-app` **exit 0**（APP=0）。ReadLints 2 文件无错。
+- **行为影响**：**零 gate 行为变更**——CT-on-IP 这条 vacuous found 在 2a 后本就不被 coverage_complete 消费（gate 不再 expect IP 的 CT），2c-2 只是不再把它**写进**账本；收益 = 干净账本 + 真实 coverage%。
+- **未做 / 下一步**：2c-3（IP 原生技术 RDNS/IP-WHOIS，需 Task 3.0 recon 采集器调研 → 单独 spec）；活体 --stage-run parity（2c-1/2c-2 合并复核）；全量 precommit。未 push。
+- **已参考技能**：无（executing-plans 逐任务 + TDD 先红后绿 + verification 跑测拿证据[红 1/绿 18 + app check]；未 Read 本地 skill raw；`mcp-server/role-skills/` 为空 Glob 0）。
+
+---
+
 ### 2026-06-15 · Host-aware coverage 2c-1 实现（权威类型轴，TDD 绿）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「开干 2c-1」）
 
 - **本轮目标**：按 `docs/superpowers/plans/2026-06-15-host-aware-coverage-2c.md` 实现 2c-1（authoritative type axis），executing-plans + TDD。
