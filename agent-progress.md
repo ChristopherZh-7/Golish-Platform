@@ -29,6 +29,21 @@
 
 ---
 
+### 2026-06-15 · Host-aware coverage 2c-3a 存储+truth（迁移已批准，TDD 绿，inert）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「实现 2c-3a（批准迁移）」）
+
+- **本轮目标**：按 plan 2c-3a 落 IP 原生技术的**存储 + truth 侧**（采集器留下一增量）。用户明确批准 `targets.ip_whois` 迁移（§2.7 sign-off）。
+- **改动（3 文件，已 commit 见下）**：
+  - `golish-db/migrations/20260615000002_targets_ip_whois.sql`（新）：`ALTER TABLE targets ADD COLUMN IF NOT EXISTS ip_whois JSONB`（expand-first/nullable/无回填，I10）。时间戳取现有最高 20260615000001 之后。
+  - `golish-db/src/repo/targets.rs`：`set_ip_whois_by_id`（pub，仿 set_real_ip_by_id；无 scope，调用方持 id，幂等）+ build_set_ip_whois_sql + SQL-shape 测。
+  - `golish-db/src/repo/coverage_truth.rs`：`TECH_RDNS`/`TECH_IPWHOIS` 常量 + `IP_TYPE_IN_LIST`；`build_rdns_values_sql`（JOIN dns_records record_type='PTR' + IP 类型，**复用 dns_records 无迁移**）+ `build_ipwhois_values_sql`（t.ip_whois 非空 shape-agnostic + IP 类型）；`TruthInputs` +rdns_values/ipwhois_values；`assemble_truth_facts_typed` 加 2 per-asset push（DNS 之后；SQL 已限 IP 故域名无害）；`coverage_truth_facts` +2 fetch + 传入；更新 empty_inputs + assemble_each_active + assemble_combines（+2 字段 + 预期序列加 RDNS/IPWHOIS）+ 3 新测。
+- **关键决策**：PTR 复用 `dns_records`（record_type TEXT 无迁移）；仅 IP-WHOIS 加 `targets.ip_whois` 列。`set_ip_whois_by_id` 设 pub（lib API，无 caller 也不报 dead_code）→ 可先落存储再落采集器。
+- **TDD / 验证（有据）**：`cargo nextest -p golish-db coverage_truth targets` → **32/32 passed**（/tmp/db-2c3a.log EXIT=0；含 set_ip_whois_sql/rdns_values_sql/ipwhois_values_sql/assemble_projects_rdns_and_ipwhois + 更新的 assemble_combines）。ReadLints 2 文件无错。coverage_truth_facts 签名未变 → golish-agent-app 不受影响。
+- **行为影响**：**完全 inert**——technique_resolver baseline 未改（gate 不要求 RDNS/IPWHOIS）+ 采集器未落（查询返空，fail-safe）。零线上行为变更。
+- **未做 / 下一步**：2c-3a **采集器**（land_ip_whois RDAP `/ip/` 复用 reqwest 无新 dep；land_rdns 反向 DNS 需 dep `dns-lookup` 或外部 `dig -x` 决策——recon-app 现无反向 DNS 库）；之后 2c-3b（technique_resolver baseline+矩阵 + 活体 parity + sign-off，会 BLOCK 无数据 IP）。未 push。
+- **已参考技能**：无（executing-plans 逐任务 + TDD + verification 跑测拿证据[32/32]；未 Read 本地 skill raw；`mcp-server/role-skills/` 为空 Glob 0）。
+
+---
+
 ### 2026-06-15 · Host-aware coverage 2c-3 调研 spike + spec（零代码）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「做 2c-3 调研 spike」）
 
 - **本轮目标**：按 plan 2c Task 3.0 做 IP 原生技术（RDNS/IP-WHOIS）的只读调研 spike → 产出 design+plan（零代码）。

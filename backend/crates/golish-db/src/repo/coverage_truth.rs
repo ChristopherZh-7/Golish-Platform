@@ -33,6 +33,15 @@ pub const TECH_OSINT: &str = "GOLISH-INTEL-OSINT";
 /// 子公司 / org 树发现 technique（scoping 阶段；Phase 2 2026-06-12-redteam-phase2）。
 pub const TECH_SUBSIDIARY: &str = "GOLISH-INTEL-SUBSIDIARY";
 
+/// Host-aware coverage 2c-3 IP-native techniques (per-asset, IP/CIDR only):
+/// reverse DNS (PTR) + RIR/netblock IP-WHOIS.
+pub const TECH_RDNS: &str = "GOLISH-INTEL-RDNS";
+pub const TECH_IPWHOIS: &str = "GOLISH-INTEL-IPWHOIS";
+
+/// SQL IN-list of IP/CIDR `targets.type` values — host-aware 2c-3 IP-native
+/// techniques apply only to these (mirrors `technique_resolver` Ip/Cidr classes).
+const IP_TYPE_IN_LIST: &str = "('ip', 'ipv4', 'ipv6', 'ip_address', 'cidr', 'range', 'netblock')";
+
 /// 主动攻击面 technique id（external_attack_surface）。
 pub const TECH_EAS_LIVENESS: &str = "GOLISH-EAS-LIVENESS";
 pub const TECH_EAS_PORT: &str = "GOLISH-EAS-PORT";
@@ -153,6 +162,27 @@ fn build_jsapi_values_sql() -> String {
     )
 }
 
+/// RDNS (host-aware 2c-3): in-scope IP/CIDR targets that have a 'PTR' dns_records
+/// row (reverse DNS landed). Reuses `dns_records` (no schema change) + IP-type filter.
+fn build_rdns_values_sql() -> String {
+    build_in_scope_values_sql(
+        "JOIN dns_records dr ON dr.target_id = t.id",
+        &format!("AND dr.record_type = 'PTR' AND t.target_type::text IN {IP_TYPE_IN_LIST}"),
+    )
+}
+
+/// IP-WHOIS (host-aware 2c-3): in-scope IP/CIDR targets with non-empty
+/// `targets.ip_whois` (RIR RDAP). Shape-agnostic empty check (no `jsonb_array_length`).
+fn build_ipwhois_values_sql() -> String {
+    build_in_scope_values_sql(
+        "",
+        &format!(
+            "AND {} AND t.target_type::text IN {IP_TYPE_IN_LIST}",
+            jsonb_non_empty("t.ip_whois")
+        ),
+    )
+}
+
 /// 纯组装入参（与 IO 解耦，便于单测）。bool = org 级存量；HashSet = per-asset 命中集。
 pub(crate) struct TruthInputs<'a> {
     pub has_asn: bool,
@@ -163,6 +193,9 @@ pub(crate) struct TruthInputs<'a> {
     pub has_subsidiary: bool,
     pub subdomain_values: &'a HashSet<String>,
     pub dns_values: &'a HashSet<String>,
+    /// Host-aware 2c-3 (per-asset, IP-only via SQL): reverse-DNS (PTR) + RIR IP-WHOIS.
+    pub rdns_values: &'a HashSet<String>,
+    pub ipwhois_values: &'a HashSet<String>,
     pub liveness_values: &'a HashSet<String>,
     pub port_values: &'a HashSet<String>,
     pub service_fp_values: &'a HashSet<String>,
@@ -222,6 +255,14 @@ pub(crate) fn assemble_truth_facts_typed(
         }
         if inputs.dns_values.contains(asset) {
             facts.push((asset.clone(), TECH_DNS));
+        }
+        // Host-aware 2c-3: per-asset IP-native (the SQL already restricts to
+        // IP/CIDR assets, so pushing is harmless on a domain that has none).
+        if inputs.rdns_values.contains(asset) {
+            facts.push((asset.clone(), TECH_RDNS));
+        }
+        if inputs.ipwhois_values.contains(asset) {
+            facts.push((asset.clone(), TECH_IPWHOIS));
         }
         if inputs.liveness_values.contains(asset) {
             facts.push((asset.clone(), TECH_EAS_LIVENESS));
@@ -289,6 +330,8 @@ pub async fn coverage_truth_facts(
         .await?
         .into_iter()
         .collect();
+    let rdns_values = fetch_values(pool, &build_rdns_values_sql(), org_id).await?;
+    let ipwhois_values = fetch_values(pool, &build_ipwhois_values_sql(), org_id).await?;
     let liveness_values = fetch_values(pool, &build_liveness_values_sql(), org_id).await?;
     let port_values = fetch_values(pool, &build_port_values_sql(), org_id).await?;
     let service_fp_values = fetch_values(pool, &build_service_fp_values_sql(), org_id).await?;
@@ -306,6 +349,8 @@ pub async fn coverage_truth_facts(
             has_subsidiary,
             subdomain_values: &subdomain_values,
             dns_values: &dns_values,
+            rdns_values: &rdns_values,
+            ipwhois_values: &ipwhois_values,
             liveness_values: &liveness_values,
             port_values: &port_values,
             service_fp_values: &service_fp_values,
@@ -334,6 +379,8 @@ mod tests {
             has_subsidiary: false,
             subdomain_values: empty,
             dns_values: empty,
+            rdns_values: empty,
+            ipwhois_values: empty,
             liveness_values: empty,
             port_values: empty,
             service_fp_values: empty,
@@ -390,6 +437,44 @@ mod tests {
         // 缺类型 ⇒ 当作非 IP，保留 CT（fail-safe，绝不少报）。
         let facts_untyped = assemble_truth_facts_typed(&assets, &[], &inputs);
         assert!(facts_untyped.contains(&("1.2.3.4".to_string(), TECH_CT)));
+    }
+
+    #[test]
+    fn rdns_values_sql_filters_ptr_and_ip_types() {
+        let sql = build_rdns_values_sql();
+        assert!(sql.contains("JOIN dns_records dr ON dr.target_id = t.id"));
+        assert!(sql.contains("dr.record_type = 'PTR'"));
+        assert!(sql.contains("t.target_type::text IN ('ip', 'ipv4'"));
+        assert!(sql.contains("t.scope::text = 'in'"));
+        assert!(sql.contains("($1 IS NULL OR t.organization_id = $1)"));
+    }
+
+    #[test]
+    fn ipwhois_values_sql_filters_nonempty_and_ip_types() {
+        let sql = build_ipwhois_values_sql();
+        assert!(sql.contains("t.ip_whois IS NOT NULL"));
+        assert!(sql.contains("t.ip_whois <> '{}'::jsonb"));
+        assert!(sql.contains("t.target_type::text IN ('ip', 'ipv4'"));
+        assert!(!sql.contains("jsonb_array_length"));
+    }
+
+    #[test]
+    fn assemble_projects_rdns_and_ipwhois_per_asset() {
+        let empty = subs(&[]);
+        let rdns = subs(&["1.2.3.4"]);
+        let ipw = subs(&["1.2.3.4"]);
+        let mut inputs = empty_inputs(&empty);
+        inputs.rdns_values = &rdns;
+        inputs.ipwhois_values = &ipw;
+        let assets = vec!["a.com".to_string(), "1.2.3.4".to_string()];
+        let types = vec!["domain".to_string(), "ip".to_string()];
+        let facts = assemble_truth_facts_typed(&assets, &types, &inputs);
+        assert!(facts.contains(&("1.2.3.4".to_string(), TECH_RDNS)));
+        assert!(facts.contains(&("1.2.3.4".to_string(), TECH_IPWHOIS)));
+        // domain has no rdns/ipwhois truth → not projected.
+        assert!(!facts
+            .iter()
+            .any(|(a, t)| a == "a.com" && (*t == TECH_RDNS || *t == TECH_IPWHOIS)));
     }
 
     #[test]
@@ -613,6 +698,8 @@ mod tests {
                 has_subsidiary: false,
                 subdomain_values: &HashSet::new(),
                 dns_values: &HashSet::new(),
+                rdns_values: &HashSet::new(),
+                ipwhois_values: &HashSet::new(),
                 liveness_values: &liveness,
                 port_values: &port,
                 service_fp_values: &service_fp,
@@ -647,6 +734,8 @@ mod tests {
                 has_subsidiary: true,
                 subdomain_values: &one,
                 dns_values: &one,
+                rdns_values: &one,
+                ipwhois_values: &one,
                 liveness_values: &one,
                 port_values: &one,
                 service_fp_values: &one,
@@ -665,6 +754,8 @@ mod tests {
                 ("a.com".to_string(), TECH_SUBSIDIARY),
                 ("a.com".to_string(), TECH_SUBDOMAIN),
                 ("a.com".to_string(), TECH_DNS),
+                ("a.com".to_string(), TECH_RDNS),
+                ("a.com".to_string(), TECH_IPWHOIS),
                 ("a.com".to_string(), TECH_EAS_LIVENESS),
                 ("a.com".to_string(), TECH_EAS_PORT),
                 ("a.com".to_string(), TECH_EAS_SERVICE_FP),

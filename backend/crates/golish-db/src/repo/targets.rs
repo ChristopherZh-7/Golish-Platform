@@ -559,6 +559,27 @@ pub async fn backfill_real_ip_from_dns(pool: &PgPool, project_path: Option<&str>
     Ok(res.rows_affected())
 }
 
+fn build_set_ip_whois_sql() -> String {
+    "UPDATE targets SET ip_whois = $1, updated_at = NOW() WHERE id = $2".to_string()
+}
+
+/// Host-aware coverage 2c-3 (design 2026-06-15-host-aware-coverage-2c3-ip-native):
+/// set a target's RIR/netblock IP-WHOIS (RDAP `/ip/`) JSON by id. No project
+/// scope — the caller owns the id (recon IP-WHOIS landing). Idempotent: re-running
+/// overwrites. Distinct from `organizations.whois` (domain RDAP, org-level).
+pub async fn set_ip_whois_by_id(
+    pool: &PgPool,
+    id: Uuid,
+    ip_whois: &serde_json::Value,
+) -> Result<()> {
+    sqlx::query(&build_set_ip_whois_sql())
+        .bind(ip_whois)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,6 +679,15 @@ mod tests {
         assert!(sql.contains("ORDER BY target_id, created_at"));
         assert!(sql.contains("t.real_ip = ''"));
         assert!(sql.contains("($1 IS NULL OR t.project_path = $1)"));
+    }
+
+    #[test]
+    fn set_ip_whois_sql_targets_ip_whois_column_by_id() {
+        // Host-aware coverage 2c-3: per-IP RIR WHOIS setter writes the ip_whois
+        // JSONB column, keyed by target id (caller owns the id).
+        let sql = build_set_ip_whois_sql();
+        assert!(sql.contains("UPDATE targets SET ip_whois = $1"));
+        assert!(sql.contains("WHERE id = $2"));
     }
 
     #[test]
