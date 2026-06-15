@@ -29,6 +29,20 @@
 
 ---
 
+### 2026-06-15 · Host-aware coverage 2c-3a 采集器（land_rdns + land_ip_whois，编译+回归绿）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「全部搞完」）
+
+- **本轮目标**：补 2c-3a 采集器（land_rdns/land_ip_whois），接入 land_target_intel_coverage hook，落 PTR + ip_whois 数据。
+- **改动（2 文件，已 commit 见下）**：
+  - `golish-recon-app/src/organization_recon/persistence.rs`：`land_rdns`（查 in-scope 裸 IP 无 PTR → `reverse_lookup_ptr` 经 **`dig -x` in spawn_blocking**（dep-free，缺 dig/无 PTR/超时优雅跳过）→ upsert PTR dns_records，键到 IP target）；`land_ip_whois`（查 in-scope IP/CIDR 空 ip_whois → RDAP `https://rdap.org/ip/{ip}` reqwest → set_ip_whois_by_id）；接入 `land_target_intel_coverage` + `CoverageLandingSummary` +rdns/ip_whois + 两处 landing 日志。
+  - `golish-recon-app/src/asset_intel/agent_intel.rs`：enrich 路径日志加 rdns/ip_whois 字段（对称）。
+- **关键决策**：反向 DNS 用 `dig -x`（spawn_blocking + std::process，**无新 dep / 无 tokio process feature**，避免多 agent 改 workspace Cargo.lock 冲突；本平台 dig 是一等工具）。CIDR 不做 PTR（netblock 无单一 PTR），land_rdns 仅处理 `parse::<IpAddr>` 成功的裸 IP；land_ip_whois 对 IP+CIDR（RDAP 用网络地址）。
+- **验证（有据）**：`cargo nextest -p golish-recon-app organization_recon` → **52/52 passed**（/tmp/recon-2c3a-collectors.log EXIT=0，编译通 + 无回归）。ReadLints 2 文件无错。
+- **行为影响**：recon 时新增对 in-scope IP 的被动 PTR + RDAP 查询（仅 in-scope、bounded≤128、best-effort 跳过失败，仿 land_dns_records/land_ct_and_whois）。**gate 仍 inert**（baseline 未翻，2c-3b 才要求）。
+- **未做 / 下一步**：2c-3b baseline 翻转（technique_resolver + target_intel.json expected/authoritative/coverage_axis + technique_taxonomy + 单测）；**活体 --stage-run parity（设计 §6，需 app，本 env 阻塞）+ 用户最终 sign-off** 才可依赖。未 push。
+- **已参考技能**：无（executing-plans + verification 跑测拿证据[52/52]；采集器网络 I/O 非单测，靠编译+回归+活体；未 Read 本地 skill raw；mcp-server/role-skills/ 为空 Glob 0）。
+
+---
+
 ### 2026-06-15 · Host-aware coverage 2c-3a 存储+truth（迁移已批准，TDD 绿，inert）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「实现 2c-3a（批准迁移）」）
 
 - **本轮目标**：按 plan 2c-3a 落 IP 原生技术的**存储 + truth 侧**（采集器留下一增量）。用户明确批准 `targets.ip_whois` 迁移（§2.7 sign-off）。

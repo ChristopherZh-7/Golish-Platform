@@ -237,6 +237,8 @@ pub async fn run_passive_intel(
                     dns_records = landed.dns_records,
                     certificates = landed.certificates,
                     whois = landed.whois,
+                    rdns = landed.rdns,
+                    ip_whois = landed.ip_whois,
                     "target_intel coverage landing (agent path)"
                 );
             }

@@ -152,6 +152,8 @@ pub(crate) async fn persist_normalized_records(
         dns_records = landed.dns_records,
         certificates = landed.certificates,
         whois = landed.whois,
+        rdns = landed.rdns,
+        ip_whois = landed.ip_whois,
         "target_intel coverage landing (org-recon path)"
     );
 
@@ -165,6 +167,9 @@ pub(crate) struct CoverageLandingSummary {
     pub dns_records: usize,
     pub certificates: usize,
     pub whois: bool,
+    /// Host-aware 2c-3: reverse-DNS (PTR) rows + IP-WHOIS rows landed for IP assets.
+    pub rdns: usize,
+    pub ip_whois: usize,
 }
 
 /// Land one passive-intel collection's results into the business tables the
@@ -211,11 +216,31 @@ pub(crate) async fn land_target_intel_coverage(
                 );
                 (0, false)
             });
+    let rdns = land_rdns(pool, organization).await.unwrap_or_else(|error| {
+        tracing::warn!(
+            organization_id = %organization.id,
+            %error,
+            "reverse-DNS landing failed (recon persistence already committed)"
+        );
+        0
+    });
+    let ip_whois = land_ip_whois(pool, organization)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                organization_id = %organization.id,
+                %error,
+                "IP-WHOIS landing failed (recon persistence already committed)"
+            );
+            0
+        });
     CoverageLandingSummary {
         subdomains,
         dns_records,
         certificates,
         whois,
+        rdns,
+        ip_whois,
     }
 }
 
@@ -573,6 +598,151 @@ async fn land_ct_and_whois(
             .await?;
     }
     Ok((ct_landed, whois_landed))
+}
+
+/// Reverse-DNS (PTR) for in-scope **IP** targets with no PTR row yet — the rows
+/// the host-aware `target_intel` RDNS coverage cell reads
+/// (`coverage_truth::build_rdns_values_sql`). Best-effort via `dig -x` in a
+/// blocking task (no external-tool guarantee: a missing `dig` / no PTR / timeout
+/// is skipped, never fatal). Bounded. (design 2026-06-15-host-aware-coverage-2c3
+/// §4.1.) CIDR/range values are skipped — a netblock has no single PTR.
+async fn land_rdns(
+    pool: &sqlx::PgPool,
+    organization: &golish_db::models::Organization,
+) -> Result<usize, GolishError> {
+    const MAX_RESOLVE: i64 = 128;
+    let targets: Vec<(Uuid, String)> = sqlx::query_as(
+        r#"SELECT t.id, t.value FROM targets t
+           WHERE t.organization_id = $1
+             AND t.scope::text = 'in'
+             AND t.target_type::text IN ('ip', 'ipv4', 'ipv6', 'ip_address')
+             AND NOT EXISTS (
+                 SELECT 1 FROM dns_records dr
+                 WHERE dr.target_id = t.id AND dr.record_type = 'PTR')
+           ORDER BY t.updated_at DESC
+           LIMIT $2"#,
+    )
+    .bind(organization.id)
+    .bind(MAX_RESOLVE)
+    .fetch_all(pool)
+    .await?;
+    if targets.is_empty() {
+        return Ok(0);
+    }
+    let mut landed = 0usize;
+    for (target_id, value) in targets {
+        let Ok(ip) = value.parse::<std::net::IpAddr>() else {
+            continue;
+        };
+        let Some(hostname) = reverse_lookup_ptr(ip).await else {
+            continue;
+        };
+        if golish_db::repo::dns_records::upsert(
+            pool,
+            target_id,
+            organization.project_path.as_str(),
+            "PTR",
+            &value,
+            &hostname,
+            "resolver",
+        )
+        .await
+        .is_ok()
+        {
+            landed += 1;
+        }
+    }
+    Ok(landed)
+}
+
+/// Run `dig -x <ip> +short` (blocking, off the async runtime) and return the
+/// first PTR hostname (trailing dot stripped). `None` when `dig` is absent,
+/// errors, times out, or there is no PTR record.
+async fn reverse_lookup_ptr(ip: std::net::IpAddr) -> Option<String> {
+    let ip_str = ip.to_string();
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("dig")
+            .args(["-x", &ip_str, "+short", "+time=3", "+tries=1"])
+            .output()
+    })
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.trim_end_matches('.').to_string())
+        .filter(|host| !host.is_empty())
+}
+
+/// RIR/netblock IP-WHOIS (RDAP `/ip/`) for in-scope IP/CIDR targets with no
+/// `ip_whois` yet — the column the host-aware `target_intel` IPWHOIS coverage cell
+/// reads (`coverage_truth::build_ipwhois_values_sql`). HTTP, bounded, best-effort:
+/// only fills empties; failures skipped, never fatal. (design 2026-06-15-host-
+/// aware-coverage-2c3 §4.2.) Returns rows landed.
+async fn land_ip_whois(
+    pool: &sqlx::PgPool,
+    organization: &golish_db::models::Organization,
+) -> Result<usize, GolishError> {
+    const MAX_LOOKUP: i64 = 128;
+    let targets: Vec<(Uuid, String)> = sqlx::query_as(
+        r#"SELECT t.id, t.value FROM targets t
+           WHERE t.organization_id = $1
+             AND t.scope::text = 'in'
+             AND t.target_type::text IN
+                 ('ip', 'ipv4', 'ipv6', 'ip_address', 'cidr', 'range', 'netblock')
+             AND (t.ip_whois IS NULL OR t.ip_whois = 'null'::jsonb OR t.ip_whois = '{}'::jsonb)
+           ORDER BY t.updated_at DESC
+           LIMIT $2"#,
+    )
+    .bind(organization.id)
+    .bind(MAX_LOOKUP)
+    .fetch_all(pool)
+    .await?;
+    if targets.is_empty() {
+        return Ok(0);
+    }
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("golish-recon/1.0")
+        .build()
+    else {
+        return Ok(0);
+    };
+    let mut landed = 0usize;
+    for (target_id, value) in targets {
+        // RDAP keys on the IP (or a CIDR's network address).
+        let query = value.split('/').next().unwrap_or(value.as_str());
+        if query.parse::<std::net::IpAddr>().is_err() {
+            continue;
+        }
+        let url = format!("https://rdap.org/ip/{query}");
+        let Ok(resp) = client.get(&url).send().await else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(text) = resp.text().await else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if json.is_object()
+            && !json_value_is_empty(&json)
+            && golish_db::repo::targets::set_ip_whois_by_id(pool, target_id, &json)
+                .await
+                .is_ok()
+        {
+            landed += 1;
+        }
+    }
+    Ok(landed)
 }
 
 fn target_type_for_record(
