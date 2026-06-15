@@ -308,4 +308,22 @@ impl GolishDbRepoProvider {
         }
         Ok(types)
     }
+
+    /// 2c-1 (设计 host-aware-coverage-2c §4.1): in-scope `(value, targets.type)`
+    /// pairs for the harness gate's **authoritative** asset classification.
+    /// Reuses the recon targets port (mirrors [`Self::in_scope_target_types_impl`];
+    /// no new SQL). `org_id` narrowing deferred (chat sessions carry no org
+    /// binding) — a superset map is harmless: `coverage_complete` only looks up
+    /// its org-narrowed asset axis, and any missing entry falls back to value
+    /// inference (2a/2b).
+    pub(super) async fn in_scope_typed_assets_impl(
+        &self,
+        _org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let targets = self.recon_targets.in_scope_targets(None).await?;
+        Ok(targets
+            .into_iter()
+            .map(|t| (t.value, t.target_type.as_str().to_string()))
+            .collect())
+    }
 }

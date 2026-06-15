@@ -193,6 +193,10 @@ pub struct OnFail {
 #[derive(Debug, Clone, Default)]
 pub struct GateContext {
     pub in_scope_assets: Option<Vec<String>>,
+    /// Host-aware coverage 2c（设计 2026-06-15-host-aware-coverage-2c §4.1）：value →
+    /// `targets.type`，让 `coverage_complete` 按**权威**类型给资产分类（回退
+    /// `from_value` → `Other`）。`None` = 回退按值推断（2a/2b 行为，逐字节一致）。
+    pub asset_types: Option<std::collections::HashMap<String, String>>,
     pub expected_techniques: Option<Vec<String>>,
     /// PR3 (设计 2026-06-11-coverage-auto-derive §5.2) · 证据账本投影事实：
     /// 从 `audit_log` 三列 (`evidence_asset/technique/outcome`) 注入的只读三元组。
@@ -389,7 +393,18 @@ fn coverage_complete(
         // every asset (byte-identical to before). `Other`/unknown keeps the full
         // list (fail-safe: an unclassified asset is never under-checked).
         let asset_techniques: Vec<&String> = if spec.host_aware_coverage {
-            let class = crate::harness::technique_resolver::AssetClass::from_value(asset);
+            // 2c-1 (设计 host-aware-coverage-2c §4.1): classify from the injected
+            // authoritative `targets.type` when present; else fall back to value
+            // inference (2a/2b), then `Other` (full set). `asset` is `&&str`, so
+            // `*asset` is the `&str` map key.
+            let class = ctx
+                .asset_types
+                .as_ref()
+                .and_then(|m| m.get(*asset))
+                .map(|ty| crate::harness::technique_resolver::AssetClass::from_target_type(ty))
+                .unwrap_or_else(|| {
+                    crate::harness::technique_resolver::AssetClass::from_value(asset)
+                });
             techniques
                 .iter()
                 .filter(|t| {
@@ -1149,6 +1164,7 @@ mod tests {
     fn projection_ctx(techs: &[&str], facts: Option<Vec<EvidenceFact>>) -> GateContext {
         GateContext {
             in_scope_assets: Some(vec!["a".to_string()]),
+            asset_types: None,
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: facts,
         }
@@ -1188,6 +1204,7 @@ mod tests {
         }
         let ctx = GateContext {
             in_scope_assets: Some(vec!["a.com".to_string(), "1.2.3.4".to_string()]),
+            asset_types: None,
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
         };
@@ -1205,6 +1222,42 @@ mod tests {
         assert!(
             eval_with_context(&d, &spec_on, &[evidence_derive_rule(None)], &ctx)[0].is_pass(),
             "host-aware on: IP no longer asked for SUBDOMAIN/DNS/CT → PASS"
+        );
+    }
+
+    #[test]
+    fn host_aware_uses_authoritative_type_over_value() {
+        // 2c-1（设计 host-aware-coverage-2c §4.1）：值像 IP、但权威类型是 `domain` 的
+        // 资产，必须仍核全 6 项——权威类型压过 from_value（后者会按值误判成 IP 而放松）。
+        let techs = [
+            "GOLISH-INTEL-DNS",
+            "GOLISH-INTEL-SUBDOMAIN",
+            "GOLISH-INTEL-CT",
+            "GOLISH-INTEL-WHOIS",
+            "GOLISH-INTEL-ASN",
+            "GOLISH-INTEL-OSINT",
+        ];
+        let asset = "1.2.3.4"; // 值看着像 IP …
+        // 只有 IP 适用子集（WHOIS/ASN/OSINT）有 Found；SUBDOMAIN/DNS/CT 缺。
+        let facts: Vec<EvidenceFact> =
+            ["GOLISH-INTEL-WHOIS", "GOLISH-INTEL-ASN", "GOLISH-INTEL-OSINT"]
+                .iter()
+                .map(|t| fact(asset, t, EvidenceOutcome::Found, 1))
+                .collect();
+        let mut asset_types = std::collections::HashMap::new();
+        asset_types.insert(asset.to_string(), "domain".to_string()); // … 但权威类型是域名
+        let ctx = GateContext {
+            in_scope_assets: Some(vec![asset.to_string()]),
+            asset_types: Some(asset_types),
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: Some(facts),
+        };
+        let d = deliverable_with_coverage(vec![]);
+        // host-aware ON：权威类型=域名 ⇒ 核全 6，缺 3 → BLOCK（若只按 from_value 会判 IP 而 PASS）。
+        let spec_on = target_intel_spec(true);
+        assert!(
+            !eval_with_context(&d, &spec_on, &[evidence_derive_rule(None)], &ctx)[0].is_pass(),
+            "authoritative type=domain holds the IP-looking asset to all 6 → BLOCK"
         );
     }
 

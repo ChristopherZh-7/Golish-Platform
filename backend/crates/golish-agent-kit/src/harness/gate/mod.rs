@@ -146,6 +146,8 @@ pub fn validate_stage_gate_with_context(
     // 注入 gate（覆盖 spec 静态值）；ctx 显式指定则尊重 ctx。资产维度透传 ctx（①）。
     let effective_ctx = rule_engine::GateContext {
         in_scope_assets: ctx.in_scope_assets.clone(),
+        // Host-aware coverage 2c：权威资产类型原样透传给规则求值（None = 按值推断）。
+        asset_types: ctx.asset_types.clone(),
         expected_techniques: ctx.expected_techniques.clone().or_else(|| {
             skeleton
                 .map(|s| s.expected_techniques.clone())

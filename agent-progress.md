@@ -29,6 +29,23 @@
 
 ---
 
+### 2026-06-15 · Host-aware coverage 2c-1 实现（权威类型轴，TDD 绿）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「开干 2c-1」）
+
+- **本轮目标**：按 `docs/superpowers/plans/2026-06-15-host-aware-coverage-2c.md` 实现 2c-1（authoritative type axis），executing-plans + TDD。
+- **改动（6 文件，已 commit 见下）**：
+  - `golish-agent-kit/src/harness/gate/rule_engine.rs`：`GateContext` 加 `asset_types: Option<HashMap<String,String>>`（value→type）；`coverage_complete` 改用**权威** class（`ctx.asset_types.get(asset)→AssetClass::from_target_type` 回退 `from_value` 回退 `Other` fail-safe 链）替代 2a/2b 的纯 `from_value`；新测 `host_aware_uses_authoritative_type_over_value`。
+  - `golish-agent-kit/src/harness/gate/mod.rs`：`effective_ctx` 透传 `asset_types`。
+  - `golish-agent-kit/src/db_traits/repo.rs`：trait 加 `in_scope_typed_assets(org_id)->Vec<(value,type)>`（default empty = fail-safe 回退按值推断）。
+  - `golish-agent-app/src/ai/db_bridge/recon.rs` + `mod.rs`：`in_scope_typed_assets_impl`（**复用 recon port `in_scope_targets`，仿 `in_scope_target_types_impl`，无新 SQL**）+ trait delegate。
+  - `golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs`：`fetch_in_scope_typed_assets_for_gate` + `apply_harness_gate_hook` 加 `asset_types` 参数（2 真实调用点算 + 注入 GateContext；4 测点补 None）。
+- **实现偏差（优于计划）**：计划 Task 1.1 拟在 golish-db 加新 typed SQL；改为**复用既有 recon port `in_scope_targets`**（与 `in_scope_target_types_impl` 同源，DRY、零新 SQL）。org 收窄沿用该路径既有「deferred」先例（超集 map 无害：coverage_complete 只查其 org 收窄的资产轴，缺项回退 from_value）。
+- **TDD（先红后绿·有据）**：新测先红（/tmp/ak-2c1-red.log：from_value 把值像 IP 的资产误判 Ip→只核 3→PASS，断言 `!is_pass` 失败）→ 实现权威 class → 绿（/tmp/ak-2c1-green.log 28/28）。回归 `nextest -p golish-agent-kit` **635/635**（/tmp/2c1-final.log KIT=0）；`cargo check -p golish-agent-app` **exit 0**（APP=0，impl+hook 编译通）。ReadLints 4 文件无错。
+- **行为影响（诚实）**：2c-1 让 hook 给已开 flag 的 target_intel 注入权威 asset_types → coverage_complete 改按权威类型分类。**常规资产 authoritative==from_value（零变更）**，仅「类型与值不符」的边缘 case（如 typed=domain 但 value 是 IP 字面量）被纠正。单测已证逻辑；**活体 --stage-run PASS/BLOCK parity 未跑**（设计 §6 建议上线前复核）。
+- **未做 / 下一步**：2c-2（assemble_truth_facts 按类型不给 IP 盖 CT）；2c-3（IP 原生技术，Task 3.0 调研 spike → 单独 spec）；活体 parity；全量 precommit。未 push。
+- **已参考技能**：无（按 executing-plans 逐任务 + TDD 先红后绿 + verification-before-completion 跑测拿证据[红 1/绿 635 + app check]执行；本轮未 Read 本地 skill raw；`mcp-server/role-skills/` 为空 Glob 0）。
+
+---
+
 ### 2026-06-15 · Host-aware coverage Phase 2c 规划（design + plan，零代码）（BaJie MCP-agent-4 · DISPATCH off · 同会话续 · 用户「规划 2c（写 design/plan）」）
 
 - **本轮目标**：用户问「2c 是啥」答疑后让我规划 2c。用 writing-plans 技能（**已 Read** `.cursor/skills/writing-plans/SKILL.md`）写 design + plan，**零生产代码**。

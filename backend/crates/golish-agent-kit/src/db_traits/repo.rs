@@ -169,6 +169,18 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Host-aware coverage 2c-1 (设计 2026-06-15-host-aware-coverage-2c §4.1):
+    /// in-scope `(value, targets.type)` pairs so `coverage_complete` can classify
+    /// each asset by its **authoritative** type (not just value inference).
+    /// Default empty ⇒ the gate falls back to value inference (2a/2b behavior).
+    async fn in_scope_typed_assets(
+        &self,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let _ = org_id;
+        Ok(Vec::new())
+    }
+
     /// In-scope recon targets as JSON rows (`target_id` / `value` / `type`) so an
     /// agent tool can enumerate the recon-collected assets, then drill into each
     /// via [`Self::query_target_data`]. Default empty (test doubles); the app

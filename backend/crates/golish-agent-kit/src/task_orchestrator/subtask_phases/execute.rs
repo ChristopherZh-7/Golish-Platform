@@ -242,6 +242,7 @@ impl TaskOrchestrator {
                     }
 
                     let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned).await;
+                    let asset_types = self.fetch_in_scope_typed_assets_for_gate(planned).await;
                     let in_scope_target_types =
                         self.fetch_in_scope_target_types_for_gate(planned).await;
                     let evidence_facts = self
@@ -255,6 +256,7 @@ impl TaskOrchestrator {
                         exec_ctx,
                         agent_result.content,
                         in_scope_assets,
+                        asset_types,
                         in_scope_target_types,
                         evidence_facts,
                         self.harness_subsidiary_policy.map(|p| p.threshold_pct),
@@ -415,6 +417,7 @@ impl TaskOrchestrator {
         // Loop exhausted: run the gate once on the fallback content (no further
         // retry possible) and drive the transition on whatever it decides.
         let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned).await;
+        let asset_types = self.fetch_in_scope_typed_assets_for_gate(planned).await;
         let in_scope_target_types = self.fetch_in_scope_target_types_for_gate(planned).await;
         let evidence_facts = self
             .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref())
@@ -425,6 +428,7 @@ impl TaskOrchestrator {
             exec_ctx,
             fallback,
             in_scope_assets,
+            asset_types,
             in_scope_target_types,
             evidence_facts,
             self.harness_subsidiary_policy.map(|p| p.threshold_pct),
@@ -1218,6 +1222,30 @@ impl TaskOrchestrator {
         }
     }
 
+    /// 2c-1 (设计 2026-06-15-host-aware-coverage-2c §4.1): fetch authoritative
+    /// `value -> targets.type` for the coverage gate's per-asset classification.
+    /// `None` when the subtask carries no stage, the DB has no typed assets, or
+    /// the lookup errors — `coverage_complete` then falls back to value inference
+    /// (2a/2b), so this is purely additive (never relaxes the gate on failure).
+    async fn fetch_in_scope_typed_assets_for_gate(
+        &self,
+        planned: &PlannedSubtask,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        planned.harness_stage.as_ref()?;
+        match self.repo.in_scope_typed_assets(self.harness_org_id).await {
+            Ok(v) if !v.is_empty() => Some(v.into_iter().collect()),
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!(
+                    target: "harness::hook",
+                    error = %e,
+                    "in-scope typed-asset lookup failed; coverage gate falls back to value-inferred class"
+                );
+                None
+            }
+        }
+    }
+
     /// P3 ③ seam: fetch the distinct `targets.type` values of the in-scope assets
     /// so the coverage gate can derive **dynamic** expected techniques. Returns an
     /// empty vec when the subtask carries no stage, the DB has none, or the lookup
@@ -1793,6 +1821,7 @@ fn apply_harness_gate_hook(
     exec_ctx: &ExecutionContext,
     content: String,
     in_scope_assets: Option<Vec<String>>,
+    asset_types: Option<std::collections::HashMap<String, String>>,
     in_scope_target_types: Vec<String>,
     evidence_facts: Option<Vec<crate::harness::gate::rule_engine::EvidenceFact>>,
     subsidiary_threshold: Option<u8>,
@@ -1959,6 +1988,7 @@ fn apply_harness_gate_hook(
     }
     let gate_ctx = crate::harness::GateContext {
         in_scope_assets,
+        asset_types,
         expected_techniques,
         evidence_facts,
     };
@@ -2809,7 +2839,7 @@ mod harness_gate_hook_tests {
         let ctx = ExecutionContext::default();
         let content = "anything".to_string();
         assert_eq!(
-            apply_harness_gate_hook(&p, &ctx, content.clone(), None, vec![], None, None).0,
+            apply_harness_gate_hook(&p, &ctx, content.clone(), None, None, vec![], None, None).0,
             content
         );
     }
@@ -2820,7 +2850,7 @@ mod harness_gate_hook_tests {
         let ctx = ExecutionContext::default();
         let content = "ignore me".to_string();
         assert_eq!(
-            apply_harness_gate_hook(&p, &ctx, content.clone(), None, vec![], None, None).0,
+            apply_harness_gate_hook(&p, &ctx, content.clone(), None, None, vec![], None, None).0,
             content
         );
     }
@@ -3264,6 +3294,7 @@ mod missing_deliverable_fail_closed_tests {
                 &ctx,
                 "prose".to_string(),
                 None,
+                None,
                 vec![],
                 Some(facts),
                 None,
@@ -3291,7 +3322,7 @@ mod missing_deliverable_fail_closed_tests {
         let p = planned(StageKind::Scoping);
         let ctx = ExecutionContext::default();
         let (out, outcome) =
-            apply_harness_gate_hook(&p, &ctx, "prose".to_string(), None, vec![], None, None);
+            apply_harness_gate_hook(&p, &ctx, "prose".to_string(), None, None, vec![], None, None);
         let o = outcome.expect("stage-tagged unparseable content must produce an outcome");
         assert!(!o.gate_allowed, "confirm-only missing must BLOCK too");
         assert!(o.missing_deliverable);

@@ -296,6 +296,13 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.in_scope_target_types_impl(org_id).await
     }
 
+    async fn in_scope_typed_assets(
+        &self,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        self.in_scope_typed_assets_impl(org_id).await
+    }
+
     async fn db_truth_facts(
         &self,
         org_id: Option<Uuid>,
