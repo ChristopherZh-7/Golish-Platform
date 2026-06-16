@@ -175,6 +175,11 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Persist this run's transcript exactly where the GUI / `--replay` look.
     let transcripts_dir = golish_events::op_trace::resolve_transcript_base(Some(&workspace));
+    // Mirror the GUI session init: register the active transcripts base so the
+    // per-run tracing layer (telemetry::session_log) co-locates this run's
+    // `run.log` next to its `transcript.json` instead of falling back to
+    // `~/.golish/transcripts` (the home default when no base is registered).
+    golish_events::op_trace::set_active_transcript_base(transcripts_dir.clone());
     match golish_events::TranscriptWriter::new(&transcripts_dir, &session_id).await {
         Ok(writer) => bridge.set_transcript_writer(writer, transcripts_dir.clone()),
         Err(e) => tracing::warn!("stage-run: transcript writer init failed: {e}"),
