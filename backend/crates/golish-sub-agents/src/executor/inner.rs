@@ -30,7 +30,7 @@ use golish_llm_providers::ModelCapabilities;
 use super::chain_persist::{maybe_restore_chain, persist_chain};
 use super::final_summary::run_final_summary;
 use super::prompt_assembly::assemble_effective_system_prompt;
-use super::response_parsing::dispatch_tool_calls;
+use super::response_parsing::{dispatch_tool_calls, StageStallGuard, STAGE_STALL_THRESHOLD};
 use super::stream_processing::process_llm_stream;
 use super::tool_setup::build_tool_definitions;
 
@@ -143,6 +143,10 @@ where
 
     let mut accumulated_response = String::new();
     let mut iteration = 0;
+    // Stage-stall circuit breaker: a weak worker can re-submit the SAME stage
+    // gate BLOCK every turn until it burns the whole iteration cap (observed:
+    // 22× "never attempted" on one org). Bail after N identical blocks.
+    let mut stall = StageStallGuard::default();
 
     loop {
         iteration += 1;
@@ -342,6 +346,29 @@ where
             if let Some(resp) = dispatch.barrier_response {
                 accumulated_response = resp;
             }
+            break;
+        }
+
+        // Stage-stall circuit breaker: if submit_stage_deliverable returned the
+        // SAME gate BLOCK STAGE_STALL_THRESHOLD times in a row, the worker is
+        // making no progress — stop and hand back to the orchestrator instead of
+        // burning the rest of the iteration cap. The per-org gate is adjudicated
+        // from DB truth regardless, so bailing early only saves wasted LLM turns.
+        let streak = stall.record(dispatch.stage_block_signature.clone());
+        if streak >= STAGE_STALL_THRESHOLD {
+            let reason = dispatch.stage_block_signature.unwrap_or_default();
+            tracing::warn!(
+                target: "harness::stage_stall",
+                agent_id = %agent_id,
+                streak,
+                reason = %reason,
+                "stage submit stalled on an identical BLOCK; breaking sub-agent loop"
+            );
+            accumulated_response = format!(
+                "[stage-stall circuit-breaker] The stage gate returned the same BLOCK {streak}× \
+                 with no progress, so this worker stopped re-submitting and handed back to the \
+                 orchestrator. Last blocking reason: {reason}"
+            );
             break;
         }
 

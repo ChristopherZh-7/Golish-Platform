@@ -26,6 +26,66 @@ pub(super) struct ToolDispatchResult {
     pub barrier_hit: bool,
     /// When the barrier tool is hit, this holds the response text.
     pub barrier_response: Option<String>,
+    /// Stage-gate block signature of a `submit_stage_deliverable` call in this
+    /// batch (its joined `needs_fix` reasons), or `None` if no submit BLOCKed.
+    /// The loop tracks consecutive identical values to break a stuck re-submit.
+    pub stage_block_signature: Option<String>,
+}
+
+/// Bail-out threshold for the stage submit loop: after this many *consecutive*
+/// identical gate BLOCKs the sub-agent stops re-submitting and hands back to the
+/// orchestrator instead of burning its whole iteration cap. Observed failure:
+/// one per-org recon worker re-submitted the SAME "never attempted" block 22×
+/// up to its 40-iteration cap (a wasted ~20 LLM turns per org).
+pub(super) const STAGE_STALL_THRESHOLD: usize = 3;
+
+/// Extract a stable block signature from a tool result, or `None` when it is not
+/// a stage-gate BLOCK. Only `submit_stage_deliverable` with `status=="needs_fix"`
+/// counts; the signature is its joined `reasons` so two identical blocks compare
+/// equal across iterations.
+pub(super) fn stage_block_signature(tool_name: &str, result: &serde_json::Value) -> Option<String> {
+    if tool_name != "submit_stage_deliverable" {
+        return None;
+    }
+    if result.get("status").and_then(|s| s.as_str()) != Some("needs_fix") {
+        return None;
+    }
+    let joined = result
+        .get("reasons")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        })
+        .unwrap_or_default();
+    Some(joined)
+}
+
+/// Tracks consecutive identical stage-gate block signatures across loop
+/// iterations. [`record`](StageStallGuard::record) returns how many times the
+/// current signature has now repeated in a row; a *different* signature restarts
+/// the streak, and `None` (no block this turn) leaves it unchanged — an
+/// identical block re-seen after some intervening work is still a stall.
+#[derive(Default)]
+pub(super) struct StageStallGuard {
+    last: Option<String>,
+    streak: usize,
+}
+
+impl StageStallGuard {
+    pub(super) fn record(&mut self, sig: Option<String>) -> usize {
+        if let Some(s) = sig {
+            if self.last.as_deref() == Some(s.as_str()) {
+                self.streak += 1;
+            } else {
+                self.last = Some(s);
+                self.streak = 1;
+            }
+        }
+        self.streak
+    }
 }
 
 /// Q3 ③ · Tag each tool in a `pentest_list_tools` result with `stage_allowed`
@@ -107,6 +167,9 @@ where
     let mut tool_results: Vec<UserContent> = vec![];
     let mut barrier_hit = false;
     let mut barrier_response: Option<String> = None;
+    // Last `submit_stage_deliverable` BLOCK signature seen this batch (for the
+    // loop's stage-stall circuit breaker). Last write wins (one submit/turn).
+    let mut last_block_sig: Option<String> = None;
 
     for tool_call in tool_calls {
         let tool_name = &tool_call.function.name;
@@ -499,6 +562,12 @@ where
             }
         }
 
+        // Stage-stall circuit breaker: record a submit_stage_deliverable BLOCK so
+        // the loop can bail after STAGE_STALL_THRESHOLD identical ones.
+        if let Some(sig) = stage_block_signature(tool_name, &result_value) {
+            last_block_sig = Some(sig);
+        }
+
         if success && (tool_name == "run_pty_cmd" || tool_name == "run_command") {
             if let Some(hook) = ctx.post_shell_hook.as_ref() {
                 let cmd = result_value
@@ -578,6 +647,7 @@ where
         tool_results,
         barrier_hit,
         barrier_response,
+        stage_block_signature: last_block_sig,
     }
 }
 
@@ -630,5 +700,72 @@ mod tests {
         annotate_list_tools_with_guard(&mut v, &guard);
         assert_eq!(v["error"], "x");
         assert!(v["stage_allowed_tools"].as_array().unwrap().is_empty());
+    }
+
+    // ── stage-stall circuit breaker (2026-06-16) ────────────────────────────
+
+    #[test]
+    fn block_signature_only_for_submit_needs_fix() {
+        use super::stage_block_signature;
+        // submit_stage_deliverable + needs_fix → joined reasons.
+        assert_eq!(
+            stage_block_signature(
+                "submit_stage_deliverable",
+                &serde_json::json!({ "status": "needs_fix", "reasons": ["a", "b"] }),
+            ),
+            Some("a | b".to_string())
+        );
+        // accepted (or any non-needs_fix) → not a block.
+        assert_eq!(
+            stage_block_signature(
+                "submit_stage_deliverable",
+                &serde_json::json!({ "status": "accepted" }),
+            ),
+            None
+        );
+        // needs_fix without a reasons array → empty signature (still a block).
+        assert_eq!(
+            stage_block_signature(
+                "submit_stage_deliverable",
+                &serde_json::json!({ "status": "needs_fix" }),
+            ),
+            Some(String::new())
+        );
+        // a different tool never counts, even with a needs_fix-shaped body.
+        assert_eq!(
+            stage_block_signature(
+                "pentest_run",
+                &serde_json::json!({ "status": "needs_fix", "reasons": ["a"] }),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn stall_guard_counts_consecutive_identical_blocks() {
+        use super::{StageStallGuard, STAGE_STALL_THRESHOLD};
+        let mut g = StageStallGuard::default();
+        // First two identical blocks build the streak below the threshold.
+        assert_eq!(g.record(Some("R".into())), 1);
+        assert_eq!(g.record(Some("R".into())), 2);
+        // Driving it up to the threshold returns exactly the bail-out count.
+        let mut streak = 2;
+        while streak < STAGE_STALL_THRESHOLD {
+            streak = g.record(Some("R".into()));
+        }
+        assert_eq!(streak, STAGE_STALL_THRESHOLD);
+    }
+
+    #[test]
+    fn stall_guard_resets_on_different_and_holds_on_none() {
+        use super::StageStallGuard;
+        let mut g = StageStallGuard::default();
+        assert_eq!(g.record(Some("R".into())), 1);
+        assert_eq!(g.record(Some("R".into())), 2);
+        // a different block restarts the streak at 1.
+        assert_eq!(g.record(Some("R2".into())), 1);
+        // a non-block turn (None) leaves the streak unchanged.
+        assert_eq!(g.record(None), 1);
+        assert_eq!(g.record(Some("R2".into())), 2);
     }
 }
