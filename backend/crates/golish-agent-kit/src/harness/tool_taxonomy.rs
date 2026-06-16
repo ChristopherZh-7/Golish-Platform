@@ -49,6 +49,18 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
         // whois / ASN lookups are zero-touch (query the registrar/RIR, not the
         // target's own hosts) → a passive target_intel technique.
         "whois" | "asn" | "whois-asn" => ("recon", "whois"),
+        // ctfr queries certificate-transparency logs (crt.sh) — zero-touch on the
+        // target, a passive target_intel technique. Dedicated `ct` subcategory so
+        // its evidence projects to GOLISH-INTEL-CT (evidence_facts.rs) and the
+        // stage's `recon/ct` selector resolves to a concrete runnable tool (the
+        // gap that left every CT coverage cell permanently "never attempted").
+        "ctfr" => ("recon", "ct"),
+        // asnmap resolves a domain/IP/org into its ASN + netblock ranges via
+        // public RIR data — zero-touch on the target. Dedicated `asn` subcategory
+        // so its evidence projects to GOLISH-INTEL-ASN and the stage's `recon/asn`
+        // selector resolves to a runnable tool (the `asn` alias above maps to
+        // recon/whois, so the ASN column otherwise had no producer).
+        "asnmap" => ("recon", "asn"),
         "enscan_go" | "enscan" | "0.zone" | "0zone" | "zero-zone" => ("recon", "osint"),
         // Passive OSINT / leak-hunting / cloud-asset discovery. All ship in
         // `resources/toolsconfig/*.json` as category=recon subcategory=osint
@@ -108,6 +120,8 @@ const CANONICAL_TOOLS: &[&str] = &[
     "gau",
     "waybackurls",
     "whois",
+    "ctfr",
+    "asnmap",
     "enscan_go",
     "gowitness",
     // web
@@ -572,6 +586,8 @@ mod tests {
             "gau",
             "waybackurls",
             "whois",
+            "ctfr",
+            "asnmap",
             "enscan_go",
         ] {
             assert!(names.contains(&must), "{must} must be listed: {names:?}");

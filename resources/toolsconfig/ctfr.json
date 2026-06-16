@@ -1,0 +1,68 @@
+{
+  "tool": {
+    "id": "ctfr",
+    "name": "ctfr",
+    "description": "Subdomain enumeration via Certificate Transparency logs (crt.sh). Zero-touch on the target — queries public CT logs, so it is a passive target_intel (recon/ct) technique.",
+    "executable": "ctfr",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "ct",
+    "tier": "recommended",
+    "pentestPhase": ["recon"],
+    "tags": ["recon", "ct", "certificate-transparency", "subdomain", "passive"],
+    "install": {
+      "method": "pip",
+      "source": "ctfr"
+    },
+    "params": [
+      {
+        "label": "Domain",
+        "flag": "-d",
+        "type": "string",
+        "required": true,
+        "description": "Target domain to enumerate from CT logs",
+        "placeholder": "target.com"
+      },
+      {
+        "label": "Output File",
+        "flag": "-o",
+        "type": "string",
+        "description": "Save discovered subdomains to a file",
+        "placeholder": "subs.txt"
+      }
+    ],
+    "skills": [
+      {
+        "id": "ct-enum",
+        "name": "CT subdomain enum",
+        "description": "Enumerate subdomains from certificate transparency logs",
+        "args": "-d {{domain}}",
+        "tags": ["passive", "ct", "fast"]
+      },
+      {
+        "id": "ct-enum-out",
+        "name": "CT enum to file",
+        "description": "CT subdomain enum, saving results to a file",
+        "args": "-d {{domain}} -o subs.txt",
+        "tags": ["passive", "ct"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["host", "subdomain"],
+      "detect": "ctfr|^[\\w\\-]+(\\.[\\w\\-]+)+$",
+      "db_action": "target_add",
+      "patterns": [
+        {
+          "type": "subdomain",
+          "regex": "^([a-zA-Z0-9_\\-\\.]+\\.[a-zA-Z]{2,})$",
+          "fields": {
+            "hostname": "$1"
+          }
+        }
+      ]
+    }
+  }
+}

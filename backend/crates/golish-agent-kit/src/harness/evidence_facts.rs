@@ -69,6 +69,21 @@ pub fn passive_intel_facts_from_command(command: &str) -> Option<(&'static str, 
         "subfinder" => flag_value(&rest, "-d")
             .or_else(|| flag_value(&rest, "-domain"))
             .map(|d| ("GOLISH-INTEL-SUBDOMAIN", d)),
+        // ctfr enumerates subdomains from certificate-transparency logs (crt.sh);
+        // a run is the GOLISH-INTEL-CT technique fact for the queried domain — the
+        // dedicated CT producer so that column stops reading "never attempted".
+        "ctfr" => flag_value(&rest, "-d")
+            .or_else(|| flag_value(&rest, "--domain"))
+            .map(|d| ("GOLISH-INTEL-CT", d)),
+        // asnmap maps a domain/IP/org to its ASN + netblocks via public RIR data;
+        // a run is the GOLISH-INTEL-ASN technique fact. Subject is the queried
+        // domain (-d), IP (-i), or a bare domain/IP token (ASN-number input has
+        // no `.` so it derives nothing — conservative, fail-closed).
+        "asnmap" => flag_value(&rest, "-d")
+            .or_else(|| flag_value(&rest, "-i"))
+            .or_else(|| flag_value(&rest, "--domain"))
+            .or_else(|| first_domain_like(&rest))
+            .map(|d| ("GOLISH-INTEL-ASN", d)),
         _ => None,
     }
 }
@@ -212,6 +227,41 @@ mod tests {
         assert_eq!(
             passive_intel_facts_from_command(dig),
             Some(("GOLISH-INTEL-DNS", "pingan.com".to_string()))
+        );
+    }
+
+    #[test]
+    fn ctfr_maps_to_ct() {
+        assert_eq!(
+            passive_intel_facts_from_command("ctfr -d moresec.cn"),
+            Some(("GOLISH-INTEL-CT", "moresec.cn".to_string()))
+        );
+        // long `--domain` flag + path-resolved executable both normalize.
+        assert_eq!(
+            passive_intel_facts_from_command("ctfr --domain moresec.cn -o out.txt"),
+            Some(("GOLISH-INTEL-CT", "moresec.cn".to_string()))
+        );
+        assert_eq!(
+            passive_intel_facts_from_command("/opt/tools/ctfr -d moresec.cn"),
+            Some(("GOLISH-INTEL-CT", "moresec.cn".to_string()))
+        );
+    }
+
+    #[test]
+    fn asnmap_maps_to_asn() {
+        assert_eq!(
+            passive_intel_facts_from_command("asnmap -d moresec.cn -silent"),
+            Some(("GOLISH-INTEL-ASN", "moresec.cn".to_string()))
+        );
+        // IP subject via -i.
+        assert_eq!(
+            passive_intel_facts_from_command("asnmap -i 115.28.135.55"),
+            Some(("GOLISH-INTEL-ASN", "115.28.135.55".to_string()))
+        );
+        // bare domain token fallback (no flag).
+        assert_eq!(
+            passive_intel_facts_from_command("asnmap moresec.cn"),
+            Some(("GOLISH-INTEL-ASN", "moresec.cn".to_string()))
         );
     }
 

@@ -1,0 +1,101 @@
+{
+  "tool": {
+    "id": "asnmap",
+    "pentestPhase": ["recon"],
+    "name": "asnmap",
+    "description": "Map a domain, IP, org name or ASN to its ASN and netblock (CIDR) ranges using public RIR data (ProjectDiscovery). Zero-touch on the target — a passive target_intel (recon/asn) technique.",
+    "executable": "asnmap",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "asn",
+    "tier": "recommended",
+    "tags": ["recon", "asn", "netblock", "cidr", "passive"],
+    "install": {
+      "method": "github",
+      "source": "projectdiscovery/asnmap",
+      "windows": { "method": "github", "source": "projectdiscovery/asnmap" },
+      "linux": { "method": "github", "source": "projectdiscovery/asnmap" }
+    },
+    "params": [
+      {
+        "label": "Domain",
+        "flag": "-d",
+        "type": "string",
+        "description": "Domain to resolve to ASN/netblocks",
+        "placeholder": "target.com"
+      },
+      {
+        "label": "IP",
+        "flag": "-i",
+        "type": "string",
+        "description": "IP address to resolve to ASN/netblocks",
+        "placeholder": "1.2.3.4"
+      },
+      {
+        "label": "ASN",
+        "flag": "-a",
+        "type": "string",
+        "description": "ASN to resolve to its netblocks",
+        "placeholder": "AS14421"
+      },
+      {
+        "label": "Org",
+        "flag": "-org",
+        "type": "string",
+        "description": "Organization name to resolve to ASNs",
+        "placeholder": "PINGAN"
+      },
+      {
+        "label": "JSON Output",
+        "flag": "-j",
+        "type": "boolean",
+        "description": "Write JSON lines with ASN/CIDR metadata"
+      },
+      {
+        "label": "Output File",
+        "flag": "-o",
+        "type": "string",
+        "description": "Save ranges to a file",
+        "placeholder": "ranges.txt"
+      },
+      {
+        "label": "Silent",
+        "flag": "-silent",
+        "type": "boolean",
+        "description": "Show only results in output"
+      }
+    ],
+    "skills": [
+      {
+        "id": "asn-from-domain",
+        "name": "ASN/netblocks from domain",
+        "description": "Resolve a domain to its ASN and CIDR ranges",
+        "args": "-d {{domain}} -silent",
+        "tags": ["passive", "asn", "fast"]
+      },
+      {
+        "id": "asn-from-ip",
+        "name": "ASN/netblocks from IP",
+        "description": "Resolve an IP to its owning ASN and CIDR ranges",
+        "args": "-i {{ip}} -silent",
+        "tags": ["passive", "asn"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["cidr", "ip"],
+      "detect": "asnmap|\\bAS\\d+\\b|/\\d{1,2}$",
+      "db_action": "target_add",
+      "patterns": [
+        {
+          "type": "cidr",
+          "regex": "^([0-9]{1,3}(?:\\.[0-9]{1,3}){3}/[0-9]{1,2})$",
+          "fields": {
+            "value": "$1"
+          }
+        }
+      ]
+    }
+  }
+}
