@@ -301,6 +301,36 @@ where
             accumulated_response.push_str(&sr.text_content);
         }
 
+        // Persist this turn's reasoning + narration to the sub-agent transcript.
+        // The per-delta `event_tx` stream above is frontend-only; without this
+        // on-disk snapshot the *why* behind each tool batch is unrecoverable
+        // offline (only `text_chars`/`thinking_chars` counts hit the logs).
+        // Bounded per turn so long reasoning can't balloon `transcript.json`.
+        if !sr.thinking_text.is_empty() {
+            let snap = truncate_str(&sr.thinking_text, SUBAGENT_PROSE_PERSIST_CAP).to_string();
+            persist_subagent_prose(
+                &transcript_writer,
+                AiEvent::SubAgentReasoning {
+                    agent_id: agent_id.to_string(),
+                    delta: snap.clone(),
+                    accumulated: snap,
+                    parent_request_id: parent_request_id.to_string(),
+                },
+            );
+        }
+        if !sr.text_content.is_empty() {
+            let snap = truncate_str(&sr.text_content, SUBAGENT_PROSE_PERSIST_CAP).to_string();
+            persist_subagent_prose(
+                &transcript_writer,
+                AiEvent::SubAgentTextDelta {
+                    agent_id: agent_id.to_string(),
+                    delta: snap.clone(),
+                    accumulated: snap,
+                    parent_request_id: parent_request_id.to_string(),
+                },
+            );
+        }
+
         if !sr.has_tool_calls {
             break;
         }
@@ -408,6 +438,19 @@ where
         parent_request_id: parent_request_id.to_string(),
     });
 
+    // Persist the worker's conclusion to the sub-agent transcript too (the
+    // `event_tx` send above only reaches the frontend), so a later agent can
+    // read each sub-agent's final answer offline without replaying the UI.
+    persist_subagent_prose(
+        &transcript_writer,
+        AiEvent::SubAgentCompleted {
+            agent_id: agent_id.to_string(),
+            response: truncate_str(&final_response, SUBAGENT_PROSE_PERSIST_CAP).to_string(),
+            duration_ms,
+            parent_request_id: parent_request_id.to_string(),
+        },
+    );
+
     if !files_modified.is_empty() {
         tracing::info!(
             "[sub-agent] {} modified {} files: {:?}",
@@ -432,4 +475,29 @@ where
         duration_ms,
         files_modified,
     })
+}
+
+/// Per-turn byte cap for prose/reasoning persisted to the sub-agent transcript.
+/// The frontend receives the full per-delta stream over `event_tx`; the on-disk
+/// copy exists only for offline "why did it do that" debugging, so it is bounded
+/// to keep `transcript.json` from ballooning on long reasoning turns.
+const SUBAGENT_PROSE_PERSIST_CAP: usize = 8000;
+
+/// Append a sub-agent prose / reasoning / completion snapshot to the sub-agent
+/// transcript, best-effort and off the hot path (spawned).
+///
+/// These complement the tool-call events written in `response_parsing.rs`: the
+/// reasoning + narration that the model streams to the frontend over `event_tx`
+/// is otherwise never written to disk, so a later agent could see *what* tools a
+/// sub-agent ran but not *why*. A no-op when no transcript writer is configured.
+fn persist_subagent_prose(writer: &Option<Arc<SubAgentTranscriptWriter>>, event: AiEvent) {
+    let Some(writer) = writer else {
+        return;
+    };
+    let writer = Arc::clone(writer);
+    tokio::spawn(async move {
+        if let Err(e) = writer.append(&event).await {
+            tracing::warn!("Failed to write sub-agent prose to transcript: {}", e);
+        }
+    });
 }

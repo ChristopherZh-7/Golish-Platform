@@ -375,6 +375,36 @@ fn anchor_only_axis<'a>(assets: &[&'a str]) -> Vec<&'a str> {
         .collect()
 }
 
+/// Persist the COMPLETE coverage gap list to the per-run log (`run.log` +
+/// `backend.log`, target `harness::gate::coverage`) when a coverage rule blocks.
+///
+/// The model-facing `reasons` only carries the first 8 cells (so the prompt isn't
+/// flooded), which means a stuck stage's *full* `(asset × technique)` gap matrix
+/// was previously unrecoverable — only those 8 survived anywhere on disk. This
+/// emits the exact, untruncated set: `gaps_total` is always exact; the joined
+/// list is capped only against pathological sizes. Observability only — it never
+/// changes the gate verdict (the returned `GateCheckOutcome` is untouched).
+fn log_coverage_gap_matrix(stage_id: &str, op: &str, gaps: &[String]) {
+    const LOG_CAP: usize = 500;
+    let shown = if gaps.len() > LOG_CAP {
+        format!(
+            "{} … (+{} more — see gaps_total)",
+            gaps[..LOG_CAP].join(", "),
+            gaps.len() - LOG_CAP
+        )
+    } else {
+        gaps.join(", ")
+    };
+    tracing::info!(
+        target: "harness::gate::coverage",
+        stage_id = %stage_id,
+        op = %op,
+        gaps_total = gaps.len(),
+        gaps = %shown,
+        "coverage gap matrix (full)"
+    );
+}
+
 /// `coverage_complete` 求值（纯函数，设计 §4.2 + Phase 2 ①③ seam）。期望技术取
 /// `ctx.expected_techniques`（③ 动态注入）否则 `spec.expected_techniques`（静态），空 →
 /// no-op Pass。资产维度取 `ctx.in_scope_assets`（① 权威注入）否则 deliverable.coverage
@@ -564,6 +594,7 @@ fn coverage_complete(
     } else {
         String::new()
     };
+    log_coverage_gap_matrix(&d.stage_id, "coverage_complete", &gaps);
     GateCheckOutcome::Block {
         reasons: vec![format!(
             "{}: never attempted {}{}",
@@ -640,6 +671,7 @@ fn coverage_denominator(
     } else {
         String::new()
     };
+    log_coverage_gap_matrix(&d.stage_id, "coverage_denominator", &gaps);
     GateCheckOutcome::Block {
         reasons: vec![format!("{}: {}{}", on_fail.reason, shown, suffix)],
         recovery: HarnessRecoveryActions {
@@ -684,6 +716,7 @@ fn coverage_corroborated(d: &StageDeliverable, on_fail: &OnFail) -> GateCheckOut
     } else {
         String::new()
     };
+    log_coverage_gap_matrix(&d.stage_id, "coverage_corroborated", &gaps);
     GateCheckOutcome::Block {
         reasons: vec![format!(
             "{}: no technique-tagged claim/finding backs {}{}",
