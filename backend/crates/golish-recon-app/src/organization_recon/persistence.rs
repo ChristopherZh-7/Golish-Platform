@@ -281,6 +281,36 @@ fn collect_subdomain_pairs(
     pairs
 }
 
+/// Pair each host with the longest OTHER host **in the same set** that it is a
+/// strict subdomain of. Hosts that are nobody's subdomain (apex roots, IPs) yield
+/// no pair. Pure (no IO) for unit testing.
+///
+/// This is the in-scope-`targets` source for subdomain landing. The agent's
+/// subfinder/amass discoveries are registered as `scope='in'` target rows (not
+/// into the junk `organizations.domains` OSINT list), so `collect_subdomain_pairs`
+/// — whose roots AND candidate hosts both come from `organizations.domains` — pairs
+/// nothing for the agent enrich path (every host equals an owned root ⇒ skipped:
+/// the "same-source" landing gap). Pairing within the in-scope target set recovers
+/// the real `(root, subdomain)` edges the coverage gate reads from `target_assets`.
+fn pair_subdomains_within(hosts: &[String]) -> Vec<(String, String)> {
+    let norm: Vec<String> = hosts.iter().filter_map(|h| normalized_host(h)).collect();
+    let mut seen = HashSet::new();
+    let mut pairs = Vec::new();
+    for host in &norm {
+        let Some(root) = norm
+            .iter()
+            .filter(|root| *root != host && host.ends_with(&format!(".{root}")))
+            .max_by_key(|root| root.len())
+        else {
+            continue;
+        };
+        if seen.insert((root.clone(), host.clone())) {
+            pairs.push((root.clone(), host.clone()));
+        }
+    }
+    pairs
+}
+
 /// Persist `(root, subdomain)` pairs as `target_assets(asset_type='subdomain')`
 /// children of the root's in-scope target. Returns how many landed. Roots with no
 /// existing target row are skipped (we never invent an in-scope root here).
@@ -290,12 +320,42 @@ async fn land_subdomain_assets(
     run_id: &str,
     subdomain_hosts: &[String],
 ) -> Result<usize, GolishError> {
-    let pairs = collect_subdomain_pairs(organization, subdomain_hosts);
-    if pairs.is_empty() {
+    // Source 1 (legacy): the owned-domain list the caller passed (org-recon:
+    // `Domain` records; agent enrich: `organizations.domains`).
+    let mut pair_set: HashSet<(String, String)> =
+        collect_subdomain_pairs(organization, subdomain_hosts)
+            .into_iter()
+            .collect();
+    // Source 2 (fix 2026-06-16 enrich-same-source): the in-scope `targets` the
+    // agent actually registered — subfinder/amass discoveries land there as
+    // scope='in' rows, NOT into the junk `organizations.domains` OSINT list that
+    // self-cancels in `collect_subdomain_pairs`. Seed the root→target_id cache from
+    // them, then pair within the set so each discovered subdomain lands as a
+    // `target_assets(asset_type='subdomain')` child of its in-scope root.
+    let in_scope: Vec<(Uuid, String)> = sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id, value FROM targets WHERE scope::text = 'in' AND organization_id = $1",
+    )
+    .bind(organization.id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let mut root_targets: HashMap<String, Option<Uuid>> = HashMap::new();
+    for (id, value) in &in_scope {
+        if let Some(host) = normalized_host(value) {
+            root_targets.entry(host).or_insert(Some(*id));
+        }
+    }
+    let in_scope_values: Vec<String> = in_scope.into_iter().map(|(_, value)| value).collect();
+    for pair in pair_subdomains_within(&in_scope_values) {
+        pair_set.insert(pair);
+    }
+    if pair_set.is_empty() {
         return Ok(0);
     }
+    // HashSet iteration order is nondeterministic → sort for reproducible upserts/logs.
+    let mut pairs: Vec<(String, String)> = pair_set.into_iter().collect();
+    pairs.sort();
     let metadata = json!({ "source": "organization_recon", "run_id": run_id });
-    let mut root_targets: HashMap<String, Option<Uuid>> = HashMap::new();
     let mut landed = 0usize;
     for (root, subdomain) in pairs {
         let target_id = match root_targets.get(&root) {
@@ -1459,6 +1519,62 @@ mod tests {
         let org = org_with_domains(json!([]));
         let hosts = vec!["life.pingan.com".to_string()];
         assert!(collect_subdomain_pairs(&org, &hosts).is_empty());
+    }
+
+    #[test]
+    fn pair_subdomains_within_maps_subdomains_to_in_scope_root() {
+        // The agent registers roots AND discovered subdomains as scope='in'
+        // targets; pairing within that set recovers the (root, subdomain) edges
+        // the enrich path can't (same-source skip-all — see fn doc). IPs/apexes
+        // are nobody's subdomain → no pair; `www.` is normalized to the apex
+        // (consistent with collect_subdomain_pairs) → dropped, not an asset.
+        let hosts: Vec<String> = [
+            "pa18.com",
+            "pingan.com",
+            "pingan.cn",
+            "pingan.com.cn",
+            "um.pa18.com",
+            "act.pa18.com",
+            "sub.pingan.com",
+            "www.pingan.com", // normalizes to pingan.com (apex) → dropped
+            "202.69.26.13",   // IP → never a subdomain → no pair
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let mut pairs = pair_subdomains_within(&hosts);
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![
+                ("pa18.com".to_string(), "act.pa18.com".to_string()),
+                ("pa18.com".to_string(), "um.pa18.com".to_string()),
+                ("pingan.com".to_string(), "sub.pingan.com".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn pair_subdomains_within_prefers_longest_parent_and_dedupes() {
+        let hosts: Vec<String> = ["a.com", "sub.a.com", "x.sub.a.com", "x.sub.a.com"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut pairs = pair_subdomains_within(&hosts);
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![
+                ("a.com".to_string(), "sub.a.com".to_string()),
+                ("sub.a.com".to_string(), "x.sub.a.com".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn pair_subdomains_within_empty_when_only_apexes() {
+        let hosts = vec!["a.com".to_string(), "b.com".to_string()];
+        assert!(pair_subdomains_within(&hosts).is_empty());
     }
 
     #[test]
