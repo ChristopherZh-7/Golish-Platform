@@ -50,6 +50,15 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
         // target's own hosts) → a passive target_intel technique.
         "whois" | "asn" | "whois-asn" => ("recon", "whois"),
         "enscan_go" | "enscan" | "0.zone" | "0zone" | "zero-zone" => ("recon", "osint"),
+        // Passive OSINT / leak-hunting / cloud-asset discovery. All ship in
+        // `resources/toolsconfig/*.json` as category=recon subcategory=osint
+        // (tagged `passive`); they query third-party sources (GitHub, search
+        // engines, cloud-provider endpoints, social sites), not the target's own
+        // hosts — so target_intel (allows recon/osint) may run them. `cloud_enum`
+        // ships as id `cloud-enum` + name `cloud_enum`, so both spellings resolve.
+        "trufflehog" | "gitleaks" | "gitdorker" | "go-dork" | "metagoofil" | "theharvester"
+        | "maigret" | "holehe" | "sherlock" | "s3scanner" | "cloud_enum" | "cloud-enum"
+        | "gcpbucketbrute" => ("recon", "osint"),
         "gowitness" | "aquatone" | "eyewitness" | "cutycapt" => ("recon", "visual"),
         // ── web ──────────────────────────────────────────────────────────────
         "ffuf" | "gobuster" | "dirb" | "dirsearch" | "feroxbuster" => ("web", "fuzzer"),
@@ -75,6 +84,73 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
         _ => return None,
     };
     Some(pair)
+}
+
+/// Representative tool names per `(category, subcategory)` in the taxonomy,
+/// used to resolve a stage's `allowed_tool_types` **type-selectors** back into
+/// the concrete tool names the agent may actually run in that stage.
+///
+/// One or two primary tools per subcategory (NOT every alias) — enough for a
+/// weak model to see "in target_intel you run dig / subfinder / amass / gau /
+/// whois / enscan_go" instead of having to map the `recon/dns` selector onto a
+/// tool itself (and mis-map `nmap` into a BLOCK). Keep in sync with the
+/// [`tool_category`] match arms above.
+const CANONICAL_TOOLS: &[&str] = &[
+    // recon
+    "dig",
+    "nmap",
+    "naabu",
+    "httpx",
+    "whatweb",
+    "subfinder",
+    "amass",
+    "katana",
+    "gau",
+    "waybackurls",
+    "whois",
+    "enscan_go",
+    "gowitness",
+    // web
+    "ffuf",
+    "arjun",
+    "nuclei",
+    "wpscan",
+    "sqlmap",
+    // network
+    "chisel",
+    "responder",
+    "tcpdump",
+    // brute
+    "john",
+    "hydra",
+    // exploit
+    "searchsploit",
+    "metasploit",
+    // post-exploit
+    "netexec",
+    "impacket",
+];
+
+/// Resolve a stage's `allowed_tool_types` type-selectors into the concrete
+/// canonical tool names that stage permits (deny-by-default), in taxonomy order.
+///
+/// This is the reverse of [`stage_allows`]: instead of asking "is THIS tool
+/// allowed?", it answers "which tools ARE allowed?". Used to front-load the
+/// concrete usable tools into a specialist's objective (Q3 ①+), so a weak model
+/// does not have to translate `recon/dns` → `dig` (and wrongly translate `nmap`
+/// into a tool it can only get BLOCKED on). Empty `allowed` → no tools.
+///
+/// The result is consistent with the runtime stage guard (both go through
+/// [`stage_allows`]): a name appears here iff the guard would let it run.
+pub fn allowed_tool_names(allowed: &[String]) -> Vec<&'static str> {
+    if allowed.is_empty() {
+        return Vec::new();
+    }
+    CANONICAL_TOOLS
+        .iter()
+        .copied()
+        .filter(|name| stage_allows(name, &Value::Null, allowed))
+        .collect()
 }
 
 /// Resolve a tool call to the underlying **tool name** (the raw inner tool, not
@@ -471,6 +547,144 @@ mod tests {
             assert!(
                 !is_offensive_sub_agent(keep),
                 "{keep} must NOT be flagged offensive"
+            );
+        }
+    }
+
+    #[test]
+    fn allowed_tool_names_target_intel_selectors() {
+        // target_intel passive selectors → only the passive recon tools surface
+        // (no port-scan / http).
+        let allowed = allow(&[
+            "recon/dns",
+            "recon/subdomain",
+            "recon/osint",
+            "recon/url-history",
+            "recon/whois",
+            "recon/asn",
+            "recon/ct",
+        ]);
+        let names = allowed_tool_names(&allowed);
+        for must in [
+            "dig",
+            "subfinder",
+            "amass",
+            "gau",
+            "waybackurls",
+            "whois",
+            "enscan_go",
+        ] {
+            assert!(names.contains(&must), "{must} must be listed: {names:?}");
+        }
+        // active tools must NOT appear in a passive intel stage
+        for never in ["nmap", "naabu", "httpx", "sqlmap", "nuclei"] {
+            assert!(
+                !names.contains(&never),
+                "{never} must NOT be listed: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn allowed_tool_names_eas_selectors() {
+        // external_attack_surface: active mapping — port-scan / http / visual.
+        let allowed = allow(&["recon/port-scan", "recon/http", "recon/visual"]);
+        let names = allowed_tool_names(&allowed);
+        for must in ["nmap", "naabu", "httpx", "whatweb", "gowitness"] {
+            assert!(names.contains(&must), "{must} must be listed: {names:?}");
+        }
+        // passive-only intel tools are not part of EAS's allowed types
+        for never in ["dig", "subfinder", "whois", "enscan_go"] {
+            assert!(
+                !names.contains(&never),
+                "{never} must NOT be listed: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn allowed_tool_names_empty_allows_nothing() {
+        assert!(allowed_tool_names(&[]).is_empty());
+    }
+
+    #[test]
+    fn allowed_tool_names_is_consistent_with_stage_allows() {
+        // Every name the reverse-lookup returns MUST be one the stage guard
+        // (stage_allows) would actually permit — otherwise the objective would
+        // advertise a tool that gets BLOCKED at dispatch.
+        let allowed = allow(&["recon/dns", "recon/subdomain", "web/scanner"]);
+        for name in allowed_tool_names(&allowed) {
+            assert!(
+                stage_allows(name, &json!({}), &allowed),
+                "{name} listed but stage_allows denies it"
+            );
+        }
+    }
+
+    /// The full set of passive-OSINT tool selectors a recon specialist may pass
+    /// as `pentest_run`'s `tool_name`. Each is `category=recon subcategory=osint`
+    /// in `resources/toolsconfig/*.json` (all tagged `passive`); they were absent
+    /// from the taxonomy → `tool_category` None → deny-by-default BLOCK even in
+    /// target_intel (which allows recon/osint). `cloud_enum` ships as both id
+    /// `cloud-enum` and name `cloud_enum`, so both spellings must resolve.
+    const OSINT_TOOLS: &[&str] = &[
+        "trufflehog",
+        "gitleaks",
+        "gitdorker",
+        "go-dork",
+        "metagoofil",
+        "theharvester",
+        "maigret",
+        "holehe",
+        "sherlock",
+        "s3scanner",
+        "cloud_enum",
+        "cloud-enum",
+        "gcpbucketbrute",
+    ];
+
+    #[test]
+    fn osint_tools_resolve_to_recon_osint() {
+        // 坑2 fix: mirror toolsconfig (category=recon subcategory=osint) so these
+        // passive OSINT / leak / cloud-asset tools classify instead of returning
+        // None (which the stage guard treats as deny-by-default).
+        for t in OSINT_TOOLS {
+            assert_eq!(
+                tool_category(t),
+                Some(("recon", "osint")),
+                "{t} must resolve to recon/osint"
+            );
+        }
+        // case-insensitive (agent may pass the toolsconfig display name)
+        assert_eq!(tool_category("TruffleHog"), Some(("recon", "osint")));
+        assert_eq!(tool_category("S3Scanner"), Some(("recon", "osint")));
+        assert_eq!(tool_category("GitDorker"), Some(("recon", "osint")));
+    }
+
+    #[test]
+    fn osint_tools_allowed_in_target_intel_blocked_in_eas() {
+        // Grounded in the real stage specs: target_intel.allowed_tool_types
+        // includes recon/osint; external_attack_surface.allowed_tool_types does
+        // NOT (port-scan/http/visual only). So the fix unblocks OSINT in intel
+        // without over-permitting it in the active mapping stage.
+        let target_intel = allow(&[
+            "recon/dns",
+            "recon/subdomain",
+            "recon/osint",
+            "recon/url-history",
+            "recon/whois",
+            "recon/asn",
+            "recon/ct",
+        ]);
+        let eas = allow(&["recon/port-scan", "recon/http", "recon/visual"]);
+        for t in OSINT_TOOLS {
+            assert!(
+                stage_allows("pentest_run", &json!({ "tool_name": t }), &target_intel),
+                "{t} must be allowed in target_intel (recon/osint)"
+            );
+            assert!(
+                !stage_allows("pentest_run", &json!({ "tool_name": t }), &eas),
+                "{t} must be blocked in external_attack_surface"
             );
         }
     }
