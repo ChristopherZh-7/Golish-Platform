@@ -16,6 +16,21 @@ const DEFAULT_HTTP_MAX_RETRIES: u32 = 2;
 /// Fixed backoff between transient-error retries of a single request.
 const HTTP_RETRY_BACKOFF_MS: u64 = 750;
 
+/// Max times a single request is retried after an HTTP 429 (rate limited),
+/// separate from the transient-transport retries above. A 429 is recoverable by
+/// waiting, so it must NOT drop the request's data — a dropped ASN/CT/OSINT
+/// request left its coverage cell permanently "never attempted" and dead-looped
+/// the target_intel gate.
+const HTTP_RATE_LIMIT_MAX_RETRIES: u32 = 3;
+
+/// Base for exponential backoff after a 429 when the server sends no usable
+/// `Retry-After`: 1s, 2s, 4s for retries 1..=3.
+const HTTP_RATE_LIMIT_BASE_BACKOFF_MS: u64 = 1_000;
+
+/// Hard cap on any single rate-limit wait (also clamps a hostile/huge
+/// `Retry-After`) so one throttled provider can't hang the whole stage.
+const HTTP_RATE_LIMIT_MAX_BACKOFF_MS: u64 = 30_000;
+
 /// Outcome of a single http_json request after retries. `Success` carries the
 /// normalized contribution; `Failed` records why and whether the failure is
 /// provider-wide (auth/quota) so the caller can stop early without burning the
@@ -407,9 +422,11 @@ async fn run_one_http_request(
         ));
     }
 
-    // Send + read the body, retrying only transient transport failures
-    // (timeout / connection reset / "error decoding response body").
+    // Send + read the body, retrying transient transport failures (timeout /
+    // connection reset / "error decoding response body") and backing off on an
+    // HTTP 429 (rate limited) instead of dropping the request.
     let mut attempt: u32 = 0;
+    let mut rate_limit_attempt: u32 = 0;
     let (http_status, body_bytes) = loop {
         let Some(attempt_builder) = builder.try_clone() else {
             // In-memory bodies always clone; this only trips for streaming
@@ -446,8 +463,39 @@ async fn run_one_http_request(
         match attempt_builder.send().await {
             Ok(response) => {
                 let status = response.status();
+                // Capture Retry-After before the body read consumes the response.
+                let retry_after = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
                 match response.bytes().await {
-                    Ok(bytes) => break (status, bytes),
+                    Ok(bytes) => {
+                        // Rate limited (429): wait (server Retry-After or
+                        // exponential backoff) and retry rather than dropping
+                        // this request — a dropped ASN/CT/OSINT request leaves
+                        // its coverage cell "never attempted" and dead-loops the
+                        // target_intel gate. Bounded by HTTP_RATE_LIMIT_MAX_RETRIES
+                        // so a stuck provider can't hang the stage.
+                        if status.as_u16() == 429
+                            && rate_limit_attempt < HTTP_RATE_LIMIT_MAX_RETRIES
+                        {
+                            rate_limit_attempt += 1;
+                            let backoff_ms =
+                                rate_limit_backoff_ms(retry_after.as_deref(), rate_limit_attempt);
+                            tracing::warn!(
+                                provider = %provider_id,
+                                run_id,
+                                request_id = %request.id,
+                                rate_limit_attempt,
+                                backoff_ms,
+                                "asset_intel http_json request rate limited (429); backing off before retry"
+                            );
+                            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                            continue;
+                        }
+                        break (status, bytes);
+                    }
                     Err(err) => {
                         if is_retryable_transport(&err) && attempt < max_retries {
                             attempt += 1;
@@ -569,6 +617,30 @@ async fn run_one_http_request(
 /// failure mode that silently zeroed 0.zone enrichment.
 fn is_retryable_transport(err: &reqwest::Error) -> bool {
     err.is_timeout() || err.is_connect() || err.is_request() || err.is_body() || err.is_decode()
+}
+
+/// Parse a `Retry-After` header (RFC 7231 delta-seconds form only; the HTTP-date
+/// form is unsupported → `None` so the caller uses exponential backoff) into a
+/// millisecond delay clamped to [`HTTP_RATE_LIMIT_MAX_BACKOFF_MS`].
+fn parse_retry_after_ms(value: Option<&str>) -> Option<u64> {
+    let secs: u64 = value?.trim().parse().ok()?;
+    Some(
+        secs.saturating_mul(1_000)
+            .min(HTTP_RATE_LIMIT_MAX_BACKOFF_MS),
+    )
+}
+
+/// Backoff before retrying an HTTP 429: prefer the server's `Retry-After`, else
+/// exponential `base * 2^(attempt-1)`. `attempt` is 1-based (1 = first retry).
+/// Always clamped to [`HTTP_RATE_LIMIT_MAX_BACKOFF_MS`] and overflow-safe.
+fn rate_limit_backoff_ms(retry_after: Option<&str>, attempt: u32) -> u64 {
+    if let Some(ms) = parse_retry_after_ms(retry_after) {
+        return ms;
+    }
+    let shift = attempt.saturating_sub(1).min(16);
+    HTTP_RATE_LIMIT_BASE_BACKOFF_MS
+        .saturating_mul(1u64 << shift)
+        .min(HTTP_RATE_LIMIT_MAX_BACKOFF_MS)
 }
 
 /// Reasons that are provider-wide (every remaining request would fail the same
@@ -769,5 +841,38 @@ mod http_runner_tests {
         assert!(!is_provider_fatal("rate_limited"));
         assert!(!is_provider_fatal("server_error"));
         assert!(!is_provider_fatal("parse_error"));
+    }
+
+    #[test]
+    fn parse_retry_after_reads_delta_seconds_only() {
+        assert_eq!(parse_retry_after_ms(Some("5")), Some(5_000));
+        assert_eq!(parse_retry_after_ms(Some("  10 ")), Some(10_000));
+        assert_eq!(parse_retry_after_ms(Some("0")), Some(0));
+        // HTTP-date form is unsupported → None (caller falls back to backoff).
+        assert_eq!(
+            parse_retry_after_ms(Some("Wed, 21 Oct 2025 07:28:00 GMT")),
+            None
+        );
+        assert_eq!(parse_retry_after_ms(None), None);
+        // A huge Retry-After is clamped to the max wait.
+        assert_eq!(
+            parse_retry_after_ms(Some("99999")),
+            Some(HTTP_RATE_LIMIT_MAX_BACKOFF_MS)
+        );
+    }
+
+    #[test]
+    fn rate_limit_backoff_prefers_retry_after_then_exponential() {
+        // Server Retry-After wins when present and parseable.
+        assert_eq!(rate_limit_backoff_ms(Some("3"), 1), 3_000);
+        // No header → exponential 1s, 2s, 4s for retries 1..=3.
+        assert_eq!(rate_limit_backoff_ms(None, 1), 1_000);
+        assert_eq!(rate_limit_backoff_ms(None, 2), 2_000);
+        assert_eq!(rate_limit_backoff_ms(None, 3), 4_000);
+        // Big attempt is clamped and never overflows (shift saturates).
+        assert_eq!(
+            rate_limit_backoff_ms(None, 99),
+            HTTP_RATE_LIMIT_MAX_BACKOFF_MS
+        );
     }
 }
