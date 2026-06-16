@@ -423,6 +423,15 @@ impl AgentBridge {
         self.harness_active_stage.clone()
     }
 
+    /// Side-channel handle: the active engagement org id (read side). Injected
+    /// into `manage_targets` so its `list` action confines to the bound
+    /// engagement's org subtree (设计 2026-06-15-engagement-org-isolation),
+    /// mirroring `in_scope_targets_impl` — a sibling engagement's assets left in
+    /// the same workspace never leak into this run's working set.
+    pub fn harness_active_org_id_handle(&self) -> Arc<RwLock<Option<uuid::Uuid>>> {
+        self.harness_active_org_id.clone()
+    }
+
     /// C2c · Side-channel handle: the captured-StageDeliverable sink (write side).
     /// The `submit_stage_deliverable` tool writes here; the Task-mode executor
     /// reads it at stage close and feeds it to the deterministic gate.

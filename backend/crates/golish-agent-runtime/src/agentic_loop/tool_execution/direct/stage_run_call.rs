@@ -30,8 +30,8 @@ use golish_agent_kit::harness::org_gate::{
     STAGE_RUN_PASS_TOKEN_KIND,
 };
 use golish_agent_kit::harness::{
-    evaluate_org_stage_gate, load_embedded_stage_spec, stage_methodology_md, OrgVerdict,
-    StageDeliverable, StageKind,
+    allowed_tool_names, evaluate_org_stage_gate, load_embedded_stage_spec, stage_methodology_md,
+    OrgVerdict, StageDeliverable, StageKind,
 };
 use golish_core::events::{AiEvent, HarnessTraceKind};
 use golish_sub_agents::SubAgentContext;
@@ -126,13 +126,29 @@ fn build_org_objective(
     );
     if !allowed_tool_types.is_empty() {
         obj.push_str(&format!(
-            " TOOLS: in the {} stage you may only use these tool types: [{}]. If a tool is \
-             blocked by the stage boundary, switch technique or submit your deliverable — do NOT \
-             retry the blocked tool. Long scans may be backgrounded on a soft timeout: poll with \
-             check_job, never re-run the same command.",
+            " TOOLS: in the {} stage you may only use these tool types: [{}].",
             stage.as_str(),
             allowed_tool_types.join(", "),
         ));
+        // Q3 ①+ · resolve the type-selectors into the CONCRETE tool names this
+        // stage permits, so a weak model does not have to translate `recon/dns`
+        // → `dig` itself (and wrongly translate `nmap` into a tool it can only
+        // get BLOCKED on). Consistent with the dispatch guard (both resolve via
+        // stage_allows), so every name advertised here is one that will run.
+        let tool_names = allowed_tool_names(allowed_tool_types);
+        if !tool_names.is_empty() {
+            obj.push_str(&format!(
+                " Concretely, the only tools you may run here are: [{}] — invoke them via \
+                 pentest_run (or run_pty_cmd). Any tool NOT in that list is out-of-stage and will \
+                 be BLOCKED; do not call it.",
+                tool_names.join(", "),
+            ));
+        }
+        obj.push_str(
+            " If a tool is blocked by the stage boundary, switch technique or submit your \
+             deliverable — do NOT retry the blocked tool. Long scans may be backgrounded on a soft \
+             timeout: poll with check_job, never re-run the same command.",
+        );
     }
     if !expected_techniques.is_empty() {
         obj.push_str(&format!(

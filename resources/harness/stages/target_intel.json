@@ -88,6 +88,9 @@
   "$comment_host_aware_coverage": "design 2026-06-15-host-aware-coverage (Phase 2a): coverage_complete holds each in-scope asset only to the intel techniques that apply to its class — a bare IP/CIDR is NOT asked for SUBDOMAIN / forward-DNS / CT (domain-only concepts); WHOIS/ASN/OSINT still apply to every class. Fixes IPs being permanently 'incomplete'. Asset class is inferred from the asset value (IpAddr/url/cidr/else domain); unknown keeps the full set (fail-safe, never relaxes the gate).",
   "host_aware_coverage": true,
 
+  "$comment_coverage_anchor_only": "design 2026-06-16-coverage-anchor-axis: this stage declares 'no enumeration denominator' (see $comment_expected_techniques) — the coverage denominator is the scoped ROOT/anchor assets, NOT the subdomains it passively enumerates. But the recon worker registers each discovered subdomain as a scope='in' target, which (read live by coverage_complete) inflated the (asset × technique) matrix during the very stage it gates — the 'treadmill' that drove every org to its 40-iteration cap and BLOCK. With this on, coverage_complete drops any in-scope asset that is a strict subdomain of another in-scope asset before deriving the matrix; the root's own SUBDOMAIN cell still represents the enumeration. Maximal roots always remain so a non-empty axis never becomes empty.",
+  "coverage_anchor_only": true,
+
   "human_approval": {
     "required_before": ["active_scan"]
   },

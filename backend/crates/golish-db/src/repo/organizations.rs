@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -138,6 +140,40 @@ pub async fn subtree_ids(pool: &PgPool, root_id: Uuid) -> Result<Vec<Uuid>> {
         .fetch_all(pool)
         .await?;
     Ok(ids)
+}
+
+/// The engagement-org subtree id set as `String`s, ready to compare against a
+/// `Target.organization_id` (stored as `String`). Shared by the AI listing
+/// paths — `in_scope_targets_impl` and the `manage_targets` `list` action — so
+/// the two org-confinement reads can never drift (设计
+/// 2026-06-15-engagement-org-isolation). `org_id = None` ⇒ `None` (legacy
+/// whole-visible set: chat / pre-scoping, no filtering). A subtree query error
+/// degrades to an empty set so a bound engagement never leaks a sibling's rows
+/// on a transient failure (matches the prior inline behavior).
+pub async fn subtree_id_str_set(pool: &PgPool, org_id: Option<Uuid>) -> Option<HashSet<String>> {
+    match org_id {
+        Some(root) => Some(
+            subtree_ids(pool, root)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|u| u.to_string())
+                .collect(),
+        ),
+        None => None,
+    }
+}
+
+/// Whether a row whose `organization_id` is `org_id` (`None` = unowned) is in
+/// scope given the `allowed` subtree set from [`subtree_id_str_set`].
+/// `allowed = None` ⇒ keep all (legacy). `allowed = Some(set)` ⇒ keep only rows
+/// whose org is inside the set; an unowned row is dropped (fail-closed — it is
+/// not provably part of the bound engagement).
+pub fn org_id_in_scope(org_id: Option<&str>, allowed: &Option<HashSet<String>>) -> bool {
+    match allowed {
+        Some(set) => org_id.map(|o| set.contains(o)).unwrap_or(false),
+        None => true,
+    }
 }
 
 pub async fn create(
@@ -409,5 +445,26 @@ mod tests {
             sql.contains("o.parent_id = s.id"),
             "recursion follows parent_id down the tree: {sql}"
         );
+    }
+
+    #[test]
+    fn org_id_in_scope_none_allowed_keeps_everything() {
+        // Legacy / pre-scoping (no engagement org bound): `allowed = None` means
+        // do not filter — every row stays, including unowned (org_id=None) rows.
+        assert!(org_id_in_scope(Some("a"), &None));
+        assert!(org_id_in_scope(None, &None));
+    }
+
+    #[test]
+    fn org_id_in_scope_some_allowed_is_fail_closed() {
+        // Engagement-org isolation: once an org subtree is bound, a row is kept
+        // only when its organization_id is inside the subtree set. An unowned row
+        // (org_id=None) is NOT "this engagement's" and must be excluded
+        // (fail-closed) — mirrors `in_scope_targets_impl` (设计 2026-06-15).
+        let allowed: Option<HashSet<String>> = Some(["a".to_string(), "b".to_string()].into());
+        assert!(org_id_in_scope(Some("a"), &allowed), "in-subtree kept");
+        assert!(org_id_in_scope(Some("b"), &allowed), "in-subtree kept");
+        assert!(!org_id_in_scope(Some("c"), &allowed), "other-org dropped");
+        assert!(!org_id_in_scope(None, &allowed), "unowned row dropped");
     }
 }

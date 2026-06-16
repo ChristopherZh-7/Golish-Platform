@@ -29,6 +29,85 @@
 
 ---
 
+### 2026-06-16 · CLI stage-run 的 run.log 与 transcript 同目录（BaJie MCP-agent-2 · DISPATCH off · 用户「补 run.log 那行」）
+
+- **本轮目标**：回答「CLI 跑的日志 vs GUI 跑的日志存放逻辑是否一样」，并修其中唯一的分歧——CLI stage-run 的 `run.log` 落点与 GUI 不一致。
+- **取证（先证再改）**：① `backend.log` 两边一样——CLI/GUI 都走 `telemetry/init.rs` 的 `init_tracing`，路径硬编码 `~/.golish/backend.log`（`init.rs:76-83`，与 workspace 无关）。② `transcript.json` 逻辑一样——两边都 `resolve_transcript_base(Some(workspace))`（GUI `session.rs:99`、CLI `stage_run/mod.rs:177`）→ `{workspace}/.golish/transcripts/<session>/`。③ **`run.log` 分歧**——`session_log.rs:114` 写到 `active_transcript_base_or_home()`，仅 GUI `session.rs:103` 调过 `set_active_transcript_base`，CLI stage-run 路径从没调 → 进程全局 base 恒为 None → 回落 `~/.golish/transcripts`。与 Test1 那次 run（transcript 在 workspace、run.log 在 ~/.golish）观察吻合，也对不上 AGENTS.md §8「run.log 与 transcript 同目录」（那段只描述了 GUI）。
+- **改动（仅 1 文件 `backend/crates/golish/src/stage_run/mod.rs`）**：在 `resolve_transcript_base` 之后、`TranscriptWriter::new` 之前补一行 `golish_events::op_trace::set_active_transcript_base(transcripts_dir.clone());`，镜像 GUI `session.rs:103`，并配注释说明其约束（让 session_log 把 run.log 放到 transcript 同目录，否则回落 ~/.golish）。
+- **运行过的验证（实跑）**：`cargo check -p golish` → exit 0；`rustfmt --edition 2021 --check stage_run/mod.rs` → FMT_CLEAN；`cargo clippy -p golish` → exit 0 零告警；ReadLints → 无。
+- **未做/诚实标注**：① 未另起完整 `--stage-run` 实测 run.log 物理落点（需拉 embedded PG + LLM，重）；因果链确定（设全局→layer 读→写 workspace），代码层已核到位，下次正常跑一次即可眼见为实。② 未跑全量 `just precommit`（沿用前几轮 rustfmt 版本漂移判断）。
+- **commit**：本条 progress 与本次修复**分开**——只 `git add` 了 `stage_run/mod.rs` 做 surgical commit（`fix(stage_run): co-locate per-run run.log with transcript.json`）；`agent-progress.md` 当前已含 +68 行 A股（③+①+/坑2）未提交进度，若随本 commit 入库会混入无关 stream，故本条 progress 留作未提交、待 A股 批次一并提交。
+
+---
+
+### 2026-06-15 · Q3 ③+①+：stage 工具白名单前置（BaJie MCP-agent-1 · DISPATCH off · 用户「按修订版改 ③+①+」）
+
+- **本轮目标**：消除「worker 靠撞墙被 BLOCK 才知 stage 边界」。先复查纠错——**① 早已存在**（`stage_run_call.rs::build_org_objective` 自 commit `284979a6` 06-14 起已把 `allowed_tool_types` **类型选择器** + 整段 methodology 注入 recon specialist 目标；上一会话误判「没做」已更正）。真缺口 = 给的是类型(`recon/dns`)非具体工具名，弱模型仍把 `nmap` 当能用→撞墙；且 `pentest_list_tools` 返回全部 28 工具不标 stage。用户拍板做**修订版 ③+①+（落到具体工具名）**。
+- **已完成（仅 7 文件，全在 scope 内）**：
+  - **①+**：`tool_taxonomy.rs` 加 `CANONICAL_TOOLS` + `allowed_tool_names(allowed)`（`stage_allows` 的反查：类型选择器→具体工具名，与 gate 同源故"列出的都跑得通"）+ re-export；`build_org_objective` 在类型清单后追加「Concretely, the only tools you may run here are: [dig, subfinder, amass, gau, waybackurls, whois, enscan_go]…其余 BLOCKED」。
+  - **③ worker**（真正撞墙方）：`golish-sub-agents/executor/response_parsing.rs` 对 `pentest_list_tools` 结果用**已注入的 `stage_tool_guard` 探针**（`guard("pentest_run",{tool_name})`）给每条打 `stage_allowed` + 顶层 `stage_allowed_tools`/`stage_note`——零新字段、不碰 12 处 ctx 构造、与实际 gate 同源。
+  - **③ main agent**：新 `tool_execution/stage_list_tools.rs::annotate_pentest_list_tools`（用 `stage_allows` + `load_embedded_stage_spec`），在 `direct/mod.rs` 结果终结处标注。
+- **运行过的验证（实跑）**：
+  - `cargo nextest -p golish-agent-kit -p golish-sub-agents -p golish-agent-runtime` → **979 passed / 0 failed**（含 9 新测试 + 既有 `build_org_objective_*`/`next_org_action_*` 无回归）。
+  - 聚焦复跑 17 passed（9 新 + 8 既有 stage_run_call）。
+  - `cargo clippy -p golish-agent-kit -p golish-sub-agents -p golish-agent-runtime --all-targets` → **exit 0 零告警**。
+  - 我的新代码 rustfmt-1.9.0 clean（rustfmt --check 中无任何我新增行）。
+- **scope 卫生**：`cargo fmt -p` 误格式化了**整 crate**（含 5 个我没碰的 pre-existing 文件 + stage_run_call 里 4 处无关 hunk），已全部 `git checkout HEAD --` / 手工重贴回滚 → 现 `git diff` 仅含我 7 文件。
+- **未做/缺口（诚实标注）**：① **未跑全量 `just precommit`**——本机 rustfmt 1.9.0 与项目 CI 版本有漂移，HEAD 自身就有 pre-existing fmt drift（如 `in_scope_targets` >100 列却committed未换行、rule_engine/org_gate/technique_resolver 多处），全量 `cargo fmt --check` 会在**非我**文件上红；建议在匹配 rustfmt 的环境跑 precommit。② **taxonomy 覆盖缺口 → 本轮已修**（见下条 00:45 补丁）。③ `list_in_scope_targets`「Unknown tool」当前代码已接好（registry+security executor），待下次 fresh run 复验。未 commit。
+
+---
+
+### 2026-06-15 · 坑2：补 taxonomy OSINT 缺口（BaJie MCP-agent-1 · DISPATCH off · 用户「补 taxonomy 缺口（坑 2）」）
+
+- **本轮目标**：修上一条标注的「坑2」——一批 passive-OSINT 工具不在 `tool_taxonomy::tool_category` → 返回 `None` → stage 守卫 deny-by-default → 即使 `target_intel` 允许 `recon/osint` 也会被 BLOCK。
+- **取证（先证再改）**：`resources/toolsconfig/` 共 47 工具，taxonomy 只覆盖 34 → **13 缺**。逐个读 toolsconfig：其中 **12 个**明确 `category=recon subcategory=osint` 且 tag `passive`（trufflehog/gitleaks/s3scanner/cloud_enum/gcpbucketbrute/theharvester/maigret/holehe/sherlock/metagoofil/gitdorker/go-dork）；第 13 个 `urlfinder` **无 subcategory 字段**且是主动抓取目标页的 crawler（语义不同）→ **本轮排除、单列后续**（避免凭空猜 subcategory）。`target_intel.json:12` 实读确认 `allowed_tool_types` 含 `recon/osint`；`external_attack_surface.json:12` 仅 `port-scan/http/visual`（不含 osint）。
+- **改动（仅 1 文件 `tool_taxonomy.rs`，模块文档本就要求"mirror toolsconfig，新增工具时保持同步"）**：在 `tool_category` 新增一条 `recon/osint` 臂，纳入这 12 个工具（含 `cloud_enum`/`cloud-enum` 下划线+连字符两拼写，因其 id=cloud-enum/name=cloud_enum）。**未动** `CANONICAL_TOOLS`（osint 代表仍是 enscan_go，objective 不膨胀；agent 改靠 ③ 注解的 `pentest_list_tools` 发现完整可用集）。
+- **TDD（实跑，先红后绿）**：
+  - RED：`cargo nextest -p golish-agent-kit osint_tools` → **2 failed**（`tool_category("trufflehog")` == None；`stage_allows` 在 target_intel 拒绝）。
+  - GREEN：同命令 + 全模块 `tool_taxonomy` → **19 passed**（17 既有 + 2 新：`osint_tools_resolve_to_recon_osint` 断 12 名+大小写解析到 recon/osint；`osint_tools_allowed_in_target_intel_blocked_in_eas` 用真 stage allow-list 断 target_intel 放行 / EAS 拦截）。
+  - 全 crate：`cargo nextest -p golish-agent-kit` → **652 passed / 0 failed**（无回归）。
+  - `cargo clippy -p golish-agent-kit --all-targets -- -D warnings` → **exit 0**；`rustfmt --check tool_taxonomy.rs` → **FMT_CLEAN**；ReadLints 无错。
+- **影响面复核**：grep 三 crate（agent-kit/sub-agents/agent-runtime）确认无任何测试/代码依赖这些名「未分类」；行为变化仅 `is_scan_tool_name` 对这 12 名由 false→true（zero-scan stage 现正确隐藏它们，更安全，无测试反向断言）。
+- **缺口（诚实）**：`urlfinder`（toolsconfig 无 subcategory + 主动 crawler 语义）仍未分类→各 stage deny-by-default，属独立后续，未修。全部**未 commit**；仍未跑全量 precommit（rustfmt 版本漂移同上条）。
+
+---
+
+### 2026-06-15 · engagement-org 隔离「活体验证」(DeepSeek Flash stage-run · BaJie MCP-agent-4 · DISPATCH off · 用户「活体跑一下 用 deepseek flash」)
+
+- **本轮目标**：对上批 engagement-org 范围隔离（core0-3）做活体验证——真 LLM（DeepSeek Flash）跑一次 stage-run，确认「同 workspace 历史平安 org 不再串进 example engagement」，补上 feature `engagement-org-isolation` 之前「活体未跑」的缺口。
+- **环境/前置**：dev app（用户自停）+ 孤儿嵌入式 PG（PID 69276，GUI 泄漏保活）→ 我 `pg_ctl stop` 释放 15432；migration `20260615000003` 已 apply（psycopg2 查活库确认 `operation_state.engagement_org_id` 列在）。
+- **污染快照（跑前 psycopg2 查活库，证 test 非空）**：project_path 全为 `…/Test1`，12 org/2 root = `中国平安保险（集团）股份有限公司`(11 org 子树) + `example-intel-test`(root 3b65e541)；in-scope targets 并存 `example.com` + 一批 `pingan.com / pingan.com.cn / pa18.com / *.pingan.com`（全 scope=in）。
+- **活体跑命令**：`QBIT_WORKSPACE=…/Test1 cargo run -p golish -- --stage-run --profile red_team --only target_intel --org example-intel-test --target example.com -p deepseek -m deepseek-v4-flash --auto-approve`（`--org` get-or-create 复用 example root → 绑 `harness_org_id` = A2-CLI 锚点）。
+- **结果（铁证，终端 + run.log 双源一致）**：
+  - 主 agent 全程 `model=deepseek-v4-flash provider=deepseek`（DeepSeek Flash 确在跑）；sub_agent pentester 按 settings 走 xiaomi/mimo（预期）。
+  - 终端输出 115k 字符 + run.log 56k 字符：**pingan=0、pa18=0、example.com=49/47**；recon 命令里**唯一域名 = example.com**（`subfinder -d example.com`、`amass enum -d example.com -passive`、`dig example.com A/AAAA/MX/NS/SOA/TXT/CAA/ANY`、`dig _dmarc.example.com`、`gau example.com`、ENScan crt.sh）。
+  - target_intel gate 8 个 sub-check 全 pass；stage_guard 正确拦越界工具（curl/nmap 非 target_intel 允许）。
+  - `stage_run dropped N org(s)`（core2）未触发——因 core3（in-scope 资产按 org 子树过滤）从源头就只让 agent 看到 example，平安根本没进 agent 视野（比 drop 更彻底的隔离）。
+- **结论**：尽管同库同 project_path 并存 11 平安 org / 十余 pingan 域名，example engagement 的 recon **100% 锁定 example.com、零平安串入** → engagement-org 隔离活体验证**通过**，「测 example 串成平安」根因已修复。
+- **运行说明**：run 跑到主 agent iter 13（recon 充分、gate 已 pass）后我 SIGINT 优雅停止（隔离结论已确凿，省 token/时间），随后 `pg_ctl stop` 清理嵌入式 PG，15432 已释放（用户可重启 dev app）。未等 stage 完整收尾（非隔离验证所需）。
+- **证据位置**：终端 372051 输出 + `~/.golish/transcripts/stage-run-c1ca8426-…/run.log`（`golish --replay stage-run-c1ca8426-532b-4e80-9de5-e284c8af591b` 可回放）。
+
+---
+
+### 2026-06-15 · 清 pre-existing 死码：golish-db `assemble_truth_facts`（BaJie MCP-agent-4 · DISPATCH off · 用户「顺手清 pre-existing 死码」）
+
+- **本轮目标**：清掉本进度日志多处记载的 pre-existing 死码 `golish-db/src/repo/coverage_truth.rs::assemble_truth_facts`（2c-3 后生产入口改走 `assemble_truth_facts_typed`，wrapper 仅剩测试调用 → 非测试构建 `dead_code` → 全 workspace `clippy -D warnings` / `just precommit` 红）。
+- **根因（复现取证，先复现再改）**：`cargo clippy -p golish-db -- -D warnings` → **exit 101**，唯一错误 `function assemble_truth_facts is never used (coverage_truth.rs:209)`。生产 caller `coverage_truth_facts`(line 341) 直接调 `assemble_truth_facts_typed(..., types, ...)`；wrapper 的 9 个调用点全在 `#[cfg(test)] mod tests`（406/420/597/612/632/657/672/691/727）。
+- **已完成（未 commit，仅 1 文件 `coverage_truth.rs`）**：删 `assemble_truth_facts` thin wrapper（其文档并入 `assemble_truth_facts_typed`）；9 个测试调用迁到 `assemble_truth_facts_typed(assets, &[], inputs)`（`&[]` types = 无类型信息保留全部，与 wrapper `assemble_truth_facts_typed(.., &[], ..)` 透传完全等价，fail-safe 不变）。**零生产行为变更**（wrapper 本就只透传 `&[]`）。
+- **运行过的验证（实跑）**：
+  - 复现（删前）：`cargo clippy -p golish-db -- -D warnings` → exit 101（dead_code 唯一错误）
+  - golish-db：`cargo clippy -p golish-db --all-targets -- -D warnings` → **exit 0**（lib+tests 均编译，死码消失，9 处测试改动可编译）
+  - golish-db：`cargo nextest run -p golish-db coverage_truth` → **21 passed / 66 skipped**（含 9 迁移测试 + 3 typed 测试，行为保留）
+  - **全 workspace 门禁**：`cargo clippy --workspace -- -D warnings` → **PASS exit 0**（之前因此死码红，现绿；确认 golish-db 内仅此 1 处死码、workspace 无其它死码阻断）
+  - 我的文件 fmt 干净（`coverage_truth.rs` 不在 fmt diff 列表内）；ReadLints 无错
+- **已记录证据**：见上「运行过的验证」。`assemble_truth_facts` 这处「待团队决定 re-apply 2c-3b 或清该函数」的 pre-existing 阻断 → 本轮选「清该函数」，**已解除**（待 commit）。
+- **提交记录**：无（未 commit；working tree 现含 1 处未提交改动 `backend/crates/golish-db/src/repo/coverage_truth.rs`）。
+- **顺带发现（非死码、本轮未动）**：`cargo fmt --check` 暴露 **21 处 pre-existing fmt 违规 / 7 文件**，全属上批 engagement-org/stage_run 已提交但未跑 fmt 的代码：`golish-agent-app/src/ai/db_bridge/{mod,recon}.rs`、`golish-agent-kit/src/{db_traits/repo.rs, harness/gate/rule_engine.rs, harness/org_gate.rs, harness/technique_resolver.rs, task_orchestrator/subtask_phases/execute.rs}`、`golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`。**这是 fmt 债不是死码**，但同样卡 `lint-rust`/`precommit` 的 `cargo fmt --check`。超出本轮「清死码」scope，未动；待用户决定是否 `cargo fmt` 一并清。
+- **已知风险/未解决**：① 本次改动未 commit；② 未跑全量 `just precommit`（其 fmt 段被上述 21 处 pre-existing fmt 债阻断、前端无关；但 `lint-rust` 的 clippy 段已单独验证 workspace 全绿）；③ fmt 债待用户拍板。
+- **下一步最佳动作**：① 用户决定是否顺带 `cargo fmt`（清 21 处 fmt 债，使 `lint-rust` 完全绿）；② commit 本次死码清理（建议与 engagement-org 工作分开单独 commit）；③ 之后跑全量 `just precommit` + 决定 push。
+
+---
+
 ### 2026-06-15 · engagement-org 隔离治本（"测 example 串成平安"根因 + core0/1/2/3）（BaJie MCP-agent-4 · DISPATCH off · 用户「全部搞完、优雅干净、代价无所谓」）
 
 - **本轮目标**：修用户报的"测 example stage-run 却串进历史平安数据"，根因调查 + 治本（engagement-org 范围隔离）。

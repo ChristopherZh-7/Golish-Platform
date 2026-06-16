@@ -143,6 +143,18 @@ pub struct StageSpec {
     #[serde(default)]
     pub host_aware_coverage: bool,
 
+    /// Anchor-only coverage denominator (design 2026-06-16-coverage-anchor-axis):
+    /// when true, `coverage_complete` first drops any in-scope asset that is a
+    /// strict subdomain of ANOTHER in-scope asset in the same set, so subdomains
+    /// passively discovered + registered as `scope='in'` during target_intel do
+    /// not inflate the (asset × technique) denominator — the root's SUBDOMAIN cell
+    /// already represents "subdomains were enumerated". The maximal roots always
+    /// remain, so a non-empty axis can never become empty (no spurious
+    /// empty-matrix BLOCK). Default false = byte-for-byte unchanged. Enable on the
+    /// passive-intel stage whose spec declares "no enumeration denominator".
+    #[serde(default)]
+    pub coverage_anchor_only: bool,
+
     /// Whether this stage's deliverable may carry security `findings` (design
     /// 2026-06-15-recon-stage-findings-suppression). Discovery / recon stages
     /// (scoping / target_intel / external_attack_surface / enumeration) set this

@@ -206,18 +206,11 @@ pub(crate) struct TruthInputs<'a> {
 
 /// 纯组装（与 IO 解耦，便于单测）：对每个 in-scope asset，按业务表存量产 `(asset, technique)`。
 /// 顺序确定（每 asset 内固定 12 维顺序，外层按 `in_scope_assets` 顺序），便于断言。
-pub(crate) fn assemble_truth_facts(
-    in_scope_assets: &[String],
-    inputs: &TruthInputs<'_>,
-) -> Vec<(String, &'static str)> {
-    // Backward-compatible: no per-asset type info ⇒ keep every fact (fail-safe).
-    assemble_truth_facts_typed(in_scope_assets, &[], inputs)
-}
-
+///
 /// 2c-2 (设计 2026-06-15-host-aware-coverage-2c §4.3): type-aware projection.
 /// `types[i]` is `in_scope_assets[i]` 的 `targets.type`；域名专属 org 事实（CT）
-/// **不**盖到 IP/CIDR 资产上（cert transparency 对裸 IP 无意义）。缺/未知类型 ⇒
-/// 当作非 IP（保留全部事实——fail-safe 倾向多报、绝不少报，不放松 gate）。
+/// **不**盖到 IP/CIDR 资产上（cert transparency 对裸 IP 无意义）。`types` 为空（或某
+/// 索引缺失/未知类型）⇒ 当作非 IP（保留全部事实——fail-safe 倾向多报、绝不少报，不放松 gate）。
 pub(crate) fn assemble_truth_facts_typed(
     in_scope_assets: &[String],
     types: &[String],
@@ -403,7 +396,7 @@ mod tests {
         let mut inputs = empty_inputs(&empty);
         inputs.has_subsidiary = true;
         let assets = vec!["moresec.cn".to_string(), "moresec.com".to_string()];
-        let facts = assemble_truth_facts(&assets, &inputs);
+        let facts = assemble_truth_facts_typed(&assets, &[], &inputs);
         // org 级事实投影：每个 in-scope asset 都拿到一条 SUBSIDIARY found。
         assert_eq!(
             facts.iter().filter(|(_, t)| *t == TECH_SUBSIDIARY).count(),
@@ -417,7 +410,7 @@ mod tests {
         let empty = subs(&[]);
         let inputs = empty_inputs(&empty);
         let assets = vec!["moresec.cn".to_string()];
-        let facts = assemble_truth_facts(&assets, &inputs);
+        let facts = assemble_truth_facts_typed(&assets, &[], &inputs);
         assert!(!facts.iter().any(|(_, t)| *t == TECH_SUBSIDIARY));
     }
 
@@ -594,7 +587,8 @@ mod tests {
     #[test]
     fn assemble_empty_in_scope_yields_no_facts() {
         let empty = HashSet::new();
-        let out = assemble_truth_facts(
+        let out = assemble_truth_facts_typed(
+            &[],
             &[],
             &TruthInputs {
                 has_asn: true,
@@ -609,8 +603,9 @@ mod tests {
     fn assemble_org_intel_applies_to_every_in_scope_asset() {
         let assets = vec!["moresec.cn".to_string(), "sub.moresec.cn".to_string()];
         let empty = HashSet::new();
-        let out = assemble_truth_facts(
+        let out = assemble_truth_facts_typed(
             &assets,
+            &[],
             &TruthInputs {
                 has_asn: true,
                 ..empty_inputs(&empty)
@@ -629,8 +624,9 @@ mod tests {
     fn assemble_whois_and_osint_are_org_level() {
         let assets = vec!["a.com".to_string(), "b.com".to_string()];
         let empty = HashSet::new();
-        let out = assemble_truth_facts(
+        let out = assemble_truth_facts_typed(
             &assets,
+            &[],
             &TruthInputs {
                 has_whois: true,
                 has_osint: true,
@@ -654,8 +650,9 @@ mod tests {
         let assets = vec!["moresec.cn".to_string(), "other.cn".to_string()];
         let sub = subs(&["moresec.cn"]);
         let empty = HashSet::new();
-        let out = assemble_truth_facts(
+        let out = assemble_truth_facts_typed(
             &assets,
+            &[],
             &TruthInputs {
                 subdomain_values: &sub,
                 ..empty_inputs(&empty)
@@ -669,8 +666,9 @@ mod tests {
         let assets = vec!["moresec.cn".to_string(), "other.cn".to_string()];
         let dns = subs(&["moresec.cn"]);
         let empty = HashSet::new();
-        let out = assemble_truth_facts(
+        let out = assemble_truth_facts_typed(
             &assets,
+            &[],
             &TruthInputs {
                 dns_values: &dns,
                 ..empty_inputs(&empty)
@@ -688,8 +686,9 @@ mod tests {
         let dir = subs(&["a.com"]);
         let param = subs(&["b.com"]);
         let jsapi = subs(&["a.com"]);
-        let out = assemble_truth_facts(
+        let out = assemble_truth_facts_typed(
             &assets,
+            &[],
             &TruthInputs {
                 has_asn: false,
                 has_ct: false,
@@ -724,8 +723,9 @@ mod tests {
     #[test]
     fn assemble_combines_all_dimensions_in_stable_order() {
         let one = subs(&["a.com"]);
-        let out = assemble_truth_facts(
+        let out = assemble_truth_facts_typed(
             &["a.com".to_string()],
+            &[],
             &TruthInputs {
                 has_asn: true,
                 has_ct: true,

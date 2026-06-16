@@ -299,26 +299,16 @@ impl GolishDbRepoProvider {
         // (root + subsidiaries). `None` org = legacy whole-visible set (chat /
         // pre-scoping). Once an org is bound, targets with no org binding are
         // excluded (fail-closed: an unowned row is not "this engagement's").
-        let allowed: Option<std::collections::HashSet<String>> = match org_id {
-            Some(root) => Some(
-                golish_db::repo::organizations::subtree_ids(&self.pool, root)
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|u| u.to_string())
-                    .collect(),
-            ),
-            None => None,
-        };
+        // Shares the db helper with the `manage_targets` list path so the two
+        // org-confinement reads never drift.
+        let allowed = golish_db::repo::organizations::subtree_id_str_set(&self.pool, org_id).await;
         Ok(targets
             .into_iter()
-            .filter(|t| match &allowed {
-                Some(set) => t
-                    .organization_id
-                    .as_deref()
-                    .map(|o| set.contains(o))
-                    .unwrap_or(false),
-                None => true,
+            .filter(|t| {
+                golish_db::repo::organizations::org_id_in_scope(
+                    t.organization_id.as_deref(),
+                    &allowed,
+                )
             })
             .map(|t| {
                 json!({

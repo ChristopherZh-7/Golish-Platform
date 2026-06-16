@@ -1,7 +1,7 @@
 {
   "tool": {
     "category": "recon",
-    "description": "OWASP Amass - in-depth attack surface mapping and asset discovery (passive + active subdomain enum, ASN, ports)",
+    "description": "OWASP Amass v5 - attack surface mapping (subdomain enum, ASN). v5 MODEL: `amass enum` auto-starts a background engine (:4000) and writes results to a local asset DB — it does NOT print discovered names to stdout. Use the two-step `enum` then `amass subs -d DOMAIN -names` to get names. v4 flags -json/-o were removed from enum; -passive is now the default. For a quick stdout subdomain list prefer subfinder; use amass for active/brute + ASN/IP breadth.",
     "executable": "amass",
     "id": "amass",
     "install": {
@@ -44,8 +44,12 @@
         "label": "Mode",
         "options": [
           {
-            "label": "enum - subdomain enumeration",
+            "label": "enum - run enumeration (populates the asset DB)",
             "value": "enum"
+          },
+          {
+            "label": "subs - print discovered names from the DB",
+            "value": "subs"
           },
           {
             "label": "track - delta between scans",
@@ -54,10 +58,6 @@
           {
             "label": "viz - generate graph viz",
             "value": "viz"
-          },
-          {
-            "label": "db - manage DB",
-            "value": "db"
           }
         ],
         "required": true,
@@ -84,9 +84,15 @@
         "type": "boolean"
       },
       {
-        "description": "Passive only (no DNS resolution)",
+        "description": "Deprecated in v5 (passive is the default). Use -active to add DNS resolution.",
         "flag": "-passive",
-        "label": "Passive",
+        "label": "Passive (deprecated)",
+        "type": "boolean"
+      },
+      {
+        "description": "subs mode: print just the discovered subdomain names to stdout",
+        "flag": "-names",
+        "label": "Names (subs)",
         "type": "boolean"
       },
       {
@@ -110,17 +116,17 @@
         "type": "string"
       },
       {
-        "description": "Output JSONL file",
-        "flag": "-json",
-        "label": "Output JSON",
-        "placeholder": "amass.jsonl",
+        "description": "Max minutes to run the enumeration (bounds long v5 runs)",
+        "flag": "-timeout",
+        "label": "Timeout (min)",
+        "placeholder": "10",
         "type": "string"
       },
       {
-        "description": "Plain output file",
-        "flag": "-o",
-        "label": "Output File",
-        "placeholder": "subs.txt",
+        "description": "Output / asset-DB directory shared by enum + subs (v5 has no enum -o flag)",
+        "flag": "-dir",
+        "label": "DB Directory",
+        "placeholder": "~/.config/amass",
         "type": "string"
       },
       {
@@ -144,48 +150,49 @@
     "runtime": "native",
     "skills": [
       {
-        "args": "enum -d {{domain}} -passive -silent",
-        "description": "Use only public sources, no DNS resolve",
+        "args": "enum -d {{domain}} -timeout 10 && amass subs -d {{domain}} -names",
+        "description": "v5 two-step: enum collects into the asset DB (passive is the default), then `subs -names` prints discovered names to stdout. enum auto-starts a background engine on :4000.",
         "id": "passive-enum",
-        "name": "Passive subdomain enum",
+        "name": "Passive subdomain enum (v5 two-step)",
         "tags": [
           "passive"
         ]
       },
       {
-        "args": "enum -d {{domain}} -active -silent",
-        "description": "Active mode (cert grab, DNS attacks)",
+        "args": "enum -d {{domain}} -active -timeout 15 && amass subs -d {{domain}} -names",
+        "description": "Active enum (zone transfers + cert name grabs), then print discovered names from the DB",
         "id": "active-enum",
-        "name": "Active subdomain enum",
+        "name": "Active subdomain enum (v5 two-step)",
         "tags": [
           "active"
         ]
       },
       {
-        "args": "enum -d {{domain}} -brute -w {{wordlist}} -silent",
-        "description": "Add wordlist brute on top of OSINT",
+        "args": "enum -d {{domain}} -brute -w {{wordlist}} -timeout 15 && amass subs -d {{domain}} -names",
+        "description": "Add wordlist brute forcing, then print discovered names from the DB",
         "id": "brute-enum",
-        "name": "Brute force subdomains",
+        "name": "Brute force subdomains (v5 two-step)",
         "tags": [
           "brute"
         ]
       },
       {
-        "args": "enum -d {{domain}} -json amass.jsonl",
-        "description": "Full JSONL with sources / IPs",
-        "id": "json-pipeline",
-        "name": "JSONL for pipeline",
+        "args": "subs -d {{domain}} -names",
+        "description": "Print names already collected in the asset DB by a prior enum run (no new enumeration)",
+        "id": "subs-names",
+        "name": "Print names from DB",
         "tags": [
-          "pipeline"
+          "db",
+          "fast"
         ]
       },
       {
-        "args": "enum -d {{domain}} -passive -silent | httpx -silent",
-        "description": "Direct subfinder-style pipeline",
-        "id": "to-httpx",
-        "name": "Pipe to httpx",
+        "args": "subs -d {{domain}} -ip",
+        "description": "Print discovered names with their resolved IP addresses (from the DB)",
+        "id": "subs-ips",
+        "name": "Names + IPs from DB",
         "tags": [
-          "pipeline"
+          "db"
         ]
       }
     ],

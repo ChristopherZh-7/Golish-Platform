@@ -28,6 +28,52 @@ pub(super) struct ToolDispatchResult {
     pub barrier_response: Option<String>,
 }
 
+/// Q3 ③ · Tag each tool in a `pentest_list_tools` result with `stage_allowed`
+/// by probing the active stage guard — the SAME predicate the executor blocks
+/// with — plus a top-level `stage_allowed_tools` list and a `stage_note`, so the
+/// worker sees the in-stage tool boundary up front instead of discovering it by
+/// hitting a BLOCK. No-op when the value has no `tools` array.
+fn annotate_list_tools_with_guard(
+    value: &mut serde_json::Value,
+    guard: &crate::executor_types::StageToolGuard,
+) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    let mut allowed: Vec<String> = Vec::new();
+    if let Some(arr) = obj.get_mut("tools").and_then(|t| t.as_array_mut()) {
+        for entry in arr.iter_mut() {
+            let name = entry
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            // Ok ⟺ the guard would let `pentest_run {tool_name: name}` run.
+            let ok = guard("pentest_run", &serde_json::json!({ "tool_name": name })).is_ok();
+            if let Some(entry_obj) = entry.as_object_mut() {
+                entry_obj.insert("stage_allowed".to_string(), serde_json::Value::Bool(ok));
+            }
+            if ok {
+                allowed.push(name);
+            }
+        }
+    }
+    obj.insert(
+        "stage_allowed_tools".to_string(),
+        serde_json::json!(allowed),
+    );
+    obj.insert(
+        "stage_note".to_string(),
+        serde_json::json!(
+            "Inside the active stage only tools with stage_allowed=true are usable; calling any \
+             other tool here is out-of-stage and will be BLOCKED — do not call it."
+        ),
+    );
+}
+
 /// Dispatch and execute a batch of tool calls from a sub-agent iteration.
 ///
 /// Handles three categories of tool calls:
@@ -424,7 +470,7 @@ where
         })
         .await;
 
-        let (result_value, success) = match tool_result {
+        let (mut result_value, success) = match tool_result {
             Ok(result) => result,
             Err(_) => {
                 let error_msg = format!(
@@ -441,6 +487,17 @@ where
                 (serde_json::json!({ "error": error_msg }), false)
             }
         };
+
+        // Q3 ③ · stage-annotate `pentest_list_tools` so this worker sees, per
+        // tool, whether the active stage permits it — instead of discovering the
+        // boundary by hitting a BLOCK. Reuses the SAME stage guard the executor
+        // enforces with (probe each tool as a `pentest_run` call), so the verdict
+        // matches what would actually run. No-op outside a harness stage.
+        if success && tool_name == "pentest_list_tools" {
+            if let Some(guard) = ctx.stage_tool_guard.as_ref() {
+                annotate_list_tools_with_guard(&mut result_value, guard);
+            }
+        }
 
         if success && (tool_name == "run_pty_cmd" || tool_name == "run_command") {
             if let Some(hook) = ctx.post_shell_hook.as_ref() {
@@ -521,5 +578,57 @@ where
         tool_results,
         barrier_hit,
         barrier_response,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::annotate_list_tools_with_guard;
+    use std::sync::Arc;
+
+    #[test]
+    fn guard_probe_marks_each_tool() {
+        // Stage guard that only allows `dig` (mimics a recon/dns-only stage):
+        // matches what the executor would enforce, so the annotation agrees.
+        let guard: crate::executor_types::StageToolGuard =
+            Arc::new(|tn: &str, args: &serde_json::Value| {
+                let inner = args.get("tool_name").and_then(|v| v.as_str()).unwrap_or(tn);
+                if inner == "dig" {
+                    Ok(())
+                } else {
+                    Err(format!("'{inner}' not allowed"))
+                }
+            });
+        let mut v = serde_json::json!({
+            "tools": [ { "name": "dig" }, { "name": "nmap" }, { "name": "sqlmap" } ],
+            "total": 3
+        });
+        annotate_list_tools_with_guard(&mut v, &guard);
+        let tools = v["tools"].as_array().unwrap();
+        let allowed = |n: &str| {
+            tools.iter().find(|t| t["name"] == n).unwrap()["stage_allowed"]
+                .as_bool()
+                .unwrap()
+        };
+        assert!(allowed("dig"), "dig allowed");
+        assert!(!allowed("nmap"), "nmap blocked");
+        assert!(!allowed("sqlmap"), "sqlmap blocked");
+        assert_eq!(
+            v["stage_allowed_tools"].as_array().unwrap(),
+            &vec![serde_json::json!("dig")]
+        );
+        assert!(v["stage_note"]
+            .as_str()
+            .unwrap()
+            .contains("stage_allowed=true"));
+    }
+
+    #[test]
+    fn guard_probe_noop_without_tools_array() {
+        let guard: crate::executor_types::StageToolGuard = Arc::new(|_, _| Ok(()));
+        let mut v = serde_json::json!({ "error": "x" });
+        annotate_list_tools_with_guard(&mut v, &guard);
+        assert_eq!(v["error"], "x");
+        assert!(v["stage_allowed_tools"].as_array().unwrap().is_empty());
     }
 }

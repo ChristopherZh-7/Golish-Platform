@@ -431,6 +431,7 @@ async fn register_pentest_tools(
             state.db_pool.clone(),
             state.pentest_config_manager.clone(),
             app_handle,
+            bridge.harness_active_org_id_handle(),
         );
         let mut registry = bridge.tool_registry().write().await;
         for tool in bridge_tools {
@@ -455,7 +456,13 @@ async fn register_pentest_tools(
             bridge.harness_active_stage_handle(),
             bridge.harness_last_deliverable_handle(),
         )
-        .with_evidence_repo(evidence_repo);
+        .with_evidence_repo(evidence_repo)
+        // Share the active engagement-org id so the submit-time gate preview also
+        // projects the org-keyed DB business-table truth (ASN/CT/OSINT) — not just
+        // the session-keyed command-path facts (DNS/WHOIS/SUBDOMAIN). Without this
+        // the per-org recon sub-agent's submit gate marks ASN/CT/OSINT "never
+        // attempted" forever and dead-loops even after enrich landed the data.
+        .with_org_id_source(bridge.harness_active_org_id_handle());
         // 乙 · scope the real-id suggestion to this chat session (the string both
         // evidence write paths stamp on the ledger) so a fabricated-ref needs_fix
         // can name the operation's real ids.

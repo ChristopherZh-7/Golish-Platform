@@ -1,0 +1,83 @@
+{
+  "tool": {
+    "id": "whois",
+    "pentestPhase": ["recon"],
+    "name": "whois",
+    "description": "Domain / IP registration lookup — registrar, registrant org, name servers, creation/expiry dates, and netblock / ASN ownership from WHOIS & RDAP registries",
+    "executable": "whois",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "whois",
+    "tier": "essential",
+    "tags": ["recon", "whois", "osint", "passive"],
+    "install": {
+      "method": "system",
+      "source": "whois",
+      "windows": { "method": "manual", "source": "https://learn.microsoft.com/sysinternals/downloads/whois" },
+      "linux": { "method": "apt", "source": "whois" }
+    },
+    "params": [
+      {
+        "label": "Target",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Domain or IP address to look up",
+        "placeholder": "example.com"
+      },
+      {
+        "label": "WHOIS Server",
+        "flag": "-h",
+        "type": "string",
+        "description": "Query a specific WHOIS server instead of the default referral",
+        "placeholder": "whois.iana.org"
+      },
+      {
+        "label": "Port",
+        "flag": "-p",
+        "type": "string",
+        "description": "Connect to a non-default port (default 43)",
+        "placeholder": "43"
+      }
+    ],
+    "skills": [
+      {
+        "id": "domain-whois",
+        "name": "Domain WHOIS",
+        "description": "Registrar, registrant org, name servers, creation/expiry dates",
+        "args": "{{target}}",
+        "tags": ["whois", "domain"]
+      },
+      {
+        "id": "ip-whois",
+        "name": "IP / netblock WHOIS",
+        "description": "Netblock owner and ASN for an IP address",
+        "args": "{{target}}",
+        "tags": ["whois", "ip", "asn"]
+      },
+      {
+        "id": "via-iana",
+        "name": "Authoritative via IANA",
+        "description": "Follow the IANA referral to the authoritative registry",
+        "args": "-h whois.iana.org {{target}}",
+        "tags": ["whois", "authoritative"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["whois_record", "intel"],
+      "detect": "(?i)Registrar:|Registrant|Creation Date|Name Server:|NetRange|OrgName:|inetnum:|origin(AS)?:",
+      "patterns": [
+        {
+          "type": "whois_record",
+          "regex": "(?i)^\\s*(Registrar|Registrant Organization|Creation Date|Registry Expiry Date|Name Server|OrgName|NetRange|origin):\\s*(.+?)\\s*$",
+          "fields": {
+            "1": "field",
+            "2": "value"
+          }
+        }
+      ]
+    }
+  }
+}

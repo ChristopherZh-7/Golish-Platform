@@ -101,6 +101,7 @@ mod tests {
             coverage_axis: vec![],
             facts_from_db_truth: false,
             host_aware_coverage: false,
+            coverage_anchor_only: false,
             findings_allowed: true,
         }
     }

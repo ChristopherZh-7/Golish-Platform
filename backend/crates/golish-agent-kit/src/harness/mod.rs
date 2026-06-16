@@ -115,8 +115,8 @@ pub use technique_taxonomy::{
     TechniqueMeta,
 };
 pub use tool_taxonomy::{
-    is_offensive_sub_agent, is_scan_invocation, is_scan_tool_name, stage_allows, tool_category,
-    underlying_tool_name,
+    allowed_tool_names, is_offensive_sub_agent, is_scan_invocation, is_scan_tool_name,
+    stage_allows, tool_category, underlying_tool_name,
 };
 pub use types::{
     AgentContinuity, CoverageCell, CoverageStatus, ExternalAttackSurfaceDeliverable,

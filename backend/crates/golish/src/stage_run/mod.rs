@@ -115,6 +115,10 @@ pub async fn run(args: Args) -> Result<()> {
     }
     eprintln!("[stage-run] database ready.");
 
+    // Test enablement: optionally seed an intel-provider API key into the vault
+    // so a headless run can populate organizations.* via enrich without the GUI.
+    maybe_seed_vault_key(&db_pool).await;
+
     // P1 · seed minimal upstream (org + in-scope targets) so an isolated
     // downstream stage (e.g. --only target_intel) has real data to work on.
     // Scoped to the workspace project_path the agent's manage_targets /
@@ -555,6 +559,57 @@ async fn maybe_seed(
             eprintln!("[stage-run] upstream seed failed (continuing): {e:#}");
             None
         }
+    }
+}
+
+/// Test enablement: seed an intel-provider API key into the vault from the file
+/// path in `GOLISH_SEED_VAULT_KEY_FILE` (single line `provider=key`), so a
+/// headless `--stage-run` can populate `organizations.*` via enrich without the
+/// GUI. The value is obfuscated to match the vault read path
+/// ([`golish_core::vault::deobfuscate`]) and upserted as an `api_key` row named
+/// after the provider. Opt-in: env unset → no-op. The key is read from a FILE
+/// (never argv / process list / shell history). Best-effort: failures are logged
+/// and the run continues (enrich will then surface the missing-credential gap).
+async fn maybe_seed_vault_key(pool: &sqlx::PgPool) {
+    let Ok(path) = std::env::var("GOLISH_SEED_VAULT_KEY_FILE") else {
+        return;
+    };
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[stage-run] vault key seed: cannot read {path}: {e}");
+            return;
+        }
+    };
+    let Some((provider, key)) = raw.trim().split_once('=') else {
+        eprintln!("[stage-run] vault key seed: file must contain 'provider=key'");
+        return;
+    };
+    let (provider, key) = (provider.trim(), key.trim());
+    if provider.is_empty() || key.is_empty() {
+        eprintln!("[stage-run] vault key seed: empty provider or key");
+        return;
+    }
+    let obfuscated = golish_core::vault::obfuscate(key);
+    let res: Result<(), sqlx::Error> = async {
+        sqlx::query("DELETE FROM vault_entries WHERE name = $1 AND entry_type = 'api_key'")
+            .bind(provider)
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO vault_entries (name, entry_type, value, notes, tags) \
+             VALUES ($1, 'api_key'::vault_entry_type, $2, 'seeded by --stage-run', '[\"intel-provider\"]'::jsonb)",
+        )
+        .bind(provider)
+        .bind(&obfuscated)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+    .await;
+    match res {
+        Ok(()) => eprintln!("[stage-run] seeded vault api_key for '{provider}' (value redacted)"),
+        Err(e) => eprintln!("[stage-run] vault key seed failed (continuing): {e}"),
     }
 }
 

@@ -9,6 +9,7 @@
 //! creating one new file and registering it in
 //! `ExecutionModeRegistry::default`. This module no longer needs touching.
 
+use golish_agent_kit::tool_definitions::get_all_tool_definitions;
 use golish_sub_agents::SubAgentContext;
 
 use super::context::AgenticLoopContext;
@@ -56,7 +57,62 @@ pub(crate) async fn build_tool_list(
     // into targets or pop a target `scope_review` during scoping (user directive
     // 2026-06-13; methodology backstop at the tool boundary).
     hide_manage_targets_in_scoping(&mut tools, ctx.harness_stage);
+    // Read-only coverage self-check: the depth-0 stage orchestrator builds its
+    // coverage matrix from what actually landed in the DB, but task
+    // `primary_tools` is orchestration-only (no static groups) so the read-only
+    // data-query tools never reach it — live evidence 2026-06-16 shows the
+    // model calling `query_target_data`, hitting a tool-guard BLOCK, then
+    // guessing the matrix (target_intel coverage dead-loop). Surface them just
+    // for the depth-0 primary while a stage is active. Read-only: no scan/write.
+    if sub_agent_context.depth == 0 {
+        add_read_only_target_query_tools_for_stage(&mut tools, ctx.harness_stage);
+    }
     tools
+}
+
+/// Surface the read-only target/coverage query tools (`list_in_scope_targets`
+/// + `query_target_data`) for the depth-0 orchestrator while a harness stage is
+/// active.
+///
+/// Task `primary_tools` is orchestration-only (`static_groups: none`), so these
+/// static-catalogue tools never reach the stage orchestrator. Without them the
+/// model calls `query_target_data` to self-check coverage, hits the per-turn
+/// tool-guard ("not in allowed list"), and falls back to guessing the coverage
+/// matrix — the live target_intel coverage dead-loop. Both are read-only DB
+/// reads (no scan / write / exec surface), so they are safe in every stage.
+///
+/// Idempotent: skips any tool already present (subtask depth>0 gets them via the
+/// static groups) and is a no-op when no harness stage is active.
+fn add_read_only_target_query_tools_for_stage(
+    tools: &mut Vec<rig::completion::ToolDefinition>,
+    harness_stage: Option<golish_agent_kit::harness::StageKind>,
+) {
+    if harness_stage.is_none() {
+        return;
+    }
+    // `query_target_data(target_id)` needs ids; `list_in_scope_targets` is its
+    // documented companion ("call FIRST to discover targets, then drill in").
+    const READ_ONLY_QUERY_TOOLS: &[&str] = &["list_in_scope_targets", "query_target_data"];
+    let any_missing = READ_ONLY_QUERY_TOOLS
+        .iter()
+        .any(|name| !tools.iter().any(|t| t.name == *name));
+    if !any_missing {
+        return;
+    }
+    let catalogue = get_all_tool_definitions();
+    for name in READ_ONLY_QUERY_TOOLS {
+        if tools.iter().any(|t| t.name == *name) {
+            continue;
+        }
+        if let Some(def) = catalogue.iter().find(|t| t.name == *name) {
+            tools.push(def.clone());
+            tracing::debug!(
+                target: "harness::hook",
+                tool = *name,
+                "tool-list: surfaced read-only target query tool for the depth-0 stage orchestrator"
+            );
+        }
+    }
 }
 
 /// Remove `manage_targets` from the exposed list when the active harness stage is
@@ -234,6 +290,42 @@ mod tests {
         hide_manage_targets_in_scoping(&mut none, None);
         assert!(none.iter().any(|t| t.name == "manage_targets"));
     }
+
+    /// The depth-0 stage orchestrator must be handed the read-only target query
+    /// tools (`query_target_data` + `list_in_scope_targets`) while a harness
+    /// stage is active so it can self-check coverage instead of guessing the
+    /// matrix; the additions are idempotent and a no-op without an active stage.
+    #[test]
+    fn read_only_query_tools_surfaced_for_active_stage_orchestrator() {
+        use golish_agent_kit::harness::StageKind;
+
+        let mut tools = vec![td("submit_stage_deliverable"), td("update_plan")];
+        add_read_only_target_query_tools_for_stage(&mut tools, Some(StageKind::TargetIntel));
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"query_target_data"),
+            "stage orchestrator must get query_target_data for coverage self-check: {names:?}"
+        );
+        assert!(
+            names.contains(&"list_in_scope_targets"),
+            "must also get its list companion (source of target ids): {names:?}"
+        );
+
+        // Idempotent: a second pass (or a tool already present) adds no dupes.
+        let before = tools.len();
+        add_read_only_target_query_tools_for_stage(&mut tools, Some(StageKind::TargetIntel));
+        assert_eq!(
+            tools.len(),
+            before,
+            "must not duplicate already-present query tools"
+        );
+
+        // No active stage → untouched (chat / non-stage turns).
+        let mut none = vec![td("submit_stage_deliverable")];
+        add_read_only_target_query_tools_for_stage(&mut none, None);
+        assert_eq!(none.len(), 1, "no stage → no additions");
+    }
+
     use golish_agent_kit::execution_mode::ExecutionMode;
     use golish_agent_kit::tool_definitions::{ToolPreset, ToolSelectionConfig};
     use golish_llm_providers::LlmClient;

@@ -7,6 +7,7 @@
 
 pub(crate) mod direct;
 mod hitl;
+pub(crate) mod stage_list_tools;
 
 pub use direct::execute_tool_direct_generic;
 pub use hitl::execute_with_hitl_generic;

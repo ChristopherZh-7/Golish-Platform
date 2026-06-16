@@ -158,4 +158,40 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
             }
         }
     }
+
+    async fn db_truth_facts(
+        &self,
+        org_id: Option<uuid::Uuid>,
+        assets: &[String],
+    ) -> Vec<golish_agent_kit::harness::EvidenceFact> {
+        use golish_agent_kit::harness::{EvidenceFact, EvidenceOutcome};
+        match self.db_truth_facts_impl(org_id, assets).await {
+            // coverage_truth is Found-only (it never infers checked_empty), and
+            // the projection is evidence-id-agnostic, so the business-table truth
+            // maps to Found facts with the sentinel id 0.
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(asset, technique)| EvidenceFact {
+                    asset,
+                    technique,
+                    outcome: EvidenceOutcome::Found,
+                    evidence_id: 0,
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    target: "harness::submit_tool",
+                    error = %e,
+                    "db_truth_facts failed; submit gate preview runs without the org-truth half"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    async fn in_scope_assets(&self, org_id: Option<uuid::Uuid>) -> Vec<String> {
+        // org-isolated (`in_scope_values(None, org_id)`), unlike the whole-DB
+        // `in_scope_targets`; keeps the submit preview's asset axis to THIS org.
+        self.in_scope_assets_impl(org_id).await.unwrap_or_default()
+    }
 }

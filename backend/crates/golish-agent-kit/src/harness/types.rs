@@ -228,6 +228,14 @@ pub struct CoverageCell {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StageDeliverable {
     pub stage_id: String,
+    /// Server-assigned (2026-06-16): the `submit_stage_deliverable` tool overwrites
+    /// this with a fresh random UUID and no longer asks the model for it. The field
+    /// is only logged + non-nil-checked (`schema_check`), never used for evidence
+    /// binding (that keys off `evidence_ids`), so generating it server-side removes a
+    /// weak model's ability to emit fabricated/patterned ids. `#[serde(default)]`
+    /// lets the model omit it; a non-tool parse that omits it stays nil and
+    /// `schema_check` still blocks (the nil guard is preserved as a safety net).
+    #[serde(default)]
     pub stage_run_id: Uuid,
     pub claims: Vec<StageClaim>,
     pub evidence_refs: Vec<EvidenceAuditId>,

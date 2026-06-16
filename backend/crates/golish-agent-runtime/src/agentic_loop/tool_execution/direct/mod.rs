@@ -509,6 +509,23 @@ where
                     obj.insert("_evidence_id".to_string(), json!(id));
                 }
             }
+
+            // Q3 ③ · stage-annotate `pentest_list_tools` so the agent sees, per
+            // tool, whether the active stage permits it — instead of discovering
+            // the boundary by hitting a BLOCK. The verdict uses the same
+            // `stage_allows` predicate the dispatch guard enforces with, so the
+            // annotation never disagrees with what the gate will actually do.
+            if effective_tool_name == "pentest_list_tools" && is_success {
+                if let Some(kind) = ctx.harness_stage {
+                    if let Ok(spec) = golish_agent_kit::harness::load_embedded_stage_spec(kind) {
+                        crate::agentic_loop::tool_execution::stage_list_tools::annotate_pentest_list_tools(
+                            &mut value,
+                            &spec.id,
+                            &spec.allowed_tool_types,
+                        );
+                    }
+                }
+            }
             Ok(ToolExecutionResult {
                 value,
                 success: is_success,

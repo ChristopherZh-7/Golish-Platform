@@ -9,7 +9,8 @@
 //! StageDeliverable`.
 //!
 //! A typed tool forces the model to emit *structured arguments* (it cannot
-//! "describe" — it must fill `stage_id` / `claims` / `evidence_refs` fields),
+//! "describe" — it must fill `stage_id` / `claims` / `evidence_refs` fields; the
+//! server assigns `stage_run_id`),
 //! which the handler captures deterministically into the bridge side-channel
 //! (`harness_last_deliverable`). The Task-mode executor then feeds it to the
 //! gate at stage close. See `docs/design/2026-06-02-submit-stage-deliverable-tool.md`.
@@ -21,6 +22,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use golish_agent_kit::harness::{
     load_embedded_stage_spec, validate_stage_gate_with_context, EvidenceFact, GateContext,
@@ -57,6 +59,31 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         let _ = session_id;
         Vec::new()
     }
+
+    /// DB business-table truth facts (`organizations.asns/.certificates/.intel`
+    /// → ASN/CT/OSINT, projected per in-scope asset) for `org_id`. Found-only
+    /// (coverage_truth never infers checked_empty). This is the HALF of the gate
+    /// context the submit preview previously missed: the session-keyed
+    /// `evidence_facts` only carry command-path techniques (DNS/WHOIS/SUBDOMAIN
+    /// from dig/whois/subfinder), never the org-keyed business-table ones
+    /// (ASN/CT/OSINT — which have no CLI tool), so those cells were always
+    /// "never attempted" and trapped per-org recon sub-agents in a resubmit loop.
+    /// Default empty so test doubles / no-DB / no-org paths skip the projection.
+    async fn db_truth_facts(&self, org_id: Option<Uuid>, assets: &[String]) -> Vec<EvidenceFact> {
+        let _ = (org_id, assets);
+        Vec::new()
+    }
+
+    /// The authoritative in-scope asset values for `org_id` (org-isolated via
+    /// `in_scope_values(None, org_id)`). Used as the coverage asset axis for the
+    /// submit preview so it matches the org's real targets — NOT the whole-DB
+    /// `in_scope_targets` set (which would drag in every target ever seeded
+    /// across runs). Default empty → preview keeps the deliverable's
+    /// self-reported asset set (prior behaviour).
+    async fn in_scope_assets(&self, org_id: Option<Uuid>) -> Vec<String> {
+        let _ = org_id;
+        Vec::new()
+    }
 }
 
 /// Tool that captures a structured [`StageDeliverable`] into the bridge
@@ -78,6 +105,12 @@ pub struct SubmitStageDeliverableTool {
     /// fabricated-ref `needs_fix` can name the operation's REAL ids. `None` ⇒ no
     /// id hint (still rejects fabricated refs, just without the suggestion).
     session_id: Option<String>,
+    /// Engagement root org id source (shared with the bridge's
+    /// `harness_active_org_id`). Lets `gate_context` pull the org-keyed DB
+    /// business-table truth (ASN/CT/OSINT) + authoritative asset axis for THIS
+    /// run's org, mirroring the main-agent stage-close hook. `None` ⇒ no org
+    /// binding ⇒ db-truth projection skipped (preview keeps prior behaviour).
+    org_id_source: Option<Arc<RwLock<Option<Uuid>>>>,
 }
 
 impl SubmitStageDeliverableTool {
@@ -90,6 +123,7 @@ impl SubmitStageDeliverableTool {
             last_deliverable,
             evidence_repo: None,
             session_id: None,
+            org_id_source: None,
         }
     }
 
@@ -102,6 +136,14 @@ impl SubmitStageDeliverableTool {
     /// Scope the real-id suggestion (乙) to this chat session.
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Share the bridge's active engagement-org id so the submit preview can
+    /// project the org-keyed DB business-table truth (ASN/CT/OSINT) + the
+    /// authoritative in-scope asset axis into the gate context.
+    pub fn with_org_id_source(mut self, src: Arc<RwLock<Option<Uuid>>>) -> Self {
+        self.org_id_source = Some(src);
         self
     }
 
@@ -157,15 +199,46 @@ impl SubmitStageDeliverableTool {
     /// per-org recon sub-agents in an endless resubmit loop. Mirrors the
     /// authoritative-found wiring the main-agent stage-close hook already has.
     async fn gate_context(&self) -> GateContext {
-        let facts = match (self.evidence_repo.as_ref(), self.session_id.as_deref()) {
-            (Some(repo), Some(sid)) => {
-                let f = repo.evidence_facts(sid).await;
-                (!f.is_empty()).then_some(f)
-            }
-            _ => None,
+        let Some(repo) = self.evidence_repo.as_ref() else {
+            return GateContext::default();
         };
+        // (1) command-path ledger facts (DNS/WHOIS/SUBDOMAIN from dig/whois/
+        //     subfinder), keyed by chat session.
+        let mut facts: Vec<EvidenceFact> = match self.session_id.as_deref() {
+            Some(sid) => repo.evidence_facts(sid).await,
+            None => Vec::new(),
+        };
+        // (2) org-keyed DB business-table truth (ASN/CT/OSINT) + authoritative
+        //     asset axis — ONLY when a bound org is present. Techniques with no
+        //     CLI tool (ASN/CT/OSINT) only ever land in `organizations.*`; without
+        //     merging coverage_truth here the preview saw only command-path facts
+        //     and rejected those cells as "never attempted", trapping per-org
+        //     recon sub-agents in a resubmit loop even after enrich landed the
+        //     data. Mirrors the main-agent stage-close hook
+        //     (`fetch_evidence_facts_for_gate`).
+        //
+        //     With `org_id == None` the in-scope read + org-presence query fall
+        //     back to the WHOLE persistent DB (every target ever seeded, across
+        //     runs/orgs) and produce no org-level facts — that would only pollute
+        //     the asset axis with unrelated hosts. So skip the projection and keep
+        //     the deliverable's self-reported axis (prior behaviour).
+        let org_id = match self.org_id_source.as_ref() {
+            Some(src) => *src.read().await,
+            None => None,
+        };
+        if let Some(org_id) = org_id {
+            let assets = repo.in_scope_assets(Some(org_id)).await;
+            if !assets.is_empty() {
+                facts.extend(repo.db_truth_facts(Some(org_id), &assets).await);
+                return GateContext {
+                    in_scope_assets: Some(assets),
+                    evidence_facts: (!facts.is_empty()).then_some(facts),
+                    ..Default::default()
+                };
+            }
+        }
         GateContext {
-            evidence_facts: facts,
+            evidence_facts: (!facts.is_empty()).then_some(facts),
             ..Default::default()
         }
     }
@@ -180,9 +253,10 @@ impl Tool for SubmitStageDeliverableTool {
     fn description(&self) -> &'static str {
         "Submit the structured StageDeliverable for the CURRENT operation stage. \
          Call this once the stage's required tools have actually run. Pass the real \
-         structured data as arguments (NOT a prose description, NOT a JSON string in \
-         text) — stage_id, a random uuid v4 stage_run_id, claims, evidence_refs, and \
-         findings. The deterministic gate validates it against the evidence ledger to \
+         structured data as arguments (NOT a          prose description, NOT a JSON string in \
+         text) — stage_id, claims, evidence_refs, and \
+         findings (stage_run_id is assigned by the server, do not pass it). The \
+         deterministic gate validates it against the evidence ledger to \
          advance the stage. This is the ONLY way to complete a stage. Do NOT hunt for \
          evidence ids in raw tool output — if your evidence_ids are missing or wrong, \
          this tool returns the operation's real evidence ids (`available_evidence_ids`) \
@@ -201,10 +275,6 @@ impl Tool for SubmitStageDeliverableTool {
                 "stage_id": {
                     "type": "string",
                     "description": "The current stage id, e.g. \"target_intel\", \"external_attack_surface\". Must equal the active stage."
-                },
-                "stage_run_id": {
-                    "type": "string",
-                    "description": "A random UUID v4 for this stage run."
                 },
                 "claims": {
                     "type": "array",
@@ -292,7 +362,7 @@ impl Tool for SubmitStageDeliverableTool {
                     "items": { "type": "string" }
                 }
             },
-            "required": ["stage_id", "stage_run_id", "claims", "evidence_refs", "findings"]
+            "required": ["stage_id", "claims", "evidence_refs", "findings"]
         })
     }
 
@@ -307,12 +377,22 @@ impl Tool for SubmitStageDeliverableTool {
                     "status": "rejected",
                     "reason": format!(
                         "could not parse StageDeliverable: {e}. Pass the structured fields \
-                         (stage_id, stage_run_id, claims[], evidence_refs[], findings[]) as tool \
+                         (stage_id, claims[], evidence_refs[], findings[]) as tool \
                          arguments — do not describe the JSON in prose."
                     ),
                 }));
             }
         };
+
+        // stage_run_id is server-assigned: overwrite any model-supplied value with a
+        // fresh random UUID before it reaches the gate preview, the side-channel sink,
+        // or any log. The field is only logged + non-nil-checked downstream, never used
+        // for evidence binding (which keys off evidence_ids), so generating it here
+        // removes a weak model's ability to emit fabricated, patterned ids
+        // (deepseek-v4-flash emitted incrementing bb07→bb08→… UUIDs that polluted the
+        // gate logs). The authoritative per-stage-run id used for evidence isolation /
+        // persistence is the harness's own, sourced separately.
+        deliverable.stage_run_id = uuid::Uuid::new_v4();
 
         let active = *self.active_stage.read().await;
         if let Some(kind) = active {
@@ -896,6 +976,100 @@ mod tests {
             out["status"].as_str(),
             Some("accepted"),
             "DNS found must be credited from the ledger fact, not rejected as never-attempted: {out:?}"
+        );
+    }
+
+    // 2026-06-16 · companion to the ledger-fact test above: the submit preview
+    // must ALSO credit found cells from the ORG-keyed DB business-table truth
+    // (coverage_truth → organizations.asns/.certificates/.intel = ASN/CT/OSINT).
+    // Those techniques have NO CLI tool, so they never appear in the session-keyed
+    // command-path `evidence_facts`; before this fix the preview ran without the
+    // db-truth half AND without an authoritative asset axis, so it marked every
+    // ASN/CT/OSINT cell "never attempted" and dead-looped per-org recon sub-agents
+    // even after enrich landed the data (live moresec.cn run: certificates=3
+    // landed in organizations.certificates yet CT stayed "never attempted").
+    struct DbTruthMock {
+        existing: HashSet<i64>,
+        db_facts: Vec<EvidenceFact>,
+        assets: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl EvidenceLedgerQuery for DbTruthMock {
+        async fn existing_evidence_ids(&self, ids: &[i64]) -> Result<HashSet<i64>> {
+            Ok(ids
+                .iter()
+                .copied()
+                .filter(|i| self.existing.contains(i))
+                .collect())
+        }
+        // No command-path ledger facts on purpose (evidence_facts defaults empty):
+        // this proves the db-truth half alone satisfies ASN/CT/OSINT.
+        async fn db_truth_facts(
+            &self,
+            _org: Option<uuid::Uuid>,
+            _assets: &[String],
+        ) -> Vec<EvidenceFact> {
+            self.db_facts.clone()
+        }
+        async fn in_scope_assets(&self, _org: Option<uuid::Uuid>) -> Vec<String> {
+            self.assets.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn target_intel_found_cells_credited_from_db_truth_facts() {
+        use golish_agent_kit::harness::EvidenceOutcome;
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::TargetIntel);
+
+        let found = |t: &str| EvidenceFact {
+            asset: "moresec.cn".into(),
+            technique: t.into(),
+            outcome: EvidenceOutcome::Found,
+            evidence_id: 0, // sentinel: business-table truth, not a ledger row
+        };
+        let repo = DbTruthMock {
+            existing: [100, 101].into_iter().collect(),
+            db_facts: vec![
+                found("GOLISH-INTEL-DNS"),
+                found("GOLISH-INTEL-WHOIS"),
+                found("GOLISH-INTEL-ASN"),
+                found("GOLISH-INTEL-CT"),
+                found("GOLISH-INTEL-SUBDOMAIN"),
+                found("GOLISH-INTEL-OSINT"),
+            ],
+            assets: vec!["moresec.cn".into()],
+        };
+        let org_src = Arc::new(RwLock::new(Some(uuid::Uuid::new_v4())));
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
+            .with_evidence_repo(Arc::new(repo))
+            .with_session_id("pentest-chat-1")
+            .with_org_id_source(org_src);
+
+        // The model submits NO coverage cells (methodology: "leave found cells out
+        // — the DB supplies them"); just a backing claim + cited ids to clear the
+        // structural checks. All 6 techniques must come from the db-truth half.
+        let args = json!({
+            "stage_id": "target_intel",
+            "stage_run_id": "3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
+            "claims": [{
+                "kind": "dns_a_record", "subject": "moresec.cn",
+                "summary": "moresec.cn A 115.28.135.55", "evidence_ids": [100],
+                "technique": "GOLISH-INTEL-DNS"
+            }],
+            "evidence_refs": [100, 101],
+            "findings": [],
+            "coverage": [],
+            "skipped_checks": [],
+            "required_checks_done": ["dns_resolve", "subdomain_enum_passive"]
+        });
+
+        let out = tool.execute(args, Path::new("/tmp")).await.unwrap();
+        assert_eq!(
+            out["status"].as_str(),
+            Some("accepted"),
+            "ASN/CT/OSINT must be credited from DB business-table truth, not rejected as never-attempted: {out:?}"
         );
     }
 

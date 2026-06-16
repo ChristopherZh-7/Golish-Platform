@@ -127,6 +127,19 @@ impl GateRule {
                 .unwrap_or_else(|| format!("{} check", check.as_str())),
         }
     }
+
+    /// 稳定的 op 标识，用于可观测性日志（block 归因）。`named_check` 取其 check 名
+    /// （scope / surface_coverage / min_invocations），其余取顶层 op tag。
+    pub fn op_name(&self) -> &'static str {
+        match self {
+            GateRule::CountAtLeast { .. } => "count_at_least",
+            GateRule::ForAll { .. } => "for_all",
+            GateRule::NamedCheck { check, .. } => check.as_str(),
+            GateRule::CoverageComplete { .. } => "coverage_complete",
+            GateRule::CoverageCorroborated { .. } => "coverage_corroborated",
+            GateRule::CoverageDenominator { .. } => "coverage_denominator",
+        }
+    }
 }
 
 /// MVP 只含有可寻址字段的两个集合（evidence_refs / skipped_checks 的计数已被
@@ -253,7 +266,7 @@ fn eval_one(
     ctx: &GateContext,
     rule: &GateRule,
 ) -> GateCheckOutcome {
-    match rule {
+    let outcome = match rule {
         GateRule::CountAtLeast {
             over,
             filter,
@@ -310,7 +323,27 @@ fn eval_one(
             min_sample_ratio_pct,
             on_fail,
         } => coverage_denominator(d, *min_sample_ratio_pct, on_fail),
+    };
+
+    // Observability (2026-06-16): the semantic gate rules were the ONLY gate layer
+    // with no tracing — a `coverage_complete` block (e.g. target_intel "never
+    // attempted" cells) surfaced solely in the submit tool result, never in
+    // backend.log, so a stuck stage looked like "4 structural checks pass" with no
+    // visible cause. Emit the block here (mirrors `harness::gate::schema_check`) so
+    // the actual blocking rule + first reason are greppable per submit.
+    if let GateCheckOutcome::Block { reasons, .. } = &outcome {
+        tracing::info!(
+            target: "harness::gate::rule_engine",
+            stage_id = %d.stage_id,
+            stage_run_id = %d.stage_run_id,
+            op = rule.op_name(),
+            outcome = "block",
+            reasons_count = reasons.len(),
+            first_reason = reasons.first().map(String::as_str).unwrap_or(""),
+            "gate_rule block"
+        );
     }
+    outcome
 }
 
 /// 所有 coverage 终态（`terminal_status` 缺省时用）。
@@ -320,6 +353,27 @@ const ALL_TERMINAL: [CoverageStatus; 4] = [
     CoverageStatus::Blocked,
     CoverageStatus::NotApplicable,
 ];
+
+/// Anchor-only coverage axis (design 2026-06-16-coverage-anchor-axis): drop any
+/// asset that is a strict subdomain of ANOTHER asset in the same in-scope set, so
+/// subdomains passively discovered + registered as `scope='in'` during a "no
+/// enumeration denominator" stage (target_intel) do not inflate the (asset ×
+/// technique) matrix — the root's own SUBDOMAIN cell already represents the
+/// enumeration. Pure (no IO). The leading dot in the `.{parent}` suffix check stops
+/// `ba.com` matching parent `a.com`. Maximal roots have no in-set parent so they
+/// always remain ⇒ a non-empty input never yields an empty output (so this filter
+/// can never trigger the empty-matrix BLOCK).
+fn anchor_only_axis<'a>(assets: &[&'a str]) -> Vec<&'a str> {
+    assets
+        .iter()
+        .copied()
+        .filter(|a| {
+            !assets.iter().any(|parent| {
+                *parent != *a && a.len() > parent.len() && a.ends_with(&format!(".{parent}"))
+            })
+        })
+        .collect()
+}
 
 /// `coverage_complete` 求值（纯函数，设计 §4.2 + Phase 2 ①③ seam）。期望技术取
 /// `ctx.expected_techniques`（③ 动态注入）否则 `spec.expected_techniques`（静态），空 →
@@ -360,6 +414,19 @@ fn coverage_complete(
             }
             self_reported
         }
+    };
+
+    // Anchor-only denominator (design 2026-06-16-coverage-anchor-axis): on a stage
+    // that declares "no enumeration denominator" (target_intel), drop assets that
+    // are subdomains of another in-scope asset so this stage's own passively-
+    // discovered subdomains don't inflate the matrix (the "treadmill" that drove
+    // every org to its iteration cap). Maximal roots always remain, so the empty
+    // check below is never reached via this filter (a non-empty axis stays
+    // non-empty). Default off ⇒ byte-for-byte unchanged for every other stage.
+    let assets: Vec<&str> = if spec.coverage_anchor_only {
+        anchor_only_axis(&assets)
+    } else {
+        assets
     };
 
     // P0 (2026-06-11 coverage-empty-bypass): we already returned Pass above when
@@ -1180,6 +1247,92 @@ mod tests {
                 "host_aware_coverage":{host_aware}}}"#
         ))
         .expect("target_intel spec parses")
+    }
+
+    /// target_intel spec with the anchor-only coverage flag set.
+    fn target_intel_anchor_spec(anchor_only: bool) -> StageSpec {
+        crate::harness::stage_spec::load_stage_spec_from_json(&format!(
+            r#"{{"id":"target_intel","kind":"target_intel","risk_level":"low",
+                "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+                "coverage_anchor_only":{anchor_only}}}"#
+        ))
+        .expect("target_intel anchor spec parses")
+    }
+
+    #[test]
+    fn coverage_anchor_only_drops_subdomains_of_in_scope_roots() {
+        // 设计 2026-06-16-coverage-anchor-axis: target_intel 的覆盖分母只数「锚点/根域」。
+        // 被动枚举登记进 scope=in 的子域（pingan.com 的下级）不该撑大分母——根域的
+        // SUBDOMAIN 技术格已代表「枚举过子域」。锚点过滤后只有 pingan.com 要核 6 类，
+        // 4scloud-web.pingan.com（其子域）被剔出分母。
+        let techs = [
+            "GOLISH-INTEL-DNS",
+            "GOLISH-INTEL-SUBDOMAIN",
+            "GOLISH-INTEL-CT",
+            "GOLISH-INTEL-WHOIS",
+            "GOLISH-INTEL-ASN",
+            "GOLISH-INTEL-OSINT",
+        ];
+        // 交付物只为根域 pingan.com 给齐 6 类终态（blocked，免证据，专测分母轴）。
+        let cells: Vec<CoverageCell> = techs
+            .iter()
+            .map(|t| cov_cell("pingan.com", t, CoverageStatus::Blocked, vec![]))
+            .collect();
+        let d = deliverable_with_coverage(cells);
+        let ctx = GateContext {
+            in_scope_assets: Some(vec![
+                "pingan.com".to_string(),
+                "4scloud-web.pingan.com".to_string(),
+            ]),
+            asset_types: None,
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: None,
+        };
+        let rule = coverage_complete_rule();
+
+        // anchor_only OFF：子域也要核 6 类，但交付物没覆盖它 → BLOCK。
+        let spec_off = target_intel_anchor_spec(false);
+        assert!(
+            !eval_with_context(&d, &spec_off, std::slice::from_ref(&rule), &ctx)[0].is_pass(),
+            "anchor_only off: discovered subdomain inflates the denominator → BLOCK"
+        );
+
+        // anchor_only ON：子域被剔出分母，只核 pingan.com（已给齐 6 类）→ PASS。
+        let spec_on = target_intel_anchor_spec(true);
+        assert!(
+            eval_with_context(&d, &spec_on, &[rule], &ctx)[0].is_pass(),
+            "anchor_only on: subdomain dropped from denominator, only root required → PASS"
+        );
+    }
+
+    #[test]
+    fn coverage_anchor_only_keeps_all_when_no_parent_in_axis() {
+        // 锚点过滤只剔「在轴内有父根域」的子域；若轴里没有父（如错配场景：39 个子域、
+        // 没有根域），它们彼此是兄弟、都保留（不凭空变空轴）。证明过滤不误伤、且
+        // 非空轴永不变空。
+        let techs = ["GOLISH-INTEL-DNS"];
+        let ctx = GateContext {
+            in_scope_assets: Some(vec![
+                "a.pa18.com".to_string(),
+                "b.pa18.com".to_string(),
+            ]),
+            asset_types: None,
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: None,
+        };
+        // 只覆盖了 a，没覆盖 b → 两个都在轴里时必 BLOCK（证明 b 没被剔除）。
+        let d = deliverable_with_coverage(vec![cov_cell(
+            "a.pa18.com",
+            "GOLISH-INTEL-DNS",
+            CoverageStatus::Blocked,
+            vec![],
+        )]);
+        let rule = coverage_complete_rule();
+        let spec_on = target_intel_anchor_spec(true);
+        assert!(
+            !eval_with_context(&d, &spec_on, &[rule], &ctx)[0].is_pass(),
+            "siblings with no in-axis parent are all kept → b.pa18.com still required → BLOCK"
+        );
     }
 
     #[test]
