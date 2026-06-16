@@ -96,7 +96,7 @@ export function ToolManager() {
           install.handleUninstall(tool);
           break;
         case "install":
-          install.handleInstall(tool);
+          install.enqueueInstall(tool);
           break;
         case "install-deps":
           install.handleInstallDeps(tool);
@@ -121,11 +121,13 @@ export function ToolManager() {
 
   const actionCtx: ActionButtonProps = {
     busy: install.busy,
+    queuedIds: install.queuedIds,
     installProgress: install.installProgress,
     dlProgress: install.dlProgress,
     onCancel: install.handleCancelInstall,
     onUninstall: install.handleUninstall,
-    onInstall: install.handleInstall,
+    onInstall: install.enqueueInstall,
+    onDequeue: install.dequeueInstall,
     onFixPermission: install.handleFixExecutablePermission,
   };
 

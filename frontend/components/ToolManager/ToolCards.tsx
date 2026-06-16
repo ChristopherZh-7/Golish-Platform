@@ -1,4 +1,4 @@
-import { Check, Download, Loader2, Trash2, X } from "lucide-react";
+import { Check, Clock, Download, Loader2, Trash2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { ToolWithMeta } from "./OutputParserEditor";
@@ -150,17 +150,20 @@ export function TagBadges({ tool, compact }: { tool: ToolWithMeta; compact?: boo
 
 export interface ActionButtonProps {
   busy: string | null;
+  queuedIds: string[];
   installProgress: Record<string, string>;
   dlProgress: { downloaded: number; total: number } | null;
   onCancel: () => void;
   onUninstall: (tool: ToolWithMeta) => void;
   onInstall: (tool: ToolWithMeta) => void;
+  onDequeue: (toolId: string) => void;
   onFixPermission: (tool: ToolWithMeta) => void;
 }
 
 export function ActionButton({ tool, ...ctx }: ActionButtonProps & { tool: ToolWithMeta }) {
   const { t } = useTranslation();
   const isBusy = ctx.busy === tool.id;
+  const isQueued = !isBusy && ctx.queuedIds.includes(tool.id);
   const progress = ctx.installProgress[tool.id];
   const hasDlProgress = isBusy && ctx.dlProgress && (ctx.dlProgress.total ?? 0) > 0;
   const dlPct = hasDlProgress
@@ -185,6 +188,20 @@ export function ActionButton({ tool, ...ctx }: ActionButtonProps & { tool: ToolW
             onClick={ctx.onCancel}
             className="p-0.5 rounded text-muted-foreground/40 hover:text-destructive transition-colors"
             title={t("common.cancel")}
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      ) : isQueued ? (
+        <div className="flex items-center gap-1">
+          <span className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-muted/40 text-muted-foreground/70">
+            <Clock className="w-3 h-3" /> {t("toolManager.queued")}
+          </span>
+          <button
+            type="button"
+            onClick={() => ctx.onDequeue(tool.id)}
+            className="p-0.5 rounded text-muted-foreground/40 hover:text-destructive transition-colors"
+            title={t("toolManager.removeFromQueue")}
           >
             <X className="w-3 h-3" />
           </button>

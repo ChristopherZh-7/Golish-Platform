@@ -288,8 +288,14 @@ export function useToolInstall(
               const toolDirAbs = cfg?.tools_dir
                 ? `${cfg.tools_dir.replace(/[/\\]+$/, "")}/${stableDirName}`
                 : stableDirName;
-              const selectedExec = interactive
-                ? await new Promise<string | null>((resolve) => {
+              // Only prompt the user to disambiguate when there's a real
+              // choice: non-interactive batch installs and the single-candidate
+              // case auto-pick the detected entry, while zero candidates (manual
+              // browse) or multiple candidates still open the picker.
+              const autoPick = !interactive || execs.length === 1;
+              const selectedExec = autoPick
+                ? execs[0] || null
+                : await new Promise<string | null>((resolve) => {
                     setExecPicker({
                       tool,
                       dirName: stableDirName,
@@ -297,8 +303,7 @@ export function useToolInstall(
                       candidates: execs,
                       resolve,
                     });
-                  })
-                : execs[0] || null;
+                  });
               if (selectedExec) {
                 const newExecutable = `${stableDirName}/${selectedExec.replace(/^[/\\]+/, "")}`;
                 await updateToolExecutable({
@@ -538,50 +543,94 @@ export function useToolInstall(
     setCheckingUpdates(false);
   }, []);
 
+  // ── Install queue ──────────────────────────────────────────────────────
+  // Clicking "Install" on several tools (or "Install All") enqueues them and
+  // installs strictly one-at-a-time. Each tool refreshes the list the moment it
+  // finishes, so its card flips to "installed" live — previously the whole batch
+  // only refreshed once at the very end, which left freshly-installed tools
+  // looking uninstalled until a manual refresh.
+  const [queuedIds, setQueuedIds] = useState<string[]>([]);
   const [batchInstalling, setBatchInstalling] = useState(false);
-  const batchCancelRef = useRef(false);
+  const queueRef = useRef<{ tool: ToolWithMeta; interactive: boolean }[]>([]);
+  const processingRef = useRef(false);
+  const queueCancelRef = useRef(false);
+
+  const syncQueuedIds = useCallback(() => {
+    setQueuedIds(queueRef.current.map((q) => q.tool.id));
+  }, []);
+
+  const processQueue = useCallback(async () => {
+    if (processingRef.current) return;
+    processingRef.current = true;
+    setBatchInstalling(true);
+    const failures: string[] = [];
+    try {
+      while (queueRef.current.length > 0 && !queueCancelRef.current) {
+        const next = queueRef.current.shift();
+        if (!next) break;
+        syncQueuedIds();
+        const result = await handleInstall(next.tool, {
+          interactive: next.interactive,
+          refresh: true,
+          force: true,
+          reportError: false,
+        });
+        if (!result.success && !result.cancelled) {
+          failures.push(`${next.tool.name}: ${result.error || "failed"}`);
+        }
+      }
+    } finally {
+      queueRef.current = [];
+      syncQueuedIds();
+      processingRef.current = false;
+      setBatchInstalling(false);
+      if (failures.length > 0 && !queueCancelRef.current) {
+        setError(failures.slice(0, 3).join("; "));
+      }
+      queueCancelRef.current = false;
+      await loadData(true);
+    }
+  }, [handleInstall, loadData, setError, syncQueuedIds]);
+
+  const enqueueInstall = useCallback(
+    (tool: ToolWithMeta, interactive = true) => {
+      if (tool.installed) return;
+      if (busy === tool.id) return;
+      if (queueRef.current.some((q) => q.tool.id === tool.id)) return;
+      queueCancelRef.current = false;
+      queueRef.current.push({ tool, interactive });
+      syncQueuedIds();
+      void processQueue();
+    },
+    [busy, processQueue, syncQueuedIds]
+  );
+
+  const dequeueInstall = useCallback(
+    (toolId: string) => {
+      queueRef.current = queueRef.current.filter((q) => q.tool.id !== toolId);
+      syncQueuedIds();
+    },
+    [syncQueuedIds]
+  );
 
   const handleInstallAllRequired = useCallback(
-    async (tools: ToolWithMeta[]) => {
-      if (busy || batchInstalling) return;
+    (tools: ToolWithMeta[]) => {
       const toInstall = tools.filter(
         (t) =>
           (t.tier === "essential" || t.tier === "recommended") &&
           !t.installed &&
           isAutoInstallMethod(t.install?.method)
       );
-      if (toInstall.length === 0) return;
-      setBatchInstalling(true);
-      batchCancelRef.current = false;
       setError(null);
-      const failures: string[] = [];
-      try {
-        for (const tool of toInstall) {
-          if (batchCancelRef.current) break;
-          const result = await handleInstall(tool, {
-            interactive: false,
-            refresh: false,
-            force: true,
-            reportError: false,
-          });
-          if (!result.success && !result.cancelled) {
-            failures.push(`${tool.name}: ${result.error || "failed"}`);
-          }
-          await new Promise((r) => setTimeout(r, 300));
-        }
-        if (failures.length > 0 && !batchCancelRef.current) {
-          setError(failures.slice(0, 3).join("; "));
-        }
-      } finally {
-        setBatchInstalling(false);
-        await loadData(true);
-      }
+      for (const tool of toInstall) enqueueInstall(tool, false);
     },
-    [batchInstalling, busy, handleInstall, loadData, setError]
+    [enqueueInstall, setError]
   );
 
   const cancelBatchInstall = useCallback(() => {
-    batchCancelRef.current = true;
+    queueCancelRef.current = true;
+    queueRef.current = [];
+    setQueuedIds([]);
     cancelRef.current = true;
     cancelDownload().catch(() => {});
     cancelRuntimeInstall().catch(() => {});
@@ -604,6 +653,9 @@ export function useToolInstall(
     showUpdates,
     setShowUpdates,
     batchInstalling,
+    queuedIds,
+    enqueueInstall,
+    dequeueInstall,
     handleInstallAllRequired,
     cancelBatchInstall,
     handleCancelInstall,

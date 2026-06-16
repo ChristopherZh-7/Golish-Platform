@@ -226,9 +226,9 @@ export function DepPickerDialog({
 
 /**
  * Pops up after a GitHub-installed tool is extracted so the user can pick the
- * entry-point binary/script. We intentionally show this for 0/1/many candidates
- * — even when there is exactly one match, the user gets the chance to confirm
- * or override the auto-detected entry instead of having it silently chosen.
+ * entry-point binary/script. Shown only when disambiguation is actually needed:
+ * zero candidates (manual browse) or multiple candidates. A single detected
+ * candidate is auto-selected by the caller, so this dialog is skipped then.
  */
 export interface ExecPickerState {
   tool: ToolWithMeta;
