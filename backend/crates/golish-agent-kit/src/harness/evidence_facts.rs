@@ -51,11 +51,18 @@ pub fn subsidiary_discovery_facts(
 /// 与解析不出资产的命令一律 `None`. `command` 形如 `"dig moresec.cn A +short"`
 /// (run_pty_cmd / background_job 的 shell 命令, 或 pentest_run 的 `"{tool} {args}"`).
 pub fn passive_intel_facts_from_command(command: &str) -> Option<(&'static str, String)> {
-    let mut tokens = command.split_whitespace();
-    let tool = tokens.next()?;
+    // The executable may be a QUOTED absolute path that contains a space: on
+    // macOS golish-managed tools live under `~/Library/Application Support/…`,
+    // so a backgrounded run's command is e.g.
+    // `"/…/Application Support/…/subfinder" -d host`. A bare `split_whitespace`
+    // breaks "Application Support" apart and mis-reads the tool name as
+    // "Application" → no fact → subfinder's subdomains never become a SUBDOMAIN
+    // coverage fact (while bare `/usr/bin/dig|whois` slipped through). Split off
+    // a leading double-quoted path first, then fall back to whitespace.
+    let (exe, rest_str) = split_executable(command.trim());
     // 路径形式 (`/usr/bin/dig`) 归一到裸名.
-    let tool = tool.rsplit('/').next().unwrap_or(tool);
-    let rest: Vec<&str> = tokens.collect();
+    let tool = exe.rsplit('/').next().unwrap_or(exe);
+    let rest: Vec<&str> = rest_str.split_whitespace().collect();
     match tool {
         "dig" | "nslookup" | "host" => first_domain_like(&rest).map(|d| ("GOLISH-INTEL-DNS", d)),
         "whois" => first_domain_like(&rest).map(|d| ("GOLISH-INTEL-WHOIS", d)),
@@ -63,6 +70,22 @@ pub fn passive_intel_facts_from_command(command: &str) -> Option<(&'static str, 
             .or_else(|| flag_value(&rest, "-domain"))
             .map(|d| ("GOLISH-INTEL-SUBDOMAIN", d)),
         _ => None,
+    }
+}
+
+/// Split a command line into `(executable, rest_args)`, honoring a leading
+/// double-quoted executable path that may contain spaces (e.g. the macOS
+/// `~/Library/Application Support/.../subfinder`). An unquoted command splits on
+/// the first run of whitespace, matching the prior behaviour for bare tools.
+fn split_executable(command: &str) -> (&str, &str) {
+    if let Some(after) = command.strip_prefix('"') {
+        if let Some(end) = after.find('"') {
+            return (&after[..end], after[end + 1..].trim_start());
+        }
+    }
+    match command.split_once(char::is_whitespace) {
+        Some((exe, rest)) => (exe, rest.trim_start()),
+        None => (command, ""),
     }
 }
 
@@ -166,6 +189,29 @@ mod tests {
         assert_eq!(
             passive_intel_facts_from_command("/opt/tools/subfinder -d moresec.cn"),
             Some(("GOLISH-INTEL-SUBDOMAIN", "moresec.cn".to_string()))
+        );
+    }
+
+    /// Regression (2026-06-16 · SUBDOMAIN coverage gap): golish-managed tools run
+    /// from a full, QUOTED executable path that may contain a space — the real
+    /// macOS path is `~/Library/Application Support/golish-platform/tools/
+    /// subfinder/subfinder`. The old `split_whitespace` tokenizer broke
+    /// "Application Support" apart and read the tool name as "Application" →
+    /// returned None → subfinder's subdomains never became a SUBDOMAIN coverage
+    /// fact (while bare `/usr/bin/dig|whois` slipped through). The parser must
+    /// honor a leading double-quoted executable path.
+    #[test]
+    fn quoted_executable_path_with_space_resolves_tool_name() {
+        let cmd = "\"/Users/me/Library/Application Support/golish-platform/tools/subfinder/subfinder\" -d pingan.com -all -recursive -silent";
+        assert_eq!(
+            passive_intel_facts_from_command(cmd),
+            Some(("GOLISH-INTEL-SUBDOMAIN", "pingan.com".to_string()))
+        );
+        // Same hazard for a path-resolved dig (defensive; dig usually runs bare).
+        let dig = "\"/opt/My Tools/dig\" A pingan.com";
+        assert_eq!(
+            passive_intel_facts_from_command(dig),
+            Some(("GOLISH-INTEL-DNS", "pingan.com".to_string()))
         );
     }
 
