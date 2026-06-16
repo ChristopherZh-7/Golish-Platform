@@ -226,7 +226,11 @@ just kill                    清掉残留进程（占用 1420 端口时用）
   - 路由依据 span 上的 `langfuse.session.id`；写入 base 由 `op_trace::set_active_transcript_base`（会话初始化时设）= 与 `transcript.json` 同目录。
   - **调试一个 run 时先读这份 `run.log`**（不用在 87MB 的全局 `backend.log` 里 grep 捞单会话）。
 
-> **分析 Golish 运行问题时**：先定位 workspace（用户会给，或看 `~/.golish/backend.log` 里 `Transcript writer initialized ... at "<path>"` 那行），再读对应 run 的 `run.log`（单 run 全量）/ `transcript.json`（结构化）；全局 / 跨会话问题才 grep `~/.golish/backend.log`。直接读这些文件即可分析，不依赖产品内的 `harness_trace` 工具 / `golish --replay`。
+> **分析 Golish 运行问题时（首选 `scripts/run_tree.py`）**：先定位 workspace（用户会给，或看 `~/.golish/backend.log` 里 `Transcript writer initialized ... at "<path>"` 那行），然后跑 `python3 scripts/run_tree.py --workspace <ws>`（默认取最新会话）——它把 `transcript.json` + 各子 agent transcript + `run.log` 拼成一棵缩进调用树：主 agent → 工具调用 → `stage_run` 扇出 → 子 agent(recon) 的思考/say/工具(subfinder/dig/enrich…)/嵌套子 agent → `submit_stage_deliverable` → gate 判定（PASS/BLOCK + 首要阻塞原因 + 每 org 覆盖矩阵）。
+>
+> - 加 `--db` 对内嵌 Postgres 做**确定性自诊断**（`organization_id=NULL` 的 target、有 "found" 证据却为空的 `target_assets`/`dns_records`、`audit_log` 技术事实），直接定位 transcript 看不到的「落库缺口」根因（例如 *subfinder 出了子域但 `target_assets=0`*）。
+> - `--full` 不截断 args/reason/prose；传具体 `<session>` 或 session 目录可看指定 run。
+> - 只有该脚本覆盖不到的全局 / 跨会话问题，才回退 grep `~/.golish/backend.log`，或直接读单 run 的 `run.log`（全量）/ `transcript.json`（结构化）。不依赖产品内的 `harness_trace` 工具 / `golish --replay`。
 
 ---
 

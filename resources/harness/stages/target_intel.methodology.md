@@ -24,6 +24,16 @@ targets bound to this `organization_id`.
    enrich actually produced OSINT data for this org. If a technique genuinely has no
    data (no provider/credential, nothing in CT/RDAP), record it `blocked+note` with
    the reason; never silently skip it and never fabricate it.
+5. CT / ASN fallback CLIs (zero-touch) — if `recon_enrich_assets` did NOT land CT or
+   ASN for a root (its crt.sh / RDAP fallback returned nothing, or no provider was
+   available), run the dedicated passive CLI as a backstop so the cell is not left
+   not_attempted: `ctfr -d <root>` (certificate-transparency subdomains →
+   `GOLISH-INTEL-CT`) and/or `asnmap -d <root>` (ASN + netblock ranges →
+   `GOLISH-INTEL-ASN`). Both query crt.sh / the RIRs — not the target's own hosts —
+   so they are in-scope in this passive stage, and their output auto-projects to the
+   CT / ASN coverage cell. Run each ONCE per root, and only when that cell would
+   otherwise stay empty. If the CLI is not installed, record the cell `blocked+note`
+   — do NOT try to install it mid-stage.
 
 **Efficiency red lines (these are the common failure modes):**
 
