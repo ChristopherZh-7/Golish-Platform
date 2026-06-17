@@ -40,6 +40,7 @@ export function ThinkingBlock({ content, isActive, startedAt, endedAt }: Thinkin
   const [expanded, setExpanded] = useState<boolean>(isActive);
   const userToggledRef = useRef(false);
   const prevActiveRef = useRef<boolean>(isActive);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (userToggledRef.current) return;
@@ -48,6 +49,15 @@ export function ThinkingBlock({ content, isActive, startedAt, endedAt }: Thinkin
     }
     prevActiveRef.current = isActive;
   }, [isActive]);
+
+  // Pin the bounded reasoning pane to its latest line while streaming so the
+  // newest thought stays in view (Cursor-style) instead of staying frozen at
+  // the top once the content overflows the max height.
+  useEffect(() => {
+    if (isActive && expanded && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [content, isActive, expanded]);
 
   const handleToggle = () => {
     userToggledRef.current = true;
@@ -83,7 +93,10 @@ export function ThinkingBlock({ content, isActive, startedAt, endedAt }: Thinkin
       </button>
 
       {expanded && content && (
-        <div className="mt-1.5 ml-1.5 pl-3 border-l-2 border-foreground/20 text-[12px] text-foreground/70 leading-[1.6] whitespace-pre-wrap">
+        <div
+          ref={scrollRef}
+          className="mt-1.5 ml-1.5 pl-3 border-l-2 border-foreground/20 text-[12px] text-foreground/70 leading-[1.6] whitespace-pre-wrap max-h-64 overflow-y-auto overscroll-contain"
+        >
           {content}
         </div>
       )}
