@@ -75,11 +75,8 @@
   "specialist": "recon",
   "coverage_axis": ["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT"],
 
-  "$comment_min_invocations": "Hard floors (gate BLOCKs if the deliverable does not register the tool): DNS + passive subdomain are mandatory on every engagement. OSINT (osint_enum) is NOT a hard floor on purpose — ENScan_GO is China-corp-focused and not every engagement has an OSINT provider/credential; OSINT stays a REQUIRED coverage cell (expected_techniques + authoritative_techniques below) that may be terminal as blocked+note when no provider is available. See docs/design/2026-06-14-deepseek-run-review-fixes.md OPEN DECISION B before promoting osint_enum to a hard floor.",
-  "min_invocations": {
-    "dns_resolve": 1,
-    "subdomain_enum_passive": 1
-  },
+  "$comment_min_invocations": "2026-06-17 passive-intel-closure Phase F: removed the dns_resolve / subdomain_enum_passive hard floors. enrich (multi-source survey -> domain<->IP pairing -> scope filter -> auto-landing of targets with surveyed real_ip -> coverage landing) now writes DNS/SUBDOMAIN/ASN/CT/WHOIS/OSINT into the gate-read DB truth tables, and completeness is enforced by coverage_complete (authoritative_found, reads the DB). The old floors only drove the prompt (task_orchestrator/prompts/mod.rs) to push the agent into re-running dig/subfinder, and were already skipped inside vacuous_check's FakePattern by facts_from_db_truth (gate/vacuous_check.rs). CLI tools (dig/subfinder/amass/asnmap/ctfr) are now fallback-only for cells enrich did not land (see target_intel.methodology.md section 2). Before re-promoting any tool to a hard floor, verify it truly cannot be covered by enrich landing. Historical context (pre-Phase F): DNS + passive subdomain were mandatory; OSINT was deliberately never a hard floor (ENScan_GO is China-corp-focused, not every engagement has an OSINT provider) and stays a REQUIRED coverage cell that may be terminal as blocked+note.",
+  "min_invocations": {},
 
   "max_other_skips": 2,
   "$comment_facts_from_db_truth": "design 2026-06-15-db-truth-single-source-deliverable §5 PR2: target_intel is facts-only — coverage/claims/evidence are adjudicated from DB truth (coverage_complete authoritative + coverage_truth). With this on, vacuous_check is satisfied by real DB/ledger evidence facts so a weak model need not hand-copy a deliverable; completeness is still enforced by coverage_complete per (in-scope asset × technique). Empty DB truth still blocks.",

@@ -7,33 +7,33 @@ You run for ONE organization — the `stage_run` fan-out dispatches one Recon pe
 org, so collect only THIS org's footprint and register its assets as in-scope
 targets bound to this `organization_id`.
 
-**Recommended sequence (run each technique ONCE per in-scope root):**
+**Recommended sequence (enrich is the PRIMARY path; CLI tools are fallback-only):**
 
-1. `recon_enrich_assets` first — ASM/intel providers (quake / 0.zone / enscan)
-   return org, ICP, subdomains, and asset fields in one shot. This is the cheapest,
-   richest source; do it before any CLI tool.
-2. Passive subdomain enumeration — `subfinder -all -recursive` and/or
-   `amass enum -passive`. Run each ONCE on the root domain. Merge + dedupe results.
-3. URL history — `gau` / `waybackurls` on the root for historical endpoints.
-4. OSINT / WHOIS / ASN / CT / DNS / SUBDOMAIN land via `recon_enrich_assets`
-   (step 1): one call writes the data the gate reads — subdomains →
-   `target_assets`, DNS A/AAAA → `dns_records`, ASN/CT/WHOIS →
+1. `recon_enrich_assets` first AND as the main path — ASM/intel providers
+   (quake / 0.zone / enscan) return org, ICP, subdomains, DNS, ASN/CT/WHOIS and
+   asset fields in one shot. Since the passive-intel-closure (Phase A/B), enrich
+   also pairs each discovered domain with its surveyed IP, scope-filters it, and
+   lands it as an in-scope target carrying that `real_ip` — discovery now becomes
+   landing without a second tool. One call writes the data the gate reads:
+   subdomains → `target_assets`, DNS A/AAAA → `dns_records`, ASN/CT/WHOIS →
    `organizations.asns/.certificates/.whois` (CT/WHOIS have a crt.sh/RDAP fallback
-   when providers return nothing), OSINT → `organizations.intel`. **OSINT is a
-   REQUIRED coverage technique** (`GOLISH-INTEL-OSINT`), not optional — confirm the
-   enrich actually produced OSINT data for this org. If a technique genuinely has no
-   data (no provider/credential, nothing in CT/RDAP), record it `blocked+note` with
-   the reason; never silently skip it and never fabricate it.
-5. CT / ASN fallback CLIs (zero-touch) — if `recon_enrich_assets` did NOT land CT or
-   ASN for a root (its crt.sh / RDAP fallback returned nothing, or no provider was
-   available), run the dedicated passive CLI as a backstop so the cell is not left
-   not_attempted: `ctfr -d <root>` (certificate-transparency subdomains →
-   `GOLISH-INTEL-CT`) and/or `asnmap -d <root>` (ASN + netblock ranges →
-   `GOLISH-INTEL-ASN`). Both query crt.sh / the RIRs — not the target's own hosts —
-   so they are in-scope in this passive stage, and their output auto-projects to the
-   CT / ASN coverage cell. Run each ONCE per root, and only when that cell would
-   otherwise stay empty. If the CLI is not installed, record the cell `blocked+note`
-   — do NOT try to install it mid-stage.
+   when providers return nothing), OSINT → `organizations.intel`. This is the
+   cheapest, richest source; do it before any CLI tool. **OSINT is a REQUIRED
+   coverage technique** (`GOLISH-INTEL-OSINT`) — confirm enrich produced OSINT data
+   for this org; if a technique genuinely has no data (no provider/credential,
+   nothing in CT/RDAP), record it `blocked+note` — never silently skip or fabricate.
+2. CLI tools are FALLBACK only (zero-touch) — reach for them ONLY when a coverage
+   cell enrich did NOT land. Run the matching passive CLI at most ONCE per root for
+   that empty cell: SUBDOMAIN → `subfinder -all` / `amass enum -passive`;
+   CT → `ctfr -d <root>`; ASN → `asnmap -d <root>`; DNS → `dig` (only when an
+   in-scope domain got no record from enrich AND no passive resolution). These query
+   crt.sh / the RIRs / resolvers — not the target's own hosts — so they stay
+   in-scope here, and their output auto-projects to the matching coverage cell. If a
+   tool still returns nothing, submit that cell as `checked_empty+evidence` or
+   `blocked+note` — do NOT retry the same tool, and do NOT install a missing tool
+   mid-stage (record it `blocked+note`).
+3. URL history (`gau` / `waybackurls`) — optional, for historical endpoints; it is
+   orthogonal to the survey and is NOT a completeness-gate requirement.
 
 **Efficiency red lines (these are the common failure modes):**
 

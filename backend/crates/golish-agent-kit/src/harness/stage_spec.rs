@@ -349,8 +349,12 @@ mod tests {
         // P2 (2026-06-11): whois 是零接触被动技术，归 target_intel（先前缺类型导致
         // stage guard 误拦 CLI whois）。
         assert!(s.allowed_tool_types.contains(&"recon/whois".to_string()));
-        // 被动子域名枚举设为本阶段硬地板（与从 EAS 删除对称）。
-        assert_eq!(s.min_invocations.get("subdomain_enum_passive"), Some(&1));
+        // 2026-06-17 passive-intel-closure Phase F：移除硬地板。被动子域名枚举不再是
+        // min_invocations 硬下限——enrich(测绘→域名↔IP 配对→scope 过滤→自动入库→landing)
+        // 把 SUBDOMAIN 写进 gate 读的 DB 真相表，完整性由 coverage_complete(authoritative)
+        // 强制；CLI(subfinder/amass) 退化为 enrich 未落格子时的 fallback。recon/subdomain
+        // 仍是本阶段 allowed_tool_type（上面断言），故本阶段仍“拥有”被动子域名职责。
+        assert!(s.min_invocations.is_empty());
     }
 
     // P5（2026-06-11）：target_intel 的 coverage 必须既能从 technique 标注的 claims

@@ -88,4 +88,19 @@ mod tests {
         let outcome = run(&deliverable(vec!["http_probe done"]), &spec);
         assert!(matches!(outcome, GateCheckOutcome::Pass));
     }
+
+    #[test]
+    fn target_intel_declares_no_hard_tool_floor() {
+        // enrich (survey + domain↔ip pairing + scope-filtered auto-landing +
+        // coverage landing) writes the DB truth tables; coverage_complete
+        // (authoritative_found, target_intel.json) is the real completeness
+        // gate. Hard tool floors (dns_resolve / subdomain_enum_passive) are
+        // redundant and only push the prompt to re-run CLIs already covered by
+        // enrich, so target_intel must declare no hard tool floor.
+        let spec = load_embedded_stage_spec(StageKind::TargetIntel).unwrap();
+        assert!(
+            spec.min_invocations.is_empty(),
+            "target_intel must not declare hard tool floors; coverage_complete (DB truth) enforces completeness"
+        );
+    }
 }
