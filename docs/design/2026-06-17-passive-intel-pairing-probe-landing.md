@@ -59,6 +59,11 @@ recon_enrich_assets(org)
   └─⑦ 归位：前端 buildHostTree 按 real_ip 自动把域名挂到 IP host 节点（已有）
 ```
 
+> Phase F 决策（2026-06-17）：⑥ 主动 httpx 探活**下沉到 EAS**（target_intel 保持 zero-touch）；
+> 本阶段 real_ip 仅来自测绘配对（Phase A）+ 被动 DNS（land_dns_records）。liveness / 端口 / 指纹属 EAS。
+> 实现落点：Phase C 在 target_intel 内只留 `probe::liveness_from_httpx` 纯映射 + 单测（不接 enrich 主路径），
+> 其 IO 调用方由 EAS specialist 接管。见配套计划 Task 13。
+
 ## 3. 关键设计决策（不变量，违反即回到老问题）
 
 - **D1 · real_ip 优先取测绘配对值，DNS 仅兜底**：测绘记录里的 (domain, ip) 是平台实际观测
@@ -76,6 +81,11 @@ recon_enrich_assets(org)
   退化用 `hostname`/`service.http.host`，不报错、记一条 note。
 
 ## 4. 不做（YAGNI / 边界）
+
+> Phase F 决策（2026-06-17）：原 §2⑥ 的「httpx 轻量探活」与本阶段 zero-touch 契约冲突
+> （methodology 明确禁用 httpx，`human_approval.required_before:["active_scan"]`）。**改判：主动 httpx
+> 探活下沉到 EAS**；target_intel 的 real_ip 仅来自测绘配对 + 被动 DNS。下面「轻量探活（httpx 存活/指纹）」
+> 一句保留为历史设计语境，实际不在本阶段执行（见 Task 13）。
 
 - 不做主动扫描（端口爆破 / 漏洞）——本设计止于被动测绘 + 轻量探活（httpx 存活/指纹）。
 - 不改 DB schema；liveness 用既有 `targets.status` + `dns_records`/`target_assets`，不新增表。

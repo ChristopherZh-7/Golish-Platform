@@ -29,6 +29,51 @@
 
 ---
 
+### 2026-06-17 · passive-intel-pairing Phase A–F 全量落地（配对+自动入库+探活映射+多维查询+工具集精简）（BaJie MCP-agent-1 · DISPATCH off · 用户「执行 Phase A 配对」→「继续吧 全部搞完」）
+
+- **本轮目标**：执行 `docs/superpowers/plans/2026-06-17-passive-intel-pairing-probe-landing.md` 的 **Phase A（Task 1-3）**——给 asset-intel enrich 管线补「同一记录内域名↔IP 成对抽取」的纯能力（类型 + 描述符 + 纯函数 + 单测），为 Phase B 自动落库（带测绘 real_ip）做前置。严格 TDD（红→绿），每 Task 边界单独验证。
+- **已完成**：
+  - **Task 1（类型/描述符，零行为）**：`golish-pentest-domain/src/models/asset_intel.rs` 加 `AssetIntelPairRule{path, host_field:Vec<String>, ip_field:Vec<String>}`（**derive 补了 `PartialEq, Eq`——计划片段只写了 `Default` 等，但 `AssetIntelNormalizeConfig` derive `PartialEq`，字段类型必须同为 `PartialEq`**），并给 `AssetIntelNormalizeConfig` 追加 `#[serde(default) ] pub pairs: Vec<AssetIntelPairRule>`（旧 JSON 缺省空、兼容）。`golish-recon-app/src/asset_intel/types.rs` 加 `pub(crate) struct HostIpPair{host,ip}` + `#[cfg(test)] pub(crate) fn pair_rule_for_test(...)`。
+  - **连带修复**：新增非可选字段 `pairs` 打断了 tests.rs 中 4 处 `AssetIntelNormalizeConfig{...}` 字面量（line 31/481/622/724），逐个补 `pairs: vec![]`。
+  - **Task 2（TDD 红）**：tests.rs 末尾加失败测试 `extract_host_ip_pairs_quake_record_pairs_domain_and_ip`（quake 形态 JSON：成对 domain/ip 留、host 空跳过）。
+  - **Task 3（TDD 绿）**：`normalize.rs` 实现 `extract_host_ip_pairs(raw, &AssetIntelPairRule)`——**按真实签名 `resolve_field_ref(&AssetIntelFieldRef)` 实现（计划示例假设的 `&[String]` 与现码不符，已据真实码调整）**，逐 `host_field`/`ip_field` 取「首个有效字段」（host 归一化为 trim+去尾点+小写且非 IP；ip 必须可 parse 为 IpAddr）。`asset_intel/mod.rs` 加 `pub(crate) use normalize::extract_host_ip_pairs`。
+- **运行过的验证（实跑）**：
+  - `cargo check -p golish-recon-app -p golish-pentest-domain` → **exit 0**（Task 1；仅 `HostIpPair never constructed` 预期暂态告警）
+  - `cargo test -p golish-recon-app extract_host_ip_pairs` → 先 **red**（`error[E0425] cannot find function extract_host_ip_pairs`）→ 实现后 **green**（`1 passed`）
+  - `cargo test -p golish-recon-app`（全量）→ **190 passed; 0 failed**（`pairs` 新字段无回归）
+  - `ReadLints`（5 个改动文件）→ 无错
+- **已记录证据**：
+  - `test asset_intel::tests::extract_host_ip_pairs_quake_record_pairs_domain_and_ip ... ok`
+  - `test result: ok. 190 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out`
+  - 非 test 构建 3 条预期告警（见下「风险」）：`unused import: extract_host_ip_pairs` / `function extract_host_ip_pairs is never used` / `struct HostIpPair is never constructed`
+- **提交记录**：**待用户授权**（按本仓库惯例不自动 commit）。计划要求每 Task 一个 commit，建议：
+  1. `feat(asset-intel): add HostIpPair type and pair-rule descriptor`
+  2. `test(asset-intel): failing test for host↔ip pair extraction`
+  3. `feat(asset-intel): implement host↔ip pair extraction (paired domain/ip)`
+- **已知风险或未解决问题**：
+  - **3 条 dead_code/unused 告警是 Phase A 的预期态**（纯函数 + 类型已就位，但生产调用方在 **Phase B（Task 5）** 才把 `extract_host_ip_pairs` 接进 `agent_intel.rs::run_passive_intel`）。**故 Phase A 单独跑不过 `just precommit`（`lint-rust` = clippy `-D warnings`）**；需与 Phase B 合并落地，三告警届时一并消除。
+  - `feature_list.json` 尚无 `passive-intel-pairing-probe-landing` 条目（计划/设计 doc 已在 `docs/{design,superpowers/plans}/2026-06-17-...` 但未登记）；建议补一条再继续。
+- **续（Phase B–F · 同会话「全部搞完」）**：
+  - **Phase B（Task 4-5 自动入库）**：`persistence.rs` 把 `value_belongs_to_organization`/`organization_owned_domains`/`normalized_host` 提 `pub(crate)` + `organization_recon/mod.rs` re-export；新建 `asset_intel/landing.rs`——纯函数 `plan_promotable_assets`（scope 过滤：自有域名带 real_ip 入选、第三方 `*.163data.com.cn` 剔除、非法 IP 滤掉）+ `pairs_from_candidates`（从候选 evidence.raw 按 provider `normalize.pairs`/默认字段逐记录抽对）+ `profile_ip_strings` + 非致命幂等 `upsert_target`（带 `real_ip` 列、`source='asset_intel'`）+ `promote_profile_assets_to_targets`；`agent_intel.rs` Enrich 分支接线（从 `run.candidates` 抽对 → promote，失败只 warn）。**关键架构决策**：`run_providers_for_org` 不返回 provider 原始文档，故 pairs 走候选 evidence.raw（http_json 0.zone/quake 的 target 候选带整条记录），**零改动** 14 处 `finish_provider_run`/9 处 normalize 调用点（避免巨大爆炸半径；偏离已在 plan Task 5 注记）。
+  - **Phase C（Task 6 + Task 13 改判）**：新建 `asset_intel/probe.rs` 仅 `liveness_from_httpx` 纯映射 + 单测，`#[cfg_attr(not(test), allow(dead_code))]`；**不接 enrich**（target_intel 保持 zero-touch，主动 httpx 探活下沉 EAS）。
+  - **Phase D（Task 8 多维查询）**：`0-zone.json`/`quake.json` 加 `normalize.pairs`；`quake.json` 加 `cert` 维 request、`fofa.json` 加 `cert` query（仅 `{{company_name}}`——runner 不支持 `{{root_domain}}`，已据实降级）；domain 模型加 2 个 pairs 反序列化单测。
+  - **Phase F（Task 10-13 工具集精简）**：`target_intel.json` `min_invocations` → `{}`（TDD 红→绿）+ 改写 `$comment_min_invocations`；`target_intel.methodology.md` 改写为「enrich 主路径、CLI(dig/subfinder/amass/asnmap/ctfr) fallback」；design/plan doc 加 Phase F 决策注记（AGENTS.md §2.4 注记不删）。
+- **运行过的验证（实跑·B–F）**：
+  - `cargo test`：recon-app **193**、pentest-domain **35**、agent-kit **659**、agent-app **128**、pentest **49** 全 passed / 0 failed
+  - `cargo clippy -p golish-recon-app -p golish-pentest-domain -p golish-agent-kit --all-targets -- -D warnings` → exit 0 零告警（Phase A 的 3 暂态告警已被 landing 接线消除）
+  - `cargo check -p golish` → exit 0（二进制集成编译，含 agent-app/pentest-app）
+  - `rustfmt --check` 本次全部改动文件 → exit 0；intel-providers(5)/target_intel.json `json.load` 全 OK
+  - 回归排查：本次 spec 改动只破坏 `stage_spec.rs::target_intel_owns_passive_subdomain_and_url_history`（断言旧 floor），已改判为断言 `min_invocations.is_empty()`；其余 min_invocations/vacuous_check/sprint_contract/harness_submit_tool 用例已逐一核对均不受影响。
+- **未做 / 诚实标注**：
+  - **`just precommit` 全量未跑**：本机 rustfmt 版本漂移，`cargo fmt --check` 报 23 处 pre-existing drift，**全在非本次文件**（`db_bridge/recon.rs`、`execute.rs`、`rule_engine.rs`、`org_gate.rs`、`technique_resolver.rs`、`stage_run_call.rs`、`manage_targets.rs` 等，部分会话起始即 `M`）→ 工作区 fmt 门会在无关文件上红。建议在匹配 CI rustfmt 的环境跑 precommit。
+  - **活体端到端（Task 9 / Phase E）未跑**：需 0.zone/quake 会员 key + 运行中 app + 内嵌 PG 的 pingan engagement，本环境不具备。复现命令见 plan Task 9（`recon_enrich_assets{org=平安集团}` 后直查 `targets`）。
+  - **native provider（fofa/hunter/shodan）pairs 暂未覆盖**：其候选 evidence 不带 raw（会员 key 门控），记为后续。
+- **提交记录**：**全部待用户授权**（按本仓库惯例未自动 commit）。计划要求每 Task 一 commit；A–F 约 13 个逻辑提交点，消息见各 Task。
+- **feature_list**：新增条目 `passive-intel-pairing-probe-landing-2026-06-17`，status=`blocked`（code-complete，待 commit 授权 + 活体 E2E + 匹配环境 precommit 方可转 passing）。
+- **下一步最佳动作**：① 用户授权后按 Task 边界 commit（或 squash）；② 在匹配 rustfmt 的环境跑 `just precommit` 收口；③ 起 app 用会员 key 跑一次 pingan enrich，直查 `targets` 验证「发现即落地 + real_ip」闭环（Phase E 证据）；④（可选）EAS 增强计划接 `probe::liveness_from_httpx` 落地主动探活、补齐 native provider pairs。
+
+---
+
 ### 2026-06-16 · CLI stage-run 的 run.log 与 transcript 同目录（BaJie MCP-agent-2 · DISPATCH off · 用户「补 run.log 那行」）
 
 - **本轮目标**：回答「CLI 跑的日志 vs GUI 跑的日志存放逻辑是否一样」，并修其中唯一的分歧——CLI stage-run 的 `run.log` 落点与 GUI 不一致。

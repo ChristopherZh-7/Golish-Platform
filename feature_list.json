@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
   "version": "0.1.10",
-  "last_updated": "2026-06-15",
+  "last_updated": "2026-06-17",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -162,6 +162,30 @@
       "evidence": "2026-06-14 BaJie MCP-agent-3 (DISPATCH off, 接 MCP-1 上下文转移). 实现主体由 MCP-1 在断点前写入工作树(未提交); 本会话核数据契约端到端(后端 PassiveIntelSummary -> tool result JSON -> getReconIntelSummary 解析 -> ReconIntelSummaryLine 渲染 -> ToolCallSummary/SubAgentDetailView 两处接线), 修 2 处 biome format, 跑 check-fe/test-fe 全绿收口. 2026-06-14 BaJie MCP-agent-4 续: 跑全量 just precommit 全绿 (✓ All checks passed! exit 0) + commit 本职 7 文件 (feat(ai-chat): surface passive-intel/OSINT providers on recon tool cards, branch feat/stage-run-fanout); 未 push.",
       "notes": "OSINT 判定 = provider id 以 'enscan' 开头(isOsintProvider); RECON_INTEL_TOOLS = {recon_enrich_assets, recon_discover_subsidiaries}; 解析兼容 result 为 JSON string(时间线卡) 或已解析 object(子 agent). 错误结果 {error:..} 无 providers -> 返 null -> 不渲染. ReconIntelSummaryLine 在 SubAgentDetailView 放 CollapsibleTrigger 之后/CollapsibleContent 之前 = 始终可见(不用展开).",
       "remember": "OSINT 可视化: 前端组件 ReconIntelSummaryLine + lib/tools.ts getReconIntelSummary 读 PassiveIntelSummary 的 providers/targets/organizations/promoted_children; 后端零改(数据本就在 tool result). 接在 ToolCallSummary(ToolCallCard) + SubAgentDetailView(子 agent 工具行)."
+    },
+    {
+      "id": "passive-intel-pairing-probe-landing-2026-06-17",
+      "priority": 1,
+      "area": "backend: golish-pentest-domain/src/models/asset_intel.rs (AssetIntelPairRule + AssetIntelNormalizeConfig.pairs); golish-recon-app/src/asset_intel/{types.rs(HostIpPair+pair_rule_for_test), normalize.rs(extract_host_ip_pairs), landing.rs(new: pairs_from_candidates/plan_promotable_assets/promote_profile_assets_to_targets/upsert_target), probe.rs(new: liveness_from_httpx pure), agent_intel.rs(wire promote in Enrich), mod.rs}; golish-recon-app/src/organization_recon/{persistence.rs(value_belongs_to_organization/organization_owned_domains/normalized_host -> pub(crate)), mod.rs(re-export)}; golish-agent-kit/src/harness/{gate/min_invocations_check.rs(test), stage_spec.rs(test)} + resources/harness/stages/target_intel.json(min_invocations={}) + target_intel.methodology.md(enrich-primary/CLI fallback); resources/intel-providers/{0-zone,quake,fofa}.json(normalize.pairs + cert dim)",
+      "title": "测绘被动情报闭环：域名↔IP 配对 + scope 过滤 + 自动入库(带测绘 real_ip) + 工具集精简。把 enrich『发现 189/落地 23』缺口闭合为『发现即(过滤后)落地』；target_intel 移除硬性工具下限(coverage_complete/DB 真相为唯一完整性门控)，CLI 退化 fallback。",
+      "user_visible_behavior": "recon_enrich_assets 跑完后自动把测绘配对到的自有域名 upsert 成 scope=in target 并带测绘 real_ip(前端 buildHostTree 按 real_ip 归位)；第三方域名(如 *.163data.com.cn)被 scope 过滤剔除。target_intel 不再因『没跑 dig/subfinder 次数』被 BLOCK，完整性只看 DB 真相覆盖。",
+      "status": "blocked",
+      "design": "docs/design/2026-06-17-passive-intel-pairing-probe-landing.md (含 Phase F 注记: 主动 httpx 探活下沉 EAS, target_intel 保持 zero-touch)",
+      "plan": "docs/superpowers/plans/2026-06-17-passive-intel-pairing-probe-landing.md (Phase A 配对 / B 自动入库 / C 探活纯映射 / D 多维查询 / E 端到端 / F 工具集精简). 实现偏离已在 plan Task 5/7 注记: pairs 改从 run.candidates[*].evidence.raw 抽取(run_providers_for_org 不返回 raw); probe 不接 enrich(zero-touch).",
+      "verification": [
+        "[✓] cargo test -p golish-recon-app → 193 passed/0 failed (extract_host_ip_pairs + landing 3 + 既有无回归)",
+        "[✓] cargo test -p golish-pentest-domain → 35 passed (pairs 反序列化 + legacy default 兼容)",
+        "[✓] cargo test -p golish-agent-kit → 659 passed (target_intel_declares_no_hard_tool_floor 红→绿 + stage_spec 测改判 + min_invocations 无回归)",
+        "[✓] cargo test -p golish-agent-app → 128 / -p golish-pentest → 49 (target_intel submit + 域模型 re-export 无回归)",
+        "[✓] cargo clippy -p golish-recon-app -p golish-pentest-domain -p golish-agent-kit --all-targets -- -D warnings → exit 0 零告警",
+        "[✓] cargo check -p golish → exit 0 (二进制集成编译)",
+        "[✓] rustfmt --check 本次全部新增/改动文件 → exit 0; intel-providers/harness JSON python json.load 全 OK",
+        "[未跑] just precommit 全量 — 本机 rustfmt 版本漂移: HEAD 有 23 处 pre-existing fmt drift(均非本次文件: db_bridge/recon.rs, execute.rs, rule_engine.rs, org_gate.rs 等), 工作区 fmt 门会在非本次文件上红",
+        "[未验·用户环境] 活体端到端: 起 just dev 对 pingan 跑 recon_enrich_assets, 直查 targets 数从 ~23 升、域名多数带 real_ip(需 0.zone/quake 会员 key + 运行中 app + 内嵌 PG)"
+      ],
+      "evidence": "2026-06-17 BaJie MCP-agent-1 (DISPATCH off, 用户『执行 Phase A 配对』→『继续吧 全部搞完』). Phase A-F 全部落地 + crate 级验证全绿. 未 commit(待用户授权; 计划要求每 Task 一 commit). 详见 agent-progress.md 最新一条.",
+      "notes": "架构关键决策: enrich 管线 run_providers_for_org 不返回 provider 原始文档(raw 只落 artifact + 候选 evidence), 故 pairs 在 agent_intel.rs Enrich 分支从 run.candidates[*].evidence.raw(http_json provider 0.zone/quake 的 target 候选携带整条记录)经 landing::pairs_from_candidates 按 provider normalize.pairs(缺则默认字段集)逐记录(path '$')抽取 — 零改动 14 处 finish_provider_run / 9 处 normalize 调用点. native provider(fofa/hunter/shodan)候选不带 raw, 其 pairs 暂未覆盖(会员 key 门控, 记为后续). Phase C: liveness_from_httpx 仅纯映射+单测, 以 #[cfg_attr(not(test), allow(dead_code))] 标注, 不接 enrich(target_intel zero-touch, 主动探活下沉 EAS).",
+      "remember": "测绘闭环落点: extract_host_ip_pairs(normalize.rs) 抽对 → landing.rs scope 过滤(value_belongs_to_organization)+upsert(带 real_ip, source='asset_intel') → agent_intel.rs Enrich 分支调用. target_intel.json min_invocations={} (coverage_complete authoritative=唯一完整性门控). httpx 探活属 EAS 不属 target_intel."
     },
     {
       "id": "stage-run-org-drilldown-2026-06-14",

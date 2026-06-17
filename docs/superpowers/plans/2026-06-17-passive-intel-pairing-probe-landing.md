@@ -192,6 +192,15 @@ pub(crate) fn plan_promotable_assets(
 
 ## Task 5：自动 profile→target 提升（带测绘 real_ip，非致命）
 
+> **实现注记（2026-06-17 执行）：** `run_providers_for_org` 的返回值**不携带** provider 原始文档
+> （raw 只落 artifact 文件 + 候选 `evidence.raw`），故本步「把各 provider raw 用 extract_host_ip_pairs 汇成
+> Vec<HostIpPair>」改为在 `agent_intel.rs` enrich 分支从 `run.candidates[*].evidence.raw` 抽取——
+> http_json provider（0.zone/quake）的 `normalize.target` 规则会为每条 `data[*]` 记录产出 target 候选，
+> 其 `evidence.raw` 保留整条记录（domain+ip 同在）。新增纯函数 `landing::pairs_from_candidates`，按 provider
+> `normalize.pairs` 字段（缺则默认字段集）对单条记录（path 置 `$`）抽 (host, ip)，按 host 去重。这样**零改动**
+> 14 处 `finish_provider_run` / 9 处 `normalize_json_*` 调用点（改它们会显著放大爆炸半径）。**已知边界：**
+> native provider（fofa/hunter/shodan）候选 evidence 不带 raw，其 pairs 暂不覆盖（会员 key 门控，记为后续）。
+
 **文件：** `asset_intel/landing.rs`、`asset_intel/agent_intel.rs`
 
 **步骤：**
@@ -252,6 +261,11 @@ pub(crate) fn liveness_from_httpx(line: &serde_json::Value) -> &'static str {
 ---
 
 ## Task 7：探活落库（httpx/dnsx，非门槛、非致命）
+
+> **被 Task 13 改判（2026-06-17 执行）：** 为保 target_intel 的 zero-touch 契约，Phase C 在本阶段**只实现
+> `probe::liveness_from_httpx` 纯映射 + 单测**，**不**在 enrich 主路径调 httpx。下文「在 `agent_intel.rs`
+> Enrich 尾部 promote 之后调 probe」一步**不执行**；主动探活 IO 下沉 EAS specialist 接管。`liveness_from_httpx`
+> 以 `#[cfg_attr(not(test), allow(dead_code))]` 标注，作为待 EAS 接线的稳定契约。详见 Task 13。
 
 **文件：** `asset_intel/probe.rs`、`asset_intel/agent_intel.rs`
 
