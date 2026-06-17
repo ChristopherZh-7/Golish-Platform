@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { filterCandidateExecutables } from "./executableFilter";
 import { selectGitHubAsset } from "./githubAsset";
 import { isAutoInstallMethod } from "./installPlatform";
+import { classifyReleaseFetchError } from "./releaseError";
 
 describe("isAutoInstallMethod", () => {
   it("accepts known auto-install methods", () => {
@@ -46,5 +47,26 @@ describe("selectGitHubAsset", () => {
       { name: "tool.zip", browser_download_url: "u2" },
     ]);
     expect(picked?.name).toBe("tool.zip");
+  });
+});
+
+describe("classifyReleaseFetchError", () => {
+  it("falls back to git clone when the repo has no published releases (404)", () => {
+    // Verbatim shape of the backend error for a source-only tool like ctfr.
+    expect(
+      classifyReleaseFetchError('GitHub API error: 404 Not Found. {"message":"Not Found"}')
+    ).toBe("fall-back-to-clone");
+    expect(classifyReleaseFetchError("Not Found")).toBe("fall-back-to-clone");
+  });
+
+  it("surfaces rate-limit errors instead of cloning", () => {
+    expect(
+      classifyReleaseFetchError("GitHub API rate limit exceeded (403). remaining=0")
+    ).toBe("rate-limit");
+  });
+
+  it("aborts on genuine errors", () => {
+    expect(classifyReleaseFetchError("GitHub token rejected (401).")).toBe("abort");
+    expect(classifyReleaseFetchError("error sending request: connection refused")).toBe("abort");
   });
 });

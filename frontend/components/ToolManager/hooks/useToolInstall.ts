@@ -40,6 +40,7 @@ import type { ToolWithMeta } from "../OutputParserEditor";
 import { filterCandidateExecutables } from "./toolInstall/executableFilter";
 import { selectGitHubAsset } from "./toolInstall/githubAsset";
 import { isAutoInstallMethod, resolveInstallForPlatform } from "./toolInstall/installPlatform";
+import { classifyReleaseFetchError } from "./toolInstall/releaseError";
 
 export {
   detectInstallPlatform,
@@ -248,11 +249,11 @@ export function useToolInstall(
             releaseVersion = release.tag_name;
             binaryAsset = selectGitHubAsset(release.assets);
           } catch (releaseErr) {
-            const message = String(releaseErr);
-            if (message.includes("rate limit")) {
-              throw new Error(t("install.githubRateLimit"));
-            }
-            throw releaseErr;
+            const outcome = classifyReleaseFetchError(String(releaseErr));
+            if (outcome === "rate-limit") throw new Error(t("install.githubRateLimit"));
+            if (outcome === "abort") throw releaseErr;
+            // "fall-back-to-clone": repo has no published Releases, so leave
+            // binaryAsset null and drop into the git-clone path below.
           }
 
           if (binaryAsset) {
