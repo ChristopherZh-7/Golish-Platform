@@ -3,7 +3,7 @@
     "id": "ctfr",
     "name": "ctfr",
     "description": "Subdomain enumeration via Certificate Transparency logs (crt.sh). Zero-touch on the target — queries public CT logs, so it is a passive target_intel (recon/ct) technique.",
-    "executable": "ctfr",
+    "executable": "ctfr/ctfr.py",
     "runtime": "python",
     "runtimeVersion": "3.11",
     "launchMode": "cli",
@@ -13,8 +13,8 @@
     "pentestPhase": ["recon"],
     "tags": ["recon", "ct", "certificate-transparency", "subdomain", "passive"],
     "install": {
-      "method": "pip",
-      "source": "ctfr"
+      "method": "github",
+      "source": "UnaPibaGeek/ctfr"
     },
     "params": [
       {
