@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Organization } from "@/lib/api/organizations";
 import type { Target } from "@/lib/pentest/types";
-import { buildOrgTree, countOrgDeletionImpact, UNASSIGNED_KEY } from "./org-tree";
+import {
+  buildHostTree,
+  buildOrgTree,
+  collectSubtreeTargets,
+  countOrgDeletionImpact,
+  UNASSIGNED_KEY,
+} from "./org-tree";
 
 function org(id: string, parentId: string | null = null): Organization {
   return { id, parent_id: parentId, name: id, sort_order: 0 } as Organization;
@@ -76,5 +82,45 @@ describe("buildOrgTree unassigned bucket", () => {
     expect(unassigned?.targets.map((t) => t.id)).toEqual(["t2", "t3"]);
     const p = roots.find((n) => n.id === "P");
     expect(p?.targets.map((t) => t.id)).toEqual(["t1"]);
+  });
+});
+
+function hostTgt(id: string, patch: Partial<Target>): Target {
+  return { id, organization_id: null, type: "domain", value: id, real_ip: "", ...patch } as Target;
+}
+
+describe("collectSubtreeTargets", () => {
+  it("returns a leaf node's own targets", () => {
+    const node = {
+      id: "n",
+      name: "n",
+      children: [],
+      targets: [tgt("a", null), tgt("b", null)],
+    };
+    expect(collectSubtreeTargets(node).map((t) => t.id)).toEqual(["a", "b"]);
+  });
+
+  it("recurses through synthetic host + unresolved children of the unassigned group", () => {
+    // buildHostTree empties the unassigned node and pushes its orphan targets
+    // into host (IP) and unresolved (no real_ip) children. Deleting "未分组"
+    // must still reach every underlying row, so the collector has to recurse.
+    const roots = buildHostTree(
+      [],
+      [
+        hostTgt("ip1", { type: "ip", value: "1.2.3.4" }),
+        hostTgt("d1", { value: "a.com", real_ip: "" }),
+        hostTgt("d2", { value: "b.com", real_ip: "1.2.3.4" }),
+      ],
+      "未分组",
+      "未解析域名"
+    );
+    const unassigned = roots.find((n) => n.id === UNASSIGNED_KEY);
+    expect(unassigned).toBeDefined();
+    expect(unassigned?.targets).toEqual([]);
+    expect(
+      collectSubtreeTargets(unassigned as NonNullable<typeof unassigned>)
+        .map((t) => t.id)
+        .sort()
+    ).toEqual(["d1", "d2", "ip1"]);
   });
 });

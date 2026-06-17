@@ -74,6 +74,8 @@
     "groupPlaceholder": "Owner organization (optional, supports / hierarchy)",
     "unassigned": "Unassigned",
     "unresolvedGroup": "Unresolved",
+    "deleteBucket": "Delete all targets in this group",
+    "deleteBucketConfirm": "Delete all {{count}} target(s) under \"{{name}}\"?\nThis permanently removes these targets and their recon/scan data and cannot be undone.",
     "viewByType": "By type",
     "viewByIp": "By IP",
     "assetsGroup": "Assets",

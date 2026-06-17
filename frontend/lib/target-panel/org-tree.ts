@@ -172,6 +172,21 @@ export function countAllTargets(node: OrgTreeNode): { total: number; inScope: nu
 }
 
 /**
+ * Flatten every real target under a node — its own `targets` plus all
+ * descendants'. Synthetic groups (the "unassigned" bucket, per-org "unresolved"
+ * buckets, IP "host" nodes) carry their rows on the node *or* its children
+ * (e.g. `buildHostTree` empties the unassigned node and pushes its targets into
+ * host/bucket children), so a correct "delete this group's targets" action must
+ * recurse exactly like {@link countAllTargets}. Returns the underlying `Target`
+ * rows so callers can map to ids for deletion and show an accurate count.
+ */
+export function collectSubtreeTargets(node: OrgTreeNode): Target[] {
+  const out: Target[] = [...node.targets];
+  for (const child of node.children) out.push(...collectSubtreeTargets(child));
+  return out;
+}
+
+/**
  * Blast radius of deleting an organization. Mirrors the DB cascade
  * (`organizations.parent_id` + `targets.organization_id`, both ON DELETE
  * CASCADE): deleting an org drops every descendant org and every target owned

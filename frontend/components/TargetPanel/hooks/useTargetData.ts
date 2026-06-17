@@ -150,6 +150,36 @@ export function useTargetData() {
     [loadTargets]
   );
 
+  const handleDeleteMany = useCallback(
+    async (ids: string[]) => {
+      // Bulk-delete the rows behind a synthetic group (unassigned / unresolved /
+      // host). Reuse the per-row `target_delete` command (no batch command on
+      // the backend) but reload + audit *once* so deleting dozens of rows
+      // doesn't trigger one `target_list` round-trip per row.
+      const unique = [...new Set(ids)].filter(Boolean);
+      if (unique.length === 0) return;
+      let deleted = 0;
+      for (const id of unique) {
+        try {
+          await targets.deleteTarget(id, getProjectPath());
+          deleted += 1;
+        } catch (e) {
+          console.error("Failed to delete target:", id, e);
+        }
+      }
+      if (deleted > 0) {
+        loadTargets();
+        sendCustomEvent("targets-changed").catch(() => {});
+        logAudit({
+          action: "targets_bulk_deleted",
+          category: "targets",
+          details: `批量删除 ${deleted}/${unique.length} 个目标`,
+        });
+      }
+    },
+    [loadTargets]
+  );
+
   const handleToggleScope = useCallback(
     async (target: Target) => {
       try {
@@ -264,6 +294,7 @@ export function useTargetData() {
     handleAdd,
     handleBatchAdd,
     handleDelete,
+    handleDeleteMany,
     handleToggleScope,
     handleUpdateNotes,
     handleUpdateGrp,

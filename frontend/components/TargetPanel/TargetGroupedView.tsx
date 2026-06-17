@@ -57,6 +57,7 @@ import {
 import { translateWithFallback } from "@/lib/target-panel/org-fields";
 import {
   buildHostTree,
+  collectSubtreeTargets,
   countOrgDeletionImpact,
   type OrgTreeNode,
   ROOT_PARENT_KEY,
@@ -120,6 +121,7 @@ interface TargetGroupedViewProps {
     source?: string
   ) => Promise<Target[]>;
   onDelete: (id: string) => Promise<void>;
+  onDeleteMany: (ids: string[]) => Promise<void>;
   onToggleScope: (target: Target) => Promise<void>;
   onUpdateNotes: (id: string, notes: string) => void;
 }
@@ -167,6 +169,7 @@ export function TargetGroupedView({
   onAdd,
   onBatchAdd,
   onDelete,
+  onDeleteMany,
   onToggleScope,
   onUpdateNotes,
 }: TargetGroupedViewProps) {
@@ -729,6 +732,25 @@ export function TargetGroupedView({
     [orgs, targets, refreshOrgs, t]
   );
 
+  const handleDeleteNodeTargets = useCallback(
+    async (node: OrgTreeNode) => {
+      // Synthetic groups (unassigned / unresolved bucket / IP host) have no DB
+      // row of their own, so "delete this group" means deleting the real targets
+      // it contains (recursively). Warn with the exact blast radius first.
+      const victims = collectSubtreeTargets(node);
+      if (victims.length === 0) return;
+      const confirmMsg = t("targets.deleteBucketConfirm")
+        .replace("{{name}}", node.name)
+        .replace("{{count}}", String(victims.length));
+      if (!confirm(confirmMsg)) return;
+      await onDeleteMany(victims.map((target) => target.id));
+      // Drop a selection pointing at the now-emptied group so the right panel
+      // doesn't dangle (host ids are also pruned by the tree-rebuild effect).
+      if (selectedHostId === node.id) setSelectedHostId(null);
+    },
+    [onDeleteMany, t, selectedHostId]
+  );
+
   const handleAddTargetSubmit = useCallback(
     async (orgId: string) => {
       if (!targetFormValue.trim()) {
@@ -894,6 +916,7 @@ export function TargetGroupedView({
             handleStartAddChild={handleStartAddChild}
             handleStartEditOrg={handleStartEditOrg}
             handleDeleteOrg={handleDeleteOrg}
+            handleDeleteNodeTargets={handleDeleteNodeTargets}
             handleRunAssetIntel={handleRunAssetIntel}
             editingTargetId={editingTargetId}
             setEditingTargetId={setEditingTargetId}

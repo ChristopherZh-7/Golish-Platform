@@ -57,6 +57,9 @@ interface OrgTreeProps {
   handleStartAddChild: (parentId: string | null) => void;
   handleStartEditOrg: (node: OrgTreeNode) => void;
   handleDeleteOrg: (id: string, name: string) => void;
+  // Bulk-delete the real targets behind a synthetic group (unassigned /
+  // unresolved bucket / IP host) — those nodes have no DB row to "delete".
+  handleDeleteNodeTargets: (node: OrgTreeNode) => void;
   handleRunAssetIntel: (org: Organization, action: AssetIntelOrgActionKind) => void;
   editingTargetId: string | null;
   setEditingTargetId: Dispatch<SetStateAction<string | null>>;
@@ -114,6 +117,7 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
     handleStartAddChild,
     handleStartEditOrg,
     handleDeleteOrg,
+    handleDeleteNodeTargets,
     handleRunAssetIntel,
     editingTargetId,
     setEditingTargetId,
@@ -365,14 +369,26 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
           {isOrg && (
             <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
               {isUnassigned ? (
-                <button
-                  type="button"
-                  className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-accent"
-                  onClick={() => handleStartAddTarget(node.id)}
-                  title={t("targets.addTarget")}
-                >
-                  <Crosshair className="w-3 h-3" />
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-accent"
+                    onClick={() => handleStartAddTarget(node.id)}
+                    title={t("targets.addTarget")}
+                  >
+                    <Crosshair className="w-3 h-3" />
+                  </button>
+                  {counts.total > 0 && (
+                    <button
+                      type="button"
+                      className="p-1 rounded hover:bg-red-500/20 text-muted-foreground hover:text-red-400"
+                      onClick={() => handleDeleteNodeTargets(node)}
+                      title={t("targets.deleteBucket")}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
+                </>
               ) : (
                 <>
                   {renderOrgActionButton(actionModel.primary, node)}
@@ -411,6 +427,24 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
                   </button>
                 </>
               )}
+            </div>
+          )}
+
+          {/* Synthetic IP host / catch-all bucket leaves carry no org actions,
+              but still need a way to clear out their underlying targets. */}
+          {isLeafSelectable && counts.total > 0 && (
+            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+              <button
+                type="button"
+                className="p-1 rounded hover:bg-red-500/20 text-muted-foreground hover:text-red-400"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDeleteNodeTargets(node);
+                }}
+                title={t("targets.deleteBucket")}
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
             </div>
           )}
         </div>

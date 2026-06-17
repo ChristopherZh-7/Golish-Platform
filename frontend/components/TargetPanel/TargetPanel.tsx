@@ -23,6 +23,7 @@ export function TargetPanel() {
     handleAdd,
     handleBatchAdd,
     handleDelete,
+    handleDeleteMany,
     handleToggleScope,
     handleUpdateNotes,
   } = useTargetData();
@@ -68,6 +69,7 @@ export function TargetPanel() {
             onAdd={handleAdd}
             onBatchAdd={handleBatchAdd}
             onDelete={handleDelete}
+            onDeleteMany={handleDeleteMany}
             onToggleScope={handleToggleScope}
             onUpdateNotes={handleUpdateNotes}
           />

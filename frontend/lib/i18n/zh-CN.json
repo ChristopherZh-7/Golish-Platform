@@ -74,6 +74,8 @@
     "groupPlaceholder": "归属组织（可选，支持 / 分级）",
     "unassigned": "未分组",
     "unresolvedGroup": "未解析域名",
+    "deleteBucket": "删除该分组下的全部目标",
+    "deleteBucketConfirm": "确定删除「{{name}}」下的全部 {{count}} 个目标吗？\n将永久删除这些目标及其侦察/扫描数据，操作不可恢复。",
     "viewByType": "按类型",
     "viewByIp": "按 IP",
     "assetsGroup": "资产",
