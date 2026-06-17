@@ -144,6 +144,8 @@ resources/wordlists/*
 # Per-machine MCP server artifacts (never push to remote)
 .cursor/rules/*-mcp.mdc
 **/.cursor/mcp.json
+# Per-machine local DB snapshots dumped by the bajie-mcp sidebar (never push)
+.cursor/db-backup-*.json
 
 # Stray vite build artifacts at repo root (build output should land in
 # `dist/` only; this catches the rare cases where vite drops a hashed
