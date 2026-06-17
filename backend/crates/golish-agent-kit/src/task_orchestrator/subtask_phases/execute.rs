@@ -961,6 +961,22 @@ impl TaskOrchestrator {
         Ok(report)
     }
 
+    /// Refresh `exec_ctx.harness_org_id` from the orchestrator's currently-bound
+    /// engagement org.
+    ///
+    /// `exec_ctx` is built ONCE at run start (`run_executor_driven`); on the chat
+    /// path the engagement org is not known there yet — scoping binds it later via
+    /// [`Self::consume_gate_outcome`]. Without re-syncing this snapshot at each
+    /// stage entry it stays a stale `None`, and every post-scoping stage loses the
+    /// org binding: `manage_targets` orphans discovered assets (`organization_id`
+    /// NULL) and the submit gate skips its org-keyed DB-truth projection so every
+    /// coverage cell reads "never attempted" and the stage dead-loops. Re-synced
+    /// per stage so the bound org reaches that stage's tools + gate through the
+    /// bridge side-channel.
+    fn sync_engagement_org_into(&self, exec_ctx: &mut ExecutionContext) {
+        exec_ctx.harness_org_id = self.harness_org_id;
+    }
+
     /// P2 方案 C · run one stage's subtask group under the Executor.
     ///
     /// `execute_single_subtask` accumulates the flow outcome (via
@@ -1024,6 +1040,11 @@ impl TaskOrchestrator {
         }
 
         exec_ctx.harness_stage = Some(stage);
+        // Engagement-org isolation (设计 2026-06-15): `exec_ctx` was snapshotted at
+        // run start before scoping bound the org; re-sync it here so this stage's
+        // tools (manage_targets org backfill) + submit gate (org-keyed DB-truth
+        // projection) see the bound org instead of a stale `None`.
+        self.sync_engagement_org_into(exec_ctx);
         exec_ctx.harness_authz = op_max_authz.map(|max_authorization| {
             let intent = crate::harness::IntentClassifier::with_default_keywords()
                 .classify(&planned.description, stage);

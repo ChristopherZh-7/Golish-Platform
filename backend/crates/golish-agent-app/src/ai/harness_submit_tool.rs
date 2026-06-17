@@ -226,18 +226,17 @@ impl SubmitStageDeliverableTool {
             Some(src) => *src.read().await,
             None => None,
         };
+        let mut out_assets: Option<Vec<String>> = None;
         if let Some(org_id) = org_id {
             let assets = repo.in_scope_assets(Some(org_id)).await;
             if !assets.is_empty() {
-                facts.extend(repo.db_truth_facts(Some(org_id), &assets).await);
-                return GateContext {
-                    in_scope_assets: Some(assets),
-                    evidence_facts: (!facts.is_empty()).then_some(facts),
-                    ..Default::default()
-                };
+                let dbt = repo.db_truth_facts(Some(org_id), &assets).await;
+                facts.extend(dbt);
+                out_assets = Some(assets);
             }
         }
         GateContext {
+            in_scope_assets: out_assets,
             evidence_facts: (!facts.is_empty()).then_some(facts),
             ..Default::default()
         }

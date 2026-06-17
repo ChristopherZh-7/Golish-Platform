@@ -244,6 +244,26 @@ pub(crate) async fn land_target_intel_coverage(
     }
 }
 
+/// Re-run ONLY the per-asset coverage landing (subdomains + DNS) for an org whose
+/// in-scope targets are now registered. Closes the enrich-time ordering gap: the
+/// agent calls `recon_enrich_assets` (which lands) BEFORE `manage_targets add`, so
+/// at enrich time `targets WHERE scope='in'` is empty and nothing lands; the
+/// gate-read path can call this once targets exist to refresh the gate-read tables
+/// (`target_assets` / `dns_records`). Per-asset only — the slow CT/WHOIS HTTP
+/// (`land_ct_and_whois`) is intentionally NOT run here since this is invoked on the
+/// hot submit-gate path. Idempotent (NOT EXISTS / upsert skip already-landed) and
+/// fully non-fatal. Returns (subdomains, dns_records) landed this pass.
+pub async fn refresh_per_asset_landing(pool: &sqlx::PgPool, org_id: Uuid) -> (usize, usize) {
+    let Ok(Some(org)) = golish_db::repo::organizations::get_one(pool, org_id).await else {
+        return (0, 0);
+    };
+    let subdomains = land_subdomain_assets(pool, &org, "gate-refresh", &[])
+        .await
+        .unwrap_or(0);
+    let dns_records = land_dns_records(pool, &org).await.unwrap_or(0);
+    (subdomains, dns_records)
+}
+
 /// Pair each candidate **host** with the org-owned **root** domain it belongs to
 /// (longest owned suffix wins). Pure (no IO) for unit testing. Hosts that equal an
 /// owned root, or that belong to no owned root, are dropped. Callers pre-filter to

@@ -265,6 +265,27 @@ impl GolishDbRepoProvider {
         org_id: Option<Uuid>,
         in_scope_assets: &[String],
     ) -> anyhow::Result<Vec<(String, String)>> {
+        // Coverage-landing refresh (fix 2026-06-17 enrich-timing): the recon
+        // sub-agent calls `recon_enrich_assets` (which lands subdomains/DNS) BEFORE
+        // `manage_targets add` registers the in-scope targets, so at enrich time the
+        // gate-read tables (`target_assets`/`dns_records`) stayed empty → this
+        // authoritative db-truth read saw no per-asset DNS/SUBDOMAIN facts → the
+        // target_intel coverage gate dead-looped. Re-run the per-asset landing now
+        // that targets exist; idempotent (NOT EXISTS/upsert skip) and non-fatal.
+        if let Some(org_id) = org_id {
+            let (subs, dns) =
+                golish_recon_app::organization_recon::refresh_per_asset_landing(&self.pool, org_id)
+                    .await;
+            if subs > 0 || dns > 0 {
+                tracing::info!(
+                    target: "harness::submit_tool",
+                    org_id = %org_id,
+                    subdomains = subs,
+                    dns_records = dns,
+                    "per-asset coverage landing refreshed before db-truth read"
+                );
+            }
+        }
         // 2c-2 (设计 host-aware-coverage-2c §4.3): align each in-scope asset to
         // its targets.type so coverage_truth drops domain-only org facts (CT) on
         // IP assets. Missing type → "" (non-IP, keep all — fail-safe). Reuses the

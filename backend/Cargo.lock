@@ -2557,6 +2557,7 @@ dependencies = [
  "golish-projects",
  "golish-prompts",
  "golish-pty",
+ "golish-recon-app",
  "golish-session",
  "golish-settings",
  "golish-sidecar",

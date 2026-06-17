@@ -862,3 +862,38 @@ fn extract_engagement_org_fails_open_on_non_uuid_or_non_scoping() {
         "only the scoping stage binds the engagement org"
     );
 }
+
+/// Engagement-org staleness fix: `exec_ctx.harness_org_id` is a snapshot taken at
+/// run start (None on the chat path, before scoping binds the org). Once scoping
+/// has bound the org (`set_harness_org_id`), entering the next stage must re-sync
+/// the snapshot so the bound org reaches that stage's tools + gate — otherwise
+/// `manage_targets` orphans discovered assets (organization_id NULL) and the
+/// submit gate skips its org-keyed DB-truth projection (coverage "never
+/// attempted").
+#[test]
+fn sync_engagement_org_refreshes_stale_exec_ctx() {
+    use crate::task_orchestrator::types::ExecutionContext;
+
+    let op = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "pentest", "target_intel");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo, Uuid::new_v4(), tx);
+
+    // Scoping bound the engagement root org mid-run.
+    let org = Uuid::new_v4();
+    orch.set_harness_org_id(Some(org));
+
+    // exec_ctx is the stale run-start snapshot (org was not yet known then).
+    let mut ctx = ExecutionContext {
+        harness_org_id: None,
+        ..Default::default()
+    };
+
+    orch.sync_engagement_org_into(&mut ctx);
+
+    assert_eq!(
+        ctx.harness_org_id,
+        Some(org),
+        "entering a stage after scoping bound the org must re-sync the stale exec_ctx snapshot"
+    );
+}

@@ -29,6 +29,9 @@ golish-pty = { workspace = true }
 # golish-mcp is referenced by path across the workspace (not a workspace.dep).
 golish-mcp = { path = "../golish-mcp" }
 golish-pentest = { workspace = true }
+# Per-asset coverage landing refresh on the submit-gate read path (fix 2026-06-17
+# enrich-timing): the agent enrich landing runs before targets are registered.
+golish-recon-app = { workspace = true }
 golish-prompts = { workspace = true }
 golish-events = { workspace = true }
 golish-projects = { workspace = true }
