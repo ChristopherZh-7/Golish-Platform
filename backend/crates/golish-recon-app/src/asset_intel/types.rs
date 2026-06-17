@@ -276,6 +276,32 @@ pub struct ProfileFieldEntry {
     pub value: String,
 }
 
+/// A `(host, ip)` pair lifted out of a single provider record by an
+/// [`AssetIntelPairRule`](golish_pentest::models::AssetIntelPairRule).
+///
+/// Keeping the domain together with the IP the survey actually observed lets
+/// downstream landing persist a target with a real `real_ip` instead of
+/// re-resolving via DNS. `host` is normalized (trimmed, trailing-dot stripped,
+/// lowercased); `ip` is the raw surveyed address (already validated as parsable).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HostIpPair {
+    pub host: String,
+    pub ip: String,
+}
+
+#[cfg(test)]
+pub(crate) fn pair_rule_for_test(
+    path: &str,
+    host_field: &[&str],
+    ip_field: &[&str],
+) -> golish_pentest::models::AssetIntelPairRule {
+    golish_pentest::models::AssetIntelPairRule {
+        path: path.to_string(),
+        host_field: host_field.iter().map(|s| s.to_string()).collect(),
+        ip_field: ip_field.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetIntelEnrichOrganizationArgs {

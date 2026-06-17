@@ -857,7 +857,7 @@ fn record_belongs_to_organization(
     }
 }
 
-fn value_belongs_to_organization(
+pub(crate) fn value_belongs_to_organization(
     organization: &golish_db::models::Organization,
     value: &str,
 ) -> bool {
@@ -879,7 +879,9 @@ fn value_belongs_to_organization(
         .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
 }
 
-fn organization_owned_domains(organization: &golish_db::models::Organization) -> Vec<String> {
+pub(crate) fn organization_owned_domains(
+    organization: &golish_db::models::Organization,
+) -> Vec<String> {
     let mut domains = Vec::new();
     collect_owned_domain_values(&mut domains, &organization.domains);
     if let Some(intel) = organization.intel.as_object() {
@@ -927,7 +929,7 @@ fn json_atom_values(value: &Value) -> Vec<String> {
     }
 }
 
-fn normalized_host(value: &str) -> Option<String> {
+pub(crate) fn normalized_host(value: &str) -> Option<String> {
     let value = value.trim().trim_end_matches('.').to_ascii_lowercase();
     if value.is_empty() || value.parse::<std::net::IpAddr>().is_ok() {
         return None;

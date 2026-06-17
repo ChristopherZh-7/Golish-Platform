@@ -41,6 +41,39 @@ pub(crate) fn extract_profile_field_entries(
     out
 }
 
+/// Extract paired `(host, ip)` tuples from a single provider raw document
+/// per an [`AssetIntelPairRule`](golish_pentest::models::AssetIntelPairRule).
+///
+/// For each record selected by `rule.path`, the first `host_field` that
+/// resolves to a non-empty, non-IP value (normalized: trimmed, trailing dot
+/// stripped, lowercased) is paired with the first `ip_field` that resolves to
+/// a parsable IP. Records missing either side are skipped, so callers only see
+/// fully-paired tuples — this keeps a domain glued to the IP the survey
+/// actually observed instead of splitting them into independent buckets.
+pub(crate) fn extract_host_ip_pairs(
+    raw: &Value,
+    rule: &golish_pentest::models::AssetIntelPairRule,
+) -> Vec<super::types::HostIpPair> {
+    use golish_pentest::models::AssetIntelFieldRef;
+    let mut out = Vec::new();
+    for item in select_json_values(raw, &rule.path) {
+        let host = rule.host_field.iter().find_map(|field| {
+            resolve_field_ref(item, &AssetIntelFieldRef::Field(field.clone()))
+                .map(|value| value.trim().trim_end_matches('.').to_ascii_lowercase())
+                .filter(|host| !host.is_empty() && host.parse::<std::net::IpAddr>().is_err())
+        });
+        let ip = rule.ip_field.iter().find_map(|field| {
+            resolve_field_ref(item, &AssetIntelFieldRef::Field(field.clone()))
+                .map(|value| value.trim().to_string())
+                .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
+        });
+        if let (Some(host), Some(ip)) = (host, ip) {
+            out.push(super::types::HostIpPair { host, ip });
+        }
+    }
+    out
+}
+
 /// Returns true when every filter clause matches the given JSON item.
 ///
 /// Operators apply via [`apply_filter_op`]:

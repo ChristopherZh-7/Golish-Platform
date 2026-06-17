@@ -144,6 +144,13 @@
         ]
       },
       "normalize": {
+        "pairs": [
+          {
+            "path": "$..data[*]",
+            "host_field": ["domain", "url", "host"],
+            "ip_field": ["ip", "msg.ip", "ip_addr"]
+          }
+        ],
         "organization": [
           {
             "path": "$..data[*]",

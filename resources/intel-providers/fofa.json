@@ -22,7 +22,8 @@
         "kind": "native_provider",
         "provider_id": "fofa",
         "queries": [
-          { "query_type": "site", "template": "org=\"{{company_name}}\"" }
+          { "query_type": "site", "template": "org=\"{{company_name}}\"" },
+          { "query_type": "cert", "template": "cert=\"{{company_name}}\"" }
         ]
       }
     }

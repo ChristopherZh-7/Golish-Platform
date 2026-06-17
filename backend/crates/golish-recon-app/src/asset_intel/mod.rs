@@ -41,8 +41,10 @@ mod asn;
 mod availability;
 mod capability;
 mod commands;
+mod landing;
 mod merge;
 mod normalize;
+mod probe;
 mod profile_patch;
 mod promote;
 mod records;
@@ -65,7 +67,8 @@ pub(crate) use capability::{
 };
 pub(crate) use merge::{flatten_candidates, merge_candidates};
 pub(crate) use normalize::{
-    extract_profile_field_entries, filter_passes, resolve_field_ref, select_json_values,
+    extract_host_ip_pairs, extract_profile_field_entries, filter_passes, resolve_field_ref,
+    select_json_values,
 };
 pub(crate) use profile_patch::{
     build_profile_patch_from_entries, merge_profile_patch_with_existing,

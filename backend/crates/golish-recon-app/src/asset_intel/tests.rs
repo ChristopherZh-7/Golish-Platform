@@ -29,6 +29,7 @@ fn fake_normalize_config() -> golish_pentest::models::AssetIntelNormalizeConfig 
             when: vec![],
         }],
         profile_fields: vec![],
+        pairs: vec![],
     }
 }
 
@@ -479,6 +480,7 @@ async fn http_json_runtime_posts_fake_data_and_normalizes_candidates() {
                     when: vec![],
                 }],
                 profile_fields: vec![],
+                pairs: vec![],
             },
             discovery: golish_pentest::models::AssetIntelDiscoveryConfig::default(),
             lookup: None,
@@ -620,6 +622,7 @@ async fn http_json_runtime_keeps_partial_data_when_one_request_drops_body() {
                     when: vec![],
                 }],
                 profile_fields: vec![],
+                pairs: vec![],
             },
             discovery: golish_pentest::models::AssetIntelDiscoveryConfig::default(),
             lookup: None,
@@ -722,6 +725,7 @@ async fn http_json_runtime_treats_provider_code_error_as_failed() {
                     when: vec![],
                 }],
                 profile_fields: vec![],
+                pairs: vec![],
             },
             discovery: golish_pentest::models::AssetIntelDiscoveryConfig::default(),
             lookup: None,
@@ -2476,4 +2480,25 @@ fn merge_candidates_dedupes_same_value_across_providers() {
             .map(Vec::len),
         Some(2)
     );
+}
+
+#[test]
+fn extract_host_ip_pairs_quake_record_pairs_domain_and_ip() {
+    let raw = serde_json::json!({"data":[
+        {"domain":"bank.pingan.com","ip":"221.11.190.218"},
+        {"hostname":"www.pingan.com","ip":"61.241.22.62"},
+        {"domain":"","ip":"1.2.3.4"} // host empty -> skip
+    ]});
+    let rule = crate::asset_intel::types::pair_rule_for_test(
+        "$..data[*]",
+        &["domain", "hostname"],
+        &["ip"],
+    );
+    let mut pairs = crate::asset_intel::extract_host_ip_pairs(&raw, &rule);
+    pairs.sort_by(|a, b| a.host.cmp(&b.host));
+    assert_eq!(pairs.len(), 2);
+    assert_eq!(pairs[0].host, "bank.pingan.com");
+    assert_eq!(pairs[0].ip, "221.11.190.218");
+    assert_eq!(pairs[1].host, "www.pingan.com");
+    assert_eq!(pairs[1].ip, "61.241.22.62");
 }

@@ -8,6 +8,7 @@
 //! providers against one organization, and returns a small serializable summary
 //! the agent tool can hand back (and the runtime can book to the evidence ledger).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -240,6 +241,42 @@ pub async fn run_passive_intel(
                     rdns = landed.rdns,
                     ip_whois = landed.ip_whois,
                     "target_intel coverage landing (agent path)"
+                );
+
+                // Passive-intel pairing closure (design 2026-06-17 §2 ③–⑤):
+                // recover (host, ip) pairs from the survey records that produced
+                // candidates, scope-filter them, and upsert as targets carrying
+                // the surveyed `real_ip`. Descriptor-driven via each provider's
+                // `normalize.pairs`; fully non-fatal (failures only warn).
+                let pairs_rules_by_provider: HashMap<
+                    String,
+                    Vec<golish_pentest::models::AssetIntelPairRule>,
+                > = scan
+                    .tools
+                    .iter()
+                    .filter_map(|candidate_tool| {
+                        candidate_tool.asset_intel.as_ref().map(|asset| {
+                            let provider_id = super::provider_id_for_tool(candidate_tool)
+                                .unwrap_or_else(|| candidate_tool.id.clone());
+                            (provider_id, asset.normalize.pairs.clone())
+                        })
+                    })
+                    .collect();
+                let pairs = crate::asset_intel::landing::pairs_from_candidates(
+                    &run.candidates,
+                    &pairs_rules_by_provider,
+                );
+                let promoted = crate::asset_intel::landing::promote_profile_assets_to_targets(
+                    pool.as_ref(),
+                    &fresh,
+                    &pairs,
+                )
+                .await;
+                tracing::info!(
+                    run_id = %run.run_id,
+                    pairs = pairs.len(),
+                    promoted,
+                    "passive-intel auto-landing to targets (agent path)"
                 );
             }
             Ok(None) => {}
