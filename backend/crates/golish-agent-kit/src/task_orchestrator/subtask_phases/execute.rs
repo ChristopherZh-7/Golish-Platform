@@ -2649,7 +2649,7 @@ fn synthesize_stage_subtask(
                 }
                 if intel_policy.enrich_assets {
                     steps.push_str(&format!(
-                        "{n}) Call recon_enrich_assets(organization_id=<org>) to passively collect domains/IPs/ICP/apps/emails via intel providers (0.zone/quake/…). ",
+                        "{n}) Call recon_map_assets(organization_id=<org>) to passively survey domains/IPs/ASN/subdomains/certificates/ICP/apps/emails via intel providers (0.zone/quake/…), then recon_lookup_whois(organization_id=<org>) for WHOIS (RDAP, once per org). ",
                     ));
                     n += 1;
                 }
@@ -2924,7 +2924,7 @@ mod dag_driven_helper_tests {
     }
 
     /// T7 (设计 2026-06-06-intel-stage §3.5): target_intel 子任务描述随 intel_policy
-    /// 分流——红队 (discover+enrich) 出 recon_discover_subsidiaries + recon_enrich_assets;
+    /// 分流——红队 (discover+enrich) 出 recon_discover_subsidiaries + recon_map_assets;
     /// 渗透 (passive_intel=skip) 出 not_applicable、不出现 recon 工具.
     #[test]
     fn target_intel_prompt_varies_by_intel_policy() {
@@ -2940,7 +2940,7 @@ mod dag_driven_helper_tests {
         let s = synthesize_stage_subtask(StageKind::TargetIntel, "acme corp", &scoping, &red);
         assert!(s.description.contains("recon_list_providers"));
         assert!(s.description.contains("recon_discover_subsidiaries"));
-        assert!(s.description.contains("recon_enrich_assets"));
+        assert!(s.description.contains("recon_map_assets"));
         assert!(!s.description.contains("not_applicable"));
 
         let pentest = IntelPolicy {
@@ -2952,7 +2952,7 @@ mod dag_driven_helper_tests {
         assert!(s2.description.contains("not_applicable"));
         assert!(!s2.description.contains("recon_list_providers"));
         assert!(!s2.description.contains("recon_discover_subsidiaries"));
-        assert!(!s2.description.contains("recon_enrich_assets"));
+        assert!(!s2.description.contains("recon_map_assets"));
     }
 
     // ── P3 ③ seam: dynamic expected_techniques in the gate hook ───────────────

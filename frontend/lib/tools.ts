@@ -36,7 +36,8 @@ const TOOL_COLORS: Record<string, string> = {
   web_fetch: "var(--ansi-magenta)",
   manage_targets: "var(--ansi-cyan)",
   record_finding: "#f59e0b",
-  recon_enrich_assets: "var(--ansi-magenta)",
+  recon_map_assets: "var(--ansi-magenta)",
+  recon_lookup_whois: "var(--ansi-magenta)",
   recon_discover_subsidiaries: "var(--ansi-magenta)",
 };
 
@@ -55,7 +56,8 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
   web_search_answer: Globe,
   web_fetch: Globe,
   manage_targets: Network,
-  recon_enrich_assets: Radar,
+  recon_map_assets: Radar,
+  recon_lookup_whois: Globe,
   recon_discover_subsidiaries: Radar,
 };
 
@@ -105,7 +107,8 @@ const TOOL_LABELS_SHORT: Record<string, string> = {
   web_fetch: "Fetch",
   manage_targets: "Targets",
   record_finding: "Finding",
-  recon_enrich_assets: "Enrich",
+  recon_map_assets: "Survey",
+  recon_lookup_whois: "WHOIS",
   recon_discover_subsidiaries: "Subsidiaries",
 };
 
@@ -125,7 +128,8 @@ const TOOL_LABELS_STANDARD: Record<string, string> = {
   pentest_run: "Pentest Run",
   pentest_list_tools: "List Tools",
   pentest_read_skill: "Read Skill",
-  recon_enrich_assets: "Enrich Assets",
+  recon_map_assets: "Map Assets",
+  recon_lookup_whois: "Lookup WHOIS",
   recon_discover_subsidiaries: "Discover Subsidiaries",
 };
 

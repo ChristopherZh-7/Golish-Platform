@@ -2,7 +2,8 @@
 //! asset-intel engine directly (设计 2026-06-06-intel-stage-ai-driven-per-mode
 //! §3.3). These wrap [`crate::asset_intel::run_passive_intel`] so the AI — not a
 //! GUI button — performs subsidiary discovery (`recon_discover_subsidiaries`,
-//! ENScan) and field enrichment (`recon_enrich_assets`, 0.zone / quake / …).
+//! ENScan), provider asset survey (`recon_map_assets`, 0.zone / quake / …) and
+//! WHOIS lookup (`recon_lookup_whois`, RDAP).
 //!
 //! Both take the confirmed engagement `organization_id` (created during scoping,
 //! org-first) and are project-scoped so a tool can never touch another project's
@@ -160,31 +161,35 @@ impl Tool for ReconDiscoverSubsidiariesTool {
     }
 }
 
-/// `recon_enrich_assets` — passive field enrichment (0.zone / quake / fofa / …):
-/// collect domains / IPs / ICP / apps / emails for the organization.
-pub struct ReconEnrichAssetsTool {
+/// `recon_map_assets` — cyberspace/intel-provider survey (0.zone / quake / fofa /
+/// hunter / shodan / ENScan): collect domains / IPs / ASN / subdomains /
+/// certificates / ICP / apps / emails / OSINT, landed to the org profile +
+/// target_assets (host↔IP pairs carry the surveyed real_ip). Replaces the old
+/// all-in-one enrich tool; WHOIS is the standalone `recon_lookup_whois` tool and
+/// CT certs also come from the `ctfr` tool. (plan 2026-06-18-slim-enrich)
+pub struct ReconMapAssetsTool {
     pool: Arc<PgPool>,
     tools: ToolsConfigState,
 }
 
-impl ReconEnrichAssetsTool {
+impl ReconMapAssetsTool {
     pub fn new(pool: Arc<PgPool>, tools: ToolsConfigState) -> Self {
         Self { pool, tools }
     }
 }
 
 #[async_trait::async_trait]
-impl Tool for ReconEnrichAssetsTool {
+impl Tool for ReconMapAssetsTool {
     fn name(&self) -> &'static str {
-        "recon_enrich_assets"
+        "recon_map_assets"
     }
 
     fn description(&self) -> &'static str {
-        "Passively enrich an organization's assets via intel providers (0.zone / quake / fofa / hunter / shodan): collect domains, IP ranges, ICP records, apps/mini-programs, and exposed emails. Use during target_intel after the engagement subject is confirmed. Writes results to the org profile + candidates. Returns a summary with counts and provider ids."
+        "Survey an organization's external footprint via cyberspace/intel providers (0.zone / quake / fofa / hunter / shodan / ENScan): domains, IP ranges, ASN, subdomains, certificates, ICP records, apps/mini-programs, exposed emails, and OSINT — landed to the org profile + target_assets (host↔IP pairs carry the surveyed real_ip). Zero-touch. Use during target_intel after the engagement subject is confirmed. WHOIS is a separate tool (recon_lookup_whois); CT certificates also via the ctfr tool. Returns a summary with counts and provider ids."
     }
 
     fn parameters(&self) -> Value {
-        passive_intel_parameters("to enrich assets for")
+        passive_intel_parameters("to survey assets for")
     }
 
     async fn execute(&self, args: Value, workspace: &Path) -> Result<Value> {
@@ -194,9 +199,61 @@ impl Tool for ReconEnrichAssetsTool {
             &args,
             workspace,
             PassiveIntelPhase::Enrich,
-            "enrich_assets",
+            "map_assets",
         )
         .await
+    }
+}
+
+/// `recon_lookup_whois` — standalone WHOIS-via-RDAP lookup for an organization,
+/// once per org across its registrable domains, landing to `organizations.whois`
+/// (the target_intel WHOIS coverage cell). Zero-touch HTTP. Split out of the old
+/// all-in-one enrich tool. (plan 2026-06-18-slim-enrich)
+pub struct ReconLookupWhoisTool {
+    pool: Arc<PgPool>,
+}
+
+impl ReconLookupWhoisTool {
+    pub fn new(pool: Arc<PgPool>) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for ReconLookupWhoisTool {
+    fn name(&self) -> &'static str {
+        "recon_lookup_whois"
+    }
+
+    fn description(&self) -> &'static str {
+        "Look up domain registration (WHOIS via RDAP) for an organization — once per org across its registrable domains — and land it to organizations.whois (the target_intel WHOIS coverage cell). Zero-touch HTTP, best-effort (only fills when empty). Use during target_intel. Args: organization_id. Returns whether a whois record landed."
+    }
+
+    fn parameters(&self) -> Value {
+        passive_intel_parameters("to look up WHOIS for")
+    }
+
+    async fn execute(&self, args: Value, _workspace: &Path) -> Result<Value> {
+        let org_id = match args.get("organization_id").and_then(Value::as_str) {
+            Some(s) => match Uuid::parse_str(s.trim()) {
+                Ok(id) => id,
+                Err(_) => return Ok(json!({"error": "'organization_id' must be a valid UUID"})),
+            },
+            None => return Ok(json!({"error": "'organization_id' is required"})),
+        };
+        let org = match golish_db::repo::organizations::get_one(self.pool.as_ref(), org_id).await {
+            Ok(Some(org)) => org,
+            Ok(None) => return Ok(json!({"error": format!("organization {org_id} not found")})),
+            Err(e) => return Ok(json!({"error": e.to_string()})),
+        };
+        match crate::organization_recon::land_whois(self.pool.as_ref(), &org).await {
+            Ok(landed) => Ok(json!({
+                "action": "lookup_whois",
+                "organization_id": org_id.to_string(),
+                "whois_landed": landed,
+            })),
+            Err(e) => Ok(json!({"error": e.to_string()})),
+        }
     }
 }
 
@@ -295,7 +352,7 @@ impl Tool for ReconListProvidersTool {
     }
 
     fn description(&self) -> &'static str {
-        "List the passive asset-intel providers (ENScan subsidiary discovery, 0.zone/quake/… enrichment) and whether each is currently usable, i.e. its credential/integration is configured. Call this FIRST during target_intel, before recon_discover_subsidiaries / recon_enrich_assets, so you only invoke providers that can actually run; for intel techniques with no available provider, record coverage as blocked (no credential) — never fabricate. Read-only: never runs a provider, never touches the target. Returns each provider's id, phase (subsidiaries/enrich), capabilities, available flag, and reason."
+        "List the passive asset-intel providers (ENScan subsidiary discovery, 0.zone/quake/… enrichment) and whether each is currently usable, i.e. its credential/integration is configured. Call this FIRST during target_intel, before recon_discover_subsidiaries / recon_map_assets, so you only invoke providers that can actually run; for intel techniques with no available provider, record coverage as blocked (no credential) — never fabricate. Read-only: never runs a provider, never touches the target. Returns each provider's id, phase (subsidiaries/enrich), capabilities, available flag, and reason."
     }
 
     fn parameters(&self) -> Value {

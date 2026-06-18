@@ -235,11 +235,6 @@ pub async fn run_passive_intel(
                 tracing::info!(
                     run_id = %run.run_id,
                     subdomains = landed.subdomains,
-                    dns_records = landed.dns_records,
-                    certificates = landed.certificates,
-                    whois = landed.whois,
-                    rdns = landed.rdns,
-                    ip_whois = landed.ip_whois,
                     "target_intel coverage landing (agent path)"
                 );
 

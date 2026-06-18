@@ -255,7 +255,7 @@ export function installDevTools() {
         name: "中国平安人寿保险股份有限公司",
         ownershipPercent: 99,
         status: "running",
-        activity: "recon_enrich_assets · quake",
+        activity: "recon_map_assets · quake",
         evidenceCount: 6,
         coverage: cov("found", "found", "pending", "pending", "pending", "pending"),
       },

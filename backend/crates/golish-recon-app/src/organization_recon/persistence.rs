@@ -149,11 +149,6 @@ pub(crate) async fn persist_normalized_records(
     tracing::info!(
         organization_id = %organization.id,
         subdomains = landed.subdomains,
-        dns_records = landed.dns_records,
-        certificates = landed.certificates,
-        whois = landed.whois,
-        rdns = landed.rdns,
-        ip_whois = landed.ip_whois,
         "target_intel coverage landing (org-recon path)"
     );
 
@@ -161,15 +156,13 @@ pub(crate) async fn persist_normalized_records(
 }
 
 /// What a single coverage-landing pass wrote into the gate-read tables.
+/// Slimmed 2026-06-18 (plan slim-enrich): the enrich / provider-survey landing only
+/// owns subdomains (target_assets). DNS stays on the gate-refresh path
+/// (`refresh_per_asset_landing`); CT/WHOIS moved to tools (`ctfr` / `recon_lookup_
+/// whois`); reverse-DNS / IP-WHOIS dropped.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct CoverageLandingSummary {
     pub subdomains: usize,
-    pub dns_records: usize,
-    pub certificates: usize,
-    pub whois: bool,
-    /// Host-aware 2c-3: reverse-DNS (PTR) rows + IP-WHOIS rows landed for IP assets.
-    pub rdns: usize,
-    pub ip_whois: usize,
 }
 
 /// Land one passive-intel collection's results into the business tables the
@@ -195,64 +188,19 @@ pub(crate) async fn land_target_intel_coverage(
             );
             0
         });
-    let dns_records = land_dns_records(pool, organization)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(
-                organization_id = %organization.id,
-                %error,
-                "dns_records landing failed (recon persistence already committed)"
-            );
-            0
-        });
-    let (certificates, whois) =
-        land_ct_and_whois(pool, organization)
-            .await
-            .unwrap_or_else(|error| {
-                tracing::warn!(
-                    organization_id = %organization.id,
-                    %error,
-                    "CT/WHOIS landing failed (recon persistence already committed)"
-                );
-                (0, false)
-            });
-    let rdns = land_rdns(pool, organization).await.unwrap_or_else(|error| {
-        tracing::warn!(
-            organization_id = %organization.id,
-            %error,
-            "reverse-DNS landing failed (recon persistence already committed)"
-        );
-        0
-    });
-    let ip_whois = land_ip_whois(pool, organization)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(
-                organization_id = %organization.id,
-                %error,
-                "IP-WHOIS landing failed (recon persistence already committed)"
-            );
-            0
-        });
-    CoverageLandingSummary {
-        subdomains,
-        dns_records,
-        certificates,
-        whois,
-        rdns,
-        ip_whois,
-    }
+    CoverageLandingSummary { subdomains }
 }
 
 /// Re-run ONLY the per-asset coverage landing (subdomains + DNS) for an org whose
 /// in-scope targets are now registered. Closes the enrich-time ordering gap: the
-/// agent calls `recon_enrich_assets` (which lands) BEFORE `manage_targets add`, so
+/// agent calls `recon_map_assets` (which lands) BEFORE `manage_targets add`, so
 /// at enrich time `targets WHERE scope='in'` is empty and nothing lands; the
 /// gate-read path can call this once targets exist to refresh the gate-read tables
-/// (`target_assets` / `dns_records`). Per-asset only — the slow CT/WHOIS HTTP
-/// (`land_ct_and_whois`) is intentionally NOT run here since this is invoked on the
-/// hot submit-gate path. Idempotent (NOT EXISTS / upsert skip already-landed) and
-/// fully non-fatal. Returns (subdomains, dns_records) landed this pass.
+/// (`target_assets` / `dns_records`). Per-asset only — org-level WHOIS
+/// (`land_whois`, RDAP) is the `recon_lookup_whois` tool's job and is NOT run here;
+/// CT was removed from the enrich landing entirely (plan 2026-06-18-slim-enrich).
+/// Idempotent (NOT EXISTS / upsert skip already-landed) and fully non-fatal.
+/// Returns (subdomains, dns_records) landed this pass.
 pub async fn refresh_per_asset_landing(pool: &sqlx::PgPool, org_id: Uuid) -> (usize, usize) {
     let Ok(Some(org)) = golish_db::repo::organizations::get_one(pool, org_id).await else {
         return (0, 0);
@@ -545,6 +493,16 @@ fn registrable_domain(host: &str) -> String {
 fn registrable_domains(organization: &golish_db::models::Organization) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for host in organization_owned_domains(organization) {
+        // Never CT/WHOIS-query an IP literal: a bare IP has no registrable apex or
+        // CT log, and `registrable_domain` would mangle it into a junk 2-label
+        // fragment (e.g. `124.196.77.48` -> `77.48`) that consumes the limited
+        // query slots and crowds out the real owned roots — leaving CT permanently
+        // unlanded (`organizations.certificates` empty -> the target_intel CT
+        // coverage cell never reaches a terminal state). The polluting IPs come
+        // from URL-wrapped IPs that `normalized_host` extracts host-only.
+        if host.parse::<std::net::IpAddr>().is_ok() {
+            continue;
+        }
         let apex = registrable_domain(&host);
         if !apex.is_empty() && !out.contains(&apex) {
             out.push(apex);
@@ -556,251 +514,44 @@ fn registrable_domains(organization: &golish_db::models::Organization) -> Vec<St
     out
 }
 
-/// Land CT (crt.sh) → `organizations.certificates` and WHOIS (RDAP) →
-/// `organizations.whois` — the org-level columns the target_intel CT/WHOIS
-/// coverage cells read (`coverage_truth::build_org_intel_presence_sql`). HTTP,
-/// bounded, best-effort: only fills columns that are currently empty; failures are
-/// skipped, never fatal. (`whois` is a schema-ahead column not on the model, so it
-/// is read/written via direct SQL.) Returns (cert_names_landed, whois_landed).
-async fn land_ct_and_whois(
+/// Land WHOIS (RDAP) → `organizations.whois` — the org-level column the
+/// target_intel WHOIS coverage cell reads (`coverage_truth::build_org_intel_
+/// presence_sql`). HTTP, bounded, best-effort: only fills when the column is
+/// currently empty; failures are skipped, never fatal. (`whois` is a schema-ahead
+/// column not on the model, so it is read/written via direct SQL.) Returns whether
+/// a whois object was landed.
+///
+/// CT (crt.sh) is intentionally NOT done here anymore: crt.sh was the 300s-timeout
+/// culprit and only produced junk for polluted registrable domains. CT now comes
+/// from the `ctfr` tool (crt.sh) + fofa native cert. WHOIS is exposed to the agent
+/// as the standalone `recon_lookup_whois` tool. (plan 2026-06-18-slim-enrich)
+pub(crate) async fn land_whois(
     pool: &sqlx::PgPool,
     organization: &golish_db::models::Organization,
-) -> Result<(usize, bool), GolishError> {
-    let need_ct = json_value_is_empty(&organization.certificates);
+) -> Result<bool, GolishError> {
     let whois_existing: Option<Value> =
         sqlx::query_scalar::<_, Option<Value>>("SELECT whois FROM organizations WHERE id = $1")
             .bind(organization.id)
             .fetch_one(pool)
             .await?;
-    let need_whois = whois_existing.as_ref().is_none_or(json_value_is_empty);
-    if !need_ct && !need_whois {
-        return Ok((0, false));
+    if whois_existing.as_ref().is_some_and(|v| !json_value_is_empty(v)) {
+        return Ok(false);
     }
     let domains = registrable_domains(organization);
     if domains.is_empty() {
-        return Ok((0, false));
+        return Ok(false);
     }
     let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .user_agent("golish-recon/1.0")
         .build()
     else {
-        return Ok((0, false));
+        return Ok(false);
     };
-
-    let mut cert_names: Vec<String> = Vec::new();
-    if need_ct {
-        for domain in &domains {
-            if cert_names.len() >= 1000 {
-                break;
-            }
-            let url = format!("https://crt.sh/?q=%25.{domain}&output=json");
-            let Ok(resp) = client.get(&url).send().await else {
-                continue;
-            };
-            let Ok(text) = resp.text().await else {
-                continue;
-            };
-            let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&text) else {
-                continue;
-            };
-            for item in items {
-                let Some(name_value) = item.get("name_value").and_then(Value::as_str) else {
-                    continue;
-                };
-                for raw in name_value.split('\n') {
-                    let name = raw.trim().trim_start_matches("*.").to_ascii_lowercase();
-                    if !name.is_empty() && !cert_names.iter().any(|existing| existing == &name) {
-                        cert_names.push(name);
-                        if cert_names.len() >= 1000 {
-                            break;
-                        }
-                    }
-                }
-                if cert_names.len() >= 1000 {
-                    break;
-                }
-            }
-        }
-    }
 
     let mut whois_value: Option<Value> = None;
-    if need_whois {
-        for domain in &domains {
-            let url = format!("https://rdap.org/domain/{domain}");
-            let Ok(resp) = client.get(&url).send().await else {
-                continue;
-            };
-            if !resp.status().is_success() {
-                continue;
-            }
-            let Ok(text) = resp.text().await else {
-                continue;
-            };
-            if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                if value.is_object() && !json_value_is_empty(&value) {
-                    whois_value = Some(value);
-                    break;
-                }
-            }
-        }
-    }
-
-    let mut ct_landed = 0usize;
-    if need_ct && !cert_names.is_empty() {
-        let mut merged = organization
-            .certificates
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        for name in &cert_names {
-            if !merged
-                .iter()
-                .filter_map(Value::as_str)
-                .any(|existing| existing.eq_ignore_ascii_case(name))
-            {
-                merged.push(Value::String(name.clone()));
-            }
-        }
-        ct_landed = cert_names.len();
-        sqlx::query("UPDATE organizations SET certificates = $1, updated_at = NOW() WHERE id = $2")
-            .bind(Value::Array(merged))
-            .bind(organization.id)
-            .execute(pool)
-            .await?;
-    }
-    let whois_landed = whois_value.is_some();
-    if let Some(value) = whois_value {
-        sqlx::query("UPDATE organizations SET whois = $1, updated_at = NOW() WHERE id = $2")
-            .bind(value)
-            .bind(organization.id)
-            .execute(pool)
-            .await?;
-    }
-    Ok((ct_landed, whois_landed))
-}
-
-/// Reverse-DNS (PTR) for in-scope **IP** targets with no PTR row yet — the rows
-/// the host-aware `target_intel` RDNS coverage cell reads
-/// (`coverage_truth::build_rdns_values_sql`). Best-effort via `dig -x` in a
-/// blocking task (no external-tool guarantee: a missing `dig` / no PTR / timeout
-/// is skipped, never fatal). Bounded. (design 2026-06-15-host-aware-coverage-2c3
-/// §4.1.) CIDR/range values are skipped — a netblock has no single PTR.
-async fn land_rdns(
-    pool: &sqlx::PgPool,
-    organization: &golish_db::models::Organization,
-) -> Result<usize, GolishError> {
-    const MAX_RESOLVE: i64 = 128;
-    let targets: Vec<(Uuid, String)> = sqlx::query_as(
-        r#"SELECT t.id, t.value FROM targets t
-           WHERE t.organization_id = $1
-             AND t.scope::text = 'in'
-             AND t.target_type::text IN ('ip', 'ipv4', 'ipv6', 'ip_address')
-             AND NOT EXISTS (
-                 SELECT 1 FROM dns_records dr
-                 WHERE dr.target_id = t.id AND dr.record_type = 'PTR')
-           ORDER BY t.updated_at DESC
-           LIMIT $2"#,
-    )
-    .bind(organization.id)
-    .bind(MAX_RESOLVE)
-    .fetch_all(pool)
-    .await?;
-    if targets.is_empty() {
-        return Ok(0);
-    }
-    let mut landed = 0usize;
-    for (target_id, value) in targets {
-        let Ok(ip) = value.parse::<std::net::IpAddr>() else {
-            continue;
-        };
-        let Some(hostname) = reverse_lookup_ptr(ip).await else {
-            continue;
-        };
-        if golish_db::repo::dns_records::upsert(
-            pool,
-            target_id,
-            organization.project_path.as_str(),
-            "PTR",
-            &value,
-            &hostname,
-            "resolver",
-        )
-        .await
-        .is_ok()
-        {
-            landed += 1;
-        }
-    }
-    Ok(landed)
-}
-
-/// Run `dig -x <ip> +short` (blocking, off the async runtime) and return the
-/// first PTR hostname (trailing dot stripped). `None` when `dig` is absent,
-/// errors, times out, or there is no PTR record.
-async fn reverse_lookup_ptr(ip: std::net::IpAddr) -> Option<String> {
-    let ip_str = ip.to_string();
-    let output = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("dig")
-            .args(["-x", &ip_str, "+short", "+time=3", "+tries=1"])
-            .output()
-    })
-    .await
-    .ok()?
-    .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(|line| line.trim_end_matches('.').to_string())
-        .filter(|host| !host.is_empty())
-}
-
-/// RIR/netblock IP-WHOIS (RDAP `/ip/`) for in-scope IP/CIDR targets with no
-/// `ip_whois` yet — the column the host-aware `target_intel` IPWHOIS coverage cell
-/// reads (`coverage_truth::build_ipwhois_values_sql`). HTTP, bounded, best-effort:
-/// only fills empties; failures skipped, never fatal. (design 2026-06-15-host-
-/// aware-coverage-2c3 §4.2.) Returns rows landed.
-async fn land_ip_whois(
-    pool: &sqlx::PgPool,
-    organization: &golish_db::models::Organization,
-) -> Result<usize, GolishError> {
-    const MAX_LOOKUP: i64 = 128;
-    let targets: Vec<(Uuid, String)> = sqlx::query_as(
-        r#"SELECT t.id, t.value FROM targets t
-           WHERE t.organization_id = $1
-             AND t.scope::text = 'in'
-             AND t.target_type::text IN
-                 ('ip', 'ipv4', 'ipv6', 'ip_address', 'cidr', 'range', 'netblock')
-             AND (t.ip_whois IS NULL OR t.ip_whois = 'null'::jsonb OR t.ip_whois = '{}'::jsonb)
-           ORDER BY t.updated_at DESC
-           LIMIT $2"#,
-    )
-    .bind(organization.id)
-    .bind(MAX_LOOKUP)
-    .fetch_all(pool)
-    .await?;
-    if targets.is_empty() {
-        return Ok(0);
-    }
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .user_agent("golish-recon/1.0")
-        .build()
-    else {
-        return Ok(0);
-    };
-    let mut landed = 0usize;
-    for (target_id, value) in targets {
-        // RDAP keys on the IP (or a CIDR's network address).
-        let query = value.split('/').next().unwrap_or(value.as_str());
-        if query.parse::<std::net::IpAddr>().is_err() {
-            continue;
-        }
-        let url = format!("https://rdap.org/ip/{query}");
+    for domain in &domains {
+        let url = format!("https://rdap.org/domain/{domain}");
         let Ok(resp) = client.get(&url).send().await else {
             continue;
         };
@@ -810,19 +561,23 @@ async fn land_ip_whois(
         let Ok(text) = resp.text().await else {
             continue;
         };
-        let Ok(json) = serde_json::from_str::<Value>(&text) else {
-            continue;
-        };
-        if json.is_object()
-            && !json_value_is_empty(&json)
-            && golish_db::repo::targets::set_ip_whois_by_id(pool, target_id, &json)
-                .await
-                .is_ok()
-        {
-            landed += 1;
+        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+            if value.is_object() && !json_value_is_empty(&value) {
+                whois_value = Some(value);
+                break;
+            }
         }
     }
-    Ok(landed)
+
+    let whois_landed = whois_value.is_some();
+    if let Some(value) = whois_value {
+        sqlx::query("UPDATE organizations SET whois = $1, updated_at = NOW() WHERE id = $2")
+            .bind(value)
+            .bind(organization.id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(whois_landed)
 }
 
 fn target_type_for_record(
@@ -1597,6 +1352,35 @@ mod tests {
     fn pair_subdomains_within_empty_when_only_apexes() {
         let hosts = vec!["a.com".to_string(), "b.com".to_string()];
         assert!(pair_subdomains_within(&hosts).is_empty());
+    }
+
+    #[test]
+    fn registrable_domains_skips_ip_garbage_and_keeps_real_roots() {
+        // Regression: a domains list polluted with URL-wrapped IPs made
+        // `registrable_domains` return IP fragments (`124.196.77.48` -> `77.48`),
+        // so crt.sh was queried for junk and CT never landed. IP hosts must be
+        // skipped, leaving the real owned roots for the CT/WHOIS query.
+        let org = org_with_domains(json!([
+            "http://124.196.77.48", // url-wrapped IP -> host 124.196.77.48 -> skip
+            "https://61.241.22.10", // url-wrapped IP -> skip
+            "pingan.com",
+            "life.pingan.com", // -> apex pingan.com (deduped)
+        ]));
+        let domains = registrable_domains(&org);
+        assert!(
+            domains.contains(&"pingan.com".to_string()),
+            "real root must be queried: {domains:?}"
+        );
+        assert!(
+            !domains.iter().any(|d| d == "77.48" || d == "22.10"),
+            "IP fragments must not appear: {domains:?}"
+        );
+        assert!(
+            !domains
+                .iter()
+                .any(|d| d.parse::<std::net::IpAddr>().is_ok()),
+            "no IP literal may be CT-queried: {domains:?}"
+        );
     }
 
     #[test]

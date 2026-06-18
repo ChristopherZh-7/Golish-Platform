@@ -182,7 +182,7 @@ fn bundled_quake_asset_intel_config_loads() {
     assert!(asset.capabilities.iter().any(|cap| cap == "services"));
     match &asset.runtime {
         golish_pentest::models::AssetIntelRuntimeConfig::HttpJson { requests, .. } => {
-            assert_eq!(requests.len(), 2);
+            assert_eq!(requests.len(), 3);
             assert_eq!(requests[0].method, "POST");
             assert_eq!(
                 requests[0].headers.get("X-QuakeToken").map(String::as_str),
@@ -193,6 +193,8 @@ fn bundled_quake_asset_intel_config_loads() {
                 requests[1].json["query"],
                 "service.http.icp.main_licence.unit: \"{{company_name}}\""
             );
+            // cert dimension (passive-intel-pairing Phase D): query CT subject.
+            assert_eq!(requests[2].json["query"], "cert: \"{{company_name}}\"");
         }
         other => panic!("expected quake http_json runtime, got {other:?}"),
     }
@@ -238,8 +240,10 @@ fn fofa_toolsconfig_parses_and_is_enrichment_selected() {
             queries,
         } => {
             assert_eq!(provider_id, "fofa");
-            assert_eq!(queries.len(), 1);
+            assert_eq!(queries.len(), 2);
             assert_eq!(queries[0].query_type, "site");
+            // cert dimension (passive-intel-pairing Phase D): query CT subject.
+            assert_eq!(queries[1].query_type, "cert");
         }
         other => panic!("expected NativeProvider, got {other:?}"),
     }

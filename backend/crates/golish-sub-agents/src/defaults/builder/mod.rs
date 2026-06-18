@@ -96,7 +96,8 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "manage_targets".to_string(),
             "recon_list_providers".to_string(),
             "recon_discover_subsidiaries".to_string(),
-            "recon_enrich_assets".to_string(),
+            "recon_map_assets".to_string(),
+            "recon_lookup_whois".to_string(),
             "record_finding".to_string(),
             "vault".to_string(),
             "pentest_list_tools".to_string(),
@@ -128,7 +129,8 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         .with_tools(vec![
             "recon_list_providers".to_string(),
             "recon_discover_subsidiaries".to_string(),
-            "recon_enrich_assets".to_string(),
+            "recon_map_assets".to_string(),
+            "recon_lookup_whois".to_string(),
             "manage_targets".to_string(),
             "list_in_scope_targets".to_string(),
             // Passive collection only (subfinder / amass -passive / gau); the

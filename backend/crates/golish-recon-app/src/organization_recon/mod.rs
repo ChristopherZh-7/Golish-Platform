@@ -17,6 +17,9 @@ pub(crate) mod types;
 // Shared coverage-gate landing (design 2026-06-15 §5 PR1): reused by the agent
 // enrich path (`asset_intel`) so passive intel lands in the gate-read tables.
 pub(crate) use persistence::land_target_intel_coverage;
+// Standalone RDAP WHOIS landing (plan 2026-06-18-slim-enrich): exposed to the
+// agent as the `recon_lookup_whois` tool, separate from provider survey.
+pub(crate) use persistence::land_whois;
 // Scope ownership check reused by the asset_intel landing path
 // (design 2026-06-17 passive-intel-pairing §2④) to keep third-party noise out
 // of auto-promoted targets.

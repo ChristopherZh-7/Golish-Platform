@@ -117,7 +117,8 @@ fn test_pentester_has_security_tools() {
     // `dig` via pentest_run instead of the 0.zone/quake/ENScan provider engine.
     assert!(has_tool(pentester, "recon_list_providers"));
     assert!(has_tool(pentester, "recon_discover_subsidiaries"));
-    assert!(has_tool(pentester, "recon_enrich_assets"));
+    assert!(has_tool(pentester, "recon_map_assets"));
+    assert!(has_tool(pentester, "recon_lookup_whois"));
     assert!(!has_tool(pentester, "js_collect"));
     assert!(has_tool(pentester, "search_knowledge_base"));
     assert!(has_tool(pentester, "read_knowledge"));
@@ -141,7 +142,8 @@ fn test_recon_has_passive_tools_only() {
     // Passive collection + stage submission tools present.
     assert!(has_tool(recon, "recon_list_providers"));
     assert!(has_tool(recon, "recon_discover_subsidiaries"));
-    assert!(has_tool(recon, "recon_enrich_assets"));
+    assert!(has_tool(recon, "recon_map_assets"));
+    assert!(has_tool(recon, "recon_lookup_whois"));
     assert!(has_tool(recon, "manage_targets"));
     assert!(has_tool(recon, "submit_stage_deliverable"));
     assert!(has_tool(recon, "record_finding"));
@@ -164,7 +166,7 @@ fn test_recon_has_passive_tools_only() {
 fn test_recon_prompt_is_zero_touch() {
     let prompt = build_recon_prompt();
     assert!(prompt.contains("ZERO-TOUCH"));
-    assert!(prompt.contains("recon_enrich_assets"));
+    assert!(prompt.contains("recon_map_assets"));
     assert!(prompt.contains("submit_stage_deliverable"));
     // Passive identity: must not describe itself as doing exploitation.
     assert!(prompt.contains("passive"));

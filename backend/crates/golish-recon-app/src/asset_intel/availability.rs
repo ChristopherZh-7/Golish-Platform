@@ -2,7 +2,7 @@
 //! each is currently usable (its credential / integration is configured).
 //!
 //! The harness `target_intel` stage calls this (via `recon_list_providers`)
-//! BEFORE `recon_discover_subsidiaries` / `recon_enrich_assets` so the AI only
+//! BEFORE `recon_discover_subsidiaries` / `recon_map_assets` so the AI only
 //! invokes providers that can actually run, and records the rest as blocked
 //! (no credential) instead of fabricating coverage (AGENTS.md I8). Reuses the
 //! integrations resolver + storage backends so the configured-check is identical

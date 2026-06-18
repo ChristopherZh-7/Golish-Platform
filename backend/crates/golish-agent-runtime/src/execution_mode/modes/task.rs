@@ -71,7 +71,8 @@ impl ExecutionModePolicy for TaskModePolicy {
                 manage_organizations: true,
                 manage_targets: true,
                 recon_discover_subsidiaries: true,
-                recon_enrich_assets: true,
+                recon_map_assets: true,
+                recon_lookup_whois: true,
                 recon_lookup_company: true,
                 recon_list_providers: true,
                 ..BridgeToolSelection::none()
@@ -160,7 +161,8 @@ mod tests {
         );
         assert!(s.bridge_tools.manage_targets);
         assert!(s.bridge_tools.recon_discover_subsidiaries);
-        assert!(s.bridge_tools.recon_enrich_assets);
+        assert!(s.bridge_tools.recon_map_assets);
+        assert!(s.bridge_tools.recon_lookup_whois);
         assert!(
             s.bridge_tools.recon_lookup_company,
             "task primary must expose recon_lookup_company or scoping 纠名 (Phase A) is unsatisfiable"

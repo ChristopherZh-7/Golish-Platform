@@ -494,20 +494,20 @@ fn coverage_complete(
             // authoritative `targets.type` when present; else fall back to value
             // inference (2a/2b), then `Other` (full set). `asset` is `&&str`, so
             // `*asset` is the `&str` map key.
-            let class = ctx
-                .asset_types
-                .as_ref()
-                .and_then(|m| m.get(*asset))
-                .map(|ty| crate::harness::technique_resolver::AssetClass::from_target_type(ty))
-                .unwrap_or_else(|| {
-                    crate::harness::technique_resolver::AssetClass::from_value(asset)
-                });
+            let class = crate::harness::technique_resolver::AssetClass::classify(
+                ctx.asset_types
+                    .as_ref()
+                    .and_then(|m| m.get(*asset))
+                    .map(String::as_str),
+                asset,
+            );
             techniques
                 .iter()
                 .filter(|t| {
-                    crate::harness::technique_resolver::technique_applies(
+                    crate::harness::technique_resolver::technique_applies_to_value(
                         spec.kind,
                         class,
+                        asset,
                         t.as_str(),
                     )
                 })

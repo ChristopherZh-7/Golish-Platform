@@ -99,8 +99,10 @@ pub struct BridgeToolSelection {
     /// `recon_discover_subsidiaries` — passive ENScan subsidiary discovery
     /// (harness target_intel, 设计 2026-06-06-intel-stage-ai-driven-per-mode).
     pub recon_discover_subsidiaries: bool,
-    /// `recon_enrich_assets` — passive field enrichment (0.zone / quake / …).
-    pub recon_enrich_assets: bool,
+    /// `recon_map_assets` — cyberspace/intel-provider survey (0.zone / quake / …).
+    pub recon_map_assets: bool,
+    /// `recon_lookup_whois` — standalone WHOIS-via-RDAP lookup (per-org).
+    pub recon_lookup_whois: bool,
     /// `recon_lookup_company` — scoping 纠名 step 1: resolve raw company names
     /// to canonical registered names before creating organizations
     /// (设计 2026-06-13-engagement-scoping-fanout §6.2).
@@ -131,7 +133,8 @@ impl BridgeToolSelection {
             manage_targets: true,
             manage_organizations: true,
             recon_discover_subsidiaries: true,
-            recon_enrich_assets: true,
+            recon_map_assets: true,
+            recon_lookup_whois: true,
             recon_lookup_company: true,
             recon_list_providers: true,
             record_finding: true,
@@ -151,7 +154,8 @@ impl BridgeToolSelection {
             manage_targets: false,
             manage_organizations: false,
             recon_discover_subsidiaries: false,
-            recon_enrich_assets: false,
+            recon_map_assets: false,
+            recon_lookup_whois: false,
             recon_lookup_company: false,
             recon_list_providers: false,
             record_finding: false,
@@ -177,8 +181,11 @@ impl BridgeToolSelection {
         if self.recon_discover_subsidiaries {
             out.push("recon_discover_subsidiaries");
         }
-        if self.recon_enrich_assets {
-            out.push("recon_enrich_assets");
+        if self.recon_map_assets {
+            out.push("recon_map_assets");
+        }
+        if self.recon_lookup_whois {
+            out.push("recon_lookup_whois");
         }
         if self.recon_lookup_company {
             out.push("recon_lookup_company");
@@ -274,7 +281,8 @@ mod tests {
                 "manage_targets",
                 "manage_organizations",
                 "recon_discover_subsidiaries",
-                "recon_enrich_assets",
+                "recon_map_assets",
+                "recon_lookup_whois",
                 "recon_lookup_company",
                 "recon_list_providers",
                 "record_finding",

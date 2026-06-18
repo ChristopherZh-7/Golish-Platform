@@ -38,6 +38,13 @@ impl AssetClass {
         if v.is_empty() {
             return Self::Other;
         }
+        // A URL whose host is a raw IP is an IP asset (cert transparency /
+        // subdomain / forward-DNS are domain concepts that do not apply to a bare
+        // IP). Must precede the generic http(s) → Url check, which would otherwise
+        // classify `http://1.2.3.4` as a domain-bearing Url.
+        if Self::is_url_wrapped_ip(v) {
+            return Self::Ip;
+        }
         let lower = v.to_ascii_lowercase();
         if lower.starts_with("http://") || lower.starts_with("https://") {
             return Self::Url;
@@ -51,6 +58,44 @@ impl AssetClass {
             }
         }
         Self::Domain
+    }
+
+    /// True when `value` is an `http(s)` URL whose host is a raw IP literal —
+    /// e.g. `http://124.196.77.48` or `https://[::1]:8443/x`. Such a value is
+    /// unambiguously an IP asset for intel coverage even when a buggy write path
+    /// stored its `targets.type` as `domain`.
+    pub fn is_url_wrapped_ip(value: &str) -> bool {
+        let lower = value.trim().to_ascii_lowercase();
+        let Some(rest) = lower
+            .strip_prefix("http://")
+            .or_else(|| lower.strip_prefix("https://"))
+        else {
+            return false;
+        };
+        let authority = rest.split('/').next().unwrap_or("");
+        // Drop optional userinfo@, then isolate the host from an optional :port,
+        // handling bracketed IPv6 (`[::1]:443`).
+        let authority = authority.rsplit('@').next().unwrap_or(authority);
+        let host = if let Some(stripped) = authority.strip_prefix('[') {
+            stripped.split(']').next().unwrap_or(stripped)
+        } else {
+            authority.split(':').next().unwrap_or(authority)
+        };
+        host.parse::<std::net::IpAddr>().is_ok()
+    }
+
+    /// Resolve an asset's class from the authoritative `targets.type` (when known)
+    /// and its value. The authoritative type wins EXCEPT for a URL whose host is a
+    /// raw IP ([`Self::is_url_wrapped_ip`]) — that stays `Ip` regardless of a
+    /// (mis-assigned) `domain` type. `None` type falls back to value inference.
+    pub fn classify(target_type: Option<&str>, value: &str) -> Self {
+        if Self::is_url_wrapped_ip(value) {
+            return Self::Ip;
+        }
+        match target_type {
+            Some(ty) => Self::from_target_type(ty),
+            None => Self::from_value(value),
+        }
     }
 
     /// 该资产是否可能承载 web 服务（决定 PARAM / JSAPI / DIR 等 web 技术是否要求）。
@@ -154,6 +199,56 @@ pub fn techniques_for(stage: StageKind, class: AssetClass) -> Vec<String> {
         .collect()
 }
 
+/// Value-aware extension of [`technique_applies`]: whether `tech` applies to a
+/// specific in-scope `value` (not just its `class`).
+///
+/// TargetIntel SUBDOMAIN is a **registrable-apex** concern: you enumerate the
+/// subdomains of a root (`niuza.com`), not of a leaf subdomain (`s.niuza.com`).
+/// The passive-intel auto-landing registers every discovered subdomain as its own
+/// `scope='in'` target, and most of their roots are NOT in-scope, so
+/// `coverage_anchor_only` (which only collapses subdomains of an *in-scope* parent)
+/// cannot fold them — leaving one unsatisfiable SUBDOMAIN cell per leaf (the
+/// treadmill that pinned every engagement at its iteration cap → gate dead-loop).
+/// Exempting non-apex domains from SUBDOMAIN removes that per-leaf requirement;
+/// apex roots still require it. Only relaxes (never adds) a requirement.
+pub fn technique_applies_to_value(
+    stage: StageKind,
+    class: AssetClass,
+    value: &str,
+    tech: &str,
+) -> bool {
+    if !technique_applies(stage, class, tech) {
+        return false;
+    }
+    if matches!(stage, StageKind::TargetIntel)
+        && tech == "GOLISH-INTEL-SUBDOMAIN"
+        && matches!(class, AssetClass::Domain)
+        && !is_registrable_apex(value)
+    {
+        return false;
+    }
+    true
+}
+
+/// True when `value`'s host is its own registrable apex (`niuza.com`,
+/// `pingan.com.cn`) rather than a leaf subdomain (`s.niuza.com`,
+/// `a.pingan.com.cn`). Best-effort 2-level-TLD heuristic mirroring the recon
+/// `registrable_domain` (no public-suffix list); `www.` is treated as the apex.
+fn is_registrable_apex(value: &str) -> bool {
+    const SECOND_LEVEL: &[&str] = &["com", "net", "org", "gov", "edu", "co", "ac"];
+    let host = value.trim().trim_end_matches('.').to_ascii_lowercase();
+    let host = host.trim_start_matches("www.");
+    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
+    let len = labels.len();
+    let apex_len =
+        if len >= 3 && labels[len - 1].len() == 2 && SECOND_LEVEL.contains(&labels[len - 2]) {
+            3
+        } else {
+            2
+        };
+    len <= apex_len
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +310,46 @@ mod tests {
     }
 
     #[test]
+    fn url_wrapped_ip_is_ip_not_url() {
+        // A URL whose host is a raw IP is an IP asset (was wrongly Url before the
+        // fix, which forced CT/DNS/SUBDOMAIN on an address that can satisfy none).
+        assert!(AssetClass::is_url_wrapped_ip("http://124.196.77.48"));
+        assert!(AssetClass::is_url_wrapped_ip("https://124.196.77.48:8443/x"));
+        assert!(AssetClass::is_url_wrapped_ip("https://[2606:4700::1111]:443/"));
+        assert!(!AssetClass::is_url_wrapped_ip("https://a.com/x"));
+        assert!(!AssetClass::is_url_wrapped_ip("124.196.77.48")); // bare IP, no scheme
+        assert_eq!(AssetClass::from_value("http://124.196.77.48"), AssetClass::Ip);
+        assert_eq!(AssetClass::from_value("https://a.com"), AssetClass::Url);
+        // host-aware: a url-wrapped IP drops the domain-only intel techniques.
+        let t = techniques_for(
+            StageKind::TargetIntel,
+            AssetClass::from_value("http://124.196.77.48"),
+        );
+        assert!(!t.contains(&"GOLISH-INTEL-CT".to_string()));
+        assert!(!t.contains(&"GOLISH-INTEL-SUBDOMAIN".to_string()));
+        assert!(!t.contains(&"GOLISH-INTEL-DNS".to_string()));
+    }
+
+    #[test]
+    fn classify_overrides_mistyped_url_wrapped_ip_only() {
+        // The 22 live URL-wrapped IPs are stored as targets.type='domain'; classify
+        // must override that to Ip (cert transparency / subdomain don't apply) …
+        assert_eq!(
+            AssetClass::classify(Some("domain"), "http://124.196.77.48"),
+            AssetClass::Ip
+        );
+        // … but a bare IP-looking value with an authoritative domain type still
+        // trusts the type (preserves host_aware_uses_authoritative_type_over_value).
+        assert_eq!(
+            AssetClass::classify(Some("domain"), "1.2.3.4"),
+            AssetClass::Domain
+        );
+        // None type falls back to value inference.
+        assert_eq!(AssetClass::classify(None, "a.com"), AssetClass::Domain);
+        assert_eq!(AssetClass::classify(Some("ip"), "9.9.9.9"), AssetClass::Ip);
+    }
+
+    #[test]
     fn target_intel_drops_domain_only_techniques_for_ip() {
         let ip = techniques_for(StageKind::TargetIntel, AssetClass::Ip);
         assert!(!ip.contains(&"GOLISH-INTEL-SUBDOMAIN".to_string()));
@@ -240,6 +375,75 @@ mod tests {
     #[test]
     fn other_class_keeps_full_set_failsafe() {
         assert_eq!(techniques_for(StageKind::TargetIntel, AssetClass::Other).len(), 6);
+    }
+
+    #[test]
+    fn is_registrable_apex_distinguishes_roots_from_leaves() {
+        assert!(is_registrable_apex("niuza.com"));
+        assert!(is_registrable_apex("pingan.com.cn"));
+        assert!(is_registrable_apex("www.niuza.com")); // www treated as the apex
+        assert!(!is_registrable_apex("s.niuza.com"));
+        assert!(!is_registrable_apex("icorepnbs.pingan-property.com.cn"));
+        assert!(!is_registrable_apex("a.b.pingan.com.cn"));
+    }
+
+    #[test]
+    fn subdomain_required_only_on_registrable_apex() {
+        use StageKind::TargetIntel as Ti;
+        // Apex roots still require subdomain enumeration …
+        assert!(technique_applies_to_value(
+            Ti,
+            AssetClass::Domain,
+            "niuza.com",
+            "GOLISH-INTEL-SUBDOMAIN"
+        ));
+        assert!(technique_applies_to_value(
+            Ti,
+            AssetClass::Domain,
+            "pingan.com.cn",
+            "GOLISH-INTEL-SUBDOMAIN"
+        ));
+        // … leaf subdomains (passively discovered + landed in-scope) do NOT —
+        // killing the per-leaf SUBDOMAIN treadmill that dead-looped the gate.
+        assert!(!technique_applies_to_value(
+            Ti,
+            AssetClass::Domain,
+            "s.niuza.com",
+            "GOLISH-INTEL-SUBDOMAIN"
+        ));
+        assert!(!technique_applies_to_value(
+            Ti,
+            AssetClass::Domain,
+            "icorepnbs.pingan-property.com.cn",
+            "GOLISH-INTEL-SUBDOMAIN"
+        ));
+        // DNS/CT still apply to a leaf domain (only SUBDOMAIN is apex-scoped).
+        assert!(technique_applies_to_value(
+            Ti,
+            AssetClass::Domain,
+            "s.niuza.com",
+            "GOLISH-INTEL-DNS"
+        ));
+        assert!(technique_applies_to_value(
+            Ti,
+            AssetClass::Domain,
+            "s.niuza.com",
+            "GOLISH-INTEL-CT"
+        ));
+        // IP class never gets SUBDOMAIN regardless (delegates to technique_applies).
+        assert!(!technique_applies_to_value(
+            Ti,
+            AssetClass::Ip,
+            "1.2.3.4",
+            "GOLISH-INTEL-SUBDOMAIN"
+        ));
+        // WHOIS/ASN/OSINT apply to every asset including a leaf (org-level).
+        assert!(technique_applies_to_value(
+            Ti,
+            AssetClass::Domain,
+            "s.niuza.com",
+            "GOLISH-INTEL-WHOIS"
+        ));
     }
 
     #[test]

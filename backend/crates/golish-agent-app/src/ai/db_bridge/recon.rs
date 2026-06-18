@@ -266,7 +266,7 @@ impl GolishDbRepoProvider {
         in_scope_assets: &[String],
     ) -> anyhow::Result<Vec<(String, String)>> {
         // Coverage-landing refresh (fix 2026-06-17 enrich-timing): the recon
-        // sub-agent calls `recon_enrich_assets` (which lands subdomains/DNS) BEFORE
+        // sub-agent calls `recon_map_assets` (which lands subdomains) BEFORE
         // `manage_targets add` registers the in-scope targets, so at enrich time the
         // gate-read tables (`target_assets`/`dns_records`) stayed empty → this
         // authoritative db-truth read saw no per-asset DNS/SUBDOMAIN facts → the

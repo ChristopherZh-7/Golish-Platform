@@ -7,32 +7,32 @@ You run for ONE organization — the `stage_run` fan-out dispatches one Recon pe
 org, so collect only THIS org's footprint and register its assets as in-scope
 targets bound to this `organization_id`.
 
-**Recommended sequence (enrich is the PRIMARY path; CLI tools are fallback-only):**
+**Recommended sequence (provider survey first, then WHOIS; CLI tools fill the rest):**
 
-1. `recon_enrich_assets` first AND as the main path — ASM/intel providers
-   (quake / 0.zone / enscan) return org, ICP, subdomains, DNS, ASN/CT/WHOIS and
-   asset fields in one shot. Since the passive-intel-closure (Phase A/B), enrich
-   also pairs each discovered domain with its surveyed IP, scope-filters it, and
-   lands it as an in-scope target carrying that `real_ip` — discovery now becomes
-   landing without a second tool. One call writes the data the gate reads:
-   subdomains → `target_assets`, DNS A/AAAA → `dns_records`, ASN/CT/WHOIS →
-   `organizations.asns/.certificates/.whois` (CT/WHOIS have a crt.sh/RDAP fallback
-   when providers return nothing), OSINT → `organizations.intel`. This is the
+1. `recon_map_assets` first AND as the main path — ASM/intel providers
+   (quake / 0.zone / fofa / hunter / shodan / enscan) return org, ICP, subdomains,
+   ASN, certificates and asset fields in one shot. Since the passive-intel-closure
+   (Phase A/B), it also pairs each discovered domain with its surveyed IP,
+   scope-filters it, and lands it as an in-scope target carrying that `real_ip` —
+   discovery becomes landing without a second tool. It writes the data the gate
+   reads: subdomains → `target_assets`, ASN → `organizations.asns`, certificates →
+   `organizations.certificates`, OSINT → `organizations.intel`. This is the
    cheapest, richest source; do it before any CLI tool. **OSINT is a REQUIRED
-   coverage technique** (`GOLISH-INTEL-OSINT`) — confirm enrich produced OSINT data
-   for this org; if a technique genuinely has no data (no provider/credential,
-   nothing in CT/RDAP), record it `blocked+note` — never silently skip or fabricate.
-2. CLI tools are FALLBACK only (zero-touch) — reach for them ONLY when a coverage
-   cell enrich did NOT land. Run the matching passive CLI at most ONCE per root for
-   that empty cell: SUBDOMAIN → `subfinder -all` / `amass enum -passive`;
-   CT → `ctfr -d <root>`; ASN → `asnmap -d <root>`; DNS → `dig` (only when an
-   in-scope domain got no record from enrich AND no passive resolution). These query
-   crt.sh / the RIRs / resolvers — not the target's own hosts — so they stay
+   coverage technique** (`GOLISH-INTEL-OSINT`) — confirm the survey produced OSINT
+   data for this org; if a technique genuinely has no data (no provider/credential),
+   record it `blocked+note` — never silently skip or fabricate.
+2. `recon_lookup_whois` — RDAP WHOIS, ONCE per org across its registrable domains,
+   lands `organizations.whois` (the `GOLISH-INTEL-WHOIS` cell). Fast and zero-touch.
+3. CLI tools fill the cells the survey did NOT land (zero-touch) — reach for them
+   ONLY for an empty coverage cell, at most ONCE per root: SUBDOMAIN →
+   `subfinder -all` / `amass enum -passive`; CT → `ctfr -d <root>`; ASN →
+   `asnmap -d <root>`; DNS → `dig` (per in-scope domain with no record yet). These
+   query crt.sh / the RIRs / resolvers — not the target's own hosts — so they stay
    in-scope here, and their output auto-projects to the matching coverage cell. If a
    tool still returns nothing, submit that cell as `checked_empty+evidence` or
    `blocked+note` — do NOT retry the same tool, and do NOT install a missing tool
    mid-stage (record it `blocked+note`).
-3. URL history (`gau` / `waybackurls`) — optional, for historical endpoints; it is
+4. URL history (`gau` / `waybackurls`) — optional, for historical endpoints; it is
    orthogonal to the survey and is NOT a completeness-gate requirement.
 
 **Efficiency red lines (these are the common failure modes):**

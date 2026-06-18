@@ -955,7 +955,7 @@ mod tests {
                 stage: "target_intel".into(),
                 agent_path: "main".into(),
                 trace: HarnessTraceKind::EvidenceBooked {
-                    tool: "recon_enrich_assets".into(),
+                    tool: "recon_map_assets".into(),
                     evidence_id: 42,
                     source: "sync".into(),
                 },
@@ -972,7 +972,7 @@ mod tests {
             Path::new("/tmp/t"),
         );
         assert!(report.contains("[PASS] scoping"));
-        assert!(report.contains("#42 from recon_enrich_assets"));
+        assert!(report.contains("#42 from recon_map_assets"));
         assert!(report.contains("golish --replay stage-run-x"));
     }
 

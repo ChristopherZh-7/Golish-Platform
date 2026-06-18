@@ -372,7 +372,13 @@ where
             // cite (otherwise every scan-stage deliverable is "fabricated" and
             // the gate loops). Kept as a separate block so the working
             // run_pty_cmd path above is untouched.
-            if effective_tool_name == "pentest_run" && is_success && ctx.harness_stage.is_some() {
+            // NOTE: NOT gated on `is_success`. A passive-intel scan that FAILS
+            // (non-zero exit / timeout / flaky external service such as crt.sh) must
+            // still book a coverage fact (outcome=checked_empty, I8) — otherwise the
+            // cell stays not_attempted and the deterministic gate loops forever on a
+            // service it can never reach. CT via `ctfr -> crt.sh` is the motivating
+            // case (see passive_intel_outcome_for_run).
+            if effective_tool_name == "pentest_run" && ctx.harness_stage.is_some() {
                 if let Some(tracker) = ctx.events.db_tracker {
                     if let Some(repo) = tracker.repo() {
                         let op_id = tracker.task_id().unwrap_or_else(|| tracker.session_uuid());
@@ -393,53 +399,74 @@ where
                             format!("{pt_tool} {pt_args}")
                         };
                         // PR2 · "{tool} {args}" has the same shape as a shell
-                        // command line; same deterministic facts derivation.
+                        // command line; same deterministic facts derivation. A FAILED
+                        // run resolves to checked_empty (I8) via
+                        // `passive_intel_outcome_for_run`; success keeps the
+                        // stdout-derived verdict.
                         let facts = golish_agent_kit::harness::evidence_facts::passive_intel_facts_from_command(&ev_subject)
                             .map(|(technique, asset)| {
-                                let outcome = golish_agent_kit::harness::evidence_facts::passive_intel_outcome(technique, &ev_stdout);
+                                let outcome = golish_agent_kit::harness::evidence_facts::passive_intel_outcome_for_run(technique, &ev_stdout, is_success);
                                 (technique, asset, outcome)
                             });
-                        match repo
-                            .evidence_append(
-                                op_id,
-                                None,
-                                ctx.events.session_id,
-                                tracker.project_path(),
-                                pt_tool,
-                                pt_tool,
-                                &ev_subject,
-                                &ev_stdout,
-                                facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
-                            )
-                            .await
-                        {
-                            Ok(id) => {
-                                appended_evidence_id = Some(id);
-                                tracing::info!(
+                        // A successful run always books (its ledger id is citable); a
+                        // FAILED run books only when it carries a passive-intel fact,
+                        // so the coverage cell gets its terminal status — a failed
+                        // UNmapped command has nothing citable and is skipped.
+                        if is_success || facts.is_some() {
+                            // On failure stdout is usually empty; record the error so
+                            // the ledger row carries the real reason (crt.sh 502 /
+                            // timeout) for audit, not a blank body.
+                            let ev_body = if is_success {
+                                ev_stdout.clone()
+                            } else {
+                                v.get("error")
+                                    .and_then(|s| s.as_str())
+                                    .unwrap_or("passive check failed")
+                                    .to_string()
+                            };
+                            match repo
+                                .evidence_append(
+                                    op_id,
+                                    None,
+                                    ctx.events.session_id,
+                                    tracker.project_path(),
+                                    pt_tool,
+                                    pt_tool,
+                                    &ev_subject,
+                                    &ev_body,
+                                    facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
+                                )
+                                .await
+                            {
+                                Ok(id) => {
+                                    appended_evidence_id = Some(id);
+                                    tracing::info!(
+                                        target: "harness::evidence",
+                                        tool = %pt_tool,
+                                        evidence_id = id,
+                                        success = is_success,
+                                        "pentest_run evidence appended; surfacing id to agent"
+                                    );
+                                }
+                                Err(e) => tracing::warn!(
                                     target: "harness::evidence",
-                                    tool = %pt_tool,
-                                    evidence_id = id,
-                                    "pentest_run evidence appended; surfacing id to agent"
-                                );
+                                    error = %e,
+                                    "pentest_run evidence append failed (continuing)"
+                                ),
                             }
-                            Err(e) => tracing::warn!(
-                                target: "harness::evidence",
-                                error = %e,
-                                "pentest_run evidence append failed (continuing)"
-                            ),
                         }
                     }
                 }
             }
 
             // Passive recon agent tools (recon_discover_subsidiaries /
-            // recon_enrich_assets) return a JSON summary (not stdout). Book it to
-            // the ledger so target_intel coverage cells can cite a REAL evidence id
-            // (otherwise the passive-intel deliverable is "fabricated" and the gate
-            // loops). Mirrors the pentest_run block above.
+            // recon_map_assets / recon_lookup_whois) return a JSON summary (not
+            // stdout). Book it to the ledger so target_intel coverage cells can cite
+            // a REAL evidence id (otherwise the passive-intel deliverable is
+            // "fabricated" and the gate loops). Mirrors the pentest_run block above.
             if matches!(
                 effective_tool_name,
-                "recon_discover_subsidiaries" | "recon_enrich_assets"
+                "recon_discover_subsidiaries" | "recon_map_assets" | "recon_lookup_whois"
             ) && is_success
                 && ctx.harness_stage.is_some()
             {

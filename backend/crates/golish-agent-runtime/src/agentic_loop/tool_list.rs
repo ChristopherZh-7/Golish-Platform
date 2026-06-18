@@ -147,7 +147,7 @@ fn hide_manage_targets_in_scoping(
 /// denied. No-op when no stage is active or the stage permits ≥1 scan type.
 ///
 /// Phase 2 (2026-06-12-redteam-phase2): `recon/osint` is the API-driven passive
-/// class — its tools (`recon_discover_subsidiaries` / `recon_enrich_assets`, the
+/// class — its tools (`recon_discover_subsidiaries` / `recon_map_assets`, the
 /// ENScan providers) are registry tools that never go through a scanner/shell
 /// surface. A stage whose whitelist contains ONLY such API classes (scoping
 /// after the subsidiary gate landed) still has no use for `pentest_run` /

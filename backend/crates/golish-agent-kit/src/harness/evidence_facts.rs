@@ -162,6 +162,24 @@ pub fn passive_intel_outcome(technique: &str, raw_output: &str) -> &'static str 
     "found"
 }
 
+/// 同 [`passive_intel_outcome`], 但把「这次运行是否成功」一并纳入判定.
+///
+/// I8 数据层兑现: 一次**失败**的被动检查 (非零退出 / 超时 / crt.sh 这类外部
+/// 服务抽风) 记为 `"empty"` (checked_empty) —— 「跑了但拿不到」属于「已检查为空」
+/// 而非「未检查」. 这样 coverage 格能落终态, gate 不会因外部服务不稳定而无限
+/// 重试同一个永远填不上的格. 成功时维持基于输出的原判定.
+pub fn passive_intel_outcome_for_run(
+    technique: &str,
+    raw_output: &str,
+    succeeded: bool,
+) -> &'static str {
+    if succeeded {
+        passive_intel_outcome(technique, raw_output)
+    } else {
+        "empty"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +338,35 @@ mod tests {
         assert_eq!(
             passive_intel_outcome("GOLISH-INTEL-WHOIS", whois_hit),
             "found"
+        );
+    }
+
+    #[test]
+    fn failed_run_is_checked_empty_regardless_of_output() {
+        // I8: a passive check that FAILED (timeout / non-zero exit / flaky crt.sh)
+        // is checked_empty, not unchecked — even if partial/error output leaked, the
+        // run did not complete, so the cell must reach a terminal (empty) state
+        // instead of looping the gate. CT (ctfr/crt.sh) is the motivating case.
+        assert_eq!(
+            passive_intel_outcome_for_run("GOLISH-INTEL-CT", "", false),
+            "empty"
+        );
+        assert_eq!(
+            passive_intel_outcome_for_run("GOLISH-INTEL-CT", "502 Bad Gateway", false),
+            "empty"
+        );
+        // Success keeps the stdout-derived verdict.
+        assert_eq!(
+            passive_intel_outcome_for_run(
+                "GOLISH-INTEL-SUBDOMAIN",
+                "www.moresec.cn\nmail.moresec.cn",
+                true
+            ),
+            "found"
+        );
+        assert_eq!(
+            passive_intel_outcome_for_run("GOLISH-INTEL-DNS", "", true),
+            "empty"
         );
     }
 
