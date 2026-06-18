@@ -4,105 +4,9 @@
 
 use crate::harness::types::StageKind;
 
-/// in-scope 资产的粗分类（来自 `targets.type`），决定哪些技术适用。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssetClass {
-    Domain,
-    Ip,
-    Url,
-    Cidr,
-    /// 未知/其它：保守当作"可能含 web"，不缩小技术集。
-    Other,
-}
-
-impl AssetClass {
-    /// 映射 `targets.type` 字符串（与 golish-pentest-domain TargetType 对齐）。
-    pub fn from_target_type(s: &str) -> Self {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "domain" | "subdomain" | "host" => Self::Domain,
-            "ip" | "ip_address" | "ipv4" | "ipv6" => Self::Ip,
-            "url" | "endpoint" | "web" => Self::Url,
-            "cidr" | "range" | "netblock" => Self::Cidr,
-            _ => Self::Other,
-        }
-    }
-
-    /// Host-aware coverage (design 2026-06-15 §4.0): infer the asset class from a
-    /// target **value** string (the form carried in `GateContext.in_scope_assets`),
-    /// so the gate can classify without an authoritative `targets.type` on the
-    /// axis. Conservative: an unrecognized non-empty value falls through to
-    /// `Domain` (the strict, full-technique set for intel) and empty → `Other` —
-    /// neither relaxes the gate.
-    pub fn from_value(value: &str) -> Self {
-        let v = value.trim();
-        if v.is_empty() {
-            return Self::Other;
-        }
-        // A URL whose host is a raw IP is an IP asset (cert transparency /
-        // subdomain / forward-DNS are domain concepts that do not apply to a bare
-        // IP). Must precede the generic http(s) → Url check, which would otherwise
-        // classify `http://1.2.3.4` as a domain-bearing Url.
-        if Self::is_url_wrapped_ip(v) {
-            return Self::Ip;
-        }
-        let lower = v.to_ascii_lowercase();
-        if lower.starts_with("http://") || lower.starts_with("https://") {
-            return Self::Url;
-        }
-        if v.parse::<std::net::IpAddr>().is_ok() {
-            return Self::Ip;
-        }
-        if let Some((addr, prefix)) = v.split_once('/') {
-            if addr.parse::<std::net::IpAddr>().is_ok() && prefix.parse::<u8>().is_ok() {
-                return Self::Cidr;
-            }
-        }
-        Self::Domain
-    }
-
-    /// True when `value` is an `http(s)` URL whose host is a raw IP literal —
-    /// e.g. `http://124.196.77.48` or `https://[::1]:8443/x`. Such a value is
-    /// unambiguously an IP asset for intel coverage even when a buggy write path
-    /// stored its `targets.type` as `domain`.
-    pub fn is_url_wrapped_ip(value: &str) -> bool {
-        let lower = value.trim().to_ascii_lowercase();
-        let Some(rest) = lower
-            .strip_prefix("http://")
-            .or_else(|| lower.strip_prefix("https://"))
-        else {
-            return false;
-        };
-        let authority = rest.split('/').next().unwrap_or("");
-        // Drop optional userinfo@, then isolate the host from an optional :port,
-        // handling bracketed IPv6 (`[::1]:443`).
-        let authority = authority.rsplit('@').next().unwrap_or(authority);
-        let host = if let Some(stripped) = authority.strip_prefix('[') {
-            stripped.split(']').next().unwrap_or(stripped)
-        } else {
-            authority.split(':').next().unwrap_or(authority)
-        };
-        host.parse::<std::net::IpAddr>().is_ok()
-    }
-
-    /// Resolve an asset's class from the authoritative `targets.type` (when known)
-    /// and its value. The authoritative type wins EXCEPT for a URL whose host is a
-    /// raw IP ([`Self::is_url_wrapped_ip`]) — that stays `Ip` regardless of a
-    /// (mis-assigned) `domain` type. `None` type falls back to value inference.
-    pub fn classify(target_type: Option<&str>, value: &str) -> Self {
-        if Self::is_url_wrapped_ip(value) {
-            return Self::Ip;
-        }
-        match target_type {
-            Some(ty) => Self::from_target_type(ty),
-            None => Self::from_value(value),
-        }
-    }
-
-    /// 该资产是否可能承载 web 服务（决定 PARAM / JSAPI / DIR 等 web 技术是否要求）。
-    fn maybe_web(self) -> bool {
-        matches!(self, Self::Domain | Self::Url | Self::Other)
-    }
-}
+// AssetClass 的单一来源已迁到 golish-pentest-domain（design 2026-06-18 D1）；
+// 此处重导出，保持 `technique_resolver::AssetClass` 既有引用零改动。
+pub use golish_pentest_domain::AssetClass;
 
 /// 该 stage 的完整静态技术集（与 stage JSON 的 expected_techniques 保持一致；
 /// 这是回退基线，动态逻辑只在此之上"按资产类型裁剪"，绝不新增 stage 未声明的技术）。
@@ -298,16 +202,6 @@ mod tests {
     }
 
     // ── Host-aware coverage (design 2026-06-15 §3, Phase 2a) ──────────────────
-
-    #[test]
-    fn from_value_classifies_ip_url_cidr_domain() {
-        assert_eq!(AssetClass::from_value("1.2.3.4"), AssetClass::Ip);
-        assert_eq!(AssetClass::from_value("2606:4700::1111"), AssetClass::Ip);
-        assert_eq!(AssetClass::from_value("https://a.com/x"), AssetClass::Url);
-        assert_eq!(AssetClass::from_value("10.0.0.0/24"), AssetClass::Cidr);
-        assert_eq!(AssetClass::from_value("a.example.com"), AssetClass::Domain);
-        assert_eq!(AssetClass::from_value(""), AssetClass::Other);
-    }
 
     #[test]
     fn url_wrapped_ip_is_ip_not_url() {

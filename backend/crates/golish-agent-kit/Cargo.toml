@@ -22,6 +22,9 @@ golish-prompts = { workspace = true }
 # Evidence Ledger types + sanitizer (Phase 1c stage harness gate)
 golish-pentest = { workspace = true }
 
+# AssetClass + canonical_asset_key 的单一来源（design 2026-06-18 D1）。
+golish-pentest-domain = { workspace = true }
+
 # Organization model for the shared per-org stage fan-out helpers
 # (already a transitive dep via golish-pentest; declared here for direct use).
 golish-db = { workspace = true }

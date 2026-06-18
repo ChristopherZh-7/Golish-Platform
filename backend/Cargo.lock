@@ -2631,6 +2631,7 @@ dependencies = [
  "golish-json-repair",
  "golish-llm-providers",
  "golish-pentest",
+ "golish-pentest-domain",
  "golish-prompts",
  "golish-settings",
  "golish-sub-agents",
