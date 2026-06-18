@@ -231,8 +231,9 @@ mod tests {
     use golish_pentest::evidence_ledger::EvidenceAuditId;
     use uuid::Uuid;
 
-    const STAGE_JSON: &str =
-        include_str!("../../../../../../resources/harness/stages/external_attack_surface.json");
+    const STAGE_JSON: &str = include_str!(
+        "../../../../../../resources/harness/stages/external_attack_surface/spec.json"
+    );
 
     fn empty_deliverable() -> ExternalAttackSurfaceDeliverable {
         ExternalAttackSurfaceDeliverable {

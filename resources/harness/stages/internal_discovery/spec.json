@@ -1,15 +1,15 @@
 {
-  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: objective_pathing. L5 red-team path planning toward objective. Approval-gated. Phase A.",
+  "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$comment": "Stage spec: internal_discovery. L5 red-team internal recon after foothold. Approval-gated. Phase A.",
 
-  "id": "objective_pathing",
-  "kind": "objective_pathing",
+  "id": "internal_discovery",
+  "kind": "internal_discovery",
   "risk_level": "critical",
 
-  "requires_stages": ["internal_discovery"],
-  "allowed_next_stages": ["objective_simulation"],
+  "requires_stages": ["access_validation"],
+  "allowed_next_stages": ["objective_pathing"],
 
-  "allowed_tool_types": ["post-exploit/ad-tools"],
+  "allowed_tool_types": ["post-exploit", "recon/port-scan", "network/tunnel"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
@@ -41,8 +41,8 @@
 
   "inherits_evidence_from": [
     {
-      "stage_kind": "internal_discovery",
-      "evidence_kinds": ["internal_host", "privilege"]
+      "stage_kind": "access_validation",
+      "evidence_kinds": ["foothold"]
     }
   ]
 }

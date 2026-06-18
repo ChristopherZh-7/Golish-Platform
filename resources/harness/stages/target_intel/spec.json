@@ -1,5 +1,5 @@
 {
-  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
   "$comment": "Stage spec: target_intel. Passive intel collection (DNS / ASN / whois / CT). L1 passive_intel. Phase A.",
 
   "id": "target_intel",

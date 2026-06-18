@@ -256,7 +256,7 @@ Only plan and act for `{stage_id}`. Do not perform later stages."#
 /// 与 [`stage_charter`]（边界/否定式约束 + gate 要求）互补：charter 告诉 agent
 /// 「不能用什么 + gate 查什么」，本函数注入「这个阶段**怎么高效做**」的正向方法论
 /// —— 推荐工具序列、效率红线（如 target_intel 禁逐条 dig）、何时收口。内容来自
-/// `resources/harness/stages/<stage>.methodology.md`（[`crate::harness::resources::stage_methodology_md`]），
+/// `resources/harness/stages/<stage>/methodology.md`（[`crate::harness::resources::stage_methodology_md`]），
 /// 改 markdown 即改指导、0 Rust 改动。没写 playbook 的阶段返回空串（不追加段落）。
 ///
 /// 这是**指导**而非硬门禁：确定性 gate 仍是唯一过关裁判，playbook 只为减少模型空转

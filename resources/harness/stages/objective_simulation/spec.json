@@ -1,15 +1,15 @@
 {
-  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: cleanup. L5 red-team artifact cleanup before reporting. Cleanup required by red_team profile. Phase A.",
+  "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$comment": "Stage spec: objective_simulation. L5 red-team objective simulation (no real damage). Approval-gated. Phase A.",
 
-  "id": "cleanup",
-  "kind": "cleanup",
-  "risk_level": "medium",
+  "id": "objective_simulation",
+  "kind": "objective_simulation",
+  "risk_level": "critical",
 
-  "requires_stages": ["objective_simulation"],
-  "allowed_next_stages": ["reporting"],
+  "requires_stages": ["objective_pathing"],
+  "allowed_next_stages": ["cleanup"],
 
-  "allowed_tool_types": [],
+  "allowed_tool_types": ["post-exploit"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
@@ -34,15 +34,15 @@
   "max_other_skips": 1,
 
   "human_approval": {
-    "required_before": []
+    "required_before": ["post_exploit", "exploit_validation"]
   },
 
   "agent_continuity": "multi_session_relay",
 
   "inherits_evidence_from": [
     {
-      "stage_kind": "objective_simulation",
-      "evidence_kinds": ["simulation_result"]
+      "stage_kind": "objective_pathing",
+      "evidence_kinds": ["attack_path"]
     }
   ]
 }

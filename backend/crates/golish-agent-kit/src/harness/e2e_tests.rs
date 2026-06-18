@@ -37,7 +37,7 @@ const ASSESSMENT_PROFILE_JSON: &str =
 const ASSESSMENT_SKELETON_JSON: &str =
     include_str!("../../../../../resources/harness/profiles/assessment.sprint_skeleton.json");
 const STAGE_JSON: &str =
-    include_str!("../../../../../resources/harness/stages/external_attack_surface.json");
+    include_str!("../../../../../resources/harness/stages/external_attack_surface/spec.json");
 
 fn build_harness() -> StageHarness {
     let profile = load_profile_from_json(ASSESSMENT_PROFILE_JSON).expect("profile");

@@ -1,5 +1,5 @@
 {
-  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
   "$comment": "Stage spec: verification. L4 controlled exploit validation. Approval-gated. Phase A.",
 
   "id": "verification",

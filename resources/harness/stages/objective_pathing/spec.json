@@ -1,15 +1,15 @@
 {
-  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: objective_simulation. L5 red-team objective simulation (no real damage). Approval-gated. Phase A.",
+  "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$comment": "Stage spec: objective_pathing. L5 red-team path planning toward objective. Approval-gated. Phase A.",
 
-  "id": "objective_simulation",
-  "kind": "objective_simulation",
+  "id": "objective_pathing",
+  "kind": "objective_pathing",
   "risk_level": "critical",
 
-  "requires_stages": ["objective_pathing"],
-  "allowed_next_stages": ["cleanup"],
+  "requires_stages": ["internal_discovery"],
+  "allowed_next_stages": ["objective_simulation"],
 
-  "allowed_tool_types": ["post-exploit"],
+  "allowed_tool_types": ["post-exploit/ad-tools"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
@@ -41,8 +41,8 @@
 
   "inherits_evidence_from": [
     {
-      "stage_kind": "objective_pathing",
-      "evidence_kinds": ["attack_path"]
+      "stage_kind": "internal_discovery",
+      "evidence_kinds": ["internal_host", "privilege"]
     }
   ]
 }

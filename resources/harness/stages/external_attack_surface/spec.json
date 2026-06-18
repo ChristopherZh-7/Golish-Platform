@@ -1,5 +1,5 @@
 {
-  "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
+  "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
   "$comment": "Stage spec: external_attack_surface — DEFINE the attack surface (liveness + port scan + service fingerprint + HTTP probe + screenshots). 阶段重排 2026-06-09: 端口/服务前移到此 (先定义 host×端口×服务×活web); JS/API 移交 enumeration. 见 docs/design/2026-06-09-active-stage-verify-first.md.",
 
   "id": "external_attack_surface",

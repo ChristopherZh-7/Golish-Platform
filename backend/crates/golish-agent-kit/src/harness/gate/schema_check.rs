@@ -85,8 +85,9 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    const STAGE_JSON: &str =
-        include_str!("../../../../../../resources/harness/stages/external_attack_surface.json");
+    const STAGE_JSON: &str = include_str!(
+        "../../../../../../resources/harness/stages/external_attack_surface/spec.json"
+    );
 
     fn make_deliverable(stage_id: &str) -> ExternalAttackSurfaceDeliverable {
         ExternalAttackSurfaceDeliverable {

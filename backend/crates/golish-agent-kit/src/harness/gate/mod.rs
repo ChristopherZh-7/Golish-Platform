@@ -278,7 +278,7 @@ mod tests {
         use std::collections::HashMap;
 
         const SCOPING_JSON: &str =
-            include_str!("../../../../../../resources/harness/stages/scoping.json");
+            include_str!("../../../../../../resources/harness/stages/scoping/spec.json");
         let spec = load_stage_spec_from_json(SCOPING_JSON).unwrap();
 
         // A scoping deliverable that PASSES the baseline gate: one evidence-backed
@@ -331,7 +331,7 @@ mod tests {
         use golish_pentest::evidence_ledger::EvidenceAuditId;
 
         const SCOPING_JSON: &str =
-            include_str!("../../../../../../resources/harness/stages/scoping.json");
+            include_str!("../../../../../../resources/harness/stages/scoping/spec.json");
         let mut spec = load_stage_spec_from_json(SCOPING_JSON).unwrap();
         // What the gate hook injects for a profile with require_human_scope_approval.
         spec.gate_rules.push(scoping_human_gate_rule());

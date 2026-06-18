@@ -148,7 +148,7 @@ mod tests {
     const ASSESSMENT_JSON: &str =
         include_str!("../../../../../resources/harness/profiles/assessment.json");
     const STAGE_JSON: &str =
-        include_str!("../../../../../resources/harness/stages/external_attack_surface.json");
+        include_str!("../../../../../resources/harness/stages/external_attack_surface/spec.json");
 
     #[test]
     fn for_stage_accepts_external_attack_surface() {

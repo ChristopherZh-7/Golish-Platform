@@ -192,10 +192,10 @@ mod tests {
     use super::*;
 
     const EXTERNAL_ATTACK_SURFACE_JSON: &str =
-        include_str!("../../../../../resources/harness/stages/external_attack_surface.json");
+        include_str!("../../../../../resources/harness/stages/external_attack_surface/spec.json");
 
     const TARGET_INTEL_JSON: &str =
-        include_str!("../../../../../resources/harness/stages/target_intel.json");
+        include_str!("../../../../../resources/harness/stages/target_intel/spec.json");
 
     #[test]
     fn load_external_attack_surface_basic_shape() {

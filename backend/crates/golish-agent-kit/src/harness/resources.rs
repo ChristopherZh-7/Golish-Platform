@@ -33,21 +33,21 @@ macro_rules! stage_methodology_raw {
 
 /// 按 stage kind 取嵌入的 stage spec JSON 原文.
 ///
-/// 12 个 StageKind 全覆盖 (与 `resources/harness/stages/*.json` 一一对应).
+/// 12 个 StageKind 全覆盖 (与 `resources/harness/stages/<stage>/spec.json` 一一对应).
 pub fn stage_spec_json(kind: StageKind) -> &'static str {
     match kind {
-        StageKind::Scoping => stage_json!("scoping.json"),
-        StageKind::TargetIntel => stage_json!("target_intel.json"),
-        StageKind::ExternalAttackSurface => stage_json!("external_attack_surface.json"),
-        StageKind::Enumeration => stage_json!("enumeration.json"),
-        StageKind::VulnTriage => stage_json!("vuln_triage.json"),
-        StageKind::Verification => stage_json!("verification.json"),
-        StageKind::AccessValidation => stage_json!("access_validation.json"),
-        StageKind::InternalDiscovery => stage_json!("internal_discovery.json"),
-        StageKind::ObjectivePathing => stage_json!("objective_pathing.json"),
-        StageKind::ObjectiveSimulation => stage_json!("objective_simulation.json"),
-        StageKind::Cleanup => stage_json!("cleanup.json"),
-        StageKind::Reporting => stage_json!("reporting.json"),
+        StageKind::Scoping => stage_json!("scoping/spec.json"),
+        StageKind::TargetIntel => stage_json!("target_intel/spec.json"),
+        StageKind::ExternalAttackSurface => stage_json!("external_attack_surface/spec.json"),
+        StageKind::Enumeration => stage_json!("enumeration/spec.json"),
+        StageKind::VulnTriage => stage_json!("vuln_triage/spec.json"),
+        StageKind::Verification => stage_json!("verification/spec.json"),
+        StageKind::AccessValidation => stage_json!("access_validation/spec.json"),
+        StageKind::InternalDiscovery => stage_json!("internal_discovery/spec.json"),
+        StageKind::ObjectivePathing => stage_json!("objective_pathing/spec.json"),
+        StageKind::ObjectiveSimulation => stage_json!("objective_simulation/spec.json"),
+        StageKind::Cleanup => stage_json!("cleanup/spec.json"),
+        StageKind::Reporting => stage_json!("reporting/spec.json"),
     }
 }
 
@@ -83,7 +83,7 @@ pub fn load_embedded_stage_spec(kind: StageKind) -> Result<StageSpec, StageSpecL
     load_stage_spec_from_json(stage_spec_json(kind))
 }
 
-/// 按 stage kind 取嵌入的「阶段方法论 playbook」原文 (`<stage>.methodology.md`).
+/// 按 stage kind 取嵌入的「阶段方法论 playbook」原文 (`<stage>/methodology.md`).
 ///
 /// 与 stage spec JSON 同目录、同 `include_str!` 深度，但与 gate 解耦：playbook 是
 /// **正向方法论指导**（这个阶段怎么高效做、推荐工具序列、效率红线、何时收口），由
@@ -93,12 +93,12 @@ pub fn load_embedded_stage_spec(kind: StageKind) -> Result<StageSpec, StageSpecL
 /// 只有写了 playbook 的阶段返回 `Some`；其余返回 `None`（charter 不追加 playbook 段）。
 pub fn stage_methodology_md(kind: StageKind) -> Option<&'static str> {
     Some(match kind {
-        StageKind::Scoping => stage_methodology_raw!("scoping.methodology.md"),
-        StageKind::TargetIntel => stage_methodology_raw!("target_intel.methodology.md"),
+        StageKind::Scoping => stage_methodology_raw!("scoping/methodology.md"),
+        StageKind::TargetIntel => stage_methodology_raw!("target_intel/methodology.md"),
         StageKind::ExternalAttackSurface => {
-            stage_methodology_raw!("external_attack_surface.methodology.md")
+            stage_methodology_raw!("external_attack_surface/methodology.md")
         }
-        StageKind::Enumeration => stage_methodology_raw!("enumeration.methodology.md"),
+        StageKind::Enumeration => stage_methodology_raw!("enumeration/methodology.md"),
         _ => return None,
     })
 }
