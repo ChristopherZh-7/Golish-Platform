@@ -11,6 +11,27 @@
   ],
   "features": [
     {
+      "id": "pr-a-canonical-asset-key-2026-06-18",
+      "priority": 1,
+      "area": "backend: golish-pentest-domain/src/{asset_id.rs(新建: AssetClass 迁入 + AssetKey{key,class} + canonical_asset_key + 私有 extract_host + 11 单测),lib.rs(pub mod asset_id + pub use 重导出 + layout 文档)}; golish-agent-kit/{Cargo.toml(+golish-pentest-domain workspace dep),src/harness/technique_resolver.rs(删本地 AssetClass enum+impl 改 pub use golish_pentest_domain::AssetClass + 删 migrated from_value 单测)}. 设计 docs/design/2026-06-18-canonical-asset-identity-and-coverage-join-key.md(§3.1/§4/§8 D1); 计划 docs/superpowers/plans/2026-06-18-pr-a-canonical-asset-key.md",
+      "title": "PR-A · 规范资产身份 canonical_asset_key（E1 第一步）：把散在 3 个 crate 各自为政的『资产身份』收成一把确定性纯函数钥匙。本 PR 仅落纯函数 + AssetClass 迁入同 crate + 原处 pub use 重导出，零接入、零行为变化（为 PR-B 边界接入 / PR-C-E technique_outcomes 物化表铺路）。",
+      "user_visible_behavior": "无用户可见行为变化（纯后端内部类型 + 未接任何调用方）。canonical_asset_key(value) 归一规则：trim/ASCII 小写/URL 取 host(解 [] IPv6、去 port/userinfo)/去 FQDN 尾点/IP·CIDR 规范文本；红线『不剥 www.、不截 apex』(否则不同资产并成一格=新漏报)。AssetClass 单一来源迁到 golish-pentest-domain；technique_resolver::AssetClass 重导出保持既有引用零改动。",
+      "status": "passing",
+      "design": "docs/design/2026-06-18-canonical-asset-identity-and-coverage-join-key.md（E1 §3.1 函数规则 + §4 红线 + §8 D1 落 golish-pentest-domain 零循环依赖）",
+      "plan": "docs/superpowers/plans/2026-06-18-pr-a-canonical-asset-key.md（Task1 新模块 TDD / Task2 重导出零行为变化 / Task3 workspace check + clippy）",
+      "verification": [
+        "[✓] cargo +stable nextest run -p golish-pentest-domain → 46 passed/0 skipped（新 asset_id::tests::* 11 个：www 保留 / apex 不截断 / url→host / url-wrapped-ip / IPv6 规范 / CIDR / 空→None / 漂移对归一相等 / AssetClass.from_value）",
+        "[✓] cargo +stable nextest run -p golish-agent-kit → 663 passed/0 skipped（technique_resolver 既有 14 测全绿 = 零行为变化；migrated from_value 测已删）",
+        "[✓] cargo +stable check --workspace → exit 0（5m05s，全部 crate 含 golish 主聚合 = AssetClass 跨 crate 移动零破坏）",
+        "[✓] cargo +stable clippy -p golish-pentest-domain -p golish-agent-kit --all-targets --no-deps -- -D warnings → exit 0 零告警（修了本轮新代码 1 个 doc_lazy_continuation）",
+        "[✓] ReadLints 4 文件无错",
+        "[未跑] just precommit 全量：① rust-toolchain.toml pin 的 1.95.0 仅部分安装、rustup 重下阻断 just；② pre-existing workspace clippy 死码（非本轮 scope）。scoped 全绿 = 无 precommit 回归"
+      ],
+      "evidence": "2026-06-18 BaJie MCP-agent-2（无角色, DISPATCH on, 用户『帮我看日志』→『按 PR-A 落地修复』）. 根因证据: 活体 run pentest-chat-1781762016363-1(Test1) coverage gate 死循环 7 submits/6 needs_fix、org evidence x0、run_tree.py --db 自诊断 audit_log 无 GOLISH-INTEL-CT 事实 + 资产 http://x 与 https://x scheme 重复计数(=身份漂移). 实现: asset_id.rs 新建(AssetClass 迁入逐字不变, maybe_web 私→pub 因跨 crate 调用)+lib.rs 重导出; agent-kit Cargo.toml +依赖 + technique_resolver.rs 改 pub use 重导出. 改前 grep 实证: AssetClass 全部引用在 agent-kit 内部经 crate::harness::technique_resolver:: 路径(execute.rs:1959/rule_engine.rs:497/sprint_contract.rs:123,337), 重导出后零改动. 未 commit/未 push. 详见 agent-progress.md 最新一条.",
+      "notes": "§2.1: 本条目落 passing(终态,不占 in_progress 槽); 工作树另有 stale in_progress=stage-run-per-org-gate-2026-06-15(属另一会话工作流, 本轮未动). 本 PR 零行为变化(纯函数 + 迁移 + 重导出), 死循环 bug 需 PR-B(接 canonical_asset_key 到 in_scope_assets/evidence 落库/gate join)才消失. 红线守住: gate rule_engine 判定纯函数 byte-for-byte 未动; 不剥 www / 不截 apex(单测钉死). full precommit 被 1.95.0 toolchain 部分安装(rustup 重下)+pre-existing 死码阻断, 均非本 PR scope. 未 commit(§2.6 全绿前不 commit + §2.7 commit 需用户确认).",
+      "remember": "PR-A canonical_asset_key(E1 第一步). golish-pentest-domain/src/asset_id.rs: canonical_asset_key(value)->Option<AssetKey{key,class}> 纯函数(trim/小写/URL→host/去尾点/IP·CIDR 规范, 红线不剥 www 不截 apex); AssetClass(Domain/Ip/Url/Cidr/Other + from_target_type/from_value/is_url_wrapped_ip/classify/maybe_web) 自 agent-kit technique_resolver 迁入(maybe_web 私→pub). agent-kit technique_resolver.rs 改 `pub use golish_pentest_domain::AssetClass`(既有引用零改动). 验证 46+663 nextest + workspace check exit0 + scoped clippy 0. 零接入/零行为变化. 后续 PR-B 接边界(in_scope_assets/evidence/gate join), PR-C/D 建 technique_outcomes 表."
+    },
+    {
       "id": "engagement-org-isolation-2026-06-15",
       "priority": 1,
       "area": "backend: golish-db/repo/{organizations.rs(subtree_ids WITH RECURSIVE),operation_state.rs(engagement_org_id 列+set_engagement_org)} + migration 20260615000003_operation_state_engagement_org; golish-agent-kit/{db_traits/{repo.rs,types.rs},db_shim.rs,task_orchestrator/{types.rs(ExecutionContext.harness_org_id),subtask_phases/execute.rs(harness_org_id 解析+extract_engagement_org_if_scoping+consume_gate_outcome 绑定+HarnessGateOutcome.engagement_org_id),prompts/mod.rs(scoping claim subject=org_id),tool_executors/security.rs(list_in_scope_targets org 过滤)}}; golish-agent-runtime/agentic_loop/{context.rs(AgenticLoopContext.harness_org_id),tool_execution/direct/{mod.rs,stage_run_call.rs(units 子树过滤)}}; golish-agent-bridge/{agent_bridge/{mod,constructors,prepare},bridge_executor/trait_impl}(harness_active_org_id 侧信道); golish-agent-app/ai/db_bridge/{mod,recon,orchestration}(impl)",

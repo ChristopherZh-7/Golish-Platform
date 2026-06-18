@@ -29,6 +29,49 @@
 
 ---
 
+### 2026-06-18 · PR-A 规范资产身份 `canonical_asset_key` 落地（E1 第一步，纯函数 + AssetClass 迁移，零行为变化）（BaJie MCP-agent-2 · 无角色 · DISPATCH on · 用户「帮我看日志」→「按 PR-A 落地修复」）
+
+- **本轮目标**：执行 `docs/superpowers/plans/2026-06-18-pr-a-canonical-asset-key.md`——在 `golish-pentest-domain` 新增确定性纯函数 `canonical_asset_key(value) -> Option<AssetKey>`，并把 `AssetClass`（枚举 + 5 个纯方法）从 `golish-agent-kit/harness/technique_resolver.rs` 迁入同 crate，原处改 `pub use` 重导出。**本 PR 不接任何调用方**（PR-B 才接）→ 除「AssetClass 换源 + 重导出」外零行为变化。
+- **根因背景（先看日志取证）**：最新活体 pingan target_intel run（`pentest-chat-1781762016363-1`，Test1）复现 coverage gate 死循环（`submits=7 / needs_fix=6`、首 org `evidence x0`）；`run_tree.py --db` 自诊断证实 `audit_log` 本会话**无任何 `GOLISH-INTEL-CT` 事实**（ctfr 跑了十几次没 project 成 CT 覆盖格）+ 资产 `http://x` 与 `https://x` 被当不同资产 scheme 重复计数（= 身份漂移）。E1 是「身份漂移→join 不命中→格永判 not_attempted→无限 needs_fix」的治本第一步。
+- **已完成（严格按 plan TDD）**：
+  - **Task 1**：新建 `backend/crates/golish-pentest-domain/src/asset_id.rs`——`AssetClass` 迁入逐字不变（仅 `maybe_web` 私有→`pub`，因迁出后被 `technique_resolver` 跨 crate 调用必须可见）；新增 `AssetKey{key,class}` + `canonical_asset_key` + 私有 `extract_host` + 11 单测。`lib.rs` 加 `pub mod asset_id;` + `pub use asset_id::{canonical_asset_key, AssetClass, AssetKey};` + layout 文档一行。
+  - **Task 2**：`golish-agent-kit/Cargo.toml` 加 `golish-pentest-domain = { workspace = true }`（紧挨 golish-pentest）；`technique_resolver.rs` 删本地 `AssetClass`（enum + impl，原 :7-105）→ `pub use golish_pentest_domain::AssetClass;`，删已迁走的 `from_value_classifies_ip_url_cidr_domain` 单测；`stage_baseline`/`resolve_expected_techniques`/`technique_applies(_to_value)`/`is_registrable_apex` 及其余单测原样不动。
+  - **修 1 个 clippy（本轮新代码）**：`asset_id.rs` 的 `canonical_asset_key` 文档触发 `clippy::doc_lazy_continuation`（list 后接段落需空行分隔）→ 加两行空 `///` 分段修复。
+- **改前复核（grep 实证零遗漏调用方）**：所有 `AssetClass` 引用都在 agent-kit 内部、走 `crate::harness::technique_resolver::AssetClass`（`execute.rs:1959` / `rule_engine.rs:497` / `sprint_contract.rs:123,337`），重导出后零改动；`maybe_web` 仅 `technique_resolver.rs:142` 自用；workspace deps 已有 `golish-pentest-domain = { path = ... }`（`backend/Cargo.toml:146`）。
+- **运行过的验证（实跑；因 `rust-toolchain.toml` pin 的 1.95.0 仅部分安装、rustup 正重下 6 组件，统一用 `+stable`＝同为 1.95.0、复用 dev app 暖缓存）**：
+  - `cargo +stable nextest run -p golish-pentest-domain` → **46 passed / 0 skipped**（含新 `asset_id::tests::*` 11 个：lowercases / trailing-dot / **www 保留** / **apex 不截断** / url→host / url-wrapped-ip / IPv6 规范 / CIDR / 空→None / 漂移对归一相等 / AssetClass.from_value）。
+  - `cargo +stable nextest run -p golish-agent-kit` → **663 passed / 0 skipped**（`technique_resolver` 既有 14 测全绿 = 零行为变化证明；migrated 测已删）。
+  - `cargo +stable check --workspace` → **exit 0**（5m05s，全部 crate 含 `golish` 主聚合编译过 = AssetClass 跨 crate 移动零破坏）。
+  - `cargo +stable clippy -p golish-pentest-domain -p golish-agent-kit --all-targets --no-deps -- -D warnings` → **exit 0，零告警**。ReadLints 4 文件无错。
+- **提交记录**：**未 commit、未 push**（AGENTS.md §2.6 全绿前不 commit / §2.7 commit 需用户确认；full precommit 见下）。
+- **已知风险 / 未解决**：
+  - **`just precommit` 全量未跑**：① 仓库根 `rust-toolchain.toml` pin 的 1.95.0 toolchain 仅部分安装，rustup 触发重下 6 组件（本机网络慢，阻断一切走 pinned toolchain 的 `just` 命令）；② 历史 pre-existing 的 workspace clippy 死码阻断（多条 feature 条目记载）。两者均**非 PR-A scope**；scoped 验证（workspace check + 两 crate test + scoped clippy）全绿 = 本 PR 未引入 precommit 回归。可选后续：待 1.95.0 装好或在 stable 上跑全量。
+  - **PR-A 不接调用方**：死循环 bug 本轮**未消失**（需 PR-B 把 `canonical_asset_key` 接到 `in_scope_assets` / evidence 落库 / gate join；PR-C/D 建 `technique_outcomes` 表）。
+  - dev app（`tauri dev` cargo run, pid 2431）在跑，监听 .rs 改动会自动重建后端＝会热载入本 PR（零行为变化，安全）；正死循环的 pingan run 可能因后端重启而中断（顺带止血）。
+- **新增 / 修改文件**：`?? backend/crates/golish-pentest-domain/src/asset_id.rs`（新）；`M golish-pentest-domain/src/lib.rs`、`M golish-agent-kit/Cargo.toml`、`M golish-agent-kit/src/harness/technique_resolver.rs`。设计/计划文档此前已写、untracked（`docs/design/2026-06-18-canonical-asset-identity-and-coverage-join-key.md`、`docs/superpowers/plans/2026-06-18-pr-a-canonical-asset-key.md`）。
+
+---
+
+### 2026-06-18 · pin Rust 工具链（仓库根新增 `rust-toolchain.toml` → 1.95.0）（BaJie MCP-agent-4 · 接 MCP-6 上下文转移 · DISPATCH on · 用户「帮我 pin 工具链」→「A：pin 够了，收尾」）
+
+- **本轮目标**：消除多轮 progress 反复记载的「本机 rustfmt/clippy 版本漂移」根因——仓库无 `rust-toolchain.toml` 钉版本，rustup 默认跟最新 stable，新版 rustfmt/clippy 把预存文件判红（如 `tool_list.rs:75 doc_lazy_continuation`，clippy `-D warnings` 硬失败）。用户要求 pin 工具链。
+- **已完成**：
+  - 仓库根新增 `rust-toolchain.toml`：`channel = "1.95.0"` + `components = ["clippy","rustfmt"]` + `profile = "minimal"`（含注释：为何 pin / 何时 bump）。从此本机 / CI / 所有会话锁定 1.95.0，`rustup update` 不再悄悄漂移。
+- **关键认定（先复现取证）**：
+  - CI（`.github/workflows/check.yml:43` 与 windows job）用 `dtolnay/rust-toolchain@stable` = 永远拉最新 stable → CI 自身也在漂移边缘，不止本机。
+  - 本机 `rustc/cargo 1.95.0`（active/default，唯一已装 toolchain），原**无** rust-toolchain.toml（`rustup show` + `cat` 实证）；亦无 rustfmt.toml/clippy.toml（用默认排版规则，故随版本漂）。
+  - pin 到 1.95.0 = **冻结现状**（今天行为不变，只防未来漂移）；**不会**令 precommit 转绿（既有 1.95 clippy lint + 已提交 fmt 漂移仍在，按用户 A 单独处理）。
+- **运行过的验证（实跑）**：
+  - `rustup show` / `rustc --version` / `cargo --version` → **1.95.0**；创建前 `cat rust-toolchain.toml` → `(no rust-toolchain.toml)`。
+  - 创建后 `rustup show active-toolchain`（root + backend/）→ rustup **读到 toml 并开始下载安装「1.95.0」这套 toolchain**（= pin 生效的实证；不读 toml 不会去装 1.95.0）。本机网络慢，5 组件下载耗时极长，最终 `cargo --version` 复确认留作后台完成项。
+- **提交记录**：**未 commit、未 push**（按 AGENTS.md §2.7；用户 A 仅要求收尾记录）。
+- **已知风险或未解决问题**：
+  - precommit 仍红（既有 lint/fmt 漂移，用户 A 选单独处理）。可选后续：**B** = 只修 `tool_list.rs:75` doc 缩进 + 仅对**已提交**文件 `cargo fmt`（不碰他会话未提交工作）；**C** = CI `@stable`→`@1.95.0`（省 CI 每次多下一套 toolchain）。
+  - 工作区仍有 MCP-6 遗留未跟踪文档（`docs/design/2026-06-18-canonical-asset-identity-and-coverage-join-key.md`、`docs/superpowers/plans/2026-06-18-pr-a-canonical-asset-key.md`、`...slim-enrich-provider-rdap.md`）及多会话未提交改动，与本轮无关。
+- **新增文件**：`?? rust-toolchain.toml`（仓库根，未跟踪）。
+
+---
+
 ### 2026-06-17 · passive-intel-pairing Phase A–F 全量落地（配对+自动入库+探活映射+多维查询+工具集精简）（BaJie MCP-agent-1 · DISPATCH off · 用户「执行 Phase A 配对」→「继续吧 全部搞完」）
 
 - **本轮目标**：执行 `docs/superpowers/plans/2026-06-17-passive-intel-pairing-probe-landing.md` 的 **Phase A（Task 1-3）**——给 asset-intel enrich 管线补「同一记录内域名↔IP 成对抽取」的纯能力（类型 + 描述符 + 纯函数 + 单测），为 Phase B 自动落库（带测绘 real_ip）做前置。严格 TDD（红→绿），每 Task 边界单独验证。
