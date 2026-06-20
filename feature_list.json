@@ -11,6 +11,26 @@
   ],
   "features": [
     {
+      "id": "active-recon-stage-specialists-2026-06-20",
+      "priority": 2,
+      "area": "backend: golish-sub-agents/src/defaults/{prompts/execution_planning.rs(build_prober_prompt 核验 + build_enumerator_prompt 新), prompts/mod.rs, builder/{mod.rs,registry.rs}(prober+enumerator 注册), tests.rs(工具/prompt 测 + count 15→16)}; golish-agent-kit/src/harness/{stage_spec.rs(EAS/enum specialist+axis 测, host-aware 2b guard), gate/rule_engine.rs(EAS+enum host-aware parity 测)}; golish-core/src/utils.rs(is_tool_result_success status/flags); resources/harness/stages/{external_attack_surface,enumeration}/spec.json(specialist+coverage_axis+host_aware_coverage)",
+      "title": "active_recon 相位 stage_run 每-org specialist 接全：external_attack_surface=prober（核验+提交）、enumeration=enumerator（新建），并翻 host-aware 2b flag（EAS/enum 按资产类型核覆盖）。",
+      "user_visible_behavior": "stage_run 现在能对 external_attack_surface 扇出 prober（每 org 一个 active 攻击面测绘 liveness/port/service）、对 enumeration 扇出 enumerator（每 org 一个 active 内容枚举 dir/param/js-api）——此前两阶段无 specialist 会被 stage_run 拒（『stage has no specialist configured』）。host-aware 2b：EAS 对裸 URL 端点不再要求 PORT/SERVICE、enumeration 对裸 IP 不再要求内容枚举（域名/主机仍核全套，Other 类 fail-safe）。",
+      "status": "passing",
+      "design": "docs/design/2026-06-13-stage-run-fanout-design.md（D2/D4 specialist 拆分）+ docs/design/2026-06-15-host-aware-coverage.md（§3.2/§3.3 2b 矩阵）",
+      "plan": "照 recon(target_intel) 拆分先例：prompt + registry×2 + spec specialist/axis + 测；host-aware 2b = 翻 spec flag（矩阵 commit e12a7638 已 inert 落地）+ parity 测",
+      "verification": [
+        "[✓] cargo nextest -p golish-sub-agents -p golish-agent-kit → 759 passed/0 failed（含 test_prober_*、test_enumerator_*、external_attack_surface/enumeration_declares_stage_run_specialist_and_axis、eas_and_enumeration_enable_host_aware_coverage、host_aware_coverage_relaxes_url_not_host_in_eas、host_aware_coverage_drops_content_enum_for_ip_in_enumeration）",
+        "[✓] cargo clippy -p golish-sub-agents -p golish-agent-kit -p golish-core --all-targets → 0 warning；2 spec JSON 合法；ReadLints 干净",
+        "[✓] harness e2e: e2e_happy_path_external_attack_surface_passes_gate 绿（gate 端到端闭环）",
+        "[未跑·用户环境] 活体 E2E（真网络）：--stage-run EAS/enumeration 真跑 httpx/naabu/whatweb/ffuf/arjun → DB → coverage 自动补格 → gate PASS",
+        "[未跑] just precommit 全量（用户『太慢』跳过；按需补跑）"
+      ],
+      "evidence": "2026-06-20 BaJie BajieAsk-agent-4（DISPATCH off, 接 MCP-1 上下文转移=task B 选 prober）. prober(task B) 上一会话已落 8 文件未提交 → 本会话核验全绿+commit；新写 enumerator(7 文件)+host-aware 2b(EAS/enum flag+parity)。3 commit 落 main 未 push：e67b3aab fix(core) is_tool_result_success / f1e67708 feat(harness) prober+host-aware 2b / d6413ee4 feat(harness) enumerator。详见 agent-progress.md 最新一条。",
+      "notes": "role_label_for 通用首字母大写(prober→Prober, enumerator→Enumerator)；registry 由 create_default_sub_agents[_from_registry] 喂入(bridge/llm_client/eval)，无硬编码 specialist 白名单。enumerator 工具含 js_collect/js_extract_apis(prober 无)。tool_taxonomy 已含 ffuf/gobuster→web/fuzzer、arjun→web/param、katana→recon/crawler(enumeration allowed_tool_types 全覆盖)。agent 总数 15→16。",
+      "remember": "active_recon specialists：target_intel=recon、external_attack_surface=prober、enumeration=enumerator（三者都 stage_run 按 org 扇出）。每个 = prompt(build_*_prompt)+registry×2(builder/{mod,registry}.rs)+spec specialist/coverage_axis+测。host-aware 2b：external_attack_surface/enumeration spec host_aware_coverage:true（矩阵 technique_applies 早 inert 落地 commit e12a7638），EAS 裸URL掉PORT/SERVICE、enum 裸IP掉全部内容技术、Other fail-safe。未接：vuln_triage/verification/post_exploit 无 specialist；活体 E2E 未跑。"
+    },
+    {
       "id": "pr-a-canonical-asset-key-2026-06-18",
       "priority": 1,
       "area": "backend: golish-pentest-domain/src/{asset_id.rs(新建: AssetClass 迁入 + AssetKey{key,class} + canonical_asset_key + 私有 extract_host + 11 单测),lib.rs(pub mod asset_id + pub use 重导出 + layout 文档)}; golish-agent-kit/{Cargo.toml(+golish-pentest-domain workspace dep),src/harness/technique_resolver.rs(删本地 AssetClass enum+impl 改 pub use golish_pentest_domain::AssetClass + 删 migrated from_value 单测)}. 设计 docs/design/2026-06-18-canonical-asset-identity-and-coverage-join-key.md(§3.1/§4/§8 D1); 计划 docs/superpowers/plans/2026-06-18-pr-a-canonical-asset-key.md",
@@ -112,11 +132,11 @@
         "[✓] python3 json.load target_intel.json → host_aware_coverage=True；StageSpec 全字面量仅 2 处(struct def + finding_verification_check 测，已补字段)，无其它 crate 构造全字面量 → golish 编译链不破",
         "[未跑] just precommit 全量（本机 cargo 跑被环境/并发 lock 频繁打断，test-rust-all 太重）; [未跑·用户环境] 活体: --stage-run target_intel 带混合 域名+IP scope，看 IP 不再因 SUBDOMAIN/DNS/CT 永远 BLOCK",
         "[✓·矩阵] Phase 2b 核心：EAS+enum technique_applies 矩阵已落+TDD 绿（commit e12a7638，11/11；inert，stage flag 未翻）",
-        "[未做] 2b flag 翻转（external_attack_surface/enumeration.json，需协调他会话改动 + rule_engine parity 测 + sign-off）+ 2c（authoritative type 轴 + IP 原生技术；design/plan 已写 host-aware-coverage-2c）"
+        "[✓] 2b flag 翻转 done（2026-06-20 BajieAsk-agent-4）：external_attack_surface.json + enumeration.json host_aware_coverage:true；rule_engine.rs +2 parity 测（EAS 裸URL掉PORT/SERVICE、enum 裸IP掉内容枚举）+ stage_spec guard 测；nextest -p golish-agent-kit 667 全过 + clippy 0 warning；commit f1e67708(EAS)+d6413ee4(enum)。剩 2c（authoritative type 轴 + IP 原生技术；design/plan 已写 host-aware-coverage-2c，单独条目）"
       ],
       "evidence": "2026-06-15 BaJie MCP-agent-2（DISPATCH off）. 设计（用户「去写 Phase 2 设计」）后用户「实现 2a」→ 按计划 TDD 实现并验证绿。改动(未 commit): technique_resolver.rs(+from_value 按值分类/+technique_applies 矩阵/+techniques_for + 4 测), stage_spec.rs(+host_aware_coverage flag #[serde(default)] bool + 解析测), gate/finding_verification_check.rs(全字面量补 host_aware_coverage:false), gate/rule_engine.rs(coverage_complete 内层循环 flag 开时按 AssetClass::from_value 过滤 techniques + parity 测), resources/harness/stages/target_intel.json(host_aware_coverage:true + comment). 关键: 比设计 §4.1 typed-axis 更简——coverage_complete 本就有 &StageSpec(含 kind)+ctx.in_scope_assets，故零 GateContext/hook/DB 改动。环境注意: 本机 cargo 跑被并发(另一 agent 跑 agent-kit nextest)+环境 kill 多次打断，最终用后台 + /tmp 日志跑过(48 + 13 全绿)。",
       "notes": "前置 = ip-centric Phase 0/1（real_ip + IP 树, 已做）. 注入链: execute.rs fetch_in_scope_assets_for_gate/fetch_in_scope_target_types_for_gate → apply_harness_gate_hook → GateContext. AssetClass::from_target_type 已存在(domain/ip/url/cidr/other). (value,type) 数据可经 db_traits in_scope_targets 拿. 推荐先做 2a(仅 target_intel, drop IP 的域名专属项, 不加新采集器, 低风险). fail-safe: 未知类型→保留全清单(绝不放松).",
-      "remember": "Host-aware coverage = IP-centric Phase 2. **2a 已实现+验证绿(未 commit)**: technique_resolver::{AssetClass::from_value(按值判类型), technique_applies(stage,class,tech) 矩阵, techniques_for}; StageSpec.host_aware_coverage flag(默认关, target_intel.json 已开); coverage_complete 内层循环 flag 开时按资产类型过滤 techniques(关=逐字节不变, Other/未知=全清单 fail-safe). target_intel 矩阵: 域名核全 6; IP/CIDR 掉 SUBDOMAIN/DNS/CT 留 WHOIS/ASN/OSINT; URL 掉 SUBDOMAIN 留其余. 实现比设计 §4.1 简(零 GateContext/hook/DB 改, 因 coverage_complete 本就有 spec+in_scope_assets). 2b(EAS+enum)/2c(authoritative type 轴+IP 原生技术)未做. 设计/计划 docs/{design,superpowers/plans}/2026-06-15-host-aware-coverage.md."
+      "remember": "Host-aware coverage = IP-centric Phase 2. **2a 已实现+验证绿(未 commit)**: technique_resolver::{AssetClass::from_value(按值判类型), technique_applies(stage,class,tech) 矩阵, techniques_for}; StageSpec.host_aware_coverage flag(默认关, target_intel.json 已开); coverage_complete 内层循环 flag 开时按资产类型过滤 techniques(关=逐字节不变, Other/未知=全清单 fail-safe). target_intel 矩阵: 域名核全 6; IP/CIDR 掉 SUBDOMAIN/DNS/CT 留 WHOIS/ASN/OSINT; URL 掉 SUBDOMAIN 留其余. 实现比设计 §4.1 简(零 GateContext/hook/DB 改, 因 coverage_complete 本就有 spec+in_scope_assets). 2b(EAS+enum) 已翻+验证绿(2026-06-20, commit f1e67708/d6413ee4); 2c(authoritative type 轴+IP 原生技术)未做. 设计/计划 docs/{design,superpowers/plans}/2026-06-15-host-aware-coverage.md."
     },
     {
       "id": "host-aware-coverage-2c-2026-06-15",

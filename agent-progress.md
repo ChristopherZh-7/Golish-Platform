@@ -29,6 +29,34 @@
 
 ---
 
+### 2026-06-20 · active_recon stage_run specialists 接全（prober 核验+提交、enumerator 新建）+ host-aware 2b flag 翻转（BaJie BajieAsk-agent-4 · 无角色 · DISPATCH off · 接 MCP-1 上下文转移[task B 选 prober] · 用户「帮我补缺口」→「给 enumeration 配 specialist」→「提交」→「更新 feature_list + 进度」）
+
+- **本轮目标**：接 MCP-1 转移的 task B（为 external_attack_surface 新建 prober specialist），核验上一会话半成品 → 补 host-aware 2b flag → 新建 enumeration 的 enumerator specialist → 逐项提交 → 收尾更新 harness 记录。
+- **已完成**：
+  - **prober（task B · 核验+提交）**：上一会话已落 8 文件（prompt + registry×2 + EAS spec specialist/axis + 测 + golish-core/utils.rs）未提交。本会话逐文件核验：`build_prober_prompt` 满足断言、prober 工具集（pentest_run/manage_targets/submit_stage_deliverable；无 recon_*/exploit/vault）、agent count=15、EAS spec specialist=prober + coverage_axis=[LIVENESS,PORT,SERVICE]；扇出链路核验 `stage_run`→`sub_agent_prober`（`role_label_for` 通用首字母大写、registry 由 `create_default_sub_agents[_from_registry]` 喂入、无硬编码 specialist 白名单）。
+  - **host-aware 2b flag 翻转**：external_attack_surface/spec.json + enumeration/spec.json 加 `host_aware_coverage:true`（矩阵 `technique_applies` 早 inert 落地 commit e12a7638）；rule_engine.rs +2 parity 测（`host_aware_coverage_relaxes_url_not_host_in_eas`：EAS 裸 URL 掉 PORT/SERVICE；`host_aware_coverage_drops_content_enum_for_ip_in_enumeration`：enum 裸 IP 掉 DIR/PARAM/JSAPI）；stage_spec.rs +`eas_and_enumeration_enable_host_aware_coverage` guard 测。
+  - **enumerator specialist（新建）**：照 prober 先例——execution_planning.rs +`build_enumerator_prompt`（ACTIVE 非利用；dir/param/js-api 方法论）+ prompts/mod.rs export；builder/{mod,registry}.rs 注册 enumerator（工具：pentest_run + js_collect/js_extract_apis + submit；无 recon_*/exploit/vault）；enumeration/spec.json specialist=enumerator + coverage_axis=[DIR,PARAM,JSAPI]；tests.rs +enumerator 工具/prompt 测 + count 15→16 + ids；stage_spec.rs +`enumeration_declares_stage_run_specialist_and_axis`。改前核 tool_taxonomy：ffuf/gobuster→web/fuzzer、arjun→web/param、katana→recon/crawler 全在 enumeration allowed_tool_types 内。
+- **运行过的验证（实跑）**：
+  - prober+host-aware：`cargo nextest -p golish-sub-agents -p golish-agent-kit -p golish-core` → 953 passed（首轮核验）；翻 flag 后 `-p golish-agent-kit` → 667 passed；定向含 `e2e_happy_path_external_attack_surface_passes_gate` 绿。
+  - enumerator：`cargo nextest -p golish-sub-agents -p golish-agent-kit` → 759 passed；定向 5 条（enumerator 工具/prompt、count=16、ids、enumeration specialist/axis）全绿。
+  - `cargo clippy`（三 crate，分轮）→ 0 warning；2 spec JSON `python3 json.load` 合法；ReadLints 全干净。
+- **已记录证据**：
+  - `Summary 953 tests run: 953 passed`（sub-agents+agent-kit+core）；`667 passed`（agent-kit 翻 flag 后）；`759 passed`（含 enumerator）。
+  - 定向 PASS：`test_prober_has_active_surface_tools` / `test_prober_prompt_is_active_surface` / `external_attack_surface_declares_stage_run_specialist_and_axis` / `host_aware_coverage_relaxes_url_not_host_in_eas` / `host_aware_coverage_drops_content_enum_for_ip_in_enumeration` / `eas_and_enumeration_enable_host_aware_coverage` / `test_enumerator_has_content_enum_tools` / `test_enumerator_prompt_is_content_enum` / `enumeration_declares_stage_run_specialist_and_axis` / `test_create_default_sub_agents_count`(16)。
+- **提交记录**：3 commit 落 main，**未 push**：
+  - `e67b3aab` fix(core): treat terminal status/flags as failure in is_tool_result_success（utils.rs）
+  - `f1e67708` feat(harness): add prober specialist + host-aware 2b coverage for external_attack_surface（9 文件）
+  - `d6413ee4` feat(harness): add enumerator specialist for enumeration stage（7 文件）
+- **里程碑**：prep/active_recon 相位 stage_run 每-org specialist 全接好——target_intel=recon、external_attack_surface=prober、enumeration=enumerator。
+- **已知风险 / 未解决**：
+  - **活体 E2E 未跑**：harness 层 e2e 绿，但真网络 httpx/naabu/whatweb/ffuf/arjun → DB → coverage 自动补格 → gate PASS 需用户授权靶标 + 跑 Golish app。
+  - **just precommit 全量未跑**（用户「太慢」明确跳过）。
+  - vuln_triage / verification / post_exploit 仍无 specialist（下游接线点）。
+  - feature_list 仍有多条 in_progress（pre-existing，本轮未 reconcile）。
+- **新增/修改文件**：3 commit 已含全部代码改动（见上）。收尾文档（本条 + feature_list 新条目 `active-recon-stage-specialists-2026-06-20` passing + host-aware-coverage 的 2b 行/remember 更新）**未 commit**。
+
+---
+
 ### 2026-06-18 · PR-A 规范资产身份 `canonical_asset_key` 落地（E1 第一步，纯函数 + AssetClass 迁移，零行为变化）（BaJie MCP-agent-2 · 无角色 · DISPATCH on · 用户「帮我看日志」→「按 PR-A 落地修复」）
 
 - **本轮目标**：执行 `docs/superpowers/plans/2026-06-18-pr-a-canonical-asset-key.md`——在 `golish-pentest-domain` 新增确定性纯函数 `canonical_asset_key(value) -> Option<AssetKey>`，并把 `AssetClass`（枚举 + 5 个纯方法）从 `golish-agent-kit/harness/technique_resolver.rs` 迁入同 crate，原处改 `pub use` 重导出。**本 PR 不接任何调用方**（PR-B 才接）→ 除「AssetClass 换源 + 重导出」外零行为变化。
