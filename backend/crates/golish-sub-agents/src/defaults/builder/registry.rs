@@ -5,9 +5,9 @@ use crate::schemas::IMPLEMENTATION_PLAN_FULL_EXAMPLE;
 
 use super::super::prompts::{
     build_adviser_prompt, build_browser_prompt, build_coder_prompt, build_enricher_prompt,
-    build_installer_prompt, build_memorist_prompt, build_orchestrator_prompt,
-    build_pentester_prompt, build_planner_prompt, build_prober_prompt, build_recon_prompt,
-    build_refiner_prompt, build_reflector_prompt, build_reporter_prompt,
+    build_enumerator_prompt, build_installer_prompt, build_memorist_prompt,
+    build_orchestrator_prompt, build_pentester_prompt, build_planner_prompt, build_prober_prompt,
+    build_recon_prompt, build_refiner_prompt, build_reflector_prompt, build_reporter_prompt,
     build_researcher_prompt_fallback,
 };
 
@@ -163,6 +163,30 @@ pub async fn create_default_sub_agents_from_registry(
             "manage_targets".into(),
             "pentest_list_tools".into(),
             "pentest_run".into(),
+            "submit_stage_deliverable".into(),
+            "record_finding".into(),
+            "search_knowledge_base".into(),
+            "read_knowledge".into(),
+        ])
+        .with_max_iterations(40)
+        .with_idle_timeout(300)
+        .with_delegatable_agents(vec!["enricher".into(), "memorist".into()]),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "enumerator",
+            "Enumerator",
+            "Active content-enumeration mapper for the enumeration stage. Turns the live web services external_attack_surface mapped (host + ports + service) into concrete testable units by enumerating directories/paths, request parameters, and JS/API endpoints — actively but without exploitation. NON-EXPLOIT: no vulnerability scanning or exploitation — that stays with the Pentester. The stage_run tool fans one Enumerator out per org.",
+            tmpl_or_fallback!("enumerator", build_enumerator_prompt()),
+        )
+        .with_tools(vec![
+            "list_in_scope_targets".into(),
+            "manage_targets".into(),
+            "pentest_list_tools".into(),
+            "pentest_run".into(),
+            "js_collect".into(),
+            "js_extract_apis".into(),
             "submit_stage_deliverable".into(),
             "record_finding".into(),
             "search_knowledge_base".into(),

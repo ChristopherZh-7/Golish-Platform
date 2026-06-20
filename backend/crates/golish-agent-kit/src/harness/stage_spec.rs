@@ -572,6 +572,19 @@ mod tests {
         assert_eq!(s.coverage_axis, vec!["LIVENESS", "PORT", "SERVICE"]);
     }
 
+    // stage_run fan-out (2026-06-13-stage-run-fanout §3.2 · enumeration rollout): enumeration
+    // declares its per-org specialist (`enumerator`, the active content-enumeration mapper
+    // split from Pentester, mirroring how `prober` was split for EAS) + the display coverage
+    // axis (its 3 expected techniques: dir / param / js-api). Without this, the chat
+    // `stage_run` tool refuses enumeration ("stage has no `specialist` configured").
+    #[test]
+    fn enumeration_declares_stage_run_specialist_and_axis() {
+        let s = crate::harness::resources::load_embedded_stage_spec(StageKind::Enumeration)
+            .expect("load enumeration spec");
+        assert_eq!(s.specialist.as_deref(), Some("enumerator"));
+        assert_eq!(s.coverage_axis, vec!["DIR", "PARAM", "JSAPI"]);
+    }
+
     #[test]
     fn specialist_and_coverage_axis_default_when_absent() {
         let minimal = r#"{"id":"scoping","kind":"scoping","risk_level":"low",

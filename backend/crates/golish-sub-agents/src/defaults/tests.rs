@@ -1,7 +1,7 @@
 use super::builder::create_default_sub_agents;
 use super::prompts::{
-    build_coder_prompt, build_pentester_prompt, build_planner_prompt, build_prober_prompt,
-    build_recon_prompt, build_researcher_prompt,
+    build_coder_prompt, build_enumerator_prompt, build_pentester_prompt, build_planner_prompt,
+    build_prober_prompt, build_recon_prompt, build_researcher_prompt,
 };
 
 fn has_tool(agent: &crate::SubAgentDefinition, tool: &str) -> bool {
@@ -12,8 +12,9 @@ fn has_tool(agent: &crate::SubAgentDefinition, tool: &str) -> bool {
 fn test_create_default_sub_agents_count() {
     let agents = create_default_sub_agents();
     // 13 base + recon (target_intel passive collector) + prober (external_attack_surface
-    // active surface-mapper) — the two stage_run per-org specialists (2026-06-13-stage-run-fanout).
-    assert_eq!(agents.len(), 15);
+    // active surface-mapper) + enumerator (enumeration active content-mapper) — the three
+    // stage_run per-org specialists (2026-06-13-stage-run-fanout).
+    assert_eq!(agents.len(), 16);
 }
 
 #[test]
@@ -29,6 +30,7 @@ fn test_create_default_sub_agents_ids() {
     assert!(ids.contains(&"pentester"));
     assert!(ids.contains(&"recon"));
     assert!(ids.contains(&"prober"));
+    assert!(ids.contains(&"enumerator"));
     assert!(ids.contains(&"memorist"));
     assert!(ids.contains(&"planner"));
     assert!(ids.contains(&"reflector"));
@@ -213,6 +215,52 @@ fn test_prober_prompt_is_active_surface() {
     assert!(prompt.contains("httpx"));
     assert!(prompt.contains("port"));
     // Prober is the ACTIVE counterpart of the ZERO-TOUCH Recon — it must NOT
+    // describe itself as zero-touch.
+    assert!(!prompt.contains("ZERO-TOUCH"));
+}
+
+#[test]
+fn test_enumerator_has_content_enum_tools() {
+    // stage_run fan-out (2026-06-13-stage-run-fanout · enumeration rollout): Enumerator is
+    // the active content-enumeration mapper split out of the Pentester (mirroring how Prober
+    // was split for external_attack_surface). It must carry the content-probe tools
+    // (pentest_run for ffuf/gobuster/arjun/katana + js_collect/js_extract_apis for JS-API)
+    // + target state + the stage submit tool, and must NOT carry the passive provider recon_*
+    // tools (Recon's) nor the Pentester's offensive surface (exploits, graph writes, vault).
+    let agents = create_default_sub_agents();
+    let enumerator = agents.iter().find(|a| a.id == "enumerator").unwrap();
+
+    // Active content enumeration + stage submission tools present.
+    assert!(has_tool(enumerator, "pentest_run"));
+    assert!(has_tool(enumerator, "pentest_list_tools"));
+    assert!(has_tool(enumerator, "js_collect"));
+    assert!(has_tool(enumerator, "js_extract_apis"));
+    assert!(has_tool(enumerator, "manage_targets"));
+    assert!(has_tool(enumerator, "list_in_scope_targets"));
+    assert!(has_tool(enumerator, "submit_stage_deliverable"));
+    assert!(has_tool(enumerator, "search_knowledge_base"));
+    assert!(has_tool(enumerator, "read_knowledge"));
+
+    // Passive provider recon_* tools belong to Recon, not Enumerator.
+    assert!(!has_tool(enumerator, "recon_map_assets"));
+    assert!(!has_tool(enumerator, "recon_discover_subsidiaries"));
+    // Offensive / heavy Pentester-only tools must NOT leak into Enumerator.
+    assert!(!has_tool(enumerator, "search_exploits"));
+    assert!(!has_tool(enumerator, "graph_attack_paths"));
+    assert!(!has_tool(enumerator, "vault"));
+    assert!(!has_tool(enumerator, "run_pty_cmd"));
+}
+
+#[test]
+fn test_enumerator_prompt_is_content_enum() {
+    let prompt = build_enumerator_prompt();
+    assert!(prompt.contains("enumeration"));
+    assert!(prompt.contains("submit_stage_deliverable"));
+    // Content enumeration: directories / parameters / JS-API extraction.
+    assert!(prompt.contains("director"));
+    assert!(prompt.contains("param"));
+    assert!(prompt.contains("js_extract_apis"));
+    // Enumerator is the ACTIVE counterpart of the ZERO-TOUCH Recon — it must NOT
     // describe itself as zero-touch.
     assert!(!prompt.contains("ZERO-TOUCH"));
 }

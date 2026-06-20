@@ -15,9 +15,10 @@ use crate::definition::SubAgentDefinition;
 
 use super::prompts::{
     build_adviser_prompt, build_browser_prompt, build_coder_prompt, build_enricher_prompt,
-    build_installer_prompt, build_memorist_prompt, build_orchestrator_prompt,
-    build_pentester_prompt, build_planner_prompt, build_prober_prompt, build_recon_prompt,
-    build_refiner_prompt, build_reflector_prompt, build_reporter_prompt, build_researcher_prompt,
+    build_enumerator_prompt, build_installer_prompt, build_memorist_prompt,
+    build_orchestrator_prompt, build_pentester_prompt, build_planner_prompt, build_prober_prompt,
+    build_recon_prompt, build_refiner_prompt, build_reflector_prompt, build_reporter_prompt,
+    build_researcher_prompt,
 };
 
 /// Create default sub-agents for common tasks.
@@ -158,6 +159,33 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             // recon/http, recon/visual) keeps it to surface mapping, not exploitation.
             "pentest_list_tools".to_string(),
             "pentest_run".to_string(),
+            "submit_stage_deliverable".to_string(),
+            "record_finding".to_string(),
+            "search_knowledge_base".to_string(),
+            "read_knowledge".to_string(),
+        ])
+        .with_max_iterations(40)
+        .with_idle_timeout(300)
+        .with_delegatable_agents(vec!["enricher".to_string(), "memorist".to_string()]),
+        SubAgentDefinition::new(
+            "enumerator",
+            "Enumerator",
+            "Active content-enumeration mapper for the enumeration stage. Turns the live web services external_attack_surface mapped (host + ports + service) into concrete testable units by enumerating directories/paths, request parameters, and JS/API endpoints — actively but without exploitation. NON-EXPLOIT: no vulnerability scanning or exploitation — that stays with the Pentester. The stage_run tool fans one Enumerator out per org.",
+            build_enumerator_prompt(),
+        )
+        .with_tools(vec![
+            "list_in_scope_targets".to_string(),
+            "manage_targets".to_string(),
+            // Active content enumeration (ffuf/gobuster/feroxbuster -> dir, arjun/katana
+            // -> param) via pentest_run; the stage tool-type allowlist (recon/http,
+            // recon/crawler, web/fuzzer, web/param) keeps it to content mapping, not
+            // exploitation.
+            "pentest_list_tools".to_string(),
+            "pentest_run".to_string(),
+            // JS/API extraction (GOLISH-ENUM-JSAPI): collect a host's JS, then pull
+            // endpoints/paths out of it.
+            "js_collect".to_string(),
+            "js_extract_apis".to_string(),
             "submit_stage_deliverable".to_string(),
             "record_finding".to_string(),
             "search_knowledge_base".to_string(),
