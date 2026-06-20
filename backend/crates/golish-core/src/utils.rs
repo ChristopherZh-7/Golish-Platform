@@ -171,7 +171,24 @@ pub fn is_tool_result_success(value: &serde_json::Value) -> bool {
         .map(|ec| ec != 0)
         .unwrap_or(false);
     let has_error_field = value.get("error").is_some();
-    !is_failure_by_exit_code && !has_error_field
+    // Explicit boolean failure flags some tools surface without an `error` key or a
+    // non-zero exit code (`success`/`ok` false, `is_error` true).
+    let explicit_failure_flag = value.get("success").and_then(|v| v.as_bool()) == Some(false)
+        || value.get("ok").and_then(|v| v.as_bool()) == Some(false)
+        || value.get("is_error").and_then(|v| v.as_bool()) == Some(true);
+    // Terminal failure conveyed via a `status` string (e.g. submit_stage_deliverable
+    // returns "rejected"/"needs_fix"); matched case-insensitively.
+    let is_failure_by_status = value
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(|s| {
+            matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "rejected" | "needs_fix" | "error" | "failed"
+            )
+        })
+        .unwrap_or(false);
+    !is_failure_by_exit_code && !has_error_field && !explicit_failure_flag && !is_failure_by_status
 }
 
 /// Simple JSONPath-like resolver: supports `$.foo.bar` and `$.foo[0].bar` patterns.
@@ -273,5 +290,47 @@ mod tests {
         assert_eq!(strip_ansi("plain"), "plain");
         assert_eq!(strip_ansi("\x1b[1;32mok\x1b[0m"), "ok");
         assert_eq!(strip_ansi(""), "");
+    }
+
+    // ── is_tool_result_success: semantic failure detection ──
+
+    #[test]
+    fn tool_result_failure_on_terminal_failure_status() {
+        // submit_stage_deliverable et al. report failure via a `status` field with
+        // no `error` key and no exit_code — these must read as failure (UI ❌).
+        for s in ["rejected", "needs_fix", "error", "failed"] {
+            assert!(
+                !is_tool_result_success(&serde_json::json!({ "status": s })),
+                "status={s} must be a failure"
+            );
+        }
+        // Case-insensitive (recon_discover_subsidiaries returns "Failed").
+        assert!(!is_tool_result_success(&serde_json::json!({ "status": "Failed" })));
+        assert!(!is_tool_result_success(&serde_json::json!({ "status": "NEEDS_FIX" })));
+    }
+
+    #[test]
+    fn tool_result_failure_on_explicit_false_or_error_flags() {
+        assert!(!is_tool_result_success(&serde_json::json!({ "success": false })));
+        assert!(!is_tool_result_success(&serde_json::json!({ "ok": false })));
+        assert!(!is_tool_result_success(&serde_json::json!({ "is_error": true })));
+    }
+
+    #[test]
+    fn tool_result_failure_on_exit_code_or_error_field() {
+        // Existing contract stays intact.
+        assert!(!is_tool_result_success(&serde_json::json!({ "exit_code": 127 })));
+        assert!(!is_tool_result_success(&serde_json::json!({ "error": "boom" })));
+    }
+
+    #[test]
+    fn tool_result_success_for_non_failure_results() {
+        // Non-failure status values and clean results stay success (no false ❌).
+        assert!(is_tool_result_success(&serde_json::json!({ "status": "completed" })));
+        assert!(is_tool_result_success(&serde_json::json!({ "status": "accepted" })));
+        assert!(is_tool_result_success(&serde_json::json!({ "success": true })));
+        assert!(is_tool_result_success(&serde_json::json!({ "is_error": false })));
+        assert!(is_tool_result_success(&serde_json::json!({ "stdout": "ok", "exit_code": 0 })));
+        assert!(is_tool_result_success(&serde_json::json!({})));
     }
 }
