@@ -1411,6 +1411,99 @@ mod tests {
         );
     }
 
+    // ── Host-aware coverage 2b parity: EAS + enumeration (design §3.2/§3.3) ──
+    // The per-asset matrix landed inert (commit e12a7638); these two prove the
+    // stage-flag flip (external_attack_surface/enumeration spec.json
+    // host_aware_coverage:true) actually relaxes the gate as designed and nothing
+    // else (domain/host still held to the full set).
+
+    /// Minimal stage spec for an arbitrary kind with the host-aware flag set
+    /// (kind drives the technique matrix; mirrors [`target_intel_spec`]).
+    fn host_aware_spec(id: &str, kind: &str, host_aware: bool) -> StageSpec {
+        crate::harness::stage_spec::load_stage_spec_from_json(&format!(
+            r#"{{"id":"{id}","kind":"{kind}","risk_level":"medium",
+                "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+                "host_aware_coverage":{host_aware}}}"#
+        ))
+        .expect("host-aware spec parses")
+    }
+
+    #[test]
+    fn host_aware_coverage_relaxes_url_not_host_in_eas() {
+        // 设计 §3.2 parity（2b）：EAS 开关开后唯一变化 = 裸 URL 端点的 PORT/SERVICE
+        // BLOCK→PASS（其主机已由 host/IP 资产覆盖），仍核 LIVENESS；域名仍核全 3。
+        let techs = [
+            "GOLISH-EAS-LIVENESS",
+            "GOLISH-EAS-PORT",
+            "GOLISH-EAS-SERVICE-FINGERPRINT",
+        ];
+        // domain 有全部 3 个 Found；URL 端点只有 LIVENESS。
+        let mut facts: Vec<EvidenceFact> = techs
+            .iter()
+            .map(|t| fact("a.com", t, EvidenceOutcome::Found, 1))
+            .collect();
+        facts.push(fact(
+            "https://a.com/login",
+            "GOLISH-EAS-LIVENESS",
+            EvidenceOutcome::Found,
+            1,
+        ));
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string(), "https://a.com/login".to_string()]),
+            asset_types: None,
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: Some(facts),
+        };
+        let d = deliverable_with_coverage(vec![]);
+
+        // Flag OFF：URL 端点被要求 PORT/SERVICE，缺 → BLOCK。
+        let spec_off = host_aware_spec("external_attack_surface", "external_attack_surface", false);
+        assert!(
+            !eval_with_context(&d, &spec_off, &[evidence_derive_rule(None)], &ctx)[0].is_pass(),
+            "host-aware off: bare URL endpoint held to PORT/SERVICE-FINGERPRINT → BLOCK"
+        );
+
+        // Flag ON：URL 只核 LIVENESS（Found）；域名仍全 3（都 Found）→ PASS。
+        let spec_on = host_aware_spec("external_attack_surface", "external_attack_surface", true);
+        assert!(
+            eval_with_context(&d, &spec_on, &[evidence_derive_rule(None)], &ctx)[0].is_pass(),
+            "host-aware on: URL endpoint no longer asked for PORT/SERVICE-FINGERPRINT → PASS"
+        );
+    }
+
+    #[test]
+    fn host_aware_coverage_drops_content_enum_for_ip_in_enumeration() {
+        // 设计 §3.3 parity（2b）：enumeration 开关开后唯一变化 = 裸 IP（非 web）的
+        // DIR/PARAM/JSAPI BLOCK→PASS（内容枚举仅对 web 资产有意义）；域名仍核全 3。
+        let techs = ["GOLISH-ENUM-DIR", "GOLISH-ENUM-PARAM", "GOLISH-ENUM-JSAPI"];
+        // domain 有全部 3 个 Found；裸 IP 无内容枚举事实。
+        let facts: Vec<EvidenceFact> = techs
+            .iter()
+            .map(|t| fact("a.com", t, EvidenceOutcome::Found, 1))
+            .collect();
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string(), "1.2.3.4".to_string()]),
+            asset_types: None,
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: Some(facts),
+        };
+        let d = deliverable_with_coverage(vec![]);
+
+        // Flag OFF：裸 IP 被要求 DIR/PARAM/JSAPI，缺 → BLOCK。
+        let spec_off = host_aware_spec("enumeration", "enumeration", false);
+        assert!(
+            !eval_with_context(&d, &spec_off, &[evidence_derive_rule(None)], &ctx)[0].is_pass(),
+            "host-aware off: bare IP held to content-enumeration techniques → BLOCK"
+        );
+
+        // Flag ON：裸 IP 非内容枚举目标（web-only）→ 只剩域名（全 Found）→ PASS。
+        let spec_on = host_aware_spec("enumeration", "enumeration", true);
+        assert!(
+            eval_with_context(&d, &spec_on, &[evidence_derive_rule(None)], &ctx)[0].is_pass(),
+            "host-aware on: bare IP dropped from content enumeration → PASS"
+        );
+    }
+
     #[test]
     fn host_aware_uses_authoritative_type_over_value() {
         // 2c-1（设计 host-aware-coverage-2c §4.1）：值像 IP、但权威类型是 `domain` 的

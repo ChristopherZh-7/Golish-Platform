@@ -6,8 +6,9 @@ use crate::schemas::IMPLEMENTATION_PLAN_FULL_EXAMPLE;
 use super::super::prompts::{
     build_adviser_prompt, build_browser_prompt, build_coder_prompt, build_enricher_prompt,
     build_installer_prompt, build_memorist_prompt, build_orchestrator_prompt,
-    build_pentester_prompt, build_planner_prompt, build_recon_prompt, build_refiner_prompt,
-    build_reflector_prompt, build_reporter_prompt, build_researcher_prompt_fallback,
+    build_pentester_prompt, build_planner_prompt, build_prober_prompt, build_recon_prompt,
+    build_refiner_prompt, build_reflector_prompt, build_reporter_prompt,
+    build_researcher_prompt_fallback,
 };
 
 /// Create default sub-agents with prompts loaded from the template registry.
@@ -139,6 +140,28 @@ pub async fn create_default_sub_agents_from_registry(
             "recon_lookup_whois".into(),
             "manage_targets".into(),
             "list_in_scope_targets".into(),
+            "pentest_run".into(),
+            "submit_stage_deliverable".into(),
+            "record_finding".into(),
+            "search_knowledge_base".into(),
+            "read_knowledge".into(),
+        ])
+        .with_max_iterations(40)
+        .with_idle_timeout(300)
+        .with_delegatable_agents(vec!["enricher".into(), "memorist".into()]),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "prober",
+            "Prober",
+            "Active external-attack-surface mapper for the external_attack_surface stage. Turns one organization's passively-discovered footprint (inherited from target_intel) into a confirmed attack surface — liveness (httpx), open ports (naabu/masscan), and service/version fingerprints — by actively but lightly probing the target. NON-EXPLOIT: no exploitation or vulnerability scanning — that stays with the Pentester. The stage_run tool fans one Prober out per org.",
+            tmpl_or_fallback!("prober", build_prober_prompt()),
+        )
+        .with_tools(vec![
+            "list_in_scope_targets".into(),
+            "manage_targets".into(),
+            "pentest_list_tools".into(),
             "pentest_run".into(),
             "submit_stage_deliverable".into(),
             "record_finding".into(),

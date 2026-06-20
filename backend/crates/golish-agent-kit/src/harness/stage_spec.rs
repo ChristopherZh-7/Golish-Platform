@@ -438,6 +438,30 @@ mod tests {
         }
     }
 
+    // Host-aware coverage 2b flip (design 2026-06-15-host-aware-coverage §3.2/§3.3):
+    // EAS + enumeration enable host_aware_coverage so coverage_complete holds each
+    // in-scope asset only to the techniques that apply to its class (EAS: a bare URL
+    // endpoint drops PORT/SERVICE-FINGERPRINT; enumeration: a bare IP/CIDR drops all
+    // content techniques). The per-asset matrix landed inert (commit e12a7638); this
+    // guards the stage flag stays on so the relaxation is actually active.
+    #[test]
+    fn eas_and_enumeration_enable_host_aware_coverage() {
+        use crate::harness::resources::load_embedded_stage_spec;
+        for kind in [StageKind::ExternalAttackSurface, StageKind::Enumeration] {
+            let s = load_embedded_stage_spec(kind).unwrap_or_else(|_| panic!("load {kind:?}"));
+            assert!(
+                s.host_aware_coverage,
+                "{kind:?} must enable host_aware_coverage (2b flip)"
+            );
+        }
+        // target_intel (2a) was already on; sanity-check the flip did not regress it.
+        let ti = load_embedded_stage_spec(StageKind::TargetIntel).expect("load target_intel");
+        assert!(
+            ti.host_aware_coverage,
+            "target_intel (2a) host_aware_coverage stays on"
+        );
+    }
+
     // Phase 2 (2026-06-12-redteam-phase2): scoping 子公司 gate 的零回归静态前提。
     // 1. 静态 expected_techniques 必须为空——SUBSIDIARY 只由 execute.rs hook 在
     //    `--include-subsidiaries` 时动态注入; 不带 flag → coverage_complete 看不到
@@ -533,6 +557,19 @@ mod tests {
             s.coverage_axis,
             vec!["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT"]
         );
+    }
+
+    // stage_run fan-out (2026-06-13-stage-run-fanout §3.2 · EAS rollout): EAS
+    // declares its per-org specialist (`prober`, the active surface-mapper split
+    // from Pentester, mirroring how `recon` was split for target_intel) + the
+    // display coverage axis (its 3 expected techniques: liveness / port /
+    // service-fingerprint). Without this, the chat `stage_run` tool refuses EAS
+    // ("stage has no `specialist` configured") and EAS cannot fan out per org.
+    #[test]
+    fn external_attack_surface_declares_stage_run_specialist_and_axis() {
+        let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
+        assert_eq!(s.specialist.as_deref(), Some("prober"));
+        assert_eq!(s.coverage_axis, vec!["LIVENESS", "PORT", "SERVICE"]);
     }
 
     #[test]

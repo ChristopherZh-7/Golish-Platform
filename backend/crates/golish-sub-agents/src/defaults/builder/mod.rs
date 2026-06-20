@@ -16,8 +16,8 @@ use crate::definition::SubAgentDefinition;
 use super::prompts::{
     build_adviser_prompt, build_browser_prompt, build_coder_prompt, build_enricher_prompt,
     build_installer_prompt, build_memorist_prompt, build_orchestrator_prompt,
-    build_pentester_prompt, build_planner_prompt, build_recon_prompt, build_refiner_prompt,
-    build_reflector_prompt, build_reporter_prompt, build_researcher_prompt,
+    build_pentester_prompt, build_planner_prompt, build_prober_prompt, build_recon_prompt,
+    build_refiner_prompt, build_reflector_prompt, build_reporter_prompt, build_researcher_prompt,
 };
 
 /// Create default sub-agents for common tasks.
@@ -135,6 +135,28 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "list_in_scope_targets".to_string(),
             // Passive collection only (subfinder / amass -passive / gau); the
             // stage tool-type allowlist (recon/*) keeps this zero-touch.
+            "pentest_run".to_string(),
+            "submit_stage_deliverable".to_string(),
+            "record_finding".to_string(),
+            "search_knowledge_base".to_string(),
+            "read_knowledge".to_string(),
+        ])
+        .with_max_iterations(40)
+        .with_idle_timeout(300)
+        .with_delegatable_agents(vec!["enricher".to_string(), "memorist".to_string()]),
+        SubAgentDefinition::new(
+            "prober",
+            "Prober",
+            "Active external-attack-surface mapper for the external_attack_surface stage. Turns one organization's passively-discovered footprint (inherited from target_intel) into a confirmed attack surface — liveness (httpx), open ports (naabu/masscan), and service/version fingerprints — by actively but lightly probing the target. NON-EXPLOIT: no exploitation or vulnerability scanning — that stays with the Pentester. The stage_run tool fans one Prober out per org.",
+            build_prober_prompt(),
+        )
+        .with_tools(vec![
+            "list_in_scope_targets".to_string(),
+            "manage_targets".to_string(),
+            // Active probing (httpx / naabu / masscan / whatweb / nmap / gowitness)
+            // via pentest_run; the stage tool-type allowlist (recon/port-scan,
+            // recon/http, recon/visual) keeps it to surface mapping, not exploitation.
+            "pentest_list_tools".to_string(),
             "pentest_run".to_string(),
             "submit_stage_deliverable".to_string(),
             "record_finding".to_string(),

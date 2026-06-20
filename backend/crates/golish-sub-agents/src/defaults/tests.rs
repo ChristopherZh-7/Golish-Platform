@@ -1,7 +1,7 @@
 use super::builder::create_default_sub_agents;
 use super::prompts::{
-    build_coder_prompt, build_pentester_prompt, build_planner_prompt, build_recon_prompt,
-    build_researcher_prompt,
+    build_coder_prompt, build_pentester_prompt, build_planner_prompt, build_prober_prompt,
+    build_recon_prompt, build_researcher_prompt,
 };
 
 fn has_tool(agent: &crate::SubAgentDefinition, tool: &str) -> bool {
@@ -11,8 +11,9 @@ fn has_tool(agent: &crate::SubAgentDefinition, tool: &str) -> bool {
 #[test]
 fn test_create_default_sub_agents_count() {
     let agents = create_default_sub_agents();
-    // 13 base + recon (stage_run passive collector, 2026-06-13-stage-run-fanout).
-    assert_eq!(agents.len(), 14);
+    // 13 base + recon (target_intel passive collector) + prober (external_attack_surface
+    // active surface-mapper) — the two stage_run per-org specialists (2026-06-13-stage-run-fanout).
+    assert_eq!(agents.len(), 15);
 }
 
 #[test]
@@ -27,6 +28,7 @@ fn test_create_default_sub_agents_ids() {
     assert!(!ids.contains(&"worker"));
     assert!(ids.contains(&"pentester"));
     assert!(ids.contains(&"recon"));
+    assert!(ids.contains(&"prober"));
     assert!(ids.contains(&"memorist"));
     assert!(ids.contains(&"planner"));
     assert!(ids.contains(&"reflector"));
@@ -170,6 +172,49 @@ fn test_recon_prompt_is_zero_touch() {
     assert!(prompt.contains("submit_stage_deliverable"));
     // Passive identity: must not describe itself as doing exploitation.
     assert!(prompt.contains("passive"));
+}
+
+#[test]
+fn test_prober_has_active_surface_tools() {
+    // stage_run fan-out (2026-06-13-stage-run-fanout · EAS rollout): Prober is the
+    // active external-attack-surface mapper split out of the Pentester (mirroring
+    // how Recon was split for target_intel). It must carry the active probe tools
+    // (pentest_run) + target state + the stage submit tool, and must NOT carry the
+    // passive provider recon_* tools (those are Recon's) nor the Pentester's
+    // offensive surface (exploits, graph writes, vault).
+    let agents = create_default_sub_agents();
+    let prober = agents.iter().find(|a| a.id == "prober").unwrap();
+
+    // Active surface mapping + stage submission tools present.
+    assert!(has_tool(prober, "pentest_run"));
+    assert!(has_tool(prober, "pentest_list_tools"));
+    assert!(has_tool(prober, "manage_targets"));
+    assert!(has_tool(prober, "list_in_scope_targets"));
+    assert!(has_tool(prober, "submit_stage_deliverable"));
+    assert!(has_tool(prober, "search_knowledge_base"));
+    assert!(has_tool(prober, "read_knowledge"));
+
+    // Passive provider recon_* tools belong to Recon, not Prober.
+    assert!(!has_tool(prober, "recon_map_assets"));
+    assert!(!has_tool(prober, "recon_discover_subsidiaries"));
+    // Offensive / heavy Pentester-only tools must NOT leak into Prober.
+    assert!(!has_tool(prober, "search_exploits"));
+    assert!(!has_tool(prober, "graph_attack_paths"));
+    assert!(!has_tool(prober, "vault"));
+    assert!(!has_tool(prober, "run_pty_cmd"));
+}
+
+#[test]
+fn test_prober_prompt_is_active_surface() {
+    let prompt = build_prober_prompt();
+    assert!(prompt.contains("attack surface"));
+    assert!(prompt.contains("submit_stage_deliverable"));
+    // Active surface mapping: liveness (httpx) / open ports / service fingerprint.
+    assert!(prompt.contains("httpx"));
+    assert!(prompt.contains("port"));
+    // Prober is the ACTIVE counterpart of the ZERO-TOUCH Recon — it must NOT
+    // describe itself as zero-touch.
+    assert!(!prompt.contains("ZERO-TOUCH"));
 }
 
 #[test]

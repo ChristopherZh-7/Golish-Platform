@@ -17,6 +17,9 @@
   "$comment_findings_allowed": "Content-enumeration stage: the deliverable is js/api/dir/param coverage (testable units feeding vuln_triage), NOT vulnerabilities. submit_stage_deliverable drops any findings submitted here and tells the model to put discoveries in claims. Design 2026-06-15-recon-stage-findings-suppression.",
   "findings_allowed": false,
 
+  "$comment_host_aware": "Host-aware coverage 2b (design 2026-06-15-host-aware-coverage \u00a73.3): content enumeration (DIR/PARAM/JSAPI) is web-level \u2014 only a web-capable asset (domain/URL) is a content-enumeration target; a bare IP/CIDR drops all three (per-asset form of the existing scope-level no-web PARAM drop); unknown class keeps all 3 (fail-safe). The per-asset technique_applies matrix landed inert (commit e12a7638); this flips the stage flag on so coverage_complete filters each in-scope asset via technique_applies_to_value. Default false = byte-for-byte unchanged.",
+  "host_aware_coverage": true,
+
   "gate_rules": [
     {
       "op": "for_all",
