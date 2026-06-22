@@ -405,6 +405,32 @@ fn log_coverage_gap_matrix(stage_id: &str, op: &str, gaps: &[String]) {
     );
 }
 
+/// E1 PR-B（设计 2026-06-18-canonical-asset-identity-and-coverage-join-key）：把资产串
+/// 归一成「join 身份键」，让 coverage join 两侧（in-scope 轴 / 自报 cell / 账本 fact /
+/// claim subject）对同一资产的不同书写（`http://x` vs `https://x` vs `x`、大小写、FQDN
+/// 尾点）能匹配上，根治「身份漂移 → fact 静默不命中 → 永判 not_attempted → 无限
+/// needs_fix」死循环。
+///
+/// 关键：**保留 URL 路径**——刻意不走 `canonical_asset_key` 的「URL 折叠到 host」，否则
+/// 会把 EAS / enumeration 的「URL 端点」(`https://a.com/login`) 与其「主机」(`a.com`)
+/// 错误合并成同一格（端点的 DIR/PARAM/JSAPI 与主机的 PORT/SERVICE 是不同覆盖行）。这里
+/// 只抹平 scheme / 大小写 / 尾点这些纯书写差异，资产粒度不变。纯函数、确定性。红线：
+/// 绝不截断 / 合并到 apex，绝不把不同资产并成一格。
+fn canon_asset(s: &str) -> String {
+    let lowered = s.trim().to_ascii_lowercase();
+    // 去掉单个前导 scheme（`http://` / `https://` / …），保留 host[+path]。
+    let no_scheme = match lowered.split_once("://") {
+        Some((scheme, rest))
+            if !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphabetic()) =>
+        {
+            rest
+        }
+        _ => lowered.as_str(),
+    };
+    // 抹平 FQDN 尾点（`pingan.com.` → `pingan.com`）。
+    no_scheme.trim_end_matches('.').to_string()
+}
+
 /// `coverage_complete` 求值（纯函数，设计 §4.2 + Phase 2 ①③ seam）。期望技术取
 /// `ctx.expected_techniques`（③ 动态注入）否则 `spec.expected_techniques`（静态），空 →
 /// no-op Pass。资产维度取 `ctx.in_scope_assets`（① 权威注入）否则 deliverable.coverage
@@ -457,6 +483,18 @@ fn coverage_complete(
         anchor_only_axis(&assets)
     } else {
         assets
+    };
+
+    // E1 PR-B（B1 · 设计 2026-06-18-canonical-asset-identity）：按规范覆盖身份去重资产
+    // 轴——把同一资产的漂移写法（`http://x` / `x` / `X.` / 大小写）折叠成一行（保留首个
+    // 原串供 asset_types 查表 + gap 消息），避免同一资产被当成多行、重复要求技术覆盖。
+    // canon 保留 URL 路径，故 EAS 的「URL 端点」与其「主机」仍区分、不会被错误折叠。
+    let assets: Vec<&str> = {
+        let mut seen = std::collections::HashSet::new();
+        assets
+            .into_iter()
+            .filter(|a| seen.insert(canon_asset(a)))
+            .collect()
     };
 
     // P0 (2026-06-11 coverage-empty-bypass): we already returned Pass above when
@@ -515,6 +553,9 @@ fn coverage_complete(
         } else {
             techniques.iter().collect()
         };
+        // E1 PR-B：把当前资产轴值归一成身份键，下面 join 两侧都用它比较，
+        // 容忍同一资产的不同写法（http://x / x / X. / 大小写）。
+        let asset_key = canon_asset(asset);
         for tech in asset_techniques {
             // Phase 0（设计 2026-06-12-redteam-phase0）：该 technique 是否进入「权威」
             // 模式（found 只认真值）。authoritative_techniques=None → 全部期望技术；
@@ -525,14 +566,14 @@ fn coverage_complete(
             let cell_status = |want: CoverageStatus| {
                 d.coverage
                     .iter()
-                    .any(|c| c.asset == *asset && c.technique == *tech && c.status == want)
+                    .any(|c| canon_asset(&c.asset) == asset_key && c.technique == *tech && c.status == want)
             };
             // 账本/DB 真值通道：asset+technique 精确匹配且 outcome 命中的事实存在？
             let has_fact = |want: EvidenceOutcome| {
                 ctx.evidence_facts.as_deref().is_some_and(|facts| {
                     facts
                         .iter()
-                        .any(|f| f.asset == *asset && f.technique == *tech && f.outcome == want)
+                        .any(|f| canon_asset(&f.asset) == asset_key && f.technique == *tech && f.outcome == want)
                 })
             };
             // P5 派生（D1/D2）：technique 标注且 subject == asset 的 claim/finding 视作
@@ -540,10 +581,10 @@ fn coverage_complete(
             let tagged_found = d
                 .claims
                 .iter()
-                .any(|c| c.subject == *asset && c.technique.as_deref() == Some(tech.as_str()))
+                .any(|c| canon_asset(&c.subject) == asset_key && c.technique.as_deref() == Some(tech.as_str()))
                 || d.findings
                     .iter()
-                    .any(|f| f.subject == *asset && f.technique.as_deref() == Some(tech.as_str()));
+                    .any(|f| canon_asset(&f.subject) == asset_key && f.technique.as_deref() == Some(tech.as_str()));
 
             // found 终态：
             // - authoritative：只认真值（账本/DB 的 Found 事实）。自报 cell / tagged
@@ -692,10 +733,13 @@ fn coverage_corroborated(d: &StageDeliverable, on_fail: &OnFail) -> GateCheckOut
         if cell.status != CoverageStatus::Found {
             continue;
         }
+        // E1 PR-B：佐证 join 同样按规范身份比较，容忍 cell.asset 与 claim/finding
+        // subject 的同一资产不同写法。
+        let cell_asset_key = canon_asset(&cell.asset);
         let corroborated = d.claims.iter().any(|c| {
-            c.subject == cell.asset && c.technique.as_deref() == Some(cell.technique.as_str())
+            canon_asset(&c.subject) == cell_asset_key && c.technique.as_deref() == Some(cell.technique.as_str())
         }) || d.findings.iter().any(|f| {
-            f.subject == cell.asset && f.technique.as_deref() == Some(cell.technique.as_str())
+            canon_asset(&f.subject) == cell_asset_key && f.technique.as_deref() == Some(cell.technique.as_str())
         });
         if !corroborated {
             gaps.push(format!("({} × {})", cell.asset, cell.technique));
@@ -2278,6 +2322,133 @@ mod tests {
             technique: Some("GOLISH-INTEL-DNS".to_string()),
         });
         assert!(eval(&d, &spec, &[rule])[0].is_pass());
+    }
+
+    // ── E1 PR-B: 资产身份漂移归一（canonical_asset_key join 修复） ──────────────
+
+    #[test]
+    fn coverage_complete_canonicalizes_asset_identity_across_drift() {
+        // 设计 2026-06-18-canonical-asset-identity：同一资产在轴里是 `pingan.com`、
+        // 在账本 fact 里是带 scheme+大写+尾点的漂移写法 `HTTPS://Pingan.com.`。归一前
+        // 字面不等 → has_fact 不命中 → never_attempted BLOCK（死循环根）；归一后对上 → PASS。
+        let techs = ["GOLISH-INTEL-DNS"];
+        let facts = vec![fact(
+            "HTTPS://Pingan.com.",
+            "GOLISH-INTEL-DNS",
+            EvidenceOutcome::Found,
+            1,
+        )];
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["pingan.com".to_string()]),
+            asset_types: None,
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: Some(facts),
+        };
+        let d = deliverable_with_coverage(vec![]);
+        assert!(
+            eval_with_context(&d, &target_intel_spec(false), &[evidence_derive_rule(None)], &ctx)[0]
+                .is_pass(),
+            "drifted-identity evidence fact must credit the in-scope asset after canonicalization"
+        );
+    }
+
+    #[test]
+    fn coverage_complete_drift_does_not_over_merge_distinct_assets() {
+        // 反作弊 parity：归一只让「同一资产不同写法」对上，绝不把「不同资产」混为一格。
+        // 轴是 pingan.com，账本只有 other.com 的 fact → 仍 BLOCK。
+        let techs = ["GOLISH-INTEL-DNS"];
+        let facts = vec![fact("other.com", "GOLISH-INTEL-DNS", EvidenceOutcome::Found, 1)];
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["pingan.com".to_string()]),
+            asset_types: None,
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: Some(facts),
+        };
+        let d = deliverable_with_coverage(vec![]);
+        assert!(
+            !eval_with_context(&d, &target_intel_spec(false), &[evidence_derive_rule(None)], &ctx)[0]
+                .is_pass(),
+            "a fact for a different asset must NOT satisfy pingan.com (no over-merge)"
+        );
+    }
+
+    #[test]
+    fn coverage_complete_dedups_drifted_in_scope_axis() {
+        // B1：in-scope 轴里同一资产的漂移写法折叠成一行。无事实 → BLOCK，但缺口只数到
+        // 一行（不是每个漂移写法各报一个），证明轴已按规范身份去重。
+        let techs = ["GOLISH-INTEL-DNS"];
+        let ctx = GateContext {
+            in_scope_assets: Some(vec![
+                "pingan.com".to_string(),
+                "http://pingan.com".to_string(),
+                "PINGAN.COM.".to_string(),
+            ]),
+            asset_types: None,
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: None,
+        };
+        let d = deliverable_with_coverage(vec![]);
+        match &eval_with_context(&d, &target_intel_spec(false), &[evidence_derive_rule(None)], &ctx)
+            [0]
+        {
+            GateCheckOutcome::Block { reasons, .. } => {
+                let gaps = reasons[0].matches("GOLISH-INTEL-DNS").count();
+                assert_eq!(
+                    gaps, 1,
+                    "drift-duplicate in-scope rows must collapse to one gap: {reasons:?}"
+                );
+            }
+            GateCheckOutcome::Pass => panic!("no evidence facts must BLOCK"),
+        }
+    }
+
+    #[test]
+    fn coverage_complete_dedup_preserves_distinct_eas_endpoint() {
+        // B1 反作弊：去重只折叠漂移写法，绝不把 EAS 的 URL 端点折进其主机——
+        // `a.com` 与 `https://a.com/login` 是两行，各自要核 → 缺一即 BLOCK。
+        let techs = ["GOLISH-EAS-LIVENESS"];
+        let facts = vec![fact("a.com", "GOLISH-EAS-LIVENESS", EvidenceOutcome::Found, 1)];
+        let ctx = GateContext {
+            in_scope_assets: Some(vec![
+                "a.com".to_string(),
+                "https://a.com/login".to_string(),
+            ]),
+            asset_types: None,
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: Some(facts),
+        };
+        let d = deliverable_with_coverage(vec![]);
+        let spec = host_aware_spec("external_attack_surface", "external_attack_surface", false);
+        assert!(
+            !eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &ctx)[0].is_pass(),
+            "URL endpoint must stay a distinct row (only a.com has the fact) → BLOCK"
+        );
+    }
+
+    #[test]
+    fn coverage_corroborated_canonicalizes_asset_identity() {
+        // found cell 的 asset(`http://pingan.com`) 与佐证 claim 的 subject(`PINGAN.COM.`)
+        // 是同一资产的不同写法 → 归一后判已佐证 PASS。
+        let rule = parse(
+            r#"{ "op":"coverage_corroborated","on_fail":{"reason":"found needs corroboration"} }"#,
+        );
+        let mut d = deliverable_with_coverage(vec![cov_cell(
+            "http://pingan.com",
+            "GOLISH-INTEL-DNS",
+            CoverageStatus::Found,
+            vec![1],
+        )]);
+        d.claims.push(StageClaim {
+            kind: "dns_a_record".to_string(),
+            subject: "PINGAN.COM.".to_string(),
+            summary: "A 1.2.3.4".to_string(),
+            evidence_ids: vec![],
+            technique: Some("GOLISH-INTEL-DNS".to_string()),
+        });
+        assert!(
+            eval(&d, &test_spec(), &[rule])[0].is_pass(),
+            "drifted cell.asset vs claim.subject must corroborate after canonicalization"
+        );
     }
 
     #[test]

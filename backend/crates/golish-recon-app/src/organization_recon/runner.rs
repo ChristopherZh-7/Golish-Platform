@@ -958,20 +958,12 @@ fn collect_owned_domain_values(domains: &mut HashSet<String>, value: &Value) {
     }
 }
 
+/// E1 PR-B（B2 · 设计 2026-06-18-canonical-asset-identity §2 A/B 去重）：原本是
+/// `persistence::normalized_host` 的逐字节副本，现改为薄封装委托唯一真相源，消除重复
+/// 逻辑（trim / 去尾点 / 小写 / 弃 IP / URL→host / 去 `www.` 等语义全留在 persistence
+/// 侧那一份）。行为逐字节不变。
 fn normalized_host(value: &str) -> Option<String> {
-    let value = value.trim().trim_end_matches('.').to_ascii_lowercase();
-    if value.is_empty() || value.parse::<IpAddr>().is_ok() {
-        return None;
-    }
-    if let Ok(url) = url::Url::parse(&value) {
-        return url
-            .host_str()
-            .map(|host| host.trim_start_matches("www.").to_string());
-    }
-    if looks_like_domain(&value) {
-        return Some(value.trim_start_matches("www.").to_string());
-    }
-    None
+    super::persistence::normalized_host(value)
 }
 
 fn is_known_public_non_asset_host(host: &str) -> bool {
