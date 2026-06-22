@@ -136,21 +136,13 @@ pub fn technique_applies_to_value(
 
 /// True when `value`'s host is its own registrable apex (`niuza.com`,
 /// `pingan.com.cn`) rather than a leaf subdomain (`s.niuza.com`,
-/// `a.pingan.com.cn`). Best-effort 2-level-TLD heuristic mirroring the recon
-/// `registrable_domain` (no public-suffix list); `www.` is treated as the apex.
+/// `a.pingan.com.cn`); `www.` is treated as the apex. Delegates to the single
+/// source [`golish_pentest_domain::is_registrable_apex`], which recon's
+/// `registrable_domain` also uses — keeping the two-level-TLD table in one place
+/// so the gate and recon can never drift (the duplicated table previously missed
+/// ccTLD second levels like `.ne.jp`, mis-classifying real apexes as leaves).
 fn is_registrable_apex(value: &str) -> bool {
-    const SECOND_LEVEL: &[&str] = &["com", "net", "org", "gov", "edu", "co", "ac"];
-    let host = value.trim().trim_end_matches('.').to_ascii_lowercase();
-    let host = host.trim_start_matches("www.");
-    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
-    let len = labels.len();
-    let apex_len =
-        if len >= 3 && labels[len - 1].len() == 2 && SECOND_LEVEL.contains(&labels[len - 2]) {
-            3
-        } else {
-            2
-        };
-    len <= apex_len
+    golish_pentest_domain::is_registrable_apex(value)
 }
 
 #[cfg(test)]
@@ -337,6 +329,25 @@ mod tests {
             AssetClass::Domain,
             "s.niuza.com",
             "GOLISH-INTEL-WHOIS"
+        ));
+    }
+
+    #[test]
+    fn subdomain_required_on_cctld_second_level_apex() {
+        // ③ 修复回归：`.ne.jp`（日本组织类二级域）下的 apex 必须被要求做 SUBDOMAIN
+        // 枚举（旧表漏 "ne" 时它被误判成叶子 → 漏枚举该根域的子域）。其子域仍免。
+        use StageKind::TargetIntel as Ti;
+        assert!(technique_applies_to_value(
+            Ti,
+            AssetClass::Domain,
+            "example.ne.jp",
+            "GOLISH-INTEL-SUBDOMAIN"
+        ));
+        assert!(!technique_applies_to_value(
+            Ti,
+            AssetClass::Domain,
+            "s.example.ne.jp",
+            "GOLISH-INTEL-SUBDOMAIN"
         ));
     }
 

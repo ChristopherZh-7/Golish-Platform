@@ -1,7 +1,7 @@
 # 2026-06-18 · 规范资产身份（E1）+ 技术结局物化表（E3）：coverage 单一真值源
 
 > 日期：2026-06-18
-> 状态：设计（§8 D0–D5 已于 2026-06-18 由用户拍板 → 待写 `docs/superpowers/plans/` 实现计划）
+> 状态：设计（§8 D0–D5 已于 2026-06-18 由用户拍板）。**状态更新（2026-06-22 核实）**：🟡 **PR-A 已落地**（纯函数 `canonical_asset_key` + `AssetClass` 迁移，commits `39bd87d6`/`af06f91b`）；**PR-B（接 `in_scope_assets`/evidence 落库/gate join）+ PR-C/D（`technique_outcomes` 物化表）未做**——`canonical_asset_key` 当前**零调用方**，身份漂移死循环 bug（CT 死循环 / `http://x`≠`https://x`）仍可能复发。
 > 作者：BaJie MCP-agent-3（无角色）
 > 关联：
 > - `docs/design/2026-06-15-db-truth-single-source-deliverable.md`（DB 真值唯一源 + per-technique outcome facts；**本文是其前置依赖 + 物化升级**，见 §2）

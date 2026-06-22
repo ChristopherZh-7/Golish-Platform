@@ -3199,6 +3199,7 @@ dependencies = [
  "golish-integrations",
  "golish-intel-providers",
  "golish-pentest",
+ "golish-pentest-domain",
  "golish-projects",
  "golish-scan-runner",
  "golish-settings",

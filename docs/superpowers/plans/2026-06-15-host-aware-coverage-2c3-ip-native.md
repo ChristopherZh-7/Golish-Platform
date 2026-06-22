@@ -6,6 +6,8 @@
 > **BLOCKED ON USER SIGN-OFF**: this adds a DB migration (§2.7), new active
 > network collectors, and a harness baseline change that BLOCKs IPs until data
 > lands (I7/I8). Do not start 2c-3b (gate activation) without sign-off.
+>
+> **状态更新（2026-06-22 · 核当前代码 + git log）**：🟡 **2c-3a 已落地**（`f140df06` storage+truth、`83c45c0d` collectors）。**2c-3b 已实现后被回退**（`a3bb618c` → revert `b2f5c2d2`，stage_run regression A/B）；当前不在生效，重启需先解决 regression + sign-off。
 
 **Goal:** Give in-scope IP/CIDR assets two required passive-intel techniques —
 reverse DNS (`GOLISH-INTEL-RDNS`) and RIR IP-WHOIS (`GOLISH-INTEL-IPWHOIS`) — with

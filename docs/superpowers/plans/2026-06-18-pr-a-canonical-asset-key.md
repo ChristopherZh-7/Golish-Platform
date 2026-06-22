@@ -1,5 +1,7 @@
 # PR-A · 规范资产身份 `canonical_asset_key` 实现计划
 
+> **状态更新（2026-06-22 · 核当前代码 + git log）**：✅ **已落地**。commits `39bd87d6`（canonical_asset_key + migrate AssetClass）+ `af06f91b`（re-export AssetClass from pentest-domain）。**注意**：本 PR 故意零接入 → PR-B（接 `in_scope_assets`/evidence 落库/gate join）+ PR-C/D（`technique_outcomes` 物化表）**仍未做**，身份漂移死循环 bug 需 PR-B 才消除（`canonical_asset_key` 当前零调用方）。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 `.cursor/skills/executing-plans` 逐任务实现此计划；按 `.cursor/skills/test-driven-development` 先写测试。
 > 关联设计：`docs/design/2026-06-18-canonical-asset-identity-and-coverage-join-key.md`（§3.1 函数规则、§4 红线、§5 PR-A、§8 决策 D1/D5）。
 > 决策落地：**D1** = 函数与 `AssetClass` 同住 `golish-pentest-domain`（纯逻辑零 I/O，无循环依赖）。**D5** = E1 先行；本计划是整个序列的第一步（PR-B 边界接入、PR-C/D/E 物化表为后续独立计划，见文末「后续计划」）。

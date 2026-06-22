@@ -1,4 +1,4 @@
-import { Bug, Gauge, Server } from "lucide-react";
+import { Bug, Gauge, Loader2, Server } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { SiOpentelemetry } from "react-icons/si";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -25,6 +25,52 @@ function formatUptime(startedAtMs: number): string {
   if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
   return `${seconds}s`;
 }
+
+/* ── Background Jobs Badge (Cursor-style "N running in background") ── */
+
+interface BackgroundJobsBadgeProps {
+  jobs: Array<{ jobId: string; command: string; startedAt: number }>;
+}
+
+export const BackgroundJobsBadge = memo(function BackgroundJobsBadge({
+  jobs,
+}: BackgroundJobsBadgeProps) {
+  if (jobs.length === 0) return null;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          title={`${jobs.length} command(s) running in the background`}
+          className="h-6 px-2 gap-1.5 text-xs font-medium rounded-lg flex items-center text-accent border border-[var(--border-subtle)]/60 bg-card/30 hover:bg-muted transition-colors"
+        >
+          <Loader2 className="size-icon-status-bar animate-spin" />
+          <span>{jobs.length} running</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 p-2">
+        <div className="text-xs font-medium text-muted-foreground px-1 pb-1.5">
+          Running in background ({jobs.length})
+        </div>
+        <ul className="space-y-0.5 max-h-64 overflow-auto">
+          {jobs.map((j) => (
+            <li
+              key={j.jobId}
+              className="flex items-center justify-between gap-2 rounded-md px-2 py-1 hover:bg-muted/50"
+            >
+              <span className="font-mono text-[11px] truncate" title={j.command}>
+                {j.command}
+              </span>
+              <span className="text-[11px] text-muted-foreground shrink-0 tabular-nums">
+                {formatUptime(j.startedAt)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </PopoverContent>
+    </Popover>
+  );
+});
 
 /* ── Context Usage Badge ── */
 

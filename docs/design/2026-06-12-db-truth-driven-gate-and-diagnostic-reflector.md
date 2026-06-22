@@ -2,6 +2,8 @@
 
 > 日期：2026-06-12
 > 状态：设计（§7 已由用户 2026-06-12 全部拍板「全按推荐」→ 进入实现，PR1 先行）
+>
+> **状态更新（2026-06-22 · 核当前代码 + git log）**：🟡 **db-truth gate coverage 部分已落地**——业务表真值投影 `db_truth_facts`（`organizations.asns/.certificates/.whois/.intel` → ASN/CT/WHOIS/OSINT）+ `derive_from_evidence` + `(asset,technique,outcome)` evidence 列均已接。**「诊断式 reflector」部分**由 `docs/design/2026-06-12-unified-refiner.md` 承接（单独跟踪，本轮未逐一核实其落地状态）。
 > 关联：`docs/design/2026-06-11-coverage-auto-derive-from-evidence.md`、`docs/design/2026-06-11-substantive-stage-evidence-projection-fallback.md`、`docs/design/2026-06-05-coverage-matrix.md`、`docs/design/2026-06-05-vuln-triage-technique-matrix.md`
 > 不变量：AGENTS.md I7（阶段交付必须有 evidence）、I8（「已检查为空」≠「未检查」）、I10（schema 先扩可空字段再上代码）、§2.5（安全语义变更）、§2.7（改 schema 先确认）
 

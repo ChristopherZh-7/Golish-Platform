@@ -10,6 +10,8 @@
 > `docs/superpowers/plans/2026-06-15-ip-centric-asset-model.md`. Evidence below
 > was gathered from the live DB (project `Test1`, embedded PG `:15432`) +
 > source on 2026-06-15.
+>
+> **状态更新（2026-06-22 · 核当前代码 + git log）**：✅ **Phase 0 + Phase 1 已落地**。`targets.real_ip` 落点 + 回填（`land_target_intel_coverage`/`recon_backfill_real_ip`）；前端 host/IP-centric 树 `buildHostTree` + `OrgTreeSidebar`（commit `521a39a0` IP-centric target panel）。**Phase 2（host-aware coverage）** 归 2c 系列单独跟踪（见 2c-3 文档：2c-3a 已落、2c-3b 已回退）。
 
 ## 0. Problem (evidence)
 

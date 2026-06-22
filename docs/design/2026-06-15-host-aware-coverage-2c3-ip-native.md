@@ -9,6 +9,8 @@
 > sign-off before implementation** (AGENTS.md I7/I8 harness-core + §2.7 DB
 > migration + new active network collectors). No code written. Evidence below was
 > read from source on 2026-06-15 (spike report).
+>
+> **状态更新（2026-06-22 · 核当前代码 + git log）**：🟡 **2c-3a 已落地，2c-3b 已回退**。2c-3a 采集器 `land_rdns`/`land_ip_whois` + DB 存储/truth：commits `f140df06`（storage + truth）+ `83c45c0d`（collectors）。**2c-3b 实现后被回退**：`a3bb618c`（require RDNS + IP-WHOIS for IP assets）→ `b2f5c2d2`（revert，原因 stage_run regression A/B）。故上面「No code written」已过时；**2c-3b 当前不在生效**，重启 gate 翻转需先解决该 regression + 用户 sign-off。
 
 ## 0. One sentence
 

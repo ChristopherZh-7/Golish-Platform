@@ -295,6 +295,14 @@ export const handleToolResult: EventHandler<{
   // but keep the timeline + interleaved cards visibly "running in background"
   // until a later `tool_background_completed` flips them to a terminal result.
   if (isBackgroundedResult(event.result)) {
+    const bg = event.result as { job_id?: string; command?: string };
+    if (bg.job_id) {
+      state.addBackgroundJob(ctx.sessionId, {
+        jobId: bg.job_id,
+        command: bg.command ?? "(command)",
+        startedAt: Date.now(),
+      });
+    }
     state.completeActiveToolCall(ctx.sessionId, event.request_id, true, event.result);
     state.backgroundStreamingToolBlock(ctx.sessionId, event.request_id, event.result);
     state.backgroundToolExecutionBlock(ctx.sessionId, event.request_id, event.result);
@@ -375,6 +383,8 @@ export const handleToolBackgroundCompleted: EventHandler<{
   seq?: number;
 }> = (event, ctx) => {
   const state = ctx.getState();
+  // Drop it from the Cursor-style "running in background" indicator.
+  state.removeBackgroundJob(ctx.sessionId, event.job_id);
   const success = event.status === "done";
   const result = {
     status: event.status,

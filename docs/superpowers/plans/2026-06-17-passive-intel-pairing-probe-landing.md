@@ -1,5 +1,7 @@
 # 测绘被动情报：域名↔IP 配对 + 探活 + 自动落库 实现计划
 
+> **状态更新（2026-06-22 · 核当前代码 + git log）**：✅ **已落地**（Phase A–F）。commits `8312365d`（pairing → landing loop）+ `976836cd`（enrich is primary）+ `f055decb`（Phase F notes + progress + feature_list）。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 `.cursor/skills/executing-plans` 逐任务实现此计划。每个任务单独 commit。TDD：先写失败测试，跑红，再实现转绿。纯函数（配对抽取 / scope 过滤 / liveness 映射）必须有单测；落库/探活为非致命旁路，失败只告警。
 
 **目标：** 让 `recon_enrich_assets` 把测绘多源发现的资产**自动配对、过滤、入库为 target（带测绘 real_ip）并探活回填存活状态**，把"发现 189 / 落地 23"的缺口闭合成"发现即（过滤后）落地"。

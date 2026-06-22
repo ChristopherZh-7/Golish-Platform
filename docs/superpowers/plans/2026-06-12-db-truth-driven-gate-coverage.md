@@ -1,5 +1,7 @@
 # DB 真值驱动的 gate coverage 实现计划（首步 · target_intel 灰度）
 
+> **状态更新（2026-06-22 · 核当前代码 + git log）**：✅ **已落地**——execute.rs stage-close hook 从业务表派生 facts（`db_truth_facts`）合并进 `GateContext.evidence_facts`，`coverage_complete` 经 `derive_from_evidence` 认 DB 真值；`golish-db` 业务表只读查询 + 哨兵过滤已就位。target_intel 灰度生效。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 `.cursor/skills/executing-plans/SKILL.md` 逐任务实现此计划，配 `.cursor/skills/test-driven-development/SKILL.md`（先红后绿）。每个写操作后 `ReadLints`，每任务后跑该任务的验证命令。
 
 **目标：** 让 `target_intel` 阶段的 coverage 判定以**数据库业务表真实结构化数据**为准——`organizations.asns`/`.certificates` 专列非空 → 该资产的 ASN/CT 算 `Found`；`target_assets(asset_type='subdomain')` 存在 → 该资产 SUBDOMAIN 算 `Found`，不再只认 agent 自报 / 命令派生。

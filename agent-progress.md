@@ -29,6 +29,32 @@
 
 ---
 
+### 2026-06-22 · PR-B canonical-key 接线 B0/B1a/B2（gate 身份漂移死循环修复）+ 16 份 db-truth/coverage 文档状态同步 + feature_list 5 处同步（BaJie BajieAsk-agent-1 · 全栈工程师 · DISPATCH off · 用户「更新这些文档」→「同步 feature_list」→「去写 PR-B」→「B1」→「B2」→「更新然后 commit」）
+
+- **本轮目标**：① 核实并更新一批 landing/db-truth/coverage/资产身份 设计·计划文档的滞后状态（避免后续 agent 被过时文档带偏原地打转）；② 同步 feature_list 对应条目状态；③ 实现 PR-B（canonical-asset-key 边界接入）的可单测验证部分，治「资产身份漂移→coverage join 不命中→永判 not_attempted→无限 needs_fix」死循环。
+- **已完成**：
+  - **文档状态同步（16 份）**：给已落地/部分落地/已回退的 design+plan 加「状态更新（2026-06-22 核实）」戳（附 commit 证据），正文保留。✅ 已落地：pr1-recon-landing-closure、passive-intel-pairing(设计+计划,`8312365d`)、slim-enrich-provider-rdap(`f314fa96`)、pr-a-canonical-asset-key(`39bd87d6`)、ip-centric-asset-model(Phase0/1 `521a39a0`)、coverage-auto-derive、redteam-phase0-authoritative-gate、db-truth-driven-gate-coverage、coverage-evidence-projection。🟡 部分：db-truth-single-source(PR1/PR2/coverage ✅、E1 后续)、canonical-asset-identity(仅 PR-A)、host-aware-2c3(设计+计划,2c-3a ✅ / 2c-3b 已回退 `b2f5c2d2`)、db-truth-driven-gate-and-diagnostic-reflector、redteam-db-truth-master(进度速览)。
+  - **feature_list 5 处同步**：passive-intel-pairing-probe-landing `blocked→passing`；redteam-phase0 / redteam-phase1 / db-truth-driven-gate-coverage `in_progress→passing`（各加 `status_synced` 注明依据）；host-aware-2c 的 `[未做] 2c-3b`→`[回退]`。`python3 -m json.tool` → VALID。
+  - **PR-B 实现（新计划 `docs/superpowers/plans/2026-06-18-pr-b-canonical-key-wiring.md`）**：
+    - **B0 · gate 侧 join 归一**（`golish-agent-kit/src/harness/gate/rule_engine.rs`）：新增纯 helper `canon_asset`（trim+小写+去前导 scheme+去尾点，**保留 URL 路径**）；coverage_complete 的 cell_status/has_fact/tagged_found(claim+finding) + coverage_corroborated(claim+finding) 共 6 处字面资产相等改为 `canon_asset(&x)==asset_key`。**实现勘误**：原想直接用 `canonical_asset_key`，但它把 URL 折叠到 host（`https://a.com/login`→`a.com`），会把 EAS URL 端点与主机错误合并（`host_aware_coverage_relaxes_url_not_host_in_eas` 当场红）→ 改用保留路径的 `canon_asset`。
+    - **B1a · in-scope 轴去重**：coverage_complete 构造轴后按 `canon_asset` 去重，漂移写法折一行；含反作弊测（EAS URL 端点不被折进主机）。
+    - **B2 · normalized_host 去重**（`golish-recon-app/.../organization_recon/runner.rs`）：把 `normalized_host` 改为薄封装委托 `super::persistence::normalized_host`（唯一真相源），消除逐字节重复副本，行为不变。
+    - **B1b（DB 写路径归一）未做**：`in_scope_assets_impl` 同时喂 gate 轴 + coverage_truth SQL（按原串 join），不能在该层归一；正确做法在写入时落规范键，属 DB 写路径，和 PR-C/D 一起做、需活体——未盲改。
+- **运行过的验证（实跑）**：
+  - `cargo nextest -p golish-agent-kit` → **674 passed / 0 failed**（669 老测试零回归 + B0 3 测 + B1 2 测）。
+  - `cargo nextest -p golish-recon-app` → **195 passed / 0 failed**（B2 无回归）。
+  - `cargo clippy -p golish-agent-kit --all-targets --no-deps -- -D warnings` → exit 0；`cargo clippy -p golish-recon-app ... --no-deps -- -D warnings` → exit 0。
+  - `python3 -m json.tool feature_list.json` → VALID；ReadLints 受影响文件无错。
+- **已记录证据**：`Summary 674 tests run: 674 passed`（agent-kit）；`195 tests run: 195 passed`（recon-app）；clippy 两 crate `Finished` exit 0。新测试：`coverage_complete_canonicalizes_asset_identity_across_drift` / `coverage_complete_drift_does_not_over_merge_distinct_assets` / `coverage_complete_dedups_drifted_in_scope_axis` / `coverage_complete_dedup_preserves_distinct_eas_endpoint` / `coverage_corroborated_canonicalizes_asset_identity`。
+- **提交记录**：本轮 2 commit（PR-B 代码+计划 / 文档状态同步+feature_list+progress）；**仅暂存本轮文件**，刻意不碰工作树里他会话未提交改动（Cargo.lock / harness_submit_tool.rs / bridge_config.rs / asset_id.rs / technique_resolver.rs / persistence.rs / pentest-domain lib.rs / recon-app Cargo.toml / 前端 / toolsconfig 等）。未 push。
+- **已知风险 / 未解决**：
+  - **B1b + 活体未做**：gate 逻辑已单测证明；真机 pingan target_intel 跑一遍确认漂移缺口消失需起 app（用户环境）。
+  - **just precommit 全量未跑**：本机 toolchain 1.95.0 部分安装 + 历史 pre-existing 死码阻断全量；本轮用 scoped nextest + scoped clippy(--no-deps) 验证受影响 crate。
+  - 工作树有他会话未提交改动（不在本次提交范围）。
+- **新增/修改文件**：代码 2（rule_engine.rs、runner.rs）；文档 17（16 状态戳 + 新 PR-B 计划）；feature_list.json；agent-progress.md（本条）。
+
+---
+
 ### 2026-06-20 · active_recon stage_run specialists 接全（prober 核验+提交、enumerator 新建）+ host-aware 2b flag 翻转（BaJie BajieAsk-agent-4 · 无角色 · DISPATCH off · 接 MCP-1 上下文转移[task B 选 prober] · 用户「帮我补缺口」→「给 enumeration 配 specialist」→「提交」→「更新 feature_list + 进度」）
 
 - **本轮目标**：接 MCP-1 转移的 task B（为 external_attack_surface 新建 prober specialist），核验上一会话半成品 → 补 host-aware 2b flag → 新建 enumeration 的 enumerator specialist → 逐项提交 → 收尾更新 harness 记录。

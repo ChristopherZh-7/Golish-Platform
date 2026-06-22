@@ -198,6 +198,7 @@ describe("dispatchEvent", () => {
     const stateWithTimeline = {
       completeToolExecutionBlock,
       updateStreamingToolBlock,
+      removeBackgroundJob: vi.fn(),
       timelines: {
         "test-session": [
           {
@@ -248,6 +249,7 @@ describe("dispatchEvent", () => {
       backgroundToolExecutionBlock: vi.fn(),
       updateStreamingToolBlock: vi.fn(),
       completeToolExecutionBlock: vi.fn(),
+      addBackgroundJob: vi.fn(),
     };
     const ctx = {
       ...mockCtx,

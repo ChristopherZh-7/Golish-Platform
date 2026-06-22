@@ -9,7 +9,7 @@
     "launchMode": "cli",
     "category": "recon",
     "subcategory": "subdomain",
-    "tier": "recommended",
+    "tier": "optional",
     "tags": ["recon", "subdomain", "passive"],
     "install": {
       "method": "github",

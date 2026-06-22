@@ -404,6 +404,39 @@ async fn configure_sub_agents(bridge: &AgentBridge, settings: &golish_settings::
     apply_sub_agent_model_settings(bridge, &settings.ai).await;
 }
 
+/// Backs the submit tool's closeout reconciliation barrier (Piece 3) with the
+/// process-wide background-job manager: reports the running scans this session
+/// started so `submit_stage_deliverable` can wait for them before grading.
+struct ManagerBackgroundJobs;
+
+#[async_trait::async_trait]
+impl crate::ai::harness_submit_tool::BackgroundJobsQuery for ManagerBackgroundJobs {
+    async fn running_for_session(
+        &self,
+        session_id: &str,
+    ) -> Vec<crate::ai::harness_submit_tool::RunningJobInfo> {
+        golish_app_core::background_jobs::manager()
+            .running_for_session(session_id)
+            .into_iter()
+            .map(|j| crate::ai::harness_submit_tool::RunningJobInfo {
+                job_id: j.job_id,
+                command: j.command,
+                elapsed_ms: j.elapsed_ms,
+            })
+            .collect()
+    }
+}
+
+/// Total time the submit-time reconciliation barrier (Piece 3) waits for a
+/// session's background scans to settle before telling the agent to wait +
+/// resubmit. Tunable via `GOLISH_SUBMIT_RECONCILE_WAIT_MS` (default 60s).
+fn submit_reconcile_wait_ms() -> u64 {
+    std::env::var("GOLISH_SUBMIT_RECONCILE_WAIT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(60_000)
+}
+
 async fn register_pentest_tools(
     bridge: &AgentBridge,
     state: &AgentState,
@@ -462,7 +495,13 @@ async fn register_pentest_tools(
         // the session-keyed command-path facts (DNS/WHOIS/SUBDOMAIN). Without this
         // the per-org recon sub-agent's submit gate marks ASN/CT/OSINT "never
         // attempted" forever and dead-loops even after enrich landed the data.
-        .with_org_id_source(bridge.harness_active_org_id_handle());
+        .with_org_id_source(bridge.harness_active_org_id_handle())
+        // Piece 3 · closeout reconciliation barrier: a submit that arrives while
+        // this session still has backgrounded scans running first waits (bounded)
+        // for them to settle so their evidence books before the gate, instead of
+        // grading the stage against half-landed evidence or busy-polling check_job.
+        .with_background_jobs(std::sync::Arc::new(ManagerBackgroundJobs))
+        .with_reconcile_timeouts(submit_reconcile_wait_ms(), 1000);
         // 乙 · scope the real-id suggestion to this chat session (the string both
         // evidence write paths stamp on the ledger) so a fabricated-ref needs_fix
         // can name the operation's real ids.

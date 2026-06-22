@@ -203,7 +203,7 @@
       "osint",
       "asn"
     ],
-    "tier": "recommended",
+    "tier": "optional",
     "updateInfo": {
       "lastUpdated": "2026-05-27",
       "version": "5.1.1"

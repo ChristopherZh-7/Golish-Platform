@@ -1,5 +1,7 @@
 # 2026-06-17 · 测绘被动情报：域名↔IP 配对 + 探活 + 自动落库（资产收集闭环）
 
+> **状态更新（2026-06-22 · 核当前代码 + git log）**：✅ **已落地**（Phase A–F）。配对→自动落库闭环 commit `8312365d`（close the passive-intel pairing → landing loop）+ `976836cd`（drop target_intel hard tool floors; enrich is primary）+ `f055decb`（Phase F notes）。
+
 > 起因：排查 run `pentest-chat-1781675306265-1`（目标 中国平安集团，stage `target_intel`）。
 > enrich 报告发现 **189 资产 / 54 org**，但**只有 23 个落地为 target**（20 域名 + 3 IP）。
 > 直查实时 DB（`postgres://golish:golish_local@localhost:15432/golish`）确认根因：测绘把海量

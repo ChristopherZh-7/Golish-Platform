@@ -9,7 +9,7 @@
     "launchMode": "cli",
     "category": "recon",
     "subcategory": "osint",
-    "tier": "recommended",
+    "tier": "optional",
     "pentestPhase": ["recon"],
     "tags": ["recon", "osint", "email", "people", "subdomain", "passive"],
     "install": {

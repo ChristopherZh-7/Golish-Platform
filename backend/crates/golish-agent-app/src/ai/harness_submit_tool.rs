@@ -86,6 +86,26 @@ pub trait EvidenceLedgerQuery: Send + Sync {
     }
 }
 
+/// A still-running background job attributed to the current session. The closeout
+/// reconciliation barrier surfaces these so the agent doesn't conclude a stage
+/// while its own backgrounded scans are still in flight.
+#[derive(Debug, Clone)]
+pub struct RunningJobInfo {
+    pub job_id: String,
+    pub command: String,
+    pub elapsed_ms: u64,
+}
+
+/// Narrow seam over the background-job manager so the submit tool can run the
+/// closeout reconciliation barrier (Piece 3) without depending on
+/// `golish-app-core` directly — and so it is trivially mockable in tests. The
+/// app wires it to `golish_app_core::background_jobs::manager()`.
+#[async_trait::async_trait]
+pub trait BackgroundJobsQuery: Send + Sync {
+    /// Background jobs still `Running` that were started by `session_id`.
+    async fn running_for_session(&self, session_id: &str) -> Vec<RunningJobInfo>;
+}
+
 /// Tool that captures a structured [`StageDeliverable`] into the bridge
 /// side-channel so the deterministic gate can validate it, regardless of which
 /// agent (orchestrator or `reporter`) produced it.
@@ -111,6 +131,20 @@ pub struct SubmitStageDeliverableTool {
     /// run's org, mirroring the main-agent stage-close hook. `None` ⇒ no org
     /// binding ⇒ db-truth projection skipped (preview keeps prior behaviour).
     org_id_source: Option<Arc<RwLock<Option<Uuid>>>>,
+    /// Piece 3 (closeout reconciliation barrier) · background-job manager seam.
+    /// When present (and a `session_id` is set), a submit that arrives while the
+    /// session still has backgrounded scans running first waits (bounded by
+    /// `reconcile_wait_ms`) for them to settle — so their evidence/DB-truth books
+    /// before the gate evaluates — instead of grading the stage against
+    /// half-landed evidence. `None` ⇒ barrier disabled (tests / no DI).
+    bg_jobs: Option<Arc<dyn BackgroundJobsQuery>>,
+    /// Total time the reconciliation barrier waits for running jobs to settle
+    /// before giving up and telling the agent to wait + resubmit. `0` ⇒ no wait
+    /// (single-shot check). Production wires this from
+    /// `GOLISH_SUBMIT_RECONCILE_WAIT_MS`.
+    reconcile_wait_ms: u64,
+    /// Poll interval while waiting for running jobs to settle.
+    reconcile_poll_ms: u64,
 }
 
 impl SubmitStageDeliverableTool {
@@ -124,6 +158,9 @@ impl SubmitStageDeliverableTool {
             evidence_repo: None,
             session_id: None,
             org_id_source: None,
+            bg_jobs: None,
+            reconcile_wait_ms: 0,
+            reconcile_poll_ms: 1000,
         }
     }
 
@@ -145,6 +182,82 @@ impl SubmitStageDeliverableTool {
     pub fn with_org_id_source(mut self, src: Arc<RwLock<Option<Uuid>>>) -> Self {
         self.org_id_source = Some(src);
         self
+    }
+
+    /// Enable the closeout reconciliation barrier (Piece 3): a submit that arrives
+    /// while this session still has backgrounded scans running waits for them to
+    /// settle (and, on overrun, tells the agent to wait + resubmit). Needs a
+    /// `session_id` to attribute jobs; without one the barrier is inert.
+    pub fn with_background_jobs(mut self, bg: Arc<dyn BackgroundJobsQuery>) -> Self {
+        self.bg_jobs = Some(bg);
+        self
+    }
+
+    /// Configure the reconciliation barrier's wait budget / poll interval (ms).
+    /// Production reads `GOLISH_SUBMIT_RECONCILE_WAIT_MS`; tests pass small values
+    /// to exercise the timeout branch without real delay.
+    pub fn with_reconcile_timeouts(mut self, wait_ms: u64, poll_ms: u64) -> Self {
+        self.reconcile_wait_ms = wait_ms;
+        self.reconcile_poll_ms = poll_ms.max(1);
+        self
+    }
+
+    /// Closeout reconciliation barrier (Piece 3). Returns `Some(needs_fix json)`
+    /// when, after waiting up to `reconcile_wait_ms`, the session STILL has
+    /// background jobs running — so the caller short-circuits the submit and the
+    /// agent waits for the auto-delivered results instead of grading the stage
+    /// against half-landed evidence (or busy-polling `check_job`). Returns `None`
+    /// when the barrier is disabled or all jobs have settled (proceed normally).
+    async fn reconcile_background_jobs(&self) -> Option<Value> {
+        let (bg, sid) = (self.bg_jobs.as_ref()?, self.session_id.as_deref()?);
+        let mut running = bg.running_for_session(sid).await;
+        if running.is_empty() {
+            return None;
+        }
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(self.reconcile_wait_ms);
+        while !running.is_empty() {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let remaining = deadline.duration_since(now).as_millis() as u64;
+            let nap = self.reconcile_poll_ms.min(remaining).max(1);
+            tokio::time::sleep(std::time::Duration::from_millis(nap)).await;
+            running = bg.running_for_session(sid).await;
+        }
+        if running.is_empty() {
+            return None;
+        }
+        tracing::info!(
+            target: "harness::submit_tool",
+            session_id = %sid,
+            still_running = running.len(),
+            "submit deferred: background scans still running at stage close"
+        );
+        let jobs: Vec<Value> = running
+            .iter()
+            .map(|j| {
+                json!({
+                    "job_id": j.job_id,
+                    "command": j.command,
+                    "elapsed_ms": j.elapsed_ms,
+                })
+            })
+            .collect();
+        Some(json!({
+            "status": "needs_fix",
+            "reasons": [format!(
+                "{} background job(s) you launched are still running, so this stage's \
+                 evidence has not fully landed yet. Their results are booked as evidence \
+                 and delivered to you automatically when they finish — do NOT poll \
+                 check_job in a loop and do NOT re-run them. Wait for them to finish, then \
+                 call submit_stage_deliverable again.",
+                running.len()
+            )],
+            "running_background_jobs": jobs,
+            "note": "wait for these background jobs to finish (results auto-deliver), then resubmit."
+        }))
     }
 
     /// The operation's REAL evidence ids (newest first) to suggest when the
@@ -404,6 +517,14 @@ impl Tool for SubmitStageDeliverableTool {
                         kind.as_str()
                     ),
                 }));
+            }
+            // Piece 3 · closeout reconciliation barrier: if this session still has
+            // backgrounded scans in flight, don't grade the stage against
+            // half-landed evidence. Wait (bounded) for them to settle; if they
+            // overrun, return now telling the agent to wait for the auto-delivered
+            // results and resubmit (no busy-polling check_job).
+            if let Some(deferred) = self.reconcile_background_jobs().await {
+                return Ok(deferred);
             }
             // 甲 · structural/semantic gate preview (no DB). The authoritative
             // evidence-ledger cross-check runs at stage close in the gate hook.
@@ -1224,5 +1345,130 @@ mod tests {
             .unwrap();
         assert_eq!(out["status"].as_str(), Some("received"));
         assert!(sink.read().await.is_some());
+    }
+
+    // ── Piece 3 · closeout reconciliation barrier ──────────────────────────
+
+    /// Background-jobs mock: reports `running` for its first `running_polls`
+    /// calls, then reports none — simulating scans that finish mid-wait. Set
+    /// `running_polls = usize::MAX` to simulate jobs that never settle.
+    struct BgJobsMock {
+        running: Vec<RunningJobInfo>,
+        running_polls: usize,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl BgJobsMock {
+        fn always_running(n: usize) -> Self {
+            Self {
+                running: (0..n)
+                    .map(|i| RunningJobInfo {
+                        job_id: format!("job_{i}"),
+                        command: format!("masscan -p- target{i}"),
+                        elapsed_ms: 45_000,
+                    })
+                    .collect(),
+                running_polls: usize::MAX,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn settles_after(n_jobs: usize, polls: usize) -> Self {
+            let mut m = Self::always_running(n_jobs);
+            m.running_polls = polls;
+            m
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl BackgroundJobsQuery for BgJobsMock {
+        async fn running_for_session(&self, _session_id: &str) -> Vec<RunningJobInfo> {
+            let n = self
+                .calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < self.running_polls {
+                self.running.clone()
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    // A submit that arrives while the session still has backgrounded scans
+    // running is DEFERRED: needs_fix listing the still-running jobs, with a
+    // message that the results auto-deliver and check_job must not be polled —
+    // and nothing is stashed (the stage is not graded against half-landed
+    // evidence).
+    #[tokio::test]
+    async fn submit_deferred_when_background_jobs_running() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Scoping);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
+            .with_session_id("pentest-chat-1")
+            .with_background_jobs(Arc::new(BgJobsMock::always_running(2)))
+            // wait budget 0 ⇒ single-shot check (the timeout branch) with no delay.
+            .with_reconcile_timeouts(0, 1);
+
+        let out = tool
+            .execute(valid_scoping_args(), Path::new("/tmp"))
+            .await
+            .unwrap();
+        assert_eq!(out["status"].as_str(), Some("needs_fix"));
+        let jobs = out["running_background_jobs"]
+            .as_array()
+            .expect("running_background_jobs present");
+        assert_eq!(jobs.len(), 2, "both running jobs are listed: {out:?}");
+        let reason = out["reasons"][0].as_str().unwrap();
+        assert!(reason.contains("still running"), "reason: {reason}");
+        assert!(reason.contains("check_job"), "reason warns off polling: {reason}");
+        // Short-circuits BEFORE the gate preview ⇒ nothing captured.
+        assert!(
+            sink.read().await.is_none(),
+            "a deferred submit must not stash a deliverable"
+        );
+    }
+
+    // Once the backgrounded scans settle (within the wait budget), the barrier
+    // lets the submit proceed to the normal gate preview → accepted.
+    #[tokio::test]
+    async fn submit_proceeds_after_background_jobs_settle() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Scoping);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
+            .with_session_id("pentest-chat-1")
+            // Running for the first 2 polls, then settles.
+            .with_background_jobs(Arc::new(BgJobsMock::settles_after(1, 2)))
+            .with_reconcile_timeouts(5_000, 1);
+
+        let out = tool
+            .execute(valid_scoping_args(), Path::new("/tmp"))
+            .await
+            .unwrap();
+        assert_eq!(
+            out["status"].as_str(),
+            Some("accepted"),
+            "once jobs settle the submit proceeds normally: {out:?}"
+        );
+        assert!(sink.read().await.is_some());
+    }
+
+    // Without a session_id the barrier cannot attribute jobs, so it stays inert
+    // even when the manager reports running jobs (no false deferral).
+    #[tokio::test]
+    async fn reconciliation_barrier_inert_without_session_id() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Scoping);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
+            .with_background_jobs(Arc::new(BgJobsMock::always_running(3)))
+            .with_reconcile_timeouts(0, 1);
+
+        let out = tool
+            .execute(valid_scoping_args(), Path::new("/tmp"))
+            .await
+            .unwrap();
+        assert_eq!(
+            out["status"].as_str(),
+            Some("accepted"),
+            "no session id ⇒ barrier inert ⇒ normal accept: {out:?}"
+        );
     }
 }

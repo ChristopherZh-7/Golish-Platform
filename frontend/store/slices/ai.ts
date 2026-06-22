@@ -67,6 +67,16 @@ function inferToolIntent(
   };
 }
 
+/** A backgrounded shell/pentest job still running (Cursor-style bottom indicator). */
+export interface BackgroundJob {
+  /** Job id returned by a `status:"backgrounded"` tool result. */
+  jobId: string;
+  /** The command that was detached to the background. */
+  command: string;
+  /** ms epoch when it was detached, for an elapsed-time display. */
+  startedAt: number;
+}
+
 export interface AiState {
   /** Global (legacy) AI configuration, kept for backwards compatibility. */
   aiConfig: AiConfig;
@@ -95,6 +105,8 @@ export interface AiState {
     string,
     Record<string, NonNullable<AiToolExecution["toolIntent"]>>
   >;
+  /** Backgrounded shell/pentest jobs still running per session (Cursor-style). */
+  backgroundJobs: Record<string, BackgroundJob[]>;
 }
 
 export interface AiActions {
@@ -176,6 +188,11 @@ export interface AiActions {
   backgroundToolExecutionBlock: (sessionId: string, requestId: string, result?: unknown) => void;
   appendToolExecutionOutput: (sessionId: string, requestId: string, chunk: string) => void;
   finalizeRunningToolExecutions: (sessionId: string) => void;
+
+  /** Track a job just detached to the background (Cursor-style indicator). */
+  addBackgroundJob: (sessionId: string, job: BackgroundJob) => void;
+  /** Drop a background job once it terminates (completed / killed). */
+  removeBackgroundJob: (sessionId: string, jobId: string) => void;
 }
 
 export interface AiSlice extends AiState, AiActions {}
@@ -197,6 +214,7 @@ export const initialAiState: AiState = {
   activeToolCalls: {},
   processedToolRequests: {},
   pendingToolIntentObservations: {},
+  backgroundJobs: {},
 };
 
 export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => ({
@@ -307,6 +325,22 @@ export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => 
   setAgentResponding: (sessionId, responding) =>
     set((state) => {
       state.isAgentResponding[sessionId] = responding;
+    }),
+
+  addBackgroundJob: (sessionId, job) =>
+    set((state) => {
+      const list = state.backgroundJobs[sessionId] ?? [];
+      if (!list.some((j) => j.jobId === job.jobId)) {
+        state.backgroundJobs[sessionId] = [...list, job];
+      }
+    }),
+
+  removeBackgroundJob: (sessionId, jobId) =>
+    set((state) => {
+      const list = state.backgroundJobs[sessionId];
+      if (list) {
+        state.backgroundJobs[sessionId] = list.filter((j) => j.jobId !== jobId);
+      }
     }),
 
   markToolRequestProcessed: (sessionId, requestId) =>

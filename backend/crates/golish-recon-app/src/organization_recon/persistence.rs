@@ -469,24 +469,14 @@ fn json_value_is_empty(value: &Value) -> bool {
     }
 }
 
-/// Best-effort registrable ("apex") domain without a full public-suffix list:
-/// keep the last 2 labels, or the last 3 when the apex is a known two-level TLD
-/// (e.g. `a.pingan.com.cn` → `pingan.com.cn`, `life.pingan.com` → `pingan.com`).
+/// Registrable ("apex") domain — delegates to the single source
+/// [`golish_pentest_domain::registrable_apex`] (best-effort two-level-TLD table,
+/// no full PSL): keep the last 2 labels, or the last 3 under a known two-level TLD
+/// (`a.pingan.com.cn` → `pingan.com.cn`, `life.pingan.com` → `pingan.com`). The
+/// table is shared with the gate's `is_registrable_apex` so CT/WHOIS target
+/// selection here and the SUBDOMAIN coverage gate can never drift on ccTLDs.
 fn registrable_domain(host: &str) -> String {
-    const SECOND_LEVEL: &[&str] = &["com", "net", "org", "gov", "edu", "co", "ac"];
-    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
-    let len = labels.len();
-    if len >= 3 {
-        let tld = labels[len - 1];
-        let sld = labels[len - 2];
-        if tld.len() == 2 && SECOND_LEVEL.contains(&sld) {
-            return labels[len - 3..].join(".");
-        }
-    }
-    if len >= 2 {
-        return labels[len - 2..].join(".");
-    }
-    host.to_string()
+    golish_pentest_domain::registrable_apex(host)
 }
 
 /// Unique registrable apex domains owned by the org (capped), for CT/WHOIS queries.
@@ -1390,6 +1380,10 @@ mod tests {
         assert_eq!(registrable_domain("a.b.pingan.com.cn"), "pingan.com.cn");
         assert_eq!(registrable_domain("pingan.com.cn"), "pingan.com.cn");
         assert_eq!(registrable_domain("example.org"), "example.org");
+        // ③ 修复回归：ccTLD 组织类二级域（`.ne.jp`）现在正确折到注册 apex，
+        // CT/WHOIS 查询目标与 gate 的 SUBDOMAIN 判定共用同一套表、不再漂移。
+        assert_eq!(registrable_domain("s.example.ne.jp"), "example.ne.jp");
+        assert_eq!(registrable_domain("example.ne.jp"), "example.ne.jp");
     }
 
     #[test]

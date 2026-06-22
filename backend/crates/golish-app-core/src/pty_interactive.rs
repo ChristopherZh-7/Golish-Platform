@@ -77,6 +77,9 @@ pub async fn run_shell_command_detail(
     command: &str,
     workspace: &Path,
     timeout_ms: u64,
+    // AI-elected background (Cursor-style): when true, hand back the job handle
+    // immediately without waiting the soft timeout, so the agent continues async.
+    background: bool,
 ) -> Result<Value> {
     let soft_cap = env_ms("GOLISH_TOOL_SOFT_TIMEOUT_MS", DEFAULT_SOFT_TIMEOUT_MS);
     let soft_ms = timeout_ms.min(soft_cap).max(1);
@@ -105,25 +108,29 @@ pub async fn run_shell_command_detail(
         session_id
     );
 
-    // Wait up to the soft timeout for an inline result (poll the manager).
-    let soft_deadline = started_at + Duration::from_millis(soft_ms);
-    loop {
-        if let Some(snap) = crate::background_jobs::manager().snapshot(&job_id) {
-            if snap.finished {
-                crate::background_jobs::manager().remove(&job_id);
-                return Ok(json!({
-                    "stdout": truncate_output(snap.stdout),
-                    "stderr": truncate_output(snap.stderr),
-                    "command": command,
-                    "exit_code": snap.exit_code.unwrap_or(-1),
-                    "duration_ms": snap.duration_ms,
-                }));
+    // AI-elected background (Cursor-style): skip the soft-timeout wait and hand back
+    // the handle now so the agent proceeds asynchronously. Otherwise wait up to the
+    // soft timeout for an inline result (poll the manager).
+    if !background {
+        let soft_deadline = started_at + Duration::from_millis(soft_ms);
+        loop {
+            if let Some(snap) = crate::background_jobs::manager().snapshot(&job_id) {
+                if snap.finished {
+                    crate::background_jobs::manager().remove(&job_id);
+                    return Ok(json!({
+                        "stdout": truncate_output(snap.stdout),
+                        "stderr": truncate_output(snap.stderr),
+                        "command": command,
+                        "exit_code": snap.exit_code.unwrap_or(-1),
+                        "duration_ms": snap.duration_ms,
+                    }));
+                }
             }
+            if std::time::Instant::now() >= soft_deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        if std::time::Instant::now() >= soft_deadline {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     // Still running → hand back a background handle. Deliberately no `error` and
@@ -133,6 +140,21 @@ pub async fn run_shell_command_detail(
         .snapshot(&job_id)
         .map(|s| (truncate_output(s.stdout), truncate_output(s.stderr)))
         .unwrap_or_default();
+    let hint = if background {
+        format!(
+            "Started in the background as requested (job {job_id}); continue with other work. \
+             Its result is auto-delivered when it finishes — do NOT poll it in a loop or re-run \
+             the same command. Reconcile any background jobs before you conclude the task."
+        )
+    } else {
+        format!(
+            "Command exceeded the {}s soft timeout and is STILL RUNNING in the background (job {}). \
+             It was NOT killed. Its result is auto-delivered when it finishes — do NOT re-run the \
+             same command (poll `check_job` at most once if you need interim output).",
+            soft_ms / 1000,
+            job_id
+        )
+    };
     Ok(json!({
         "status": "backgrounded",
         "job_id": job_id,
@@ -140,11 +162,7 @@ pub async fn run_shell_command_detail(
         "partial_stdout": partial_stdout,
         "partial_stderr": partial_stderr,
         "soft_timeout_ms": soft_ms,
-        "hint": format!(
-            "Command exceeded the {}s soft timeout and is STILL RUNNING in the background (job {}). It was NOT killed. Poll the `check_job` tool with this job_id for status/output; do not re-run the same command.",
-            soft_ms / 1000,
-            job_id
-        ),
+        "hint": hint,
     }))
 }
 
@@ -214,6 +232,10 @@ impl Tool for VisibleRunPtyCmdTool {
                 "timeout": {
                     "type": "integer",
                     "description": "Timeout in seconds (default: 10, max: 120)"
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Run in the background (Cursor-style): return immediately with a job handle and keep the command running so you can proceed with other work. Use for long commands whose output you don't need right now; the result is auto-delivered when it finishes."
                 }
             },
             "required": ["command"]
@@ -231,8 +253,9 @@ impl Tool for VisibleRunPtyCmdTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_MS / 1000);
         let timeout_ms = (timeout_secs * 1000).min(MAX_TIMEOUT_MS);
+        let background = args.get("background").and_then(|v| v.as_bool()).unwrap_or(false);
 
-        run_shell_command_detail(command, workspace, timeout_ms).await
+        run_shell_command_detail(command, workspace, timeout_ms, background).await
     }
 }
 

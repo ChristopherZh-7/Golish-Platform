@@ -1,5 +1,7 @@
 # Recon 工具拆解：删 enrich → recon_map_assets（测绘）+ recon_lookup_whois（RDAP）实现计划
 
+> **状态更新（2026-06-22 · 核当前代码 + git log）**：✅ **已落地**。commit `f314fa96`（split enrich into recon_map_assets + recon_lookup_whois tools）；配套 `976836cd`（drop target_intel hard tool floors; enrich is primary）+ `89e6e7ff`（ctfr/asnmap 作为 CT/ASN coverage producers）。`recon_map_assets`/`recon_lookup_whois` 工具已在代码中（`golish-recon-app/src/agent_tools/mod.rs`）。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:executing-plans 逐任务实现；每个任务单独 commit、单独验证（TDD）。
 > **本计划取代同名前一版（「内部瘦身」思路）。** 用户 2026-06-18 拍板：**删掉 enrich，把测绘包成一个工具、RDAP 包成另一个工具**。
 

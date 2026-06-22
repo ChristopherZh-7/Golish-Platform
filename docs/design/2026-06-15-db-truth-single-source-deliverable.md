@@ -1,7 +1,7 @@
 # 2026-06-15 · 数据库真值作为唯一真相源：交付物 = DB 投影 + agent 判断
 
 > 日期：2026-06-15
-> 状态：设计（待用户审 §8 决策表 → 再写 `docs/superpowers/plans/` 实现计划）
+> 状态：设计（2026-06-15 待审 §8）。**状态更新（2026-06-22 核实）**：🟡 **大部分已落地**——**PR1 落库闭环** ✅（`land_target_intel_coverage` 共享入口 + agent 路径 `agent_intel.rs:228`，plan `2026-06-15-pr1-recon-landing-closure.md`）；**PR2 evidence 列**（`evidence_technique`/`evidence_outcome` migrations `20260611000001`/`20260611000002`）+ per-technique facts ✅；**coverage `derive_from_evidence`** 投影已接（`resources/harness/stages/target_intel/spec.json` + `rule_engine.rs`）。后续「事实层单一真值源」方向由 `2026-06-18-canonical-asset-identity-and-coverage-join-key.md`（E1，PR-B/C/D 未做）+ `2026-06-18-slim-enrich-provider-rdap.md`（已落地）承接/调整。
 > 作者：BaJie MCP-agent-4（无角色）
 > 关联：
 > - `docs/design/2026-06-14-target-intel-landing-and-tools.md`（落库管线根因，本文承接并落地其 §2③）

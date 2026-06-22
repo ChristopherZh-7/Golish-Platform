@@ -1,7 +1,7 @@
 # Coverage 矩阵：从证据账本自动派生（弱模型交付物简化）
 
 > 日期：2026-06-11
-> 状态：设计（待用户审 §7 决策表 → 再写实现计划）
+> 状态：设计（2026-06-11 待审 §7）。**状态更新（2026-06-22 核实）**：✅ **已落地**——`derive_from_evidence` 投影已接（`resources/harness/stages/target_intel/spec.json` + `golish-agent-kit/src/harness/gate/rule_engine.rs` + `stage_spec.rs` + `evidence_facts.rs`）；`(asset, technique, outcome)` 三列 migration `20260611000001_evidence_technique_outcome.sql` + `20260611000002_evidence_asset.sql` 已落、`golish-db/src/repo/audit/mod.rs` 已读写。
 > 关联：`docs/design/2026-06-05-coverage-matrix.md`、`docs/design/2026-06-05-vuln-triage-technique-matrix.md`、`docs/design/2026-06-11-weak-model-submit-channel.md`、`docs/design/2026-06-02-submit-stage-deliverable-tool.md`
 > 不变量：AGENTS.md I7（阶段交付必须有 evidence）、I8（「已检查为空」≠「未检查」）、§2.5（安全语义变更）
 

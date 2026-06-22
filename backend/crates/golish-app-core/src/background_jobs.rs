@@ -92,6 +92,16 @@ pub struct JobSnapshot {
     pub finished: bool,
 }
 
+/// Lightweight view of a still-running job attributed to a session. Used by the
+/// closeout reconciliation barrier (`submit_stage_deliverable`) to tell the
+/// agent which background scans are still in flight before it concludes a stage.
+#[derive(Debug, Clone)]
+pub struct RunningJob {
+    pub job_id: String,
+    pub command: String,
+    pub elapsed_ms: u64,
+}
+
 /// Broadcast payload emitted when a background job reaches a terminal state.
 ///
 /// Consumed by per-session listeners (wired in `golish-agent-app`) which turn
@@ -324,6 +334,30 @@ impl BackgroundJobManager {
         })
     }
 
+    /// Snapshot of the jobs still `Running` that were attributed to `session_id`,
+    /// newest activity irrelevant (caller-order). Finished/killed jobs and jobs
+    /// from other sessions are excluded. Used by the closeout reconciliation
+    /// barrier so the agent doesn't conclude a stage while its own backgrounded
+    /// scans are still in flight (their evidence hasn't landed yet).
+    pub fn running_for_session(&self, session_id: &str) -> Vec<RunningJob> {
+        let now = Instant::now();
+        let jobs = self.jobs.lock();
+        jobs.iter()
+            .filter_map(|(id, state)| {
+                let s = state.lock();
+                if s.status == JobStatus::Running && s.session_id.as_deref() == Some(session_id) {
+                    Some(RunningJob {
+                        job_id: id.clone(),
+                        command: s.command.clone(),
+                        elapsed_ms: now.duration_since(s.started_at).as_millis() as u64,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Request cancellation of a running job. Returns `true` if the job exists.
     pub fn kill(&self, job_id: &str) -> bool {
         if let Some(state) = self.jobs.lock().get(job_id).cloned() {
@@ -446,6 +480,61 @@ mod tests {
         let mgr = BackgroundJobManager::new();
         assert!(mgr.snapshot("job_doesnotexist").is_none());
         assert!(!mgr.kill("job_doesnotexist"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn running_for_session_filters_by_session_and_terminal_state() {
+        let mgr = BackgroundJobManager::new();
+        // Two long jobs for sess-A, one for sess-B, plus a quick one for sess-A
+        // that will finish and must drop out of the running list.
+        let a_long = mgr.spawn_for_session(
+            "sleep 30",
+            &ws(),
+            Duration::from_secs(60),
+            Some("sess-A".to_string()),
+        );
+        let _a_other = mgr.spawn_for_session(
+            "sleep 30",
+            &ws(),
+            Duration::from_secs(60),
+            Some("sess-A".to_string()),
+        );
+        let _b_long = mgr.spawn_for_session(
+            "sleep 30",
+            &ws(),
+            Duration::from_secs(60),
+            Some("sess-B".to_string()),
+        );
+        let a_quick = mgr.spawn_for_session(
+            "true",
+            &ws(),
+            Duration::from_secs(60),
+            Some("sess-A".to_string()),
+        );
+        // Let the quick job finish.
+        let _ = wait_terminal(&mgr, &a_quick, Duration::from_secs(5)).await;
+
+        let running = mgr.running_for_session("sess-A");
+        assert_eq!(
+            running.len(),
+            2,
+            "sess-A has exactly two still-running jobs (the finished one drops out): {running:?}"
+        );
+        assert!(running.iter().any(|j| j.job_id == a_long));
+        assert!(
+            running.iter().all(|j| j.command == "sleep 30"),
+            "the finished `true` job must not appear: {running:?}"
+        );
+
+        // Unknown session → empty.
+        assert!(mgr.running_for_session("sess-unknown").is_empty());
+
+        // Clean up the long-runners so the test process doesn't leak children.
+        for j in mgr.running_for_session("sess-A") {
+            mgr.kill(&j.job_id);
+        }
+        mgr.kill(&_b_long);
     }
 
     #[tokio::test]

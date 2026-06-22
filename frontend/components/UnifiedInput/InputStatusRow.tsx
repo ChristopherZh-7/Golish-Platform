@@ -11,7 +11,16 @@ import { cn } from "@/lib/utils";
 import { isMockBrowserMode } from "@/mocks";
 import { useContextMetrics, useInputMode, useSessionAiConfig, useStore } from "@/store";
 import { selectDisplaySettings } from "@/store/slices";
-import { ContextUsageBadge, DebugPopover, LangfuseBadge, McpServersBadge } from "./StatusBadges";
+import {
+  BackgroundJobsBadge,
+  ContextUsageBadge,
+  DebugPopover,
+  LangfuseBadge,
+  McpServersBadge,
+} from "./StatusBadges";
+
+/** Stable empty array so the selector doesn't churn re-renders when idle. */
+const EMPTY_BG_JOBS: never[] = [];
 
 interface InputStatusRowProps {
   sessionId: string;
@@ -30,6 +39,7 @@ export const InputStatusRow = memo(function InputStatusRow({ sessionId }: InputS
 
   const sessionWorkingDirectory = useStore((state) => state.sessions[sessionId]?.workingDirectory);
   const contextMetrics = useContextMetrics(sessionId);
+  const backgroundJobs = useStore((state) => state.backgroundJobs[sessionId]) ?? EMPTY_BG_JOBS;
 
   const [providerSettings, refreshProviderSettings] = useProviderSettings();
   const { langfuseActive, telemetryStats } = providerSettings;
@@ -138,6 +148,7 @@ export const InputStatusRow = memo(function InputStatusRow({ sessionId }: InputS
 
       {/* Right side */}
       <div className="flex items-center gap-2">
+        <BackgroundJobsBadge jobs={backgroundJobs} />
         {isMockBrowserMode() ? (
           <span className="text-[var(--ansi-yellow)] text-[11px] truncate max-w-[200px]">
             Browser only mode

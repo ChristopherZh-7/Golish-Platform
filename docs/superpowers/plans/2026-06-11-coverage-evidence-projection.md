@@ -1,5 +1,7 @@
 # Coverage = 证据账本投影 实现计划
 
+> **状态更新（2026-06-22 · 核当前代码 + git log）**：✅ **已落地**（PR1/PR2/PR3）。PR2 evidence 列 migration `20260611000001_evidence_technique_outcome.sql` + `20260611000002_evidence_asset.sql`；PR3 `coverage_complete` 的 `derive_from_evidence` 投影已接（`target_intel/spec.json` + `rule_engine.rs` + `evidence_facts.rs`）。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 `executing-plans` 逐任务实现此计划。每个任务先写失败测试（TDD），看它失败，再写最小实现，再验证，再 commit。
 
 **目标：** 把 stage coverage 矩阵从「模型手写」改为「harness 对证据账本的确定性投影」；弱模型提交退化为「确认 scope + 交 findings」。先 `target_intel` 单阶段灰度。

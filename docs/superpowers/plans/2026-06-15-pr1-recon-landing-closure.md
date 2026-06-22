@@ -1,5 +1,7 @@
 # PR1 · Recon 落库闭合 实现计划
 
+> **状态更新（2026-06-22 · 核当前代码 + git log）**：✅ **已落地**。三 landing 钩子已收敛为共享入口 `land_target_intel_coverage`（`organization_recon/persistence.rs:175`），GUI 路径与 **agent 路径（`asset_intel/agent_intel.rs:228`）两路共用**；其后被 slim-enrich（2026-06-18，commit `f314fa96`）进一步收窄为 `recon_map_assets`/`recon_lookup_whois`。本计划目标（侦察结果落进 gate 读的业务表）已达成。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 `.cursor/skills/executing-plans` 逐任务实现此计划。
 > 关联设计：`docs/design/2026-06-15-db-truth-single-source-deliverable.md` §5 PR1、`docs/design/2026-06-14-target-intel-landing-and-tools.md` §2③。
 > 决策：D1=抽共享函数（§8）、D3=WHOIS 走现成 RDAP。**D2（per-technique 可引用账本 fact）移到 PR2**——它只在 PR2 被消费（让投影 deliverable 引用真实 id），PR1 保持「数据落进业务表」这一可独立验证的干净单元。

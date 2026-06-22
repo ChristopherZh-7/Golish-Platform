@@ -2,6 +2,8 @@
 
 > 日期：2026-06-12
 > 状态：设计（总纲 / roadmap）。每个 Phase 另有独立设计文档（见 §7），实现计划在 `docs/superpowers/plans/`。
+>
+> **进度速览（2026-06-22 · 核当前代码 + git log）**：Phase 0（DB 真值权威 gate）✅；coverage 业务表投影 + `(asset,technique,outcome)` evidence 列 ✅；落库闭环 PR1 ✅、slim-enrich（recon_map_assets/recon_lookup_whois）✅；资产身份 E1 仅 PR-A ✅（**PR-B/C/D 未做** → 身份漂移死循环可能仍在）；host-aware 2c-3a ✅、**2c-3b 已回退**。各子项详见对应 phase/设计文档头部的状态戳。
 > 作者背景：BaJie MCP-agent-3（DISPATCH off），承接 deepseek+xiaomi 活体 run（`/tmp/golish-stage-run-split.log` + transcript `stage-run-c4422add`）的实证分析。
 > 关联既有设计：`2026-06-12-db-truth-driven-gate-and-diagnostic-reflector.md`、`2026-06-12-active-collection-db-truth-closure.md`、`2026-06-09-active-stage-verify-first.md`、`2026-06-10-coverage-asset-scope-isolation.md`、`2026-06-02-organization-recon-closed-loop.md`。
 > 不变量：AGENTS.md I7（阶段交付必须有 evidence）、I8（「已检查为空」≠「未检查」）、I10（schema 先扩可空字段）、§2.5（安全语义变更先设计）、§2.7（改 schema 先确认）。

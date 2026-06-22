@@ -2,6 +2,8 @@
 
 > 日期：2026-06-12
 > 状态：设计（可执行级，首个实现目标）。总纲见 `2026-06-12-redteam-db-truth-master.md`。实现计划见 `docs/superpowers/plans/2026-06-12-redteam-phase0-db-truth-authoritative-gate.md`。
+>
+> **状态更新（2026-06-22 · 核当前代码 + git log）**：✅ **已落地**——`authoritative_found` 权威 gate（`found` 只认 DB 真值，模型自报 / 改名 evidence 一律不算）已在 `resources/harness/stages/target_intel/spec.json` + `golish-agent-kit/src/harness/gate/rule_engine.rs`；per-org 权威 stage gate commit `15f88c3a`。
 > 不变量：AGENTS.md I7 / I8 / §2.5（gate 语义变更先设计）；gate 纯函数不破。
 
 ---
