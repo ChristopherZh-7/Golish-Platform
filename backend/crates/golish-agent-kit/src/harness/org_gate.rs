@@ -9,8 +9,8 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::gate::rule_engine::{EvidenceFact, EvidenceOutcome, GateContext};
-use super::gate::{validate_stage_gate_with_context, GateResult};
+use super::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
+use super::gate::{validate_stage_gate_with_context, GateContextBuilder, GateResult};
 use super::stage_spec::StageSpec;
 use super::types::StageDeliverable;
 use super::{load_embedded_stage_spec, StageKind};
@@ -46,6 +46,9 @@ pub fn facts_from_rows(rows: Vec<(String, String, String, i64)>) -> Vec<Evidence
             technique,
             outcome: if outcome.eq_ignore_ascii_case("found") {
                 EvidenceOutcome::Found
+            } else if outcome.eq_ignore_ascii_case("error") {
+                // T2：失败检查（gray-switch）记 error，≠ checked_empty。
+                EvidenceOutcome::Error
             } else {
                 EvidenceOutcome::Empty
             },
@@ -174,10 +177,7 @@ pub async fn evaluate_org_stage_gate(
     // 2) 资产轴 + 类型（org 隔离）。空资产集 → 不注入（gate 回退自报，coverage_complete
     //    自带「空矩阵但声明了期望技术 → BLOCK」保护）。
     let in_scope_assets = repo.in_scope_assets(org_id).await.unwrap_or_default();
-    let asset_types: Option<std::collections::HashMap<String, String>> = {
-        let typed = repo.in_scope_typed_assets(org_id).await.unwrap_or_default();
-        (!typed.is_empty()).then(|| typed.into_iter().collect())
-    };
+    let typed_assets = repo.in_scope_typed_assets(org_id).await.unwrap_or_default();
 
     // 3) 证据事实：账本投影 + DB 业务表真值（Found）合并。
     let mut facts: Vec<EvidenceFact> = repo
@@ -195,12 +195,43 @@ pub async fn evaluate_org_stage_gate(
         }
     }
 
-    let ctx = GateContext {
-        in_scope_assets: (!in_scope_assets.is_empty()).then_some(in_scope_assets),
-        asset_types,
-        expected_techniques: None, // 回退 spec.expected_techniques（target_intel 已声明）
-        evidence_facts: (!facts.is_empty()).then_some(facts),
-    };
+    // PR-D (#4/E3, 设计 2026-06-23-technique-outcomes-provenance)：灰度从
+    // technique_outcomes union 进 facts（per-org fan-out gate；与 execute.rs 主路径同
+    // 源）。flag off / org=None = 逐字节不变（additive）。outcome blocked→Error。
+    if crate::harness::feature_flags::technique_outcomes_read_enabled() {
+        if let Some(oid) = org_id {
+            let projected: Vec<EvidenceFact> = repo
+                .technique_outcome_facts(oid, session_id)
+                .await
+                .into_iter()
+                .filter_map(|(asset, technique, outcome, evidence_id)| {
+                    let outcome = match outcome.as_str() {
+                        "found" => EvidenceOutcome::Found,
+                        "empty" => EvidenceOutcome::Empty,
+                        "error" | "blocked" => EvidenceOutcome::Error,
+                        _ => return None,
+                    };
+                    Some(EvidenceFact {
+                        asset,
+                        technique,
+                        outcome,
+                        evidence_id,
+                    })
+                })
+                .collect();
+            facts.extend(projected);
+        }
+    }
+
+    // 统一组装入口（设计 2026-06-23-unified-gate-context-builder）：归一/合并收口到
+    // GateContextBuilder。expected_techniques=None ⇒ 回退 spec.expected_techniques
+    // （target_intel 已声明）。
+    let ctx = GateContextBuilder::new()
+        .in_scope_assets(in_scope_assets)
+        .typed_assets(typed_assets)
+        .extend_evidence_facts(facts)
+        .expected_techniques(None)
+        .build();
 
     validate_stage_gate_with_context(deliverable, &spec, None, None, &ctx)
 }

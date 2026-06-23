@@ -66,6 +66,70 @@ impl GolishDbRepoProvider {
         Ok(rows)
     }
 
+    /// PR-C step2b（#4 / E3，设计 2026-06-23-technique-outcomes-provenance）：upsert 一条
+    /// 覆盖结局 + provenance 进 `technique_outcomes`。`asset` 在此过 `canonical_asset_key`
+    /// 归一（E1：表的 UNIQUE/gate join 依赖规范键，否则身份漂移）。`collected_at` 取
+    /// 当前时刻；`result_count`/`confidence` 暂留 None（落点暂无该信号）。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn upsert_technique_outcome_impl(
+        &self,
+        organization_id: uuid::Uuid,
+        run_id: &str,
+        asset: &str,
+        technique: &str,
+        outcome: &str,
+        source: Option<&str>,
+        query: Option<&str>,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<()> {
+        let canonical = golish_pentest_domain::canonical_asset_key(asset)
+            .map(|k| k.key)
+            .unwrap_or_else(|| asset.to_string());
+        let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
+            organization_id,
+            run_id: run_id.to_string(),
+            asset: canonical,
+            technique: technique.to_string(),
+            outcome: outcome.to_string(),
+            source: source.map(str::to_string),
+            query: query.map(str::to_string),
+            result_count: None,
+            confidence: None,
+            evidence_ids: evidence_ids.to_vec(),
+            collected_at: Some(chrono::Utc::now()),
+        };
+        golish_db::repo::technique_outcomes::upsert(&self.pool, &write).await
+    }
+
+    /// PR-D（#4 / E3）：读某 `(org, run)` 的 technique_outcomes 行 → coverage 投影元组
+    /// `(asset, technique, outcome, evidence_id)`。`evidence_id` 取 `evidence_ids` 首个
+    /// （无则 0 哨兵）。fail-safe：读失败 → 空 + warn（gate 退回 coverage_truth/ledger）。
+    pub(crate) async fn technique_outcome_facts_impl(
+        &self,
+        organization_id: uuid::Uuid,
+        run_id: &str,
+    ) -> Vec<(String, String, String, i64)> {
+        match golish_db::repo::technique_outcomes::list_for_run(&self.pool, organization_id, run_id)
+            .await
+        {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|r| {
+                    let eid = r.evidence_ids.first().copied().unwrap_or(0);
+                    (r.asset, r.technique, r.outcome, eid)
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    target: "harness::submit_tool",
+                    error = %e,
+                    "technique_outcome_facts read failed; gate runs without technique_outcomes projection"
+                );
+                Vec::new()
+            }
+        }
+    }
+
     pub(crate) async fn evidence_existing_ids_impl(
         &self,
         ids: &[i64],
@@ -138,6 +202,8 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
                     let outcome = match outcome.as_str() {
                         "found" => EvidenceOutcome::Found,
                         "empty" => EvidenceOutcome::Empty,
+                        // T2：失败检查（gray-switch GOLISH_FAILURE_OUTCOME_ERROR）记 error。
+                        "error" => EvidenceOutcome::Error,
                         _ => return None,
                     };
                     Some(EvidenceFact {
@@ -196,5 +262,20 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
         // org-isolated (`in_scope_values(None, org_id)`), unlike the whole-DB
         // `in_scope_targets`; keeps the submit preview's asset axis to THIS org.
         self.in_scope_assets_impl(org_id).await.unwrap_or_default()
+    }
+
+    async fn in_scope_typed_assets(&self, org_id: Option<uuid::Uuid>) -> Vec<(String, String)> {
+        // T3 (设计 2026-06-23-submit-preview-authoritative-context): host-aware
+        // asset_types for the submit preview (same source as the stage-close gate).
+        self.in_scope_typed_assets_impl(org_id)
+            .await
+            .unwrap_or_default()
+    }
+
+    async fn in_scope_target_types(&self, org_id: Option<uuid::Uuid>) -> Vec<String> {
+        // T3: distinct targets.type for the preview's dynamic expected_techniques.
+        self.in_scope_target_types_impl(org_id)
+            .await
+            .unwrap_or_default()
     }
 }

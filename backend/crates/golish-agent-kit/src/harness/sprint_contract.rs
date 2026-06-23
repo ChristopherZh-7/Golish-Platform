@@ -126,6 +126,28 @@ impl DefaultSprintContractGenerator {
     }
 }
 
+/// 由 in-scope 资产的 `targets.type`（字符串集）派生该 stage 的**动态期望技术**
+/// （host-aware）。`target_types` 空 ⇒ `None`（gate 回退 `spec.expected_techniques`
+/// 静态值）。
+///
+/// 主 agent stage-close hook（`execute.rs::gate_expected_techniques` 委托此函数）与
+/// submit 预检（`harness_submit_tool.rs::gate_context`）**共用同一函数**，保证两路
+/// 期望技术口径逐字节一致（设计 `2026-06-23-submit-preview-authoritative-context.md`）。
+pub fn expected_techniques_for_target_types(
+    stage: StageKind,
+    target_types: &[String],
+) -> Option<Vec<String>> {
+    if target_types.is_empty() {
+        return None;
+    }
+    let classes: Vec<crate::harness::technique_resolver::AssetClass> = target_types
+        .iter()
+        .map(|s| crate::harness::technique_resolver::AssetClass::from_target_type(s))
+        .collect();
+    let techs = DefaultSprintContractGenerator::expected_techniques_for(stage, &classes);
+    (!techs.is_empty()).then_some(techs)
+}
+
 #[async_trait]
 impl SprintContractGenerator for DefaultSprintContractGenerator {
     async fn generate(
@@ -212,6 +234,23 @@ mod tests {
 
     const ASSESSMENT_SKELETON_JSON: &str =
         include_str!("../../../../../resources/harness/profiles/assessment.sprint_skeleton.json");
+
+    #[test]
+    fn expected_techniques_for_target_types_empty_is_none() {
+        // 空类型集 → None（gate 回退 spec.expected_techniques 静态值）。
+        assert!(expected_techniques_for_target_types(StageKind::TargetIntel, &[]).is_none());
+    }
+
+    #[test]
+    fn expected_techniques_for_target_types_domain_yields_intel_techniques() {
+        // 域名类型 → 非空动态期望技术（stage-close 与 submit 预检共用同一派生）。
+        let techs = expected_techniques_for_target_types(
+            StageKind::TargetIntel,
+            &["domain".to_string()],
+        )
+        .expect("domain target_intel should derive expected techniques");
+        assert!(!techs.is_empty());
+    }
 
     #[test]
     fn parse_assessment_skeleton_has_external_attack_surface() {

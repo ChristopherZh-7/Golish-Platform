@@ -38,6 +38,7 @@ pub mod subtasks;
 pub mod target_assets;
 pub mod targets;
 pub mod tasks;
+pub mod technique_outcomes;
 pub mod terminal_logs;
 pub mod tool_calls;
 pub mod vault;

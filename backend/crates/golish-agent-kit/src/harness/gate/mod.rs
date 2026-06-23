@@ -7,6 +7,7 @@
 //! Observability ids 字段 (`gate_result_id` / `blocking_reason_id`) 已加入
 //! [`GateResult`], Phase 2 完整 wiring 时填.
 
+pub mod context_builder;
 pub mod contract_check;
 pub mod finding_verification_check;
 pub mod freshness_check;
@@ -16,6 +17,8 @@ pub mod schema_check;
 pub mod scope_check;
 pub mod surface_coverage_check;
 pub mod vacuous_check;
+
+pub use context_builder::GateContextBuilder;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -534,6 +537,7 @@ mod tests {
             status: CoverageStatus::CheckedEmpty,
             evidence_refs: vec![eid],
             note: Some("scanned, no finding".into()),
+            reason_kind: None,
             tested_units: 1,
             total_units: 1,
             sampling_rationale: None,
@@ -545,6 +549,7 @@ mod tests {
                 status: CoverageStatus::Found,
                 evidence_refs: vec![eid],
                 note: None,
+                reason_kind: None,
                 tested_units: 1,
                 total_units: 1,
                 sampling_rationale: None,
@@ -558,6 +563,7 @@ mod tests {
                 status: CoverageStatus::NotApplicable,
                 evidence_refs: vec![],
                 note: Some("no outbound fetch surface".into()),
+                reason_kind: None,
                 tested_units: 0,
                 total_units: 0,
                 sampling_rationale: None,
@@ -762,6 +768,7 @@ mod tests {
                 status: CoverageStatus::CheckedEmpty,
                 evidence_refs: vec![eid],
                 note: Some("scanned".into()),
+                reason_kind: None,
                 tested_units: 1,
                 total_units: 1,
                 sampling_rationale: None,

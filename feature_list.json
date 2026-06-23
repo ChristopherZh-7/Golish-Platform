@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
   "version": "0.1.10",
-  "last_updated": "2026-06-17",
+  "last_updated": "2026-06-23",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -10,6 +10,132 @@
     "passing"
   ],
   "features": [
+    {
+      "id": "technique-outcomes-provenance-migration-2026-06-23",
+      "priority": 2,
+      "area": "backend: golish-db/migrations/20260623000002_technique_outcomes.sql(新表，纯新增). 设计 docs/design/2026-06-23-technique-outcomes-provenance.md（建于 2026-06-18 E3 §3.3 + D0 之上）",
+      "title": "#4（评审 claim #4 DB-truth 带 source）· PR-C step1+2a：建 technique_outcomes 物化表（E3 §3.3 + provenance 列 source/query/result_count/confidence/collected_at）+ golish-db repo + step2b 写路径（主命令路径）+ PR-D 读路径（execute.rs 主路径 gate dual-read union）。#4 端到端就绪（双 gray-switch 默认 off）；其余写点(recon/enrich)+org_gate/submit 读+PR-E 清旧 union 待续。",
+      "user_visible_behavior": "无（本步仅 migration，表先 inert，无读无写=零行为变化）。后续 PR-C 写路径接入后：每 (run × asset × technique) 落一行带 outcome(found|empty|error|blocked)+source(provider)+query+evidence_ids+collected_at+confidence+seq，coverage gate 可审计追溯（哪个 provider、哪条 query、何时采）。",
+      "status": "blocked",
+      "design": "docs/design/2026-06-23-technique-outcomes-provenance.md（建于 docs/design/2026-06-18-canonical-asset-identity-and-coverage-join-key.md §3.3 E3 + D0 拍板之上；#4=E3 表 + provenance 列）",
+      "plan": "PR-C step1（本步）migration only → PR-C step2 golish-db repo upsert/读(IDOR) + 命令路径&persistence 落库点同步 upsert → PR-D gate 从本表投影 EvidenceFact(灰度 dual-read vs coverage_truth) → PR-E 清旧 union",
+      "verification": [
+        "[✓] cargo check -p golish-db → exit 0（migration 静态资源被 sqlx::migrate! 收纳，crate 编译通过）",
+        "[✓] FK 目标核实：organizations(id) UUID PRIMARY KEY 存在（migration 20260517194500）→ REFERENCES organizations(id) ON DELETE CASCADE 合法",
+        "[✓] SQL sanity：CREATE TABLE IF NOT EXISTS + 2 索引 + COMMENT，纯新增、I10 安全",
+        "[未验·用户环境] app 重启 apply migration → \\d technique_outcomes 列齐、UNIQUE(run_id,asset,technique)/2 索引在",
+        "[✓] PR-C step2a · golish-db repo technique_outcomes.rs（upsert + list_for_run + 4 SQL-builder 测）：cargo nextest -p golish-db → 101 passed（+4）；cargo clippy -p golish-db --all-targets --no-deps -D warnings → exit 0；ReadLints clean",
+        "[✓] PR-C step2b · 写路径接线（主命令路径）：DbRepoProvider::upsert_technique_outcome（默认 no-op）+ golish-agent-app upsert_technique_outcome_impl（canonical_asset_key 归一 asset + 调 golish-db upsert）+ override + direct/mod.rs pentest_run 命令路径调用（gray-switch GOLISH_TECHNIQUE_OUTCOMES_WRITE 默认 off、org 绑定、非致命 warn）+ feature flag(3 测) + golish-agent-app Cargo +golish-pentest-domain。验证：cargo nextest -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime → 1005 passed（+3）；cargo clippy 4 crate -D warnings → exit 0；ReadLints clean",
+        "[✓] PR-D · gate 读路径（execute.rs 主路径）：DbRepoProvider::technique_outcome_facts（默认空）+ golish-agent-app impl（list_for_run+map，fail-safe 空）+ override + feature flag technique_outcomes_read_enabled（env GOLISH_TECHNIQUE_OUTCOMES_READ 默认 off，3 测）+ execute.rs fetch_evidence_facts_for_gate 灰度 union（dual-read，outcome blocked→Error，flag off 逐字节不变）。验证：cargo nextest 3 crate → 1008 passed（+3）；cargo clippy 3 crate -D warnings → exit 0",
+        "[✓] PR-D 读路径扩到 per-org fan-out gate（org_gate.rs evaluate_org_stage_gate 同款灰度 union，outcome blocked→Error）：cargo nextest -p golish-agent-kit → 709 passed；cargo clippy -p golish-agent-kit -D warnings → exit 0",
+        "[未做·后续] 写点 recon_discover_subsidiaries（company-name asset 需 org-level 投影，与 PR-D union 时序需对齐——故未盲接）+ persistence.rs enrich 写点 + submit 预检读路径（须扩 EvidenceLedgerQuery seam）+ PR-E 清旧 coverage_truth union（读全切表、活体稳后）"
+      ],
+      "evidence": "2026-06-23 BaJie BajieAsk-agent-4（全栈工程师, DISPATCH off, 用户『从 #4 起手』→『A 写设计+migration』）。可行性核查（读 coverage_truth.rs 全 SQL 构造器）实证：source/query/confidence 库里没存 → #4 须 schema。复用已拍板 E3（2026-06-18 §3.3 D0 用户『可以做新表』）→ #4=E3 表 + provenance 列。写设计 doc + migration 20260623000002（E3 列 + source/query/result_count/confidence/collected_at；outcome 扩 found|empty|error|blocked 承接 T2）。cargo check -p golish-db exit 0；organizations(id) FK 核实。未 commit、未 push、未 apply。",
+      "notes": "§2.1：标 blocked（不占 in_progress 槽；当前 in_progress=intel-eas-perdim-freshness）——blocked 于：① 用户审 design ② 决定是否继续 PR-C step2 写路径 / PR-D 读路径（live 切 gate 真值源，更重）。§2.7：建表 D0 已确认（2026-06-18），migration 加性（CREATE TABLE IF NOT EXISTS）I10 安全；未 apply（用户环境重启才 apply）。依赖 E1 canonical_asset_key（PR-A 已落 + PR-B 部分）：本表 asset 须规范键，读/写接入前确认 PR-B in_scope_assets 归一就绪。表 inert 落地无行为变化、可 DROP 回滚。",
+      "remember": "#4=E3 technique_outcomes 表 + provenance。migration 20260623000002_technique_outcomes.sql：列 = E3(id/organization_id NOT NULL FK organizations(id) CASCADE/run_id/asset=canonical_key/technique/outcome/evidence_ids BIGINT[]/seq/created_at/updated_at/UNIQUE(run_id,asset,technique)) + #4(source/query/result_count/confidence/collected_at)；outcome 取 found|empty|error|blocked(承接 T2)。2 索引(run+org / org+asset+technique join)。本步只建表 inert(I10 step1)。后续 PR-C step2 写路径(命令路径 evidence_facts + persistence 钩子 upsert，asset 走 canonical_asset_key，非致命 warn)、PR-D gate 读(从表投影 EvidenceFact 灰度 dual-read vs coverage_truth，rule_engine 判定 byte 不变)。依赖 E1 规范键(PR-A/B)。设计 2026-06-23-technique-outcomes-provenance.md。"
+    },
+    {
+      "id": "failure-outcome-not-checked-empty-2026-06-23",
+      "priority": 2,
+      "area": "backend: golish-agent-kit/src/harness/{feature_flags.rs(failure_outcome_error_enabled opt-in 默认 off + 纯函数 + 3 测), gate/rule_engine.rs(EvidenceOutcome::Error + coverage_complete error_ok 终态 + 3 测), evidence_facts.rs(passive_intel_outcome_for_run +distinguish_failure 参 + 1 测), org_gate.rs(facts_from_rows error→Error), task_orchestrator/subtask_phases/execute.rs(fetch_evidence_facts_for_gate match +error 臂)}; golish-agent-app/src/ai/db_bridge/evidence.rs(match +error 臂); golish-agent-runtime/src/agentic_loop/{tool_execution/direct/mod.rs(passive_intel_outcome_for_run 传 flag), tool_list.rs(顺手修 pre-existing doc lint)}. 设计 docs/design/2026-06-23-failure-outcome-not-checked-empty.md",
+      "title": "T2（评审 claim #2）：failure ≠ checked_empty。失败的被动检查（非零退出/超时/502）记新 outcome `error`（≠ empty），gate 仍当终态（保住不无限重试）但语义为『失败阻断』、绝不当已查为空。gray-switch GOLISH_FAILURE_OUTCOME_ERROR 默认 off。无 schema 变更（自由文本列）。",
+      "user_visible_behavior": "GOLISH_FAILURE_OUTCOME_ERROR=1 时：失败的被动检查落 evidence_outcome='error'（而非 'empty'），gate 把 error 事实当终态（CheckedEmpty∪Blocked 终态集，避免对永远填不上的格无限重试），但绝不算 found/checked_empty；run_tree.py 按 evidence_outcome 分组自动把 error 显示为独立一行（失败阻断 vs 已查为空可区分）。默认 off = 失败仍记 empty（逐字节不变）。",
+      "status": "passing",
+      "design": "docs/design/2026-06-23-failure-outcome-not-checked-empty.md（§3.1 数据层 gray-switch distinguish_failure + §3.2 EvidenceOutcome::Error+3 映射 + §3.3 gate error_ok 终态 additive + §3.4 诊断显示 run_tree.py 自动 + §5 无 schema 变更）",
+      "plan": "①feature flag(opt-in default off) ②EvidenceOutcome::Error(==比较,无穷尽 match,零破坏) ③passive_intel_outcome_for_run +distinguish_failure(纯函数,双向测)+caller 传 flag ④3 处 row→fact 映射认 error ⑤coverage_complete error_ok(derive_from_evidence && has_fact(Error) && (CheckedEmpty|Blocked)终态; additive inert without error facts) ⑥TDD",
+      "verification": [
+        "[✓] cargo nextest -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime → 1002 passed/0 skipped（+7 新：failure_outcome flag 3 + passive_intel_outcome_for_run distinguish 1 + gate error_ok 3[终态/不冒充 found/无 derive 时 inert]；既有零回归，failed_run_is_checked_empty 测更新为 flag-off 仍 empty）",
+        "[✓] cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime --all-targets --no-deps -- -D warnings → exit 0（顺手修 tool_list.rs:75 pre-existing doc_lazy_continuation，非本改动引入）",
+        "[✓] ReadLints 7 文件无错",
+        "[✓] schema 核查：audit_log.evidence_outcome 是自由文本 TEXT 无 CHECK 约束（migration 20260611000001）→ 写 'error' 无需 migration、无需 §2.7 schema 确认",
+        "[未跑] just precommit 全量（scoped 验证；默认 off=零行为变化）"
+      ],
+      "evidence": "2026-06-23 BaJie BajieAsk-agent-4（全栈工程师, DISPATCH off, 用户『做 T2 failure≠empty』）。承接 Phase1/T3/T1。改前实证：passive_intel_outcome_for_run !succeeded→'empty'（evidence_facts.rs:171），注释自承故意（防无限重试），但把『失败』与『已查为空』混为一谈（与 I8 精神冲突）。schema 核查确认 evidence_outcome 自由文本无 CHECK → 无需 migration。实现：EvidenceOutcome::Error + 3 映射认 error + gate error_ok（additive，inert without error facts，保住不无限重试）+ passive_intel_outcome_for_run distinguish_failure 参（caller 传 flag，默认 off）。验证全绿见上。未 commit（§2.7 需确认）、未 push。",
+      "notes": "§2.1：passing（不占 in_progress 槽）。gray-switch=env flag opt-in（GOLISH_FAILURE_OUTCOME_ERROR 默认 off），与 scoping_human_gate 默认 on 相反（因这是改 evidence 记录的行为变化，保守默认 off）。次序安全：gate 侧认 error 是 additive 无条件上（无 error 事实时 error_ok 恒假），故先于数据层 flag 落地、不会出现『发 error→gate 不认→掉行→无限重试』。no-infinite-retry 保住：error 在旧 empty 原终态处仍终态（CheckedEmpty∪Blocked）。诊断：run_tree.py 已 GROUP BY evidence_outcome，error 自动独立显示。column comment 仍写 found|empty（轻微滞后，未补 comment-only migration 以免 §2.7）。reason_kind(T1) 可与 error 配合标 provider_missing/rate_limited 等。Phase 2 三轨（T3/T1/T2）全完成。",
+      "remember": "T2 failure≠checked_empty：EvidenceOutcome::Error(rule_engine.rs，==比较无穷尽 match)。passive_intel_outcome_for_run(tech,raw,succeeded,distinguish_failure)：succeeded→输出判定；!succeeded && distinguish→'error'；else 'empty'。caller direct/mod.rs 传 feature_flags::failure_outcome_error_enabled()(env GOLISH_FAILURE_OUTCOME_ERROR 默认 off)。3 处 row→fact 认 'error'→Error(execute.rs fetch_evidence_facts_for_gate / db_bridge evidence.rs / org_gate facts_from_rows)。gate coverage_complete error_ok=derive_from_evidence && has_fact(Error) && (terminal∋CheckedEmpty|Blocked)；additive inert without error facts。无 schema 变更(evidence_outcome 自由文本)。run_tree.py GROUP BY evidence_outcome 自动显示 error。"
+    },
+    {
+      "id": "coverage-note-required-reason-kind-2026-06-23",
+      "priority": 2,
+      "area": "backend: golish-agent-kit/src/harness/{types.rs(ReasonKind 枚举 + CoverageCell.reason_kind:Option<ReasonKind> + serde 测), gate/rule_engine.rs(GateRule::CoverageComplete +require_note_for_other 字段 + dispatch + coverage_complete 参 + other_ok note 子句 + 5 测 + cov_cell_noted 助手), gate/mod.rs/e2e_tests.rs/types.rs(CoverageCell 字面量补 reason_kind:None)}; golish-agent-app/src/ai/harness_submit_tool.rs(parameters() coverage cell schema +reason_kind 枚举 + 断言). 设计 docs/design/2026-06-23-coverage-note-required.md",
+      "title": "T1（评审 claim #1）：blocked/not_applicable 强校验 note 非空（gray-switch require_note_for_other，默认 off）+ 新增 CoverageCell.reason_kind 结构化原因枚举（6 变体，可选元数据 + 进 submit schema）。堵『空 note 蒙混 blocked』。",
+      "user_visible_behavior": "require_note_for_other 翻开的 stage：coverage gate 对 blocked/not_applicable 终态格要求 note 非空（仅空白也不算），否则不算终态 → 缺口 BLOCK。默认 off = 逐字节不变。reason_kind（provider_missing/credential_missing/rate_limited/tool_missing/out_of_scope/not_applicable）作为可选结构化原因进入 submit_stage_deliverable schema，模型可在 blocked/not_applicable 时填类别（与自由文本 note 互补）；本期 gate 不强制 reason_kind。",
+      "status": "passing",
+      "design": "docs/design/2026-06-23-coverage-note-required.md（§3.1 rule 配置 gray-switch + note 子句 + 为何 rule 配置非 env + §3.2 reason_kind 加字段 + §5 激活=按 spec 翻开，本 PR 不翻）",
+      "plan": "①ReasonKind+字段(types.rs,serde default,向后兼容) ②require_note_for_other rule 字段(serde default false)+dispatch+coverage_complete 参 ③other_ok note 子句(off 恒真=逐字节不变) ④submit schema 暴露 reason_kind ⑤TDD",
+      "verification": [
+        "[✓] cargo nextest -p golish-agent-kit -p golish-agent-app → 749 passed/0 skipped（+6 新：require_note_for_other 5 测[默认 off 不变 / on blocked 空 note→BLOCK / on 带 note→PASS / 仅空白不算 / not_applicable 同理] + reason_kind serde snake_case+default 1；既有 743 零回归，8 CoverageCell 字面量补 reason_kind:None）",
+        "[✓] cargo clippy -p golish-agent-kit -p golish-agent-app --all-targets --no-deps -- -D warnings → exit 0 零告警",
+        "[✓] ReadLints 5 文件无错",
+        "[未跑] just precommit 全量（scoped 验证；默认 off=零行为变化）",
+        "[未做·按设计] 不在本 PR 翻任何 spec 的 require_note_for_other（live gate 收紧，留用户逐阶段灰度，同 perdim-freshness 流程）"
+      ],
+      "evidence": "2026-06-23 BaJie BajieAsk-agent-4（全栈工程师, DISPATCH off, 用户『接着做 T1』）。承接 Phase 1/T3。改前实证：rule_engine.rs other_ok 经 cell_status 只看 status 不看 note，注释自承『不收紧』；CoverageStatus 文档却要求 blocked/not_applicable『必须 note』=代码与文档/I8 矛盾。实现：ReasonKind 枚举+字段（加性 serde default）+ require_note_for_other rule 灰度位（serde default false，与 authoritative_found 同款）+ other_ok 加 note 子句（off 恒真=逐字节不变）+ submit schema 暴露 reason_kind。验证全绿见上。未 commit（§2.7 需确认）、未 push。",
+      "notes": "§2.1：passing（不占 in_progress 槽）。gray-switch=rule 配置（非 env），与 host_aware_coverage/freshness_window 同模式（gate 纯函数/DB-free/env-free，按 spec 灰度）。默认 off ⇒ 落地零行为变化；激活=目标 spec.json 的 coverage_complete 规则加 require_note_for_other:true（live 收紧，本 PR 不翻）。reason_kind 本期仅加字段+schema，gate 不强制（用户『最好』=可选）；后续可加 toggle 强制 reason_kind + 用它做更细 recovery 提示。剩余 Phase 2：T2 failure≠checked_empty（高风险，可能动 schema 须 §2.7）。CoverageCell 非 ts-rs 导出，无前端类型链影响。",
+      "remember": "T1 coverage note 强校验：GateRule::CoverageComplete.require_note_for_other(serde default false)→coverage_complete→other_ok 用 cell_other_ok 闭包(status 命中 && (!require_note_for_other || note.trim 非空))；off 恒真=逐字节不变；按 spec 灰度翻开=live 收紧。ReasonKind 枚举(types.rs, snake_case: provider_missing/credential_missing/rate_limited/tool_missing/out_of_scope/not_applicable)+CoverageCell.reason_kind:Option<ReasonKind>(serde default None,加性)。submit parameters() coverage cell schema 含 reason_kind 枚举。8 个 CoverageCell 字面量(gate/mod.rs/e2e_tests.rs/types.rs/rule_engine.rs cov_cell+cov_cell_dn)补 reason_kind:None。reason_kind gate 不强制(本期)。"
+    },
+    {
+      "id": "unified-gate-context-builder-2026-06-23",
+      "priority": 2,
+      "area": "backend: golish-agent-kit/src/harness/{gate/context_builder.rs(新建 GateContextBuilder + 9 等价性单测), gate/mod.rs(pub mod + 重导出), mod.rs(重导出 GateContextBuilder), org_gate.rs(evaluate_org_stage_gate 手搓 GateContext→builder), task_orchestrator/subtask_phases/execute.rs(stage-close gate_ctx→builder)}; golish-agent-app/src/ai/harness_submit_tool.rs(gate_context 预检→builder, import). 设计 docs/design/2026-06-23-unified-gate-context-builder.md; 计划 docs/superpowers/plans/2026-06-23-unified-gate-context-builder.md",
+      "title": "统一 GateContext 构造（Phase 1，行为保持）：把散在 3 个 gate 入口（主 agent stage-close / per-org fan-out / submit 预检）各自手搓的 GateContext 组装（empty→None 归一 + typed→map + evidence-facts 合并）收成单一 GateContextBuilder，消除 submit 预检漏 asset_types/expected_techniques 的隐式 Default 漂移。",
+      "user_visible_behavior": "无用户可见行为变化（纯后端组装重构，gate 判定逐字节不变）。3 入口现走同一 GateContextBuilder；submit 预检仍有意保持不喂 asset_types/expected_techniques（加 // Phase 2 注释把隐式 Default 变成可见决策），补全为完整 authoritative 口径属 gray-switch 后续 PR。",
+      "status": "passing",
+      "design": "docs/design/2026-06-23-unified-gate-context-builder.md（§3 builder API + §4 行为保持接线 + §7 Phase 2 deferred: submit 预检补口径 / 查询编排统一 / note 强校验·reason_kind·db-truth source 单点加字段）",
+      "plan": "docs/superpowers/plans/2026-06-23-unified-gate-context-builder.md（Task1 builder TDD / Task2 导出 / Task3 接线 3 入口 / Task4 验证）",
+      "verification": [
+        "[✓] cargo nextest -p golish-agent-kit -p golish-agent-app → 737 passed/0 skipped（含新 harness::gate::context_builder::tests 9 个等价性测 + harness_submit_tool::tests 全绿含 target_intel_found_cell_credited_from_evidence_facts / _from_db_truth_facts，即改动的 submit 预检 gate 路径零回归）",
+        "[✓] cargo clippy -p golish-agent-kit -p golish-agent-app --all-targets --no-deps -- -D warnings → exit 0 零告警",
+        "[✓] ReadLints 6 文件无错",
+        "[未跑] just precommit 全量（按既有会话惯例 scoped 验证，全量较慢；本改动零行为变化 + 既有测试零回归 = 无 precommit 回归风险）"
+      ],
+      "evidence": "2026-06-23 BaJie BajieAsk-agent-4（全栈工程师, DISPATCH off, 用户『开工统一 GateContextBuilder』，承接本会话对另一会话 6 条 gate 建议的评审：claim ③ 统一 GateContextBuilder）。改前实证 3 入口构造差异：execute.rs:2222 四字段全塞 / org_gate.rs:198 expected_techniques=None / harness_submit_tool.rs:351 asset_types+expected_techniques 走 Default（漏）。实现：新建 context_builder.rs（累加器 + build() 唯一 empty→None 归一）+ 接线 3 入口（execute.rs Option.unwrap_or_default 适配、org_gate/submit 删手搓 then_some）。GateContext import 在 org_gate.rs 变 unused 已移除。叠加于另一会话 perdim-freshness commit 649fef1e 之上、与之正交。未 commit（§2.7 需用户确认）、未 push。",
+      "notes": "§2.1：本条目落 passing（终态，不占 in_progress 槽；当前唯一 in_progress = intel-eas-perdim-freshness）。行为保持铁证 = 既有 gate/org_gate/submit_tool 测全绿（含直接打 submit 预检 gate 路径的 target_intel_* 测）+ 新 9 等价性测。Phase 2（deferred，单独 PR）：① submit 预检补 asset_types+expected_techniques（gray-switch）② Site A/B repo 查询编排收门面 ③ 评审 claim #1 note 强校验/reason_kind、#2 failure≠checked_empty、#4 db-truth 带 source 时只在 builder 一处加字段。",
+      "remember": "GateContextBuilder（golish-agent-kit/src/harness/gate/context_builder.rs）= gate 上下文唯一组装入口：链式 in_scope_assets(Vec)/typed_assets(Vec<(String,String)>)/asset_types_map(HashMap)/extend_evidence_facts(IntoIter)/expected_techniques(Option<Vec>)→build()（唯一 empty→None 归一；expected_techniques 不归一，Some(vec![])≠None）。3 入口：execute.rs stage-close（四字段，Option.unwrap_or_default 适配）、org_gate.rs evaluate_org_stage_gate（expected_techniques=None 回退 spec）、harness_submit_tool.rs gate_context 预检（Phase 2/T3 已补 asset_types/expected_techniques，见 submit-preview-authoritative-context-2026-06-23）。重导出 crate::harness::GateContextBuilder + golish_agent_kit::harness::GateContextBuilder。"
+    },
+    {
+      "id": "submit-preview-authoritative-context-2026-06-23",
+      "priority": 2,
+      "area": "backend: golish-agent-kit/src/harness/{feature_flags.rs(submit_preview_authoritative_context_enabled + 纯函数 + 3 测), sprint_contract.rs(pub expected_techniques_for_target_types + 2 测), mod.rs(重导出 helper), task_orchestrator/subtask_phases/execute.rs(gate_expected_techniques 委托 helper)}; golish-agent-app/src/ai/{harness_submit_tool.rs(EvidenceLedgerQuery +in_scope_typed_assets/+in_scope_target_types 默认空; gate_context(stage,authoritative) 灰度补 asset_types/expected_techniques; 调用方传 flag; +TypedAxisMock on/off 测), db_bridge/evidence.rs(两 seam 委托 *_impl)}. 设计 docs/design/2026-06-23-submit-preview-authoritative-context.md",
+      "title": "T3 收尾 GateContextBuilder：submit 预检补全 authoritative 口径（asset_types + 动态 expected_techniques），与 stage-close 同口径，消除预检假 PASS / close BLOCK 分歧。gray-switch 默认开（env GOLISH_SUBMIT_PREVIEW_AUTHORITATIVE_CONTEXT=0 回退）。",
+      "user_visible_behavior": "灰度开（默认）时，submit 预检 gate 对同一交付物给出与 stage-close 一致的判定：host-aware 阶段按权威 targets.type 分类资产（asset_types）+ 按类型派生动态期望技术（expected_techniques），不再用值推断 + 静态全集。预检 verdict 现对齐权威 close，给 agent 更准的早期 needs_fix。env=0 回退旧行为（仅 in_scope_assets + evidence_facts）。stage-close 与预检共用 expected_techniques_for_target_types 派生函数。",
+      "status": "passing",
+      "design": "docs/design/2026-06-23-submit-preview-authoritative-context.md（§3.1 共享派生消重 + §3.2 扩 seam + §3.3 gate_context(stage,authoritative) 可测 + §3.4 灰度默认开理由）；父 docs/design/2026-06-23-unified-gate-context-builder.md §7.1",
+      "plan": "在 GateContextBuilder（Phase 1）基础上：① feature flag ② pub expected_techniques_for_target_types（execute.rs 委托）③ EvidenceLedgerQuery 加 typed/target-type seam（默认空）+ 真实 impl 委托 *_impl ④ gate_context 参数化 authoritative 走 builder ⑤ TDD",
+      "verification": [
+        "[✓] cargo nextest -p golish-agent-kit -p golish-agent-app → 743 passed/0 skipped（+6 新：feature_flags 3 + expected_techniques_for_target_types 2 + submit_preview_authoritative_flag_gates_asset_types_and_expected_techniques 1；既有 737 零回归含全部 harness_submit_tool 预检测）",
+        "[✓] cargo clippy -p golish-agent-kit -p golish-agent-app --all-targets --no-deps -- -D warnings → exit 0 零告警",
+        "[✓] ReadLints 6 文件无错",
+        "[未跑] just precommit 全量（scoped 验证；gray-switch 默认开但每字段查询 fail-safe 退空）",
+        "[未验·用户环境] 活体：开关开下真跑 host-aware 阶段（EAS/enumeration）确认预检与 close 判定一致"
+      ],
+      "evidence": "2026-06-23 BaJie BajieAsk-agent-4（全栈工程师, DISPATCH off, 用户『继续做 Phase 2』→『先做 T3 收尾Builder』）。承接 Phase 1 GateContextBuilder。改前实证：submit gate_context 漏 asset_types/expected_techniques（走 Default），与 execute.rs:2222 stage-close 四字段全塞不一致。实现：共享 expected_techniques_for_target_types（execute.rs gate_expected_techniques 委托=DRY 零回归）+ EvidenceLedgerQuery 两 seam（默认空，真实 impl 委托既有 in_scope_typed_assets_impl/in_scope_target_types_impl）+ gate_context(stage,authoritative) 灰度走 builder。验证全绿见上。未 commit（§2.7 需确认）、未 push。",
+      "notes": "§2.1：passing（不占 in_progress 槽）。gray-switch 默认开理由：让预检对齐已是权威的 stage-close（非新增独立 gate），每字段查询失败 fail-safe 退空 → 安全；env kill-switch 备回退。可测性：gate_context 收 authoritative:bool 参数（调用方从 flag 求值后传），单测两分支确定性、不读 env。预检不做 subsidiary-inject（需 engagement threshold，预检 seam 不持有；authoritative stage-close 仍强制该维）。剩余 Phase 2：T1 note 强校验+reason_kind、T2 failure≠checked_empty（更重，须单独设计；T2 动 schema 须用户确认 §2.7）。",
+      "remember": "submit 预检 authoritative 口径（T3）：feature_flags::submit_preview_authoritative_context_enabled()（env GOLISH_SUBMIT_PREVIEW_AUTHORITATIVE_CONTEXT，默认开，0/false 关）。共享派生 sprint_contract::expected_techniques_for_target_types(stage,&[String])->Option<Vec>（execute.rs gate_expected_techniques 委托它；submit gate_context 也调它=两路同口径）。EvidenceLedgerQuery 新 seam in_scope_typed_assets/in_scope_target_types（默认空；GolishDbRepoProvider 委托 in_scope_typed_assets_impl/in_scope_target_types_impl）。gate_context(stage:StageKind,authoritative:bool)：authoritative 时补 typed_assets+expected_techniques 走 GateContextBuilder。预检不含 subsidiary-inject。"
+    },
+    {
+      "id": "intel-eas-perdim-freshness-slim-deliverable-2026-06-23",
+      "priority": 1,
+      "area": "backend: golish-db/{migrations/20260622000001_organizations_intel_collected_at.sql + 20260623000001_targets_eas_collected_at.sql, repo/{organizations.rs(IntelDim+stamp_intel_collected_at), coverage_truth.rs(build_in_scope_values_sql window 参 + 各 build_*_values_sql(apply_window) + coverage_truth_facts(run_start)), dns_records.rs(present_target_values run_start), targets.rs(ports_scanned_at/liveness_checked_at/ip_whois_collected_at 盖戳)}}; golish-pentest/output_store/{organizations/mod.rs,targets.rs}(盖戳); golish-recon-app/{asset_intel/service/hydrate.rs,organization_recon/persistence.rs}(盖戳); golish-agent-kit/{db_traits/{repo.rs,types.rs(OperationStateView.stage_started_at)}, harness/{org_gate.rs,stage_spec.rs(freshness_window), gate/{rule_engine.rs(CoverageCorroborated authoritative no-op),finding_verification_check.rs}, task_orchestrator/{prompts/mod.rs(facts_from_db_truth slim charter),subtask_phases/execute.rs(run_start 注入)}}; golish-agent-app/ai/db_bridge/*(trait 透传); resources/harness/stages/{target_intel,external_attack_surface,enumeration}/spec.json(freshness_window:true + target_intel coverage_corroborated authoritative)",
+      "title": "intel + EAS 每维精确新鲜度 + 瘦身交付物：coverage gate 的 DB-truth 投影加 per-维度时间窗（只认本次 stage-run 之后采的数据，杜绝『上次遗留旧行让这次直接判过』），并把 facts_from_db_truth 阶段交付物瘦身（不填矩阵/不强制 tagged claim，DB 真值裁决）。",
+      "user_visible_behavior": "freshness_window 开（target_intel/EAS/enumeration）时，gate 判 found 只认本次 stage-run（operation_state.stage_started_at）之后落库的数据：org 情报(ASN/CT/WHOIS/OSINT) + per-asset(DNS/SUBDOMAIN/PORT/LIVENESS/IPWHOIS/SERVICE-FP/DIR/PARAM/JSAPI)各按 collected_at/行时间戳过滤，旧/未盖戳(NULL)不计。target_intel 瘦身：agent 只跑采集工具落库，不再逐格填矩阵/打 technique 标注(coverage_corroborated 在 authoritative 下 no-op)。默认关 = 逐字节不变。",
+      "status": "in_progress",
+      "design": "docs/design/2026-06-22-intel-perdim-freshness-slim-deliverable.md",
+      "plan": "docs/superpowers/plans/2026-06-22-intel-perdim-freshness-slim-deliverable.md（Phase 0 审计 + A 列级 + B 行级 + C 瘦身 + D EAS + E 收尾）",
+      "verification": [
+        "[✓] cargo nextest -p golish-db → 97 passed（含 subdomain/dns/EAS 各维 on/off 窗 SQL 测 + ip_whois/backfill 盖戳测）",
+        "[✓] cargo nextest -p golish-agent-kit → 676 passed（含 coverage_corroborated_authoritative_is_noop + stage_charter_slim_coverage_when_facts_from_db_truth；翻 freshness_window 后 52 spec/charter guard 无回归）",
+        "[✓] cargo nextest -p golish-pentest -p golish-recon-app → 写点改造无回归（合计 423 with golish-db 早轮）",
+        "[✓] cargo clippy -p golish-db -p golish-pentest -p golish-recon-app -p golish-agent-kit --all-targets --no-deps -- -D warnings → exit 0",
+        "[✓] cargo check -p golish-agent-app（全链）→ exit 0；ReadLints 6 文件 clean；3 flipped spec.json VALID",
+        "[✓] 只读活体 DB 探查(localhost:15432, psycopg2): 确认 migration 20260622000001/20260623000001 未应用(运行中 app 旧二进制)→ freshness 列尚不存在(需 app 重启 apply)",
+        "[未跑] just precommit 全量（本机历史 pinned toolchain/死码阻断；用 scoped 替代）",
+        "[未验·用户环境] 活体: just dev 重启 apply 两迁移 + 新 spec → 跑 target_intel 验证旧数据(NULL stamp)不计、本轮真采算过、AI 提交体量变小"
+      ],
+      "evidence": "2026-06-23 BaJie BajieAsk-agent-1(全栈工程师, DISPATCH off, 用户『昨天没搞完接着搞』→继续 B/C/D→批准 D 迁移→翻 freshness_window 活体→commit). 接昨天 2026-06-22 未提交的 Phase 0/A1/A2 半成品(A3 读侧已写但留下 finding_verification_check.rs 的 StageSpec{} 漏 freshness_window 字段=cargo nextest 编译失败的雷, 本会话先修). 本会话完成 A3 收尾 + B(行级 DNS/SUBDOMAIN) + C(瘦身 prompt + coverage_corroborated authoritative no-op) + D(EAS 迁移 20260623000001 + 写点盖戳 + 读侧列/行窗) + 激活(3 spec freshness_window:true). commit 649fef1e(28 文件 +956/-124, 未 push). 详见 agent-progress.md 最新一条.",
+      "notes": "§2.1: 本条 in_progress(代码+commit+scoped 全绿；缺 full precommit + 活体才转 passing)；工作树另有 pre-existing stale in_progress(非本轮). C(瘦身)挂 target_intel 已开的 facts_from_db_truth → commit+部署即生效(不受 freshness_window 控)；A/B/D 窗受 freshness_window 控, 现已翻 true(但 live DB 需 app 重启 apply 迁移才真生效). 行级维度(subdomain/dns/service-fp/dir/param/jsapi)按行时间戳判新鲜→工具重采若 dedup 只命中已知值(DO NOTHING 不刷时间戳)该维判本轮未采(符合『重跑要求重采』但比 org 级采集站点盖戳严, 激活前活体复核). 多 org fan-out gate(org_gate.rs)仍 presence-only(run_start=None, Phase A deferred), 仅单 org execute.rs 路径走窗. 排除提交: pentest-harness-completeness-template.xlsx + gen_pentest_completeness_template.py(属另一任务).",
+      "remember": "per-dim freshness: coverage_truth build_in_scope_values_sql(join,filter,window:Option<&str>) 加 `<col> >= $2`; 各 build_*_values_sql(apply_window:bool); fetch_values(..,run_start) 按 run_start.is_some() 绑 $2; coverage_truth_facts(..,run_start) 由 execute.rs 在 spec.freshness_window 时取 operation_state.stage_started_at 注入. 列: organizations.{asns,certificates,whois,osint}_collected_at(mig 20260622000001) + targets.{ports_scanned_at,liveness_checked_at,ip_whois_collected_at}(mig 20260623000001); 行: target_assets.discovered_at/dns_records.created_at/fingerprints.detected_at/directory_entries.created_at/api_endpoints.discovered_at. 盖戳在采集站点(非通用 update_profile; backfill 用 sub.created_at 非 NOW). 瘦身: prompts facts_from_db_truth 分支 + CoverageCorroborated{authoritative} no-op. 灰度 freshness_window 默认 false, 现 target_intel/EAS/enumeration 已 true. RDNS/fan-out gate 未窗(范围外/deferred). commit 649fef1e."
+    },
     {
       "id": "active-recon-stage-specialists-2026-06-20",
       "priority": 2,

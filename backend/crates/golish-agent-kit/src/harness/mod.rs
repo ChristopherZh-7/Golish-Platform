@@ -67,6 +67,7 @@ pub mod types;
 #[cfg(test)]
 mod e2e_tests;
 
+pub use gate::context_builder::GateContextBuilder;
 pub use gate::freshness_check::freshness_age_reasons;
 pub use gate::rule_engine::{EvidenceFact, EvidenceOutcome, GateContext};
 pub use gate::{
@@ -95,8 +96,8 @@ pub use resources::{
 };
 pub use slice::resolve_slice;
 pub use sprint_contract::{
-    DefaultSprintContractGenerator, ExpectedFinding, SprintContract, SprintContractGenerator,
-    SprintSkeleton, StageSkeleton,
+    expected_techniques_for_target_types, DefaultSprintContractGenerator, ExpectedFinding,
+    SprintContract, SprintContractGenerator, SprintSkeleton, StageSkeleton,
 };
 pub use stage_harness::StageHarness;
 pub use stage_spec::{

@@ -2554,6 +2554,7 @@ dependencies = [
  "golish-mcp",
  "golish-models",
  "golish-pentest",
+ "golish-pentest-domain",
  "golish-projects",
  "golish-prompts",
  "golish-pty",

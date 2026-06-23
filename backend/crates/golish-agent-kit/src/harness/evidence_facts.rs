@@ -164,17 +164,24 @@ pub fn passive_intel_outcome(technique: &str, raw_output: &str) -> &'static str 
 
 /// 同 [`passive_intel_outcome`], 但把「这次运行是否成功」一并纳入判定.
 ///
-/// I8 数据层兑现: 一次**失败**的被动检查 (非零退出 / 超时 / crt.sh 这类外部
-/// 服务抽风) 记为 `"empty"` (checked_empty) —— 「跑了但拿不到」属于「已检查为空」
-/// 而非「未检查」. 这样 coverage 格能落终态, gate 不会因外部服务不稳定而无限
-/// 重试同一个永远填不上的格. 成功时维持基于输出的原判定.
+/// 一次**失败**的被动检查 (非零退出 / 超时 / crt.sh 这类外部服务抽风) 必须落**终态**
+/// (否则 gate 对永远填不上的格无限重试). `distinguish_failure` (T2, 设计
+/// 2026-06-23-failure-outcome-not-checked-empty) 决定失败记什么:
+/// - `false` (gray-switch off, 缺省旧行为): 失败记 `"empty"` (checked_empty).
+/// - `true`: 失败记 `"error"` —— 「跑了但拿不到」≠「已检查为空」, gate 仍当终态但
+///   语义为「失败阻断」, 审计/诊断按 error 区分.
+///
+/// 成功时两种模式都维持基于输出的原判定 (I8 高置信 empty / found).
 pub fn passive_intel_outcome_for_run(
     technique: &str,
     raw_output: &str,
     succeeded: bool,
+    distinguish_failure: bool,
 ) -> &'static str {
     if succeeded {
         passive_intel_outcome(technique, raw_output)
+    } else if distinguish_failure {
+        "error"
     } else {
         "empty"
     }
@@ -347,12 +354,13 @@ mod tests {
         // is checked_empty, not unchecked — even if partial/error output leaked, the
         // run did not complete, so the cell must reach a terminal (empty) state
         // instead of looping the gate. CT (ctfr/crt.sh) is the motivating case.
+        // gray-switch off（distinguish_failure=false）= 旧行为：失败记 empty。
         assert_eq!(
-            passive_intel_outcome_for_run("GOLISH-INTEL-CT", "", false),
+            passive_intel_outcome_for_run("GOLISH-INTEL-CT", "", false, false),
             "empty"
         );
         assert_eq!(
-            passive_intel_outcome_for_run("GOLISH-INTEL-CT", "502 Bad Gateway", false),
+            passive_intel_outcome_for_run("GOLISH-INTEL-CT", "502 Bad Gateway", false, false),
             "empty"
         );
         // Success keeps the stdout-derived verdict.
@@ -360,13 +368,37 @@ mod tests {
             passive_intel_outcome_for_run(
                 "GOLISH-INTEL-SUBDOMAIN",
                 "www.moresec.cn\nmail.moresec.cn",
-                true
+                true,
+                false
             ),
             "found"
         );
         assert_eq!(
-            passive_intel_outcome_for_run("GOLISH-INTEL-DNS", "", true),
+            passive_intel_outcome_for_run("GOLISH-INTEL-DNS", "", true, false),
             "empty"
+        );
+    }
+
+    #[test]
+    fn failed_run_is_error_when_distinguish_failure_on() {
+        // T2: gray-switch on（distinguish_failure=true）→ 失败记 error（≠ empty），
+        // 区分「失败阻断」与「已查为空」。
+        assert_eq!(
+            passive_intel_outcome_for_run("GOLISH-INTEL-CT", "", false, true),
+            "error"
+        );
+        assert_eq!(
+            passive_intel_outcome_for_run("GOLISH-INTEL-CT", "502 Bad Gateway", false, true),
+            "error"
+        );
+        // 成功路径不受 distinguish_failure 影响（仍走 stdout 判定）。
+        assert_eq!(
+            passive_intel_outcome_for_run("GOLISH-INTEL-DNS", "", true, true),
+            "empty"
+        );
+        assert_eq!(
+            passive_intel_outcome_for_run("GOLISH-INTEL-SUBDOMAIN", "www.moresec.cn", true, true),
+            "found"
         );
     }
 

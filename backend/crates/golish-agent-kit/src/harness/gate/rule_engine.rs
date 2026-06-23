@@ -74,6 +74,12 @@ pub enum GateRule {
         /// （如 WHOIS/OSINT）暂不收紧，仍走旧自报。
         #[serde(default)]
         authoritative_techniques: Option<Vec<String>>,
+        /// T1（设计 2026-06-23-coverage-note-required）：true 时 `blocked` /
+        /// `not_applicable` 终态格要求 `note` 非空，否则不算终态 → 缺口 BLOCK
+        /// （堵「空 note 蒙混 blocked」）。缺省 false = 逐字节不变（旧「自报即终态」）。
+        /// 按 spec 灰度逐阶段翻开。
+        #[serde(default)]
+        require_note_for_other: bool,
         on_fail: OnFail,
     },
     /// P5（2026-06-11）交叉校验：每个 status == found 的 coverage cell 必须有 ≥1 个
@@ -237,11 +243,14 @@ pub struct EvidenceFact {
 }
 
 /// 事实的结局：`Found`（有产出）/ `Empty`（跑了→空 — I8 的被记录事实，
-/// 投影成 CheckedEmpty 终态，**绝不**当 Found）。
+/// 投影成 CheckedEmpty 终态，**绝不**当 Found）/ `Error`（跑了但失败：非零退出 /
+/// 超时 / 502 等——T2，设计 2026-06-23-failure-outcome-not-checked-empty。投影成
+/// 「失败阻断」终态，**绝不**当 Found / CheckedEmpty）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceOutcome {
     Found,
     Empty,
+    Error,
 }
 
 /// 逐条规则求值，每条产出一个 outcome。数据 op（count_at_least/for_all）是纯函数、
@@ -315,6 +324,7 @@ fn eval_one(
             derive_from_evidence,
             authoritative_found,
             authoritative_techniques,
+            require_note_for_other,
             on_fail,
         } => coverage_complete(
             d,
@@ -325,6 +335,7 @@ fn eval_one(
             *derive_from_evidence,
             *authoritative_found,
             authoritative_techniques.as_deref(),
+            *require_note_for_other,
             on_fail,
         ),
         GateRule::CoverageCorroborated {
@@ -457,6 +468,7 @@ fn coverage_complete(
     derive_from_evidence: bool,
     authoritative_found: bool,
     authoritative_techniques: Option<&[String]>,
+    require_note_for_other: bool,
     on_fail: &OnFail,
 ) -> GateCheckOutcome {
     // ③ seam：动态注入的期望技术覆盖 spec 静态值。
@@ -620,13 +632,35 @@ fn coverage_complete(
                     cell_status(CoverageStatus::CheckedEmpty)
                         || (derive_from_evidence && has_fact(EvidenceOutcome::Empty))
                 };
-            // blocked / not_applicable：自报 + note 的判断态，两路径一致（不收紧）。
+            // blocked / not_applicable 终态：自报 cell 命中即算。T1（设计
+            // 2026-06-23-coverage-note-required）：`require_note_for_other` 开时额外
+            // 要求 `note` 非空（堵「空 note 蒙混 blocked」）；缺省 false ⇒ note 子句
+            // 恒真 = 与旧 `cell_status` 逐字节一致。
+            let cell_other_ok = |want: CoverageStatus| {
+                d.coverage.iter().any(|c| {
+                    canon_asset(&c.asset) == asset_key
+                        && c.technique == *tech
+                        && c.status == want
+                        && (!require_note_for_other
+                            || c.note.as_deref().is_some_and(|n| !n.trim().is_empty()))
+                })
+            };
             let other_ok = (terminal.contains(&CoverageStatus::Blocked)
-                && cell_status(CoverageStatus::Blocked))
+                && cell_other_ok(CoverageStatus::Blocked))
                 || (terminal.contains(&CoverageStatus::NotApplicable)
-                    && cell_status(CoverageStatus::NotApplicable));
+                    && cell_other_ok(CoverageStatus::NotApplicable));
 
-            if !found_ok && !empty_ok && !other_ok {
+            // T2（设计 2026-06-23-failure-outcome-not-checked-empty）：error 事实
+            // （跑了但失败：超时 / 非零退出 / 502）= 终态——保住旧 failure→empty 的
+            // 「落终态、不无限重试」性质，但按「失败阻断」计，绝不当 found / checked_empty。
+            // 终态条件取 CheckedEmpty∪Blocked（覆盖旧 empty 路径 + Blocked 语义）。无
+            // error 事实时恒假 = 逐字节不变（additive，gate 侧无需灰度）。
+            let error_ok = derive_from_evidence
+                && has_fact(EvidenceOutcome::Error)
+                && (terminal.contains(&CoverageStatus::CheckedEmpty)
+                    || terminal.contains(&CoverageStatus::Blocked));
+
+            if !found_ok && !empty_ok && !other_ok && !error_ok {
                 gaps.push(format!("({asset} × {tech})"));
             }
         }
@@ -1207,6 +1241,7 @@ mod tests {
             status,
             evidence_refs: refs.into_iter().map(EvidenceAuditId::new).collect(),
             note: None,
+            reason_kind: None,
             tested_units: 0,
             total_units: 0,
             sampling_rationale: None,
@@ -2025,6 +2060,163 @@ mod tests {
         );
     }
 
+    // ── T1 (设计 2026-06-23-coverage-note-required) · require_note_for_other ──
+
+    fn cov_cell_noted(
+        asset: &str,
+        technique: &str,
+        status: CoverageStatus,
+        note: &str,
+    ) -> CoverageCell {
+        CoverageCell {
+            asset: asset.to_string(),
+            technique: technique.to_string(),
+            status,
+            evidence_refs: vec![],
+            note: Some(note.to_string()),
+            reason_kind: None,
+            tested_units: 0,
+            total_units: 0,
+            sampling_rationale: None,
+        }
+    }
+
+    fn note_required_rule() -> GateRule {
+        parse(
+            r#"{ "op":"coverage_complete","require_note_for_other":true,
+                 "on_fail":{"reason":"coverage incomplete"} }"#,
+        )
+    }
+
+    #[test]
+    fn require_note_for_other_defaults_false_blocked_without_note_passes() {
+        // 缺省（不写该字段）→ blocked 空 note 仍算终态 → Pass（逐字节不变）。
+        let rule = coverage_complete_rule();
+        let spec = spec_with_expected(&["idor"]);
+        let d = deliverable_with_coverage(vec![cov_cell(
+            "a",
+            "idor",
+            CoverageStatus::Blocked,
+            vec![],
+        )]);
+        assert!(eval(&d, &spec, &[rule])[0].is_pass());
+    }
+
+    #[test]
+    fn require_note_for_other_blocks_blocked_cell_without_note() {
+        // 开关开 + blocked 空 note → 不算终态 → a×idor 缺口 → Block。
+        let spec = spec_with_expected(&["idor"]);
+        let d = deliverable_with_coverage(vec![cov_cell(
+            "a",
+            "idor",
+            CoverageStatus::Blocked,
+            vec![],
+        )]);
+        match &eval(&d, &spec, &[note_required_rule()])[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons[0].contains("(a × idor)"), "{reasons:?}");
+            }
+            GateCheckOutcome::Pass => {
+                panic!("blocked cell without note must BLOCK when require_note_for_other")
+            }
+        }
+    }
+
+    #[test]
+    fn require_note_for_other_passes_blocked_cell_with_note() {
+        // 开关开 + blocked 带非空 note → 终态 → Pass。
+        let spec = spec_with_expected(&["idor"]);
+        let d = deliverable_with_coverage(vec![cov_cell_noted(
+            "a",
+            "idor",
+            CoverageStatus::Blocked,
+            "WAF 403 on every payload",
+        )]);
+        assert!(eval(&d, &spec, &[note_required_rule()])[0].is_pass());
+    }
+
+    #[test]
+    fn require_note_for_other_whitespace_note_does_not_count() {
+        // 仅空白 note 视同空（trim 后为空）→ Block。
+        let spec = spec_with_expected(&["idor"]);
+        let d = deliverable_with_coverage(vec![cov_cell_noted(
+            "a",
+            "idor",
+            CoverageStatus::Blocked,
+            "   ",
+        )]);
+        assert!(matches!(
+            eval(&d, &spec, &[note_required_rule()])[0],
+            GateCheckOutcome::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn require_note_for_other_applies_to_not_applicable_too() {
+        let spec = spec_with_expected(&["idor"]);
+        // not_applicable 空 note → Block。
+        let d_empty = deliverable_with_coverage(vec![cov_cell(
+            "a",
+            "idor",
+            CoverageStatus::NotApplicable,
+            vec![],
+        )]);
+        assert!(matches!(
+            eval(&d_empty, &spec, &[note_required_rule()])[0],
+            GateCheckOutcome::Block { .. }
+        ));
+        // not_applicable 带 note → Pass。
+        let d_noted = deliverable_with_coverage(vec![cov_cell_noted(
+            "a",
+            "idor",
+            CoverageStatus::NotApplicable,
+            "no auth surface on a static asset",
+        )]);
+        assert!(eval(&d_noted, &spec, &[note_required_rule()])[0].is_pass());
+    }
+
+    // ── T2 (设计 2026-06-23-failure-outcome-not-checked-empty) · Error 事实 ──
+
+    #[test]
+    fn error_fact_is_terminal_under_derive_from_evidence() {
+        // derive_from_evidence + Error 事实 + 默认终态集（含 CheckedEmpty/Blocked）→
+        // cell 落终态（不 gap）→ Pass。保住「失败也落终态、不无限重试」。
+        let rule = evidence_derive_rule(None);
+        let ctx = projection_ctx(&["t"], Some(vec![fact("a", "t", EvidenceOutcome::Error, 9)]));
+        assert!(
+            eval_with_context(&deliverable_with_coverage(vec![]), &test_spec(), &[rule], &ctx)[0]
+                .is_pass(),
+            "an Error fact must make the cell terminal (no infinite retry)"
+        );
+    }
+
+    #[test]
+    fn error_fact_does_not_satisfy_found_only_terminal() {
+        // terminal=["found"]：Error 事实既不算 found，也不在 CheckedEmpty/Blocked 终态
+        // 集 → 缺口 Block。证明 error 绝不冒充 found。
+        let rule = evidence_derive_rule(Some(r#""found""#));
+        let ctx = projection_ctx(&["t"], Some(vec![fact("a", "t", EvidenceOutcome::Error, 9)]));
+        match &eval_with_context(&deliverable_with_coverage(vec![]), &test_spec(), &[rule], &ctx)[0]
+        {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons[0].contains("(a × t)"), "{reasons:?}");
+            }
+            GateCheckOutcome::Pass => panic!("error fact must not satisfy a found-only terminal"),
+        }
+    }
+
+    #[test]
+    fn error_fact_inert_without_derive_from_evidence() {
+        // 不开 derive_from_evidence：Error 事实不投影 → a×t 无终态 → Block（gate 侧
+        // 对 error 的处理 additive，需 derive_from_evidence 才消费）。
+        let rule = coverage_complete_rule();
+        let ctx = projection_ctx(&["t"], Some(vec![fact("a", "t", EvidenceOutcome::Error, 9)]));
+        assert!(matches!(
+            eval_with_context(&deliverable_with_coverage(vec![]), &test_spec(), &[rule], &ctx)[0],
+            GateCheckOutcome::Block { .. }
+        ));
+    }
+
     // ── coverage_denominator op（设计 2026-06-05-vuln-triage-technique-matrix §5.3） ──
 
     /// coverage cell with denominator fields（分母测试用）。
@@ -2043,6 +2235,7 @@ mod tests {
             status,
             evidence_refs: refs.into_iter().map(EvidenceAuditId::new).collect(),
             note: None,
+            reason_kind: None,
             tested_units: tested,
             total_units: total,
             sampling_rationale: rationale.map(str::to_string),

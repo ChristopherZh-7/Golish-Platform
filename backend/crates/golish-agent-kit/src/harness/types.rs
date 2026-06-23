@@ -193,6 +193,27 @@ pub enum CoverageStatus {
     NotApplicable,
 }
 
+/// `blocked` / `not_applicable` 的**结构化原因类别**（T1，设计
+/// `2026-06-23-coverage-note-required.md`）。与自由文本 `note` 互补：`note` 给人读，
+/// `reason_kind` 给机器分类（审计/诊断/recovery 提示）。可选元数据——本期 gate 只强制
+/// `note` 非空，不强制 `reason_kind`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasonKind {
+    /// 缺数据源（无对应 provider 配置/不可用）。
+    ProviderMissing,
+    /// 缺凭证（provider 在但无 API key / 认证失败）。
+    CredentialMissing,
+    /// 被限流（外部服务 rate limit）。
+    RateLimited,
+    /// 缺工具（CLI 工具未安装 / 不在 PATH）。
+    ToolMissing,
+    /// 越界（该资产/技术不在授权 scope）。
+    OutOfScope,
+    /// 该技术对该资产不适用（与 `CoverageStatus::NotApplicable` 配套的原因细化）。
+    NotApplicable,
+}
+
 /// Coverage matrix 一个 (资产 × 技术) 单元格。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoverageCell {
@@ -207,6 +228,11 @@ pub struct CoverageCell {
     /// checked_empty / blocked / not_applicable 的理由。
     #[serde(default)]
     pub note: Option<String>,
+    /// blocked / not_applicable 的结构化原因类别（T1，设计
+    /// `2026-06-23-coverage-note-required.md`）。与 `note` 互补，可选；缺省 None
+    /// （加性、向后兼容；旧交付物/未填均 None）。
+    #[serde(default)]
+    pub reason_kind: Option<ReasonKind>,
     /// 分母覆盖（设计 2026-06-05-vuln-triage-technique-matrix §5）。
     /// N：该 (资产×技术) 实际测过的可测单元数。
     #[serde(default, deserialize_with = "null_as_default")]
@@ -378,6 +404,7 @@ mod tests {
             status: CoverageStatus::CheckedEmpty,
             evidence_refs: vec![EvidenceAuditId::new(1)],
             note: Some("scanned".to_string()),
+            reason_kind: None,
             tested_units: 12,
             total_units: 12,
             sampling_rationale: None,
@@ -396,6 +423,38 @@ mod tests {
         assert_eq!(old.tested_units, 0);
         assert_eq!(old.total_units, 0);
         assert!(old.sampling_rationale.is_none());
+        // T1：reason_kind 缺省 None（旧交付物向后兼容）。
+        assert!(old.reason_kind.is_none());
+    }
+
+    #[test]
+    fn reason_kind_serde_snake_case_and_default() {
+        // snake_case round-trip for each variant + 缺省 None。
+        let c = CoverageCell {
+            asset: "a".to_string(),
+            technique: "GOLISH-INTEL-OSINT".to_string(),
+            status: CoverageStatus::Blocked,
+            evidence_refs: vec![],
+            note: Some("no github token configured".to_string()),
+            reason_kind: Some(ReasonKind::CredentialMissing),
+            tested_units: 0,
+            total_units: 0,
+            sampling_rationale: None,
+        };
+        let j = serde_json::to_string(&c).unwrap();
+        assert!(
+            j.contains("\"reason_kind\":\"credential_missing\""),
+            "reason_kind must serialize snake_case: {j}"
+        );
+        let back: CoverageCell = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.reason_kind, Some(ReasonKind::CredentialMissing));
+
+        // 未填 reason_kind 的 JSON → None。
+        let none: CoverageCell = serde_json::from_str(
+            r#"{"asset":"a","technique":"t","status":"blocked","note":"x"}"#,
+        )
+        .unwrap();
+        assert!(none.reason_kind.is_none());
     }
 
     // Fix6 (2026-06-14): weak models emit explicit `null` for "N/A" optional

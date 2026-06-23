@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use golish_agent_kit::harness::{
     load_embedded_stage_spec, validate_stage_gate_with_context, EvidenceFact, GateContext,
-    StageDeliverable, StageKind,
+    GateContextBuilder, StageDeliverable, StageKind,
 };
 use golish_core::Tool;
 
@@ -81,6 +81,25 @@ pub trait EvidenceLedgerQuery: Send + Sync {
     /// across runs). Default empty → preview keeps the deliverable's
     /// self-reported asset set (prior behaviour).
     async fn in_scope_assets(&self, org_id: Option<Uuid>) -> Vec<String> {
+        let _ = org_id;
+        Vec::new()
+    }
+
+    /// In-scope typed assets `(value, targets.type)` for `org_id`. Feeds the
+    /// submit preview's host-aware `asset_types` so coverage_complete classifies
+    /// assets by AUTHORITATIVE type (matching the stage-close gate) instead of
+    /// value inference. Gated by `submit_preview_authoritative_context_enabled()`.
+    /// Default empty ⇒ preview keeps value-inferred classes (prior behaviour).
+    async fn in_scope_typed_assets(&self, org_id: Option<Uuid>) -> Vec<(String, String)> {
+        let _ = org_id;
+        Vec::new()
+    }
+
+    /// Distinct `targets.type` of the in-scope assets for `org_id`. Feeds the
+    /// submit preview's dynamic `expected_techniques` (host-aware), matching the
+    /// stage-close gate. Gated by `submit_preview_authoritative_context_enabled()`.
+    /// Default empty ⇒ preview falls back to `spec.expected_techniques` (prior).
+    async fn in_scope_target_types(&self, org_id: Option<Uuid>) -> Vec<String> {
         let _ = org_id;
         Vec::new()
     }
@@ -311,7 +330,13 @@ impl SubmitStageDeliverableTool {
     /// even when the tool already ran and the fact is in the ledger — which traps
     /// per-org recon sub-agents in an endless resubmit loop. Mirrors the
     /// authoritative-found wiring the main-agent stage-close hook already has.
-    async fn gate_context(&self) -> GateContext {
+    ///
+    /// `authoritative` (T3, 设计 2026-06-23-submit-preview-authoritative-context):
+    /// when true (gray-switch `submit_preview_authoritative_context_enabled()`),
+    /// ALSO feed host-aware `asset_types` + dynamic `expected_techniques` so the
+    /// preview matches the stage-close gate口径. Passed in (not read from env here)
+    /// to keep the method deterministically testable.
+    async fn gate_context(&self, stage: StageKind, authoritative: bool) -> GateContext {
         let Some(repo) = self.evidence_repo.as_ref() else {
             return GateContext::default();
         };
@@ -339,20 +364,38 @@ impl SubmitStageDeliverableTool {
             Some(src) => *src.read().await,
             None => None,
         };
-        let mut out_assets: Option<Vec<String>> = None;
+        let mut in_scope_assets: Vec<String> = Vec::new();
+        let mut typed_assets: Vec<(String, String)> = Vec::new();
+        let mut expected_techniques: Option<Vec<String>> = None;
         if let Some(org_id) = org_id {
             let assets = repo.in_scope_assets(Some(org_id)).await;
             if !assets.is_empty() {
-                let dbt = repo.db_truth_facts(Some(org_id), &assets).await;
-                facts.extend(dbt);
-                out_assets = Some(assets);
+                facts.extend(repo.db_truth_facts(Some(org_id), &assets).await);
+                in_scope_assets = assets;
+            }
+            // (3) T3 · authoritative口径补全: host-aware asset_types + dynamic
+            //     expected_techniques (same source as the stage-close gate), so the
+            //     preview和close对同一交付物给同一判定（消除预检假 PASS / close
+            //     BLOCK 分歧）。Each query fail-safes to empty (prior behaviour).
+            //     预检不做 subsidiary-inject（需 engagement threshold，预检 seam 不
+            //     持有；authoritative stage-close 仍强制该维）。
+            if authoritative {
+                typed_assets = repo.in_scope_typed_assets(Some(org_id)).await;
+                let target_types = repo.in_scope_target_types(Some(org_id)).await;
+                expected_techniques =
+                    golish_agent_kit::harness::expected_techniques_for_target_types(
+                        stage,
+                        &target_types,
+                    );
             }
         }
-        GateContext {
-            in_scope_assets: out_assets,
-            evidence_facts: (!facts.is_empty()).then_some(facts),
-            ..Default::default()
-        }
+        // 统一组装入口（设计 2026-06-23-unified-gate-context-builder）。
+        GateContextBuilder::new()
+            .in_scope_assets(in_scope_assets)
+            .typed_assets(typed_assets)
+            .extend_evidence_facts(facts)
+            .expected_techniques(expected_techniques)
+            .build()
     }
 }
 
@@ -435,6 +478,7 @@ impl Tool for SubmitStageDeliverableTool {
                             "status": { "type": "string", "enum": ["found", "checked_empty", "blocked", "not_applicable"], "description": "Terminal state for this (asset × technique)." },
                             "evidence_refs": { "type": "array", "items": { "type": "integer" }, "description": "Required for found/checked_empty: real evidence ids proving the work." },
                             "note": { "type": "string", "description": "Required for blocked/not_applicable: why." },
+                            "reason_kind": { "type": "string", "enum": ["provider_missing", "credential_missing", "rate_limited", "tool_missing", "out_of_scope", "not_applicable"], "description": "Optional structured reason category for blocked/not_applicable (complements `note`)." },
                             "tested_units": { "type": "integer", "description": "How many enumerated units you actually tested for this asset×technique." },
                             "total_units": { "type": "integer", "description": "Denominator: total enumerated units for this asset×technique." },
                             "sampling_rationale": { "type": "string", "description": "Required when tested_units < total_units: why sampling is justified." }
@@ -546,8 +590,11 @@ impl Tool for SubmitStageDeliverableTool {
                 // Project the session's ledger evidence-facts into the gate so an
                 // authoritative_found stage credits real `found` cells (the
                 // per-org recon "never attempted" loop fix). Empty/no-DB ⇒ default
-                // context = prior behaviour.
-                let ctx = self.gate_context().await;
+                // context = prior behaviour. T3: gray-switch also feeds host-aware
+                // asset_types + dynamic expected_techniques so the preview matches
+                // the stage-close口径 (env GOLISH_SUBMIT_PREVIEW_AUTHORITATIVE_CONTEXT=0 reverts).
+                let authoritative = golish_agent_kit::harness::feature_flags::submit_preview_authoritative_context_enabled();
+                let ctx = self.gate_context(kind, authoritative).await;
                 let result =
                     validate_stage_gate_with_context(&deliverable, &spec, None, None, &ctx);
                 // Stash the canonical JSON regardless — the stage-close gate is
@@ -1193,6 +1240,65 @@ mod tests {
         );
     }
 
+    // T3 (2026-06-23 · 设计 submit-preview-authoritative-context) · the submit
+    // preview gate context feeds host-aware `asset_types` + dynamic
+    // `expected_techniques` (matching the stage-close口径) ONLY when the
+    // authoritative gray-switch is on; off ⇒ prior behaviour (axis + facts only).
+    struct TypedAxisMock {
+        assets: Vec<String>,
+        typed: Vec<(String, String)>,
+        target_types: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl EvidenceLedgerQuery for TypedAxisMock {
+        async fn existing_evidence_ids(&self, ids: &[i64]) -> Result<HashSet<i64>> {
+            Ok(ids.iter().copied().collect())
+        }
+        async fn in_scope_assets(&self, _org: Option<uuid::Uuid>) -> Vec<String> {
+            self.assets.clone()
+        }
+        async fn in_scope_typed_assets(&self, _org: Option<uuid::Uuid>) -> Vec<(String, String)> {
+            self.typed.clone()
+        }
+        async fn in_scope_target_types(&self, _org: Option<uuid::Uuid>) -> Vec<String> {
+            self.target_types.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_preview_authoritative_flag_gates_asset_types_and_expected_techniques() {
+        let (stage, sink) = handles();
+        let repo = TypedAxisMock {
+            assets: vec!["moresec.cn".into()],
+            typed: vec![("moresec.cn".into(), "domain".into())],
+            target_types: vec!["domain".into()],
+        };
+        let org_src = Arc::new(RwLock::new(Some(uuid::Uuid::new_v4())));
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(repo))
+            .with_session_id("pentest-chat-1")
+            .with_org_id_source(org_src);
+
+        // flag OFF = prior behaviour: asset axis still fed, but asset_types /
+        // expected_techniques stay None (preview keeps value-inference + static spec).
+        let off = tool.gate_context(StageKind::TargetIntel, false).await;
+        assert!(off.in_scope_assets.is_some(), "asset axis still fed when off");
+        assert!(off.asset_types.is_none(), "asset_types omitted when flag off");
+        assert!(
+            off.expected_techniques.is_none(),
+            "expected_techniques omitted when flag off"
+        );
+
+        // flag ON = authoritative口径: both populated (matches stage-close gate).
+        let on = tool.gate_context(StageKind::TargetIntel, true).await;
+        assert!(on.asset_types.is_some(), "asset_types fed when flag on");
+        assert!(
+            on.expected_techniques.is_some(),
+            "dynamic expected_techniques fed when flag on"
+        );
+    }
+
     // Fix1 (2026-06-14) · the parameters schema must spell out the nested shapes
     // the model kept guessing wrong — especially `skipped_checks[].reason` (the
     // SkipReason enum, internally tagged by `kind`), the coverage cell `status`
@@ -1230,6 +1336,26 @@ mod tests {
             assert!(
                 status["enum"].as_array().unwrap().iter().any(|v| v == s),
                 "coverage status enum must list {s}"
+            );
+        }
+        // T1 (2026-06-23): coverage cell reason_kind enum lists the structured
+        // reason categories so the model can classify blocked/not_applicable.
+        let reason_kind = &p["properties"]["coverage"]["items"]["properties"]["reason_kind"];
+        for rk in [
+            "provider_missing",
+            "credential_missing",
+            "rate_limited",
+            "tool_missing",
+            "out_of_scope",
+            "not_applicable",
+        ] {
+            assert!(
+                reason_kind["enum"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|v| v == rk),
+                "coverage reason_kind enum must list {rk}"
             );
         }
         let severity = &p["properties"]["findings"]["items"]["properties"]["severity"];

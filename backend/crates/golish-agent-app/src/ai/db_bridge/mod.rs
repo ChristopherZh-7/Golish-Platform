@@ -573,11 +573,44 @@ impl DbRepoProvider for GolishDbRepoProvider {
         .await
     }
 
+    async fn upsert_technique_outcome(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+        asset: &str,
+        technique: &str,
+        outcome: &str,
+        source: Option<&str>,
+        query: Option<&str>,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<()> {
+        self.upsert_technique_outcome_impl(
+            organization_id,
+            run_id,
+            asset,
+            technique,
+            outcome,
+            source,
+            query,
+            evidence_ids,
+        )
+        .await
+    }
+
     async fn evidence_facts_for_session(
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<(String, String, String, i64)>> {
         self.evidence_facts_for_session_impl(session_id).await
+    }
+
+    async fn technique_outcome_facts(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+    ) -> Vec<(String, String, String, i64)> {
+        self.technique_outcome_facts_impl(organization_id, run_id)
+            .await
     }
 
     async fn evidence_existing_ids(

@@ -1514,6 +1514,8 @@ impl TaskOrchestrator {
                     let outcome = match outcome.as_str() {
                         "found" => EvidenceOutcome::Found,
                         "empty" => EvidenceOutcome::Empty,
+                        // T2：失败检查（gray-switch GOLISH_FAILURE_OUTCOME_ERROR）记 error。
+                        "error" => EvidenceOutcome::Error,
                         _ => return None,
                     };
                     Some(EvidenceFact {
@@ -1572,6 +1574,44 @@ impl TaskOrchestrator {
         // 展开是 I8 的关键: 「跑了→0 合格子」才能走 checked_empty 而非 not_attempted。
         if let Some(assets) = in_scope_assets {
             project_org_level_subsidiary_facts(&mut facts, assets);
+        }
+
+        // PR-D (#4/E3, 设计 2026-06-23-technique-outcomes-provenance): 灰度从
+        // technique_outcomes 物化表投影 EvidenceFact 并 **union** 进 facts（dual-read：
+        // 与现有 ledger + coverage_truth 并存；flag off = 逐字节不变，additive）。run_id
+        // = chat session；org 绑定才读（表 org NOT NULL）。outcome `blocked`→Error（与
+        // error 同终态语义；gate 的 EvidenceOutcome 无 Blocked 变体）。
+        if crate::harness::feature_flags::technique_outcomes_read_enabled() {
+            if let Some(org_id) = self.harness_org_id {
+                let projected: Vec<EvidenceFact> = self
+                    .repo
+                    .technique_outcome_facts(org_id, sid)
+                    .await
+                    .into_iter()
+                    .filter_map(|(asset, technique, outcome, evidence_id)| {
+                        let outcome = match outcome.as_str() {
+                            "found" => EvidenceOutcome::Found,
+                            "empty" => EvidenceOutcome::Empty,
+                            "error" | "blocked" => EvidenceOutcome::Error,
+                            _ => return None,
+                        };
+                        Some(EvidenceFact {
+                            asset,
+                            technique,
+                            outcome,
+                            evidence_id,
+                        })
+                    })
+                    .collect();
+                if !projected.is_empty() {
+                    tracing::info!(
+                        target: "harness::hook",
+                        technique_outcome_facts = projected.len(),
+                        "PR-D: merged technique_outcomes projection into coverage gate (dual-read union)"
+                    );
+                    facts.extend(projected);
+                }
+            }
         }
 
         if facts.is_empty() {
@@ -1976,22 +2016,9 @@ fn gate_expected_techniques(
     stage: crate::harness::StageKind,
     target_types: &[String],
 ) -> Option<Vec<String>> {
-    if target_types.is_empty() {
-        return None;
-    }
-    let classes: Vec<crate::harness::technique_resolver::AssetClass> = target_types
-        .iter()
-        .map(|s| crate::harness::technique_resolver::AssetClass::from_target_type(s))
-        .collect();
-    let techs =
-        crate::harness::sprint_contract::DefaultSprintContractGenerator::expected_techniques_for(
-            stage, &classes,
-        );
-    if techs.is_empty() {
-        None
-    } else {
-        Some(techs)
-    }
+    // 委托共享 helper（设计 2026-06-23-submit-preview-authoritative-context）：
+    // stage-close 与 submit 预检共用同一派生，保证两路期望技术口径一致。
+    crate::harness::sprint_contract::expected_techniques_for_target_types(stage, target_types)
 }
 
 /// Phase 2 (2026-06-12-redteam-phase2) · org 级 SUBSIDIARY 事实展开: 账本里
@@ -2219,12 +2246,15 @@ fn apply_harness_gate_hook(
             "scoping subsidiary gate active: GOLISH-INTEL-SUBSIDIARY injected into expected techniques"
         );
     }
-    let gate_ctx = crate::harness::GateContext {
-        in_scope_assets,
-        asset_types,
-        expected_techniques,
-        evidence_facts,
-    };
+    // 统一组装入口（设计 2026-06-23-unified-gate-context-builder）：4 个值此前已是
+    // Option（fetch helper 预归一）→ unwrap_or_default 喂 builder、build() 再归一，
+    // 与手搓 GateContext{} 逐字节同构（行为保持）。
+    let gate_ctx = crate::harness::GateContextBuilder::new()
+        .in_scope_assets(in_scope_assets.unwrap_or_default())
+        .asset_types_map(asset_types.unwrap_or_default())
+        .extend_evidence_facts(evidence_facts.unwrap_or_default())
+        .expected_techniques(expected_techniques)
+        .build();
     let decision = harness.validate_gate_with_context(&deliverable, None, &gate_ctx);
 
     // P2-c · doer eval: score this deliverable's quality (gate outcome +

@@ -348,6 +348,36 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(0)
     }
 
+    /// PR-C step2b（#4 / E3，设计 2026-06-23-technique-outcomes-provenance）：把一条
+    /// 覆盖结局 + provenance upsert 进 `technique_outcomes`（命令路径 / enrich 落库点
+    /// 调用）。`asset` 由 app 层过 `canonical_asset_key` 归一（E1）；`outcome` ∈
+    /// found|empty|error|blocked。非致命：调用方 warn-only、不回滚证据。默认 no-op
+    /// （test double 零改动 + gray-switch off 时调用方根本不调）。app 层覆写。
+    #[allow(clippy::too_many_arguments)]
+    async fn upsert_technique_outcome(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+        asset: &str,
+        technique: &str,
+        outcome: &str,
+        source: Option<&str>,
+        query: Option<&str>,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<()> {
+        let _ = (
+            organization_id,
+            run_id,
+            asset,
+            technique,
+            outcome,
+            source,
+            query,
+            evidence_ids,
+        );
+        Ok(())
+    }
+
     /// PR2 任务 2.5 (coverage 投影) · the session's evidence facts
     /// `(asset, technique, outcome, evidence_id)`, ledger order. Only rows where
     /// all three projection columns are non-NULL (conservative: unmapped rows
@@ -358,6 +388,20 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<Vec<(String, String, String, i64)>> {
         let _ = session_id;
         Ok(Vec::new())
+    }
+
+    /// PR-D（#4 / E3，设计 2026-06-23-technique-outcomes-provenance）：从
+    /// `technique_outcomes` 物化表读某 `(org, run)` 的 `(asset, technique, outcome,
+    /// evidence_id)`（`evidence_id` 取该行 `evidence_ids` 首个，无则 0）。gate 灰度
+    /// dual-read 投影源。fail-safe 到空（读失败 → 空，gate 退回 coverage_truth/ledger）。
+    /// 默认空（test double 零改动 + gray-switch off 时调用方根本不调）。app 层覆写。
+    async fn technique_outcome_facts(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+    ) -> Vec<(String, String, String, i64)> {
+        let _ = (organization_id, run_id);
+        Vec::new()
     }
 
     /// 设计 2026-06-12 §5.3 · DB 业务表真值事实 `(asset, technique)`：业务表里

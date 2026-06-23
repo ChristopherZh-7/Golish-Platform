@@ -70,9 +70,9 @@ pub(crate) async fn build_tool_list(
     tools
 }
 
-/// Surface the read-only target/coverage query tools (`list_in_scope_targets`
-/// + `query_target_data`) for the depth-0 orchestrator while a harness stage is
-/// active.
+/// Surface the read-only target/coverage query tools
+/// (`list_in_scope_targets` + `query_target_data`) for the depth-0 orchestrator
+/// while a harness stage is active.
 ///
 /// Task `primary_tools` is orchestration-only (`static_groups: none`), so these
 /// static-catalogue tools never reach the stage orchestrator. Without them the

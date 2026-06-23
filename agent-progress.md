@@ -29,6 +29,145 @@
 
 ---
 
+### 2026-06-23 · #4（评审 claim #4 DB-truth 带 source）起手：technique_outcomes 物化表设计 + migration（PR-C step1，inert）（BaJie BajieAsk-agent-4 · 全栈工程师 · DISPATCH off · 用户「从 #4 起手」→「A 写设计+migration」）
+
+- **本轮目标**：评审 #4「DB-truth 不能只返回 (asset, technique)，要带 source/query/evidence_id/collected_at/confidence」。先做可行性核查 → 写设计 + migration 给用户审（不接 repo/写/读，留后续 PR）。
+- **可行性核查（读 coverage_truth.rs 全 SQL 构造器）**：per-asset 维只 `SELECT DISTINCT value`；org-intel 维（ASN/CT/WHOIS/OSINT）是 `organizations.*` JSON blob 的 presence bool。**source/query/confidence 库里根本没存** → #4 必须动 schema（§2.7）。
+- **关键发现 · 复用已拍板 E3**：`docs/design/2026-06-18-canonical-asset-identity-and-coverage-join-key.md` §3.3 已设计 `technique_outcomes` 物化表（D0「建独立物化表」用户 2026-06-18 已确认；PR-C/D 在 plan 2026-06-18-pr-b-canonical-key-wiring.md）。#4 与 E3 **本质同一张表**（每 (run×asset×technique) 一行）——#4 = E3 表 + provenance 列。**不另起炉灶**，建在 E3 之上、沿用其 D0–D5 决策。
+- **已完成（本轮 = 设计 + migration only）**：
+  - 设计 `docs/design/2026-06-23-technique-outcomes-provenance.md`（引 E3 为基；#4 加 source/query/result_count/confidence/collected_at 列；outcome 扩 found|empty|error|blocked 承接 T2；写/读集成属后续 PR-C step2/PR-D；I2/I7/I8/I10 红线）。
+  - migration `backend/crates/golish-db/migrations/20260623000002_technique_outcomes.sql`：`CREATE TABLE IF NOT EXISTS technique_outcomes`（E3 列 + #4 provenance 列 + UNIQUE(run_id,asset,technique) + 2 索引 + COMMENT）。纯新增、I10 第 1 步，表先 **inert** 落地。
+  - feature_list 新增 `technique-outcomes-provenance-migration-2026-06-23`（**blocked**：等用户审 design + 决定是否继续 PR-C step2 写 / PR-D 读）。
+- **运行过的验证（实跑）**：
+  - `cargo check -p golish-db` → **exit 0**（migration 被 sqlx::migrate! 收纳，crate 编译通过）。
+  - FK 目标核实：`organizations(id) UUID PRIMARY KEY` 存在（migration 20260517194500）→ `REFERENCES organizations(id) ON DELETE CASCADE` 合法。
+  - `python3 -m json.tool feature_list.json` → VALID。
+- **已记录证据**：`cargo check -p golish-db ... Finished` exit 0；organizations(id) PK grep 命中。
+- **提交记录**：**未 commit**（§2.7 需用户确认）、**未 apply**（用户环境重启才 apply migration）。
+- **未提交的半成品（本轮）**：`?? docs/design/2026-06-23-technique-outcomes-provenance.md`、`?? backend/crates/golish-db/migrations/20260623000002_technique_outcomes.sql`、`M feature_list.json`、`M agent-progress.md`。
+- **已知风险 / 下一步**：① 表 inert（无读无写）= 零行为变化；DROP 可回滚。② **依赖 E1 canonical_asset_key**（PR-A 已落 + PR-B 部分）：本表 asset 须规范键，读/写接入前确认 PR-B `in_scope_assets` 归一就绪。③ PR-D（gate 从表投影 EvidenceFact，灰度 dual-read vs coverage_truth，rule_engine 判定 byte 不变）待续。④ 本会话累计未 commit：Phase1+T3+T1+T2+#4-migration+#4-repo。
+
+- **续（同轮）· PR-C step2a 完成 · golish-db repo**：新建 `backend/crates/golish-db/src/repo/technique_outcomes.rs`（`upsert`（INSERT…ON CONFLICT(run_id,asset,technique) DO UPDATE，seq=COALESCE(MAX(seq),0)+1 per run，幂等不堆叠）+ `list_for_run`（org 隔离读）+ `TechniqueOutcomeWrite`/`TechniqueOutcomeRow` + 4 SQL-builder 单测）；`repo/mod.rs` 注册 `pub mod technique_outcomes`。验证：`cargo nextest -p golish-db` → **101 passed**（+4）；`cargo clippy -p golish-db --all-targets --no-deps -D warnings` → **exit 0**；ReadLints clean。下一步 = PR-C step2b 写路径接线。
+
+- **续（同轮）· PR-C step2b 完成（主命令路径）**：查写点确认 `direct/mod.rs` pentest_run 块有 `ctx.harness_org_id`(Option<Uuid>)/`ctx.events.session_id`(run_id)/`evidence_append` 返回 id/`facts`(technique,asset,outcome)——上下文齐备。实现（镜像 evidence_append 模式）：① `DbRepoProvider::upsert_technique_outcome`（golish-agent-kit/db_traits/repo.rs，默认 no-op，加性）② `GolishDbRepoProvider` override + `upsert_technique_outcome_impl`（golish-agent-app/db_bridge：`canonical_asset_key` 归一 asset → 构 `TechniqueOutcomeWrite` → 调 golish-db `technique_outcomes::upsert`）③ `golish-agent-app/Cargo.toml` +`golish-pentest-domain`(canonical_asset_key) ④ 调用点 `direct/mod.rs` pentest_run `Ok(id)` 臂：gray-switch `technique_outcomes_write_enabled()`(env `GOLISH_TECHNIQUE_OUTCOMES_WRITE` 默认 off) + org 绑定 + facts → `repo.upsert_technique_outcome(org_id, session_id, asset, tech, outcome, source=tool, query=subject, &[id])`，非致命 warn ⑤ feature flag + 3 测。验证：`cargo nextest -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime` → **1005 passed**（+3）；`cargo clippy 4 crate -D warnings` → **exit 0**；ReadLints clean；JSON VALID。**下一步**：其余写点（`direct/mod.rs` recon_discover_subsidiaries 块 + golish-recon-app `persistence.rs` enrich 钩子）+ PR-D gate 读路径（从表投影 EvidenceFact，灰度 dual-read vs coverage_truth，rule_engine byte 不变）。本会话累计未 commit：Phase1+T3+T1+T2+#4(migration+repo+step2b 主写点)。
+
+- **续（同轮）· PR-D 读路径完成（execute.rs 主路径）**：让 technique_outcomes 真正喂 gate。实现：① `DbRepoProvider::technique_outcome_facts(org_id, run_id) -> Vec<(asset,technique,outcome,evidence_id)>`（默认空 Vec，加性）② golish-agent-app `technique_outcome_facts_impl`（golish-db `list_for_run` + map，evidence_id 取 evidence_ids 首个，fail-safe 读失败→空+warn）+ override ③ feature flag `technique_outcomes_read_enabled()`（env `GOLISH_TECHNIQUE_OUTCOMES_READ` 默认 off，3 测）④ `execute.rs::fetch_evidence_facts_for_gate`：flag on + org 绑定 → 投影 EvidenceFact（found→Found/empty→Empty/error|blocked→Error）**union** 进 facts（dual-read：与 ledger+coverage_truth 并存，flag off 逐字节不变）。验证：`cargo nextest -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime` → **1008 passed**（+3）；`cargo clippy 3 crate -D warnings` → exit 0；ReadLints clean；JSON VALID。**#4 端到端就绪**（双 gray-switch：WRITE+READ 默认 off）：开 WRITE 表填、再开 READ gate 读。**剩余**：其余写点（recon_discover_subsidiaries + persistence.rs enrich）、org_gate/submit 读路径接入（当前仅 execute.rs 主路径）、PR-E 清旧 coverage_truth union（读全切表、活体稳后）。本会话累计未 commit：Phase1+T3+T1+T2+#4(migration+repo+step2b 主写点+PR-D 主读路径)。
+
+- **续（同轮）· #4 余项（PR-D 读路径扩 per-org fan-out gate）**：`org_gate.rs::evaluate_org_stage_gate` 加同款灰度 union（`technique_outcomes_read_enabled()` + org 绑定 → `repo.technique_outcome_facts(oid, session_id)` 投影 EvidenceFact，found/empty/error|blocked→Found/Empty/Error，extend facts，flag off 逐字节不变）。验证：`cargo nextest -p golish-agent-kit` → **709 passed**；`cargo clippy -p golish-agent-kit -D warnings` → exit 0；ReadLints clean；JSON VALID。**读路径现覆盖 execute.rs 主路径 + org_gate per-org fanout**。**剩余未做（均有 wrinkle，未盲接）**：① `direct/mod.rs` recon_discover_subsidiaries 写点——其 fact asset 是公司名、需 org-level 投影（project_org_level_subsidiary_facts），而该投影在 fetch_evidence_facts_for_gate 里跑在 PR-D union **之前**，故直接写+读时序对不上，需专门处理；② golish-recon-app `persistence.rs` enrich 写点（需查该处 org_id/run_id 上下文）；③ submit 预检读路径（须扩 `EvidenceLedgerQuery` seam + impl）；④ PR-E 清旧 coverage_truth union（读全切表、活体稳后）。本会话累计未 commit：Phase1+T3+T1+T2+#4(migration+repo+写[命令路径]+读[execute+org_gate])。
+
+---
+
+### 2026-06-23 · T2（评审 claim #2）failure ≠ checked_empty：失败检查记 error（gray-switch）（BaJie BajieAsk-agent-4 · 全栈工程师 · DISPATCH off · 用户「做 T2 failure≠empty」）
+
+- **本轮目标**：落 Phase 2 / T2（评审 claim #2）——失败的被动检查（非零退出/超时/crt.sh 502）记新 outcome `error`（≠ `empty`），gate 仍当**终态**（保住「不无限重试」）但语义为「失败阻断」、**绝不**当已查为空。gray-switch 默认 off。
+- **改前实证**：`passive_intel_outcome_for_run` `!succeeded`→`"empty"`（evidence_facts.rs:171），注释自承「失败记 empty 防无限重试」是**故意**的——但把「失败」与「已查为空」混为一谈（与 I8 精神冲突）。**schema 核查**：`audit_log.evidence_outcome` 是**自由文本 TEXT、无 CHECK 约束**（migration 20260611000001）→ 写 `"error"` **无需 migration、无需 §2.7 schema 确认**。`EvidenceOutcome` 全以 `==` 比较（无穷尽 match）→ 加变体零破坏。`run_tree.py:507` 已 `GROUP BY evidence_outcome` → error 自动独立显示。
+- **已完成**：
+  - **outcome 枚举**：`EvidenceOutcome` 加 `Error`（rule_engine.rs）。
+  - **数据层 gray-switch**：`passive_intel_outcome_for_run` 加 `distinguish_failure: bool` 参（纯函数、双向可测）：`!succeeded && distinguish→"error"`，否则旧 `"empty"`。caller `direct/mod.rs` 传 `feature_flags::failure_outcome_error_enabled()`（env `GOLISH_FAILURE_OUTCOME_ERROR`，**默认 off**，opt-in）。
+  - **3 处 row→fact 映射**认 `"error"→Error`（execute.rs `fetch_evidence_facts_for_gate`、db_bridge evidence.rs、org_gate.rs `facts_from_rows`）。
+  - **gate**：`coverage_complete` 加 `error_ok = derive_from_evidence && has_fact(Error) && (terminal∋CheckedEmpty|Blocked)`——**additive，无 error 事实时恒假 = 逐字节不变**；保住「失败也落终态、不无限重试」（error 在旧 empty 原终态处仍终态），但绝不冒充 found/checked_empty。gate 侧无条件上（先于数据层 flag，避免「发 error→不认→掉行→无限重试」次序坑）。
+  - 顺手修 `tool_list.rs:75` 的 pre-existing `doc_lazy_continuation`（doc reflow，非本改动引入；为 golish-agent-runtime clippy 清绿）。
+  - 设计 `docs/design/2026-06-23-failure-outcome-not-checked-empty.md`；feature_list 新增 `failure-outcome-not-checked-empty-2026-06-23`（`passing`）。
+- **运行过的验证（实跑）**：
+  - `cargo nextest -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime` → **1002 passed / 0 skipped**（+7 新：failure_outcome flag 3 + passive_intel_outcome_for_run distinguish 1 + gate error_ok 3[终态/不冒充 found/无 derive 时 inert]；既有零回归，`failed_run_is_checked_empty` 测更新为 flag-off 仍 empty）。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime --all-targets --no-deps -- -D warnings` → **exit 0**；ReadLints 7 文件 clean；feature_list JSON VALID。
+- **已记录证据**：`Summary [5.828s] 1002 tests run: 1002 passed, 0 skipped`；clippy `Finished` exit 0。
+- **提交记录**：**未 commit**（§2.7 需用户确认）。
+- **已知风险 / 下一步**：① 默认 off ⇒ 零行为变化；**激活** = `GOLISH_FAILURE_OUTCOME_ERROR=1`（数据层开始记 error，gate 已就绪）。② column comment 仍写 found|empty（轻微滞后，未补 comment-only migration 以免 §2.7）。③ **Phase 2 三轨（T3/T1/T2）全完成**——下一步可 commit 本会话全部（Phase1 GateContextBuilder + T3 + T1 + T2）/ 跑 full precommit / 翻 spec·env 逐步激活。④ 另一会话 agent-1 同改 execute.rs/org_gate.rs，留意工作树叠加。
+
+---
+
+### 2026-06-23 · T1（评审 claim #1）blocked/not_applicable 强校验 note + reason_kind（gray-switch）（BaJie BajieAsk-agent-4 · 全栈工程师 · DISPATCH off · 用户「接着做 T1」）
+
+- **本轮目标**：落 Phase 2 / T1（评审 claim #1）——① `blocked`/`not_applicable` 终态格**强校验 note 非空**（gray-switch，默认 off）；② 新增 `CoverageCell.reason_kind` 结构化原因枚举（6 变体，可选元数据 + 进 submit schema）。堵「空 note 蒙混 blocked」（代码与 `CoverageStatus` 文档/I8 矛盾）。
+- **改前实证**：`rule_engine.rs` 的 `other_ok` 经 `cell_status` 闭包**只看 status 不看 note**，注释自承「自报 + note 的判断态…**不收紧**」；而 `CoverageStatus` 文档（types.rs:188-193）要求 blocked/not_applicable「必须 note」。
+- **已完成**：
+  - **reason_kind**：`types.rs` 新增 `ReasonKind` 枚举（snake_case：provider_missing/credential_missing/rate_limited/tool_missing/out_of_scope/not_applicable）+ `CoverageCell.reason_kind: Option<ReasonKind>`（`#[serde(default)]`，加性、向后兼容）。
+  - **note 强校验**：`GateRule::CoverageComplete` 加 `require_note_for_other: bool`（`#[serde(default)]` false，与 `authoritative_found` 同款灰度位）→ dispatch → `coverage_complete` 参 → `other_ok` 改用 `cell_other_ok` 闭包（status 命中 && (!require_note_for_other || note.trim 非空)）。**off 恒真 = 逐字节不变**。
+  - **gray-switch 选 rule 配置非 env**：与 `host_aware_coverage`/`freshness_window`/`coverage_anchor_only` 同模式（gate 纯函数/DB-free/env-free，按 spec 灰度）。
+  - **submit schema**：`parameters()` coverage cell 加 `reason_kind` 可选枚举（6 变体）让模型可填；+ 断言。
+  - 8 个 `CoverageCell` 字面量（gate/mod.rs ×4、e2e_tests.rs、types.rs、rule_engine.rs cov_cell+cov_cell_dn）补 `reason_kind: None`。
+  - 设计 `docs/design/2026-06-23-coverage-note-required.md`；feature_list 新增 `coverage-note-required-reason-kind-2026-06-23`（`passing`）。
+- **运行过的验证（实跑）**：
+  - `cargo nextest -p golish-agent-kit -p golish-agent-app` → **749 passed / 0 skipped**（+6 新：require_note_for_other 5 测[默认 off 不变 / on 空 note→BLOCK / on 带 note→PASS / 仅空白不算 / not_applicable 同理] + reason_kind serde 1；既有 743 零回归）。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-app --all-targets --no-deps -- -D warnings` → **exit 0** 零告警；ReadLints 5 文件 clean；feature_list JSON VALID。
+- **已记录证据**：`Summary [2.397s] 749 tests run: 749 passed, 0 skipped`；clippy `Finished` exit 0。
+- **提交记录**：**未 commit**（§2.7 需用户确认）。
+- **未提交的半成品（本会话累计 Phase1+T3+T1）**：见各轮；T1 新增 `?? docs/design/2026-06-23-coverage-note-required.md` + 改 types.rs/rule_engine.rs/gate/mod.rs/e2e_tests.rs/harness_submit_tool.rs/feature_list/progress。
+- **已知风险 / 下一步**：① **激活=按 spec 翻开** `require_note_for_other:true`（live gate 收紧，会把「blocked 空 note」run 翻 BLOCK）——**本 PR 不翻任何 spec**，留用户逐阶段灰度。② reason_kind 本期仅加字段+schema、gate 不强制（用户「最好」）；后续可加 toggle 强制。③ 剩余 Phase 2：T2 failure≠checked_empty（高风险，可能动 schema 须 §2.7 确认）。④ 未跑 full precommit。
+
+---
+
+### 2026-06-23 · T3 收尾 GateContextBuilder：submit 预检补全 authoritative 口径（gray-switch）（BaJie BajieAsk-agent-4 · 全栈工程师 · DISPATCH off · 用户「继续做 Phase 2」→「先做 T3 收尾Builder」）
+
+- **本轮目标**：承接 Phase 1（GateContextBuilder），落 Phase 2 §7.1 / T3——让 submit 预检 `gate_context` 喂入与 stage-close **同口径**的 `asset_types` + 动态 `expected_techniques`，消除「预检假 PASS / close BLOCK」分歧。gray-switch 包裹、可回退。
+- **brainstorming 纪律**：Phase 2 三轨（T1 note 强校验+reason_kind / T2 failure≠checked_empty / T3 submit 预检补口径）风险差异大，先列表 + 推荐顺序让用户选起点 → 用户选 T3。
+- **改前实证**：submit `gate_context` 漏 `asset_types`/`expected_techniques`（走 Default），与 `execute.rs:2222` stage-close 四字段全塞不一致；`gate_expected_techniques`（execute.rs 私有）= `AssetClass::from_target_type` + `DefaultSprintContractGenerator::expected_techniques_for`；submit seam `EvidenceLedgerQuery` 无 typed/target-type 方法。
+- **已完成**：
+  - **共享派生消重**：新增 pub `sprint_contract::expected_techniques_for_target_types(stage, &[String]) -> Option<Vec<String>>`；`execute.rs::gate_expected_techniques` 改薄委托（DRY，既有 `gate_expected_techniques_*` 测零回归）；`harness/mod.rs` 重导出。
+  - **灰度开关**：`feature_flags::submit_preview_authoritative_context_enabled()`（env `GOLISH_SUBMIT_PREVIEW_AUTHORITATIVE_CONTEXT`，默认开，0/false 关）+ 纯函数 + 3 测（镜像 scoping_human_gate）。
+  - **扩 seam**：`EvidenceLedgerQuery` 加 `in_scope_typed_assets`/`in_scope_target_types`（默认空）；真实 impl（`db_bridge/evidence.rs::GolishDbRepoProvider`）委托既有 `in_scope_typed_assets_impl`/`in_scope_target_types_impl`。
+  - **gate_context 接线**：签名改 `gate_context(stage: StageKind, authoritative: bool)`（`authoritative` 由调用方从 flag 求值后传入 = 可确定性单测）；`authoritative` 且 org 绑定时补 `typed_assets` + `expected_techniques`，统一走 `GateContextBuilder`。预检**不做** subsidiary-inject（需 engagement threshold，预检 seam 不持有；authoritative stage-close 仍强制）。
+  - 设计 `docs/design/2026-06-23-submit-preview-authoritative-context.md`；feature_list 新增 `submit-preview-authoritative-context-2026-06-23`（`passing`）。
+- **运行过的验证（实跑）**：
+  - `cargo nextest -p golish-agent-kit -p golish-agent-app` → **743 passed / 0 skipped**（+6 新：feature_flags 3 + expected_techniques_for_target_types 2 + `submit_preview_authoritative_flag_gates_asset_types_and_expected_techniques`（on/off 两分支）1；既有 737 零回归）。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-app --all-targets --no-deps -- -D warnings` → **exit 0** 零告警；ReadLints 6 文件 clean；`python3 -m json.tool feature_list.json` → VALID。
+- **已记录证据**：`Summary [1.933s] 743 tests run: 743 passed, 0 skipped`；clippy `Finished` exit 0。
+- **提交记录**：**未 commit**（§2.7 需用户确认）。叠加于本会话 Phase 1 改动（亦未 commit）+ 另一会话 `649fef1e` 之上。
+- **未提交的半成品（本会话累计）**：Phase 1（context_builder.rs + 设计/计划 + gate/mod.rs/harness/mod.rs/org_gate.rs/execute.rs/harness_submit_tool.rs）+ T3（feature_flags.rs/sprint_contract.rs/execute.rs/harness_submit_tool.rs/db_bridge/evidence.rs/mod.rs 改 + 设计 doc）+ feature_list/progress。
+- **已知风险 / 下一步**：① gray-switch 默认开 = 下次构建即生效（env=0 回退）；活体未验。② 剩余 Phase 2：T1（note 强校验 + reason_kind，中风险）、T2（failure≠checked_empty，高风险 + 可能动 schema 须 §2.7 确认）。③ 未跑 full precommit。④ 另一会话 agent-1 同改 execute.rs，留意工作树叠加。
+
+---
+
+### 2026-06-23 · 统一 GateContextBuilder（Phase 1 行为保持重构）（BaJie BajieAsk-agent-4 · 全栈工程师 · DISPATCH off · 用户「开工统一 GateContextBuilder」）
+
+- **本轮目标**：承接本会话上一轮对另一会话 6 条 gate 建议的评审（claim ③）——把散在 3 个 gate 入口各自手搓的 `GateContext` 组装收成单一 `GateContextBuilder`，消除 submit 预检漏 `asset_types`/`expected_techniques` 的隐式 Default 漂移。范围限定 Phase 1：**行为逐字节保持**的纯组装抽取（不收紧 gate）。
+- **改前实证（读源码核实 3 入口差异）**：① `execute.rs:2222` stage-close 四字段全塞；② `org_gate.rs:198` `evaluate_org_stage_gate` 手搓 `then_some` + `expected_techniques=None`；③ `harness_submit_tool.rs:351` `gate_context` 预检只塞 `in_scope_assets`+`evidence_facts`，`asset_types`/`expected_techniques` 走 `..Default::default()`（**漏**）。`gate/mod.rs:147` 的 `effective_ctx` 是 gate 消费侧内部合并，非调用方构造点，未动。
+- **已完成**：
+  - 新建 `golish-agent-kit/src/harness/gate/context_builder.rs`：`GateContextBuilder` 累加器（`in_scope_assets`/`typed_assets`/`asset_types_map`/`extend_evidence_facts`/`expected_techniques`），`build()` 为**唯一** `empty→None` 归一点；`expected_techniques` 不归一（`Some(vec![])≠None`）。含 9 个等价性单测（含 `full_build_mirrors_manual_struct_literal` 钉死与手搓 `GateContext{}` 同构）。
+  - 导出：`gate/mod.rs` `pub mod context_builder` + 重导出；`harness/mod.rs` 重导出 `GateContextBuilder`。
+  - 接线 3 入口（行为保持）：`execute.rs`（Option `.unwrap_or_default()` 适配喂 builder）、`org_gate.rs`（删手搓 `then_some`，`GateContext` import 变 unused 已移除）、`harness_submit_tool.rs`（改 builder + import；`asset_types`/`expected_techniques` 显式不喂 + `// Phase 2` 注释把隐式 Default 变可见决策）。
+  - 设计 `docs/design/2026-06-23-unified-gate-context-builder.md` + 计划 `docs/superpowers/plans/2026-06-23-unified-gate-context-builder.md`（含 Phase 2 deferred 清单）。
+  - feature_list 新增 `unified-gate-context-builder-2026-06-23`（`passing`）；JSON VALID。
+- **运行过的验证（实跑）**：
+  - `cargo nextest -p golish-agent-kit -p golish-agent-app` → **737 passed / 0 skipped**（新 `harness::gate::context_builder::tests` 9 个 + `harness_submit_tool::tests` 全绿，含直接打改动 submit 预检 gate 路径的 `target_intel_found_cell_credited_from_evidence_facts` / `_from_db_truth_facts` = 零回归铁证）。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-app --all-targets --no-deps -- -D warnings` → **exit 0** 零告警。
+  - `ReadLints` 6 文件无错；`python3 -m json.tool feature_list.json` → VALID。
+- **已记录证据**：`Summary [3.154s] 737 tests run: 737 passed, 0 skipped`；clippy `Finished dev profile ... in 38.44s` exit 0。
+- **提交记录**：**未 commit**（§2.7 commit 需用户确认）。改动叠加于另一会话 perdim-freshness commit `649fef1e` 之上、与之正交（只动 `GateContext{}` 构造，不动 freshness 取数）。
+- **未提交的半成品（本会话）**：`?? backend/crates/golish-agent-kit/src/harness/gate/context_builder.rs`、`?? docs/design/2026-06-23-unified-gate-context-builder.md`、`?? docs/superpowers/plans/2026-06-23-unified-gate-context-builder.md`、`M gate/mod.rs`、`M harness/mod.rs`、`M org_gate.rs`、`M execute.rs`、`M harness_submit_tool.rs`、`M feature_list.json`、`M agent-progress.md`。
+- **已知风险 / 下一步**：① 未跑 full `just precommit`（scoped 替代，零行为变化）；② 另一会话（BajieAsk-agent-1）活跃且同改 `execute.rs`/`org_gate.rs`——本改动已基于其 commit 之上，若其继续改这两文件需留意工作树叠加；③ Phase 2（单独 PR，gray-switch）：submit 预检补口径 / 查询编排统一 / 评审 claim #1 note 强校验+reason_kind、#2 failure≠checked_empty、#4 db-truth 带 source 时只在 builder 一处加字段。
+
+---
+
+### 2026-06-23 · intel+EAS 每维精确新鲜度 + 瘦身交付物（Phase A 收尾 + B/C/D + 激活 + commit）（BaJie BajieAsk-agent-1 · 全栈工程师 · DISPATCH off · 用户「昨天没搞完接着搞」→「继续 Phase B/C/D」→「批准迁移继续 D」→「翻 freshness_window 活体」→「先 commit B/C/D」→「更新进度文档」）
+
+- **本轮目标**：接昨天（2026-06-22）未提交的 intel-perdim-freshness 半成品（Phase 0/A1/A2 + A3 读侧已写），收尾 A、做 B/C/D、激活灰度、提交。
+- **关键发现（先取证）**：昨天的工作树**编译不过测试**——`finding_verification_check.rs:80` 的 `StageSpec{}` 测试字面量漏了昨天新加的 `freshness_window` 字段（`cargo check` 过但 `cargo nextest` 红）→ 昨天若跑 precommit 必失败。本会话首先补该字段。
+- **已完成**：
+  - **Phase A 收尾**：核实 A3 读侧（`coverage_truth_facts(run_start)` + `build_org_intel_presence_sql(apply_window)` + execute.rs 按 `spec.freshness_window` 取 `operation_state.stage_started_at` 注入）已在工作树且正确；补 `finding_verification_check.rs` 漏字段。
+  - **Phase B（行级 DNS/SUBDOMAIN）**：`build_in_scope_values_sql` 加 `window:Option<&str>`；SUBDOMAIN 走 `target_assets.discovered_at >= $2`、DNS 走 `dns_records.created_at >= $2`（`present_target_values(run_start)`）；`fetch_values(run_start)` 按 `run_start.is_some()` 绑 $2。+4 单测。
+  - **Phase C（瘦身交付物）**：C1 prompt 对 `facts_from_db_truth` 阶段改「DB 自动裁决」瘦指引（不教逐格填矩阵/打 technique 标注）；C2 `CoverageCorroborated` 加 `authoritative` 开关→no-op，target_intel spec 置 true。+2 单测。
+  - **Phase D（EAS/enum）**：D1 迁移 `20260623000001`（targets ports_scanned_at/liveness_checked_at/ip_whois_collected_at，nullable，用户已复看批准）；D2 写点盖戳（update_ports_by_id/update_recon_extended_by_id/set_real_ip_by_id/set_ip_whois_by_id + golish-pentest output_store/targets.rs；backfill 用 `sub.created_at` 不用 NOW——被动派生继承源 A 记录新鲜度）；D3 读侧列窗（PORT/LIVENESS/IPWHOIS）+ 行窗（SERVICE-FP/DIR/PARAM/JSAPI，已有列免迁移）。+2 单测 + 2 盖戳测更新。
+  - **激活**：`freshness_window:true` 翻于 target_intel / external_attack_surface / enumeration 三 spec。
+- **运行过的验证（实跑）**：
+  - `cargo nextest -p golish-db` → **97 passed**（含 subdomain/dns/EAS 各维 on/off 窗 SQL 测 + ip_whois/backfill 盖戳测）。
+  - `cargo nextest -p golish-agent-kit` → **676 passed**（含 `coverage_corroborated_authoritative_is_noop` + `stage_charter_slim_coverage_when_facts_from_db_truth`；翻 flag 后 52 spec/charter guard 无回归）。
+  - `cargo nextest -p golish-pentest -p golish-recon-app` → 写点改造无回归（与 golish-db 合计 423）。
+  - `cargo clippy -p golish-db -p golish-pentest -p golish-recon-app -p golish-agent-kit --all-targets --no-deps -- -D warnings` → exit 0；`cargo check -p golish-agent-app`（全链）→ exit 0；ReadLints 6 文件 clean；3 spec.json + feature_list.json VALID。
+  - **只读活体 DB 探查**（localhost:15432，psycopg2，未改数据）：确认 migration `20260622000001`/`20260623000001` **未应用**（运行中 app 是旧二进制，最新应用 `20260615000003`）→ freshness 列尚不存在，需 app 重启 apply。
+- **已记录证据**：`97 passed`（golish-db）/`676 passed`（golish-agent-kit）/clippy exit 0/check exit 0；commit `649fef1e`（28 文件 +956/-124）。
+- **提交记录**：**1 commit `649fef1e`**「feat(harness): per-dimension intel/EAS coverage freshness + slim deliverable」（落 main，**未 push**）。刻意排除 `docs/pentest-harness-completeness-template.xlsx` + `scripts/gen_pentest_completeness_template.py`（属另一任务，仍未跟踪）。
+- **已知风险 / 未解决**：
+  - **活体未跑**：需 `just dev` 重启 apply 两迁移 + 加载新 spec + 新代码，再跑 target_intel 真验「旧数据(NULL stamp)不计、本轮真采算过」。当前运行 app 是旧二进制。
+  - **just precommit 全量未跑**（本机历史 pinned toolchain/死码阻断；用 scoped 替代）。**未 push**。
+  - **C(瘦身)挂 facts_from_db_truth → commit+部署即生效**（不受 freshness_window 控）；A/B/D 窗受 freshness_window 控（现已 true，但 live 需重启）。
+  - 行级维度（subdomain/dns/service-fp/dir/param/jsapi）按行时间戳判新鲜→工具重采若 dedup 只命中已知值（DO NOTHING 不刷时间戳）该维判「本轮未采」（符合「重跑要求重采」但比 org 级采集站点盖戳严，激活前活体复核）。
+  - 多 org fan-out gate（`org_gate.rs`）仍 presence-only（`run_start=None`，Phase A deferred），仅单 org `execute.rs` 路径走窗；RDNS 未窗（范围外）。
+- **新增/修改文件**：commit `649fef1e` 含 28 文件（A/B/C/D 代码 + 2 迁移 + 设计/计划文档 + 3 spec 激活）。本条收尾文档（agent-progress.md 本条 + feature_list.json 新条目 `intel-eas-perdim-freshness-slim-deliverable-2026-06-23` in_progress + 计划/设计状态戳）**未 commit**。
+
+---
+
 ### 2026-06-22 · PR-B canonical-key 接线 B0/B1a/B2（gate 身份漂移死循环修复）+ 16 份 db-truth/coverage 文档状态同步 + feature_list 5 处同步（BaJie BajieAsk-agent-1 · 全栈工程师 · DISPATCH off · 用户「更新这些文档」→「同步 feature_list」→「去写 PR-B」→「B1」→「B2」→「更新然后 commit」）
 
 - **本轮目标**：① 核实并更新一批 landing/db-truth/coverage/资产身份 设计·计划文档的滞后状态（避免后续 agent 被过时文档带偏原地打转）；② 同步 feature_list 对应条目状态；③ 实现 PR-B（canonical-asset-key 边界接入）的可单测验证部分，治「资产身份漂移→coverage join 不命中→永判 not_attempted→无限 needs_fix」死循环。

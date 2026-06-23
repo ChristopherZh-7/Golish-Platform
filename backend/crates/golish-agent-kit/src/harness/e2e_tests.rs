@@ -113,6 +113,7 @@ fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
         status,
         evidence_refs: vec![http_eid],
         note: Some("mapped via httpx".to_string()),
+        reason_kind: None,
         tested_units: 1,
         total_units: 1,
         sampling_rationale: None,

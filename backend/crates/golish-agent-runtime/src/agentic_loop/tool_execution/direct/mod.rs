@@ -403,9 +403,12 @@ where
                         // run resolves to checked_empty (I8) via
                         // `passive_intel_outcome_for_run`; success keeps the
                         // stdout-derived verdict.
+                        // T2 (设计 2026-06-23-failure-outcome-not-checked-empty): gray-switch
+                        // 决定失败检查记 error 还是 empty（默认 off = empty，旧行为）。
+                        let distinguish_failure = golish_agent_kit::harness::feature_flags::failure_outcome_error_enabled();
                         let facts = golish_agent_kit::harness::evidence_facts::passive_intel_facts_from_command(&ev_subject)
                             .map(|(technique, asset)| {
-                                let outcome = golish_agent_kit::harness::evidence_facts::passive_intel_outcome_for_run(technique, &ev_stdout, is_success);
+                                let outcome = golish_agent_kit::harness::evidence_facts::passive_intel_outcome_for_run(technique, &ev_stdout, is_success, distinguish_failure);
                                 (technique, asset, outcome)
                             });
                         // A successful run always books (its ledger id is citable); a
@@ -447,6 +450,37 @@ where
                                         success = is_success,
                                         "pentest_run evidence appended; surfacing id to agent"
                                     );
+                                    // PR-C step2b (#4/E3, 设计 2026-06-23-technique-outcomes-
+                                    // provenance): 同步 upsert technique_outcomes（provenance
+                                    // 物化）。gray-switch 默认 off；仅 org 绑定 + 有派生 fact
+                                    // 时写；非致命 warn（证据为底、表为物化，失败不回滚证据）。
+                                    if golish_agent_kit::harness::feature_flags::technique_outcomes_write_enabled() {
+                                        if let (Some(org_id), Some(rid), Some((tech, asset, outcome))) = (
+                                            ctx.harness_org_id,
+                                            ctx.events.session_id,
+                                            facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
+                                        ) {
+                                            if let Err(e) = repo
+                                                .upsert_technique_outcome(
+                                                    org_id,
+                                                    rid,
+                                                    asset,
+                                                    tech,
+                                                    outcome,
+                                                    Some(pt_tool),
+                                                    Some(ev_subject.as_str()),
+                                                    &[id],
+                                                )
+                                                .await
+                                            {
+                                                tracing::warn!(
+                                                    target: "harness::evidence",
+                                                    error = %e,
+                                                    "technique_outcomes upsert failed (continuing)"
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                                 Err(e) => tracing::warn!(
                                     target: "harness::evidence",
