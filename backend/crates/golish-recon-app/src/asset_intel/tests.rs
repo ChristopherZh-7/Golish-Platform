@@ -201,6 +201,33 @@ fn bundled_quake_asset_intel_config_loads() {
 }
 
 #[test]
+fn quake_config_maps_service_cert_to_certificates() {
+    // 2026-06-23: Quake nests the cert subject at `service.cert` (the cert request
+    // includes it). The HttpJson extraction must map it to
+    // organizations.certificates or Quake CT is silently dropped (live root cause:
+    // profile_fields had no service.cert entry → certificates always empty).
+    let json = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../resources/intel-providers/quake.json"
+    ));
+    let value: serde_json::Value = serde_json::from_str(json).unwrap();
+    let pfs = value["tool"]["asset_intel"]["normalize"]["profile_fields"]
+        .as_array()
+        .expect("quake normalize.profile_fields");
+    assert!(
+        pfs.iter()
+            .any(|pf| pf["source_field"] == "service.cert"
+                && pf["target_field"] == "certificates"),
+        "quake.json must map service.cert -> certificates (else Quake CT never lands)"
+    );
+    // and the cert request must actually fetch service.cert from the API.
+    assert!(
+        json.contains("\"service.cert\""),
+        "quake cert request must include service.cert"
+    );
+}
+
+#[test]
 fn native_bridge_record_maps_surface_and_profile() {
     use golish_intel_providers::{ProviderRecord, QueryType};
     let mut fields = std::collections::HashMap::new();

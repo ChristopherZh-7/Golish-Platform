@@ -132,15 +132,15 @@ pub(crate) fn plan_promotable_assets(
 
 /// Upsert one target, idempotent on `value` + `project_path`, tagging the
 /// surveyed `real_ip` when known. Mirrors `persist_target_record` but adds the
-/// `real_ip` column and `source='asset_intel'`. Returns `true` if the row
-/// already existed.
+/// `real_ip` column and `source='asset_intel'`. Returns the target's id so the
+/// caller can directly land its provider-paired DNS record (design 2026-06-23).
 async fn upsert_target(
     pool: &sqlx::PgPool,
     org: &golish_db::models::Organization,
     value: &str,
     target_type: &str,
     real_ip: Option<&str>,
-) -> Result<bool, GolishError> {
+) -> Result<Uuid, GolishError> {
     let existing: Option<Uuid> = sqlx::query_scalar(
         r#"SELECT id FROM targets
            WHERE value = $1
@@ -166,16 +166,17 @@ async fn upsert_target(
         if let Some(ip) = real_ip.map(str::trim).filter(|ip| !ip.is_empty()) {
             golish_db::repo::targets::set_real_ip_by_id(pool, id, ip).await?;
         }
-        return Ok(true);
+        return Ok(id);
     }
 
-    sqlx::query(
+    let new_id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO targets
               (name, target_type, value, tags, notes, scope, grp, owner,
                organization_id, project_path, source, parent_id, real_ip)
            VALUES
               ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, 'default', '',
-               $4, $5, 'asset_intel', NULL, $6)"#,
+               $4, $5, 'asset_intel', NULL, $6)
+           RETURNING id"#,
     )
     .bind(value)
     .bind(target_type)
@@ -183,9 +184,24 @@ async fn upsert_target(
     .bind(org.id)
     .bind(&org.project_path)
     .bind(real_ip.unwrap_or("").trim())
-    .execute(pool)
+    .fetch_one(pool)
     .await?;
-    Ok(false)
+    Ok(new_id)
+}
+
+/// Classify a provider-paired `(host, ip)` into a DNS record tuple
+/// `(record_type, name, value)` for direct landing into `dns_records` (design
+/// 2026-06-23). Returns `None` for an empty host or an unparseable IP — so junk
+/// never lands. IPv4 → `"A"`, IPv6 → `"AAAA"`.
+fn provider_dns_record(host: &str, ip: &str) -> Option<(&'static str, String, String)> {
+    let host = host.trim();
+    let ip = ip.trim();
+    if host.is_empty() {
+        return None;
+    }
+    let parsed: IpAddr = ip.parse().ok()?;
+    let record_type = if parsed.is_ipv4() { "A" } else { "AAAA" };
+    Some((record_type, host.to_string(), ip.to_string()))
 }
 
 /// Promote scope-filtered survey assets into `targets` with their surveyed
@@ -201,7 +217,35 @@ pub(crate) async fn promote_profile_assets_to_targets(
     let mut landed = 0usize;
     for (domain, real_ip) in domains {
         match upsert_target(pool, org, &domain, "domain", real_ip.as_deref()).await {
-            Ok(_) => landed += 1,
+            Ok(target_id) => {
+                landed += 1;
+                // Phase A (design 2026-06-23): the provider already paired this
+                // host→IP; land it DIRECTLY as a DNS A/AAAA record (the gate-read
+                // table) so the DNS coverage cell no longer depends on gate-time
+                // live re-resolution. Non-fatal (I9): a failure only warns and
+                // never rolls back the committed enrich. `dns_records.upsert` is
+                // idempotent (unique key DO NOTHING).
+                if let Some(ip) = real_ip.as_deref() {
+                    if let Some((rt, name, value)) = provider_dns_record(&domain, ip) {
+                        if let Err(error) = golish_db::repo::dns_records::upsert(
+                            pool,
+                            target_id,
+                            org.project_path.as_str(),
+                            rt,
+                            &name,
+                            &value,
+                            "provider",
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                %domain, %error,
+                                "provider dns_records direct-land failed (non-fatal)"
+                            );
+                        }
+                    }
+                }
+            }
             Err(error) => {
                 tracing::warn!(%domain, %error, "promote domain→target failed (non-fatal)")
             }
@@ -249,6 +293,27 @@ mod tests {
             evidence: serde_json::json!({ "provider": source, "raw": raw }),
             created_at: 1,
         }
+    }
+
+    #[test]
+    fn provider_dns_record_classifies_a_aaaa_and_rejects_garbage() {
+        // Phase A (design 2026-06-23): provider host↔IP → direct DNS record.
+        assert_eq!(
+            provider_dns_record("bank.pingan.com", "1.2.3.4"),
+            Some(("A", "bank.pingan.com".to_string(), "1.2.3.4".to_string()))
+        );
+        assert_eq!(
+            provider_dns_record("x.com", "2400:cb00::1").map(|t| t.0),
+            Some("AAAA")
+        );
+        // junk IP / empty host never lands.
+        assert_eq!(provider_dns_record("x.com", "not-an-ip"), None);
+        assert_eq!(provider_dns_record("", "1.2.3.4"), None);
+        // trims whitespace.
+        assert_eq!(
+            provider_dns_record("  a.com  ", " 9.9.9.9 "),
+            Some(("A", "a.com".to_string(), "9.9.9.9".to_string()))
+        );
     }
 
     #[test]

@@ -194,6 +194,13 @@
           },
           {
             "path": "$..data[*]",
+            "source_field": "service.cert",
+            "target_field": "certificates",
+            "transform": "trim",
+            "when": [{ "field": "service.cert", "op": "exists", "value": "" }]
+          },
+          {
+            "path": "$..data[*]",
             "source_field": ["service.http.host", "hostname", "domain", "ip"],
             "target_field": "business_systems",
             "transform": "trim",

@@ -48,6 +48,22 @@ fn base_fields(svc: &QuakeService) -> HashMap<String, String> {
     fields
 }
 
+/// Quake nests the cert subject under `service.cert` (v3 `quake_service`) but
+/// "sometimes flattens it" to the top level. Prefer flat, fall back to nested,
+/// so CT lands regardless of shape (2026-06-23 live: nested was being dropped →
+/// all Quake CT silently lost).
+fn cert_subject(svc: &QuakeService) -> Option<String> {
+    svc.cert
+        .clone()
+        .filter(|c| !c.is_empty())
+        .or_else(|| {
+            svc.service
+                .as_ref()
+                .and_then(|s| s.cert.clone())
+                .filter(|c| !c.is_empty())
+        })
+}
+
 /// `Site` mapping — full service surface (ip/port/protocol/title/...).
 pub fn map_site(svc: QuakeService, raw: serde_json::Value) -> ProviderRecord {
     let mut fields = base_fields(&svc);
@@ -55,11 +71,7 @@ pub fn map_site(svc: QuakeService, raw: serde_json::Value) -> ProviderRecord {
     // writer can append into organizations.domains.
     let domain = svc.domain.clone().or_else(|| svc.hostname.clone());
     insert_if_present(&mut fields, "domain", domain.as_ref());
-    if let Some(cert) = &svc.cert {
-        if !cert.is_empty() {
-            fields.insert("cert".into(), cert.clone());
-        }
-    }
+    insert_if_present(&mut fields, "cert", cert_subject(&svc).as_ref());
     ProviderRecord::new(PROVIDER, QueryType::Site, fields, raw)
 }
 
@@ -87,7 +99,7 @@ pub fn map_domain(svc: QuakeService, raw: serde_json::Value) -> ProviderRecord {
 /// `Cert` mapping — surface certificate info into `organizations.certificates`.
 pub fn map_cert(svc: QuakeService, raw: serde_json::Value) -> ProviderRecord {
     let mut fields = base_fields(&svc);
-    insert_if_present(&mut fields, "cert", svc.cert.as_ref());
+    insert_if_present(&mut fields, "cert", cert_subject(&svc).as_ref());
     insert_if_present(&mut fields, "domain", svc.domain.as_ref());
     ProviderRecord::new(PROVIDER, QueryType::Cert, fields, raw)
 }
@@ -121,6 +133,7 @@ mod tests {
                     server: Some("nginx".into()),
                 }),
                 tls: None,
+                cert: None,
             }),
             cert: Some("CN=*.example.com".into()),
         }
@@ -184,6 +197,45 @@ mod tests {
         assert_eq!(rec.query_type, QueryType::Cert);
         assert!(rec.fields.get("cert").unwrap().contains("CN=*.example.com"));
         assert_eq!(rec.fields.get("domain").unwrap(), "example.com");
+    }
+
+    #[test]
+    fn cert_mapper_reads_nested_service_cert_when_flat_absent() {
+        // Quake v3 quake_service nests the cert under `service.cert`; the record
+        // has NO flat top-level `cert` (2026-06-23 live structure probe). map_cert
+        // must still extract it — this drop is why Quake CT never landed.
+        let svc = QuakeService {
+            cert: None,
+            domain: Some("pingan.com".into()),
+            service: Some(QuakeInnerService {
+                cert: Some("CN=*.pingan.com".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let rec = map_cert(svc, raw());
+        assert_eq!(
+            rec.fields.get("cert").map(String::as_str),
+            Some("CN=*.pingan.com")
+        );
+        assert_eq!(rec.fields.get("domain").unwrap(), "pingan.com");
+    }
+
+    #[test]
+    fn site_mapper_reads_nested_service_cert() {
+        // Same nested-cert path on the Site mapper (provider survey records also
+        // carry certs nested under service.cert).
+        let svc = QuakeService {
+            cert: None,
+            ip: Some("1.2.3.4".into()),
+            service: Some(QuakeInnerService {
+                cert: Some("CN=svc.example".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let rec = map_site(svc, raw());
+        assert_eq!(rec.fields.get("cert").map(String::as_str), Some("CN=svc.example"));
     }
 
     #[test]

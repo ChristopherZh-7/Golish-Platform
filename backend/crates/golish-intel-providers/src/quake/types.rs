@@ -129,6 +129,11 @@ pub struct QuakeInnerService {
     /// TLS / cert info when the service exposes one.
     #[serde(default)]
     pub tls: Option<QuakeTls>,
+    /// Certificate subject string. Quake v3 `quake_service` nests the cert here
+    /// as `service.cert`, NOT as a flat top-level field — capturing it lets
+    /// `map_cert` extract CT (2026-06-23 live: missing this dropped all Quake CT).
+    #[serde(default)]
+    pub cert: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

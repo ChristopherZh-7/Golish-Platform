@@ -215,34 +215,10 @@ pub async fn run_passive_intel(
     if phase == PassiveIntelPhase::Enrich {
         match golish_db::repo::organizations::get_one(pool.as_ref(), organization_id).await {
             Ok(Some(fresh)) => {
-                let subdomain_hosts: Vec<String> = fresh
-                    .domains
-                    .as_array()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|v| v.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let landed = crate::organization_recon::land_target_intel_coverage(
-                    pool.as_ref(),
-                    &fresh,
-                    &run.run_id,
-                    &subdomain_hosts,
-                )
-                .await;
-                tracing::info!(
-                    run_id = %run.run_id,
-                    subdomains = landed.subdomains,
-                    "target_intel coverage landing (agent path)"
-                );
-
                 // Passive-intel pairing closure (design 2026-06-17 §2 ③–⑤):
-                // recover (host, ip) pairs from the survey records that produced
-                // candidates, scope-filter them, and upsert as targets carrying
-                // the surveyed `real_ip`. Descriptor-driven via each provider's
-                // `normalize.pairs`; fully non-fatal (failures only warn).
+                // recover (host, ip) pairs from the survey records FIRST — their
+                // hosts are the REAL provider-discovered subdomains. Descriptor-
+                // driven via each provider's `normalize.pairs`; fully non-fatal.
                 let pairs_rules_by_provider: HashMap<
                     String,
                     Vec<golish_pentest::models::AssetIntelPairRule>,
@@ -261,6 +237,39 @@ pub async fn run_passive_intel(
                     &run.candidates,
                     &pairs_rules_by_provider,
                 );
+
+                // SUBDOMAIN landing (design 2026-06-23 Phase B): feed the provider
+                // pair hosts (real subdomains) to the coverage landing so
+                // `collect_subdomain_pairs` maps each to its owned root →
+                // `target_assets(asset_type='subdomain')`. The old input
+                // (`organizations.domains` alone) self-cancels — every entry IS an
+                // owned root, so collect_subdomain_pairs skipped them all and
+                // landed 0 subdomains on the agent path.
+                let mut subdomain_hosts: Vec<String> = fresh
+                    .domains
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                subdomain_hosts.extend(pairs.iter().map(|p| p.host.clone()));
+                let landed = crate::organization_recon::land_target_intel_coverage(
+                    pool.as_ref(),
+                    &fresh,
+                    &run.run_id,
+                    &subdomain_hosts,
+                )
+                .await;
+                tracing::info!(
+                    run_id = %run.run_id,
+                    subdomains = landed.subdomains,
+                    subdomain_hosts = subdomain_hosts.len(),
+                    "target_intel coverage landing (agent path)"
+                );
+
                 let promoted = crate::asset_intel::landing::promote_profile_assets_to_targets(
                     pool.as_ref(),
                     &fresh,
