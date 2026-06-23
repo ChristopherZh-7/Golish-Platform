@@ -323,6 +323,82 @@ describe("dispatchEvent", () => {
     expect(normalState.backgroundToolExecutionBlock).not.toHaveBeenCalled();
   });
 
+  it("registers a background job when a sub-agent tool_result is backgrounded", () => {
+    const subAgentState = {
+      addBackgroundJob: vi.fn(),
+      completeSubAgentToolCall: vi.fn(),
+    };
+    const ctx = {
+      ...mockCtx,
+      getState: vi.fn(() => subAgentState) as unknown as EventHandlerContext["getState"],
+    };
+    const result = {
+      status: "backgrounded",
+      job_id: "job_sa",
+      command: "nmap -p- -sV 10.0.0.0/24",
+    };
+    const event = {
+      type: "sub_agent_tool_result" as const,
+      agent_id: "recon",
+      tool_name: "pentest_run",
+      success: true,
+      result,
+      request_id: "req-sa-bg",
+      parent_request_id: "parent-1",
+      session_id: "test-session",
+    };
+
+    const handled = dispatchEvent(event, ctx);
+
+    expect(handled).toBe(true);
+    // Surfaces in the Cursor-style background-jobs indicator (badge + detail).
+    expect(subAgentState.addBackgroundJob).toHaveBeenCalledWith(
+      "test-session",
+      expect.objectContaining({ jobId: "job_sa", command: "nmap -p- -sV 10.0.0.0/24" })
+    );
+    // The sub-agent card is still resolved, carrying the backgrounded result.
+    expect(subAgentState.completeSubAgentToolCall).toHaveBeenCalledWith(
+      "test-session",
+      "parent-1",
+      "req-sa-bg",
+      true,
+      result
+    );
+  });
+
+  it("does not register a background job for a normal sub-agent tool_result", () => {
+    const subAgentState = {
+      addBackgroundJob: vi.fn(),
+      completeSubAgentToolCall: vi.fn(),
+    };
+    const ctx = {
+      ...mockCtx,
+      getState: vi.fn(() => subAgentState) as unknown as EventHandlerContext["getState"],
+    };
+    const result = { stdout: "PORT 80 open", exit_code: 0 };
+    const event = {
+      type: "sub_agent_tool_result" as const,
+      agent_id: "recon",
+      tool_name: "pentest_run",
+      success: true,
+      result,
+      request_id: "req-sa-ok",
+      parent_request_id: "parent-1",
+      session_id: "test-session",
+    };
+
+    dispatchEvent(event, ctx);
+
+    expect(subAgentState.addBackgroundJob).not.toHaveBeenCalled();
+    expect(subAgentState.completeSubAgentToolCall).toHaveBeenCalledWith(
+      "test-session",
+      "parent-1",
+      "req-sa-ok",
+      true,
+      result
+    );
+  });
+
   it("dispatches system_hooks_injected event to correct handler", () => {
     const event = {
       type: "system_hooks_injected" as const,

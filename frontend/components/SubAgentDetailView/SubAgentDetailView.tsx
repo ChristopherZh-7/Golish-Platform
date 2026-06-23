@@ -29,6 +29,7 @@ import { useTranslation } from "react-i18next";
 import { ThinkingBlock } from "@/components/AIChatPanel/ThinkingBlock";
 import { JsonView } from "@/components/JsonView/JsonView";
 import { Markdown } from "@/components/Markdown";
+import { BackgroundJobsBadge } from "@/components/UnifiedInput/StatusBadges";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -378,6 +379,8 @@ interface SubAgentDetailViewProps {
 }
 
 const EMPTY_SUB_AGENT_LIST: ActiveSubAgent[] = [];
+/** Stable empty array so the background-jobs selector doesn't churn re-renders. */
+const EMPTY_BG_JOBS: never[] = [];
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
 
 export const SubAgentDetailView = memo(function SubAgentDetailView({
@@ -397,6 +400,10 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
       ) ?? null
     );
   });
+  // Session-wide background jobs (soft-timeout→detached commands still running),
+  // surfaced here so backgrounded recon/sub-agent commands are visible from the
+  // detail view, not only the input-row badge.
+  const backgroundJobs = useStore((s) => s.backgroundJobs[sessionId]) ?? EMPTY_BG_JOBS;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -552,6 +559,9 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
         <span className="text-[11px] text-muted-foreground/60 tabular-nums">
           {subAgent.toolCalls.length} {t("ai.agentTree.tools")}
         </span>
+        <div className="ml-auto flex items-center">
+          <BackgroundJobsBadge jobs={backgroundJobs} />
+        </div>
       </div>
 
       {/* Task assignment block */}

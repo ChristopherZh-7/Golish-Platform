@@ -6,6 +6,7 @@
  */
 
 import type { JsonValue } from "@/lib/serde_json/JsonValue";
+import { isBackgroundedResult, registerBackgroundJobFromResult } from "./tool-handlers";
 import type { EventHandler } from "./types";
 
 /**
@@ -106,15 +107,22 @@ export const handleSubAgentToolResult: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
-  ctx
-    .getState()
-    .completeSubAgentToolCall(
-      ctx.sessionId,
-      event.parent_request_id,
-      event.request_id,
-      event.success,
-      event.result
-    );
+  const state = ctx.getState();
+  // Soft-timeout → backgrounded: a sub-agent command exceeded its soft timeout
+  // and was detached to a background job (still running). Register it into the
+  // Cursor-style background-jobs indicator (mirrors the main-agent path) so it
+  // surfaces in the input-row badge + sub-agent detail header. The sub-agent's
+  // turn continues, so still resolve the card carrying the backgrounded result.
+  if (isBackgroundedResult(event.result)) {
+    registerBackgroundJobFromResult(state, ctx.sessionId, event.result);
+  }
+  state.completeSubAgentToolCall(
+    ctx.sessionId,
+    event.parent_request_id,
+    event.request_id,
+    event.success,
+    event.result
+  );
 };
 
 /**

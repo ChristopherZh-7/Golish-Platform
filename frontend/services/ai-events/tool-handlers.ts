@@ -265,12 +265,42 @@ export const handleToolAutoApproved: EventHandler<{
 };
 
 /** A soft-timeout result whose command was detached to a background job. */
-function isBackgroundedResult(result: unknown): boolean {
+export function isBackgroundedResult(result: unknown): boolean {
   return (
     result != null &&
     typeof result === "object" &&
     (result as { status?: unknown }).status === "backgrounded"
   );
+}
+
+/** Minimal store surface needed to register a background job. */
+type BackgroundJobRegistrar = {
+  addBackgroundJob: (
+    sessionId: string,
+    job: { jobId: string; command: string; startedAt: number }
+  ) => void;
+};
+
+/**
+ * Register a soft-timeout→backgrounded tool result into the Cursor-style
+ * background-jobs indicator. Shared by the main-agent (`handleToolResult`) and
+ * sub-agent (`handleSubAgentToolResult`) paths so both surface backgrounded
+ * commands in the input-row badge + sub-agent detail header. No-op when the
+ * result carries no `job_id`.
+ */
+export function registerBackgroundJobFromResult(
+  state: BackgroundJobRegistrar,
+  sessionId: string,
+  result: unknown
+): void {
+  const bg = result as { job_id?: string; command?: string };
+  if (bg.job_id) {
+    state.addBackgroundJob(sessionId, {
+      jobId: bg.job_id,
+      command: bg.command ?? "(command)",
+      startedAt: Date.now(),
+    });
+  }
 }
 
 /**
@@ -295,14 +325,7 @@ export const handleToolResult: EventHandler<{
   // but keep the timeline + interleaved cards visibly "running in background"
   // until a later `tool_background_completed` flips them to a terminal result.
   if (isBackgroundedResult(event.result)) {
-    const bg = event.result as { job_id?: string; command?: string };
-    if (bg.job_id) {
-      state.addBackgroundJob(ctx.sessionId, {
-        jobId: bg.job_id,
-        command: bg.command ?? "(command)",
-        startedAt: Date.now(),
-      });
-    }
+    registerBackgroundJobFromResult(state, ctx.sessionId, event.result);
     state.completeActiveToolCall(ctx.sessionId, event.request_id, true, event.result);
     state.backgroundStreamingToolBlock(ctx.sessionId, event.request_id, event.result);
     state.backgroundToolExecutionBlock(ctx.sessionId, event.request_id, event.result);
