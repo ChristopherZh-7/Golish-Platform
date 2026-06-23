@@ -80,7 +80,16 @@ pub enum GateRule {
     /// technique 匹配的 claim/finding 佐证（item.technique == cell.technique 且
     /// item.subject == cell.asset，精确相等，D5）。found 之外的终态豁免（D3）：
     /// absence 无结构化观察可佐证，由 cell 自身 evidence/note 规则把关。
-    CoverageCorroborated { on_fail: OnFail },
+    CoverageCorroborated {
+        /// Phase C（设计 2026-06-22 瘦身交付物）：true ⇒ 显式 no-op（立即 Pass）。当
+        /// 本阶段从 DB 真值裁决覆盖（`facts_from_db_truth` + coverage_complete
+        /// `authoritative_found`）时，agent 交「瘦」交付物——只跑采集工具、让 DB-truth
+        /// 投影补格，故**不应**再被要求为每个 found cell 手打 technique-tagged
+        /// claim/finding 佐证。缺省 false = P5 佐证校验（逐字节不变）。
+        #[serde(default)]
+        authoritative: bool,
+        on_fail: OnFail,
+    },
     /// 分母覆盖（设计 2026-06-05-vuln-triage-technique-matrix §5.3）。对 status ∈
     /// {found, checked_empty} 的每个 coverage cell 核「面覆盖」：默认全覆盖（D6）要求
     /// `tested_units == total_units`；抽样例外要求 `sampling_rationale` 非空且
@@ -119,7 +128,7 @@ impl GateRule {
             GateRule::CountAtLeast { on_fail, .. }
             | GateRule::ForAll { on_fail, .. }
             | GateRule::CoverageComplete { on_fail, .. }
-            | GateRule::CoverageCorroborated { on_fail }
+            | GateRule::CoverageCorroborated { on_fail, .. }
             | GateRule::CoverageDenominator { on_fail, .. } => on_fail.reason.clone(),
             GateRule::NamedCheck { check, on_fail } => on_fail
                 .as_ref()
@@ -318,7 +327,10 @@ fn eval_one(
             authoritative_techniques.as_deref(),
             on_fail,
         ),
-        GateRule::CoverageCorroborated { on_fail } => coverage_corroborated(d, on_fail),
+        GateRule::CoverageCorroborated {
+            on_fail,
+            authoritative,
+        } => coverage_corroborated(d, on_fail, *authoritative),
         GateRule::CoverageDenominator {
             min_sample_ratio_pct,
             on_fail,
@@ -727,7 +739,18 @@ fn coverage_denominator(
 /// coverage cell 必须有 ≥1 个 technique 匹配的 claim/finding 佐证（item.technique ==
 /// cell.technique 且 item.subject == cell.asset，精确相等）。其余终态豁免（absence
 /// 无结构化观察可佐证，由 cell 自身 evidence/note 规则把关）。
-fn coverage_corroborated(d: &StageDeliverable, on_fail: &OnFail) -> GateCheckOutcome {
+fn coverage_corroborated(
+    d: &StageDeliverable,
+    on_fail: &OnFail,
+    authoritative: bool,
+) -> GateCheckOutcome {
+    // Phase C (设计 2026-06-22): authoritative stages adjudicate coverage from DB
+    // truth (the projection fills the matrix), so a slim deliverable must not be
+    // blocked for lacking a technique-tagged claim/finding per found cell —
+    // corroboration is an explicit no-op here.
+    if authoritative {
+        return GateCheckOutcome::Pass;
+    }
     let mut gaps: Vec<String> = Vec::new();
     for cell in &d.coverage {
         if cell.status != CoverageStatus::Found {
@@ -2579,6 +2602,28 @@ mod tests {
             ),
         ]);
         assert!(eval(&d, &test_spec(), &[rule])[0].is_pass());
+    }
+
+    #[test]
+    fn coverage_corroborated_authoritative_is_noop() {
+        // Phase C (设计 2026-06-22 瘦身交付物): authoritative stages adjudicate
+        // coverage from DB truth, so a slim deliverable's found cell with NO
+        // technique-tagged claim/finding must NOT block (paired opposite of
+        // `coverage_corroborated_blocks_unbacked_found_cell`, same input).
+        let rule = parse(
+            r#"{ "op":"coverage_corroborated", "authoritative":true,
+                 "on_fail":{"reason":"found cells must be corroborated by technique-tagged items"} }"#,
+        );
+        let d = deliverable_with_coverage(vec![cov_cell(
+            "example.com",
+            "GOLISH-INTEL-DNS",
+            CoverageStatus::Found,
+            vec![1],
+        )]);
+        assert!(
+            eval(&d, &test_spec(), &[rule])[0].is_pass(),
+            "authoritative coverage_corroborated must no-op (slim deliverable)"
+        );
     }
 
     // ── 设计 2026-06-12 §5.3: DB 业务表投影 fact（哨兵 id=0）端到端安全保证 ──

@@ -32,6 +32,7 @@ impl GolishDbRepoProvider {
             current_stage: r.current_stage,
             engagement_org_id: r.engagement_org_id,
             state_blob: r.state_blob,
+            stage_started_at: r.stage_started_at,
         }))
     }
 

@@ -446,7 +446,9 @@ pub async fn update_status_by_id(pool: &PgPool, id: Uuid, status: &str) -> Resul
 /// Overwrite a target's `ports` JSON by id. Mirrors legacy
 /// `db_target_update_recon`.
 pub async fn update_ports_by_id(pool: &PgPool, id: Uuid, ports: &serde_json::Value) -> Result<()> {
-    sqlx::query("UPDATE targets SET ports=$1, updated_at=NOW() WHERE id=$2")
+    // Phase D (design 2026-06-22 §3.3): port scan is a collection site, so stamp
+    // `ports_scanned_at = NOW()` for the gate's time-windowed PORT truth read.
+    sqlx::query("UPDATE targets SET ports=$1, ports_scanned_at=NOW(), updated_at=NOW() WHERE id=$2")
         .bind(ports)
         .bind(id)
         .execute(pool)
@@ -505,6 +507,13 @@ pub async fn update_recon_extended_by_id(
                                     ) existing(ep) ON true
                                 ) sub
                             ) END,
+            -- Phase D (design 2026-06-22 §3.3): stamp per-dim freshness at this
+            -- collection site. PORT only when ports were actually provided
+            -- ($8 != '[]'); LIVENESS only when a liveness signal (real_ip /
+            -- http_status) was provided — so a call carrying neither does not
+            -- falsely mark the dim collected this run.
+            ports_scanned_at    = CASE WHEN $8::jsonb = '[]'::jsonb THEN ports_scanned_at ELSE NOW() END,
+            liveness_checked_at = CASE WHEN ($1 != '' OR $4 IS NOT NULL) THEN NOW() ELSE liveness_checked_at END,
             updated_at    = NOW()
            WHERE id = $9"#,
     )
@@ -525,8 +534,12 @@ pub async fn update_recon_extended_by_id(
 // ── IP-centric host tree: primary resolved IP (design 2026-06-15 Phase 0) ────
 
 fn build_backfill_real_ip_sql() -> String {
-    "UPDATE targets t SET real_ip = sub.ip, updated_at = NOW() \
-       FROM (SELECT DISTINCT ON (target_id) target_id, value AS ip \
+    // Phase D (design 2026-06-22 §3.3): this is a PASSIVE derive from already-stored
+    // A records (no fresh resolution), so liveness_checked_at carries the SOURCE
+    // record's `created_at` (NOT NOW()) — backfilled liveness inherits the DNS
+    // record's true freshness and won't be mis-counted as collected this run.
+    "UPDATE targets t SET real_ip = sub.ip, liveness_checked_at = sub.created_at, updated_at = NOW() \
+       FROM (SELECT DISTINCT ON (target_id) target_id, value AS ip, created_at \
                FROM dns_records WHERE record_type = 'A' \
                ORDER BY target_id, created_at) sub \
       WHERE t.id = sub.target_id AND t.real_ip = '' \
@@ -539,7 +552,11 @@ fn build_backfill_real_ip_sql() -> String {
 /// Unlike [`update_recon_extended_by_id`] this is an unconditional single-column
 /// write used by the host-tree resolution path.
 pub async fn set_real_ip_by_id(pool: &PgPool, id: Uuid, real_ip: &str) -> Result<()> {
-    sqlx::query("UPDATE targets SET real_ip = $1, updated_at = NOW() WHERE id = $2")
+    // Phase D (design 2026-06-22 §3.3): active recon DNS-landing collection site —
+    // setting real_ip is a liveness signal, so stamp `liveness_checked_at = NOW()`.
+    sqlx::query(
+        "UPDATE targets SET real_ip = $1, liveness_checked_at = NOW(), updated_at = NOW() WHERE id = $2",
+    )
         .bind(real_ip)
         .bind(id)
         .execute(pool)
@@ -560,7 +577,10 @@ pub async fn backfill_real_ip_from_dns(pool: &PgPool, project_path: Option<&str>
 }
 
 fn build_set_ip_whois_sql() -> String {
-    "UPDATE targets SET ip_whois = $1, updated_at = NOW() WHERE id = $2".to_string()
+    // Phase D (design 2026-06-22 §3.3): RIR RDAP fetch is a collection site, so
+    // stamp `ip_whois_collected_at = NOW()` for the gate's windowed IPWHOIS read.
+    "UPDATE targets SET ip_whois = $1, ip_whois_collected_at = NOW(), updated_at = NOW() WHERE id = $2"
+        .to_string()
 }
 
 /// Host-aware coverage 2c-3 (design 2026-06-15-host-aware-coverage-2c3-ip-native):
@@ -679,6 +699,10 @@ mod tests {
         assert!(sql.contains("ORDER BY target_id, created_at"));
         assert!(sql.contains("t.real_ip = ''"));
         assert!(sql.contains("($1 IS NULL OR t.project_path = $1)"));
+        // Phase D: passive derive carries the source A record's created_at as
+        // liveness_checked_at (NOT NOW()), so stale-derived liveness isn't fresh.
+        assert!(sql.contains("liveness_checked_at = sub.created_at"));
+        assert!(sql.contains("value AS ip, created_at"));
     }
 
     #[test]
@@ -688,6 +712,8 @@ mod tests {
         let sql = build_set_ip_whois_sql();
         assert!(sql.contains("UPDATE targets SET ip_whois = $1"));
         assert!(sql.contains("WHERE id = $2"));
+        // Phase D: RDAP collection site stamps per-dim freshness.
+        assert!(sql.contains("ip_whois_collected_at = NOW()"));
     }
 
     #[test]

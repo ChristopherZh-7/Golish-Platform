@@ -20,6 +20,9 @@
   "$comment_host_aware": "Host-aware coverage 2b (design 2026-06-15-host-aware-coverage \u00a73.2): EAS is host-level \u2014 a bare URL endpoint drops GOLISH-EAS-PORT/SERVICE-FINGERPRINT (its host is already covered via the host/IP asset) but keeps LIVENESS; domain/IP/CIDR keep all 3; unknown class keeps all 3 (fail-safe). The per-asset technique_applies matrix landed inert (commit e12a7638); this flips the stage flag on so coverage_complete filters each in-scope asset to the techniques that apply to its class (via technique_applies_to_value). Default false = byte-for-byte unchanged.",
   "host_aware_coverage": true,
 
+  "$comment_freshness_window": "Phase E activation (design 2026-06-22 Phase D): gray-switch ON. The EAS DB-truth back-fill (GOLISH-EAS-LIVENESS/PORT/SERVICE-FINGERPRINT) only counts data collected this stage-run (targets.liveness_checked_at/ports_scanned_at + fingerprints.detected_at >= stage start; migration 20260623000001). EAS coverage_complete is derive_from_evidence (NOT authoritative), so this makes the DB auto-fill fresh-only; self-reported cells still fall back. Default false = presence-only.",
+  "freshness_window": true,
+
   "gate_rules": [
     {
       "op": "for_all",

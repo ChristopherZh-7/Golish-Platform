@@ -264,6 +264,7 @@ impl GolishDbRepoProvider {
         &self,
         org_id: Option<Uuid>,
         in_scope_assets: &[String],
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<Vec<(String, String)>> {
         // Coverage-landing refresh (fix 2026-06-17 enrich-timing): the recon
         // sub-agent calls `recon_map_assets` (which lands subdomains) BEFORE
@@ -305,6 +306,7 @@ impl GolishDbRepoProvider {
             org_id,
             in_scope_assets,
             &types,
+            run_start,
         )
         .await?;
         Ok(rows.into_iter().map(|(a, t)| (a, t.to_string())).collect())

@@ -236,6 +236,10 @@ pub struct OperationStateView {
     /// Harness-private resume state (JSONB). Carries `HarnessResumeState`
     /// (current stage run id + queue titles + completed count) for kill→resume.
     pub state_blob: serde_json::Value,
+    /// When the current stage-run started (`stage_started_at`, set to NOW() on each
+    /// `advance_stage`). The per-dimension freshness window (design 2026-06-22) uses
+    /// it as `run_start` to discount DB-truth org-intel rows collected before this run.
+    pub stage_started_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Minimal view of a sub-agent dispatch row, exposed to higher layers

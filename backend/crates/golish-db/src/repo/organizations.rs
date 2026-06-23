@@ -364,6 +364,59 @@ pub async fn update_profile(
     Ok(Some(row))
 }
 
+/// Org-level intel coverage dimension whose per-dimension freshness timestamp
+/// the `target_intel` gate reads (design 2026-06-22 §3.2). Each maps to a
+/// nullable `*_collected_at` column added by `20260622000001_organizations_intel
+/// _collected_at.sql`. Centralizes the column whitelist so write sites and the
+/// (future) time-windowed read in `coverage_truth` share one source of truth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum IntelDim {
+    Asn,
+    Ct,
+    Whois,
+    Osint,
+}
+
+impl IntelDim {
+    /// Fixed column name (never built from user input — injection-safe).
+    pub const fn collected_at_column(self) -> &'static str {
+        match self {
+            IntelDim::Asn => "asns_collected_at",
+            IntelDim::Ct => "certificates_collected_at",
+            IntelDim::Whois => "whois_collected_at",
+            IntelDim::Osint => "osint_collected_at",
+        }
+    }
+}
+
+/// Stamp `<dim>_collected_at = NOW()` for the given intel dimensions on one org.
+///
+/// Call from a **collection site** AFTER the dimension's data has been written,
+/// so the coverage gate's time-windowed DB-truth read counts that dimension as
+/// collected for the current stage-run (design 2026-06-22 §3.2). Stamp by
+/// "dimension was collected this run" — NOT by per-value dedup — so re-finding
+/// already-known values still marks the dimension fresh. No-op on empty input.
+///
+/// Deliberately NOT folded into [`update_profile`]: that helper is also called
+/// by non-collection paths (candidate clearing, child promotion, manual GUI
+/// edits) that must not falsely mark a dimension as freshly collected.
+pub async fn stamp_intel_collected_at(pool: &PgPool, org_id: Uuid, dims: &[IntelDim]) -> Result<()> {
+    if dims.is_empty() {
+        return Ok(());
+    }
+    let mut cols: Vec<&'static str> = dims.iter().map(|d| d.collected_at_column()).collect();
+    cols.sort_unstable();
+    cols.dedup();
+    let set = cols
+        .iter()
+        .map(|c| format!("{c} = NOW()"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!("UPDATE organizations SET {set}, updated_at = NOW() WHERE id = $1");
+    sqlx::query(&sql).bind(org_id).execute(pool).await?;
+    Ok(())
+}
+
 fn build_find_root_id_by_name_sql() -> String {
     "SELECT id FROM organizations WHERE project_path = $1 AND name = $2 AND parent_id IS NULL LIMIT 1"
         .to_string()

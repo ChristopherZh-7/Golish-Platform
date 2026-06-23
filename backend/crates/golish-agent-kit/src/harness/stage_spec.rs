@@ -135,6 +135,16 @@ pub struct StageSpec {
     #[serde(default)]
     pub facts_from_db_truth: bool,
 
+    /// Per-dimension freshness window (design 2026-06-22). When true, the gate's
+    /// DB-truth org-intel projection (ASN/CT/WHOIS/OSINT) only counts a dimension
+    /// as Found when its `organizations.<dim>_collected_at >= this stage-run start`
+    /// (`operation_state.stage_started_at`), so a stale row left by a previous run
+    /// can't satisfy the cell this run. Default false = presence-only (byte-for-byte
+    /// unchanged); enable on facts-from-DB-truth intel stages together with the
+    /// write-path `*_collected_at` stamping.
+    #[serde(default)]
+    pub freshness_window: bool,
+
     /// Host-aware coverage (design 2026-06-15-host-aware-coverage, Phase 2a):
     /// when true, `coverage_complete` holds each in-scope asset only to the
     /// techniques that apply to its class (a bare IP is not asked for

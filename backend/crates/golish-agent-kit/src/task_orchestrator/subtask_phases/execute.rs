@@ -265,7 +265,7 @@ impl TaskOrchestrator {
                     let in_scope_target_types =
                         self.fetch_in_scope_target_types_for_gate(planned).await;
                     let evidence_facts = self
-                        .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref())
+                        .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref(), task_id)
                         .await;
                     // 设计 2026-06-12-unified-refiner · Refiner C 类诊断与 gate 用
                     // 同一份证据事实；hook move 走原值，这里留一份给渲染。
@@ -459,7 +459,7 @@ impl TaskOrchestrator {
         let asset_types = self.fetch_in_scope_typed_assets_for_gate(planned).await;
         let in_scope_target_types = self.fetch_in_scope_target_types_for_gate(planned).await;
         let evidence_facts = self
-            .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref())
+            .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref(), task_id)
             .await;
         let refine_facts = evidence_facts.clone();
         // Phase 1.5: fan-out 阶段收尾改判 stage_run pass_token；非 fan-out 走常规 gate。
@@ -1481,10 +1481,29 @@ impl TaskOrchestrator {
         &self,
         planned: &PlannedSubtask,
         in_scope_assets: Option<&[String]>,
+        task_id: Uuid,
     ) -> Option<Vec<crate::harness::gate::rule_engine::EvidenceFact>> {
         use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
-        planned.harness_stage.as_ref()?;
+        let stage = planned.harness_stage.as_ref()?.stage_kind;
         let sid = self.chat_session_id.as_deref()?;
+
+        // Per-dimension freshness window (design 2026-06-22 §3.2): when this stage's
+        // spec opts in (`freshness_window`), anchor the DB-truth org-intel facts to
+        // this stage-run start (`operation_state.stage_started_at`) so a stale row
+        // from a previous run can't satisfy a cell this run. Spec off / unresolved /
+        // missing operation_state ⇒ None = presence-only (gray-switch safe).
+        let run_start = if crate::harness::load_embedded_stage_spec(stage)
+            .map(|s| s.freshness_window)
+            .unwrap_or(false)
+        {
+            crate::db_shim::operation_state::get(&*self.repo, task_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|s| s.stage_started_at)
+        } else {
+            None
+        };
 
         // ① 账本派生（现有路径）：audit_log 三列齐全的行 → EvidenceFact。
         let mut facts: Vec<EvidenceFact> = match self.repo.evidence_facts_for_session(sid).await {
@@ -1520,7 +1539,11 @@ impl TaskOrchestrator {
         // in_scope_assets 缺失（GUI/chat 路径 org_id=None 且无注入）→ 跳过，退回纯账本
         // 投影（零回归）。
         if let Some(assets) = in_scope_assets {
-            match self.repo.db_truth_facts(self.harness_org_id, assets).await {
+            match self
+                .repo
+                .db_truth_facts(self.harness_org_id, assets, run_start)
+                .await
+            {
                 Ok(truth) if !truth.is_empty() => {
                     let n = truth.len();
                     facts.extend(db_truth_facts_to_evidence(truth));

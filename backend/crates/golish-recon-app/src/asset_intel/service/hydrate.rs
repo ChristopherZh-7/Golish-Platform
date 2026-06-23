@@ -224,6 +224,29 @@ pub(crate) async fn run_providers_for_org(
         {
             merge_profile_patch_with_existing(org_row, &mut patch);
             golish_db::repo::organizations::update_profile(pool, organization_id, &patch).await?;
+            // Per-dimension freshness (design 2026-06-22 §3.2): genuine collection
+            // site, so stamp `*_collected_at` for the intel coverage dimensions
+            // this patch actually carried. The patch is a delta — a dimension is
+            // Some only when entries for it were collected this run — so this
+            // never over-stamps. WHOIS is not in ProfilePatch (separate whois
+            // write path). OSINT presence = contacts / social_accounts /
+            // business_systems (mirrors coverage_truth `has_osint`).
+            use golish_db::repo::organizations::IntelDim;
+            let mut dims: Vec<IntelDim> = Vec::new();
+            if patch.asns.is_some() {
+                dims.push(IntelDim::Asn);
+            }
+            if patch.certificates.is_some() {
+                dims.push(IntelDim::Ct);
+            }
+            if patch.contacts.is_some()
+                || patch.social_accounts.is_some()
+                || patch.business_systems.is_some()
+            {
+                dims.push(IntelDim::Osint);
+            }
+            golish_db::repo::organizations::stamp_intel_collected_at(pool, organization_id, &dims)
+                .await?;
         }
     }
 

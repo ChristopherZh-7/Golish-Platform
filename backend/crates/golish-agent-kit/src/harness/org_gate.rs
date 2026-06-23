@@ -186,7 +186,11 @@ pub async fn evaluate_org_stage_gate(
         .map(facts_from_rows)
         .unwrap_or_default();
     if !in_scope_assets.is_empty() {
-        if let Ok(truth) = repo.db_truth_facts(org_id, &in_scope_assets).await {
+        // Per-org fan-out scoping gate stays presence-only (run_start=None): the
+        // per-dimension freshness window (design 2026-06-22) is wired on the
+        // single-org target_intel execute.rs path; threading the stage-run anchor
+        // through the multi-org fan-out gate is separate, deferred work.
+        if let Ok(truth) = repo.db_truth_facts(org_id, &in_scope_assets, None).await {
             facts.extend(db_truth_to_facts(truth));
         }
     }

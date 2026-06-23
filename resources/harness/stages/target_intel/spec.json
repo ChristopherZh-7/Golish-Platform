@@ -58,6 +58,8 @@
     },
     {
       "op": "coverage_corroborated",
+      "authoritative": true,
+      "$comment_authoritative": "Phase C (design 2026-06-22-intel-perdim-freshness-slim-deliverable, 瘦身交付物): target_intel adjudicates coverage from DB truth (facts_from_db_truth + coverage_complete authoritative_found above), so the agent submits a SLIM deliverable — it runs the collection tools and lets the DB-truth projection fill the matrix. Requiring a technique-tagged claim/finding per found cell contradicts that, so coverage_corroborated is an explicit no-op here. Kept (not deleted) to document intent and stay available to any future non-authoritative intel stage. Completeness is still enforced by coverage_complete (authoritative, reads the DB); a vacuous/empty submission still BLOCKs via vacuous_check + empty DB truth.",
       "on_fail": {
         "reason": "every 'found' intel coverage cell must be corroborated by a technique-tagged claim/finding on the same asset",
         "hints": ["tag each intel claim/finding with its `technique` id (GOLISH-INTEL-DNS / -WHOIS / -ASN / -CT / -SUBDOMAIN / -OSINT)", "use the SAME subject string as the coverage cell's asset"]
@@ -81,6 +83,9 @@
   "max_other_skips": 2,
   "$comment_facts_from_db_truth": "design 2026-06-15-db-truth-single-source-deliverable §5 PR2: target_intel is facts-only — coverage/claims/evidence are adjudicated from DB truth (coverage_complete authoritative + coverage_truth). With this on, vacuous_check is satisfied by real DB/ledger evidence facts so a weak model need not hand-copy a deliverable; completeness is still enforced by coverage_complete per (in-scope asset × technique). Empty DB truth still blocks.",
   "facts_from_db_truth": true,
+
+  "$comment_freshness_window": "Phase E activation (design 2026-06-22-intel-perdim-freshness-slim-deliverable): gray-switch ON. The coverage gate's DB-truth projection (org intel ASN/CT/WHOIS/OSINT + per-asset DNS/SUBDOMAIN) now only counts data collected at/after this stage-run start (operation_state.stage_started_at), so a row left by a PREVIOUS run no longer satisfies a cell this run (execute.rs reads this flag -> threads run_start into db_truth_facts -> coverage_truth windows each dim). Requires the write-path *_collected_at stamping (migration 20260622000001) to be live. Default false = presence-only; flip back to false to disable instantly.",
+  "freshness_window": true,
 
   "$comment_host_aware_coverage": "design 2026-06-15-host-aware-coverage (Phase 2a): coverage_complete holds each in-scope asset only to the intel techniques that apply to its class — a bare IP/CIDR is NOT asked for SUBDOMAIN / forward-DNS / CT (domain-only concepts); WHOIS/ASN/OSINT still apply to every class. Fixes IPs being permanently 'incomplete'. Asset class is inferred from the asset value (IpAddr/url/cidr/else domain); unknown keeps the full set (fail-safe, never relaxes the gate).",
   "host_aware_coverage": true,

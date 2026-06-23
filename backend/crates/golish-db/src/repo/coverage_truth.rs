@@ -18,6 +18,7 @@
 
 use std::collections::HashSet;
 
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -78,24 +79,47 @@ fn jsonb_non_empty(col: &str) -> String {
 /// 列存量判定一律走 [`jsonb_non_empty`]（不裸调 `jsonb_array_length`）；唯一保留
 /// 的 `jsonb_array_length` 是 `intel->'records'`，且有 `CASE WHEN jsonb_typeof =
 /// 'array'` 守卫，对非数组安全。
-fn build_org_intel_presence_sql() -> String {
-    format!(
-        "SELECT {has_asn} AS has_asn, \
-                {has_ct} AS has_ct, \
-                (whois IS NOT NULL AND whois <> 'null'::jsonb AND whois <> '{{}}'::jsonb) AS has_whois, \
-                (COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(intel->'records') = 'array' \
-                              THEN intel->'records' END), 0) > 0 \
-                 OR {has_contacts} \
-                 OR {has_social} \
-                 OR {has_business}) AS has_osint, \
-                (EXISTS(SELECT 1 FROM organizations child \
-                          WHERE child.parent_id = organizations.id)) AS has_subsidiary \
-           FROM organizations WHERE id = $1",
-        has_asn = jsonb_non_empty("asns"),
-        has_ct = jsonb_non_empty("certificates"),
+fn build_org_intel_presence_sql(apply_window: bool) -> String {
+    // Per-dimension freshness window (design 2026-06-22 §3.2): when `apply_window`,
+    // each of the 4 org intel dims additionally requires its `<dim>_collected_at
+    // >= $2` (this stage-run start, `operation_state.stage_started_at`). A NULL
+    // collected_at (legacy row / never-collected) fails `>= $2`, and the
+    // `(expr AND col >= $2) IS TRUE` wrapper maps the resulting NULL to `false`
+    // ⇒ not projected (conservative: no stale Found, honors I8) **and** keeps the
+    // column non-NULL so it still decodes into `bool`. `apply_window=false` emits
+    // no `*_collected_at` predicate at all (freshness_window gray-switch off =
+    // pre-2026-06-22 presence-only behavior); the existing presence tests cover
+    // that the column reads / shape-agnostic empty checks are unchanged.
+    let dim = |expr: &str, col: &str| -> String {
+        if apply_window {
+            format!("(({expr}) AND {col} >= $2) IS TRUE")
+        } else {
+            expr.to_string()
+        }
+    };
+    let osint_expr = format!(
+        "(COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(intel->'records') = 'array' \
+                      THEN intel->'records' END), 0) > 0 \
+         OR {has_contacts} \
+         OR {has_social} \
+         OR {has_business})",
         has_contacts = jsonb_non_empty("contacts"),
         has_social = jsonb_non_empty("social_accounts"),
         has_business = jsonb_non_empty("business_systems"),
+    );
+    let whois_expr = "(whois IS NOT NULL AND whois <> 'null'::jsonb AND whois <> '{}'::jsonb)";
+    format!(
+        "SELECT {has_asn} AS has_asn, \
+                {has_ct} AS has_ct, \
+                {has_whois} AS has_whois, \
+                {has_osint} AS has_osint, \
+                (EXISTS(SELECT 1 FROM organizations child \
+                          WHERE child.parent_id = organizations.id)) AS has_subsidiary \
+           FROM organizations WHERE id = $1",
+        has_asn = dim(&jsonb_non_empty("asns"), "asns_collected_at"),
+        has_ct = dim(&jsonb_non_empty("certificates"), "certificates_collected_at"),
+        has_whois = dim(whois_expr, "whois_collected_at"),
+        has_osint = dim(&osint_expr, "osint_collected_at"),
     )
 }
 
@@ -103,62 +127,95 @@ fn build_org_intel_presence_sql() -> String {
 /// `$1 IS NULL` 时不按 org 过滤（退回全局 scope='in'）。`extra` 形如
 /// `"AND jsonb_typeof(t.ports) = 'array' AND t.ports <> '[]'::jsonb"` 或
 /// `"JOIN fingerprints f ON ..."`。
-fn build_in_scope_values_sql(join: &str, filter: &str) -> String {
+///
+/// Per-asset row-level freshness window (design 2026-06-22 §3.3): when
+/// `window = Some(col)`, additionally require `col >= $2` (this stage-run start,
+/// `operation_state.stage_started_at`), so a row left by a previous stage-run no
+/// longer satisfies the dimension this run. `col` is a fixed literal chosen by the
+/// caller (never user input — injection-safe). `None` = presence-only ($1 only;
+/// freshness_window gray-switch off, or this dimension not yet windowed). When
+/// `Some`, the caller MUST bind `$2` in [`fetch_values`] (gated by the same flag).
+fn build_in_scope_values_sql(join: &str, filter: &str, window: Option<&str>) -> String {
+    let window_clause = match window {
+        Some(col) => format!("AND {col} >= $2"),
+        None => String::new(),
+    };
     format!(
         "SELECT DISTINCT t.value FROM targets t {join} \
            WHERE t.scope::text = 'in' \
-             AND ($1 IS NULL OR t.organization_id = $1) {filter}"
+             AND ($1 IS NULL OR t.organization_id = $1) {filter} {window_clause}"
     )
 }
 
 /// 该 org 下 scope='in' 的 target 中，哪些 `value` 真有 `asset_type='subdomain'` 子资产行。
-fn build_subdomain_target_values_sql() -> String {
+/// `apply_window` (Phase B, freshness_window on) ⇒ 只数本次 stage-run 期间发现的子域
+/// 子资产行（`target_assets.discovered_at >= $2`）。
+fn build_subdomain_target_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql(
         "JOIN target_assets ta ON ta.target_id = t.id",
         "AND ta.asset_type = 'subdomain'",
+        apply_window.then_some("ta.discovered_at"),
     )
 }
 
 /// EAS-LIVENESS：httpx 探活/解析 IP（`http_status` 非空或 `real_ip` 非空）。
-fn build_liveness_values_sql() -> String {
-    build_in_scope_values_sql("", "AND (t.http_status IS NOT NULL OR t.real_ip <> '')")
+/// Phase D：`apply_window` ⇒ 只数本次 stage-run 探的活性（`t.liveness_checked_at >= $2`）。
+fn build_liveness_values_sql(apply_window: bool) -> String {
+    build_in_scope_values_sql(
+        "",
+        "AND (t.http_status IS NOT NULL OR t.real_ip <> '')",
+        apply_window.then_some("t.liveness_checked_at"),
+    )
 }
 
 /// EAS-PORT：端口扫描结果（`ports` 为非空 JSONB 数组）。判空走 `jsonb_typeof =
 /// 'array'` + 比较式（不裸调 `jsonb_array_length`，否则非数组 `ports` 会抛
 /// `cannot get array length of a non-array`），与 `engagement_truth` 同款守卫。
-fn build_port_values_sql() -> String {
+fn build_port_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql(
         "",
         "AND jsonb_typeof(t.ports) = 'array' AND t.ports <> '[]'::jsonb",
+        apply_window.then_some("t.ports_scanned_at"),
     )
 }
 
-/// EAS-SERVICE-FINGERPRINT：该 host 有服务/版本指纹行。
-fn build_service_fp_values_sql() -> String {
-    build_in_scope_values_sql("JOIN fingerprints f ON f.target_id = t.id", "")
+/// EAS-SERVICE-FINGERPRINT：该 host 有服务/版本指纹行。Phase D 行级窗：
+/// `apply_window` ⇒ 只数本次 stage-run 探到的指纹（`f.detected_at >= $2`）。
+fn build_service_fp_values_sql(apply_window: bool) -> String {
+    build_in_scope_values_sql(
+        "JOIN fingerprints f ON f.target_id = t.id",
+        "",
+        apply_window.then_some("f.detected_at"),
+    )
 }
 
-/// ENUM-DIR：该 host 有目录枚举产物（ffuf/gobuster → directory_entries）。
-fn build_dir_values_sql() -> String {
-    build_in_scope_values_sql("JOIN directory_entries de ON de.target_id = t.id", "")
+/// ENUM-DIR：该 host 有目录枚举产物（ffuf/gobuster → directory_entries）。Phase D
+/// 行级窗：`apply_window` ⇒ 只数本次 stage-run 落库的条目（`de.created_at >= $2`）。
+fn build_dir_values_sql(apply_window: bool) -> String {
+    build_in_scope_values_sql(
+        "JOIN directory_entries de ON de.target_id = t.id",
+        "",
+        apply_window.then_some("de.created_at"),
+    )
 }
 
 /// ENUM-PARAM：该 host 有带参端点（arjun/katana → api_endpoints.params 非空）。
 /// 判空同 [`build_port_values_sql`]：`jsonb_typeof = 'array'` + 比较式，避免对
 /// 非数组 `params` 调 `jsonb_array_length` 抛错。
-fn build_param_values_sql() -> String {
+fn build_param_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql(
         "JOIN api_endpoints ae ON ae.target_id = t.id",
         "AND jsonb_typeof(ae.params) = 'array' AND ae.params <> '[]'::jsonb",
+        apply_window.then_some("ae.discovered_at"),
     )
 }
 
 /// ENUM-JSAPI：该 host 有 JS/爬虫抽取的端点（api_endpoints.source）。
-fn build_jsapi_values_sql() -> String {
+fn build_jsapi_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql(
         "JOIN api_endpoints ae ON ae.target_id = t.id",
         "AND ae.source IN ('js_analysis', 'crawler')",
+        apply_window.then_some("ae.discovered_at"),
     )
 }
 
@@ -168,18 +225,21 @@ fn build_rdns_values_sql() -> String {
     build_in_scope_values_sql(
         "JOIN dns_records dr ON dr.target_id = t.id",
         &format!("AND dr.record_type = 'PTR' AND t.target_type::text IN {IP_TYPE_IN_LIST}"),
+        None,
     )
 }
 
 /// IP-WHOIS (host-aware 2c-3): in-scope IP/CIDR targets with non-empty
 /// `targets.ip_whois` (RIR RDAP). Shape-agnostic empty check (no `jsonb_array_length`).
-fn build_ipwhois_values_sql() -> String {
+/// Phase D：`apply_window` ⇒ 只数本次 stage-run 采的 IP-WHOIS（`t.ip_whois_collected_at >= $2`）。
+fn build_ipwhois_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql(
         "",
         &format!(
             "AND {} AND t.target_type::text IN {IP_TYPE_IN_LIST}",
             jsonb_non_empty("t.ip_whois")
         ),
+        apply_window.then_some("t.ip_whois_collected_at"),
     )
 }
 
@@ -281,13 +341,20 @@ pub(crate) fn assemble_truth_facts_typed(
 
 /// per-asset host 级查询的小封装：跑一条 `build_in_scope_values_sql` 派生的 SQL，
 /// 绑定 `org_id`，收 distinct `value` 成集合。
-async fn fetch_values(pool: &PgPool, sql: &str, org_id: Option<Uuid>) -> Result<HashSet<String>> {
-    Ok(sqlx::query_scalar::<_, String>(sql)
-        .bind(org_id)
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .collect())
+async fn fetch_values(
+    pool: &PgPool,
+    sql: &str,
+    org_id: Option<Uuid>,
+    run_start: Option<DateTime<Utc>>,
+) -> Result<HashSet<String>> {
+    // `$1` = org_id always; `$2` = run_start bound only when the SQL was built
+    // with a row-level window (caller passes the same `run_start` that drove
+    // `apply_window`), keeping placeholder count and bind count in lockstep.
+    let mut query = sqlx::query_scalar::<_, String>(sql).bind(org_id);
+    if let Some(rs) = run_start {
+        query = query.bind(rs);
+    }
+    Ok(query.fetch_all(pool).await?.into_iter().collect())
 }
 
 /// DB 业务表真值事实 `(asset, technique)`：业务表里 `asset` 上 `technique` 真有数据。
@@ -303,34 +370,57 @@ pub async fn coverage_truth_facts(
     org_id: Option<Uuid>,
     in_scope_assets: &[String],
     types: &[String],
+    run_start: Option<DateTime<Utc>>,
 ) -> Result<Vec<(String, &'static str)>> {
     if in_scope_assets.is_empty() {
         return Ok(Vec::new());
     }
+    // `run_start = Some(stage-run start)` applies the per-dimension freshness
+    // window to the 4 org intel dims (design 2026-06-22 §3.2); `None` keeps the
+    // presence-only behavior (freshness_window gray-switch off). Per-asset dims
+    // (DNS/SUBDOMAIN/EAS/ENUM) are unaffected here — they get their own row-level
+    // window in Phase B/D.
     let (has_asn, has_ct, has_whois, has_osint, has_subsidiary) = match org_id {
         Some(id) => {
-            sqlx::query_as::<_, (bool, bool, bool, bool, bool)>(&build_org_intel_presence_sql())
-                .bind(id)
+            let sql = build_org_intel_presence_sql(run_start.is_some());
+            let mut query = sqlx::query_as::<_, (bool, bool, bool, bool, bool)>(&sql).bind(id);
+            if let Some(rs) = run_start {
+                query = query.bind(rs);
+            }
+            query
                 .fetch_optional(pool)
                 .await?
                 .unwrap_or((false, false, false, false, false))
         }
         None => (false, false, false, false, false),
     };
-    let subdomain_values = fetch_values(pool, &build_subdomain_target_values_sql(), org_id).await?;
-    // DNS 维度（PR-B）：复用 dns_records repo 的存在查询（DRY），org 隔离。
-    let dns_values: HashSet<String> = crate::repo::dns_records::present_target_values(pool, org_id)
-        .await?
-        .into_iter()
-        .collect();
-    let rdns_values = fetch_values(pool, &build_rdns_values_sql(), org_id).await?;
-    let ipwhois_values = fetch_values(pool, &build_ipwhois_values_sql(), org_id).await?;
-    let liveness_values = fetch_values(pool, &build_liveness_values_sql(), org_id).await?;
-    let port_values = fetch_values(pool, &build_port_values_sql(), org_id).await?;
-    let service_fp_values = fetch_values(pool, &build_service_fp_values_sql(), org_id).await?;
-    let dir_values = fetch_values(pool, &build_dir_values_sql(), org_id).await?;
-    let param_values = fetch_values(pool, &build_param_values_sql(), org_id).await?;
-    let jsapi_values = fetch_values(pool, &build_jsapi_values_sql(), org_id).await?;
+    // Per-dimension freshness window (design 2026-06-22): when `run_start = Some`
+    // (freshness_window on), each per-asset dim only counts rows collected this
+    // stage-run. `aw` (= `run_start.is_some()`) keeps the SQL placeholder ($2) and
+    // the `fetch_values` bind in lockstep. Phase B = SUBDOMAIN + DNS; Phase D =
+    // EAS/ENUM (LIVENESS/PORT/SERVICE-FP/DIR/PARAM/JSAPI) + IP-WHOIS. RDNS stays
+    // presence-only (out of the 2026-06-22 scope; niche IP-only PTR dim).
+    let aw = run_start.is_some();
+    let subdomain_values =
+        fetch_values(pool, &build_subdomain_target_values_sql(aw), org_id, run_start).await?;
+    // DNS 维度（PR-B）：复用 dns_records repo 的存在查询（DRY），org 隔离；Phase B
+    // 行级窗 `dns_records.created_at >= run_start`（受 freshness_window 控）。
+    let dns_values: HashSet<String> =
+        crate::repo::dns_records::present_target_values(pool, org_id, run_start)
+            .await?
+            .into_iter()
+            .collect();
+    let rdns_values = fetch_values(pool, &build_rdns_values_sql(), org_id, None).await?;
+    let ipwhois_values =
+        fetch_values(pool, &build_ipwhois_values_sql(aw), org_id, run_start).await?;
+    let liveness_values =
+        fetch_values(pool, &build_liveness_values_sql(aw), org_id, run_start).await?;
+    let port_values = fetch_values(pool, &build_port_values_sql(aw), org_id, run_start).await?;
+    let service_fp_values =
+        fetch_values(pool, &build_service_fp_values_sql(aw), org_id, run_start).await?;
+    let dir_values = fetch_values(pool, &build_dir_values_sql(aw), org_id, run_start).await?;
+    let param_values = fetch_values(pool, &build_param_values_sql(aw), org_id, run_start).await?;
+    let jsapi_values = fetch_values(pool, &build_jsapi_values_sql(aw), org_id, run_start).await?;
     Ok(assemble_truth_facts_typed(
         in_scope_assets,
         types,
@@ -385,7 +475,7 @@ mod tests {
 
     #[test]
     fn org_intel_presence_sql_includes_subsidiary_child_exists() {
-        let sql = build_org_intel_presence_sql();
+        let sql = build_org_intel_presence_sql(false);
         assert!(sql.contains("child.parent_id = organizations.id"));
         assert!(sql.contains("AS has_subsidiary"));
     }
@@ -444,7 +534,7 @@ mod tests {
 
     #[test]
     fn ipwhois_values_sql_filters_nonempty_and_ip_types() {
-        let sql = build_ipwhois_values_sql();
+        let sql = build_ipwhois_values_sql(false);
         assert!(sql.contains("t.ip_whois IS NOT NULL"));
         assert!(sql.contains("t.ip_whois <> '{}'::jsonb"));
         assert!(sql.contains("t.target_type::text IN ('ip', 'ipv4'"));
@@ -472,7 +562,7 @@ mod tests {
 
     #[test]
     fn org_intel_presence_sql_reads_all_four_org_columns() {
-        let sql = build_org_intel_presence_sql();
+        let sql = build_org_intel_presence_sql(false);
         // 五个 org 级列都参与判定（列名出现）。
         for col in [
             "asns",
@@ -487,6 +577,42 @@ mod tests {
         // OSINT 多源任一非空（intel->records 走 jsonb_typeof 守卫的 array_length）。
         assert!(sql.contains("intel->'records'"));
         assert!(sql.contains("FROM organizations WHERE id = $1"));
+    }
+
+    #[test]
+    fn org_intel_presence_sql_off_omits_freshness_window() {
+        // freshness_window gray-switch OFF (design 2026-06-22): presence-only, no
+        // `*_collected_at` predicate and no $2 placeholder ⇒ pre-change behavior.
+        let sql = build_org_intel_presence_sql(false);
+        assert!(!sql.contains("collected_at"), "off must not window: {sql}");
+        assert!(!sql.contains("$2"), "off must bind only $1: {sql}");
+        assert!(!sql.contains("IS TRUE"));
+    }
+
+    #[test]
+    fn org_intel_presence_sql_on_windows_each_org_dim() {
+        // freshness_window ON: every org intel dim requires its per-dimension
+        // `<dim>_collected_at >= $2`, wrapped `IS TRUE` so a NULL collected_at
+        // becomes `false` (never a stale Found; stays a non-NULL bool).
+        let sql = build_org_intel_presence_sql(true);
+        for col in [
+            "asns_collected_at",
+            "certificates_collected_at",
+            "whois_collected_at",
+            "osint_collected_at",
+        ] {
+            assert!(
+                sql.contains(&format!("{col} >= $2")),
+                "missing window for {col}: {sql}"
+            );
+        }
+        assert!(sql.contains("IS TRUE"), "window must coalesce NULL: {sql}");
+        // subsidiary is scoping-only (no collected_at) — never windowed.
+        assert!(!sql.contains("has_subsidiary >= $2"));
+        // org-column reads + shape-agnostic empty checks survive (windowing is
+        // additive, not a rewrite).
+        assert!(sql.contains("asns <> '[]'::jsonb"));
+        assert!(sql.contains("intel->'records'"));
     }
 
     /// shape 无关空判据自身的守卫：永不调 `jsonb_array_length`，且把
@@ -511,7 +637,7 @@ mod tests {
     /// `intel->'records'`（带 `jsonb_typeof = 'array'` 守卫，对非数组安全）。
     #[test]
     fn org_intel_presence_sql_never_array_length_on_unguarded_columns() {
-        let sql = build_org_intel_presence_sql();
+        let sql = build_org_intel_presence_sql(false);
         for col in [
             "asns",
             "certificates",
@@ -534,7 +660,7 @@ mod tests {
 
     #[test]
     fn subdomain_sql_filters_scope_org_and_asset_type() {
-        let sql = build_subdomain_target_values_sql();
+        let sql = build_subdomain_target_values_sql(false);
         assert!(sql.contains("t.scope::text = 'in'"));
         assert!(sql.contains("($1 IS NULL OR t.organization_id = $1)"));
         assert!(sql.contains("ta.asset_type = 'subdomain'"));
@@ -542,15 +668,39 @@ mod tests {
     }
 
     #[test]
+    fn subdomain_sql_off_omits_row_level_window() {
+        // freshness_window OFF (Phase B): presence-only, no `$2` / `discovered_at >=`
+        // ⇒ a subdomain child landed by a previous stage-run still counts (pre-change).
+        let sql = build_subdomain_target_values_sql(false);
+        assert!(!sql.contains("$2"), "off must bind only $1: {sql}");
+        assert!(!sql.contains("discovered_at >="), "off must not window: {sql}");
+    }
+
+    #[test]
+    fn subdomain_sql_on_windows_target_assets_discovered_at() {
+        // freshness_window ON (Phase B, design 2026-06-22 §3.3): the SUBDOMAIN
+        // dimension only counts in-scope targets whose subdomain child rows were
+        // discovered this stage-run (`target_assets.discovered_at >= $2`).
+        let sql = build_subdomain_target_values_sql(true);
+        assert!(
+            sql.contains("ta.discovered_at >= $2"),
+            "on must window target_assets.discovered_at: {sql}"
+        );
+        // windowing is additive — scope/org/asset_type predicates survive.
+        assert!(sql.contains("ta.asset_type = 'subdomain'"));
+        assert!(sql.contains("t.scope::text = 'in'"));
+    }
+
+    #[test]
     fn active_dimension_sqls_filter_scope_and_org() {
         // 6 个主动维度 SQL 都必须带 scope='in' + org 隔离（不串 org / 不漏 scope）。
         for sql in [
-            build_liveness_values_sql(),
-            build_port_values_sql(),
-            build_service_fp_values_sql(),
-            build_dir_values_sql(),
-            build_param_values_sql(),
-            build_jsapi_values_sql(),
+            build_liveness_values_sql(false),
+            build_port_values_sql(false),
+            build_service_fp_values_sql(false),
+            build_dir_values_sql(false),
+            build_param_values_sql(false),
+            build_jsapi_values_sql(false),
         ] {
             assert!(sql.contains("t.scope::text = 'in'"), "missing scope: {sql}");
             assert!(
@@ -562,15 +712,21 @@ mod tests {
 
     #[test]
     fn active_dimension_sqls_target_the_right_tables() {
-        assert!(build_liveness_values_sql().contains("t.http_status IS NOT NULL OR t.real_ip"));
-        assert!(build_port_values_sql()
+        assert!(
+            build_liveness_values_sql(false).contains("t.http_status IS NOT NULL OR t.real_ip")
+        );
+        assert!(build_port_values_sql(false)
             .contains("jsonb_typeof(t.ports) = 'array' AND t.ports <> '[]'::jsonb"));
-        assert!(build_service_fp_values_sql().contains("JOIN fingerprints f ON f.target_id = t.id"));
-        assert!(build_dir_values_sql().contains("JOIN directory_entries de ON de.target_id = t.id"));
-        let param = build_param_values_sql();
+        assert!(
+            build_service_fp_values_sql(false).contains("JOIN fingerprints f ON f.target_id = t.id")
+        );
+        assert!(
+            build_dir_values_sql(false).contains("JOIN directory_entries de ON de.target_id = t.id")
+        );
+        let param = build_param_values_sql(false);
         assert!(param.contains("JOIN api_endpoints ae ON ae.target_id = t.id"));
         assert!(param.contains("jsonb_typeof(ae.params) = 'array' AND ae.params <> '[]'::jsonb"));
-        let jsapi = build_jsapi_values_sql();
+        let jsapi = build_jsapi_values_sql(false);
         assert!(jsapi.contains("JOIN api_endpoints ae ON ae.target_id = t.id"));
         assert!(jsapi.contains("ae.source IN ('js_analysis', 'crawler')"));
     }
@@ -580,8 +736,41 @@ mod tests {
     /// `coverage_truth_facts` 抛错、db_truth 投影整体失效。
     #[test]
     fn active_dimension_sqls_never_array_length_unguarded() {
-        assert!(!build_port_values_sql().contains("jsonb_array_length(t.ports)"));
-        assert!(!build_param_values_sql().contains("jsonb_array_length(ae.params)"));
+        assert!(!build_port_values_sql(false).contains("jsonb_array_length(t.ports)"));
+        assert!(!build_param_values_sql(false).contains("jsonb_array_length(ae.params)"));
+    }
+
+    #[test]
+    fn active_dimension_sqls_off_omit_row_level_window() {
+        // freshness_window OFF (Phase D): presence-only — no `$2` window predicate
+        // ⇒ EAS/ENUM data left by a previous stage-run still counts (pre-change).
+        for sql in [
+            build_liveness_values_sql(false),
+            build_port_values_sql(false),
+            build_service_fp_values_sql(false),
+            build_dir_values_sql(false),
+            build_param_values_sql(false),
+            build_jsapi_values_sql(false),
+            build_ipwhois_values_sql(false),
+        ] {
+            assert!(!sql.contains("$2"), "off must bind only $1: {sql}");
+            assert!(!sql.contains(">= $2"), "off must not window: {sql}");
+        }
+    }
+
+    #[test]
+    fn active_dimension_sqls_on_window_their_collection_timestamp() {
+        // freshness_window ON (Phase D, design 2026-06-22 §3.3/D3): each EAS/ENUM dim
+        // only counts rows collected this stage-run, via its per-dim timestamp >= $2.
+        // PORT/LIVENESS/IPWHOIS = targets columns (migration 20260623000001);
+        // SERVICE-FP/DIR/PARAM/JSAPI = existing child-table row timestamps.
+        assert!(build_liveness_values_sql(true).contains("t.liveness_checked_at >= $2"));
+        assert!(build_port_values_sql(true).contains("t.ports_scanned_at >= $2"));
+        assert!(build_ipwhois_values_sql(true).contains("t.ip_whois_collected_at >= $2"));
+        assert!(build_service_fp_values_sql(true).contains("f.detected_at >= $2"));
+        assert!(build_dir_values_sql(true).contains("de.created_at >= $2"));
+        assert!(build_param_values_sql(true).contains("ae.discovered_at >= $2"));
+        assert!(build_jsapi_values_sql(true).contains("ae.discovered_at >= $2"));
     }
 
     #[test]

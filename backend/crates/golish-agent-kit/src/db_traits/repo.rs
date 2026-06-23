@@ -375,8 +375,9 @@ pub trait DbRepoProvider: Send + Sync {
         &self,
         org_id: Option<Uuid>,
         in_scope_assets: &[String],
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<Vec<(String, String)>> {
-        let _ = (org_id, in_scope_assets);
+        let _ = (org_id, in_scope_assets, run_start);
         Ok(Vec::new())
     }
 

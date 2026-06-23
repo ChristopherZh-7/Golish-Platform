@@ -307,8 +307,10 @@ impl DbRepoProvider for GolishDbRepoProvider {
         &self,
         org_id: Option<Uuid>,
         in_scope_assets: &[String],
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<Vec<(String, String)>> {
-        self.db_truth_facts_impl(org_id, in_scope_assets).await
+        self.db_truth_facts_impl(org_id, in_scope_assets, run_start)
+            .await
     }
 
     async fn in_scope_org_ids(&self, project_path: Option<&str>) -> anyhow::Result<Vec<Uuid>> {

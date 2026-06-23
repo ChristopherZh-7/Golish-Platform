@@ -43,6 +43,7 @@ impl MemRepo {
                 current_stage: current_stage.to_string(),
                 engagement_org_id: None,
                 state_blob: serde_json::Value::Null,
+                stage_started_at: chrono::Utc::now(),
             },
         );
         Arc::new(Self {
@@ -111,6 +112,7 @@ impl DbRepoProvider for MemRepo {
                 current_stage: current_stage.to_string(),
                 engagement_org_id: None,
                 state_blob: serde_json::Value::Null,
+                stage_started_at: chrono::Utc::now(),
             },
         );
         Ok(())

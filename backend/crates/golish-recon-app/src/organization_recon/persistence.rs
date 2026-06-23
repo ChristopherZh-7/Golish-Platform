@@ -561,7 +561,12 @@ pub(crate) async fn land_whois(
 
     let whois_landed = whois_value.is_some();
     if let Some(value) = whois_value {
-        sqlx::query("UPDATE organizations SET whois = $1, updated_at = NOW() WHERE id = $2")
+        // whois_collected_at bump (design 2026-06-22 §3.2): genuine WHOIS
+        // collection site (RDAP fetch), so stamp per-dimension freshness in the
+        // same write for the coverage gate's time-windowed read.
+        sqlx::query(
+            "UPDATE organizations SET whois = $1, whois_collected_at = NOW(), updated_at = NOW() WHERE id = $2",
+        )
             .bind(value)
             .bind(organization.id)
             .execute(pool)
@@ -836,6 +841,12 @@ struct ProfileAccumulator {
     social_accounts: Value,
     historical_vulns: Value,
     contacts: Value,
+    /// Intel coverage dimensions this accumulation actually collected this run
+    /// (design 2026-06-22 §3.2) — drives per-dimension `*_collected_at` stamping
+    /// in [`ProfileAccumulator::write`]. Set on record-kind match (not per-value
+    /// dedup), so re-finding known values still marks the dimension fresh.
+    touched_ct: bool,
+    touched_osint: bool,
 }
 
 impl ProfileAccumulator {
@@ -850,6 +861,8 @@ impl ProfileAccumulator {
             social_accounts: array_or_empty(&organization.social_accounts),
             historical_vulns: array_or_empty(&organization.historical_vulns),
             contacts: object_or_empty(&organization.contacts),
+            touched_ct: false,
+            touched_osint: false,
         }
     }
 
@@ -864,9 +877,16 @@ impl ProfileAccumulator {
             ReconRecordKind::MiniProgram => {
                 push_intel_array(&mut self.intel, "mini_programs", &record.value)
             }
-            ReconRecordKind::Wechat => push_json_array(&mut self.social_accounts, &record.value),
-            ReconRecordKind::Certificate => push_json_array(&mut self.certificates, &record.value),
+            ReconRecordKind::Wechat => {
+                self.touched_osint = true;
+                push_json_array(&mut self.social_accounts, &record.value)
+            }
+            ReconRecordKind::Certificate => {
+                self.touched_ct = true;
+                push_json_array(&mut self.certificates, &record.value)
+            }
             ReconRecordKind::Contact => {
+                self.touched_osint = true;
                 let channel = contact_channel(field, &record.value);
                 push_contact(&mut self.contacts, channel, &record.value)
             }
@@ -888,6 +908,7 @@ impl ProfileAccumulator {
             }
             ReconRecordKind::Ip => push_json_array(&mut self.ip_ranges, &record.value),
             ReconRecordKind::Url | ReconRecordKind::Site => {
+                self.touched_osint = true;
                 push_json_array(&mut self.business_systems, &record.value)
             }
             ReconRecordKind::Organization | ReconRecordKind::Port | ReconRecordKind::Service => {
@@ -901,7 +922,20 @@ impl ProfileAccumulator {
         tx: &mut Transaction<'_, Postgres>,
         organization_id: Uuid,
     ) -> Result<(), GolishError> {
-        sqlx::query(
+        // Per-dimension freshness stamps (design 2026-06-22 §3.2): append
+        // `*_collected_at = NOW()` only for intel coverage dimensions this
+        // accumulation collected this run (touched_*). Column names are fixed
+        // literals mirroring golish-db `IntelDim::collected_at_column` (no
+        // injection). CT ← Certificate records; OSINT ← Wechat / Contact /
+        // Url|Site records (social_accounts / contacts / business_systems).
+        let mut freshness = String::new();
+        if self.touched_ct {
+            freshness.push_str(", certificates_collected_at = NOW()");
+        }
+        if self.touched_osint {
+            freshness.push_str(", osint_collected_at = NOW()");
+        }
+        let sql = format!(
             r#"UPDATE organizations
                SET domains = $1,
                    ip_ranges = $2,
@@ -912,21 +946,22 @@ impl ProfileAccumulator {
                    social_accounts = $7,
                    historical_vulns = $8,
                    contacts = $9,
-                   updated_at = NOW()
-               WHERE id = $10"#,
-        )
-        .bind(&self.domains)
-        .bind(&self.ip_ranges)
-        .bind(&self.email_domains)
-        .bind(&self.intel)
-        .bind(&self.certificates)
-        .bind(&self.business_systems)
-        .bind(&self.social_accounts)
-        .bind(&self.historical_vulns)
-        .bind(&self.contacts)
-        .bind(organization_id)
-        .execute(&mut **tx)
-        .await?;
+                   updated_at = NOW(){freshness}
+               WHERE id = $10"#
+        );
+        sqlx::query(&sql)
+            .bind(&self.domains)
+            .bind(&self.ip_ranges)
+            .bind(&self.email_domains)
+            .bind(&self.intel)
+            .bind(&self.certificates)
+            .bind(&self.business_systems)
+            .bind(&self.social_accounts)
+            .bind(&self.historical_vulns)
+            .bind(&self.contacts)
+            .bind(organization_id)
+            .execute(&mut **tx)
+            .await?;
         Ok(())
     }
 }

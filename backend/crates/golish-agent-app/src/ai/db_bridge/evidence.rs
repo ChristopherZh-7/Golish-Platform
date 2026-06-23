@@ -165,7 +165,10 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
         assets: &[String],
     ) -> Vec<golish_agent_kit::harness::EvidenceFact> {
         use golish_agent_kit::harness::{EvidenceFact, EvidenceOutcome};
-        match self.db_truth_facts_impl(org_id, assets).await {
+        // Submit preview is a non-authoritative hint shown to the agent during
+        // submit; keep it presence-only (run_start=None). The authoritative
+        // stage-close gate applies the freshness window via DbRepoProvider.
+        match self.db_truth_facts_impl(org_id, assets, None).await {
             // coverage_truth is Found-only (it never infers checked_empty), and
             // the projection is evidence-id-agnostic, so the business-table truth
             // maps to Found facts with the sentinel id 0.

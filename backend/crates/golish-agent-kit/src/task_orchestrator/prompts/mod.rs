@@ -72,8 +72,29 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
     // techniques, the `coverage_complete` gate op requires every in-scope asset
     // to take each technique to a terminal state. Surface that contract so the
     // agent fills the `coverage` field instead of leaving cells not_attempted.
+    //
+    // Phase C slim deliverable (设计 2026-06-22): when the stage adjudicates
+    // coverage from DB truth (`facts_from_db_truth`), the completeness matrix is
+    // filled by the DB-truth projection, not self-report. Telling the agent to
+    // fill the matrix cell-by-cell + tag claims is then counter-productive (drives
+    // the "fill the table" busywork loop). Instead instruct it to just run the
+    // collection tools (data lands in DB) and only self-report blocked/not_applicable.
     let coverage_line = if spec.expected_techniques.is_empty() {
         String::new()
+    } else if spec.facts_from_db_truth {
+        format!(
+            "\n- **Coverage (auto-adjudicated from the DATABASE)** — for these techniques: {}. \
+             Just RUN the collection tools so their data LANDS in the database (e.g. enrich / dig / \
+             subfinder → dns_records / target_assets / organizations.*); the deterministic gate reads \
+             the DB directly to score per-(asset × technique) completeness. You do NOT need to fill the \
+             `coverage` matrix cell-by-cell, and you do NOT need to tag claims/findings with `technique` \
+             — leave found / checked_empty cells to the DB-truth projection. ONLY add a `coverage` cell \
+             when a technique genuinely has no data source or is blocked for an asset: mark it `blocked` \
+             or `not_applicable` with a `note` naming the failed/absent source. A `blocked` cell is \
+             TERMINAL and clears that gap — do NOT resubmit the same matrix expecting it to fill \
+             (\"checked-empty\" is NOT \"unchecked\").",
+            spec.expected_techniques.join(", ")
+        )
     } else {
         format!(
             "\n- **Coverage (per in-scope asset)** — give EACH of these techniques a terminal status \
@@ -840,6 +861,32 @@ mod tests {
         .unwrap();
         assert!(!stage_charter(&without, &ScopingPolicy::default())
             .contains("Tag claims/findings with `technique`"));
+    }
+
+    /// Phase C 瘦身交付物（设计 2026-06-22）：facts_from_db_truth 阶段的 charter 用
+    /// 「DB 自动裁决」的瘦覆盖指引——不教逐格填矩阵、不教 technique 标注，改教「跑工具
+    /// 落库 + 仅对无源/被阻断技术报 blocked/not_applicable」。
+    #[test]
+    fn stage_charter_slim_coverage_when_facts_from_db_truth() {
+        use crate::harness::stage_spec::load_stage_spec_from_json;
+
+        let spec = load_stage_spec_from_json(
+            r#"{"id":"target_intel","kind":"target_intel","risk_level":"low",
+                "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
+                "facts_from_db_truth":true,
+                "expected_techniques":["GOLISH-INTEL-DNS","GOLISH-INTEL-WHOIS"]}"#,
+        )
+        .expect("spec parses");
+        let charter = stage_charter(&spec, &ScopingPolicy::default());
+        // slim branch: DB auto-adjudicates; technique list still surfaced.
+        assert!(
+            charter.contains("auto-adjudicated from the DATABASE"),
+            "facts_from_db_truth charter must use the slim coverage instruction"
+        );
+        assert!(charter.contains("GOLISH-INTEL-DNS"));
+        // the cell-by-cell matrix + tagging busywork is NOT rendered for slim stages.
+        assert!(!charter.contains("Coverage (per in-scope asset)"));
+        assert!(!charter.contains("Tag claims/findings with `technique`"));
     }
 
     /// 2026-06-09 verify-first（纯 gate 配置版）：给 EAS 加 expected_techniques 后，

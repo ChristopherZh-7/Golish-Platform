@@ -100,6 +100,7 @@ mod tests {
             specialist: None,
             coverage_axis: vec![],
             facts_from_db_truth: false,
+            freshness_window: false,
             host_aware_coverage: false,
             coverage_anchor_only: false,
             findings_allowed: true,
