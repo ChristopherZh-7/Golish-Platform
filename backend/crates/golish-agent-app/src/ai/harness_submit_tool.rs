@@ -25,8 +25,8 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use golish_agent_kit::harness::{
-    load_embedded_stage_spec, validate_stage_gate_with_context, EvidenceFact, GateContext,
-    GateContextBuilder, StageDeliverable, StageKind,
+    load_embedded_stage_spec, validate_stage_gate_with_context, EvidenceFact, EvidenceOutcome,
+    GateContext, GateContextBuilder, StageDeliverable, StageKind,
 };
 use golish_core::Tool;
 
@@ -101,6 +101,19 @@ pub trait EvidenceLedgerQuery: Send + Sync {
     /// Default empty ⇒ preview falls back to `spec.expected_techniques` (prior).
     async fn in_scope_target_types(&self, org_id: Option<Uuid>) -> Vec<String> {
         let _ = org_id;
+        Vec::new()
+    }
+
+    /// PR-D (#4/E3, 设计 2026-06-23-technique-outcomes-provenance): project
+    /// `(asset, technique, outcome, evidence_id)` from the `technique_outcomes`
+    /// table for the submit preview's gray-switched dual-read. Gated by
+    /// `technique_outcomes_read_enabled()`. Default empty ⇒ preview doesn't read it.
+    async fn technique_outcome_facts(
+        &self,
+        org_id: Uuid,
+        run_id: &str,
+    ) -> Vec<(String, String, String, i64)> {
+        let _ = (org_id, run_id);
         Vec::new()
     }
 }
@@ -387,6 +400,33 @@ impl SubmitStageDeliverableTool {
                         stage,
                         &target_types,
                     );
+            }
+            // (4) PR-D (#4/E3): 灰度从 technique_outcomes union 进 facts（submit 预检；
+            //     与 execute.rs/org_gate 同源 dual-read）。flag off = 逐字节不变。run_id
+            //     = chat session；outcome blocked→Error（gate 无 Blocked outcome）。
+            if golish_agent_kit::harness::feature_flags::technique_outcomes_read_enabled() {
+                if let Some(sid) = self.session_id.as_deref() {
+                    let projected: Vec<EvidenceFact> = repo
+                        .technique_outcome_facts(org_id, sid)
+                        .await
+                        .into_iter()
+                        .filter_map(|(asset, technique, outcome, evidence_id)| {
+                            let outcome = match outcome.as_str() {
+                                "found" => EvidenceOutcome::Found,
+                                "empty" => EvidenceOutcome::Empty,
+                                "error" | "blocked" => EvidenceOutcome::Error,
+                                _ => return None,
+                            };
+                            Some(EvidenceFact {
+                                asset,
+                                technique,
+                                outcome,
+                                evidence_id,
+                            })
+                        })
+                        .collect();
+                    facts.extend(projected);
+                }
             }
         }
         // 统一组装入口（设计 2026-06-23-unified-gate-context-builder）。

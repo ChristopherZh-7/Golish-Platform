@@ -278,4 +278,13 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
             .await
             .unwrap_or_default()
     }
+
+    async fn technique_outcome_facts(
+        &self,
+        org_id: uuid::Uuid,
+        run_id: &str,
+    ) -> Vec<(String, String, String, i64)> {
+        // PR-D (#4/E3): submit 预检 dual-read 投影源（与 DbRepoProvider 同 impl）。
+        self.technique_outcome_facts_impl(org_id, run_id).await
+    }
 }

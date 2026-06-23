@@ -550,6 +550,38 @@ where
                                     evidence_id = id,
                                     "recon passive evidence appended; surfacing id to agent"
                                 );
+                                // PR-C step2b (#4/E3): recon 写点 provenance 物化（仅
+                                // recon_discover_subsidiaries 带 fact）。gray-switch + org
+                                // 绑定 + facts；非致命 warn。注：subsidiary fact 的 asset 是
+                                // 公司名（org 级），coverage 仍由 db_truth 投影；本表记
+                                // provenance（PR-E 切单源时再处理投影时序）。
+                                if golish_agent_kit::harness::feature_flags::technique_outcomes_write_enabled() {
+                                    if let (Some(org_id), Some(rid), Some((tech, asset, outcome))) = (
+                                        ctx.harness_org_id,
+                                        ctx.events.session_id,
+                                        facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
+                                    ) {
+                                        if let Err(e) = repo
+                                            .upsert_technique_outcome(
+                                                org_id,
+                                                rid,
+                                                asset,
+                                                tech,
+                                                outcome,
+                                                Some(effective_tool_name),
+                                                Some(ev_subject),
+                                                &[id],
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                target: "harness::evidence",
+                                                error = %e,
+                                                "technique_outcomes upsert failed (continuing)"
+                                            );
+                                        }
+                                    }
+                                }
                             }
                             Err(e) => tracing::warn!(
                                 target: "harness::evidence",
