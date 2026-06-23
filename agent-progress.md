@@ -29,6 +29,24 @@
 
 ---
 
+### 2026-06-23 · #5（评审 claim #5 Source/Query Log 层）step1：source_query_log 物化表设计 + migration（inert）（BaJie BajieAsk-agent-4 · 全栈工程师 · DISPATCH off · 用户「接 #5 查询日志层」→ brainstorming 定消费模型 A →「选 A 写设计+migration」）
+
+- **本轮目标**：评审 #5「补一个 Source Coverage / Query Log 层，证明哪些数据源查过」。brainstorming 先定消费模型分叉（gate 强制 vs 审计/reviewer-only）→ 用户选 **A 审计/provenance-only**（gate 不 block）→ 写设计 + migration（inert，I10 step1），repo/写/读属后续 PR。
+- **改前实证（已读码）**：`audit_log` 有 evidence_technique/evidence_outcome 但**无** source(provider)/query/result_count/timing 结构化列（migration 20260408 initial audit_log + 20260611000001 evidence_technique_outcome）；`technique_outcomes`（#4）每 (asset×technique) **只一行**（UNIQUE(run_id,asset,technique)），一个 technique 被多源覆盖时塌成一行，证不了逐源查询 → 需更细 (run×source×query×target) 表。
+- **已完成（本轮 = 设计 + migration only）**：
+  - 设计 `docs/design/2026-06-23-source-query-log.md`（§2 三层正交[coverage / technique_outcomes / source_query_log] + §3 schema + §4 写/读 reviewer 后续 PR + §5 I2/I7/I8/I10 不变量）。
+  - migration `backend/crates/golish-db/migrations/20260623000003_source_query_log.sql`：`CREATE TABLE IF NOT EXISTS source_query_log`（org_id FK CASCADE / run_id / source / query / target NOT NULL DEFAULT '' / technique / status(found|empty|error|blocked) / result_count / evidence_ids BIGINT[] / detail / started_at / finished_at / created_at / updated_at + UNIQUE(run_id,source,query,target) + 2 索引 + COMMENT）。纯新增、I10 第 1 步，表先 **inert**。
+  - feature_list 新增 `source-query-log-2026-06-23`（**blocked**：等用户审 design + 决定是否继续 step2 写 / step3 reviewer 读）。
+- **运行过的验证（实跑）**：`cargo check -p golish-db` → **exit 0**（Finished 10.45s，migration 被 sqlx::migrate! 收纳）；`python3 -m json.tool feature_list.json` → VALID。
+- **已记录证据**：`Checking golish-db v0.2.43 ... Finished `dev` profile ... 10.45s` exit 0；JSON VALID。
+- **提交记录**：**未 commit**（§2.7 需用户确认）、**未 apply**（用户环境重启才 apply migration）。
+- **未提交的半成品（本轮）**：`?? docs/design/2026-06-23-source-query-log.md`、`?? backend/crates/golish-db/migrations/20260623000003_source_query_log.sql`、`M feature_list.json`、`M agent-progress.md`。
+- **已知风险 / 下一步**：① 表 inert（无读无写）= 零行为变化；DROP 可回滚。② 消费模型 A = gate 不读本表（coverage 判定逐字节不变）；future B（gate 强制源覆盖）须另立设计 + 「每 technique 必需源」taxonomy。③ 依赖 E1 canonical_asset_key（target 须规范键）。④ step2 写路径（采集点 upsert gray-switch 非致命）、step3 reviewer/报告读 待续。
+
+- **续（同轮，用户「继续继续 全部搞完 不要问我 有测试啊 编译 全部跑完再搞」）· #5 step2+step3 端到端完成**（feature_list 转 **passing**）：mirror #4 PR-C/D 模式一气呵成。**step2 写**：① `golish-db/src/repo/source_query_log.rs`（`SourceQueryLogWrite` + `upsert`（INSERT…ON CONFLICT(run_id,source,query,target) DO UPDATE，键列+created_at 不更新，幂等不堆叠）+ 4 SQL-builder 测）+ repo/mod.rs 注册；② feature flag `source_query_log_write_enabled()`（env `GOLISH_SOURCE_QUERY_LOG_WRITE`，默认 off + 3 测）；③ `DbRepoProvider::upsert_source_query`（默认 no-op，加性，test double 零改动）；④ `GolishDbRepoProvider::upsert_source_query_impl`（canonical_asset_key 归一非空 target、org 级空串保留；finished_at=now；result_count/started_at/detail=None）+ trait override；⑤ 命令路径写点 `direct/mod.rs` pentest_run `Ok(id)` 臂 mirror technique_outcomes：gray-switch + org 绑定 + facts → `upsert_source_query(org,run,pt_tool,ev_subject,asset,Some(tech),outcome,&[id])`，非致命 warn。**step3 reviewer 读**：`run_tree.py` `run_db_diagnosis` 加 §7 source_query_log（`GROUP BY technique,source,status` 本 run，psycopg2 per-query degrade 无表不崩）——消费模型 A 故读走 Python 直读 DB，**gate 不读、无 Rust read flag、无 dead-code**。**运行过的验证（实跑）**：`cargo nextest -p golish-db -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime` → **1116 passed / 0 skipped**（+7 新：repo SQL 4 + flag 3；既有零回归）；`cargo clippy 4 crate --all-targets --no-deps -- -D warnings` → **exit 0** 零告警；`python3 -m py_compile scripts/run_tree.py` → exit 0；ReadLints 7 文件 clean；JSON VALID。**已记录证据**：`Summary [8.392s] 1116 tests run: 1116 passed, 0 skipped`；clippy `Finished … 46.51s` exit 0。**提交记录**：**已 commit `cec6af0f`**（feat(harness): source_query_log #5，11 文件 +453；未 push，本地 ahead origin/main 8）+ 本 progress 行随后续 docs(progress) commit。仅显式暂存本会话 #5 文件（migration+repo+flag+trait/impl+写点+run_tree+design+feature_list），agent-1 的 perdim-freshness docs/xlsx/脚本原样未碰。**未 apply**（app 重启才建表）。**下一步**：跑 full precommit / push（需用户点头 §2.7）/ 其余写点(recon/enrich，同模式)/ 做 #6 Expansion Queue / 暂停。
+
+---
+
 ### 2026-06-23 · #4（评审 claim #4 DB-truth 带 source）起手：technique_outcomes 物化表设计 + migration（PR-C step1，inert）（BaJie BajieAsk-agent-4 · 全栈工程师 · DISPATCH off · 用户「从 #4 起手」→「A 写设计+migration」）
 
 - **本轮目标**：评审 #4「DB-truth 不能只返回 (asset, technique)，要带 source/query/evidence_id/collected_at/confidence」。先做可行性核查 → 写设计 + migration 给用户审（不接 repo/写/读，留后续 PR）。
