@@ -450,10 +450,9 @@ mod tests {
         assert_eq!(back.reason_kind, Some(ReasonKind::CredentialMissing));
 
         // 未填 reason_kind 的 JSON → None。
-        let none: CoverageCell = serde_json::from_str(
-            r#"{"asset":"a","technique":"t","status":"blocked","note":"x"}"#,
-        )
-        .unwrap();
+        let none: CoverageCell =
+            serde_json::from_str(r#"{"asset":"a","technique":"t","status":"blocked","note":"x"}"#)
+                .unwrap();
         assert!(none.reason_kind.is_none());
     }
 

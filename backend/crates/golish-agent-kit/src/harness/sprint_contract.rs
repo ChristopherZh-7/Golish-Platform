@@ -244,11 +244,9 @@ mod tests {
     #[test]
     fn expected_techniques_for_target_types_domain_yields_intel_techniques() {
         // 域名类型 → 非空动态期望技术（stage-close 与 submit 预检共用同一派生）。
-        let techs = expected_techniques_for_target_types(
-            StageKind::TargetIntel,
-            &["domain".to_string()],
-        )
-        .expect("domain target_intel should derive expected techniques");
+        let techs =
+            expected_techniques_for_target_types(StageKind::TargetIntel, &["domain".to_string()])
+                .expect("domain target_intel should derive expected techniques");
         assert!(!techs.is_empty());
     }
 

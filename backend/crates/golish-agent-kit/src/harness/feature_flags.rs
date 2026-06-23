@@ -59,61 +59,13 @@ fn failure_outcome_error_from_env(value: Option<String>) -> bool {
     }
 }
 
-/// technique_outcomes 物化表**写路径**灰度开关（#4 / E3 PR-C step2b，设计
-/// `2026-06-23-technique-outcomes-provenance.md`）。
-///
-/// **默认关闭**（opt-in）；设 `GOLISH_TECHNIQUE_OUTCOMES_WRITE=1`（或 `true`）开启——
-/// 采集落库点同步 upsert `technique_outcomes`（provenance 物化）。关闭（缺省）= 不写
-/// 该表（逐字节不变；表保持 inert，读路径 PR-D 仍未上）。
-pub fn technique_outcomes_write_enabled() -> bool {
-    technique_outcomes_write_from_env(std::env::var("GOLISH_TECHNIQUE_OUTCOMES_WRITE").ok())
-}
-
-/// 纯函数：缺省（未设）= 关闭；`"1"` / `"true"`（大小写不敏感）= 开启；其余 = 关闭。
-fn technique_outcomes_write_from_env(value: Option<String>) -> bool {
-    match value {
-        Some(v) => v == "1" || v.eq_ignore_ascii_case("true"),
-        None => false,
-    }
-}
-
-/// technique_outcomes 物化表**读路径**灰度开关（#4 / E3 PR-D，设计
-/// `2026-06-23-technique-outcomes-provenance.md`）。
-///
-/// **默认关闭**（opt-in）；设 `GOLISH_TECHNIQUE_OUTCOMES_READ=1`（或 `true`）开启——
-/// coverage gate 额外从 `technique_outcomes` 投影 `EvidenceFact` 并 **union** 进现有
-/// facts（dual-read：与 coverage_truth/ledger 并存）。关闭（缺省）= 不读该表（逐字节
-/// 不变）。须先 PR-C 写路径开（`GOLISH_TECHNIQUE_OUTCOMES_WRITE=1`）表里才有数据。
-pub fn technique_outcomes_read_enabled() -> bool {
-    technique_outcomes_read_from_env(std::env::var("GOLISH_TECHNIQUE_OUTCOMES_READ").ok())
-}
-
-/// 纯函数：缺省（未设）= 关闭；`"1"` / `"true"`（大小写不敏感）= 开启；其余 = 关闭。
-fn technique_outcomes_read_from_env(value: Option<String>) -> bool {
-    match value {
-        Some(v) => v == "1" || v.eq_ignore_ascii_case("true"),
-        None => false,
-    }
-}
-
-/// source_query_log 物化表**写路径**灰度开关（#5，设计
-/// `2026-06-23-source-query-log.md`）。
-///
-/// **默认关闭**（opt-in）；设 `GOLISH_SOURCE_QUERY_LOG_WRITE=1`（或 `true`）开启——
-/// 被动情报采集落库点同步 upsert `source_query_log`（逐源查询日志物化）。关闭（缺省）=
-/// 不写该表（逐字节不变；表保持 inert）。消费模型 A：读路径走 reviewer / `run_tree.py`
-/// （coverage gate **不**读本表），故本表无对应「读灰度开关」。
-pub fn source_query_log_write_enabled() -> bool {
-    source_query_log_write_from_env(std::env::var("GOLISH_SOURCE_QUERY_LOG_WRITE").ok())
-}
-
-/// 纯函数：缺省（未设）= 关闭；`"1"` / `"true"`（大小写不敏感）= 开启；其余 = 关闭。
-fn source_query_log_write_from_env(value: Option<String>) -> bool {
-    match value {
-        Some(v) => v == "1" || v.eq_ignore_ascii_case("true"),
-        None => false,
-    }
-}
+// 注：#4 technique_outcomes（写 + 读）/ #5 source_query_log（写）/ #6 expansion_queue
+// （写）三组物化表路径**均无灰度开关、始终开启**（用户 2026-06-23 决定测试阶段默认开，
+// 删除原 GOLISH_TECHNIQUE_OUTCOMES_WRITE / _READ / GOLISH_SOURCE_QUERY_LOG_WRITE /
+// GOLISH_EXPANSION_QUEUE_WRITE 四个开关）。写路径非致命 warn（写失败 / 表未 apply 只
+// warn，绝不影响主流程）；#4 读路径是 coverage gate 的 dual-read union（additive +
+// fail-safe 到空：读失败 / 表缺即退回 ledger + coverage_truth）。各落库 / gate 点直接
+// 无条件执行，不再查 env。
 
 #[cfg(test)]
 mod tests {
@@ -185,57 +137,5 @@ mod tests {
         assert!(!failure_outcome_error_from_env(Some("0".to_string())));
         assert!(!failure_outcome_error_from_env(Some("false".to_string())));
         assert!(!failure_outcome_error_from_env(Some("yes".to_string())));
-    }
-
-    #[test]
-    fn technique_outcomes_write_defaults_off_when_unset() {
-        assert!(!technique_outcomes_write_from_env(None));
-    }
-
-    #[test]
-    fn technique_outcomes_write_on_for_one_and_true() {
-        assert!(technique_outcomes_write_from_env(Some("1".to_string())));
-        assert!(technique_outcomes_write_from_env(Some("true".to_string())));
-    }
-
-    #[test]
-    fn technique_outcomes_write_off_for_zero_and_other_values() {
-        assert!(!technique_outcomes_write_from_env(Some("0".to_string())));
-        assert!(!technique_outcomes_write_from_env(Some("no".to_string())));
-    }
-
-    #[test]
-    fn technique_outcomes_read_defaults_off_when_unset() {
-        assert!(!technique_outcomes_read_from_env(None));
-    }
-
-    #[test]
-    fn technique_outcomes_read_on_for_one_and_true() {
-        assert!(technique_outcomes_read_from_env(Some("1".to_string())));
-        assert!(technique_outcomes_read_from_env(Some("true".to_string())));
-    }
-
-    #[test]
-    fn technique_outcomes_read_off_for_zero_and_other_values() {
-        assert!(!technique_outcomes_read_from_env(Some("0".to_string())));
-        assert!(!technique_outcomes_read_from_env(Some("yes".to_string())));
-    }
-
-    #[test]
-    fn source_query_log_write_defaults_off_when_unset() {
-        assert!(!source_query_log_write_from_env(None));
-    }
-
-    #[test]
-    fn source_query_log_write_on_for_one_and_true() {
-        assert!(source_query_log_write_from_env(Some("1".to_string())));
-        assert!(source_query_log_write_from_env(Some("true".to_string())));
-        assert!(source_query_log_write_from_env(Some("TRUE".to_string())));
-    }
-
-    #[test]
-    fn source_query_log_write_off_for_zero_and_other_values() {
-        assert!(!source_query_log_write_from_env(Some("0".to_string())));
-        assert!(!source_query_log_write_from_env(Some("no".to_string())));
     }
 }

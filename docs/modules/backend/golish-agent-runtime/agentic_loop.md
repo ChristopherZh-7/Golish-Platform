@@ -43,6 +43,7 @@ agentic loop 的公开表面 + 子模块实现。`turn/` 是 phase 调度本体�
 
 - `mod.rs` 是**薄表面**，逻辑在 `turn::*`——改 loop 行为去 turn，别把实现堆回 mod.rs。
 - 透传宽 context（crate 级 `allow(too_many_arguments)`）是有意为之。
+- `tool_execution/direct/mod.rs` 是 harness evidence 入账后的补充写点：recon passive 工具拿到 evidence id 后，会把 provider/RDAP terminal rows 同步写入 `source_query_log`；target_intel 里同 run/action 已有 terminal source row 时会返回 `skipped_duplicate=true`，不再重复调用 provider。
 
 ## 测试入口
 

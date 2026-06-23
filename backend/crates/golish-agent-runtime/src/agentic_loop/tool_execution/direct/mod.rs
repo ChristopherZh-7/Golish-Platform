@@ -228,6 +228,10 @@ where
         });
     }
 
+    if let Some(result) = duplicate_source_query_guard(effective_tool_name, ctx).await {
+        return Ok(result);
+    }
+
     let registry = ctx.tool_registry.read().await;
     let result = registry
         .execute_tool(effective_tool_name, tool_args.clone())
@@ -405,7 +409,9 @@ where
                         // stdout-derived verdict.
                         // T2 (设计 2026-06-23-failure-outcome-not-checked-empty): gray-switch
                         // 决定失败检查记 error 还是 empty（默认 off = empty，旧行为）。
-                        let distinguish_failure = golish_agent_kit::harness::feature_flags::failure_outcome_error_enabled();
+                        let distinguish_failure =
+                            golish_agent_kit::harness::feature_flags::failure_outcome_error_enabled(
+                            );
                         let facts = golish_agent_kit::harness::evidence_facts::passive_intel_facts_from_command(&ev_subject)
                             .map(|(technique, asset)| {
                                 let outcome = golish_agent_kit::harness::evidence_facts::passive_intel_outcome_for_run(technique, &ev_stdout, is_success, distinguish_failure);
@@ -452,65 +458,61 @@ where
                                     );
                                     // PR-C step2b (#4/E3, 设计 2026-06-23-technique-outcomes-
                                     // provenance): 同步 upsert technique_outcomes（provenance
-                                    // 物化）。gray-switch 默认 off；仅 org 绑定 + 有派生 fact
+                                    // 物化）。**始终写**（无灰度开关）；仅 org 绑定 + 有派生 fact
                                     // 时写；非致命 warn（证据为底、表为物化，失败不回滚证据）。
-                                    if golish_agent_kit::harness::feature_flags::technique_outcomes_write_enabled() {
-                                        if let (Some(org_id), Some(rid), Some((tech, asset, outcome))) = (
-                                            ctx.harness_org_id,
-                                            ctx.events.session_id,
-                                            facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
-                                        ) {
-                                            if let Err(e) = repo
-                                                .upsert_technique_outcome(
-                                                    org_id,
-                                                    rid,
-                                                    asset,
-                                                    tech,
-                                                    outcome,
-                                                    Some(pt_tool),
-                                                    Some(ev_subject.as_str()),
-                                                    &[id],
-                                                )
-                                                .await
-                                            {
-                                                tracing::warn!(
-                                                    target: "harness::evidence",
-                                                    error = %e,
-                                                    "technique_outcomes upsert failed (continuing)"
-                                                );
-                                            }
+                                    if let (Some(org_id), Some(rid), Some((tech, asset, outcome))) = (
+                                        ctx.harness_org_id,
+                                        ctx.events.session_id,
+                                        facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
+                                    ) {
+                                        if let Err(e) = repo
+                                            .upsert_technique_outcome(
+                                                org_id,
+                                                rid,
+                                                asset,
+                                                tech,
+                                                outcome,
+                                                Some(pt_tool),
+                                                Some(ev_subject.as_str()),
+                                                &[id],
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                target: "harness::evidence",
+                                                error = %e,
+                                                "technique_outcomes upsert failed (continuing)"
+                                            );
                                         }
                                     }
                                     // #5 (设计 2026-06-23-source-query-log): 同步 upsert
                                     // source_query_log（逐源查询日志，比 technique_outcomes 更细：
-                                    // 每 source 各一行）。gray-switch 默认 off；仅 org 绑定 + 有派生
-                                    // fact 时写；非致命 warn。消费模型 A：仅写 + reviewer 读，gate
-                                    // 不读。source=工具名、query=命令、target=asset。
-                                    if golish_agent_kit::harness::feature_flags::source_query_log_write_enabled() {
-                                        if let (Some(org_id), Some(rid), Some((tech, asset, outcome))) = (
-                                            ctx.harness_org_id,
-                                            ctx.events.session_id,
-                                            facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
-                                        ) {
-                                            if let Err(e) = repo
-                                                .upsert_source_query(
-                                                    org_id,
-                                                    rid,
-                                                    pt_tool,
-                                                    ev_subject.as_str(),
-                                                    asset,
-                                                    Some(tech),
-                                                    outcome,
-                                                    &[id],
-                                                )
-                                                .await
-                                            {
-                                                tracing::warn!(
-                                                    target: "harness::evidence",
-                                                    error = %e,
-                                                    "source_query_log upsert failed (continuing)"
-                                                );
-                                            }
+                                    // 每 source 各一行）。**始终写**（无灰度开关）；仅 org 绑定 + 有
+                                    // 派生 fact 时写；非致命 warn。消费模型 A：仅写 + reviewer 读，
+                                    // gate 不读。source=工具名、query=命令、target=asset。
+                                    if let (Some(org_id), Some(rid), Some((tech, asset, outcome))) = (
+                                        ctx.harness_org_id,
+                                        ctx.events.session_id,
+                                        facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
+                                    ) {
+                                        if let Err(e) = repo
+                                            .upsert_source_query(
+                                                org_id,
+                                                rid,
+                                                pt_tool,
+                                                ev_subject.as_str(),
+                                                asset,
+                                                Some(tech),
+                                                outcome,
+                                                &[id],
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                target: "harness::evidence",
+                                                error = %e,
+                                                "source_query_log upsert failed (continuing)"
+                                            );
                                         }
                                     }
                                 }
@@ -583,25 +585,85 @@ where
                                     "recon passive evidence appended; surfacing id to agent"
                                 );
                                 // PR-C step2b (#4/E3): recon 写点 provenance 物化（仅
-                                // recon_discover_subsidiaries 带 fact）。gray-switch + org
-                                // 绑定 + facts；非致命 warn。注：subsidiary fact 的 asset 是
-                                // 公司名（org 级），coverage 仍由 db_truth 投影；本表记
+                                // recon_discover_subsidiaries 带 fact）。**始终写**（无灰度开关）
+                                // + org 绑定 + facts；非致命 warn。注：subsidiary fact 的 asset
+                                // 是公司名（org 级），coverage 仍由 db_truth 投影；本表记
                                 // provenance（PR-E 切单源时再处理投影时序）。
-                                if golish_agent_kit::harness::feature_flags::technique_outcomes_write_enabled() {
-                                    if let (Some(org_id), Some(rid), Some((tech, asset, outcome))) = (
-                                        ctx.harness_org_id,
-                                        ctx.events.session_id,
-                                        facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
-                                    ) {
+                                if let (Some(org_id), Some(rid), Some((tech, asset, outcome))) = (
+                                    ctx.harness_org_id,
+                                    ctx.events.session_id,
+                                    facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
+                                ) {
+                                    if let Err(e) = repo
+                                        .upsert_technique_outcome(
+                                            org_id,
+                                            rid,
+                                            asset,
+                                            tech,
+                                            outcome,
+                                            Some(effective_tool_name),
+                                            Some(ev_subject),
+                                            &[id],
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            target: "harness::evidence",
+                                            error = %e,
+                                            "technique_outcomes upsert failed (continuing)"
+                                        );
+                                    }
+                                }
+                                // #6 (设计 2026-06-23-expansion-queue): 发现的子公司候选入
+                                // expansion_queue 作 pending 线索（递归深挖追踪）。**始终开启**
+                                // （无灰度开关，测试阶段默认写）；仅 recon_discover_subsidiaries
+                                // + org 绑定时入队；非致命 warn（写失败 / 表未 apply 只 warn，绝不
+                                // 影响主流程）。消费模型 A：仅写 + reviewer 读（gate 不 block）。
+                                if effective_tool_name == "recon_discover_subsidiaries" {
+                                    if let (Some(org_id), Some(rid)) =
+                                        (ctx.harness_org_id, ctx.events.session_id)
+                                    {
+                                        for lead in golish_agent_kit::harness::evidence_facts::expansion_leads_from_subsidiary_discovery(v) {
+                                            if let Err(e) = repo
+                                                .enqueue_expansion_lead(
+                                                    org_id,
+                                                    rid,
+                                                    lead.lead_type,
+                                                    &lead.lead_value,
+                                                    Some(effective_tool_name),
+                                                    lead.confidence,
+                                                    &[id],
+                                                )
+                                                .await
+                                            {
+                                                tracing::warn!(
+                                                    target: "harness::evidence",
+                                                    error = %e,
+                                                    "expansion_queue enqueue failed (continuing)"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                // #5 Phase 2 (设计 2026-06-23-target-intel-provider-source-closure):
+                                // provider-backed recon tools now surface source-level terminal
+                                // status in their JSON summary. Materialize those rows into
+                                // source_query_log so reviewers can see which provider/source
+                                // was queried for this run. This is still reviewer/provenance
+                                // only; gate-read source coverage is a later phase.
+                                if let (Some(org_id), Some(rid)) =
+                                    (ctx.harness_org_id, ctx.events.session_id)
+                                {
+                                    for row in recon_source_query_rows(effective_tool_name, v) {
                                         if let Err(e) = repo
-                                            .upsert_technique_outcome(
+                                            .upsert_source_query(
                                                 org_id,
                                                 rid,
-                                                asset,
-                                                tech,
-                                                outcome,
-                                                Some(effective_tool_name),
-                                                Some(ev_subject),
+                                                &row.source,
+                                                &row.query,
+                                                &row.target,
+                                                row.technique,
+                                                row.status,
                                                 &[id],
                                             )
                                             .await
@@ -609,7 +671,9 @@ where
                                             tracing::warn!(
                                                 target: "harness::evidence",
                                                 error = %e,
-                                                "technique_outcomes upsert failed (continuing)"
+                                                source = %row.source,
+                                                query = %row.query,
+                                                "source_query_log provider upsert failed (continuing)"
                                             );
                                         }
                                     }
@@ -663,6 +727,145 @@ where
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReconSourceQueryRow {
+    source: String,
+    query: String,
+    target: String,
+    technique: Option<&'static str>,
+    status: &'static str,
+}
+
+fn recon_source_query_rows(
+    tool_name: &str,
+    result: &serde_json::Value,
+) -> Vec<ReconSourceQueryRow> {
+    match tool_name {
+        "recon_discover_subsidiaries" | "recon_map_assets" => {
+            let query = result
+                .get("action")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(tool_name)
+                .to_string();
+            result
+                .get("providerStatus")
+                .or_else(|| result.get("provider_status"))
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|item| {
+                    let source = item
+                        .get("providerId")
+                        .or_else(|| item.get("provider_id"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())?;
+                    let raw_status = item.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                    Some(ReconSourceQueryRow {
+                        source: source.to_string(),
+                        query: query.clone(),
+                        target: String::new(),
+                        technique: None,
+                        status: provider_status_for_source_query(raw_status),
+                    })
+                })
+                .collect()
+        }
+        "recon_lookup_whois" => {
+            let query = result
+                .get("action")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(tool_name)
+                .to_string();
+            let landed = result
+                .get("whois_landed")
+                .or_else(|| result.get("whoisLanded"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            vec![ReconSourceQueryRow {
+                source: "rdap".to_string(),
+                query,
+                target: String::new(),
+                technique: Some("GOLISH-INTEL-WHOIS"),
+                status: if landed { "found" } else { "empty" },
+            }]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn provider_status_for_source_query(status: &str) -> &'static str {
+    match status {
+        "completed" | "Completed" => "found",
+        "checked_empty" | "CheckedEmpty" => "empty",
+        "unavailable" | "Unavailable" => "blocked",
+        "failed" | "Failed" => "error",
+        _ => "error",
+    }
+}
+
+async fn duplicate_source_query_guard(
+    tool_name: &str,
+    ctx: &AgenticLoopContext<'_>,
+) -> Option<ToolExecutionResult> {
+    let query = duplicate_guard_query(tool_name)?;
+    if ctx.harness_stage != Some(golish_agent_kit::harness::StageKind::TargetIntel) {
+        return None;
+    }
+    let org_id = ctx.harness_org_id?;
+    let run_id = ctx.events.session_id?;
+    let repo = ctx.events.db_tracker?.repo()?;
+    let rows = repo.source_query_facts(org_id, run_id).await;
+    let matching: Vec<_> = rows
+        .iter()
+        .filter(|row| row.query == query && is_terminal_source_query_status(&row.status))
+        .collect();
+    if matching.is_empty() {
+        return None;
+    }
+    let mut evidence_ids: Vec<i64> = matching
+        .iter()
+        .flat_map(|row| row.evidence_ids.iter().copied())
+        .collect();
+    evidence_ids.sort_unstable();
+    evidence_ids.dedup();
+    tracing::info!(
+        target: "harness::duplicate_guard",
+        tool = %tool_name,
+        query = %query,
+        source_rows = matching.len(),
+        "skipping duplicate target_intel recon tool call; terminal source_query_log rows already exist"
+    );
+    Some(ToolExecutionResult {
+        value: json!({
+            "action": query,
+            "skipped_duplicate": true,
+            "reason": "terminal source_query_log rows already exist for this run/action; not re-running providers",
+            "source_query_rows": matching.len(),
+            "existing_evidence_ids": evidence_ids,
+        }),
+        success: true,
+    })
+}
+
+fn duplicate_guard_query(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        "recon_map_assets" => Some("map_assets"),
+        "recon_lookup_whois" => Some("lookup_whois"),
+        "recon_discover_subsidiaries" => Some("discover_subsidiaries"),
+        _ => None,
+    }
+}
+
+fn is_terminal_source_query_status(status: &str) -> bool {
+    matches!(
+        status,
+        "found" | "empty" | "checked_empty" | "error" | "blocked"
+    )
+}
+
 /// P2-d guardrail decision for the execution chokepoint.
 ///
 /// Returns `Some(reason)` when a tool call must be blocked, else `None`.
@@ -688,7 +891,10 @@ fn guardrail_block_reason(
 
 #[cfg(test)]
 mod tests {
-    use super::guardrail_block_reason;
+    use super::{
+        duplicate_guard_query, guardrail_block_reason, is_terminal_source_query_status,
+        recon_source_query_rows,
+    };
     use golish_agent_kit::harness::StageKind;
     use serde_json::json;
 
@@ -720,5 +926,73 @@ mod tests {
         // preserving legacy non-harness tool dispatch.
         let args = json!({ "url": "http://169.254.169.254/" });
         assert!(guardrail_block_reason(None, "http_probe", &args).is_none());
+    }
+
+    #[test]
+    fn duplicate_guard_maps_recon_tools_to_source_queries() {
+        assert_eq!(
+            duplicate_guard_query("recon_map_assets"),
+            Some("map_assets")
+        );
+        assert_eq!(
+            duplicate_guard_query("recon_lookup_whois"),
+            Some("lookup_whois")
+        );
+        assert_eq!(
+            duplicate_guard_query("recon_discover_subsidiaries"),
+            Some("discover_subsidiaries")
+        );
+        assert_eq!(duplicate_guard_query("subfinder"), None);
+    }
+
+    #[test]
+    fn duplicate_guard_only_treats_terminal_source_statuses_as_skippable() {
+        for status in ["found", "empty", "checked_empty", "error", "blocked"] {
+            assert!(
+                is_terminal_source_query_status(status),
+                "{status} should be terminal"
+            );
+        }
+        assert!(!is_terminal_source_query_status("running"));
+    }
+
+    #[test]
+    fn provider_status_rows_map_to_source_query_statuses() {
+        let rows = recon_source_query_rows(
+            "recon_map_assets",
+            &json!({
+                "action": "map_assets",
+                "providerStatus": [
+                    {"providerId": "0.zone", "status": "completed", "message": "ok"},
+                    {"providerId": "quake", "status": "checked_empty", "message": "empty"},
+                    {"providerId": "fofa", "status": "unavailable", "message": "no key"},
+                    {"providerId": "hunter", "status": "failed", "message": "boom"}
+                ]
+            }),
+        );
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].source, "0.zone");
+        assert_eq!(rows[0].query, "map_assets");
+        assert_eq!(rows[0].status, "found");
+        assert_eq!(rows[1].status, "empty");
+        assert_eq!(rows[2].status, "blocked");
+        assert_eq!(rows[3].status, "error");
+        assert!(rows.iter().all(|row| row.target.is_empty()));
+    }
+
+    #[test]
+    fn whois_result_maps_to_rdap_source_query() {
+        let rows = recon_source_query_rows(
+            "recon_lookup_whois",
+            &json!({"action": "lookup_whois", "whois_landed": true}),
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source, "rdap");
+        assert_eq!(rows[0].query, "lookup_whois");
+        assert_eq!(rows[0].technique, Some("GOLISH-INTEL-WHOIS"));
+        assert_eq!(rows[0].status, "found");
+
+        let empty = recon_source_query_rows("recon_lookup_whois", &json!({}));
+        assert_eq!(empty[0].status, "empty");
     }
 }

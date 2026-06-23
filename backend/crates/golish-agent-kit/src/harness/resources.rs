@@ -214,9 +214,12 @@ mod tests {
         assert!(scoping.contains("do NOT probe") || scoping.contains("NO reconnaissance"));
 
         let ti = stage_methodology_md(StageKind::TargetIntel).expect("target_intel playbook");
-        // The key fix this stage encodes: no one-by-one dig, no active scan here.
-        assert!(ti.contains("subfinder"));
-        assert!(ti.contains("dig"));
+        // The key fixes this stage encodes: no scan-tool fallback and no active
+        // scan here.
+        assert!(ti.contains("recon_map_assets"));
+        assert!(ti.contains("recon_lookup_whois"));
+        assert!(!ti.contains("subfinder"));
+        assert!(!ti.contains("dig"));
         assert!(ti.to_lowercase().contains("once"));
 
         let eas = stage_methodology_md(StageKind::ExternalAttackSurface)

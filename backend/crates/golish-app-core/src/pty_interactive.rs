@@ -82,7 +82,10 @@ fn is_dns_zone_transfer(command: &str) -> bool {
 fn compute_hard_ms(command: &str, timeout_ms: u64) -> u64 {
     let hard_ms = env_ms("GOLISH_TOOL_HARD_TIMEOUT_MS", DEFAULT_HARD_TIMEOUT_MS).max(timeout_ms);
     if is_dns_zone_transfer(command) {
-        hard_ms.min(env_ms("GOLISH_DNS_HARD_TIMEOUT_MS", DEFAULT_DNS_HARD_TIMEOUT_MS))
+        hard_ms.min(env_ms(
+            "GOLISH_DNS_HARD_TIMEOUT_MS",
+            DEFAULT_DNS_HARD_TIMEOUT_MS,
+        ))
     } else {
         hard_ms
     }
@@ -286,7 +289,10 @@ impl Tool for VisibleRunPtyCmdTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_MS / 1000);
         let timeout_ms = (timeout_secs * 1000).min(MAX_TIMEOUT_MS);
-        let background = args.get("background").and_then(|v| v.as_bool()).unwrap_or(false);
+        let background = args
+            .get("background")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         run_shell_command_detail(command, workspace, timeout_ms, background).await
     }
@@ -427,7 +433,9 @@ mod tests {
     fn detects_dns_zone_transfer_probes() {
         assert!(is_dns_zone_transfer("dig AXFR +short pingan.com"));
         assert!(is_dns_zone_transfer("dig axfr example.com"));
-        assert!(is_dns_zone_transfer("dig @ns1.example.com example.com AXFR"));
+        assert!(is_dns_zone_transfer(
+            "dig @ns1.example.com example.com AXFR"
+        ));
         assert!(is_dns_zone_transfer("host -l example.com ns1.example.com"));
     }
 
@@ -463,11 +471,8 @@ mod tests {
     #[tokio::test]
     async fn kill_job_tool_cancels_a_running_job() {
         // Spawn a long-runner through the process-global manager the tool uses.
-        let job_id = crate::background_jobs::manager().spawn(
-            "sleep 30",
-            &ws(),
-            Duration::from_secs(60),
-        );
+        let job_id =
+            crate::background_jobs::manager().spawn("sleep 30", &ws(), Duration::from_secs(60));
         let res = KillJobTool
             .execute(json!({ "job_id": job_id }), &ws())
             .await

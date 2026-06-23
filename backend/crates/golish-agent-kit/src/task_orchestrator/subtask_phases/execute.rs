@@ -128,9 +128,9 @@ impl TaskOrchestrator {
                         {
                             desc.push_str(&super::super::prompts::stage_methodology(&spec));
                         } else {
-                            desc.push_str(
-                                &super::super::prompts::stage_specialist_orchestration(&spec),
-                            );
+                            desc.push_str(&super::super::prompts::stage_specialist_orchestration(
+                                &spec,
+                            ));
                         }
                         // C6 · handoff: inject which evidence kinds this stage
                         // inherits from upstream stages (consumes the otherwise
@@ -267,6 +267,7 @@ impl TaskOrchestrator {
                     let evidence_facts = self
                         .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref(), task_id)
                         .await;
+                    let source_queries = self.fetch_source_queries_for_gate(planned).await;
                     // 设计 2026-06-12-unified-refiner · Refiner C 类诊断与 gate 用
                     // 同一份证据事实；hook move 走原值，这里留一份给渲染。
                     let refine_facts = evidence_facts.clone();
@@ -288,6 +289,7 @@ impl TaskOrchestrator {
                             asset_types,
                             in_scope_target_types,
                             evidence_facts,
+                            source_queries,
                             self.harness_subsidiary_policy.map(|p| p.threshold_pct),
                         )
                     };
@@ -461,26 +463,27 @@ impl TaskOrchestrator {
         let evidence_facts = self
             .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref(), task_id)
             .await;
+        let source_queries = self.fetch_source_queries_for_gate(planned).await;
         let refine_facts = evidence_facts.clone();
         // Phase 1.5: fan-out 阶段收尾改判 stage_run pass_token；非 fan-out 走常规 gate。
         let mut specialist_gated = false;
-        let (out, gate_outcome) = if let Some(res) =
-            self.try_specialist_stage_gate(planned, &fallback).await
-        {
-            specialist_gated = true;
-            res
-        } else {
-            apply_harness_gate_hook(
-                planned,
-                exec_ctx,
-                fallback,
-                in_scope_assets,
-                asset_types,
-                in_scope_target_types,
-                evidence_facts,
-                self.harness_subsidiary_policy.map(|p| p.threshold_pct),
-            )
-        };
+        let (out, gate_outcome) =
+            if let Some(res) = self.try_specialist_stage_gate(planned, &fallback).await {
+                specialist_gated = true;
+                res
+            } else {
+                apply_harness_gate_hook(
+                    planned,
+                    exec_ctx,
+                    fallback,
+                    in_scope_assets,
+                    asset_types,
+                    in_scope_target_types,
+                    evidence_facts,
+                    source_queries,
+                    self.harness_subsidiary_policy.map(|p| p.threshold_pct),
+                )
+            };
         if let Some(mut outcome) = gate_outcome {
             self.enforce_evidence_existence(&mut outcome).await;
             self.enforce_evidence_kinds(&mut outcome).await;
@@ -1422,9 +1425,11 @@ impl TaskOrchestrator {
                 content,
                 stage,
                 false,
-                vec!["cannot verify stage completion: no in-scope organizations resolved — run \
+                vec![
+                    "cannot verify stage completion: no in-scope organizations resolved — run \
                       scoping to build the org tree first"
-                    .to_string()],
+                        .to_string(),
+                ],
                 deliverable,
             );
         }
@@ -1438,8 +1443,11 @@ impl TaskOrchestrator {
             .filter(|(_, at)| completion_is_fresh(*at, now, STAGE_COMPLETION_TTL_SECS))
             .collect();
         let have: std::collections::HashSet<uuid::Uuid> = fresh.iter().map(|(o, _)| *o).collect();
-        let missing: Vec<uuid::Uuid> =
-            org_ids.iter().copied().filter(|o| !have.contains(o)).collect();
+        let missing: Vec<uuid::Uuid> = org_ids
+            .iter()
+            .copied()
+            .filter(|o| !have.contains(o))
+            .collect();
         if !missing.is_empty() {
             return render_specialist_gate(
                 content,
@@ -1460,13 +1468,17 @@ impl TaskOrchestrator {
             Some(tok) if tok == expected => {
                 return render_specialist_gate(content, stage, true, vec![], deliverable);
             }
-            Some(_) => vec!["stage_run pass_token mismatch (stale or wrong stage) — re-run \
+            Some(_) => vec![
+                "stage_run pass_token mismatch (stale or wrong stage) — re-run \
                              stage_run for this stage and submit the fresh pass_token it returns"
-                .to_string()],
-            None => vec!["missing stage_run pass_token — call stage_run for this stage, then \
+                    .to_string(),
+            ],
+            None => vec![
+                "missing stage_run pass_token — call stage_run for this stage, then \
                           submit a claim {kind:\"stage_run_pass_token\", summary:<pass_token>} \
                           from its result"
-                .to_string()],
+                    .to_string(),
+            ],
         };
         render_specialist_gate(content, stage, false, reasons, deliverable)
     }
@@ -1576,41 +1588,39 @@ impl TaskOrchestrator {
             project_org_level_subsidiary_facts(&mut facts, assets);
         }
 
-        // PR-D (#4/E3, 设计 2026-06-23-technique-outcomes-provenance): 灰度从
+        // #4/E3 (设计 2026-06-23-technique-outcomes-provenance): **始终**从
         // technique_outcomes 物化表投影 EvidenceFact 并 **union** 进 facts（dual-read：
-        // 与现有 ledger + coverage_truth 并存；flag off = 逐字节不变，additive）。run_id
-        // = chat session；org 绑定才读（表 org NOT NULL）。outcome `blocked`→Error（与
-        // error 同终态语义；gate 的 EvidenceOutcome 无 Blocked 变体）。
-        if crate::harness::feature_flags::technique_outcomes_read_enabled() {
-            if let Some(org_id) = self.harness_org_id {
-                let projected: Vec<EvidenceFact> = self
-                    .repo
-                    .technique_outcome_facts(org_id, sid)
-                    .await
-                    .into_iter()
-                    .filter_map(|(asset, technique, outcome, evidence_id)| {
-                        let outcome = match outcome.as_str() {
-                            "found" => EvidenceOutcome::Found,
-                            "empty" => EvidenceOutcome::Empty,
-                            "error" | "blocked" => EvidenceOutcome::Error,
-                            _ => return None,
-                        };
-                        Some(EvidenceFact {
-                            asset,
-                            technique,
-                            outcome,
-                            evidence_id,
-                        })
+        // 与现有 ledger + coverage_truth 并存；additive + fail-safe 到空，无灰度开关）。
+        // run_id = chat session；org 绑定才读（表 org NOT NULL）。outcome `blocked`→Error
+        // （与 error 同终态语义；gate 的 EvidenceOutcome 无 Blocked 变体）。
+        if let Some(org_id) = self.harness_org_id {
+            let projected: Vec<EvidenceFact> = self
+                .repo
+                .technique_outcome_facts(org_id, sid)
+                .await
+                .into_iter()
+                .filter_map(|(asset, technique, outcome, evidence_id)| {
+                    let outcome = match outcome.as_str() {
+                        "found" => EvidenceOutcome::Found,
+                        "empty" => EvidenceOutcome::Empty,
+                        "error" | "blocked" => EvidenceOutcome::Error,
+                        _ => return None,
+                    };
+                    Some(EvidenceFact {
+                        asset,
+                        technique,
+                        outcome,
+                        evidence_id,
                     })
-                    .collect();
-                if !projected.is_empty() {
-                    tracing::info!(
-                        target: "harness::hook",
-                        technique_outcome_facts = projected.len(),
-                        "PR-D: merged technique_outcomes projection into coverage gate (dual-read union)"
-                    );
-                    facts.extend(projected);
-                }
+                })
+                .collect();
+            if !projected.is_empty() {
+                tracing::info!(
+                    target: "harness::hook",
+                    technique_outcome_facts = projected.len(),
+                    "#4: merged technique_outcomes projection into coverage gate (dual-read union)"
+                );
+                facts.extend(projected);
             }
         }
 
@@ -1623,6 +1633,25 @@ impl TaskOrchestrator {
             "injecting merged ledger+DB evidence facts into coverage gate (projection)"
         );
         Some(facts)
+    }
+
+    async fn fetch_source_queries_for_gate(
+        &self,
+        planned: &PlannedSubtask,
+    ) -> Option<Vec<crate::harness::SourceQueryFact>> {
+        planned.harness_stage.as_ref()?;
+        let org_id = self.harness_org_id?;
+        let sid = self.chat_session_id.as_deref()?;
+        let rows = self.repo.source_query_facts(org_id, sid).await;
+        if rows.is_empty() {
+            return None;
+        }
+        tracing::info!(
+            target: "harness::hook",
+            source_query_facts = rows.len(),
+            "#5: merged source_query_log rows into gate context"
+        );
+        Some(rows)
     }
 
     /// P0 · gate evidence 回查: 把交付物里引用、但 ledger 中**不存在**的 evidence
@@ -2076,6 +2105,17 @@ fn inject_subsidiary_expected_technique(
 /// subsidiary scoping (`--include-subsidiaries --subsidiary-threshold <pct>`) —
 /// scoping's gate then requires the GOLISH-INTEL-SUBSIDIARY dimension. `None`
 /// = legacy scoping (no injection, zero behaviour change).
+fn is_confirm_only_stage(
+    stage: crate::harness::StageKind,
+    subsidiary_threshold: Option<u8>,
+) -> bool {
+    match stage {
+        crate::harness::StageKind::Scoping => subsidiary_threshold.is_none(),
+        crate::harness::StageKind::Reporting => true,
+        _ => false,
+    }
+}
+
 fn apply_harness_gate_hook(
     planned: &PlannedSubtask,
     exec_ctx: &ExecutionContext,
@@ -2084,6 +2124,7 @@ fn apply_harness_gate_hook(
     asset_types: Option<std::collections::HashMap<String, String>>,
     in_scope_target_types: Vec<String>,
     evidence_facts: Option<Vec<crate::harness::gate::rule_engine::EvidenceFact>>,
+    source_queries: Option<Vec<crate::harness::SourceQueryFact>>,
     subsidiary_threshold: Option<u8>,
 ) -> (String, Option<HarnessGateOutcome>) {
     let Some(stage_hint) = planned.harness_stage.as_ref() else {
@@ -2174,19 +2215,15 @@ fn apply_harness_gate_hook(
         );
     }
 
-    // StageSpec.allowed_tool_types.is_empty()（reporting 等确认型阶段）：
+    // Confirm-only 是阶段语义，不再由 `allowed_tool_types.is_empty()` 推断：
+    // target_intel / cleanup 可以禁止模型直接调外部工具，但仍有 substantive gate。
     // missing-deliverable 分支与 Refiner 的 A 类 confirm-only 变体共用此事实。
     // Phase 2 (redteam-phase2)：scoping 的静态白名单已含 recon/osint（子公司发现
     // 工具），但「要不要真跑工具」是 engagement 级决定——不带
     // `--include-subsidiaries` 时 scoping 仍是纯授权确认阶段（confirm-only，
     // 行为与白名单为空时逐字节一致，零回归）；带 flag 才是真工具阶段
     // （missing deliverable + 账本空 → B 类重做引导跑子公司发现）。
-    let confirm_only = match stage_hint.stage_kind {
-        crate::harness::StageKind::Scoping => subsidiary_threshold.is_none(),
-        _ => crate::harness::load_embedded_stage_spec(stage_hint.stage_kind)
-            .map(|s| s.allowed_tool_types.is_empty())
-            .unwrap_or(false),
-    };
+    let confirm_only = is_confirm_only_stage(stage_hint.stage_kind, subsidiary_threshold);
 
     let deliverable = match parse_deliverable_from_content(&content) {
         Some(d) => d,
@@ -2247,12 +2284,13 @@ fn apply_harness_gate_hook(
         );
     }
     // 统一组装入口（设计 2026-06-23-unified-gate-context-builder）：4 个值此前已是
-    // Option（fetch helper 预归一）→ unwrap_or_default 喂 builder、build() 再归一，
+    // Option（fetch helper 预归一）+ source rows → unwrap_or_default 喂 builder、build() 再归一，
     // 与手搓 GateContext{} 逐字节同构（行为保持）。
     let gate_ctx = crate::harness::GateContextBuilder::new()
         .in_scope_assets(in_scope_assets.unwrap_or_default())
         .asset_types_map(asset_types.unwrap_or_default())
         .extend_evidence_facts(evidence_facts.unwrap_or_default())
+        .extend_source_queries(source_queries.unwrap_or_default())
         .expected_techniques(expected_techniques)
         .build();
     let decision = harness.validate_gate_with_context(&deliverable, None, &gate_ctx);
@@ -2702,12 +2740,12 @@ fn synthesize_stage_subtask(
                 }
                 if intel_policy.enrich_assets {
                     steps.push_str(&format!(
-                        "{n}) Call recon_map_assets(organization_id=<org>) to passively survey domains/IPs/ASN/subdomains/certificates/ICP/apps/emails via intel providers (0.zone/quake/…), then recon_lookup_whois(organization_id=<org>) for WHOIS (RDAP, once per org). ",
+                        "{n}) Call recon_map_assets(organization_id=<org>) to passively survey domains/IPs/DNS-adjacent asset facts/ASN/subdomains/certificates/ICP/apps/emails via intel providers (0.zone/quake/…), then recon_lookup_whois(organization_id=<org>) for WHOIS (RDAP, once per org). target_intel is provider/registry-tool backed; do not run scan-tool fallback here. ",
                     ));
                     n += 1;
                 }
                 steps.push_str(&format!(
-                    "{n}) For each in-scope asset, give every expected intel technique (GOLISH-INTEL-DNS/WHOIS/ASN/CT/SUBDOMAIN/OSINT) a terminal coverage status, citing the evidence ids the tools recorded, then submit_stage_deliverable. Do NOT perform active scanning in this stage.",
+                    "{n}) For each in-scope asset, give every expected intel technique (GOLISH-INTEL-DNS/WHOIS/ASN/CT/SUBDOMAIN/OSINT) a terminal coverage status, citing the evidence ids the tools recorded. If recon_map_assets/recon_lookup_whois cannot land a required technique, record it as blocked/checked_empty/not_applicable with note/evidence instead of switching tools. Then submit_stage_deliverable. Do NOT perform active scanning in this stage.",
                 ));
             }
             (
@@ -2722,9 +2760,9 @@ fn synthesize_stage_subtask(
                 "DEFINE the external attack surface of the hosts inherited from target_intel \
                  for `{target}`: PORT SCANNING, service/version fingerprinting, HTTP probing, \
                  and screenshots — establish host x port x service x live-web. Confirm liveness \
-                 with httpx (it resolves + probes in one shot). DNS resolution and subdomains \
-                 were ALREADY done upstream in target_intel — REUSE the inherited dns_a/subdomain \
-                 evidence, do NOT re-run dig or re-enumerate. JS/API extraction happens in the \
+                 with httpx (it resolves + probes in one shot). Passive provider survey \
+                 was ALREADY done upstream in target_intel — REUSE the inherited evidence \
+                 and do NOT re-enumerate. JS/API extraction happens in the \
                  NEXT stage (enumeration) on the services you map here."
             ),
             "pentester",
@@ -2994,7 +3032,9 @@ mod dag_driven_helper_tests {
         assert!(s.description.contains("recon_list_providers"));
         assert!(s.description.contains("recon_discover_subsidiaries"));
         assert!(s.description.contains("recon_map_assets"));
-        assert!(!s.description.contains("not_applicable"));
+        assert!(!s.description.contains("SKIPS passive intel"));
+        assert!(!s.description.contains("subfinder"));
+        assert!(!s.description.contains("dig"));
 
         let pentest = IntelPolicy {
             passive_intel: PassiveIntelMode::Skip,
@@ -3180,7 +3220,18 @@ mod harness_gate_hook_tests {
         let ctx = ExecutionContext::default();
         let content = "anything".to_string();
         assert_eq!(
-            apply_harness_gate_hook(&p, &ctx, content.clone(), None, None, vec![], None, None).0,
+            apply_harness_gate_hook(
+                &p,
+                &ctx,
+                content.clone(),
+                None,
+                None,
+                vec![],
+                None,
+                None,
+                None,
+            )
+            .0,
             content
         );
     }
@@ -3191,7 +3242,18 @@ mod harness_gate_hook_tests {
         let ctx = ExecutionContext::default();
         let content = "ignore me".to_string();
         assert_eq!(
-            apply_harness_gate_hook(&p, &ctx, content.clone(), None, None, vec![], None, None).0,
+            apply_harness_gate_hook(
+                &p,
+                &ctx,
+                content.clone(),
+                None,
+                None,
+                vec![],
+                None,
+                None,
+                None,
+            )
+            .0,
             content
         );
     }
@@ -3257,26 +3319,23 @@ mod harness_gate_hook_tests {
     }
 
     #[test]
-    fn command_hint_covers_passive_intel_and_warns_dig_full_banner() {
+    fn command_hint_covers_passive_intel_provider_actions() {
         use crate::task_orchestrator::refiner::passive_intel_command_hint;
         assert!(passive_intel_command_hint("GOLISH-INTEL-DNS")
             .unwrap()
-            .contains("dig"));
-        assert!(
-            passive_intel_command_hint("GOLISH-INTEL-DNS")
-                .unwrap()
-                .contains("+noall +answer"),
-            "DNS hint must steer to full banner so records persist to dns_records"
-        );
-        assert!(passive_intel_command_hint("GOLISH-INTEL-SUBDOMAIN")
+            .contains("recon_map_assets"));
+        assert!(!passive_intel_command_hint("GOLISH-INTEL-DNS")
             .unwrap()
-            .contains("subfinder"));
+            .contains("dig"));
+        let subdomain_hint = passive_intel_command_hint("GOLISH-INTEL-SUBDOMAIN").unwrap();
+        assert!(subdomain_hint.contains("recon_map_assets"));
+        assert!(!subdomain_hint.contains("subfinder"));
         assert!(passive_intel_command_hint("GOLISH-INTEL-WHOIS")
             .unwrap()
-            .contains("whois"));
+            .contains("recon_lookup_whois"));
         assert!(passive_intel_command_hint("GOLISH-INTEL-CT")
             .unwrap()
-            .contains("crt.sh"));
+            .contains("recon_map_assets"));
         assert!(passive_intel_command_hint("GOLISH-INTEL-ASN").is_some());
         assert!(passive_intel_command_hint("GOLISH-INTEL-OSINT").is_some());
         assert!(
@@ -3313,7 +3372,7 @@ mod harness_gate_hook_tests {
     }
 
     #[test]
-    fn refiner_coverage_block_appends_db_status_and_commands() {
+    fn refiner_coverage_block_appends_db_status_and_actions() {
         use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
         let mut o = missing_deliverable_gate_outcome(StageKind::TargetIntel, false).unwrap();
         o.missing_deliverable = false;
@@ -3333,10 +3392,11 @@ mod harness_gate_hook_tests {
             "列已 Found 的类"
         );
         assert!(
-            d.correction.contains("Suggested next commands"),
-            "命令建议段"
+            d.correction.contains("Suggested next target_intel actions"),
+            "下一步动作建议段"
         );
-        assert!(d.correction.contains("dig") && d.correction.contains("subfinder"));
+        assert!(d.correction.contains("recon_map_assets"));
+        assert!(!d.correction.contains("dig"));
     }
 
     #[test]
@@ -3345,7 +3405,7 @@ mod harness_gate_hook_tests {
         o.missing_deliverable = false;
         o.gate_reasons = vec!["finding count below minimum".to_string()];
         let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(None));
-        assert!(!d.correction.contains("Suggested next commands"));
+        assert!(!d.correction.contains("Suggested next target_intel actions"));
         assert!(!d.correction.contains("DB truth status"));
     }
 
@@ -3640,6 +3700,7 @@ mod missing_deliverable_fail_closed_tests {
                 vec![],
                 Some(facts),
                 None,
+                None,
             );
             let o = outcome.expect("stage-tagged unparseable content must produce an outcome");
             assert!(!o.gate_allowed, "{stage:?} must fail-closed BLOCK");
@@ -3663,8 +3724,17 @@ mod missing_deliverable_fail_closed_tests {
         // 锁 submit 逼 agent 自己提交。
         let p = planned(StageKind::Scoping);
         let ctx = ExecutionContext::default();
-        let (out, outcome) =
-            apply_harness_gate_hook(&p, &ctx, "prose".to_string(), None, None, vec![], None, None);
+        let (out, outcome) = apply_harness_gate_hook(
+            &p,
+            &ctx,
+            "prose".to_string(),
+            None,
+            None,
+            vec![],
+            None,
+            None,
+            None,
+        );
         let o = outcome.expect("stage-tagged unparseable content must produce an outcome");
         assert!(!o.gate_allowed, "confirm-only missing must BLOCK too");
         assert!(o.missing_deliverable);

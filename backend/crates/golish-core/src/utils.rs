@@ -305,32 +305,54 @@ mod tests {
             );
         }
         // Case-insensitive (recon_discover_subsidiaries returns "Failed").
-        assert!(!is_tool_result_success(&serde_json::json!({ "status": "Failed" })));
-        assert!(!is_tool_result_success(&serde_json::json!({ "status": "NEEDS_FIX" })));
+        assert!(!is_tool_result_success(
+            &serde_json::json!({ "status": "Failed" })
+        ));
+        assert!(!is_tool_result_success(
+            &serde_json::json!({ "status": "NEEDS_FIX" })
+        ));
     }
 
     #[test]
     fn tool_result_failure_on_explicit_false_or_error_flags() {
-        assert!(!is_tool_result_success(&serde_json::json!({ "success": false })));
+        assert!(!is_tool_result_success(
+            &serde_json::json!({ "success": false })
+        ));
         assert!(!is_tool_result_success(&serde_json::json!({ "ok": false })));
-        assert!(!is_tool_result_success(&serde_json::json!({ "is_error": true })));
+        assert!(!is_tool_result_success(
+            &serde_json::json!({ "is_error": true })
+        ));
     }
 
     #[test]
     fn tool_result_failure_on_exit_code_or_error_field() {
         // Existing contract stays intact.
-        assert!(!is_tool_result_success(&serde_json::json!({ "exit_code": 127 })));
-        assert!(!is_tool_result_success(&serde_json::json!({ "error": "boom" })));
+        assert!(!is_tool_result_success(
+            &serde_json::json!({ "exit_code": 127 })
+        ));
+        assert!(!is_tool_result_success(
+            &serde_json::json!({ "error": "boom" })
+        ));
     }
 
     #[test]
     fn tool_result_success_for_non_failure_results() {
         // Non-failure status values and clean results stay success (no false ❌).
-        assert!(is_tool_result_success(&serde_json::json!({ "status": "completed" })));
-        assert!(is_tool_result_success(&serde_json::json!({ "status": "accepted" })));
-        assert!(is_tool_result_success(&serde_json::json!({ "success": true })));
-        assert!(is_tool_result_success(&serde_json::json!({ "is_error": false })));
-        assert!(is_tool_result_success(&serde_json::json!({ "stdout": "ok", "exit_code": 0 })));
+        assert!(is_tool_result_success(
+            &serde_json::json!({ "status": "completed" })
+        ));
+        assert!(is_tool_result_success(
+            &serde_json::json!({ "status": "accepted" })
+        ));
+        assert!(is_tool_result_success(
+            &serde_json::json!({ "success": true })
+        ));
+        assert!(is_tool_result_success(
+            &serde_json::json!({ "is_error": false })
+        ));
+        assert!(is_tool_result_success(
+            &serde_json::json!({ "stdout": "ok", "exit_code": 0 })
+        ));
         assert!(is_tool_result_success(&serde_json::json!({})));
     }
 }

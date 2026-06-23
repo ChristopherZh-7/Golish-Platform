@@ -47,27 +47,25 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
         "katana" | "hakrawler" | "gospider" => ("recon", "crawler"),
         "gau" | "waybackurls" => ("recon", "url-history"),
         // whois / ASN lookups are zero-touch (query the registrar/RIR, not the
-        // target's own hosts) → a passive target_intel technique.
+        // target's own hosts). Some stages may opt into this scan wrapper; current
+        // target_intel prefers recon_lookup_whois.
         "whois" | "asn" | "whois-asn" => ("recon", "whois"),
         // ctfr queries certificate-transparency logs (crt.sh) — zero-touch on the
-        // target, a passive target_intel technique. Dedicated `ct` subcategory so
-        // its evidence projects to GOLISH-INTEL-CT (evidence_facts.rs) and the
-        // stage's `recon/ct` selector resolves to a concrete runnable tool (the
-        // gap that left every CT coverage cell permanently "never attempted").
+        // target. Dedicated `ct` subcategory so any stage that opts in can resolve
+        // a concrete runnable tool.
         "ctfr" => ("recon", "ct"),
         // asnmap resolves a domain/IP/org into its ASN + netblock ranges via
         // public RIR data — zero-touch on the target. Dedicated `asn` subcategory
-        // so its evidence projects to GOLISH-INTEL-ASN and the stage's `recon/asn`
-        // selector resolves to a runnable tool (the `asn` alias above maps to
-        // recon/whois, so the ASN column otherwise had no producer).
+        // so stages that opt into `recon/asn` can resolve to a runnable tool (the
+        // `asn` alias above maps to recon/whois).
         "asnmap" => ("recon", "asn"),
         "enscan_go" | "enscan" | "0.zone" | "0zone" | "zero-zone" => ("recon", "osint"),
         // Passive OSINT / leak-hunting / cloud-asset discovery. All ship in
         // `resources/toolsconfig/*.json` as category=recon subcategory=osint
         // (tagged `passive`); they query third-party sources (GitHub, search
         // engines, cloud-provider endpoints, social sites), not the target's own
-        // hosts — so target_intel (allows recon/osint) may run them. `cloud_enum`
-        // ships as id `cloud-enum` + name `cloud_enum`, so both spellings resolve.
+        // hosts. `cloud_enum` ships as id `cloud-enum` + name `cloud_enum`, so
+        // both spellings resolve.
         "trufflehog" | "gitleaks" | "gitdorker" | "go-dork" | "metagoofil" | "theharvester"
         | "maigret" | "holehe" | "sherlock" | "s3scanner" | "cloud_enum" | "cloud-enum"
         | "gcpbucketbrute" => ("recon", "osint"),
@@ -103,9 +101,9 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
 /// the concrete tool names the agent may actually run in that stage.
 ///
 /// One or two primary tools per subcategory (NOT every alias) — enough for a
-/// weak model to see "in target_intel you run dig / subfinder / amass / gau /
-/// whois / enscan_go" instead of having to map the `recon/dns` selector onto a
-/// tool itself (and mis-map `nmap` into a BLOCK). Keep in sync with the
+/// weak model to see the representative tools for stages that still expose
+/// scan-tool selectors instead of having to map a selector onto a tool itself
+/// (and mis-map `nmap` into a BLOCK). Keep in sync with the
 /// [`tool_category`] match arms above.
 const CANONICAL_TOOLS: &[&str] = &[
     // recon
@@ -289,11 +287,10 @@ mod tests {
     #[test]
     fn whois_resolves_to_recon_whois() {
         // P2 (2026-06-11): whois is a zero-touch passive technique (queries the
-        // registrar, not the target's own hosts) and belongs in target_intel.
-        // It was previously absent from the taxonomy, so the stage guard denied
-        // it (deny-by-default) — real runs show `whois` BLOCKED in target_intel.
-        // Map it to a dedicated recon/whois subcategory so target_intel can opt
-        // in and satisfy GOLISH-INTEL-WHOIS/ASN without forcing providers-only.
+        // registrar, not the target's own hosts). It was previously absent from
+        // the taxonomy, so stages that opted into it saw deny-by-default blocks.
+        // Map it to a dedicated recon/whois subcategory so stages can opt in
+        // without allowing every recon tool.
         assert_eq!(tool_category("whois"), Some(("recon", "whois")));
         // and a stage that allows recon/whois permits it
         assert!(stage_allows(
@@ -566,34 +563,35 @@ mod tests {
     }
 
     #[test]
-    fn allowed_tool_names_target_intel_selectors() {
-        // target_intel passive selectors → only the passive recon tools surface
-        // (no port-scan / http).
-        let allowed = allow(&[
-            "recon/dns",
-            "recon/subdomain",
-            "recon/osint",
-            "recon/url-history",
-            "recon/whois",
-            "recon/asn",
-            "recon/ct",
-        ]);
+    fn allowed_tool_names_target_intel_provider_only_boundary() {
+        // target_intel is provider/registry-tool backed. Its stage spec exposes
+        // no scan-tool selectors, so `allowed_tool_names` must be empty even
+        // though the stage still requires the passive intel coverage cells.
+        let allowed = allow(&[]);
         let names = allowed_tool_names(&allowed);
-        for must in [
+        assert!(
+            names.is_empty(),
+            "target_intel must expose no scan tools: {names:?}"
+        );
+        for never in [
             "dig",
-            "subfinder",
-            "amass",
             "gau",
             "waybackurls",
             "whois",
             "ctfr",
             "asnmap",
             "enscan_go",
+            "subfinder",
+            "amass",
+            "assetfinder",
+            "sublist3r",
+            "findomain",
+            "nmap",
+            "naabu",
+            "httpx",
+            "sqlmap",
+            "nuclei",
         ] {
-            assert!(names.contains(&must), "{must} must be listed: {names:?}");
-        }
-        // active tools must NOT appear in a passive intel stage
-        for never in ["nmap", "naabu", "httpx", "sqlmap", "nuclei"] {
             assert!(
                 !names.contains(&never),
                 "{never} must NOT be listed: {names:?}"
@@ -640,9 +638,9 @@ mod tests {
     /// The full set of passive-OSINT tool selectors a recon specialist may pass
     /// as `pentest_run`'s `tool_name`. Each is `category=recon subcategory=osint`
     /// in `resources/toolsconfig/*.json` (all tagged `passive`); they were absent
-    /// from the taxonomy → `tool_category` None → deny-by-default BLOCK even in
-    /// target_intel (which allows recon/osint). `cloud_enum` ships as both id
-    /// `cloud-enum` and name `cloud_enum`, so both spellings must resolve.
+    /// from the taxonomy → `tool_category` None → deny-by-default BLOCK in stages
+    /// that opt into recon/osint. `cloud_enum` ships as both id `cloud-enum` and
+    /// name `cloud_enum`, so both spellings must resolve.
     const OSINT_TOOLS: &[&str] = &[
         "trufflehog",
         "gitleaks",
@@ -678,25 +676,15 @@ mod tests {
     }
 
     #[test]
-    fn osint_tools_allowed_in_target_intel_blocked_in_eas() {
-        // Grounded in the real stage specs: target_intel.allowed_tool_types
-        // includes recon/osint; external_attack_surface.allowed_tool_types does
-        // NOT (port-scan/http/visual only). So the fix unblocks OSINT in intel
-        // without over-permitting it in the active mapping stage.
-        let target_intel = allow(&[
-            "recon/dns",
-            "recon/subdomain",
-            "recon/osint",
-            "recon/url-history",
-            "recon/whois",
-            "recon/asn",
-            "recon/ct",
-        ]);
+    fn osint_tools_resolve_but_provider_only_target_intel_blocks_scan_wrappers() {
+        // OSINT wrappers still resolve to recon/osint for stages that opt in,
+        // but target_intel no longer exposes scan-tool selectors at all.
+        let target_intel = allow(&[]);
         let eas = allow(&["recon/port-scan", "recon/http", "recon/visual"]);
         for t in OSINT_TOOLS {
             assert!(
-                stage_allows("pentest_run", &json!({ "tool_name": t }), &target_intel),
-                "{t} must be allowed in target_intel (recon/osint)"
+                !stage_allows("pentest_run", &json!({ "tool_name": t }), &target_intel),
+                "{t} must be blocked in provider-only target_intel"
             );
             assert!(
                 !stage_allows("pentest_run", &json!({ "tool_name": t }), &eas),

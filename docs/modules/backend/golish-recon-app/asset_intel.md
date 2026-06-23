@@ -43,6 +43,7 @@ Phase 1 provider-agnostic 资产情报：`run_passive_intel` 等调被动 provid
 - 被 `agent_tools`（harness target_intel 阶段）包装成 AI 工具调用。
 - **三个 runtime kind**（`AssetIntelRuntimeConfig`）：`cli_json` / `http_json` / `native_provider`。新加测绘 provider 若 `golish-intel-providers` 注册表已有实现（fofa/hunter/shodan/0.zone/quake），优先写 `native_provider` toolsconfig（复用原生鉴权/编码/字段映射），别在 toolsconfig 用 http_json 重写 API。
 - `native_provider` 凭据走 `read_vault_secret`（与 http_json 同款，含 legacy `name=tool_id` 回退）；无 key → `Unavailable`（不伪造，I8），`provider_output_is_trusted` 仅信 `Completed`/`CheckedEmpty`。
+- 在 `target_intel` 中，`recon_map_assets` 是 provider survey + DB landing 通道（`target_assets` / `organizations.*`），不是“全网完整收集”的证明；2026-06-23 起 target_intel 不再允许 scan-tool fallback，完整性由 harness 覆盖门按每个 technique 的 found/blocked/checked_empty 终态判定。
 
 ## 测试入口
 

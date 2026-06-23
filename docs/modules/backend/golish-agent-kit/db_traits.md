@@ -42,6 +42,7 @@
 
 - **依赖倒置核心**：本 crate 定义 trait，golish-agent-app 注入实现——别在此引 golish-db/sqlx（会破坏 agent 栈的可测/解耦）。
 - 本地 DTO 与 golish-db 的 row 类型是两套，由 bridge 转换。
+- harness gate 相关读写也走 `DbRepoProvider` seam：`technique_outcome_facts` 投影 coverage truth，`source_query_facts` 投影 `source_query_log` 的 source/provider terminal rows；后者只证明 source 尝试，不证明 found。
 
 ## 测试入口
 

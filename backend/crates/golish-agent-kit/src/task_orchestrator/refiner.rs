@@ -43,7 +43,9 @@ pub(crate) struct RefineInput<'a> {
     pub gate_reasons: &'a [String],
     pub gate_recovery: Option<&'a crate::harness::HarnessRecoveryActions>,
     pub missing_deliverable: bool,
-    /// `StageSpec.allowed_tool_types.is_empty()`（scoping / reporting 等确认型阶段）。
+    /// Explicit stage semantic: scoping without subsidiary discovery, reporting, etc.
+    /// This is not inferred from `allowed_tool_types` because provider-only stages can
+    /// disallow direct tools while still requiring a substantive deliverable.
     pub confirm_only_stage: bool,
     pub fabricated_ids: &'a [i64],
     /// 账本真实 ids（newest first；missing 时由 gather_missing_deliverable_ids 填，
@@ -236,7 +238,7 @@ fn render_redo_stage(input: &RefineInput<'_>) -> String {
     )
 }
 
-/// C · 诊断式模板：gate 原因素体 + DB 真值现状 + 每类被动情报的具体命令。
+/// C · 诊断式模板：gate 原因素体 + DB 真值现状 + 每类被动情报的下一步动作。
 /// vacuous 与 coverage BLOCK 都触发（设计 §5.1 对 PR-C 的扩展）。
 fn render_coverage_or_vacuous(input: &RefineInput<'_>) -> String {
     let mut s = render_gate_reasons_body(input);
@@ -245,7 +247,7 @@ fn render_coverage_or_vacuous(input: &RefineInput<'_>) -> String {
             s.push_str(&db_status);
         }
     }
-    s.push_str("\n### Suggested next commands (run per in-scope asset, replace <asset>)\n");
+    s.push_str("\n### Suggested next target_intel actions\n");
     for tech in PASSIVE_INTEL_TECHNIQUES {
         if let Some(cmd) = passive_intel_command_hint(tech) {
             s.push_str(&format!("- {tech}: {cmd}\n"));
@@ -332,18 +334,28 @@ fn render_gate_reasons_body(input: &RefineInput<'_>) -> String {
 pub(crate) fn passive_intel_command_hint(technique: &str) -> Option<&'static str> {
     match technique {
         "GOLISH-INTEL-DNS" => Some(
-            "dig <asset> ANY +noall +answer  (use the FULL banner, NOT +short — only full \
-             ANSWER-SECTION rows persist to dns_records and satisfy the gate)",
+            "run recon_map_assets(organization_id=<org>) and rely on provider DNS/host-IP landing; \
+             if no configured provider can land DNS evidence for this asset, submit blocked or \
+             checked_empty with evidence/note instead of running a scan-tool fallback",
         ),
-        "GOLISH-INTEL-SUBDOMAIN" => Some("subfinder -d <asset> -silent"),
-        "GOLISH-INTEL-WHOIS" => Some("whois <asset>"),
+        "GOLISH-INTEL-SUBDOMAIN" => Some(
+            "recon_map_assets(organization_id=<org>) lands provider-backed subdomains to \
+             target_assets; if no provider can supply this cell, record blocked/checked_empty \
+             instead of running CLI subdomain enumeration in target_intel",
+        ),
+        "GOLISH-INTEL-WHOIS" => Some("run recon_lookup_whois(organization_id=<org>) once per org"),
         "GOLISH-INTEL-ASN" => Some(
-            "whois -h whois.cymru.com \" -v <ip>\"  (ASN / netblock ownership for the resolved IP)",
+            "run recon_map_assets(organization_id=<org>) and rely on provider ASN landing; if no \
+             applicable provider exists, submit blocked/not_applicable with a note",
         ),
-        "GOLISH-INTEL-CT" => {
-            Some("curl -s 'https://crt.sh/?q=<asset>&output=json'  (Certificate Transparency)")
-        }
-        "GOLISH-INTEL-OSINT" => Some("theHarvester -d <asset> -b all  (emails / hosts / leaks)"),
+        "GOLISH-INTEL-CT" => Some(
+            "run recon_map_assets(organization_id=<org>) and rely on provider certificate landing; \
+             if the provider/source is unavailable, submit blocked with the source named",
+        ),
+        "GOLISH-INTEL-OSINT" => Some(
+            "run recon_map_assets(organization_id=<org>) and rely on provider OSINT landing; if no \
+             OSINT provider is configured, submit blocked with a note",
+        ),
         _ => None,
     }
 }
@@ -540,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn coverage_template_includes_db_diagnosis_and_commands_for_vacuous() {
+    fn coverage_template_includes_db_diagnosis_and_actions_for_vacuous() {
         let reasons = vec!["deliverable vacuous: no claims".to_string()];
         let kinds = HashMap::new();
         let facts = vec![EvidenceFact {
@@ -553,8 +565,8 @@ mod tests {
         i.evidence_facts = Some(&facts);
         let d = refine(&i);
         assert!(
-            d.correction.contains("Suggested next commands"),
-            "vacuous BLOCK 也必须附命令诊断（live run 两连 BLOCK 的修复锚点）"
+            d.correction.contains("Suggested next target_intel actions"),
+            "vacuous BLOCK 也必须附下一步动作诊断（live run 两连 BLOCK 的修复锚点）"
         );
         assert!(d.correction.contains("GOLISH-INTEL-DNS"));
         assert!(d.correction.contains("DB truth status"));
@@ -567,7 +579,7 @@ mod tests {
         let kinds = HashMap::new();
         let d = refine(&base_input(&reasons, &kinds));
         assert!(!d.correction.contains("DB truth status"));
-        assert!(d.correction.contains("Suggested next commands"));
+        assert!(d.correction.contains("Suggested next target_intel actions"));
     }
 
     #[test]

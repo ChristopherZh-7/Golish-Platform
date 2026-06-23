@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use uuid::Uuid;
 
+use golish_agent_kit::harness::SourceQueryFact;
 use golish_pentest::evidence_ledger::append::{append, EvidenceInput};
 use golish_pentest::evidence_ledger::{InMemoryScopeService, ScopeVersion};
 
@@ -141,6 +142,36 @@ impl GolishDbRepoProvider {
         golish_db::repo::source_query_log::upsert(&self.pool, &write).await
     }
 
+    /// #6（设计 2026-06-23-expansion-queue）：enqueue 一条「待扩展线索」进
+    /// `expansion_queue`。入队恒 `status="pending"`（冲突时 SQL 不重置 status）；
+    /// `discovered_at` 取当前时刻；`detail` 暂留 None。`lead_value` 不过
+    /// canonical_asset_key（子公司线索是公司名，非 in-scope 主机）。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn enqueue_expansion_lead_impl(
+        &self,
+        organization_id: uuid::Uuid,
+        run_id: &str,
+        lead_type: &str,
+        lead_value: &str,
+        source: Option<&str>,
+        confidence: Option<f32>,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<()> {
+        let write = golish_db::repo::expansion_queue::ExpansionLeadWrite {
+            organization_id,
+            run_id: run_id.to_string(),
+            lead_type: lead_type.to_string(),
+            lead_value: lead_value.to_string(),
+            source: source.map(str::to_string),
+            confidence,
+            status: "pending".to_string(),
+            evidence_ids: evidence_ids.to_vec(),
+            detail: None,
+            discovered_at: Some(chrono::Utc::now()),
+        };
+        golish_db::repo::expansion_queue::enqueue(&self.pool, &write).await
+    }
+
     /// PR-D（#4 / E3）：读某 `(org, run)` 的 technique_outcomes 行 → coverage 投影元组
     /// `(asset, technique, outcome, evidence_id)`。`evidence_id` 取 `evidence_ids` 首个
     /// （无则 0 哨兵）。fail-safe：读失败 → 空 + warn（gate 退回 coverage_truth/ledger）。
@@ -164,6 +195,39 @@ impl GolishDbRepoProvider {
                     target: "harness::submit_tool",
                     error = %e,
                     "technique_outcome_facts read failed; gate runs without technique_outcomes projection"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// #5 Phase 3（provider-source closure）：读 `source_query_log` 的 terminal source
+    /// rows → gate/source-coverage 只读 facts。fail-safe：读失败返回空，让 coverage
+    /// gate 退回其它证据路径；日志保留定位信息。
+    pub(crate) async fn source_query_facts_impl(
+        &self,
+        organization_id: uuid::Uuid,
+        run_id: &str,
+    ) -> Vec<SourceQueryFact> {
+        match golish_db::repo::source_query_log::list_for_run(&self.pool, organization_id, run_id)
+            .await
+        {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|r| SourceQueryFact {
+                    source: r.source,
+                    query: r.query,
+                    target: r.target,
+                    technique: r.technique,
+                    status: r.status,
+                    evidence_ids: r.evidence_ids,
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    target: "harness::submit_tool",
+                    error = %e,
+                    "source_query_facts read failed; source_coverage gate runs without source-query projection"
                 );
                 Vec::new()
             }
@@ -326,5 +390,9 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
     ) -> Vec<(String, String, String, i64)> {
         // PR-D (#4/E3): submit 预检 dual-read 投影源（与 DbRepoProvider 同 impl）。
         self.technique_outcome_facts_impl(org_id, run_id).await
+    }
+
+    async fn source_query_facts(&self, org_id: uuid::Uuid, run_id: &str) -> Vec<SourceQueryFact> {
+        self.source_query_facts_impl(org_id, run_id).await
     }
 }

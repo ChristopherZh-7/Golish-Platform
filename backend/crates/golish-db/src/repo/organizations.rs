@@ -400,7 +400,11 @@ impl IntelDim {
 /// Deliberately NOT folded into [`update_profile`]: that helper is also called
 /// by non-collection paths (candidate clearing, child promotion, manual GUI
 /// edits) that must not falsely mark a dimension as freshly collected.
-pub async fn stamp_intel_collected_at(pool: &PgPool, org_id: Uuid, dims: &[IntelDim]) -> Result<()> {
+pub async fn stamp_intel_collected_at(
+    pool: &PgPool,
+    org_id: Uuid,
+    dims: &[IntelDim],
+) -> Result<()> {
     if dims.is_empty() {
         return Ok(());
     }

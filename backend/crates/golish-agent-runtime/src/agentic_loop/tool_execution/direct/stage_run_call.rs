@@ -258,11 +258,7 @@ enum OrgAttemptOutcome {
 
 /// Decide what to do after a per-org attempt produced `verdict`. `attempt` is the
 /// 1-based number of the attempt that just ran; `max_attempts` is the cap.
-fn next_org_action(
-    verdict: &OrgVerdict,
-    attempt: usize,
-    max_attempts: usize,
-) -> OrgAttemptOutcome {
+fn next_org_action(verdict: &OrgVerdict, attempt: usize, max_attempts: usize) -> OrgAttemptOutcome {
     match verdict {
         OrgVerdict::Pass => OrgAttemptOutcome::Passed,
         OrgVerdict::Block { reasons } => {
@@ -553,8 +549,7 @@ where
                 (Some(repo), Some(deliv)) => {
                     let org_uuid = uuid::Uuid::parse_str(&unit.id).ok();
                     let session = ctx.events.session_id.unwrap_or("");
-                    let gate =
-                        evaluate_org_stage_gate(repo, org_uuid, session, stage, deliv).await;
+                    let gate = evaluate_org_stage_gate(repo, org_uuid, session, stage, deliv).await;
                     (decide_org_verdict(&gate), true)
                 }
                 _ => {
@@ -876,8 +871,14 @@ mod tests {
 
     #[test]
     fn next_org_action_pass_is_passed() {
-        assert_eq!(next_org_action(&OrgVerdict::Pass, 1, 3), OrgAttemptOutcome::Passed);
-        assert_eq!(next_org_action(&OrgVerdict::Pass, 3, 3), OrgAttemptOutcome::Passed);
+        assert_eq!(
+            next_org_action(&OrgVerdict::Pass, 1, 3),
+            OrgAttemptOutcome::Passed
+        );
+        assert_eq!(
+            next_org_action(&OrgVerdict::Pass, 3, 3),
+            OrgAttemptOutcome::Passed
+        );
     }
 
     #[test]
@@ -891,7 +892,10 @@ mod tests {
                     feedback.contains("missing GOLISH-INTEL-DNS on a.com"),
                     "feedback names the gap: {feedback}"
                 );
-                assert!(feedback.contains("retry 2/3"), "feedback names attempt: {feedback}");
+                assert!(
+                    feedback.contains("retry 2/3"),
+                    "feedback names attempt: {feedback}"
+                );
             }
             other => panic!("expected Retry, got {other:?}"),
         }

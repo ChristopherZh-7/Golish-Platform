@@ -156,11 +156,17 @@ pub async fn evaluate_org_stage_gate(
 
     // 1) fabricated-ref 兜底（scoping 不要求账本证据，跳过）。
     if stage != StageKind::Scoping {
-        let cited: Vec<i64> = deliverable.evidence_refs.iter().map(|e| e.as_i64()).collect();
+        let cited: Vec<i64> = deliverable
+            .evidence_refs
+            .iter()
+            .map(|e| e.as_i64())
+            .collect();
         if !cited.is_empty() {
             if let Ok(existing) = repo.evidence_existing_ids(&cited).await {
-                let fabricated: Vec<i64> =
-                    cited.into_iter().filter(|id| !existing.contains(id)).collect();
+                let fabricated: Vec<i64> = cited
+                    .into_iter()
+                    .filter(|id| !existing.contains(id))
+                    .collect();
                 if !fabricated.is_empty() {
                     return GateResult::block(
                         vec![format!(
@@ -195,33 +201,36 @@ pub async fn evaluate_org_stage_gate(
         }
     }
 
-    // PR-D (#4/E3, 设计 2026-06-23-technique-outcomes-provenance)：灰度从
+    // #4/E3 (设计 2026-06-23-technique-outcomes-provenance)：**始终**从
     // technique_outcomes union 进 facts（per-org fan-out gate；与 execute.rs 主路径同
-    // 源）。flag off / org=None = 逐字节不变（additive）。outcome blocked→Error。
-    if crate::harness::feature_flags::technique_outcomes_read_enabled() {
-        if let Some(oid) = org_id {
-            let projected: Vec<EvidenceFact> = repo
-                .technique_outcome_facts(oid, session_id)
-                .await
-                .into_iter()
-                .filter_map(|(asset, technique, outcome, evidence_id)| {
-                    let outcome = match outcome.as_str() {
-                        "found" => EvidenceOutcome::Found,
-                        "empty" => EvidenceOutcome::Empty,
-                        "error" | "blocked" => EvidenceOutcome::Error,
-                        _ => return None,
-                    };
-                    Some(EvidenceFact {
-                        asset,
-                        technique,
-                        outcome,
-                        evidence_id,
-                    })
+    // 源）。org=None = 跳过（additive + fail-safe，无灰度开关）。outcome blocked→Error。
+    if let Some(oid) = org_id {
+        let projected: Vec<EvidenceFact> = repo
+            .technique_outcome_facts(oid, session_id)
+            .await
+            .into_iter()
+            .filter_map(|(asset, technique, outcome, evidence_id)| {
+                let outcome = match outcome.as_str() {
+                    "found" => EvidenceOutcome::Found,
+                    "empty" => EvidenceOutcome::Empty,
+                    "error" | "blocked" => EvidenceOutcome::Error,
+                    _ => return None,
+                };
+                Some(EvidenceFact {
+                    asset,
+                    technique,
+                    outcome,
+                    evidence_id,
                 })
-                .collect();
-            facts.extend(projected);
-        }
+            })
+            .collect();
+        facts.extend(projected);
     }
+
+    let source_queries = match org_id {
+        Some(oid) => repo.source_query_facts(oid, session_id).await,
+        None => Vec::new(),
+    };
 
     // 统一组装入口（设计 2026-06-23-unified-gate-context-builder）：归一/合并收口到
     // GateContextBuilder。expected_techniques=None ⇒ 回退 spec.expected_techniques
@@ -230,6 +239,7 @@ pub async fn evaluate_org_stage_gate(
         .in_scope_assets(in_scope_assets)
         .typed_assets(typed_assets)
         .extend_evidence_facts(facts)
+        .extend_source_queries(source_queries)
         .expected_techniques(None)
         .build();
 
@@ -264,7 +274,12 @@ mod tests {
     fn facts_only_found_outcome_maps_found() {
         let f = facts_from_rows(vec![
             ("a.com".into(), "GOLISH-INTEL-DNS".into(), "found".into(), 7),
-            ("a.com".into(), "GOLISH-INTEL-WHOIS".into(), "empty".into(), 8),
+            (
+                "a.com".into(),
+                "GOLISH-INTEL-WHOIS".into(),
+                "empty".into(),
+                8,
+            ),
         ]);
         assert_eq!(f[0].outcome, EvidenceOutcome::Found);
         assert_eq!(f[1].outcome, EvidenceOutcome::Empty);
@@ -364,13 +379,25 @@ mod tests {
         let now = Utc::now();
         let ttl = STAGE_COMPLETION_TTL_SECS;
         assert!(completion_is_fresh(now, now, ttl));
-        assert!(completion_is_fresh(now - chrono::Duration::days(1), now, ttl));
+        assert!(completion_is_fresh(
+            now - chrono::Duration::days(1),
+            now,
+            ttl
+        ));
         assert!(completion_is_fresh(
             now - chrono::Duration::seconds(ttl),
             now,
             ttl
         ));
-        assert!(!completion_is_fresh(now - chrono::Duration::days(8), now, ttl));
-        assert!(completion_is_fresh(now + chrono::Duration::hours(1), now, ttl));
+        assert!(!completion_is_fresh(
+            now - chrono::Duration::days(8),
+            now,
+            ttl
+        ));
+        assert!(completion_is_fresh(
+            now + chrono::Duration::hours(1),
+            now,
+            ttl
+        ));
     }
 }

@@ -117,7 +117,10 @@ fn build_org_intel_presence_sql(apply_window: bool) -> String {
                           WHERE child.parent_id = organizations.id)) AS has_subsidiary \
            FROM organizations WHERE id = $1",
         has_asn = dim(&jsonb_non_empty("asns"), "asns_collected_at"),
-        has_ct = dim(&jsonb_non_empty("certificates"), "certificates_collected_at"),
+        has_ct = dim(
+            &jsonb_non_empty("certificates"),
+            "certificates_collected_at"
+        ),
         has_whois = dim(whois_expr, "whois_collected_at"),
         has_osint = dim(&osint_expr, "osint_collected_at"),
     )
@@ -401,8 +404,13 @@ pub async fn coverage_truth_facts(
     // EAS/ENUM (LIVENESS/PORT/SERVICE-FP/DIR/PARAM/JSAPI) + IP-WHOIS. RDNS stays
     // presence-only (out of the 2026-06-22 scope; niche IP-only PTR dim).
     let aw = run_start.is_some();
-    let subdomain_values =
-        fetch_values(pool, &build_subdomain_target_values_sql(aw), org_id, run_start).await?;
+    let subdomain_values = fetch_values(
+        pool,
+        &build_subdomain_target_values_sql(aw),
+        org_id,
+        run_start,
+    )
+    .await?;
     // DNS 维度（PR-B）：复用 dns_records repo 的存在查询（DRY），org 隔离；Phase B
     // 行级窗 `dns_records.created_at >= run_start`（受 freshness_window 控）。
     let dns_values: HashSet<String> =
@@ -673,7 +681,10 @@ mod tests {
         // ⇒ a subdomain child landed by a previous stage-run still counts (pre-change).
         let sql = build_subdomain_target_values_sql(false);
         assert!(!sql.contains("$2"), "off must bind only $1: {sql}");
-        assert!(!sql.contains("discovered_at >="), "off must not window: {sql}");
+        assert!(
+            !sql.contains("discovered_at >="),
+            "off must not window: {sql}"
+        );
     }
 
     #[test]
@@ -712,17 +723,13 @@ mod tests {
 
     #[test]
     fn active_dimension_sqls_target_the_right_tables() {
-        assert!(
-            build_liveness_values_sql(false).contains("t.http_status IS NOT NULL OR t.real_ip")
-        );
+        assert!(build_liveness_values_sql(false).contains("t.http_status IS NOT NULL OR t.real_ip"));
         assert!(build_port_values_sql(false)
             .contains("jsonb_typeof(t.ports) = 'array' AND t.ports <> '[]'::jsonb"));
-        assert!(
-            build_service_fp_values_sql(false).contains("JOIN fingerprints f ON f.target_id = t.id")
-        );
-        assert!(
-            build_dir_values_sql(false).contains("JOIN directory_entries de ON de.target_id = t.id")
-        );
+        assert!(build_service_fp_values_sql(false)
+            .contains("JOIN fingerprints f ON f.target_id = t.id"));
+        assert!(build_dir_values_sql(false)
+            .contains("JOIN directory_entries de ON de.target_id = t.id"));
         let param = build_param_values_sql(false);
         assert!(param.contains("JOIN api_endpoints ae ON ae.target_id = t.id"));
         assert!(param.contains("jsonb_typeof(ae.params) = 'array' AND ae.params <> '[]'::jsonb"));

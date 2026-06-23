@@ -6,6 +6,8 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
+use crate::harness::SourceQueryFact;
+
 use super::types::*;
 
 /// Real, persisted red_team scoping actions observed for a session (read from
@@ -185,7 +187,10 @@ pub trait DbRepoProvider: Send + Sync {
     /// agent tool can enumerate the recon-collected assets, then drill into each
     /// via [`Self::query_target_data`]. Default empty (test doubles); the app
     /// layer overrides it through the recon targets service port.
-    async fn in_scope_targets(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<serde_json::Value>> {
+    async fn in_scope_targets(
+        &self,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
         let _ = org_id;
         Ok(Vec::new())
     }
@@ -409,6 +414,35 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(())
     }
 
+    /// #6（设计 2026-06-23-expansion-queue）：把一条「待扩展线索」enqueue 进
+    /// `expansion_queue`（发现点调用，如 recon_discover_subsidiaries 抽出的子公司候选）。
+    /// `lead_type` ∈ new_domain|brand|app|github_org|subsidiary|email_domain；`lead_value`
+    /// 是线索主体（公司名/域名，不过 canonical_asset_key）。入队恒 `pending`（status 由 impl
+    /// 设）。非致命：调用方 warn-only。消费模型 A：本表仅写 + reviewer 读，**gate 不读/不 block**。
+    /// 默认 no-op（test double 零改动 + gray-switch off 时调用方根本不调）。app 层覆写。
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_expansion_lead(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+        lead_type: &str,
+        lead_value: &str,
+        source: Option<&str>,
+        confidence: Option<f32>,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<()> {
+        let _ = (
+            organization_id,
+            run_id,
+            lead_type,
+            lead_value,
+            source,
+            confidence,
+            evidence_ids,
+        );
+        Ok(())
+    }
+
     /// PR2 任务 2.5 (coverage 投影) · the session's evidence facts
     /// `(asset, technique, outcome, evidence_id)`, ledger order. Only rows where
     /// all three projection columns are non-NULL (conservative: unmapped rows
@@ -431,6 +465,18 @@ pub trait DbRepoProvider: Send + Sync {
         organization_id: Uuid,
         run_id: &str,
     ) -> Vec<(String, String, String, i64)> {
+        let _ = (organization_id, run_id);
+        Vec::new()
+    }
+
+    /// #5（source_query_log gate-read）：从 `source_query_log` 读某 `(org, run)` 的
+    /// source/provider terminal rows。gate 只用它证明 source 已尝试，绝不投影 found。
+    /// 默认空（test double 零改动；读失败由 app 层 fail-safe 成空）。
+    async fn source_query_facts(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+    ) -> Vec<SourceQueryFact> {
         let _ = (organization_id, run_id);
         Vec::new()
     }

@@ -324,13 +324,9 @@ async fn land_subdomain_assets(
     let mut pairs: Vec<(String, String)> = pair_set.into_iter().collect();
     pairs.sort();
     let metadata = json!({ "source": "organization_recon", "run_id": run_id });
-    // PR-C step2b (#4/E3, 设计 2026-06-23-technique-outcomes-provenance): enrich/landing
-    // 写点 provenance 物化（gray-switch）。flag 的纯函数住在 golish-agent-kit::
-    // feature_flags，但 recon-app 不依赖 agent-kit（错误的 DAG 方向），故就地读**同一**
-    // env var `GOLISH_TECHNIQUE_OUTCOMES_WRITE`（语义一致、默认 off）。
-    let write_technique_outcomes = std::env::var("GOLISH_TECHNIQUE_OUTCOMES_WRITE")
-        .ok()
-        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    // #4/E3 (设计 2026-06-23-technique-outcomes-provenance): enrich/landing 写点 provenance
+    // 物化（**始终写**，无灰度开关；用户 2026-06-23 删除原 GOLISH_TECHNIQUE_OUTCOMES_WRITE
+    // env 开关）。非致命 warn（写失败 / 表未 apply 只 warn，绝不影响 landing 主流程）。
     let mut landed = 0usize;
     for (root, subdomain) in pairs {
         let target_id = match root_targets.get(&root) {
@@ -374,32 +370,28 @@ async fn land_subdomain_assets(
                 // asset 走 canonical_asset_key（E1）；evidence_ids 空（landing 无 ledger
                 // 行）；collected_at None（landing 时刻非该维证据时刻）；非致命 warn。
                 // coverage 仍由 db_truth 提供——本表此处仅记 provenance。
-                if write_technique_outcomes {
-                    let canonical = golish_pentest_domain::canonical_asset_key(&subdomain)
-                        .map(|k| k.key)
-                        .unwrap_or_else(|| subdomain.clone());
-                    let w = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
-                        organization_id: organization.id,
-                        run_id: run_id.to_string(),
-                        asset: canonical,
-                        technique: "GOLISH-INTEL-SUBDOMAIN".to_string(),
-                        outcome: "found".to_string(),
-                        source: Some("organization_recon".to_string()),
-                        query: Some(root.clone()),
-                        result_count: None,
-                        confidence: None,
-                        evidence_ids: Vec::new(),
-                        collected_at: None,
-                    };
-                    if let Err(e) =
-                        golish_db::repo::technique_outcomes::upsert(pool, &w).await
-                    {
-                        tracing::warn!(
-                            %subdomain,
-                            error = %e,
-                            "technique_outcomes upsert (enrich subdomain landing) failed"
-                        );
-                    }
+                let canonical = golish_pentest_domain::canonical_asset_key(&subdomain)
+                    .map(|k| k.key)
+                    .unwrap_or_else(|| subdomain.clone());
+                let w = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
+                    organization_id: organization.id,
+                    run_id: run_id.to_string(),
+                    asset: canonical,
+                    technique: "GOLISH-INTEL-SUBDOMAIN".to_string(),
+                    outcome: "found".to_string(),
+                    source: Some("organization_recon".to_string()),
+                    query: Some(root.clone()),
+                    result_count: None,
+                    confidence: None,
+                    evidence_ids: Vec::new(),
+                    collected_at: None,
+                };
+                if let Err(e) = golish_db::repo::technique_outcomes::upsert(pool, &w).await {
+                    tracing::warn!(
+                        %subdomain,
+                        error = %e,
+                        "technique_outcomes upsert (enrich subdomain landing) failed"
+                    );
                 }
             }
             Err(error) => tracing::warn!(
@@ -564,7 +556,10 @@ pub(crate) async fn land_whois(
             .bind(organization.id)
             .fetch_one(pool)
             .await?;
-    if whois_existing.as_ref().is_some_and(|v| !json_value_is_empty(v)) {
+    if whois_existing
+        .as_ref()
+        .is_some_and(|v| !json_value_is_empty(v))
+    {
         return Ok(false);
     }
     let domains = registrable_domains(organization);

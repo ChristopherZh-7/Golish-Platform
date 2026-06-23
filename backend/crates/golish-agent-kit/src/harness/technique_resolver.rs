@@ -200,11 +200,18 @@ mod tests {
         // A URL whose host is a raw IP is an IP asset (was wrongly Url before the
         // fix, which forced CT/DNS/SUBDOMAIN on an address that can satisfy none).
         assert!(AssetClass::is_url_wrapped_ip("http://124.196.77.48"));
-        assert!(AssetClass::is_url_wrapped_ip("https://124.196.77.48:8443/x"));
-        assert!(AssetClass::is_url_wrapped_ip("https://[2606:4700::1111]:443/"));
+        assert!(AssetClass::is_url_wrapped_ip(
+            "https://124.196.77.48:8443/x"
+        ));
+        assert!(AssetClass::is_url_wrapped_ip(
+            "https://[2606:4700::1111]:443/"
+        ));
         assert!(!AssetClass::is_url_wrapped_ip("https://a.com/x"));
         assert!(!AssetClass::is_url_wrapped_ip("124.196.77.48")); // bare IP, no scheme
-        assert_eq!(AssetClass::from_value("http://124.196.77.48"), AssetClass::Ip);
+        assert_eq!(
+            AssetClass::from_value("http://124.196.77.48"),
+            AssetClass::Ip
+        );
         assert_eq!(AssetClass::from_value("https://a.com"), AssetClass::Url);
         // host-aware: a url-wrapped IP drops the domain-only intel techniques.
         let t = techniques_for(
@@ -250,7 +257,10 @@ mod tests {
             techniques_for(StageKind::TargetIntel, AssetClass::Ip)
         );
         // Domain keeps all 6.
-        assert_eq!(techniques_for(StageKind::TargetIntel, AssetClass::Domain).len(), 6);
+        assert_eq!(
+            techniques_for(StageKind::TargetIntel, AssetClass::Domain).len(),
+            6
+        );
         // URL keeps host intel (DNS/CT) but not subdomain enumeration.
         let url = techniques_for(StageKind::TargetIntel, AssetClass::Url);
         assert!(!url.contains(&"GOLISH-INTEL-SUBDOMAIN".to_string()));
@@ -260,7 +270,10 @@ mod tests {
 
     #[test]
     fn other_class_keeps_full_set_failsafe() {
-        assert_eq!(techniques_for(StageKind::TargetIntel, AssetClass::Other).len(), 6);
+        assert_eq!(
+            techniques_for(StageKind::TargetIntel, AssetClass::Other).len(),
+            6
+        );
     }
 
     #[test]

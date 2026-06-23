@@ -448,11 +448,13 @@ pub async fn update_status_by_id(pool: &PgPool, id: Uuid, status: &str) -> Resul
 pub async fn update_ports_by_id(pool: &PgPool, id: Uuid, ports: &serde_json::Value) -> Result<()> {
     // Phase D (design 2026-06-22 §3.3): port scan is a collection site, so stamp
     // `ports_scanned_at = NOW()` for the gate's time-windowed PORT truth read.
-    sqlx::query("UPDATE targets SET ports=$1, ports_scanned_at=NOW(), updated_at=NOW() WHERE id=$2")
-        .bind(ports)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE targets SET ports=$1, ports_scanned_at=NOW(), updated_at=NOW() WHERE id=$2",
+    )
+    .bind(ports)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

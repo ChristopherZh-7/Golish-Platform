@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use golish_agent_kit::harness::{
     load_embedded_stage_spec, validate_stage_gate_with_context, EvidenceFact, EvidenceOutcome,
-    GateContext, GateContextBuilder, StageDeliverable, StageKind,
+    GateContext, GateContextBuilder, SourceQueryFact, StageDeliverable, StageKind,
 };
 use golish_core::Tool;
 
@@ -104,15 +104,22 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         Vec::new()
     }
 
-    /// PR-D (#4/E3, 设计 2026-06-23-technique-outcomes-provenance): project
+    /// #4/E3 (设计 2026-06-23-technique-outcomes-provenance): project
     /// `(asset, technique, outcome, evidence_id)` from the `technique_outcomes`
-    /// table for the submit preview's gray-switched dual-read. Gated by
-    /// `technique_outcomes_read_enabled()`. Default empty ⇒ preview doesn't read it.
+    /// table for the submit preview's dual-read (always on, no gray-switch).
+    /// Default empty ⇒ preview doesn't read it (test doubles / read failure).
     async fn technique_outcome_facts(
         &self,
         org_id: Uuid,
         run_id: &str,
     ) -> Vec<(String, String, String, i64)> {
+        let _ = (org_id, run_id);
+        Vec::new()
+    }
+
+    /// #5 source/provider terminal rows for source coverage. Default empty so
+    /// tests/no-DB paths keep prior behavior.
+    async fn source_query_facts(&self, org_id: Uuid, run_id: &str) -> Vec<SourceQueryFact> {
         let _ = (org_id, run_id);
         Vec::new()
     }
@@ -284,7 +291,10 @@ impl SubmitStageDeliverableTool {
                  evidence has not fully landed yet. Their results are booked as evidence \
                  and delivered to you automatically when they finish — do NOT poll \
                  check_job in a loop and do NOT re-run them. Wait for them to finish, then \
-                 call submit_stage_deliverable again.",
+                 call submit_stage_deliverable again. BUT if one has clearly hung (see its \
+                 elapsed_ms below — very long with no progress, e.g. a DNS AXFR / zone-transfer \
+                 probe), check_job it ONCE and, if it is stuck, kill_job it; then resubmit \
+                 rather than letting one hung probe block the stage.",
                 running.len()
             )],
             "running_background_jobs": jobs,
@@ -380,6 +390,7 @@ impl SubmitStageDeliverableTool {
         let mut in_scope_assets: Vec<String> = Vec::new();
         let mut typed_assets: Vec<(String, String)> = Vec::new();
         let mut expected_techniques: Option<Vec<String>> = None;
+        let mut source_queries: Vec<SourceQueryFact> = Vec::new();
         if let Some(org_id) = org_id {
             let assets = repo.in_scope_assets(Some(org_id)).await;
             if !assets.is_empty() {
@@ -401,32 +412,31 @@ impl SubmitStageDeliverableTool {
                         &target_types,
                     );
             }
-            // (4) PR-D (#4/E3): 灰度从 technique_outcomes union 进 facts（submit 预检；
-            //     与 execute.rs/org_gate 同源 dual-read）。flag off = 逐字节不变。run_id
-            //     = chat session；outcome blocked→Error（gate 无 Blocked outcome）。
-            if golish_agent_kit::harness::feature_flags::technique_outcomes_read_enabled() {
-                if let Some(sid) = self.session_id.as_deref() {
-                    let projected: Vec<EvidenceFact> = repo
-                        .technique_outcome_facts(org_id, sid)
-                        .await
-                        .into_iter()
-                        .filter_map(|(asset, technique, outcome, evidence_id)| {
-                            let outcome = match outcome.as_str() {
-                                "found" => EvidenceOutcome::Found,
-                                "empty" => EvidenceOutcome::Empty,
-                                "error" | "blocked" => EvidenceOutcome::Error,
-                                _ => return None,
-                            };
-                            Some(EvidenceFact {
-                                asset,
-                                technique,
-                                outcome,
-                                evidence_id,
-                            })
+            // (4) #4/E3: **始终**从 technique_outcomes union 进 facts（submit 预检；与
+            //     execute.rs/org_gate 同源 dual-read）。additive + fail-safe，无灰度开关。
+            //     run_id = chat session；outcome blocked→Error（gate 无 Blocked outcome）。
+            if let Some(sid) = self.session_id.as_deref() {
+                let projected: Vec<EvidenceFact> = repo
+                    .technique_outcome_facts(org_id, sid)
+                    .await
+                    .into_iter()
+                    .filter_map(|(asset, technique, outcome, evidence_id)| {
+                        let outcome = match outcome.as_str() {
+                            "found" => EvidenceOutcome::Found,
+                            "empty" => EvidenceOutcome::Empty,
+                            "error" | "blocked" => EvidenceOutcome::Error,
+                            _ => return None,
+                        };
+                        Some(EvidenceFact {
+                            asset,
+                            technique,
+                            outcome,
+                            evidence_id,
                         })
-                        .collect();
-                    facts.extend(projected);
-                }
+                    })
+                    .collect();
+                facts.extend(projected);
+                source_queries = repo.source_query_facts(org_id, sid).await;
             }
         }
         // 统一组装入口（设计 2026-06-23-unified-gate-context-builder）。
@@ -434,6 +444,7 @@ impl SubmitStageDeliverableTool {
             .in_scope_assets(in_scope_assets)
             .typed_assets(typed_assets)
             .extend_evidence_facts(facts)
+            .extend_source_queries(source_queries)
             .expected_techniques(expected_techniques)
             .build()
     }
@@ -924,6 +935,7 @@ mod tests {
         existing: HashSet<i64>,
         recent: Vec<i64>,
         facts: Vec<EvidenceFact>,
+        source_queries: Vec<SourceQueryFact>,
     }
 
     impl MockLedger {
@@ -932,6 +944,7 @@ mod tests {
                 existing: ids,
                 recent: Vec::new(),
                 facts: Vec::new(),
+                source_queries: Vec::new(),
             }
         }
     }
@@ -950,6 +963,13 @@ mod tests {
         }
         async fn evidence_facts(&self, _session_id: &str) -> Vec<EvidenceFact> {
             self.facts.clone()
+        }
+        async fn source_query_facts(
+            &self,
+            _org_id: uuid::Uuid,
+            _run_id: &str,
+        ) -> Vec<SourceQueryFact> {
+            self.source_queries.clone()
         }
     }
 
@@ -1006,6 +1026,7 @@ mod tests {
             existing: HashSet::new(),
             recent: vec![88, 86],
             facts: Vec::new(),
+            source_queries: Vec::new(),
         };
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
             .with_evidence_repo(Arc::new(ledger))
@@ -1040,6 +1061,7 @@ mod tests {
             existing: HashSet::new(),
             recent: vec![88, 86],
             facts: Vec::new(),
+            source_queries: Vec::new(),
         };
         // No .with_session_id → available_real_ids() returns empty.
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
@@ -1073,6 +1095,7 @@ mod tests {
             existing: HashSet::new(),
             recent: vec![644, 646],
             facts: Vec::new(),
+            source_queries: Vec::new(),
         };
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
             .with_evidence_repo(Arc::new(ledger))
@@ -1146,10 +1169,20 @@ mod tests {
                 outcome: EvidenceOutcome::Found,
                 evidence_id: 100,
             }],
+            source_queries: vec![SourceQueryFact {
+                source: "dig".into(),
+                query: "dns_resolve".into(),
+                target: "pingan.com".into(),
+                technique: Some("GOLISH-INTEL-DNS".into()),
+                status: "found".into(),
+                evidence_ids: vec![100],
+            }],
         };
+        let org_src = Arc::new(RwLock::new(Some(uuid::Uuid::new_v4())));
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
             .with_evidence_repo(Arc::new(ledger))
-            .with_session_id("pentest-chat-1");
+            .with_session_id("pentest-chat-1")
+            .with_org_id_source(org_src);
 
         // DNS found (now backed by a real fact) + the other 5 expected techniques
         // marked blocked (terminal, no fact needed) = full coverage for pingan.com.
@@ -1199,6 +1232,7 @@ mod tests {
         existing: HashSet<i64>,
         db_facts: Vec<EvidenceFact>,
         assets: Vec<String>,
+        source_queries: Vec<SourceQueryFact>,
     }
 
     #[async_trait::async_trait]
@@ -1221,6 +1255,13 @@ mod tests {
         }
         async fn in_scope_assets(&self, _org: Option<uuid::Uuid>) -> Vec<String> {
             self.assets.clone()
+        }
+        async fn source_query_facts(
+            &self,
+            _org_id: uuid::Uuid,
+            _run_id: &str,
+        ) -> Vec<SourceQueryFact> {
+            self.source_queries.clone()
         }
     }
 
@@ -1247,6 +1288,24 @@ mod tests {
                 found("GOLISH-INTEL-OSINT"),
             ],
             assets: vec!["moresec.cn".into()],
+            source_queries: vec![
+                SourceQueryFact {
+                    source: "provider_status".into(),
+                    query: "recon_map_assets".into(),
+                    target: "moresec.cn".into(),
+                    technique: None,
+                    status: "found".into(),
+                    evidence_ids: vec![100],
+                },
+                SourceQueryFact {
+                    source: "rdap".into(),
+                    query: "lookup_whois".into(),
+                    target: "moresec.cn".into(),
+                    technique: Some("GOLISH-INTEL-WHOIS".into()),
+                    status: "found".into(),
+                    evidence_ids: vec![101],
+                },
+            ],
         };
         let org_src = Arc::new(RwLock::new(Some(uuid::Uuid::new_v4())));
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
@@ -1323,8 +1382,14 @@ mod tests {
         // flag OFF = prior behaviour: asset axis still fed, but asset_types /
         // expected_techniques stay None (preview keeps value-inference + static spec).
         let off = tool.gate_context(StageKind::TargetIntel, false).await;
-        assert!(off.in_scope_assets.is_some(), "asset axis still fed when off");
-        assert!(off.asset_types.is_none(), "asset_types omitted when flag off");
+        assert!(
+            off.in_scope_assets.is_some(),
+            "asset axis still fed when off"
+        );
+        assert!(
+            off.asset_types.is_none(),
+            "asset_types omitted when flag off"
+        );
         assert!(
             off.expected_techniques.is_none(),
             "expected_techniques omitted when flag off"
@@ -1548,9 +1613,7 @@ mod tests {
     #[async_trait::async_trait]
     impl BackgroundJobsQuery for BgJobsMock {
         async fn running_for_session(&self, _session_id: &str) -> Vec<RunningJobInfo> {
-            let n = self
-                .calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if n < self.running_polls {
                 self.running.clone()
             } else {
@@ -1585,7 +1648,10 @@ mod tests {
         assert_eq!(jobs.len(), 2, "both running jobs are listed: {out:?}");
         let reason = out["reasons"][0].as_str().unwrap();
         assert!(reason.contains("still running"), "reason: {reason}");
-        assert!(reason.contains("check_job"), "reason warns off polling: {reason}");
+        assert!(
+            reason.contains("check_job"),
+            "reason warns off polling: {reason}"
+        );
         // Short-circuits BEFORE the gate preview ⇒ nothing captured.
         assert!(
             sink.read().await.is_none(),

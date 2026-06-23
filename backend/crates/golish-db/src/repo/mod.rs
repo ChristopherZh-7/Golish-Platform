@@ -10,6 +10,7 @@ pub mod endpoint_tests;
 pub mod engagement_truth;
 pub mod evidence_classifications;
 pub mod execution_plans;
+pub mod expansion_queue;
 pub mod findings;
 pub mod fingerprints;
 pub mod js_analysis;

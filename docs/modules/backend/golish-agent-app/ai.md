@@ -41,6 +41,7 @@ agent 服务命令面宿主。`commands/` 是 Tauri handlers；各 `*_bridge` �
 ## 注意事项 / 坑
 
 - 各 bridge 是**依赖倒置的实现侧**：agent-kit 定义 trait（`db_traits`），这里用 golish-db 等实现并注入——别把 golish-db 依赖塞回 agent-kit。
+- `db_bridge/evidence.rs` 同时实现 evidence ledger、`technique_outcomes`、`source_query_log` 的 harness read/write seam；`source_query_facts` 只投影 source/provider terminal rows，不代表 found。
 - 扁平 re-export 是 A3 删 umbrella 的兼容垫片，镜像 umbrella 旧导出；别乱删。
 - **不变量 I4**：命令命名 `<domain>_<verb>_<object>`。
 

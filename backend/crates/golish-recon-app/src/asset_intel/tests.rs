@@ -216,8 +216,7 @@ fn quake_config_maps_service_cert_to_certificates() {
         .expect("quake normalize.profile_fields");
     assert!(
         pfs.iter()
-            .any(|pf| pf["source_field"] == "service.cert"
-                && pf["target_field"] == "certificates"),
+            .any(|pf| pf["source_field"] == "service.cert" && pf["target_field"] == "certificates"),
         "quake.json must map service.cert -> certificates (else Quake CT never lands)"
     );
     // and the cert request must actually fetch service.cert from the API.

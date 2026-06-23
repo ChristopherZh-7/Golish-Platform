@@ -53,15 +53,12 @@ fn base_fields(svc: &QuakeService) -> HashMap<String, String> {
 /// so CT lands regardless of shape (2026-06-23 live: nested was being dropped →
 /// all Quake CT silently lost).
 fn cert_subject(svc: &QuakeService) -> Option<String> {
-    svc.cert
-        .clone()
-        .filter(|c| !c.is_empty())
-        .or_else(|| {
-            svc.service
-                .as_ref()
-                .and_then(|s| s.cert.clone())
-                .filter(|c| !c.is_empty())
-        })
+    svc.cert.clone().filter(|c| !c.is_empty()).or_else(|| {
+        svc.service
+            .as_ref()
+            .and_then(|s| s.cert.clone())
+            .filter(|c| !c.is_empty())
+    })
 }
 
 /// `Site` mapping — full service surface (ip/port/protocol/title/...).
@@ -235,7 +232,10 @@ mod tests {
             ..Default::default()
         };
         let rec = map_site(svc, raw());
-        assert_eq!(rec.fields.get("cert").map(String::as_str), Some("CN=svc.example"));
+        assert_eq!(
+            rec.fields.get("cert").map(String::as_str),
+            Some("CN=svc.example")
+        );
     }
 
     #[test]

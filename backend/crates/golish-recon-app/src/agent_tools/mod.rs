@@ -165,8 +165,7 @@ impl Tool for ReconDiscoverSubsidiariesTool {
 /// hunter / shodan / ENScan): collect domains / IPs / ASN / subdomains /
 /// certificates / ICP / apps / emails / OSINT, landed to the org profile +
 /// target_assets (host↔IP pairs carry the surveyed real_ip). Replaces the old
-/// all-in-one enrich tool; WHOIS is the standalone `recon_lookup_whois` tool and
-/// CT certs also come from the `ctfr` tool. (plan 2026-06-18-slim-enrich)
+/// all-in-one enrich tool; WHOIS is the standalone `recon_lookup_whois` tool.
 pub struct ReconMapAssetsTool {
     pool: Arc<PgPool>,
     tools: ToolsConfigState,
@@ -185,7 +184,7 @@ impl Tool for ReconMapAssetsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Survey an organization's external footprint via cyberspace/intel providers (0.zone / quake / fofa / hunter / shodan / ENScan): domains, IP ranges, ASN, subdomains, certificates, ICP records, apps/mini-programs, exposed emails, and OSINT — landed to the org profile + target_assets (host↔IP pairs carry the surveyed real_ip). Zero-touch. Use during target_intel after the engagement subject is confirmed. WHOIS is a separate tool (recon_lookup_whois); CT certificates also via the ctfr tool. Returns a summary with counts and provider ids."
+        "Survey an organization's external footprint via cyberspace/intel providers (0.zone / quake / fofa / hunter / shodan / ENScan): domains, IP ranges, ASN, subdomains, certificates, ICP records, apps/mini-programs, exposed emails, and OSINT — landed to the org profile + target_assets (host↔IP pairs carry the surveyed real_ip). Zero-touch. Use during target_intel after the engagement subject is confirmed. WHOIS is a separate tool (recon_lookup_whois). Returns a summary with counts and provider ids."
     }
 
     fn parameters(&self) -> Value {

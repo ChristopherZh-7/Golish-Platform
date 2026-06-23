@@ -114,19 +114,31 @@ mod tests {
     fn upsert_sql_targets_unique_key_and_keeps_seq_on_conflict() {
         // 冲突键 = (run_id, asset, technique)；冲突时更新 provenance 但不动 seq。
         assert!(UPSERT_SQL.contains("ON CONFLICT (run_id, asset, technique) DO UPDATE"));
-        assert!(!UPSERT_SQL.contains("seq = EXCLUDED.seq"), "seq must NOT be updated on conflict");
+        assert!(
+            !UPSERT_SQL.contains("seq = EXCLUDED.seq"),
+            "seq must NOT be updated on conflict"
+        );
         assert!(UPSERT_SQL.contains("updated_at = NOW()"));
     }
 
     #[test]
     fn upsert_sql_seq_is_per_run_autoincrement() {
         // D2：首插 seq = 该 run 内 MAX(seq)+1。
-        assert!(UPSERT_SQL.contains("COALESCE(MAX(seq), 0) + 1 FROM technique_outcomes WHERE run_id = $2"));
+        assert!(UPSERT_SQL
+            .contains("COALESCE(MAX(seq), 0) + 1 FROM technique_outcomes WHERE run_id = $2"));
     }
 
     #[test]
     fn upsert_sql_writes_provenance_columns() {
-        for col in ["outcome", "source", "query", "result_count", "confidence", "evidence_ids", "collected_at"] {
+        for col in [
+            "outcome",
+            "source",
+            "query",
+            "result_count",
+            "confidence",
+            "evidence_ids",
+            "collected_at",
+        ] {
             assert!(UPSERT_SQL.contains(col), "upsert must write {col}");
             assert!(
                 UPSERT_SQL.contains(&format!("{col} = EXCLUDED.{col}")),

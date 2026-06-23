@@ -25,6 +25,7 @@ owns 全部表的结构化访问。每个表一个子模块（如 `findings.rs` 
 | `scoped`（`scoped.rs`） | scope/所有权校验基座（IDOR 守卫核心） |
 | pentest/recon 表：`findings` / `methodology` / `execution_plans` / `evidence_classifications` / `targets` / `target_assets` / `organizations` / `directory_entries` / `sensitive_scan` / `custom_rules` / `passive_scans` / `scan_queue` / `fingerprints` / `vuln_scan` / `screenshots` / `sitemap_store` / `api_endpoints` / `endpoint_tests` / `js_analysis` | 各表 scoped CRUD |
 | agent/会话表：`sessions` / `tasks` / `subtasks` / `tool_calls` / `message_chains` / `msg_logs` / `agent_logs` / `search_logs` / `terminal_logs` / `conversation_store` / `operation_state` / `stage_runs` / `sprint_contracts` / `sub_agent_dispatches` | agent 运行/会话数据 |
+| harness 物化事实：`technique_outcomes` / `source_query_log` / `expansion_queue` | stage gate/reviewer 的 coverage/source/扩展线索投影 |
 | 其它：`memories`（向量记忆） / `vault`（凭据） / `notes` / `kb_research` / `wiki_kb` / `prompt_templates` / `vuln_intel` / `vector_store_logs` | 记忆/凭据/笔记/知识库等 |
 
 ## 关键文件
@@ -46,6 +47,7 @@ owns 全部表的结构化访问。每个表一个子模块（如 `findings.rs` 
 - **raw SQL allowlist**：极少数裸 sqlx 调用在 `check_repo_ownership.py` ALLOWLIST 登记；新增裸 SQL 要么走 repo，要么显式登记。
 - **不变量 I9**：repo 方法别在事务里调外部 HTTP/MQ/长耗。
 - app crate **不直接写 SQL**：纵向走 `repo::*`，横向跨服务走 `golish-app-core/ports`。
+- `source_query_log::list_for_run` 供 gate/reviewer 只读 `(org, run)` 的 source/provider terminal rows；它证明 source 尝试，不可当作 found truth。
 
 ## 测试入口
 

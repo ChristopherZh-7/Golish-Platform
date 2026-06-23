@@ -69,7 +69,7 @@ mod e2e_tests;
 
 pub use gate::context_builder::GateContextBuilder;
 pub use gate::freshness_check::freshness_age_reasons;
-pub use gate::rule_engine::{EvidenceFact, EvidenceOutcome, GateContext};
+pub use gate::rule_engine::{EvidenceFact, EvidenceOutcome, GateContext, SourceQueryFact};
 pub use gate::{
     validate_external_attack_surface_gate, validate_stage_gate, validate_stage_gate_with_context,
     validate_stage_gate_with_skeleton, GateCheckOutcome, GateResult,

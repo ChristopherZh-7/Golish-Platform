@@ -288,7 +288,10 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.in_scope_assets_impl(org_id).await
     }
 
-    async fn in_scope_targets(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<serde_json::Value>> {
+    async fn in_scope_targets(
+        &self,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
         self.in_scope_targets_impl(org_id).await
     }
 
@@ -621,6 +624,28 @@ impl DbRepoProvider for GolishDbRepoProvider {
         .await
     }
 
+    async fn enqueue_expansion_lead(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+        lead_type: &str,
+        lead_value: &str,
+        source: Option<&str>,
+        confidence: Option<f32>,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<()> {
+        self.enqueue_expansion_lead_impl(
+            organization_id,
+            run_id,
+            lead_type,
+            lead_value,
+            source,
+            confidence,
+            evidence_ids,
+        )
+        .await
+    }
+
     async fn evidence_facts_for_session(
         &self,
         session_id: &str,
@@ -635,6 +660,14 @@ impl DbRepoProvider for GolishDbRepoProvider {
     ) -> Vec<(String, String, String, i64)> {
         self.technique_outcome_facts_impl(organization_id, run_id)
             .await
+    }
+
+    async fn source_query_facts(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+    ) -> Vec<golish_agent_kit::harness::SourceQueryFact> {
+        self.source_query_facts_impl(organization_id, run_id).await
     }
 
     async fn evidence_existing_ids(

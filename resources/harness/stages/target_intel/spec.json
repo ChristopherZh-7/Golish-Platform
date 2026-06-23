@@ -9,7 +9,7 @@
   "requires_stages": ["scoping"],
   "allowed_next_stages": ["external_attack_surface"],
 
-  "allowed_tool_types": ["recon/dns", "recon/subdomain", "recon/osint", "recon/url-history", "recon/whois", "recon/asn", "recon/ct"],
+  "allowed_tool_types": [],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
@@ -50,10 +50,20 @@
       "derive_from_evidence": true,
       "authoritative_found": true,
       "authoritative_techniques": ["GOLISH-INTEL-DNS", "GOLISH-INTEL-SUBDOMAIN", "GOLISH-INTEL-ASN", "GOLISH-INTEL-CT", "GOLISH-INTEL-WHOIS", "GOLISH-INTEL-OSINT"],
-      "$comment_authoritative": "Phase 0+1 (2026-06-12-redteam-phase0/phase1): 'found' for all 6 passive intel techniques is decided by DB/ledger truth, not self-report. Landing per technique: DNS\u2192dns_records (dig), SUBDOMAIN\u2192target_assets (subfinder/amass), ASN/CT\u2192organizations.asns/.certificates (enrich), WHOIS\u2192organizations.whois column or a real `whois` command ledger fact, OSINT\u2192organizations.intel.records/contacts/social_accounts/business_systems (enrich). Tagging a claim or hand-writing a found cell no longer counts.",
+      "$comment_authoritative": "Phase 0+1 (2026-06-12-redteam-phase0/phase1) + 2026-06-23 provider-source closure: 'found' for all 6 passive intel techniques is decided by DB/ledger truth, not self-report. Landing per technique is provider/registry-tool backed: SUBDOMAIN/DNS-adjacent asset mapping\u2192target_assets/dns_records when available from provider landing, ASN/CT/OSINT\u2192organizations.asns/.certificates/.intel via recon_map_assets, WHOIS\u2192organizations.whois via recon_lookup_whois. target_intel no longer allows scan-tool fallback; missing/unavailable provider data must be submitted as terminal checked_empty/blocked/not_applicable. Tagging a claim or hand-writing a found cell no longer counts.",
       "on_fail": {
         "reason": "intel coverage incomplete: some (in-scope asset \u00d7 expected intel technique) cells were never attempted",
-        "hints": ["for every in-scope asset, give each expected intel technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note", "the gate reads the DATABASE, not your self-report: a cell is 'found' only if the real tool ran and its data landed (dig\u2192dns_records, subfinder\u2192target_assets, enrich\u2192organizations.asns/.certificates/.whois/.intel, whois\u2192whois column or ledger) \u2014 tagging a claim is not enough", "no provider/credential for a technique (e.g. OSINT)? record it blocked+note \u2014 never fabricate; run the real tools to make found cells real", "BREAK THE LOOP: if a technique's data source is unavailable or keeps failing (e.g. CT via crt.sh/ctfr times out or returns nothing, or no OSINT provider), submit that (asset x technique) cell as status=blocked with a note naming the failed source. A blocked cell is TERMINAL and clears the gap; do NOT resubmit the same matrix expecting that cell to fill, it will loop forever."]
+        "hints": ["for every in-scope asset, give each expected intel technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note", "the gate reads the DATABASE, not your self-report: a cell is 'found' only if the provider/registry tool ran and its data landed (recon_map_assets\u2192target_assets/organizations.*, recon_lookup_whois\u2192organizations.whois, provider DNS landing\u2192dns_records where available) \u2014 tagging a claim is not enough", "no provider/credential for a technique (e.g. OSINT, CT, ASN, DNS or SUBDOMAIN provider survey)? record it blocked+note \u2014 never fabricate; run only the target_intel registry tools to make found cells real", "BREAK THE LOOP: if a technique's provider/source is unavailable or keeps failing, submit that (asset x technique) cell as status=blocked with a note naming the failed/absent source. A blocked cell is TERMINAL and clears the gap; do NOT resubmit the same matrix expecting that cell to fill, it will loop forever."]
+      }
+    },
+    {
+      "op": "source_coverage",
+      "authoritative_techniques": ["GOLISH-INTEL-DNS", "GOLISH-INTEL-SUBDOMAIN", "GOLISH-INTEL-ASN", "GOLISH-INTEL-CT", "GOLISH-INTEL-WHOIS", "GOLISH-INTEL-OSINT"],
+      "$comment_authoritative": "Provider-source closure Phase 3: source_query_log rows are required as source-attempt proof for provider-backed found/checked_empty intel. They do NOT make a cell found; found is still DB/ledger truth. blocked/not_applicable cells with a note are terminal and do not force a provider call.",
+      "on_fail": {
+        "reason": "intel source coverage incomplete: some provider/source attempts have no terminal source_query_log row",
+        "hints": ["run target_intel registry tools once: recon_map_assets records providerStatus rows for DNS/SUBDOMAIN/ASN/CT/OSINT provider survey, recon_lookup_whois records the RDAP WHOIS source row", "do not call shell discovery tools in target_intel; they are not allowed in this stage", "if a source/provider is unavailable, submit blocked or not_applicable coverage with a non-empty note naming the source instead of rerunning the same provider loop"],
+        "missing_evidence_kinds": ["source_query_log"]
       }
     },
     {
@@ -77,7 +87,7 @@
   "specialist": "recon",
   "coverage_axis": ["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT"],
 
-  "$comment_min_invocations": "2026-06-17 passive-intel-closure Phase F: removed the dns_resolve / subdomain_enum_passive hard floors. enrich (multi-source survey -> domain<->IP pairing -> scope filter -> auto-landing of targets with surveyed real_ip -> coverage landing) now writes DNS/SUBDOMAIN/ASN/CT/WHOIS/OSINT into the gate-read DB truth tables, and completeness is enforced by coverage_complete (authoritative_found, reads the DB). The old floors only drove the prompt (task_orchestrator/prompts/mod.rs) to push the agent into re-running dig/subfinder, and were already skipped inside vacuous_check's FakePattern by facts_from_db_truth (gate/vacuous_check.rs). CLI tools (dig/subfinder/amass/asnmap/ctfr) are now fallback-only for cells enrich did not land (see target_intel.methodology.md section 2). Before re-promoting any tool to a hard floor, verify it truly cannot be covered by enrich landing. Historical context (pre-Phase F): DNS + passive subdomain were mandatory; OSINT was deliberately never a hard floor (ENScan_GO is China-corp-focused, not every engagement has an OSINT provider) and stays a REQUIRED coverage cell that may be terminal as blocked+note.",
+  "$comment_min_invocations": "2026-06-23 target_intel provider-source boundary: no scan-tool selectors are exposed in this zero-touch stage. SUBDOMAIN/DNS/ASN/CT/OSINT coverage remains required, but found states must come from provider/registry-tool landing (primarily recon_map_assets; WHOIS via recon_lookup_whois). If no configured provider/source can land a technique, the agent must record blocked/checked_empty/not_applicable with evidence or note instead of running a CLI fallback. 2026-06-17 passive-intel-closure Phase F removed the dns_resolve / subdomain_enum_passive hard floors; completeness is enforced by coverage_complete (authoritative_found, reads the DB). Historical context (pre-Phase F): DNS + passive subdomain were mandatory hard floors; OSINT was deliberately never a hard floor (ENScan_GO is China-corp-focused, not every engagement has an OSINT provider) and stays a REQUIRED coverage cell that may be terminal as blocked+note.",
   "min_invocations": {},
 
   "max_other_skips": 2,

@@ -347,23 +347,17 @@ mod tests {
     }
 
     #[test]
-    fn target_intel_owns_passive_subdomain_and_url_history() {
+    fn target_intel_keeps_subdomain_coverage_but_blocks_cli_subdomain_tools() {
         let s = load_stage_spec_from_json(TARGET_INTEL_JSON).expect("parse");
-        // 零接触被动技术全部归 target_intel。
+        // SUBDOMAIN 仍由 target_intel 覆盖，但 2026-06-23 provider-source
+        // boundary 后，target_intel 不再暴露任何 scan-tool selector。阶段只走
+        // recon_map_assets / recon_lookup_whois 等 registry 工具；缺 provider/source
+        // 时提交 terminal coverage cell，而不是切 CLI fallback。
+        assert!(s.allowed_tool_types.is_empty());
         assert!(s
-            .allowed_tool_types
-            .contains(&"recon/subdomain".to_string()));
-        assert!(s
-            .allowed_tool_types
-            .contains(&"recon/url-history".to_string()));
-        // P2 (2026-06-11): whois 是零接触被动技术，归 target_intel（先前缺类型导致
-        // stage guard 误拦 CLI whois）。
-        assert!(s.allowed_tool_types.contains(&"recon/whois".to_string()));
-        // 2026-06-17 passive-intel-closure Phase F：移除硬地板。被动子域名枚举不再是
-        // min_invocations 硬下限——enrich(测绘→域名↔IP 配对→scope 过滤→自动入库→landing)
-        // 把 SUBDOMAIN 写进 gate 读的 DB 真相表，完整性由 coverage_complete(authoritative)
-        // 强制；CLI(subfinder/amass) 退化为 enrich 未落格子时的 fallback。recon/subdomain
-        // 仍是本阶段 allowed_tool_type（上面断言），故本阶段仍“拥有”被动子域名职责。
+            .expected_techniques
+            .contains(&"GOLISH-INTEL-SUBDOMAIN".to_string()));
+        assert!(s.coverage_axis.contains(&"SUBDOMAIN".to_string()));
         assert!(s.min_invocations.is_empty());
     }
 

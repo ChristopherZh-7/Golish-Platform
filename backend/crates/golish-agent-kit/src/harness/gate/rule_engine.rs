@@ -106,6 +106,16 @@ pub enum GateRule {
         min_sample_ratio_pct: u8,
         on_fail: OnFail,
     },
+    /// Source coverage (2026-06-23 provider-source closure): for techniques that
+    /// claim `found` / `checked_empty`, require a terminal `source_query_log`
+    /// row proving a provider/source was actually queried. This is deliberately
+    /// weaker than `coverage_complete`: source rows prove "attempted source",
+    /// never "found data" (DB/ledger truth still owns found).
+    SourceCoverage {
+        #[serde(default)]
+        authoritative_techniques: Option<Vec<String>>,
+        on_fail: OnFail,
+    },
 }
 
 /// `named_check` 逃生舱可调的内建 check（闭合枚举 → 写错名 serde 报错 fail-closed）。
@@ -135,7 +145,8 @@ impl GateRule {
             | GateRule::ForAll { on_fail, .. }
             | GateRule::CoverageComplete { on_fail, .. }
             | GateRule::CoverageCorroborated { on_fail, .. }
-            | GateRule::CoverageDenominator { on_fail, .. } => on_fail.reason.clone(),
+            | GateRule::CoverageDenominator { on_fail, .. }
+            | GateRule::SourceCoverage { on_fail, .. } => on_fail.reason.clone(),
             GateRule::NamedCheck { check, on_fail } => on_fail
                 .as_ref()
                 .map(|o| o.reason.clone())
@@ -153,6 +164,7 @@ impl GateRule {
             GateRule::CoverageComplete { .. } => "coverage_complete",
             GateRule::CoverageCorroborated { .. } => "coverage_corroborated",
             GateRule::CoverageDenominator { .. } => "coverage_denominator",
+            GateRule::SourceCoverage { .. } => "source_coverage",
         }
     }
 }
@@ -231,6 +243,13 @@ pub struct GateContext {
     /// `None` = 不启用投影（与旧行为逐字节一致）；规则侧还需
     /// `coverage_complete.derive_from_evidence=true` 才消费（双开关，灰度安全）。
     pub evidence_facts: Option<Vec<EvidenceFact>>,
+    /// Source-query terminal facts from `source_query_log`.
+    ///
+    /// These facts answer "which provider/source did this run query and how did
+    /// that source terminate?" They do not project into `found`; source coverage
+    /// only consumes them to prevent a self-reported `found`/`checked_empty` cell
+    /// from passing without any source attempt recorded.
+    pub source_queries: Option<Vec<SourceQueryFact>>,
 }
 
 /// 一条证据投影事实：账本里「在 `asset` 上跑了 `technique`」的确定性记录。
@@ -251,6 +270,17 @@ pub enum EvidenceOutcome {
     Found,
     Empty,
     Error,
+}
+
+/// A terminal source/provider query row projected from `source_query_log`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceQueryFact {
+    pub source: String,
+    pub query: String,
+    pub target: String,
+    pub technique: Option<String>,
+    pub status: String,
+    pub evidence_ids: Vec<i64>,
 }
 
 /// 逐条规则求值，每条产出一个 outcome。数据 op（count_at_least/for_all）是纯函数、
@@ -346,6 +376,10 @@ fn eval_one(
             min_sample_ratio_pct,
             on_fail,
         } => coverage_denominator(d, *min_sample_ratio_pct, on_fail),
+        GateRule::SourceCoverage {
+            authoritative_techniques,
+            on_fail,
+        } => source_coverage(d, spec, ctx, authoritative_techniques.as_deref(), on_fail),
     };
 
     // Observability (2026-06-16): the semantic gate rules were the ONLY gate layer
@@ -588,27 +622,29 @@ fn coverage_complete(
                 && authoritative_techniques.is_none_or(|list| list.iter().any(|t| t == tech));
 
             let cell_status = |want: CoverageStatus| {
-                d.coverage
-                    .iter()
-                    .any(|c| canon_asset(&c.asset) == asset_key && c.technique == *tech && c.status == want)
+                d.coverage.iter().any(|c| {
+                    canon_asset(&c.asset) == asset_key && c.technique == *tech && c.status == want
+                })
             };
             // 账本/DB 真值通道：asset+technique 精确匹配且 outcome 命中的事实存在？
             let has_fact = |want: EvidenceOutcome| {
                 ctx.evidence_facts.as_deref().is_some_and(|facts| {
-                    facts
-                        .iter()
-                        .any(|f| canon_asset(&f.asset) == asset_key && f.technique == *tech && f.outcome == want)
+                    facts.iter().any(|f| {
+                        canon_asset(&f.asset) == asset_key
+                            && f.technique == *tech
+                            && f.outcome == want
+                    })
                 })
             };
             // P5 派生（D1/D2）：technique 标注且 subject == asset 的 claim/finding 视作
             // found（仅旧自报路径用；authoritative 模式下不再算 found）。
-            let tagged_found = d
-                .claims
-                .iter()
-                .any(|c| canon_asset(&c.subject) == asset_key && c.technique.as_deref() == Some(tech.as_str()))
-                || d.findings
-                    .iter()
-                    .any(|f| canon_asset(&f.subject) == asset_key && f.technique.as_deref() == Some(tech.as_str()));
+            let tagged_found = d.claims.iter().any(|c| {
+                canon_asset(&c.subject) == asset_key
+                    && c.technique.as_deref() == Some(tech.as_str())
+            }) || d.findings.iter().any(|f| {
+                canon_asset(&f.subject) == asset_key
+                    && f.technique.as_deref() == Some(tech.as_str())
+            });
 
             // found 终态：
             // - authoritative：只认真值（账本/DB 的 Found 事实）。自报 cell / tagged
@@ -794,9 +830,11 @@ fn coverage_corroborated(
         // subject 的同一资产不同写法。
         let cell_asset_key = canon_asset(&cell.asset);
         let corroborated = d.claims.iter().any(|c| {
-            canon_asset(&c.subject) == cell_asset_key && c.technique.as_deref() == Some(cell.technique.as_str())
+            canon_asset(&c.subject) == cell_asset_key
+                && c.technique.as_deref() == Some(cell.technique.as_str())
         }) || d.findings.iter().any(|f| {
-            canon_asset(&f.subject) == cell_asset_key && f.technique.as_deref() == Some(cell.technique.as_str())
+            canon_asset(&f.subject) == cell_asset_key
+                && f.technique.as_deref() == Some(cell.technique.as_str())
         });
         if !corroborated {
             gaps.push(format!("({} × {})", cell.asset, cell.technique));
@@ -829,6 +867,153 @@ fn coverage_corroborated(
             missing_evidence_kinds: on_fail.missing_evidence_kinds.clone(),
         },
     }
+}
+
+fn source_coverage(
+    d: &StageDeliverable,
+    spec: &StageSpec,
+    ctx: &GateContext,
+    authoritative_techniques: Option<&[String]>,
+    on_fail: &OnFail,
+) -> GateCheckOutcome {
+    let techniques: Vec<&str> = match authoritative_techniques {
+        Some(list) => list.iter().map(String::as_str).collect(),
+        None => match ctx.expected_techniques.as_deref() {
+            Some(t) => t.iter().map(String::as_str).collect(),
+            None => spec
+                .expected_techniques
+                .iter()
+                .map(String::as_str)
+                .collect(),
+        },
+    };
+    if techniques.is_empty() {
+        return GateCheckOutcome::Pass;
+    }
+
+    let rows = ctx.source_queries.as_deref().unwrap_or(&[]);
+    let assets = source_coverage_assets(d, spec, ctx);
+    if rows.is_empty() && assets.is_empty() {
+        return GateCheckOutcome::Pass;
+    }
+
+    let mut gaps = Vec::new();
+    for tech in techniques {
+        if rows.iter().any(|row| source_row_covers_tech(row, tech)) {
+            continue;
+        }
+        // If every applicable cell is explicitly blocked / not_applicable with
+        // a note, the model has declared "there is no usable source/provider" and
+        // `coverage_complete` already treats that as terminal. Do not force a
+        // source row for a source that cannot be invoked.
+        if !assets.is_empty() && all_assets_have_other_terminal(d, &assets, tech) {
+            continue;
+        }
+        gaps.push(tech.to_string());
+    }
+
+    if gaps.is_empty() {
+        return GateCheckOutcome::Pass;
+    }
+    const MAX_SHOWN: usize = 8;
+    let shown = gaps
+        .iter()
+        .take(MAX_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let suffix = if gaps.len() > MAX_SHOWN {
+        format!(" (+{} more)", gaps.len() - MAX_SHOWN)
+    } else {
+        String::new()
+    };
+    log_coverage_gap_matrix(&d.stage_id, "source_coverage", &gaps);
+    GateCheckOutcome::Block {
+        reasons: vec![format!(
+            "{}: missing terminal source/provider query for {}{}",
+            on_fail.reason, shown, suffix
+        )],
+        recovery: HarnessRecoveryActions {
+            hints: on_fail.hints.clone(),
+            repair_tool_calls: on_fail.repair_tool_calls.clone(),
+            missing_evidence_kinds: on_fail.missing_evidence_kinds.clone(),
+        },
+    }
+}
+
+fn source_coverage_assets(
+    d: &StageDeliverable,
+    spec: &StageSpec,
+    ctx: &GateContext,
+) -> Vec<String> {
+    let mut assets: Vec<String> = match ctx.in_scope_assets.as_deref() {
+        Some(list) => list.to_vec(),
+        None => {
+            let mut self_reported = Vec::new();
+            for cell in &d.coverage {
+                if !self_reported.contains(&cell.asset) {
+                    self_reported.push(cell.asset.clone());
+                }
+            }
+            self_reported
+        }
+    };
+    if spec.coverage_anchor_only {
+        let refs: Vec<&str> = assets.iter().map(String::as_str).collect();
+        assets = anchor_only_axis(&refs)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+    }
+    let mut seen = std::collections::HashSet::new();
+    assets
+        .into_iter()
+        .filter(|a| seen.insert(canon_asset(a)))
+        .collect()
+}
+
+fn all_assets_have_other_terminal(d: &StageDeliverable, assets: &[String], tech: &str) -> bool {
+    assets.iter().all(|asset| {
+        let asset_key = canon_asset(asset);
+        d.coverage.iter().any(|cell| {
+            canon_asset(&cell.asset) == asset_key
+                && cell.technique == tech
+                && matches!(
+                    cell.status,
+                    CoverageStatus::Blocked | CoverageStatus::NotApplicable
+                )
+                && cell.note.as_deref().is_some_and(|n| !n.trim().is_empty())
+        })
+    })
+}
+
+fn source_row_covers_tech(row: &SourceQueryFact, tech: &str) -> bool {
+    if !is_terminal_source_status(&row.status) {
+        return false;
+    }
+    if row.technique.as_deref() == Some(tech) {
+        return true;
+    }
+    provider_survey_covers_tech(row, tech)
+}
+
+fn is_terminal_source_status(status: &str) -> bool {
+    matches!(
+        status,
+        "found" | "empty" | "checked_empty" | "error" | "blocked"
+    )
+}
+
+fn provider_survey_covers_tech(row: &SourceQueryFact, tech: &str) -> bool {
+    matches!(
+        tech,
+        "GOLISH-INTEL-DNS"
+            | "GOLISH-INTEL-SUBDOMAIN"
+            | "GOLISH-INTEL-ASN"
+            | "GOLISH-INTEL-CT"
+            | "GOLISH-INTEL-OSINT"
+    ) && matches!(row.query.as_str(), "map_assets" | "recon_map_assets")
+        && row.source != "rdap"
 }
 
 enum ItemRef<'a> {
@@ -1369,6 +1554,7 @@ mod tests {
             asset_types: None,
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: facts,
+            source_queries: None,
         }
     }
 
@@ -1422,6 +1608,7 @@ mod tests {
             asset_types: None,
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: None,
+            source_queries: None,
         };
         let rule = coverage_complete_rule();
 
@@ -1447,13 +1634,11 @@ mod tests {
         // 非空轴永不变空。
         let techs = ["GOLISH-INTEL-DNS"];
         let ctx = GateContext {
-            in_scope_assets: Some(vec![
-                "a.pa18.com".to_string(),
-                "b.pa18.com".to_string(),
-            ]),
+            in_scope_assets: Some(vec!["a.pa18.com".to_string(), "b.pa18.com".to_string()]),
             asset_types: None,
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: None,
+            source_queries: None,
         };
         // 只覆盖了 a，没覆盖 b → 两个都在轴里时必 BLOCK（证明 b 没被剔除）。
         let d = deliverable_with_coverage(vec![cov_cell(
@@ -1487,7 +1672,11 @@ mod tests {
             .iter()
             .map(|t| fact("a.com", t, EvidenceOutcome::Found, 1))
             .collect();
-        for t in ["GOLISH-INTEL-WHOIS", "GOLISH-INTEL-ASN", "GOLISH-INTEL-OSINT"] {
+        for t in [
+            "GOLISH-INTEL-WHOIS",
+            "GOLISH-INTEL-ASN",
+            "GOLISH-INTEL-OSINT",
+        ] {
             facts.push(fact("1.2.3.4", t, EvidenceOutcome::Found, 1));
         }
         let ctx = GateContext {
@@ -1495,6 +1684,7 @@ mod tests {
             asset_types: None,
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
+            source_queries: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -1555,6 +1745,7 @@ mod tests {
             asset_types: None,
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
+            source_queries: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -1588,6 +1779,7 @@ mod tests {
             asset_types: None,
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
+            source_queries: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -1619,12 +1811,15 @@ mod tests {
             "GOLISH-INTEL-OSINT",
         ];
         let asset = "1.2.3.4"; // 值看着像 IP …
-        // 只有 IP 适用子集（WHOIS/ASN/OSINT）有 Found；SUBDOMAIN/DNS/CT 缺。
-        let facts: Vec<EvidenceFact> =
-            ["GOLISH-INTEL-WHOIS", "GOLISH-INTEL-ASN", "GOLISH-INTEL-OSINT"]
-                .iter()
-                .map(|t| fact(asset, t, EvidenceOutcome::Found, 1))
-                .collect();
+                               // 只有 IP 适用子集（WHOIS/ASN/OSINT）有 Found；SUBDOMAIN/DNS/CT 缺。
+        let facts: Vec<EvidenceFact> = [
+            "GOLISH-INTEL-WHOIS",
+            "GOLISH-INTEL-ASN",
+            "GOLISH-INTEL-OSINT",
+        ]
+        .iter()
+        .map(|t| fact(asset, t, EvidenceOutcome::Found, 1))
+        .collect();
         let mut asset_types = std::collections::HashMap::new();
         asset_types.insert(asset.to_string(), "domain".to_string()); // … 但权威类型是域名
         let ctx = GateContext {
@@ -1632,6 +1827,7 @@ mod tests {
             asset_types: Some(asset_types),
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
+            source_queries: None,
         };
         let d = deliverable_with_coverage(vec![]);
         // host-aware ON：权威类型=域名 ⇒ 核全 6，缺 3 → BLOCK（若只按 from_value 会判 IP 而 PASS）。
@@ -2093,12 +2289,8 @@ mod tests {
         // 缺省（不写该字段）→ blocked 空 note 仍算终态 → Pass（逐字节不变）。
         let rule = coverage_complete_rule();
         let spec = spec_with_expected(&["idor"]);
-        let d = deliverable_with_coverage(vec![cov_cell(
-            "a",
-            "idor",
-            CoverageStatus::Blocked,
-            vec![],
-        )]);
+        let d =
+            deliverable_with_coverage(vec![cov_cell("a", "idor", CoverageStatus::Blocked, vec![])]);
         assert!(eval(&d, &spec, &[rule])[0].is_pass());
     }
 
@@ -2106,12 +2298,8 @@ mod tests {
     fn require_note_for_other_blocks_blocked_cell_without_note() {
         // 开关开 + blocked 空 note → 不算终态 → a×idor 缺口 → Block。
         let spec = spec_with_expected(&["idor"]);
-        let d = deliverable_with_coverage(vec![cov_cell(
-            "a",
-            "idor",
-            CoverageStatus::Blocked,
-            vec![],
-        )]);
+        let d =
+            deliverable_with_coverage(vec![cov_cell("a", "idor", CoverageStatus::Blocked, vec![])]);
         match &eval(&d, &spec, &[note_required_rule()])[0] {
             GateCheckOutcome::Block { reasons, .. } => {
                 assert!(reasons[0].contains("(a × idor)"), "{reasons:?}");
@@ -2182,10 +2370,18 @@ mod tests {
         // derive_from_evidence + Error 事实 + 默认终态集（含 CheckedEmpty/Blocked）→
         // cell 落终态（不 gap）→ Pass。保住「失败也落终态、不无限重试」。
         let rule = evidence_derive_rule(None);
-        let ctx = projection_ctx(&["t"], Some(vec![fact("a", "t", EvidenceOutcome::Error, 9)]));
+        let ctx = projection_ctx(
+            &["t"],
+            Some(vec![fact("a", "t", EvidenceOutcome::Error, 9)]),
+        );
         assert!(
-            eval_with_context(&deliverable_with_coverage(vec![]), &test_spec(), &[rule], &ctx)[0]
-                .is_pass(),
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &test_spec(),
+                &[rule],
+                &ctx
+            )[0]
+            .is_pass(),
             "an Error fact must make the cell terminal (no infinite retry)"
         );
     }
@@ -2195,8 +2391,16 @@ mod tests {
         // terminal=["found"]：Error 事实既不算 found，也不在 CheckedEmpty/Blocked 终态
         // 集 → 缺口 Block。证明 error 绝不冒充 found。
         let rule = evidence_derive_rule(Some(r#""found""#));
-        let ctx = projection_ctx(&["t"], Some(vec![fact("a", "t", EvidenceOutcome::Error, 9)]));
-        match &eval_with_context(&deliverable_with_coverage(vec![]), &test_spec(), &[rule], &ctx)[0]
+        let ctx = projection_ctx(
+            &["t"],
+            Some(vec![fact("a", "t", EvidenceOutcome::Error, 9)]),
+        );
+        match &eval_with_context(
+            &deliverable_with_coverage(vec![]),
+            &test_spec(),
+            &[rule],
+            &ctx,
+        )[0]
         {
             GateCheckOutcome::Block { reasons, .. } => {
                 assert!(reasons[0].contains("(a × t)"), "{reasons:?}");
@@ -2210,9 +2414,189 @@ mod tests {
         // 不开 derive_from_evidence：Error 事实不投影 → a×t 无终态 → Block（gate 侧
         // 对 error 的处理 additive，需 derive_from_evidence 才消费）。
         let rule = coverage_complete_rule();
-        let ctx = projection_ctx(&["t"], Some(vec![fact("a", "t", EvidenceOutcome::Error, 9)]));
+        let ctx = projection_ctx(
+            &["t"],
+            Some(vec![fact("a", "t", EvidenceOutcome::Error, 9)]),
+        );
         assert!(matches!(
-            eval_with_context(&deliverable_with_coverage(vec![]), &test_spec(), &[rule], &ctx)[0],
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &test_spec(),
+                &[rule],
+                &ctx
+            )[0],
+            GateCheckOutcome::Block { .. }
+        ));
+    }
+
+    // ── Source coverage (2026-06-23 provider-source closure) ────────────────
+
+    fn source_query(
+        source: &str,
+        query: &str,
+        technique: Option<&str>,
+        status: &str,
+    ) -> SourceQueryFact {
+        SourceQueryFact {
+            source: source.to_string(),
+            query: query.to_string(),
+            target: String::new(),
+            technique: technique.map(str::to_string),
+            status: status.to_string(),
+            evidence_ids: vec![9],
+        }
+    }
+
+    fn source_coverage_rule(techniques: Option<&[&str]>) -> GateRule {
+        let techs = match techniques {
+            Some(t) => {
+                let arr = t
+                    .iter()
+                    .map(|s| format!("\"{s}\""))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(r#","authoritative_techniques":[{arr}]"#)
+            }
+            None => String::new(),
+        };
+        parse(&format!(
+            r#"{{ "op":"source_coverage"{techs},
+                 "on_fail":{{"reason":"source coverage incomplete"}} }}"#
+        ))
+    }
+
+    #[test]
+    fn source_coverage_blocks_found_without_terminal_source_row() {
+        let d = deliverable_with_coverage(vec![cov_cell(
+            "a.com",
+            "GOLISH-INTEL-WHOIS",
+            CoverageStatus::Found,
+            vec![1],
+        )]);
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string()]),
+            expected_techniques: Some(vec!["GOLISH-INTEL-WHOIS".to_string()]),
+            ..Default::default()
+        };
+        assert!(matches!(
+            eval_with_context(
+                &d,
+                &target_intel_spec(false),
+                &[source_coverage_rule(None)],
+                &ctx
+            )[0],
+            GateCheckOutcome::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn source_coverage_accepts_provider_survey_for_provider_backed_intel() {
+        let techs = [
+            "GOLISH-INTEL-DNS",
+            "GOLISH-INTEL-SUBDOMAIN",
+            "GOLISH-INTEL-ASN",
+            "GOLISH-INTEL-CT",
+            "GOLISH-INTEL-OSINT",
+        ];
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string()]),
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            source_queries: Some(vec![source_query(
+                "builtin_provider",
+                "map_assets",
+                None,
+                "found",
+            )]),
+            ..Default::default()
+        };
+        assert!(
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &target_intel_spec(false),
+                &[source_coverage_rule(None)],
+                &ctx
+            )[0]
+            .is_pass(),
+            "a terminal recon_map_assets provider row proves provider-backed sources were attempted"
+        );
+    }
+
+    #[test]
+    fn source_coverage_accepts_rdap_for_whois() {
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string()]),
+            expected_techniques: Some(vec!["GOLISH-INTEL-WHOIS".to_string()]),
+            source_queries: Some(vec![source_query(
+                "rdap",
+                "lookup_whois",
+                Some("GOLISH-INTEL-WHOIS"),
+                "empty",
+            )]),
+            ..Default::default()
+        };
+        assert!(
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &target_intel_spec(false),
+                &[source_coverage_rule(None)],
+                &ctx
+            )[0]
+            .is_pass(),
+            "terminal RDAP source row proves WHOIS was attempted even when empty"
+        );
+    }
+
+    #[test]
+    fn source_coverage_exempts_not_applicable_with_note() {
+        let d = deliverable_with_coverage(vec![cov_cell_noted(
+            "a.com",
+            "GOLISH-INTEL-OSINT",
+            CoverageStatus::NotApplicable,
+            "no OSINT provider configured for this engagement",
+        )]);
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string()]),
+            expected_techniques: Some(vec!["GOLISH-INTEL-OSINT".to_string()]),
+            ..Default::default()
+        };
+        assert!(
+            eval_with_context(
+                &d,
+                &target_intel_spec(false),
+                &[source_coverage_rule(None)],
+                &ctx
+            )[0]
+            .is_pass(),
+            "explicit not_applicable+note remains terminal without forcing a source call"
+        );
+    }
+
+    #[test]
+    fn source_query_fact_does_not_make_authoritative_found_pass() {
+        let d = deliverable_with_coverage(vec![cov_cell(
+            "a.com",
+            "GOLISH-INTEL-CT",
+            CoverageStatus::Found,
+            vec![1],
+        )]);
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string()]),
+            expected_techniques: Some(vec!["GOLISH-INTEL-CT".to_string()]),
+            source_queries: Some(vec![source_query(
+                "builtin_provider",
+                "map_assets",
+                None,
+                "found",
+            )]),
+            ..Default::default()
+        };
+        assert!(matches!(
+            eval_with_context(
+                &d,
+                &target_intel_spec(false),
+                &[authoritative_rule(None)],
+                &ctx
+            )[0],
             GateCheckOutcome::Block { .. }
         ));
     }
@@ -2559,11 +2943,17 @@ mod tests {
             asset_types: None,
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
+            source_queries: None,
         };
         let d = deliverable_with_coverage(vec![]);
         assert!(
-            eval_with_context(&d, &target_intel_spec(false), &[evidence_derive_rule(None)], &ctx)[0]
-                .is_pass(),
+            eval_with_context(
+                &d,
+                &target_intel_spec(false),
+                &[evidence_derive_rule(None)],
+                &ctx
+            )[0]
+            .is_pass(),
             "drifted-identity evidence fact must credit the in-scope asset after canonicalization"
         );
     }
@@ -2573,17 +2963,28 @@ mod tests {
         // 反作弊 parity：归一只让「同一资产不同写法」对上，绝不把「不同资产」混为一格。
         // 轴是 pingan.com，账本只有 other.com 的 fact → 仍 BLOCK。
         let techs = ["GOLISH-INTEL-DNS"];
-        let facts = vec![fact("other.com", "GOLISH-INTEL-DNS", EvidenceOutcome::Found, 1)];
+        let facts = vec![fact(
+            "other.com",
+            "GOLISH-INTEL-DNS",
+            EvidenceOutcome::Found,
+            1,
+        )];
         let ctx = GateContext {
             in_scope_assets: Some(vec!["pingan.com".to_string()]),
             asset_types: None,
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
+            source_queries: None,
         };
         let d = deliverable_with_coverage(vec![]);
         assert!(
-            !eval_with_context(&d, &target_intel_spec(false), &[evidence_derive_rule(None)], &ctx)[0]
-                .is_pass(),
+            !eval_with_context(
+                &d,
+                &target_intel_spec(false),
+                &[evidence_derive_rule(None)],
+                &ctx
+            )[0]
+            .is_pass(),
             "a fact for a different asset must NOT satisfy pingan.com (no over-merge)"
         );
     }
@@ -2602,10 +3003,15 @@ mod tests {
             asset_types: None,
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: None,
+            source_queries: None,
         };
         let d = deliverable_with_coverage(vec![]);
-        match &eval_with_context(&d, &target_intel_spec(false), &[evidence_derive_rule(None)], &ctx)
-            [0]
+        match &eval_with_context(
+            &d,
+            &target_intel_spec(false),
+            &[evidence_derive_rule(None)],
+            &ctx,
+        )[0]
         {
             GateCheckOutcome::Block { reasons, .. } => {
                 let gaps = reasons[0].matches("GOLISH-INTEL-DNS").count();
@@ -2623,15 +3029,18 @@ mod tests {
         // B1 反作弊：去重只折叠漂移写法，绝不把 EAS 的 URL 端点折进其主机——
         // `a.com` 与 `https://a.com/login` 是两行，各自要核 → 缺一即 BLOCK。
         let techs = ["GOLISH-EAS-LIVENESS"];
-        let facts = vec![fact("a.com", "GOLISH-EAS-LIVENESS", EvidenceOutcome::Found, 1)];
+        let facts = vec![fact(
+            "a.com",
+            "GOLISH-EAS-LIVENESS",
+            EvidenceOutcome::Found,
+            1,
+        )];
         let ctx = GateContext {
-            in_scope_assets: Some(vec![
-                "a.com".to_string(),
-                "https://a.com/login".to_string(),
-            ]),
+            in_scope_assets: Some(vec!["a.com".to_string(), "https://a.com/login".to_string()]),
             asset_types: None,
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
+            source_queries: None,
         };
         let d = deliverable_with_coverage(vec![]);
         let spec = host_aware_spec("external_attack_surface", "external_attack_surface", false);

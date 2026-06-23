@@ -395,10 +395,7 @@ impl GolishDbRepoProvider {
     /// subtree (root + descendants) of the scoping-confirmed engagement root org,
     /// so the stage_run fan-out confines dispatch to THIS engagement's tree and a
     /// sibling engagement's org (left in the same workspace) is never targeted.
-    pub(super) async fn org_subtree_ids_impl(
-        &self,
-        root_id: Uuid,
-    ) -> anyhow::Result<Vec<Uuid>> {
+    pub(super) async fn org_subtree_ids_impl(&self, root_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
         Ok(golish_db::repo::organizations::subtree_ids(&self.pool, root_id).await?)
     }
 

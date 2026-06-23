@@ -44,6 +44,8 @@
 ## 注意事项 / 坑
 
 - **不变量 I7/I8**：gate 是**确定性规则**（schema/scope/contract/vacuous/freshness），不能拿模型自报当通过；`scope_check` 验 evidence_refs 当前 label = InScope。
+- `target_intel` 的 6 个 `GOLISH-INTEL-*` 覆盖列仍必核，但阶段不再暴露任何 scan-tool selector（`allowed_tool_types=[]`）：found 只能来自 `recon_map_assets` / `recon_lookup_whois` 等 registry/provider 工具落库后的 DB truth；缺 provider、无结果或不适用要走 `blocked` / `checked_empty` / `not_applicable` 终态，不能切 CLI fallback。
+- `source_coverage` 规则读取 `GateContext.source_queries`（来自 `source_query_log`）来证明 provider/source 已终态尝试；它不投影 found，found 仍由 DB/ledger truth 决定。
 - 设计见 `docs/design/2026-05-26-*`；内层 harness 当前 deferred（见 AGENTS.md §6）。
 
 ## 测试入口

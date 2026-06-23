@@ -45,6 +45,46 @@ pub fn subsidiary_discovery_facts(
     (status == "Completed").then(|| (TECH_SUBSIDIARY, company.to_string(), "empty"))
 }
 
+/// #6 (设计 2026-06-23-expansion-queue): 一条「待扩展线索」(expansion_queue 入队用).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpansionLead {
+    /// new_domain / brand / app / github_org / subsidiary / email_domain.
+    pub lead_type: &'static str,
+    pub lead_value: String,
+    pub confidence: Option<f32>,
+}
+
+/// #6 · 从 `recon_discover_subsidiaries` 的 JSON summary 抽「待扩展线索」——
+/// auto_promote OFF 时 surfaced 的子公司候选 (`subsidiaries[]`, 每个 `name` +
+/// `meets_threshold`). 每候选 = 一条 `subsidiary` pending 线索; `meets_threshold`
+/// → 高置信 0.9, 否则中置信 0.5. auto_promote ON 时 `subsidiaries` 为空 (候选已升
+/// child org), 返回空. 解析不出 `name` / 空名的候选跳过 (保守, 不入噪声线索).
+pub fn expansion_leads_from_subsidiary_discovery(result: &serde_json::Value) -> Vec<ExpansionLead> {
+    let mut leads = Vec::new();
+    let Some(subs) = result.get("subsidiaries").and_then(|s| s.as_array()) else {
+        return leads;
+    };
+    for cand in subs {
+        let Some(name) = cand.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let meets = cand
+            .get("meets_threshold")
+            .and_then(|m| m.as_bool())
+            .unwrap_or(false);
+        leads.push(ExpansionLead {
+            lead_type: "subsidiary",
+            lead_value: name.to_string(),
+            confidence: Some(if meets { 0.9 } else { 0.5 }),
+        });
+    }
+    leads
+}
+
 /// 解析一条被动情报命令行 → `(注册 technique id, 主资产)`.
 ///
 /// 覆盖 target_intel 灰度 (D-scope) 的常见被动工具; 主动扫描工具 (nmap/httpx…)
@@ -473,5 +513,53 @@ mod tests {
             None,
             "missing promoted_children must not derive (older summary shape)"
         );
+    }
+
+    // ── expansion_leads_from_subsidiary_discovery (#6) ──
+
+    #[test]
+    fn expansion_leads_extracts_subsidiary_candidates() {
+        let v = serde_json::json!({
+            "company": "默安科技", "status": "Completed", "phase": "subsidiaries",
+            "subsidiaries": [
+                {"name": "子公司A", "meets_threshold": true},
+                {"name": "子公司B", "meets_threshold": false}
+            ]
+        });
+        let leads = expansion_leads_from_subsidiary_discovery(&v);
+        assert_eq!(leads.len(), 2);
+        assert_eq!(
+            leads[0],
+            ExpansionLead {
+                lead_type: "subsidiary",
+                lead_value: "子公司A".to_string(),
+                confidence: Some(0.9),
+            }
+        );
+        // meets_threshold=false → 中置信 0.5.
+        assert_eq!(leads[1].confidence, Some(0.5));
+    }
+
+    #[test]
+    fn expansion_leads_empty_when_no_subsidiaries_field() {
+        // auto_promote ON (subsidiaries 省略) 或 enrich phase → 无线索.
+        let v = serde_json::json!({
+            "company": "默安科技", "status": "Completed", "promoted_children": 2
+        });
+        assert!(expansion_leads_from_subsidiary_discovery(&v).is_empty());
+    }
+
+    #[test]
+    fn expansion_leads_skips_blank_or_nameless_candidates() {
+        let v = serde_json::json!({
+            "subsidiaries": [
+                {"name": "  ", "meets_threshold": true},
+                {"meets_threshold": true},
+                {"name": "真子公司", "meets_threshold": false}
+            ]
+        });
+        let leads = expansion_leads_from_subsidiary_discovery(&v);
+        assert_eq!(leads.len(), 1);
+        assert_eq!(leads[0].lead_value, "真子公司");
     }
 }

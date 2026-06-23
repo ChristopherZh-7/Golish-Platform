@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use super::rule_engine::{EvidenceFact, GateContext};
+use super::rule_engine::{EvidenceFact, GateContext, SourceQueryFact};
 
 /// 累加器式构造 [`GateContext`]。所有 setter 取所有权、可链式；空集合在
 /// [`GateContextBuilder::build`] 统一折成 `None`（与各入口此前手搓的
@@ -23,6 +23,7 @@ pub struct GateContextBuilder {
     in_scope_assets: Vec<String>,
     asset_types: HashMap<String, String>,
     evidence_facts: Vec<EvidenceFact>,
+    source_queries: Vec<SourceQueryFact>,
     expected_techniques: Option<Vec<String>>,
 }
 
@@ -62,6 +63,16 @@ impl GateContextBuilder {
         self
     }
 
+    /// 追加 source-query facts（source_query_log 读投影）。可多次调用；空集合在
+    /// `build()` 归一成 None。
+    pub fn extend_source_queries<I>(mut self, rows: I) -> Self
+    where
+        I: IntoIterator<Item = SourceQueryFact>,
+    {
+        self.source_queries.extend(rows);
+        self
+    }
+
     /// 动态期望技术。`None` ⇒ gate 回退 `spec.expected_techniques`（静态）。
     /// 直接透传（不做空集合归一——`Some(vec![])` 与 `None` 语义不同，交给 gate）。
     pub fn expected_techniques(mut self, techniques: Option<Vec<String>>) -> Self {
@@ -76,6 +87,7 @@ impl GateContextBuilder {
             asset_types: (!self.asset_types.is_empty()).then_some(self.asset_types),
             expected_techniques: self.expected_techniques,
             evidence_facts: (!self.evidence_facts.is_empty()).then_some(self.evidence_facts),
+            source_queries: (!self.source_queries.is_empty()).then_some(self.source_queries),
         }
     }
 }
@@ -102,6 +114,7 @@ mod tests {
         assert_eq!(ctx.asset_types, def.asset_types);
         assert_eq!(ctx.expected_techniques, def.expected_techniques);
         assert!(ctx.evidence_facts.is_none() && def.evidence_facts.is_none());
+        assert!(ctx.source_queries.is_none() && def.source_queries.is_none());
     }
 
     #[test]
@@ -111,10 +124,12 @@ mod tests {
             .in_scope_assets(vec![])
             .typed_assets(vec![])
             .extend_evidence_facts(std::iter::empty::<EvidenceFact>())
+            .extend_source_queries(std::iter::empty::<SourceQueryFact>())
             .build();
         assert!(ctx.in_scope_assets.is_none());
         assert!(ctx.asset_types.is_none());
         assert!(ctx.evidence_facts.is_none());
+        assert!(ctx.source_queries.is_none());
     }
 
     #[test]
@@ -166,8 +181,29 @@ mod tests {
             .build();
         let facts = ctx.evidence_facts.expect("evidence_facts should be Some");
         assert_eq!(facts.len(), 3);
-        assert!(facts.iter().any(|f| f.technique == "GOLISH-INTEL-DNS" && f.evidence_id == 7));
+        assert!(facts
+            .iter()
+            .any(|f| f.technique == "GOLISH-INTEL-DNS" && f.evidence_id == 7));
         assert!(facts.iter().any(|f| f.technique == "GOLISH-INTEL-CT"));
+    }
+
+    #[test]
+    fn extend_source_queries_merges_multiple_sources() {
+        let rows = vec![SourceQueryFact {
+            source: "rdap".to_string(),
+            query: "lookup_whois".to_string(),
+            target: String::new(),
+            technique: Some("GOLISH-INTEL-WHOIS".to_string()),
+            status: "found".to_string(),
+            evidence_ids: vec![9],
+        }];
+        let ctx = GateContextBuilder::new()
+            .extend_source_queries(rows)
+            .build();
+        let rows = ctx.source_queries.expect("source_queries should be Some");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source, "rdap");
+        assert_eq!(rows[0].technique.as_deref(), Some("GOLISH-INTEL-WHOIS"));
     }
 
     #[test]
@@ -213,6 +249,7 @@ mod tests {
             asset_types: Some(types),
             expected_techniques: Some(vec!["GOLISH-INTEL-DNS".to_string()]),
             evidence_facts: Some(facts),
+            source_queries: None,
         };
 
         assert_eq!(built.in_scope_assets, manual.in_scope_assets);

@@ -21,7 +21,8 @@ use crate::organizations::OrganizationCandidates;
 use super::{
     apply_ownership_threshold_override, auto_promote_discovered_children, parse_ownership_percent,
     run_providers_for_org, select_discovery_policy, select_enrichment_providers,
-    select_subsidiary_providers, AssetIntelHydrateConfig, ToolsConfigState,
+    select_subsidiary_providers, AssetIntelHydrateConfig, AssetIntelProviderRunStatus,
+    ToolsConfigState,
 };
 
 /// Which passive provider phase to run.
@@ -67,6 +68,10 @@ pub struct PassiveIntelSummary {
     pub targets: usize,
     /// Provider ids that were selected and run for this phase.
     pub providers: Vec<String>,
+    /// Per-provider terminal status. This is source-level audit metadata for
+    /// `source_query_log`; it is not a completeness proof by itself.
+    #[serde(default, rename = "providerStatus")]
+    pub provider_status: Vec<AssetIntelProviderRunStatus>,
     /// Phase 2: number of discovered subsidiaries auto-promoted to child orgs
     /// (subsidiaries phase only; 0 for enrich or when no candidate qualified).
     pub promoted_children: usize,
@@ -298,6 +303,7 @@ pub async fn run_passive_intel(
         organizations: run.candidates.organizations.len(),
         targets: run.candidates.targets.len(),
         providers: provider_ids,
+        provider_status: run.provider_status,
         promoted_children,
         subsidiaries,
     })
@@ -323,6 +329,7 @@ mod tests {
             organizations: 2,
             targets: 5,
             providers: vec!["0.zone".into()],
+            provider_status: vec![],
             promoted_children: 0,
             subsidiaries: vec![],
         };
@@ -331,6 +338,7 @@ mod tests {
         assert_eq!(v["phase"], "enrich");
         assert_eq!(v["targets"], 5);
         assert_eq!(v["providers"][0], "0.zone");
+        assert!(v["providerStatus"].as_array().unwrap().is_empty());
         // Empty subsidiaries is skipped from the JSON so enrich stays clean.
         assert!(v.get("subsidiaries").is_none());
     }

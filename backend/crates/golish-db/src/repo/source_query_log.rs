@@ -5,8 +5,9 @@
 //! 单行）更细——一个 technique 被多个源覆盖时各源各一行，用来证明「查过 CT / WHOIS /
 //! OSINT / 代码平台——但为空 / 失败 / 无凭证」。
 //!
-//! 消费模型 A（审计 / provenance-only）：命令路径 / enrich 落库点 **upsert** 这里（写路径，
-//! gray-switch）；reviewer / 报告 / `run_tree.py` 直接读 DB（**coverage gate 不读本表**）。
+//! 消费模型 B（审计 + source 尝试证明）：命令路径 / enrich 落库点 **upsert** 这里；
+//! reviewer / 报告 / `run_tree.py` 可直接读 DB；gate 只读取它证明某 source/provider
+//! 已终态查询，绝不把 source row 当作 found 真值。
 //!
 //! 纯 runtime sqlx（无 `query!` 宏 → 无需编译期 DB）；SQL 抽成 `const` 便于单测。
 //! I2：写按 `organization_id`。I8：`status=empty` 只来自真「跑了→空」；`error` = 失败
@@ -14,7 +15,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 /// 一条 source_query_log 的写入参数。`target` 由调用方过 `canonical_asset_key().key`
@@ -40,6 +41,18 @@ pub struct SourceQueryLogWrite {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
+/// 一条 source_query_log 的只读投影。Gate 只消费 source/query/technique/status/evidence，
+/// 不把它当资产/technique 的 found 事实。
+#[derive(Debug, Clone, FromRow)]
+pub struct SourceQueryLogRow {
+    pub source: String,
+    pub query: String,
+    pub target: String,
+    pub technique: Option<String>,
+    pub status: String,
+    pub evidence_ids: Vec<i64>,
+}
+
 /// upsert：`UNIQUE(run_id, source, query, target)` 冲突 → 更新可变态（status / 计数 /
 /// 证据 / timing / detail / updated_at），幂等不堆叠（重跑同 (源,查询,目标) 只刷新最新态）。
 /// 键列（org/run/source/query/target）与 `created_at` 不在 SET 子句里。
@@ -59,6 +72,12 @@ ON CONFLICT (run_id, source, query, target) DO UPDATE SET \
   finished_at = EXCLUDED.finished_at, \
   updated_at = NOW()";
 
+const LIST_FOR_RUN_SQL: &str = "\
+SELECT source, query, target, technique, status, evidence_ids \
+FROM source_query_log \
+WHERE organization_id = $1 AND run_id = $2 \
+ORDER BY created_at ASC, id ASC";
+
 /// upsert 一条 source_query_log（#5 写路径，gray-switch；调用方 warn-only、非致命）。
 pub async fn upsert(pool: &PgPool, w: &SourceQueryLogWrite) -> Result<()> {
     sqlx::query(UPSERT_SQL)
@@ -77,6 +96,20 @@ pub async fn upsert(pool: &PgPool, w: &SourceQueryLogWrite) -> Result<()> {
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// 读取某 `(org, run)` 的 source/provider 终态行（gate/reviewer 只读）。
+pub async fn list_for_run(
+    pool: &PgPool,
+    organization_id: Uuid,
+    run_id: &str,
+) -> Result<Vec<SourceQueryLogRow>> {
+    let rows = sqlx::query_as::<_, SourceQueryLogRow>(LIST_FOR_RUN_SQL)
+        .bind(organization_id)
+        .bind(run_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
 }
 
 #[cfg(test)]
@@ -118,7 +151,10 @@ mod tests {
             "target = EXCLUDED",
             "created_at = EXCLUDED",
         ] {
-            assert!(!UPSERT_SQL.contains(frag), "{frag} must NOT be in the conflict SET");
+            assert!(
+                !UPSERT_SQL.contains(frag),
+                "{frag} must NOT be in the conflict SET"
+            );
         }
     }
 
@@ -128,5 +164,21 @@ mod tests {
             assert!(UPSERT_SQL.contains(&format!("${n}")), "missing bind ${n}");
         }
         assert!(!UPSERT_SQL.contains("$13"), "must not bind a 13th column");
+    }
+
+    #[test]
+    fn list_for_run_sql_is_org_and_run_scoped() {
+        assert!(LIST_FOR_RUN_SQL.contains("WHERE organization_id = $1 AND run_id = $2"));
+        assert!(LIST_FOR_RUN_SQL.contains("ORDER BY created_at ASC, id ASC"));
+        for col in [
+            "source",
+            "query",
+            "target",
+            "technique",
+            "status",
+            "evidence_ids",
+        ] {
+            assert!(LIST_FOR_RUN_SQL.contains(col), "must select {col}");
+        }
     }
 }

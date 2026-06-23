@@ -84,8 +84,9 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
     } else if spec.facts_from_db_truth {
         format!(
             "\n- **Coverage (auto-adjudicated from the DATABASE)** — for these techniques: {}. \
-             Just RUN the collection tools so their data LANDS in the database (e.g. enrich / dig / \
-             subfinder → dns_records / target_assets / organizations.*); the deterministic gate reads \
+             Just RUN the target_intel registry tools so their data LANDS in the database (e.g. \
+             recon_map_assets / recon_lookup_whois → target_assets / dns_records where provider data \
+             exists / organizations.*); the deterministic gate reads \
              the DB directly to score per-(asset × technique) completeness. You do NOT need to fill the \
              `coverage` matrix cell-by-cell, and you do NOT need to tag claims/findings with `technique` \
              — leave found / checked_empty cells to the DB-truth projection. ONLY add a `coverage` cell \
@@ -474,8 +475,9 @@ Each subtask should be independently executable by a specialist agent.
 When the task involves testing a target, follow this standard methodology:
 
 ### Phase 1: Information Gathering
-- DNS resolution (dig) and subdomain enumeration (subfinder) — ONLY for domain targets
-- For IP targets, skip DNS/subdomain steps entirely
+- Provider-backed target intelligence (asset/subdomain/DNS-adjacent facts,
+  ASN/CT/OSINT, WHOIS) — ONLY for applicable targets
+- For IP targets, skip domain-only subdomain/CT expectations entirely
 - Port scanning (naabu/nmap) to identify open services
 - **CRITICAL**: Always verify what service is actually running on each port using service fingerprinting (httpx, nmap -sV). NEVER assume a service based on port number alone (e.g., port 8080 is NOT necessarily Tomcat).
 
@@ -509,7 +511,7 @@ with the ONE harness stage it belongs to (the full operation DAG is supported).
 **Harness stages** (pick the single best match; omit `harness_stage` entirely if none fit):
 
 - `scoping` — define scope / rules of engagement / authorization boundary (no probing).
-- `target_intel` — passive intel (zero-touch, no target contact): whois, ASN, DNS records, registrant info, passive subdomain enum (subfinder/amass -passive + CT logs), url-history (gau/waybackurls). (情报收集)
+- `target_intel` — passive intel (zero-touch, no target contact): provider-backed asset/subdomain/DNS-adjacent/ASN/CT/OSINT survey via recon_map_assets, plus RDAP WHOIS via recon_lookup_whois; no scan-tool fallback. (情报收集)
 - `external_attack_surface` — active recon that DEFINES the attack surface of approved hosts: DNS resolution, port scanning, service/version fingerprinting, HTTP probing, screenshots (host x port x service x live-web). Subdomains inherited from `target_intel` (do not re-enumerate). (资产测绘 / 攻击面 / 端口扫描)
 - `enumeration` — content enumeration on the services mapped by EAS: JS collection + API endpoint extraction, directory/path discovery, parameter discovery. Do NOT re-port-scan (already done in EAS). (目录扫描 / JS-API / 参数发现)
 - `vuln_triage` — non-destructive vulnerability identification (nuclei, vuln matching). (漏洞扫描 / 漏洞识别)
@@ -918,9 +920,12 @@ mod tests {
         let m = stage_methodology(&ti);
         assert!(m.contains("## STAGE PLAYBOOK"));
         assert!(m.contains("target_intel"));
-        // The key methodology fix must reach the agent: no one-by-one dig.
-        assert!(m.contains("dig"));
-        assert!(m.contains("subfinder"));
+        // The key methodology fix must reach the agent: no scan-tool fallback in
+        // target_intel.
+        assert!(m.contains("recon_map_assets"));
+        assert!(m.contains("recon_lookup_whois"));
+        assert!(!m.contains("dig"));
+        assert!(!m.contains("subfinder"));
         // Must be clearly framed as guidance, not a hard gate.
         assert!(m.contains("GUIDANCE") || m.contains("not a gate"));
 

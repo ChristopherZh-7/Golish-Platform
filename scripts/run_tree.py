@@ -560,6 +560,33 @@ def run_db_diagnosis(session_id: str, db_url: str | None, trunc: int) -> list[st
         for tech, source, status, n in sqlog:
             out.append(f"    {tech or '(unmapped)'} via {source} \u2192 {status}: {n}")
 
+    # 8) expansion_queue (#6): discovered leads pending recursive expansion for
+    #    THIS run. Proves whether high-confidence leads (subsidiaries / new domains
+    #    / github orgs ...) were followed up. Degrades if the table is absent (write
+    #    path is gray-switched, default off). Gate does NOT block on it (model A).
+    eq = q(
+        "SELECT lead_type, status, count(*), "
+        "count(*) FILTER (WHERE confidence >= 0.8) "
+        "FROM expansion_queue WHERE run_id=%s GROUP BY 1,2 ORDER BY 1,2",
+        (session_id,),
+    )
+    if eq and eq[0][0] == "ERR":
+        out.append(f"  expansion_queue: {eq[0][1]}")
+    elif not eq:
+        out.append(
+            "  expansion_queue: (none for this run; no subsidiary leads "
+            "discovered, or migration not applied yet)"
+        )
+    else:
+        out.append("  expansion_queue (this run, discovered leads):")
+        for lead_type, status, n, hi in eq:
+            flag = (
+                f"  \u26a0 {hi} high-confidence pending \u2192 follow up"
+                if status == "pending" and hi
+                else ""
+            )
+            out.append(f"    {lead_type} [{status}]: {n}{flag}")
+
     conn.close()
     return out
 
