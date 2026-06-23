@@ -481,6 +481,38 @@ where
                                             }
                                         }
                                     }
+                                    // #5 (设计 2026-06-23-source-query-log): 同步 upsert
+                                    // source_query_log（逐源查询日志，比 technique_outcomes 更细：
+                                    // 每 source 各一行）。gray-switch 默认 off；仅 org 绑定 + 有派生
+                                    // fact 时写；非致命 warn。消费模型 A：仅写 + reviewer 读，gate
+                                    // 不读。source=工具名、query=命令、target=asset。
+                                    if golish_agent_kit::harness::feature_flags::source_query_log_write_enabled() {
+                                        if let (Some(org_id), Some(rid), Some((tech, asset, outcome))) = (
+                                            ctx.harness_org_id,
+                                            ctx.events.session_id,
+                                            facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
+                                        ) {
+                                            if let Err(e) = repo
+                                                .upsert_source_query(
+                                                    org_id,
+                                                    rid,
+                                                    pt_tool,
+                                                    ev_subject.as_str(),
+                                                    asset,
+                                                    Some(tech),
+                                                    outcome,
+                                                    &[id],
+                                                )
+                                                .await
+                                            {
+                                                tracing::warn!(
+                                                    target: "harness::evidence",
+                                                    error = %e,
+                                                    "source_query_log upsert failed (continuing)"
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                                 Err(e) => tracing::warn!(
                                     target: "harness::evidence",

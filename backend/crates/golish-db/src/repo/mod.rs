@@ -31,6 +31,7 @@ pub mod search_logs;
 pub mod sensitive_scan;
 pub mod sessions;
 pub mod sitemap_store;
+pub mod source_query_log;
 pub mod sprint_contracts;
 pub mod stage_runs;
 pub mod sub_agent_dispatches;

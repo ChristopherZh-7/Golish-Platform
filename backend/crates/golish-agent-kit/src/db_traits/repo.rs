@@ -378,6 +378,37 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(())
     }
 
+    /// #5（设计 2026-06-23-source-query-log）：把一条被动情报「源查询」upsert 进
+    /// `source_query_log`（命令路径 / enrich 落库点调用）——比 `upsert_technique_outcome`
+    /// 更细：每 `(run × source × query × target)` 一行，多源各一行。`target` 由 app 层过
+    /// `canonical_asset_key` 归一（E1，org 级取 `""`）；`status` ∈ found|empty|error|blocked。
+    /// 非致命：调用方 warn-only、不回滚证据。消费模型 A：本表仅写 + reviewer 读，**gate 不读**。
+    /// 默认 no-op（test double 零改动 + gray-switch off 时调用方根本不调）。app 层覆写。
+    #[allow(clippy::too_many_arguments)]
+    async fn upsert_source_query(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+        source: &str,
+        query: &str,
+        target: &str,
+        technique: Option<&str>,
+        status: &str,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<()> {
+        let _ = (
+            organization_id,
+            run_id,
+            source,
+            query,
+            target,
+            technique,
+            status,
+            evidence_ids,
+        );
+        Ok(())
+    }
+
     /// PR2 任务 2.5 (coverage 投影) · the session's evidence facts
     /// `(asset, technique, outcome, evidence_id)`, ledger order. Only rows where
     /// all three projection columns are non-NULL (conservative: unmapped rows

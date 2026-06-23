@@ -538,6 +538,28 @@ def run_db_diagnosis(session_id: str, db_url: str | None, trunc: int) -> list[st
             "\u2192 landing gap (evidence booked, not projected into assets)"
         )
 
+    # 7) source_query_log (#5): per-source passive-intel query log for THIS run.
+    #    Proves which data sources were queried (CT / WHOIS / OSINT / code platforms)
+    #    and with what result — finer-grained than the asset x technique coverage
+    #    matrix (a technique covered by several sources shows one row per source).
+    #    Degrades if the table is absent (write path is gray-switched, default off).
+    sqlog = q(
+        "SELECT technique, source, status, count(*) FROM source_query_log "
+        "WHERE run_id=%s GROUP BY 1,2,3 ORDER BY 1,2,3",
+        (session_id,),
+    )
+    if sqlog and sqlog[0][0] == "ERR":
+        out.append(f"  source_query_log: {sqlog[0][1]}")
+    elif not sqlog:
+        out.append(
+            "  source_query_log: (none for this run; write path off "
+            "[GOLISH_SOURCE_QUERY_LOG_WRITE] or no source queries)"
+        )
+    else:
+        out.append("  source_query_log (this run, per source):")
+        for tech, source, status, n in sqlog:
+            out.append(f"    {tech or '(unmapped)'} via {source} \u2192 {status}: {n}")
+
     conn.close()
     return out
 

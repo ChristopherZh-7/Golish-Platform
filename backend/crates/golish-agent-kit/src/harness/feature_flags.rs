@@ -96,6 +96,25 @@ fn technique_outcomes_read_from_env(value: Option<String>) -> bool {
     }
 }
 
+/// source_query_log 物化表**写路径**灰度开关（#5，设计
+/// `2026-06-23-source-query-log.md`）。
+///
+/// **默认关闭**（opt-in）；设 `GOLISH_SOURCE_QUERY_LOG_WRITE=1`（或 `true`）开启——
+/// 被动情报采集落库点同步 upsert `source_query_log`（逐源查询日志物化）。关闭（缺省）=
+/// 不写该表（逐字节不变；表保持 inert）。消费模型 A：读路径走 reviewer / `run_tree.py`
+/// （coverage gate **不**读本表），故本表无对应「读灰度开关」。
+pub fn source_query_log_write_enabled() -> bool {
+    source_query_log_write_from_env(std::env::var("GOLISH_SOURCE_QUERY_LOG_WRITE").ok())
+}
+
+/// 纯函数：缺省（未设）= 关闭；`"1"` / `"true"`（大小写不敏感）= 开启；其余 = 关闭。
+fn source_query_log_write_from_env(value: Option<String>) -> bool {
+    match value {
+        Some(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +219,23 @@ mod tests {
     fn technique_outcomes_read_off_for_zero_and_other_values() {
         assert!(!technique_outcomes_read_from_env(Some("0".to_string())));
         assert!(!technique_outcomes_read_from_env(Some("yes".to_string())));
+    }
+
+    #[test]
+    fn source_query_log_write_defaults_off_when_unset() {
+        assert!(!source_query_log_write_from_env(None));
+    }
+
+    #[test]
+    fn source_query_log_write_on_for_one_and_true() {
+        assert!(source_query_log_write_from_env(Some("1".to_string())));
+        assert!(source_query_log_write_from_env(Some("true".to_string())));
+        assert!(source_query_log_write_from_env(Some("TRUE".to_string())));
+    }
+
+    #[test]
+    fn source_query_log_write_off_for_zero_and_other_values() {
+        assert!(!source_query_log_write_from_env(Some("0".to_string())));
+        assert!(!source_query_log_write_from_env(Some("no".to_string())));
     }
 }

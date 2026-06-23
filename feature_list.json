@@ -11,6 +11,26 @@
   ],
   "features": [
     {
+      "id": "source-query-log-2026-06-23",
+      "priority": 2,
+      "area": "backend: golish-db/{migrations/20260623000003_source_query_log.sql(新表), src/repo/source_query_log.rs(SourceQueryLogWrite+upsert+4 SQL 测)+mod.rs}; golish-agent-kit/src/harness/feature_flags.rs(source_query_log_write_enabled+3 测) + db_traits/repo.rs(DbRepoProvider::upsert_source_query 默认 no-op); golish-agent-app/src/ai/db_bridge/{evidence.rs(upsert_source_query_impl),mod.rs(override)}; golish-agent-runtime/src/agentic_loop/tool_execution/direct/mod.rs(命令路径写点 gray-switch); scripts/run_tree.py(step3 reviewer 读 §7). 设计 docs/design/2026-06-23-source-query-log.md",
+      "title": "#5（评审 claim #5）Source/Query Log 层（端到端）：source_query_log 物化表（每 run×source×query×target 一行：source/query/target/technique/status(found|empty|error|blocked)/result_count/evidence_ids/detail/started_at/finished_at）+ golish-db repo upsert + 命令路径写点(gray-switch GOLISH_SOURCE_QUERY_LOG_WRITE 默认 off) + step3 reviewer 读(run_tree.py §7 源覆盖)。消费模型 A 审计/provenance-only（reviewer/报告读，coverage gate 不 block，逐字节不变）。",
+      "user_visible_behavior": "GOLISH_SOURCE_QUERY_LOG_WRITE=1 时：命令路径被动情报查询（dig/subfinder/whois/enrich 经 pentest_run）每条落一行 source_query_log 带 source(工具)+query(命令)+target(asset)+technique+status+evidence_ids+finished_at；run_tree.py --db §7 投影『本 run 逐源查询矩阵』证明查过哪些源/各自结果（found/empty/error/blocked）。默认 off = 不写本表（表 inert，逐字节不变）。coverage gate 判定不接本表（消费模型 A）。",
+      "status": "passing",
+      "design": "docs/design/2026-06-23-source-query-log.md（§2 与 coverage/technique_outcomes 三层正交 + §3 schema + §4 写/读 reviewer 集成 + §5 I2/I7/I8/I10 不变量）",
+      "plan": "✅step1 migration(inert，I10 第1步) → ✅step2 golish-db repo upsert + DbRepoProvider trait/impl + 命令路径写点(gray-switch 非致命 warn) → ✅step3 run_tree.py §7 reviewer 读投影源覆盖矩阵(gate 不接)。余：其余写点(recon/enrich，同模式)、apply migration(用户环境)。",
+      "verification": [
+        "[✓] cargo nextest -p golish-db -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime → 1116 passed/0 skipped（含新 source_query_log SQL 4 测 + feature_flag source_query_log_write 3 测；既有零回归）",
+        "[✓] cargo clippy -p golish-db -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime --all-targets --no-deps -- -D warnings → exit 0 零告警",
+        "[✓] python3 -m py_compile scripts/run_tree.py → exit 0（step3 §7 reviewer 读，psycopg2 per-query degrade 无表也不崩）",
+        "[✓] ReadLints 7 文件无错；FK organizations(id) UUID PK → ON DELETE CASCADE 合法；SQL sanity（CREATE TABLE IF NOT EXISTS + UNIQUE(run_id,source,query,target) + 2 索引 + COMMENT，纯新增 I10）",
+        "[未验·用户环境] app 重启 apply migration → \\d source_query_log 列齐、UNIQUE/2 索引在；GOLISH_SOURCE_QUERY_LOG_WRITE=1 活体跑被动情报确认逐源落行 + run_tree.py --db §7 显示"
+      ],
+      "evidence": "2026-06-23 BaJie BajieAsk-agent-4（全栈工程师, DISPATCH off, 用户『接 #5 查询日志层』→ brainstorming 定消费模型 A →『选 A 写设计+migration』→『继续继续 全部搞完 不要问我 有测试啊 编译 全部跑完再搞』）。改前实证：audit_log 有 evidence_technique/outcome 但无 source/query/result_count/timing 结构化列；technique_outcomes(#4) 每 (asset×technique) 只一行（UNIQUE）多源塌一行 → 需更细 (run×source×query×target) 表。端到端实现（mirror #4 PR-C/D 模式）：migration(inert) + repo upsert(SQL const+4 测) + feature_flag(默认 off+3 测) + DbRepoProvider::upsert_source_query(默认 no-op，加性) + GolishDbRepoProvider impl(canonical_asset_key 归一 target，org 级空串保留) + 命令路径写点(direct/mod.rs pentest_run Ok(id) 臂，gray-switch+org 绑定+facts，非致命 warn) + run_tree.py §7 reviewer 读。验证全绿见 verification。未 commit（§2.7 需用户确认）、未 apply。",
+      "notes": "§2.1：passing（终态，不占 in_progress 槽）。消费模型 A（gate 不 block）= 评审『gate 或 reviewer』取 reviewer 轻量端 → Rust 只写（无 read 灰度开关），读走 run_tree.py(Python 直读 DB，无 Rust dead-code)；future B（gate 强制源覆盖）须另立设计 + 『每 technique 必需源』taxonomy + 灰度。本表与 #4 technique_outcomes 正交（#4=收口态单行，#5=逐源查询多行）。命令路径写点已接（mirror #4）；recon/enrich 写点同模式后续可加。未 commit（§2.7）、未 apply。",
+      "remember": "#5=source_query_log 表（migration 20260623000003）。列 = id/organization_id NOT NULL FK organizations(id) CASCADE/run_id/source/query/target NOT NULL DEFAULT ''/technique/status(found|empty|error|blocked)/result_count/evidence_ids BIGINT[]/detail/started_at/finished_at/created_at/updated_at/UNIQUE(run_id,source,query,target)。2 索引(run+org / org+technique+source)。消费模型 A 审计-only：Rust 只写(repo upsert + DbRepoProvider::upsert_source_query 默认 no-op + GolishDbRepoProvider impl + 命令路径 direct/mod.rs 写点 gray-switch GOLISH_SOURCE_QUERY_LOG_WRITE 默认 off 非致命 warn)；读走 run_tree.py §7(gate 不读，故无 read flag)。target 走 canonical_asset_key(org 级取 '')。设计 2026-06-23-source-query-log.md。"
+    },
+    {
       "id": "technique-outcomes-provenance-migration-2026-06-23",
       "priority": 2,
       "area": "backend: golish-db/migrations/20260623000002_technique_outcomes.sql(新表，纯新增). 设计 docs/design/2026-06-23-technique-outcomes-provenance.md（建于 2026-06-18 E3 §3.3 + D0 之上）",

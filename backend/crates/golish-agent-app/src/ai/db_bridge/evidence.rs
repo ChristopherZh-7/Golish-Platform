@@ -101,6 +101,46 @@ impl GolishDbRepoProvider {
         golish_db::repo::technique_outcomes::upsert(&self.pool, &write).await
     }
 
+    /// #5（设计 2026-06-23-source-query-log）：upsert 一条被动情报「源查询」进
+    /// `source_query_log`（逐源查询日志，比 `technique_outcomes` 更细）。非空 `target` 在此
+    /// 过 `canonical_asset_key` 归一（E1）；org 级查询（空串 target）原样保留。`finished_at`
+    /// 取当前时刻；`result_count` / `started_at` / `detail` 暂留 None（命令路径暂无该信号）。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn upsert_source_query_impl(
+        &self,
+        organization_id: uuid::Uuid,
+        run_id: &str,
+        source: &str,
+        query: &str,
+        target: &str,
+        technique: Option<&str>,
+        status: &str,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<()> {
+        let canonical_target = if target.is_empty() {
+            String::new()
+        } else {
+            golish_pentest_domain::canonical_asset_key(target)
+                .map(|k| k.key)
+                .unwrap_or_else(|| target.to_string())
+        };
+        let write = golish_db::repo::source_query_log::SourceQueryLogWrite {
+            organization_id,
+            run_id: run_id.to_string(),
+            source: source.to_string(),
+            query: query.to_string(),
+            target: canonical_target,
+            technique: technique.map(str::to_string),
+            status: status.to_string(),
+            result_count: None,
+            evidence_ids: evidence_ids.to_vec(),
+            detail: None,
+            started_at: None,
+            finished_at: Some(chrono::Utc::now()),
+        };
+        golish_db::repo::source_query_log::upsert(&self.pool, &write).await
+    }
+
     /// PR-D（#4 / E3）：读某 `(org, run)` 的 technique_outcomes 行 → coverage 投影元组
     /// `(asset, technique, outcome, evidence_id)`。`evidence_id` 取 `evidence_ids` 首个
     /// （无则 0 哨兵）。fail-safe：读失败 → 空 + warn（gate 退回 coverage_truth/ledger）。

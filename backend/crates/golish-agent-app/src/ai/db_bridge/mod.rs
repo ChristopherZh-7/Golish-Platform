@@ -597,6 +597,30 @@ impl DbRepoProvider for GolishDbRepoProvider {
         .await
     }
 
+    async fn upsert_source_query(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+        source: &str,
+        query: &str,
+        target: &str,
+        technique: Option<&str>,
+        status: &str,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<()> {
+        self.upsert_source_query_impl(
+            organization_id,
+            run_id,
+            source,
+            query,
+            target,
+            technique,
+            status,
+            evidence_ids,
+        )
+        .await
+    }
+
     async fn evidence_facts_for_session(
         &self,
         session_id: &str,
