@@ -53,12 +53,39 @@ const MAX_TIMEOUT_MS: u64 = 120000;
 const DEFAULT_SOFT_TIMEOUT_MS: u64 = 30_000;
 /// Background hard limit: runaway jobs are killed after this so nothing leaks.
 const DEFAULT_HARD_TIMEOUT_MS: u64 = 1_800_000; // 30 min
+/// Background hard limit for DNS zone-transfer (AXFR) probes. These hang
+/// indefinitely against resolvers that silently drop TCP zone transfers, so the
+/// 30-minute default would let a single hung probe pin a whole stage's closeout
+/// reconciliation barrier. Capped aggressively so they fail fast instead.
+const DEFAULT_DNS_HARD_TIMEOUT_MS: u64 = 15_000; // 15s
 
 fn env_ms(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(default)
+}
+
+/// True when `command` is a DNS zone-transfer probe (`dig AXFR`, `host -l`, …).
+/// These are prone to hanging forever against resolvers that drop TCP AXFR, so
+/// the caller caps their background hard limit (see [`compute_hard_ms`]).
+fn is_dns_zone_transfer(command: &str) -> bool {
+    let c = command.to_ascii_lowercase();
+    c.contains("axfr") || c.contains("host -l")
+}
+
+/// Background hard limit (ms) for `command` given the caller's `timeout_ms`.
+///
+/// Normally the global default (30 min, raised to outlast `timeout_ms`), but
+/// capped hard for DNS zone-transfer probes so one hung `dig AXFR` cannot keep a
+/// stage's reconciliation barrier open for the full default.
+fn compute_hard_ms(command: &str, timeout_ms: u64) -> u64 {
+    let hard_ms = env_ms("GOLISH_TOOL_HARD_TIMEOUT_MS", DEFAULT_HARD_TIMEOUT_MS).max(timeout_ms);
+    if is_dns_zone_transfer(command) {
+        hard_ms.min(env_ms("GOLISH_DNS_HARD_TIMEOUT_MS", DEFAULT_DNS_HARD_TIMEOUT_MS))
+    } else {
+        hard_ms
+    }
 }
 
 /// Run a shell command outside the visible terminal and return structured
@@ -83,9 +110,11 @@ pub async fn run_shell_command_detail(
 ) -> Result<Value> {
     let soft_cap = env_ms("GOLISH_TOOL_SOFT_TIMEOUT_MS", DEFAULT_SOFT_TIMEOUT_MS);
     let soft_ms = timeout_ms.min(soft_cap).max(1);
-    // The background hard limit must outlast the caller's timeout so the job can
-    // continue past the point where it would previously have been killed.
-    let hard_ms = env_ms("GOLISH_TOOL_HARD_TIMEOUT_MS", DEFAULT_HARD_TIMEOUT_MS).max(timeout_ms);
+    // The background hard limit normally outlasts the caller's timeout so the job
+    // can continue past the point where it would previously have been killed —
+    // except DNS zone-transfer probes, which are capped short (they hang forever
+    // against resolvers that drop TCP AXFR). See [`compute_hard_ms`].
+    let hard_ms = compute_hard_ms(command, timeout_ms);
 
     let started_at = std::time::Instant::now();
     // Attribute the job to the session whose agentic loop is currently running
@@ -144,13 +173,17 @@ pub async fn run_shell_command_detail(
         format!(
             "Started in the background as requested (job {job_id}); continue with other work. \
              Its result is auto-delivered when it finishes — do NOT poll it in a loop or re-run \
-             the same command. Reconcile any background jobs before you conclude the task."
+             the same command. Reconcile any background jobs before you conclude the task. If it \
+             still hasn't finished much later, `check_job` it ONCE: if it's stuck with no new \
+             output (e.g. a hung DNS AXFR), `kill_job` it and move on instead of waiting."
         )
     } else {
         format!(
             "Command exceeded the {}s soft timeout and is STILL RUNNING in the background (job {}). \
              It was NOT killed. Its result is auto-delivered when it finishes — do NOT re-run the \
-             same command (poll `check_job` at most once if you need interim output).",
+             same command. Poll `check_job` at most once if you need interim output; if it shows \
+             the job stuck with no new output, `kill_job` it and proceed (do not wait out the \
+             30-minute hard timeout).",
             soft_ms / 1000,
             job_id
         )
@@ -273,7 +306,9 @@ impl Tool for CheckJobTool {
         "Poll a background job (created when a shell/pentest command exceeded its soft timeout and was \
          moved to the background instead of being killed). Returns its status \
          (running/done/failed/killed), the command's exit code once finished, and the latest \
-         stdout/stderr. Pass the job_id from a tool result whose status was \"backgrounded\"."
+         stdout/stderr. Pass the job_id from a tool result whose status was \"backgrounded\". \
+         If this shows a job still running with no new output for a long time, it is likely stuck \
+         (e.g. a hung DNS AXFR / zone-transfer) — cancel it with kill_job and move on."
     }
 
     fn parameters(&self) -> Value {
@@ -313,5 +348,149 @@ impl Tool for CheckJobTool {
                 "error": format!("No background job with id '{job_id}' (it may have finished and been cleared)."),
             })),
         }
+    }
+}
+
+/// Tool that lets the AI cancel a background job that is stuck or no longer
+/// needed (e.g. a DNS AXFR / zone-transfer probe that hangs against a resolver
+/// dropping TCP zone transfers). Closes the Cursor-style loop: `check_job` shows
+/// no progress → `kill_job` it → continue or re-run differently, instead of
+/// waiting out the hard-timeout watchdog.
+pub struct KillJobTool;
+
+#[async_trait::async_trait]
+impl Tool for KillJobTool {
+    fn name(&self) -> &'static str {
+        "kill_job"
+    }
+
+    fn description(&self) -> &'static str {
+        "Cancel a background job that is stuck or no longer needed (created when a shell/pentest \
+         command was moved to the background). Use this AFTER check_job shows a job has been \
+         running with no new output for a long time (e.g. a hung DNS AXFR / zone-transfer probe): \
+         cancel it, then continue or re-run differently rather than waiting out the hard timeout. \
+         Pass the job_id from a tool result whose status was \"backgrounded\"."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": "The job_id of the background job to cancel (from a tool result with status \"backgrounded\")."
+                }
+            },
+            "required": ["job_id"]
+        })
+    }
+
+    async fn execute(&self, args: Value, _workspace: &Path) -> Result<Value> {
+        let job_id = args
+            .get("job_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing required argument: job_id"))?;
+
+        let killed = crate::background_jobs::manager().kill(job_id);
+        if killed {
+            Ok(json!({
+                "job_id": job_id,
+                "killed": true,
+                "message": format!(
+                    "Requested cancellation of background job '{job_id}'. It will transition to \
+                     'killed' shortly — continue without waiting (do NOT re-run the same command \
+                     blindly; reconsider why it hung first)."
+                ),
+            }))
+        } else {
+            Ok(json!({
+                "job_id": job_id,
+                "killed": false,
+                "message": format!(
+                    "No background job with id '{job_id}' (it may have already finished and been cleared)."
+                ),
+            }))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn ws() -> std::path::PathBuf {
+        std::env::temp_dir()
+    }
+
+    #[test]
+    fn detects_dns_zone_transfer_probes() {
+        assert!(is_dns_zone_transfer("dig AXFR +short pingan.com"));
+        assert!(is_dns_zone_transfer("dig axfr example.com"));
+        assert!(is_dns_zone_transfer("dig @ns1.example.com example.com AXFR"));
+        assert!(is_dns_zone_transfer("host -l example.com ns1.example.com"));
+    }
+
+    #[test]
+    fn non_zone_transfer_commands_are_not_flagged() {
+        assert!(!is_dns_zone_transfer("dig A example.com"));
+        assert!(!is_dns_zone_transfer("subfinder -d example.com"));
+        assert!(!is_dns_zone_transfer("httpx -u https://example.com"));
+        assert!(!is_dns_zone_transfer("echo hello"));
+    }
+
+    #[test]
+    fn zone_transfer_hard_limit_is_capped_short() {
+        // A hung AXFR must not be allowed to pin a stage for the 30-min default.
+        let axfr = compute_hard_ms("dig AXFR +short pingan.com", 10_000);
+        assert!(
+            axfr <= DEFAULT_DNS_HARD_TIMEOUT_MS,
+            "zone-transfer hard limit should be capped to <= {DEFAULT_DNS_HARD_TIMEOUT_MS}ms, got {axfr}"
+        );
+        // A normal command keeps the long default (and must outlast the caller timeout).
+        let normal = compute_hard_ms("dig A example.com", 10_000);
+        assert!(
+            normal >= DEFAULT_HARD_TIMEOUT_MS,
+            "normal command should keep the long hard limit, got {normal}"
+        );
+        assert!(
+            axfr < normal,
+            "zone-transfer hard limit ({axfr}) must be shorter than a normal one ({normal})"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_job_tool_cancels_a_running_job() {
+        // Spawn a long-runner through the process-global manager the tool uses.
+        let job_id = crate::background_jobs::manager().spawn(
+            "sleep 30",
+            &ws(),
+            Duration::from_secs(60),
+        );
+        let res = KillJobTool
+            .execute(json!({ "job_id": job_id }), &ws())
+            .await
+            .expect("kill_job execute ok");
+        assert_eq!(
+            res.get("killed"),
+            Some(&json!(true)),
+            "kill_job should report killed:true for a live job, got {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn kill_job_tool_reports_unknown_id() {
+        let res = KillJobTool
+            .execute(json!({ "job_id": "job_doesnotexist" }), &ws())
+            .await
+            .expect("kill_job execute ok");
+        assert_eq!(res.get("killed"), Some(&json!(false)));
+    }
+
+    #[tokio::test]
+    async fn kill_job_tool_requires_job_id() {
+        let err = KillJobTool.execute(json!({}), &ws()).await;
+        assert!(err.is_err(), "missing job_id must be an error");
     }
 }

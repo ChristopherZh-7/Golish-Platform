@@ -562,8 +562,12 @@ async fn register_visible_pty_tool(bridge: &AgentBridge, state: &AgentState) {
     // Companion poll tool for commands moved to the background on soft-timeout
     // (shares the process-global background-job manager — no per-call state).
     registry.register_tool(Arc::new(golish_app_core::pty_interactive::CheckJobTool));
+    // Companion cancel tool: lets the agent kill a stuck background job (e.g. a
+    // hung DNS AXFR) after check_job shows no progress, instead of waiting out
+    // the hard-timeout watchdog. Same process-global manager — no per-call state.
+    registry.register_tool(Arc::new(golish_app_core::pty_interactive::KillJobTool));
     tracing::info!(
-        "[configure_bridge] Registered VisibleRunPtyCmdTool + CheckJobTool (background job polling)"
+        "[configure_bridge] Registered VisibleRunPtyCmdTool + CheckJobTool + KillJobTool (background job control)"
     );
 }
 
