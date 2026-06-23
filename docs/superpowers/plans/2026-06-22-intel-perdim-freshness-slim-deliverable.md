@@ -6,6 +6,32 @@
 
 ---
 
+## 状态更新（2026-06-23 核实 · BajieAsk-agent-1）
+
+**Phase 0 / A / B / C / D 全部完成并 commit `649fef1e`（28 文件 +956/-124，未 push）。灰度 `freshness_window` 已翻 true（target_intel / external_attack_surface / enumeration）。**
+
+| Phase | 状态 | 备注 |
+|---|---|---|
+| 0 审计 | ✅ | 写点清单见下方原文 |
+| A1 迁移 | ✅ | `20260622000001`（org 4 维 collected_at） |
+| A2 写点 bump | ✅ | output_store 派发器 / hydrate enrich / persistence accumulator + land_whois |
+| A3 读侧时间窗 | ✅ | `coverage_truth_facts(run_start)` + `build_org_intel_presence_sql(apply_window)`；execute.rs 按 `spec.freshness_window` 取 `operation_state.stage_started_at` 注入 |
+| A4 TDD | ✅ | presence SQL on/off 窗单测（DB-backed assemble 测留活体） |
+| B1 行级 | ✅ | SUBDOMAIN(`target_assets.discovered_at`) + DNS(`dns_records.created_at`) |
+| B2 TDD | ✅ | subdomain/dns on/off 窗单测 |
+| C1 瘦身 prompt | ✅ | `facts_from_db_truth` 分支：不教逐格填矩阵/打标注 |
+| C2 coverage_corroborated | ✅ | `authoritative` 开关 → no-op；target_intel spec 已置 |
+| C3 verify | 🟡 | 沿用 vacuous_check + coverage_complete(authoritative) 现保证（676 测绿）；专项瘦路径 e2e 归 Phase E 活体 |
+| D1 迁移 | ✅ | `20260623000001`（targets ports_scanned_at/liveness_checked_at/ip_whois_collected_at）·用户已复看批准 |
+| D2 写点盖戳 | ✅ | update_ports/update_recon_extended/set_real_ip/set_ip_whois + output_store/targets.rs；backfill 用 `sub.created_at` |
+| D3 读侧窗 | ✅ | 列窗 PORT/LIVENESS/IPWHOIS + 行窗 SERVICE-FP/DIR/PARAM/JSAPI |
+| D4 TDD | ✅ | EAS 各维 on/off 窗 SQL 测 + 盖戳测 |
+| E 收尾 | 🟡 | commit ✅ / progress+feature_list+本状态块 ✅ / **2026-06-24 当前批次 `just precommit` 全量通过** / **活体未跑（需 app 重启 apply 迁移）** / push 未做 |
+
+**已知偏差/风险**：① 行级维度按行时间戳判新鲜→工具重采若 dedup 只命中已知值（DO NOTHING 不刷时间戳）该维判「本轮未采」（符合「重跑要求重采」，但比 org 级采集站点盖戳严，激活前活体复核）；② 多 org fan-out gate（`org_gate.rs`）仍 presence-only（`run_start=None`，Phase A deferred），仅单 org `execute.rs` 路径走窗；③ RDNS 未窗（范围外）；④ 修复了上一会话遗留的 `finding_verification_check.rs` `StageSpec{}` 漏 `freshness_window` 字段（昨天若跑 nextest/precommit 必失败）。
+
+---
+
 ## Phase 0 · 审计（只读，先把写点摸全 — 本设计成败关键）
 - [x] 列出所有写 `organizations` 情报列的代码点 → 见下「Phase 0 审计结果」3 个写面 A/B/C。
 - [x] 列出所有写 `targets` 的 ports / http_status / real_ip / ip_whois 的代码点 → 见下表。

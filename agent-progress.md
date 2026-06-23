@@ -29,6 +29,85 @@
 
 ---
 
+### 2026-06-23 · target_intel provider-source closure Phase 1-4（本会话）
+
+- **本轮目标**：按用户要求继续推进 `target_intel` 重新设计：完成 provider-only 阶段边界、provider/source 终态写入、source coverage gate-read、同 run/action duplicate guard。
+- **已完成**：
+  - 新增设计：`docs/design/2026-06-23-target-intel-provider-source-closure.md`
+  - 新增计划：`docs/superpowers/plans/2026-06-23-target-intel-provider-source-closure.md`
+  - Phase 1：`target_intel/spec.json` 改 `allowed_tool_types=[]`；methodology / charter / refiner / stage subtask prompt 不再建议 `subfinder`、`dig`、`ctfr`、`asnmap`、`gau/waybackurls` 等 scan-tool fallback。
+  - Phase 2：`PassiveIntelSummary` 透传 `providerStatus`；`golish-agent-runtime` 在 recon passive evidence 入账后写 `source_query_log`：provider `completed/checked_empty/unavailable/failed` 分别映射 `found/empty/blocked/error`；`recon_lookup_whois` 写 `rdap / lookup_whois / GOLISH-INTEL-WHOIS` source row。
+  - Phase 3：`source_query_log::list_for_run` + `DbRepoProvider::source_query_facts` / submit 预检 / org_gate / stage-close 三路 gate context 注入；新增 `GateRule::SourceCoverage`，只证明 source/provider terminal，不把 source row 当 found。
+  - Phase 4：runtime registry 执行前 duplicate guard：`recon_map_assets` / `recon_lookup_whois` / `recon_discover_subsidiaries` 同 run/action 已有 terminal source row 时返回 `skipped_duplicate=true` + `existing_evidence_ids`，不再重复调用 provider。
+  - 模块卡同步：`golish-agent-kit/harness`、`golish-agent-kit/db_traits`、`golish-agent-app/ai`、`golish-db/repo`、`golish-recon-app/asset_intel`、`golish-recon-app/agent_tools`、`golish-agent-runtime/agentic_loop`。
+- **运行过的验证（实跑）**：
+  - `python3 -m json.tool resources/harness/stages/target_intel/spec.json` → exit 0
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-recon-app -p golish-agent-runtime` → exit 0
+  - `cd backend && cargo test -p golish-agent-kit target_intel --lib` → 13 passed / 0 failed
+  - `cd backend && cargo test -p golish-agent-kit stage_methodology --lib` → 2 passed / 0 failed
+  - `cd backend && cargo test -p golish-agent-kit command_hint --lib` → 1 passed / 0 failed
+  - `cd backend && cargo test -p golish-agent-kit osint_tools --lib` → 2 passed / 0 failed
+  - `cd backend && cargo test -p golish-agent-runtime provider_status_rows --lib` → 1 passed / 0 failed
+  - `cd backend && cargo test -p golish-agent-runtime whois_result_maps --lib` → 1 passed / 0 failed
+  - `cd backend && cargo test -p golish-recon-app summary_serializes_with_camel_friendly_fields --lib` → 1 passed / 0 failed（先红一次，因新增字段未显式 rename；已修为 `providerStatus` 后转绿）
+  - `cd backend && cargo test -p golish-agent-kit source_coverage --lib` → 4 passed / 0 failed
+  - `cd backend && cargo test -p golish-agent-kit source_query_fact_does_not_make_authoritative_found_pass --lib` → 1 passed / 0 failed
+  - `cd backend && cargo test -p golish-agent-kit context_builder --lib` → 10 passed / 0 failed
+  - `cd backend && cargo test -p golish-db source_query_log --lib` → 5 passed / 0 failed
+  - `cd backend && cargo test -p golish-agent-runtime duplicate_guard --lib` → 2 passed / 0 failed
+  - `cd backend && cargo check -p golish-recon-app -p golish-agent-runtime` → exit 0
+  - `cd backend && cargo check -p golish-agent-app -p golish-agent-runtime` → exit 0
+- **已记录证据**：
+  - target_intel 测试组确认 provider-only 边界：scan-tool wrappers 不再暴露；prompt/refiner 不再提示 `dig/subfinder`。
+  - runtime 新测确认 provider 状态映射到 source_query_log status：`completed→found`、`checked_empty→empty`、`unavailable→blocked`、`failed→error`；WHOIS 映射为 `rdap` source。
+  - source_coverage 新测确认：缺 terminal source row 会 block；provider survey row 覆盖 provider-backed intel source-attempt；RDAP row 覆盖 WHOIS；`not_applicable+note` 不强制 source call；source row 不会让 authoritative found 直接 PASS。
+  - duplicate_guard 新测确认 recon tool → source query action 映射和 terminal status 词表。
+- **提交记录**：未提交。
+- **已知风险或未解决问题**：
+  - 用户明确要求不跑 `init.sh` / full precommit；本轮只跑 targeted 验证。
+  - `source_coverage` 只能保证“有 source/provider terminal 尝试”，不能保证被动数据全网完整。
+  - duplicate guard 当前按 tool action 粒度跳过；未来如果要 provider 级 partial rerun，需要 provider capability/selection 矩阵。
+- **下一步最佳动作**：后续可做 provider capability matrix / source contract，把“哪些 source 对哪些 technique 负责”正式化；本轮不跑 `init.sh` / full precommit，状态不切 `passing`。
+
+### 2026-06-23 · A+C+D 后台任务可控化（kill_job 工具 + AXFR hard 超时封顶 + 卡死升级提示词）（BaJie BajieAsk-agent-2 · 全栈工程师 · DISPATCH off · 接 MCP-5 上下文转交「现在开工A+C+D」）
+
+- **本轮目标**：修上次 pingan.com 卡在 recon gate 的根因（两条 `dig AXFR` 后台任务挂死，把阶段对账闸门顶满 30min）。MCP-5 已诊断 + 定方案，本会话接手实现 **A+C+D**（B = 闸门僵死兜底，触及 gate 核心，**仍 deferred 待单独评审**）。
+- **改前实证（已读码）**：MCP-5 实际未落码（git log 近 15 条无关 + 工作树无 A/C/D 改动）；`BackgroundJobManager::kill()` 已存在（`background_jobs.rs:362`）但未暴露成工具；`check_job` 在 `pty_interactive.rs:264`；后台 hint 145-157；提示词纪律在 `execution_planning.rs:157/198` + 闸门对账消息 `harness_submit_tool.rs:283`。
+- **已完成（TDD 红→绿）**：
+  - **A** `pty_interactive.rs` 新增 `KillJobTool`（薄封装 `manager().kill`，返回 killed:true/false + 提示语）→ `bridge_config.rs::register_visible_pty_tool` 注册（紧挨 CheckJobTool）。kill_job 是 agent 内部工具，**不需** Tauri 命令/ts-rs/前端（前端走通用 background 渲染）。
+  - **C** 新增 `is_dns_zone_transfer`（命中 "axfr"/"host -l"）+ `compute_hard_ms`：AXFR/zone-transfer 类后台 hard 超时封顶 **15s**（`DEFAULT_DNS_HARD_TIMEOUT_MS`，env `GOLISH_DNS_HARD_TIMEOUT_MS` 可调），其余仍 30min；`run_shell_command_detail` 改用 `compute_hard_ms`。
+  - **D** 提示词加「卡死升级」：① 两条 run hint（background / soft-timeout 分支）② `CheckJobTool` 描述 ③ `execution_planning.rs` probe/enumerate 两条 methodology ④ 闸门对账 needs_fix 消息——一致表述「check_job 见零进度 → kill_job 杀掉再继续，别干等 30min hard 超时」。
+- **运行过的验证（实跑）**：`cargo nextest -p golish-app-core` → **38 passed / 0 skipped**（含 6 新：is_dns_zone_transfer 正/负 + compute_hard_ms 封顶 + KillJobTool 杀/未知 id/缺参；**先跑出 4 红再转 6 绿**）；`cargo clippy -p golish-app-core -p golish-agent-app -p golish-sub-agents --all-targets -- -D warnings` → **exit 0 零告警**；`cargo nextest -p golish-sub-agents -p golish-agent-app` → **144 passed / 0**（提示词/注册改动零回归）；ReadLints 4 文件 clean。
+- **已记录证据**：`Summary [0.236s] 38 tests run: 38 passed, 0 skipped`（app-core）；红阶段 `6 tests run: 2 passed, 4 failed`；clippy `Finished dev … 38.52s` exit 0；`Summary 144 tests run: 144 passed, 0 skipped`。
+- **提交记录**：**未 commit**（§2.7 需用户确认）、**未跑 full `just precommit`**（仅触及 crate 级 nextest + clippy，已绿）。
+- **未提交的半成品（A+C+D）**：`M golish-app-core/src/pty_interactive.rs`、`M golish-agent-app/src/ai/commands/bridge_config.rs`、`M golish-agent-app/src/ai/harness_submit_tool.rs`（注：该文件含他会话 #6 预存改动，本轮**仅加**闸门对账消息的 kill_job 子句）、`M golish-sub-agents/src/defaults/prompts/execution_planning.rs`、`M agent-progress.md`。
+- **已知风险 / 下一步**：① **B 仍 deferred**——A+C+D = 让「模型/超时」能自救；B = 「模型不动手也不被一条挂死探测无限 BLOCK」的闸门安全网，须单独评审 gate 逻辑。② AXFR 封顶后 job 在 ~15s 内被 watchdog 杀，soft-wait 期内即以 exit 124 内联返回（快失败而非挂死）。③ 下一步：commit A+C+D / 跑 full precommit / 做 B / push（均需点头）。
+
+---
+
+### 2026-06-23 · #6（评审 claim #6 Expansion Queue）端到端：expansion_queue 表 + repo + recon 入队点 + run_tree §8 reviewer 读（BaJie BajieAsk-agent-4 · 全栈工程师 · DISPATCH off · 用户「做 #6 Expansion Queue」→ brainstorming 定消费模型 A →「选 A 一口气端到端做完」）
+
+- **本轮目标**：评审 #6「补 Expansion Queue：发现的新线索（子公司/新域名/github org/email 域）有没有继续追」。brainstorming 定消费模型 A（审计/reviewer-only，gate 不 block）→ 端到端做完（mirror #5）。
+- **改前实证（已读码）**：**无任何 lead/pending 队列概念**；`agent_intel.rs::SubsidiaryCandidate`（name/ownership_percent/status/meets_threshold）= recon 子公司候选，`PassiveIntelSummary.subsidiaries[]` 在 auto_promote off 时 surfaced，但发现即散。`before_scope_expansion` 是 HITL 审批位（非线索队列）。
+- **已完成（端到端，全 gray-switch 默认 off）**：
+  - migration `20260623000004_expansion_queue.sql`（CREATE TABLE IF NOT EXISTS：org_id FK CASCADE/run_id/lead_type/lead_value/source/confidence/status DEFAULT 'pending'/evidence_ids BIGINT[]/detail/discovered_at/processed_at/created/updated_at + UNIQUE(run_id,lead_type,lead_value) + 2 索引 + COMMENT；纯新增 inert，I10 step1）。
+  - repo `golish-db/src/repo/expansion_queue.rs`：`ExpansionLeadWrite` + `enqueue`（ON CONFLICT 只刷 source/confidence/evidence_ids/updated_at，**不重置 status**=future B 语义）+ 4 SQL 测；repo/mod.rs 注册。
+  - flag `expansion_queue_write_enabled()`（env `GOLISH_EXPANSION_QUEUE_WRITE` 默认 off）+ 3 测。
+  - 纯函数 `expansion_leads_from_subsidiary_discovery`（evidence_facts.rs：从 `subsidiaries[]` 抽 lead，name 非空 + meets_threshold→0.9 否则 0.5）+ `ExpansionLead` 结构 + 3 测。
+  - `DbRepoProvider::enqueue_expansion_lead`（默认 no-op 加性）+ `GolishDbRepoProvider::enqueue_expansion_lead_impl`（status='pending'、discovered_at=now、lead_value 不归一）+ override。
+  - 入队点 `direct/mod.rs` recon `Ok(id)` 臂：仅 recon_discover_subsidiaries + gray-switch + org 绑定 → 逐 lead `enqueue_expansion_lead`，非致命 warn。
+  - reviewer 读 `run_tree.py` §8：本 run expansion_queue 按 lead_type/status 计数 + 高置信 pending 标记（per-query degrade 无表不崩）。**消费模型 A → 读走 Python，gate 不读、无 Rust dequeue dead-code**。
+  - 设计 `docs/design/2026-06-23-expansion-queue.md`；feature_list 新增 `expansion-queue-2026-06-23`（**passing**）。
+- **运行过的验证（实跑）**：`cargo nextest -p golish-db -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime` → **1126 passed / 0 skipped**（+10 新：repo SQL 4 + flag 3 + expansion_leads 抽取 3；既有零回归）；`cargo clippy 4 crate --all-targets --no-deps -- -D warnings` → **exit 0** 零告警；`python3 -m py_compile scripts/run_tree.py` → exit 0；ReadLints 8 文件 clean；JSON VALID。
+- **已记录证据**：`Summary [7.798s] 1126 tests run: 1126 passed, 0 skipped`；clippy `Finished … 47.01s` exit 0。
+- **提交记录**：**未 commit**（§2.7 需用户确认）、**未 apply**。
+- **未提交的半成品（#6）**：`?? docs/design/2026-06-23-expansion-queue.md`、`?? backend/crates/golish-db/migrations/20260623000004_expansion_queue.sql`、`?? backend/crates/golish-db/src/repo/expansion_queue.rs`、`M` golish-db repo/mod.rs、`M` golish-agent-kit {feature_flags.rs,evidence_facts.rs,db_traits/repo.rs}、`M` golish-agent-app db_bridge/{evidence.rs,mod.rs}、`M` golish-agent-runtime direct/mod.rs、`M` scripts/run_tree.py、`M feature_list.json`、`M agent-progress.md`。
+- **已知风险 / 下一步**：① 全 gray-switch 默认 off = 零行为变化；表 inert，DROP 可回滚。② future B（gate 强制高置信 pending 线索）= status/processed_at 已预留，另立设计。③ 其余线索源(new_domain/github_org/email_domain from OSINT enrich) 同模式后续可加。④ **评审 6 条全部落地**（Builder/T1/T2/T3/#4/#5/#6）。⑤ 下一步：commit #6 / 跑 full precommit / push（需点头）/ 暂停。
+
+- **续（同轮，用户「我不想要这个开关 删掉 救人就是开着的 测试阶段没关系」）· 删除 #6 入队写灰度开关 → 始终开启**：移除 `GOLISH_EXPANSION_QUEUE_WRITE` / `expansion_queue_write_enabled()` / `expansion_queue_write_from_env()` + 3 flag 测（feature_flags.rs 留一行注释说明无开关）；`direct/mod.rs` 入队条件去掉 flag → 仅 `recon_discover_subsidiaries` + org 绑定即**始终入队**（非致命 warn，写失败 / 表未 apply 只 warn，绝不影响主流程）；`run_tree.py` §8 空态提示去掉 flag 名。**安全性**：消费模型 A（gate 不读）下始终写零 gate 行为影响（仅多写一张物化表）。**重验全绿（实跑）**：`cargo nextest -p golish-db -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime` → **1123 passed / 0 skipped**（删 3 flag 测，1126→1123，既有零回归）；`cargo clippy 4 crate --all-targets --no-deps -- -D warnings` → exit 0；`python3 -m py_compile scripts/run_tree.py` → exit 0；ReadLints 2 文件 clean；JSON VALID。design / feature_list 已同步去 flag（#6 仅余 1 个 #6 概念：始终写；#4/#5 的 gray-switch 未动）。未 commit、未 apply。
+
+---
+
 ### 2026-06-23 · #5（评审 claim #5 Source/Query Log 层）step1：source_query_log 物化表设计 + migration（inert）（BaJie BajieAsk-agent-4 · 全栈工程师 · DISPATCH off · 用户「接 #5 查询日志层」→ brainstorming 定消费模型 A →「选 A 写设计+migration」）
 
 - **本轮目标**：评审 #5「补一个 Source Coverage / Query Log 层，证明哪些数据源查过」。brainstorming 先定消费模型分叉（gate 强制 vs 审计/reviewer-only）→ 用户选 **A 审计/provenance-only**（gate 不 block）→ 写设计 + migration（inert，I10 step1），repo/写/读属后续 PR。
@@ -5203,6 +5282,77 @@
   - 后续 PR：fofa/quake/hunter/shodan 各家 client + types + mapper（约 0.5 day/家）；Playwright E2E spec（约 0.5 day）
 
 ---
+
+### 2026-06-23 · target_intel provider-source closure Phase 1
+
+- **本轮目标**：按用户要求先落地一份 `target_intel` 重新设计计划，并开始实现第一步：不再允许 target_intel 走 subfinder / dig / ctfr / asnmap / url-history 等 scan-tool fallback，只走 provider registry 工具 + 终态提交。
+- **已完成**：
+  - 新增设计：`docs/design/2026-06-23-target-intel-provider-source-closure.md`
+  - 新增计划：`docs/superpowers/plans/2026-06-23-target-intel-provider-source-closure.md`
+  - `resources/harness/stages/target_intel/spec.json`：`allowed_tool_types` 改为空数组；注释/hints 改成 provider/registry-tool backed，缺 provider/source 时交 `blocked` / `checked_empty` / `not_applicable`。
+  - `resources/harness/stages/target_intel/methodology.md`：删除 CLI fallback 和 URL-history optional 路径；明确 `recon_map_assets` + `recon_lookup_whois` 后收口。
+  - `backend/crates/golish-agent-kit`：更新 stage charter、stage assignment、refiner hint、target_intel 子任务说明和相关测试，避免再提示 `dig` / `subfinder` / `ctfr` / `asnmap` / `gau` / `waybackurls`。
+  - `backend/crates/golish-recon-app/src/agent_tools/mod.rs`：`recon_map_assets` 工具描述去掉 “CT 也走 ctfr” 的旧提示。
+  - 模块卡同步：`docs/modules/backend/golish-agent-kit/harness.md`、`docs/modules/backend/golish-recon-app/asset_intel.md`。
+- **运行过的验证**：
+  - `python3 -m json.tool resources/harness/stages/target_intel/spec.json` → exit 0
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-recon-app` → exit 0
+  - `cd backend && cargo test -p golish-agent-kit target_intel --lib` → 13 passed / 0 failed / 693 filtered
+  - `cd backend && cargo test -p golish-agent-kit stage_methodology --lib` → 2 passed / 0 failed / 704 filtered
+  - `cd backend && cargo test -p golish-agent-kit command_hint --lib` → 1 passed / 0 failed / 705 filtered
+  - `cd backend && cargo test -p golish-agent-kit osint_tools --lib` → 2 passed / 0 failed / 704 filtered
+  - `cd backend && cargo check -p golish-recon-app` → exit 0
+  - `git diff --check -- <本轮触碰文件>` → exit 0
+- **已记录证据**：
+  - `target_intel` 测试组确认 `allowed_tool_types=[]`、provider-only target_intel 不暴露 OSINT scan wrappers、prompt 不含 `subfinder` / `dig`。
+  - refiner hint 测试确认下一步建议为 `recon_map_assets` / `recon_lookup_whois`，不再建议 DNS shell fallback。
+- **提交记录**：未提交。
+- **已知风险或未解决问题**：
+  - 用户明确要求不跑 `init.sh`；本轮一开始曾按 AGENTS 启动 `./init.sh`，已按用户最新指令中断。中断前 `fmt` / `check-fe` / `test-fe` / `lint-rust` 已过，`test-rust-all` 未完成，不能算完整 precommit 证据。
+  - 本轮只完成 Phase 1 阶段边界收紧。`recon_map_assets` 目前返回 summary/provider ids，不返回 per-provider terminal 明细；因此还不能用 gate 严格证明“provider 数据完整”或“无重复 provider 调用”。
+  - `source_query_log` 现有唯一键可作为后续去重审计基础，但本轮未把 gate 接到 source coverage，也未做 pre-dispatch duplicate guard。
+  - `feature_list.json` 已有相关 intel 条目处于 `in_progress`（缺 full precommit/活体）；本轮未新增第二个 `in_progress`，避免违反一次只做一个功能。
+- **下一步最佳动作**：
+  1. Phase 2：把 `AssetIntelRun.provider_status` 透传到 `PassiveIntelSummary` / agent tool 返回值，精确写入 `source_query_log`（source/query/status/result_count/detail/evidence）。
+  2. Phase 3：gate 只读接入 source coverage：每个 expected technique 要有 applicable source terminal；失败/blocked 与 checked_empty 分开。
+  3. Phase 4：provider runner / dispatch 前加 `(run_id, source, query, target)` duplicate guard，terminal 后不重复跑同一 source。
+
+---
+
+### 2026-06-24 · target_intel provider-source closure commit batch
+
+- **本轮目标**：按用户要求把未提交改动整理成可追溯 commit；不跑 `init.sh`，用 `just precommit` 做最终门禁。
+- **已完成**：
+  - 后端：`target_intel` provider-only 边界、`source_query_log` gate-read/source_coverage、`recon_map_assets`/RDAP providerStatus 写入、runtime duplicate guard、`expansion_queue` 写入与 `run_tree.py` reviewer 读，落在 `395643df`。
+  - 前端：sub-agent backgrounded tool_result 注册到 session background jobs，并在 `SubAgentDetailView` 显示 badge，落在 `e529a754`。
+  - 文档/模板：新增 `scripts/gen_pentest_completeness_template.py` 与 `docs/pentest-harness-completeness-template.xlsx`；模板已移除 target_intel 旧 CLI fallback，落在 `00f0ad7a`。
+  - 状态文件：同步 `feature_list.json` 的 #5/#6 状态、补 2026-06-22 freshness 文档的 full-precommit 状态。
+- **运行过的验证**：
+  - `python3 -m json.tool resources/harness/stages/target_intel/spec.json` → exit 0
+  - `cd backend && cargo test -p golish-agent-app target_intel_found --lib` → 2 passed
+  - `cd backend && cargo test -p golish-agent-kit hook_blocks_missing_deliverable --lib` → 2 passed
+  - `python3 scripts/gen_pentest_completeness_template.py` → wrote `docs/pentest-harness-completeness-template.xlsx`
+  - `python3 -m py_compile scripts/gen_pentest_completeness_template.py` → exit 0
+  - xlsx 旧 fallback 关键字扫描（subfinder/ctfr/asnmap/gau/waybackurls/dig 补 DNS/空格用 CLI）→ hits=0
+  - `python3 -m json.tool feature_list.json` → exit 0
+  - `just precommit` → 最终 OK：fmt + check-fe + test-fe + lint-rust + test-rust-all + check-types 全过；Rust nextest clean run = 3493 tests passed, 10 skipped
+- **已记录证据**：
+  - 第一次 final precommit 暴露两个 submit-preview 测试缺 `source_query_facts`，已补测试夹具；第二次暴露 `allowed_tool_types=[]` 误推 confirm-only，已改为显式 stage 语义；定向回归均通过。
+  - 一次后续 precommit 在最后两个 `golish-recon-app` CLI runtime 测试偶发失败；定向 `cargo test -p golish-recon-app cli_json_runtime --lib -- --nocapture` 随后 2 passed；再次全量 `just precommit` clean 通过。
+- **提交记录**：
+  - `395643df` `feat(harness): close target_intel provider evidence loop`
+  - `e529a754` `feat(ai-events): surface sub-agent background jobs`
+  - `00f0ad7a` `docs(harness): add pentest completeness workbook`
+  - 本记录 + `feature_list.json` 状态更新将作为最后一个 docs/progress commit。
+- **已知风险或未解决问题**：
+  - 未跑 `init.sh`（用户明确要求不要跑）。
+  - DB migration 尚未在用户 app 环境 apply；活体 `source_query_log` / `expansion_queue` 落库与 `run_tree.py --db` 展示仍需 app 重启后验证。
+  - `provider-only` 不等于全网被动数据完整性证明；当前只证明 provider/source 尝试终态、避免重复 registry action。
+  - `feature_list.json` 中 older #4/#5 历史条目仍保留部分旧灰度上下文；本轮只修正 #5 当前状态与 #6 commit 状态。
+- **下一步最佳动作**：
+  1. 重启 app 让 migrations apply，跑一次 target_intel 活体。
+  2. 用 `scripts/run_tree.py --workspace <ws> --db` 核对 §7 source rows 与 §8 expansion_queue。
+  3. 根据活体结果决定是否把 source taxonomy 从 provider survey 粗覆盖继续细化到 provider×technique contract。
 
 <!-- 新会话请在这里上方插入一条新记录，保持倒序 -->
 

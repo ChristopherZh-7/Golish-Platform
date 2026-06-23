@@ -1,7 +1,7 @@
 # 2026-06-22 · intel 阶段：每维精确新鲜度 + 瘦身交付物（DB 真值唯一源收尾）
 
 > 日期：2026-06-22
-> 状态：设计（待审 §8 + 用户 sign-off schema 改动 §2.7）
+> 状态：**已实现（2026-06-23 核实）** · A/B/C/D 全部落地 + 灰度 `freshness_window` 已激活（target_intel/EAS/enumeration），commit `649fef1e`（未 push）。用户已 sign-off 两条 schema 迁移（20260622000001 + 20260623000001）。2026-06-24 当前批次已跑 `just precommit` 全量通过；**仍待**活体（app 重启 apply 迁移后真跑验证）。详见 `docs/superpowers/plans/2026-06-22-intel-perdim-freshness-slim-deliverable.md` 顶部状态块 + `agent-progress.md` 2026-06-23/24 条。
 > 作者：BaJie BajieAsk-agent-3（全栈工程师）· 与用户对话产出（DISPATCH off）
 > 关联：
 > - `docs/design/2026-06-15-db-truth-single-source-deliverable.md`（本文承接其 **PR3 提交通道简化**，并补齐其 §139 自称「freshness 保留」但实现未覆盖 DB-truth 投影的缝）
