@@ -129,10 +129,11 @@ pub type PostShellHook = Arc<
 >;
 
 /// Extra tool executor for tools that live OUTSIDE the [`ToolRegistry`]
-/// (graph / memory). Given `(tool_name, args)` it returns
+/// (for example security-analysis read helpers and graph tools). Given
+/// `(tool_name, args)` it returns
 /// `Some((value, success))` if it handled the call, else `None` to fall through
 /// to the registry. A plain `Fn` so this crate stays free of harness-crate
-/// deps; the runtime builds it with the graph/memory backends wired in.
+/// deps; the runtime builds it with the needed app/runtime backends wired in.
 pub type SubAgentToolRouter = Arc<
     dyn Fn(
             String,
@@ -140,6 +141,22 @@ pub type SubAgentToolRouter = Arc<
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Option<(serde_json::Value, bool)>> + Send>,
         > + Send
+        + Sync,
+>;
+
+/// Optional hook invoked after a sub-agent tool returns and before the result is
+/// emitted back to the model. Runtime crates use this to mirror main-agent
+/// harness side effects (for example evidence/source-query materialization)
+/// without making `golish-sub-agents` depend on the harness or database layers.
+pub type SubAgentToolResultHook = Arc<
+    dyn Fn(
+            String,
+            serde_json::Value,
+            serde_json::Value,
+            bool,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = (serde_json::Value, bool)> + Send>>
+        + Send
         + Sync,
 >;
 
@@ -207,10 +224,14 @@ pub struct SubAgentExecutorContext<'a> {
     /// `Some("latest")` continues this agent's most recent chain; `None` is a
     /// fresh sub-agent (default). Enables "go back to the same worker".
     pub resume: Option<String>,
-    /// Extra tool executor for tools outside the `ToolRegistry` (graph/memory),
+    /// Extra tool executor for tools outside the `ToolRegistry` (security/graph),
     /// tried before the registry fallback so a delegated sub-agent can actually
     /// run them (e.g. `graph_add_entity`) instead of getting "Unknown tool".
     pub sub_tool_router: Option<SubAgentToolRouter>,
+    /// Optional post-processing hook for regular tool results. This keeps the
+    /// executor generic while allowing the agent runtime to attach harness
+    /// evidence/source logging to sub-agent tool calls.
+    pub post_tool_result_hook: Option<SubAgentToolResultHook>,
     /// Optional per-stage tool boundary guard (forbidden-only). When the
     /// sub-agent runs inside a harness stage, this blocks tool calls whose
     /// resolved capability is in the stage's forbidden list (e.g. `dig` in

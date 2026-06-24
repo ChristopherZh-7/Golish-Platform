@@ -11,6 +11,7 @@ import { ChatModelSelector } from "./ChatModelSelector";
 import { AskHumanInline, CompactionNotice, WorkflowProgress } from "./ChatSubComponents";
 import { ContextUsageRing } from "./ContextUsageRing";
 import { ConversationTabs } from "./ConversationTabs";
+import { activateConversationTerminalFromChat } from "./conversationTerminalActivation";
 import { ExecutionModePicker } from "./ExecutionModePicker";
 import { readLastExecutionMode } from "./executionModePicker.utils";
 import { useAiChatEvents } from "./hooks/useAiChatEvents";
@@ -183,25 +184,12 @@ export const AIChatPanel = memo(function AIChatPanel() {
   useEffect(() => {
     if (!activeConvId) return;
     if (terminalRestoreInProgress || useStore.getState().terminalRestoreInProgress) return;
-    const store = useStore.getState();
-    const terminals = store.conversationTerminals[activeConvId];
-    if (terminals && terminals.length > 0) {
-      const firstTerminal = terminals[0];
-      if (store.sessions[firstTerminal] && store.activeSessionId !== firstTerminal) {
-        store.setActiveSession(firstTerminal);
-      }
-      for (const tid of terminals) {
-        const em = store.sessions[tid]?.executionMode;
-        if (em && em !== "chat") {
-          modes.setChatExecutionMode(em);
-          break;
-        }
-      }
-    } else {
+    activateConversationTerminalFromChat(activeConvId, {
+      setChatExecutionMode: modes.setChatExecutionMode,
       // Fresh tab (no terminals yet): reopen in the last-remembered mode rather
       // than always snapping back to Chat.
-      modes.setChatExecutionMode(readLastExecutionMode());
-    }
+      emptyExecutionMode: readLastExecutionMode,
+    });
   }, [activeConvId, terminalRestoreInProgress, modes.setChatExecutionMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Handlers ─────────────────────────────────────────────────────────
@@ -240,6 +228,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const handleConvSelect = useCallback((convId: string) => {
     useStore.getState().setActiveConversation(convId);
     setShowHistory(false);
+    requestAnimationFrame(() => textareaRef.current?.focus());
   }, []);
 
   // ── Derived data ─────────────────────────────────────────────────────

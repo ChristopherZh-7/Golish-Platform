@@ -9,10 +9,12 @@ import { respondToToolApproval } from "@/lib/ai";
 import { logger } from "@/lib/logger";
 import type { JsonValue } from "@/lib/serde_json/JsonValue";
 import type { AiToolExecution } from "@/store";
-import type { EventHandler } from "./types";
+import type { EventHandler, EventHandlerContext } from "./types";
 
 type ToolIntentSource = NonNullable<AiToolExecution["toolIntent"]>["source"];
 type ToolIntentDecision = NonNullable<AiToolExecution["toolIntent"]>["decision"];
+
+const EMPTY_STAGE_RUN_SUMMARY = { total: 0, covered: 0, active: 0, queued: 0, blocked: 0 };
 
 function normalizeToolIntentSource(source: string): ToolIntentSource {
   return source === "textual_xml" ||
@@ -30,6 +32,25 @@ function normalizeToolIntentDecision(decision: string): ToolIntentDecision {
     decision === "reject"
     ? decision
     : "reject";
+}
+
+function seedStageRunToolRequest(
+  state: ReturnType<EventHandlerContext["getState"]>,
+  sessionId: string,
+  toolName: string,
+  requestId: string,
+  source: ReturnType<EventHandlerContext["convertToolSource"]>
+) {
+  const isMainTool = !source || source.type === "main";
+  if (toolName !== "stage_run" || !isMainTool) return;
+  state.setSessionStageRun(sessionId, {
+    rows: [],
+    summary: { ...EMPTY_STAGE_RUN_SUMMARY },
+    stageLabel: "Stage Run",
+    roleLabel: "",
+    coverageAxis: [],
+    requestId,
+  });
 }
 
 export const handleToolIntentObservation: EventHandler<{
@@ -105,11 +126,8 @@ export const handleToolRequest: EventHandler<{
       args: event.args as Record<string, unknown>,
       source,
     });
-
-    if (state.sessions[ctx.sessionId]) {
-      state.setDetailViewMode(ctx.sessionId, "tool-detail");
-    }
   }
+  seedStageRunToolRequest(state, ctx.sessionId, event.tool_name, event.request_id, source);
 };
 
 /**
@@ -170,11 +188,8 @@ export const handleToolApprovalRequest: EventHandler<{
       riskLevel: event.risk_level,
       source,
     });
-
-    if (state.sessions[ctx.sessionId]) {
-      state.setDetailViewMode(ctx.sessionId, "tool-detail");
-    }
   }
+  seedStageRunToolRequest(state, ctx.sessionId, event.tool_name, event.request_id, source);
 
   // Check if auto-approve mode is enabled for this session
   // This acts as a frontend safeguard in case the backend sent an approval request
@@ -257,11 +272,8 @@ export const handleToolAutoApproved: EventHandler<{
       autoApproved: true,
       source,
     });
-
-    if (state.sessions[ctx.sessionId]) {
-      state.setDetailViewMode(ctx.sessionId, "tool-detail");
-    }
   }
+  seedStageRunToolRequest(state, ctx.sessionId, event.tool_name, event.request_id, source);
 };
 
 /** A soft-timeout result whose command was detached to a background job. */

@@ -246,9 +246,10 @@ pub struct GateContext {
     /// Source-query terminal facts from `source_query_log`.
     ///
     /// These facts answer "which provider/source did this run query and how did
-    /// that source terminate?" They do not project into `found`; source coverage
-    /// only consumes them to prevent a self-reported `found`/`checked_empty` cell
-    /// from passing without any source attempt recorded.
+    /// that source terminate?" They never project into `found`; exact technique
+    /// rows with empty/error/blocked terminal status may close `coverage_complete`
+    /// gaps as non-found terminal states, and `source_coverage` consumes them to
+    /// prove the source/provider was actually attempted.
     pub source_queries: Option<Vec<SourceQueryFact>>,
 }
 
@@ -696,7 +697,22 @@ fn coverage_complete(
                 && (terminal.contains(&CoverageStatus::CheckedEmpty)
                     || terminal.contains(&CoverageStatus::Blocked));
 
-            if !found_ok && !empty_ok && !other_ok && !error_ok {
+            // Source-query terminal rows are source-attempt facts, not discovery
+            // facts. They can close a missing cell only as a non-found terminal
+            // state (checked_empty / blocked), never rescue a self-reported
+            // `found` cell that lacks DB truth. This is what lets a slim
+            // target_intel deliverable pass after `recon_lookup_whois` records
+            // "RDAP ran and returned empty" once per org, without making the
+            // model hand-write hundreds of WHOIS checked_empty cells.
+            let source_terminal_ok = !cell_status(CoverageStatus::Found)
+                && derive_from_evidence
+                && ctx.source_queries.as_deref().is_some_and(|rows| {
+                    rows.iter().any(|row| {
+                        source_row_terminal_for_coverage(row, tech, &asset_key, terminal)
+                    })
+                });
+
+            if !found_ok && !empty_ok && !other_ok && !error_ok && !source_terminal_ok {
                 gaps.push(format!("({asset} × {tech})"));
             }
         }
@@ -1014,6 +1030,45 @@ fn provider_survey_covers_tech(row: &SourceQueryFact, tech: &str) -> bool {
             | "GOLISH-INTEL-OSINT"
     ) && matches!(row.query.as_str(), "map_assets" | "recon_map_assets")
         && row.source != "rdap"
+}
+
+fn source_row_terminal_for_coverage(
+    row: &SourceQueryFact,
+    tech: &str,
+    asset_key: &str,
+    terminal: &[CoverageStatus],
+) -> bool {
+    if !is_terminal_source_status(&row.status) {
+        return false;
+    }
+
+    let exact_technique = row.technique.as_deref() == Some(tech);
+    let provider_survey = row.technique.is_none() && provider_survey_covers_tech(row, tech);
+    if !exact_technique && !provider_survey {
+        return false;
+    }
+
+    // Exact technique rows may be either org-wide (`target` empty) or asset-specific.
+    // Provider survey rows are org-wide by construction, so do not match their
+    // `target` field against each asset.
+    if exact_technique && !row.target.trim().is_empty() && canon_asset(&row.target) != asset_key {
+        return false;
+    }
+
+    match row.status.as_str() {
+        "empty" | "checked_empty" => terminal.contains(&CoverageStatus::CheckedEmpty),
+        "blocked" => terminal.contains(&CoverageStatus::Blocked),
+        "found" if provider_survey => terminal.contains(&CoverageStatus::CheckedEmpty),
+        // A source error is terminal for loop-breaking purposes, but it remains
+        // non-found. Accept either blocked or checked_empty terminal sets because
+        // older gate rules used checked_empty as the only non-found terminal.
+        "error" => {
+            terminal.contains(&CoverageStatus::Blocked)
+                || terminal.contains(&CoverageStatus::CheckedEmpty)
+        }
+        "found" => false,
+        _ => false,
+    }
 }
 
 enum ItemRef<'a> {
@@ -2593,6 +2648,94 @@ mod tests {
         assert!(matches!(
             eval_with_context(
                 &d,
+                &target_intel_spec(false),
+                &[authoritative_rule(None)],
+                &ctx
+            )[0],
+            GateCheckOutcome::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn source_query_empty_closes_authoritative_coverage_as_checked_empty() {
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string(), "b.com".to_string()]),
+            expected_techniques: Some(vec!["GOLISH-INTEL-WHOIS".to_string()]),
+            source_queries: Some(vec![source_query(
+                "rdap",
+                "lookup_whois",
+                Some("GOLISH-INTEL-WHOIS"),
+                "empty",
+            )]),
+            ..Default::default()
+        };
+        assert!(
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &target_intel_spec(false),
+                &[authoritative_rule(None)],
+                &ctx
+            )[0]
+            .is_pass(),
+            "an exact terminal RDAP empty row should close WHOIS cells as checked_empty, not require hand-written per-asset cells"
+        );
+    }
+
+    #[test]
+    fn source_query_found_does_not_close_authoritative_coverage_without_db_truth() {
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string()]),
+            expected_techniques: Some(vec!["GOLISH-INTEL-WHOIS".to_string()]),
+            source_queries: Some(vec![source_query(
+                "rdap",
+                "lookup_whois",
+                Some("GOLISH-INTEL-WHOIS"),
+                "found",
+            )]),
+            ..Default::default()
+        };
+        assert!(matches!(
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &target_intel_spec(false),
+                &[authoritative_rule(None)],
+                &ctx
+            )[0],
+            GateCheckOutcome::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn provider_survey_found_closes_provider_backed_coverage_as_non_found_terminal() {
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["www.a.com".to_string()]),
+            expected_techniques: Some(vec!["GOLISH-INTEL-SUBDOMAIN".to_string()]),
+            source_queries: Some(vec![source_query("quake", "map_assets", None, "found")]),
+            ..Default::default()
+        };
+        assert!(
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &target_intel_spec(false),
+                &[authoritative_rule(None)],
+                &ctx
+            )[0]
+            .is_pass(),
+            "an org-level provider survey row should close provider-backed cells the DB did not mark found"
+        );
+    }
+
+    #[test]
+    fn provider_survey_does_not_close_whois_coverage() {
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string()]),
+            expected_techniques: Some(vec!["GOLISH-INTEL-WHOIS".to_string()]),
+            source_queries: Some(vec![source_query("quake", "map_assets", None, "found")]),
+            ..Default::default()
+        };
+        assert!(matches!(
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
                 &target_intel_spec(false),
                 &[authoritative_rule(None)],
                 &ctx

@@ -1,4 +1,5 @@
 import {
+  Bot,
   CheckCircle2,
   ChevronDown,
   Clock,
@@ -16,11 +17,22 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { getToolColor, getToolLabel, getToolPrimaryArg } from "@/lib/tools";
+import {
+  getToolColor,
+  getToolLabel,
+  getToolPrimaryArg,
+  toolResultIndicatesFailure,
+} from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 
 type ApprovalMode = "ask" | "run-all";
+
+function roleAgentLabel(roleLabel?: string) {
+  const label = roleLabel?.trim();
+  if (!label) return null;
+  return /agent$/i.test(label) ? label : `${label} Agent`;
+}
 
 /**
  * Compact tool-approval mode switch rendered inline on a tool-call card / row.
@@ -102,8 +114,23 @@ export function parseToolPrimary(name: string, argsStr?: string): string | null 
  * failure so the card shows ❌ instead of a misleading ✅.
  */
 export function toolResultIsFailure(result?: string): boolean {
-  if (!result) return false;
-  return /"status"\s*:\s*"(rejected|needs_fix|error|failed)"/i.test(result);
+  return toolResultIndicatesFailure(result) || toolResultStatus(result) === "killed";
+}
+
+export function toolResultStatus(result?: string): string | null {
+  if (!result) return null;
+  try {
+    const parsed = JSON.parse(result);
+    const status =
+      parsed && typeof parsed === "object" ? (parsed as { status?: unknown }).status : null;
+    return typeof status === "string" ? status : null;
+  } catch {
+    return null;
+  }
+}
+
+export function toolResultIsBackgrounded(result?: string): boolean {
+  return toolResultStatus(result) === "backgrounded";
 }
 
 function ToolCallCard({
@@ -129,22 +156,44 @@ function ToolCallCard({
   const color = getToolColor(tc.name);
   const isNoResult = tc.success === undefined;
   const isExpired = isNoResult && isMessageComplete;
+  const isBackgrounded = toolResultIsBackgrounded(tc.result);
   const isRunning = isNoResult && !isMessageComplete;
   const isError = tc.success === false || toolResultIsFailure(tc.result);
   const isShell = tc.name === "run_command" || tc.name === "run_pty_cmd";
   const primary = parseToolPrimary(tc.name, tc.args);
 
-  // For a `stage_run` tool card, surface its live per-org fan-out progress
-  // (covered/total + running/queued/blocked) inline, so the count is visible at
-  // a glance without opening the detail pane. Matched to THIS tool row by
-  // requestId (the same tie the detail pane uses).
+  // For a `stage_run` tool card, surface its live worker fan-out inline so the
+  // user sees that the tool is orchestrating specialist agents, not doing a
+  // silent background batch. Matched to THIS tool row by requestId (the same tie
+  // the detail pane uses).
   const stageRunSummary = useStore((s) => {
     if (tc.name !== "stage_run" || !sessionId) return null;
-    const sr = s.sessions[sessionId]?.stageRun;
+    const session = s.sessions[sessionId];
+    const sr = requestId
+      ? (session?.stageRuns?.[requestId] ?? session?.stageRun)
+      : session?.stageRun;
     if (!sr || sr.summary.total === 0) return null;
     if (sr.requestId && requestId && sr.requestId !== requestId) return null;
     return sr.summary;
   });
+  const stageRunRoleLabel = useStore((s) => {
+    if (tc.name !== "stage_run" || !sessionId) return null;
+    const session = s.sessions[sessionId];
+    const sr = requestId
+      ? (session?.stageRuns?.[requestId] ?? session?.stageRun)
+      : session?.stageRun;
+    if (!sr || sr.summary.total === 0) return null;
+    if (sr.requestId && requestId && sr.requestId !== requestId) return null;
+    return sr.roleLabel;
+  });
+  const stageRunWorkerLabel = roleAgentLabel(stageRunRoleLabel ?? undefined);
+  const workerCount = stageRunSummary?.total ?? 0;
+  const workerText = `${workerCount} ${workerCount === 1 ? "worker" : "workers"}`;
+  const stoppedWorkerCount = isExpired
+    ? (stageRunSummary?.active ?? 0) + (stageRunSummary?.queued ?? 0)
+    : 0;
+  const displayActiveWorkers = isExpired ? 0 : (stageRunSummary?.active ?? 0);
+  const displayQueuedWorkers = isExpired ? 0 : (stageRunSummary?.queued ?? 0);
 
   return (
     <div
@@ -162,13 +211,17 @@ function ToolCallCard({
         isSelected && "ring-1 ring-accent/50 border-accent/40 bg-accent/5",
         isExpired
           ? "border-[#565f89]/30 opacity-60"
-          : isRunning
+          : isRunning || isBackgrounded
             ? "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]"
             : isError
               ? "border-red-500/30 hover:border-red-500/50"
               : "border-border/30 hover:border-accent/40"
       )}
-      style={isRunning ? { borderLeftColor: color } : undefined}
+      style={
+        isRunning || isBackgrounded
+          ? { borderLeftColor: isBackgrounded ? "var(--ansi-yellow)" : color }
+          : undefined
+      }
     >
       <div className="flex items-center gap-2">
         <Wrench
@@ -180,6 +233,8 @@ function ToolCallCard({
         <div className="ml-auto flex items-center gap-1.5">
           {isExpired ? (
             <Clock className="w-3 h-3 text-[#565f89]" />
+          ) : isBackgrounded ? (
+            <Loader2 className="w-3 h-3 text-[var(--ansi-yellow)] animate-spin" />
           ) : isRunning ? (
             <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />
           ) : isError ? (
@@ -189,6 +244,8 @@ function ToolCallCard({
           )}
           {isExpired ? (
             <span className="text-[10px] text-[#565f89]">Expired</span>
+          ) : isBackgrounded ? (
+            <span className="text-[10px] text-[var(--ansi-yellow)]/80">Background →</span>
           ) : (
             <span className="text-[10px] text-muted-foreground/60 group-hover:text-accent/60 transition-colors">
               Details →
@@ -199,14 +256,21 @@ function ToolCallCard({
       {stageRunSummary && (
         <div className="mt-1.5 space-y-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px]">
-            <span className="font-medium text-foreground/70">
-              {stageRunSummary.covered}/{stageRunSummary.total} 覆盖
+            <span className="inline-flex items-center gap-1 font-medium text-cyan-300">
+              <Bot className="h-2.5 w-2.5" />
+              {stageRunWorkerLabel ? `${stageRunWorkerLabel} · ${workerText}` : workerText}
             </span>
-            {stageRunSummary.active > 0 && (
-              <span className="text-sky-400">{stageRunSummary.active} 进行</span>
+            <span className="text-foreground/70">
+              {stageRunSummary.covered}/{stageRunSummary.total} passed
+            </span>
+            {displayActiveWorkers > 0 && (
+              <span className="text-sky-400">{displayActiveWorkers} 进行</span>
             )}
-            {stageRunSummary.queued > 0 && (
-              <span className="text-indigo-400">{stageRunSummary.queued} 排队</span>
+            {displayQueuedWorkers > 0 && (
+              <span className="text-indigo-400">{displayQueuedWorkers} 排队</span>
+            )}
+            {stoppedWorkerCount > 0 && (
+              <span className="text-yellow-400">{stoppedWorkerCount} stopped</span>
             )}
             {stageRunSummary.blocked > 0 && (
               <span className="text-amber-400">{stageRunSummary.blocked} 阻塞</span>
@@ -343,6 +407,15 @@ export function CollapsibleToolCall({
           (() => {
             // success=true but a rejected/needs_fix status body still reads ❌.
             const failed = tc.success === false || toolResultIsFailure(tc.result);
+            const backgrounded = toolResultIsBackgrounded(tc.result);
+            if (backgrounded) {
+              return (
+                <span className="ml-auto inline-flex items-center gap-1 text-[var(--ansi-yellow)]">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Background
+                </span>
+              );
+            }
             return (
               <span className={cn("ml-auto", failed ? "text-red-500" : "text-green-500")}>
                 {failed ? "\u2717" : "\u2713"}
@@ -497,7 +570,8 @@ export function ToolCallSummary({
   const backfillTimeline = (
     state: ReturnType<typeof useStore.getState>,
     sessionId: string,
-    calls: typeof toolCalls
+    calls: typeof toolCalls,
+    messageComplete?: boolean
   ) => {
     const timeline = state.timelines[sessionId] ?? [];
     const existingIds = new Set(
@@ -510,24 +584,32 @@ export function ToolCallSummary({
     );
 
     for (const tc of calls) {
-      if (!tc.requestId || existingIds.has(tc.requestId)) continue;
+      if (!tc.requestId) continue;
       if (tc.name.startsWith("sub_agent_")) continue;
 
-      let parsedArgs: Record<string, unknown> = {};
-      try {
-        if (tc.args) parsedArgs = JSON.parse(tc.args);
-      } catch {
-        /* keep empty */
+      if (!existingIds.has(tc.requestId)) {
+        let parsedArgs: Record<string, unknown> = {};
+        try {
+          if (tc.args) parsedArgs = JSON.parse(tc.args);
+        } catch {
+          /* keep empty */
+        }
+
+        state.addToolExecutionBlock(sessionId, {
+          requestId: tc.requestId,
+          toolName: tc.name,
+          args: parsedArgs,
+        });
       }
 
-      state.addToolExecutionBlock(sessionId, {
-        requestId: tc.requestId,
-        toolName: tc.name,
-        args: parsedArgs,
-      });
-
-      if (tc.success !== undefined) {
+      if (tc.success !== undefined && toolResultIsBackgrounded(tc.result)) {
+        state.backgroundToolExecutionBlock(sessionId, tc.requestId, tc.result);
+      } else if (tc.success !== undefined) {
         state.completeToolExecutionBlock(sessionId, tc.requestId, tc.success, tc.result);
+      } else if (messageComplete) {
+        state.interruptToolExecutionBlock(sessionId, tc.requestId, {
+          reason: "Tool call expired before a result was received.",
+        });
       }
     }
   };
@@ -549,7 +631,7 @@ export function ToolCallSummary({
     const ids = tc.requestId ? [tc.requestId] : (requestIds ?? null);
     state.setToolDetailRequestIds(sessionId, ids);
     state.setDetailViewMode(sessionId, "tool-detail");
-    backfillTimeline(state, sessionId, toolCalls);
+    backfillTimeline(state, sessionId, toolCalls, isMessageComplete);
   };
 
   return (

@@ -82,6 +82,7 @@
     "assetsShowMore": "Show more",
     "assetsShowLess": "Show less",
     "backToHost": "Back",
+    "backToOrganization": "Back to organization",
     "surfaceDomainsTitle": "Domains",
     "surfaceDomainsHint": "Domains resolving to this IP",
     "surfaceDomainsEmpty": "No domains resolve to this IP yet",
@@ -161,6 +162,12 @@
     "overview": {
       "placeholder": "Mode-aware workspace skeleton. Backend orchestration and coverage panels come next.",
       "noTargets": "No targets linked to this organization yet."
+    },
+    "targetsPanel": {
+      "title": "Assets by IP",
+      "description": "IPs, domains, and URLs are grouped on the right so the left tree stays focused on organizations.",
+      "moreLinked": "More linked targets",
+      "noLinkedTargets": "No linked domains or URLs yet."
     },
     "candidates": {
       "title": "Discovery candidates",

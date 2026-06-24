@@ -23,10 +23,18 @@
 |---|---|
 | AI 对话 | `AIChatPanel` / `AgentChat` / `StreamingOutput` / `SubAgentCard` / `SubAgentTreeView` / `SubAgentDetailView` / `SystemHooksCard` |
 | 终端 | `GridTerminal` / `LiveTerminalBlock` / `CommandBlock` / `Ansi` |
-| pentest UI | `FindingsPanel` / `MethodologyPanel` / `DashboardPanel` / `AuditLogPanel` / `QuickNotes` |
+| pentest UI | `TargetPanel` / `FindingsPanel` / `MethodologyPanel` / `DashboardPanel` / `AuditLogPanel` / `QuickNotes` |
 | 布局/导航 | `PaneContainer` / `TabBar` / `ActivityBar` / `HomeView` / `DetachedView` / `CommandPalette` / `QuickOpenDialog` |
 | 渲染/弹窗 | `Markdown` / `MarkdownEditor` / `DiffView` / `ImageModal` / `*Popup`（FileCommand/Path/Slash/History） |
 | 其它 | `Settings` / `Sidecar` / `SessionBrowser` / `FileEditorSidebar` / `NotificationWidget` / `ErrorBoundary` |
+
+AIChatPanel 切换 conversation tab 时会激活关联 terminal 作为上下文，但必须通过 `terminalAutoFocus` suppression 保持 DOM 焦点在 chat 输入；`GridTerminal` / xterm / `UnifiedInput` 的自动 focus 都要尊重这个窗口，用户主动点击 terminal 时再清掉 suppression。
+
+`StageRunOrgRows` 渲染 `stage_run` 的 AI worker 执行边界：详情页必须表达 `Main Agent` 只负责调度，`Recon/Prober/Enumerator Agent` 等 specialist worker 按 org 执行并可 drill-in 到子 agent 对话/工具调用；即使只有 1 个 org，也显示为 `1 worker`，不要折叠成主 agent 自己完成阶段。`stage_run_org_progress` 是最后一次 live 快照；父 `stage_run` tool 已 completed/error/interrupted/expired 时，running/queued worker 只能投影为 stopped 展示，不能继续画 spinner / Running 文案。
+
+后台工具（`status:"backgrounded"`）必须在聊天工具卡、`ToolExecutionCard`、`ToolCallDetailView` 和 `UnifiedInput` 状态行里保持同一语义：backgrounded 是 live/non-terminal，不显示成功绿勾；detail 模式会隐藏底部输入行，所以 header 要挂 `BackgroundJobsBadge` 作为会话级后台任务入口。
+
+TargetPanel 左侧树默认只做组织导航：子组织和公司计数保留，但 IP/URL/域名资产不在左树展开；右侧 Targets 面板按 IP 联合展示资产，点击 IP、域名或 URL 进入 target workbench。不要把大量 IP 重新铺成 org 的第一层 children，否则母子公司层级会被资产列表淹没。
 
 ## 依赖
 

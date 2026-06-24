@@ -133,10 +133,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "recon_map_assets".to_string(),
             "recon_lookup_whois".to_string(),
             "manage_targets".to_string(),
-            "list_in_scope_targets".to_string(),
-            // Passive collection only (subfinder / amass -passive / gau); the
-            // stage tool-type allowlist (recon/*) keeps this zero-touch.
-            "pentest_run".to_string(),
             "submit_stage_deliverable".to_string(),
             "record_finding".to_string(),
             "search_knowledge_base".to_string(),
@@ -153,6 +149,7 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         )
         .with_tools(vec![
             "list_in_scope_targets".to_string(),
+            "list_attack_surface_seeds".to_string(),
             "manage_targets".to_string(),
             // Active probing (httpx / naabu / masscan / whatweb / nmap / gowitness)
             // via pentest_run; the stage tool-type allowlist (recon/port-scan,

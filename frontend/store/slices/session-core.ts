@@ -32,6 +32,35 @@ function computeStageRunSummary(rows: StageRunRow[]): StageRunSummary {
   };
 }
 
+function latestStageRunRequestId(state: SessionStoreDraft, sessionId: string): string | undefined {
+  const timeline = state.timelines[sessionId] ?? [];
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    const block = timeline[i];
+    if (block.type === "ai_tool_execution" && block.data.toolName === "stage_run") {
+      return block.data.requestId;
+    }
+  }
+  return undefined;
+}
+
+function emptyStageRun(
+  requestId: string | undefined,
+  meta: {
+    stageLabel: string;
+    roleLabel: string;
+    coverageAxis: string[];
+  }
+): SessionStageRun {
+  return {
+    rows: [],
+    summary: { total: 0, covered: 0, active: 0, queued: 0, blocked: 0 },
+    stageLabel: meta.stageLabel,
+    roleLabel: meta.roleLabel,
+    coverageAxis: meta.coverageAxis,
+    requestId,
+  };
+}
+
 export function createSessionCoreActions(
   set: ImmerSet<SessionStoreDraft>,
   _get: StateGet<SessionStoreDraft>
@@ -279,6 +308,11 @@ export function createSessionCoreActions(
       set((state) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].stageRun = stageRun;
+          if (!stageRun) return;
+          if (stageRun.requestId) {
+            state.sessions[sessionId].stageRuns = state.sessions[sessionId].stageRuns ?? {};
+            state.sessions[sessionId].stageRuns[stageRun.requestId] = stageRun;
+          }
         }
       }),
 
@@ -289,39 +323,31 @@ export function createSessionCoreActions(
         stageLabel: string;
         roleLabel: string;
         coverageAxis: string[];
+        requestId?: string | null;
       }
     ) =>
       set((state) => {
         const sess = state.sessions[sessionId];
         if (!sess) return;
-        if (!sess.stageRun) {
-          // Tie this run to its `stage_run` tool call so the standard tool-call
-          // detail pane only shows these rows on the matching tool row. The
-          // `stage_run` tool_request always lands in the timeline before the
-          // first per-org progress frame, so scan back for the latest one.
-          const timeline = state.timelines[sessionId] ?? [];
-          let requestId: string | undefined;
-          for (let i = timeline.length - 1; i >= 0; i--) {
-            const block = timeline[i];
-            if (block.type === "ai_tool_execution" && block.data.toolName === "stage_run") {
-              requestId = block.data.requestId;
-              break;
-            }
-          }
-          sess.stageRun = {
-            rows: [],
-            summary: { total: 0, covered: 0, active: 0, queued: 0, blocked: 0 },
-            stageLabel: meta.stageLabel,
-            roleLabel: meta.roleLabel,
-            coverageAxis: meta.coverageAxis,
-            requestId,
-          };
+
+        const requestId =
+          meta.requestId ?? sess.stageRun?.requestId ?? latestStageRunRequestId(state, sessionId);
+        const latestRequestId = latestStageRunRequestId(state, sessionId);
+
+        let sr: SessionStageRun;
+        if (requestId) {
+          sess.stageRuns = sess.stageRuns ?? {};
+          sr = sess.stageRuns[requestId] ?? emptyStageRun(requestId, meta);
+          sess.stageRuns[requestId] = sr;
+        } else {
+          sr = sess.stageRun ?? emptyStageRun(undefined, meta);
         }
-        const sr = sess.stageRun;
+
         // The first real frame carries the stage labels/axis — keep them fresh.
         if (meta.stageLabel) sr.stageLabel = meta.stageLabel;
         if (meta.roleLabel) sr.roleLabel = meta.roleLabel;
         if (meta.coverageAxis.length) sr.coverageAxis = meta.coverageAxis;
+        if (requestId) sr.requestId = requestId;
 
         const idx = sr.rows.findIndex((r) => r.id === row.id);
         if (idx >= 0) {
@@ -330,6 +356,10 @@ export function createSessionCoreActions(
           sr.rows.push(row);
         }
         sr.summary = computeStageRunSummary(sr.rows);
+
+        if (!requestId || !latestRequestId || latestRequestId === requestId) {
+          sess.stageRun = sr;
+        }
       }),
   };
 }

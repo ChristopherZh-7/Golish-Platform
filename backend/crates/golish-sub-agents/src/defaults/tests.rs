@@ -153,11 +153,10 @@ fn test_recon_has_passive_tools_only() {
     assert!(has_tool(recon, "record_finding"));
     assert!(has_tool(recon, "search_knowledge_base"));
     assert!(has_tool(recon, "read_knowledge"));
-    // pentest_run is allowed but the stage tool-type allowlist (recon/*) keeps it
-    // passive (subfinder / amass -passive / gau).
-    assert!(has_tool(recon, "pentest_run"));
 
     // Offensive / heavy Pentester-only tools must NOT leak into Recon.
+    assert!(!has_tool(recon, "list_in_scope_targets"));
+    assert!(!has_tool(recon, "pentest_run"));
     assert!(!has_tool(recon, "search_exploits"));
     assert!(!has_tool(recon, "graph_add_entity"));
     assert!(!has_tool(recon, "graph_attack_paths"));
@@ -174,6 +173,10 @@ fn test_recon_prompt_is_zero_touch() {
     assert!(prompt.contains("submit_stage_deliverable"));
     // Passive identity: must not describe itself as doing exploitation.
     assert!(prompt.contains("passive"));
+    assert!(!prompt.contains("list_in_scope_targets"));
+    assert!(!prompt.contains("subfinder"));
+    assert!(!prompt.contains("ctfr"));
+    assert!(!prompt.contains("dig"));
 }
 
 #[test]
@@ -192,6 +195,8 @@ fn test_prober_has_active_surface_tools() {
     assert!(has_tool(prober, "pentest_list_tools"));
     assert!(has_tool(prober, "manage_targets"));
     assert!(has_tool(prober, "list_in_scope_targets"));
+    // L1b (design 2026-06-24): Prober gets the ranked attack-surface seed worklist.
+    assert!(has_tool(prober, "list_attack_surface_seeds"));
     assert!(has_tool(prober, "submit_stage_deliverable"));
     assert!(has_tool(prober, "search_knowledge_base"));
     assert!(has_tool(prober, "read_knowledge"));

@@ -238,6 +238,11 @@ pub struct AgentBridge {
     /// so fan-out / in-scope reads confine to this org's subtree (root + subs).
     /// `None` = no bound org (legacy whole-DB axis / chat / pre-scoping turn).
     pub(crate) harness_active_org_id: Arc<RwLock<Option<uuid::Uuid>>>,
+    /// Active harness operation id (Task id for graph-flow task mode). Set
+    /// per-subtask so loop tools that need operation-scoped state (for example
+    /// `stage_run` worker resume) can update the same `operation_state` row as the
+    /// graph checkpointer.
+    pub(crate) harness_active_operation_id: Arc<RwLock<Option<uuid::Uuid>>>,
 
     /// Per-session selected harness operation profile id (e.g. "assessment" /
     /// "red_team"), chosen via the chat-panel mode picker. `None` = chat mode /

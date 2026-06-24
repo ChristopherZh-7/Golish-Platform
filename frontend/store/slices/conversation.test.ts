@@ -158,6 +158,75 @@ describe("Conversation Slice — error severity & de-dupe", () => {
   });
 });
 
+describe("Conversation Slice — tool result correlation", () => {
+  const CONV = "conv-tool-result-test";
+
+  const toolCalls = () => {
+    const conv = useStore.getState().conversations[CONV];
+    return conv.messages.flatMap((m) => m.toolCalls ?? []);
+  };
+
+  beforeEach(() => {
+    useStore.setState({
+      conversations: {},
+      activeConversationId: null,
+      conversationOrder: [],
+      conversationTerminals: {},
+    });
+    useStore.getState().addConversation({
+      id: CONV,
+      title: "t",
+      messages: [],
+      createdAt: 0,
+      aiSessionId: CONV,
+      aiInitialized: false,
+      isStreaming: true,
+    });
+    useStore.getState().addConversationMessage(CONV, {
+      id: "m1",
+      role: "assistant",
+      content: "",
+      timestamp: 0,
+      isStreaming: true,
+    });
+  });
+
+  it("updates same-name tool calls by request id instead of the newest name match", () => {
+    const store = useStore.getState();
+    store.addMessageToolCall(CONV, { name: "pentest_run", args: "{}", requestId: "r1" });
+    store.addMessageToolCall(CONV, { name: "pentest_run", args: "{}", requestId: "r2" });
+
+    store.updateMessageToolResult(CONV, "pentest_run", '{"status":"backgrounded"}', true, "r1");
+
+    expect(toolCalls().find((tc) => tc.requestId === "r1")?.result).toBe(
+      '{"status":"backgrounded"}'
+    );
+    expect(toolCalls().find((tc) => tc.requestId === "r2")?.result).toBeUndefined();
+  });
+
+  it("updates a backgrounded tool call when completion arrives by job id", () => {
+    const store = useStore.getState();
+    store.addMessageToolCall(CONV, { name: "pentest_run", args: "{}", requestId: "r1" });
+    store.updateMessageToolResult(
+      CONV,
+      "pentest_run",
+      '{"status":"backgrounded","job_id":"job_42"}',
+      true,
+      "r1"
+    );
+
+    store.updateMessageToolResultByJobId(
+      CONV,
+      "job_42",
+      '{"status":"done","job_id":"job_42","stdout":"ok"}',
+      true
+    );
+
+    expect(toolCalls()[0].result).toBe('{"status":"done","job_id":"job_42","stdout":"ok"}');
+    expect(toolCalls()[0].success).toBe(true);
+  });
+});
+
 describe("Conversation Slice — stage markers", () => {
   const CONV = "conv-stage-test";
 

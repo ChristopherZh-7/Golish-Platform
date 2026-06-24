@@ -75,9 +75,12 @@ impl Checkpointer<OperationFlowState> for DbFlowCheckpointer {
         state: &OperationFlowState,
         next_node: &str,
     ) -> GraphResult<()> {
-        let blob = serde_json::json!({
-            "graph_flow": { "state": state, "next_node": next_node }
-        });
+        let existing = crate::db_shim::operation_state::get(&*self.repo, self.operation_id)
+            .await
+            .map_err(|e| GraphError::Checkpoint(e.to_string()))?
+            .map(|view| view.state_blob)
+            .unwrap_or_default();
+        let blob = state_blob_with_graph_flow(existing, state, next_node);
         crate::db_shim::operation_state::write_state_blob(&*self.repo, self.operation_id, blob)
             .await
             .map_err(|e| GraphError::Checkpoint(e.to_string()))?;
@@ -104,6 +107,21 @@ impl Checkpointer<OperationFlowState> for DbFlowCheckpointer {
             .to_string();
         Ok(Some((state, next_node)))
     }
+}
+
+fn state_blob_with_graph_flow(
+    mut existing: serde_json::Value,
+    state: &OperationFlowState,
+    next_node: &str,
+) -> serde_json::Value {
+    if !existing.is_object() {
+        existing = serde_json::json!({});
+    }
+    existing.as_object_mut().unwrap().insert(
+        "graph_flow".to_string(),
+        serde_json::json!({ "state": state, "next_node": next_node }),
+    );
+    existing
 }
 
 #[cfg(test)]
@@ -152,5 +170,29 @@ mod tests {
     fn empty_or_all_untagged_yields_no_groups() {
         assert!(group_subtasks_by_stage(&[]).is_empty());
         assert!(group_subtasks_by_stage(&[sub(None), sub(None)]).is_empty());
+    }
+
+    #[test]
+    fn graph_flow_checkpoint_preserves_other_state_blob_keys() {
+        let mut flow = OperationFlowState::default();
+        flow.visited.push(StageKind::Scoping);
+        let existing = serde_json::json!({
+            "stage_run_workers": {
+                "target_intel": {
+                    "11111111-1111-1111-1111-111111111111": {
+                        "chain_id": "22222222-2222-2222-2222-222222222222"
+                    }
+                }
+            }
+        });
+
+        let merged = state_blob_with_graph_flow(existing, &flow, StageKind::TargetIntel.as_str());
+
+        assert_eq!(
+            merged["stage_run_workers"]["target_intel"]["11111111-1111-1111-1111-111111111111"]
+                ["chain_id"],
+            "22222222-2222-2222-2222-222222222222"
+        );
+        assert_eq!(merged["graph_flow"]["next_node"], "target_intel");
     }
 }

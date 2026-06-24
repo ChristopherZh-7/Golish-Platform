@@ -141,6 +141,14 @@ pub struct AssetIntelHydrateConfig {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub create_candidates: Option<bool>,
+    /// b1 (design 2026-06-24-intel-to-eas-handoff): when set, the provider survey
+    /// runs in **domain-keyed mode** — only providers/queries that reference
+    /// `{{domain}}` run (substituted with this value), so a newly-discovered apex
+    /// can be expanded for its subdomain tree (recon_map_assets is otherwise
+    /// org/company-name keyed). `None` = legacy company-name survey (unchanged).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub domain: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

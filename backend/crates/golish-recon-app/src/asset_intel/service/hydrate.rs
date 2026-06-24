@@ -103,6 +103,17 @@ pub(crate) async fn auto_promote_discovered_children(
     }))
 }
 
+/// b1 (design 2026-06-24-intel-to-eas-handoff): a provider supports the
+/// domain-keyed survey iff any of its query/request templates reference
+/// `{{domain}}`. Shape-agnostic — inspects the serialized runtime config so it
+/// works across native_provider / http_json / cli_json without per-kind code.
+fn provider_supports_domain(tool: &ToolConfig) -> bool {
+    tool.asset_intel
+        .as_ref()
+        .and_then(|a| serde_json::to_string(&a.runtime).ok())
+        .is_some_and(|s| s.contains("{{domain}}"))
+}
+
 /// Run a set of asset-intel providers against a single organization, writing
 /// candidates + master-record profile fields back to **that org's** id.
 ///
@@ -129,6 +140,23 @@ pub(crate) async fn run_providers_for_org(
     let run_id = Uuid::new_v4().to_string();
     let project_root = PathBuf::from(&org_row.project_path);
     let organization_id = org_row.id;
+
+    // b1 (design 2026-06-24): in domain-keyed mode, drop providers that have no
+    // {{domain}} query so a domain expansion never re-fires a company-name survey
+    // of the parent org. Legacy company survey (domain=None) keeps all providers.
+    let providers: Vec<ToolConfig> = if config
+        .domain
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|d| !d.is_empty())
+    {
+        providers
+            .into_iter()
+            .filter(provider_supports_domain)
+            .collect()
+    } else {
+        providers
+    };
 
     let mut provider_status = Vec::new();
     let mut evidence = Vec::new();

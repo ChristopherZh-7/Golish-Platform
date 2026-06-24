@@ -121,6 +121,38 @@ export interface ChatConversation {
   streamingStartedAt?: number;
 }
 
+function parseResultRecord(result?: string): Record<string, unknown> | null {
+  if (!result) return null;
+  try {
+    const parsed = JSON.parse(result);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function resultJobId(result?: string): string | null {
+  const id = parseResultRecord(result)?.job_id;
+  return typeof id === "string" ? id : null;
+}
+
+function findLatestToolCall(
+  conv: ChatConversation,
+  predicate: (toolCall: ChatToolCall) => boolean
+): ChatToolCall | null {
+  for (let i = conv.messages.length - 1; i >= 0; i--) {
+    const message = conv.messages[i];
+    if (message.role !== "assistant" || !message.toolCalls) continue;
+    for (let j = message.toolCalls.length - 1; j >= 0; j--) {
+      const toolCall = message.toolCalls[j];
+      if (predicate(toolCall)) return toolCall;
+    }
+  }
+  return null;
+}
+
 // State interface
 export interface ConversationState {
   conversations: Record<string, ChatConversation>;
@@ -151,6 +183,14 @@ export interface ConversationActions {
   updateMessageToolResult: (
     convId: string,
     toolName: string,
+    result: string,
+    success: boolean,
+    requestId?: string
+  ) => void;
+  /** Update a backgrounded tool result once its async job completion arrives. */
+  updateMessageToolResultByJobId: (
+    convId: string,
+    jobId: string,
     result: string,
     success: boolean
   ) => void;
@@ -408,17 +448,28 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
       }
     }),
 
-  updateMessageToolResult: (convId, toolName, result, success) =>
+  updateMessageToolResult: (convId, toolName, result, success, requestId) =>
     set((state) => {
       const conv = state.conversations[convId];
       if (!conv) return;
-      const last = conv.messages[conv.messages.length - 1];
-      if (last?.role === "assistant" && last.toolCalls) {
-        const tc = [...last.toolCalls].reverse().find((t) => t.name === toolName);
-        if (tc) {
-          tc.result = result;
-          tc.success = success;
-        }
+      const tc = findLatestToolCall(
+        conv,
+        requestId ? (t) => t.requestId === requestId : (t) => t.name === toolName
+      );
+      if (tc) {
+        tc.result = result;
+        tc.success = success;
+      }
+    }),
+
+  updateMessageToolResultByJobId: (convId, jobId, result, success) =>
+    set((state) => {
+      const conv = state.conversations[convId];
+      if (!conv) return;
+      const tc = findLatestToolCall(conv, (t) => resultJobId(t.result) === jobId);
+      if (tc) {
+        tc.result = result;
+        tc.success = success;
       }
     }),
 

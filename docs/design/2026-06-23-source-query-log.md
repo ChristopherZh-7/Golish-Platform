@@ -1,6 +1,6 @@
 # #5 · source_query_log 层（证明「哪些数据源查过」）
 
-> 评审 claim #5。消费模型 = **A 审计/provenance-only**（用户 2026-06-23 拍板：reviewer/报告读，coverage gate 不 block）。状态：进行中（2026-06-23）。**本 PR 范围 = 设计 + migration（I10 第 1 步，表先 inert 落地）；repo/写/读（reviewer）路径接入 = 后续 PR**。
+> 评审 claim #5。初版消费模型 = **A 审计/provenance-only**；2026-06-23 后续实现已演进为 gate/reviewer 双读：gate 只把 terminal source row 当作“source 已尝试/已阻断/已查空”的证明，绝不把它投影成 found 真值。2026-06-24 追加 org-scoped unique 修正，支持多 org `stage_run` 扇出隔离。
 
 ## 1. 问题（评审 #5）
 
@@ -11,7 +11,7 @@ coverage 矩阵是 `asset × technique`，回答「这格 found 没」。#4 `tec
 - `audit_log`（evidence 底座）：有 `evidence_technique` / `evidence_outcome`，但**无** source(provider) / query / result_count / timing 的结构化列。
 - `technique_outcomes`（#4）：(asset × technique) 单行，多源塌一行。
 
-→ 需要更细一层：每 `(run × source × query × target)` 一行。
+→ 需要更细一层：每 `(org × run × source × query × target)` 一行。
 
 ## 2. 与现有两层的关系（不重复造）
 
@@ -19,9 +19,9 @@ coverage 矩阵是 `asset × technique`，回答「这格 found 没」。#4 `tec
 |---|---|---|---|
 | coverage（gate 判定） | (asset × technique) 终态 | 这格覆盖了没 | 是 |
 | `technique_outcomes`（#4） | (run × asset × technique) 单行 + provenance | 哪个 provider 让这格 found（收口态） | 是（灰度 dual-read） |
-| **`source_query_log`（#5，本设计）** | (run × source × query × target) 多行 | 逐条源查询的态/计数/用时/证据 | **否**（消费模型 A） |
+| **`source_query_log`（#5，本设计）** | (org × run × source × query × target) 多行 | 逐条源查询的态/计数/用时/证据 | 是：只证明 source/provider terminal，不投影 found |
 
-三层正交：#5 是**最细的查询日志**，不替代前两层；coverage gate 判定**逐字节不变**（消费模型 A：gate 不读本表，仅 reviewer/报告/诊断读）。
+三层正交：#5 是**最细的查询日志**，不替代前两层；coverage gate 可读本表来证明 source/provider 已终态尝试，但 found 仍只来自 DB/ledger truth。
 
 ## 3. Schema
 
@@ -41,12 +41,14 @@ coverage 矩阵是 `asset × technique`，回答「这格 found 没」。#4 `tec
 | `started_at` / `finished_at` | 查询用时 |
 | created_at / updated_at | 落库审计 |
 
-`UNIQUE(run_id, source, query, target)`：每 (run, 源, 查询, 目标) 一行，重跑同查询 upsert 幂等不堆叠。`target NOT NULL DEFAULT ''` 让 org 级查询的 UNIQUE 行为确定（避免 nullable 列在 UNIQUE 中视为相异而重复堆叠）。
+`UNIQUE(organization_id, run_id, source, query, target)`：每 (org, run, 源, 查询, 目标) 一行，重跑同查询 upsert 幂等不堆叠；不同 org 的同源查询必须各自隔离，避免 `stage_run` 多 org 扇出时子公司 source row 被 root org 行吞掉。`target NOT NULL DEFAULT ''` 让 org 级查询的 UNIQUE 行为确定（避免 nullable 列在 UNIQUE 中视为相异而重复堆叠）。
 
-## 4. 写 / 读（reviewer）集成（**本 PR 不实现，后续 PR**）
+2026-06-24 修正：新增 migration `20260624000001_source_query_log_org_scoped_unique.sql` 将早期 `(run_id, source, query, target)` 唯一键替换为 org-scoped 唯一索引；repo upsert 的 `ON CONFLICT` 同步改为 org-scoped。
 
-- **写（后续 step2，gray-switch）**：被动情报采集点（enrich provider 调用、命令路径 dig/subfinder/whois、CLI 兜底）book 证据时**同步 upsert** source_query_log：`source` 取 provider/工具名、`query` 取查询/命令、`target` 走 `canonical_asset_key`（org 级取 `''`）、`status` 同 `passive_intel_outcome_for_run`（含 T2 error）、`result_count` 取条数、`evidence_ids` 指 audit_log、timing 取实际起止。**非致命**：upsert 失败只 warn，不回滚证据（证据为底、本表为审计物化）。gray-switch（env，默认 off），与 #4 写路径同款。
-- **读（后续 step3，reviewer/报告）**：reviewer / 报告生成 / `run_tree.py` 诊断从本表投影「源覆盖矩阵」（每 technique × 每 source 的查询态）。**coverage gate 判定不接本表**（消费模型 A）；future B（gate 强制源覆盖）若做，再在 gate 侧加灰度读 + 「每 technique 必需源」taxonomy（另立设计）。
+## 4. 写 / 读集成
+
+- **写**：被动情报采集点（enrich provider 调用、命令路径 dig/subfinder/whois、CLI 兜底）book 证据时**同步 upsert** source_query_log：`source` 取 provider/工具名、`query` 取查询/命令、`target` 走 `canonical_asset_key`（org 级取 `''`）、`status` 同 `passive_intel_outcome_for_run`（含 T2 error）、`evidence_ids` 指 audit_log。**非致命**：upsert 失败只 warn，不回滚证据。
+- **读（gate + reviewer/报告）**：reviewer / 报告生成 / `run_tree.py` 诊断从本表投影「源覆盖矩阵」（每 technique × 每 source 的查询态）。gate 只消费 terminal source/provider row 来证明“源已尝试/已阻断/已查空”，绝不把 source row 当作 found 真值。
 
 ## 5. 不变量
 
@@ -59,7 +61,7 @@ coverage 矩阵是 `asset × technique`，回答「这格 found 没」。#4 `tec
 ## 6. 依赖与顺序
 
 - 依赖 **E1 规范键**（`canonical_asset_key`）：`target` 须规范键（org 级取 `''`），与 #4 同。
-- 顺序：本 migration（step1）→ repo + 写路径（step2，gray-switch）→ reviewer/报告读（step3）。
+- 顺序：初始 migration（step1）→ repo + 写路径（step2）→ reviewer/gate 读（step3）→ org-scoped unique 修正（2026-06-24）。
 
 ## 7. 验证（本 PR）
 

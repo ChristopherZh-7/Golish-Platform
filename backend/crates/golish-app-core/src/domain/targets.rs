@@ -180,6 +180,46 @@ pub struct TargetStore {
     pub targets: Vec<Target>,
 }
 
+/// Attack-surface seed priority for a target (design 2026-06-24-intel-to-eas-
+/// handoff §4 L1c / D3). Higher = scan sooner. Lets EAS prioritise instead of
+/// flat-scanning a large in-scope set: resolved hosts (have a real_ip) and
+/// already-alive hosts (have an http_status) rank highest, web-capable classes
+/// (domain/url) above bare IPs, bare IPs above whole netblocks (cidr/wildcard).
+pub fn attack_surface_priority(t: &Target) -> i32 {
+    let mut score = 0;
+    if !t.real_ip.trim().is_empty() {
+        score += 40;
+    }
+    if t.http_status.is_some() {
+        score += 20;
+    }
+    score += match t.target_type {
+        TargetType::Domain | TargetType::Url => 30,
+        TargetType::Ip => 20,
+        TargetType::Cidr | TargetType::Wildcard => 5,
+    };
+    if !t.source.trim().is_empty() && t.source != "manual" {
+        score += 10;
+    }
+    score
+}
+
+/// Rank in-scope targets into attack-surface seeds by descending priority
+/// (stable tiebreak on value), optionally capping to `cap` (D3: per-org cap,
+/// `None` = no cap / default off). Pure — the caller projects each ranked target
+/// into the rich seed JSON the EAS handoff returns.
+pub fn rank_attack_surface_seeds(mut targets: Vec<Target>, cap: Option<usize>) -> Vec<Target> {
+    targets.sort_by(|a, b| {
+        attack_surface_priority(b)
+            .cmp(&attack_surface_priority(a))
+            .then_with(|| a.value.cmp(&b.value))
+    });
+    if let Some(n) = cap {
+        targets.truncate(n);
+    }
+    targets
+}
+
 /// Infer a [`TargetType`] from a raw target value (URL > CIDR > wildcard > IP >
 /// domain).
 pub fn detect_type(value: &str) -> TargetType {
@@ -260,6 +300,40 @@ pub struct DirectoryEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn seed(value: &str, ty: &str, real_ip: &str, http_status: Option<i32>) -> Target {
+        serde_json::from_value(serde_json::json!({
+            "id": value, "name": value, "type": ty, "value": value,
+            "scope": "in", "status": "new", "source": "asset_intel",
+            "real_ip": real_ip, "http_status": http_status,
+            "created_at": 0, "updated_at": 0,
+        }))
+        .expect("build test target")
+    }
+
+    #[test]
+    fn rank_attack_surface_seeds_orders_by_priority_and_caps() {
+        // L1c / D3 (design 2026-06-24): resolved+alive web host ranks top, whole
+        // netblock bottom; cap truncates.
+        let resolved_domain = seed("resolved.example.com", "domain", "1.2.3.4", Some(200));
+        let bare_domain = seed("bare.example.com", "domain", "", None);
+        let bare_ip = seed("9.9.9.9", "ip", "", None);
+        let netblock = seed("10.0.0.0/8", "cidr", "", None);
+        let all = vec![
+            netblock.clone(),
+            bare_ip,
+            bare_domain,
+            resolved_domain.clone(),
+        ];
+
+        let ranked = rank_attack_surface_seeds(all.clone(), None);
+        assert_eq!(ranked[0].value, "resolved.example.com");
+        assert_eq!(ranked.last().unwrap().value, "10.0.0.0/8");
+
+        let capped = rank_attack_surface_seeds(all, Some(2));
+        assert_eq!(capped.len(), 2);
+        assert_eq!(capped[0].value, "resolved.example.com");
+    }
 
     #[test]
     fn target_status_as_str_matches_db_enum_values() {

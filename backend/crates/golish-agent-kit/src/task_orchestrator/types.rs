@@ -49,6 +49,10 @@ pub struct AgentTokenUsage {
 /// Renders in PentAGI-compatible XML format for injection into agent prompts.
 #[derive(Debug, Clone, Default)]
 pub struct ExecutionContext {
+    /// Current harness operation id (Task id in graph-flow task mode). Threaded
+    /// into the bridge so loop-level tools such as `stage_run` can update the same
+    /// `operation_state` row that the graph checkpointer uses.
+    pub operation_id: Option<uuid::Uuid>,
     /// Accumulated results from completed subtasks.
     pub completed_results: Vec<SubtaskResult>,
     /// The original user input.

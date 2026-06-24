@@ -339,6 +339,7 @@ impl TestContext {
             harness_submit_only: false,
             harness_deliverable_sink: None,
             harness_org_id: None,
+            harness_operation_id: None,
         }
     }
 

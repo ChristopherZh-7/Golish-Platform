@@ -266,10 +266,13 @@ fn fofa_toolsconfig_parses_and_is_enrichment_selected() {
             queries,
         } => {
             assert_eq!(provider_id, "fofa");
-            assert_eq!(queries.len(), 2);
+            assert_eq!(queries.len(), 3);
             assert_eq!(queries[0].query_type, "site");
             // cert dimension (passive-intel-pairing Phase D): query CT subject.
             assert_eq!(queries[1].query_type, "cert");
+            // b1 (design 2026-06-24): domain-keyed query for apex expansion.
+            assert_eq!(queries[2].query_type, "domain");
+            assert!(queries[2].template.contains("{{domain}}"));
         }
         other => panic!("expected NativeProvider, got {other:?}"),
     }
@@ -1070,6 +1073,7 @@ fn asset_intel_skill_args_render_config_bindings() {
             depth: Some("2".into()),
             include_branches: Some(true),
             create_candidates: Some(true),
+            domain: None,
         },
         &bindings,
     );
@@ -1738,6 +1742,7 @@ fn enrichment_config_disables_candidate_queue_writes() {
         depth: Some("2".into()),
         include_branches: Some(true),
         create_candidates: Some(true),
+        domain: None,
     });
 
     assert_eq!(config.min_ownership_percent.as_deref(), Some("35"));
@@ -1756,6 +1761,7 @@ fn enrich_organization_config_disables_candidate_queue_writes() {
             depth: Some("2".into()),
             include_branches: Some(true),
             create_candidates: Some(true),
+            domain: None,
         },
     };
 

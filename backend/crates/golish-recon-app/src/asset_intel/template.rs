@@ -29,6 +29,9 @@ pub(crate) fn render_asset_intel_skill_args(
         template
             .replace("{{org}}", company_name)
             .replace("{{company_name}}", company_name)
+            // b1 (design 2026-06-24): domain-keyed survey value (empty in the
+            // legacy company-name survey).
+            .replace("{{domain}}", config.domain.as_deref().unwrap_or_default())
             .replace("{{out_dir}}", &out_dir.to_string_lossy())
             .replace(
                 "{{config.min_ownership_percent}}",
@@ -164,6 +167,9 @@ pub(crate) fn render_http_template(
     let mut rendered = template
         .replace("{{org}}", company_name)
         .replace("{{company_name}}", company_name)
+        // b1 (design 2026-06-24): domain-keyed survey value (empty in the legacy
+        // company-name survey).
+        .replace("{{domain}}", config.domain.as_deref().unwrap_or_default())
         .replace(
             "{{config.min_ownership_percent}}",
             config.min_ownership_percent.as_deref().unwrap_or_default(),

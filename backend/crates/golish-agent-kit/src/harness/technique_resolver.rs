@@ -224,12 +224,16 @@ mod tests {
     }
 
     #[test]
-    fn classify_overrides_mistyped_url_wrapped_ip_only() {
-        // The 22 live URL-wrapped IPs are stored as targets.type='domain'; classify
-        // must override that to Ip (cert transparency / subdomain don't apply) …
+    fn classify_overrides_mistyped_url_values() {
+        // Live URL-shaped assets may be stored as targets.type='domain'; classify
+        // must trust URL syntax so URL-only values do not pick up SUBDOMAIN.
         assert_eq!(
             AssetClass::classify(Some("domain"), "http://124.196.77.48"),
             AssetClass::Ip
+        );
+        assert_eq!(
+            AssetClass::classify(Some("domain"), "https://a.com/login"),
+            AssetClass::Url
         );
         // … but a bare IP-looking value with an authoritative domain type still
         // trusts the type (preserves host_aware_uses_authoritative_type_over_value).

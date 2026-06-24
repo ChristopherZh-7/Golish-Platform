@@ -7,7 +7,13 @@ import { StatusIcon } from "@/components/ui/StatusIcon";
 import { cancelBackgroundJob } from "@/lib/ai";
 import { stripAllAnsi } from "@/lib/ansi";
 import { formatDurationShort } from "@/lib/time";
-import { getToolColor, getToolIcon, getToolLabel, getToolPrimaryArg } from "@/lib/tools";
+import {
+  getToolColor,
+  getToolIcon,
+  getToolLabel,
+  getToolPrimaryArg,
+  toolResultIndicatesFailure,
+} from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { AiToolExecution } from "@/store";
 
@@ -121,6 +127,14 @@ function getBackgroundJobId(result: unknown): string | null {
 
 const PREVIEW_LIMIT = 2000;
 
+export function getToolExecutionDisplayStatus(
+  execution: Pick<AiToolExecution, "status" | "result">
+): AiToolExecution["status"] {
+  return execution.status === "completed" && toolResultIndicatesFailure(execution.result)
+    ? "error"
+    : execution.status;
+}
+
 function OutputBlock({ text, isShellCommand }: { text: string; isShellCommand: boolean }) {
   const isLong = text.length > PREVIEW_LIMIT;
   const [expanded, setExpanded] = useState(false);
@@ -183,6 +197,8 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
 
   const isRunning = execution.status === "running";
   const isBackgrounded = execution.status === "backgrounded";
+  const displayStatus = getToolExecutionDisplayStatus(execution);
+  const isDisplayError = displayStatus === "error";
   // Both states are "live" (non-terminal): same pulsing border treatment.
   const isLive = isRunning || isBackgrounded;
   const backgroundJobId = isBackgrounded ? getBackgroundJobId(execution.result) : null;
@@ -323,7 +339,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
                 Cancel
               </button>
             )}
-            <StatusIcon status={execution.status} />
+            <StatusIcon status={displayStatus} />
             {execution.durationMs !== undefined && (
               <span className={cn("text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>
                 {formatDurationShort(execution.durationMs)}
@@ -388,7 +404,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
           {outputPreview && <OutputBlock text={outputPreview} isShellCommand={isShellCommand} />}
 
           {/* Error display */}
-          {execution.status === "error" && resultText && (
+          {isDisplayError && resultText && (
             <div className="mt-1.5 rounded bg-[var(--ansi-red)]/10 px-2 py-1.5 text-xs text-[var(--ansi-red)]">
               <span className="font-medium">Error: </span>
               {resultText.length > 500 ? `${resultText.slice(0, 500)}...` : resultText}

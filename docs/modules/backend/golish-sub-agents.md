@@ -28,7 +28,7 @@
 | `create_default_sub_agents` | 默认 sub-agent 集 |
 | `discover_agents` / `AgentFileInfo` | 文件系统发现 + 加载 |
 | `PromptRegistry` / `PromptContext` / `SubAgentPromptContributor` | prompt 注册/上下文/贡献者 |
-| `StageToolGuard` / `StageToolHider` / `SubAgentToolRouter` / `PostShellHook` / `SubAgentChainPersistence` | 阶段工具守卫/路由/持久化（executor_types） |
+| `StageToolGuard` / `StageToolHider` / `SubAgentToolRouter` / `SubAgentToolResultHook` / `PostShellHook` / `SubAgentChainPersistence` | 阶段工具守卫/路由/工具结果后处理/持久化（executor_types） |
 
 ## 依赖
 
@@ -56,6 +56,8 @@
 
 - `MAX_AGENT_DEPTH` 限制嵌套递归——改 sub-agent 调 sub-agent 时务必尊重深度上限，防失控。
 - 工具走 `ToolProvider` trait 注入（非直接依赖上层 runtime），保持本 crate 处于 L2，不要引入向上依赖。
+- 默认 `recon` 子 agent 是 `target_intel` 的 provider-only 生产者：不暴露 `list_in_scope_targets` / `pentest_run`，避免在 intel 阶段查询尚未生产的目标或 fallback 到 subfinder/dig 类扫描路径；`prober` / `enumerator` 才消费 `list_in_scope_targets`。
+- `SubAgentToolResultHook` 只提供通用结果后处理注入点；具体 harness/evidence/source_query 副作用由上层 runtime 注入，避免本 crate 反向依赖 DB/harness。
 - doc 注释提到的 `golish-web` / `vtcode-core` 为历史描述；当前 Cargo.toml 实际内部依赖以本卡「依赖」段为准。
 
 ## 测试入口

@@ -31,6 +31,8 @@ pub struct ModelContextLimits {
     // Xiaomi MiMo models
     pub xiaomi_mimo: usize,
     pub xiaomi_mimo_omni: usize,
+    // DeepSeek direct API models
+    pub deepseek: usize,
 }
 
 impl Default for ModelContextLimits {
@@ -62,6 +64,8 @@ impl Default for ModelContextLimits {
             // Xiaomi MiMo models
             xiaomi_mimo: 1_000_000,
             xiaomi_mimo_omni: 256_000,
+            // DeepSeek V4 direct API models
+            deepseek: 1_000_000,
         }
     }
 }

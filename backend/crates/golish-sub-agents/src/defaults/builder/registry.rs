@@ -139,8 +139,6 @@ pub async fn create_default_sub_agents_from_registry(
             "recon_map_assets".into(),
             "recon_lookup_whois".into(),
             "manage_targets".into(),
-            "list_in_scope_targets".into(),
-            "pentest_run".into(),
             "submit_stage_deliverable".into(),
             "record_finding".into(),
             "search_knowledge_base".into(),
@@ -160,6 +158,7 @@ pub async fn create_default_sub_agents_from_registry(
         )
         .with_tools(vec![
             "list_in_scope_targets".into(),
+            "list_attack_surface_seeds".into(),
             "manage_targets".into(),
             "pentest_list_tools".into(),
             "pentest_run".into(),

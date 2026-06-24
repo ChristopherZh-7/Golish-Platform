@@ -195,6 +195,21 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// L1b (design 2026-06-24-intel-to-eas-handoff): in-scope recon targets as
+    /// rich attack-surface seeds (value/type/source/status/real_ip/ports/
+    /// http_status/cdn_waf + a computed `priority`), ranked so the EAS specialist
+    /// can prioritise instead of flat-scanning. `cap` truncates the ranked set
+    /// (D3 per-org cap; `None` = no cap). Default empty (test doubles); the app
+    /// layer overrides it through the recon targets service port.
+    async fn attack_surface_seeds(
+        &self,
+        org_id: Option<Uuid>,
+        cap: Option<usize>,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let _ = (org_id, cap);
+        Ok(Vec::new())
+    }
+
     // ── Tasks & Subtasks ────────────────────────────────────────────────
 
     async fn task_create(&self, task: NewTask) -> anyhow::Result<TaskView>;

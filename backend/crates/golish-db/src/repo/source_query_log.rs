@@ -1,9 +1,9 @@
 //! `source_query_log` 物化表写入（#5，设计 `docs/design/2026-06-23-source-query-log.md`）。
 //!
-//! 被动情报「逐源查询日志」：每 `(run × source × query × target)` 一行，记录数据源
-//! 查询的结果态 + 计数 + 用时 + 证据。比 `technique_outcomes`（每 `asset × technique`
-//! 单行）更细——一个 technique 被多个源覆盖时各源各一行，用来证明「查过 CT / WHOIS /
-//! OSINT / 代码平台——但为空 / 失败 / 无凭证」。
+//! 被动情报「逐源查询日志」：每 `(org × run × source × query × target)` 一行，记录
+//! 数据源查询的结果态 + 计数 + 用时 + 证据。比 `technique_outcomes`（每 `asset ×
+//! technique` 单行）更细——一个 technique 被多个源覆盖时各源各一行，用来证明「查过 CT /
+//! WHOIS / OSINT / 代码平台——但为空 / 失败 / 无凭证」。
 //!
 //! 消费模型 B（审计 + source 尝试证明）：命令路径 / enrich 落库点 **upsert** 这里；
 //! reviewer / 报告 / `run_tree.py` 可直接读 DB；gate 只读取它证明某 source/provider
@@ -53,8 +53,9 @@ pub struct SourceQueryLogRow {
     pub evidence_ids: Vec<i64>,
 }
 
-/// upsert：`UNIQUE(run_id, source, query, target)` 冲突 → 更新可变态（status / 计数 /
-/// 证据 / timing / detail / updated_at），幂等不堆叠（重跑同 (源,查询,目标) 只刷新最新态）。
+/// upsert：`UNIQUE(organization_id, run_id, source, query, target)` 冲突 → 更新可变态
+/// （status / 计数 / 证据 / timing / detail / updated_at），幂等不堆叠（同 org 重跑同
+/// (源,查询,目标) 只刷新最新态；不同 org 各自隔离）。
 /// 键列（org/run/source/query/target）与 `created_at` 不在 SET 子句里。
 const UPSERT_SQL: &str = "\
 INSERT INTO source_query_log \
@@ -62,7 +63,7 @@ INSERT INTO source_query_log \
    result_count, evidence_ids, detail, started_at, finished_at) \
 VALUES \
   ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
-ON CONFLICT (run_id, source, query, target) DO UPDATE SET \
+ON CONFLICT (organization_id, run_id, source, query, target) DO UPDATE SET \
   technique = EXCLUDED.technique, \
   status = EXCLUDED.status, \
   result_count = EXCLUDED.result_count, \
@@ -118,7 +119,8 @@ mod tests {
 
     #[test]
     fn upsert_sql_targets_unique_key() {
-        assert!(UPSERT_SQL.contains("ON CONFLICT (run_id, source, query, target) DO UPDATE"));
+        assert!(UPSERT_SQL
+            .contains("ON CONFLICT (organization_id, run_id, source, query, target) DO UPDATE"));
         assert!(UPSERT_SQL.contains("updated_at = NOW()"));
     }
 

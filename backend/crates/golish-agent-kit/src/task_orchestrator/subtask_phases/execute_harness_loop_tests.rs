@@ -25,6 +25,7 @@ use super::HarnessGateOutcome;
 /// transition driver touches nothing else, so every other method is a stub.
 struct MemRepo {
     op_state: Mutex<HashMap<Uuid, OperationStateView>>,
+    advance_count: Mutex<usize>,
     /// Canned `wiki_search_fts` result for the P3 RAG-prior wiring tests.
     /// Defaults to `Null` (no hits); the transition-driver tests never read it.
     wiki_result: Mutex<serde_json::Value>,
@@ -48,6 +49,7 @@ impl MemRepo {
         );
         Arc::new(Self {
             op_state: Mutex::new(m),
+            advance_count: Mutex::new(0),
             wiki_result: Mutex::new(serde_json::Value::Null),
             tasks: Mutex::new(HashMap::new()),
         })
@@ -60,6 +62,10 @@ impl MemRepo {
             .unwrap()
             .get(&operation_id)
             .map(|s| s.current_stage.clone())
+    }
+
+    fn advance_count(&self) -> usize {
+        *self.advance_count.lock().unwrap()
     }
 
     /// Seed a `tasks` row with a given status (P1 finalize tests).
@@ -128,6 +134,7 @@ impl DbRepoProvider for MemRepo {
         operation_id: Uuid,
         new_stage: &str,
     ) -> anyhow::Result<()> {
+        *self.advance_count.lock().unwrap() += 1;
         if let Some(s) = self.op_state.lock().unwrap().get_mut(&operation_id) {
             s.current_stage = new_stage.to_string();
         }
@@ -582,6 +589,39 @@ async fn block_emits_no_stage_passed() {
             .iter()
             .any(|e| matches!(e, AiEvent::TaskProgress { status, .. } if status == "stage_passed")),
         "gate BLOCK must not emit stage_passed"
+    );
+}
+
+/// The graph-flow stage cursor is a "currently executing stage" marker, not a
+/// "last completed stage" marker. Entering a new stage advances
+/// `operation_state.current_stage` and refreshes the freshness anchor once; re-
+/// entering the same stage during resume must not advance again, otherwise
+/// `stage_started_at` would move forward and hide evidence gathered before the
+/// disconnect.
+#[tokio::test]
+async fn stage_entry_sync_advances_only_on_stage_change() {
+    let op = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "red_team", "target_intel");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
+
+    orch.sync_operation_stage_on_entry(op, StageKind::ExternalAttackSurface)
+        .await;
+
+    assert_eq!(repo.stage(op).as_deref(), Some("external_attack_surface"));
+    assert_eq!(
+        repo.advance_count(),
+        1,
+        "entering a different stage should advance the DB cursor once"
+    );
+
+    orch.sync_operation_stage_on_entry(op, StageKind::ExternalAttackSurface)
+        .await;
+
+    assert_eq!(
+        repo.advance_count(),
+        1,
+        "same-stage resume must not refresh stage_started_at"
     );
 }
 

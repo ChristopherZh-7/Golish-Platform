@@ -275,6 +275,24 @@ fn test_model_context_limits_xiaomi_mimo() {
 }
 
 #[test]
+fn test_model_context_limits_deepseek() {
+    let config = TokenBudgetConfig::for_model("deepseek-v4-flash");
+    assert_eq!(config.max_context_tokens, 1_000_000);
+
+    let config = TokenBudgetConfig::for_model("deepseek-v4-pro");
+    assert_eq!(config.max_context_tokens, 1_000_000);
+
+    let config = TokenBudgetConfig::for_model("deepseek-chat");
+    assert_eq!(config.max_context_tokens, 1_000_000);
+
+    let config = TokenBudgetConfig::for_model("deepseek-reasoner");
+    assert_eq!(config.max_context_tokens, 1_000_000);
+
+    let config = TokenBudgetConfig::for_model("deepseek-ai/deepseek-v4-flash");
+    assert_eq!(config.max_context_tokens, 1_000_000);
+}
+
+#[test]
 fn test_model_context_limits_o_series() {
     // o1 model
     let config = TokenBudgetConfig::for_model("o1");

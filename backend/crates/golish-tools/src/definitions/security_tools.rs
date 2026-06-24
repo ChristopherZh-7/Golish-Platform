@@ -233,10 +233,24 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
         },
         FunctionDeclaration {
             name: "list_in_scope_targets".to_string(),
-            description: "List the in-scope targets/assets collected by reconnaissance (organization recon, manual target-add). Returns each target's target_id (UUID), value (domain/IP/URL), and type. Call this FIRST to discover which targets exist, then use query_target_data(target_id) to drill into any one. Takes no arguments.".to_string(),
+            description: "List the in-scope targets/assets collected by reconnaissance (organization recon, manual target-add). Returns each target's target_id (UUID), value (domain/IP/URL/CIDR), type, plus intel context (source, status, real_ip, ports, http_status, cdn_waf, organization_id). Call this FIRST to discover which targets exist, then use query_target_data(target_id) to drill into any one. For a ranked attack-surface worklist, prefer list_attack_surface_seeds. Takes no arguments.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        FunctionDeclaration {
+            name: "list_attack_surface_seeds".to_string(),
+            description: "List in-scope assets as a RANKED attack-surface worklist for active mapping (external_attack_surface). Each seed carries target_id, value, type, source, status, real_ip, ports, http_status, cdn_waf, organization_id and a computed `priority` (resolved/alive web hosts first, whole CIDR netblocks last). Use this to prioritise probing instead of flat-scanning a large set; optional `limit` caps the returned set to the top-N by priority.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Optional cap: return only the top-N seeds by priority. Omit for all."
+                    }
+                },
                 "additionalProperties": false
             }),
         },

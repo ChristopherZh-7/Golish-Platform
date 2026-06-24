@@ -112,5 +112,11 @@ export interface Session {
    * the matching `stage_run` tool row.
    */
   stageRun?: SessionStageRun | null;
+  /**
+   * Request-scoped stage-run snapshots. A chat can contain multiple `stage_run`
+   * tool calls after an interrupt/continue, so rows must be keyed by the tool
+   * requestId instead of one session-wide mutable slot.
+   */
+  stageRuns?: Record<string, SessionStageRun>;
   interactiveMode?: InteractiveModeState | null;
 }

@@ -371,6 +371,7 @@ impl AgentBridge {
             harness_stage: *self.harness_active_stage.read().await,
             harness_authz: *self.harness_active_authz.read().await,
             harness_org_id: *self.harness_active_org_id.read().await,
+            harness_operation_id: *self.harness_active_operation_id.read().await,
             // 设计 2026-06-11 · targeted gate-repair pass: lock this run's
             // tool_choice to `submit_stage_deliverable`.
             harness_submit_only: *self.harness_submit_only.read().await,

@@ -44,6 +44,7 @@ where
     drop(registry);
 
     let tool_provider = DefaultToolProvider::with_db_tracker(ctx.events.db_tracker);
+    let effective_harness_org_id = stage_run_org_id_from_request_id(tool_id).or(ctx.harness_org_id);
 
     let task_desc = tool_args.get("task").and_then(|v| v.as_str()).unwrap_or("");
     // AI-controlled resume: a prior sub-agent session id continues that exact
@@ -54,32 +55,6 @@ where
         _ => None,
     };
 
-    // Route graph tools (which live outside the ToolRegistry) for the delegated
-    // sub-agent, so it can actually run e.g. `graph_add_entity` instead of
-    // getting "Unknown tool". Built only when a graph backend is wired; returns
-    // None for non-graph tools so the executor falls through to the registry.
-    let sub_tool_router: Option<golish_sub_agents::SubAgentToolRouter> =
-        ctx.graph_backend.clone().map(|graph| {
-            let router: golish_sub_agents::SubAgentToolRouter =
-                std::sync::Arc::new(move |name: String, args: serde_json::Value| {
-                    let graph = graph.clone();
-                    Box::pin(async move {
-                        golish_agent_kit::tool_executors::execute_graph_tool(
-                            &name,
-                            &args,
-                            Some(graph.as_ref()),
-                        )
-                        .await
-                    })
-                        as std::pin::Pin<
-                            Box<
-                                dyn std::future::Future<Output = Option<(serde_json::Value, bool)>>
-                                    + Send,
-                            >,
-                        >
-                });
-            router
-        });
     let project_id = {
         let ws = ctx.workspace.read().await;
         ws.to_string_lossy().to_string()
@@ -88,6 +63,59 @@ where
         None
     } else {
         Some(project_id)
+    };
+
+    // Route tools that are exposed to sub-agents but live outside the plain
+    // ToolRegistry. Without this, read-only stage helpers like
+    // list_in_scope_targets are advertised to the model but fail at runtime as
+    // UnknownTool.
+    let sub_tool_router: Option<golish_sub_agents::SubAgentToolRouter> = {
+        let graph = ctx.graph_backend.clone();
+        let tracker = ctx.events.db_tracker.cloned();
+        let project_path = project_id_opt.clone();
+        let session_id = ctx.events.session_id.map(str::to_string);
+        let harness_org_id = effective_harness_org_id;
+        let router: golish_sub_agents::SubAgentToolRouter =
+            std::sync::Arc::new(move |name: String, args: serde_json::Value| {
+                let graph = graph.clone();
+                let tracker = tracker.clone();
+                let project_path = project_path.clone();
+                let session_id = session_id.clone();
+                Box::pin(async move {
+                    if let Some(result) =
+                        golish_agent_kit::tool_executors::execute_security_analysis_tool(
+                            &name,
+                            &args,
+                            tracker.as_ref(),
+                            project_path.as_deref(),
+                            session_id.as_deref(),
+                            harness_org_id,
+                        )
+                        .await
+                    {
+                        return Some(result);
+                    }
+
+                    match graph {
+                        Some(graph) => {
+                            golish_agent_kit::tool_executors::execute_graph_tool(
+                                &name,
+                                &args,
+                                Some(graph.as_ref()),
+                            )
+                            .await
+                        }
+                        None => None,
+                    }
+                })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<Output = Option<(serde_json::Value, bool)>>
+                                + Send,
+                        >,
+                    >
+            });
+        Some(router)
     };
     let briefing = build_sub_agent_briefing(
         ctx.events.db_tracker,
@@ -151,6 +179,44 @@ where
                 golish_agent_kit::harness::is_scan_tool_name(name)
             });
             hider
+        });
+
+    let sub_tool_result_hook: Option<golish_sub_agents::SubAgentToolResultHook> =
+        ctx.harness_stage.map(|stage| {
+            let tracker = ctx.events.db_tracker.cloned();
+            let session_id = ctx.events.session_id.map(str::to_string);
+            let harness_org_id = effective_harness_org_id;
+            let hook: golish_sub_agents::SubAgentToolResultHook = std::sync::Arc::new(
+                move |tool_name: String,
+                      _tool_args: serde_json::Value,
+                      mut result: serde_json::Value,
+                      success: bool| {
+                    let tracker = tracker.clone();
+                    let session_id = session_id.clone();
+                    Box::pin(async move {
+                        if let Some(id) = super::record_recon_passive_evidence(
+                            tracker.as_ref(),
+                            session_id.as_deref(),
+                            Some(stage),
+                            harness_org_id,
+                            &tool_name,
+                            &result,
+                            success,
+                        )
+                        .await
+                        {
+                            if let Some(obj) = result.as_object_mut() {
+                                obj.insert("_evidence_id".to_string(), json!(id));
+                            }
+                        }
+                        (result, success)
+                    })
+                        as std::pin::Pin<
+                            Box<dyn std::future::Future<Output = (serde_json::Value, bool)> + Send>,
+                        >
+                },
+            );
+            hook
         });
 
     // P0-4: persist dispatch lifecycle so the next session can list
@@ -238,6 +304,7 @@ where
                 chain_persistence: ctx.chain_persistence.as_ref(),
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: ctx.post_shell_hook.clone(),
+                post_tool_result_hook: sub_tool_result_hook.clone(),
                 stage_tool_guard: stage_tool_guard.clone(),
                 hide_tool_in_stage: hide_tool_in_stage.clone(),
             };
@@ -276,6 +343,7 @@ where
                 chain_persistence: ctx.chain_persistence.as_ref(),
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: ctx.post_shell_hook.clone(),
+                post_tool_result_hook: sub_tool_result_hook.clone(),
                 stage_tool_guard: stage_tool_guard.clone(),
                 hide_tool_in_stage: hide_tool_in_stage.clone(),
             };
@@ -315,6 +383,7 @@ where
             chain_persistence: ctx.chain_persistence.as_ref(),
             sub_agent_registry: Some(ctx.sub_agent_registry),
             post_shell_hook: ctx.post_shell_hook.clone(),
+            post_tool_result_hook: sub_tool_result_hook.clone(),
             stage_tool_guard: stage_tool_guard.clone(),
             hide_tool_in_stage: hide_tool_in_stage.clone(),
         };
@@ -430,5 +499,31 @@ where
             value: json!({ "error": e.to_string() }),
             success: false,
         }),
+    }
+}
+
+fn stage_run_org_id_from_request_id(request_id: &str) -> Option<uuid::Uuid> {
+    let (_, org_id) = request_id.rsplit_once("::org::")?;
+    uuid::Uuid::parse_str(org_id).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stage_run_org_id_from_request_id;
+
+    #[test]
+    fn stage_run_org_id_parses_per_org_request_id() {
+        let id = "fb90ef2a-eb1c-4288-8f7c-97dc957a26c0";
+        let request_id = format!("call_00_ZRDP0qOpYOpCbInFkBHS5518::org::{id}");
+        assert_eq!(
+            stage_run_org_id_from_request_id(&request_id).map(|u| u.to_string()),
+            Some(id.to_string())
+        );
+    }
+
+    #[test]
+    fn stage_run_org_id_ignores_plain_sub_agent_request_id() {
+        assert!(stage_run_org_id_from_request_id("call_00_plain").is_none());
+        assert!(stage_run_org_id_from_request_id("call_00::org::not-a-uuid").is_none());
     }
 }

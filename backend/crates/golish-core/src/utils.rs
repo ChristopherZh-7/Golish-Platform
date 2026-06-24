@@ -164,6 +164,7 @@ pub fn get_optional_u32(args: &serde_json::Value, key: &str) -> Option<u32> {
 /// A result is considered a failure if:
 /// - It has a non-zero `exit_code` field
 /// - It has an `"error"` field present
+/// - It has empty stdout and stderr that clearly reports an error
 pub fn is_tool_result_success(value: &serde_json::Value) -> bool {
     let is_failure_by_exit_code = value
         .get("exit_code")
@@ -188,7 +189,27 @@ pub fn is_tool_result_success(value: &serde_json::Value) -> bool {
             )
         })
         .unwrap_or(false);
-    !is_failure_by_exit_code && !has_error_field && !explicit_failure_flag && !is_failure_by_status
+    let stderr_failure_with_no_stdout = value
+        .get("stdout")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+        && value
+            .get("stderr")
+            .and_then(|v| v.as_str())
+            .map(|stderr| {
+                let normalized = strip_ansi(stderr).to_ascii_lowercase();
+                ["error", "failed", "exception", "panic"]
+                    .iter()
+                    .any(|needle| normalized.contains(needle))
+            })
+            .unwrap_or(false);
+    !is_failure_by_exit_code
+        && !has_error_field
+        && !explicit_failure_flag
+        && !is_failure_by_status
+        && !stderr_failure_with_no_stdout
 }
 
 /// Simple JSONPath-like resolver: supports `$.foo.bar` and `$.foo[0].bar` patterns.
@@ -336,6 +357,15 @@ mod tests {
     }
 
     #[test]
+    fn tool_result_failure_on_stderr_error_with_empty_stdout() {
+        assert!(!is_tool_result_success(&serde_json::json!({
+            "stdout": "",
+            "stderr": "\u{1b}[1m\u{1b}[31mERROR Opening: https://example.test - can't modify frozen Hash\u{1b}[0m",
+            "exit_code": 0
+        })));
+    }
+
+    #[test]
     fn tool_result_success_for_non_failure_results() {
         // Non-failure status values and clean results stay success (no false ❌).
         assert!(is_tool_result_success(
@@ -353,6 +383,11 @@ mod tests {
         assert!(is_tool_result_success(
             &serde_json::json!({ "stdout": "ok", "exit_code": 0 })
         ));
+        assert!(is_tool_result_success(&serde_json::json!({
+            "stdout": "usable output",
+            "stderr": "WARNING: noisy scanner banner",
+            "exit_code": 0
+        })));
         assert!(is_tool_result_success(&serde_json::json!({})));
     }
 }

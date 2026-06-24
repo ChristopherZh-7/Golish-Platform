@@ -295,6 +295,14 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.in_scope_targets_impl(org_id).await
     }
 
+    async fn attack_surface_seeds(
+        &self,
+        org_id: Option<Uuid>,
+        cap: Option<usize>,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.attack_surface_seeds_impl(org_id, cap).await
+    }
+
     async fn in_scope_target_types(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {
         self.in_scope_target_types_impl(org_id).await
     }

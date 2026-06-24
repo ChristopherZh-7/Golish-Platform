@@ -42,6 +42,28 @@ fn passive_intel_parameters(subject_hint: &str) -> Value {
     })
 }
 
+/// JSON schema for `recon_map_assets`. Same `organization_id` as the shared
+/// passive schema, plus the optional b1 `domain` knob (design 2026-06-24): when
+/// set, the survey runs domain-keyed — only providers/queries that reference
+/// `{{domain}}` fire (e.g. FOFA `domain="x"`) — to expand a newly-discovered
+/// apex's subdomain tree without re-surveying the parent org.
+fn map_assets_parameters() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "organization_id": {
+                "type": "string",
+                "description": "Organization UUID (the confirmed engagement subject to survey assets for). Create/select it first via manage_organizations."
+            },
+            "domain": {
+                "type": "string",
+                "description": "Optional apex domain (e.g. \"example.com\"). When provided, runs a DOMAIN-keyed provider survey (FOFA domain=\"…\" etc.) to expand that domain's subdomain tree instead of the company-name survey. Use it to deepen a newly-discovered apex found during attack-surface mapping. Omit for the normal company-name survey."
+            }
+        },
+        "required": ["organization_id"]
+    })
+}
+
 /// JSON schema for `recon_discover_subsidiaries`. Adds the scope knobs the
 /// scoping agent must ASK the human for (ownership threshold / branches) — see
 /// scoping.methodology.md. Absent fields fall back to provider-config defaults.
@@ -102,11 +124,19 @@ async fn run_phase(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let include_branches = args.get("include_branches").and_then(|v| v.as_bool());
+    // b1 (design 2026-06-24): optional domain-keyed survey (recon_map_assets only;
+    // other phases omit it → None → legacy company-name survey, unchanged).
+    let domain = args
+        .get("domain")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let config = AssetIntelHydrateConfig {
         min_ownership_percent,
         depth: None,
         include_branches,
         create_candidates: Some(true),
+        domain,
     };
 
     match run_passive_intel(Arc::clone(pool), tools.clone(), uid, phase, config).await {
@@ -184,11 +214,11 @@ impl Tool for ReconMapAssetsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Survey an organization's external footprint via cyberspace/intel providers (0.zone / quake / fofa / hunter / shodan / ENScan): domains, IP ranges, ASN, subdomains, certificates, ICP records, apps/mini-programs, exposed emails, and OSINT — landed to the org profile + target_assets (host↔IP pairs carry the surveyed real_ip). Zero-touch. Use during target_intel after the engagement subject is confirmed. WHOIS is a separate tool (recon_lookup_whois). Returns a summary with counts and provider ids."
+        "Survey an organization's external footprint via cyberspace/intel providers (0.zone / quake / fofa / hunter / shodan / ENScan): domains, IP ranges, ASN, subdomains, certificates, ICP records, apps/mini-programs, exposed emails, and OSINT — landed to the org profile + target_assets (host↔IP pairs carry the surveyed real_ip). Zero-touch. Use during target_intel after the engagement subject is confirmed. WHOIS is a separate tool (recon_lookup_whois). Optional `domain` arg runs a DOMAIN-keyed survey (FOFA domain=\"…\") to expand a newly-discovered apex's subdomain tree. Returns a summary with counts and provider ids."
     }
 
     fn parameters(&self) -> Value {
-        passive_intel_parameters("to survey assets for")
+        map_assets_parameters()
     }
 
     async fn execute(&self, args: Value, workspace: &Path) -> Result<Value> {
@@ -383,6 +413,17 @@ mod tests {
         let required = p["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "organization_id"));
         assert!(p["properties"].get("organization_id").is_some());
+    }
+
+    #[test]
+    fn map_assets_schema_has_optional_domain() {
+        // b1 (design 2026-06-24): recon_map_assets exposes an optional `domain`
+        // knob; organization_id stays required.
+        let p = map_assets_parameters();
+        let required = p["required"].as_array().unwrap();
+        assert!(required.iter().any(|r| r == "organization_id"));
+        assert!(!required.iter().any(|r| r == "domain"));
+        assert!(p["properties"].get("domain").is_some());
     }
 
     #[test]

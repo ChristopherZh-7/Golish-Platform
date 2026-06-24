@@ -18,6 +18,7 @@ import { Ansi } from "@/components/Ansi";
 import { StageRunOrgRows } from "@/components/Engagement/StageRunOrgRows";
 import { JsonView } from "@/components/JsonView/JsonView";
 import { Markdown } from "@/components/Markdown";
+import { BackgroundJobsBadge } from "@/components/UnifiedInput/StatusBadges";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -28,7 +29,12 @@ import {
 } from "@/lib/ansi";
 import { safeStringify } from "@/lib/text";
 import { formatDurationLong } from "@/lib/time";
-import { formatCommandForDisplay, getToolColor, getToolLabel } from "@/lib/tools";
+import {
+  formatCommandForDisplay,
+  getToolColor,
+  getToolLabel,
+  toolResultIndicatesFailure,
+} from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { AiToolExecution } from "@/store";
 import { useStore } from "@/store";
@@ -36,6 +42,8 @@ import { useStore } from "@/store";
 interface ToolCallDetailViewProps {
   sessionId: string;
 }
+
+const EMPTY_BG_JOBS: never[] = [];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -304,6 +312,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
   const setDetailViewMode = useStore((s) => s.setDetailViewMode);
   const requestIds = useStore((s) => s.sessions[sessionId]?.toolDetailRequestIds);
   const targetRequestId = requestIds?.[0] ?? null;
+  const backgroundJobs = useStore((s) => s.backgroundJobs[sessionId]) ?? EMPTY_BG_JOBS;
 
   const execution = useStore((s) => {
     if (!targetRequestId) return null;
@@ -322,7 +331,10 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
   // superseded the bespoke StageRunCard/StageRunView). Only attach the rows to the
   // matching tool row — when the run's requestId is known and differs, skip.
   const stageRun = useStore((s) => {
-    const sr = s.sessions[sessionId]?.stageRun ?? null;
+    const session = s.sessions[sessionId];
+    const sr = targetRequestId
+      ? (session?.stageRuns?.[targetRequestId] ?? session?.stageRun ?? null)
+      : (session?.stageRun ?? null);
     if (!sr) return null;
     if (sr.requestId && targetRequestId && sr.requestId !== targetRequestId) return null;
     return sr;
@@ -374,7 +386,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         {stageRunReady && stageRun ? (
           <div className="flex-1 overflow-y-auto px-4 py-3">
             <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
-              逐 org 进度
+              AI workers
             </div>
             <StageRunOrgRows
               rows={stageRun.rows}
@@ -401,8 +413,13 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     );
   }
 
-  const isRunning = execution.status === "running";
-  const isError = execution.status === "error";
+  const displayStatus =
+    execution.status === "completed" && toolResultIndicatesFailure(execution.result)
+      ? "error"
+      : execution.status;
+  const isRunning = displayStatus === "running";
+  const isBackgrounded = displayStatus === "backgrounded";
+  const isError = displayStatus === "error";
   const errorMessage = (() => {
     if (!isError) return null;
     if (typeof execution.result === "string") return execution.result;
@@ -454,11 +471,12 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           variant="outline"
           className={cn(
             "gap-1 flex items-center text-[10px] px-2 py-0.5",
-            STATUS_BADGE_STYLES[execution.status]
+            STATUS_BADGE_STYLES[displayStatus]
           )}
         >
           {isRunning && <Loader2 className="w-3 h-3 animate-spin" />}
-          {getStatusLabel(execution.status)}
+          {isBackgrounded && <Loader2 className="w-3 h-3 animate-spin" />}
+          {getStatusLabel(displayStatus)}
         </Badge>
         {execution.durationMs != null && (
           <span className="text-[11px] text-muted-foreground/70 tabular-nums flex items-center gap-1">
@@ -466,6 +484,9 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
             {formatDurationLong(execution.durationMs)}
           </span>
         )}
+        <div className="ml-auto flex items-center">
+          <BackgroundJobsBadge jobs={backgroundJobs} />
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -490,7 +511,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         {execution.toolName === "stage_run" && stageRun && stageRun.rows.length > 0 && (
           <div className="px-4 py-3 border-b border-border/20">
             <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
-              逐 org 进度
+              AI workers
             </div>
             <StageRunOrgRows
               rows={stageRun.rows}
@@ -498,6 +519,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
               stageLabel={stageRun.stageLabel}
               roleLabel={stageRun.roleLabel}
               coverageAxis={stageRun.coverageAxis}
+              isActive={isRunning}
               onDrillIn={handleDrillIntoOrg}
             />
           </div>
@@ -597,10 +619,24 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         )}
       </div>
 
-      {isRunning && (
-        <div className="px-3 py-2 border-t border-[var(--border-subtle)] bg-accent/5 flex items-center gap-2 flex-shrink-0">
-          <Loader2 className="w-3 h-3 text-accent animate-spin" />
-          <span className="text-[11px] text-accent/80">{t("ai.toolDetail.running")}</span>
+      {(isRunning || isBackgrounded) && (
+        <div
+          className={cn(
+            "px-3 py-2 border-t border-[var(--border-subtle)] flex items-center gap-2 flex-shrink-0",
+            isBackgrounded ? "bg-amber-400/5" : "bg-accent/5"
+          )}
+        >
+          <Loader2
+            className={cn(
+              "w-3 h-3 animate-spin",
+              isBackgrounded ? "text-amber-400" : "text-accent"
+            )}
+          />
+          <span
+            className={cn("text-[11px]", isBackgrounded ? "text-amber-400/80" : "text-accent/80")}
+          >
+            {isBackgrounded ? "Running in background" : t("ai.toolDetail.running")}
+          </span>
         </div>
       )}
     </div>

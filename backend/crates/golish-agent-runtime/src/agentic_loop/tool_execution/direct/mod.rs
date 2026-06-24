@@ -28,6 +28,156 @@ use self::sub_agent_call::execute_sub_agent_call;
 pub(crate) mod stage_run_call;
 use self::stage_run_call::execute_stage_run;
 
+async fn record_recon_passive_evidence(
+    tracker: Option<&golish_agent_kit::db_tracking::DbTracker>,
+    session_id: Option<&str>,
+    harness_stage: Option<golish_agent_kit::harness::StageKind>,
+    harness_org_id: Option<uuid::Uuid>,
+    tool_name: &str,
+    result: &serde_json::Value,
+    success: bool,
+) -> Option<i64> {
+    if !matches!(
+        tool_name,
+        "recon_discover_subsidiaries" | "recon_map_assets" | "recon_lookup_whois"
+    ) || !success
+        || harness_stage.is_none()
+    {
+        return None;
+    }
+
+    let tracker = tracker?;
+    let repo = tracker.repo()?;
+    let op_id = tracker.task_id().unwrap_or_else(|| tracker.session_uuid());
+    let ev_subject = result
+        .get("company")
+        .and_then(|c| c.as_str())
+        .filter(|c| !c.is_empty())
+        .unwrap_or(tool_name);
+    let ev_raw = serde_json::to_string(result).unwrap_or_default();
+    // PR2 · enrich's subject is a COMPANY name, not an in-scope asset
+    // (domain/IP) — no deterministic asset, so no facts. Subsidiary discovery
+    // DOES derive an org-level GOLISH-INTEL-SUBSIDIARY fact from its structured
+    // summary so "ran → 0 qualifying child" can be checked_empty instead of
+    // not_attempted (I8).
+    let facts = (tool_name == "recon_discover_subsidiaries")
+        .then(|| golish_agent_kit::harness::evidence_facts::subsidiary_discovery_facts(result))
+        .flatten();
+
+    match repo
+        .evidence_append(
+            op_id,
+            None,
+            session_id,
+            tracker.project_path(),
+            tool_name,
+            tool_name,
+            ev_subject,
+            &ev_raw,
+            facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
+        )
+        .await
+    {
+        Ok(id) => {
+            tracing::info!(
+                target: "harness::evidence",
+                tool = %tool_name,
+                evidence_id = id,
+                "recon passive evidence appended; surfacing id to agent"
+            );
+
+            if let (Some(org_id), Some(rid), Some((tech, asset, outcome))) = (
+                harness_org_id,
+                session_id,
+                facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
+            ) {
+                if let Err(e) = repo
+                    .upsert_technique_outcome(
+                        org_id,
+                        rid,
+                        asset,
+                        tech,
+                        outcome,
+                        Some(tool_name),
+                        Some(ev_subject),
+                        &[id],
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        target: "harness::evidence",
+                        error = %e,
+                        "technique_outcomes upsert failed (continuing)"
+                    );
+                }
+            }
+
+            if tool_name == "recon_discover_subsidiaries" {
+                if let (Some(org_id), Some(rid)) = (harness_org_id, session_id) {
+                    for lead in
+                        golish_agent_kit::harness::evidence_facts::expansion_leads_from_subsidiary_discovery(result)
+                    {
+                        if let Err(e) = repo
+                            .enqueue_expansion_lead(
+                                org_id,
+                                rid,
+                                lead.lead_type,
+                                &lead.lead_value,
+                                Some(tool_name),
+                                lead.confidence,
+                                &[id],
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                target: "harness::evidence",
+                                error = %e,
+                                "expansion_queue enqueue failed (continuing)"
+                            );
+                        }
+                    }
+                }
+            }
+
+            if let (Some(org_id), Some(rid)) = (harness_org_id, session_id) {
+                for row in recon_source_query_rows(tool_name, result) {
+                    if let Err(e) = repo
+                        .upsert_source_query(
+                            org_id,
+                            rid,
+                            &row.source,
+                            &row.query,
+                            &row.target,
+                            row.technique,
+                            row.status,
+                            &[id],
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            target: "harness::evidence",
+                            error = %e,
+                            source = %row.source,
+                            query = %row.query,
+                            "source_query_log provider upsert failed (continuing)"
+                        );
+                    }
+                }
+            }
+
+            Some(id)
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "harness::evidence",
+                error = %e,
+                "recon passive evidence append failed (continuing)"
+            );
+            None
+        }
+    }
+}
+
 /// Execute a tool directly for generic models (after approval or auto-approved).
 pub async fn execute_tool_direct_generic<M>(
     tool_name: &str,
@@ -527,166 +677,18 @@ where
                 }
             }
 
-            // Passive recon agent tools (recon_discover_subsidiaries /
-            // recon_map_assets / recon_lookup_whois) return a JSON summary (not
-            // stdout). Book it to the ledger so target_intel coverage cells can cite
-            // a REAL evidence id (otherwise the passive-intel deliverable is
-            // "fabricated" and the gate loops). Mirrors the pentest_run block above.
-            if matches!(
+            if let Some(id) = record_recon_passive_evidence(
+                ctx.events.db_tracker,
+                ctx.events.session_id,
+                ctx.harness_stage,
+                ctx.harness_org_id,
                 effective_tool_name,
-                "recon_discover_subsidiaries" | "recon_map_assets" | "recon_lookup_whois"
-            ) && is_success
-                && ctx.harness_stage.is_some()
+                v,
+                is_success,
+            )
+            .await
             {
-                if let Some(tracker) = ctx.events.db_tracker {
-                    if let Some(repo) = tracker.repo() {
-                        let op_id = tracker.task_id().unwrap_or_else(|| tracker.session_uuid());
-                        let ev_subject = v
-                            .get("company")
-                            .and_then(|c| c.as_str())
-                            .filter(|c| !c.is_empty())
-                            .unwrap_or(effective_tool_name);
-                        let ev_raw = serde_json::to_string(&v).unwrap_or_default();
-                        // PR2 · enrich's subject is a COMPANY name, not an in-scope
-                        // asset (domain/IP) — no deterministic asset, so no facts
-                        // (设计 §4 约束3: 歧义即不派生). Per-asset enrich rows are
-                        // the A1 follow-up.
-                        // Phase 2 (2026-06-12-redteam-phase2) · subsidiary discovery
-                        // DOES derive an org-level GOLISH-INTEL-SUBSIDIARY fact from
-                        // its structured summary (promoted_children / status): the
-                        // Empty outcome is what lets "ran → 0 qualifying child" be
-                        // checked_empty instead of not_attempted (I8). The gate hook
-                        // re-projects the company-name asset onto in-scope assets.
-                        let facts = (effective_tool_name == "recon_discover_subsidiaries")
-                            .then(|| {
-                                golish_agent_kit::harness::evidence_facts::subsidiary_discovery_facts(v)
-                            })
-                            .flatten();
-                        match repo
-                            .evidence_append(
-                                op_id,
-                                None,
-                                ctx.events.session_id,
-                                tracker.project_path(),
-                                effective_tool_name,
-                                effective_tool_name,
-                                ev_subject,
-                                &ev_raw,
-                                facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
-                            )
-                            .await
-                        {
-                            Ok(id) => {
-                                appended_evidence_id = Some(id);
-                                tracing::info!(
-                                    target: "harness::evidence",
-                                    tool = %effective_tool_name,
-                                    evidence_id = id,
-                                    "recon passive evidence appended; surfacing id to agent"
-                                );
-                                // PR-C step2b (#4/E3): recon 写点 provenance 物化（仅
-                                // recon_discover_subsidiaries 带 fact）。**始终写**（无灰度开关）
-                                // + org 绑定 + facts；非致命 warn。注：subsidiary fact 的 asset
-                                // 是公司名（org 级），coverage 仍由 db_truth 投影；本表记
-                                // provenance（PR-E 切单源时再处理投影时序）。
-                                if let (Some(org_id), Some(rid), Some((tech, asset, outcome))) = (
-                                    ctx.harness_org_id,
-                                    ctx.events.session_id,
-                                    facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
-                                ) {
-                                    if let Err(e) = repo
-                                        .upsert_technique_outcome(
-                                            org_id,
-                                            rid,
-                                            asset,
-                                            tech,
-                                            outcome,
-                                            Some(effective_tool_name),
-                                            Some(ev_subject),
-                                            &[id],
-                                        )
-                                        .await
-                                    {
-                                        tracing::warn!(
-                                            target: "harness::evidence",
-                                            error = %e,
-                                            "technique_outcomes upsert failed (continuing)"
-                                        );
-                                    }
-                                }
-                                // #6 (设计 2026-06-23-expansion-queue): 发现的子公司候选入
-                                // expansion_queue 作 pending 线索（递归深挖追踪）。**始终开启**
-                                // （无灰度开关，测试阶段默认写）；仅 recon_discover_subsidiaries
-                                // + org 绑定时入队；非致命 warn（写失败 / 表未 apply 只 warn，绝不
-                                // 影响主流程）。消费模型 A：仅写 + reviewer 读（gate 不 block）。
-                                if effective_tool_name == "recon_discover_subsidiaries" {
-                                    if let (Some(org_id), Some(rid)) =
-                                        (ctx.harness_org_id, ctx.events.session_id)
-                                    {
-                                        for lead in golish_agent_kit::harness::evidence_facts::expansion_leads_from_subsidiary_discovery(v) {
-                                            if let Err(e) = repo
-                                                .enqueue_expansion_lead(
-                                                    org_id,
-                                                    rid,
-                                                    lead.lead_type,
-                                                    &lead.lead_value,
-                                                    Some(effective_tool_name),
-                                                    lead.confidence,
-                                                    &[id],
-                                                )
-                                                .await
-                                            {
-                                                tracing::warn!(
-                                                    target: "harness::evidence",
-                                                    error = %e,
-                                                    "expansion_queue enqueue failed (continuing)"
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                                // #5 Phase 2 (设计 2026-06-23-target-intel-provider-source-closure):
-                                // provider-backed recon tools now surface source-level terminal
-                                // status in their JSON summary. Materialize those rows into
-                                // source_query_log so reviewers can see which provider/source
-                                // was queried for this run. This is still reviewer/provenance
-                                // only; gate-read source coverage is a later phase.
-                                if let (Some(org_id), Some(rid)) =
-                                    (ctx.harness_org_id, ctx.events.session_id)
-                                {
-                                    for row in recon_source_query_rows(effective_tool_name, v) {
-                                        if let Err(e) = repo
-                                            .upsert_source_query(
-                                                org_id,
-                                                rid,
-                                                &row.source,
-                                                &row.query,
-                                                &row.target,
-                                                row.technique,
-                                                row.status,
-                                                &[id],
-                                            )
-                                            .await
-                                        {
-                                            tracing::warn!(
-                                                target: "harness::evidence",
-                                                error = %e,
-                                                source = %row.source,
-                                                query = %row.query,
-                                                "source_query_log provider upsert failed (continuing)"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => tracing::warn!(
-                                target: "harness::evidence",
-                                error = %e,
-                                "recon passive evidence append failed (continuing)"
-                            ),
-                        }
-                    }
-                }
+                appended_evidence_id = Some(id);
             }
 
             // P1 · surface the appended evidence id so the agent cites a REAL

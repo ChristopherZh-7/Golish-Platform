@@ -56,7 +56,7 @@ import {
 } from "@/lib/target-panel/engagement";
 import { translateWithFallback } from "@/lib/target-panel/org-fields";
 import {
-  buildHostTree,
+  buildOrgTree,
   collectSubtreeTargets,
   countOrgDeletionImpact,
   type OrgTreeNode,
@@ -309,12 +309,12 @@ export function TargetGroupedView({
     [orgById, orgs, targets]
   );
   const unassignedLabel = t("targets.unassigned");
-  const unresolvedLabel = t("targets.unresolvedGroup");
-  // Single IP-centric tree: orgs spine → IP host nodes (domains live in the
-  // right-hand workbench's "domains" block, not nested in the tree).
+  // Organization-only tree: targets stay on each node for counts/deletion, but
+  // the sidebar does not render asset rows. IP/domain grouping lives in the
+  // right-hand workspace so company navigation stays clean.
   const roots = useMemo(
-    () => buildHostTree(orgs, visibleTargets, unassignedLabel, unresolvedLabel),
-    [orgs, visibleTargets, unassignedLabel, unresolvedLabel]
+    () => buildOrgTree(orgs, visibleTargets, unassignedLabel),
+    [orgs, visibleTargets, unassignedLabel]
   );
   const selectedOrg = useMemo(
     () => orgs.find((o) => o.id === selectedOrgId) ?? orgs[0] ?? null,
@@ -332,6 +332,19 @@ export function TargetGroupedView({
     () => visibleTargets.find((target) => target.id === selectedTargetId) ?? null,
     [selectedTargetId, visibleTargets]
   );
+  const selectedTargetRelatedDomains = useMemo(() => {
+    if (!selectedTarget || selectedTarget.type !== "ip") return [];
+    const ip = selectedTarget.value.trim();
+    if (!ip) return [];
+    return visibleTargets
+      .filter(
+        (target) =>
+          target.id !== selectedTarget.id &&
+          target.organization_id === selectedTarget.organization_id &&
+          (target.real_ip ?? "").trim() === ip
+      )
+      .sort((a, b) => a.value.localeCompare(b.value, "zh"));
+  }, [selectedTarget, visibleTargets]);
 
   // Flatten the synthetic host/bucket nodes for O(1) lookup of the selected one,
   // so the right-hand workbench can show its IP + the domains resolving to it.
@@ -947,8 +960,13 @@ export function TargetGroupedView({
               <TargetSurfaceWorkbench
                 target={selectedTarget}
                 onUpdateNotes={onUpdateNotes}
-                onBack={selectedHost ? () => setSelectedTargetId(null) : undefined}
-                backLabel={selectedHost ? t("targets.backToHost") : undefined}
+                relatedDomains={selectedTargetRelatedDomains}
+                onBack={() => setSelectedTargetId(null)}
+                backLabel={
+                  selectedHost
+                    ? t("targets.backToHost")
+                    : translateWithFallback(t, "targets.backToOrganization", "Back to organization")
+                }
               />
             ) : selectedHost && hostWorkbenchTarget ? (
               <TargetSurfaceWorkbench
@@ -978,6 +996,7 @@ export function TargetGroupedView({
                 expandedCandidateIds={expandedCandidateIds}
                 setExpandedCandidateIds={setExpandedCandidateIds}
                 setEditingTargetId={setEditingTargetId}
+                setSelectedTargetId={setSelectedTargetId}
                 handleRunAssetIntel={handleRunAssetIntel}
                 handleRunOrganizationRecon={handleRunOrganizationRecon}
                 handleExportOrganizationReconAssets={handleExportOrganizationReconAssets}

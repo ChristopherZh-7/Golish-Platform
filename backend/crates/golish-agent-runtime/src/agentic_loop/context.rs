@@ -197,6 +197,10 @@ pub struct AgenticLoopContext<'a> {
     /// confine fan-out / in-scope reads to this org's subtree (root + subs).
     /// `None` = no bound org (legacy whole-DB axis; flag off / chat / pre-scoping).
     pub harness_org_id: Option<uuid::Uuid>,
+    /// Current harness operation id (Task id in graph-flow task mode). Loop-level
+    /// tools use this to update operation-scoped state such as
+    /// `operation_state.state_blob` without guessing from the DB tracker session.
+    pub harness_operation_id: Option<uuid::Uuid>,
 }
 
 /// Check cancellation flag; returns true when the user has requested a stop.

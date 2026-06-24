@@ -38,6 +38,8 @@
 - **不变量（AGENTS.md §2.3）**：组件调后端走 `lib/api/<domain>.ts`，**禁裸 `invoke()`**；`invoke` 只在 `api/client.ts`。
 - **不变量 I1**：错误按 `error-codes.ts` 的 `code` 翻译，不靠 HTTP status 做业务判断。
 - 加新后端域：加 `lib/api/<domain>.ts` wrapper + 在 `api/index.ts` 注册。
+- `target-panel/org-tree.ts` 是 TargetPanel 左侧组织树投影入口，默认只用于公司层级和计数；`target-panel/asset-groups.ts` 负责右侧 Targets 面板的 IP ⇄ 域名/URL 联合分组，避免大型客户的资产列表遮住子公司层级。
+- `tools.ts::toolResultIndicatesFailure` 是工具结果显示态的共享判定：transport success 不等于业务成功，组件画状态图标前要检查 rejected/needs_fix/error/failed、非 0 exit、以及 stderr 里的 ERROR/FATAL/EXCEPTION。
 
 ## 测试入口
 

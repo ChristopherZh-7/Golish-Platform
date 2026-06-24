@@ -17,16 +17,17 @@
 
 import {
   AlertTriangle,
+  Bot,
   CheckCircle2,
   ChevronRight,
   Circle,
   Clock,
   Loader2,
-  Radar,
+  Workflow,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type StageRunStatus = "passed" | "running" | "queued" | "blocked" | "pending";
+export type StageRunStatus = "passed" | "running" | "queued" | "blocked" | "pending" | "stopped";
 
 /** Per-technique terminal state on the coverage axis (mirrors the gate contract). */
 export type TechniqueState = "found" | "checked_empty" | "blocked" | "pending";
@@ -60,11 +61,12 @@ export interface StageRunSummary {
 }
 
 const STATUS_META: Record<StageRunStatus, { label: string; className: string }> = {
-  passed: { label: "Covered", className: "bg-emerald-500/15 text-emerald-400" },
+  passed: { label: "Passed", className: "bg-emerald-500/15 text-emerald-400" },
   running: { label: "Running", className: "bg-sky-500/15 text-sky-400" },
   queued: { label: "Queued", className: "bg-indigo-500/15 text-indigo-400" },
   blocked: { label: "Blocked", className: "bg-amber-500/15 text-amber-400" },
   pending: { label: "Pending", className: "bg-slate-500/15 text-slate-400" },
+  stopped: { label: "Stopped", className: "bg-yellow-500/10 text-yellow-400" },
 };
 
 const TECH_META: Record<TechniqueState, { className: string; mark: string }> = {
@@ -73,6 +75,12 @@ const TECH_META: Record<TechniqueState, { className: string; mark: string }> = {
   blocked: { className: "bg-amber-500/15 text-amber-300 border-amber-500/30", mark: "!" },
   pending: { className: "bg-transparent text-muted-foreground/40 border-border/40", mark: "·" },
 };
+
+function roleAgentLabel(roleLabel: string) {
+  const label = roleLabel.trim();
+  if (!label) return "Specialist Agent";
+  return /agent$/i.test(label) ? label : `${label} Agent`;
+}
 
 function CollectorGlyph({ status }: { status: StageRunStatus }) {
   switch (status) {
@@ -84,6 +92,8 @@ function CollectorGlyph({ status }: { status: StageRunStatus }) {
       return <Clock className="h-3.5 w-3.5 shrink-0 text-indigo-400" />;
     case "blocked":
       return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-400" />;
+    case "stopped":
+      return <Circle className="h-3.5 w-3.5 shrink-0 text-yellow-400" />;
     default:
       return <Circle className="h-3.5 w-3.5 shrink-0 text-slate-500" />;
   }
@@ -132,6 +142,7 @@ function CollectorCard({
   const meta = STATUS_META[row.status];
   const drillId = row.agentRequestId ?? null;
   const clickable = Boolean(onDrillIn && drillId);
+  const workerLabel = roleAgentLabel(roleLabel);
 
   const containerClass = cn(
     "block w-full rounded-lg border bg-background/50 p-2.5 text-left transition-colors",
@@ -149,8 +160,8 @@ function CollectorCard({
         <CollectorGlyph status={row.status} />
         {roleLabel && (
           <span className="inline-flex shrink-0 items-center gap-1 rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] font-medium text-cyan-300">
-            <Radar className="h-2.5 w-2.5" />
-            {roleLabel}
+            <Bot className="h-2.5 w-2.5" />
+            {workerLabel}
           </span>
         )}
         <span className="min-w-0 truncate text-[12px] font-medium" title={row.name}>
@@ -186,7 +197,7 @@ function CollectorCard({
             aria-hidden="true"
           />
           <span className="truncate" title={row.activity}>
-            正在 {row.activity}
+            {workerLabel} 正在 {row.activity}
           </span>
         </div>
       )}
@@ -201,7 +212,7 @@ function CollectorCard({
         type="button"
         className={containerClass}
         onClick={() => onDrillIn(drillId)}
-        title={`查看 ${row.name} 的子 agent 详情（对话 / 思考 / 工具调用）`}
+        title={`打开 ${row.name} 的 ${workerLabel} 详情（对话 / 思考 / 工具调用）`}
       >
         {body}
       </button>
@@ -221,6 +232,12 @@ export interface StageRunOrgRowsProps {
   /** Coverage technique columns for this stage (config-driven). */
   coverageAxis: string[];
   /**
+   * Whether the parent `stage_run` tool is still active. When false, live
+   * running/queued rows are projected into a stopped display state so stale
+   * progress snapshots do not look like active work.
+   */
+  isActive?: boolean;
+  /**
    * Drill from an org row into that org's specialist sub-agent detail. Given the
    * row's `agentRequestId`; only rows that carry one render as clickable. Wired
    * by {@link ToolCallDetailView} to open the sub-agent detail pane.
@@ -238,25 +255,51 @@ export function StageRunOrgRows({
   stageLabel,
   roleLabel,
   coverageAxis,
+  isActive = true,
   onDrillIn,
 }: StageRunOrgRowsProps) {
+  const inactiveStoppedCount = isActive
+    ? 0
+    : rows.filter((row) => row.status === "running" || row.status === "queued").length;
+  const displayRows: StageRunRow[] = isActive
+    ? rows
+    : rows.map((row): StageRunRow => {
+        if (row.status !== "running" && row.status !== "queued") return row;
+        return { ...row, status: "stopped", activity: undefined };
+      });
+  const displaySummary: StageRunSummary = isActive ? summary : { ...summary, active: 0, queued: 0 };
   const summaryText = [
-    `${summary.covered}/${summary.total} covered`,
-    summary.active > 0 ? `${summary.active} active` : null,
-    summary.queued > 0 ? `${summary.queued} queued` : null,
-    summary.blocked > 0 ? `${summary.blocked} blocked` : null,
+    `${displaySummary.covered}/${displaySummary.total} passed`,
+    displaySummary.active > 0 ? `${displaySummary.active} active` : null,
+    displaySummary.queued > 0 ? `${displaySummary.queued} queued` : null,
+    inactiveStoppedCount > 0 ? `${inactiveStoppedCount} stopped` : null,
+    displaySummary.blocked > 0 ? `${displaySummary.blocked} blocked` : null,
   ]
     .filter(Boolean)
     .join(" · ");
+  const workerCount = Math.max(displaySummary.total, displayRows.length);
+  const workerText = `${workerCount} ${workerCount === 1 ? "worker" : "workers"}`;
+  const workerLabel = roleAgentLabel(roleLabel);
 
   return (
     <div className="space-y-1.5">
-      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-        <span className="font-semibold text-foreground/90">{stageLabel}</span>
-        <span className="min-w-0 flex-1 truncate">{summaryText}</span>
+      <div className="rounded-md border border-border/30 bg-muted/20 px-2.5 py-2">
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+          <span className="font-semibold text-foreground/90">{stageLabel}</span>
+          <span className="inline-flex items-center gap-1 rounded bg-muted/50 px-1.5 py-0.5 text-muted-foreground">
+            <Workflow className="h-2.5 w-2.5" />
+            Main Agent
+          </span>
+          <ChevronRight className="h-3 w-3 text-muted-foreground/40" />
+          <span className="inline-flex items-center gap-1 rounded bg-cyan-500/15 px-1.5 py-0.5 font-medium text-cyan-300">
+            <Bot className="h-2.5 w-2.5" />
+            {workerLabel} · {workerText}
+          </span>
+        </div>
+        <div className="mt-1 truncate text-[10px] text-muted-foreground/70">{summaryText}</div>
       </div>
       <div className="space-y-1.5">
-        {rows.map((row) => (
+        {displayRows.map((row) => (
           <CollectorCard
             key={row.id}
             row={row}

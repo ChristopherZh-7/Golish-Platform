@@ -86,6 +86,7 @@ interface OrgTreeProps {
   handleAddTargetSubmit: (orgId: string) => void;
   handleSaveEditOrg: () => void;
   closeAllEditors: () => void;
+  showAssetsInTree?: boolean;
   t: (key: string) => string;
 }
 
@@ -141,6 +142,7 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
     handleAddTargetSubmit,
     handleSaveEditOrg,
     closeAllEditors,
+    showAssetsInTree = false,
     t,
   } = props;
 
@@ -213,7 +215,6 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
     );
   };
 
-  const isCollapsed = collapsed.has(node.id);
   const counts = countAllTargets(node);
   const isUnassigned = node.id === UNASSIGNED_KEY;
   // Synthetic IP-centric nodes (`buildHostTree`): host = an IP group, bucket =
@@ -222,9 +223,11 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
   const isOrg = kind === "org";
   const isHost = kind === "host";
   const isBucket = kind === "bucket";
+  const isSelectedOrg = selectedOrgId === node.id && isOrg && !isUnassigned;
   // Host & bucket nodes are selectable leaves in the IP view: clicking selects
   // them (→ that IP's workbench on the right) rather than expanding nested rows.
   const isLeafSelectable = isHost || isBucket;
+  const isCollapsed = collapsed.has(node.id);
 
   // Asset sub-group state. Membership in `collapsed` flips the size-based
   // default, so an untouched large group starts folded while an untouched small
@@ -298,8 +301,9 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
       ) : (
         <div
           className={cn(
-            "flex items-center gap-1 px-2 py-1 hover:bg-muted/15 transition-colors group rounded",
-            selectedOrgId === node.id && !isUnassigned && "bg-muted/15",
+            "flex items-center gap-1 border-l-2 border-transparent px-2 py-1 hover:bg-muted/15 transition-colors group rounded-r",
+            isSelectedOrg &&
+              "border-accent bg-accent/12 shadow-[inset_0_0_0_1px_hsl(var(--accent)/0.18)]",
             isLeafSelectable && selectedHostId === node.id && "bg-muted/20"
           )}
           style={{ paddingLeft: `${8 + depth * 16}px` }}
@@ -336,12 +340,27 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
             ) : !isOrg || isUnassigned ? (
               <FolderOpen className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" />
             ) : (
-              <Building2 className="w-3 h-3 text-accent/70 flex-shrink-0" />
+              <Building2
+                className={cn(
+                  "w-3 h-3 flex-shrink-0",
+                  isSelectedOrg ? "text-accent" : "text-accent/70"
+                )}
+              />
             )}
-            <span className="min-w-0 truncate text-[11px] font-medium text-foreground">
+            <span
+              className={cn(
+                "min-w-0 truncate text-[11px] font-medium",
+                isSelectedOrg ? "text-accent" : "text-foreground"
+              )}
+            >
               {node.name}
             </span>
-            <span className="flex-shrink-0 text-[10px] text-muted-foreground/55 tabular-nums">
+            <span
+              className={cn(
+                "flex-shrink-0 text-[10px] tabular-nums",
+                isSelectedOrg ? "text-accent/80" : "text-muted-foreground/55"
+              )}
+            >
               {counts.total}
             </span>
             {counts.inScope > 0 && (
@@ -483,7 +502,7 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
 
       {!isCollapsed && (
         <div className="space-y-px">
-          {isOrg && node.targets.length > 0 && (
+          {showAssetsInTree && isOrg && node.targets.length > 0 && (
             // Org node: keep the collapsible "资产" sub-group so a large asset
             // list can be folded independently of the org's sub-orgs. Host /
             // bucket nodes intentionally render no nested rows — their domains

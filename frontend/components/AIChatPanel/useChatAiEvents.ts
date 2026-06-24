@@ -231,10 +231,35 @@ export function useChatAiEvents({
             case "tool_result": {
               const resultStr =
                 typeof event.result === "string" ? event.result : safeStringify(event.result);
-              store.updateMessageToolResult(convId, event.tool_name, resultStr, event.success);
+              store.updateMessageToolResult(
+                convId,
+                event.tool_name,
+                resultStr,
+                event.success,
+                event.request_id
+              );
               if (pendingApprovalRef.current?.requestId === event.request_id) {
                 setPendingApproval(null);
               }
+              break;
+            }
+
+            case "tool_background_completed": {
+              store.updateMessageToolResultByJobId(
+                convId,
+                event.job_id,
+                safeStringify({
+                  status: event.status,
+                  job_id: event.job_id,
+                  command: event.command,
+                  exit_code: event.exit_code ?? null,
+                  stdout: event.stdout_tail,
+                  stderr: event.stderr_tail,
+                  duration_ms: event.duration_ms,
+                  backgrounded_completed: true,
+                }),
+                event.status === "done"
+              );
               break;
             }
 

@@ -28,6 +28,10 @@
 | `selectors/`（app/session/agent-tree/anchors/pane-leaf/store-hooks） | 派生选择器 |
 | `types/` | 共享状态类型 |
 
+`Session.stageRuns` 按 `stage_run` 工具 `requestId` 缓存逐 org 进度；`Session.stageRun` 保留为当前/兼容快照。中断后继续产生新的 `stage_run` 时，UI 必须按 requestId 读取对应快照，不能用 session 级单槽覆盖旧/新 run。
+
+`conversation.updateMessageToolResult` 优先按 `requestId` 精确回填工具结果，工具名只作旧路径兜底；后台工具完成事件通过 `updateMessageToolResultByJobId` 按原 backgrounded result 里的 `job_id` 回填聊天气泡，避免同名 `pentest_run` 串结果或 backgrounded 长期显示成功态。
+
 ## 依赖
 
 - `zustand`（+ devtools/immer middleware）、`immer`；消费 `lib`（类型/api）、被 `components`/`hooks` 订阅

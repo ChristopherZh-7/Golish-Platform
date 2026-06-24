@@ -668,6 +668,7 @@ impl TaskOrchestrator {
                 .and_then(|s| s.engagement_org_id),
         };
         let mut exec_ctx = ExecutionContext {
+            operation_id: Some(task_id),
             completed_results: Vec::new(),
             task_input,
             current_subtask: None,
@@ -843,6 +844,7 @@ impl TaskOrchestrator {
                         planner_subtasks = indices.len(),
                         "graph-flow: entering stage"
                     );
+                    self.sync_operation_stage_on_entry(task_id, req.stage).await;
                     // Two-level model (flag on): run the stage, then hold for human
                     // approval before crossing a 大阶段 boundary. A decline that
                     // carries a reviewer note re-runs THIS stage with the note as a
@@ -889,26 +891,6 @@ impl TaskOrchestrator {
                             }
                         }
                     };
-                    // G · observability: the graph-driven path advanced the cursor
-                    // silently; mirror the legacy path's "cursor advanced" log so a
-                    // run's stage progression is visible end-to-end.
-                    match crate::db_shim::operation_state::advance_stage(
-                        &*self.repo, task_id, req.stage.as_str(),
-                    )
-                    .await
-                    {
-                        Ok(()) => tracing::info!(
-                            target: "harness::hook",
-                            task_id = %task_id,
-                            stage = %req.stage.as_str(),
-                            "graph-flow: operation_state cursor advanced past stage"
-                        ),
-                        Err(e) => tracing::warn!(
-                            target: "harness::hook",
-                            error = %e,
-                            "graph-flow: advance_stage failed"
-                        ),
-                    }
                     let _ = req.reply.send(outcome);
                 }
             }
@@ -978,6 +960,57 @@ impl TaskOrchestrator {
     /// bridge side-channel.
     fn sync_engagement_org_into(&self, exec_ctx: &mut ExecutionContext) {
         exec_ctx.harness_org_id = self.harness_org_id;
+    }
+
+    /// Keep the operation-state cursor aligned with the stage currently being
+    /// executed. `operation_state.advance_stage` also refreshes `stage_started_at`,
+    /// so we only call it when the stage actually changes; a same-stage resume must
+    /// preserve the original start time for freshness-window gates.
+    async fn sync_operation_stage_on_entry(&self, task_id: Uuid, stage: crate::harness::StageKind) {
+        let desired = stage.as_str();
+        match crate::db_shim::operation_state::get(&*self.repo, task_id).await {
+            Ok(Some(state)) if state.current_stage == desired => {
+                tracing::debug!(
+                    target: "harness::hook",
+                    task_id = %task_id,
+                    stage = %desired,
+                    "graph-flow: operation_state cursor already at stage"
+                );
+            }
+            Ok(Some(state)) => {
+                match crate::db_shim::operation_state::advance_stage(&*self.repo, task_id, desired)
+                    .await
+                {
+                    Ok(()) => tracing::info!(
+                        target: "harness::hook",
+                        task_id = %task_id,
+                        previous_stage = %state.current_stage,
+                        stage = %desired,
+                        "graph-flow: operation_state cursor entered stage"
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "harness::hook",
+                        task_id = %task_id,
+                        stage = %desired,
+                        error = %e,
+                        "graph-flow: operation_state stage-entry sync failed"
+                    ),
+                }
+            }
+            Ok(None) => tracing::warn!(
+                target: "harness::hook",
+                task_id = %task_id,
+                stage = %desired,
+                "graph-flow: operation_state missing during stage-entry sync"
+            ),
+            Err(e) => tracing::warn!(
+                target: "harness::hook",
+                task_id = %task_id,
+                stage = %desired,
+                error = %e,
+                "graph-flow: operation_state stage-entry lookup failed"
+            ),
+        }
     }
 
     /// P2 方案 C · run one stage's subtask group under the Executor.

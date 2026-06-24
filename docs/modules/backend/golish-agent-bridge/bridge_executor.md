@@ -41,6 +41,7 @@
 
 - 角色分工：Generator/Refiner/Reporter **无工具无历史**（one-shot），Primary 才用全 loop——别给 one-shot 角色挂工具。
 - 历史在 A1-3 从 golish-ai 搬来，依赖 `AgentBridge`（所以放 bridge crate 而非 agent-kit）。
+- Task-mode Primary 每次进 loop 前会通过 `AgentBridge` side-channel 发布当前 `harness_stage` / `harness_authz` / engagement org / operation id；`stage_run` 等 loop 工具依赖 operation id 写同一条 `operation_state`，不要只猜 `DbTracker.session_uuid`。
 
 ## 测试入口
 

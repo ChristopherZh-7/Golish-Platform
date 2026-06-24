@@ -46,6 +46,8 @@ struct OrgUnit {
     ownership_percent: Option<f64>,
 }
 
+const STAGE_RUN_WORKERS_KEY: &str = "stage_run_workers";
+
 /// Parse the `orgs` argument into per-org units. The main agent passes the
 /// in-scope organization tree it built during scoping (each `{id, name,
 /// ownership_percent?}`); the per-org gate enforces DB truth downstream, so a
@@ -236,6 +238,134 @@ async fn resume_skip_passed_at(
         .await?;
     completion_is_fresh(passed_at, chrono::Utc::now(), STAGE_COMPLETION_TTL_SECS)
         .then_some(passed_at)
+}
+
+fn parse_sub_agent_session_id(response: &str) -> Option<uuid::Uuid> {
+    let marker = "[sub_agent_session_id:";
+    let start = response.rfind(marker)? + marker.len();
+    let id = response[start..].split(']').next()?.trim();
+    uuid::Uuid::parse_str(id).ok()
+}
+
+fn stage_run_worker_chain_from_blob(
+    blob: &Value,
+    stage: StageKind,
+    org_id: &str,
+    specialist: &str,
+) -> Option<uuid::Uuid> {
+    let entry = blob
+        .get(STAGE_RUN_WORKERS_KEY)?
+        .get(stage.as_str())?
+        .get(org_id)?;
+    let stored_specialist = entry.get("specialist").and_then(|v| v.as_str())?;
+    if stored_specialist != specialist {
+        return None;
+    }
+    entry
+        .get("chain_id")
+        .and_then(|v| v.as_str())
+        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+}
+
+fn ensure_object(value: &mut Value) -> &mut serde_json::Map<String, Value> {
+    if !value.is_object() {
+        *value = json!({});
+    }
+    value.as_object_mut().unwrap()
+}
+
+fn upsert_stage_run_worker_blob(
+    mut blob: Value,
+    stage: StageKind,
+    unit: &OrgUnit,
+    specialist: &str,
+    org_request_id: &str,
+    chain_id: uuid::Uuid,
+) -> Value {
+    let root = ensure_object(&mut blob);
+    let workers = root
+        .entry(STAGE_RUN_WORKERS_KEY.to_string())
+        .or_insert_with(|| json!({}));
+    let stage_map = ensure_object(
+        ensure_object(workers)
+            .entry(stage.as_str().to_string())
+            .or_insert_with(|| json!({})),
+    );
+    stage_map.insert(
+        unit.id.clone(),
+        json!({
+            "chain_id": chain_id.to_string(),
+            "specialist": specialist,
+            "org_name": unit.name.clone(),
+            "tool_call_id": org_request_id,
+            "updated_at": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
+    blob
+}
+
+fn stage_run_operation_id(ctx: &AgenticLoopContext<'_>) -> Option<uuid::Uuid> {
+    ctx.harness_operation_id.or_else(|| {
+        ctx.events
+            .db_tracker
+            .map(|tracker| tracker.task_id().unwrap_or_else(|| tracker.session_uuid()))
+    })
+}
+
+async fn load_stage_run_worker_chain(
+    ctx: &AgenticLoopContext<'_>,
+    stage: StageKind,
+    unit: &OrgUnit,
+    specialist: &str,
+) -> Option<uuid::Uuid> {
+    let tracker = ctx.events.db_tracker?;
+    let repo = tracker.repo()?;
+    let operation_id = stage_run_operation_id(ctx)?;
+    let state = golish_agent_kit::db_shim::operation_state::get(repo, operation_id)
+        .await
+        .ok()
+        .flatten()?;
+    stage_run_worker_chain_from_blob(&state.state_blob, stage, &unit.id, specialist)
+}
+
+async fn persist_stage_run_worker_chain(
+    ctx: &AgenticLoopContext<'_>,
+    stage: StageKind,
+    unit: &OrgUnit,
+    specialist: &str,
+    org_request_id: &str,
+    chain_id: uuid::Uuid,
+) {
+    let Some(tracker) = ctx.events.db_tracker else {
+        return;
+    };
+    let Some(repo) = tracker.repo() else {
+        return;
+    };
+    let Some(operation_id) = stage_run_operation_id(ctx) else {
+        return;
+    };
+    let current = golish_agent_kit::db_shim::operation_state::get(repo, operation_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|state| state.state_blob)
+        .unwrap_or_default();
+    let next =
+        upsert_stage_run_worker_blob(current, stage, unit, specialist, org_request_id, chain_id);
+    if let Err(e) =
+        golish_agent_kit::db_shim::operation_state::write_state_blob(repo, operation_id, next).await
+    {
+        tracing::warn!(
+            target: "harness::stage_run",
+            stage = %stage.as_str(),
+            org_id = %unit.id,
+            specialist = %specialist,
+            chain_id = %chain_id,
+            error = %e,
+            "stage_run failed to persist worker resume chain"
+        );
+    }
 }
 
 /// Phase 2 闸1·A-lite: max gate attempts per org before giving up to `gaps`
@@ -479,6 +609,7 @@ where
         // path uses max_attempts=1 so eval/headless never retries.
         let mut attempt = 0usize;
         let mut feedback: Option<String> = None;
+        let mut resume_chain_id = load_stage_run_worker_chain(ctx, stage, unit, &specialist).await;
         loop {
             attempt += 1;
             emit_org_progress(
@@ -488,7 +619,12 @@ where
                 &org_request_id,
                 "running",
                 Some(if attempt == 1 {
-                    format!("dispatching {role_label}")
+                    match resume_chain_id {
+                        Some(chain_id) => {
+                            format!("resuming {role_label} worker ({chain_id})")
+                        }
+                        None => format!("dispatching {role_label}"),
+                    }
                 } else {
                     format!("retry {attempt}/{MAX_ORG_GATE_ATTEMPTS}: closing gate gaps")
                 }),
@@ -510,7 +646,10 @@ where
                     None => base,
                 }
             };
-            let sub_args = json!({ "task": objective });
+            let mut sub_args = json!({ "task": objective });
+            if let Some(chain_id) = resume_chain_id {
+                sub_args["resume"] = json!(chain_id.to_string());
+            }
             let result = execute_sub_agent_call(
                 &sub_agent_tool,
                 &sub_args,
@@ -522,6 +661,25 @@ where
             .await;
 
             let sub_ok = matches!(&result, Ok(r) if r.success);
+            if let Ok(result) = &result {
+                if let Some(chain_id) = result
+                    .value
+                    .get("response")
+                    .and_then(|v| v.as_str())
+                    .and_then(parse_sub_agent_session_id)
+                {
+                    resume_chain_id = Some(chain_id);
+                    persist_stage_run_worker_chain(
+                        ctx,
+                        stage,
+                        unit,
+                        &specialist,
+                        &org_request_id,
+                        chain_id,
+                    )
+                    .await;
+                }
+            }
 
             // Take THIS org's own deliverable: serial execution means the
             // side-channel slot currently holds this org's last submit.
@@ -867,6 +1025,58 @@ mod tests {
             now,
             ttl
         ));
+    }
+
+    #[test]
+    fn parses_sub_agent_session_id_from_response_tail() {
+        let id = uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let response = format!("done\n\n[sub_agent_session_id: {id}]");
+
+        assert_eq!(parse_sub_agent_session_id(&response), Some(id));
+        assert_eq!(parse_sub_agent_session_id("done"), None);
+    }
+
+    #[test]
+    fn stage_run_worker_blob_round_trips_chain_and_preserves_graph_flow() {
+        let chain_id = uuid::Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        let unit = OrgUnit {
+            id: "11111111-1111-1111-1111-111111111111".to_string(),
+            name: "ACME".to_string(),
+            ownership_percent: None,
+        };
+        let existing = json!({
+            "graph_flow": { "next_node": "external_attack_surface" }
+        });
+
+        let blob = upsert_stage_run_worker_blob(
+            existing,
+            StageKind::ExternalAttackSurface,
+            &unit,
+            "recon",
+            "stage_run_1::org::11111111-1111-1111-1111-111111111111",
+            chain_id,
+        );
+
+        assert_eq!(blob["graph_flow"]["next_node"], "external_attack_surface");
+        assert_eq!(
+            stage_run_worker_chain_from_blob(
+                &blob,
+                StageKind::ExternalAttackSurface,
+                &unit.id,
+                "recon"
+            ),
+            Some(chain_id)
+        );
+        assert_eq!(
+            stage_run_worker_chain_from_blob(
+                &blob,
+                StageKind::ExternalAttackSurface,
+                &unit.id,
+                "crawler"
+            ),
+            None,
+            "a different specialist must not resume another worker's chain"
+        );
     }
 
     #[test]

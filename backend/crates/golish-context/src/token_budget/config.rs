@@ -115,6 +115,13 @@ impl TokenBudgetConfig {
             {
                 limits.xiaomi_mimo
             }
+            // DeepSeek direct API models and legacy aliases
+            m if m.contains("deepseek-v4")
+                || m.contains("deepseek-chat")
+                || m.contains("deepseek-reasoner") =>
+            {
+                limits.deepseek
+            }
             // Default fallback
             _ => DEFAULT_MAX_CONTEXT_TOKENS,
         };

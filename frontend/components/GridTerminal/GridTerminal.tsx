@@ -24,6 +24,10 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import "@/styles/grid-terminal.css";
 import { imeGetSource, imeSetSource } from "@/lib/api/shell";
+import {
+  clearTerminalAutoFocusSuppression,
+  isTerminalAutoFocusSuppressed,
+} from "@/lib/terminal/terminalAutoFocus";
 import { GridRow } from "./GridRow";
 import { useGridKeyboard } from "./useGridKeyboard";
 import { useGridResize } from "./useGridResize";
@@ -70,6 +74,7 @@ export const GridTerminal = memo(function GridTerminal({
   // on every grid update.
   useEffect(() => {
     if (!autoFocus || !enabled) return;
+    if (isTerminalAutoFocusSuppressed(sessionId)) return;
     const el = containerRef.current;
     if (!el) return;
     // Defer a frame so React's commit + browser focus race lands in
@@ -90,6 +95,7 @@ export const GridTerminal = memo(function GridTerminal({
   const prevImeSourceRef = useRef<string | null>(null);
   const handleFocus = useCallback(() => {
     setIsFocused(true);
+    clearTerminalAutoFocusSuppression(sessionId);
     imeGetSource()
       .then((src) => {
         if (src && src !== "com.apple.keylayout.ABC") {
@@ -98,7 +104,7 @@ export const GridTerminal = memo(function GridTerminal({
         }
       })
       .catch(() => {});
-  }, []);
+  }, [sessionId]);
   const handleBlur = useCallback(() => {
     setIsFocused(false);
     if (prevImeSourceRef.current) {
@@ -109,8 +115,9 @@ export const GridTerminal = memo(function GridTerminal({
   // Clicking anywhere in the grid should focus the container so the
   // keymap hook starts seeing keystrokes.
   const handleMouseDown = useCallback(() => {
+    clearTerminalAutoFocusSuppression(sessionId);
     containerRef.current?.focus({ preventScroll: true });
-  }, []);
+  }, [sessionId]);
 
   if (snapshot.rowCount === 0) {
     return (

@@ -163,6 +163,7 @@ pub(crate) async fn maybe_run_reflector(
             chain_persistence: ctx.chain_persistence.as_ref(),
             sub_agent_registry: Some(ctx.sub_agent_registry),
             post_shell_hook: None,
+            post_tool_result_hook: None,
             stage_tool_guard: None,
             hide_tool_in_stage: None,
         };

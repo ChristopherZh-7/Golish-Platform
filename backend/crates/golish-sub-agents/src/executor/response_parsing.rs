@@ -271,6 +271,7 @@ where
                         chain_persistence: ctx.chain_persistence,
                         sub_agent_registry: ctx.sub_agent_registry,
                         post_shell_hook: ctx.post_shell_hook.clone(),
+                        post_tool_result_hook: ctx.post_tool_result_hook.clone(),
                         // Propagate the stage boundary to nested sub-agents so a
                         // deeper delegate can't bypass the stage's forbidden tools.
                         stage_tool_guard: ctx.stage_tool_guard.clone(),
@@ -513,7 +514,7 @@ where
                     Err(e) => (serde_json::json!({ "error": e.to_string() }), false),
                 }
             } else {
-                // Try the injected router first (graph/memory tools that live
+                // Try the injected router first (security/graph tools that live
                 // outside the ToolRegistry); fall through to the registry.
                 let routed = match &ctx.sub_tool_router {
                     Some(router) => router(tool_name.to_string(), tool_args.clone()).await,
@@ -533,7 +534,7 @@ where
         })
         .await;
 
-        let (mut result_value, success) = match tool_result {
+        let (mut result_value, mut success) = match tool_result {
             Ok(result) => result,
             Err(_) => {
                 let error_msg = format!(
@@ -550,6 +551,19 @@ where
                 (serde_json::json!({ "error": error_msg }), false)
             }
         };
+
+        if let Some(hook) = ctx.post_tool_result_hook.as_ref() {
+            let hook = Arc::clone(hook);
+            let (hooked_value, hooked_success) = hook(
+                tool_name.to_string(),
+                tool_args.clone(),
+                result_value,
+                success,
+            )
+            .await;
+            result_value = hooked_value;
+            success = hooked_success;
+        }
 
         // Q3 ③ · stage-annotate `pentest_list_tools` so this worker sees, per
         // tool, whether the active stage permits it — instead of discovering the

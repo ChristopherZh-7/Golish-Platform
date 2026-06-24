@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { handleHarnessTrace } from "./harness-handlers";
+import { handleHarnessTrace, stageRunRequestIdFromAgentRequestId } from "./harness-handlers";
 import type { EventHandlerContext } from "./types";
 
 function mockCtx(upsert: ReturnType<typeof vi.fn>): EventHandlerContext {
@@ -62,6 +62,13 @@ describe("handleHarnessTrace", () => {
     expect(meta.stageLabel).toBe("Target Intel");
     expect(meta.roleLabel).toBe("Recon");
     expect(meta.coverageAxis).toEqual(["DNS", "CT"]);
+    expect(meta.requestId).toBe("op");
+  });
+
+  it("extracts the stage_run tool request id from an org agent request id", () => {
+    expect(stageRunRequestIdFromAgentRequestId("tool-13::org::org-1")).toBe("tool-13");
+    expect(stageRunRequestIdFromAgentRequestId("tool-13")).toBeNull();
+    expect(stageRunRequestIdFromAgentRequestId(null)).toBeNull();
   });
 
   it("ignores non stage_run_org_progress harness traces", () => {

@@ -1,19 +1,22 @@
 /**
+ * Remove ANSI/control escape sequences for places that render plain text rather
+ * than terminal-emulated output (e.g. JSON scalar values).
+ */
+export function stripAnsiForDisplay(str: string): string {
+  let result = str;
+  result = result.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "");
+  result = result.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
+  result = result.replace(/\x1b[78\\()=>#]/g, "");
+  result = result.replace(/\x1b/g, "");
+  return result.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+}
+
+/**
  * Strip ALL ANSI escape sequences (both control and color codes) from terminal output.
  * Returns plain text suitable for sending to LLMs or rendering without terminal emulation.
  */
 export function stripAllAnsi(str: string): string {
-  let result = str;
-  // OSC sequences: ESC ] ... (BEL | ST)
-  result = result.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "");
-  // CSI sequences: ESC [ ... final_byte (color codes, cursor movement, etc.)
-  result = result.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
-  // Bare ESC sequences (cursor save/restore, ST, etc.)
-  result = result.replace(/\x1b[78\\()]/g, "");
-  // Catch any remaining ESC characters
-  result = result.replace(/\x1b/g, "");
-  // Remove other C0 control characters (except \n, \r, \t)
-  result = result.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+  let result = stripAnsiForDisplay(str);
   // Simulate carriage return (keep last overwrite segment per line)
   result = result
     .split("\n")

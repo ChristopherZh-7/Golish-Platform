@@ -49,6 +49,14 @@ function toCoverage(pairs: [string, string][]): Record<string, TechniqueState> {
   return out;
 }
 
+export function stageRunRequestIdFromAgentRequestId(agentRequestId?: string | null): string | null {
+  if (!agentRequestId) return null;
+  const marker = "::org::";
+  const idx = agentRequestId.indexOf(marker);
+  if (idx <= 0) return null;
+  return agentRequestId.slice(0, idx);
+}
+
 /**
  * Handle a `harness_trace` event. Only `stage_run_org_progress` drives UI today;
  * it upserts the per-org row into the session's stage-run, rendered in the
@@ -77,5 +85,6 @@ export const handleHarnessTrace: EventHandler<Extract<AiEvent, { type: "harness_
     stageLabel: event.stage_label,
     roleLabel: event.role_label,
     coverageAxis: event.coverage_axis ?? [],
+    requestId: stageRunRequestIdFromAgentRequestId(event.agent_request_id),
   });
 };

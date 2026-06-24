@@ -92,7 +92,11 @@ fn add_read_only_target_query_tools_for_stage(
     }
     // `query_target_data(target_id)` needs ids; `list_in_scope_targets` is its
     // documented companion ("call FIRST to discover targets, then drill in").
-    const READ_ONLY_QUERY_TOOLS: &[&str] = &["list_in_scope_targets", "query_target_data"];
+    const READ_ONLY_QUERY_TOOLS: &[&str] = &[
+        "list_in_scope_targets",
+        "list_attack_surface_seeds",
+        "query_target_data",
+    ];
     let any_missing = READ_ONLY_QUERY_TOOLS
         .iter()
         .any(|name| !tools.iter().any(|t| t.name == *name));

@@ -1,18 +1,20 @@
 import { describe, expect, it } from "vitest";
+import type { Organization } from "@/lib/api/organizations";
+import type { Target } from "@/lib/pentest/types";
 import { buildHostTree } from "./org-tree";
 
-const org = { id: "o1", name: "Acme", parent_id: null, sort_order: 0 } as any;
-const tgt = (over: any) =>
+const org = { id: "o1", name: "Acme", parent_id: null, sort_order: 0 } as Organization;
+const tgt = ({ value, ...over }: Partial<Target> & { value: string }): Target =>
   ({
-    id: over.value,
-    name: over.value,
+    id: value,
+    name: value,
     type: "domain",
-    value: over.value,
+    value,
     scope: "in",
     real_ip: "",
     organization_id: "o1",
     ...over,
-  }) as any;
+  }) as Target;
 
 describe("buildHostTree", () => {
   it("nests domains under their real_ip host node and bins unresolved", () => {
@@ -24,12 +26,12 @@ describe("buildHostTree", () => {
     const roots = buildHostTree([org], targets, "Unassigned", "Unresolved");
     const acme = roots[0];
 
-    const host = acme.children.find((c) => c.kind === "host" && c.name === "1.1.1.1");
+    const host = acme.children.find((child) => child.kind === "host" && child.name === "1.1.1.1");
     expect(host).toBeDefined();
     // The IP target itself seeds the host node and the domain resolving to it joins.
     expect(host?.targets.map((x) => x.value).sort()).toEqual(["1.1.1.1", "a.com"]);
 
-    const bucket = acme.children.find((c) => c.kind === "bucket");
+    const bucket = acme.children.find((child) => child.kind === "bucket");
     expect(bucket?.targets.map((x) => x.value)).toEqual(["b.com"]);
 
     // The org's flat target list is emptied — everything moves into host/bucket children.
@@ -41,7 +43,7 @@ describe("buildHostTree", () => {
     const roots = buildHostTree([org], targets, "Unassigned", "Unresolved");
     expect(roots).toHaveLength(1);
     expect(roots[0].id).toBe("o1");
-    const host = roots[0].children.find((c) => c.kind === "host");
+    const host = roots[0].children.find((child) => child.kind === "host");
     expect(host?.name).toBe("9.9.9.9");
     expect(host?.targets.map((x) => x.value).sort()).toEqual(["9.9.9.9", "x.com"]);
   });

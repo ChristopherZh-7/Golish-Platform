@@ -21,6 +21,7 @@ pub async fn execute_security_analysis_tool(
             | "log_scan_result"
             | "query_target_data"
             | "list_in_scope_targets"
+            | "list_attack_surface_seeds"
     );
     if !is_sec_tool {
         return None;
@@ -398,6 +399,28 @@ pub async fn execute_security_analysis_tool(
             };
             let count = rows.len();
             let data = json!({ "in_scope_targets": rows, "count": count });
+            Some((data, true))
+        }
+
+        "list_attack_surface_seeds" => {
+            // L1b (design 2026-06-24): ranked, rich attack-surface seeds for EAS.
+            // Optional `limit`/`cap` truncates the ranked set (D3 per-org cap).
+            let cap = args
+                .get("limit")
+                .or_else(|| args.get("cap"))
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize);
+            let rows = match repo.attack_surface_seeds(harness_org_id, cap).await {
+                Ok(r) => r,
+                Err(e) => {
+                    return Some(error_result(format!(
+                        "Failed to list attack surface seeds: {}",
+                        e
+                    )))
+                }
+            };
+            let count = rows.len();
+            let data = json!({ "attack_surface_seeds": rows, "count": count });
             Some((data, true))
         }
 

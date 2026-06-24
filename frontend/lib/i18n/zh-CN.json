@@ -82,6 +82,7 @@
     "assetsShowMore": "显示更多",
     "assetsShowLess": "收起",
     "backToHost": "返回该 IP",
+    "backToOrganization": "返回组织",
     "surfaceDomainsTitle": "域名",
     "surfaceDomainsHint": "解析到此 IP 的域名",
     "surfaceDomainsEmpty": "暂无域名解析到此 IP",
@@ -161,6 +162,12 @@
     "overview": {
       "placeholder": "按模式展示的工作区骨架。后续会接入后端编排和覆盖率面板。",
       "noTargets": "该组织下还没有关联目标。"
+    },
+    "targetsPanel": {
+      "title": "按 IP 联合资产",
+      "description": "IP、域名和 URL 在右侧合并展示，左侧只保留公司层级。",
+      "moreLinked": "更多关联目标",
+      "noLinkedTargets": "暂无绑定域名或 URL。"
     },
     "candidates": {
       "title": "发现候选项",

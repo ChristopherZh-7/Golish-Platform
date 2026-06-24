@@ -59,7 +59,7 @@ mod tests {
     fn test_build_function_declarations_returns_all_tools() {
         let declarations = build_function_declarations();
 
-        assert_eq!(declarations.len(), 41);
+        assert_eq!(declarations.len(), 42);
 
         let names: Vec<&str> = declarations.iter().map(|d| d.name.as_str()).collect();
 

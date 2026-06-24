@@ -47,7 +47,7 @@ owns 全部表的结构化访问。每个表一个子模块（如 `findings.rs` 
 - **raw SQL allowlist**：极少数裸 sqlx 调用在 `check_repo_ownership.py` ALLOWLIST 登记；新增裸 SQL 要么走 repo，要么显式登记。
 - **不变量 I9**：repo 方法别在事务里调外部 HTTP/MQ/长耗。
 - app crate **不直接写 SQL**：纵向走 `repo::*`，横向跨服务走 `golish-app-core/ports`。
-- `source_query_log::list_for_run` 供 gate/reviewer 只读 `(org, run)` 的 source/provider terminal rows；它证明 source 尝试，不可当作 found truth。
+- `source_query_log` 的幂等键必须包含 `organization_id`：`(organization_id, run_id, source, query, target)`。多 org `stage_run` 扇出时，root/子公司同源 provider 查询不能互相覆盖；`list_for_run` 供 gate/reviewer 只读 `(org, run)` 的 source/provider terminal rows，证明 source 尝试，不可当作 found truth。
 
 ## 测试入口
 

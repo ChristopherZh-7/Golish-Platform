@@ -7,12 +7,13 @@
  * the two heaviest tabs to `AssetIntelActivityPanel` and `CandidateReviewList`.
  */
 
-import { Building2, Crosshair, Globe } from "lucide-react";
+import { Building2, Crosshair, Globe, Network } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import type { AssetIntelProviderDescriptor, AssetIntelRun } from "@/lib/api/asset-intel";
 import type { OrganizationReconRunSnapshot } from "@/lib/api/organization-recon";
 import type { Organization, OrganizationCandidate } from "@/lib/api/organizations";
 import type { Target } from "@/lib/pentest/types";
+import { groupTargetsByHost } from "@/lib/target-panel/asset-groups";
 import {
   getCandidateSourceFilter,
   getVisibleCandidateBuckets,
@@ -59,6 +60,7 @@ interface OrgWorkspacePanelProps {
   expandedCandidateIds: Set<string>;
   setExpandedCandidateIds: Dispatch<SetStateAction<Set<string>>>;
   setEditingTargetId: Dispatch<SetStateAction<string | null>>;
+  setSelectedTargetId: Dispatch<SetStateAction<string | null>>;
   handleRunAssetIntel: (org: Organization, action: AssetIntelOrgActionKind) => void;
   handleRunOrganizationRecon: (org: Organization) => void;
   handleExportOrganizationReconAssets: (
@@ -92,6 +94,7 @@ export function OrgWorkspacePanel({
   expandedCandidateIds,
   setExpandedCandidateIds,
   setEditingTargetId,
+  setSelectedTargetId,
   handleRunAssetIntel,
   handleRunOrganizationRecon,
   handleExportOrganizationReconAssets,
@@ -146,6 +149,15 @@ export function OrgWorkspacePanel({
   const selectedOrgActions = getOrgActionModel(selectedMode, {
     isChild: selectedOrgIsChild,
   });
+  const targetGroups = groupTargetsByHost(
+    selectedTargets,
+    translateWithFallback(t, "targets.unresolvedGroup", "Unresolved")
+  );
+  const visibleTargetGroups = workspaceTab === "overview" ? targetGroups.slice(0, 5) : targetGroups;
+  const openTarget = (targetId: string) => {
+    setEditingTargetId(null);
+    setSelectedTargetId(targetId);
+  };
 
   return (
     <div className="h-full overflow-y-auto p-3 space-y-3">
@@ -285,13 +297,23 @@ export function OrgWorkspacePanel({
         <section className="rounded border border-border/35 bg-muted/5 p-3">
           <div className="flex items-center justify-between gap-2">
             <div>
-              <h4 className="text-xs font-medium text-foreground">{workspace.title}</h4>
+              <h4 className="text-xs font-medium text-foreground">
+                {workspaceTab === "targets"
+                  ? translateWithFallback(t, "targetWorkspace.targetsPanel.title", "Assets by IP")
+                  : workspace.title}
+              </h4>
               <p className="text-[10px] text-muted-foreground/70 mt-1">
-                {translateWithFallback(
-                  t,
-                  "targetWorkspace.overview.placeholder",
-                  "Mode-aware workspace skeleton. Backend orchestration and coverage panels come next."
-                )}
+                {workspaceTab === "targets"
+                  ? translateWithFallback(
+                      t,
+                      "targetWorkspace.targetsPanel.description",
+                      "IPs, domains, and URLs are grouped together so the tree can stay focused on organizations."
+                    )
+                  : translateWithFallback(
+                      t,
+                      "targetWorkspace.overview.placeholder",
+                      "Mode-aware workspace skeleton. Backend orchestration and coverage panels come next."
+                    )}
               </p>
             </div>
           </div>
@@ -308,30 +330,89 @@ export function OrgWorkspacePanel({
               </p>
             </div>
           ) : (
-            <div className="mt-3 space-y-1">
-              {selectedTargets.slice(0, 8).map((target) => (
-                <button
-                  key={target.id}
-                  type="button"
-                  className="w-full flex items-center gap-2 rounded px-2 py-1 text-left hover:bg-muted/30"
-                  onClick={() => setEditingTargetId(target.id)}
-                >
-                  {TYPE_ICONS[target.type] || <Globe className="w-3.5 h-3.5" />}
-                  <span className="text-xs font-mono text-foreground truncate flex-1">
-                    {target.value}
-                  </span>
-                  <span
-                    className={cn(
-                      "text-[9px] px-1.5 py-0.5 rounded",
-                      target.scope === "in"
-                        ? "bg-green-500/10 text-green-400"
-                        : "bg-muted/40 text-muted-foreground"
-                    )}
+            <div className="mt-3 space-y-2">
+              {visibleTargetGroups.map((group) => {
+                const primaryTarget = group.ipTarget ?? group.targets[0];
+                const shownLinkedTargets =
+                  workspaceTab === "overview"
+                    ? group.linkedTargets.slice(0, 4)
+                    : group.linkedTargets;
+                const hiddenLinkedCount = group.linkedTargets.length - shownLinkedTargets.length;
+
+                return (
+                  <div
+                    key={group.id}
+                    className="rounded border border-border/30 bg-background/35 p-2"
                   >
-                    {target.scope}
-                  </span>
-                </button>
-              ))}
+                    <div className="flex min-w-0 items-center gap-2">
+                      <Network className="h-3.5 w-3.5 flex-shrink-0 text-blue-400/75" />
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 truncate text-left font-mono text-xs text-foreground hover:text-accent"
+                        onClick={() => openTarget(primaryTarget.id)}
+                      >
+                        {group.label}
+                      </button>
+                      <span className="rounded bg-muted/30 px-1.5 py-0.5 text-[9px] text-muted-foreground">
+                        {group.targets.length}
+                      </span>
+                      {group.inScope > 0 && (
+                        <span className="rounded bg-green-500/10 px-1.5 py-0.5 text-[9px] text-green-400">
+                          {group.inScope} in
+                        </span>
+                      )}
+                    </div>
+
+                    {shownLinkedTargets.length > 0 ? (
+                      <div className="mt-2 space-y-1 border-l border-border/30 pl-2">
+                        {shownLinkedTargets.map((target) => (
+                          <button
+                            key={target.id}
+                            type="button"
+                            className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-muted/25"
+                            onClick={() => openTarget(target.id)}
+                          >
+                            {TYPE_ICONS[target.type] || (
+                              <Globe className="h-3.5 w-3.5 flex-shrink-0" />
+                            )}
+                            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/90">
+                              {target.value}
+                            </span>
+                            <span
+                              className={cn(
+                                "rounded px-1.5 py-0.5 text-[9px]",
+                                target.scope === "in"
+                                  ? "bg-green-500/10 text-green-400"
+                                  : "bg-muted/40 text-muted-foreground"
+                              )}
+                            >
+                              {target.scope}
+                            </span>
+                          </button>
+                        ))}
+                        {hiddenLinkedCount > 0 && (
+                          <p className="px-1.5 text-[10px] text-muted-foreground/65">
+                            {translateWithFallback(
+                              t,
+                              "targetWorkspace.targetsPanel.moreLinked",
+                              "More linked targets"
+                            )}{" "}
+                            +{hiddenLinkedCount}
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="mt-2 pl-5 text-[10px] text-muted-foreground/60">
+                        {translateWithFallback(
+                          t,
+                          "targetWorkspace.targetsPanel.noLinkedTargets",
+                          "No linked domains or URLs yet."
+                        )}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </section>

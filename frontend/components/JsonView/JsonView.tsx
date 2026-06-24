@@ -12,6 +12,7 @@
  */
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { memo, useState } from "react";
+import { stripAnsiForDisplay } from "@/lib/ansi";
 import { cn } from "@/lib/utils";
 
 const KEY_CLASS = "text-[var(--ansi-cyan)]/80";
@@ -44,14 +45,14 @@ function tableColumns(arr: unknown[]): string[] | null {
 function cellText(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
+  return typeof value === "string" ? stripAnsiForDisplay(value) : String(value);
 }
 
 const Primitive = memo(function Primitive({ value }: { value: unknown }) {
   if (value === null || value === undefined) return <span className={NULL_CLASS}>null</span>;
   switch (typeof value) {
     case "string":
-      return <span className={cn(STRING_CLASS, "break-words")}>{value}</span>;
+      return <span className={cn(STRING_CLASS, "break-words")}>{stripAnsiForDisplay(value)}</span>;
     case "number":
       return <span className={NUMBER_CLASS}>{String(value)}</span>;
     case "boolean":

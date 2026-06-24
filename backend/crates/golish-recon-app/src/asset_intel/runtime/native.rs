@@ -13,6 +13,21 @@ use crate::intel_providers::provider_registry;
 use crate::organizations::{OrganizationCandidate, OrganizationCandidateKind};
 use golish_intel_providers::{ProviderRecord, QueryType};
 
+/// b1 (design 2026-06-24-intel-to-eas-handoff): gate which provider queries run.
+/// In domain-keyed mode only `{{domain}}` queries run; in the legacy
+/// company-name mode only non-`{{domain}}` queries run. This keeps a provider's
+/// company queries from re-surveying the parent org during a domain-scoped
+/// expansion, and keeps domain queries from firing with an empty `{{domain}}`
+/// in the normal survey.
+pub(crate) fn query_applies(template: &str, domain_mode: bool) -> bool {
+    let is_domain_query = template.contains("{{domain}}");
+    if domain_mode {
+        is_domain_query
+    } else {
+        !is_domain_query
+    }
+}
+
 /// Parse the toolsconfig `query_type` string into a provider `QueryType`.
 /// Unknown / "site" → `Site` (every native provider passes raw DSL through on
 /// `Site`, which is what the org-name templates rely on).
@@ -106,7 +121,7 @@ pub(crate) async fn run_native_provider(
     _project_root: &Path,
     run_id: &str,
     company_name: &str,
-    _config: &AssetIntelHydrateConfig,
+    config: &AssetIntelHydrateConfig,
     sink: Option<&EventEmitterHandle>,
 ) -> Result<
     (
@@ -207,8 +222,21 @@ pub(crate) async fn run_native_provider(
     let mut candidates = OrganizationCandidates::default();
     let mut profile_entries: Vec<ProfileFieldEntry> = Vec::new();
     let mut request_evidence = Vec::new();
+    // b1 (design 2026-06-24): domain-keyed survey value (None = legacy company
+    // survey). Gates which queries fire (see `query_applies`).
+    let domain = config
+        .domain
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
     for q in queries {
-        let rendered = q.template.replace("{{company_name}}", company_name);
+        if !query_applies(&q.template, domain.is_some()) {
+            continue;
+        }
+        let mut rendered = q.template.replace("{{company_name}}", company_name);
+        if let Some(d) = domain {
+            rendered = rendered.replace("{{domain}}", d);
+        }
         let qt = parse_query_type(&q.query_type);
         emit_event(
             sink,
@@ -283,4 +311,18 @@ pub(crate) async fn run_native_provider(
         }),
         profile_entries,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::query_applies;
+
+    #[test]
+    fn query_applies_gates_by_domain_mode() {
+        // b1: company queries only in normal mode; domain queries only in domain mode.
+        assert!(query_applies("org=\"{{company_name}}\"", false));
+        assert!(!query_applies("org=\"{{company_name}}\"", true));
+        assert!(query_applies("domain=\"{{domain}}\"", true));
+        assert!(!query_applies("domain=\"{{domain}}\"", false));
+    }
 }

@@ -15,6 +15,7 @@ import {
   Terminal,
   Wrench,
 } from "lucide-react";
+import { stripAnsiForDisplay } from "./ansi";
 import { safeStringify } from "./text";
 
 /**
@@ -166,6 +167,55 @@ export function formatToolResult(result: unknown): string {
     return result;
   }
   return safeStringify(result);
+}
+
+const FAILURE_STATUS_RE = /"status"\s*:\s*"(rejected|needs_fix|error|failed)"/i;
+const STDERR_FAILURE_RE = /(^|\s)(error|fatal|exception)([:\s]|$)/i;
+
+function parseResultObject(result: unknown): Record<string, unknown> | null {
+  if (result != null && typeof result === "object" && !Array.isArray(result)) {
+    return result as Record<string, unknown>;
+  }
+  if (typeof result !== "string") return null;
+  const trimmed = result.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed != null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Some tools return success at the transport layer while their payload is a
+ * domain failure (e.g. `submit_stage_deliverable` needs_fix) or a shell-like
+ * result with `exit_code: 0` but fatal stderr (`whatweb` can do this). UI status
+ * indicators should use this helper before painting a green success icon.
+ */
+export function toolResultIndicatesFailure(result?: unknown): boolean {
+  if (result == null || result === "") return false;
+
+  const text = typeof result === "string" ? result : safeStringify(result);
+  if (FAILURE_STATUS_RE.test(text)) return true;
+
+  const obj = parseResultObject(result);
+  if (!obj) return false;
+
+  const exitCode =
+    typeof obj.exit_code === "number"
+      ? obj.exit_code
+      : typeof obj.exitCode === "number"
+        ? obj.exitCode
+        : null;
+  if (exitCode != null && exitCode !== 0) return true;
+
+  const stderr = [obj.stderr, obj.partial_stderr]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n");
+  return STDERR_FAILURE_RE.test(stripAnsiForDisplay(stderr));
 }
 
 /** Type guard to check if a result is a shell command result */

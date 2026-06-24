@@ -4,6 +4,7 @@ import type { ToolConfig } from "@/lib/pentest/types";
 import { getSettings } from "@/lib/settings";
 import { restoreBatchTerminals } from "@/lib/terminal-restore";
 import { useStore } from "@/store";
+import { activateConversationTerminalFromChat } from "../conversationTerminalActivation";
 import { getConfiguredProviders } from "../providerConfig";
 
 type ApprovalMode = "ask" | "run-all";
@@ -122,23 +123,10 @@ export function useChatStreamingSync(opts: UseChatStreamingSyncOptions): void {
   useEffect(() => {
     if (!activeConvId) return;
     if (terminalRestoreInProgress || useStore.getState().terminalRestoreInProgress) return;
-    const store = useStore.getState();
-    const terminals = store.conversationTerminals[activeConvId];
-    if (terminals && terminals.length > 0) {
-      const firstTerminal = terminals[0];
-      if (store.sessions[firstTerminal] && store.activeSessionId !== firstTerminal) {
-        store.setActiveSession(firstTerminal);
-      }
-      for (const tid of terminals) {
-        const sess = store.sessions[tid];
-        if (sess?.executionMode && sess.executionMode !== "chat") {
-          setChatExecutionMode(sess.executionMode);
-          break;
-        }
-      }
-    } else {
-      setChatExecutionMode("chat");
-    }
+    activateConversationTerminalFromChat(activeConvId, {
+      setChatExecutionMode,
+      emptyExecutionMode: "chat",
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeConvId, terminalRestoreInProgress, setChatExecutionMode]);
 }

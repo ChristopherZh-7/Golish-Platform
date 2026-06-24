@@ -2374,6 +2374,7 @@ async fn test_sub_agent_context_inheritance() {
         chain_persistence: None,
         sub_agent_registry: None,
         post_shell_hook: None,
+        post_tool_result_hook: None,
         stage_tool_guard: None,
         hide_tool_in_stage: None,
     };
@@ -2484,6 +2485,7 @@ async fn test_sub_agent_result_propagation() {
         chain_persistence: None,
         sub_agent_registry: None,
         post_shell_hook: None,
+        post_tool_result_hook: None,
         stage_tool_guard: None,
         hide_tool_in_stage: None,
     };
@@ -2556,6 +2558,7 @@ async fn test_sub_agent_events_emitted() {
         chain_persistence: None,
         sub_agent_registry: None,
         post_shell_hook: None,
+        post_tool_result_hook: None,
         stage_tool_guard: None,
         hide_tool_in_stage: None,
     };
@@ -2666,6 +2669,7 @@ async fn test_sub_agent_error_handling() {
         chain_persistence: None,
         sub_agent_registry: None,
         post_shell_hook: None,
+        post_tool_result_hook: None,
         stage_tool_guard: None,
         hide_tool_in_stage: None,
     };
@@ -2755,6 +2759,7 @@ async fn test_sub_agent_tool_restrictions() {
         chain_persistence: None,
         sub_agent_registry: None,
         post_shell_hook: None,
+        post_tool_result_hook: None,
         stage_tool_guard: None,
         hide_tool_in_stage: None,
     };
@@ -2852,6 +2857,7 @@ async fn test_sub_agent_timeout_behavior() {
         chain_persistence: None,
         sub_agent_registry: None,
         post_shell_hook: None,
+        post_tool_result_hook: None,
         stage_tool_guard: None,
         hide_tool_in_stage: None,
     };

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { expandTerminalTabs } from "./ansi";
+import { expandTerminalTabs, stripAnsiForDisplay } from "./ansi";
+
+describe("stripAnsiForDisplay", () => {
+  it("removes SGR color codes without changing visible text", () => {
+    expect(stripAnsiForDisplay("\x1b[1m\x1b[31mERROR\x1b[0m Opening")).toBe(
+      "ERROR Opening"
+    );
+  });
+});
 
 describe("expandTerminalTabs", () => {
   it("expands tabs against terminal tab stops", () => {

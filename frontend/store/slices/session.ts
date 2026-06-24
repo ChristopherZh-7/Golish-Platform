@@ -105,6 +105,7 @@ export interface SessionActions {
       stageLabel: string;
       roleLabel: string;
       coverageAxis: string[];
+      requestId?: string | null;
     }
   ) => void;
   setInteractiveMode: (sessionId: string, mode: InteractiveModeState | null) => void;

@@ -334,10 +334,65 @@ impl GolishDbRepoProvider {
                 )
             })
             .map(|t| {
+                // L1a (design 2026-06-24-intel-to-eas-handoff): widen the EAS
+                // handoff with the intel context already carried on the row
+                // (source / status / real_ip / ports / org / http_status / cdn_waf)
+                // so the next stage can prioritise instead of flat-scanning a bare
+                // id/value/type list.
                 json!({
                     "target_id": t.id,
                     "value": t.value,
                     "type": t.target_type.as_str(),
+                    "source": t.source,
+                    "status": t.status.as_str(),
+                    "real_ip": t.real_ip,
+                    "ports": t.ports,
+                    "organization_id": t.organization_id,
+                    "http_status": t.http_status,
+                    "cdn_waf": t.cdn_waf,
+                })
+            })
+            .collect())
+    }
+
+    /// L1b (design 2026-06-24-intel-to-eas-handoff): rich, ranked attack-surface
+    /// seeds for the EAS specialist. Same org-subtree isolation as
+    /// [`Self::in_scope_targets_impl`], but each row carries the intel context +
+    /// a computed `priority`, and the set is ranked (resolved/alive web hosts
+    /// first, whole netblocks last) and optionally capped (D3).
+    pub(super) async fn attack_surface_seeds_impl(
+        &self,
+        org_id: Option<Uuid>,
+        cap: Option<usize>,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let targets = self.recon_targets.in_scope_targets(None).await?;
+        let allowed = golish_db::repo::organizations::subtree_id_str_set(&self.pool, org_id).await;
+        let owned: Vec<golish_app_core::domain::targets::Target> = targets
+            .into_iter()
+            .filter(|t| {
+                golish_db::repo::organizations::org_id_in_scope(
+                    t.organization_id.as_deref(),
+                    &allowed,
+                )
+            })
+            .collect();
+        let ranked = golish_app_core::domain::targets::rank_attack_surface_seeds(owned, cap);
+        Ok(ranked
+            .into_iter()
+            .map(|t| {
+                let priority = golish_app_core::domain::targets::attack_surface_priority(&t);
+                json!({
+                    "target_id": t.id,
+                    "value": t.value,
+                    "type": t.target_type.as_str(),
+                    "source": t.source,
+                    "status": t.status.as_str(),
+                    "real_ip": t.real_ip,
+                    "ports": t.ports,
+                    "organization_id": t.organization_id,
+                    "http_status": t.http_status,
+                    "cdn_waf": t.cdn_waf,
+                    "priority": priority,
                 })
             })
             .collect())

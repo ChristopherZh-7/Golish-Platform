@@ -188,6 +188,7 @@ where
         harness_submit_only: false,
         harness_deliverable_sink: None,
         harness_org_id: None,
+        harness_operation_id: None,
     };
 
     let capabilities = ModelCapabilities::detect(&config.provider_name, &config.model_name);
@@ -424,6 +425,7 @@ where
         harness_submit_only: false,
         harness_deliverable_sink: None,
         harness_org_id: None,
+        harness_operation_id: None,
     };
 
     // Detect capabilities from provider/model

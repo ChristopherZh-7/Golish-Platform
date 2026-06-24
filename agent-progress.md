@@ -29,6 +29,241 @@
 
 ---
 
+### 2026-06-24 · backgrounded 工具前端状态可见性修复（本会话续）
+
+- **本轮目标**：回应用户反馈：`pentest_run/run_pty_cmd` 使用 `background: true` 后，聊天工具卡/detail 没有像 Cursor 一样清楚显示“仍有后台工具在跑”，并且截图里 `status:"backgrounded"` 却显示绿勾。
+- **根因确认**：
+  - `backgroundJobs` store、`BackgroundJobsBadge`、`tool_background_completed` handler 已存在，但 `BackgroundJobsBadge` 只挂在 `UnifiedInput/InputStatusRow` 和 `SubAgentDetailView`；普通 `ToolCallDetailView` 会隐藏底部输入行，所以 detail 里看不到会话级后台任务入口。
+  - 聊天气泡里的 `ToolCallSummary` 只看 `success?: boolean`，`backgrounded` 工具结果是 success-shaped，所以显示成绿色完成；打开详情时 backfill 还会把 timeline 卡补成 completed。
+  - `conversation.updateMessageToolResult` 按 `toolName` 倒找，多个同名 `pentest_run` 时可能串结果；后台完成事件没有按 `job_id` 回填聊天气泡。
+- **已完成**：
+  - `ToolCallSummary` 新增 `toolResultIsBackgrounded`/`toolResultStatus`：`status:"backgrounded"` 显示橙色 Background + spinner，作为 live/non-terminal；`killed` 计为失败态。
+  - `ToolCallSummary` backfill timeline 时，backgrounded 结果走 `backgroundToolExecutionBlock`，不再误写 completed。
+  - `ToolCallDetailView` header 挂 `BackgroundJobsBadge`，backgrounded 当前工具显示橙色 live footer（detail 模式隐藏底部 input 时仍能看到后台任务数）。
+  - `conversation.updateMessageToolResult` 增加 `requestId` 精确匹配，工具名只作兜底；新增 `updateMessageToolResultByJobId` 让 `tool_background_completed` 回填聊天气泡。
+  - `useAiChatEvents` 和旧 `useChatAiEvents` 均把 `tool_result.request_id` 传给 store，并处理 `tool_background_completed`。
+  - 同步模块卡：`docs/modules/frontend/{components,services,store}.md`。
+- **运行过的验证（实跑）**：
+  - `pnpm exec vitest run frontend/components/AIChatPanel/ToolCallSummary.test.ts frontend/store/slices/conversation.test.ts` → exit 0，2 files / 23 tests passed。
+  - `pnpm exec biome check frontend/components/AIChatPanel/ToolCallSummary.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/store/slices/conversation.ts frontend/components/AIChatPanel/hooks/useAiChatEvents.ts frontend/components/AIChatPanel/useChatAiEvents.ts frontend/components/AIChatPanel/ToolCallSummary.test.ts frontend/store/slices/conversation.test.ts` → exit 0。
+  - `just check-fe` → exit 0（biome + typecheck；`generate-model-constants` 无留下 diff）。
+  - `just test-fe` → exit 1，129 files passed / 1351 tests passed / 12 skipped，唯一失败 `frontend/components/PaneContainer/PaneLeaf.lazy.test.tsx` 的 HomeView lazy loading 5s timeout。
+  - `pnpm exec vitest run frontend/components/PaneContainer/PaneLeaf.lazy.test.tsx` → exit 0，7 tests passed（单独重跑通过，判定为全量并发下 flaky/baseline 超时）。
+- **未跑**：`./init.sh` / `just precommit` / 活体 UI（当前工作树已有大量本日未提交前后端改动；`just test-fe` 全量有一次 unrelated/flaky timeout，失败文件单独复跑通过）。
+- **提交记录**：未提交。
+- **feature_list**：未新增条目；属于用户即时 UI/状态修正，不改 DB schema / IPC 类型 / harness 协议。
+- **下一步建议**：重启/刷新前端后复现 `pentest_run whatweb ... background:true`，预期聊天卡先显示橙色 Background，detail header 显示 `N running`；作业完成后聊天卡和 timeline/detail 均按 done/failed/killed 终态回填。
+
+---
+
+### 2026-06-24 · stage_run 前端 AI worker 语义显性化（本会话）
+
+- **本轮目标**：回应用户反馈：`stage_run` 前端看起来像后台批处理/覆盖列表，没有体现“主 agent 调度 specialist AI worker 执行阶段”，尤其单目标时容易误解成主 agent 自己跑。
+- **根因确认**：
+  - 后端 `stage_run_org_progress` 已带 `agent_request_id`，前端 `StageRunOrgRows` 也已有 `agentRequestId` drill-in 能力；缺口主要是 UI 文案/视觉语义不清，不需要改事件协议。
+  - `SessionStageRun.summary.covered` 实际是 passed org 计数；摘要卡用“覆盖”容易读成静态 coverage，而不是 worker/gate 执行状态。
+- **已完成**：
+  - `StageRunOrgRows` 顶部新增 `Main Agent → <Specialist> Agent · N worker(s)` 的控制/worker 关系；单 org 也显示 `1 worker`。
+  - 每个 org 行的角色标签从裸 `Recon` 等改为 `Recon Agent`，running activity 改为 `<Agent> 正在 ...`，drill-in title 指向该 worker 详情。
+  - `ToolCallSummary` 的 `stage_run` 小卡从 `x/y 覆盖` 改为优先显示 `<Specialist> Agent · N worker(s)` + `x/y passed`。
+  - `ToolCallDetailView` 的 stage_run 区标题从“逐 org 进度”改为 `AI workers`。
+  - 补 `StageRunOrgRows.test.tsx` 锁住单 org 也作为 worker boundary 渲染；同步 `docs/modules/frontend/components.md`。
+  - 顺手修复 `ToolCallSummary.toolResultIsFailure` 只看 `status`、不看 ANSI stderr `ERROR` 的既有测试失败：解析 JSON stderr 后用 `stripAnsiForDisplay` 判断 error/fatal/exception。
+- **运行过的验证**：
+  - `pnpm exec vitest run frontend/components/ToolExecutionCard/ToolExecutionCard.test.tsx frontend/components/AIChatPanel/ToolCallSummary.test.ts frontend/components/Engagement/StageRunOrgRows.test.tsx frontend/store/stage-run.test.ts frontend/services/ai-events/harness-handlers.test.ts frontend/services/ai-events/tool-handlers.test.ts` → exit 0，6 files / 18 tests passed。
+  - `just check-fe` → exit 0（多次重跑，biome + typecheck 均通过；`generate-model-constants` 无留下 diff）。
+  - `just test-fe` → 第一次因 `ToolCallSummary.test.ts` 既有 stderr ERROR 断言失败而 exit 1；补修后重跑 → exit 0。
+  - `git diff --check -- frontend/components/Engagement/StageRunOrgRows.tsx frontend/components/Engagement/StageRunOrgRows.test.tsx frontend/components/ToolExecutionCard/ToolExecutionCard.tsx frontend/components/ToolExecutionCard/ToolExecutionCard.test.tsx frontend/components/AIChatPanel/ToolCallSummary.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/lib/tools.ts docs/modules/frontend/components.md docs/modules/frontend/lib.md` → exit 0。
+- **未跑**：`./init.sh` / `just precommit`（本轮是前端 UI 语义小改，且当前工作树已有大量其他未提交 backend/frontend 改动；已按改动范围跑 targeted + `check-fe` + `test-fe`）。
+- **提交记录**：未提交。
+- **feature_list**：未新增条目；此改动属于用户即时 UI 语义修正，不改变阶段 harness 协议/DB schema/IPC 类型。
+- **下一步建议**：活体跑 `stage_run` 时确认单目标也显示 `1 worker`，点击 org 行能进入对应 specialist 子 agent 详情。
+- **续修（用户反馈 crash）**：用户活体看到 `Maximum update depth exceeded`；根因是 `ToolCallSummary` 的 `useStore` selector 返回 `{ summary, roleLabel }` 新对象，在 React 19 / Zustand v5 下 snapshot 不稳定导致循环更新。已拆成两个稳定 selector（`summary` 对象引用 + `roleLabel` 字符串），重验 targeted vitest / `just check-fe` / `just test-fe` 全绿。
+- **续修（用户反馈 expired 后左侧仍 Running）**：右侧 `Expired` 是消息完成但 tool result 缺失的临时 UI 状态，左侧 detail 仍读 timeline 里旧的 `ai_tool_execution.status=running` + 最后一帧 `stage_run_org_progress`，所以 worker 行继续显示 spinner/Running。已补 `interruptToolExecutionBlock`，点击 expired tool 详情时把仍 running 的 timeline block 标为 `interrupted`；`StageRunOrgRows` 新增父 tool active 语义，父 tool 非 running 时把 running/queued worker 快照投影为 `Stopped`，并停止 activity/spinner；`ToolCallSummary` expired 卡也不再显示 `active/queued`，改显示 stopped worker 数。已重跑 targeted vitest / `just check-fe` / `just test-fe` 全绿。
+- **续修（用户反馈 whatweb stderr ERROR 但前面仍绿色勾）**：`ToolExecutionCard` / `ToolCallDetailView` 原来只看 `execution.status=completed`，没有复用 `ToolCallSummary` 已有的 payload failure 判定。已抽 `toolResultIndicatesFailure` 到 `frontend/lib/tools.ts`，统一识别 rejected/needs_fix/error/failed、非 0 exit、以及 stderr 中 ERROR/FATAL/EXCEPTION；completed 但 payload 失败时仅显示态投影为 error（红叉/错误块），不改底层 execution 记录。已重跑 targeted vitest / `just check-fe` / `just test-fe` 全绿。
+
+---
+
+### 2026-06-24 · intel → EAS handoff 强化 P0–P3 实现（本会话 · BajieAsk-agent-4 全栈工程师 · DISPATCH off）
+
+- **本轮目标**：用户评审「昨天优化的 intel，下一阶段够不够利用这些信息」→ brainstorming 定方案 → 用户拍 D1/D2/D3 → 写设计+计划 → 用户『一路干完别问我，最后跑 build 统一修错』→ 落 P0–P3 代码。
+- **评审结论（file:line 实证）**：intel 6 维里 SUBDOMAIN/DNS 通畅（→targets.scope='in'→EAS 自动扫），但 ASN/CT/WHOIS/OSINT/扩展线索只喂 coverage gate、没驱动下一步。两类根因：A 下游没读 organizations.*；B 没物化进共享表 targets（CIDR 被 landing.rs `parse::<IpAddr>` 丢、CT SAN 锁在 organizations.certificates JSON）。约束：下一阶段+gate 只认 targets.scope='in'；intel 现 provider-only 无 subfinder（recon/subdomain 无 stage 放行）；recon_map_assets 只收 organization_id；provider 模板只认 {{company_name}} 无 {{domain}}；target_type 枚举已含 'cidr'（零 schema 改）。
+- **已完成（P0–P3）**：
+  - **P0** L0a：`landing.rs::plan_promotable_cidrs` 抽合法 CIDR + `promote_profile_assets_to_targets` 物化成 `cidr` 种子（非 fatal）；L1a：`db_bridge/recon.rs::in_scope_targets_impl` 投影从 3 字段加宽到带 source/status/real_ip/ports/organization_id/http_status/cdn_waf（Target DTO 已带全字段，零 SQL/DTO 改）。
+  - **P1** L0b：`landing.rs::hostnames_from_certificates`（shape-agnostic 抽 cert SAN/CN 主机名，丢 IP/泛域）+ 过 `value_belongs_to_organization` 物化成 domain 种子。
+  - **P2 b1**：`AssetIntelHydrateConfig` 加 `domain` 字段（types.rs，ts-rs）；`template.rs` 加 `{{domain}}` 替换（读 config.domain，零签名 ripple）；`native.rs::query_applies` 域模式 per-query 过滤 + {{domain}} 替换；`hydrate.rs::provider_supports_domain` 门（domain 模式只跑含 {{domain}} 的 provider，shape-agnostic 序列化检查）；`agent_tools/mod.rs::recon_map_assets` 加可选 `domain` 入参 + 专属 schema；`fofa.json` 加 `domain="{{domain}}"` 查询。**D2 自动递归 deferred**（能力就绪，自动触发需 EAS 落点）。
+  - **P3** `app-core/domain/targets.rs::{attack_surface_priority, rank_attack_surface_seeds}`（resolved/alive web 优先、netblock 垫底、可配 cap）；`recon.rs::attack_surface_seeds_impl` + `db_traits/repo.rs` trait 默认方法 + `db_bridge/mod.rs` override + `security.rs` executor `list_attack_surface_seeds` + `security_tools.rs` 声明 + `config.rs`/`tool_list.rs` 两处 gating。
+  - **prompt 接线（用户追加『两个 gap 都补』）**：① `execution_planning.rs::build_prober_prompt` 改用 `list_attack_surface_seeds`（优先级 worklist，list_in_scope_targets 兜底）+ 加 `cidr` 种子处理指导（masscan 整段扫发现主机→manage_targets 登记，整段主动扫走 human_approval D1）；② prober 工具列表（`builder/mod.rs` + `builder/registry.rs`）加 `list_attack_surface_seeds`，否则 agent 调不到。这把 L1b/D1 对 prober 真正闭环（之前只是工具/数据备好、prompt 没让 agent 用）。验证：`nextest -p golish-sub-agents` 91 passed（新断言 prober has list_attack_surface_seeds）+ clippy -D warnings exit 0。
+  - **P4 deferred**：守卫 `stage_spec.rs::active_stages_derive_from_evidence_but_not_authoritative` 禁止 EAS/enumeration 开 authoritative_found（active Empty 事实源未就绪）——未碰，维持 default off。
+- **运行过的验证（实跑）**：
+  - `cargo nextest -p golish-recon-app -p golish-app-core -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-tools -p golish-db` → 1445 passed/0 skipped（修 2 计数断言：fofa queries 2→3、tool decls 41→42）。
+  - `cargo clippy`（上述 6 crate）`--all-targets --no-deps -- -D warnings` → exit 0。
+  - `just check-fe` → exit 0（ts-rs `AssetIntelHydrateConfig.domain` 重生到 frontend/lib/generated/）。
+- **已记录证据**：新测全 PASS（plan_promotable_cidrs / hostnames_from_certificates / query_applies / map_assets_schema_has_optional_domain / rank_attack_surface_seeds）；landing 物化非 fatal（I9）；cidr 主动扫走 EAS human_approval（D1）；I8 物化不冒充 found。
+- **提交记录**：未 commit。
+- **未提交的本轮改动文件**：`docs/design/2026-06-24-intel-to-eas-handoff.md`(新)、`docs/superpowers/plans/2026-06-24-intel-to-eas-handoff.md`(新)、`feature_list.json`、`backend/crates/golish-recon-app/src/{agent_tools/mod.rs, asset_intel/{landing.rs,runtime/native.rs,service/hydrate.rs,template.rs,tests.rs,types.rs}}`、`golish-app-core/src/domain/targets.rs`、`golish-agent-app/src/ai/db_bridge/{mod.rs,recon.rs}`、`golish-agent-kit/src/{db_traits/repo.rs,tool_definitions/config.rs,tool_executors/security.rs}`、`golish-agent-runtime/src/agentic_loop/tool_list.rs`、`golish-tools/src/definitions/{mod.rs,security_tools.rs}`、`resources/intel-providers/fofa.json`、`frontend/lib/generated/AssetIntelHydrateConfig.ts`(ts-rs 重生)。
+- **下一步建议**：① 活体重启跑 target_intel 复查 targets 出现 cidr + CT 子域行、list_attack_surface_seeds 返回富字段+priority；② 视情况接 D2 自动递归触发（定位 EAS 主动落点）；③ P4 待 active Empty 事实源就绪再启用；④ quake(http_json)/hunter 的 domain 查询模板可后续按 provider 加（基础设施已支持 {{domain}}）。
+
+### 2026-06-24 · target_intel 多 org `stage_run` accepted 后被外层 gate 打回修复（本会话）
+
+- **本轮目标**：解释并修复用户最新 run 里“子 agent `submit_stage_deliverable accepted`，但多资产/多 org `stage_run` 外层又打回 retry”的原因。
+- **最新 run 诊断**：
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --db` 仍指向 `pentest-chat-1782234945520-1`；子公司 `中国平安人寿保险股份有限公司` 多次出现 `submit_stage_deliverable accepted ✓`，随后外层 `stage_run` 标记 `retry 2/3`、`retry 3/3`。
+  - `run.log` 证明两层判定不同：子 agent submit 预检先显示 accepted；随后外层 per-org gate 在 `18:00:47` / `18:02:45` BLOCK：`source_coverage` 缺 6 个 `GOLISH-INTEL-*` source rows，`coverage_complete` 剩 `pa18.com` / `pingantrust.com` / `www.my7duoduo.cn` 等 gap。
+  - 直接查当前 DB：`evidence_id 2260/2261` 是子公司这轮工具结果，但 `source_query_log.organization_id` 被写成 root org `1b3cca07-c0ae-4cc3-9797-61ff5f539f20`，而子公司 org 是 `fb90ef2a-eb1c-4288-8f7c-97dc957a26c0`。
+  - 进一步查 schema：`source_query_log` 旧唯一键是 `(run_id, source, query, target)`，没有 `organization_id`；多 org `stage_run` 中 root/子公司同源 provider 查询会撞到同一行，后写只更新 evidence_ids/status，不改 org_id，导致子公司 gate 查不到自己的 source rows。
+- **已完成**：
+  - 新 migration `20260624000001_source_query_log_org_scoped_unique.sql`：删除旧 unique constraint，新增 org-scoped unique index `(organization_id, run_id, source, query, target)`，并更新 table comment。
+  - `golish-db/src/repo/source_query_log.rs`：`UPSERT_SQL` 的 `ON CONFLICT` 改为 org-scoped key；测试同步更新。
+  - `golish-agent-runtime/src/agentic_loop/tool_execution/direct/sub_agent_call.rs`：从 `stage_run` per-org request id（`...::org::<uuid>`）解析当前 org，优先用于 sub-agent 的 `execute_security_analysis_tool` 路由和 recon passive evidence/source_query hook；不再继承父级 root org。
+  - 当前 embedded DB 已手动应用新 migration，并用 rollback 事务验证同一 `(run,source,query,target)` 可在 root/child 两个 org 下同时插入 2 行。
+  - 同步文档/模块卡：`docs/design/2026-06-23-source-query-log.md`、`docs/modules/backend/golish-db/repo.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt --all` → exit 0
+  - `cd backend && cargo nextest run -p golish-db source_query_log --status-level fail` → 5 passed / 105 skipped
+  - `cd backend && cargo nextest run -p golish-agent-runtime stage_run_org_id --status-level fail` → 2 passed / 250 skipped
+  - `cd backend && cargo check -p golish-db -p golish-agent-runtime` → exit 0
+  - `cd backend && cargo clippy -p golish-db -p golish-agent-runtime --all-targets -- -D warnings` → exit 0
+  - `python3` 执行新 migration 到当前 DB → 旧 `(run,source,query,target)` unique 不再存在，新 `idx_source_query_log_org_run_source_query_target_unique` 存在。
+  - rollback 事务验证：同一 run/source/query/target 在 root org 和 child org 下临时插入成功，`temporary rows in transaction: 2`。
+  - `git diff --check` → exit 0
+- **未跑**：`init.sh` / `just precommit`（遵守用户此前要求，不走重型 init/precommit 路径）；未活体重跑 AI（需要后端使用新代码重启/重编）。
+- **提交记录**：未 commit。
+- **下一步建议**：重启/重编后端后重新跑 `target_intel stage_run`；预期子公司 `recon_map_assets` / `recon_lookup_whois` 的 `source_query_log` 会写到 `fb90ef2a...` 自己名下，外层 per-org gate 不会再因为查不到 source rows 而把 accepted 的子 agent 打回 retry。
+
+### 2026-06-24 · ChatPanel tab 切换后 terminal 抢焦点修复（本会话）
+
+- **本轮目标**：修用户反馈的前端问题：点开 ChatPanel 的 conversation tab 后，过几秒光标会跳到左边 terminal/terminal input。
+- **根因确认**：
+  - `AIChatPanel` 切换 conversation 时会 `setActiveSession(firstTerminal)`，这是为了让该 conversation 的 terminal 成为上下文；但这也触发 terminal 侧的自动 focus。
+  - 已有 `terminalAutoFocus` suppression 只覆盖“新建 chat/terminal”路径，未覆盖“切换已有 chat tab”路径。
+  - `GridTerminal` 也是一个自动 focus 源，但之前没检查 suppression，和 `terminalAutoFocus.ts` 的契约不一致。
+- **已完成**：
+  - 新增 `frontend/components/AIChatPanel/conversationTerminalActivation.ts`：统一在 chat tab 切换时激活关联 terminal，但先调用 `suppressTerminalAutoFocus(firstTerminal)`；同时恢复 execution mode。
+  - `AIChatPanel.tsx` 使用该 helper，并在 `handleConvSelect` 后 `requestAnimationFrame` 把焦点放回 chat textarea。
+  - `useChatStreamingSync.ts` 的遗留 conversation-switch 逻辑也改走同一 helper，避免以后重新接入时复发。
+  - `GridTerminal.tsx` 的 mount auto-focus 增加 `isTerminalAutoFocusSuppressed(sessionId)` 检查；用户主动 focus/click grid 时清除 suppression。
+  - 新增测试：`conversationTerminalActivation.test.ts`、`GridTerminal.test.tsx`；更新模块卡 `docs/modules/frontend/components.md`。
+- **运行过的验证**：
+  - `pnpm exec vitest run frontend/components/AIChatPanel/conversationTerminalActivation.test.ts frontend/components/GridTerminal/GridTerminal.test.tsx frontend/components/AIChatPanel/hooks/useChatConversationOps.test.ts` → exit 0，3 files / 6 tests passed。
+  - `just check-fe` → exit 0。
+  - `just test-fe` → exit 0。
+- **已记录证据**：
+  - helper 测试确认：激活 conversation terminal 后 `activeSessionId` 切到 terminal，同时 `isTerminalAutoFocusSuppressed(term)` 为 true，并恢复该 terminal 的 `executionMode`。
+  - GridTerminal 测试确认：无 suppression 时会 auto-focus；suppression 窗口内不会 auto-focus。
+- **提交记录**：未提交。
+- **已知风险 / 未做**：用户要求不要跑 `init.sh`；本轮未跑 `init.sh` / `just precommit`。
+- **下一步建议**：刷新前端后切换 ChatPanel tabs，观察焦点应留在 chat 输入框；如果用户主动点 terminal，suppression 会被清掉，terminal 仍可正常输入。
+
+---
+
+### 2026-06-24 · 前端 stage_run 继续后旧/新状态串卡修复（本会话）
+
+- **本轮目标**：修用户截图里的前端问题：点击“继续”后新 `stage_run`（如 T13）没有逐 org 状态，而旧的已中断/关闭 `stage_run`（如 T9）继续动。
+- **根因确认**：
+  - 前端原来只有 `Session.stageRun` 一个 session 级单槽；`stage_run_org_progress` 首帧到来时倒扫 timeline 绑定“最近的 stage_run”。
+  - 中断后继续产生新的 `stage_run` 时，旧快照的 `requestId` 仍留在 `Session.stageRun`，后续 progress 会继续更新旧卡，导致新卡没有 summary/详情状态。
+  - 后端现有 `agent_request_id` 已包含 `${stage_run_request_id}::org::${org_id}`，前端可从中解析所属工具 requestId，无需改 ts-rs 生成类型。
+- **已完成**：
+  - `frontend/services/ai-events/harness-handlers.ts` 新增 `stageRunRequestIdFromAgentRequestId`，把 `stage_run_org_progress` meta 绑定到所属 `stage_run` requestId。
+  - `frontend/store/types/session.ts` 增加 `Session.stageRuns?: Record<string, SessionStageRun>`；`Session.stageRun` 保留为当前/兼容快照。
+  - `frontend/store/slices/session-core.ts` 的 `upsertStageRunRow` 改为按 requestId 写入对应快照；旧 run 的晚到事件只更新旧槽，不会把当前视图从新 run 拉回旧 run。
+  - `frontend/services/ai-events/tool-handlers.ts` 在主 agent 新 `stage_run` tool request / approval / auto-approved 到来时先 seed 一个空的 request-scoped stageRun，让新卡立即拥有绑定。
+  - `ToolCallSummary` / `ToolCallDetailView` 优先按当前工具 requestId 读取对应 stageRun。
+  - 新增 `frontend/store/stage-run.test.ts` 覆盖 T9/T13 双 run 串卡回归；同步更新 `frontend/services/ai-events/harness-handlers.test.ts`。
+  - 更新模块卡：`docs/modules/frontend/store.md`、`docs/modules/frontend/services.md`。
+- **运行过的验证**：
+  - `pnpm exec vitest run frontend/services/ai-events/harness-handlers.test.ts frontend/store/stage-run.test.ts` → exit 0，2 files / 5 tests passed。
+  - `just check-fe` → exit 0（biome + typecheck；generate-model-constants 无留下 diff）。
+  - `just test-fe` → exit 0。
+- **已记录证据**：
+  - 回归测试确认：旧 T9 late frame 更新 `stageRuns.T9`，新 T13 保持当前 `Session.stageRun.requestId === "T13"`。
+  - handler 测试确认：`tool-13::org::org-1` 解析为 `tool-13`，并随 `stage_run_org_progress` meta 下传。
+- **提交记录**：未提交。
+- **已知风险 / 未做**：
+  - 用户明确要求不要跑 `init.sh`；本轮未跑 `init.sh` / `just precommit`。
+  - 现有持久化仍主要保存 `stageRun` 当前/兼容快照；历史 `stageRuns` 多槽在本轮只用于 live UI 串卡修复，未扩展 DB schema。
+- **下一步建议**：活体重启前端后复现“继续”路径，确认新 T13 的逐 org summary/详情跟随 T13，旧 T9 不再被新 run 进度驱动。
+
+---
+
+### 2026-06-24 · target_intel 最新 run gate BLOCK 二次诊断 + `coverage_complete` source-row 消费修复（本会话续）
+
+- **本轮目标**：复查用户刚刚跑的 `target_intel` 为什么仍过不了 gate，并修掉从 `source_query_log` 已落账后暴露出的下一层 `coverage_complete` blocker。
+- **最新 run 诊断**：
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db` 指向最新 session `pentest-chat-1782234945520-1`。
+  - 这次 `source_query_log` **已经有数据**：`GOLISH-INTEL-WHOIS via rdap -> empty`，以及 `0.zone/quake found`、`enscan-go-enrichment empty`、`fofa/hunter/shodan blocked` provider rows；说明前一轮子 agent evidence/source_query 落账修复方向正确。
+  - 当前 blocker 已换成 `coverage_complete`：`211 cells never reached a terminal state`，其中 `205` 个是 `GOLISH-INTEL-WHOIS`，`6` 个是 `GOLISH-INTEL-SUBDOMAIN`（5 个 URL 形态 domain 值 + `www.pingantrust.com`）。
+  - 同一 run 仍能看到 `list_in_scope_targets -> Unknown tool`，这是 live app/run 仍跑旧代码或 run 开始时尚未包含上一轮 recon prompt/router 修复；重启后应消失。
+- **根因确认**：
+  - `coverage_complete` 原来不消费 terminal `source_query_log` row 来关闭非 found 终态；所以 RDAP 已经记录“WHOIS 查过且为空”，gate 仍要求模型手写 200+ 个 per-asset WHOIS coverage cell。
+  - `recon_map_assets` provider survey 是组织级查询；旧 gate 没有把该终态 source row 用作 provider-backed 技术的非 found 闭环，因此会留下少量 SUBDOMAIN 轴噪声。
+  - `AssetClass::classify` 对 `targets.type=domain` 过于信任，导致 `http://ahsz.com` 这种 URL 形态值也被当成 Domain，从而被要求 SUBDOMAIN。
+- **已完成**：
+  - `coverage_complete` 在 `derive_from_evidence=true` 时可消费 `source_query_log` terminal rows 来关闭**非 found** gap：精确 technique row（如 RDAP/WHOIS）按 checked_empty/blocked/error 终态处理；provider survey row（`map_assets` / `recon_map_assets`）仅覆盖 DNS/SUBDOMAIN/ASN/CT/OSINT 这类 provider-backed intel 技术。
+  - 加保护：如果 deliverable 自报 `found` 但没有 DB/ledger truth，source row 不会把它“降级补过”；found 仍只能由 DB truth/ledger fact 决定。
+  - `AssetClass::classify` 改为 URL 形态值优先按值定类：URL-wrapped IP -> `Ip`，普通 `http(s)://domain` -> `Url`；非 URL 值继续信任权威 `targets.type`。
+  - 同步模块卡：`golish-agent-kit/harness`、`golish-pentest-domain`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt --all` → exit 0
+  - `cd backend && cargo nextest run -p golish-pentest-domain asset_class --status-level fail` → 2 passed / 48 skipped
+  - `cd backend && cargo nextest run -p golish-agent-kit source_query --status-level fail` → 3 passed / 713 skipped
+  - `cd backend && cargo nextest run -p golish-agent-kit provider_survey --status-level fail` → 3 passed / 713 skipped
+  - `cd backend && cargo nextest run -p golish-agent-kit classify_overrides_mistyped_url_values --status-level fail` → 1 passed / 715 skipped
+  - `cd backend && cargo nextest run -p golish-agent-kit coverage_complete --status-level fail` → 19 passed / 697 skipped
+  - `cd backend && cargo check -p golish-agent-kit -p golish-pentest-domain` → exit 0
+  - `cd backend && cargo clippy -p golish-agent-kit -p golish-pentest-domain --all-targets -- -D warnings` → exit 0
+- **未跑**：`init.sh` / `just precommit` / 活体 AI 重跑（遵守用户此前要求，不走重型 init/precommit 路径）。
+- **提交记录**：未 commit。
+- **下一步建议**：重启 dev app/后端后重新跑一次 `target_intel`；预期最新代码下这个 run 类型的 205 WHOIS gap 和 6 个 SUBDOMAIN 轴噪声都不应再让 gate 卡死。
+
+### 2026-06-24 · target_intel Recon 子 agent 错调 `list_in_scope_targets` 修复（本会话续）
+
+- **本轮目标**：解释并修复用户截图里的 `list_in_scope_targets` → `Unknown tool`：AI 在 `target_intel` / Recon 子 agent 中反复调用一个该阶段不该使用、且子 agent 执行路由未接上的 read-only query tool。
+- **根因确认**：
+  - `golish-sub-agents` 默认 `recon` 工具清单显式包含 `list_in_scope_targets`，Recon prompt 还写了 “Before collecting, call list_in_scope_targets”，所以模型是被 prompt/tool-list 诱导，不是随机幻觉。
+  - `list_in_scope_targets` / `query_target_data` 是 `security_analysis_declarations()` 暴露的工具声明，主 agent 通过 `execute_security_analysis_tool` special-case 执行；它不是普通 `ToolRegistry` 工具。
+  - `stage_run` 子 agent 执行路径先走 `SubAgentToolRouter`，但原 router 只在有 graph backend 时路由 graph tools；security-analysis read helpers 落到 `ToolRegistry` 后就报 `Unknown tool`。
+- **已完成**：
+  - `sub_agent_call.rs` 的 `SubAgentToolRouter` 扩展为统一外部工具路由：先尝试 `execute_security_analysis_tool`（覆盖 `list_in_scope_targets` / `query_target_data` 等），再尝试 graph executor，最后才落回普通 registry。
+  - Recon 默认工具集移除 `list_in_scope_targets` 和 `pentest_run`；`target_intel` 是 provider-only 生产目标阶段，不再让 Recon 查询尚未生产的 target list，也不再暴露 scan-tool fallback。
+  - Recon prompt 删除 `list_in_scope_targets` 必调、`subfinder/amass/gau/ctfr/dig` fallback 等旧指引；保留 `recon_list_providers → recon_map_assets → recon_lookup_whois → manage_targets → submit_stage_deliverable` 路径。
+  - 测试补负断言：Recon 不含 `list_in_scope_targets` / `pentest_run`，prompt 不含 `list_in_scope_targets` / `subfinder` / `ctfr` / `dig`；Prober/Enumerator 仍保留 `list_in_scope_targets`，因为它们消费上阶段已登记的目标。
+  - 同步模块卡：`golish-agent-runtime/agentic_loop`、`golish-sub-agents`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt --all` → exit 0
+  - `cd backend && cargo nextest run -p golish-sub-agents test_recon --status-level fail` → 2 passed / 89 skipped
+  - `cd backend && cargo check -p golish-agent-runtime -p golish-sub-agents` → exit 0
+  - `cd backend && cargo check -p golish-agent-runtime -p golish-sub-agents -p golish-agent-bridge` → exit 0
+  - `cd backend && cargo nextest run -p golish-sub-agents defaults --status-level fail` → 21 passed / 70 skipped
+  - `cd backend && cargo clippy -p golish-sub-agents -p golish-agent-runtime -p golish-agent-bridge --all-targets -- -D warnings` → exit 0
+- **未跑**：`init.sh` / `just precommit` / 活体 AI 重跑。
+- **提交记录**：未 commit。
+- **下一步建议**：重启 app 后再跑一次 `target_intel`；预期 Recon 不再调用 `list_in_scope_targets`，后续 Prober/Enumerator 若调用该工具则应通过 security router 正常返回，而不是 `Unknown tool`。
+
+### 2026-06-24 · target_intel stage_run 子 agent evidence/source_query 落账修复（本会话）
+
+- **本轮目标**：修复最后一次 AI run 中 `target_intel` 反复 `submit_stage_deliverable` needs_fix 的根因：`stage_run` 扇出的 `recon` 子 agent 跑了 `recon_map_assets` / `recon_lookup_whois`，但没有写 evidence ledger / `source_query_log`，导致 `source_coverage` 永远缺 6 项。
+- **根因确认**：
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db` 指向 `pentest-chat-1782233561777-1`：`source_query_log` 本 run 为空，gate 反复 BLOCK `GOLISH-INTEL-DNS/SUBDOMAIN/ASN/CT/WHOIS/OSINT`。
+  - 直接查 DB：`source_query_log count = 0`。
+  - `run.log` 只有 `recon_discover_subsidiaries evidence_id=2210`，没有 `recon_map_assets` / `recon_lookup_whois` 的 evidence append；代码确认子 agent path 直接 `registry.execute_tool(...)`，绕过主 agent `direct/mod.rs` 的 harness evidence/source_query hook。
+- **已完成**：
+  - `golish-sub-agents` 新增 `SubAgentToolResultHook`，在普通工具返回后、事件发出前运行；嵌套 sub-agent 同步传递。
+  - `golish-agent-runtime` 抽出 `record_recon_passive_evidence(...)` 作为主 agent / 子 agent 共用的 recon passive 落账函数。
+  - `sub_agent_call.rs` 在 harness stage 下给子 agent 注入 post-tool hook；`recon_map_assets` / `recon_lookup_whois` 成功后会 append evidence、写 `source_query_log` provider/RDAP terminal rows，并把 `_evidence_id` 回塞给模型。
+  - 其他 `SubAgentExecutorContext` 构造点补 `post_tool_result_hook: None`；同步模块卡。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt --all` → exit 0
+  - `cd backend && cargo check -p golish-sub-agents -p golish-agent-runtime` → exit 0
+  - `cd backend && cargo check -p golish-agent-bridge` → exit 0
+  - `cd backend && cargo nextest run -p golish-sub-agents -p golish-agent-runtime --status-level fail` → `341 tests run: 341 passed, 0 skipped`
+  - `cd backend && cargo clippy -p golish-sub-agents -p golish-agent-runtime -p golish-agent-bridge --all-targets -- -D warnings` → exit 0
+- **未跑**：`just precommit`（用户此前要求不要走重型 init/precommit 路径）、活体 AI 重跑（需要重启/新 run 才能看到 `source_query_log`）。
+- **提交记录**：未 commit。
+- **未提交的半成品（本轮）**：sub-agent result hook + runtime recon passive evidence/source_query hook + module cards + 本 progress 记录。
+- **下一步建议**：重启 dev app 后跑一个最小 `target_intel`，再用 `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --db` 确认 `source_query_log` 出现 `map_assets` / `lookup_whois` rows；若还 BLOCK，再处理剩余的 in-scope asset axis 噪声（`万里通.cn` / `www.pingantrust.com`）。
+
 ### 2026-06-23 · target_intel provider-source closure Phase 1-4（本会话）
 
 - **本轮目标**：按用户要求继续推进 `target_intel` 重新设计：完成 provider-only 阶段边界、provider/source 终态写入、source coverage gate-read、同 run/action duplicate guard。
@@ -5353,6 +5588,85 @@
   1. 重启 app 让 migrations apply，跑一次 target_intel 活体。
   2. 用 `scripts/run_tree.py --workspace <ws> --db` 核对 §7 source rows 与 §8 expansion_queue。
   3. 根据活体结果决定是否把 source taxonomy 从 provider survey 粗覆盖继续细化到 provider×technique contract。
+
+### 2026-06-24 · Target 页面组织树与 IP 联合资产视图调整（本会话）
+
+- **本轮目标**：解决 Target 页面母公司展开后被大量 IP/URL 淹没、很难看到第二个子公司的显示问题；根据用户反馈，最终采用“左侧只公司层级，右侧按 IP 联合展示资产”的方案。
+- **已完成**：
+  - `TargetGroupedView` 默认树从 IP-centric projection 切回 organization-only `buildOrgTree`：左侧树保留公司层级和 target 计数，但不再把 IP/URL/域名展开在左侧。
+  - `OrgTreeSidebar` 增加 `showAssetsInTree` 开关，默认 false；因此 org 节点的 `node.targets` 只用于计数/删除影响面，不在左树渲染资产行。
+  - 新增 `frontend/lib/target-panel/asset-groups.ts`：把同一公司下的 IP target、`real_ip` 绑定域名、以及 `https://IP/...` 这类 URL 归到同一 IP group；无法解析到 IP 的域名进入 unresolved group。
+  - `OrgWorkspacePanel` 的 Overview/Targets 区域改为右侧 IP 联合资产视图：IP 作为 group header，下面列关联域名/URL；点击 IP、域名或 URL 进入 `TargetSurfaceWorkbench`。
+  - IP target 详情页现在从右侧进入时也会带上解析到该 IP 的 related domains，并提供“返回组织”。
+  - 左侧组织树选中态增强：选中的公司行现在有 accent 左边线、背景描边、公司名和计数高亮，避免在暗色界面里看不清当前选中公司。
+  - 补充中英文文案：`targetWorkspace.targetsPanel.*`、`targets.backToOrganization`。
+  - 同步模块卡：`docs/modules/frontend/components.md`、`docs/modules/frontend/lib.md`。
+- **运行过的验证**：
+  - `pnpm exec vitest run frontend/lib/target-panel/asset-groups.test.ts frontend/lib/target-panel/host-tree.test.ts frontend/lib/target-panel/org-tree.test.ts` → exit 0，3 files / 12 tests passed。
+  - `pnpm exec tsc --noEmit` → exit 0。
+  - `pnpm exec biome check --write frontend/lib/target-panel/asset-groups.ts frontend/lib/target-panel/asset-groups.test.ts frontend/lib/target-panel/org-tree.ts frontend/lib/target-panel/host-tree.test.ts frontend/lib/target-panel/org-tree.test.ts frontend/components/TargetPanel/OrgTreeSidebar.tsx frontend/components/TargetPanel/TargetGroupedView.tsx frontend/components/TargetPanel/OrgWorkspacePanel.tsx frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json` → exit 0。
+  - `pnpm exec biome check --write frontend/components/TargetPanel/OrgTreeSidebar.tsx` → exit 0。
+  - `just check-fe` → exit 0（generate-model-constants 无留下 diff）。
+  - `just test-fe` → exit 0。
+- **已记录证据**：
+  - `asset-groups.test.ts` 覆盖 IP target + `real_ip` 域名 + `https://IP/...` URL 合并为同一 group。
+  - `asset-groups.test.ts` 覆盖 unresolved 域名落到最后的 catch-all group。
+  - `host-tree` / `org-tree` 既有投影与递归删除影响面测试继续通过。
+- **提交记录**：未提交。
+- **已知风险或未解决问题**：
+  - 本轮未跑 `./init.sh` / `just precommit`；只跑前端标准检查和聚焦测试。
+  - 工作树已有大量本轮之前的未提交后端/前端改动；本轮只触碰 TargetPanel、target-panel lib、i18n 和前端模块卡相关文件。
+  - 未做活体浏览器截图验证；需要重启/刷新前端后用真实数据确认右侧 IP 联合视图密度是否符合预期。
+- **下一步最佳动作**：在当前真实数据下打开 Target 页面确认左树只剩公司层级；如果右侧 IP group 仍显得密，可再加搜索、按 scope/type 过滤和虚拟滚动。
+
+### 2026-06-24 · graph-flow 断线恢复阶段游标修复（本会话）
+
+- **本轮目标**：修复 graph-flow 断线后继续时 `operation_state.current_stage` 滞后一阶段，导致看起来从阶段重新开始、freshness window 锚点不准的问题。
+- **已完成**：
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs`：把 `operation_state` stage 游标从“阶段跑完后写”改为“进入阶段时同步”。同阶段重进只读不写，避免断线恢复刷新 `stage_started_at`。
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute_harness_loop_tests.rs`：新增 `stage_entry_sync_advances_only_on_stage_change`，用内存 repo 的 advance 计数锁住“新 stage 写一次 / 同 stage 不重复写”的语义。
+  - `docs/modules/backend/golish-agent-kit/task_orchestrator.md`：补充 graph-flow 当前阶段游标与 freshness-window 的注意事项。
+  - 评估了 `stage_run` 未 PASS worker 的续跑：`sub_agent_*` 支持 `resume`，但 `resume: "latest"` 按 specialist 最新链取，不按 org/stage_run 稳定键取；同一 specialist 会串多个 org，当前不能安全自动续未完成 worker，本轮不硬接。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-agent-kit` → exit 0
+  - `cd backend && cargo nextest run -p golish-agent-kit stage_entry_sync_advances_only_on_stage_change --status-level fail` → 1 test passed / 716 skipped
+  - `cd backend && cargo nextest run -p golish-agent-kit execute_harness_loop_tests --status-level fail` → 13 tests passed / 704 skipped
+  - `cd backend && cargo check -p golish-agent-kit` → exit 0
+  - `cd backend && cargo clippy -p golish-agent-kit --all-targets -- -D warnings` → exit 0
+- **已记录证据**：新增测试直接断言进入 `external_attack_surface` 后 DB 游标变为该 stage，第二次同 stage sync 的 `advance_count` 仍为 1，证明同阶段 resume 不刷新 `stage_started_at`。
+- **提交记录**：未提交。
+- **已知风险或未解决问题**：
+  - 未跑 `./init.sh` / `just precommit`；本轮按问题范围跑了 `golish-agent-kit` 局部格式、测试、check、clippy。
+  - 未实现未 PASS sub-agent worker 的自动续跑；需要 per-org/per-stage 的稳定 chain/dispatch 关联后再做，避免 `latest` 续到错误 org。
+  - 当前 app 若仍在旧二进制上运行，需要重启后才会吃到 stage-entry cursor sync。
+- **下一步最佳动作**：重启 app 后复跑一次中断/恢复场景，用 `scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --db` 对比 `operation_state.current_stage` 与 `graph_flow.next_node` 是否在进入 EAS 后一致。
+
+### 2026-06-24 · stage_run 未完成 org worker 精确续跑（本会话）
+
+- **本轮目标**：把 `stage_run` 里未 PASS 的 per-org specialist worker 续到之前的 sub-agent chain，而不是断线/重跑时重新派一个全新 worker。
+- **已完成**：
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`：新增 `stage_run_workers` state_blob 映射，按 `stage + org_id + specialist` 读写 `sub_agent_session_id`；未 PASS org 重跑时用精确 `resume:<chain_id>`，同一轮 gate retry 也继续同一个 worker。
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/stage_execution.rs`：graph-flow checkpoint 写 `state_blob.graph_flow` 时改为 merge，保留 `stage_run_workers` 等其他 key，避免两个 resume 状态互相覆盖。
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/types.rs` + `backend/crates/golish-agent-bridge/src/{agent_bridge,bridge_executor}` + `backend/crates/golish-agent-runtime/src/agentic_loop/context.rs`：把 graph-flow `task_id` 作为 `harness_operation_id` 侧信道传进 loop，`stage_run` 优先用它写同一条 `operation_state`，不再只猜 `DbTracker.session_uuid`。
+  - `docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/backend/golish-agent-kit/task_orchestrator.md`、`docs/modules/backend/golish-agent-bridge/bridge_executor.md`：同步记录 state_blob 多消费者、per-org worker resume 与 operation id side-channel 约定。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-agent-runtime -p golish-agent-kit -p golish-agent-bridge` → exit 0
+  - `cd backend && cargo nextest run -p golish-agent-kit graph_flow_checkpoint_preserves_other_state_blob_keys --status-level fail` → 1 test passed / 717 skipped
+  - `cd backend && cargo nextest run -p golish-agent-runtime parses_sub_agent_session_id_from_response_tail --status-level fail` → 1 test passed / 253 skipped
+  - `cd backend && cargo nextest run -p golish-agent-runtime stage_run_worker_blob_round_trips_chain_and_preserves_graph_flow --status-level fail` → 1 test passed / 253 skipped
+  - `cd backend && cargo nextest run -p golish-agent-runtime stage_run_call --status-level fail` → 13 tests passed / 241 skipped
+  - `cd backend && cargo nextest run -p golish-agent-kit stage_execution --status-level fail` → 4 tests passed / 714 skipped
+  - `cd backend && cargo check -p golish-agent-runtime -p golish-agent-kit -p golish-agent-bridge` → exit 0
+  - `cd backend && cargo clippy -p golish-agent-runtime -p golish-agent-kit -p golish-agent-bridge --all-targets -- -D warnings` → exit 0
+- **已记录证据**：
+  - `stage_run_worker_blob_round_trips_chain_and_preserves_graph_flow` 覆盖 worker chain 写入后可按同 stage/org/specialist 读回，且 specialist 不匹配时不续错。
+  - `graph_flow_checkpoint_preserves_other_state_blob_keys` 覆盖 graph checkpoint 更新不会覆盖 `stage_run_workers`。
+- **提交记录**：未提交。
+- **已知风险或未解决问题**：
+  - 未跑 `./init.sh` / `just precommit`；本轮按改动范围跑了 `golish-agent-runtime` + `golish-agent-kit` targeted tests/check/clippy。
+  - 现有 sub-agent chain 仍是在 worker teardown 时持久化；如果进程被硬杀在单个 sub-agent 尚未返回前，chain 内容可能还没保存，无法精确续到半个工具调用/半段输出。
+  - 当前 app 需要重启后才会使用新的 `stage_run_workers` 映射逻辑。
+- **下一步最佳动作**：重启 app，跑一次 EAS/target_intel 中断恢复；恢复后检查 `operation_state.state_blob.stage_run_workers` 是否出现对应 org 的 chain_id，并确认未 PASS org 的下一次 `stage_run` tool args 带精确 `resume`。
 
 <!-- 新会话请在这里上方插入一条新记录，保持倒序 -->
 

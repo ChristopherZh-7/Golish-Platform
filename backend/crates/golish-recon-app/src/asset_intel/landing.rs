@@ -130,6 +130,95 @@ pub(crate) fn plan_promotable_assets(
     (domains, ips)
 }
 
+/// Keep only well-formed CIDR networks (atoms carrying a `/prefix`) from the
+/// org's `ip_ranges`, deduped. Bare IPs are handled by [`plan_promotable_assets`]
+/// (they are NOT returned here); non-CIDR / malformed atoms are dropped so junk
+/// never becomes a scan target (design 2026-06-24-intel-to-eas-handoff §4 L0a).
+/// `target_type='cidr'` is an existing enum value (no schema change).
+pub(crate) fn plan_promotable_cidrs(profile_ips: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    profile_ips
+        .iter()
+        .filter_map(|raw| {
+            let s = raw.trim();
+            let (addr, prefix) = s.split_once('/')?;
+            let ip: IpAddr = addr.trim().parse().ok()?;
+            let bits: u8 = prefix.trim().parse().ok()?;
+            let max = if ip.is_ipv4() { 32 } else { 128 };
+            if bits > max {
+                return None;
+            }
+            Some(s.to_string())
+        })
+        .filter(|cidr| seen.insert(cidr.clone()))
+        .collect()
+}
+
+/// Extract candidate hostnames from the org's `certificates` JSON (CT coverage),
+/// **shape-agnostically**: walk every string leaf (`json_atom_strings`), pull
+/// host-like tokens out of each (handles cert-subject DNs like `CN=*.pingan.com`,
+/// strips `*.` wildcards to their parent, drops IPs and non-host tokens), dedupe.
+/// The caller scope-filters via `value_belongs_to_organization` before
+/// materialising (design 2026-06-24-intel-to-eas-handoff §4 L0b). Pure.
+pub(crate) fn hostnames_from_certificates(certificates: &Value) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for leaf in json_atom_strings(certificates) {
+        for host in hostnames_in_text(&leaf) {
+            if seen.insert(host.clone()) {
+                out.push(host);
+            }
+        }
+    }
+    out
+}
+
+/// Pull dotted-hostname tokens out of free text (a cert subject DN, SAN list,
+/// etc.). Splits on non-host chars, strips a leading `*.` wildcard, lowercases,
+/// keeps only well-formed hostnames (≥2 labels, alpha TLD → IPs excluded).
+fn hostnames_in_text(text: &str) -> Vec<String> {
+    text.split(|c: char| {
+        !(c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '*' || c == '_')
+    })
+    .filter_map(|raw| {
+        let tok = raw
+            .trim()
+            .trim_start_matches("*.")
+            .trim_matches('.')
+            .to_ascii_lowercase();
+        if is_hostname_like(&tok) {
+            Some(tok)
+        } else {
+            None
+        }
+    })
+    .collect()
+}
+
+/// A token is hostname-like when it has ≥2 dot-separated labels, each label is a
+/// valid DNS label, and the TLD is alphabetic (so dotted IPs like `1.2.3.4` are
+/// rejected — their numeric TLD fails).
+fn is_hostname_like(s: &str) -> bool {
+    if s.len() < 4 || s.len() > 253 || !s.contains('.') {
+        return false;
+    }
+    let labels: Vec<&str> = s.split('.').collect();
+    if labels.len() < 2 {
+        return false;
+    }
+    if labels.iter().any(|l| {
+        l.is_empty()
+            || l.len() > 63
+            || l.starts_with('-')
+            || l.ends_with('-')
+            || !l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    }) {
+        return false;
+    }
+    let tld = labels.last().expect("len>=2 checked");
+    tld.len() >= 2 && tld.bytes().all(|b| b.is_ascii_alphabetic())
+}
+
 /// Upsert one target, idempotent on `value` + `project_path`, tagging the
 /// surveyed `real_ip` when known. Mirrors `persist_target_record` but adds the
 /// `real_ip` column and `source='asset_intel'`. Returns the target's id so the
@@ -257,6 +346,31 @@ pub(crate) async fn promote_profile_assets_to_targets(
             Err(error) => tracing::warn!(%ip, %error, "promote ip→target failed (non-fatal)"),
         }
     }
+    // L0a (design 2026-06-24): owned CIDR/ASN ranges become VISIBLE `cidr` scope
+    // targets so EAS sees them (today they were dropped by the bare-IP parse
+    // filter). Active port-scanning a whole netblock stays behind EAS
+    // human_approval (D1: "看得见，但不乱炸"). Non-fatal (I9).
+    for cidr in plan_promotable_cidrs(&profile_ips) {
+        match upsert_target(pool, org, &cidr, "cidr", None).await {
+            Ok(_) => landed += 1,
+            Err(error) => tracing::warn!(%cidr, %error, "promote cidr→target failed (non-fatal)"),
+        }
+    }
+    // L0b (design 2026-06-24): CT-discovered owned hosts (cert SAN/CN) become
+    // `domain` scope targets so EAS can probe them (today they only set the
+    // coverage has_ct flag, locked in organizations.certificates JSON). Scope-
+    // filtered (drop third-party / non-owned) + idempotent upsert. Non-fatal (I9).
+    for host in hostnames_from_certificates(&org.certificates) {
+        if !value_belongs_to_organization(org, &host) {
+            continue;
+        }
+        match upsert_target(pool, org, &host, "domain", None).await {
+            Ok(_) => landed += 1,
+            Err(error) => {
+                tracing::warn!(%host, %error, "promote cert host→target failed (non-fatal)")
+            }
+        }
+    }
     landed
 }
 
@@ -340,6 +454,57 @@ mod tests {
             )]
         );
         assert_eq!(ips, vec!["1.2.3.4".to_string()]);
+    }
+
+    #[test]
+    fn plan_promotable_cidrs_keeps_networks_drops_bare_and_garbage() {
+        // L0a (design 2026-06-24): only well-formed CIDR networks survive; bare
+        // IPs (handled elsewhere), non-CIDR atoms, and over-wide prefixes drop.
+        let v = plan_promotable_cidrs(&[
+            "203.0.113.0/24".to_string(),
+            "10.0.0.0/8".to_string(),
+            "1.2.3.4".to_string(),        // bare IP — not a CIDR
+            "not-a-net".to_string(),      // garbage
+            "1.2.3.4/99".to_string(),     // invalid prefix (>32)
+            "203.0.113.0/24".to_string(), // dup — collapsed
+            "2001:db8::/32".to_string(),  // IPv6 CIDR
+        ]);
+        assert_eq!(
+            v,
+            vec![
+                "203.0.113.0/24".to_string(),
+                "10.0.0.0/8".to_string(),
+                "2001:db8::/32".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn hostnames_from_certificates_extracts_hosts_shape_agnostic() {
+        // L0b (design 2026-06-24): pull hosts out of cert-subject strings + nested
+        // objects; strip wildcards; drop IPs and non-host DN tokens (O=/C=).
+        let certs = serde_json::json!([
+            "CN=*.pingan.com",
+            "CN=bank.pingan.com, O=Ping An, C=CN",
+            "mail.pingan.com",
+            "1.2.3.4",
+            { "subject": "CN=vpn.pingan.com", "san": ["api.pingan.com"] },
+        ]);
+        let mut v = hostnames_from_certificates(&certs);
+        v.sort();
+        assert_eq!(
+            v,
+            vec![
+                "api.pingan.com",
+                "bank.pingan.com",
+                "mail.pingan.com",
+                "pingan.com",
+                "vpn.pingan.com",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+        );
     }
 
     #[test]
