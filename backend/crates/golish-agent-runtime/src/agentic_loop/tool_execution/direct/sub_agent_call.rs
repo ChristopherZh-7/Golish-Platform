@@ -78,9 +78,6 @@ fn background_job_ids_from_submit_result(result: &Value) -> Vec<String> {
 }
 
 fn submit_repair_mode_from_agent_run(checkpoint: &AgentRunCheckpoint) -> Option<SubmitRepairMode> {
-    if !checkpoint.pending_submit_only {
-        return None;
-    }
     serde_json::from_value(checkpoint.submit_repair_mode.clone()?).ok()
 }
 
@@ -189,9 +186,7 @@ async fn clear_sub_agent_submit_repair_checkpoint(
         .unwrap_or_default();
     let should_clear = agent_run_from_state_blob(&current)
         .map(|checkpoint| {
-            checkpoint.agent_path == agent_path
-                && checkpoint.pending_submit_only
-                && checkpoint.submit_repair_mode.is_some()
+            checkpoint.agent_path == agent_path && checkpoint.submit_repair_mode.is_some()
         })
         .unwrap_or(false);
     if !should_clear {
@@ -351,7 +346,7 @@ fn build_sub_agent_tool_observer(
                             trigger: "execution_monitor".to_string(),
                             tool: repeated_tool.clone(),
                             repeat_count: repeat_count.min(u32::MAX as usize) as u32,
-                            injected: matches!(mode, ExecutionMonitorMode::SoftInject),
+                            injected: mode.injects(),
                             advice_preview: truncate_str(&advice_body, 500).to_string(),
                         },
                     };
@@ -367,6 +362,14 @@ fn build_sub_agent_tool_observer(
                     ExecutionMonitorMode::Shadow => None,
                     ExecutionMonitorMode::SoftInject => Some(format!(
                         "\n\n--- EXECUTION ADVISOR ---\n{}\n-------------------------",
+                        advice_body
+                    )),
+                    ExecutionMonitorMode::HardInject => Some(format!(
+                        "\n\n--- EXECUTION SUPERVISOR (HARD) ---\n\
+                         You MUST treat this as a corrective instruction before choosing the next \
+                         tool. Stop the repeated pattern, address the specific failure, and only \
+                         continue once the stated correction is satisfied.\n\n{}\n\
+                         -----------------------------------",
                         advice_body
                     )),
                 }
@@ -965,5 +968,36 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("http_probe"));
+    }
+
+    #[test]
+    fn submit_repair_mode_restores_from_stage_retry_checkpoint() {
+        let mode = SubmitRepairMode {
+            kind: SubmitRepairKind::CoverageGap,
+            reason: "coverage cell missing".to_string(),
+            missing_required_checks: Vec::new(),
+        };
+        let checkpoint = AgentRunCheckpoint {
+            schema_v: 1,
+            operation_id: None,
+            stage: Some(StageKind::ExternalAttackSurface.as_str().to_string()),
+            stage_attempt_id: None,
+            agent_path: "main>stage_run:external_attack_surface>org:abc>prober".to_string(),
+            status: AgentRunStatus::GateBlocked,
+            llm_turn_index: Some(1),
+            message_chain_ref: None,
+            pending_gate_correction: Some("retry 2/3: close coverage gap".to_string()),
+            pending_submit_only: false,
+            submit_repair_mode: Some(serde_json::to_value(&mode).unwrap()),
+            runtime_corrections: Vec::new(),
+            background_job_ids: Vec::new(),
+            evidence_watermark: None,
+            last_tool: None,
+            updated_at: chrono::Utc::now(),
+        };
+
+        let restored = submit_repair_mode_from_agent_run(&checkpoint).expect("mode restores");
+        assert_eq!(restored.kind, SubmitRepairKind::CoverageGap);
+        assert!(restored.block_result("pentest_run").is_none());
     }
 }

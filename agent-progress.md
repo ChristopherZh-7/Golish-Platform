@@ -6033,6 +6033,37 @@
   - 未做活体 stage_run EAS；需要重启后端后实际跑一次确认 prober 新 prompt + spec 新 gate 的交互。
 - **下一步最佳动作**：重启 app 后跑一次 EAS stage_run；若模型开始因为 denominator 字段不熟悉反复 needs_fix，再把 `submit_stage_deliverable` schema/工具说明或新增 EAS 专用 record 工具补上。
 
+### 2026-06-25 · needs_fix 分类 / stage retry resume / mentor hard / background evidence 修复
+
+- **本轮目标**：修用户现场 EAS run 暴露的四个后端问题：coverage needs_fix 被误锁成 evidence-ref repair、stage retry/resume 像从头跑、`shadow` 不是实际监督、后台 nmap/naabu evidence 归因丢真实工具名。
+- **已完成**：
+  - `golish-sub-agents`：新增 `SubmitRepairKind::CoverageGap`，把 `coverage` / `never attempted` / EAS liveness/service-fingerprint 反馈从纯 evidence-ref 修复中拆出；coverage-gap 模式允许阶段内定向 `pentest_run`/query/wait/resubmit，但继续拦截 broad restart。
+  - `golish-agent-runtime`：stage_run 的 per-org `GateBlocked` checkpoint 现在能持久化 coverage-gap repair mode；sub_agent restore 不再要求 `pending_submit_only=true`，所以 stage retry/resume 会恢复 repair mode + worker chain，而不是只带 gate 文本重开。
+  - `golish-agent-kit` / `golish-agent-bridge` / runtime：新增 `ExecutionMonitorMode::HardInject`，`GOLISH_EXECUTION_MENTOR=hard|supervise` 会把 supervisor correction 注入主 agent / sub-agent ToolResult；`shadow` 仍只记录，`soft/on` 仍 advisor 注入。
+  - `golish-agent-app`：background completion evidence 写入时用命令行解析出的真实 tool_name；`nmap` 保持 `nmap` kind，`naabu` 映射为 `port_probe`，不再统一写成 `background_job`。
+  - 同步模块卡：`docs/modules/backend/golish-sub-agents/executor.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-agent-kit/loop_detection.md`、`docs/modules/backend/golish-agent-bridge/agent_bridge.md`。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-sub-agents -p golish-agent-runtime -p golish-agent-kit -p golish-agent-bridge -p golish-agent-app` → exit 0。
+  - `cd backend && cargo nextest run -p golish-sub-agents submit --status-level fail` → 3 passed / 99 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents background_true --status-level fail` → 2 passed / 100 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-runtime stage_run_agent_checkpoint --status-level fail` → 2 passed / 264 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-runtime submit_repair_mode --status-level fail` → 2 passed / 264 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit execution_monitor --status-level fail` → 2 passed / 723 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app background_ --status-level fail` → 5 passed / 55 skipped。
+  - `cd backend && cargo check -p golish-sub-agents -p golish-agent-runtime -p golish-agent-kit -p golish-agent-bridge -p golish-agent-app` → exit 0。
+  - `cd backend && cargo clippy -p golish-sub-agents -p golish-agent-runtime -p golish-agent-kit -p golish-agent-bridge -p golish-agent-app --all-targets -- -D warnings` → exit 0。
+- **已记录证据**：
+  - `coverage_gap_needs_fix_enters_targeted_gap_closure_mode` 覆盖 coverage needs_fix 不再拦截 `pentest_run`，但仍标记 `repair_kind=coverage_gap` 并拦截未知 fresh discovery。
+  - `stage_run_agent_checkpoint_carries_coverage_repair_mode` 与 `submit_repair_mode_restores_from_stage_retry_checkpoint` 覆盖 stage retry checkpoint 能携带并恢复 coverage-gap repair mode。
+  - `execution_monitor_modes_are_explicit` 覆盖 shadow/soft/hard 注入语义。
+  - `background_port_scan_commands_keep_real_tool_names` 覆盖后台 nmap/naabu evidence tool_name/kind 归因。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 `./init.sh` / `just precommit`；按用户此前要求不跑慢 precommit，本轮只跑相关后端 crate 的 targeted tests/check/clippy。
+  - hard supervisor 仍是模型可见的强纠偏注入，不是独立确定性 gate；确定性阻断仍由 submit repair/stage guard/background barrier 承担。
+  - 运行中的 app 需要重启后才会加载新逻辑；已存在的旧 background evidence 不会 retroactively 改 tool_name。
+- **下一步最佳动作**：重启 app，用 `GOLISH_EXECUTION_MENTOR=hard just dev` 复跑 EAS；若只想观察 mentor 但不注入，继续用 `GOLISH_EXECUTION_MENTOR=shadow just dev`。
+
 ### 2026-06-24 · sub-agent runtime monitor 与后台失败纠偏
 
 - **本轮目标**：修复用户现场 run 中 sub-agent 内部 `background:true` 失败 / repeated submit needs_fix 被模型忽略的问题，并确认 UI 已有 `wait_for_background_jobs` 后把修复落在后端执行链。

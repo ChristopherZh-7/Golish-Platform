@@ -69,7 +69,8 @@ pub use file_loader::AgentFileInfo;
 
 // Re-export executor types
 pub use executor::{
-    execute_sub_agent, submit_repair_mode_from_submit_result, SubAgentExecutorContext, ToolProvider,
+    execute_sub_agent, submit_coverage_gap_repair_mode_from_reasons,
+    submit_repair_mode_from_submit_result, SubAgentExecutorContext, ToolProvider,
 };
 pub use executor_types::{
     PostShellHook, StageToolGuard, StageToolHider, SubAgentChainPersistence,

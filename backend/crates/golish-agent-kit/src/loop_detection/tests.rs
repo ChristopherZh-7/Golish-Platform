@@ -159,6 +159,13 @@ fn execution_monitor_modes_are_explicit() {
         ExecutionMonitor::soft_inject().mode(),
         ExecutionMonitorMode::SoftInject
     );
+    assert_eq!(
+        ExecutionMonitor::hard_inject().mode(),
+        ExecutionMonitorMode::HardInject
+    );
+    assert!(!ExecutionMonitorMode::Shadow.injects());
+    assert!(ExecutionMonitorMode::SoftInject.injects());
+    assert!(ExecutionMonitorMode::HardInject.injects());
     // Preserve the pre-existing constructor semantics for callers that
     // explicitly instantiate a monitor: a monitor means soft mentor injection.
     assert_eq!(

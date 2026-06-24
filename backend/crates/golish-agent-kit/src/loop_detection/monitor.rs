@@ -13,6 +13,10 @@ pub enum ExecutionMonitorMode {
     Shadow,
     /// Call the mentor and append its advice to the tool response.
     SoftInject,
+    /// Call the mentor and append a stronger, blocking-style instruction to the
+    /// tool response. This is still model-mediated, but it is treated as a
+    /// supervisor correction rather than an advisory hint.
+    HardInject,
 }
 
 impl ExecutionMonitorMode {
@@ -20,7 +24,12 @@ impl ExecutionMonitorMode {
         match self {
             Self::Shadow => "shadow",
             Self::SoftInject => "soft",
+            Self::HardInject => "hard",
         }
+    }
+
+    pub fn injects(self) -> bool {
+        matches!(self, Self::SoftInject | Self::HardInject)
     }
 }
 
@@ -54,6 +63,10 @@ impl ExecutionMonitor {
 
     pub fn soft_inject() -> Self {
         Self::with_mode(ExecutionMonitorMode::SoftInject)
+    }
+
+    pub fn hard_inject() -> Self {
+        Self::with_mode(ExecutionMonitorMode::HardInject)
     }
 
     pub fn with_mode(mode: ExecutionMonitorMode) -> Self {

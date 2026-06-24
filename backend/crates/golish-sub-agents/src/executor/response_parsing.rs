@@ -249,6 +249,36 @@ fn needs_fix_evidence_ref_problem(reasons: &[String]) -> bool {
         || reason_lc.contains("real evidence")
 }
 
+fn needs_fix_coverage_gap(reasons: &[String]) -> bool {
+    let reason_lc = reasons.join(" | ").to_ascii_lowercase();
+    reason_lc.contains("coverage")
+        || reason_lc.contains("not_attempted")
+        || reason_lc.contains("never attempted")
+        || reason_lc.contains("never reached a terminal state")
+        || reason_lc.contains("missing terminal")
+        || reason_lc.contains("external attack surface incomplete")
+        || reason_lc.contains("liveness")
+        || reason_lc.contains("service-fingerprint")
+        || reason_lc.contains("service fingerprint")
+}
+
+pub fn submit_coverage_gap_repair_mode_from_reasons(
+    reasons: &[String],
+) -> Option<SubmitRepairMode> {
+    if !needs_fix_coverage_gap(reasons) {
+        return None;
+    }
+    Some(SubmitRepairMode {
+        kind: SubmitRepairKind::CoverageGap,
+        reason: if reasons.is_empty() {
+            "(no reasons returned)".to_string()
+        } else {
+            reasons.join(" | ")
+        },
+        missing_required_checks: missing_min_invocation_tools(reasons),
+    })
+}
+
 pub fn submit_repair_mode_from_submit_result(
     tool_name: &str,
     result: &serde_json::Value,
@@ -281,6 +311,10 @@ pub fn submit_repair_mode_from_submit_result(
             reason,
             missing_required_checks: Vec::new(),
         });
+    }
+
+    if let Some(mode) = submit_coverage_gap_repair_mode_from_reasons(&reasons) {
+        return Some(mode);
     }
 
     let available_ids = collect_json_array_strings(result.get("available_evidence_ids"));
@@ -320,12 +354,50 @@ fn submit_needs_fix_runtime_correction(
     }
 
     let available_ids = collect_json_array_strings(result.get("available_evidence_ids"));
+    let reasons = collect_json_array_strings(result.get("reasons"));
+    let reason_text = reasons.join(" | ");
+    if needs_fix_coverage_gap(&reasons) {
+        let ids_hint = if available_ids.is_empty() {
+            "No available_evidence_ids were returned for this needs_fix.".to_string()
+        } else {
+            let mut preview_ids = available_ids.iter().take(20).cloned().collect::<Vec<_>>();
+            if available_ids.len() > preview_ids.len() {
+                preview_ids.push(format!(
+                    "... +{} more",
+                    available_ids.len() - preview_ids.len()
+                ));
+            }
+            format!(
+                "Real evidence ids currently available in this run: [{}].",
+                preview_ids.join(", ")
+            )
+        };
+        let correction = format!(
+            "submit_stage_deliverable returned coverage gaps, not a pure evidence-ref rewrite. \
+             {ids_hint} Close ONLY the assets/techniques named by the gate: query_target_data or \
+             prior wait_for_background_jobs output first, then run targeted stage-allowed probes \
+             only for missing coverage cells. Do not restart broad discovery or rescan \
+             already-covered assets. After every named gap has a terminal coverage status, \
+             resubmit the StageDeliverable. Gate reasons: {}",
+            if reason_text.is_empty() {
+                "(none provided)"
+            } else {
+                reason_text.as_str()
+            }
+        );
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert(
+                "runtime_correction".to_string(),
+                serde_json::Value::String(correction.clone()),
+            );
+        }
+        return Some(correction);
+    }
+
     if available_ids.is_empty() {
         return None;
     }
 
-    let reasons = collect_json_array_strings(result.get("reasons"));
-    let reason_text = reasons.join(" | ");
     if !needs_fix_evidence_ref_problem(&reasons) {
         return None;
     }
@@ -1067,6 +1139,7 @@ mod tests {
         structured_storage_hook_payload, submit_needs_fix_runtime_correction, submit_repair_update,
         SubmitRepairModeUpdate,
     };
+    use crate::SubmitRepairKind;
     use golish_core::Tool;
     use golish_tools::ToolRegistry;
     use std::path::Path;
@@ -1415,14 +1488,49 @@ mod tests {
     }
 
     #[test]
-    fn submit_needs_fix_correction_ignores_coverage_gap_without_ids() {
+    fn coverage_gap_needs_fix_enters_targeted_gap_closure_mode() {
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "available_evidence_ids": [4336, 4335],
+            "reasons": [
+                "external attack surface incomplete: (101.69.134.6 x GOLISH-EAS-LIVENESS) never attempted",
+                "This operation's REAL evidence ids (newest first) are [4336, 4335]."
+            ]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("coverage gaps should activate targeted repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
+
+        assert_eq!(mode.kind, SubmitRepairKind::CoverageGap);
+        assert!(mode.block_result("query_target_data").is_none());
+        assert!(mode.block_result("pentest_run").is_none());
+        assert!(mode.block_result("submit_stage_deliverable").is_none());
+        let blocked = mode
+            .block_result("subfinder")
+            .expect("unknown fresh discovery tool remains blocked");
+        assert_eq!(blocked["repair_kind"], "coverage_gap");
+        assert!(blocked["error"]
+            .as_str()
+            .unwrap()
+            .contains("Targeted gap-closure"));
+    }
+
+    #[test]
+    fn submit_needs_fix_correction_guides_coverage_gap_without_ids() {
         let mut v = serde_json::json!({
             "status": "needs_fix",
             "reasons": ["coverage cell missing for host x service fingerprint"]
         });
 
-        assert!(submit_needs_fix_runtime_correction("submit_stage_deliverable", &mut v).is_none());
-        assert!(v.get("runtime_correction").is_none());
+        let note = submit_needs_fix_runtime_correction("submit_stage_deliverable", &mut v)
+            .expect("coverage needs_fix should produce targeted correction");
+
+        assert!(note.contains("coverage gaps"));
+        assert!(note.contains("targeted stage-allowed probes"));
+        assert!(!note.contains("Do NOT launch more scans"));
+        assert!(v.get("runtime_correction").is_some());
     }
 
     #[test]

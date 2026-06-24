@@ -219,6 +219,7 @@ pub type StageToolHider = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 pub enum SubmitRepairKind {
     EvidenceRefs,
     BackgroundJobs,
+    CoverageGap,
 }
 
 /// Deterministic refiner directive produced from `submit_stage_deliverable`
@@ -247,6 +248,18 @@ impl SubmitRepairMode {
                 "kill_job",
                 "submit_stage_deliverable",
             ],
+            SubmitRepairKind::CoverageGap => &[
+                "pentest_list_tools",
+                "pentest_run",
+                "list_in_scope_targets",
+                "list_attack_surface_seeds",
+                "query_target_data",
+                "wait_for_background_jobs",
+                "check_job",
+                "kill_job",
+                "manage_targets",
+                "submit_stage_deliverable",
+            ],
         }
     }
 
@@ -254,6 +267,7 @@ impl SubmitRepairMode {
         match self.kind {
             SubmitRepairKind::EvidenceRefs => "evidence_refs",
             SubmitRepairKind::BackgroundJobs => "background_jobs",
+            SubmitRepairKind::CoverageGap => "coverage_gap",
         }
     }
 
@@ -280,6 +294,15 @@ impl SubmitRepairMode {
                  the completed output tails, then resubmit."
                     .to_string()
             }
+            SubmitRepairKind::CoverageGap => {
+                "submit_stage_deliverable returned needs_fix because the stage coverage matrix \
+                 still has missing or non-terminal cells. Targeted gap-closure mode is active: \
+                 first query existing targets/evidence, then run only the stage-allowed probes \
+                 needed for the exact assets/techniques named in the gate feedback. Do NOT restart \
+                 broad discovery or rescan already-covered assets. When each named gap has a \
+                 terminal coverage cell, resubmit."
+                    .to_string()
+            }
         };
         if !self.missing_required_checks.is_empty() {
             message.push_str(&format!(
@@ -298,6 +321,7 @@ impl SubmitRepairMode {
         Some(serde_json::json!({
             "error": self.model_instruction(),
             "blocked_by_submit_repair": true,
+            "repair_kind": self.kind_str(),
             "blocked_tool": tool_name,
             "allowed_tools": self.allowed_tools(),
             "last_needs_fix_reason": self.reason,

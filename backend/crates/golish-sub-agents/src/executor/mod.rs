@@ -33,7 +33,9 @@ mod response_parsing;
 mod stream_processing;
 mod tool_setup;
 
-pub use response_parsing::submit_repair_mode_from_submit_result;
+pub use response_parsing::{
+    submit_coverage_gap_repair_mode_from_reasons, submit_repair_mode_from_submit_result,
+};
 
 /// Execute a sub-agent with the given task and context.
 ///

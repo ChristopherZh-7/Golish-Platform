@@ -57,7 +57,7 @@ fn emit_mentor_advice_trace(
             trigger: "execution_monitor".to_string(),
             tool: repeated_tool.to_string(),
             repeat_count: repeat_count.min(u32::MAX as usize) as u32,
-            injected: matches!(mode, ExecutionMonitorMode::SoftInject),
+            injected: mode.injects(),
             advice_preview: truncate_str(advice_body, 500).to_string(),
         },
     };
@@ -398,6 +398,14 @@ where
                     ExecutionMonitorMode::Shadow => None,
                     ExecutionMonitorMode::SoftInject => Some(format!(
                         "\n\n--- EXECUTION ADVISOR ---\n{}\n-------------------------",
+                        advice_body
+                    )),
+                    ExecutionMonitorMode::HardInject => Some(format!(
+                        "\n\n--- EXECUTION SUPERVISOR (HARD) ---\n\
+                         You MUST treat this as a corrective instruction before choosing the next \
+                         tool. Stop the repeated pattern, address the specific failure, and only \
+                         continue once the stated correction is satisfied.\n\n{}\n\
+                         -----------------------------------",
                         advice_body
                     )),
                 }

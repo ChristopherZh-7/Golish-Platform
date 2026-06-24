@@ -24,7 +24,7 @@
 | `execute_sub_agent` | 公开执行入口（超时 + 错误包装） |
 | `SubAgentExecutorContext` / `ToolProvider` / `BARRIER_TOOL_NAME`（re-export） | 执行上下文 / 工具注入 / barrier |
 | `SubAgentToolObserver` / `SubAgentToolObservation` | 上层 runtime 注入的工具结果观察点；可 trace-only，也可把纠偏提示附回 ToolResult |
-| `SubmitRepairMode` / `SubmitRepairKind` / `submit_repair_mode_from_submit_result` | 可持久化的 submit repair/refiner directive；runtime 写入 checkpoint，executor resume 时恢复 |
+| `SubmitRepairMode` / `SubmitRepairKind` / `submit_repair_mode_from_submit_result` / `submit_coverage_gap_repair_mode_from_reasons` | 可持久化的 submit repair/refiner directive；runtime 写入 checkpoint，executor resume 时恢复 |
 
 ## 关键文件
 
@@ -48,7 +48,7 @@
 - registry/router fallback 会用 `golish_core::with_agent_tool_context` 标记当前 sub-agent tool call；如果 `pentest_run` 等工具内部启动后台 shell，live chunk 要带 `ToolSource::SubAgent` 回到对应 sub-agent 工具详情。
 - `response_parsing.rs` 对 sub-agent 的 `pentest_run` 结果也要触发 `post_shell_hook`（从 result/args 提取 `command/stdout`），否则 Prober/Enumerator 的 active scan 输出只进 evidence，不会自动走 output_store 写 `targets` / fingerprints。
 - `SubAgentToolObserver` 是 runtime supervisor/mentor 的泛型扩展点：executor 只传工具名、参数、结果、成功状态，不反向依赖 harness/DB/LLM；shadow 模式只记 trace，soft 模式才把建议附回模型可见 ToolResult。
-- `submit_stage_deliverable` 返回 `needs_fix` 且 gate 已给出 `available_evidence_ids` 时，`response_parsing.rs` 会给模型追加确定性 runtime correction，要求用真实 evidence id 重交，而不是继续扫；并在下一轮进入 submit repair-only lock，只允许 `submit_stage_deliverable` / `query_target_data` / `wait_for_background_jobs` 这类补洞工具，拦截新的扫描类调用。
+- `submit_stage_deliverable` 返回 `needs_fix` 且 gate 已给出 `available_evidence_ids` 时，`response_parsing.rs` 会先分类：纯 evidence/id 错误进入 evidence-ref repair-only（只允许 submit/query/wait），覆盖缺口（coverage / never attempted / EAS liveness/port/service）进入 targeted gap-closure，允许 `pentest_run` 等阶段内定向补扫但仍拦截 broad restart。
 - `submit_stage_deliverable` 返回 `needs_fix` 且仍有后台 job 未完成时，executor 会进入 wait-only repair lock：只允许 `wait_for_background_jobs` / `check_job` / `kill_job` / resubmit，避免模型开替代扫描把 UI 又变回 submit spinner。
 - `SubAgentExecutorContext.initial_submit_repair_mode` 是 resume/refiner 入口：runtime 从 `agent_run.submit_repair_mode` 恢复后传入；executor 会把 directive 写进恢复后的 chat history，并发一条 SubAgentTextDelta 给 UI，随后用同一个 repair lock 继续拦截不允许的工具。
 - `background:true` 工具若同步失败，也会提示不要把它当成运行中的后台 job。

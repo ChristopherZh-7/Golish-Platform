@@ -35,6 +35,9 @@ fn execution_monitor_from_env(
         "soft" | "soft_inject" | "on" | "1" | "true" => {
             golish_agent_kit::loop_detection::ExecutionMonitor::soft_inject()
         }
+        "hard" | "hard_inject" | "supervise" | "supervisor" => {
+            golish_agent_kit::loop_detection::ExecutionMonitor::hard_inject()
+        }
         _ => return None,
     };
     tracing::info!(

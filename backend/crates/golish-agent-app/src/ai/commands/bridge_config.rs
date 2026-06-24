@@ -258,6 +258,7 @@ async fn maybe_append_background_evidence(
                 );
                 (technique, asset, outcome)
             });
+    let evidence_tool = background_evidence_tool_name(&jc.command);
     let evidence_kind = background_evidence_kind(&jc.command);
 
     match db_repo
@@ -266,7 +267,7 @@ async fn maybe_append_background_evidence(
             None,
             Some(session_id),
             project_path,
-            "background_job",
+            &evidence_tool,
             evidence_kind,
             &jc.command,
             &raw_output,
@@ -326,6 +327,10 @@ fn background_command_tool_name(command: &str) -> Option<String> {
     }
 }
 
+fn background_evidence_tool_name(command: &str) -> String {
+    background_command_tool_name(command).unwrap_or_else(|| "background_job".to_string())
+}
+
 fn background_evidence_kind(command: &str) -> &'static str {
     let Some(tool) = background_command_tool_name(command) else {
         return "background_job";
@@ -333,6 +338,7 @@ fn background_evidence_kind(command: &str) -> &'static str {
     match tool.as_str() {
         "httpx" | "whatweb" | "curl" | "wget" | "http" => "http_probe",
         "nmap" => "nmap",
+        "naabu" => "port_probe",
         "dig" | "dnsx" | "host" | "nslookup" => "dns_a",
         "whois" | "asn" | "whois-asn" => "whois",
         "ctfr" => "ct_log",
@@ -845,7 +851,18 @@ mod tests {
     fn background_httpx_command_books_http_probe_kind() {
         let cmd = r#""/Users/me/Application Support/golish-platform/tools/httpx/httpx" -u https://example.com -silent"#;
         assert_eq!(background_command_tool_name(cmd).as_deref(), Some("httpx"));
+        assert_eq!(background_evidence_tool_name(cmd), "httpx");
         assert_eq!(background_evidence_kind(cmd), "http_probe");
+    }
+
+    #[test]
+    fn background_port_scan_commands_keep_real_tool_names() {
+        assert_eq!(background_evidence_tool_name("nmap -sV 1.2.3.4"), "nmap");
+        assert_eq!(background_evidence_kind("nmap -sV 1.2.3.4"), "nmap");
+
+        let cmd = r#""/Users/me/Application Support/golish-platform/tools/naabu/naabu" -host 1.2.3.4 -silent"#;
+        assert_eq!(background_evidence_tool_name(cmd), "naabu");
+        assert_eq!(background_evidence_kind(cmd), "port_probe");
     }
 
     #[test]
@@ -853,6 +870,10 @@ mod tests {
         assert_eq!(
             background_evidence_kind("custom-tool --flag"),
             "background_job"
+        );
+        assert_eq!(
+            background_evidence_tool_name("custom-tool --flag"),
+            "custom-tool"
         );
     }
 }

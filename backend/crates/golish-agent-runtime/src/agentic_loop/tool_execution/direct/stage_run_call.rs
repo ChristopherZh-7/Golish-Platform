@@ -39,7 +39,9 @@ use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
     ToolCheckpointState,
 };
 use golish_core::events::{AiEvent, HarnessTraceKind};
-use golish_sub_agents::SubAgentContext;
+use golish_sub_agents::{
+    submit_coverage_gap_repair_mode_from_reasons, SubAgentContext, SubmitRepairMode,
+};
 
 use super::super::super::{AgenticLoopContext, ToolExecutionResult};
 use super::sub_agent_call::execute_sub_agent_call;
@@ -453,6 +455,7 @@ struct StageRunCheckpointInput<'a> {
     status: AgentRunStatus,
     pending_gate_correction: Option<String>,
     correction_kind: Option<&'a str>,
+    submit_repair_mode: Option<SubmitRepairMode>,
 }
 
 fn build_stage_run_agent_checkpoint(input: StageRunCheckpointInput<'_>) -> AgentRunCheckpoint {
@@ -467,7 +470,10 @@ fn build_stage_run_agent_checkpoint(input: StageRunCheckpointInput<'_>) -> Agent
         message_chain_ref: input.chain_id.map(|id| id.to_string()),
         pending_gate_correction: input.pending_gate_correction.clone(),
         pending_submit_only: false,
-        submit_repair_mode: None,
+        submit_repair_mode: input
+            .submit_repair_mode
+            .as_ref()
+            .and_then(|mode| serde_json::to_value(mode).ok()),
         runtime_corrections: input
             .pending_gate_correction
             .map(|message| {
@@ -480,7 +486,10 @@ fn build_stage_run_agent_checkpoint(input: StageRunCheckpointInput<'_>) -> Agent
                     message,
                     job_ids: Vec::new(),
                     evidence_ids: Vec::new(),
-                    submit_allowed: false,
+                    submit_allowed: matches!(
+                        input.submit_repair_mode.as_ref().map(|mode| mode.kind),
+                        Some(golish_sub_agents::SubmitRepairKind::EvidenceRefs)
+                    ),
                 }]
             })
             .unwrap_or_default(),
@@ -865,6 +874,11 @@ where
             .await;
 
             let sub_ok = matches!(&result, Ok(r) if r.success);
+            let carried_submit_repair_mode = load_stage_run_agent_checkpoint(ctx, &agent_path)
+                .await
+                .and_then(|checkpoint| {
+                    serde_json::from_value::<SubmitRepairMode>(checkpoint.submit_repair_mode?).ok()
+                });
             if let Ok(result) = &result {
                 if let Some(chain_id) = result
                     .value
@@ -897,6 +911,7 @@ where
                     status: AgentRunStatus::ToolCompleted,
                     pending_gate_correction: None,
                     correction_kind: None,
+                    submit_repair_mode: carried_submit_repair_mode,
                 }),
             )
             .await;
@@ -967,6 +982,12 @@ where
                     break;
                 }
                 OrgAttemptOutcome::Retry { feedback: fb } => {
+                    let submit_repair_mode = match &verdict {
+                        OrgVerdict::Block { reasons } => {
+                            submit_coverage_gap_repair_mode_from_reasons(reasons)
+                        }
+                        OrgVerdict::Pass => None,
+                    };
                     persist_stage_run_agent_checkpoint(
                         ctx,
                         build_stage_run_agent_checkpoint(StageRunCheckpointInput {
@@ -980,6 +1001,7 @@ where
                             status: AgentRunStatus::GateBlocked,
                             pending_gate_correction: Some(fb.clone()),
                             correction_kind: Some("per_org_gate_retry"),
+                            submit_repair_mode,
                         }),
                     )
                     .await;
@@ -1396,6 +1418,7 @@ mod tests {
             status: AgentRunStatus::GateBlocked,
             pending_gate_correction: Some("retry 2/3: close port gap".to_string()),
             correction_kind: Some("per_org_gate_retry"),
+            submit_repair_mode: None,
         });
 
         assert_eq!(checkpoint.status, AgentRunStatus::GateBlocked);
@@ -1409,6 +1432,38 @@ mod tests {
             checkpoint.last_tool.as_ref().unwrap().result_ref.as_deref(),
             Some("message_chain:22222222-2222-2222-2222-222222222222")
         );
+    }
+
+    #[test]
+    fn stage_run_agent_checkpoint_carries_coverage_repair_mode() {
+        let mode = submit_coverage_gap_repair_mode_from_reasons(&[
+            "coverage cell missing for 1.2.3.4 x GOLISH-EAS-SERVICE-FINGERPRINT".to_string(),
+        ])
+        .expect("coverage feedback should map to repair mode");
+        let checkpoint = build_stage_run_agent_checkpoint(StageRunCheckpointInput {
+            operation_id: None,
+            stage: StageKind::ExternalAttackSurface,
+            agent_path: "main>stage_run:external_attack_surface>org:abc>prober",
+            attempt: 1,
+            org_request_id: "stage_run_1::org::abc",
+            sub_agent_tool: "sub_agent_prober",
+            chain_id: None,
+            status: AgentRunStatus::GateBlocked,
+            pending_gate_correction: Some("retry 2/3: close coverage gap".to_string()),
+            correction_kind: Some("per_org_gate_retry"),
+            submit_repair_mode: Some(mode),
+        });
+
+        let restored: SubmitRepairMode =
+            serde_json::from_value(checkpoint.submit_repair_mode.unwrap()).unwrap();
+        assert_eq!(
+            restored.kind,
+            golish_sub_agents::SubmitRepairKind::CoverageGap
+        );
+        assert!(restored.block_result("pentest_run").is_none());
+        assert!(restored
+            .model_instruction()
+            .contains("Targeted gap-closure"));
     }
 
     #[test]
