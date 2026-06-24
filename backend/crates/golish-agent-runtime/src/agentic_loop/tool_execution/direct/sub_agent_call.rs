@@ -5,13 +5,19 @@
 
 use anyhow::Result;
 use rig::completion::CompletionModel as RigCompletionModel;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use golish_agent_kit::loop_detection::ExecutionMonitorMode;
+use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
+    agent_run_from_state_blob, state_blob_with_agent_run, state_blob_without_agent_run,
+    AgentRunCheckpoint, AgentRunStatus, RuntimeCorrectionCheckpoint, ToolCheckpoint,
+    ToolCheckpointState,
+};
 use golish_core::events::{AiEvent, HarnessTraceKind};
 use golish_core::utils::truncate_str;
 use golish_sub_agents::{
-    execute_sub_agent, SubAgentContext, SubAgentExecutorContext, SubAgentToolObservation,
+    execute_sub_agent, submit_repair_mode_from_submit_result, SubAgentContext,
+    SubAgentExecutorContext, SubAgentToolObservation, SubmitRepairMode,
 };
 
 use super::super::super::llm_helpers::mentor_one_shot;
@@ -24,6 +30,184 @@ use golish_agent_kit::tool_provider_impl::DefaultToolProvider;
 
 fn sub_agent_mentor_agent_path(agent_id: &str) -> String {
     format!("main>{agent_id}")
+}
+
+fn sub_agent_checkpoint_agent_path(
+    stage: Option<golish_agent_kit::harness::StageKind>,
+    parent_request_id: &str,
+    agent_id: &str,
+) -> String {
+    match (stage, stage_run_org_id_from_request_id(parent_request_id)) {
+        (Some(stage), Some(org_id)) => {
+            format!(
+                "main>stage_run:{}>org:{}>{}",
+                stage.as_str(),
+                org_id,
+                agent_id
+            )
+        }
+        _ => sub_agent_mentor_agent_path(agent_id),
+    }
+}
+
+fn evidence_ids_from_submit_result(result: &Value) -> Vec<i64> {
+    result
+        .get("available_evidence_ids")
+        .and_then(|ids| ids.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|id| {
+            id.as_i64()
+                .or_else(|| id.as_u64().and_then(|u| i64::try_from(u).ok()))
+        })
+        .collect()
+}
+
+fn background_job_ids_from_submit_result(result: &Value) -> Vec<String> {
+    result
+        .get("running_background_jobs")
+        .and_then(|jobs| jobs.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|job| {
+            job.get("job_id")
+                .and_then(|id| id.as_str())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+fn submit_repair_mode_from_agent_run(checkpoint: &AgentRunCheckpoint) -> Option<SubmitRepairMode> {
+    if !checkpoint.pending_submit_only {
+        return None;
+    }
+    serde_json::from_value(checkpoint.submit_repair_mode.clone()?).ok()
+}
+
+async fn load_sub_agent_submit_repair_checkpoint(
+    ctx: &AgenticLoopContext<'_>,
+    agent_path: &str,
+) -> Option<SubmitRepairMode> {
+    let tracker = ctx.events.db_tracker?;
+    let repo = tracker.repo()?;
+    let operation_id = ctx.harness_operation_id?;
+    let state = golish_agent_kit::db_shim::operation_state::get(repo, operation_id)
+        .await
+        .ok()
+        .flatten()?;
+    let checkpoint = agent_run_from_state_blob(&state.state_blob)?;
+    if checkpoint.agent_path != agent_path {
+        return None;
+    }
+    submit_repair_mode_from_agent_run(&checkpoint)
+}
+
+async fn persist_sub_agent_submit_repair_checkpoint(
+    tracker: Option<golish_agent_kit::db_tracking::DbTracker>,
+    operation_id: Option<uuid::Uuid>,
+    stage: Option<golish_agent_kit::harness::StageKind>,
+    agent_path: String,
+    tool_call_id: String,
+    mode: SubmitRepairMode,
+    result: Value,
+) {
+    let (Some(tracker), Some(operation_id)) = (tracker, operation_id) else {
+        return;
+    };
+    let Some(repo) = tracker.repo() else {
+        return;
+    };
+    let current = golish_agent_kit::db_shim::operation_state::get(repo, operation_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|state| state.state_blob)
+        .unwrap_or_default();
+    let message = mode.model_instruction();
+    let job_ids = background_job_ids_from_submit_result(&result);
+    let evidence_ids = evidence_ids_from_submit_result(&result);
+    let submit_repair_mode = serde_json::to_value(&mode).ok();
+    let checkpoint = AgentRunCheckpoint {
+        schema_v: 1,
+        operation_id: Some(operation_id),
+        stage: stage.map(|stage| stage.as_str().to_string()),
+        stage_attempt_id: None,
+        agent_path: agent_path.clone(),
+        status: AgentRunStatus::RuntimeCorrectionQueued,
+        llm_turn_index: None,
+        message_chain_ref: None,
+        pending_gate_correction: Some(message.clone()),
+        pending_submit_only: true,
+        submit_repair_mode,
+        runtime_corrections: vec![RuntimeCorrectionCheckpoint {
+            source: "rule".to_string(),
+            kind: format!("submit_{}", mode.kind_str()),
+            message,
+            job_ids: job_ids.clone(),
+            evidence_ids: evidence_ids.clone(),
+            submit_allowed: matches!(mode.kind, golish_sub_agents::SubmitRepairKind::EvidenceRefs),
+        }],
+        background_job_ids: job_ids,
+        evidence_watermark: evidence_ids.iter().copied().max(),
+        last_tool: Some(ToolCheckpoint {
+            tool_call_id,
+            tool_name: "submit_stage_deliverable".to_string(),
+            state: ToolCheckpointState::Completed,
+            result_ref: None,
+        }),
+        updated_at: chrono::Utc::now(),
+    };
+    let next = state_blob_with_agent_run(current, &checkpoint);
+    if let Err(e) =
+        golish_agent_kit::db_shim::operation_state::write_state_blob(repo, operation_id, next).await
+    {
+        tracing::warn!(
+            target: "harness::sub_agent_resume",
+            agent_path = %agent_path,
+            error = %e,
+            "failed to persist submit repair checkpoint"
+        );
+    }
+}
+
+async fn clear_sub_agent_submit_repair_checkpoint(
+    tracker: Option<golish_agent_kit::db_tracking::DbTracker>,
+    operation_id: Option<uuid::Uuid>,
+    agent_path: String,
+) {
+    let (Some(tracker), Some(operation_id)) = (tracker, operation_id) else {
+        return;
+    };
+    let Some(repo) = tracker.repo() else {
+        return;
+    };
+    let current = golish_agent_kit::db_shim::operation_state::get(repo, operation_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|state| state.state_blob)
+        .unwrap_or_default();
+    let should_clear = agent_run_from_state_blob(&current)
+        .map(|checkpoint| {
+            checkpoint.agent_path == agent_path
+                && checkpoint.pending_submit_only
+                && checkpoint.submit_repair_mode.is_some()
+        })
+        .unwrap_or(false);
+    if !should_clear {
+        return;
+    }
+    let next = state_blob_without_agent_run(current);
+    if let Err(e) =
+        golish_agent_kit::db_shim::operation_state::write_state_blob(repo, operation_id, next).await
+    {
+        tracing::warn!(
+            target: "harness::sub_agent_resume",
+            agent_path = %agent_path,
+            error = %e,
+            "failed to clear submit repair checkpoint"
+        );
+    }
 }
 
 fn build_sub_agent_tool_observer(
@@ -42,6 +226,9 @@ fn build_sub_agent_tool_observer(
         .map(|stage| stage.as_str().to_string())
         .unwrap_or_default();
     let agent_id_for_path = agent_id.to_string();
+    let harness_stage = ctx.harness_stage;
+    let db_tracker = ctx.events.db_tracker.cloned();
+    let harness_operation_id = ctx.harness_operation_id;
 
     let observer: golish_sub_agents::SubAgentToolObserver = std::sync::Arc::new(
         move |observation: SubAgentToolObservation| {
@@ -50,8 +237,41 @@ fn build_sub_agent_tool_observer(
             let event_tx = event_tx.clone();
             let operation_id = operation_id.clone();
             let stage = stage.clone();
-            let agent_path = sub_agent_mentor_agent_path(&agent_id_for_path);
+            let agent_path = sub_agent_checkpoint_agent_path(
+                harness_stage,
+                &observation.parent_request_id,
+                &agent_id_for_path,
+            );
+            let db_tracker = db_tracker.clone();
             Box::pin(async move {
+                if observation.tool_name == "submit_stage_deliverable" {
+                    if let Some(mode) = submit_repair_mode_from_submit_result(
+                        &observation.tool_name,
+                        &observation.result,
+                    ) {
+                        persist_sub_agent_submit_repair_checkpoint(
+                            db_tracker.clone(),
+                            harness_operation_id,
+                            harness_stage,
+                            agent_path.clone(),
+                            observation.parent_request_id.clone(),
+                            mode,
+                            observation.result.clone(),
+                        )
+                        .await;
+                    } else if matches!(
+                        observation.result.get("status").and_then(|s| s.as_str()),
+                        Some("accepted" | "received")
+                    ) {
+                        clear_sub_agent_submit_repair_checkpoint(
+                            db_tracker.clone(),
+                            harness_operation_id,
+                            agent_path.clone(),
+                        )
+                        .await;
+                    }
+                }
+
                 let args_summary =
                     serde_json::to_string(&observation.tool_args).unwrap_or_default();
                 let should_mentor = {
@@ -184,6 +404,9 @@ where
 
     let tool_provider = DefaultToolProvider::with_db_tracker(ctx.events.db_tracker);
     let effective_harness_org_id = stage_run_org_id_from_request_id(tool_id).or(ctx.harness_org_id);
+    let agent_path = sub_agent_checkpoint_agent_path(ctx.harness_stage, tool_id, agent_id);
+    let restored_submit_repair_mode =
+        load_sub_agent_submit_repair_checkpoint(ctx, &agent_path).await;
 
     let task_desc = tool_args.get("task").and_then(|v| v.as_str()).unwrap_or("");
     // AI-controlled resume: a prior sub-agent session id continues that exact
@@ -448,6 +671,7 @@ where
                 post_shell_hook: ctx.post_shell_hook.clone(),
                 post_tool_result_hook: sub_tool_result_hook.clone(),
                 tool_observer: sub_tool_observer.clone(),
+                initial_submit_repair_mode: restored_submit_repair_mode.clone(),
                 stage_tool_guard: stage_tool_guard.clone(),
                 hide_tool_in_stage: hide_tool_in_stage.clone(),
             };
@@ -490,6 +714,7 @@ where
                 post_shell_hook: ctx.post_shell_hook.clone(),
                 post_tool_result_hook: sub_tool_result_hook.clone(),
                 tool_observer: sub_tool_observer.clone(),
+                initial_submit_repair_mode: restored_submit_repair_mode.clone(),
                 stage_tool_guard: stage_tool_guard.clone(),
                 hide_tool_in_stage: hide_tool_in_stage.clone(),
             };
@@ -533,6 +758,7 @@ where
             post_shell_hook: ctx.post_shell_hook.clone(),
             post_tool_result_hook: sub_tool_result_hook.clone(),
             tool_observer: sub_tool_observer.clone(),
+            initial_submit_repair_mode: restored_submit_repair_mode.clone(),
             stage_tool_guard: stage_tool_guard.clone(),
             hide_tool_in_stage: hide_tool_in_stage.clone(),
         };
@@ -658,7 +884,15 @@ fn stage_run_org_id_from_request_id(request_id: &str) -> Option<uuid::Uuid> {
 
 #[cfg(test)]
 mod tests {
-    use super::stage_run_org_id_from_request_id;
+    use super::{
+        stage_run_org_id_from_request_id, sub_agent_checkpoint_agent_path,
+        submit_repair_mode_from_agent_run,
+    };
+    use golish_agent_kit::harness::StageKind;
+    use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
+        AgentRunCheckpoint, AgentRunStatus,
+    };
+    use golish_sub_agents::{SubmitRepairKind, SubmitRepairMode};
 
     #[test]
     fn stage_run_org_id_parses_per_org_request_id() {
@@ -674,5 +908,62 @@ mod tests {
     fn stage_run_org_id_ignores_plain_sub_agent_request_id() {
         assert!(stage_run_org_id_from_request_id("call_00_plain").is_none());
         assert!(stage_run_org_id_from_request_id("call_00::org::not-a-uuid").is_none());
+    }
+
+    #[test]
+    fn checkpoint_agent_path_uses_stage_run_org_when_present() {
+        let org_id = "fb90ef2a-eb1c-4288-8f7c-97dc957a26c0";
+        let request_id = format!("call_00::org::{org_id}");
+
+        assert_eq!(
+            sub_agent_checkpoint_agent_path(
+                Some(StageKind::ExternalAttackSurface),
+                &request_id,
+                "prober"
+            ),
+            format!("main>stage_run:external_attack_surface>org:{org_id}>prober")
+        );
+        assert_eq!(
+            sub_agent_checkpoint_agent_path(
+                Some(StageKind::ExternalAttackSurface),
+                "plain",
+                "prober"
+            ),
+            "main>prober"
+        );
+    }
+
+    #[test]
+    fn submit_repair_mode_restores_from_agent_run_checkpoint() {
+        let mode = SubmitRepairMode {
+            kind: SubmitRepairKind::EvidenceRefs,
+            reason: "real ids are [101]".to_string(),
+            missing_required_checks: vec!["http_probe".to_string()],
+        };
+        let checkpoint = AgentRunCheckpoint {
+            schema_v: 1,
+            operation_id: None,
+            stage: Some(StageKind::ExternalAttackSurface.as_str().to_string()),
+            stage_attempt_id: None,
+            agent_path: "main>prober".to_string(),
+            status: AgentRunStatus::RuntimeCorrectionQueued,
+            llm_turn_index: None,
+            message_chain_ref: None,
+            pending_gate_correction: Some(mode.model_instruction()),
+            pending_submit_only: true,
+            submit_repair_mode: Some(serde_json::to_value(&mode).unwrap()),
+            runtime_corrections: Vec::new(),
+            background_job_ids: Vec::new(),
+            evidence_watermark: None,
+            last_tool: None,
+            updated_at: chrono::Utc::now(),
+        };
+
+        let restored = submit_repair_mode_from_agent_run(&checkpoint).expect("mode restores");
+        assert_eq!(restored.kind, SubmitRepairKind::EvidenceRefs);
+        assert!(restored.block_result("pentest_run").unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .contains("http_probe"));
     }
 }

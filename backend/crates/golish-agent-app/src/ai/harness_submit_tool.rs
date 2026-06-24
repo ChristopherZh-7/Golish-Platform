@@ -15,7 +15,7 @@
 //! (`harness_last_deliverable`). The Task-mode executor then feeds it to the
 //! gate at stage close. See `docs/design/2026-06-02-submit-stage-deliverable-tool.md`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -46,6 +46,15 @@ pub trait EvidenceLedgerQuery: Send + Sync {
     async fn recent_evidence_ids(&self, session_id: &str, limit: i64) -> Result<Vec<i64>> {
         let _ = (session_id, limit);
         Ok(Vec::new())
+    }
+
+    /// Map real evidence ids to their ledger kind (`detail->>'kind'`). The submit
+    /// tool uses this to reconcile legacy `min_invocations` checks from actual
+    /// cited evidence instead of depending solely on the model-populated
+    /// `required_checks_done` hint.
+    async fn evidence_kinds_for(&self, ids: &[i64]) -> Result<HashMap<i64, String>> {
+        let _ = ids;
+        Ok(HashMap::new())
     }
 
     /// PR3 coverage projection · the session's evidence facts
@@ -143,6 +152,79 @@ pub struct RunningJobInfo {
 pub trait BackgroundJobsQuery: Send + Sync {
     /// Background jobs still `Running` that were started by `session_id`.
     async fn running_for_session(&self, session_id: &str) -> Vec<RunningJobInfo>;
+}
+
+fn required_check_aliases_for_evidence_kind(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "http_probe" => &["http_probe"],
+        "dns_a" | "dns_aaaa" => &["dns_resolve"],
+        "subdomain" | "subdomain_enum" | "subdomain_enum_passive" => &["subdomain_enum_passive"],
+        _ => &[],
+    }
+}
+
+fn collect_cited_evidence_ids(deliverable: &StageDeliverable) -> Vec<i64> {
+    let mut seen = HashSet::new();
+    let mut ids = Vec::new();
+
+    let mut push = |id: i64| {
+        if seen.insert(id) {
+            ids.push(id);
+        }
+    };
+
+    for evidence_id in &deliverable.evidence_refs {
+        push(evidence_id.as_i64());
+    }
+    for claim in &deliverable.claims {
+        for evidence_id in &claim.evidence_ids {
+            push(evidence_id.as_i64());
+        }
+    }
+    for finding in &deliverable.findings {
+        for evidence_id in &finding.evidence_refs {
+            push(evidence_id.as_i64());
+        }
+    }
+    for cell in &deliverable.coverage {
+        for evidence_id in &cell.evidence_refs {
+            push(evidence_id.as_i64());
+        }
+    }
+
+    ids
+}
+
+fn required_check_done_mentions(done: &str, alias: &str) -> bool {
+    done.split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+        .any(|token| token == alias)
+}
+
+fn backfill_required_checks_done_from_kinds(
+    deliverable: &mut StageDeliverable,
+    spec: &golish_agent_kit::harness::StageSpec,
+    evidence_kinds: &HashMap<i64, String>,
+) -> Vec<String> {
+    let mut added = Vec::new();
+    for evidence_id in collect_cited_evidence_ids(deliverable) {
+        let Some(kind) = evidence_kinds.get(&evidence_id) else {
+            continue;
+        };
+        for alias in required_check_aliases_for_evidence_kind(kind) {
+            if !spec.min_invocations.contains_key(*alias) {
+                continue;
+            }
+            let already = deliverable
+                .required_checks_done
+                .iter()
+                .any(|done| required_check_done_mentions(done, alias));
+            if !already {
+                deliverable.required_checks_done.push((*alias).to_string());
+                added.push((*alias).to_string());
+            }
+        }
+    }
+    added
 }
 
 /// Tool that captures a structured [`StageDeliverable`] into the bridge
@@ -344,6 +426,42 @@ impl SubmitStageDeliverableTool {
                 );
                 Vec::new()
             }
+        }
+    }
+
+    async fn backfill_required_checks_done_from_evidence(
+        &self,
+        deliverable: &mut StageDeliverable,
+        spec: &golish_agent_kit::harness::StageSpec,
+    ) {
+        if spec.min_invocations.is_empty() {
+            return;
+        }
+        let Some(repo) = self.evidence_repo.as_ref() else {
+            return;
+        };
+        let ids = collect_cited_evidence_ids(deliverable);
+        if ids.is_empty() {
+            return;
+        }
+        let kinds = match repo.evidence_kinds_for(&ids).await {
+            Ok(kinds) => kinds,
+            Err(e) => {
+                tracing::warn!(
+                    target: "harness::submit_tool",
+                    error = %e,
+                    "evidence kind lookup failed; submit preview keeps model-provided required_checks_done"
+                );
+                return;
+            }
+        };
+        let added = backfill_required_checks_done_from_kinds(deliverable, spec, &kinds);
+        if !added.is_empty() {
+            tracing::info!(
+                target: "harness::submit_tool",
+                checks = ?added,
+                "backfilled required_checks_done from cited evidence kinds"
+            );
         }
     }
 
@@ -645,6 +763,8 @@ impl Tool for SubmitStageDeliverableTool {
                 // context = prior behaviour. T3: gray-switch also feeds host-aware
                 // asset_types + dynamic expected_techniques so the preview matches
                 // the stage-close口径 (env GOLISH_SUBMIT_PREVIEW_AUTHORITATIVE_CONTEXT=0 reverts).
+                self.backfill_required_checks_done_from_evidence(&mut deliverable, &spec)
+                    .await;
                 let authoritative = golish_agent_kit::harness::feature_flags::submit_preview_authoritative_context_enabled();
                 let ctx = self.gate_context(kind, authoritative).await;
                 let result =
@@ -935,6 +1055,7 @@ mod tests {
     struct MockLedger {
         existing: HashSet<i64>,
         recent: Vec<i64>,
+        kinds: HashMap<i64, String>,
         facts: Vec<EvidenceFact>,
         source_queries: Vec<SourceQueryFact>,
     }
@@ -944,6 +1065,7 @@ mod tests {
             Self {
                 existing: ids,
                 recent: Vec::new(),
+                kinds: HashMap::new(),
                 facts: Vec::new(),
                 source_queries: Vec::new(),
             }
@@ -962,6 +1084,9 @@ mod tests {
         async fn recent_evidence_ids(&self, _session_id: &str, _limit: i64) -> Result<Vec<i64>> {
             Ok(self.recent.clone())
         }
+        async fn evidence_kinds_for(&self, _ids: &[i64]) -> Result<HashMap<i64, String>> {
+            Ok(self.kinds.clone())
+        }
         async fn evidence_facts(&self, _session_id: &str) -> Vec<EvidenceFact> {
             self.facts.clone()
         }
@@ -972,6 +1097,82 @@ mod tests {
         ) -> Vec<SourceQueryFact> {
             self.source_queries.clone()
         }
+    }
+
+    #[test]
+    fn backfills_required_checks_done_from_cited_http_probe_evidence() {
+        let spec =
+            load_embedded_stage_spec(StageKind::ExternalAttackSurface).expect("EAS spec loads");
+        let mut deliverable = StageDeliverable {
+            stage_id: StageKind::ExternalAttackSurface.as_str().to_string(),
+            stage_run_id: uuid::Uuid::new_v4(),
+            claims: vec![],
+            evidence_refs: vec![golish_pentest::evidence_ledger::EvidenceAuditId::new(42)],
+            skipped_checks: vec![],
+            findings: vec![],
+            required_checks_done: vec![],
+            coverage: vec![],
+        };
+        let added = backfill_required_checks_done_from_kinds(
+            &mut deliverable,
+            &spec,
+            &HashMap::from([(42, "http_probe".to_string())]),
+        );
+
+        assert_eq!(added, vec!["http_probe"]);
+        assert_eq!(deliverable.required_checks_done, vec!["http_probe"]);
+
+        let added_again = backfill_required_checks_done_from_kinds(
+            &mut deliverable,
+            &spec,
+            &HashMap::from([(42, "http_probe".to_string())]),
+        );
+        assert!(
+            added_again.is_empty(),
+            "backfill must not duplicate required_checks_done"
+        );
+    }
+
+    #[test]
+    fn backfills_required_checks_done_from_claim_evidence_ids() {
+        let spec =
+            load_embedded_stage_spec(StageKind::ExternalAttackSurface).expect("EAS spec loads");
+        let mut deliverable = StageDeliverable {
+            stage_id: StageKind::ExternalAttackSurface.as_str().to_string(),
+            stage_run_id: uuid::Uuid::new_v4(),
+            claims: vec![golish_agent_kit::harness::StageClaim {
+                kind: "http_probe".to_string(),
+                subject: "https://example.com".to_string(),
+                summary: "httpx returned a live host".to_string(),
+                evidence_ids: vec![golish_pentest::evidence_ledger::EvidenceAuditId::new(42)],
+                technique: None,
+            }],
+            evidence_refs: vec![],
+            skipped_checks: vec![],
+            findings: vec![],
+            required_checks_done: vec![],
+            coverage: vec![],
+        };
+        let added = backfill_required_checks_done_from_kinds(
+            &mut deliverable,
+            &spec,
+            &HashMap::from([(42, "http_probe".to_string())]),
+        );
+
+        assert_eq!(added, vec!["http_probe"]);
+        assert_eq!(deliverable.required_checks_done, vec!["http_probe"]);
+    }
+
+    #[test]
+    fn required_check_done_mentions_match_tokens_not_substrings() {
+        assert!(required_check_done_mentions(
+            "http_probe done",
+            "http_probe"
+        ));
+        assert!(!required_check_done_mentions(
+            "not_http_probe done",
+            "http_probe"
+        ));
     }
 
     // P2 · validate-on-submit ACCEPT: structure OK *and* every cited evidence id
@@ -1026,6 +1227,7 @@ mod tests {
         let ledger = MockLedger {
             existing: HashSet::new(),
             recent: vec![88, 86],
+            kinds: HashMap::new(),
             facts: Vec::new(),
             source_queries: Vec::new(),
         };
@@ -1061,6 +1263,7 @@ mod tests {
         let ledger = MockLedger {
             existing: HashSet::new(),
             recent: vec![88, 86],
+            kinds: HashMap::new(),
             facts: Vec::new(),
             source_queries: Vec::new(),
         };
@@ -1095,6 +1298,7 @@ mod tests {
         let ledger = MockLedger {
             existing: HashSet::new(),
             recent: vec![644, 646],
+            kinds: HashMap::new(),
             facts: Vec::new(),
             source_queries: Vec::new(),
         };
@@ -1164,6 +1368,7 @@ mod tests {
         let ledger = MockLedger {
             existing: [100, 101].into_iter().collect(),
             recent: vec![101, 100],
+            kinds: HashMap::new(),
             facts: vec![EvidenceFact {
                 asset: "pingan.com".into(),
                 technique: "GOLISH-INTEL-DNS".into(),

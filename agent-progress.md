@@ -29,6 +29,70 @@
 
 ---
 
+### 2026-06-25 · resume/refiner 最终版骨架：submit repair checkpoint + 恢复注入
+
+- **本轮目标**：按用户“最终版弄完然后回头 build、改错、commit”要求，把 resume/refiner 体系从 P2a 扩到完整骨架：submit needs_fix、background wait、per-org stage_run retry 都走统一 `agent_run` checkpoint/refiner directive，而不是只靠一次 loop 内临时状态。
+- **已完成**：
+  - `golish-sub-agents` 把 `SubmitRepairMode` / `SubmitRepairKind` 提升为公共、可序列化 directive，并导出 `submit_repair_mode_from_submit_result`；executor 仍在当轮进入 repair-only/wait-only lock。
+  - `SubAgentExecutorContext` 新增 `initial_submit_repair_mode`：resume 时如果 runtime 传入 directive，sub-agent 会把“只允许 wait/query/resubmit，不要重新扫描”的指令写入 chat history，并发 `SubAgentTextDelta` 给 UI 显示“Resuming submit repair...”。
+  - `agent_run_checkpoint` 新增 `submit_repair_mode` JSON 槽，保持 agent-kit 不反向依赖 sub-agents；checkpoint 继续保留 `graph_flow` / `stage_run_workers` sibling key。
+  - `sub_agent_call.rs` 的 observer 现在会在 `submit_stage_deliverable needs_fix` 后持久化 submit repair checkpoint：`available_evidence_ids` → evidence-ref repair；`running_background_jobs` → wait-only repair；`accepted/received` 会清理 stale submit repair checkpoint。
+  - `sub_agent_call.rs` 在下一次同 `agent_path` resume 时读取 `agent_run.submit_repair_mode` 并注入 sub-agent executor；stage-run per-org request id 会映射到类似 `main>stage_run:external_attack_surface>org:fb90ef2a-eb1c-4288-8f7c-97dc957a26c0>prober` 的路径，和 `stage_run_call` 的 per-org checkpoint 对齐。
+  - 保留并整合上一批修复：后台 evidence kind 映射、submit 预检按 cited evidence kind 回填 `required_checks_done`、stage_run gate retry resume。
+  - 同步模块卡：`docs/modules/backend/golish-agent-kit/task_orchestrator.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/backend/golish-sub-agents/executor.md`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt` → exit 0。
+  - `cd backend && cargo check -p golish-agent-kit -p golish-sub-agents -p golish-agent-runtime -p golish-agent-bridge -p golish-agent-app` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-kit -p golish-sub-agents -p golish-agent-runtime agent_run submit_repair stage_run sub_agent --status-level fail` → 67 tests passed / 1023 skipped。
+  - `cd backend && cargo clippy -p golish-agent-kit -p golish-sub-agents -p golish-agent-runtime -p golish-agent-bridge -p golish-agent-app --all-targets -- -D warnings` → exit 0。
+- **未跑**：`./init.sh` / `just precommit` / 活体中断恢复复跑（本轮按用户“回头一次 build 什么的”做 scoped build+clippy+targeted tests；未跑全量慢 precommit）。
+- **提交记录**：待本轮 commit。
+- **下一步建议**：用真实 EAS run 做一次断线/继续验证：预期 submit `needs_fix + running_background_jobs` 后继续时先显示 submit repair/wait directive，然后调用 `wait_for_background_jobs` / resubmit；submit `needs_fix + available_evidence_ids` 后继续时补 evidence refs / required_checks_done，而不是 Step 1 重新扫。
+
+---
+
+### 2026-06-25 · P2a agent-run checkpoint + stage_run gate retry resume
+
+- **本轮目标**：继续实现用户说的 resume/refiner 后续：先落 P2a 细粒度 checkpoint 地基，并让 `stage_run` 的 per-org gate block 可以断线后从“上次差什么”继续补，而不是从阶段开头重跑。
+- **已完成**：
+  - 新增 `golish-agent-kit::task_orchestrator::agent_run_checkpoint`：定义 `AgentRunCheckpoint` / `AgentRunStatus` / `ToolCheckpoint` / `RuntimeCorrectionCheckpoint`，持久化在 `operation_state.state_blob.agent_run`，并提供 merge/clear/read helpers。
+  - `agent_run` helper 保证保留 sibling state，例如 `graph_flow`、`stage_run_workers`；大段输出不进 checkpoint，只存 message chain、tool result ref、pending correction、background/evidence watermark 等轻量恢复点。
+  - `stage_run_call.rs` 接入该 checkpoint：per-org specialist 工具完成后记录 `ToolCompleted`；真实 DB gate 返回 retry 时记录 `GateBlocked + pending_gate_correction`；同一 `agent_path` 恢复时从已完成 attempt + gate feedback 继续下一次尝试。
+  - PASS、exhausted、resume-skip 都会清理当前 org 的 `agent_run` 槽，避免 stale correction 污染下一轮。
+  - 同步模块卡：`docs/modules/backend/golish-agent-kit/task_orchestrator.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-kit agent_run --status-level fail` → 3 tests passed / 722 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-runtime stage_run --status-level fail` → 21 tests passed / 241 skipped。
+  - `cd backend && cargo check -p golish-agent-kit -p golish-agent-runtime` → exit 0。
+- **未跑**：`./init.sh` / `just precommit` / 活体中断恢复复跑（本轮按用户要求继续实现后续，保持 scoped 验证）。
+- **提交记录**：未 commit。
+- **未提交的本轮改动文件**：`backend/crates/golish-agent-kit/src/task_orchestrator/{mod.rs,agent_run_checkpoint.rs}`、`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`、`docs/modules/backend/golish-agent-kit/task_orchestrator.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`agent-progress.md`。
+- **下一步建议**：把 `submit_stage_deliverable needs_fix` 的 repair-only 状态也写入同一 `agent_run` checkpoint（pending submit-only + evidence ids/background job ids），然后再接真正 runtime monitor/refiner 的实时 correction queue。
+
+---
+
+### 2026-06-25 · submit needs_fix 补洞模式 + 后台证据 kind 修复
+
+- **本轮目标**：修用户现场 run 的两个问题：`submit_stage_deliverable` 交完 `needs_fix` 后不该从头扫描；后台 `httpx` 完成后 evidence 被记成 generic kind，导致 gate/submit preview 仍认为 `http_probe` 没满足。
+- **已完成**：
+  - `golish-sub-agents::executor` 增加 submit repair-only lock：`needs_fix + available_evidence_ids` 后只允许 resubmit / `query_target_data` / `wait_for_background_jobs`，新扫描工具会被确定性拦截并提示“用真实 evidence id 补交”；`needs_fix + running_background_jobs` 后只允许 `wait_for_background_jobs` / `check_job` / `kill_job` / resubmit。
+  - `submit_stage_deliverable` 的 runtime correction 会把 gate 提到的 `min tool invocations not satisfied for 'http_probe'` 转成明确指令：有相应证据时补 `required_checks_done`，不要重跑。
+  - 后台 completion evidence 根据命令名落具体 kind：`httpx`/`whatweb`/`curl`/`wget` → `http_probe`，`nmap` → `nmap`，DNS/whois/ct 工具同理；HarnessTrace 的 `EvidenceBooked.tool` 也跟随具体 kind。
+  - `harness_submit_tool` 在 validate-on-submit 前从所有已引用 evidence id（顶层 refs、claim evidence_ids、finding/coverage refs）查询 ledger kind，并按 stage spec 回填 `required_checks_done`，解决“证据存在但 hint 漏填”导致的假 `needs_fix`。
+  - 同步模块卡：`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-sub-agents/executor.md`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt` → exit 0。
+  - `cd backend && cargo nextest run -p golish-sub-agents submit_needs_fix_correction_points_to_available_evidence_ids evidence_ref_needs_fix_enters_repair_mode_and_blocks_scans background_jobs_needs_fix_enters_wait_only_repair_mode --status-level fail` → 3 passed / 98 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app background_httpx_command_books_http_probe_kind background_unknown_command_keeps_generic_kind backfills_required_checks_done_from_cited_http_probe_evidence backfills_required_checks_done_from_claim_evidence_ids required_check_done_mentions_match_tokens_not_substrings --status-level fail` → 5 passed / 54 skipped。
+  - `cd backend && cargo check -p golish-sub-agents -p golish-agent-app` → exit 0。
+- **未跑**：`./init.sh` / `just precommit` 全量（按用户要求先做 scoped 修复，不跑慢 precommit；本轮只改后端 harness/sub-agent 小范围）。
+- **提交记录**：未 commit。
+- **未提交的本轮改动文件**：`backend/crates/golish-agent-app/src/ai/commands/bridge_config.rs`、`backend/crates/golish-agent-app/src/ai/db_bridge/evidence.rs`、`backend/crates/golish-agent-app/src/ai/harness_submit_tool.rs`、`backend/crates/golish-sub-agents/src/executor/inner.rs`、`backend/crates/golish-sub-agents/src/executor/response_parsing.rs`、`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-sub-agents/executor.md`、`agent-progress.md`。
+- **下一步建议**：重启后端后复跑 EAS；预期若后台 job 未结束，UI 会显式走 `wait_for_background_jobs`；若 submit 返回 `needs_fix` 只缺 evidence_refs/required_checks_done，worker 会补交而不是重新从 Step 1 开始扫。
+
+---
+
 ### 2026-06-24 · execution mentor shadow/soft 接线（本会话续）
 
 - **本轮目标**：在先提交清空工作树后，开始实现 `Runtime Monitor + Fine-Grained Resume` 设计里的模型监督第一刀：复用既有 PentAGI-style `ExecutionMonitor` / mentor prompt，不改变 gate/submit 硬规则。

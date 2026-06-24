@@ -30,7 +30,9 @@ use golish_llm_providers::ModelCapabilities;
 use super::chain_persist::{maybe_restore_chain, persist_chain};
 use super::final_summary::run_final_summary;
 use super::prompt_assembly::assemble_effective_system_prompt;
-use super::response_parsing::{dispatch_tool_calls, StageStallGuard, STAGE_STALL_THRESHOLD};
+use super::response_parsing::{
+    dispatch_tool_calls, StageStallGuard, SubmitRepairModeUpdate, STAGE_STALL_THRESHOLD,
+};
 use super::stream_processing::process_llm_stream;
 use super::tool_setup::build_tool_definitions;
 
@@ -83,6 +85,7 @@ where
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Sub-agent call missing 'task' parameter"))?;
     let additional_context = args.get("context").and_then(|v| v.as_str()).unwrap_or("");
+    let initial_submit_repair_mode = ctx.initial_submit_repair_mode.clone();
 
     let effective_system_prompt = assemble_effective_system_prompt(
         agent_def,
@@ -125,6 +128,19 @@ where
         depth: sub_context.depth,
         parent_request_id: parent_request_id.to_string(),
     });
+    if let Some(mode) = initial_submit_repair_mode.as_ref() {
+        let message = format!(
+            "Resuming submit repair: {} Allowed next tools: [{}].",
+            mode.model_instruction(),
+            mode.allowed_tool_names().join(", ")
+        );
+        let _ = ctx.event_tx.send(AiEvent::SubAgentTextDelta {
+            agent_id: agent_id.to_string(),
+            delta: message.clone(),
+            accumulated: message,
+            parent_request_id: parent_request_id.to_string(),
+        });
+    }
 
     let tools = build_tool_definitions(agent_def, &sub_context, &ctx, tool_provider).await;
 
@@ -147,6 +163,19 @@ where
     // gate BLOCK every turn until it burns the whole iteration cap (observed:
     // 22× "never attempted" on one org). Bail after N identical blocks.
     let mut stall = StageStallGuard::default();
+    let mut submit_repair_mode = initial_submit_repair_mode;
+    if let Some(mode) = submit_repair_mode.as_ref() {
+        chat_history.push(Message::User {
+            content: OneOrMany::one(UserContent::Text(Text {
+                text: format!(
+                    "RESUME REPAIR DIRECTIVE (deterministic): {}\nAllowed next tools: [{}]. \
+                     Continue this exact repair path; do not restart discovery.",
+                    mode.model_instruction(),
+                    mode.allowed_tool_names().join(", ")
+                ),
+            })),
+        });
+    }
 
     loop {
         iteration += 1;
@@ -366,6 +395,7 @@ where
             &last_activity,
             tool_fallback_timeout,
             idle_timeout,
+            submit_repair_mode.as_ref(),
             &transcript_writer,
             &mut files_modified,
             &llm_span,
@@ -377,6 +407,16 @@ where
                 accumulated_response = resp;
             }
             break;
+        }
+
+        match dispatch.submit_repair_update {
+            Some(SubmitRepairModeUpdate::Set(mode)) => {
+                submit_repair_mode = Some(mode);
+            }
+            Some(SubmitRepairModeUpdate::Clear) => {
+                submit_repair_mode = None;
+            }
+            None => {}
         }
 
         // Stage-stall circuit breaker: if submit_stage_deliverable returned the

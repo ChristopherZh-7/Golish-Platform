@@ -33,6 +33,11 @@ use golish_agent_kit::harness::{
     allowed_tool_names, evaluate_org_stage_gate, load_embedded_stage_spec, stage_methodology_md,
     OrgVerdict, StageDeliverable, StageKind,
 };
+use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
+    agent_run_from_state_blob, state_blob_with_agent_run, state_blob_without_agent_run,
+    AgentRunCheckpoint, AgentRunStatus, RuntimeCorrectionCheckpoint, ToolCheckpoint,
+    ToolCheckpointState,
+};
 use golish_core::events::{AiEvent, HarnessTraceKind};
 use golish_sub_agents::SubAgentContext;
 
@@ -315,6 +320,15 @@ fn stage_run_operation_id(ctx: &AgenticLoopContext<'_>) -> Option<uuid::Uuid> {
     })
 }
 
+fn stage_run_agent_path(stage: StageKind, unit: &OrgUnit, specialist: &str) -> String {
+    format!(
+        "main>stage_run:{}>org:{}>{}",
+        stage.as_str(),
+        unit.id,
+        specialist
+    )
+}
+
 async fn load_stage_run_worker_chain(
     ctx: &AgenticLoopContext<'_>,
     stage: StageKind,
@@ -329,6 +343,157 @@ async fn load_stage_run_worker_chain(
         .ok()
         .flatten()?;
     stage_run_worker_chain_from_blob(&state.state_blob, stage, &unit.id, specialist)
+}
+
+async fn load_stage_run_agent_checkpoint(
+    ctx: &AgenticLoopContext<'_>,
+    agent_path: &str,
+) -> Option<AgentRunCheckpoint> {
+    let tracker = ctx.events.db_tracker?;
+    let repo = tracker.repo()?;
+    let operation_id = stage_run_operation_id(ctx)?;
+    let state = golish_agent_kit::db_shim::operation_state::get(repo, operation_id)
+        .await
+        .ok()
+        .flatten()?;
+    let checkpoint = agent_run_from_state_blob(&state.state_blob)?;
+    (checkpoint.agent_path == agent_path).then_some(checkpoint)
+}
+
+fn pending_stage_run_retry_from_checkpoint(
+    checkpoint: &AgentRunCheckpoint,
+    max_attempts: usize,
+) -> Option<(usize, String)> {
+    if checkpoint.status != AgentRunStatus::GateBlocked {
+        return None;
+    }
+    let completed_attempt = checkpoint.llm_turn_index? as usize;
+    if completed_attempt == 0 || completed_attempt >= max_attempts {
+        return None;
+    }
+    let feedback = checkpoint.pending_gate_correction.clone()?;
+    Some((completed_attempt, feedback))
+}
+
+async fn persist_stage_run_agent_checkpoint(
+    ctx: &AgenticLoopContext<'_>,
+    checkpoint: AgentRunCheckpoint,
+) {
+    let Some(tracker) = ctx.events.db_tracker else {
+        return;
+    };
+    let Some(repo) = tracker.repo() else {
+        return;
+    };
+    let Some(operation_id) = stage_run_operation_id(ctx) else {
+        return;
+    };
+    let current = golish_agent_kit::db_shim::operation_state::get(repo, operation_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|state| state.state_blob)
+        .unwrap_or_default();
+    let next = state_blob_with_agent_run(current, &checkpoint);
+    if let Err(e) =
+        golish_agent_kit::db_shim::operation_state::write_state_blob(repo, operation_id, next).await
+    {
+        tracing::warn!(
+            target: "harness::stage_run",
+            agent_path = %checkpoint.agent_path,
+            error = %e,
+            "stage_run failed to persist agent-run checkpoint"
+        );
+    }
+}
+
+async fn clear_stage_run_agent_checkpoint(ctx: &AgenticLoopContext<'_>, agent_path: &str) {
+    let Some(tracker) = ctx.events.db_tracker else {
+        return;
+    };
+    let Some(repo) = tracker.repo() else {
+        return;
+    };
+    let Some(operation_id) = stage_run_operation_id(ctx) else {
+        return;
+    };
+    let current = golish_agent_kit::db_shim::operation_state::get(repo, operation_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|state| state.state_blob)
+        .unwrap_or_default();
+    let should_clear = agent_run_from_state_blob(&current)
+        .map(|checkpoint| checkpoint.agent_path == agent_path)
+        .unwrap_or(false);
+    if !should_clear {
+        return;
+    }
+    let next = state_blob_without_agent_run(current);
+    if let Err(e) =
+        golish_agent_kit::db_shim::operation_state::write_state_blob(repo, operation_id, next).await
+    {
+        tracing::warn!(
+            target: "harness::stage_run",
+            agent_path = %agent_path,
+            error = %e,
+            "stage_run failed to clear agent-run checkpoint"
+        );
+    }
+}
+
+struct StageRunCheckpointInput<'a> {
+    operation_id: Option<uuid::Uuid>,
+    stage: StageKind,
+    agent_path: &'a str,
+    attempt: usize,
+    org_request_id: &'a str,
+    sub_agent_tool: &'a str,
+    chain_id: Option<uuid::Uuid>,
+    status: AgentRunStatus,
+    pending_gate_correction: Option<String>,
+    correction_kind: Option<&'a str>,
+}
+
+fn build_stage_run_agent_checkpoint(input: StageRunCheckpointInput<'_>) -> AgentRunCheckpoint {
+    AgentRunCheckpoint {
+        schema_v: 1,
+        operation_id: input.operation_id,
+        stage: Some(input.stage.as_str().to_string()),
+        stage_attempt_id: None,
+        agent_path: input.agent_path.to_string(),
+        status: input.status,
+        llm_turn_index: Some(input.attempt as u64),
+        message_chain_ref: input.chain_id.map(|id| id.to_string()),
+        pending_gate_correction: input.pending_gate_correction.clone(),
+        pending_submit_only: false,
+        submit_repair_mode: None,
+        runtime_corrections: input
+            .pending_gate_correction
+            .map(|message| {
+                vec![RuntimeCorrectionCheckpoint {
+                    source: "rule".to_string(),
+                    kind: input
+                        .correction_kind
+                        .unwrap_or("per_org_gate_block")
+                        .to_string(),
+                    message,
+                    job_ids: Vec::new(),
+                    evidence_ids: Vec::new(),
+                    submit_allowed: false,
+                }]
+            })
+            .unwrap_or_default(),
+        background_job_ids: Vec::new(),
+        evidence_watermark: None,
+        last_tool: Some(ToolCheckpoint {
+            tool_call_id: input.org_request_id.to_string(),
+            tool_name: input.sub_agent_tool.to_string(),
+            state: ToolCheckpointState::Completed,
+            result_ref: input.chain_id.map(|id| format!("message_chain:{id}")),
+        }),
+        updated_at: chrono::Utc::now(),
+    }
 }
 
 async fn persist_stage_run_worker_chain(
@@ -603,12 +768,14 @@ where
         // collapse them into one). The UI links the org row to this id via the
         // `agent_request_id` field on the StageRunOrgProgress event.
         let org_request_id = format!("{tool_id}::org::{}", unit.id);
+        let agent_path = stage_run_agent_path(stage, unit, &specialist);
 
         // Resume-skip: if this org already passed THIS stage within the TTL
         // window, count it covered and DON'T re-dispatch the specialist — the
         // fix for "为什么还带着已完成的 org 重新跑 / 很多操作重复做". Fail-open
         // (no db_tracker / unparseable id / stale row → run; see helper).
         if let Some(passed_at) = resume_skip_passed_at(ctx, stage, unit).await {
+            clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
             passed_count += 1;
             emit_org_progress(
                 ctx,
@@ -636,8 +803,16 @@ where
         // gaps. Only a PASS counts + writes the ledger; exhausting the attempts
         // records a gap for the main agent's gap-closure loop. The no-DB fallback
         // path uses max_attempts=1 so eval/headless never retries.
-        let mut attempt = 0usize;
-        let mut feedback: Option<String> = None;
+        let restored_retry = load_stage_run_agent_checkpoint(ctx, &agent_path)
+            .await
+            .and_then(|checkpoint| {
+                pending_stage_run_retry_from_checkpoint(&checkpoint, MAX_ORG_GATE_ATTEMPTS)
+            });
+        let mut attempt = restored_retry
+            .as_ref()
+            .map(|(completed_attempt, _)| *completed_attempt)
+            .unwrap_or(0);
+        let mut feedback: Option<String> = restored_retry.map(|(_, feedback)| feedback);
         let mut resume_chain_id = load_stage_run_worker_chain(ctx, stage, unit, &specialist).await;
         loop {
             attempt += 1;
@@ -709,6 +884,22 @@ where
                     .await;
                 }
             }
+            persist_stage_run_agent_checkpoint(
+                ctx,
+                build_stage_run_agent_checkpoint(StageRunCheckpointInput {
+                    operation_id: stage_run_operation_id(ctx),
+                    stage,
+                    agent_path: &agent_path,
+                    attempt,
+                    org_request_id: &org_request_id,
+                    sub_agent_tool: &sub_agent_tool,
+                    chain_id: resume_chain_id,
+                    status: AgentRunStatus::ToolCompleted,
+                    pending_gate_correction: None,
+                    correction_kind: None,
+                }),
+            )
+            .await;
 
             // Take THIS org's own deliverable: serial execution means the
             // side-channel slot currently holds this org's last submit.
@@ -745,6 +936,7 @@ where
             let max_attempts = if from_gate { MAX_ORG_GATE_ATTEMPTS } else { 1 };
             match next_org_action(&verdict, attempt, max_attempts) {
                 OrgAttemptOutcome::Passed => {
+                    clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
                     passed_count += 1;
                     // Record this org's pass into the resume ledger so a later run
                     // can skip it (upsert latest). Fail-open: no db_tracker /
@@ -775,10 +967,27 @@ where
                     break;
                 }
                 OrgAttemptOutcome::Retry { feedback: fb } => {
+                    persist_stage_run_agent_checkpoint(
+                        ctx,
+                        build_stage_run_agent_checkpoint(StageRunCheckpointInput {
+                            operation_id: stage_run_operation_id(ctx),
+                            stage,
+                            agent_path: &agent_path,
+                            attempt,
+                            org_request_id: &org_request_id,
+                            sub_agent_tool: &sub_agent_tool,
+                            chain_id: resume_chain_id,
+                            status: AgentRunStatus::GateBlocked,
+                            pending_gate_correction: Some(fb.clone()),
+                            correction_kind: Some("per_org_gate_retry"),
+                        }),
+                    )
+                    .await;
                     feedback = Some(fb);
                     continue;
                 }
                 OrgAttemptOutcome::Exhausted { reasons } => {
+                    clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
                     // Prefer the gate's own reasons; fall back to the sub-agent's
                     // response/error when the block came from the success-flag path.
                     let detail = if reasons.is_empty() {
@@ -1097,6 +1306,108 @@ mod tests {
             ),
             None,
             "a different specialist must not resume another worker's chain"
+        );
+    }
+
+    #[test]
+    fn stage_run_agent_path_is_stable_per_stage_org_and_specialist() {
+        let unit = OrgUnit {
+            id: "11111111-1111-1111-1111-111111111111".to_string(),
+            name: "ACME".to_string(),
+            ownership_percent: None,
+        };
+
+        assert_eq!(
+            stage_run_agent_path(StageKind::ExternalAttackSurface, &unit, "prober"),
+            "main>stage_run:external_attack_surface>org:11111111-1111-1111-1111-111111111111>prober"
+        );
+    }
+
+    #[test]
+    fn pending_retry_restores_completed_attempt_and_feedback_from_checkpoint() {
+        let checkpoint = AgentRunCheckpoint {
+            schema_v: 1,
+            operation_id: None,
+            stage: Some(StageKind::ExternalAttackSurface.as_str().to_string()),
+            stage_attempt_id: None,
+            agent_path: "main>stage_run:external_attack_surface>org:abc>prober".to_string(),
+            status: AgentRunStatus::GateBlocked,
+            llm_turn_index: Some(1),
+            message_chain_ref: Some("22222222-2222-2222-2222-222222222222".to_string()),
+            pending_gate_correction: Some("retry 2/3: close liveness gap".to_string()),
+            pending_submit_only: false,
+            submit_repair_mode: None,
+            runtime_corrections: Vec::new(),
+            background_job_ids: Vec::new(),
+            evidence_watermark: None,
+            last_tool: None,
+            updated_at: chrono::Utc::now(),
+        };
+
+        assert_eq!(
+            pending_stage_run_retry_from_checkpoint(&checkpoint, 3),
+            Some((1, "retry 2/3: close liveness gap".to_string()))
+        );
+    }
+
+    #[test]
+    fn pending_retry_ignores_non_gate_blocked_or_exhausted_checkpoint() {
+        let mut checkpoint = AgentRunCheckpoint {
+            schema_v: 1,
+            operation_id: None,
+            stage: Some(StageKind::ExternalAttackSurface.as_str().to_string()),
+            stage_attempt_id: None,
+            agent_path: "main>stage_run:external_attack_surface>org:abc>prober".to_string(),
+            status: AgentRunStatus::ToolCompleted,
+            llm_turn_index: Some(1),
+            message_chain_ref: None,
+            pending_gate_correction: Some("retry".to_string()),
+            pending_submit_only: false,
+            submit_repair_mode: None,
+            runtime_corrections: Vec::new(),
+            background_job_ids: Vec::new(),
+            evidence_watermark: None,
+            last_tool: None,
+            updated_at: chrono::Utc::now(),
+        };
+        assert_eq!(
+            pending_stage_run_retry_from_checkpoint(&checkpoint, 3),
+            None
+        );
+
+        checkpoint.status = AgentRunStatus::GateBlocked;
+        checkpoint.llm_turn_index = Some(3);
+        assert_eq!(
+            pending_stage_run_retry_from_checkpoint(&checkpoint, 3),
+            None
+        );
+    }
+
+    #[test]
+    fn stage_run_agent_checkpoint_records_pending_gate_feedback() {
+        let checkpoint = build_stage_run_agent_checkpoint(StageRunCheckpointInput {
+            operation_id: None,
+            stage: StageKind::ExternalAttackSurface,
+            agent_path: "main>stage_run:external_attack_surface>org:abc>prober",
+            attempt: 1,
+            org_request_id: "stage_run_1::org::abc",
+            sub_agent_tool: "sub_agent_prober",
+            chain_id: Some(uuid::Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap()),
+            status: AgentRunStatus::GateBlocked,
+            pending_gate_correction: Some("retry 2/3: close port gap".to_string()),
+            correction_kind: Some("per_org_gate_retry"),
+        });
+
+        assert_eq!(checkpoint.status, AgentRunStatus::GateBlocked);
+        assert_eq!(checkpoint.llm_turn_index, Some(1));
+        assert_eq!(
+            checkpoint.pending_gate_correction.as_deref(),
+            Some("retry 2/3: close port gap")
+        );
+        assert_eq!(checkpoint.runtime_corrections[0].kind, "per_org_gate_retry");
+        assert_eq!(
+            checkpoint.last_tool.as_ref().unwrap().result_ref.as_deref(),
+            Some("message_chain:22222222-2222-2222-2222-222222222222")
         );
     }
 

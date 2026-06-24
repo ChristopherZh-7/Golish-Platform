@@ -294,6 +294,13 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
         self.recent_evidence_ids_impl(session_id, limit).await
     }
 
+    async fn evidence_kinds_for(
+        &self,
+        ids: &[i64],
+    ) -> anyhow::Result<std::collections::HashMap<i64, String>> {
+        self.evidence_kinds_for_impl(ids).await
+    }
+
     async fn evidence_facts(
         &self,
         session_id: &str,

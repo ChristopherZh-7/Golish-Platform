@@ -167,6 +167,7 @@ pub(crate) async fn maybe_run_reflector(
             post_shell_hook: None,
             post_tool_result_hook: None,
             tool_observer: None,
+            initial_submit_repair_mode: None,
             stage_tool_guard: None,
             hide_tool_in_stage: None,
         };

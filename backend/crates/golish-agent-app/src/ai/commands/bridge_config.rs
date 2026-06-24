@@ -174,12 +174,13 @@ fn spawn_background_completion_listener(
                     // scans' real ids previously only reached the agent via a
                     // next-turn prompt note, invisible to any run reconstruction.
                     if let Some(eid) = evidence_id {
+                        let evidence_kind = background_evidence_kind(&jc.command);
                         let _ = event_tx.send(AiEvent::HarnessTrace {
                             operation_id: session_id.clone(),
                             stage: String::new(),
                             agent_path: "main".to_string(),
                             trace: golish_core::events::HarnessTraceKind::EvidenceBooked {
-                                tool: "background_job".to_string(),
+                                tool: evidence_kind.to_string(),
                                 evidence_id: eid,
                                 source: "background".to_string(),
                             },
@@ -257,6 +258,7 @@ async fn maybe_append_background_evidence(
                 );
                 (technique, asset, outcome)
             });
+    let evidence_kind = background_evidence_kind(&jc.command);
 
     match db_repo
         .evidence_append(
@@ -265,7 +267,7 @@ async fn maybe_append_background_evidence(
             Some(session_id),
             project_path,
             "background_job",
-            "background_command",
+            evidence_kind,
             &jc.command,
             &raw_output,
             facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
@@ -289,6 +291,52 @@ async fn maybe_append_background_evidence(
             );
             None
         }
+    }
+}
+
+fn background_command_tool_name(command: &str) -> Option<String> {
+    let s = command.trim_start();
+    if s.is_empty() {
+        return None;
+    }
+    let (first, _) = if let Some(quote) = s.chars().next().filter(|c| *c == '"' || *c == '\'') {
+        let rest = &s[quote.len_utf8()..];
+        match rest.find(quote) {
+            Some(end) => (&rest[..end], &rest[end + quote.len_utf8()..]),
+            None => (rest, ""),
+        }
+    } else {
+        match s.find(char::is_whitespace) {
+            Some(end) => (&s[..end], &s[end..]),
+            None => (s, ""),
+        }
+    };
+    let base = first
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(first)
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_ascii_lowercase();
+    if base.is_empty() {
+        None
+    } else {
+        Some(base)
+    }
+}
+
+fn background_evidence_kind(command: &str) -> &'static str {
+    let Some(tool) = background_command_tool_name(command) else {
+        return "background_job";
+    };
+    match tool.as_str() {
+        "httpx" | "whatweb" | "curl" | "wget" | "http" => "http_probe",
+        "nmap" => "nmap",
+        "dig" | "dnsx" | "host" | "nslookup" => "dns_a",
+        "whois" | "asn" | "whois-asn" => "whois",
+        "ctfr" => "ct_log",
+        _ => "background_job",
     }
 }
 
@@ -791,5 +839,20 @@ mod tests {
     #[test]
     fn submit_reconcile_default_defers_to_visible_wait_tool() {
         assert_eq!(DEFAULT_SUBMIT_RECONCILE_WAIT_MS, 0);
+    }
+
+    #[test]
+    fn background_httpx_command_books_http_probe_kind() {
+        let cmd = r#""/Users/me/Application Support/golish-platform/tools/httpx/httpx" -u https://example.com -silent"#;
+        assert_eq!(background_command_tool_name(cmd).as_deref(), Some("httpx"));
+        assert_eq!(background_evidence_kind(cmd), "http_probe");
+    }
+
+    #[test]
+    fn background_unknown_command_keeps_generic_kind() {
+        assert_eq!(
+            background_evidence_kind("custom-tool --flag"),
+            "background_job"
+        );
     }
 }

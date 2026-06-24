@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rig::completion::request::ToolDefinition;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
@@ -213,6 +214,97 @@ pub type StageToolGuard = Arc<dyn Fn(&str, &serde_json::Value) -> Result<(), Str
 /// builds it from the stage's `allowed_tool_types`.
 pub type StageToolHider = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmitRepairKind {
+    EvidenceRefs,
+    BackgroundJobs,
+}
+
+/// Deterministic refiner directive produced from `submit_stage_deliverable`
+/// `needs_fix`. It is intentionally small and serializable so upper runtime
+/// layers can persist it in `operation_state.state_blob.agent_run`, then inject
+/// it back into a resumed sub-agent without depending on transient loop memory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmitRepairMode {
+    pub kind: SubmitRepairKind,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_required_checks: Vec<String>,
+}
+
+impl SubmitRepairMode {
+    fn allowed_tools(&self) -> &'static [&'static str] {
+        match self.kind {
+            SubmitRepairKind::EvidenceRefs => &[
+                "submit_stage_deliverable",
+                "query_target_data",
+                "wait_for_background_jobs",
+            ],
+            SubmitRepairKind::BackgroundJobs => &[
+                "wait_for_background_jobs",
+                "check_job",
+                "kill_job",
+                "submit_stage_deliverable",
+            ],
+        }
+    }
+
+    pub fn kind_str(&self) -> &'static str {
+        match self.kind {
+            SubmitRepairKind::EvidenceRefs => "evidence_refs",
+            SubmitRepairKind::BackgroundJobs => "background_jobs",
+        }
+    }
+
+    pub fn allowed_tool_names(&self) -> &'static [&'static str] {
+        self.allowed_tools()
+    }
+
+    pub fn allows(&self, tool_name: &str) -> bool {
+        self.allowed_tools().contains(&tool_name)
+    }
+
+    pub fn model_instruction(&self) -> String {
+        let mut message = match self.kind {
+            SubmitRepairKind::EvidenceRefs => {
+                "submit_stage_deliverable returned needs_fix for evidence/submit fields, so \
+                 repair-only mode is active. Do NOT start fresh discovery or launch new scans. \
+                 Rebuild the StageDeliverable from the real evidence ids already returned, use \
+                 query_target_data only if you need to map ids to claims, then resubmit."
+                    .to_string()
+            }
+            SubmitRepairKind::BackgroundJobs => {
+                "submit_stage_deliverable returned needs_fix because background jobs are still \
+                 pending. Do NOT launch replacement scans. Call wait_for_background_jobs, inspect \
+                 the completed output tails, then resubmit."
+                    .to_string()
+            }
+        };
+        if !self.missing_required_checks.is_empty() {
+            message.push_str(&format!(
+                " Also include these required_checks_done entries if the cited evidence backs \
+                 them: [{}].",
+                self.missing_required_checks.join(", ")
+            ));
+        }
+        message
+    }
+
+    pub fn block_result(&self, tool_name: &str) -> Option<serde_json::Value> {
+        if self.allows(tool_name) {
+            return None;
+        }
+        Some(serde_json::json!({
+            "error": self.model_instruction(),
+            "blocked_by_submit_repair": true,
+            "blocked_tool": tool_name,
+            "allowed_tools": self.allowed_tools(),
+            "last_needs_fix_reason": self.reason,
+        }))
+    }
+}
+
 /// Context needed for sub-agent execution.
 pub struct SubAgentExecutorContext<'a> {
     pub event_tx: &'a mpsc::UnboundedSender<AiEvent>,
@@ -272,6 +364,11 @@ pub struct SubAgentExecutorContext<'a> {
     /// to implement runtime mentor/supervisor logic without making this crate
     /// depend on those layers.
     pub tool_observer: Option<SubAgentToolObserver>,
+    /// Optional persisted submit-repair directive restored from
+    /// `operation_state.state_blob.agent_run`. When present, the sub-agent starts
+    /// in deterministic repair-only mode instead of rediscovering the same stage
+    /// from scratch after a resume/retry.
+    pub initial_submit_repair_mode: Option<SubmitRepairMode>,
     /// Optional per-stage tool boundary guard (forbidden-only). When the
     /// sub-agent runs inside a harness stage, this blocks tool calls whose
     /// resolved capability is in the stage's forbidden list (e.g. `dig` in

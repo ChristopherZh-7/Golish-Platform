@@ -124,6 +124,7 @@ impl BridgeAgentExecutor {
             post_shell_hook: self.bridge.post_shell_hook.clone(),
             post_tool_result_hook: None,
             tool_observer: None,
+            initial_submit_repair_mode: None,
             // Stage tool boundary is enforced on the delegated-sub-agent path
             // (sub_agent_call.rs) and the main dispatch gate; this executor path
             // does not build it.

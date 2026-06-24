@@ -68,10 +68,13 @@ pub use discovery::discover_agents;
 pub use file_loader::AgentFileInfo;
 
 // Re-export executor types
-pub use executor::{execute_sub_agent, SubAgentExecutorContext, ToolProvider};
+pub use executor::{
+    execute_sub_agent, submit_repair_mode_from_submit_result, SubAgentExecutorContext, ToolProvider,
+};
 pub use executor_types::{
     PostShellHook, StageToolGuard, StageToolHider, SubAgentChainPersistence,
     SubAgentToolObservation, SubAgentToolObserver, SubAgentToolResultHook, SubAgentToolRouter,
+    SubmitRepairKind, SubmitRepairMode,
 };
 
 // Re-export prompt registry

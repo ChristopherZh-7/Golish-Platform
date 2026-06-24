@@ -16,7 +16,8 @@ use uuid::Uuid;
 use crate::definition::{SubAgentContext, SubAgentDefinition};
 use crate::executor_helpers::{epoch_secs, extract_file_path, is_write_tool};
 use crate::executor_types::{
-    SubAgentExecutorContext, SubAgentToolObservation, ToolProvider, BARRIER_TOOL_NAME,
+    SubAgentExecutorContext, SubAgentToolObservation, SubmitRepairKind, SubmitRepairMode,
+    ToolProvider, BARRIER_TOOL_NAME,
 };
 use crate::transcript::SubAgentTranscriptWriter;
 use golish_core::events::{AiEvent, ToolSource};
@@ -32,6 +33,11 @@ pub(super) struct ToolDispatchResult {
     /// batch (its joined `needs_fix` reasons), or `None` if no submit BLOCKed.
     /// The loop tracks consecutive identical values to break a stuck re-submit.
     pub stage_block_signature: Option<String>,
+    /// A deterministic repair-only lock to apply after certain
+    /// `submit_stage_deliverable needs_fix` responses. The next turn may repair
+    /// the submission, query existing state, or wait for background jobs, but it
+    /// must not restart broad scanning just because the prior submit failed.
+    pub submit_repair_update: Option<SubmitRepairModeUpdate>,
 }
 
 /// Bail-out threshold for the stage submit loop: after this many *consecutive*
@@ -88,6 +94,12 @@ impl StageStallGuard {
         }
         self.streak
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SubmitRepairModeUpdate {
+    Set(SubmitRepairMode),
+    Clear,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +219,95 @@ fn collect_json_array_strings(value: Option<&serde_json::Value>) -> Vec<String> 
         .unwrap_or_default()
 }
 
+fn missing_min_invocation_tools(reasons: &[String]) -> Vec<String> {
+    const PREFIX: &str = "min tool invocations not satisfied for '";
+    let mut out = Vec::new();
+    for reason in reasons {
+        let mut rest = reason.as_str();
+        while let Some(idx) = rest.find(PREFIX) {
+            let after = &rest[idx + PREFIX.len()..];
+            let Some(end) = after.find('\'') else {
+                break;
+            };
+            let tool = after[..end].trim();
+            if !tool.is_empty() && !out.iter().any(|seen| seen == tool) {
+                out.push(tool.to_string());
+            }
+            rest = &after[end + 1..];
+        }
+    }
+    out
+}
+
+fn needs_fix_evidence_ref_problem(reasons: &[String]) -> bool {
+    let reason_lc = reasons.join(" | ").to_ascii_lowercase();
+    reason_lc.contains("evidence_ref")
+        || reason_lc.contains("evidence id")
+        || reason_lc.contains("evidence_ids")
+        || reason_lc.contains("fabricated")
+        || reason_lc.contains("fakepattern")
+        || reason_lc.contains("real evidence")
+}
+
+pub fn submit_repair_mode_from_submit_result(
+    tool_name: &str,
+    result: &serde_json::Value,
+) -> Option<SubmitRepairMode> {
+    if tool_name != "submit_stage_deliverable" {
+        return None;
+    }
+    let status = result.get("status").and_then(|s| s.as_str());
+    if status != Some("needs_fix") {
+        return None;
+    }
+
+    let reasons = collect_json_array_strings(result.get("reasons"));
+    let reason = if reasons.is_empty() {
+        "(no reasons returned)".to_string()
+    } else {
+        reasons.join(" | ")
+    };
+    let reason_lc = reason.to_ascii_lowercase();
+    let has_running_jobs = result
+        .get("running_background_jobs")
+        .and_then(|v| v.as_array())
+        .map(|jobs| !jobs.is_empty())
+        .unwrap_or(false)
+        || reason_lc.contains("background job")
+        || reason_lc.contains("wait_for_background_jobs");
+    if has_running_jobs {
+        return Some(SubmitRepairMode {
+            kind: SubmitRepairKind::BackgroundJobs,
+            reason,
+            missing_required_checks: Vec::new(),
+        });
+    }
+
+    let available_ids = collect_json_array_strings(result.get("available_evidence_ids"));
+    if !available_ids.is_empty() && needs_fix_evidence_ref_problem(&reasons) {
+        return Some(SubmitRepairMode {
+            kind: SubmitRepairKind::EvidenceRefs,
+            reason,
+            missing_required_checks: missing_min_invocation_tools(&reasons),
+        });
+    }
+    None
+}
+
+fn submit_repair_update(
+    tool_name: &str,
+    result: &serde_json::Value,
+) -> Option<SubmitRepairModeUpdate> {
+    if tool_name != "submit_stage_deliverable" {
+        return None;
+    }
+    let status = result.get("status").and_then(|s| s.as_str());
+    if matches!(status, Some("accepted" | "received")) {
+        return Some(SubmitRepairModeUpdate::Clear);
+    }
+    submit_repair_mode_from_submit_result(tool_name, result).map(SubmitRepairModeUpdate::Set)
+}
+
 fn submit_needs_fix_runtime_correction(
     tool_name: &str,
     result: &mut serde_json::Value,
@@ -225,16 +326,18 @@ fn submit_needs_fix_runtime_correction(
 
     let reasons = collect_json_array_strings(result.get("reasons"));
     let reason_text = reasons.join(" | ");
-    let reason_lc = reason_text.to_ascii_lowercase();
-    let evidence_ref_problem = reason_lc.contains("evidence_ref")
-        || reason_lc.contains("evidence id")
-        || reason_lc.contains("evidence_ids")
-        || reason_lc.contains("fabricated")
-        || reason_lc.contains("fakepattern")
-        || reason_lc.contains("real evidence");
-    if !evidence_ref_problem {
+    if !needs_fix_evidence_ref_problem(&reasons) {
         return None;
     }
+    let missing_checks = missing_min_invocation_tools(&reasons);
+    let required_checks_instruction = if missing_checks.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Also set required_checks_done to include [{}] when the cited evidence backs those checks.",
+            missing_checks.join(", ")
+        )
+    };
 
     let mut preview_ids = available_ids.iter().take(20).cloned().collect::<Vec<_>>();
     if available_ids.len() > preview_ids.len() {
@@ -248,9 +351,9 @@ fn submit_needs_fix_runtime_correction(
         "submit_stage_deliverable already returned real evidence ids available in this run: [{}]. \
          Do NOT launch more scans just to fix evidence_refs. Rebuild and resubmit the \
          StageDeliverable using these exact ids in top-level evidence_refs and in every \
-         claim/finding evidence_ids/evidence_refs required by the gate. If the mapping is unclear, \
-         call query_target_data or inspect the prior wait_for_background_jobs output, then submit \
-         again. Gate reasons: {}",
+         claim/finding evidence_ids/evidence_refs required by the gate.{required_checks_instruction} \
+         If the mapping is unclear, call query_target_data or inspect the prior \
+         wait_for_background_jobs output, then submit again. Gate reasons: {}",
         preview_ids.join(", "),
         if reason_text.is_empty() {
             "(none provided)"
@@ -313,6 +416,7 @@ pub(super) async fn dispatch_tool_calls<M, P>(
     last_activity: &Arc<AtomicU64>,
     tool_fallback_timeout: Duration,
     idle_timeout: Option<Duration>,
+    submit_repair_mode: Option<&SubmitRepairMode>,
     transcript_writer: &Option<Arc<SubAgentTranscriptWriter>>,
     files_modified: &mut Vec<String>,
     llm_span: &tracing::Span,
@@ -328,6 +432,7 @@ where
     // Last `submit_stage_deliverable` BLOCK signature seen this batch (for the
     // loop's stage-stall circuit breaker). Last write wins (one submit/turn).
     let mut last_block_sig: Option<String> = None;
+    let mut submit_repair_update_seen: Option<SubmitRepairModeUpdate> = None;
 
     for tool_call in tool_calls {
         let tool_name = &tool_call.function.name;
@@ -433,6 +538,7 @@ where
                         post_shell_hook: ctx.post_shell_hook.clone(),
                         post_tool_result_hook: ctx.post_tool_result_hook.clone(),
                         tool_observer: ctx.tool_observer.clone(),
+                        initial_submit_repair_mode: ctx.initial_submit_repair_mode.clone(),
                         // Propagate the stage boundary to nested sub-agents so a
                         // deeper delegate can't bypass the stage's forbidden tools.
                         stage_tool_guard: ctx.stage_tool_guard.clone(),
@@ -565,6 +671,16 @@ where
 
         let tool_timeout = idle_timeout.unwrap_or(tool_fallback_timeout);
         let tool_result = tokio::time::timeout(tool_timeout, async {
+            if let Some(blocked) = submit_repair_mode.and_then(|mode| mode.block_result(tool_name))
+            {
+                tracing::warn!(
+                    target: "harness::submit_repair",
+                    agent_id = %agent_id,
+                    tool = %tool_name,
+                    "sub-agent tool call BLOCKED by submit repair mode"
+                );
+                return (blocked, false);
+            }
             // Stage boundary (forbidden-only): block a tool whose RESOLVED
             // capability is forbidden in the active harness stage BEFORE running
             // it (e.g. `dig` via pentest_run in scoping). The synthetic error
@@ -795,6 +911,9 @@ where
         if let Some(sig) = stage_block_signature(tool_name, &result_value) {
             last_block_sig = Some(sig);
         }
+        if let Some(update) = submit_repair_update(tool_name, &result_value) {
+            submit_repair_update_seen = Some(update);
+        }
 
         if let Some(payload) =
             structured_storage_hook_payload(tool_name, &tool_args, &result_value, success)
@@ -871,6 +990,7 @@ where
         barrier_hit,
         barrier_response,
         stage_block_signature: last_block_sig,
+        submit_repair_update: submit_repair_update_seen,
     }
 }
 
@@ -944,7 +1064,8 @@ mod tests {
     use super::{
         annotate_list_tools_with_guard, background_failure_runtime_correction,
         execute_registry_tool_with_active_org, registry_tool_outcome,
-        structured_storage_hook_payload, submit_needs_fix_runtime_correction,
+        structured_storage_hook_payload, submit_needs_fix_runtime_correction, submit_repair_update,
+        SubmitRepairModeUpdate,
     };
     use golish_core::Tool;
     use golish_tools::ToolRegistry;
@@ -1048,6 +1169,7 @@ mod tests {
             active_org_id_override: Some(child_org),
             post_tool_result_hook: None,
             tool_observer: None,
+            initial_submit_repair_mode: None,
             stage_tool_guard: None,
             hide_tool_in_stage: None,
         };
@@ -1106,6 +1228,7 @@ mod tests {
             active_org_id_override: Some(child_org),
             post_tool_result_hook: None,
             tool_observer: None,
+            initial_submit_repair_mode: None,
             stage_tool_guard: None,
             hide_tool_in_stage: None,
         };
@@ -1219,6 +1342,7 @@ mod tests {
             "available_evidence_ids": [101, 102, 103],
             "reasons": [
                 "FakePattern: total evidence_refs (0) below min_invocations sum (1)",
+                "min tool invocations not satisfied for 'http_probe' (not in required_checks_done)",
                 "Every finding must cite real evidence ids"
             ]
         });
@@ -1228,10 +1352,66 @@ mod tests {
 
         assert!(note.contains("101, 102, 103"));
         assert!(note.contains("Do NOT launch more scans"));
+        assert!(note.contains("required_checks_done"));
+        assert!(note.contains("http_probe"));
         assert!(v["runtime_correction"]
             .as_str()
             .unwrap()
             .contains("top-level evidence_refs"));
+    }
+
+    #[test]
+    fn evidence_ref_needs_fix_enters_repair_mode_and_blocks_scans() {
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "available_evidence_ids": [101],
+            "reasons": [
+                "FakePattern: total evidence_refs (0) below min_invocations sum (1)",
+                "min tool invocations not satisfied for 'http_probe' (not in required_checks_done)",
+                "This operation's REAL evidence ids (newest first) are [101]."
+            ]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("needs_fix should activate repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
+
+        assert!(mode.block_result("query_target_data").is_none());
+        assert!(mode.block_result("submit_stage_deliverable").is_none());
+        let blocked = mode
+            .block_result("pentest_run")
+            .expect("repair mode blocks fresh scans");
+        assert_eq!(blocked["blocked_by_submit_repair"], true);
+        assert!(blocked["error"]
+            .as_str()
+            .unwrap()
+            .contains("Do NOT start fresh"));
+        assert!(blocked["error"].as_str().unwrap().contains("http_probe"));
+    }
+
+    #[test]
+    fn background_jobs_needs_fix_enters_wait_only_repair_mode() {
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["1 background job(s) you launched are still running"],
+            "running_background_jobs": [{"job_id": "job_1"}]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("running jobs should activate wait repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
+
+        assert!(mode.block_result("wait_for_background_jobs").is_none());
+        assert!(mode.block_result("submit_stage_deliverable").is_none());
+        let blocked = mode
+            .block_result("pentest_run")
+            .expect("wait repair mode blocks replacement scans");
+        assert!(blocked["error"]
+            .as_str()
+            .unwrap()
+            .contains("wait_for_background_jobs"));
     }
 
     #[test]
