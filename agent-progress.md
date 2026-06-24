@@ -5969,6 +5969,30 @@
   - 未做活体 stage_run EAS；需要重启后端后实际跑一次确认 prober 新 prompt + spec 新 gate 的交互。
 - **下一步最佳动作**：重启 app 后跑一次 EAS stage_run；若模型开始因为 denominator 字段不熟悉反复 needs_fix，再把 `submit_stage_deliverable` schema/工具说明或新增 EAS 专用 record 工具补上。
 
+### 2026-06-24 · sub-agent runtime monitor 与后台失败纠偏
+
+- **本轮目标**：修复用户现场 run 中 sub-agent 内部 `background:true` 失败 / repeated submit needs_fix 被模型忽略的问题，并确认 UI 已有 `wait_for_background_jobs` 后把修复落在后端执行链。
+- **已完成**：
+  - `golish-sub-agents` 新增 `SubAgentToolObservation` / `SubAgentToolObserver`，在普通工具结果 post-hook 之后观察 sub-agent 工具结果，并允许 runtime 在 soft 模式把指导附回 ToolResult；嵌套 sub-agent 同步传递 observer。
+  - `response_parsing.rs` 新增两条规则纠偏：`background:true` 同步失败时明确告诉 worker 不要当成后台 job/coverage；`submit_stage_deliverable needs_fix` 且 `available_evidence_ids` 存在时，明确要求用真实 evidence id 重交而不是继续扫描。
+  - `golish-agent-runtime` 在 `sub_agent_call.rs` 把现有 `ExecutionMonitor` mentor 注入 delegated sub-agent；`GOLISH_EXECUTION_MENTOR=shadow` 只发 `MentorAdviceRecorded`/`harness::mentor`，`soft` 才附回子 agent ToolResult。
+  - `golish-agent-bridge` / reflector / runtime 测试 helper 补齐 `tool_observer: None` 构造。
+  - 更新设计与模块卡：`docs/design/2026-06-24-runtime-monitor-and-fine-grained-resume.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/backend/golish-sub-agents/executor.md`。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-sub-agents -p golish-agent-runtime -p golish-agent-bridge` → exit 0。
+  - `cd backend && cargo nextest run -p golish-sub-agents submit_needs_fix_correction background_true --status-level fail` → 4 tests passed / 95 skipped。
+  - `cd backend && cargo check -p golish-sub-agents -p golish-agent-runtime -p golish-agent-bridge` → exit 0。
+  - `cd backend && cargo clippy -p golish-sub-agents -p golish-agent-runtime -p golish-agent-bridge --all-targets -- -D warnings` → exit 0。
+- **已记录证据**：
+  - `submit_needs_fix_correction_points_to_available_evidence_ids` 覆盖 gate 给出真实 evidence ids 后，模型可见 correction 要求直接用这些 ids 重交。
+  - `background_true_failure_gets_runtime_correction` 覆盖 `background:true` 同步失败不会被误当成运行中的后台 job。
+- **提交记录**：待提交（用户要求不跑 precommit）。
+- **已知风险或未解决问题**：
+  - 未跑 `./init.sh` / `just precommit`；按用户要求只跑 scoped fmt/test/check/clippy。
+  - 当前正在运行的 app 进程需要重启后才会加载新后端逻辑；已有 run 不会 retroactively 产生 mentor trace。
+  - observer 复用同一个 `ExecutionMonitor`，当前阈值仍按工具名计数，不区分每个 org worker 的独立窗口；这符合本轮 shadow/soft 目标，但 P2 resume/monitor 状态仍需后续细化。
+- **下一步最佳动作**：重启 app 后用 `GOLISH_EXECUTION_MENTOR=shadow` 复跑 EAS；在 `run.log` / `transcript.json` 里检查 sub-agent 内部 repeated tool 后是否出现 `mentor_advice_recorded`，以及 failed `background:true` ToolResult 是否带 `RUNTIME CORRECTION`。
+
 <!-- 新会话请在这里上方插入一条新记录，保持倒序 -->
 
 ### 2026-06-24 · 前端 detail thinking/output 卡顿修复

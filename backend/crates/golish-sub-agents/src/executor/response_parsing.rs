@@ -15,7 +15,9 @@ use uuid::Uuid;
 
 use crate::definition::{SubAgentContext, SubAgentDefinition};
 use crate::executor_helpers::{epoch_secs, extract_file_path, is_write_tool};
-use crate::executor_types::{SubAgentExecutorContext, ToolProvider, BARRIER_TOOL_NAME};
+use crate::executor_types::{
+    SubAgentExecutorContext, SubAgentToolObservation, ToolProvider, BARRIER_TOOL_NAME,
+};
 use crate::transcript::SubAgentTranscriptWriter;
 use golish_core::events::{AiEvent, ToolSource};
 use golish_core::utils::{is_tool_result_success, truncate_str};
@@ -189,6 +191,107 @@ fn annotate_list_tools_with_guard(
     );
 }
 
+fn collect_json_array_strings(value: Option<&serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .or_else(|| v.as_i64().map(|n| n.to_string()))
+                        .or_else(|| v.as_u64().map(|n| n.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn submit_needs_fix_runtime_correction(
+    tool_name: &str,
+    result: &mut serde_json::Value,
+) -> Option<String> {
+    if tool_name != "submit_stage_deliverable" {
+        return None;
+    }
+    if result.get("status").and_then(|s| s.as_str()) != Some("needs_fix") {
+        return None;
+    }
+
+    let available_ids = collect_json_array_strings(result.get("available_evidence_ids"));
+    if available_ids.is_empty() {
+        return None;
+    }
+
+    let reasons = collect_json_array_strings(result.get("reasons"));
+    let reason_text = reasons.join(" | ");
+    let reason_lc = reason_text.to_ascii_lowercase();
+    let evidence_ref_problem = reason_lc.contains("evidence_ref")
+        || reason_lc.contains("evidence id")
+        || reason_lc.contains("evidence_ids")
+        || reason_lc.contains("fabricated")
+        || reason_lc.contains("fakepattern")
+        || reason_lc.contains("real evidence");
+    if !evidence_ref_problem {
+        return None;
+    }
+
+    let mut preview_ids = available_ids.iter().take(20).cloned().collect::<Vec<_>>();
+    if available_ids.len() > preview_ids.len() {
+        preview_ids.push(format!(
+            "... +{} more",
+            available_ids.len() - preview_ids.len()
+        ));
+    }
+
+    let correction = format!(
+        "submit_stage_deliverable already returned real evidence ids available in this run: [{}]. \
+         Do NOT launch more scans just to fix evidence_refs. Rebuild and resubmit the \
+         StageDeliverable using these exact ids in top-level evidence_refs and in every \
+         claim/finding evidence_ids/evidence_refs required by the gate. If the mapping is unclear, \
+         call query_target_data or inspect the prior wait_for_background_jobs output, then submit \
+         again. Gate reasons: {}",
+        preview_ids.join(", "),
+        if reason_text.is_empty() {
+            "(none provided)"
+        } else {
+            reason_text.as_str()
+        }
+    );
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert(
+            "runtime_correction".to_string(),
+            serde_json::Value::String(correction.clone()),
+        );
+    }
+    Some(correction)
+}
+
+fn background_failure_runtime_correction(
+    tool_args: &serde_json::Value,
+    result: &serde_json::Value,
+    success: bool,
+) -> Option<String> {
+    if success || tool_args.get("background").and_then(|v| v.as_bool()) != Some(true) {
+        return None;
+    }
+    let error_summary = result
+        .get("error")
+        .or_else(|| result.get("stderr"))
+        .or_else(|| result.get("stdout"))
+        .and_then(|v| v.as_str())
+        .map(|s| truncate_str(s, 500).to_string())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "no error text provided".to_string());
+
+    Some(format!(
+        "This tool was requested with background:true, but the returned result is a FAILURE. \
+         Do NOT treat it as a running background job or as collected coverage. Read the error, \
+         correct the arguments (or choose another allowed tool), then retry once if needed. \
+         Error summary: {error_summary}"
+    ))
+}
+
 /// Dispatch and execute a batch of tool calls from a sub-agent iteration.
 ///
 /// Handles three categories of tool calls:
@@ -329,6 +432,7 @@ where
                         sub_agent_registry: ctx.sub_agent_registry,
                         post_shell_hook: ctx.post_shell_hook.clone(),
                         post_tool_result_hook: ctx.post_tool_result_hook.clone(),
+                        tool_observer: ctx.tool_observer.clone(),
                         // Propagate the stage boundary to nested sub-agents so a
                         // deeper delegate can't bypass the stage's forbidden tools.
                         stage_tool_guard: ctx.stage_tool_guard.clone(),
@@ -654,6 +758,38 @@ where
             }
         }
 
+        let mut model_visible_notes: Vec<String> = Vec::new();
+        if let Some(correction) = submit_needs_fix_runtime_correction(tool_name, &mut result_value)
+        {
+            model_visible_notes.push(format!(
+                "\n\n--- RUNTIME CORRECTION ---\n{}\n--------------------------",
+                correction
+            ));
+        }
+        if let Some(correction) =
+            background_failure_runtime_correction(&tool_args, &result_value, success)
+        {
+            model_visible_notes.push(format!(
+                "\n\n--- RUNTIME CORRECTION ---\n{}\n--------------------------",
+                correction
+            ));
+        }
+
+        if let Some(observer) = ctx.tool_observer.as_ref() {
+            let observation = SubAgentToolObservation {
+                agent_id: agent_id.to_string(),
+                agent_name: agent_def.name.clone(),
+                parent_request_id: parent_request_id.to_string(),
+                tool_name: tool_name.to_string(),
+                tool_args: tool_args.clone(),
+                result: result_value.clone(),
+                success,
+            };
+            if let Some(note) = observer(observation).await {
+                model_visible_notes.push(note);
+            }
+        }
+
         // Stage-stall circuit breaker: record a submit_stage_deliverable BLOCK so
         // the loop can bail after STAGE_STALL_THRESHOLD identical ones.
         if let Some(sig) = stage_block_signature(tool_name, &result_value) {
@@ -719,7 +855,10 @@ where
             }
         }
 
-        let result_text = serde_json::to_string(&result_value).unwrap_or_default();
+        let mut result_text = serde_json::to_string(&result_value).unwrap_or_default();
+        for note in model_visible_notes {
+            result_text.push_str(&note);
+        }
         tool_results.push(UserContent::ToolResult(ToolResult {
             id: tool_id,
             call_id: Some(tool_call_id),
@@ -803,8 +942,9 @@ fn inject_harness_org_id_arg(
 #[cfg(test)]
 mod tests {
     use super::{
-        annotate_list_tools_with_guard, execute_registry_tool_with_active_org,
-        registry_tool_outcome, structured_storage_hook_payload,
+        annotate_list_tools_with_guard, background_failure_runtime_correction,
+        execute_registry_tool_with_active_org, registry_tool_outcome,
+        structured_storage_hook_payload, submit_needs_fix_runtime_correction,
     };
     use golish_core::Tool;
     use golish_tools::ToolRegistry;
@@ -907,6 +1047,7 @@ mod tests {
             active_org_id_source: Some(active_org_id.clone()),
             active_org_id_override: Some(child_org),
             post_tool_result_hook: None,
+            tool_observer: None,
             stage_tool_guard: None,
             hide_tool_in_stage: None,
         };
@@ -964,6 +1105,7 @@ mod tests {
             active_org_id_source: Some(active_org_id.clone()),
             active_org_id_override: Some(child_org),
             post_tool_result_hook: None,
+            tool_observer: None,
             stage_tool_guard: None,
             hide_tool_in_stage: None,
         };
@@ -1068,6 +1210,66 @@ mod tests {
         annotate_list_tools_with_guard(&mut v, &guard);
         assert_eq!(v["error"], "x");
         assert!(v["stage_allowed_tools"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn submit_needs_fix_correction_points_to_available_evidence_ids() {
+        let mut v = serde_json::json!({
+            "status": "needs_fix",
+            "available_evidence_ids": [101, 102, 103],
+            "reasons": [
+                "FakePattern: total evidence_refs (0) below min_invocations sum (1)",
+                "Every finding must cite real evidence ids"
+            ]
+        });
+
+        let note = submit_needs_fix_runtime_correction("submit_stage_deliverable", &mut v)
+            .expect("evidence-ref needs_fix should produce correction");
+
+        assert!(note.contains("101, 102, 103"));
+        assert!(note.contains("Do NOT launch more scans"));
+        assert!(v["runtime_correction"]
+            .as_str()
+            .unwrap()
+            .contains("top-level evidence_refs"));
+    }
+
+    #[test]
+    fn submit_needs_fix_correction_ignores_coverage_gap_without_ids() {
+        let mut v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["coverage cell missing for host x service fingerprint"]
+        });
+
+        assert!(submit_needs_fix_runtime_correction("submit_stage_deliverable", &mut v).is_none());
+        assert!(v.get("runtime_correction").is_none());
+    }
+
+    #[test]
+    fn background_true_failure_gets_runtime_correction() {
+        let note = background_failure_runtime_correction(
+            &serde_json::json!({ "background": true, "tool_name": "naabu" }),
+            &serde_json::json!({
+                "stdout": "flag provided but not defined: -ports",
+                "exit_code": 2
+            }),
+            false,
+        )
+        .expect("failed background request should be corrected");
+
+        assert!(note.contains("background:true"));
+        assert!(note.contains("Do NOT treat it as a running background job"));
+        assert!(note.contains("-ports"));
+    }
+
+    #[test]
+    fn background_true_success_gets_no_runtime_correction() {
+        assert!(background_failure_runtime_correction(
+            &serde_json::json!({ "background": true }),
+            &serde_json::json!({ "job_id": "job_1" }),
+            true,
+        )
+        .is_none());
     }
 
     // ── stage-stall circuit breaker (2026-06-16) ────────────────────────────

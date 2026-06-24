@@ -11,6 +11,14 @@ mentor and records advice as `HarnessTraceKind::MentorAdviceRecorded` plus
 `harness::mentor` tracing; `soft`/`on` records the same trace and appends the
 advice to the tool response; default is `off`.
 
+Implementation note 2026-06-24b: the same monitor now observes sub-agent tool
+results through `SubAgentToolObserver`, so stage-run specialists are covered too.
+`shadow` remains trace-only; `soft` appends advice to the sub-agent ToolResult.
+The sub-agent executor also performs rule-only corrections for two common stalls:
+failed `background:true` tool calls are not treated as running jobs, and
+`submit_stage_deliverable needs_fix` with available real evidence ids tells the
+worker to resubmit with those ids instead of launching more scans.
+
 ## 1. Problem
 
 The current harness already has several useful pieces: background tool jobs, live output chunks, completion events, a state-driven task resume entry, and the unified gate Refiner. The remaining gap is that these pieces do not yet form one runtime supervision model.

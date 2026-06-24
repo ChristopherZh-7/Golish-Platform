@@ -7,15 +7,154 @@ use anyhow::Result;
 use rig::completion::CompletionModel as RigCompletionModel;
 use serde_json::json;
 
+use golish_agent_kit::loop_detection::ExecutionMonitorMode;
+use golish_core::events::{AiEvent, HarnessTraceKind};
 use golish_core::utils::truncate_str;
-use golish_sub_agents::{execute_sub_agent, SubAgentContext, SubAgentExecutorContext};
+use golish_sub_agents::{
+    execute_sub_agent, SubAgentContext, SubAgentExecutorContext, SubAgentToolObservation,
+};
 
+use super::super::super::llm_helpers::mentor_one_shot;
 use super::super::super::sub_agent_dispatch::{
     build_sub_agent_briefing, execute_sub_agent_with_client,
 };
 use super::super::super::{AgenticLoopContext, ToolExecutionResult};
 use golish_agent_kit::tool_executors::extract_and_upsert_entities;
 use golish_agent_kit::tool_provider_impl::DefaultToolProvider;
+
+fn sub_agent_mentor_agent_path(agent_id: &str) -> String {
+    format!("main>{agent_id}")
+}
+
+fn build_sub_agent_tool_observer(
+    ctx: &AgenticLoopContext<'_>,
+    agent_id: &str,
+) -> Option<golish_sub_agents::SubAgentToolObserver> {
+    let monitor = ctx.execution_monitor.as_ref()?.clone();
+    let client = std::sync::Arc::clone(ctx.llm.client);
+    let event_tx = (*ctx.events.event_tx).clone();
+    let operation_id = ctx
+        .harness_operation_id
+        .map(|id| id.to_string())
+        .or_else(|| ctx.events.session_id.map(str::to_string));
+    let stage = ctx
+        .harness_stage
+        .map(|stage| stage.as_str().to_string())
+        .unwrap_or_default();
+    let agent_id_for_path = agent_id.to_string();
+
+    let observer: golish_sub_agents::SubAgentToolObserver = std::sync::Arc::new(
+        move |observation: SubAgentToolObservation| {
+            let monitor = monitor.clone();
+            let client = std::sync::Arc::clone(&client);
+            let event_tx = event_tx.clone();
+            let operation_id = operation_id.clone();
+            let stage = stage.clone();
+            let agent_path = sub_agent_mentor_agent_path(&agent_id_for_path);
+            Box::pin(async move {
+                let args_summary =
+                    serde_json::to_string(&observation.tool_args).unwrap_or_default();
+                let should_mentor = {
+                    let mut mon = monitor.write().await;
+                    mon.record_and_check(&observation.tool_name, &args_summary)
+                };
+                if !should_mentor {
+                    return None;
+                }
+
+                let (mode, repeated_tool, repeat_count, recent_summary) = {
+                    let mon = monitor.read().await;
+                    (
+                        mon.mode(),
+                        mon.repeated_tool_name().to_string(),
+                        mon.same_tool_count(),
+                        mon.recent_calls_summary(),
+                    )
+                };
+                tracing::info!(
+                    "[ExecutionMentor] Sub-agent monitor triggered: '{}' called {} times in {}",
+                    repeated_tool,
+                    repeat_count,
+                    observation.agent_id,
+                );
+
+                let mentor_system =
+                    golish_agent_kit::task_orchestrator::prompts::mentor_system_prompt();
+                let mentor_user = golish_agent_kit::task_orchestrator::prompts::mentor_user_prompt(
+                    &observation.tool_name,
+                    &repeated_tool,
+                    repeat_count,
+                    &recent_summary,
+                );
+                let advice_body = match mentor_one_shot(&client, mentor_system, &mentor_user).await
+                {
+                    Ok(llm_advice) => {
+                        tracing::info!(
+                            "[ExecutionMentor] Sub-agent LLM mentor produced {} chars of advice",
+                            llm_advice.len()
+                        );
+                        llm_advice
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[ExecutionMentor] Sub-agent LLM mentor failed, using static fallback: {}",
+                            e
+                        );
+                        format!(
+                            "You have called '{}' {} times. Consider a different approach:\n\
+                             - Check whether previous tool results already contain the data you need\n\
+                             - Correct failed tool arguments before launching more work\n\
+                             - Use wait_for_background_jobs before submitting if background jobs are pending\n\
+                             Recent calls: {}",
+                            repeated_tool, repeat_count, recent_summary,
+                        )
+                    }
+                };
+
+                tracing::info!(
+                    target: "harness::mentor",
+                    mode = mode.as_str(),
+                    repeated_tool = %repeated_tool,
+                    repeat_count,
+                    agent_id = %observation.agent_id,
+                    parent_request_id = %observation.parent_request_id,
+                    advice_preview = %truncate_str(&advice_body, 500),
+                    "sub-agent execution mentor advice recorded"
+                );
+                if let Some(operation_id) = operation_id {
+                    let trace = AiEvent::HarnessTrace {
+                        operation_id,
+                        stage,
+                        agent_path,
+                        trace: HarnessTraceKind::MentorAdviceRecorded {
+                            mode: mode.as_str().to_string(),
+                            trigger: "execution_monitor".to_string(),
+                            tool: repeated_tool.clone(),
+                            repeat_count: repeat_count.min(u32::MAX as usize) as u32,
+                            injected: matches!(mode, ExecutionMonitorMode::SoftInject),
+                            advice_preview: truncate_str(&advice_body, 500).to_string(),
+                        },
+                    };
+                    let _ = event_tx.send(trace);
+                }
+
+                {
+                    let mut mon = monitor.write().await;
+                    mon.reset_after_mentor();
+                }
+
+                match mode {
+                    ExecutionMonitorMode::Shadow => None,
+                    ExecutionMonitorMode::SoftInject => Some(format!(
+                        "\n\n--- EXECUTION ADVISOR ---\n{}\n-------------------------",
+                        advice_body
+                    )),
+                }
+            })
+        },
+    );
+    Some(observer)
+}
 
 /// Handle sub-agent tool calls (tool names starting with `sub_agent_`).
 pub(super) async fn execute_sub_agent_call<M>(
@@ -218,6 +357,7 @@ where
             );
             hook
         });
+    let sub_tool_observer = build_sub_agent_tool_observer(ctx, agent_id);
 
     // P0-4: persist dispatch lifecycle so the next session can list
     // mid-flight invocations after a crash/restart. Best-effort —
@@ -307,6 +447,7 @@ where
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: ctx.post_shell_hook.clone(),
                 post_tool_result_hook: sub_tool_result_hook.clone(),
+                tool_observer: sub_tool_observer.clone(),
                 stage_tool_guard: stage_tool_guard.clone(),
                 hide_tool_in_stage: hide_tool_in_stage.clone(),
             };
@@ -348,6 +489,7 @@ where
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: ctx.post_shell_hook.clone(),
                 post_tool_result_hook: sub_tool_result_hook.clone(),
+                tool_observer: sub_tool_observer.clone(),
                 stage_tool_guard: stage_tool_guard.clone(),
                 hide_tool_in_stage: hide_tool_in_stage.clone(),
             };
@@ -390,6 +532,7 @@ where
             sub_agent_registry: Some(ctx.sub_agent_registry),
             post_shell_hook: ctx.post_shell_hook.clone(),
             post_tool_result_hook: sub_tool_result_hook.clone(),
+            tool_observer: sub_tool_observer.clone(),
             stage_tool_guard: stage_tool_guard.clone(),
             hide_tool_in_stage: hide_tool_in_stage.clone(),
         };

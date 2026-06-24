@@ -160,6 +160,34 @@ pub type SubAgentToolResultHook = Arc<
         + Sync,
 >;
 
+/// Owned snapshot of a completed sub-agent tool call for runtime observers.
+///
+/// This crate intentionally does not know about harness gates, DB evidence, or
+/// mentor LLMs. Runtime crates can attach a callback that watches the generic
+/// stream of tool outcomes and optionally returns model-visible guidance.
+#[derive(Debug, Clone)]
+pub struct SubAgentToolObservation {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub parent_request_id: String,
+    pub tool_name: String,
+    pub tool_args: serde_json::Value,
+    pub result: serde_json::Value,
+    pub success: bool,
+}
+
+/// Optional observer invoked after normal sub-agent tool post-processing.
+///
+/// Returning `Some(text)` appends that text to the model-visible ToolResult.
+/// Returning `None` keeps the observation trace-only.
+pub type SubAgentToolObserver = Arc<
+    dyn Fn(
+            SubAgentToolObservation,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Per-stage tool-boundary guard for sub-agent tool calls.
 ///
 /// Given `(tool_name, args)` it returns `Err(reason)` when the call is NOT
@@ -240,6 +268,10 @@ pub struct SubAgentExecutorContext<'a> {
     /// executor generic while allowing the agent runtime to attach harness
     /// evidence/source logging to sub-agent tool calls.
     pub post_tool_result_hook: Option<SubAgentToolResultHook>,
+    /// Optional observer for completed regular tool calls. Used by upper layers
+    /// to implement runtime mentor/supervisor logic without making this crate
+    /// depend on those layers.
+    pub tool_observer: Option<SubAgentToolObserver>,
     /// Optional per-stage tool boundary guard (forbidden-only). When the
     /// sub-agent runs inside a harness stage, this blocks tool calls whose
     /// resolved capability is in the stage's forbidden list (e.g. `dig` in

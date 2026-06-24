@@ -71,7 +71,7 @@ pub use file_loader::AgentFileInfo;
 pub use executor::{execute_sub_agent, SubAgentExecutorContext, ToolProvider};
 pub use executor_types::{
     PostShellHook, StageToolGuard, StageToolHider, SubAgentChainPersistence,
-    SubAgentToolResultHook, SubAgentToolRouter,
+    SubAgentToolObservation, SubAgentToolObserver, SubAgentToolResultHook, SubAgentToolRouter,
 };
 
 // Re-export prompt registry
