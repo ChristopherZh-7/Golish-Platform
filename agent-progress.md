@@ -29,6 +29,26 @@
 
 ---
 
+### 2026-06-24 · execution mentor shadow/soft 接线（本会话续）
+
+- **本轮目标**：在先提交清空工作树后，开始实现 `Runtime Monitor + Fine-Grained Resume` 设计里的模型监督第一刀：复用既有 PentAGI-style `ExecutionMonitor` / mentor prompt，不改变 gate/submit 硬规则。
+- **前置清理**：用户要求“别跑 precommit，先提交干净”。已中断 `just precommit` 于 `test-rust-all` 阶段；此前已通过 `fmt` / `check-fe` / `test-fe` / `lint-rust`。已用 `git commit --no-verify` 落本地提交 `86f50286 fix(harness): make background scan waits explicit`，提交后工作树 clean，未 push。
+- **已完成**：
+  - `ExecutionMonitor` 增加 `ExecutionMonitorMode::{Shadow, SoftInject}`；`shadow()` 只记录建议，`soft_inject()` 保留现有注入语义，`new()` 维持 soft-inject 兼容。
+  - `AgentBridge::prepare_execution_context` 按 `GOLISH_EXECUTION_MENTOR` 注入 monitor：默认 `off`；`shadow` 调 LLM mentor 并写 `harness::mentor` tracing；`soft`/`on` 才把 `--- EXECUTION ADVISOR ---` 追加到 tool response。
+  - `single_tool_call` 的 mentor 处理改成 shadow/soft 分流；两种模式都会在触发后 reset monitor，shadow 不改变 agent 行为。
+  - 同步设计文档与模块卡：`runtime-monitor-and-fine-grained-resume`、`golish-agent-kit/loop_detection`、`golish-agent-runtime/agentic_loop`、`golish-agent-bridge/agent_bridge`。
+- **运行过的验证（实跑）**：
+  - `cargo fmt -p golish-agent-kit -p golish-agent-runtime -p golish-agent-bridge` → exit 0。
+  - `cargo nextest run -p golish-agent-kit execution_monitor --status-level fail` → 2 passed / 720 skipped。
+  - `cargo check -p golish-agent-kit -p golish-agent-runtime -p golish-agent-bridge` → exit 0。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-runtime -p golish-agent-bridge --all-targets -- -D warnings` → exit 0。
+- **未跑**：`just precommit` 全量（按用户要求不跑；上一轮全量已被用户要求中断于 `test-rust-all`）。
+- **提交记录**：待 commit。
+- **下一步建议**：后续活体可用 `GOLISH_EXECUTION_MENTOR=shadow` 跑 EAS/enum，检查 `run.log` 的 `harness::mentor` 建议质量；准了再试 `soft` 注入。
+
+---
+
 ### 2026-06-24 · background=true 快速失败同步回传修复（本会话续）
 
 - **本轮目标**：回应用户截图与现场 run：`pentest_run naabu ... background:true` 因 bad flag `-ports` 快速失败，但 sub-agent 继续执行，疑似后台工具错误被模型忽略。

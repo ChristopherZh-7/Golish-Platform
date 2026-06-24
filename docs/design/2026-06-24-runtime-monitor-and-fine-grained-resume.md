@@ -5,6 +5,11 @@
 > Related: `2026-06-03-background-tool-execution.md`, `2026-06-05-unified-ai-harness-observability.md`, `2026-06-12-unified-refiner.md`, `docs/superpowers/plans/2026-06-04-task-resume-after-disconnect.md`
 > Invariants: AGENTS.md I7 evidence-first deliverables, I8 checked-empty != unchecked, §2.5 deterministic gate validator
 
+Implementation note 2026-06-24: P1a/P1b mentor gating is wired as an env-controlled
+runtime mode. `GOLISH_EXECUTION_MENTOR=shadow` invokes the existing execution
+mentor and records advice to `harness::mentor` tracing only; `soft`/`on` appends
+the advice to the tool response; default is `off`.
+
 ## 1. Problem
 
 The current harness already has several useful pieces: background tool jobs, live output chunks, completion events, a state-driven task resume entry, and the unified gate Refiner. The remaining gap is that these pieces do not yet form one runtime supervision model.

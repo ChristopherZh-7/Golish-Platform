@@ -14,7 +14,7 @@ mod tests;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub use monitor::ExecutionMonitor;
+pub use monitor::{ExecutionMonitor, ExecutionMonitorMode};
 
 /// Configuration for loop protection.
 #[derive(Debug, Clone, Serialize, Deserialize)]

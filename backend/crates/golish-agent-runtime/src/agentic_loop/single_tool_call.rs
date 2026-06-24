@@ -282,9 +282,10 @@ where
             mon.record_and_check(tool_name, &args_summary)
         };
         if should_mentor {
-            let (repeated_tool, repeat_count, recent_summary) = {
+            let (mode, repeated_tool, repeat_count, recent_summary) = {
                 let mon = monitor.read().await;
                 (
+                    mon.mode(),
                     mon.repeated_tool_name().to_string(),
                     mon.same_tool_count(),
                     mon.recent_calls_summary(),
@@ -304,32 +305,45 @@ where
                     repeat_count,
                     &recent_summary,
                 );
-                match mentor_one_shot(ctx.llm.client, mentor_system, &mentor_user).await {
-                    Ok(llm_advice) => {
-                        tracing::info!(
-                            "[ExecutionMentor] LLM mentor produced {} chars of advice",
-                            llm_advice.len()
-                        );
-                        format!(
-                            "\n\n--- EXECUTION ADVISOR ---\n{}\n-------------------------",
+                let advice_body =
+                    match mentor_one_shot(ctx.llm.client, mentor_system, &mentor_user).await {
+                        Ok(llm_advice) => {
+                            tracing::info!(
+                                "[ExecutionMentor] LLM mentor produced {} chars of advice",
+                                llm_advice.len()
+                            );
                             llm_advice
-                        )
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "[ExecutionMentor] LLM mentor failed, using static fallback: {}",
-                            e
-                        );
-                        format!(
-                            "\n\n--- EXECUTION ADVISOR ---\n\
-                             You have called '{}' {} times. Consider a different approach:\n\
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "[ExecutionMentor] LLM mentor failed, using static fallback: {}",
+                                e
+                            );
+                            format!(
+                                "You have called '{}' {} times. Consider a different approach:\n\
                              - Try a different tool to make progress\n\
                              - Check if previous results already contain the information you need\n\
                              - If stuck, use a different strategy entirely\n\
-                             Recent calls: {}\n\
-                             -------------------------",
-                            repeated_tool, repeat_count, recent_summary,
-                        )
+                             Recent calls: {}",
+                                repeated_tool, repeat_count, recent_summary,
+                            )
+                        }
+                    };
+                tracing::info!(
+                    target: "harness::mentor",
+                    mode = mode.as_str(),
+                    repeated_tool = %repeated_tool,
+                    repeat_count,
+                    advice_preview = %truncate_str(&advice_body, 500),
+                    "execution mentor advice recorded"
+                );
+                match mode {
+                    golish_agent_kit::loop_detection::ExecutionMonitorMode::Shadow => None,
+                    golish_agent_kit::loop_detection::ExecutionMonitorMode::SoftInject => {
+                        Some(format!(
+                            "\n\n--- EXECUTION ADVISOR ---\n{}\n-------------------------",
+                            advice_body
+                        ))
                     }
                 }
             };
@@ -337,7 +351,7 @@ where
                 let mut mon = monitor.write().await;
                 mon.reset_after_mentor();
             }
-            Some(advice)
+            advice
         } else {
             None
         }

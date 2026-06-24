@@ -23,6 +23,28 @@ use super::super::system_prompt::build_system_prompt_with_contributions;
 use super::terminal_error::TerminalErrorState;
 use super::AgentBridge;
 
+fn execution_monitor_from_env(
+) -> Option<std::sync::Arc<tokio::sync::RwLock<golish_agent_kit::loop_detection::ExecutionMonitor>>>
+{
+    let mode = std::env::var("GOLISH_EXECUTION_MENTOR")
+        .unwrap_or_else(|_| "off".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    let monitor = match mode.as_str() {
+        "shadow" => golish_agent_kit::loop_detection::ExecutionMonitor::shadow(),
+        "soft" | "soft_inject" | "on" | "1" | "true" => {
+            golish_agent_kit::loop_detection::ExecutionMonitor::soft_inject()
+        }
+        _ => return None,
+    };
+    tracing::info!(
+        target: "harness::mentor",
+        mode = monitor.mode().as_str(),
+        "execution mentor monitor enabled for this agent turn"
+    );
+    Some(std::sync::Arc::new(tokio::sync::RwLock::new(monitor)))
+}
+
 impl AgentBridge {
     /// Prepare the execution context for an agent turn.
     ///
@@ -359,7 +381,7 @@ impl AgentBridge {
             },
             custom_tool_executor: self.mcp_tool_executor.read().await.clone(),
             cancelled: Some(&self.cancelled),
-            execution_monitor: None,
+            execution_monitor: execution_monitor_from_env(),
             execution_mode: *self.execution_mode.read().await,
             execution_mode_registry: self.execution_mode_registry.clone(),
             post_shell_hook: self.post_shell_hook.clone(),

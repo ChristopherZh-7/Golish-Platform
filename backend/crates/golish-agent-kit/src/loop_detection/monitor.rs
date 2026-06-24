@@ -5,6 +5,25 @@ const MENTOR_SAME_TOOL_THRESHOLD: usize = 3;
 /// Threshold for total tool calls in a turn before invoking the mentor.
 const MENTOR_TOTAL_CALL_THRESHOLD: usize = 15;
 
+/// How execution mentor advice is handled when the monitor triggers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionMonitorMode {
+    /// Call the mentor and record advice to logs/trace, but do not inject it into
+    /// the agent's next tool response.
+    Shadow,
+    /// Call the mentor and append its advice to the tool response.
+    SoftInject,
+}
+
+impl ExecutionMonitorMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shadow => "shadow",
+            Self::SoftInject => "soft",
+        }
+    }
+}
+
 /// Execution monitor that tracks tool call patterns to decide when
 /// to invoke the mentor for corrective guidance (PentAGI pattern).
 ///
@@ -13,6 +32,7 @@ const MENTOR_TOTAL_CALL_THRESHOLD: usize = 15;
 /// into the tool response.
 #[derive(Debug)]
 pub struct ExecutionMonitor {
+    mode: ExecutionMonitorMode,
     /// Consecutive calls to the same tool name.
     same_tool_count: usize,
     /// Name of the last tool called.
@@ -25,12 +45,29 @@ pub struct ExecutionMonitor {
 
 impl ExecutionMonitor {
     pub fn new() -> Self {
+        Self::soft_inject()
+    }
+
+    pub fn shadow() -> Self {
+        Self::with_mode(ExecutionMonitorMode::Shadow)
+    }
+
+    pub fn soft_inject() -> Self {
+        Self::with_mode(ExecutionMonitorMode::SoftInject)
+    }
+
+    pub fn with_mode(mode: ExecutionMonitorMode) -> Self {
         Self {
+            mode,
             same_tool_count: 0,
             last_tool_name: None,
             total_since_mentor: 0,
             recent_calls: Vec::new(),
         }
+    }
+
+    pub fn mode(&self) -> ExecutionMonitorMode {
+        self.mode
     }
 
     /// Record a tool call and return whether the mentor should be invoked.

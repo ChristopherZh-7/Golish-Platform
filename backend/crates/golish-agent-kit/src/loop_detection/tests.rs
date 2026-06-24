@@ -148,3 +148,32 @@ fn test_stats() {
     assert_eq!(stats.most_repeated_tool, Some("read_file".to_string()));
     assert_eq!(stats.most_repeated_count, 2);
 }
+
+#[test]
+fn execution_monitor_modes_are_explicit() {
+    assert_eq!(
+        ExecutionMonitor::shadow().mode(),
+        ExecutionMonitorMode::Shadow
+    );
+    assert_eq!(
+        ExecutionMonitor::soft_inject().mode(),
+        ExecutionMonitorMode::SoftInject
+    );
+    // Preserve the pre-existing constructor semantics for callers that
+    // explicitly instantiate a monitor: a monitor means soft mentor injection.
+    assert_eq!(
+        ExecutionMonitor::new().mode(),
+        ExecutionMonitorMode::SoftInject
+    );
+}
+
+#[test]
+fn execution_monitor_triggers_on_repeated_tool_calls() {
+    let mut monitor = ExecutionMonitor::shadow();
+    assert!(!monitor.record_and_check("pentest_run", "nmap 1"));
+    assert!(!monitor.record_and_check("pentest_run", "nmap 2"));
+    assert!(monitor.record_and_check("pentest_run", "nmap 3"));
+    assert_eq!(monitor.repeated_tool_name(), "pentest_run");
+    assert_eq!(monitor.same_tool_count(), 3);
+    assert!(monitor.recent_calls_summary().contains("nmap 3"));
+}
