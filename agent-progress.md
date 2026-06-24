@@ -29,6 +29,33 @@
 
 ---
 
+### 2026-06-24 · EAS active landing 最小闭环（本会话续）
+
+- **本轮目标**：按用户“开始做 active landing”，让 EAS/Prober 的 `pentest_run` 主动探测结果不只进 evidence，也能复用现有 toolsconfig output parser 自动写 `targets` / fingerprints，从而 Target 面板与 gate DB truth 读取同一份结构化事实。
+- **根因确认**：
+  - `golish-pentest::output_store::maybe_detect_and_store_via` 已能按 toolsconfig 的 `db_action=target_update_recon` 解析并写 `targets`/fingerprints，`httpx`/`naabu`/`nmap`/`whatweb` 都已有 output config。
+  - 但 `post_shell_hook` 之前只在 `run_pty_cmd` / `run_command` 成功路径触发；`pentest_run` 是 registry 工具，Prober 走 sub-agent registry fallback，结果只进 evidence，不自动走 output_store。
+  - `nmap` 文本 parser 还有一个落库缺口：host 行和 port 行分开匹配，port record 没有 host/ip/url，`store_target_update_recon` 会因缺 target key 失败。
+- **已完成**：
+  - `golish-agent-runtime::tool_execution/direct` 新增 `structured_storage_hook_payload`，主 agent 的 `pentest_run` result 会把 `command/stdout` 送进 `post_shell_hook`。
+  - `golish-sub-agents::executor/response_parsing` 同步新增同名 helper，sub-agent（Prober/Enumerator）里的 `pentest_run` 也会触发 `post_shell_hook`。
+  - `golish-pentest::output_parser` 对 `target_update_recon` 文本输出保存当前 host/ip/url/hostname 上下文，并注入后续 port records；`targets.rs::store_target_update_recon` 也接受 `hostname` 作为 target key。
+  - `TargetDetailView` 增加 `Recon Facts` 区块，显式展示 top-level `real_ip/http_status/http_title/webserver/cdn_waf/os_info/content_type`，即使 `ports[]` 尚无 entry，也能在 Target 面板看到 active landing 写回字段。
+  - `TargetGroupedView` 的真实 IP target 分支也给 `TargetSurfaceWorkbench` 传 `onSelectDomain`；IP Surface 下“解析到此 IP 的域名”点击后会切换到对应 domain target（此前只有 synthetic host 分支可点）。
+  - `OrgTreeSidebar` 增加 `orgTreeNodeHasExpandableContent`；左侧 org tree 只有有子公司/可展开资产组时才显示 chevron，叶子 org 不再显示空箭头。
+  - `OrgTreeSidebar` 拆分 chevron 与行主体交互：展开/收起只能点 chevron；点击公司行主体只选中并展示右侧详情；双击公司行主体也可展开/收起。`TargetGroupedView.toggleCollapsedSet` 保留 root-level accordion：展开一个主公司会收起其它 root。
+  - 同步模块卡：`golish-agent-runtime/agentic_loop`、`golish-sub-agents/executor`、`golish-pentest/output_store`、`frontend/components`。
+- **验证（实跑）**：
+  - 先加红灯：`pentest_run_result_feeds_structured_storage_hook`（runtime + sub-agents）缺 helper 失败；`test_nmap_parse` 断言 port record 带 ip 失败。
+  - `cargo nextest run -p golish-agent-runtime -p golish-sub-agents -p golish-pentest pentest_run_result_feeds_structured_storage_hook test_nmap_parse --status-level fail` → 3 tests passed / 493 skipped。
+  - `cargo check -p golish-agent-runtime -p golish-sub-agents -p golish-pentest` → exit 0。
+  - `cargo clippy -p golish-agent-runtime -p golish-sub-agents -p golish-pentest --all-targets -- -D warnings` → exit 0。
+  - `pnpm exec vitest run frontend/components/TargetPanel/OrgTreeSidebar.test.ts frontend/components/TargetPanel/TargetDetail.test.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts frontend/components/TargetPanel/surface/surfaceModel.test.ts frontend/components/TargetPanel/topology/buildTopologyModel.test.ts` → 5 files / 53 tests passed；`pnpm exec biome check frontend/components/TargetPanel/OrgTreeSidebar.tsx frontend/components/TargetPanel/OrgTreeSidebar.test.ts frontend/components/TargetPanel/TargetGroupedView.tsx frontend/components/TargetPanel/TargetGroupedView.actions.test.ts frontend/components/TargetPanel/TargetDetail.tsx frontend/components/TargetPanel/TargetDetail.test.tsx` → exit 0。
+- **未跑**：`just precommit` / 活体 EAS 重启验证。
+- **下一步建议**：重启 app 后跑一次 EAS Prober：预期 `pentest_run httpx/naabu/nmap/whatweb` 结束后 Target 面板可看到 target status/ports/http metadata/fingerprints 的结构化更新；若字段仍缺，再补对应 toolsconfig parser（例如 httpx 非 JSON rich text 里的 server/tech）。
+
+---
+
 ### 2026-06-24 · pentest_run/background job 实时输出可见性修复（本会话续）
 
 - **本轮目标**：回应用户追问“如果不是 background_jobs 呢”并按“开始改”落地：让 `pentest_run` 这类 shell-like 工具在后台 job 读到 stdout/stderr 时，前端工具详情能实时追加输出，不再只能等最终返回。

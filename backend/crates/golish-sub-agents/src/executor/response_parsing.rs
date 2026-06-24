@@ -88,6 +88,61 @@ impl StageStallGuard {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StructuredStorageHookPayload {
+    command: String,
+    stdout: String,
+}
+
+fn structured_storage_hook_payload(
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+    result: &serde_json::Value,
+    success: bool,
+) -> Option<StructuredStorageHookPayload> {
+    let stdout = result
+        .get("stdout")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    if stdout.trim().is_empty() {
+        return None;
+    }
+
+    let command = if (tool_name == "run_pty_cmd" || tool_name == "run_command") && success {
+        result
+            .get("command")
+            .and_then(|c| c.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                tool_args
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default()
+    } else if tool_name == "pentest_run" {
+        result
+            .get("command")
+            .and_then(|c| c.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                let tool = tool_args.get("tool_name").and_then(|v| v.as_str())?;
+                let args = tool_args.get("args").and_then(|v| v.as_str()).unwrap_or("");
+                Some(format!("{tool} {args}").trim().to_string())
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    if command.trim().is_empty() {
+        return None;
+    }
+
+    Some(StructuredStorageHookPayload { command, stdout })
+}
+
 /// Q3 ③ · Tag each tool in a `pentest_list_tools` result with `stage_allowed`
 /// by probing the active stage guard — the SAME predicate the executor blocks
 /// with — plus a top-level `stage_allowed_tools` list and a `stage_note`, so the
@@ -605,25 +660,17 @@ where
             last_block_sig = Some(sig);
         }
 
-        if success && (tool_name == "run_pty_cmd" || tool_name == "run_command") {
+        if let Some(payload) =
+            structured_storage_hook_payload(tool_name, &tool_args, &result_value, success)
+        {
             if let Some(hook) = ctx.post_shell_hook.as_ref() {
-                let cmd = result_value
-                    .get("command")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let stdout = result_value
-                    .get("stdout")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string();
                 let pp = {
                     let ws = ctx.workspace.read().await;
                     ws.to_string_lossy().to_string()
                 };
                 let hook = Arc::clone(hook);
                 tokio::spawn(async move {
-                    hook(cmd, stdout, Some(pp)).await;
+                    hook(payload.command, payload.stdout, Some(pp)).await;
                 });
             }
         }
@@ -757,7 +804,7 @@ fn inject_harness_org_id_arg(
 mod tests {
     use super::{
         annotate_list_tools_with_guard, execute_registry_tool_with_active_org,
-        registry_tool_outcome,
+        registry_tool_outcome, structured_storage_hook_payload,
     };
     use golish_core::Tool;
     use golish_tools::ToolRegistry;
@@ -956,6 +1003,25 @@ mod tests {
             !success,
             "sub-agent registry fallback must not turn WhatWeb stderr ERROR into a green check"
         );
+    }
+
+    #[test]
+    fn pentest_run_result_feeds_structured_storage_hook() {
+        let payload = structured_storage_hook_payload(
+            "pentest_run",
+            &serde_json::json!({"tool_name": "httpx", "args": "-u https://example.com -sc"}),
+            &serde_json::json!({
+                "command": "httpx -u https://example.com -sc",
+                "stdout": "https://example.com [200]",
+                "stderr": "",
+                "exit_code": 0
+            }),
+            true,
+        )
+        .expect("pentest_run should produce structured-storage payload");
+
+        assert_eq!(payload.command, "httpx -u https://example.com -sc");
+        assert_eq!(payload.stdout, "https://example.com [200]");
     }
 
     #[test]

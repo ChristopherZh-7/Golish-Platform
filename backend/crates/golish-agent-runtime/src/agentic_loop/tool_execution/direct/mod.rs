@@ -28,6 +28,55 @@ use self::sub_agent_call::execute_sub_agent_call;
 pub(crate) mod stage_run_call;
 use self::stage_run_call::execute_stage_run;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StructuredStorageHookPayload {
+    command: String,
+    stdout: String,
+}
+
+fn structured_storage_hook_payload(
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+    result: &serde_json::Value,
+    success: bool,
+) -> Option<StructuredStorageHookPayload> {
+    let stdout = result
+        .get("stdout")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    if stdout.trim().is_empty() {
+        return None;
+    }
+
+    let command = if tool_name == "run_pty_cmd" && success {
+        tool_args
+            .get("command")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string()
+    } else if tool_name == "pentest_run" {
+        result
+            .get("command")
+            .and_then(|c| c.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                let tool = tool_args.get("tool_name").and_then(|v| v.as_str())?;
+                let args = tool_args.get("args").and_then(|v| v.as_str()).unwrap_or("");
+                Some(format!("{tool} {args}").trim().to_string())
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    if command.trim().is_empty() {
+        return None;
+    }
+
+    Some(StructuredStorageHookPayload { command, stdout })
+}
+
 async fn record_recon_passive_evidence(
     tracker: Option<&golish_agent_kit::db_tracking::DbTracker>,
     session_id: Option<&str>,
@@ -401,27 +450,21 @@ where
             // would then BLOCK).
             let mut appended_evidence_id: Option<i64> = None;
 
-            if effective_tool_name == "run_pty_cmd" && is_success {
+            if let Some(payload) =
+                structured_storage_hook_payload(effective_tool_name, tool_args, v, is_success)
+            {
                 if let Some(hook) = &ctx.post_shell_hook {
-                    let stdout = v
-                        .get("stdout")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let command = tool_args
-                        .get("command")
-                        .and_then(|c| c.as_str())
-                        .unwrap_or("")
-                        .to_string();
                     let ws = ctx.workspace.read().await;
                     let pp = ws.to_string_lossy().to_string();
                     drop(ws);
                     let hook = Arc::clone(hook);
                     tokio::spawn(async move {
-                        hook(command, stdout, Some(pp)).await;
+                        hook(payload.command, payload.stdout, Some(pp)).await;
                     });
                 }
+            }
 
+            if effective_tool_name == "run_pty_cmd" && is_success {
                 // P0 · evidence ledger: record this tool run as an
                 // `audit_role='evidence'` row (OpenFang-style hash chain) so the
                 // harness gate can later cross-check the deliverable's
@@ -914,7 +957,7 @@ fn guardrail_block_reason(
 mod tests {
     use super::{
         duplicate_guard_query, guardrail_block_reason, is_terminal_source_query_status,
-        recon_source_query_rows,
+        recon_source_query_rows, structured_storage_hook_payload,
     };
     use golish_agent_kit::harness::StageKind;
     use serde_json::json;
@@ -1015,5 +1058,24 @@ mod tests {
 
         let empty = recon_source_query_rows("recon_lookup_whois", &json!({}));
         assert_eq!(empty[0].status, "empty");
+    }
+
+    #[test]
+    fn pentest_run_result_feeds_structured_storage_hook() {
+        let payload = structured_storage_hook_payload(
+            "pentest_run",
+            &json!({"tool_name": "httpx", "args": "-u https://example.com -sc -title"}),
+            &json!({
+                "command": "httpx -u https://example.com -sc -title",
+                "stdout": "https://example.com [200] [Example Domain]",
+                "stderr": "",
+                "exit_code": 0
+            }),
+            true,
+        )
+        .expect("pentest_run should produce structured-storage payload");
+
+        assert_eq!(payload.command, "httpx -u https://example.com -sc -title");
+        assert_eq!(payload.stdout, "https://example.com [200] [Example Domain]");
     }
 }

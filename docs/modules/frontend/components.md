@@ -41,6 +41,9 @@ detail 里的状态图标不能只信 transport/completed 状态；`whatweb` 这
 `SubAgentDetailView` header 也不能只信原始 `subAgent.status`：如果 completed agent 仍有 running/backgrounded 工具，header 要显示运行态/后台态；如果 completed agent 的最后一个工具调用失败（典型是 `submit_stage_deliverable` needs_fix/error 后无成功提交），header 要显示错误，避免“业务卡住但顶部已完成”的误导。
 
 TargetPanel 左侧树默认只做组织导航：子组织和公司计数保留，但 IP/URL/域名资产不在左树展开；右侧 Targets 面板按 IP 联合展示资产，点击 IP、域名或 URL 进入 target workbench。不要把大量 IP 重新铺成 org 的第一层 children，否则母子公司层级会被资产列表淹没。
+Target detail 展开区必须显式展示 active landing 写回的 top-level recon fields（`real_ip` / `http_status` / `http_title` / `webserver` / `cdn_waf` / `os_info` / `content_type`），即使 `ports[]` 还没有对应 entry；per-port metadata 和 fingerprints 继续在 Services / Fingerprints 区展示。
+`TargetSurfaceWorkbench` 的 IP/host Surface 相关域名列表必须可 drill-in：无论当前 subject 是 synthetic host 还是真实 IP target，都要传 `onSelectDomain`，点击域名行应切换到对应 domain target。
+Target 左侧 org tree 的 chevron 只表示“有可展开内容”：有子公司，或在资产树模式下有资产组；没有下一层的 org leaf 不显示 chevron。展开/收起只能点 chevron，点击公司行主体只选中并展示右侧详情；双击公司行主体也可展开/收起。root-level 主公司折叠采用 accordion 口径：展开一个主公司时收起其它主公司。
 
 ## 依赖
 

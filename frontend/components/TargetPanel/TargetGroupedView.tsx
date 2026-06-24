@@ -98,6 +98,25 @@ export {
 } from "@/lib/target-panel/engagement";
 export { formatFieldValue, getOrgFieldGroups } from "@/lib/target-panel/org-fields";
 
+export function toggleCollapsedSet(
+  current: Set<string>,
+  id: string,
+  rootIds: Set<string> = new Set()
+): Set<string> {
+  const next = new Set(current);
+  if (next.has(id)) {
+    next.delete(id);
+    if (rootIds.has(id)) {
+      for (const rootId of rootIds) {
+        if (rootId !== id) next.add(rootId);
+      }
+    }
+  } else {
+    next.add(id);
+  }
+  return next;
+}
+
 interface AddTargetForm {
   name: string;
   value: string;
@@ -316,6 +335,7 @@ export function TargetGroupedView({
     () => buildOrgTree(orgs, visibleTargets, unassignedLabel),
     [orgs, visibleTargets, unassignedLabel]
   );
+  const rootIds = useMemo(() => new Set(roots.map((root) => root.id)), [roots]);
   const selectedOrg = useMemo(
     () => orgs.find((o) => o.id === selectedOrgId) ?? orgs[0] ?? null,
     [orgs, selectedOrgId]
@@ -425,14 +445,12 @@ export function TargetGroupedView({
     }
   }, [selectedOrg, selectedTarget, selectedHostId]);
 
-  const toggleCollapse = useCallback((id: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  const toggleCollapse = useCallback(
+    (id: string) => {
+      setCollapsed((prev) => toggleCollapsedSet(prev, id, rootIds));
+    },
+    [rootIds]
+  );
 
   const resetForms = useCallback(() => {
     setOrgFormName("");
@@ -961,6 +979,7 @@ export function TargetGroupedView({
                 target={selectedTarget}
                 onUpdateNotes={onUpdateNotes}
                 relatedDomains={selectedTargetRelatedDomains}
+                onSelectDomain={(id) => setSelectedTargetId(id)}
                 onBack={() => setSelectedTargetId(null)}
                 backLabel={
                   selectedHost

@@ -22,6 +22,7 @@ import {
   getVisibleCandidateBuckets,
   getWorkspaceModel,
   type HydrateActivity,
+  toggleCollapsedSet,
 } from "./TargetGroupedView";
 
 const emptyActivity: HydrateActivity = {
@@ -88,6 +89,20 @@ describe("getWorkspaceModel", () => {
     expect(getWorkspaceModel("profile_only")).toMatchObject({
       title: "Overview",
     });
+  });
+});
+
+describe("toggleCollapsedSet", () => {
+  it("collapses an expanded node when clicked again", () => {
+    expect([...toggleCollapsedSet(new Set(), "root-a", new Set(["root-a", "root-b"]))]).toEqual([
+      "root-a",
+    ]);
+  });
+
+  it("expands one root while collapsing sibling roots", () => {
+    expect(
+      [...toggleCollapsedSet(new Set(["root-a"]), "root-a", new Set(["root-a", "root-b"]))]
+    ).toEqual(["root-b"]);
   });
 });
 

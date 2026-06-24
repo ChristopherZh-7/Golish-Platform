@@ -99,6 +99,19 @@ export function TargetDetailView({
     medium: "bg-yellow-500/10 text-yellow-400",
     low: "bg-blue-500/10 text-blue-400",
   };
+  const reconFacts = [
+    { label: "Resolved IP", value: target.real_ip, mono: true },
+    {
+      label: "HTTP",
+      value: target.http_status != null ? String(target.http_status) : "",
+      mono: true,
+    },
+    { label: "Title", value: target.http_title },
+    { label: "Server", value: target.webserver },
+    { label: "CDN/WAF", value: target.cdn_waf },
+    { label: "OS", value: target.os_info },
+    { label: "Content-Type", value: target.content_type },
+  ].filter((fact) => fact.value);
 
   return (
     <div className="mt-2 ml-5 space-y-2" onClick={(e) => e.stopPropagation()}>
@@ -111,6 +124,31 @@ export function TargetDetailView({
       {target.source && target.source !== "manual" && (
         <div className="text-[11px] text-muted-foreground">
           <span className="font-medium">Source:</span> {target.source}
+        </div>
+      )}
+
+      {reconFacts.length > 0 && (
+        <div className="rounded-md border border-border/15 bg-muted/10 px-2 py-1.5">
+          <div className="mb-1 flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+            <Database className="h-3 w-3 text-cyan-400/70" />
+            Recon Facts
+          </div>
+          <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+            {reconFacts.map((fact) => (
+              <div key={fact.label} className="min-w-0 text-[10px]">
+                <span className="text-muted-foreground/50">{fact.label}</span>
+                <div
+                  className={cn(
+                    "truncate text-foreground/75",
+                    fact.mono && "font-mono text-emerald-400/75"
+                  )}
+                  title={fact.value}
+                >
+                  {fact.value}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

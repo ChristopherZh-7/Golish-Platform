@@ -98,6 +98,17 @@ interface OrgTreeProps {
 const ASSET_GROUP_DEFAULT_COLLAPSE = 20;
 const ASSET_PREVIEW_LIMIT = 15;
 
+export function orgTreeNodeHasExpandableContent(
+  node: Pick<OrgTreeNode, "children" | "targets" | "kind">,
+  showAssetsInTree = false
+): boolean {
+  const kind = node.kind ?? "org";
+  if (kind === "host" || kind === "bucket") return false;
+  return (
+    node.children.length > 0 || (showAssetsInTree && kind === "org" && node.targets.length > 0)
+  );
+}
+
 function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreeProps) {
   const {
     node,
@@ -227,6 +238,7 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
   // Host & bucket nodes are selectable leaves in the IP view: clicking selects
   // them (→ that IP's workbench on the right) rather than expanding nested rows.
   const isLeafSelectable = isHost || isBucket;
+  const hasExpandableContent = orgTreeNodeHasExpandableContent(node, showAssetsInTree);
   const isCollapsed = collapsed.has(node.id);
 
   // Asset sub-group state. Membership in `collapsed` flips the size-based
@@ -308,6 +320,23 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
           )}
           style={{ paddingLeft: `${8 + depth * 16}px` }}
         >
+          {hasExpandableContent ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleCollapse(node.id);
+              }}
+              className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:bg-muted/30 hover:text-foreground"
+              title={isCollapsed ? t("targets.expand") : t("targets.collapse")}
+            >
+              <ChevronDown
+                className={cn("w-3 h-3 transition-transform", isCollapsed && "-rotate-90")}
+              />
+            </button>
+          ) : (
+            <span className="h-4 w-4 flex-shrink-0" />
+          )}
           <button
             type="button"
             onClick={() => {
@@ -323,18 +352,12 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
                 setSelectedTargetId(null);
                 setSelectedHostId(null);
               }
-              toggleCollapse(node.id);
             }}
-            className="flex items-center gap-2 flex-1 text-left min-w-0"
+            onDoubleClick={() => {
+              if (hasExpandableContent) toggleCollapse(node.id);
+            }}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
-            {!isLeafSelectable && (
-              <ChevronDown
-                className={cn(
-                  "w-3 h-3 text-muted-foreground/60 transition-transform flex-shrink-0",
-                  isCollapsed && "-rotate-90"
-                )}
-              />
-            )}
             {isHost ? (
               <Network className="w-3 h-3 text-blue-400/70 flex-shrink-0" />
             ) : !isOrg || isUnassigned ? (

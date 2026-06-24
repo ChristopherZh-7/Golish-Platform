@@ -44,6 +44,7 @@
 - `SubAgentExecutorContext.active_org_id_override` 是 stage-run per-org 硬隔离通道：registry fallback 执行 `manage_targets` / `manage_organizations` 时会注入内部隐藏 `__harness_org_id`，让工具按当前 org 子树过滤/绑定；不要把这件事退化成 prompt 约束。
 - 普通 registry fallback 的 `Ok(Value)` 不是成功定义；必须用 `golish_core::utils::is_tool_result_success` 从 payload 判定。典型例子：WhatWeb 在 Ruby/OpenSSL 兼容问题下可能 `exit_code=0` 但 `stderr` 含 `ERROR Opening`，这要作为失败上报，UI 才能显示红色而不是绿勾。
 - registry/router fallback 会用 `golish_core::with_agent_tool_context` 标记当前 sub-agent tool call；如果 `pentest_run` 等工具内部启动后台 shell，live chunk 要带 `ToolSource::SubAgent` 回到对应 sub-agent 工具详情。
+- `response_parsing.rs` 对 sub-agent 的 `pentest_run` 结果也要触发 `post_shell_hook`（从 result/args 提取 `command/stdout`），否则 Prober/Enumerator 的 active scan 输出只进 evidence，不会自动走 output_store 写 `targets` / fingerprints。
 
 ## 测试入口
 

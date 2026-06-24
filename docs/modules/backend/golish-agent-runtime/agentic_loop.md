@@ -51,6 +51,7 @@ agentic loop 的公开表面 + 子模块实现。`turn/` 是 phase 调度本体�
 - depth-0 stage orchestrator 会在 active harness stage 里看到只读 coverage/target query 工具（`list_in_scope_targets` / `list_attack_surface_seeds` / `query_target_data`）；这些工具既要在 `tool_list` 暴露，也必须在 direct executor 走 `execute_security_analysis_tool`，不能只声明不路由，否则主 agent 会得到 `Unknown tool`。
 - `sub_agent_call.rs` 还负责给子 agent 注入非 `ToolRegistry` 工具路由：`list_in_scope_targets` / `list_attack_surface_seeds` / `query_target_data` 等 security-analysis read helpers 走 `execute_security_analysis_tool`，graph tools 走 graph executor，避免“工具已暴露但 UnknownTool”。
 - `single_tool_call.rs` 会用 `golish_core::with_agent_tool_context` 包住主 agent 工具执行；后台 shell/pentest job 在启动时读取这个 task-local context，把 stdout/stderr chunk 归还到正确的 tool card。
+- `tool_execution/direct/mod.rs` 对 `pentest_run` registry 结果也会触发 `PostShellHook`（使用结果里的 `command/stdout`），让 EAS active probes 复用 `golish-pentest::output_store::maybe_detect_and_store_via` 自动写 `targets` / fingerprints；不要只把 structured-storage hook 挂在 `run_pty_cmd`。
 
 ## 测试入口
 
