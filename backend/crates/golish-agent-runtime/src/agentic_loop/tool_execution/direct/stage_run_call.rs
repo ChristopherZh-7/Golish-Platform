@@ -149,7 +149,10 @@ fn build_org_objective(
         obj.push_str(
             " If a tool is blocked by the stage boundary, switch technique or submit your \
              deliverable — do NOT retry the blocked tool. Long scans may be backgrounded on a soft \
-             timeout: poll with check_job, never re-run the same command.",
+             timeout: do NOT re-run the same command. submit_stage_deliverable waits for \
+             attributed background jobs to finish before grading; if it reports jobs still \
+             running, wait for their completion notes and resubmit. Only inspect/kill a \
+             background job if it is clearly hung.",
         );
     }
     if !expected_techniques.is_empty() {
@@ -403,6 +406,32 @@ fn next_org_action(verdict: &OrgVerdict, attempt: usize, max_attempts: usize) ->
             }
         }
     }
+}
+
+fn fallback_org_verdict(repo_available: bool, sub_ok: bool) -> (OrgVerdict, bool) {
+    if repo_available {
+        return (
+            OrgVerdict::Block {
+                reasons: vec![
+                    "sub-agent completed without a StageDeliverable accepted by the per-org gate. \
+                     It may have received needs_fix from submit_stage_deliverable (for example, \
+                     pending background jobs or missing evidence). Close that feedback and submit \
+                     again before this organization can pass."
+                        .to_string(),
+                ],
+            },
+            true,
+        );
+    }
+
+    let verdict = if sub_ok {
+        OrgVerdict::Pass
+    } else {
+        OrgVerdict::Block {
+            reasons: vec!["sub-agent did not complete".to_string()],
+        }
+    };
+    (verdict, false)
 }
 
 /// Build the feedback block appended to the specialist's objective on a retry,
@@ -700,26 +729,16 @@ where
             // Authoritative verdict + whether it came from the real DB gate. Without
             // a repo (pure-eval/headless) or a parseable deliverable, fall back to
             // the sub-agent success flag so regression/eval paths keep working.
-            let (verdict, from_gate) = match (
-                ctx.events.db_tracker.and_then(|t| t.repo()),
-                org_deliverable.as_ref(),
-            ) {
+            let repo = ctx.events.db_tracker.and_then(|t| t.repo());
+            let (verdict, from_gate) = match (repo, org_deliverable.as_ref()) {
                 (Some(repo), Some(deliv)) => {
                     let org_uuid = uuid::Uuid::parse_str(&unit.id).ok();
                     let session = ctx.events.session_id.unwrap_or("");
                     let gate = evaluate_org_stage_gate(repo, org_uuid, session, stage, deliv).await;
                     (decide_org_verdict(&gate), true)
                 }
-                _ => {
-                    let v = if sub_ok {
-                        OrgVerdict::Pass
-                    } else {
-                        OrgVerdict::Block {
-                            reasons: vec!["sub-agent did not complete".to_string()],
-                        }
-                    };
-                    (v, false)
-                }
+                (repo, None) => fallback_org_verdict(repo.is_some(), sub_ok),
+                (None, Some(_)) => fallback_org_verdict(false, sub_ok),
             };
 
             // Only the real DB gate earns retries; the fallback path is terminal.
@@ -982,9 +1001,11 @@ mod tests {
         assert!(obj.contains("GOLISH-INTEL-DNS"));
         assert!(obj.contains("GOLISH-INTEL-WHOIS"));
         assert!(obj.contains("FAILS the gate"));
-        // Tool boundary is listed so the specialist stays in-stage + poll guidance.
+        // Tool boundary is listed so the specialist stays in-stage + background guidance.
         assert!(obj.contains("recon/dns"));
-        assert!(obj.contains("check_job"));
+        assert!(obj.contains("submit_stage_deliverable waits"));
+        assert!(obj.contains("completion notes"));
+        assert!(obj.contains("do NOT re-run"));
     }
 
     #[test]
@@ -1136,5 +1157,36 @@ mod tests {
                 reasons: vec!["sub-agent did not complete".to_string()]
             }
         );
+    }
+
+    #[test]
+    fn live_stage_run_blocks_missing_deliverable_even_if_sub_agent_completed() {
+        let (verdict, from_gate) = fallback_org_verdict(true, true);
+
+        assert!(
+            from_gate,
+            "a live DB-backed stage must treat missing deliverable as a gate BLOCK so it retries"
+        );
+        match verdict {
+            OrgVerdict::Block { reasons } => {
+                assert!(
+                    reasons
+                        .iter()
+                        .any(|reason| reason.contains("without a StageDeliverable")),
+                    "reason should explain that no accepted deliverable was captured: {reasons:?}"
+                );
+            }
+            OrgVerdict::Pass => {
+                panic!("missing live deliverable must not pass via sub_ok fallback")
+            }
+        }
+    }
+
+    #[test]
+    fn no_db_fallback_still_uses_sub_agent_success() {
+        let (verdict, from_gate) = fallback_org_verdict(false, true);
+
+        assert!(!from_gate);
+        assert!(matches!(verdict, OrgVerdict::Pass));
     }
 }

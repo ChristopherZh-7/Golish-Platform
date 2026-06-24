@@ -18,7 +18,7 @@ use crate::executor_helpers::{epoch_secs, extract_file_path, is_write_tool};
 use crate::executor_types::{SubAgentExecutorContext, ToolProvider, BARRIER_TOOL_NAME};
 use crate::transcript::SubAgentTranscriptWriter;
 use golish_core::events::{AiEvent, ToolSource};
-use golish_core::utils::truncate_str;
+use golish_core::utils::{is_tool_result_success, truncate_str};
 
 /// Result of dispatching tool calls within a sub-agent iteration.
 pub(super) struct ToolDispatchResult {
@@ -261,6 +261,8 @@ where
                         model_name: ctx.model_name,
                         resume: None,
                         sub_tool_router: None,
+                        active_org_id_source: ctx.active_org_id_source.clone(),
+                        active_org_id_override: ctx.active_org_id_override,
                         session_id: ctx.session_id,
                         transcript_base_dir: ctx.transcript_base_dir,
                         api_request_stats: ctx.api_request_stats,
@@ -514,22 +516,43 @@ where
                     Err(e) => (serde_json::json!({ "error": e.to_string() }), false),
                 }
             } else {
-                // Try the injected router first (security/graph tools that live
-                // outside the ToolRegistry); fall through to the registry.
-                let routed = match &ctx.sub_tool_router {
-                    Some(router) => router(tool_name.to_string(), tool_args.clone()).await,
-                    None => None,
+                let tool_context = golish_core::AgentToolContext {
+                    request_id: request_id.clone(),
+                    tool_name: tool_name.to_string(),
+                    source: ToolSource::SubAgent {
+                        agent_id: agent_id.to_string(),
+                        agent_name: agent_def.name.clone(),
+                    },
                 };
-                match routed {
-                    Some((value, success)) => (value, success),
-                    None => {
-                        let registry = ctx.tool_registry.read().await;
-                        match registry.execute_tool(tool_name, tool_args.clone()).await {
-                            Ok(v) => (v.clone(), true),
-                            Err(e) => (serde_json::json!({ "error": e.to_string() }), false),
+                golish_core::with_agent_session(
+                    ctx.session_id.map(str::to_string),
+                    golish_core::with_agent_tool_context(Some(tool_context), async {
+                        // Try the injected router first (security/graph tools that live
+                        // outside the ToolRegistry); fall through to the registry.
+                        let routed = match &ctx.sub_tool_router {
+                            Some(router) => router(tool_name.to_string(), tool_args.clone()).await,
+                            None => None,
+                        };
+                        match routed {
+                            Some((value, success)) => (value, success),
+                            None => {
+                                match execute_registry_tool_with_active_org(
+                                    ctx,
+                                    tool_name,
+                                    tool_args.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(v) => registry_tool_outcome(v),
+                                    Err(e) => {
+                                        (serde_json::json!({ "error": e.to_string() }), false)
+                                    }
+                                }
+                            }
                         }
-                    }
-                }
+                    }),
+                )
+                .await
             }
         })
         .await;
@@ -665,10 +688,275 @@ where
     }
 }
 
+fn registry_tool_outcome(value: serde_json::Value) -> (serde_json::Value, bool) {
+    let success = is_tool_result_success(&value);
+    (value, success)
+}
+
+async fn execute_registry_tool_with_active_org(
+    ctx: &SubAgentExecutorContext<'_>,
+    tool_name: &str,
+    mut tool_args: serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let injected_org_arg =
+        inject_harness_org_id_arg(tool_name, &mut tool_args, ctx.active_org_id_override);
+    if injected_org_arg {
+        let registry = ctx.tool_registry.read().await;
+        return registry.execute_tool(tool_name, tool_args).await;
+    }
+
+    let previous = match (
+        ctx.active_org_id_source.as_ref(),
+        ctx.active_org_id_override,
+    ) {
+        (Some(source), Some(org_id)) => {
+            let mut guard = source.write().await;
+            let previous = *guard;
+            *guard = Some(org_id);
+            Some(previous)
+        }
+        _ => None,
+    };
+
+    let result = {
+        let registry = ctx.tool_registry.read().await;
+        registry.execute_tool(tool_name, tool_args).await
+    };
+
+    if let (Some(source), Some(previous)) = (ctx.active_org_id_source.as_ref(), previous) {
+        *source.write().await = previous;
+    }
+
+    result
+}
+
+const HARNESS_ORG_ID_ARG: &str = "__harness_org_id";
+
+fn inject_harness_org_id_arg(
+    tool_name: &str,
+    tool_args: &mut serde_json::Value,
+    org_id: Option<uuid::Uuid>,
+) -> bool {
+    let Some(org_id) = org_id else {
+        return false;
+    };
+    if !matches!(tool_name, "manage_targets" | "manage_organizations") {
+        return false;
+    }
+    if !tool_args.is_object() {
+        *tool_args = serde_json::json!({});
+    }
+    if let Some(obj) = tool_args.as_object_mut() {
+        obj.insert(HARNESS_ORG_ID_ARG.to_string(), org_id.to_string().into());
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
-    use super::annotate_list_tools_with_guard;
+    use super::{
+        annotate_list_tools_with_guard, execute_registry_tool_with_active_org,
+        registry_tool_outcome,
+    };
+    use golish_core::Tool;
+    use golish_tools::ToolRegistry;
+    use std::path::Path;
     use std::sync::Arc;
+    use tokio::sync::{mpsc, Mutex, RwLock};
+    use uuid::Uuid;
+
+    struct ObserveActiveOrgTool {
+        active_org_id: Arc<RwLock<Option<Uuid>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for ObserveActiveOrgTool {
+        fn name(&self) -> &'static str {
+            "observe_active_org"
+        }
+
+        fn description(&self) -> &'static str {
+            "test helper"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type":"object","properties":{}})
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _workspace: &Path,
+        ) -> anyhow::Result<serde_json::Value> {
+            let observed = *self.active_org_id.read().await;
+            Ok(serde_json::json!({
+                "observed_org_id": observed.map(|id| id.to_string())
+            }))
+        }
+    }
+
+    struct ObserveManageTargetsArgsTool {
+        observed_args: Arc<Mutex<Option<serde_json::Value>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for ObserveManageTargetsArgsTool {
+        fn name(&self) -> &'static str {
+            "manage_targets"
+        }
+
+        fn description(&self) -> &'static str {
+            "test helper"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type":"object","properties":{}})
+        }
+
+        async fn execute(
+            &self,
+            args: serde_json::Value,
+            _workspace: &Path,
+        ) -> anyhow::Result<serde_json::Value> {
+            *self.observed_args.lock().await = Some(args.clone());
+            Ok(args)
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_tool_exec_temporarily_overrides_active_org_id() {
+        let parent_org = Uuid::new_v4();
+        let child_org = Uuid::new_v4();
+        let active_org_id = Arc::new(RwLock::new(Some(parent_org)));
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let mut registry = ToolRegistry::new(tmp.path().to_path_buf()).await;
+        registry.register_tool(Arc::new(ObserveActiveOrgTool {
+            active_org_id: active_org_id.clone(),
+        }));
+        let registry = Arc::new(RwLock::new(registry));
+        let workspace = Arc::new(RwLock::new(tmp.path().to_path_buf()));
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+
+        let ctx = crate::executor_types::SubAgentExecutorContext {
+            event_tx: &event_tx,
+            tool_registry: &registry,
+            workspace: &workspace,
+            provider_name: "test",
+            model_name: "test",
+            session_id: None,
+            transcript_base_dir: None,
+            api_request_stats: None,
+            briefing: None,
+            temperature_override: None,
+            max_tokens_override: None,
+            top_p_override: None,
+            chain_persistence: None,
+            sub_agent_registry: None,
+            post_shell_hook: None,
+            resume: None,
+            sub_tool_router: None,
+            active_org_id_source: Some(active_org_id.clone()),
+            active_org_id_override: Some(child_org),
+            post_tool_result_hook: None,
+            stage_tool_guard: None,
+            hide_tool_in_stage: None,
+        };
+
+        let out = execute_registry_tool_with_active_org(
+            &ctx,
+            "observe_active_org",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("tool executes");
+
+        assert_eq!(out["observed_org_id"], child_org.to_string());
+        assert_eq!(
+            *active_org_id.read().await,
+            Some(parent_org),
+            "parent active org must be restored after the registry tool call"
+        );
+    }
+
+    #[tokio::test]
+    async fn manage_targets_gets_hidden_harness_org_arg_without_mutating_global_org() {
+        let parent_org = Uuid::new_v4();
+        let child_org = Uuid::new_v4();
+        let active_org_id = Arc::new(RwLock::new(Some(parent_org)));
+        let observed_args = Arc::new(Mutex::new(None));
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let mut registry = ToolRegistry::new(tmp.path().to_path_buf()).await;
+        registry.register_tool(Arc::new(ObserveManageTargetsArgsTool {
+            observed_args: observed_args.clone(),
+        }));
+        let registry = Arc::new(RwLock::new(registry));
+        let workspace = Arc::new(RwLock::new(tmp.path().to_path_buf()));
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+
+        let ctx = crate::executor_types::SubAgentExecutorContext {
+            event_tx: &event_tx,
+            tool_registry: &registry,
+            workspace: &workspace,
+            provider_name: "test",
+            model_name: "test",
+            session_id: None,
+            transcript_base_dir: None,
+            api_request_stats: None,
+            briefing: None,
+            temperature_override: None,
+            max_tokens_override: None,
+            top_p_override: None,
+            chain_persistence: None,
+            sub_agent_registry: None,
+            post_shell_hook: None,
+            resume: None,
+            sub_tool_router: None,
+            active_org_id_source: Some(active_org_id.clone()),
+            active_org_id_override: Some(child_org),
+            post_tool_result_hook: None,
+            stage_tool_guard: None,
+            hide_tool_in_stage: None,
+        };
+
+        let out = execute_registry_tool_with_active_org(
+            &ctx,
+            "manage_targets",
+            serde_json::json!({"action": "list"}),
+        )
+        .await
+        .expect("tool executes");
+
+        assert_eq!(out["__harness_org_id"], child_org.to_string());
+        assert_eq!(
+            observed_args.lock().await.as_ref().unwrap()["__harness_org_id"],
+            child_org.to_string()
+        );
+        assert_eq!(
+            *active_org_id.read().await,
+            Some(parent_org),
+            "manage_targets must not rely on temporarily mutating the global active org"
+        );
+    }
+
+    #[test]
+    fn registry_tool_success_detection_rejects_whatweb_runtime_error() {
+        let result = serde_json::json!({
+            "stdout": "",
+            "stderr": "ERROR Opening: https://example.test - can't modify frozen Hash: {verify_mode: 1, verify_hostname: true}",
+            "exit_code": 0,
+            "tool": "whatweb",
+        });
+
+        let (_value, success) = registry_tool_outcome(result);
+
+        assert!(
+            !success,
+            "sub-agent registry fallback must not turn WhatWeb stderr ERROR into a green check"
+        );
+    }
 
     #[test]
     fn guard_probe_marks_each_tool() {

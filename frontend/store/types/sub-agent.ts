@@ -2,7 +2,7 @@ export interface SubAgentToolCall {
   id: string;
   name: string;
   args: Record<string, unknown>;
-  status: "running" | "completed" | "error";
+  status: "running" | "backgrounded" | "completed" | "error";
   result?: unknown;
   streamingOutput?: string;
   startedAt: string;

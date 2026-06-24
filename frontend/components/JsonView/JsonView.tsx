@@ -52,7 +52,11 @@ const Primitive = memo(function Primitive({ value }: { value: unknown }) {
   if (value === null || value === undefined) return <span className={NULL_CLASS}>null</span>;
   switch (typeof value) {
     case "string":
-      return <span className={cn(STRING_CLASS, "break-words")}>{stripAnsiForDisplay(value)}</span>;
+      return (
+        <span className={cn(STRING_CLASS, "whitespace-pre-wrap break-words")}>
+          {stripAnsiForDisplay(value)}
+        </span>
+      );
     case "number":
       return <span className={NUMBER_CLASS}>{String(value)}</span>;
     case "boolean":

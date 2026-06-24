@@ -47,6 +47,7 @@
 
 - **不变量 I5**：`AiEvent` 跨 IPC，必须 ts-rs 同步前端；新增/改变体要同步前端绑定与所有消费方（`golish-cli-output/cli_json`、`op_trace`、前端 hooks）。
 - `event.rs` 是**单一大枚举**，别拆散——拆了会破坏 wire 契约一致性。
+- `ToolSource` 被 agent tool context 用作可比较字段，保持 `PartialEq + Eq` derive；否则 `AgentToolContext` 的任务本地 attribution 测试会在 `golish-core` 编译期失败。
 - `should_transcript`（在 `golish-events/transcript`）会按变体过滤；加流式/sub-agent 内部事件时注意是否该落 transcript。
 
 ## 测试入口

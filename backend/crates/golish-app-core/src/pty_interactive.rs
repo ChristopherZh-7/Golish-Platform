@@ -122,13 +122,17 @@ pub async fn run_shell_command_detail(
     let started_at = std::time::Instant::now();
     // Attribute the job to the session whose agentic loop is currently running
     // (set via `golish_core::with_agent_session`), so the completion broadcast
-    // can be routed back to that session. `None` when not attributable.
+    // can be routed back to that session. Capture the current tool context too
+    // so live stdout/stderr chunks can update the existing tool-call detail UI.
+    // `None` when not attributable.
     let session_id = golish_core::current_agent_session();
-    let job_id = crate::background_jobs::manager().spawn_for_session(
+    let tool_context = golish_core::current_agent_tool_context();
+    let job_id = crate::background_jobs::manager().spawn_for_session_and_tool(
         command,
         workspace,
         Duration::from_millis(hard_ms),
         session_id.clone(),
+        tool_context,
     );
 
     tracing::info!(

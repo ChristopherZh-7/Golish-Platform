@@ -289,12 +289,12 @@ impl SubmitStageDeliverableTool {
             "reasons": [format!(
                 "{} background job(s) you launched are still running, so this stage's \
                  evidence has not fully landed yet. Their results are booked as evidence \
-                 and delivered to you automatically when they finish — do NOT poll \
-                 check_job in a loop and do NOT re-run them. Wait for them to finish, then \
-                 call submit_stage_deliverable again. BUT if one has clearly hung (see its \
-                 elapsed_ms below — very long with no progress, e.g. a DNS AXFR / zone-transfer \
-                 probe), check_job it ONCE and, if it is stuck, kill_job it; then resubmit \
-                 rather than letting one hung probe block the stage.",
+                 and delivered to you automatically when they finish. Do NOT re-run the same \
+                 command. Wait for the completion note, then call submit_stage_deliverable \
+                 again. If one has clearly hung (see elapsed_ms below — very long with no \
+                 progress, e.g. a DNS AXFR / zone-transfer probe), inspect it once with \
+                 check_job and kill_job it if stuck, then resubmit rather than letting one \
+                 hung probe block the stage.",
                 running.len()
             )],
             "running_background_jobs": jobs,
@@ -520,7 +520,7 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "coverage": {
                     "type": "array",
-                    "description": "Coverage matrix: ONE cell per (asset × technique) you took to a terminal state. STAGES THAT RUN NO TOOLS (e.g. scoping, reporting) produce no evidence — submit an EMPTY array [] and do NOT invent cells (a 'found'/'checked_empty' cell ALWAYS needs real evidence_refs, so an evidence-less cell here just fails the gate). For tool stages: for EACH in-scope asset, give EVERY expected technique a cell — a MISSING (asset × technique) means not_attempted and FAILS the gate. A 'found' or 'checked_empty' cell MUST cite evidence_refs (PoC for found; the scan/probe evidence proving you tested it for checked_empty); 'blocked'/'not_applicable' MUST give a `note`. \"checked-empty\" is NOT \"unchecked\". For found/checked_empty cells with an enumerated denominator ALSO set tested_units/total_units; the gate requires full coverage (tested_units==total_units) unless you set sampling_rationale. Omit optional fields you don't use — never pass null.",
+                    "description": "Coverage matrix: ONE cell per (asset × technique) you took to a terminal state. STAGES THAT RUN NO TOOLS (e.g. scoping, reporting) produce no evidence — submit an EMPTY array [] and do NOT invent cells (a 'found'/'checked_empty' cell ALWAYS needs real evidence_refs, so an evidence-less cell here just fails the gate). For tool stages: for EACH in-scope asset, give EVERY expected technique a cell — a MISSING (asset × technique) means not_attempted and FAILS the gate. A 'found' or 'checked_empty' cell MUST cite evidence_refs (PoC for found; the scan/probe evidence proving you tested it for checked_empty); 'blocked'/'not_applicable' MUST give a `note`. \"checked-empty\" is NOT \"unchecked\". For found/checked_empty cells with an enumerated denominator ALSO set tested_units/total_units; the gate requires full coverage (tested_units==total_units) unless you set sampling_rationale. EAS example: SERVICE-FINGERPRINT tested_units = open ports fingerprinted, total_units = open ports discovered; if no ports are open, submit not_applicable+note rather than checked_empty total_units=0. Omit optional fields you don't use — never pass null.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -530,8 +530,8 @@ impl Tool for SubmitStageDeliverableTool {
                             "evidence_refs": { "type": "array", "items": { "type": "integer" }, "description": "Required for found/checked_empty: real evidence ids proving the work." },
                             "note": { "type": "string", "description": "Required for blocked/not_applicable: why." },
                             "reason_kind": { "type": "string", "enum": ["provider_missing", "credential_missing", "rate_limited", "tool_missing", "out_of_scope", "not_applicable"], "description": "Optional structured reason category for blocked/not_applicable (complements `note`)." },
-                            "tested_units": { "type": "integer", "description": "How many enumerated units you actually tested for this asset×technique." },
-                            "total_units": { "type": "integer", "description": "Denominator: total enumerated units for this asset×technique." },
+                            "tested_units": { "type": "integer", "description": "How many enumerated units you actually tested for this asset×technique. For EAS service fingerprinting, this is the number of open ports fingerprinted." },
+                            "total_units": { "type": "integer", "description": "Denominator: total enumerated units for this asset×technique. For EAS service fingerprinting, this is the number of discovered open ports." },
                             "sampling_rationale": { "type": "string", "description": "Required when tested_units < total_units: why sampling is justified." }
                         },
                         "required": ["asset", "technique", "status"]
@@ -1476,6 +1476,19 @@ mod tests {
         );
         // claims items must actually declare properties (not be an empty object).
         assert!(p["properties"]["claims"]["items"]["properties"]["evidence_ids"].is_object());
+        let coverage_desc = p["properties"]["coverage"]["description"]
+            .as_str()
+            .expect("coverage description");
+        assert!(
+            coverage_desc.contains("SERVICE-FINGERPRINT tested_units = open ports fingerprinted"),
+            "coverage description must include EAS denominator example: {coverage_desc}"
+        );
+        assert!(
+            p["properties"]["coverage"]["items"]["properties"]["tested_units"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("open ports fingerprinted")
+        );
     }
 
     // Fix7 (2026-06-14): a no-tool stage (scoping has empty expected_techniques)
@@ -1624,7 +1637,7 @@ mod tests {
 
     // A submit that arrives while the session still has backgrounded scans
     // running is DEFERRED: needs_fix listing the still-running jobs, with a
-    // message that the results auto-deliver and check_job must not be polled —
+    // message that the results auto-deliver and the same scan must not be rerun —
     // and nothing is stashed (the stage is not graded against half-landed
     // evidence).
     #[tokio::test]
@@ -1648,10 +1661,8 @@ mod tests {
         assert_eq!(jobs.len(), 2, "both running jobs are listed: {out:?}");
         let reason = out["reasons"][0].as_str().unwrap();
         assert!(reason.contains("still running"), "reason: {reason}");
-        assert!(
-            reason.contains("check_job"),
-            "reason warns off polling: {reason}"
-        );
+        assert!(reason.contains("Do NOT re-run"), "reason: {reason}");
+        assert!(reason.contains("completion note"), "reason: {reason}");
         // Short-circuits BEFORE the gate preview ⇒ nothing captured.
         assert!(
             sink.read().await.is_none(),

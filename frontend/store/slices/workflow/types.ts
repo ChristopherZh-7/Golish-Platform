@@ -80,6 +80,12 @@ export interface WorkflowActions {
     success: boolean,
     result?: unknown
   ) => void;
+  completeBackgroundedSubAgentToolCall: (
+    sessionId: string,
+    jobId: string,
+    success: boolean,
+    result?: unknown
+  ) => void;
   completeSubAgent: (
     sessionId: string,
     parentRequestId: string,

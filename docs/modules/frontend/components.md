@@ -32,7 +32,13 @@ AIChatPanel 切换 conversation tab 时会激活关联 terminal 作为上下文�
 
 `StageRunOrgRows` 渲染 `stage_run` 的 AI worker 执行边界：详情页必须表达 `Main Agent` 只负责调度，`Recon/Prober/Enumerator Agent` 等 specialist worker 按 org 执行并可 drill-in 到子 agent 对话/工具调用；即使只有 1 个 org，也显示为 `1 worker`，不要折叠成主 agent 自己完成阶段。`stage_run_org_progress` 是最后一次 live 快照；父 `stage_run` tool 已 completed/error/interrupted/expired 时，running/queued worker 只能投影为 stopped 展示，不能继续画 spinner / Running 文案。
 
-后台工具（`status:"backgrounded"`）必须在聊天工具卡、`ToolExecutionCard`、`ToolCallDetailView` 和 `UnifiedInput` 状态行里保持同一语义：backgrounded 是 live/non-terminal，不显示成功绿勾；detail 模式会隐藏底部输入行，所以 header 要挂 `BackgroundJobsBadge` 作为会话级后台任务入口。
+后台工具（`status:"backgrounded"`）必须在聊天工具卡、`ToolExecutionCard`、`ToolCallDetailView`、`SubAgentDetailView` 和 `UnifiedInput` 状态行里保持同一语义：backgrounded 是 live/non-terminal，不显示成功绿勾；detail 模式会隐藏底部输入行，所以 header 要挂 `BackgroundJobsBadge` 作为会话级后台任务入口。sub-agent 后台工具要保留 `backgrounded` 状态并按 `job_id` 接收 `tool_background_completed` 回填，避免完成前突然切成最终 Output 样式。
+`BackgroundJobsBadge` 不能只依赖已到达的 job registry；detail 已经能从当前工具或 sub-agent 工具列表看出 backgrounded 数量时，要用 fallback count 显示 `N running`，避免详情页没有任何后台入口。
+
+`ToolCallDetailView` 和 `SubAgentDetailView` 对 shell-like 工具（`run_pty_cmd` / `run_command` / `pentest_run`，以及带 `args.tool_name` + `background/timeout_secs` 的后台工具包装参数）必须在 running/backgrounded 时固定显示 Output 区；没有 stdout/stderr chunk 时显示 pending 状态，一旦 `tool_output_chunk` 到达就用同一区域追加，避免 detail 只显示 Input、让用户误以为工具没有运行。completed/error 且 stdout/stderr 为空时也要显示 `No output.`，不要把 Output 区整个隐藏。注意：sub-agent 里的 `pentest_run` 不是 `run_pty_cmd`，但仍应按 shell-like 输出渲染，同时保留它自己的工具名和 Input args。
+
+detail 里的状态图标不能只信 transport/completed 状态；`whatweb` 这类工具可能 `exit_code=0` 但 stdout/stderr 表达依赖缺失或 fatal error，主工具 detail、sub-agent detail、聊天摘要和 tool execution card 都要复用 `toolResultIndicatesFailure` 后再画绿色勾。
+`SubAgentDetailView` header 也不能只信原始 `subAgent.status`：如果 completed agent 仍有 running/backgrounded 工具，header 要显示运行态/后台态；如果 completed agent 的最后一个工具调用失败（典型是 `submit_stage_deliverable` needs_fix/error 后无成功提交），header 要显示错误，避免“业务卡住但顶部已完成”的误导。
 
 TargetPanel 左侧树默认只做组织导航：子组织和公司计数保留，但 IP/URL/域名资产不在左树展开；右侧 Targets 面板按 IP 联合展示资产，点击 IP、域名或 URL 进入 target workbench。不要把大量 IP 重新铺成 org 的第一层 children，否则母子公司层级会被资产列表淹没。
 

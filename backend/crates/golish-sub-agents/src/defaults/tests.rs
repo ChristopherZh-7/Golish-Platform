@@ -219,6 +219,10 @@ fn test_prober_prompt_is_active_surface() {
     // Active surface mapping: liveness (httpx) / open ports / service fingerprint.
     assert!(prompt.contains("httpx"));
     assert!(prompt.contains("port"));
+    assert!(prompt.contains("list_attack_surface_seeds"));
+    assert!(prompt.contains("tested_units"));
+    assert!(prompt.contains("total_units"));
+    assert!(prompt.contains("HTTP liveness alone"));
     // Prober is the ACTIVE counterpart of the ZERO-TOUCH Recon — it must NOT
     // describe itself as zero-touch.
     assert!(!prompt.contains("ZERO-TOUCH"));

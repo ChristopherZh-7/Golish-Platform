@@ -29,6 +29,150 @@
 
 ---
 
+### 2026-06-24 · pentest_run/background job 实时输出可见性修复（本会话续）
+
+- **本轮目标**：回应用户追问“如果不是 background_jobs 呢”并按“开始改”落地：让 `pentest_run` 这类 shell-like 工具在后台 job 读到 stdout/stderr 时，前端工具详情能实时追加输出，不再只能等最终返回。
+- **设计取向**：
+  - 不新增一套前端视图；复用现有 `AiEvent::ToolOutputChunk`、`appendToolExecutionOutput`、`ToolCallDetailView` 的 shell-like 渲染。
+  - 关键不是“是否直接叫 background_jobs”，而是启动进程时能否拿到当前 tool attribution；因此主 agent `single_tool_call` 和 sub-agent registry/router fallback 都用 `golish_core::with_agent_tool_context` 包住执行。
+- **已完成**：
+  - `golish-core::agent_session` 增加 `AgentToolContext`、`with_agent_tool_context`、`current_agent_tool_context`，用于 task-local tool attribution。
+  - `golish-app-core::background_jobs` 增加 live stdout/stderr `JobOutputChunk` broadcast；`pty_interactive::run_shell_command_detail` 在 spawn 时 capture session + tool context。
+  - `golish-agent-app::commands/bridge_config.rs` 为每个非 title-gen session 启动 background output listener，把 job chunk 转成 `AiEvent::ToolOutputChunk`。
+  - 主 agent tool execution 和 sub-agent registry/router fallback 均设置 tool context；sub-agent chunks 会带 `ToolSource::SubAgent`。
+  - 前端经检查无需改：`tool_output_chunk` handler 已 append 到主工具执行块，`ToolCallDetailView` 已把 `pentest_run` 当 shell-like 工具显示 `streamingOutput`。
+  - 同步模块卡：`golish-core`、`golish-app-core`、`golish-agent-app/ai`、`golish-agent-runtime/agentic_loop`、`golish-sub-agents/executor`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt` → exit 0
+  - `cd backend && cargo nextest run -p golish-core agent_session --status-level fail` → 6 passed / 197 skipped
+  - `cd backend && cargo nextest run -p golish-app-core background_jobs --status-level fail` → 11 passed / 29 skipped（nextest 报 1 leaky，结果仍 pass）
+  - `cd backend && cargo check -p golish-core -p golish-app-core -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents` → exit 0
+  - `pnpm exec vitest run frontend/services/ai-events/registry.test.ts frontend/services/ai-events/tool-handlers.test.ts frontend/store/stage-run.test.ts` → 3 files / 26 tests passed
+  - `cd backend && cargo clippy -p golish-core -p golish-app-core -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents --all-targets -- -D warnings` → exit 0
+- **未跑**：`./init.sh` / `just precommit`。本轮一开始误触 `./init.sh`，用户提醒“别跑init”后已中断；后续只跑 targeted 验证。
+- **提交记录**：未提交。
+- **未提交的本轮改动文件**：`backend/crates/golish-core/src/{agent_session.rs,lib.rs}`、`backend/crates/golish-app-core/src/{background_jobs.rs,pty_interactive.rs}`、`backend/crates/golish-agent-runtime/src/agentic_loop/single_tool_call.rs`、`backend/crates/golish-sub-agents/src/executor/response_parsing.rs`、`backend/crates/golish-agent-app/src/ai/commands/bridge_config.rs`、`docs/modules/backend/{golish-core.md,golish-app-core.md,golish-agent-app/ai.md,golish-agent-runtime/agentic_loop.md,golish-sub-agents/executor.md}`、`agent-progress.md`。
+- **下一步建议**：重启 dev app/后端后活体跑一个 `pentest_run` 或 `run_pty_cmd background:true` 的长输出命令；预期工具详情里 stdout/stderr 会边跑边追加，完成后仍走既有 background completion/evidence 路径。
+- **续修（用户截图仍只见 Input）**：
+  - 后端：sub-agent registry/router fallback 现在同时设置 `with_agent_session` + `with_agent_tool_context`；否则 sub-agent 内部 `pentest_run` 启动的 background job 可能带 tool context 但没有 session id，被 per-session output listener 过滤掉。
+  - 前端：`ToolCallDetailView` 对 `run_pty_cmd` / `run_command` / `pentest_run` 在 running/backgrounded 且暂无 stdout/stderr 时也固定显示 Output 区和 pending spinner；chunk 到达后在同一区域替换为实时输出，不再像截图那样只剩 Input。
+  - 新增 `frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts` 覆盖 running placeholder、streaming chunk、final stdout 三种状态；同步 `docs/modules/frontend/components.md`。
+  - 续修验证：`cargo fmt` → exit 0；`cargo nextest run -p golish-sub-agents registry_tool_exec_temporarily_overrides_active_org_id manage_targets_gets_hidden_harness_org_arg_without_mutating_global_org --status-level fail` → 2 passed / 92 skipped；`cargo check -p golish-sub-agents -p golish-app-core -p golish-agent-app` → exit 0；`pnpm exec biome check frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts` → exit 0；`pnpm exec vitest run frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/services/ai-events/tool-handlers.test.ts` → 2 files / 6 tests passed；`cargo clippy -p golish-sub-agents -p golish-app-core -p golish-agent-app --all-targets -- -D warnings` → exit 0。
+- **续修 2（用户截图仍只见 sub-agent Input）**：
+  - 根因：截图对应 `SubAgentDetailView.AgentToolCallBlock`，该组件只把 `run_pty_cmd` / `run_command` 当 shell；sub-agent 内的 `pentest_run` 被当普通 JSON 工具，所以 running 时只画 Input，不画 Output pending/streaming。
+  - 已改：`SubAgentDetailView` 将 `pentest_run` 纳入 shell-like output 渲染，但保留 `pentest_run` 工具名和 Input args；running 且暂无 chunk 时显示 `Output / Waiting for output...`，收到 `streamingOutput` 后同区块追加，最终结果拼 stdout/stderr。
+  - 新增/扩展测试：`getSubAgentShellOutputForDetail` 覆盖 pending、streaming、final stdout+stderr；验证 `pnpm exec biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0；`pnpm exec vitest run frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts` → 2 files / 11 tests passed；`pnpm exec vitest run frontend/services/ai-events/tool-handlers.test.ts frontend/services/ai-events/registry.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts` → 4 files / 35 tests passed。
+- **续修 3（detail running spinner 太小）**：
+  - 已改：`ToolCallDetailView` 与 `SubAgentDetailView` 的 detail 运行态 spinner 从 12px 级别统一提升到 16px 级别；包括 status badge、Output pending、running footer，以及 sub-agent 工具行运行状态。
+  - TDD：先加 `DETAIL_*_SPINNER_CLASS` / `SUB_AGENT_DETAIL_*_SPINNER_CLASS` 尺寸断言并确认红灯；实现后转绿。
+  - 验证：`pnpm exec vitest run frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 2 files / 13 tests passed；`pnpm exec biome check frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0；ReadLints 4 文件无错。
+- **续修 4（sub-agent detail Output 泄漏 ANSI 颜色码）**：
+  - 根因：主工具 detail 的 shell-like output 已用 `Ansi` 渲染，但 `SubAgentDetailView.AgentToolCallBlock` 的 shell-like Output 仍直接把字符串放进 `<pre>`，所以 `\x1b[1;31m...\x1b[0m` 会在 UI 里漏成 `31m/0m` 控制码残片。
+  - 已改：sub-agent shell-like output 现在先走 `stripOscSequences` + `collapseProgressBars` + `expandTerminalTabs`，再通过 `Ansi` 渲染；新增截图同类 `FTL` 红色 ANSI 输出回归测试，断言可见文本不含 `[1;31m` / `[0m`。
+  - 验证：`pnpm exec vitest run frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 2 files / 14 tests passed；`pnpm exec biome check frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0；ReadLints 4 文件无错。
+- **续修 5（sub-agent detail Output 与 Input key/value 风格不一致）**：
+  - 已改：sub-agent shell-like 工具完成态若返回结构化对象，会把 `stdout` / `output` / `stderr` / `error` / `exit_code` 拆成 key/value 行展示，外观贴近 Input 的字段式样；字段值使用纯文本清理 ANSI，实时 streaming/pending 仍保留终端块。
+  - TDD：新增 `getSubAgentShellOutputFieldsForDetail` 回归测试，覆盖 ANSI stdout + stderr + exit_code 拆字段。
+  - 验证：`pnpm exec vitest run frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 2 files / 15 tests passed；`pnpm exec biome check frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0；ReadLints 4 文件无错。
+- **续修 6（Output key/value 仍与 Input 视觉不对齐）**：
+  - 已改：结构化 shell Output 不再自绘字段行，而是转换成 `{ stdout, stderr, exit_code, ... }` 后直接复用 `JsonView`，容器、树形缩进、key/value 配色与 Input 保持一致。
+  - 同步：`JsonView` 字符串值加 `whitespace-pre-wrap`，让 stdout 多行在 Input/Output 同一渲染器下保留换行。
+  - TDD：新增 `getSubAgentShellOutputJsonValueForDetail` 回归测试，锁住 shell result → JsonView value 的转换。
+  - 验证：`pnpm exec vitest run frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 2 files / 16 tests passed；`pnpm exec biome check frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/JsonView/JsonView.tsx` → exit 0；ReadLints 5 文件无错。
+- **续修 7（running/backgrounded Output 视觉突变 + sub-agent 后台工具 detail 不可见）**：
+  - 根因：sub-agent tool call 类型/状态机没有 `backgrounded`，收到 `status:"backgrounded"` 结果时会被写成 `completed`；同时 `tool_background_completed` 只回填主工具卡，不按 `job_id` 回填 sub-agent 工具卡。运行态有结构化结果时还会提前走完成态 `JsonView`，造成视觉上突然切到最终 Output 样式。
+  - 已改：`SubAgentToolCall.status` 增加 `backgrounded`；sub-agent store 保留后台 live 状态，后台完成事件按 `job_id` 回填 sub-agent 工具结果；`ToolCallDetailView` / `SubAgentDetailView` 识别 `partial_stdout` / `partial_stderr`，并把带 `args.tool_name` + `background/timeout_secs` 的后台工具包装参数按 shell-like Output 渲染。
+  - 视觉约束：running/backgrounded 的 shell-like Output 保持终端/pending/streaming 样式，不再在 live 阶段切成完成态 `JsonView`；完成后才对结构化 stdout/stderr/exit_code 复用 Input 风格 JSON 展示。
+  - 验证：先加回归测试并确认红灯（partial output、live 不走 JSON、background completed 回填 sub-agent、包装参数 shell-like 识别）；实现后 `pnpm exec vitest run frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/services/ai-events/registry.test.ts` → 3 files / 42 tests passed；`pnpm exec biome check ...`（11 个编辑前端文件）→ exit 0；`pnpm run typecheck` → exit 0；ReadLints 11 文件无错。
+- **续修 8（stage_run 把 blocked submit 误当 org PASS）**：
+  - 现场实证：用户截图对应 run `pentest-chat-1782234945520-1`、prober sub-agent `...::org::1b3cca07-c0ae-4cc3-9797-61ff5f539f20`。`submit_stage_deliverable` 在 2026-06-24T08:10:57 返回 `success:false` / `status:"needs_fix"` / `22 background job(s)`；之后没有 resubmit，sub-agent 又启动一个 `nmap` background job 后直接 `sub_agent_completed`。
+  - 根因：`stage_run_call.rs` 在 per-org 判定里，如果 DB-backed gate 可用但没有捕获到 accepted `StageDeliverable`（`harness_deliverable_sink=None`），仍 fallback 到 `sub_ok`；而 sub-agent 对话完成会让 `sub_ok=true`，导致该 org 被计为 PASS。这绕过了 `submit_stage_deliverable` 的 needs_fix/BLOCK 语义。
+  - 已改：新增 `fallback_org_verdict(repo_available, sub_ok)`；live DB-backed stage_run 缺 accepted deliverable 时一律返回 `OrgVerdict::Block` 且 `from_gate=true`，进入正常 retry/gap 流程；只有 no-DB/eval fallback 才继续用 sub-agent success 兜底。
+  - 验证：先加 `live_stage_run_blocks_missing_deliverable_even_if_sub_agent_completed` / `no_db_fallback_still_uses_sub_agent_success` 并确认红灯（函数缺失）；实现后 `cargo nextest run -p golish-agent-runtime live_stage_run_blocks_missing_deliverable_even_if_sub_agent_completed no_db_fallback_still_uses_sub_agent_success --status-level fail` → 2 passed；`cargo nextest run -p golish-agent-runtime stage_run --status-level fail` → 17 passed；`cargo check -p golish-agent-runtime` → exit 0；`cargo clippy -p golish-agent-runtime --all-targets -- -D warnings` → exit 0；`cargo fmt -p golish-agent-runtime` → exit 0；格式化后重跑 `stage_run` tests → 17 passed。
+- **续修 9（completed shell-like 工具空输出区不可见）**：
+  - 用户截图：`pentest_run httpx -u ... -silent` 上方 completed 工具只显示 Input、无 Output；下方 running 工具有 `Waiting for output...`。这类 `httpx -silent` 目标无响应/无匹配时 stdout/stderr 可能确实为空，但 UI 隐藏 Output 会让人误以为渲染漏了。
+  - 已改：`ToolCallDetailView.getShellOutputForDetail` 与 `SubAgentDetailView.getSubAgentShellOutputForDetail` 在 completed/error 且 shell-like result 存在但 stdout/stderr/output 为空时返回 `No output.`，保持 Output 区可见；running/backgrounded 仍显示 `Waiting for output...`。
+  - 验证：先加主工具/sub-agent 空输出回归测试并确认红灯；实现后 `pnpm exec vitest run frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/services/ai-events/registry.test.ts` → 3 files / 44 tests passed；`pnpm exec biome check ...`（11 个编辑前端文件）→ exit 0；`pnpm run typecheck` → exit 0。
+- **续修 10（主 agent 调 `list_attack_surface_seeds` 变 Unknown tool）**：
+  - 用户截图：主 agent detail 显示 `Model wanted list_attack_surface_seeds`、`Golish decision Allowed`，但 Output 为 `Unknown tool: list_attack_surface_seeds`。
+  - 根因：`tool_list.rs` 会在 active harness stage 给 depth-0 主 orchestrator 暴露只读 query 工具（含 `list_attack_surface_seeds`），日志也显示 “surfaced read-only target query tool”；但 direct executor 的 security-analysis 路由只匹配了 `query_target_data` / `list_in_scope_targets`，漏了 `list_attack_surface_seeds`，所以执行层 fallthrough 到 registry 后 Unknown tool。sub-agent 路由没问题（实际 transcript 里 prober 调同名工具成功）。
+  - 已改：新增 `is_security_analysis_direct_tool` helper，direct executor 用它统一判定；把 `list_attack_surface_seeds` 纳入 `execute_security_analysis_tool` 路由。
+  - 验证：先加 `attack_surface_seeds_routes_through_security_analysis_executor` 并确认红灯（函数缺失）；实现后 `cargo nextest run -p golish-agent-runtime attack_surface_seeds_routes_through_security_analysis_executor stage_run --status-level fail` → 18 passed；`cargo check -p golish-agent-runtime` → exit 0；`cargo clippy -p golish-agent-runtime --all-targets -- -D warnings` → exit 0；`cargo fmt -p golish-agent-runtime` → exit 0。
+- **续修 11（whatweb 缺依赖仍显示绿勾）**：
+  - 用户截图：`pentest_run whatweb` 输出 `WhatWeb is not installed and is missing dependencies` / 缺 `addressable`，但 detail 仍显示绿色勾。
+  - 根因：共享前端失败判定只覆盖 `stderr ERROR` / 非零 exit / status failed；缺依赖文本落在 stdout 且 wrapper `exit_code=0` 时未命中。同时 `SubAgentDetailView.AgentToolCallBlock` 仍直接使用 `tool.status=completed`，没有像主工具 detail 那样复用 `toolResultIndicatesFailure` 做语义状态转换。
+  - 已改：`toolResultIndicatesFailure` 增加 stdout/output/error/message 中 `not installed` / `missing dependency` / `command not found` 判定；sub-agent detail 新增 `getSubAgentToolDisplayStatus`，completed payload 语义失败时按 `error` 渲染状态和 Output 图标。
+  - 验证：先加前端红灯测试确认 `WhatWeb is not installed... exit_code:0` 与 sub-agent detail display status 失败；实现后 `pnpm exec vitest run frontend/components/AIChatPanel/ToolCallSummary.test.ts frontend/components/ToolExecutionCard/ToolExecutionCard.test.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 4 files / 34 tests passed；`pnpm exec biome check frontend/lib/tools.ts frontend/components/AIChatPanel/ToolCallSummary.test.ts frontend/components/ToolExecutionCard/ToolExecutionCard.test.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0；ReadLints 6 文件无错。
+- **续修 12（detail 页后台运行数量入口不可见）**：
+  - 用户追问：detail 里看不到有多少后台运行的程序/工具调用。
+  - 根因：`BackgroundJobsBadge` 只在 `backgroundJobs[sessionId]` 有 job 明细时渲染；但 detail 自身已经能看到当前工具或 sub-agent toolCalls 处于 `backgrounded`，如果 job registry 未到达/为空，header 就没有任何数量入口。
+  - 已改：`BackgroundJobsBadge` 增加 `fallbackCount`；无 job 明细但 fallback>0 时仍显示 `N running`，popover 给出“metadata 尚未到达”的说明。`ToolCallDetailView` 对当前 backgrounded 工具传 1；`SubAgentDetailView` 对 sub-agent 内 backgrounded 工具计数后传入。
+  - 验证：先加 `StatusBadges.test.tsx` 红灯确认空 jobs + fallbackCount 不显示；实现后 `pnpm exec vitest run frontend/components/UnifiedInput/StatusBadges.test.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 3 files / 26 tests passed；`pnpm exec biome check frontend/components/UnifiedInput/StatusBadges.tsx frontend/components/UnifiedInput/StatusBadges.test.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0。
+- **续修 13（sub-agent detail 顶部已完成但业务仍卡住）**：
+  - 用户截图：左侧 Prober detail header 显示“已完成”，但内部连续 `submit_stage_deliverable` 失败/needs_fix，右侧父 `stage_run` 仍在 running/queued/issue 状态，用户感知为卡住。
+  - 根因：`SubAgentDetailView` header 只使用原始 `subAgent.status`；收到 `sub_agent_completed` 后即显示 completed，没有结合当前工具调用状态。这样 completed agent 仍有 running/backgrounded 工具，或最后一个工具调用失败时，顶部仍会误导为“已完成”。
+  - 已改：新增 `getSubAgentHeaderDisplayStatus` 派生展示状态：completed 但存在 running/backgrounded tool 时优先显示运行/后台；completed 但最后一个 tool 语义失败时显示 error。新增 `backgrounded` 中英文状态文案。
+  - 验证：先加 sub-agent header 红灯测试（completed+running tool、completed+latest failed tool）；实现后最终组合验证 `pnpm exec vitest run frontend/components/AIChatPanel/ToolCallSummary.test.ts frontend/components/ToolExecutionCard/ToolExecutionCard.test.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/UnifiedInput/StatusBadges.test.tsx` → 5 files / 37 tests passed；`pnpm exec biome check ...`（11 个相关前端/i18n 文件）→ exit 0。
+- **续修 14（submit 前后台 job 等待与控制面冲突）**：
+  - 现场实证：最新非标题 run `pentest-chat-1782234945520-1` 中，Prober 在 `submit_stage_deliverable` 收到 “1 background job(s) still running” 后尝试 `pentest_run check_job job_369ecd01`，但 EAS stage guard 把 `check_job` 当扫描工具拦掉；随后模型立即重交，转成证据不足/coverage gap，最终该 org blocked。
+  - 根因：submit barrier 只默认等 60s，慢 `nmap -sV` 仍在跑时把等待责任交回模型；同时 `pentest_run check_job/kill_job` 走 wrapper 后被 `is_scan_invocation` 误判为受 stage 白名单约束的扫描调用，导致“建议检查卡死 job”与实际 guard 冲突。
+  - 已改：`check_job` / `kill_job` / `list_jobs` 识别为后台 job 控制面，不再参与 stage scan whitelist；submit barrier 默认等待提升到 5min（`GOLISH_SUBMIT_RECONCILE_WAIT_MS` 仍可调）；submit needs_fix、`stage_run` objective、prober/enumerator prompt 都改为先等 completion note/submit barrier，禁止重跑同一扫描，只有明确卡死才一次性检查/kill。
+  - 验证：`cargo fmt -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents` → exit 0；`cargo nextest run -p golish-agent-kit is_scan_invocation_distinguishes_scan_from_meta --status-level fail` → 1 passed；`cargo nextest run -p golish-agent-app submit_deferred_when_background_jobs_running submit_proceeds_after_background_jobs_settle submit_reconcile_default_waits_for_slow_scans --status-level fail` → 3 passed；`cargo nextest run -p golish-agent-runtime build_org_objective --status-level fail` → 2 passed；`cargo nextest run -p golish-sub-agents prober --status-level fail` → 2 passed；`cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents --all-targets -- -D warnings` → exit 0；ReadLints 相关文件无错。
+
+---
+
+### 2026-06-24 · EAS WhatWeb Ruby 4 假成功与绿勾修复（本会话续）
+
+- **本轮目标**：回应用户截图问题：`pentest_run whatweb -a 1 https://www.pingan.com` 输出 `stderr: ERROR Opening ... can't modify frozen Hash`，但工具卡仍显示绿色勾；同时避免 EAS 反复调用坏掉的 WhatWeb。
+- **根因确认**：
+  - `resources/toolsconfig/whatweb.json` 声明 `runtime=ruby` + `runtimeVersion=3.2`，但 `command_builder` 之前只解析 `runtime`，`find_ruby_for_version(Some("3.2"))` 找不到时又 fallback 到 Homebrew Ruby。当前机器 `/opt/homebrew/opt/ruby/bin/ruby` 是 Ruby 4.0.5，WhatWeb 在 Ruby/OpenSSL 组合下报 `can't modify frozen Hash`，且仍 `exit_code=0`。
+  - 主 agent direct path 已用 `golish_core::utils::is_tool_result_success` 判定 payload；但 sub-agent registry fallback 仍是 `Ok(Value) => success=true`，所以 Prober 子 agent 内的 WhatWeb 失败被标成成功，前端拿到上游 success 后显示绿勾。
+  - 前端 `ToolCallSummary` / `ToolExecutionCard` 已有 stderr ERROR 判失败逻辑和回归测试；本轮确认 UI 侧不是唯一根因，上游成功标记必须修。
+- **已完成**：
+  - `golish-sub-agents` registry fallback 改用 `is_tool_result_success` 判定普通 registry 工具结果，新增 WhatWeb `exit_code=0 + stderr ERROR Opening` 回归测试。
+  - `golish-pentest` 的 `build_run_command` 将 Ruby 工具的 `runtime + runtimeVersion` 合并解析，WhatWeb 现在按 `ruby3.2` 找运行时。
+  - `find_ruby_for_version(Some("3.2"))` 不再 fallback 到 Homebrew 最新 Ruby；找不到就明确失败，避免 Ruby 4 跑出假成功。错误文案会提示安装对应 Ruby 版本。
+  - `ToolManager::launch_tool` 同步使用合并后的 runtime 字符串，GUI/旧 launch path 与 AI `pentest_run` 不再分叉。
+  - EAS methodology + Prober prompt 调整：`nmap -sV` 作为每个开放端口的主要 service/version fingerprint 路径；WhatWeb 只在 Ruby runtime ready 且 HTTP(S) 服务上使用；遇 runtime/SSL/opening error 时记录失败、不重试同 host，转 `nmap -sV` / `httpx`。
+  - 为了 unblock 当前编译，给 `golish_core::events::ToolSource` 补 `PartialEq + Eq` derive，匹配已存在的 `AgentToolContext` 测试语义。
+  - 同步模块卡：`golish-sub-agents/executor`、`golish-pentest/{command_builder,tool_manager,runtime}`、`golish-core/events`。
+- **运行过的验证（实跑）**：
+  - `cargo fmt -p golish-core -p golish-sub-agents -p golish-pentest` → exit 0。
+  - `cargo nextest run -p golish-sub-agents registry_tool_success_detection_rejects_whatweb_runtime_error prober --status-level fail` → 3 passed / 91 skipped。
+  - `cargo nextest run -p golish-pentest rbenv_ruby_version ruby_runtime_uses_configured_runtime_version ruby_missing_message_names_requested_version test_parse_runtime --status-level fail` → 6 passed / 137 skipped。
+  - `pnpm exec vitest run frontend/components/AIChatPanel/ToolCallSummary.test.ts frontend/components/ToolExecutionCard/ToolExecutionCard.test.tsx` → 2 files / 8 tests passed。
+  - `cargo check -p golish-core -p golish-sub-agents -p golish-pentest` → exit 0。
+  - `cargo clippy -p golish-core -p golish-sub-agents -p golish-pentest --all-targets -- -D warnings` → exit 0。
+- **未跑**：`./init.sh` / `just precommit` / 活体 AI 重跑（用户此前明确不要跑 init/full precommit；本轮按 WhatWeb/Ruby/status 范围做 scoped 验证）。
+- **提交记录**：未提交。
+- **已知风险 / 下一步**：
+  - 如果本机没有 Ruby 3.2，WhatWeb 现在会前置失败，而不是用 Ruby 4 继续跑；要真的使用 WhatWeb，需要在 Settings/Environment 或 rbenv 安装 Ruby 3.2.x。
+  - 需要重启/重编后端后活体重跑 EAS，确认 WhatWeb 错误显示红色，并且 Prober 不再对同 host 反复重试 WhatWeb。
+
+### 2026-06-24 · EAS `stage_run` 子公司工具视图硬隔离修复（本会话续）
+
+- **本轮目标**：回应用户截图问题：EAS/Prober 子 agent 在某个子公司 worker 里调用 `manage_targets {"action":"list"}` 时拿到全局 698 个 targets，隔离依赖模型自己“聪明地筛选”。
+- **根因确认**：
+  - `list_in_scope_targets` / `list_attack_surface_seeds` 已走 `ctx.harness_org_id`，但 `manage_targets` 是普通 `ToolRegistry` 工具，不走 security-analysis router。
+  - `ManageTargetsTool` 已支持 active org 过滤/回填，但 `stage_run` 子 agent 的 per-org request id 只用于 evidence/source_query 和 security router，没有传到普通 registry 工具执行边界。
+  - 只临时改全局 `active_org_id` 不够稳：虽然当前 `stage_run` 是 serial fan-out，未来并发时会有 side-channel 时序风险。
+- **已完成**：
+  - `AgenticLoopContext` 增加 `harness_org_id_source`，bridge `prepare.rs` 把 `harness_active_org_id` handle 传入 loop；`sub_agent_call.rs` 从 `...::org::<uuid>` 解析 per-org id 并写进 `SubAgentExecutorContext.active_org_id_override`。
+  - `golish-sub-agents` registry fallback 执行 `manage_targets` / `manage_organizations` 时，自动注入内部隐藏 `__harness_org_id`；模型 schema 不暴露、不需要模型自己传。
+  - `ManageTargetsTool` / `ManageOrganizationsTool` 优先读取 `__harness_org_id`；`manage_targets list` / `manage_organizations list` 只返回该 org 子树，`manage_targets add` 缺 `organization_id` 时回填该 org；没有隐藏字段时保留旧 `active_org_id`/legacy 行为。
+  - 保留 legacy side-channel fallback 给非 org-aware registry 工具；新增测试证明 `manage_targets` 不靠临时改全局 active org。
+  - 同步模块卡：`golish-agent-runtime/agentic_loop`、`golish-sub-agents/executor`、`golish-agent-bridge/bridge_executor`、`golish-pentest-app/pentest_bridge`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo nextest run -p golish-sub-agents manage_targets_gets_hidden_harness_org_arg_without_mutating_global_org registry_tool_exec_temporarily_overrides_active_org_id --status-level fail` → 2 passed / 91 skipped
+  - `cd backend && cargo nextest run -p golish-pentest-app manage_targets_reads_internal_harness_org_override manage_organizations_reads_internal_harness_org_override manage_targets_schema_exposes_scope_and_set_scope manage_organizations_schema_exposes_actions_and_candidates --status-level fail` → 4 passed / 54 skipped
+  - `cd backend && cargo nextest run -p golish-agent-runtime stage_run_call --status-level fail` → 13 passed / 241 skipped
+  - `cd backend && cargo check -p golish-sub-agents -p golish-agent-runtime -p golish-agent-bridge -p golish-pentest-app` → exit 0
+  - `cd backend && cargo clippy -p golish-sub-agents -p golish-agent-runtime -p golish-agent-bridge -p golish-pentest-app --all-targets -- -D warnings` → exit 0
+- **未跑**：`./init.sh` / `just precommit`（遵守用户要求不走 init/重型 precommit）；未活体重跑 EAS（需要重启/重编后端）。
+- **提交记录**：未 commit。
+- **未提交的本轮改动文件**：`backend/crates/golish-agent-runtime/src/agentic_loop/{context.rs,tool_execution/direct/sub_agent_call.rs}`、`backend/crates/golish-agent-runtime/src/{eval_support,test_utils} 相关构造点`、`backend/crates/golish-agent-bridge/src/{agent_bridge/prepare.rs,bridge_executor/mod.rs}`、`backend/crates/golish-sub-agents/src/{executor/response_parsing.rs,executor_types.rs}`、`backend/crates/golish-pentest-app/src/pentest_bridge/{manage_targets.rs,manage_organizations.rs}`、`docs/modules/backend/{golish-agent-runtime/agentic_loop.md,golish-sub-agents/executor.md,golish-agent-bridge/bridge_executor.md,golish-pentest-app/pentest_bridge.md}`、`feature_list.json`、`agent-progress.md`。
+- **下一步建议**：重启 dev app/后端后重新跑 EAS `stage_run`；预期每个子公司 worker 的 `manage_targets action=list` 不再返回全局 698 targets，而只返回该 org 子树资产。
+
 ### 2026-06-24 · backgrounded 工具前端状态可见性修复（本会话续）
 
 - **本轮目标**：回应用户反馈：`pentest_run/run_pty_cmd` 使用 `background: true` 后，聊天工具卡/detail 没有像 Cursor 一样清楚显示“仍有后台工具在跑”，并且截图里 `status:"backgrounded"` 却显示绿勾。
@@ -5667,6 +5811,47 @@
   - 现有 sub-agent chain 仍是在 worker teardown 时持久化；如果进程被硬杀在单个 sub-agent 尚未返回前，chain 内容可能还没保存，无法精确续到半个工具调用/半段输出。
   - 当前 app 需要重启后才会使用新的 `stage_run_workers` 映射逻辑。
 - **下一步最佳动作**：重启 app，跑一次 EAS/target_intel 中断恢复；恢复后检查 `operation_state.state_blob.stage_run_workers` 是否出现对应 org 的 chain_id，并确认未 PASS org 的下一次 `stage_run` tool args 带精确 `resume`。
+
+### 2026-06-24 · EAS gate contract 补强（本会话）
+
+- **本轮目标**：只讨论并落地 `external_attack_surface` 过 gate 的交付物契约：每个 IP/host 必须有端口终态，开放端口必须被服务指纹覆盖，且显式 coverage 不能靠空话过门。
+- **已完成**：
+  - 新增设计与计划：`docs/design/2026-06-24-eas-gate-contract.md`、`docs/superpowers/plans/2026-06-24-eas-gate-contract.md`。
+  - `resources/harness/stages/external_attack_surface/spec.json`：新增 found/checked_empty coverage 证据规则；`coverage_complete.require_note_for_other=true`；新增 `coverage_denominator` 规则，要求显式 coverage 分母完整。
+  - `resources/harness/stages/external_attack_surface/methodology.md`：补资产类型语义（domain/ip/url/cidr/wildcard）与 denominator 填写约定。
+  - `backend/crates/golish-sub-agents/src/defaults/prompts/execution_planning.rs`：Prober prompt 明确 `list_attack_surface_seeds` 优先、CIDR sweep、URL 只做 liveness、不能把 HTTP liveness 当 PORT/SERVICE、服务指纹按开放端口分母覆盖。
+  - `backend/crates/golish-agent-kit/src/harness/{stage_spec.rs,e2e_tests.rs}` 与 `backend/crates/golish-sub-agents/src/defaults/tests.rs`：补 spec 结构、EAS gate 阻断、prober prompt 回归测试。
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/prompts/mod.rs`：Task-mode stage charter 现在对 EAS 渲染专门的 asset/port contract，明确 URL 只做 liveness、domain/ip/CIDR-discovered IP 要 PORT/SERVICE，服务指纹 denominator = 已指纹开放端口 / 发现开放端口。
+  - `backend/crates/golish-agent-app/src/ai/harness_submit_tool.rs`：`submit_stage_deliverable` 的 coverage schema 说明补 EAS 例子；`tested_units` / `total_units` 字段描述也写明服务指纹的开放端口语义。
+  - 同步模块卡：`docs/modules/backend/golish-agent-kit/harness.md`、`docs/modules/backend/golish-sub-agents/defaults.md`；更新 `feature_list.json` 当前条目的真实状态。
+  - 追加同步模块卡：`docs/modules/backend/golish-agent-kit/task_orchestrator.md`、`docs/modules/backend/golish-agent-app/ai.md`。
+- **运行过的验证**：
+  - `./init.sh` → 按用户要求中断；中断前 fmt / check-fe / test-fe / lint-rust 已过，停在 `test-rust-all`，exit 130，不作为完成证据。
+  - `python3 -m json.tool resources/harness/stages/external_attack_surface/spec.json` → exit 0。
+  - `cd backend && cargo fmt --all` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-kit external_attack_surface --status-level fail` → 26 passed / 694 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit coverage_denominator --status-level fail` → 1 passed / 719 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents prober --status-level fail` → 2 passed / 89 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit external_attack_surface_charter_surfaces_liveness_technique --status-level fail` → 1 passed / 719 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app parameters_spell_out_nested_enum_shapes --status-level fail` → 1 passed / 52 skipped。
+  - `cd backend && cargo check -p golish-agent-kit -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo clippy -p golish-agent-kit -p golish-sub-agents --all-targets -- -D warnings` → exit 0。
+  - `cd backend && cargo check -p golish-agent-kit -p golish-agent-app` → exit 0。
+  - `cd backend && cargo clippy -p golish-agent-kit -p golish-agent-app --all-targets -- -D warnings` → exit 0。
+  - `python3 -m json.tool feature_list.json` → exit 0。
+- **已记录证据**：
+  - `e2e_external_attack_surface_blocks_found_coverage_without_evidence` 证明 EAS found coverage 没 evidence 会 BLOCK。
+  - `e2e_external_attack_surface_blocks_partial_service_fingerprint_denominator` 证明服务指纹分母不完整（1/2）会 BLOCK。
+  - `external_attack_surface_requires_per_asset_surface_coverage` 证明 spec 已开启 `require_note_for_other` 和 `coverage_denominator`。
+  - `external_attack_surface_charter_surfaces_liveness_technique` 证明 Task-mode charter 已渲染 EAS-specific asset/port contract、open-port fingerprint denominator 和 URL liveness 边界。
+  - `parameters_spell_out_nested_enum_shapes` 证明 `submit_stage_deliverable` schema 已暴露 EAS SERVICE-FINGERPRINT denominator 例子。
+- **提交记录**：未提交。
+- **已知风险或未解决问题**：
+  - 未跑完整 `./init.sh` / `just precommit`（用户明确要求不要跑 init，改走直接设计 + scoped 验证）。
+  - EAS 仍未启用 `authoritative_found`；这是刻意保留，因为 active Empty 事实源未就绪。
+  - 这版没有新增 schema / scan_attempts 表；“开放端口集合 <= 已指纹端口集合”的完全权威校验仍需后续结构化事实源。
+  - 未做活体 stage_run EAS；需要重启后端后实际跑一次确认 prober 新 prompt + spec 新 gate 的交互。
+- **下一步最佳动作**：重启 app 后跑一次 EAS stage_run；若模型开始因为 denominator 字段不熟悉反复 needs_fix，再把 `submit_stage_deliverable` schema/工具说明或新增 EAS 专用 record 工具补上。
 
 <!-- 新会话请在这里上方插入一条新记录，保持倒序 -->
 

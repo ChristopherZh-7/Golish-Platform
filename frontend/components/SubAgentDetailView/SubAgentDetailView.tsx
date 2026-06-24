@@ -27,6 +27,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { ThinkingBlock } from "@/components/AIChatPanel/ThinkingBlock";
+import { Ansi } from "@/components/Ansi";
 import { JsonView } from "@/components/JsonView/JsonView";
 import { Markdown } from "@/components/Markdown";
 import { BackgroundJobsBadge } from "@/components/UnifiedInput/StatusBadges";
@@ -35,15 +36,97 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { StatusIcon } from "@/components/ui/StatusIcon";
-import { collapseProgressBars, stripAllAnsi } from "@/lib/ansi";
+import {
+  collapseProgressBars,
+  expandTerminalTabs,
+  stripAllAnsi,
+  stripOscSequences,
+} from "@/lib/ansi";
 import { copyToClipboard } from "@/lib/clipboard";
 import { getAgentColor, getAgentIcon } from "@/lib/sub-agent-theme";
 import { safeStringify } from "@/lib/text";
 import { formatDurationShort } from "@/lib/time";
-import { getToolPrimaryArg } from "@/lib/tools";
+import { getToolPrimaryArg, toolResultIndicatesFailure } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, SubAgentToolCall } from "@/store";
 import { useStore } from "@/store";
+
+export const SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS = "h-4 w-4 shrink-0 animate-spin";
+export const SUB_AGENT_DETAIL_PENDING_OUTPUT_SPINNER_CLASS =
+  "h-4 w-4 shrink-0 animate-spin text-[var(--ansi-blue)]/80";
+
+type ShellOutputField = { key: string; value: string };
+type SubAgentToolStatus = SubAgentToolCall["status"];
+type DetailToolStatus = SubAgentToolStatus | "interrupted";
+type SubAgentHeaderStatus = ActiveSubAgent["status"] | "backgrounded";
+
+export function SubAgentShellOutputText({ text }: { text: string }) {
+  return <Ansi>{text}</Ansi>;
+}
+
+function normalizeSubAgentShellText(raw: string): string {
+  return expandTerminalTabs(collapseProgressBars(stripOscSequences(raw))).trim();
+}
+
+function normalizeSubAgentShellFieldText(raw: string): string {
+  return collapseProgressBars(stripAllAnsi(raw)).trim();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isLiveToolStatus(status: string | undefined): boolean {
+  return status === "running" || status === "backgrounded";
+}
+
+export function getSubAgentToolDisplayStatus(
+  tool: Pick<SubAgentToolCall, "status" | "result">
+): DetailToolStatus {
+  const status: DetailToolStatus =
+    (tool.status as string) === "completed"
+      ? "completed"
+      : (tool.status as string) === "error"
+        ? "error"
+        : (tool.status as string) === "interrupted"
+          ? "interrupted"
+          : (tool.status as string) === "backgrounded"
+            ? "backgrounded"
+            : "running";
+
+  return status === "completed" && toolResultIndicatesFailure(tool.result) ? "error" : status;
+}
+
+export function getSubAgentHeaderDisplayStatus(
+  agent: Pick<ActiveSubAgent, "status" | "toolCalls">
+): SubAgentHeaderStatus {
+  if (agent.toolCalls.some((tool) => getSubAgentToolDisplayStatus(tool) === "running")) {
+    return "running";
+  }
+  if (agent.toolCalls.some((tool) => getSubAgentToolDisplayStatus(tool) === "backgrounded")) {
+    return "backgrounded";
+  }
+  if (agent.status === "completed" && agent.toolCalls.length > 0) {
+    const latestTool = agent.toolCalls[agent.toolCalls.length - 1];
+    if (getSubAgentToolDisplayStatus(latestTool) === "error") return "error";
+  }
+  return agent.status;
+}
+
+export function isSubAgentShellLikeOutputTool(
+  tool: Pick<SubAgentToolCall, "name" | "args">
+): boolean {
+  if (tool.name === "run_pty_cmd" || tool.name === "run_command" || tool.name === "pentest_run") {
+    return true;
+  }
+  return (
+    isRecord(tool.args) &&
+    typeof tool.args.tool_name === "string" &&
+    (tool.args.background === true ||
+      typeof tool.args.args === "string" ||
+      typeof tool.args.timeout_secs === "number")
+  );
+}
 
 export function stripAgentXmlTags(text: string): string {
   return stripAllAnsi(
@@ -101,6 +184,89 @@ function ToolArgsTable({ args }: { args: Record<string, unknown> }) {
   return <JsonView value={args} className="px-3 py-2" />;
 }
 
+export function getSubAgentShellOutputForDetail(
+  tool: Pick<SubAgentToolCall, "status" | "result" | "streamingOutput">
+): {
+  text: string | null;
+  pending: boolean;
+} {
+  let raw: string | null = null;
+  if (tool.streamingOutput) {
+    raw = tool.streamingOutput;
+  } else if (tool.result && typeof tool.result === "object") {
+    const r = tool.result as Record<string, unknown>;
+    const parts: string[] = [];
+    const stdout =
+      typeof r.stdout === "string"
+        ? r.stdout
+        : typeof r.partial_stdout === "string"
+          ? r.partial_stdout
+          : "";
+    const stderr =
+      typeof r.stderr === "string"
+        ? r.stderr
+        : typeof r.partial_stderr === "string"
+          ? r.partial_stderr
+          : "";
+    if (stdout.trim()) parts.push(stdout.trim());
+    if (typeof r.output === "string" && r.output.trim() && parts.length === 0) {
+      parts.push(r.output.trim());
+    }
+    if (stderr) {
+      const stderrText = stderr.trim();
+      if (stderrText) parts.push(parts.length > 0 ? `stderr:\n${stderrText}` : stderrText);
+    }
+    raw = parts.join("\n\n") || null;
+  }
+
+  const text = raw ? normalizeSubAgentShellText(raw) : null;
+  const pending = isLiveToolStatus(tool.status) && !text;
+  const terminalNoOutput =
+    (tool.status === "completed" || tool.status === "error") &&
+    tool.result !== null &&
+    tool.result !== undefined &&
+    !text;
+  return {
+    text: text ?? (pending ? "Waiting for output..." : terminalNoOutput ? "No output." : null),
+    pending,
+  };
+}
+
+export function getSubAgentShellOutputFieldsForDetail(
+  tool: Pick<SubAgentToolCall, "result">
+): ShellOutputField[] {
+  if (!tool.result || typeof tool.result !== "object" || Array.isArray(tool.result)) return [];
+
+  const r = tool.result as Record<string, unknown>;
+  const fields: ShellOutputField[] = [];
+  const pushString = (key: string, value: unknown) => {
+    if (typeof value !== "string") return;
+    const text = normalizeSubAgentShellFieldText(value);
+    if (text) fields.push({ key, value: text });
+  };
+
+  pushString("stdout", r.stdout);
+  pushString("output", r.output);
+  pushString("stderr", r.stderr);
+  pushString("error", r.error ?? r.message);
+
+  if (typeof r.exit_code === "number") {
+    fields.push({ key: "exit_code", value: String(r.exit_code) });
+  }
+
+  return fields;
+}
+
+export function getSubAgentShellOutputJsonValueForDetail(
+  tool: Pick<SubAgentToolCall, "result"> & Partial<Pick<SubAgentToolCall, "status">>
+): Record<string, string> | null {
+  if (isLiveToolStatus(tool.status)) return null;
+  const fields = getSubAgentShellOutputFieldsForDetail(tool);
+  if (fields.length === 0) return null;
+
+  return Object.fromEntries(fields.map((field) => [field.key, field.value]));
+}
+
 /* ─── Tool result display ─── */
 
 const ToolResultDisplay = memo(function ToolResultDisplay({ result }: { result: unknown }) {
@@ -155,45 +321,27 @@ const ToolResultDisplay = memo(function ToolResultDisplay({ result }: { result: 
 /* ─── Sub-agent tool call block ─── */
 
 const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: SubAgentToolCall }) {
-  const isShellCmd = tool.name === "run_pty_cmd" || tool.name === "run_command";
+  const isShellRunner = tool.name === "run_pty_cmd" || tool.name === "run_command";
+  const isShellLikeOutput = isSubAgentShellLikeOutputTool(tool);
   const [isExpanded, setIsExpanded] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
-  const status: "running" | "completed" | "error" | "interrupted" =
-    (tool.status as string) === "completed"
-      ? "completed"
-      : (tool.status as string) === "error"
-        ? "error"
-        : (tool.status as string) === "interrupted"
-          ? "interrupted"
-          : "running";
-  const isStreaming = isShellCmd && tool.status === "running" && !!tool.streamingOutput;
+  const status = getSubAgentToolDisplayStatus(tool);
+  const isLive = isLiveToolStatus(status);
+  const isStreaming = isShellLikeOutput && isLive && !!tool.streamingOutput;
 
   useEffect(() => {
     if (isStreaming && preRef.current) {
       preRef.current.scrollTop = preRef.current.scrollHeight;
     }
-  }, [isStreaming]);
+  }, [isStreaming, tool.streamingOutput]);
 
   // Reuse the shared primary-arg formatter (same as the main timeline cards) so
   // every collapsed row surfaces a one-line summary. In particular pentest_run
   // nests the real tool under `tool_name`/`args`, so this renders e.g.
   // "nmap -sV target" inline without the user expanding the row.
   const summaryArg = getToolPrimaryArg(tool.name, tool.args);
-
-  const shellOutput: string | null = (() => {
-    if (!isShellCmd) return null;
-    let raw: string | null;
-    if (tool.streamingOutput) {
-      raw = tool.streamingOutput;
-    } else if (tool.result && typeof tool.result === "object") {
-      const r = tool.result as Record<string, unknown>;
-      raw = (r.stdout as string) || (r.output as string) || null;
-    } else {
-      raw = null;
-    }
-    // Collapse progress-bar spam (amass/nuclei "[--->] 100%") to the final frame.
-    return raw ? collapseProgressBars(raw) : null;
-  })();
+  const shellOutputState = getSubAgentShellOutputForDetail(tool);
+  const shellOutputJsonValue = getSubAgentShellOutputJsonValueForDetail(tool);
 
   return (
     <div className="mx-3 my-2 rounded-lg border border-border/30 overflow-hidden bg-card/80 shadow-sm border-l-2 border-l-[var(--ansi-magenta)]/40">
@@ -205,20 +353,22 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: Su
             <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
           )}
           <Wand2 className="h-3 w-3 text-[var(--ansi-magenta)]/70 flex-shrink-0" />
-          <StatusIcon status={status} size="sm" />
-          {isShellCmd ? (
+          <StatusIcon status={status} size="md" />
+          {isShellLikeOutput ? (
             <Terminal className="h-3 w-3 text-[var(--ansi-green)] flex-shrink-0" />
           ) : null}
-          <span className="font-mono text-[var(--ansi-cyan)]">{isShellCmd ? "" : tool.name}</span>
+          <span className="font-mono text-[var(--ansi-cyan)]">
+            {isShellRunner ? "" : tool.name}
+          </span>
           {summaryArg && (
             <span
               className={cn(
                 "truncate font-mono",
-                isShellCmd ? "text-[var(--ansi-green)]/80" : "text-muted-foreground"
+                isShellRunner ? "text-[var(--ansi-green)]/80" : "text-muted-foreground"
               )}
               title={summaryArg}
             >
-              {isShellCmd && <span className="text-muted-foreground/50 mr-1">$</span>}
+              {isShellRunner && <span className="text-muted-foreground/50 mr-1">$</span>}
               {summaryArg}
             </span>
           )}
@@ -233,21 +383,7 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: Su
         </CollapsibleTrigger>
         <CollapsibleContent>
           <div className="px-4 pb-3 space-y-2.5 text-xs overflow-hidden border-t border-border/20 pt-2.5">
-            {isShellCmd && shellOutput && (
-              <pre
-                ref={preRef}
-                className={cn(
-                  "ansi-output max-h-60 overflow-auto whitespace-pre-wrap rounded border border-border/15 bg-background/40 px-3 py-2 text-[11px] font-mono text-muted-foreground",
-                  isStreaming && "border-l-2 border-[var(--ansi-blue)]"
-                )}
-              >
-                {shellOutput.length > 5000
-                  ? `${shellOutput.slice(0, 5000)}\n... (truncated)`
-                  : shellOutput}
-              </pre>
-            )}
-
-            {!isShellCmd && tool.args && typeof tool.args === "object" && (
+            {!isShellRunner && tool.args && typeof tool.args === "object" && (
               <div className="overflow-hidden">
                 <div className="flex items-center gap-1.5 mb-1.5">
                   <ChevronRight className="w-2.5 h-2.5 text-[var(--ansi-cyan)]/50" />
@@ -261,10 +397,57 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: Su
               </div>
             )}
 
-            {!isShellCmd && tool.result !== undefined && (
+            {isShellLikeOutput && shellOutputState.text && (
               <div className="overflow-hidden">
                 <div className="flex items-center gap-1.5 mb-1.5">
-                  <CheckCircle2 className="w-2.5 h-2.5 text-[var(--ansi-green)]/50" />
+                  {isLive ? (
+                    <Loader2
+                      className={cn(
+                        SUB_AGENT_DETAIL_PENDING_OUTPUT_SPINNER_CLASS,
+                        status === "backgrounded" && "text-amber-400"
+                      )}
+                    />
+                  ) : status === "error" ? (
+                    <XCircle className="w-2.5 h-2.5 text-[var(--ansi-red)]/70" />
+                  ) : (
+                    <CheckCircle2 className="w-2.5 h-2.5 text-[var(--ansi-green)]/50" />
+                  )}
+                  <span className="text-[9px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
+                    Output
+                  </span>
+                </div>
+                {shellOutputJsonValue ? (
+                  <div className="max-h-60 overflow-auto rounded-md border border-border/20 bg-muted/40">
+                    <JsonView value={shellOutputJsonValue} className="px-3 py-2" />
+                  </div>
+                ) : (
+                  <pre
+                    ref={preRef}
+                    className={cn(
+                      "ansi-output max-h-60 overflow-auto whitespace-pre-wrap rounded border border-border/15 bg-background/40 px-3 py-2 text-[11px] font-mono text-muted-foreground",
+                      isStreaming && "border-l-2 border-[var(--ansi-blue)]"
+                    )}
+                  >
+                    <SubAgentShellOutputText
+                      text={
+                        shellOutputState.text.length > 5000
+                          ? `${shellOutputState.text.slice(0, 5000)}\n... (truncated)`
+                          : shellOutputState.text
+                      }
+                    />
+                  </pre>
+                )}
+              </div>
+            )}
+
+            {!isShellLikeOutput && tool.result !== undefined && (
+              <div className="overflow-hidden">
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  {status === "error" ? (
+                    <XCircle className="w-2.5 h-2.5 text-[var(--ansi-red)]/70" />
+                  ) : (
+                    <CheckCircle2 className="w-2.5 h-2.5 text-[var(--ansi-green)]/50" />
+                  )}
                   <span className="text-[9px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
                     Output
                   </span>
@@ -273,7 +456,7 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: Su
               </div>
             )}
 
-            {isShellCmd &&
+            {isShellLikeOutput &&
               !!tool.result &&
               typeof tool.result === "object" &&
               !!(tool.result as Record<string, unknown>).error && (
@@ -350,7 +533,7 @@ const NestedSubAgentCard = memo(function NestedSubAgentCard({
       )}
       {agent.thinking && status === "running" && (
         <div className="mt-1.5 flex min-w-0 items-center gap-2 pl-5">
-          <Loader2 className="h-2.5 w-2.5 flex-shrink-0 animate-spin text-accent/70" />
+          <Loader2 className={cn(SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS, "text-accent/70")} />
           <span className="min-w-0 flex-1 truncate text-[10px] text-accent/70">
             {agent.thinking}
           </span>
@@ -362,11 +545,9 @@ const NestedSubAgentCard = memo(function NestedSubAgentCard({
 
 /* ─── Status badge ─── */
 
-const STATUS_BADGE_STYLES: Record<
-  "running" | "completed" | "error" | "interrupted",
-  { badgeClass: string }
-> = {
+const STATUS_BADGE_STYLES: Record<SubAgentHeaderStatus, { badgeClass: string }> = {
   running: { badgeClass: "bg-[var(--accent-dim)] text-accent" },
+  backgrounded: { badgeClass: "bg-amber-400/10 text-amber-400" },
   completed: { badgeClass: "bg-[var(--success-dim)] text-[var(--success)]" },
   error: { badgeClass: "bg-destructive/10 text-destructive" },
   interrupted: { badgeClass: "bg-yellow-500/10 text-yellow-400" },
@@ -520,10 +701,15 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
 
   const AgentIcon = getAgentIcon(subAgent.agentName);
   const agentColor = getAgentColor(subAgent.agentName);
-  const status = STATUS_BADGE_STYLES[subAgent.status];
+  const headerDisplayStatus = getSubAgentHeaderDisplayStatus(subAgent);
+  const headerStatus = STATUS_BADGE_STYLES[headerDisplayStatus];
+  const isHeaderLive = headerDisplayStatus === "running" || headerDisplayStatus === "backgrounded";
   const toolMap = new Map(subAgent.toolCalls.map((tc) => [tc.id, tc]));
   const subAgentMap = new Map(subAgents.map((agent) => [agent.parentRequestId, agent]));
   const hasEntries = subAgent.entries.length > 0;
+  const backgroundedToolCount = subAgent.toolCalls.filter(
+    (tool) => getSubAgentToolDisplayStatus(tool) === "backgrounded"
+  ).length;
   const cleanedTask = stripAgentXmlTags(subAgent.task);
   const taskPreview = cleanedTask.replace(/\s+/g, " ").trim();
 
@@ -545,10 +731,17 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
         <AnchorChip sessionId={sessionId} requestId={subAgent.parentRequestId} />
         <Badge
           variant="outline"
-          className={cn("gap-1 flex items-center text-[10px] px-2 py-0.5", status.badgeClass)}
+          className={cn("gap-1 flex items-center text-[10px] px-2 py-0.5", headerStatus.badgeClass)}
         >
-          {isRunning && <Loader2 className="w-3 h-3 animate-spin" />}
-          {t(`ai.subAgentDetail.status.${subAgent.status}`)}
+          {isHeaderLive && (
+            <Loader2
+              className={cn(
+                SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS,
+                headerDisplayStatus === "backgrounded" && "text-amber-400"
+              )}
+            />
+          )}
+          {t(`ai.subAgentDetail.status.${headerDisplayStatus}`)}
         </Badge>
         {subAgent.durationMs != null && (
           <span className="text-[11px] text-muted-foreground/70 tabular-nums flex items-center gap-1">
@@ -560,7 +753,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
           {subAgent.toolCalls.length} {t("ai.agentTree.tools")}
         </span>
         <div className="ml-auto flex items-center">
-          <BackgroundJobsBadge jobs={backgroundJobs} />
+          <BackgroundJobsBadge jobs={backgroundJobs} fallbackCount={backgroundedToolCount} />
         </div>
       </div>
 
@@ -725,7 +918,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
       {/* Running footer */}
       {isRunning && (
         <div className="px-3 py-2 border-t border-[var(--border-subtle)] bg-accent/5 flex items-center gap-2 flex-shrink-0">
-          <Loader2 className="w-3 h-3 text-accent animate-spin" />
+          <Loader2 className={cn(SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS, "text-accent")} />
           <span className="text-[11px] text-accent/80">{t("ai.subAgentDetail.agentRunning")}</span>
         </div>
       )}

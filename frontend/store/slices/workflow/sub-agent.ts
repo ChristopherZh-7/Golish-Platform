@@ -15,6 +15,20 @@ export function syncSubAgentToTimeline(
   }
 }
 
+function isBackgroundedToolResult(result: unknown): boolean {
+  return (
+    result != null &&
+    typeof result === "object" &&
+    (result as { status?: unknown }).status === "backgrounded"
+  );
+}
+
+function backgroundJobIdFromResult(result: unknown): string | null {
+  if (result == null || typeof result !== "object") return null;
+  const jobId = (result as { job_id?: unknown }).job_id;
+  return typeof jobId === "string" ? jobId : null;
+}
+
 export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
   return {
     startPromptGeneration: (
@@ -226,14 +240,50 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         if (agent) {
           const tool = agent.toolCalls.find((t) => t.id === toolId);
           if (tool) {
-            tool.status = success ? "completed" : "error";
+            tool.status = isBackgroundedToolResult(result)
+              ? "backgrounded"
+              : success
+                ? "completed"
+                : "error";
             tool.result = result;
-            tool.completedAt = new Date().toISOString();
+            if (tool.status === "backgrounded") {
+              delete tool.completedAt;
+            } else {
+              tool.completedAt = new Date().toISOString();
+            }
           }
         }
         const timeline = state.timelines[sessionId];
         if (timeline && agent) {
           syncSubAgentToTimeline(timeline, parentRequestId, agent);
+        }
+      }),
+
+    completeBackgroundedSubAgentToolCall: (
+      sessionId: string,
+      jobId: string,
+      success: boolean,
+      result?: unknown
+    ) =>
+      set((state) => {
+        const agents = state.activeSubAgents[sessionId];
+        if (!agents) return;
+        for (const agent of agents) {
+          const tool = agent.toolCalls.find((candidate) => {
+            if ((candidate.status as string) !== "backgrounded") return false;
+            return backgroundJobIdFromResult(candidate.result) === jobId;
+          });
+          if (!tool) continue;
+
+          tool.status = success ? "completed" : "error";
+          tool.result = result;
+          tool.completedAt = new Date().toISOString();
+
+          const timeline = state.timelines[sessionId];
+          if (timeline) {
+            syncSubAgentToTimeline(timeline, agent.parentRequestId, agent);
+          }
+          return;
         }
       }),
 

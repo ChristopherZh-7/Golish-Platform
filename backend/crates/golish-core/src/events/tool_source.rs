@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Source of a tool call - indicates where the tool request originated.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub enum ToolSource {

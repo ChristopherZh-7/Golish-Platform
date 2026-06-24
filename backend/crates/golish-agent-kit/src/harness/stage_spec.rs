@@ -262,11 +262,12 @@ mod tests {
 
     #[test]
     fn external_attack_surface_gate_rules_count() {
-        // gate-rules-migration: eas 过关标准 = scope×2 + named_check:surface_coverage
-        // + named_check:min_invocations + coverage_complete(per-asset liveness,
-        // 2026-06-09) = 5 条 gate_rules。
+        // EAS 过关标准 = claim/finding evidence + coverage found/checked_empty evidence
+        // + named_check:surface_coverage + named_check:min_invocations
+        // + coverage_complete(per-asset liveness/port/service with notes for other)
+        // + coverage_denominator(full explicit coverage) = 8 条 gate_rules。
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
-        assert_eq!(s.gate_rules.len(), 5);
+        assert_eq!(s.gate_rules.len(), 8);
     }
 
     // 2026-06-09 verify-first + 阶段重排：EAS = 定义攻击面，必须对每个 in-scope 资产
@@ -289,9 +290,22 @@ mod tests {
         assert!(
             s.gate_rules.iter().any(|r| matches!(
                 r,
-                crate::harness::gate::rule_engine::GateRule::CoverageComplete { .. }
+                crate::harness::gate::rule_engine::GateRule::CoverageComplete {
+                    require_note_for_other: true,
+                    ..
+                }
             )),
-            "EAS gate_rules must include a coverage_complete rule"
+            "EAS gate_rules must include coverage_complete with notes required for blocked/not_applicable"
+        );
+        assert!(
+            s.gate_rules.iter().any(|r| matches!(
+                r,
+                crate::harness::gate::rule_engine::GateRule::CoverageDenominator {
+                    min_sample_ratio_pct: 100,
+                    ..
+                }
+            )),
+            "EAS gate_rules must require full denominator coverage for explicit cells"
         );
     }
 

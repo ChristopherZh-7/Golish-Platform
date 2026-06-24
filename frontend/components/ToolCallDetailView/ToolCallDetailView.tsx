@@ -45,8 +45,24 @@ interface ToolCallDetailViewProps {
 
 const EMPTY_BG_JOBS: never[] = [];
 
+export const DETAIL_RUNNING_SPINNER_CLASS = "h-4 w-4 shrink-0 animate-spin";
+export const DETAIL_PENDING_OUTPUT_SPINNER_CLASS = "h-4 w-4 shrink-0 animate-spin text-accent";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function isShellLikeToolForDetail(toolName: string, args: unknown): boolean {
+  if (toolName === "run_pty_cmd" || toolName === "run_command" || toolName === "pentest_run") {
+    return true;
+  }
+  if (!isRecord(args)) return false;
+  return (
+    typeof args.tool_name === "string" &&
+    (args.background === true ||
+      typeof args.args === "string" ||
+      typeof args.timeout_secs === "number")
+  );
 }
 
 function normalizeToolArgs(
@@ -242,8 +258,18 @@ function formatShellLikeOutput(result: unknown, streamingOutput?: string): strin
 
   const r = value as Record<string, unknown>;
   const command = typeof r.command === "string" ? r.command : null;
-  const stdout = typeof r.stdout === "string" ? r.stdout : "";
-  const stderr = typeof r.stderr === "string" ? r.stderr : "";
+  const stdout =
+    typeof r.stdout === "string"
+      ? r.stdout
+      : typeof r.partial_stdout === "string"
+        ? r.partial_stdout
+        : "";
+  const stderr =
+    typeof r.stderr === "string"
+      ? r.stderr
+      : typeof r.partial_stderr === "string"
+        ? r.partial_stderr
+        : "";
   const output = typeof r.output === "string" ? r.output : "";
   const error =
     typeof r.error === "string" ? r.error : typeof r.message === "string" ? r.message : "";
@@ -304,6 +330,33 @@ const TOOL_INTENT_DECISION_LABELS: Record<
   require_human_answer: "Waiting for user",
   reject: "Rejected",
 };
+
+export function getShellOutputForDetail(
+  result: unknown,
+  streamingOutput: string | undefined,
+  status: AiToolExecution["status"]
+): { text: string | null; pending: boolean } {
+  const shellOutput = formatShellLikeOutput(result, streamingOutput);
+  const cleanedShellOutput = shellOutput
+    ? expandTerminalTabs(collapseProgressBars(stripOscSequences(shellOutput)))
+    : null;
+  const displayShellOutput =
+    cleanedShellOutput && cleanedShellOutput.length > 8000
+      ? `${cleanedShellOutput.slice(0, 8000)}\n... (truncated)`
+      : cleanedShellOutput;
+  const pending = (status === "running" || status === "backgrounded") && !displayShellOutput;
+  const terminalNoOutput =
+    (status === "completed" || status === "error" || status === "interrupted") &&
+    result !== null &&
+    result !== undefined &&
+    !displayShellOutput;
+  return {
+    text:
+      displayShellOutput ??
+      (pending ? "Waiting for output..." : terminalNoOutput ? "No output." : null),
+    pending,
+  };
+}
 
 export const ToolCallDetailView = memo(function ToolCallDetailView({
   sessionId,
@@ -419,6 +472,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
       : execution.status;
   const isRunning = displayStatus === "running";
   const isBackgrounded = displayStatus === "backgrounded";
+  const backgroundedToolCount = isBackgrounded ? 1 : 0;
   const isError = displayStatus === "error";
   const errorMessage = (() => {
     if (!isError) return null;
@@ -431,24 +485,13 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     return null;
   })();
 
-  const isShellCmd =
-    execution.toolName === "run_pty_cmd" ||
-    execution.toolName === "run_command" ||
-    execution.toolName === "pentest_run";
+  const isShellCmd = isShellLikeToolForDetail(execution.toolName, execution.args);
   const intent = execution.toolIntent;
-  const shellOutput = isShellCmd
-    ? formatShellLikeOutput(execution.result, execution.streamingOutput)
-    : null;
-  // Strip OSC/cursor noise but keep SGR colour codes so <Ansi> can paint them —
-  // otherwise raw escape sequences (e.g. 256-colour `wttr.in` art) leak into the
-  // panel as literal `\x1b[38;5;…m` text instead of rendering as colours.
-  const cleanedShellOutput = shellOutput
-    ? expandTerminalTabs(collapseProgressBars(stripOscSequences(shellOutput)))
-    : null;
-  const displayShellOutput =
-    cleanedShellOutput && cleanedShellOutput.length > 8000
-      ? `${cleanedShellOutput.slice(0, 8000)}\n... (truncated)`
-      : cleanedShellOutput;
+  const shellOutputState = isShellCmd
+    ? getShellOutputForDetail(execution.result, execution.streamingOutput, displayStatus)
+    : { text: null, pending: false };
+  const shellOutputText = shellOutputState.text;
+  const pendingShellOutput = shellOutputState.pending;
 
   return (
     <div className="h-full flex flex-col bg-card">
@@ -474,8 +517,8 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
             STATUS_BADGE_STYLES[displayStatus]
           )}
         >
-          {isRunning && <Loader2 className="w-3 h-3 animate-spin" />}
-          {isBackgrounded && <Loader2 className="w-3 h-3 animate-spin" />}
+          {isRunning && <Loader2 className={DETAIL_RUNNING_SPINNER_CLASS} />}
+          {isBackgrounded && <Loader2 className={DETAIL_RUNNING_SPINNER_CLASS} />}
           {getStatusLabel(displayStatus)}
         </Badge>
         {execution.durationMs != null && (
@@ -485,7 +528,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           </span>
         )}
         <div className="ml-auto flex items-center">
-          <BackgroundJobsBadge jobs={backgroundJobs} />
+          <BackgroundJobsBadge jobs={backgroundJobs} fallbackCount={backgroundedToolCount} />
         </div>
       </div>
 
@@ -580,13 +623,16 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           </div>
         )}
 
-        {isShellCmd && displayShellOutput && (
+        {isShellCmd && shellOutputText && (
           <div className="px-4 py-3 border-b border-border/20">
-            <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
-              Output
+            <div className="flex items-center gap-1.5 mb-2">
+              {pendingShellOutput && <Loader2 className={DETAIL_PENDING_OUTPUT_SPINNER_CLASS} />}
+              <span className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
+                Output
+              </span>
             </div>
             <pre className="ansi-output max-h-[480px] overflow-auto whitespace-pre-wrap rounded border border-border/15 bg-background/40 px-3 py-2 text-[11px] font-mono text-muted-foreground">
-              <Ansi>{displayShellOutput}</Ansi>
+              <Ansi>{shellOutputText}</Ansi>
             </pre>
           </div>
         )}
@@ -628,7 +674,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         >
           <Loader2
             className={cn(
-              "w-3 h-3 animate-spin",
+              DETAIL_RUNNING_SPINNER_CLASS,
               isBackgrounded ? "text-amber-400" : "text-accent"
             )}
           />

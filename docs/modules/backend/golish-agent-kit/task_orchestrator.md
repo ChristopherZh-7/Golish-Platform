@@ -44,6 +44,7 @@
 - `bridge_executor`（`AgentExecutor` 实现）在 `golish-agent-bridge`（依赖 AgentBridge）；本模块只持 trait。
 - graph-flow 的 `operation_state.current_stage` 表示**当前正在执行的 stage**：进入新 stage 时同步并刷新 `stage_started_at`；断线后回到同一 stage 时不能重复刷新，否则 freshness-window gate 会看不到断线前已落库的 evidence。
 - `operation_state.state_blob` 是 graph checkpoint、stage_run worker resume 等多消费者共享 JSON；更新 `graph_flow` 时要 merge 保留其他 key，不能整段覆盖。
+- `prompts::stage_charter` 会把 `StageSpec` 的 gate contract 渲染给执行 agent；`external_attack_surface` 有专门文案说明 domain/ip/url/cidr 的 coverage 差异，以及 SERVICE-FINGERPRINT 的 `tested_units/total_units = 已指纹开放端口/发现开放端口`。
 
 ## 测试入口
 

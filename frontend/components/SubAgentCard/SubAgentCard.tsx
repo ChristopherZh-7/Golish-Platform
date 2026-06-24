@@ -73,15 +73,20 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
   const [isExpanded, setIsExpanded] = useState(isShellCmd);
   const preRef = useRef<HTMLPreElement>(null);
   const rawStatus = tool.status as string;
-  const status: "running" | "completed" | "error" | "interrupted" =
+  const status: "running" | "backgrounded" | "completed" | "error" | "interrupted" =
     rawStatus === "completed"
       ? "completed"
       : rawStatus === "error"
         ? "error"
         : rawStatus === "interrupted"
           ? "interrupted"
-          : "running";
-  const isStreaming = isShellCmd && tool.status === "running" && !!tool.streamingOutput;
+          : rawStatus === "backgrounded"
+            ? "backgrounded"
+            : "running";
+  const isStreaming =
+    isShellCmd &&
+    (tool.status === "running" || tool.status === "backgrounded") &&
+    !!tool.streamingOutput;
 
   useEffect(() => {
     if (isStreaming && preRef.current) {

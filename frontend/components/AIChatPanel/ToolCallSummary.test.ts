@@ -21,6 +21,19 @@ describe("toolResultIsFailure", () => {
     ).toBe(true);
   });
 
+  it("flags missing tool dependencies even when the wrapper exits zero", () => {
+    expect(
+      toolResultIsFailure(
+        JSON.stringify({
+          stdout:
+            "WhatWeb is not installed and is missing dependencies.\nThe following gems are missing:\n - addressable",
+          stderr: "",
+          exit_code: 0,
+        })
+      )
+    ).toBe(true);
+  });
+
   it("does NOT flag an accepted deliverable", () => {
     expect(
       toolResultIsFailure('{"status":"accepted","note":"structure OK; final gate at stage close."}')

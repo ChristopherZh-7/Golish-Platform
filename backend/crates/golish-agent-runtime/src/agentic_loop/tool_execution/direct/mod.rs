@@ -178,6 +178,20 @@ async fn record_recon_passive_evidence(
     }
 }
 
+fn is_security_analysis_direct_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "log_operation"
+            | "discover_apis"
+            | "save_js_analysis"
+            | "fingerprint_target"
+            | "log_scan_result"
+            | "query_target_data"
+            | "list_in_scope_targets"
+            | "list_attack_surface_seeds"
+    )
+}
+
 /// Execute a tool directly for generic models (after approval or auto-approved).
 pub async fn execute_tool_direct_generic<M>(
     tool_name: &str,
@@ -275,16 +289,7 @@ where
         }
     }
 
-    if matches!(
-        tool_name,
-        "log_operation"
-            | "discover_apis"
-            | "save_js_analysis"
-            | "fingerprint_target"
-            | "log_scan_result"
-            | "query_target_data"
-            | "list_in_scope_targets"
-    ) {
+    if is_security_analysis_direct_tool(tool_name) {
         let ws_path = ctx.workspace.read().await;
         let project_path_str = ws_path.to_string_lossy().to_string();
         drop(ws_path);
@@ -805,6 +810,20 @@ fn provider_status_for_source_query(status: &str) -> &'static str {
         "unavailable" | "Unavailable" => "blocked",
         "failed" | "Failed" => "error",
         _ => "error",
+    }
+}
+
+#[cfg(test)]
+mod direct_tool_routing_tests {
+    use super::*;
+
+    #[test]
+    fn attack_surface_seeds_routes_through_security_analysis_executor() {
+        assert!(
+            is_security_analysis_direct_tool("list_attack_surface_seeds"),
+            "tool_list exposes list_attack_surface_seeds to the main stage orchestrator, \
+             so direct execution must route it instead of falling through to Unknown tool"
+        );
     }
 }
 

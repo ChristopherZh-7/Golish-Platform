@@ -147,6 +147,51 @@ fn e2e_happy_path_external_attack_surface_passes_gate() {
 }
 
 #[test]
+fn e2e_external_attack_surface_blocks_found_coverage_without_evidence() {
+    let harness = build_harness();
+    let mut d = happy_deliverable(Uuid::new_v4());
+    let port_cell = d
+        .coverage
+        .iter_mut()
+        .find(|cell| cell.technique == "GOLISH-EAS-PORT")
+        .expect("happy fixture includes port coverage");
+    port_cell.evidence_refs.clear();
+
+    let decision = harness.validate_gate(&d, None);
+    assert!(!decision.allowed);
+    assert!(
+        decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("every found EAS coverage cell must cite evidence")),
+        "found coverage without evidence should block: {:?}",
+        decision.reasons
+    );
+}
+
+#[test]
+fn e2e_external_attack_surface_blocks_partial_service_fingerprint_denominator() {
+    let harness = build_harness();
+    let mut d = happy_deliverable(Uuid::new_v4());
+    let service_cell = d
+        .coverage
+        .iter_mut()
+        .find(|cell| cell.technique == "GOLISH-EAS-SERVICE-FINGERPRINT")
+        .expect("happy fixture includes service-fingerprint coverage");
+    service_cell.tested_units = 1;
+    service_cell.total_units = 2;
+    service_cell.sampling_rationale = None;
+
+    let decision = harness.validate_gate(&d, None);
+    assert!(!decision.allowed);
+    assert!(
+        decision.reasons.iter().any(|reason| reason.contains("1/2")),
+        "partial service fingerprint denominator should block: {:?}",
+        decision.reasons
+    );
+}
+
+#[test]
 fn e2e_vacuous_deliverable_is_blocked_with_recovery() {
     let harness = build_harness();
     let d = ExternalAttackSurfaceDeliverable {

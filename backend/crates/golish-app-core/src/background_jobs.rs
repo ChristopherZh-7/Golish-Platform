@@ -41,6 +41,9 @@ const COMPLETION_TAIL_BYTES: usize = 8 * 1024;
 /// per-session listeners; a slow listener that lags simply drops older
 /// notifications (the job result is still pollable via `snapshot`).
 const COMPLETION_CHANNEL_CAP: usize = 256;
+/// Capacity of the live stdout/stderr broadcast channel. These chunks are best
+/// effort UI telemetry; the retained job buffers remain the durable source.
+const OUTPUT_CHANNEL_CAP: usize = 1024;
 
 /// High-level lifecycle state of a background job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +74,9 @@ struct JobState {
     /// Agent session that started the job (for routing the completion back to
     /// the right session), or `None` when not attributable.
     session_id: Option<String>,
+    /// Agent tool call that started the job, when this job came from the
+    /// agentic loop. Used to stream live chunks into the existing tool panel.
+    tool_context: Option<golish_core::AgentToolContext>,
     status: JobStatus,
     exit_code: Option<i32>,
     stdout: String,
@@ -121,6 +127,20 @@ pub struct JobCompletion {
     pub duration_ms: u64,
 }
 
+/// Broadcast payload emitted as stdout/stderr bytes arrive for an attributed
+/// background job.
+#[derive(Debug, Clone)]
+pub struct JobOutputChunk {
+    pub job_id: String,
+    /// Session the job was attributed to at spawn, if any.
+    pub session_id: Option<String>,
+    pub request_id: String,
+    pub tool_name: String,
+    pub source: golish_core::events::ToolSource,
+    pub stream: &'static str,
+    pub chunk: String,
+}
+
 /// Keep the trailing `max` bytes of `s` on a char boundary (the *end* of a
 /// command's output is usually the interesting part for a completion notice).
 fn tail_capped(s: &str, max: usize) -> String {
@@ -139,6 +159,8 @@ pub struct BackgroundJobManager {
     jobs: Mutex<HashMap<String, Arc<Mutex<JobState>>>>,
     /// Fan-out of job-completion notifications to per-session listeners.
     completions: broadcast::Sender<JobCompletion>,
+    /// Fan-out of live stdout/stderr chunks to per-session UI listeners.
+    outputs: broadcast::Sender<JobOutputChunk>,
 }
 
 impl Default for BackgroundJobManager {
@@ -161,8 +183,13 @@ fn append_capped(buf: &mut String, chunk: &str) {
     *buf = buf[cut..].to_string();
 }
 
-async fn pump<R>(mut reader: R, state: Arc<Mutex<JobState>>, is_stderr: bool)
-where
+async fn pump<R>(
+    mut reader: R,
+    state: Arc<Mutex<JobState>>,
+    outputs: broadcast::Sender<JobOutputChunk>,
+    job_id: String,
+    is_stderr: bool,
+) where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut buf = [0u8; 8192];
@@ -171,11 +198,26 @@ where
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 let chunk = String::from_utf8_lossy(&buf[..n]);
-                let mut s = state.lock();
-                if is_stderr {
-                    append_capped(&mut s.stderr, &chunk);
-                } else {
-                    append_capped(&mut s.stdout, &chunk);
+                let stream = if is_stderr { "stderr" } else { "stdout" };
+                let output_event = {
+                    let mut s = state.lock();
+                    if is_stderr {
+                        append_capped(&mut s.stderr, &chunk);
+                    } else {
+                        append_capped(&mut s.stdout, &chunk);
+                    }
+                    s.tool_context.as_ref().map(|ctx| JobOutputChunk {
+                        job_id: job_id.clone(),
+                        session_id: s.session_id.clone(),
+                        request_id: ctx.request_id.clone(),
+                        tool_name: ctx.tool_name.clone(),
+                        source: ctx.source.clone(),
+                        stream,
+                        chunk: chunk.to_string(),
+                    })
+                };
+                if let Some(event) = output_event {
+                    let _ = outputs.send(event);
                 }
             }
         }
@@ -185,9 +227,11 @@ where
 impl BackgroundJobManager {
     pub fn new() -> Self {
         let (completions, _) = broadcast::channel(COMPLETION_CHANNEL_CAP);
+        let (outputs, _) = broadcast::channel(OUTPUT_CHANNEL_CAP);
         Self {
             jobs: Mutex::new(HashMap::new()),
             completions,
+            outputs,
         }
     }
 
@@ -196,6 +240,13 @@ impl BackgroundJobManager {
     /// [`JobCompletion`]. Listeners filter by `session_id`.
     pub fn subscribe_completions(&self) -> broadcast::Receiver<JobCompletion> {
         self.completions.subscribe()
+    }
+
+    /// Subscribe to live stdout/stderr chunks from attributed background jobs.
+    /// Chunks are best-effort UI telemetry; callers can still recover the
+    /// complete retained tail via [`Self::snapshot`].
+    pub fn subscribe_output_chunks(&self) -> broadcast::Receiver<JobOutputChunk> {
+        self.outputs.subscribe()
     }
 
     /// Spawn `command` in the background, unattributed. See
@@ -216,6 +267,19 @@ impl BackgroundJobManager {
         hard_limit: Duration,
         session_id: Option<String>,
     ) -> String {
+        self.spawn_for_session_and_tool(command, workspace, hard_limit, session_id, None)
+    }
+
+    /// Spawn `command` in the background, additionally attributing live output
+    /// to an agent tool call when `tool_context` is provided.
+    pub fn spawn_for_session_and_tool(
+        &self,
+        command: &str,
+        workspace: &Path,
+        hard_limit: Duration,
+        session_id: Option<String>,
+        tool_context: Option<golish_core::AgentToolContext>,
+    ) -> String {
         self.prune();
 
         let id = format!("job_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
@@ -223,6 +287,7 @@ impl BackgroundJobManager {
         let state = Arc::new(Mutex::new(JobState {
             command: command.to_string(),
             session_id,
+            tool_context,
             status: JobStatus::Running,
             exit_code: None,
             stdout: String::new(),
@@ -243,10 +308,22 @@ impl BackgroundJobManager {
         match cmd.spawn() {
             Ok(mut child) => {
                 if let Some(out) = child.stdout.take() {
-                    tokio::spawn(pump(out, state.clone(), false));
+                    tokio::spawn(pump(
+                        out,
+                        state.clone(),
+                        self.outputs.clone(),
+                        id.clone(),
+                        false,
+                    ));
                 }
                 if let Some(err) = child.stderr.take() {
-                    tokio::spawn(pump(err, state.clone(), true));
+                    tokio::spawn(pump(
+                        err,
+                        state.clone(),
+                        self.outputs.clone(),
+                        id.clone(),
+                        true,
+                    ));
                 }
 
                 let st = state.clone();
@@ -562,6 +639,44 @@ mod tests {
             "stdout_tail was: {:?}",
             completion.stdout_tail
         );
+    }
+
+    #[tokio::test]
+    async fn output_chunk_is_broadcast_with_tool_context() {
+        let mgr = BackgroundJobManager::new();
+        let mut rx = mgr.subscribe_output_chunks();
+        let ctx = golish_core::AgentToolContext {
+            request_id: "req-live".to_string(),
+            tool_name: "pentest_run".to_string(),
+            source: golish_core::events::ToolSource::Main,
+        };
+        let id = mgr.spawn_for_session_and_tool(
+            "printf live-out",
+            &ws(),
+            Duration::from_secs(10),
+            Some("sess-live".to_string()),
+            Some(ctx),
+        );
+
+        let chunk = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("output chunk within timeout")
+            .expect("output chunk received");
+
+        assert_eq!(chunk.job_id, id);
+        assert_eq!(chunk.session_id.as_deref(), Some("sess-live"));
+        assert_eq!(chunk.request_id, "req-live");
+        assert_eq!(chunk.tool_name, "pentest_run");
+        assert_eq!(chunk.stream, "stdout");
+        assert_eq!(chunk.source, golish_core::events::ToolSource::Main);
+        assert!(
+            chunk.chunk.contains("live-out"),
+            "chunk was: {:?}",
+            chunk.chunk
+        );
+
+        let snap = wait_terminal(&mgr, &id, Duration::from_secs(5)).await;
+        assert_eq!(snap.status, JobStatus::Done);
     }
 
     #[tokio::test]

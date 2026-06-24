@@ -30,43 +30,54 @@ function formatUptime(startedAtMs: number): string {
 
 interface BackgroundJobsBadgeProps {
   jobs: Array<{ jobId: string; command: string; startedAt: number }>;
+  fallbackCount?: number;
 }
 
 export const BackgroundJobsBadge = memo(function BackgroundJobsBadge({
   jobs,
+  fallbackCount = 0,
 }: BackgroundJobsBadgeProps) {
-  if (jobs.length === 0) return null;
+  const displayCount = jobs.length > 0 ? jobs.length : Math.max(0, fallbackCount);
+  if (displayCount === 0) return null;
+  const hasJobDetails = jobs.length > 0;
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
-          title={`${jobs.length} command(s) running in the background`}
+          title={`${displayCount} command(s) running in the background`}
           className="h-6 px-2 gap-1.5 text-xs font-medium rounded-lg flex items-center text-accent border border-[var(--border-subtle)]/60 bg-card/30 hover:bg-muted transition-colors"
         >
           <Loader2 className="size-icon-status-bar animate-spin" />
-          <span>{jobs.length} running</span>
+          <span>{displayCount} running</span>
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-80 p-2">
         <div className="text-xs font-medium text-muted-foreground px-1 pb-1.5">
-          Running in background ({jobs.length})
+          Running in background ({displayCount})
         </div>
-        <ul className="space-y-0.5 max-h-64 overflow-auto">
-          {jobs.map((j) => (
-            <li
-              key={j.jobId}
-              className="flex items-center justify-between gap-2 rounded-md px-2 py-1 hover:bg-muted/50"
-            >
-              <span className="font-mono text-[11px] truncate" title={j.command}>
-                {j.command}
-              </span>
-              <span className="text-[11px] text-muted-foreground shrink-0 tabular-nums">
-                {formatUptime(j.startedAt)}
-              </span>
-            </li>
-          ))}
-        </ul>
+        {hasJobDetails ? (
+          <ul className="space-y-0.5 max-h-64 overflow-auto">
+            {jobs.map((j) => (
+              <li
+                key={j.jobId}
+                className="flex items-center justify-between gap-2 rounded-md px-2 py-1 hover:bg-muted/50"
+              >
+                <span className="font-mono text-[11px] truncate" title={j.command}>
+                  {j.command}
+                </span>
+                <span className="text-[11px] text-muted-foreground shrink-0 tabular-nums">
+                  {formatUptime(j.startedAt)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="px-1 py-1 text-[11px] text-muted-foreground leading-relaxed">
+            Backgrounded tool calls are active in this detail view, but detailed job metadata has
+            not arrived yet.
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   );

@@ -195,9 +195,11 @@ describe("dispatchEvent", () => {
   it("dispatches tool_background_completed and completes the matching tool card", () => {
     const completeToolExecutionBlock = vi.fn();
     const updateStreamingToolBlock = vi.fn();
+    const completeBackgroundedSubAgentToolCall = vi.fn();
     const stateWithTimeline = {
       completeToolExecutionBlock,
       updateStreamingToolBlock,
+      completeBackgroundedSubAgentToolCall,
       removeBackgroundJob: vi.fn(),
       timelines: {
         "test-session": [
@@ -239,6 +241,12 @@ describe("dispatchEvent", () => {
       "req-bg",
       true,
       expect.objectContaining({ job_id: "job_x", status: "done" })
+    );
+    expect(completeBackgroundedSubAgentToolCall).toHaveBeenCalledWith(
+      "test-session",
+      "job_x",
+      true,
+      expect.objectContaining({ job_id: "job_x", status: "done", exit_code: 0 })
     );
   });
 

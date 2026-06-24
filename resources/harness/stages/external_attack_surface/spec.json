@@ -36,17 +36,50 @@
       "require": { "pred": "non_empty", "field": "evidence_refs" },
       "on_fail": { "reason": "every finding must cite evidence", "hints": ["add evidence to each finding via prior tool calls"] }
     },
+    {
+      "op": "for_all",
+      "over": "coverage",
+      "where": { "pred": "eq", "field": "status", "value": "found" },
+      "require": { "pred": "non_empty", "field": "evidence_refs" },
+      "on_fail": {
+        "reason": "every found EAS coverage cell must cite evidence",
+        "hints": ["cite the evidence id from the tool run that produced this liveness / port / service fact"]
+      }
+    },
+    {
+      "op": "for_all",
+      "over": "coverage",
+      "where": { "pred": "eq", "field": "status", "value": "checked_empty" },
+      "require": { "pred": "non_empty", "field": "evidence_refs" },
+      "on_fail": {
+        "reason": "every checked_empty EAS coverage cell must cite evidence",
+        "hints": ["cite the scan/probe evidence proving the technique ran and returned no applicable result"]
+      }
+    },
     { "op": "named_check", "check": "surface_coverage" },
     { "op": "named_check", "check": "min_invocations" },
     {
       "op": "coverage_complete",
       "derive_from_evidence": true,
+      "require_note_for_other": true,
       "$comment_derive": "Phase 1 (2026-06-12-redteam-phase1): DB business-table truth补格 \u2014 GOLISH-EAS-LIVENESS\u2190targets(http_status/real_ip), -PORT\u2190targets.ports, -SERVICE-FINGERPRINT\u2190fingerprints. 真跑工具落库后 coverage 格自动补 found; 不开 authoritative (主动阶段命令派生的 Empty 事实源未就绪, 见 phase1 计划勘验4), 故自报 cell 仍兜底, DB 投影只增不减.",
       "on_fail": {
         "reason": "external attack surface incomplete: some in-scope assets were not fully mapped (liveness / port / service-fingerprint)",
         "hints": [
-          "for EVERY in-scope asset, take each of GOLISH-EAS-LIVENESS (httpx confirms the host is live + resolves its current IP; DNS was already done in target_intel \u2014 REUSE the inherited dns_a, do NOT re-run dig) / GOLISH-EAS-PORT (port scan) / GOLISH-EAS-SERVICE-FINGERPRINT (service/version) to a terminal coverage cell: found+evidence_refs / checked_empty+evidence_refs / blocked|not_applicable+note",
+          "for EVERY in-scope asset, take each applicable EAS technique to a terminal coverage cell: found+evidence_refs / checked_empty+evidence_refs / blocked|not_applicable+note. IP/domain/CIDR assets require PORT; bare URL assets keep only LIVENESS because host-level PORT/SERVICE belongs to the host/IP target",
           "intel-source data (FOFA/Shodan/...) is a lead, not proof \u2014 actively confirm each asset NOW; the gate auto-projects found cells from DB truth (httpx\u2192targets, naabu/masscan\u2192targets.ports, whatweb/nmap\u2192fingerprints) so running the real tools fills coverage; JS/API extraction happens in the NEXT stage (enumeration)"
+        ]
+      }
+    },
+    {
+      "op": "coverage_denominator",
+      "min_sample_ratio_pct": 100,
+      "on_fail": {
+        "reason": "external attack surface denominator incomplete",
+        "hints": [
+          "for service fingerprint coverage set tested_units to the number of discovered open ports fingerprinted and total_units to the number of discovered open ports",
+          "if a host has no open ports, mark SERVICE-FINGERPRINT not_applicable with a note instead of checked_empty total_units=0",
+          "do not treat HTTP liveness alone as PORT or SERVICE-FINGERPRINT coverage"
         ]
       }
     }

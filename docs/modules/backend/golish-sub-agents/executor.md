@@ -30,6 +30,7 @@
 |---|---|
 | `mod.rs` | `execute_sub_agent` + re-export |
 | `inner` | iterate-stream-dispatch 主循环 |
+| `response_parsing.rs` | tool call dispatch、stream chunk event、registry/router fallback attribution |
 | `prompt_assembly` / `tool_setup` / `chain_persist` / `final_summary` | prompt / 工具 / 链持久化 / 末次总结 |
 
 ## 依赖
@@ -40,6 +41,9 @@
 
 - `timeout_secs=None` = 有进展就一直跑（靠 idle/per-tool/max_iterations 兜底）；改超时语义别让 sub-agent 永久挂起。
 - 工具经 `ToolProvider` 注入（保持 L2 不反向依赖上层 runtime）；barrier 工具是 sub-agent 与主 agent 的交接点。
+- `SubAgentExecutorContext.active_org_id_override` 是 stage-run per-org 硬隔离通道：registry fallback 执行 `manage_targets` / `manage_organizations` 时会注入内部隐藏 `__harness_org_id`，让工具按当前 org 子树过滤/绑定；不要把这件事退化成 prompt 约束。
+- 普通 registry fallback 的 `Ok(Value)` 不是成功定义；必须用 `golish_core::utils::is_tool_result_success` 从 payload 判定。典型例子：WhatWeb 在 Ruby/OpenSSL 兼容问题下可能 `exit_code=0` 但 `stderr` 含 `ERROR Opening`，这要作为失败上报，UI 才能显示红色而不是绿勾。
+- registry/router fallback 会用 `golish_core::with_agent_tool_context` 标记当前 sub-agent tool call；如果 `pentest_run` 等工具内部启动后台 shell，live chunk 要带 `ToolSource::SubAgent` 回到对应 sub-agent 工具详情。
 
 ## 测试入口
 

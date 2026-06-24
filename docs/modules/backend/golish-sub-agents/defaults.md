@@ -40,6 +40,8 @@
 
 - 硬编码 prompts 是 **fallback**：registry 优先用 `prompts/*.tera` + DB override；改默认行为先确认走的是哪条路径。
 - `from_registry` 版本会合并 DB/模板 override；纯 `create_default_sub_agents` 是无 registry 的基线。
+- `prober` prompt 是 `external_attack_surface` 的 active worker contract：优先 `list_attack_surface_seeds`，按 domain/ip/url/cidr 类型决定 liveness/port/service 动作；显式 coverage 要填 evidence 与 denominator（尤其 SERVICE-FINGERPRINT 的 `tested_units/total_units = 已指纹开放端口/发现开放端口`），不能把 HTTP liveness 当作 PORT/SERVICE 证明。
+- prober / enumerator prompt 的后台任务约束要强调：慢扫描只跑一次，等 completion note 和 submit barrier 落证据后再提交；不要在后台 job 未完成时反复 submit 或重跑同一命令。
 
 ## 测试入口
 

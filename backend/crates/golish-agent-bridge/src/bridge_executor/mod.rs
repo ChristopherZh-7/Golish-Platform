@@ -128,6 +128,8 @@ impl BridgeAgentExecutor {
             // does not build it.
             stage_tool_guard: None,
             hide_tool_in_stage: None,
+            active_org_id_source: None,
+            active_org_id_override: None,
         };
 
         let client = self.bridge.client().read().await;

@@ -26,9 +26,9 @@
 | `DbState` | 命令接收的窄 DB 状态句柄 |
 | `TauriEventEmitter` | 包 `tauri::AppHandle` 的事件发射适配器 |
 | `ports`（vuln/platform/pentest/agent/recon） | provider 端服务 ports（S1-2），如 `VaultReadPort`/`PgVaultAdapter` |
-| `pty_interactive` | PTY 输出 tap + `run_pty_cmd` Tool 实现 |
+| `pty_interactive` | PTY 输出 tap + `run_pty_cmd` Tool 实现；启动后台 job 时捕获当前 agent tool context |
 | `runtime`（`TauriRuntime` / `CliRuntime`） | `GolishRuntime` 适配器 |
-| `scoping` / `domain` / `state` / `background_jobs` | IDOR 守卫 / domain DTO（ts-rs）/ 状态 / 后台任务 |
+| `scoping` / `domain` / `state` / `background_jobs` | IDOR 守卫 / domain DTO（ts-rs）/ 状态 / 后台任务；后台任务广播 completion + live stdout/stderr chunks |
 
 ## 依赖
 
@@ -49,7 +49,7 @@
 
 ## 关键文件
 
-`error.rs`（`GolishError`）、`state.rs`（`DbState`）、`event_emitter.rs`、`scoping.rs`（IDOR 守卫）、`pty_interactive.rs`、`background_jobs.rs`。
+`error.rs`（`GolishError`）、`state.rs`（`DbState`）、`event_emitter.rs`、`scoping.rs`（IDOR 守卫）、`pty_interactive.rs`、`background_jobs.rs`（job snapshot/completion/live output broadcast）。
 
 ## 注意事项 / 坑
 

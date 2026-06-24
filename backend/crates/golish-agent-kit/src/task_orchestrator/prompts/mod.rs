@@ -96,6 +96,24 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
              (\"checked-empty\" is NOT \"unchecked\").",
             spec.expected_techniques.join(", ")
         )
+    } else if spec.kind == StageKind::ExternalAttackSurface {
+        format!(
+            "\n- **Coverage (per in-scope asset)** — EAS asset/port contract: give EACH applicable \
+             technique a terminal status for EVERY asset via the `coverage` field: {}. \
+             domain/ip/CIDR-discovered IP assets require LIVENESS + PORT + SERVICE-FINGERPRINT; \
+             bare URL assets keep URL LIVENESS only because host-level PORT/SERVICE belongs to the \
+             host/IP target. Per cell: found+evidence_refs / checked_empty+evidence_refs / \
+             blocked|not_applicable+note. A missing (asset × technique) = not_attempted = gate \
+             BLOCK (\"checked-empty\" is NOT \"unchecked\").\n\
+             - **EAS denominator** — if you explicitly submit found/checked_empty coverage, set \
+             `tested_units` and `total_units`. LIVENESS uses 1/1 for the checked host or URL. \
+             PORT uses the scanned port-set denominator for that host/IP. SERVICE-FINGERPRINT uses \
+             `tested_units = open ports fingerprinted` and `total_units = open ports discovered`. \
+             If no ports are open, mark SERVICE-FINGERPRINT `not_applicable` with a note; do NOT \
+             submit checked_empty with total_units=0. HTTP liveness alone is never PORT or \
+             SERVICE-FINGERPRINT coverage.",
+            spec.expected_techniques.join(", ")
+        )
     } else {
         format!(
             "\n- **Coverage (per in-scope asset)** — give EACH of these techniques a terminal status \
@@ -906,6 +924,10 @@ mod tests {
             "EAS charter must surface the liveness technique to the agent"
         );
         assert!(charter.contains("Coverage (per in-scope asset)"));
+        assert!(charter.contains("EAS asset/port contract"));
+        assert!(charter.contains("open ports fingerprinted"));
+        assert!(charter.contains("HTTP liveness alone is never PORT"));
+        assert!(charter.contains("bare URL assets keep URL LIVENESS only"));
     }
 
     /// 阶段级方法论 playbook (设计 2026-06-11): `stage_methodology` 为有 playbook 的

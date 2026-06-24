@@ -28,6 +28,7 @@
 | HITL：`ApprovalDecision` / `ApprovalPattern` / `RiskLevel` / `ToolApprovalConfig` | 人类在环审批 |
 | `PromptContributor` / `PromptContext` / `PromptSection` | prompt 组装贡献机制 |
 | `EventEmitter` / `NullEmitter`、`DbReadyGate`、`SkillProvider` | 事件/就绪门/技能 |
+| `with_agent_session` / `with_agent_tool_context` / `AgentToolContext` | agent loop 的 task-local session/tool attribution |
 | `web_fetch`、`vault`、`utils`、`time::now_ms` | 通用能力 |
 
 ## 依赖
@@ -53,6 +54,7 @@
 ## 注意事项 / 坑
 
 - 跨 IPC 的类型若在此定义，必须 `#[derive(ts_rs::TS)]` 同步前端（不变量 I5）。
+- `agent_session.rs` 的 task-local attribution 是 best-effort：只对 inline awaited work 生效，启动后台 job 时要立即 capture，不能等到 spawned task 里再读。
 - 改动牵一发动全身：优先在子模块内部小改，避免改公共 `pub` 签名。
 
 ## 测试入口

@@ -6,8 +6,9 @@ use super::llm_helpers::{mentor_one_shot, summarize_tool_output};
 use super::tool_execution::execute_with_hitl_generic;
 use super::{normalize_run_pty_cmd_args, toolcall_fixer, SUMMARIZE_THRESHOLD_TOKENS};
 use golish_agent_kit::system_hooks::{HookRegistry, PostToolContext};
-use golish_core::events::AiEvent;
+use golish_core::events::{AiEvent, ToolSource};
 use golish_core::utils::truncate_str;
+use golish_core::AgentToolContext;
 use golish_sub_agents::SubAgentContext;
 use rig::completion::CompletionModel as RigCompletionModel;
 use rig::message::{Text, ToolCall, ToolResult, ToolResultContent, UserContent};
@@ -108,15 +109,23 @@ where
         .map(|t| t.start_tool_call(&tool_id, tool_name, &tool_args));
 
     // Execute tool with HITL approval check
-    let mut result = execute_with_hitl_generic(
-        tool_name,
-        &tool_args,
-        &tool_id,
-        ctx,
-        capture_ctx,
-        model,
-        sub_agent_context,
-    )
+    let tool_context = AgentToolContext {
+        request_id: tool_id.clone(),
+        tool_name: tool_name.to_string(),
+        source: ToolSource::Main,
+    };
+    let mut result = golish_core::with_agent_tool_context(Some(tool_context.clone()), async {
+        execute_with_hitl_generic(
+            tool_name,
+            &tool_args,
+            &tool_id,
+            ctx,
+            capture_ctx,
+            model,
+            sub_agent_context,
+        )
+        .await
+    })
     .await
     .unwrap_or_else(|e| ToolExecutionResult {
         value: json!({ "error": e.to_string() }),
@@ -155,15 +164,18 @@ where
                 "[toolcall-fixer] Retrying '{}' with repaired args",
                 tool_name
             );
-            result = execute_with_hitl_generic(
-                tool_name,
-                &fixed_args,
-                &tool_id,
-                ctx,
-                capture_ctx,
-                model,
-                sub_agent_context,
-            )
+            result = golish_core::with_agent_tool_context(Some(tool_context.clone()), async {
+                execute_with_hitl_generic(
+                    tool_name,
+                    &fixed_args,
+                    &tool_id,
+                    ctx,
+                    capture_ctx,
+                    model,
+                    sub_agent_context,
+                )
+                .await
+            })
             .await
             .unwrap_or_else(|e| ToolExecutionResult {
                 value: json!({ "error": e.to_string() }),

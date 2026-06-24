@@ -228,6 +228,14 @@ pub struct SubAgentExecutorContext<'a> {
     /// tried before the registry fallback so a delegated sub-agent can actually
     /// run them (e.g. `graph_add_entity`) instead of getting "Unknown tool".
     pub sub_tool_router: Option<SubAgentToolRouter>,
+    /// Writable active-org side-channel used by legacy registry tools. Per-org
+    /// stage_run workers prefer hidden per-call org args for org-aware tools
+    /// (`manage_targets` / `manage_organizations`) and keep this as a fallback.
+    pub active_org_id_source: Option<Arc<RwLock<Option<uuid::Uuid>>>>,
+    /// The org id this sub-agent is bound to. Org-aware registry tools receive it
+    /// as an internal hidden arg; non-injectable tools may fall back to the
+    /// side-channel above. `None` preserves the parent/global binding.
+    pub active_org_id_override: Option<uuid::Uuid>,
     /// Optional post-processing hook for regular tool results. This keeps the
     /// executor generic while allowing the agent runtime to attach harness
     /// evidence/source logging to sub-agent tool calls.

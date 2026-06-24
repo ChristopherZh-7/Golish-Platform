@@ -55,8 +55,51 @@ pub async fn configure_bridge(
         } else {
             Some(pp)
         };
+        spawn_background_output_listener(bridge);
         spawn_background_completion_listener(bridge, bg_repo, bg_project_path);
     }
+}
+
+/// Wire this session's background-job stdout/stderr chunks into the normal tool
+/// output event stream. The frontend already knows how to append
+/// `ToolOutputChunk` to shell-like tool panels, so attributed `pentest_run`
+/// background jobs become visible without a separate UI path.
+fn spawn_background_output_listener(bridge: &AgentBridge) {
+    use golish_core::events::AiEvent;
+
+    let Some(session_id) = bridge.event_session_id().map(str::to_string) else {
+        tracing::debug!("[configure_bridge] No session id; skipping background output listener");
+        return;
+    };
+    let event_tx = bridge.get_or_create_event_tx();
+    let mut rx = golish_app_core::background_jobs::manager().subscribe_output_chunks();
+
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(chunk) => {
+                    if chunk.session_id.as_deref() != Some(session_id.as_str()) {
+                        continue;
+                    }
+                    let _ = event_tx.send(AiEvent::ToolOutputChunk {
+                        request_id: chunk.request_id,
+                        tool_name: chunk.tool_name,
+                        chunk: chunk.chunk,
+                        stream: chunk.stream.to_string(),
+                        source: chunk.source,
+                    });
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
+                    tracing::warn!(
+                        "[background-output-listener] lagged; dropped {} chunk(s)",
+                        dropped
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    tracing::info!("[configure_bridge] Started background-job output listener");
 }
 
 /// Wire this session's background-job completions back into the agent.
@@ -429,12 +472,14 @@ impl crate::ai::harness_submit_tool::BackgroundJobsQuery for ManagerBackgroundJo
 
 /// Total time the submit-time reconciliation barrier (Piece 3) waits for a
 /// session's background scans to settle before telling the agent to wait +
-/// resubmit. Tunable via `GOLISH_SUBMIT_RECONCILE_WAIT_MS` (default 60s).
+/// resubmit. Tunable via `GOLISH_SUBMIT_RECONCILE_WAIT_MS` (default 5min).
+const DEFAULT_SUBMIT_RECONCILE_WAIT_MS: u64 = 300_000;
+
 fn submit_reconcile_wait_ms() -> u64 {
     std::env::var("GOLISH_SUBMIT_RECONCILE_WAIT_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(60_000)
+        .unwrap_or(DEFAULT_SUBMIT_RECONCILE_WAIT_MS)
 }
 
 async fn register_pentest_tools(
@@ -736,5 +781,10 @@ mod tests {
         let note = format_background_note(&sample_completion(), None);
         assert!(!note.contains("evidence_id="), "note: {note}");
         assert!(note.contains("status=done"));
+    }
+
+    #[test]
+    fn submit_reconcile_default_waits_for_slow_scans() {
+        assert_eq!(DEFAULT_SUBMIT_RECONCILE_WAIT_MS, 300_000);
     }
 }

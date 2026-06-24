@@ -201,6 +201,16 @@ pub fn underlying_tool_name(tool_name: &str, args: &Value) -> String {
     }
 }
 
+/// Background-job lifecycle commands are control-plane operations, not scan
+/// invocations. They must stay usable inside active stages so a worker can inspect
+/// or cancel a stuck background job without widening the stage's scan whitelist.
+fn is_background_job_control_tool(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "check_job" | "kill_job" | "list_jobs"
+    )
+}
+
 /// Whether a tool call is a **scan invocation** that the per-stage whitelist
 /// should govern, vs an agent / meta / control-plane tool that is exempt.
 ///
@@ -216,8 +226,12 @@ pub fn underlying_tool_name(tool_name: &str, args: &Value) -> String {
 /// with an unknown inner tool still returns `true`, so [`stage_allows`] denies it
 /// — safe deny-by-default for unrecognized scans.)
 pub fn is_scan_invocation(tool_name: &str, args: &Value) -> bool {
+    let inner = underlying_tool_name(tool_name, args);
+    if is_background_job_control_tool(&inner) {
+        return false;
+    }
     matches!(tool_name, "pentest_run" | "run_pty_cmd" | "run_command")
-        || tool_category(&underlying_tool_name(tool_name, args)).is_some()
+        || tool_category(&inner).is_some()
 }
 
 /// Name-only variant of [`is_scan_invocation`] for **tool-list filtering** (where
@@ -480,6 +494,13 @@ mod tests {
             "pentest_run",
             &json!({"tool_name": "weirdtool"})
         ));
+        // background job control travels through pentest_run but is not a scan.
+        for ctl in ["check_job", "kill_job", "list_jobs"] {
+            assert!(
+                !is_scan_invocation("pentest_run", &json!({"tool_name": ctl})),
+                "{ctl} must be exempt from the scan whitelist"
+            );
+        }
         // agent / meta / control-plane tools → exempt (not scan)
         for meta in [
             "sub_agent_pentester",

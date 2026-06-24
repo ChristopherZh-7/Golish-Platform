@@ -145,7 +145,7 @@ export function getToolPrimaryArg(name: string, args: Record<string, unknown>): 
   // pentest_run wraps the real tool in `tool_name` + `args`; surface them as a
   // single command-like line (e.g. "dig example.com NS") so the card explains
   // what it did without the user expanding it.
-  if (name === "pentest_run" && args.tool_name) {
+  if (typeof args.tool_name === "string") {
     const toolArgs = args.args != null ? String(args.args) : "";
     return formatCommandForDisplay(`${String(args.tool_name)} ${toolArgs}`.trim());
   }
@@ -171,6 +171,7 @@ export function formatToolResult(result: unknown): string {
 
 const FAILURE_STATUS_RE = /"status"\s*:\s*"(rejected|needs_fix|error|failed)"/i;
 const STDERR_FAILURE_RE = /(^|\s)(error|fatal|exception)([:\s]|$)/i;
+const OUTPUT_FAILURE_RE = /\b(not installed|missing dependenc(?:y|ies)|command not found)\b/i;
 
 function parseResultObject(result: unknown): Record<string, unknown> | null {
   if (result != null && typeof result === "object" && !Array.isArray(result)) {
@@ -215,7 +216,12 @@ export function toolResultIndicatesFailure(result?: unknown): boolean {
   const stderr = [obj.stderr, obj.partial_stderr]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .join("\n");
-  return STDERR_FAILURE_RE.test(stripAnsiForDisplay(stderr));
+  if (STDERR_FAILURE_RE.test(stripAnsiForDisplay(stderr))) return true;
+
+  const outputText = [obj.stdout, obj.output, obj.error, obj.message]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n");
+  return OUTPUT_FAILURE_RE.test(stripAnsiForDisplay(outputText));
 }
 
 /** Type guard to check if a result is a shell command result */

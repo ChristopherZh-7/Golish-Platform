@@ -803,6 +803,7 @@
       "promptFailed": "Prompt generation failed",
       "status": {
         "running": "Running",
+        "backgrounded": "Backgrounded",
         "completed": "Completed",
         "error": "Error",
         "interrupted": "Interrupted"

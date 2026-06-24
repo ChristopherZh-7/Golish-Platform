@@ -444,6 +444,7 @@ export const handleToolBackgroundCompleted: EventHandler<{
     // state too, so both views converge on the terminal result.
     state.updateStreamingToolBlock(ctx.sessionId, block.data.requestId, success, result);
   }
+  state.completeBackgroundedSubAgentToolCall(ctx.sessionId, event.job_id, success, result);
 };
 
 /**
