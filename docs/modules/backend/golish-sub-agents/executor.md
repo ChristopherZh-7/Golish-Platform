@@ -47,7 +47,7 @@
 - 普通 registry fallback 的 `Ok(Value)` 不是成功定义；必须用 `golish_core::utils::is_tool_result_success` 从 payload 判定。典型例子：WhatWeb 在 Ruby/OpenSSL 兼容问题下可能 `exit_code=0` 但 `stderr` 含 `ERROR Opening`，这要作为失败上报，UI 才能显示红色而不是绿勾。
 - registry/router fallback 会用 `golish_core::with_agent_tool_context` 标记当前 sub-agent tool call；如果 `pentest_run` 等工具内部启动后台 shell，live chunk 要带 `ToolSource::SubAgent` 回到对应 sub-agent 工具详情。
 - `response_parsing.rs` 对 sub-agent 的 `pentest_run` 结果也要触发 `post_shell_hook`（从 result/args 提取 `command/stdout`），否则 Prober/Enumerator 的 active scan 输出只进 evidence，不会自动走 output_store 写 `targets` / fingerprints。
-- `SubAgentToolObserver` 是 runtime supervisor/mentor 的泛型扩展点：executor 只传工具名、参数、结果、成功状态，不反向依赖 harness/DB/LLM；shadow 模式只记 trace，soft 模式才把建议附回模型可见 ToolResult。
+- `SubAgentToolObserver` 是 runtime supervisor/mentor 的泛型扩展点：executor 只传工具名、参数、结果、成功状态，不反向依赖 harness/DB/LLM；shadow 模式只记 trace，soft/hard 模式才把建议附回模型可见 ToolResult。
 - `submit_stage_deliverable` 返回 `needs_fix` 且 gate 已给出 `available_evidence_ids` 时，`response_parsing.rs` 会先分类：纯 evidence/id 错误进入 evidence-ref repair-only（只允许 submit/query/wait），覆盖缺口（coverage / never attempted / EAS liveness/port/service）进入 targeted gap-closure，允许 `pentest_run` 等阶段内定向补扫但仍拦截 broad restart。
 - `submit_stage_deliverable` 返回 `needs_fix` 且仍有后台 job 未完成时，executor 会进入 wait-only repair lock：只允许 `wait_for_background_jobs` / `check_job` / `kill_job` / resubmit，避免模型开替代扫描把 UI 又变回 submit spinner。
 - `SubAgentExecutorContext.initial_submit_repair_mode` 是 resume/refiner 入口：runtime 从 `agent_run.submit_repair_mode` 恢复后传入；executor 会把 directive 写进恢复后的 chat history，并发一条 SubAgentTextDelta 给 UI，随后用同一个 repair lock 继续拦截不允许的工具。

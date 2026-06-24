@@ -18,7 +18,7 @@
 
 硬性 `LoopDetector` 跟踪并拦截失控行为：总 turn 数、每 turn 工具调用数、相同参数重复调用次数。超限发 `AiEvent::LoopWarning`/`LoopBlocked`/`MaxIterationsReached`（见 `golish-core::events`）。
 
-`ExecutionMonitor` 是较软的执行监督器：跟踪同工具重复/总工具调用阈值，触发 mentor LLM 评审。`GOLISH_EXECUTION_MENTOR=shadow` 只记录建议，`soft`/`on` 把 advisor 建议追加到工具响应，`hard`/`supervise` 把 supervisor correction 追加到工具响应；默认 off，避免无意增加模型调用成本。
+`ExecutionMonitor` 是较软的执行监督器：跟踪同工具重复/总工具调用阈值，触发 mentor LLM 评审。bridge 默认启用 hard supervisor（普通 `just dev` 直接生效）；`GOLISH_EXECUTION_MENTOR=shadow` 只记录建议，`soft`/`on` 把 advisor 建议追加到工具响应，`off`/`false`/`0` 才关闭。
 
 ## 公开接口
 
@@ -41,7 +41,7 @@
 ## 注意事项 / 坑
 
 - 阈值过松会放任失控（烧 token/钱）、过紧会误杀合法长任务；改阈值要兼顾 Task 模式的多 turn。
-- `ExecutionMonitor::new()` 保留 soft-inject 语义；生产是否启用由 bridge 的 `GOLISH_EXECUTION_MENTOR` 控制，默认 off。
+- `ExecutionMonitor::new()` 保留 soft-inject 语义；生产默认由 bridge 创建 hard-inject monitor，`GOLISH_EXECUTION_MENTOR` 只作为 shadow/soft/off 调试覆盖。
 - 对应前端的 LoopWarning/LoopBlocked 事件（`golish-core::events` + `cli_json::loop_guard`）。
 
 ## 测试入口

@@ -6033,6 +6033,27 @@
   - 未做活体 stage_run EAS；需要重启后端后实际跑一次确认 prober 新 prompt + spec 新 gate 的交互。
 - **下一步最佳动作**：重启 app 后跑一次 EAS stage_run；若模型开始因为 denominator 字段不熟悉反复 needs_fix，再把 `submit_stage_deliverable` schema/工具说明或新增 EAS 专用 record 工具补上。
 
+### 2026-06-25 · execution mentor 默认 hard supervisor
+
+- **本轮目标**：把监督模式改成 `just dev` 默认启用最完整 hard supervisor，不再要求用户记 `GOLISH_EXECUTION_MENTOR=hard`。
+- **已完成**：
+  - `golish-agent-bridge/src/agent_bridge/prepare.rs`：默认未设置 `GOLISH_EXECUTION_MENTOR` 时创建 `HardInject` monitor；env 仅作为调试覆盖，`shadow`/`soft` 可降级，`off`/`false`/`0` 可关闭。
+  - 新增解析函数单测，覆盖默认 hard、显式 hard、shadow/soft/off。
+  - 同步模块卡：`docs/modules/backend/golish-agent-bridge/agent_bridge.md`、`docs/modules/backend/golish-agent-kit/loop_detection.md`、`docs/modules/backend/golish-sub-agents/executor.md`。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-agent-bridge` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-bridge execution_monitor --status-level fail` → 2 passed / 16 skipped。
+  - `cd backend && cargo check -p golish-agent-bridge` → exit 0。
+  - `cd backend && cargo clippy -p golish-agent-bridge --all-targets -- -D warnings` → exit 0。
+- **已记录证据**：
+  - `execution_monitor_defaults_to_hard_supervisor` 证明空/default 走 `HardInject`。
+  - `execution_monitor_env_can_downgrade_or_disable` 证明 shadow/soft/off 覆盖仍可用。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 `just precommit`；本轮为 bridge 默认值改动，只跑 scoped bridge 验证。
+  - 默认 hard 会在触发阈值后多一次 mentor LLM 调用，这是产品选择；需要压成本时可显式 `GOLISH_EXECUTION_MENTOR=off just dev`。
+- **下一步最佳动作**：直接 `just dev` 复跑 EAS；不需要再加 env。
+
 ### 2026-06-25 · needs_fix 分类 / stage retry resume / mentor hard / background evidence 修复
 
 - **本轮目标**：修用户现场 EAS run 暴露的四个后端问题：coverage needs_fix 被误锁成 evidence-ref repair、stage retry/resume 像从头跑、`shadow` 不是实际监督、后台 nmap/naabu evidence 归因丢真实工具名。

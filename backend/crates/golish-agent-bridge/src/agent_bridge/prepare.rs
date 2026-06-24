@@ -23,23 +23,27 @@ use super::super::system_prompt::build_system_prompt_with_contributions;
 use super::terminal_error::TerminalErrorState;
 use super::AgentBridge;
 
+fn execution_monitor_for_mode(
+    mode: &str,
+) -> Option<golish_agent_kit::loop_detection::ExecutionMonitor> {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "" | "hard" | "hard_inject" | "supervise" | "supervisor" => {
+            Some(golish_agent_kit::loop_detection::ExecutionMonitor::hard_inject())
+        }
+        "shadow" => Some(golish_agent_kit::loop_detection::ExecutionMonitor::shadow()),
+        "soft" | "soft_inject" | "on" | "1" | "true" => {
+            Some(golish_agent_kit::loop_detection::ExecutionMonitor::soft_inject())
+        }
+        "off" | "0" | "false" | "none" | "disabled" => None,
+        _ => None,
+    }
+}
+
 fn execution_monitor_from_env(
 ) -> Option<std::sync::Arc<tokio::sync::RwLock<golish_agent_kit::loop_detection::ExecutionMonitor>>>
 {
-    let mode = std::env::var("GOLISH_EXECUTION_MENTOR")
-        .unwrap_or_else(|_| "off".to_string())
-        .trim()
-        .to_ascii_lowercase();
-    let monitor = match mode.as_str() {
-        "shadow" => golish_agent_kit::loop_detection::ExecutionMonitor::shadow(),
-        "soft" | "soft_inject" | "on" | "1" | "true" => {
-            golish_agent_kit::loop_detection::ExecutionMonitor::soft_inject()
-        }
-        "hard" | "hard_inject" | "supervise" | "supervisor" => {
-            golish_agent_kit::loop_detection::ExecutionMonitor::hard_inject()
-        }
-        _ => return None,
-    };
+    let mode = std::env::var("GOLISH_EXECUTION_MENTOR").unwrap_or_else(|_| "hard".to_string());
+    let monitor = execution_monitor_for_mode(&mode)?;
     tracing::info!(
         target: "harness::mentor",
         mode = monitor.mode().as_str(),
@@ -567,5 +571,36 @@ impl AgentBridge {
                 .await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::execution_monitor_for_mode;
+    use golish_agent_kit::loop_detection::ExecutionMonitorMode;
+
+    #[test]
+    fn execution_monitor_defaults_to_hard_supervisor() {
+        let monitor = execution_monitor_for_mode("").expect("blank default should enable monitor");
+        assert_eq!(monitor.mode(), ExecutionMonitorMode::HardInject);
+
+        let monitor = execution_monitor_for_mode("hard").expect("hard should enable monitor");
+        assert_eq!(monitor.mode(), ExecutionMonitorMode::HardInject);
+        assert!(monitor.mode().injects());
+    }
+
+    #[test]
+    fn execution_monitor_env_can_downgrade_or_disable() {
+        assert_eq!(
+            execution_monitor_for_mode("shadow").unwrap().mode(),
+            ExecutionMonitorMode::Shadow
+        );
+        assert_eq!(
+            execution_monitor_for_mode("soft").unwrap().mode(),
+            ExecutionMonitorMode::SoftInject
+        );
+        assert!(execution_monitor_for_mode("off").is_none());
+        assert!(execution_monitor_for_mode("false").is_none());
+        assert!(execution_monitor_for_mode("0").is_none());
     }
 }
