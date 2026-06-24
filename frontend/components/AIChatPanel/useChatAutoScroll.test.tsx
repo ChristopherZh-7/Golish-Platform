@@ -84,10 +84,13 @@ describe("useChatAutoScroll", () => {
     expect(observer?.observe).toHaveBeenCalledWith(getByTestId("content"));
   });
 
-  it("scrolls to the bottom when the observer fires and the user is at bottom", () => {
+  it("scrolls to the bottom when the observer fires and the user is at bottom", async () => {
     const { getByTestId } = render(<Harness messages={[{ id: 1 }]} />);
     const readTop = patchScroll(getByTestId("container"), 800);
     act(() => lastObserver()?.fire());
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
     expect(readTop()).toBe(800);
   });
 

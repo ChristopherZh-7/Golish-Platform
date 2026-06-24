@@ -44,6 +44,7 @@
 - **wire 契约对齐**：handler 处理的事件类型对应后端 `golish-core::events::AiEvent`（ts-rs 生成）；后端加事件变体要在此加 handler。
 - `session-sequence` 依赖后端 envelope 的 seq 保证有序——别绕过它直接处理乱序事件。
 - `tool_result.result.status === "backgrounded"` 要走 live/non-terminal 路由：登记 `backgroundJobs`，timeline / streaming block 标 `backgrounded`，等 `tool_background_completed` 再按 `job_id` 翻终态；聊天气泡侧同样按 requestId/jobId 回填，避免 success=true 的 backgrounded 工具显示绿勾。
+- 高频流式 handler 不要直接写 store：`reasoning`、`sub_agent_reasoning`、`tool_output_chunk` 走 `EventHandlerContext` 的 batch 方法，由 `lib/ai/streaming-buffer.ts` 合并后写入，避免 detail thinking/output 同时刷新时卡顿。
 
 ## 测试入口
 

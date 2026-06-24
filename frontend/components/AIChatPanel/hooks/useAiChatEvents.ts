@@ -7,6 +7,11 @@ import {
   respondToToolApproval,
 } from "@/lib/ai";
 import { classifyErrorSeverity } from "@/lib/ai/errorSeverity";
+import {
+  batchConversationThinking,
+  runRealtimeBatchFlush,
+  runRealtimeBatchFlushForConversation,
+} from "@/lib/ai/streaming-buffer";
 import { safeStringify } from "@/lib/text";
 import { type ChatMessage, useStore } from "@/store";
 import { type AskHumanState, resolveAskHumanInputType } from "../AskHumanInline";
@@ -143,6 +148,7 @@ export function useAiChatEvents({
               break;
             }
             case "text_delta":
+              runRealtimeBatchFlushForConversation(convId);
               store.appendMessageDelta(convId, event.delta);
               break;
             case "tool_intent_observation":
@@ -169,6 +175,7 @@ export function useAiChatEvents({
               break;
             case "tool_request":
             case "tool_auto_approved": {
+              runRealtimeBatchFlushForConversation(convId);
               store.addMessageToolCall(convId, {
                 name: event.tool_name,
                 args:
@@ -184,6 +191,7 @@ export function useAiChatEvents({
               break;
             }
             case "tool_approval_request": {
+              runRealtimeBatchFlushForConversation(convId);
               store.addMessageToolCall(convId, {
                 name: event.tool_name,
                 args:
@@ -211,6 +219,7 @@ export function useAiChatEvents({
               break;
             }
             case "tool_result": {
+              runRealtimeBatchFlushForConversation(convId);
               const resultStr =
                 typeof event.result === "string" ? event.result : safeStringify(event.result);
               store.updateMessageToolResult(
@@ -247,9 +256,10 @@ export function useAiChatEvents({
               break;
             }
             case "reasoning":
-              store.appendMessageThinking(convId, event.content);
+              batchConversationThinking(convId, event.content);
               break;
             case "completed": {
+              runRealtimeBatchFlushForConversation(convId);
               store.finalizeStreamingMessage(convId, event.response, event.reasoning ?? undefined);
               streamingMsgRef.current = null;
               if (taskInProgressRef.current) store.setConversationStreaming(convId, true);
@@ -507,6 +517,7 @@ export function useAiChatEvents({
       mounted = false;
       unlistenRef.current?.();
       unlistenRef.current = null;
+      runRealtimeBatchFlush();
     };
   }, [
     generateTitleRef.current,

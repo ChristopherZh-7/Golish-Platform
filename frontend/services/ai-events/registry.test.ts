@@ -102,8 +102,12 @@ describe("dispatchEvent", () => {
     mockCtx = {
       sessionId: "test-session",
       getState: vi.fn(() => mockState) as unknown as EventHandlerContext["getState"],
+      flushTextDeltas: vi.fn(),
       flushSessionDeltas: vi.fn(),
       batchTextDelta: vi.fn(),
+      batchThinkingContent: vi.fn(),
+      batchSubAgentThinking: vi.fn(),
+      batchToolOutputChunk: vi.fn(),
       convertToolSource: vi.fn(),
     };
   });
@@ -186,10 +190,12 @@ describe("dispatchEvent", () => {
     };
     dispatchEvent(event, mockCtx);
 
-    expect(mockState.appendThinkingContent).toHaveBeenCalledWith(
+    expect(mockCtx.flushTextDeltas).toHaveBeenCalledWith("test-session");
+    expect(mockCtx.batchThinkingContent).toHaveBeenCalledWith(
       "test-session",
       "Thinking about this..."
     );
+    expect(mockState.appendThinkingContent).not.toHaveBeenCalled();
   });
 
   it("dispatches tool_background_completed and completes the matching tool card", () => {

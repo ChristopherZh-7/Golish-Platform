@@ -41,6 +41,7 @@ export function ThinkingBlock({ content, isActive, startedAt, endedAt }: Thinkin
   const userToggledRef = useRef(false);
   const prevActiveRef = useRef<boolean>(isActive);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (userToggledRef.current) return;
@@ -55,8 +56,19 @@ export function ThinkingBlock({ content, isActive, startedAt, endedAt }: Thinkin
   // the top once the content overflows the max height.
   useEffect(() => {
     if (isActive && expanded && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      if (scrollFrameRef.current != null) cancelAnimationFrame(scrollFrameRef.current);
+      scrollFrameRef.current = requestAnimationFrame(() => {
+        scrollFrameRef.current = null;
+        const el = scrollRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
     }
+    return () => {
+      if (scrollFrameRef.current != null) {
+        cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+    };
   }, [content, isActive, expanded]);
 
   const handleToggle = () => {

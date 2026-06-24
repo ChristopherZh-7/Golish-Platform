@@ -16,15 +16,7 @@ import {
   Wand2,
   XCircle,
 } from "lucide-react";
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type WheelEvent,
-} from "react";
+import { memo, useCallback, useEffect, useRef, useState, type WheelEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { ThinkingBlock } from "@/components/AIChatPanel/ThinkingBlock";
 import { Ansi } from "@/components/Ansi";
@@ -325,14 +317,26 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: Su
   const isShellLikeOutput = isSubAgentShellLikeOutputTool(tool);
   const [isExpanded, setIsExpanded] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
+  const preScrollFrameRef = useRef<number | null>(null);
   const status = getSubAgentToolDisplayStatus(tool);
   const isLive = isLiveToolStatus(status);
   const isStreaming = isShellLikeOutput && isLive && !!tool.streamingOutput;
 
   useEffect(() => {
     if (isStreaming && preRef.current) {
-      preRef.current.scrollTop = preRef.current.scrollHeight;
+      if (preScrollFrameRef.current != null) cancelAnimationFrame(preScrollFrameRef.current);
+      preScrollFrameRef.current = requestAnimationFrame(() => {
+        preScrollFrameRef.current = null;
+        const el = preRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
     }
+    return () => {
+      if (preScrollFrameRef.current != null) {
+        cancelAnimationFrame(preScrollFrameRef.current);
+        preScrollFrameRef.current = null;
+      }
+    };
   }, [isStreaming, tool.streamingOutput]);
 
   // Reuse the shared primary-arg formatter (same as the main timeline cards) so
@@ -429,11 +433,7 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: Su
                     )}
                   >
                     <SubAgentShellOutputText
-                      text={
-                        shellOutputState.text.length > 5000
-                          ? `${shellOutputState.text.slice(0, 5000)}\n... (truncated)`
-                          : shellOutputState.text
-                      }
+                      text={limitLiveOutputForRender(shellOutputState.text, isLive)}
                     />
                   </pre>
                 )}
@@ -563,6 +563,12 @@ const EMPTY_SUB_AGENT_LIST: ActiveSubAgent[] = [];
 /** Stable empty array so the background-jobs selector doesn't churn re-renders. */
 const EMPTY_BG_JOBS: never[] = [];
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
+const LIVE_OUTPUT_RENDER_LIMIT = 20000;
+
+function limitLiveOutputForRender(text: string, isLive: boolean): string {
+  if (!isLive || text.length <= LIVE_OUTPUT_RENDER_LIMIT) return text;
+  return `... (showing latest output)\n${text.slice(-LIVE_OUTPUT_RENDER_LIMIT)}`;
+}
 
 export const SubAgentDetailView = memo(function SubAgentDetailView({
   sessionId,
@@ -587,6 +593,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
   const backgroundJobs = useStore((s) => s.backgroundJobs[sessionId]) ?? EMPTY_BG_JOBS;
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const timelineScrollFrameRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
   const [isTaskExpanded, setIsTaskExpanded] = useState(false);
@@ -624,24 +631,40 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
     }
   }, []);
 
+  const scheduleTimelineScrollToBottom = useCallback(() => {
+    if (timelineScrollFrameRef.current != null) return;
+    timelineScrollFrameRef.current = requestAnimationFrame(() => {
+      timelineScrollFrameRef.current = null;
+      const el = scrollRef.current;
+      if (!el || !shouldStickToBottomRef.current) return;
+      el.scrollTop = el.scrollHeight;
+    });
+  }, []);
+
   // Follow streaming output only while the user is already near the bottom.
-  useLayoutEffect(() => {
+  useEffect(() => {
     const el = scrollRef.current;
     if (!el || !isRunning || !shouldStickToBottomRef.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [activityVersion, isRunning]);
+    scheduleTimelineScrollToBottom();
+  }, [activityVersion, isRunning, scheduleTimelineScrollToBottom]);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     shouldStickToBottomRef.current = true;
-    const el = scrollRef.current;
-    if (el && isRunning) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [targetRequestId]);
+    if (scrollRef.current && isRunning) scheduleTimelineScrollToBottom();
+  }, [targetRequestId, isRunning, scheduleTimelineScrollToBottom]);
 
   useEffect(() => {
     setIsTaskExpanded(false);
   }, [targetRequestId]);
+
+  useEffect(() => {
+    return () => {
+      if (timelineScrollFrameRef.current != null) {
+        cancelAnimationFrame(timelineScrollFrameRef.current);
+        timelineScrollFrameRef.current = null;
+      }
+    };
+  }, []);
 
   const handleCopy = async (content: string, section: string) => {
     if (await copyToClipboard(content)) {

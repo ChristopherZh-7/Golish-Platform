@@ -19,10 +19,23 @@ export interface EventHandlerContext {
   sessionId: string;
   /** Access to the store's getState function */
   getState: () => StoreState;
-  /** Flush pending text deltas for a session (ensures correct ordering) */
+  /** Flush pending text deltas for a session. */
+  flushTextDeltas: (sessionId: string) => void;
+  /** Flush pending text/realtime deltas for a session (ensures correct ordering before boundaries) */
   flushSessionDeltas: (sessionId: string) => void;
   /** Batch a text delta for throttled updates */
   batchTextDelta: (sessionId: string, delta: string) => void;
+  /** Batch a reasoning/thinking delta for throttled updates */
+  batchThinkingContent: (sessionId: string, content: string) => void;
+  /** Batch a sub-agent reasoning update, keeping the latest accumulated text */
+  batchSubAgentThinking: (sessionId: string, parentRequestId: string, text: string) => void;
+  /** Batch streaming tool output so large output does not re-render per chunk */
+  batchToolOutputChunk: (
+    sessionId: string,
+    toolId: string,
+    chunk: string,
+    target: "main" | "sub_agent"
+  ) => void;
   /** Convert backend tool source to store tool source */
   convertToolSource: (source?: ToolSource) => ToolCallSource | undefined;
 }

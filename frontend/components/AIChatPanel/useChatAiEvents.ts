@@ -6,6 +6,11 @@ import {
   onAiEvent,
   respondToToolApproval,
 } from "@/lib/ai";
+import {
+  batchConversationThinking,
+  runRealtimeBatchFlush,
+  runRealtimeBatchFlushForConversation,
+} from "@/lib/ai/streaming-buffer";
 import { safeStringify } from "@/lib/text";
 import { type ChatMessage, useStore } from "@/store";
 import type { AskHumanState, WorkflowRunSnapshot } from "./ChatSubComponents";
@@ -160,6 +165,7 @@ export function useChatAiEvents({
             }
 
             case "text_delta": {
+              runRealtimeBatchFlushForConversation(convId);
               store.appendMessageDelta(convId, event.delta);
               break;
             }
@@ -190,6 +196,7 @@ export function useChatAiEvents({
 
             case "tool_request":
             case "tool_auto_approved": {
+              runRealtimeBatchFlushForConversation(convId);
               store.addMessageToolCall(convId, {
                 name: event.tool_name,
                 args:
@@ -200,6 +207,7 @@ export function useChatAiEvents({
             }
 
             case "tool_approval_request": {
+              runRealtimeBatchFlushForConversation(convId);
               store.addMessageToolCall(convId, {
                 name: event.tool_name,
                 args:
@@ -229,6 +237,7 @@ export function useChatAiEvents({
             }
 
             case "tool_result": {
+              runRealtimeBatchFlushForConversation(convId);
               const resultStr =
                 typeof event.result === "string" ? event.result : safeStringify(event.result);
               store.updateMessageToolResult(
@@ -264,11 +273,12 @@ export function useChatAiEvents({
             }
 
             case "reasoning": {
-              store.appendMessageThinking(convId, event.content);
+              batchConversationThinking(convId, event.content);
               break;
             }
 
             case "completed": {
+              runRealtimeBatchFlushForConversation(convId);
               store.finalizeStreamingMessage(convId, event.response, event.reasoning ?? undefined);
               streamingMsgRef.current = null;
               // Keep the stop button visible during task-mode execution:
@@ -460,6 +470,7 @@ export function useChatAiEvents({
       mounted = false;
       unlisten?.();
       unlisten = null;
+      runRealtimeBatchFlush();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [generateTitleRef.current]);

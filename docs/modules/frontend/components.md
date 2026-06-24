@@ -36,6 +36,7 @@ AIChatPanel 切换 conversation tab 时会激活关联 terminal 作为上下文�
 `BackgroundJobsBadge` 不能只依赖已到达的 job registry；detail 已经能从当前工具或 sub-agent 工具列表看出 backgrounded 数量时，要用 fallback count 显示 `N running`，避免详情页没有任何后台入口。
 
 `ToolCallDetailView` 和 `SubAgentDetailView` 对 shell-like 工具（`run_pty_cmd` / `run_command` / `pentest_run`，以及带 `args.tool_name` + `background/timeout_secs` 的后台工具包装参数）必须在 running/backgrounded 时固定显示 Output 区；没有 stdout/stderr chunk 时显示 pending 状态，一旦 `tool_output_chunk` 到达就用同一区域追加，避免 detail 只显示 Input、让用户误以为工具没有运行。completed/error 且 stdout/stderr 为空时也要显示 `No output.`，不要把 Output 区整个隐藏。注意：sub-agent 里的 `pentest_run` 不是 `run_pty_cmd`，但仍应按 shell-like 输出渲染，同时保留它自己的工具名和 Input args。
+detail/live thinking/output 的自动跟随滚动必须用 rAF 合并，并且只在用户贴近底部时跟随；running/backgrounded 的长 Output 只渲染尾部窗口，完整数据保留在 store/result，避免每个 chunk 重新 parse 全量 ANSI 文本。
 
 detail 里的状态图标不能只信 transport/completed 状态；`whatweb` 这类工具可能 `exit_code=0` 但 stdout/stderr 表达依赖缺失或 fatal error，主工具 detail、sub-agent detail、聊天摘要和 tool execution card 都要复用 `toolResultIndicatesFailure` 后再画绿色勾。
 `SubAgentDetailView` header 也不能只信原始 `subAgent.status`：如果 completed agent 仍有 running/backgrounded 工具，header 要显示运行态/后台态；如果 completed agent 的最后一个工具调用失败（典型是 `submit_stage_deliverable` needs_fix/error 后无成功提交），header 要显示错误，避免“业务卡住但顶部已完成”的误导。

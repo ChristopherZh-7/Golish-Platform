@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
 /**
  * Auto-scroll the chat messages container to the bottom on new messages,
@@ -24,6 +24,17 @@ export function useChatAutoScroll<T>(messages: readonly T[]): ChatAutoScrollStat
   const chatAtBottomRef = useRef(true);
   const userScrolledUpRef = useRef(false);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const scrollFrameRef = useRef<number | null>(null);
+
+  const scheduleScrollToBottom = useCallback(() => {
+    if (userScrolledUpRef.current || scrollFrameRef.current != null) return;
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      if (userScrolledUpRef.current) return;
+      const el = messagesContainerRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  }, []);
 
   useEffect(() => {
     const container = messagesContainerRef.current;
@@ -75,24 +86,25 @@ export function useChatAutoScroll<T>(messages: readonly T[]): ChatAutoScrollStat
 
     if (!resizeObserverRef.current) {
       resizeObserverRef.current = new ResizeObserver(() => {
-        if (userScrolledUpRef.current) return;
-        const el = messagesContainerRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
+        scheduleScrollToBottom();
       });
     }
     const ro = resizeObserverRef.current;
     ro.disconnect();
     ro.observe(container.firstElementChild ?? container);
 
-    if (userScrolledUpRef.current) return;
-    container.scrollTop = container.scrollHeight;
-  }, [messages]);
+    scheduleScrollToBottom();
+  }, [messages, scheduleScrollToBottom]);
 
   // Tear down the observer on unmount.
   useEffect(() => {
     return () => {
       resizeObserverRef.current?.disconnect();
       resizeObserverRef.current = null;
+      if (scrollFrameRef.current != null) {
+        cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
     };
   }, []);
 

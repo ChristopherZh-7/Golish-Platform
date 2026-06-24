@@ -154,7 +154,7 @@ export const handleSubAgentReasoning: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
-  ctx.getState().updateSubAgentThinking(ctx.sessionId, event.parent_request_id, event.accumulated);
+  ctx.batchSubAgentThinking(ctx.sessionId, event.parent_request_id, event.accumulated);
 };
 
 /**

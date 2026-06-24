@@ -12,8 +12,12 @@ function mockCtx(upsert: ReturnType<typeof vi.fn>): EventHandlerContext {
     getState: vi.fn(() => ({
       upsertStageRunRow: upsert,
     })) as unknown as EventHandlerContext["getState"],
+    flushTextDeltas: vi.fn(),
     flushSessionDeltas: vi.fn(),
     batchTextDelta: vi.fn(),
+    batchThinkingContent: vi.fn(),
+    batchSubAgentThinking: vi.fn(),
+    batchToolOutputChunk: vi.fn(),
     convertToolSource: vi.fn(),
   };
 }

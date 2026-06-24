@@ -5971,6 +5971,30 @@
 
 <!-- 新会话请在这里上方插入一条新记录，保持倒序 -->
 
+### 2026-06-24 · 前端 detail thinking/output 卡顿修复
+
+- **本轮目标**：修复 detail 中 thinking 流式输出时，用户同步滚动 Output 内容导致页面明显卡顿的问题。
+- **已完成**：
+  - `frontend/lib/ai/streaming-buffer.ts`：把 text delta 之外的高频流也纳入 16ms batch，包括 main reasoning、chat bubble thinking、sub-agent thinking、main/sub-agent tool output chunk；支持按 session/conv flush，保证 tool/completed 等边界前顺序不漂。
+  - `frontend/services/ai-events/{core,sub-agent,tool}-handlers.ts` + `frontend/hooks/useAiEvents.ts`：reasoning / sub_agent_reasoning / tool_output_chunk 不再逐事件直接写 store；移除 tool_output_chunk 每个 chunk 扫描 streamingBlocks 和 debug log 的热路径。
+  - `frontend/components/AIChatPanel/ThinkingBlock.tsx`、`frontend/components/AIChatPanel/useChatAutoScroll.ts`、`frontend/components/StreamingOutput/StreamingOutput.tsx`、`frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`：auto-scroll 改为 requestAnimationFrame 合并；sub-agent timeline 只在贴底时跟随。
+  - `frontend/components/{ToolCallDetailView,SubAgentDetailView}`：running/backgrounded 长 Output 只渲染尾部窗口，避免每个 chunk 重新 parse 全量 ANSI 文本；完整数据仍保留在 store/result。
+  - 同步模块卡：`docs/modules/frontend/{lib,services,components}.md`。
+- **运行过的验证**：
+  - `pnpm exec vitest run frontend/services/ai-events/registry.test.ts frontend/services/ai-events/tool-handlers.test.ts frontend/services/ai-events/harness-handlers.test.ts frontend/hooks/useAiEvents.test.ts frontend/components/AIChatPanel/useChatAutoScroll.test.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 7 files / 81 tests passed。
+  - `pnpm exec biome check frontend/lib/ai/streaming-buffer.ts frontend/hooks/useAiEvents.ts frontend/services/ai-events/types.ts frontend/services/ai-events/core-handlers.ts frontend/services/ai-events/sub-agent-handlers.ts frontend/services/ai-events/tool-handlers.ts frontend/services/ai-events/registry.test.ts frontend/services/ai-events/tool-handlers.test.ts frontend/services/ai-events/harness-handlers.test.ts frontend/components/AIChatPanel/hooks/useAiChatEvents.ts frontend/components/AIChatPanel/useChatAiEvents.ts frontend/components/AIChatPanel/ThinkingBlock.tsx frontend/components/AIChatPanel/useChatAutoScroll.ts frontend/components/AIChatPanel/useChatAutoScroll.test.tsx frontend/components/StreamingOutput/StreamingOutput.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.tsx` → exit 0。
+  - `pnpm run typecheck` → exit 0（pretypecheck 生成 `frontend/lib/ai/models.generated.ts`，无 diff）。
+  - `just check-fe` → exit 0。
+  - `just test-fe` → exit 0。
+- **已记录证据**：
+  - `tool-handlers.test.ts` 新增 main/sub-agent `tool_output_chunk` 走 batch 的回归覆盖。
+  - `useChatAutoScroll.test.tsx` 更新为等待 rAF，覆盖 ResizeObserver 内容增长仍能在贴底时跟随。
+- **提交记录**：未提交。
+- **已知风险或未解决问题**：
+  - 未跑 `./init.sh` / `just precommit`；本轮为前端性能修复，已跑 `just check-fe` + `just test-fe`。
+  - 未做 Playwright 活体性能录制；需要在真实 thinking + 大 stdout 流场景下再观察主线程帧率。
+- **下一步最佳动作**：重启前端，复现一次 thinking + 大 Output 同时流式更新；若仍卡，下一刀把 store 内 streamingOutput 从全量字符串改成 ring buffer/line buffer。
+
 ## 模板（复制下面这块当新会话记录）
 
 ```markdown

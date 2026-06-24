@@ -44,6 +44,7 @@ interface ToolCallDetailViewProps {
 }
 
 const EMPTY_BG_JOBS: never[] = [];
+const LIVE_OUTPUT_RENDER_LIMIT = 20000;
 
 export const DETAIL_RUNNING_SPINNER_CLASS = "h-4 w-4 shrink-0 animate-spin";
 export const DETAIL_PENDING_OUTPUT_SPINNER_CLASS = "h-4 w-4 shrink-0 animate-spin text-accent";
@@ -102,6 +103,11 @@ function hasToolArgs(args: unknown): boolean {
 function renderMaybeAnsi(value: string) {
   if (!value.includes("\x1b")) return value;
   return <Ansi>{expandTerminalTabs(stripOscSequences(value))}</Ansi>;
+}
+
+function limitLiveOutputForRender(text: string, isLive: boolean): string {
+  if (!isLive || text.length <= LIVE_OUTPUT_RENDER_LIMIT) return text;
+  return `... (showing latest output)\n${text.slice(-LIVE_OUTPUT_RENDER_LIMIT)}`;
 }
 
 /**
@@ -492,6 +498,9 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     : { text: null, pending: false };
   const shellOutputText = shellOutputState.text;
   const pendingShellOutput = shellOutputState.pending;
+  const displayedShellOutputText = shellOutputText
+    ? limitLiveOutputForRender(shellOutputText, isRunning || isBackgrounded)
+    : null;
 
   return (
     <div className="h-full flex flex-col bg-card">
@@ -623,7 +632,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           </div>
         )}
 
-        {isShellCmd && shellOutputText && (
+        {isShellCmd && displayedShellOutputText && (
           <div className="px-4 py-3 border-b border-border/20">
             <div className="flex items-center gap-1.5 mb-2">
               {pendingShellOutput && <Loader2 className={DETAIL_PENDING_OUTPUT_SPINNER_CLASS} />}
@@ -632,7 +641,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
               </span>
             </div>
             <pre className="ansi-output max-h-[480px] overflow-auto whitespace-pre-wrap rounded border border-border/15 bg-background/40 px-3 py-2 text-[11px] font-mono text-muted-foreground">
-              <Ansi>{shellOutputText}</Ansi>
+              <Ansi>{displayedShellOutputText}</Ansi>
             </pre>
           </div>
         )}

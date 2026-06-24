@@ -28,6 +28,8 @@
 | `pentest/` / `target-panel/` / `timeline/` | pentest 视图模型 / 目标面板 / 时间线 |
 | `models/` / `settings/` / `theme/` / `i18n/` / `terminal/` / `ui-state/` / `serde_json/` | 模型 / 设置 / 主题 / 国际化 / 终端 / UI 状态 / JSON 工具 |
 
+`ai/streaming-buffer.ts` 是流式更新的节流入口：text delta、reasoning/thinking、sub-agent thinking、tool output chunk、聊天气泡 thinking 都应先进入 16ms batch，再统一写 store；非文本边界事件（tool request/result/completed/error）前要 flush 对应 session/conv，保证显示顺序不漂。
+
 ## 依赖
 
 - `@tauri-apps/api`（仅 `lib/api/client.ts`）；被 `components`/`hooks`/`store`/`services` 广泛消费

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   handleToolApprovalRequest,
   handleToolAutoApproved,
+  handleToolOutputChunk,
   handleToolRequest,
 } from "./tool-handlers";
 import type { EventHandlerContext } from "./types";
@@ -22,8 +23,12 @@ function mockCtx() {
   const ctx: EventHandlerContext = {
     sessionId: "sess-1",
     getState: vi.fn(() => state) as unknown as EventHandlerContext["getState"],
+    flushTextDeltas: vi.fn(),
     flushSessionDeltas: vi.fn(),
     batchTextDelta: vi.fn(),
+    batchThinkingContent: vi.fn(),
+    batchSubAgentThinking: vi.fn(),
+    batchToolOutputChunk: vi.fn(),
     convertToolSource: vi.fn(() => undefined),
   };
   return { state, ctx };
@@ -103,5 +108,48 @@ describe("tool event detail pane behavior", () => {
       expect.objectContaining({ requestId: "T3", toolName: "stage_run" })
     );
     expect(state.setDetailViewMode).not.toHaveBeenCalled();
+  });
+
+  it("batches main tool output chunks", () => {
+    const { ctx } = mockCtx();
+
+    handleToolOutputChunk(
+      {
+        type: "tool_output_chunk",
+        tool_name: "pentest_run",
+        request_id: "T4",
+        chunk: "line 1\n",
+        stream: "stdout",
+        source: { type: "main" },
+        session_id: "sess-1",
+      } as Parameters<typeof handleToolOutputChunk>[0],
+      ctx
+    );
+
+    expect(ctx.batchToolOutputChunk).toHaveBeenCalledWith("sess-1", "T4", "line 1\n", "main");
+  });
+
+  it("batches sub-agent tool output chunks", () => {
+    const { ctx } = mockCtx();
+
+    handleToolOutputChunk(
+      {
+        type: "tool_output_chunk",
+        tool_name: "pentest_run",
+        request_id: "T5",
+        chunk: "sub line\n",
+        stream: "stdout",
+        source: { type: "sub_agent", agent_id: "a1", agent_name: "Recon" },
+        session_id: "sess-1",
+      } as Parameters<typeof handleToolOutputChunk>[0],
+      ctx
+    );
+
+    expect(ctx.batchToolOutputChunk).toHaveBeenCalledWith(
+      "sess-1",
+      "T5",
+      "sub line\n",
+      "sub_agent"
+    );
   });
 });

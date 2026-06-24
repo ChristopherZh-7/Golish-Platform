@@ -366,32 +366,12 @@ export const handleToolOutputChunk: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
-  const state = ctx.getState();
-
   if (event.source?.type === "sub_agent") {
-    state.appendSubAgentToolOutput(ctx.sessionId, event.request_id, event.chunk);
+    ctx.batchToolOutputChunk(ctx.sessionId, event.request_id, event.chunk, "sub_agent");
     return;
   }
 
-  // Debug: Log what blocks exist and which one we're trying to match
-  const blocks = state.streamingBlocks[ctx.sessionId] ?? [];
-  const toolBlocks = blocks.filter((b) => b.type === "tool");
-  const matchingBlock = toolBlocks.find(
-    (b) => b.type === "tool" && b.toolCall.id === event.request_id
-  );
-
-  if (!matchingBlock) {
-    logger.warn("tool_output_chunk: No matching block found for request_id:", event.request_id, {
-      availableToolIds: toolBlocks.map((b) => (b as { toolCall: { id: string } }).toolCall.id),
-    });
-  } else {
-    logger.debug("tool_output_chunk: Found matching block for", event.request_id);
-  }
-
-  // Append the chunk to the tool's streaming output
-  state.appendToolStreamingOutput(ctx.sessionId, event.request_id, event.chunk);
-  // Also append to timeline card
-  state.appendToolExecutionOutput(ctx.sessionId, event.request_id, event.chunk);
+  ctx.batchToolOutputChunk(ctx.sessionId, event.request_id, event.chunk, "main");
 };
 
 /**

@@ -1,8 +1,14 @@
 import { useEffect, useRef } from "react";
 import { type AiEvent, isTitleGenSessionId, onAiEvent, signalFrontendReady } from "@/lib/ai";
 import {
+  batchSubAgentThinking,
+  batchThinkingContent,
+  batchToolOutputChunk,
   pendingTextBatches,
+  runRealtimeBatchFlush,
+  runRealtimeBatchFlushForSession,
   runTextBatchFlush,
+  scheduledRealtimeBatchFlush,
   scheduledTextBatchFlush,
   scheduleTextBatchFlush,
 } from "@/lib/ai/streaming-buffer";
@@ -50,13 +56,11 @@ export function useAiEvents() {
 
     // Flush all pending text batches to the store
     const flushPendingDeltas = () => {
-      if (pendingTextBatches.size === 0) return;
-      runTextBatchFlush();
+      if (pendingTextBatches.size > 0) runTextBatchFlush();
+      runRealtimeBatchFlush();
     };
 
-    // Flush pending deltas for a specific session immediately
-    // Called before adding non-text blocks to ensure correct ordering
-    const flushSessionDeltas = (sessionId: string) => {
+    const flushTextDeltas = (sessionId: string) => {
       const pending = pendingTextBatches.get(sessionId);
       if (pending) {
         useStore.getState().updateAgentStreaming(sessionId, pending);
@@ -64,8 +68,16 @@ export function useAiEvents() {
       }
     };
 
+    // Flush pending deltas for a specific session immediately.
+    // Called before adding non-text blocks to ensure correct ordering.
+    const flushSessionDeltas = (sessionId: string) => {
+      flushTextDeltas(sessionId);
+      runRealtimeBatchFlushForSession(sessionId);
+    };
+
     // Add a text delta to the pending batch
     const batchTextDelta = (sessionId: string, delta: string) => {
+      runRealtimeBatchFlushForSession(sessionId);
       const current = pendingTextBatches.get(sessionId) ?? "";
       pendingTextBatches.set(sessionId, current + delta);
       scheduleTextBatchFlush();
@@ -160,8 +172,12 @@ export function useAiEvents() {
       const ctx: EventHandlerContext = {
         sessionId,
         getState: () => useStore.getState(),
+        flushTextDeltas,
         flushSessionDeltas,
         batchTextDelta,
+        batchThinkingContent,
+        batchSubAgentThinking,
+        batchToolOutputChunk,
         convertToolSource,
       };
 
@@ -213,6 +229,9 @@ export function useAiEvents() {
       }
       if (scheduledTextBatchFlush) {
         clearTimeout(scheduledTextBatchFlush);
+      }
+      if (scheduledRealtimeBatchFlush) {
+        clearTimeout(scheduledRealtimeBatchFlush);
       }
       // Flush any remaining deltas before unmount
       flushPendingDeltas();

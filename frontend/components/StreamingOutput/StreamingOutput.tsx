@@ -23,13 +23,25 @@ export function StreamingOutput({
   autoScroll = true,
 }: StreamingOutputProps) {
   const containerRef = useRef<HTMLPreElement>(null);
+  const scrollFrameRef = useRef<number | null>(null);
   const cleanContent = stripOscSequences(content);
 
   // Auto-scroll to bottom when content changes
   useEffect(() => {
     if (autoScroll && containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+      if (scrollFrameRef.current != null) cancelAnimationFrame(scrollFrameRef.current);
+      scrollFrameRef.current = requestAnimationFrame(() => {
+        scrollFrameRef.current = null;
+        const el = containerRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
     }
+    return () => {
+      if (scrollFrameRef.current != null) {
+        cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+    };
   }, [cleanContent, autoScroll]);
 
   // Memoize style object to prevent recreation on each render

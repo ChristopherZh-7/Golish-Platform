@@ -231,6 +231,7 @@ export const handleReasoning: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
+  ctx.flushTextDeltas(ctx.sessionId);
   if (isStreamDebugEnabled()) {
     const counters = ensureDebugCounters(ctx.sessionId);
     counters.reasoningChunks += 1;
@@ -241,7 +242,7 @@ export const handleReasoning: EventHandler<{
       event.content.slice(0, 80)
     );
   }
-  ctx.getState().appendThinkingContent(ctx.sessionId, event.content);
+  ctx.batchThinkingContent(ctx.sessionId, event.content);
 };
 
 /**
