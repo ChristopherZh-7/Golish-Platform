@@ -48,7 +48,7 @@
 - `source_coverage` 规则读取 `GateContext.source_queries`（来自 `source_query_log`）来证明 provider/source 已终态尝试；它不投影 found，found 仍由 DB/ledger truth 决定。
 - `coverage_complete` 在 `derive_from_evidence=true` 时也可消费 `source_query_log` 的终态 source row 来关闭**非 found** gap：精确 technique（如 RDAP/WHOIS）按空/阻断终态处理，`recon_map_assets` provider survey 只覆盖 provider-backed intel 技术；自报 `found` 仍必须有 DB/ledger truth，不能靠 source row 过门。
 - `external_attack_surface` 仍不启用 `authoritative_found`（active Empty 事实源未就绪），但显式 coverage cell 已收紧：`found` / `checked_empty` 必须挂 evidence，`blocked` / `not_applicable` 必须有 note，且 `coverage_denominator` 要求端口/服务这类显式格覆盖完整（服务指纹的 `tested_units/total_units` 表示已指纹开放端口/发现开放端口）。
-- stage tool whitelist 只约束真实扫描调用；`pentest_run check_job` / `kill_job` / `list_jobs` 是后台 job 控制面，必须 exempt，否则 submit barrier 报“后台任务仍在跑”后 worker 无法检查明显卡死的 job。
+- stage tool whitelist 只约束真实扫描调用；`check_job` / `kill_job` / `list_jobs` / `wait_for_background_jobs` 是后台 job 控制面，必须 exempt，否则 submit barrier 报“后台任务仍在跑”后 worker 无法等待输出或检查明显卡死的 job。
 - 设计见 `docs/design/2026-05-26-*`；内层 harness 当前 deferred（见 AGENTS.md §6）。
 
 ## 测试入口

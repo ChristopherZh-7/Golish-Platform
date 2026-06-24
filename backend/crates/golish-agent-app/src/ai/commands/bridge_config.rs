@@ -472,8 +472,10 @@ impl crate::ai::harness_submit_tool::BackgroundJobsQuery for ManagerBackgroundJo
 
 /// Total time the submit-time reconciliation barrier (Piece 3) waits for a
 /// session's background scans to settle before telling the agent to wait +
-/// resubmit. Tunable via `GOLISH_SUBMIT_RECONCILE_WAIT_MS` (default 5min).
-const DEFAULT_SUBMIT_RECONCILE_WAIT_MS: u64 = 300_000;
+/// resubmit. Tunable via `GOLISH_SUBMIT_RECONCILE_WAIT_MS`; default is 0 so the
+/// wait is visible as a separate `wait_for_background_jobs` tool step instead
+/// of making the submit card spin for minutes.
+const DEFAULT_SUBMIT_RECONCILE_WAIT_MS: u64 = 0;
 
 fn submit_reconcile_wait_ms() -> u64 {
     std::env::var("GOLISH_SUBMIT_RECONCILE_WAIT_MS")
@@ -542,9 +544,9 @@ async fn register_pentest_tools(
         // attempted" forever and dead-loops even after enrich landed the data.
         .with_org_id_source(bridge.harness_active_org_id_handle())
         // Piece 3 · closeout reconciliation barrier: a submit that arrives while
-        // this session still has backgrounded scans running first waits (bounded)
-        // for them to settle so their evidence books before the gate, instead of
-        // grading the stage against half-landed evidence or busy-polling check_job.
+        // this session still has backgrounded scans running defers fast by default
+        // and tells the model to call wait_for_background_jobs. Operators can opt
+        // back into the old bounded-in-submit wait via GOLISH_SUBMIT_RECONCILE_WAIT_MS.
         .with_background_jobs(std::sync::Arc::new(ManagerBackgroundJobs))
         .with_reconcile_timeouts(submit_reconcile_wait_ms(), 1000);
         // 乙 · scope the real-id suggestion to this chat session (the string both
@@ -611,8 +613,11 @@ async fn register_visible_pty_tool(bridge: &AgentBridge, state: &AgentState) {
     // hung DNS AXFR) after check_job shows no progress, instead of waiting out
     // the hard-timeout watchdog. Same process-global manager — no per-call state.
     registry.register_tool(Arc::new(golish_app_core::pty_interactive::KillJobTool));
+    registry.register_tool(Arc::new(
+        golish_app_core::pty_interactive::WaitForBackgroundJobsTool,
+    ));
     tracing::info!(
-        "[configure_bridge] Registered VisibleRunPtyCmdTool + CheckJobTool + KillJobTool (background job control)"
+        "[configure_bridge] Registered VisibleRunPtyCmdTool + CheckJobTool + KillJobTool + WaitForBackgroundJobsTool (background job control)"
     );
 }
 
@@ -784,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn submit_reconcile_default_waits_for_slow_scans() {
-        assert_eq!(DEFAULT_SUBMIT_RECONCILE_WAIT_MS, 300_000);
+    fn submit_reconcile_default_defers_to_visible_wait_tool() {
+        assert_eq!(DEFAULT_SUBMIT_RECONCILE_WAIT_MS, 0);
     }
 }

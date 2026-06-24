@@ -1,6 +1,7 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -51,6 +52,10 @@ const MAX_TIMEOUT_MS: u64 = 120000;
 
 /// Inline wait cap before a still-running command is moved to the background.
 const DEFAULT_SOFT_TIMEOUT_MS: u64 = 30_000;
+/// Brief startup confirmation for AI-elected background jobs. Commands that
+/// fail immediately due to bad flags / missing runtime should be returned inline
+/// so the model can correct them instead of blindly continuing.
+const DEFAULT_BACKGROUND_STARTUP_GRACE_MS: u64 = 800;
 /// Background hard limit: runaway jobs are killed after this so nothing leaks.
 const DEFAULT_HARD_TIMEOUT_MS: u64 = 1_800_000; // 30 min
 /// Background hard limit for DNS zone-transfer (AXFR) probes. These hang
@@ -58,6 +63,13 @@ const DEFAULT_HARD_TIMEOUT_MS: u64 = 1_800_000; // 30 min
 /// 30-minute default would let a single hung probe pin a whole stage's closeout
 /// reconciliation barrier. Capped aggressively so they fail fast instead.
 const DEFAULT_DNS_HARD_TIMEOUT_MS: u64 = 15_000; // 15s
+/// Explicit wait tool default. Unlike `submit_stage_deliverable`, this is a
+/// visible step: the model/user see "waiting for background jobs" as its own
+/// tool card, then receive the finished job tails before re-submitting.
+const DEFAULT_WAIT_BACKGROUND_JOBS_TIMEOUT_MS: u64 = 300_000;
+const MAX_WAIT_BACKGROUND_JOBS_TIMEOUT_MS: u64 = 900_000;
+const DEFAULT_WAIT_BACKGROUND_JOBS_POLL_MS: u64 = 1_000;
+const WAIT_BACKGROUND_JOBS_OUTPUT_TAIL_BYTES: usize = 12 * 1024;
 
 fn env_ms(key: &str, default: u64) -> u64 {
     std::env::var(key)
@@ -91,6 +103,16 @@ fn compute_hard_ms(command: &str, timeout_ms: u64) -> u64 {
     }
 }
 
+fn finished_job_value(command: &str, snap: crate::background_jobs::JobSnapshot) -> Value {
+    json!({
+        "stdout": truncate_output(snap.stdout),
+        "stderr": truncate_output(snap.stderr),
+        "command": command,
+        "exit_code": snap.exit_code.unwrap_or(-1),
+        "duration_ms": snap.duration_ms,
+    })
+}
+
 /// Run a shell command outside the visible terminal and return structured
 /// output for the AI tool detail panel.
 ///
@@ -98,8 +120,9 @@ fn compute_hard_ms(command: &str, timeout_ms: u64) -> u64 {
 /// commands do not create `CommandBlock`s in the user's terminal timeline.
 ///
 /// The command is spawned through the [`crate::background_jobs`] manager: if it
-/// finishes within the *soft* timeout the full result is returned as before;
-/// otherwise it keeps running in the background and a
+/// finishes within the *soft* timeout (or, for AI-elected background runs, the
+/// startup confirmation window) the full result is returned as before; otherwise
+/// it keeps running in the background and a
 /// `{ status: "backgrounded", job_id }` handle is returned (success-shaped, so
 /// the agentic loop does not treat it as a failure). The AI polls progress via
 /// the `check_job` tool.
@@ -144,25 +167,30 @@ pub async fn run_shell_command_detail(
         session_id
     );
 
-    // AI-elected background (Cursor-style): skip the soft-timeout wait and hand back
-    // the handle now so the agent proceeds asynchronously. Otherwise wait up to the
-    // soft timeout for an inline result (poll the manager).
-    if !background {
-        let soft_deadline = started_at + Duration::from_millis(soft_ms);
+    // Cursor-style backgrounding still needs a tiny startup confirmation window:
+    // if the child exits immediately with a usage/runtime error, return that
+    // inline so the model can correct its command. Once the window expires and
+    // the child is still running, hand back the job handle and let it continue.
+    let inline_wait_ms = if background {
+        env_ms(
+            "GOLISH_TOOL_BACKGROUND_STARTUP_GRACE_MS",
+            DEFAULT_BACKGROUND_STARTUP_GRACE_MS,
+        )
+        .min(soft_ms)
+    } else {
+        soft_ms
+    };
+
+    if inline_wait_ms > 0 {
+        let inline_deadline = started_at + Duration::from_millis(inline_wait_ms);
         loop {
             if let Some(snap) = crate::background_jobs::manager().snapshot(&job_id) {
                 if snap.finished {
                     crate::background_jobs::manager().remove(&job_id);
-                    return Ok(json!({
-                        "stdout": truncate_output(snap.stdout),
-                        "stderr": truncate_output(snap.stderr),
-                        "command": command,
-                        "exit_code": snap.exit_code.unwrap_or(-1),
-                        "duration_ms": snap.duration_ms,
-                    }));
+                    return Ok(finished_job_value(command, snap));
                 }
             }
-            if std::time::Instant::now() >= soft_deadline {
+            if std::time::Instant::now() >= inline_deadline {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -236,6 +264,30 @@ fn truncate_output(output: String) -> String {
     )
 }
 
+fn tail_output(output: &str, max_bytes: usize) -> String {
+    if output.len() <= max_bytes {
+        return output.to_string();
+    }
+    let mut cut = output.len() - max_bytes;
+    while cut < output.len() && !output.is_char_boundary(cut) {
+        cut += 1;
+    }
+    format!("...[+{} earlier bytes]\n{}", cut, &output[cut..])
+}
+
+fn job_snapshot_value(job_id: &str, snap: crate::background_jobs::JobSnapshot) -> Value {
+    json!({
+        "job_id": job_id,
+        "status": snap.status.as_str(),
+        "running": !snap.finished,
+        "job_exit_code": snap.exit_code,
+        "command": snap.command,
+        "stdout_tail": tail_output(&snap.stdout, WAIT_BACKGROUND_JOBS_OUTPUT_TAIL_BYTES),
+        "stderr_tail": tail_output(&snap.stderr, WAIT_BACKGROUND_JOBS_OUTPUT_TAIL_BYTES),
+        "duration_ms": snap.duration_ms,
+    })
+}
+
 /// Drop-in replacement for `RunPtyCmdTool` that returns shell output to the
 /// AI tool detail panel instead of writing into the user's visible terminal.
 pub struct VisibleRunPtyCmdTool;
@@ -275,7 +327,7 @@ impl Tool for VisibleRunPtyCmdTool {
                 },
                 "background": {
                     "type": "boolean",
-                    "description": "Run in the background (Cursor-style): return immediately with a job handle and keep the command running so you can proceed with other work. Use for long commands whose output you don't need right now; the result is auto-delivered when it finishes."
+                    "description": "Run in the background (Cursor-style): after a brief startup check, return a job handle and keep the command running so you can proceed with other work. Immediate flag/runtime errors are returned inline so you can fix them. Use for long commands whose output you don't need right now; the result is auto-delivered when it finishes."
                 }
             },
             "required": ["command"]
@@ -424,6 +476,122 @@ impl Tool for KillJobTool {
     }
 }
 
+/// Tool that turns "wait for background scans" into an explicit, visible agent
+/// step. It waits for all running jobs attributed to the current AI session,
+/// then returns each completed job's stdout/stderr tail so the model can inspect
+/// the results before calling `submit_stage_deliverable`.
+pub struct WaitForBackgroundJobsTool;
+
+#[async_trait::async_trait]
+impl Tool for WaitForBackgroundJobsTool {
+    fn name(&self) -> &'static str {
+        "wait_for_background_jobs"
+    }
+
+    fn description(&self) -> &'static str {
+        "Wait for background jobs started by this AI session to finish, then return a compact \
+         summary of each completed job's stdout/stderr tail and exit code. Use this before \
+         submit_stage_deliverable when scans were backgrounded, so you can inspect their output \
+         and let evidence land instead of hiding the wait inside submit."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "timeout_secs": {
+                    "type": "integer",
+                    "description": "Maximum time to wait, in seconds. Default 300, max 900."
+                },
+                "poll_interval_ms": {
+                    "type": "integer",
+                    "description": "Polling interval while waiting. Default 1000ms."
+                }
+            }
+        })
+    }
+
+    async fn execute(&self, args: Value, _workspace: &Path) -> Result<Value> {
+        let Some(session_id) = golish_core::current_agent_session() else {
+            return Ok(json!({
+                "status": "no_session",
+                "note": "No current AI session is attached, so background jobs cannot be attributed."
+            }));
+        };
+
+        let timeout_ms = args
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .map(|s| s.saturating_mul(1_000))
+            .unwrap_or(DEFAULT_WAIT_BACKGROUND_JOBS_TIMEOUT_MS)
+            .min(MAX_WAIT_BACKGROUND_JOBS_TIMEOUT_MS);
+        let poll_ms = args
+            .get("poll_interval_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(DEFAULT_WAIT_BACKGROUND_JOBS_POLL_MS)
+            .clamp(100, 10_000);
+
+        let manager = crate::background_jobs::manager();
+        let started_at = Instant::now();
+        let deadline = started_at + Duration::from_millis(timeout_ms);
+        let mut tracked_ids = BTreeSet::new();
+        let mut running = manager.running_for_session(&session_id);
+        for job in &running {
+            tracked_ids.insert(job.job_id.clone());
+        }
+
+        while !running.is_empty() && Instant::now() < deadline {
+            let now = Instant::now();
+            let remaining = deadline.duration_since(now).as_millis() as u64;
+            let nap = poll_ms.min(remaining).max(1);
+            tokio::time::sleep(Duration::from_millis(nap)).await;
+            running = manager.running_for_session(&session_id);
+            for job in &running {
+                tracked_ids.insert(job.job_id.clone());
+            }
+        }
+
+        let mut completed_jobs = Vec::new();
+        let mut running_jobs = Vec::new();
+        for job_id in tracked_ids {
+            if let Some(snap) = manager.snapshot(&job_id) {
+                if snap.finished {
+                    completed_jobs.push(job_snapshot_value(&job_id, snap));
+                } else {
+                    running_jobs.push(job_snapshot_value(&job_id, snap));
+                }
+            }
+        }
+
+        let waited_ms = started_at.elapsed().as_millis() as u64;
+        if completed_jobs.is_empty() && running_jobs.is_empty() {
+            return Ok(json!({
+                "status": "no_running_jobs",
+                "waited_ms": waited_ms,
+                "completed_background_jobs": [],
+                "running_background_jobs": [],
+                "note": "No running background jobs were found for this session."
+            }));
+        }
+        if running_jobs.is_empty() {
+            return Ok(json!({
+                "status": "settled",
+                "waited_ms": waited_ms,
+                "completed_background_jobs": completed_jobs,
+                "running_background_jobs": [],
+                "note": "All tracked background jobs have finished. Inspect the stdout_tail/stderr_tail above, then call submit_stage_deliverable."
+            }));
+        }
+        Ok(json!({
+            "status": "still_running",
+            "waited_ms": waited_ms,
+            "completed_background_jobs": completed_jobs,
+            "running_background_jobs": running_jobs,
+            "note": "Some background jobs are still running. If a job is clearly stuck with no useful output, use check_job once and kill_job if needed; otherwise wait_for_background_jobs again later."
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,6 +641,45 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn background_command_that_fails_during_startup_returns_inline_error() {
+        let res = run_shell_command_detail("printf bad-flag >&2; exit 2", &ws(), 10_000, true)
+            .await
+            .expect("background command should return a structured result");
+
+        assert_eq!(res.get("exit_code"), Some(&json!(2)));
+        assert!(
+            res.get("stderr")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .contains("bad-flag"),
+            "stderr should be returned inline so the model can correct it: {res:?}"
+        );
+        assert!(
+            res.get("status").and_then(|v| v.as_str()) != Some("backgrounded"),
+            "fast failures must not be hidden behind a background handle: {res:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn background_command_that_survives_startup_returns_job_handle() {
+        let res = run_shell_command_detail("sleep 30", &ws(), 10_000, true)
+            .await
+            .expect("background command should return a structured result");
+
+        assert_eq!(res.get("status"), Some(&json!("backgrounded")));
+        let job_id = res
+            .get("job_id")
+            .and_then(|v| v.as_str())
+            .expect("backgrounded result includes job_id");
+        assert!(
+            crate::background_jobs::manager().kill(job_id),
+            "test long-runner should be cancellable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn kill_job_tool_cancels_a_running_job() {
         // Spawn a long-runner through the process-global manager the tool uses.
         let job_id =
@@ -501,5 +708,38 @@ mod tests {
     async fn kill_job_tool_requires_job_id() {
         let err = KillJobTool.execute(json!({}), &ws()).await;
         assert!(err.is_err(), "missing job_id must be an error");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn wait_for_background_jobs_returns_completed_output() {
+        let session_id = format!("test-session-{}", uuid::Uuid::new_v4());
+        crate::background_jobs::manager().spawn_for_session(
+            "sleep 0.1; printf wait-done",
+            &ws(),
+            Duration::from_secs(5),
+            Some(session_id.clone()),
+        );
+
+        let res = golish_core::with_agent_session(Some(session_id), async {
+            WaitForBackgroundJobsTool
+                .execute(json!({ "timeout_secs": 2, "poll_interval_ms": 50 }), &ws())
+                .await
+        })
+        .await
+        .expect("wait_for_background_jobs execute ok");
+
+        assert_eq!(res.get("status"), Some(&json!("settled")));
+        let completed = res["completed_background_jobs"]
+            .as_array()
+            .expect("completed jobs array");
+        assert_eq!(completed.len(), 1, "one job should settle: {res:?}");
+        assert!(
+            completed[0]["stdout_tail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("wait-done"),
+            "completed stdout tail should be returned: {res:?}"
+        );
     }
 }

@@ -346,24 +346,24 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: Su
   return (
     <div className="mx-3 my-2 rounded-lg border border-border/30 overflow-hidden bg-card/80 shadow-sm border-l-2 border-l-[var(--ansi-magenta)]/40">
       <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-        <CollapsibleTrigger className="group flex w-full items-center gap-1.5 px-3 py-2 text-xs hover:bg-accent/20 transition-colors">
+        <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-1.5 px-3 py-2 text-xs hover:bg-accent/20 transition-colors">
           {isExpanded ? (
             <ChevronDown className="h-3 w-3 text-muted-foreground flex-shrink-0" />
           ) : (
             <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
           )}
           <Wand2 className="h-3 w-3 text-[var(--ansi-magenta)]/70 flex-shrink-0" />
-          <StatusIcon status={status} size="md" />
+          <StatusIcon status={status} size="sm" />
           {isShellLikeOutput ? (
             <Terminal className="h-3 w-3 text-[var(--ansi-green)] flex-shrink-0" />
           ) : null}
-          <span className="font-mono text-[var(--ansi-cyan)]">
+          <span className="shrink-0 font-mono text-[var(--ansi-cyan)]">
             {isShellRunner ? "" : tool.name}
           </span>
           {summaryArg && (
             <span
               className={cn(
-                "truncate font-mono",
+                "min-w-0 truncate font-mono",
                 isShellRunner ? "text-[var(--ansi-green)]/80" : "text-muted-foreground"
               )}
               title={summaryArg}

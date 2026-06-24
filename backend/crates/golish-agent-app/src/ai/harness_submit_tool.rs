@@ -172,10 +172,11 @@ pub struct SubmitStageDeliverableTool {
     org_id_source: Option<Arc<RwLock<Option<Uuid>>>>,
     /// Piece 3 (closeout reconciliation barrier) · background-job manager seam.
     /// When present (and a `session_id` is set), a submit that arrives while the
-    /// session still has backgrounded scans running first waits (bounded by
-    /// `reconcile_wait_ms`) for them to settle — so their evidence/DB-truth books
-    /// before the gate evaluates — instead of grading the stage against
-    /// half-landed evidence. `None` ⇒ barrier disabled (tests / no DI).
+    /// session still has backgrounded scans running defers before gate preview.
+    /// Production defaults `reconcile_wait_ms` to 0 so the wait is a visible
+    /// `wait_for_background_jobs` tool step; operators may opt back into bounded
+    /// in-submit waiting with `GOLISH_SUBMIT_RECONCILE_WAIT_MS`.
+    /// `None` ⇒ barrier disabled (tests / no DI).
     bg_jobs: Option<Arc<dyn BackgroundJobsQuery>>,
     /// Total time the reconciliation barrier waits for running jobs to settle
     /// before giving up and telling the agent to wait + resubmit. `0` ⇒ no wait
@@ -224,9 +225,9 @@ impl SubmitStageDeliverableTool {
     }
 
     /// Enable the closeout reconciliation barrier (Piece 3): a submit that arrives
-    /// while this session still has backgrounded scans running waits for them to
-    /// settle (and, on overrun, tells the agent to wait + resubmit). Needs a
-    /// `session_id` to attribute jobs; without one the barrier is inert.
+    /// while this session still has backgrounded scans running defers before the
+    /// gate preview. Needs a `session_id` to attribute jobs; without one the
+    /// barrier is inert.
     pub fn with_background_jobs(mut self, bg: Arc<dyn BackgroundJobsQuery>) -> Self {
         self.bg_jobs = Some(bg);
         self
@@ -244,8 +245,8 @@ impl SubmitStageDeliverableTool {
     /// Closeout reconciliation barrier (Piece 3). Returns `Some(needs_fix json)`
     /// when, after waiting up to `reconcile_wait_ms`, the session STILL has
     /// background jobs running — so the caller short-circuits the submit and the
-    /// agent waits for the auto-delivered results instead of grading the stage
-    /// against half-landed evidence (or busy-polling `check_job`). Returns `None`
+    /// agent waits via the explicit `wait_for_background_jobs` control tool
+    /// instead of grading the stage against half-landed evidence. Returns `None`
     /// when the barrier is disabled or all jobs have settled (proceed normally).
     async fn reconcile_background_jobs(&self) -> Option<Value> {
         let (bg, sid) = (self.bg_jobs.as_ref()?, self.session_id.as_deref()?);
@@ -288,17 +289,17 @@ impl SubmitStageDeliverableTool {
             "status": "needs_fix",
             "reasons": [format!(
                 "{} background job(s) you launched are still running, so this stage's \
-                 evidence has not fully landed yet. Their results are booked as evidence \
-                 and delivered to you automatically when they finish. Do NOT re-run the same \
-                 command. Wait for the completion note, then call submit_stage_deliverable \
-                 again. If one has clearly hung (see elapsed_ms below — very long with no \
-                 progress, e.g. a DNS AXFR / zone-transfer probe), inspect it once with \
-                 check_job and kill_job it if stuck, then resubmit rather than letting one \
-                 hung probe block the stage.",
+                 evidence has not fully landed yet. Do NOT re-run the same command. Call \
+                 wait_for_background_jobs to wait visibly and read the completed job output \
+                 tails; then build the final deliverable from those results and call \
+                 submit_stage_deliverable again. If one has clearly hung (see elapsed_ms \
+                 below — very long with no progress, e.g. a DNS AXFR / zone-transfer probe), \
+                 inspect it once with check_job and kill_job it if stuck, then resubmit rather \
+                 than letting one hung probe block the stage.",
                 running.len()
             )],
             "running_background_jobs": jobs,
-            "note": "wait for these background jobs to finish (results auto-deliver), then resubmit."
+            "note": "call wait_for_background_jobs, inspect the completed job tails it returns, then resubmit."
         }))
     }
 
@@ -615,9 +616,9 @@ impl Tool for SubmitStageDeliverableTool {
             }
             // Piece 3 · closeout reconciliation barrier: if this session still has
             // backgrounded scans in flight, don't grade the stage against
-            // half-landed evidence. Wait (bounded) for them to settle; if they
-            // overrun, return now telling the agent to wait for the auto-delivered
-            // results and resubmit (no busy-polling check_job).
+            // half-landed evidence. Default behavior is a fast deferral that tells
+            // the agent to call wait_for_background_jobs, making the wait/output
+            // inspection visible before the next submit.
             if let Some(deferred) = self.reconcile_background_jobs().await {
                 return Ok(deferred);
             }
@@ -1637,9 +1638,9 @@ mod tests {
 
     // A submit that arrives while the session still has backgrounded scans
     // running is DEFERRED: needs_fix listing the still-running jobs, with a
-    // message that the results auto-deliver and the same scan must not be rerun —
-    // and nothing is stashed (the stage is not graded against half-landed
-    // evidence).
+    // message that tells the model to wait visibly via wait_for_background_jobs
+    // and not rerun the same scan — and nothing is stashed (the stage is not
+    // graded against half-landed evidence).
     #[tokio::test]
     async fn submit_deferred_when_background_jobs_running() {
         let (stage, sink) = handles();
@@ -1662,7 +1663,11 @@ mod tests {
         let reason = out["reasons"][0].as_str().unwrap();
         assert!(reason.contains("still running"), "reason: {reason}");
         assert!(reason.contains("Do NOT re-run"), "reason: {reason}");
-        assert!(reason.contains("completion note"), "reason: {reason}");
+        assert!(
+            reason.contains("wait_for_background_jobs"),
+            "reason: {reason}"
+        );
+        assert!(reason.contains("output tails"), "reason: {reason}");
         // Short-circuits BEFORE the gate preview ⇒ nothing captured.
         assert!(
             sink.read().await.is_none(),

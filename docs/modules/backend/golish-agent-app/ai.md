@@ -43,7 +43,7 @@ agent 服务命令面宿主。`commands/` 是 Tauri handlers；各 `*_bridge` �
 - 各 bridge 是**依赖倒置的实现侧**：agent-kit 定义 trait（`db_traits`），这里用 golish-db 等实现并注入——别把 golish-db 依赖塞回 agent-kit。
 - `db_bridge/evidence.rs` 同时实现 evidence ledger、`technique_outcomes`、`source_query_log` 的 harness read/write seam；`source_query_facts` 只投影 source/provider terminal rows，不代表 found。
 - `harness_submit_tool` 的 `submit_stage_deliverable` schema 是模型看到 coverage cell 字段的最后一道说明；EAS 的 explicit coverage 要在这里也讲清 SERVICE-FINGERPRINT denominator（已指纹开放端口 / 发现开放端口），避免 gate retry 时继续交空分母。
-- `submit_stage_deliverable` 在 active stage 内会先等本 session 归因的 background jobs 结束再 gate preview；默认等待 5 分钟（`GOLISH_SUBMIT_RECONCILE_WAIT_MS` 可调）。超时后只应等待 completion note / 必要时一次性 `check_job`+`kill_job` 卡死 job，不能重跑同一扫描。
+- `submit_stage_deliverable` 在 active stage 内会先检查本 session 归因的 background jobs；生产默认快速 `needs_fix`，要求模型调用 `wait_for_background_jobs` 显式等待、读取完成 job 的 stdout/stderr tail 后再提交。`GOLISH_SUBMIT_RECONCILE_WAIT_MS` 可恢复旧的 bounded in-submit wait，但不应作为默认 UI 体验。
 - `commands/bridge_config.rs` 每个非 title-gen session 会监听 `background_jobs` completion 与 live output：completion 负责 evidence/note，live output 转成 `AiEvent::ToolOutputChunk` 给前端现有工具详情面板追加显示。
 - 扁平 re-export 是 A3 删 umbrella 的兼容垫片，镜像 umbrella 旧导出；别乱删。
 - **不变量 I4**：命令命名 `<domain>_<verb>_<object>`。

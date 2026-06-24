@@ -207,7 +207,7 @@ pub fn underlying_tool_name(tool_name: &str, args: &Value) -> String {
 fn is_background_job_control_tool(name: &str) -> bool {
     matches!(
         name.trim().to_ascii_lowercase().as_str(),
-        "check_job" | "kill_job" | "list_jobs"
+        "check_job" | "kill_job" | "list_jobs" | "wait_for_background_jobs"
     )
 }
 
@@ -495,7 +495,12 @@ mod tests {
             &json!({"tool_name": "weirdtool"})
         ));
         // background job control travels through pentest_run but is not a scan.
-        for ctl in ["check_job", "kill_job", "list_jobs"] {
+        for ctl in [
+            "check_job",
+            "kill_job",
+            "list_jobs",
+            "wait_for_background_jobs",
+        ] {
             assert!(
                 !is_scan_invocation("pentest_run", &json!({"tool_name": ctl})),
                 "{ctl} must be exempt from the scan whitelist"

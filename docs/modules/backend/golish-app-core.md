@@ -26,7 +26,7 @@
 | `DbState` | 命令接收的窄 DB 状态句柄 |
 | `TauriEventEmitter` | 包 `tauri::AppHandle` 的事件发射适配器 |
 | `ports`（vuln/platform/pentest/agent/recon） | provider 端服务 ports（S1-2），如 `VaultReadPort`/`PgVaultAdapter` |
-| `pty_interactive` | PTY 输出 tap + `run_pty_cmd` Tool 实现；启动后台 job 时捕获当前 agent tool context |
+| `pty_interactive` | PTY 输出 tap + `run_pty_cmd` Tool 实现；启动后台 job 时捕获当前 agent tool context；提供 `check_job` / `kill_job` / `wait_for_background_jobs` 后台控制工具 |
 | `runtime`（`TauriRuntime` / `CliRuntime`） | `GolishRuntime` 适配器 |
 | `scoping` / `domain` / `state` / `background_jobs` | IDOR 守卫 / domain DTO（ts-rs）/ 状态 / 后台任务；后台任务广播 completion + live stdout/stderr chunks |
 
@@ -57,6 +57,8 @@
 - **不变量 I2**：`scoping` 是 IDOR 守卫，所有 CRUD 验所有权（含批量）。
 - **不变量 I5**：`domain` DTO 用 `ts_rs::TS` 同步前端，不要手写第二份。
 - **禁止向上依赖 `golish`**（会成环）；巨石 `AppState` 故意留在 `golish` crate。
+- `run_pty_cmd` / `pentest_run` 的 `background:true` 不是零等待返回：`pty_interactive` 会先做一个短启动确认窗口，窗口内的参数/运行时错误必须同步返回给 agent；只有确认仍在运行后才返回 `status:"backgrounded"`。
+- `wait_for_background_jobs` 是显式等待工具：只等当前 AI session 归因的后台 job，并返回完成 job 的 stdout/stderr tail + exit code，让模型在 `submit_stage_deliverable` 前能先读结果。
 
 ## 测试入口
 

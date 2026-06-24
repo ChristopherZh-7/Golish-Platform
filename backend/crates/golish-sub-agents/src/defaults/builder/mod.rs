@@ -156,6 +156,7 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             // recon/http, recon/visual) keeps it to surface mapping, not exploitation.
             "pentest_list_tools".to_string(),
             "pentest_run".to_string(),
+            "wait_for_background_jobs".to_string(),
             "submit_stage_deliverable".to_string(),
             "record_finding".to_string(),
             "search_knowledge_base".to_string(),
@@ -179,6 +180,7 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             // exploitation.
             "pentest_list_tools".to_string(),
             "pentest_run".to_string(),
+            "wait_for_background_jobs".to_string(),
             // JS/API extraction (GOLISH-ENUM-JSAPI): collect a host's JS, then pull
             // endpoints/paths out of it.
             "js_collect".to_string(),

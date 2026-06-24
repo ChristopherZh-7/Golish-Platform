@@ -29,6 +29,66 @@
 
 ---
 
+### 2026-06-24 · background=true 快速失败同步回传修复（本会话续）
+
+- **本轮目标**：回应用户截图与现场 run：`pentest_run naabu ... background:true` 因 bad flag `-ports` 快速失败，但 sub-agent 继续执行，疑似后台工具错误被模型忽略。
+- **现场实证**：
+  - 当前 run：`/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1782234945520-1`。
+  - 截图对应 sub-agent：`prober-call_00_OzcGrH8GLXsZ4p0IGPxU7753::org::fb90ef2a-eb1c-4288-8f7c-97dc957a26c0`。
+  - transcript 行为：`sub_agent_tool_result` 给模型的是 `success:true` + `status:"backgrounded"` + `job_id`；真正的 `status=failed` 只在后续 `tool_background_completed` / UI 事件里出现。结论：模型不是看到错误还不纠错，而是当轮只看到“已放后台”，没拿到失败结果。
+- **根因确认**：
+  - `run_shell_command_detail(..., background=true)` 之前跳过所有软等待，spawn 后马上返回 background handle。
+  - completion listener 会把失败写入 `pending_background`，但该 note 只在 `AgentBridge.prepare_execution_context()` 的主 agent 下一轮注入；正在运行的 sub-agent 内层循环不会立即看到。
+- **已完成**：
+  - `golish-app-core::pty_interactive` 增加 AI-elected background startup grace：默认 800ms（`GOLISH_TOOL_BACKGROUND_STARTUP_GRACE_MS` 可调）。窗口内进程结束就同步返回 stdout/stderr/exit_code；窗口后仍运行才返回 `status:"backgrounded"`。
+  - `run_pty_cmd` / `pentest_run` schema 文案改为“短启动确认后后台运行”，避免模型理解为零等待。
+  - 新增两条回归测试：`background=true` 的快速失败必须同步返回；真正长跑命令仍返回 job handle。
+  - 同步模块卡：`golish-app-core`、`golish-pentest-app/pentest_ai`。
+- **运行过的验证（实跑）**：
+  - `cargo fmt -p golish-app-core -p golish-pentest-app` → exit 0。
+  - `cargo nextest run -p golish-app-core background_command_that_fails_during_startup_returns_inline_error background_command_that_survives_startup_returns_job_handle --status-level fail` → 2 passed / 40 skipped。
+  - `cargo check -p golish-app-core -p golish-pentest-app` → exit 0。
+  - `cargo nextest run -p golish-app-core pty_interactive --status-level fail` → 8 passed / 34 skipped。
+  - `cargo clippy -p golish-app-core -p golish-pentest-app --all-targets -- -D warnings` → exit 0。
+- **未跑**：`./init.sh` / `just precommit` 全量 / 活体重启复跑（本轮按后台工具小修 scoped 验证）。
+- **提交记录**：未 commit。
+- **未提交的本轮改动文件**：`backend/crates/golish-app-core/src/pty_interactive.rs`、`backend/crates/golish-pentest-app/src/pentest_ai/run.rs`、`docs/modules/backend/golish-app-core.md`、`docs/modules/backend/golish-pentest-app/pentest_ai.md`、`agent-progress.md`。
+- **下一步建议**：重启后端后复跑同类 EAS；预期 `naabu -ports` 这类快速 usage error 会直接作为本次 `pentest_run` 的失败 tool result 喂给 sub-agent，模型应改用 `-p` 或换 `nmap`，而不是继续假设该后台任务已正常运行。
+- **续修 15（submit 内部长等改为显式 wait 工具 + 本次 gate BLOCK 诊断）**：
+  - **现场实证**：截图对应 run `pentest-chat-1782234945520-1`。`nmap` 后台 job 最晚在 `2026-06-24T11:32:21+08:00` 完成；最终 gate 在 `2026-06-24T11:32:55+08:00` 评估，说明这次最后 BLOCK 不是后台未落完，而是 coverage/claim 本身不完整。
+  - **gate 不过原因**：`external_attack_surface` gate 报 `coverage_complete gaps_total=168`，首批缺口是 `(101.69.134.6 × GOLISH-EAS-LIVENESS)`、`(101.69.134.6 × GOLISH-EAS-SERVICE-FINGERPRINT)` 等；同时 `surface_coverage` 还缺 evidence-backed `Surface` claim/category。结论：worker 只覆盖了部分/live targets 或提交了 stale coverage；EAS 要求每个 in-scope asset 的适用 technique 都有 terminal cell（found/checked_empty/blocked/not_applicable）且 found/checked_empty 绑定真实 evidence。
+  - **样式/流程根因**：`submit_stage_deliverable` 之前把等待后台 job 藏在 tool 内部（本 run 里出现 246.1s 的 submit spinner），所以 UI 上看起来是 sub-agent 一直转圈，而不是“等待后台任务 → 读取输出 → 再提交”的可见步骤。
+  - **已改**：新增 `wait_for_background_jobs` 动态工具，等待当前 AI session 的后台 job，并返回每个完成 job 的 stdout/stderr tail、exit code、duration；`submit_stage_deliverable` 生产默认 `GOLISH_SUBMIT_RECONCILE_WAIT_MS=0`，遇仍运行 job 立刻 `needs_fix`，明确要求先调 `wait_for_background_jobs`、读完输出 tail 再提交。`GOLISH_SUBMIT_RECONCILE_WAIT_MS` 仍可恢复旧 bounded in-submit wait。
+  - **已改**：Prober / Enumerator allowed_tools 与 prompt 都加入 `wait_for_background_jobs`；`wait_for_background_jobs` 加入 harness 后台控制面 taxonomy，不计作扫描工具，不受 stage scan whitelist 误拦。
+  - **同步模块卡**：`golish-app-core`、`golish-agent-app/ai`、`golish-sub-agents/defaults`、`golish-agent-kit/harness`。
+  - **运行过的验证（实跑）**：`cargo fmt -p golish-app-core -p golish-agent-app -p golish-sub-agents -p golish-agent-kit` → exit 0；`cargo nextest run -p golish-app-core wait_for_background_jobs --status-level fail` → 1 passed；`cargo nextest run -p golish-app-core background_command --status-level fail` → 2 passed；`cargo nextest run -p golish-agent-app submit_deferred_when_background_jobs_running submit_proceeds_after_background_jobs_settle reconciliation_barrier_inert_without_session_id --status-level fail` → 3 passed（先因旧断言期待 `completion note` 红一次，改为 `wait_for_background_jobs` 契约后转绿）；补跑 `cargo nextest run -p golish-agent-app submit_reconcile_default_defers_to_visible_wait_tool submit_deferred_when_background_jobs_running submit_proceeds_after_background_jobs_settle reconciliation_barrier_inert_without_session_id --status-level fail` → 4 passed；`cargo nextest run -p golish-sub-agents prober enumerator --status-level fail` → 4 passed；`cargo nextest run -p golish-agent-kit is_scan_invocation_distinguishes_scan_from_meta --status-level fail` → 1 passed；`cargo check -p golish-app-core -p golish-agent-app -p golish-sub-agents -p golish-agent-kit` → exit 0；`cargo clippy -p golish-app-core -p golish-agent-app -p golish-sub-agents -p golish-agent-kit --all-targets -- -D warnings` → exit 0；补跑 `cargo clippy -p golish-agent-app --all-targets -- -D warnings` → exit 0。
+  - **未跑**：`./init.sh` / `just precommit` / 活体重启复跑（本轮按用户问题 scoped 验证；当前工作树还有同一大轮前端/UI 未提交改动）。
+  - **新增未提交文件**：`backend/crates/golish-agent-app/src/ai/{commands/bridge_config.rs,harness_submit_tool.rs}`、`backend/crates/golish-agent-kit/src/harness/tool_taxonomy.rs`、`backend/crates/golish-sub-agents/src/defaults/{builder/mod.rs,builder/registry.rs,prompts/execution_planning.rs,tests.rs}`、`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-sub-agents/defaults.md`、`docs/modules/backend/golish-agent-kit/harness.md`。
+
+---
+
+### 2026-06-24 · detail tool row 状态图标尺寸修复（本会话续）
+
+- **本轮目标**：回应用户截图：sub-agent/detail 里的 `pentest_run` 工具调用行，状态图标在长命令（如 `nmap --top-ports ...`）附近一会儿变小、一会儿正常。
+- **根因确认**：
+  - `frontend/components/ui/StatusIcon.tsx` 输出的 lucide SVG 没有 `shrink-0`，在 flex 行里会被长 `pentest_run` 参数压缩。
+  - `SubAgentDetailView.AgentToolCallBlock` 的 collapsed row 没有 `min-w-0` 文本槽，且状态图标用 `md`，和同一行的魔杖/terminal 小图标尺寸不一致。
+- **已完成**：
+  - `StatusIcon` 增加可选 `className`，并统一带 `shrink-0`，防止 dense tool row 中被 flex 压扁。
+  - `SubAgentDetailView` 工具调用行补 `min-w-0`，`pentest_run` 参数只在文本区域 truncate；状态图标改 `sm`，与同一行其它小图标对齐。
+  - 新增 `StatusIcon.test.tsx` 锁定 `w-3 h-3 shrink-0`，防止回归。
+- **运行过的验证（实跑）**：
+  - `pnpm exec vitest run frontend/components/ui/StatusIcon.test.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts` → 3 files / 28 tests passed。
+  - `pnpm exec biome check frontend/components/ui/StatusIcon.tsx frontend/components/ui/StatusIcon.test.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts` → exit 0。
+  - `just check-fe` → exit 0。
+  - `just test-fe` → exit 0。
+- **未跑**：`./init.sh` / `just precommit` 全量（沿用本轮 EAS 前端小修的 scoped 验证口径；无后端/生成类型/schema 改动）。
+- **提交记录**：未 commit。
+- **未提交的本轮改动文件**：`frontend/components/ui/StatusIcon.tsx`、`frontend/components/ui/StatusIcon.test.tsx`、`frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`、`agent-progress.md`。
+- **下一步建议**：重启/刷新前端后复看 detail；预期 `pentest_run` 前的魔杖、状态、terminal 图标不再因命令长短忽大忽小。
+
+---
+
 ### 2026-06-24 · EAS active landing 最小闭环（本会话续）
 
 - **本轮目标**：按用户“开始做 active landing”，让 EAS/Prober 的 `pentest_run` 主动探测结果不只进 evidence，也能复用现有 toolsconfig output parser 自动写 `targets` / fingerprints，从而 Target 面板与 gate DB truth 读取同一份结构化事实。
@@ -141,6 +201,7 @@
   - 已改：新增 `getSubAgentHeaderDisplayStatus` 派生展示状态：completed 但存在 running/backgrounded tool 时优先显示运行/后台；completed 但最后一个 tool 语义失败时显示 error。新增 `backgrounded` 中英文状态文案。
   - 验证：先加 sub-agent header 红灯测试（completed+running tool、completed+latest failed tool）；实现后最终组合验证 `pnpm exec vitest run frontend/components/AIChatPanel/ToolCallSummary.test.ts frontend/components/ToolExecutionCard/ToolExecutionCard.test.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/UnifiedInput/StatusBadges.test.tsx` → 5 files / 37 tests passed；`pnpm exec biome check ...`（11 个相关前端/i18n 文件）→ exit 0。
 - **续修 14（submit 前后台 job 等待与控制面冲突）**：
+  - **状态说明**：本段是上一版临时修复记录；“submit 默认等待 5min / 等 completion note”已被上方续修 15 supersede，当前契约是显式调用 `wait_for_background_jobs` 后再提交。
   - 现场实证：最新非标题 run `pentest-chat-1782234945520-1` 中，Prober 在 `submit_stage_deliverable` 收到 “1 background job(s) still running” 后尝试 `pentest_run check_job job_369ecd01`，但 EAS stage guard 把 `check_job` 当扫描工具拦掉；随后模型立即重交，转成证据不足/coverage gap，最终该 org blocked。
   - 根因：submit barrier 只默认等 60s，慢 `nmap -sV` 仍在跑时把等待责任交回模型；同时 `pentest_run check_job/kill_job` 走 wrapper 后被 `is_scan_invocation` 误判为受 stage 白名单约束的扫描调用，导致“建议检查卡死 job”与实际 guard 冲突。
   - 已改：`check_job` / `kill_job` / `list_jobs` 识别为后台 job 控制面，不再参与 stage scan whitelist；submit barrier 默认等待提升到 5min（`GOLISH_SUBMIT_RECONCILE_WAIT_MS` 仍可调）；submit needs_fix、`stage_run` objective、prober/enumerator prompt 都改为先等 completion note/submit barrier，禁止重跑同一扫描，只有明确卡死才一次性检查/kill。

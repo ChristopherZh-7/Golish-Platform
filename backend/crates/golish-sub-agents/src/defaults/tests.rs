@@ -193,6 +193,7 @@ fn test_prober_has_active_surface_tools() {
     // Active surface mapping + stage submission tools present.
     assert!(has_tool(prober, "pentest_run"));
     assert!(has_tool(prober, "pentest_list_tools"));
+    assert!(has_tool(prober, "wait_for_background_jobs"));
     assert!(has_tool(prober, "manage_targets"));
     assert!(has_tool(prober, "list_in_scope_targets"));
     // L1b (design 2026-06-24): Prober gets the ranked attack-surface seed worklist.
@@ -220,6 +221,7 @@ fn test_prober_prompt_is_active_surface() {
     assert!(prompt.contains("httpx"));
     assert!(prompt.contains("port"));
     assert!(prompt.contains("list_attack_surface_seeds"));
+    assert!(prompt.contains("wait_for_background_jobs"));
     assert!(prompt.contains("tested_units"));
     assert!(prompt.contains("total_units"));
     assert!(prompt.contains("HTTP liveness alone"));
@@ -242,6 +244,7 @@ fn test_enumerator_has_content_enum_tools() {
     // Active content enumeration + stage submission tools present.
     assert!(has_tool(enumerator, "pentest_run"));
     assert!(has_tool(enumerator, "pentest_list_tools"));
+    assert!(has_tool(enumerator, "wait_for_background_jobs"));
     assert!(has_tool(enumerator, "js_collect"));
     assert!(has_tool(enumerator, "js_extract_apis"));
     assert!(has_tool(enumerator, "manage_targets"));
@@ -265,6 +268,7 @@ fn test_enumerator_prompt_is_content_enum() {
     let prompt = build_enumerator_prompt();
     assert!(prompt.contains("enumeration"));
     assert!(prompt.contains("submit_stage_deliverable"));
+    assert!(prompt.contains("wait_for_background_jobs"));
     // Content enumeration: directories / parameters / JS-API extraction.
     assert!(prompt.contains("director"));
     assert!(prompt.contains("param"));
