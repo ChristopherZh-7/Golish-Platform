@@ -62,6 +62,26 @@ pub enum HarnessTraceKind {
         evidence_ids: Vec<i64>,
     },
 
+    /// Execution mentor produced guidance after the runtime monitor detected a
+    /// repetitive or stalled tool pattern. In `shadow` mode this is trace-only;
+    /// in `soft` mode the same advice is also appended to the tool response.
+    MentorAdviceRecorded {
+        /// `"shadow"` | `"soft"`.
+        mode: String,
+        /// Monitor reason, e.g. `"execution_monitor"`.
+        trigger: String,
+        /// Tool name that dominated the recent call pattern.
+        tool: String,
+        #[ts(type = "number")]
+        repeat_count: u32,
+        /// Whether this advice was injected into the next model-visible tool
+        /// response (`true`) or only recorded as telemetry (`false`).
+        injected: bool,
+        /// Short preview for transcript/run-tree rendering. Full advice remains
+        /// in tracing/tool response depending on mode.
+        advice_preview: String,
+    },
+
     /// `stage_run` tool: one organization's live progress for the current stage's
     /// per-org fan-out (design 2026-06-13-stage-run-fanout). The frontend upserts a
     /// row per `org_id` into the `stage_run` tool's detail pane; `stage_label`/
@@ -197,6 +217,34 @@ mod tests {
         assert_eq!(v["kind"], "background_notes_injected");
         assert_eq!(v["count"], 57);
         assert_eq!(v["evidence_ids"], serde_json::json!([86, 88, 90]));
+    }
+
+    #[test]
+    fn mentor_advice_recorded_roundtrips() {
+        let k = HarnessTraceKind::MentorAdviceRecorded {
+            mode: "shadow".into(),
+            trigger: "execution_monitor".into(),
+            tool: "pentest_run".into(),
+            repeat_count: 3,
+            injected: false,
+            advice_preview: "check the previous background output first".into(),
+        };
+        let v = serde_json::to_value(&k).unwrap();
+        assert_eq!(v["kind"], "mentor_advice_recorded");
+        assert_eq!(v["mode"], "shadow");
+        assert_eq!(v["tool"], "pentest_run");
+        assert_eq!(v["repeat_count"], 3);
+        assert_eq!(v["injected"], false);
+
+        let back: HarnessTraceKind = serde_json::from_value(v).expect("round-trips");
+        assert!(matches!(
+            back,
+            HarnessTraceKind::MentorAdviceRecorded {
+                mode,
+                injected: false,
+                ..
+            } if mode == "shadow"
+        ));
     }
 
     #[test]

@@ -37,15 +37,23 @@
   - `ExecutionMonitor` 增加 `ExecutionMonitorMode::{Shadow, SoftInject}`；`shadow()` 只记录建议，`soft_inject()` 保留现有注入语义，`new()` 维持 soft-inject 兼容。
   - `AgentBridge::prepare_execution_context` 按 `GOLISH_EXECUTION_MENTOR` 注入 monitor：默认 `off`；`shadow` 调 LLM mentor 并写 `harness::mentor` tracing；`soft`/`on` 才把 `--- EXECUTION ADVISOR ---` 追加到 tool response。
   - `single_tool_call` 的 mentor 处理改成 shadow/soft 分流；两种模式都会在触发后 reset monitor，shadow 不改变 agent 行为。
-  - 同步设计文档与模块卡：`runtime-monitor-and-fine-grained-resume`、`golish-agent-kit/loop_detection`、`golish-agent-runtime/agentic_loop`、`golish-agent-bridge/agent_bridge`。
+  - 新增 `HarnessTraceKind::MentorAdviceRecorded`：shadow/soft 两种模式都会把 mentor 建议写入 transcript/run-tree 可见的结构化 trace；soft 额外注入 tool response，shadow 只观测不干预。
+  - `op_trace` / transcript summarizer 增加 mentor advice 可读摘要；ts-rs generated bindings 已同步 `GeneratedHarnessTraceKind` / `GeneratedAiEvent`。
+  - 同步设计文档与模块卡：`runtime-monitor-and-fine-grained-resume`、`golish-agent-kit/loop_detection`、`golish-agent-runtime/agentic_loop`、`golish-agent-bridge/agent_bridge`、`golish-core/events`、`golish-events/{op_trace,transcript}`。
 - **运行过的验证（实跑）**：
   - `cargo fmt -p golish-agent-kit -p golish-agent-runtime -p golish-agent-bridge` → exit 0。
   - `cargo nextest run -p golish-agent-kit execution_monitor --status-level fail` → 2 passed / 720 skipped。
   - `cargo check -p golish-agent-kit -p golish-agent-runtime -p golish-agent-bridge` → exit 0。
   - `cargo clippy -p golish-agent-kit -p golish-agent-runtime -p golish-agent-bridge --all-targets -- -D warnings` → exit 0。
-- **未跑**：`just precommit` 全量（按用户要求不跑；上一轮全量已被用户要求中断于 `test-rust-all`）。
-- **提交记录**：待 commit。
-- **下一步建议**：后续活体可用 `GOLISH_EXECUTION_MENTOR=shadow` 跑 EAS/enum，检查 `run.log` 的 `harness::mentor` 建议质量；准了再试 `soft` 注入。
+  - `cargo fmt -p golish-core -p golish-events -p golish-agent-runtime` → exit 0。
+  - `cargo nextest run -p golish-core mentor_advice --status-level fail` → 1 passed / 203 skipped。
+  - `cargo check -p golish-core -p golish-events -p golish-agent-runtime` → exit 0。
+  - `cargo test -p golish-core export_bindings -q` → 14 passed / 190 filtered out，生成 TS bindings。
+  - `cargo clippy -p golish-core -p golish-events -p golish-agent-runtime --all-targets -- -D warnings` → exit 0。
+  - `pnpm --silent typecheck` → exit 0。
+- **未跑**：`just precommit` 全量（按用户要求不跑；上一轮全量已被用户要求中断于 `test-rust-all`）。`just gen-types` 全量 recipe 因耗时中断，已改用 scoped `cargo test -p golish-core export_bindings -q` 完成实际需要的生成。
+- **提交记录**：`dac6fd8b feat(agent): gate execution mentor modes`；本续修随 `feat(agent): trace execution mentor advice` 提交。
+- **下一步建议**：后续活体可用 `GOLISH_EXECUTION_MENTOR=shadow` 跑 EAS/enum，检查 transcript/run_tree 里的 `mentor_advice_recorded` 和 `run.log` 的 `harness::mentor` 建议质量；准了再试 `soft` 注入。
 
 ---
 

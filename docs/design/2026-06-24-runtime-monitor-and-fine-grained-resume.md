@@ -7,8 +7,9 @@
 
 Implementation note 2026-06-24: P1a/P1b mentor gating is wired as an env-controlled
 runtime mode. `GOLISH_EXECUTION_MENTOR=shadow` invokes the existing execution
-mentor and records advice to `harness::mentor` tracing only; `soft`/`on` appends
-the advice to the tool response; default is `off`.
+mentor and records advice as `HarnessTraceKind::MentorAdviceRecorded` plus
+`harness::mentor` tracing; `soft`/`on` records the same trace and appends the
+advice to the tool response; default is `off`.
 
 ## 1. Problem
 

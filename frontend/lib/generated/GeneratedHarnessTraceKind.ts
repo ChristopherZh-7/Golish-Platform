@@ -25,7 +25,29 @@ source: string, } | { "kind": "deliverable_submitted",
 /**
  * `"accepted"` | `"needs_fix"` | `"rejected"` | `"received"`.
  */
-status: string, cited_evidence_refs: number[], available_real_ids: number[], } | { "kind": "background_notes_injected", count: number, evidence_ids: number[], } | { "kind": "stage_run_org_progress", 
+status: string, cited_evidence_refs: number[], available_real_ids: number[], } | { "kind": "background_notes_injected", count: number, evidence_ids: number[], } | { "kind": "mentor_advice_recorded", 
+/**
+ * `"shadow"` | `"soft"`.
+ */
+mode: string, 
+/**
+ * Monitor reason, e.g. `"execution_monitor"`.
+ */
+trigger: string, 
+/**
+ * Tool name that dominated the recent call pattern.
+ */
+tool: string, repeat_count: number, 
+/**
+ * Whether this advice was injected into the next model-visible tool
+ * response (`true`) or only recorded as telemetry (`false`).
+ */
+injected: boolean, 
+/**
+ * Short preview for transcript/run-tree rendering. Full advice remains
+ * in tracing/tool response depending on mode.
+ */
+advice_preview: string, } | { "kind": "stage_run_org_progress", 
 /**
  * The organization this progress row is for.
  */

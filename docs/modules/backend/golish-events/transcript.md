@@ -43,6 +43,7 @@
 ## 注意事项 / 坑
 
 - `should_transcript` 故意剔除 `TextDelta`/`Reasoning`/`ToolOutputChunk`/`SubAgent*` 等高频/内部事件——加新流式事件时考虑是否该加进过滤。
+- `summarizer.rs` 对 `HarnessTraceKind` 做可读摘要；新增 trace kind 要同步 match 分支。mentor advice 会进入 summarizer 输入，但 shadow 模式不改变 agent 行为。
 - 读取容忍 legacy 整文件 JSON 数组 + JSONL 两种格式，且跳过坏行（不整体失败）。
 - 与 `op_trace` 共用同一 transcript 目录与格式；改路径/格式要两边同步。
 

@@ -5,8 +5,9 @@ use super::helpers::handle_loop_detection;
 use super::llm_helpers::{mentor_one_shot, summarize_tool_output};
 use super::tool_execution::execute_with_hitl_generic;
 use super::{normalize_run_pty_cmd_args, toolcall_fixer, SUMMARIZE_THRESHOLD_TOKENS};
+use golish_agent_kit::loop_detection::ExecutionMonitorMode;
 use golish_agent_kit::system_hooks::{HookRegistry, PostToolContext};
-use golish_core::events::{AiEvent, ToolSource};
+use golish_core::events::{AiEvent, HarnessTraceKind, ToolSource};
 use golish_core::utils::truncate_str;
 use golish_core::AgentToolContext;
 use golish_sub_agents::SubAgentContext;
@@ -14,6 +15,54 @@ use rig::completion::CompletionModel as RigCompletionModel;
 use rig::message::{Text, ToolCall, ToolResult, ToolResultContent, UserContent};
 use rig::one_or_many::OneOrMany;
 use serde_json::json;
+
+fn mentor_agent_path(sub_agent_context: &SubAgentContext) -> String {
+    if sub_agent_context.depth == 0 {
+        return "main".to_string();
+    }
+
+    let current = format!("subagent_depth_{}", sub_agent_context.depth);
+    match sub_agent_context.parent_agent.as_deref() {
+        Some("main" | "main-agent") | None => format!("main>{current}"),
+        Some(parent) if parent.starts_with("main>") => format!("{parent}>{current}"),
+        Some(parent) => format!("main>{parent}>{current}"),
+    }
+}
+
+fn emit_mentor_advice_trace(
+    ctx: &AgenticLoopContext<'_>,
+    sub_agent_context: &SubAgentContext,
+    mode: ExecutionMonitorMode,
+    repeated_tool: &str,
+    repeat_count: usize,
+    advice_body: &str,
+) {
+    let operation_id = ctx
+        .harness_operation_id
+        .map(|id| id.to_string())
+        .or_else(|| ctx.events.session_id.map(str::to_string));
+    let Some(operation_id) = operation_id else {
+        return;
+    };
+
+    let trace = AiEvent::HarnessTrace {
+        operation_id,
+        stage: ctx
+            .harness_stage
+            .map(|stage| stage.as_str().to_string())
+            .unwrap_or_default(),
+        agent_path: mentor_agent_path(sub_agent_context),
+        trace: HarnessTraceKind::MentorAdviceRecorded {
+            mode: mode.as_str().to_string(),
+            trigger: "execution_monitor".to_string(),
+            tool: repeated_tool.to_string(),
+            repeat_count: repeat_count.min(u32::MAX as usize) as u32,
+            injected: matches!(mode, ExecutionMonitorMode::SoftInject),
+            advice_preview: truncate_str(advice_body, 500).to_string(),
+        },
+    };
+    let _ = ctx.events.event_tx.send(trace);
+}
 
 pub(super) async fn execute_single_tool_call<M>(
     tool_call: ToolCall,
@@ -337,14 +386,20 @@ where
                     advice_preview = %truncate_str(&advice_body, 500),
                     "execution mentor advice recorded"
                 );
+                emit_mentor_advice_trace(
+                    ctx,
+                    sub_agent_context,
+                    mode,
+                    &repeated_tool,
+                    repeat_count,
+                    &advice_body,
+                );
                 match mode {
-                    golish_agent_kit::loop_detection::ExecutionMonitorMode::Shadow => None,
-                    golish_agent_kit::loop_detection::ExecutionMonitorMode::SoftInject => {
-                        Some(format!(
-                            "\n\n--- EXECUTION ADVISOR ---\n{}\n-------------------------",
-                            advice_body
-                        ))
-                    }
+                    ExecutionMonitorMode::Shadow => None,
+                    ExecutionMonitorMode::SoftInject => Some(format!(
+                        "\n\n--- EXECUTION ADVISOR ---\n{}\n-------------------------",
+                        advice_body
+                    )),
                 }
             };
             {

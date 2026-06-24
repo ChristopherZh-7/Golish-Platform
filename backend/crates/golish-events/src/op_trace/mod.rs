@@ -346,6 +346,13 @@ fn summarize_event(event: &AiEvent) -> String {
                 "submit {status} cited={cited_evidence_refs:?} available={available_real_ids:?}"
             ),
             K::BackgroundNotesInjected { count, .. } => format!("notes injected x{count}"),
+            K::MentorAdviceRecorded {
+                mode,
+                tool,
+                repeat_count,
+                injected,
+                ..
+            } => format!("mentor {mode} {tool} x{repeat_count} injected={injected}"),
             K::StageRunOrgProgress {
                 org_name,
                 status,

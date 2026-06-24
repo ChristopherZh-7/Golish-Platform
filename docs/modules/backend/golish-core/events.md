@@ -25,7 +25,7 @@
 | `AiEvent`（+ `event_type()`） | 全部 AI 事件的大枚举（wire 契约） |
 | `AiEventEnvelope` | seq + ts 包装，保证可靠投递 |
 | `ToolSource` | 一次工具调用的来源（main/sub-agent/server tool 等） |
-| `HarnessTraceKind` / `build_agent_path` | harness 观测事件类型 + agent_path 构造 |
+| `HarnessTraceKind` / `build_agent_path` | harness 观测事件类型 + agent_path 构造；覆盖 gate/evidence/background/stage_run/mentor advice trace |
 
 均经 crate 根 `pub use events::*` 暴露为 `golish_core::events::*`。
 
