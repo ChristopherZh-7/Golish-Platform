@@ -78,6 +78,7 @@ mod tests {
         assert!(s.bridge_tools.auth_probe);
         assert!(s.bridge_tools.record_finding);
         assert!(s.bridge_tools.vault);
+        assert!(s.bridge_tools.browser_collect_js_api);
         assert!(s.bridge_tools.js_extract_apis);
         // The harness deliverable channel is task-mode-only: chat has no active
         // stage, so it must never expose submit_stage_deliverable.

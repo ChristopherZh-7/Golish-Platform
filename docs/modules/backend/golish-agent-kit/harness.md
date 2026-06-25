@@ -35,6 +35,7 @@
 | `stage_harness.rs` / `stage_transition.rs` | 主入口 / gate→下一 stage |
 | `operation_graph.rs` / `profile.rs` / `stage_spec.rs` | DAG 投影 / profile / stage 定义 |
 | `gate/` | 6 个确定性 check |
+| `evidence_facts.rs` | 从工具命令/输出派生 coverage facts（passive intel + EAS） |
 | `intent_classifier.rs` / `nl_slice.rs` / `sprint_contract.rs` / `pre_action_authorizer.rs` | 分类 / 终态 / 契约 / authz |
 
 ## 依赖
@@ -47,7 +48,10 @@
 - `target_intel` 的 6 个 `GOLISH-INTEL-*` 覆盖列仍必核，但阶段不再暴露任何 scan-tool selector（`allowed_tool_types=[]`）：found 只能来自 `recon_map_assets` / `recon_lookup_whois` 等 registry/provider 工具落库后的 DB truth；缺 provider、无结果或不适用要走 `blocked` / `checked_empty` / `not_applicable` 终态，不能切 CLI fallback。
 - `source_coverage` 规则读取 `GateContext.source_queries`（来自 `source_query_log`）来证明 provider/source 已终态尝试；它不投影 found，found 仍由 DB/ledger truth 决定。
 - `coverage_complete` 在 `derive_from_evidence=true` 时也可消费 `source_query_log` 的终态 source row 来关闭**非 found** gap：精确 technique（如 RDAP/WHOIS）按空/阻断终态处理，`recon_map_assets` provider survey 只覆盖 provider-backed intel 技术；自报 `found` 仍必须有 DB/ledger truth，不能靠 source row 过门。
-- `external_attack_surface` 仍不启用 `authoritative_found`（active Empty 事实源未就绪），但显式 coverage cell 已收紧：`found` / `checked_empty` 必须挂 evidence，`blocked` / `not_applicable` 必须有 note，且 `coverage_denominator` 要求端口/服务这类显式格覆盖完整（服务指纹的 `tested_units/total_units` 表示已指纹开放端口/发现开放端口）。
+- `coverage_complete` BLOCK 时会在 `HarnessRecoveryActions.coverage_gap_actions` 输出结构化缺口清单（`asset` / `technique` / `reason` / `suggested_tools`），供 `submit_stage_deliverable` 和 sub-agent repair mode 直接告诉模型“只补这些目标/技术”，不要只靠自然语言 reason 猜。
+- `external_attack_surface` 现在走 DB-truth 瘦交付：`facts_from_db_truth=true`，`coverage_complete.authoritative_found=true` 只认 targets/ports/fingerprints/technique_outcomes 投影的 found LIVENESS/PORT/SERVICE-FINGERPRINT；`coverage_denominator.authoritative=true` 不再要求手抄 denominator。主动 negative 终态仍需显式 `checked_empty+evidence` 或 `blocked/not_applicable+note`，直到 active Empty 事实源完全覆盖。
+- EAS 工具证据事实也在 `evidence_facts.rs` 派生：`httpx` / `nmap -sn` / `naabu` / `whatweb` 会映射到对应 `GOLISH-EAS-*` technique；`nmap` 的 DNS failure（stderr `Failed to resolve`）会成为 `error` terminal fact，避免同一 liveness gap 无限重试。
+- `external_attack_surface` 的 `stage_run_pass_token` claim 视为 Surface closeout 信号：它只在 orchestrator 按 per-org completion ledger 重算通过后才有效，避免 fan-out 阶段主 agent 只交 pass token 时被 `surface_coverage` 误拦；泛化的 `discovery` claim 仍不映射到 Surface。
 - stage tool whitelist 只约束真实扫描调用；`check_job` / `kill_job` / `list_jobs` / `wait_for_background_jobs` 是后台 job 控制面，必须 exempt，否则 submit barrier 报“后台任务仍在跑”后 worker 无法等待输出或检查明显卡死的 job。
 - 设计见 `docs/design/2026-05-26-*`；内层 harness 当前 deferred（见 AGENTS.md §6）。
 

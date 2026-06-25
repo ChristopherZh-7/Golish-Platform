@@ -73,7 +73,7 @@ pub use executor::{
     submit_repair_mode_from_submit_result, SubAgentExecutorContext, ToolProvider,
 };
 pub use executor_types::{
-    PostShellHook, StageToolGuard, StageToolHider, SubAgentChainPersistence,
+    CoverageGapAction, PostShellHook, StageToolGuard, StageToolHider, SubAgentChainPersistence,
     SubAgentToolObservation, SubAgentToolObserver, SubAgentToolResultHook, SubAgentToolRouter,
     SubmitRepairKind, SubmitRepairMode,
 };

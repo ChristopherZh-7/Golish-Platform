@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use super::super::stage_spec::StageSpec;
 use super::super::types::{
-    CoverageCell, CoverageStatus, FindingSeverity, HarnessFinding, HarnessRecoveryActions,
-    StageClaim, StageDeliverable,
+    CoverageCell, CoverageGapAction, CoverageStatus, FindingSeverity, HarnessFinding,
+    HarnessRecoveryActions, StageClaim, StageDeliverable,
 };
 use super::{min_invocations_check, scope_check, surface_coverage_check, GateCheckOutcome};
 
@@ -102,6 +102,11 @@ pub enum GateRule {
     /// `tested_units*100 ≥ min_sample_ratio_pct*total_units`。blocked / not_applicable
     /// 免分母；`total_units==0` 的 found/checked_empty 记缺口（应改用 not_applicable）。
     CoverageDenominator {
+        /// Slim DB-truth stages should not require the model to hand-copy
+        /// denominator fields for cells the database already adjudicates.
+        /// Completeness remains enforced by `coverage_complete`.
+        #[serde(default)]
+        authoritative: bool,
         #[serde(default = "default_sample_ratio_pct")]
         min_sample_ratio_pct: u8,
         on_fail: OnFail,
@@ -339,6 +344,13 @@ fn eval_one(
         GateRule::NamedCheck { check, on_fail } => {
             let base = match check {
                 NamedCheckKind::Scope => scope_check::run(d),
+                NamedCheckKind::SurfaceCoverage if db_truth_backed(spec, ctx) => {
+                    // DB-truth stages use the precise coverage matrix populated
+                    // from ledger/DB facts. The legacy Surface Workbench
+                    // category check is redundant there and would push the
+                    // model back toward hand-written claims.
+                    GateCheckOutcome::Pass
+                }
                 NamedCheckKind::SurfaceCoverage => surface_coverage_check::run(d),
                 NamedCheckKind::MinInvocations => min_invocations_check::run(d, spec),
             };
@@ -374,9 +386,10 @@ fn eval_one(
             authoritative,
         } => coverage_corroborated(d, on_fail, *authoritative),
         GateRule::CoverageDenominator {
+            authoritative,
             min_sample_ratio_pct,
             on_fail,
-        } => coverage_denominator(d, *min_sample_ratio_pct, on_fail),
+        } => coverage_denominator(d, *authoritative, *min_sample_ratio_pct, on_fail),
         GateRule::SourceCoverage {
             authoritative_techniques,
             on_fail,
@@ -402,6 +415,10 @@ fn eval_one(
         );
     }
     outcome
+}
+
+fn db_truth_backed(spec: &StageSpec, ctx: &GateContext) -> bool {
+    spec.facts_from_db_truth && ctx.evidence_facts.as_deref().is_some_and(|f| !f.is_empty())
 }
 
 /// 所有 coverage 终态（`terminal_status` 缺省时用）。
@@ -461,6 +478,26 @@ fn log_coverage_gap_matrix(stage_id: &str, op: &str, gaps: &[String]) {
         gaps = %shown,
         "coverage gap matrix (full)"
     );
+}
+
+fn coverage_gap_action(asset: &str, technique: &str) -> CoverageGapAction {
+    CoverageGapAction {
+        asset: asset.to_string(),
+        technique: technique.to_string(),
+        reason: "missing_terminal_coverage".to_string(),
+        suggested_tools: suggested_tools_for_gap(technique),
+    }
+}
+
+fn suggested_tools_for_gap(technique: &str) -> Vec<String> {
+    match technique {
+        "GOLISH-EAS-LIVENESS" => vec!["httpx".to_string(), "nmap -sn".to_string()],
+        "GOLISH-EAS-PORT" => vec!["naabu".to_string(), "nmap".to_string()],
+        "GOLISH-EAS-SERVICE-FINGERPRINT" => {
+            vec!["nmap -sV".to_string(), "whatweb".to_string()]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// E1 PR-B（设计 2026-06-18-canonical-asset-identity-and-coverage-join-key）：把资产串
@@ -575,11 +612,12 @@ fn coverage_complete(
                 hints: on_fail.hints.clone(),
                 repair_tool_calls: on_fail.repair_tool_calls.clone(),
                 missing_evidence_kinds: on_fail.missing_evidence_kinds.clone(),
+                ..Default::default()
             },
         };
     }
 
-    let mut gaps: Vec<String> = Vec::new();
+    let mut gaps: Vec<CoverageGapAction> = Vec::new();
     for asset in &assets {
         // Host-aware coverage (design 2026-06-15 §4.0): when enabled, hold each
         // asset only to the techniques that apply to its class (a bare IP is not
@@ -660,11 +698,15 @@ fn coverage_complete(
                         || (derive_from_evidence && has_fact(EvidenceOutcome::Found))
                 };
             // checked_empty 终态（I8）：
-            // - authoritative：自报 + 真 Empty 账本事实双要（「跑了→空」必须被记录）。
+            // - authoritative：自报 checked_empty 必须有真 Empty 账本事实；如果工具落账点
+            //   已经直接派生 Empty fact（如 EAS active probe / source terminal），该事实本身
+            //   也可关闭缺口，避免模型为了镜像账本再手抄 coverage matrix。
             // - 旧路径：自报 cell || derive_from_evidence 的 Empty 事实。
             let empty_ok = terminal.contains(&CoverageStatus::CheckedEmpty)
                 && if authoritative {
-                    cell_status(CoverageStatus::CheckedEmpty) && has_fact(EvidenceOutcome::Empty)
+                    has_fact(EvidenceOutcome::Empty)
+                        && (cell_status(CoverageStatus::CheckedEmpty)
+                            || (derive_from_evidence && !cell_status(CoverageStatus::Found)))
                 } else {
                     cell_status(CoverageStatus::CheckedEmpty)
                         || (derive_from_evidence && has_fact(EvidenceOutcome::Empty))
@@ -713,7 +755,7 @@ fn coverage_complete(
                 });
 
             if !found_ok && !empty_ok && !other_ok && !error_ok && !source_terminal_ok {
-                gaps.push(format!("({asset} × {tech})"));
+                gaps.push(coverage_gap_action(asset, tech));
             }
         }
     }
@@ -721,19 +763,23 @@ fn coverage_complete(
     if gaps.is_empty() {
         return GateCheckOutcome::Pass;
     }
+    let gap_labels = gaps
+        .iter()
+        .map(|gap| format!("({} × {})", gap.asset, gap.technique))
+        .collect::<Vec<_>>();
     const MAX_SHOWN: usize = 8;
-    let shown = gaps
+    let shown = gap_labels
         .iter()
         .take(MAX_SHOWN)
         .cloned()
         .collect::<Vec<_>>()
         .join(", ");
-    let suffix = if gaps.len() > MAX_SHOWN {
-        format!(" (+{} more)", gaps.len() - MAX_SHOWN)
+    let suffix = if gap_labels.len() > MAX_SHOWN {
+        format!(" (+{} more)", gap_labels.len() - MAX_SHOWN)
     } else {
         String::new()
     };
-    log_coverage_gap_matrix(&d.stage_id, "coverage_complete", &gaps);
+    log_coverage_gap_matrix(&d.stage_id, "coverage_complete", &gap_labels);
     GateCheckOutcome::Block {
         reasons: vec![format!(
             "{}: never attempted {}{}",
@@ -743,6 +789,7 @@ fn coverage_complete(
             hints: on_fail.hints.clone(),
             repair_tool_calls: on_fail.repair_tool_calls.clone(),
             missing_evidence_kinds: on_fail.missing_evidence_kinds.clone(),
+            coverage_gap_actions: gaps,
         },
     }
 }
@@ -759,9 +806,13 @@ fn default_sample_ratio_pct() -> u8 {
 /// （应改用 not_applicable）。无缺口 → Pass；否则 Block，缺口聚合进 reason（前 N 个）。
 fn coverage_denominator(
     d: &StageDeliverable,
+    authoritative: bool,
     min_ratio_pct: u8,
     on_fail: &OnFail,
 ) -> GateCheckOutcome {
+    if authoritative {
+        return GateCheckOutcome::Pass;
+    }
     let mut gaps: Vec<String> = Vec::new();
     for c in &d.coverage {
         if !matches!(
@@ -817,6 +868,7 @@ fn coverage_denominator(
             hints: on_fail.hints.clone(),
             repair_tool_calls: on_fail.repair_tool_calls.clone(),
             missing_evidence_kinds: on_fail.missing_evidence_kinds.clone(),
+            ..Default::default()
         },
     }
 }
@@ -881,6 +933,7 @@ fn coverage_corroborated(
             hints: on_fail.hints.clone(),
             repair_tool_calls: on_fail.repair_tool_calls.clone(),
             missing_evidence_kinds: on_fail.missing_evidence_kinds.clone(),
+            ..Default::default()
         },
     }
 }
@@ -953,6 +1006,7 @@ fn source_coverage(
             hints: on_fail.hints.clone(),
             repair_tool_calls: on_fail.repair_tool_calls.clone(),
             missing_evidence_kinds: on_fail.missing_evidence_kinds.clone(),
+            ..Default::default()
         },
     }
 }
@@ -1216,6 +1270,7 @@ fn block_from(on_fail: &OnFail) -> GateCheckOutcome {
             hints: on_fail.hints.clone(),
             repair_tool_calls: on_fail.repair_tool_calls.clone(),
             missing_evidence_kinds: on_fail.missing_evidence_kinds.clone(),
+            ..Default::default()
         },
     }
 }
@@ -1450,6 +1505,40 @@ mod tests {
             vec![],
         );
         assert!(eval(&d, &test_spec(), &[rule])[0].is_pass());
+    }
+
+    #[test]
+    fn db_truth_backed_surface_coverage_named_check_is_noop() {
+        let spec = crate::harness::stage_spec::load_stage_spec_from_json(
+            r#"{"id":"external_attack_surface","kind":"external_attack_surface","risk_level":"medium",
+                "deliverable_schema":"ExternalAttackSurfaceDeliverable",
+                "gate_validator":"validate_external_attack_surface_gate",
+                "facts_from_db_truth":true}"#,
+        )
+        .expect("spec parses");
+        let rule = parse(r#"{ "op":"named_check","check":"surface_coverage" }"#);
+        let d = deliverable(
+            vec![],
+            vec![StageClaim {
+                kind: "generic_note".into(),
+                subject: "a.com".into(),
+                summary: "DB-backed EAS result".into(),
+                evidence_ids: vec![EvidenceAuditId::new(1)],
+                technique: None,
+            }],
+        );
+        let ctx = crate::harness::gate::GateContextBuilder::new()
+            .extend_evidence_facts(vec![fact(
+                "a.com",
+                "GOLISH-EAS-LIVENESS",
+                EvidenceOutcome::Found,
+                1,
+            )])
+            .build();
+        assert!(
+            eval_with_context(&d, &spec, &[rule], &ctx)[0].is_pass(),
+            "DB-truth EAS should not require a hand-written Surface category claim"
+        );
     }
 
     #[test]
@@ -2049,6 +2138,26 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_empty_fact_closes_cell_without_handwritten_coverage() {
+        let d = deliverable_with_coverage(vec![]);
+        let ctx_empty = projection_ctx(
+            &["GOLISH-EAS-LIVENESS"],
+            Some(vec![fact(
+                "a",
+                "GOLISH-EAS-LIVENESS",
+                EvidenceOutcome::Empty,
+                7,
+            )]),
+        );
+
+        assert!(
+            eval_with_context(&d, &test_spec(), &[authoritative_rule(None)], &ctx_empty)[0]
+                .is_pass(),
+            "authoritative Empty evidence fact should be terminal without forcing the model to mirror it into coverage"
+        );
+    }
+
+    #[test]
     fn authoritative_off_keeps_legacy_self_report() {
         // 不开 authoritative_found（缺省）→ 自报 found 仍算终态（零回归）。
         let rule = parse(
@@ -2215,8 +2324,13 @@ mod tests {
         let d =
             deliverable_with_coverage(vec![cov_cell("a", "idor", CoverageStatus::Found, vec![1])]);
         match &eval(&d, &spec, &[rule])[0] {
-            GateCheckOutcome::Block { reasons, .. } => {
+            GateCheckOutcome::Block { reasons, recovery } => {
                 assert!(reasons[0].contains("(a × xss)"), "{:?}", reasons);
+                assert_eq!(recovery.coverage_gap_actions.len(), 1);
+                let action = &recovery.coverage_gap_actions[0];
+                assert_eq!(action.asset, "a");
+                assert_eq!(action.technique, "xss");
+                assert_eq!(action.reason, "missing_terminal_coverage");
             }
             GateCheckOutcome::Pass => panic!("expected Block on missing technique"),
         }
@@ -2786,11 +2900,36 @@ mod tests {
     fn coverage_denominator_default_ratio_is_100() {
         match denominator_rule(None) {
             GateRule::CoverageDenominator {
+                authoritative,
                 min_sample_ratio_pct,
                 ..
-            } => assert_eq!(min_sample_ratio_pct, 100),
+            } => {
+                assert!(!authoritative);
+                assert_eq!(min_sample_ratio_pct, 100);
+            }
             _ => panic!("expected CoverageDenominator"),
         }
+    }
+
+    #[test]
+    fn coverage_denominator_authoritative_is_noop() {
+        let rule = parse(
+            r#"{ "op":"coverage_denominator","authoritative":true,
+                 "on_fail":{"reason":"coverage below denominator"} }"#,
+        );
+        let d = deliverable_with_coverage(vec![cov_cell_dn(
+            "a",
+            "GOLISH-EAS-SERVICE-FINGERPRINT",
+            CoverageStatus::Found,
+            vec![1],
+            0,
+            0,
+            None,
+        )]);
+        assert!(
+            eval_one(&d, &test_spec(), &GateContext::default(), &rule).is_pass(),
+            "authoritative DB-truth stages should not require hand-copied denominator fields"
+        );
     }
 
     #[test]

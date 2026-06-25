@@ -1,0 +1,3 @@
+[
+{"target":"http://8.138.179.62:8080","http_status":403,"request_config":{"headers":{"User-Agent":"WhatWeb/0.6.4"}},"plugins":{"Country":{"string":["UNITED STATES"],"module":["US"]},"HTTPServer":{"os":["Ubuntu Linux"],"string":["nginx/1.24.0 (Ubuntu)"]},"IP":{"string":["8.138.179.62"]},"nginx":{"version":["1.24.0"]}}}
+]

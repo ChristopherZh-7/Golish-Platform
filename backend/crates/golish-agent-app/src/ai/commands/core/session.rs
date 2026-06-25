@@ -156,6 +156,15 @@ pub async fn shutdown_ai_session(
             tracing::info!("Cancellation signalled for session {}", session_id);
         }
     }
+    let killed_jobs =
+        golish_app_core::background_jobs::manager().kill_running_for_session(&session_id);
+    if killed_jobs > 0 {
+        tracing::info!(
+            killed_background_jobs = killed_jobs,
+            "Killed background jobs while shutting down session {}",
+            session_id
+        );
+    }
 
     if state
         .ai_state
@@ -183,13 +192,25 @@ pub async fn cancel_ai_generation(
 ) -> Result<(), GolishError> {
     if let Some(bridge) = state.ai_state.get_session_bridge(&session_id).await {
         bridge.cancel();
+        let killed_jobs =
+            golish_app_core::background_jobs::manager().kill_running_for_session(&session_id);
         tracing::info!(
+            killed_background_jobs = killed_jobs,
             "Generation cancelled (session kept alive) for {}",
             session_id
         );
         Ok(())
     } else {
+        let killed_jobs =
+            golish_app_core::background_jobs::manager().kill_running_for_session(&session_id);
         tracing::debug!("No AI agent found for session {} to cancel", session_id);
+        if killed_jobs > 0 {
+            tracing::info!(
+                killed_background_jobs = killed_jobs,
+                "Cancelled orphaned background jobs for session {}",
+                session_id
+            );
+        }
         Ok(())
     }
 }

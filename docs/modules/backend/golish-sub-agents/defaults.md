@@ -40,7 +40,8 @@
 
 - 硬编码 prompts 是 **fallback**：registry 优先用 `prompts/*.tera` + DB override；改默认行为先确认走的是哪条路径。
 - `from_registry` 版本会合并 DB/模板 override；纯 `create_default_sub_agents` 是无 registry 的基线。
-- `prober` prompt 是 `external_attack_surface` 的 active worker contract：优先 `list_attack_surface_seeds`，按 domain/ip/url/cidr 类型决定 liveness/port/service 动作；显式 coverage 要填 evidence 与 denominator（尤其 SERVICE-FINGERPRINT 的 `tested_units/total_units = 已指纹开放端口/发现开放端口`），不能把 HTTP liveness 当作 PORT/SERVICE 证明。
+- `prober` prompt 是 `external_attack_surface` 的 active worker contract：优先 `list_attack_surface_seeds`，按 domain/ip/url/cidr 类型决定 liveness/port/service 动作；found coverage 由 DB truth 自动投影（targets / ports / fingerprints / technique_outcomes），不要手抄 found 矩阵；只为 DB 不能推导的 active negative / blocked / not_applicable 终态提交 coverage。Prober/Enumerator 都必须暴露 `query_target_data`，否则 coverage-gap repair mode 的“查现有目标/证据后窄补洞”会退化成扫全量。
+- `enumerator` / `browser` 的 JS/API 路径要 browser-first：每个 alive web service 先跑 `browser_collect_js_api(crawl_mode="fast", ai_assist=true)` 做 lazy chunk / runtime XHR closure；如果 `closure_complete=false`、`recursive_queue_remaining>0`、`status=closure_partial|timeout_partial` 或 `ai_assist.recommended=true`，由模型选择一次 bounded deep/recipe 二次调用；deep/recipe 后停止继续升级，转 `js_extract_apis` 对已保存 JS 做静态 endpoint 抽取，不用 shell/curl/katana 替代 closure signal。
 - prober / enumerator prompt 的后台任务约束要强调：慢扫描只跑一次，提交前先用 `wait_for_background_jobs` 显式等待并读取完成 job 的 stdout/stderr tail；不要在后台 job 未完成时反复 submit 或重跑同一命令。
 
 ## 测试入口

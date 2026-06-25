@@ -20,7 +20,8 @@ use uuid::Uuid;
 
 use super::gate::contract_check::run_with_skeleton as contract_check_with_skeleton;
 use super::gate::freshness_check::run_with_freshness as freshness_check_with_freshness;
-use super::gate::GateCheckOutcome;
+use super::gate::rule_engine::{EvidenceFact, EvidenceOutcome, GateContext};
+use super::gate::{GateCheckOutcome, GateContextBuilder};
 use super::profile::load_profile_from_json;
 use super::sprint_contract::{
     DefaultSprintContractGenerator, SprintContractGenerator, SprintSkeleton,
@@ -64,14 +65,11 @@ fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
         evidence_refs: vec![dns_eid, http_eid, ct_eid],
         skipped_checks: vec![],
         findings: vec![],
-        // external_attack_surface.json declares min_invocations for these recon
-        // tools; a compliant deliverable records having run each at least once.
+        // EAS now closes from DB-truth coverage; required_checks_done is no longer
+        // a hard tool floor.
         required_checks_done: vec![
             "scope_status_present".to_string(),
             "evidence_non_empty".to_string(),
-            "dns_resolve".to_string(),
-            "subdomain_enum_passive".to_string(),
-            "http_probe".to_string(),
         ],
         coverage: vec![],
     };
@@ -102,38 +100,35 @@ fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
         evidence_refs: vec![http_eid],
         technique: None,
     });
-    // EAS (2026-06-09 reorder) declares GOLISH-EAS-{LIVENESS,PORT,
-    // SERVICE-FINGERPRINT} expected techniques + a coverage_complete gate_rule.
-    // A compliant EAS deliverable maps each in-scope asset's liveness/port/
-    // service to a terminal coverage cell — an empty matrix is a gate BLOCK
-    // (coverage-empty-bypass fix, 2026-06-11), so the happy path supplies one.
-    let cell = |technique: &str, status: CoverageStatus| CoverageCell {
-        asset: "api.example.com".to_string(),
-        technique: technique.to_string(),
-        status,
-        evidence_refs: vec![http_eid],
-        note: Some("mapped via httpx".to_string()),
-        reason_kind: None,
-        tested_units: 1,
-        total_units: 1,
-        sampling_rationale: None,
-    };
-    d.coverage = vec![
-        cell("GOLISH-EAS-LIVENESS", CoverageStatus::Found),
-        cell("GOLISH-EAS-PORT", CoverageStatus::Found),
-        cell(
-            "GOLISH-EAS-SERVICE-FINGERPRINT",
-            CoverageStatus::CheckedEmpty,
-        ),
-    ];
     d
+}
+
+fn eas_fact(asset: &str, technique: &str) -> EvidenceFact {
+    EvidenceFact {
+        asset: asset.to_string(),
+        technique: technique.to_string(),
+        outcome: EvidenceOutcome::Found,
+        evidence_id: 2,
+    }
+}
+
+fn eas_db_truth_context() -> GateContext {
+    GateContextBuilder::new()
+        .in_scope_assets(vec!["api.example.com".to_string()])
+        .extend_evidence_facts(vec![
+            eas_fact("api.example.com", "GOLISH-EAS-LIVENESS"),
+            eas_fact("api.example.com", "GOLISH-EAS-PORT"),
+            eas_fact("api.example.com", "GOLISH-EAS-SERVICE-FINGERPRINT"),
+        ])
+        .build()
 }
 
 #[test]
 fn e2e_happy_path_external_attack_surface_passes_gate() {
     let harness = build_harness();
     let d = happy_deliverable(Uuid::new_v4());
-    let decision = harness.validate_gate(&d, None);
+    let ctx = eas_db_truth_context();
+    let decision = harness.validate_gate_with_context(&d, None, &ctx);
     assert!(
         decision.allowed,
         "happy deliverable should pass gate: reasons={:?}",
@@ -150,14 +145,20 @@ fn e2e_happy_path_external_attack_surface_passes_gate() {
 fn e2e_external_attack_surface_blocks_found_coverage_without_evidence() {
     let harness = build_harness();
     let mut d = happy_deliverable(Uuid::new_v4());
-    let port_cell = d
-        .coverage
-        .iter_mut()
-        .find(|cell| cell.technique == "GOLISH-EAS-PORT")
-        .expect("happy fixture includes port coverage");
-    port_cell.evidence_refs.clear();
+    d.coverage.push(CoverageCell {
+        asset: "api.example.com".to_string(),
+        technique: "GOLISH-EAS-PORT".to_string(),
+        status: CoverageStatus::Found,
+        evidence_refs: vec![],
+        note: None,
+        reason_kind: None,
+        tested_units: 1,
+        total_units: 1,
+        sampling_rationale: None,
+    });
 
-    let decision = harness.validate_gate(&d, None);
+    let ctx = eas_db_truth_context();
+    let decision = harness.validate_gate_with_context(&d, None, &ctx);
     assert!(!decision.allowed);
     assert!(
         decision
@@ -170,23 +171,26 @@ fn e2e_external_attack_surface_blocks_found_coverage_without_evidence() {
 }
 
 #[test]
-fn e2e_external_attack_surface_blocks_partial_service_fingerprint_denominator() {
+fn e2e_external_attack_surface_db_truth_ignores_hand_copied_denominator() {
     let harness = build_harness();
     let mut d = happy_deliverable(Uuid::new_v4());
-    let service_cell = d
-        .coverage
-        .iter_mut()
-        .find(|cell| cell.technique == "GOLISH-EAS-SERVICE-FINGERPRINT")
-        .expect("happy fixture includes service-fingerprint coverage");
-    service_cell.tested_units = 1;
-    service_cell.total_units = 2;
-    service_cell.sampling_rationale = None;
+    d.coverage.push(CoverageCell {
+        asset: "api.example.com".to_string(),
+        technique: "GOLISH-EAS-SERVICE-FINGERPRINT".to_string(),
+        status: CoverageStatus::Found,
+        evidence_refs: vec![EvidenceAuditId::new(2)],
+        note: None,
+        reason_kind: None,
+        tested_units: 1,
+        total_units: 2,
+        sampling_rationale: None,
+    });
 
-    let decision = harness.validate_gate(&d, None);
-    assert!(!decision.allowed);
+    let ctx = eas_db_truth_context();
+    let decision = harness.validate_gate_with_context(&d, None, &ctx);
     assert!(
-        decision.reasons.iter().any(|reason| reason.contains("1/2")),
-        "partial service fingerprint denominator should block: {:?}",
+        decision.allowed,
+        "DB-truth EAS denominator should be no-op: {:?}",
         decision.reasons
     );
 }

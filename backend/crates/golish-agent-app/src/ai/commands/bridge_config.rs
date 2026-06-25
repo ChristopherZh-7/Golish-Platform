@@ -56,7 +56,12 @@ pub async fn configure_bridge(
             Some(pp)
         };
         spawn_background_output_listener(bridge);
-        spawn_background_completion_listener(bridge, bg_repo, bg_project_path);
+        spawn_background_completion_listener(
+            bridge,
+            bg_repo,
+            state.db_pool.clone(),
+            bg_project_path,
+        );
     }
 }
 
@@ -118,6 +123,7 @@ fn spawn_background_output_listener(bridge: &AgentBridge) {
 fn spawn_background_completion_listener(
     bridge: &AgentBridge,
     db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider>,
+    db_pool: std::sync::Arc<sqlx::PgPool>,
     project_path: Option<String>,
 ) {
     use golish_core::events::AiEvent;
@@ -167,6 +173,12 @@ fn spawn_background_completion_listener(
                         &jc,
                     )
                     .await;
+                    maybe_store_background_structured_output(
+                        &db_pool,
+                        project_path.as_deref(),
+                        &jc,
+                    )
+                    .await;
 
                     // Observability (design 2026-06-05): surface background-job
                     // evidence as a first-class HarnessTrace so it appears in the
@@ -207,6 +219,52 @@ fn spawn_background_completion_listener(
     tracing::info!("[configure_bridge] Started background-job completion listener");
 }
 
+async fn maybe_store_background_structured_output(
+    db_pool: &sqlx::PgPool,
+    project_path: Option<&str>,
+    jc: &golish_app_core::background_jobs::JobCompletion,
+) {
+    use golish_app_core::background_jobs::JobStatus;
+
+    if jc.status != JobStatus::Done {
+        return;
+    }
+    let stdout = jc.stdout_tail.trim();
+    if stdout.is_empty() {
+        return;
+    }
+
+    let store = golish_pentest::output_store::PgPentestStore::new(db_pool);
+    match golish_pentest::output_store::maybe_detect_and_store_via(
+        &store,
+        &jc.command,
+        stdout,
+        project_path,
+    )
+    .await
+    {
+        Some(stats) => {
+            tracing::info!(
+                target: "harness::evidence",
+                job_id = %jc.job_id,
+                tool = %stats.tool_name,
+                parsed = stats.parsed_count,
+                stored = stats.stored_count,
+                errors = ?stats.errors,
+                "background job structured output stored"
+            );
+        }
+        None => {
+            tracing::debug!(
+                target: "harness::evidence",
+                job_id = %jc.job_id,
+                command = %jc.command,
+                "background job structured output not detected"
+            );
+        }
+    }
+}
+
 /// Append a **successful** background job's output to the evidence ledger (P3-c),
 /// gated on harness stage mode. Returns the new evidence id so it can be surfaced
 /// to the agent (letting it cite a REAL id in a StageDeliverable's `evidence_refs`
@@ -228,13 +286,6 @@ async fn maybe_append_background_evidence(
 ) -> Option<i64> {
     use golish_app_core::background_jobs::JobStatus;
 
-    // Only book cleanly-finished jobs (mirrors the sync path's is_success gate);
-    // killed/failed jobs still surface via the note but are not booked as
-    // evidence (an aborted scan is not a completed check).
-    if jc.status != JobStatus::Done {
-        return None;
-    }
-
     let op_id = uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_OID,
         format!("golish-bg-op:{session_id}").as_bytes(),
@@ -245,19 +296,29 @@ async fn maybe_append_background_evidence(
         format!("{}\n[stderr]\n{}", jc.stdout_tail, jc.stderr_tail)
     };
 
-    // PR2 (coverage 投影) · backgrounded scans are the main target_intel evidence
-    // path (subfinder/dig run as jobs); derive (technique, asset, outcome) from
-    // the job's command line. Outcome reads stdout only — stderr noise must not
-    // flip an empty result to "found".
-    let facts =
-        golish_agent_kit::harness::evidence_facts::passive_intel_facts_from_command(&jc.command)
-            .map(|(technique, asset)| {
-                let outcome = golish_agent_kit::harness::evidence_facts::passive_intel_outcome(
-                    technique,
-                    &jc.stdout_tail,
-                );
-                (technique, asset, outcome)
-            });
+    // PR2 (coverage 投影) · backgrounded scans are the main target_intel/EAS
+    // evidence path. Derive (technique, asset, outcome) from the job command;
+    // EAS needs stderr too because tools such as nmap report DNS failures there.
+    let distinguish_failure =
+        golish_agent_kit::harness::feature_flags::failure_outcome_error_enabled();
+    let facts = golish_agent_kit::harness::evidence_facts::coverage_facts_from_command(&jc.command)
+        .map(|(technique, asset)| {
+            let outcome = golish_agent_kit::harness::evidence_facts::coverage_outcome_for_run(
+                technique,
+                &raw_output,
+                jc.status == JobStatus::Done,
+                distinguish_failure,
+            );
+            (technique, asset, outcome)
+        });
+
+    // Cleanly-finished jobs are always citable evidence. Failed mapped probes
+    // are also evidence because they close a coverage cell as error/empty. Killed
+    // jobs remain just a user-visible note: an aborted scan is not a completed
+    // check.
+    if jc.status != JobStatus::Done && !(jc.status == JobStatus::Failed && facts.is_some()) {
+        return None;
+    }
     let evidence_tool = background_evidence_tool_name(&jc.command);
     let evidence_kind = background_evidence_kind(&jc.command);
 
@@ -296,34 +357,65 @@ async fn maybe_append_background_evidence(
 }
 
 fn background_command_tool_name(command: &str) -> Option<String> {
-    let s = command.trim_start();
-    if s.is_empty() {
-        return None;
+    let (first, rest) = command_token(command)?;
+    let base = command_token_base(first);
+    if is_ruby_interpreter(&base) {
+        if let Some(wrapped) = background_wrapped_tool_name(rest) {
+            return Some(wrapped);
+        }
     }
-    let (first, _) = if let Some(quote) = s.chars().next().filter(|c| *c == '"' || *c == '\'') {
-        let rest = &s[quote.len_utf8()..];
-        match rest.find(quote) {
-            Some(end) => (&rest[..end], &rest[end + quote.len_utf8()..]),
-            None => (rest, ""),
-        }
-    } else {
-        match s.find(char::is_whitespace) {
-            Some(end) => (&s[..end], &s[end..]),
-            None => (s, ""),
-        }
-    };
-    let base = first
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(first)
-        .trim()
-        .trim_matches('"')
-        .trim_matches('\'')
-        .to_ascii_lowercase();
     if base.is_empty() {
         None
     } else {
         Some(base)
+    }
+}
+
+fn command_token(command: &str) -> Option<(&str, &str)> {
+    let s = command.trim_start();
+    if s.is_empty() {
+        return None;
+    }
+    Some(
+        if let Some(quote) = s.chars().next().filter(|c| *c == '"' || *c == '\'') {
+            let rest = &s[quote.len_utf8()..];
+            match rest.find(quote) {
+                Some(end) => (&rest[..end], &rest[end + quote.len_utf8()..]),
+                None => (rest, ""),
+            }
+        } else {
+            match s.find(char::is_whitespace) {
+                Some(end) => (&s[..end], &s[end..]),
+                None => (s, ""),
+            }
+        },
+    )
+}
+
+fn command_token_base(token: &str) -> String {
+    token
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(token)
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_ascii_lowercase()
+}
+
+fn is_ruby_interpreter(base: &str) -> bool {
+    matches!(base, "ruby" | "ruby.exe") || base.starts_with("ruby3")
+}
+
+fn background_wrapped_tool_name(rest: &str) -> Option<String> {
+    let mut remaining = rest;
+    loop {
+        let (token, next) = command_token(remaining)?;
+        let base = command_token_base(token);
+        if !base.is_empty() && !base.starts_with('-') {
+            return Some(base);
+        }
+        remaining = next;
     }
 }
 
@@ -852,6 +944,17 @@ mod tests {
         let cmd = r#""/Users/me/Application Support/golish-platform/tools/httpx/httpx" -u https://example.com -silent"#;
         assert_eq!(background_command_tool_name(cmd).as_deref(), Some("httpx"));
         assert_eq!(background_evidence_tool_name(cmd), "httpx");
+        assert_eq!(background_evidence_kind(cmd), "http_probe");
+    }
+
+    #[test]
+    fn background_ruby_wrapped_whatweb_books_http_probe_kind() {
+        let cmd = r#""/Users/me/.rbenv/versions/3.2.11/bin/ruby" "/Users/me/Application Support/golish-platform/tools/whatweb/whatweb" -a 1 https://example.com"#;
+        assert_eq!(
+            background_command_tool_name(cmd).as_deref(),
+            Some("whatweb")
+        );
+        assert_eq!(background_evidence_tool_name(cmd), "whatweb");
         assert_eq!(background_evidence_kind(cmd), "http_probe");
     }
 

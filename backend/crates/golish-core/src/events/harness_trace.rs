@@ -82,6 +82,45 @@ pub enum HarnessTraceKind {
         advice_preview: String,
     },
 
+    /// RuntimeSupervisor produced structured strategy guidance after the runtime
+    /// monitor detected a repetitive or stalled tool pattern. This is
+    /// PentAGI-style execution monitoring, but the model output is parsed and
+    /// policy-sanitized before any text is injected.
+    RuntimeSupervisorDecision {
+        /// `"shadow"` | `"soft"` | `"hard"`.
+        mode: String,
+        /// Monitor reason, e.g. `"execution_monitor"`.
+        trigger: String,
+        /// Tool name that dominated the recent call pattern.
+        tool: String,
+        #[ts(type = "number")]
+        repeat_count: u32,
+        /// Whether this directive was injected into the model-visible tool
+        /// response.
+        injected: bool,
+        /// `"strategy_pivot"` / `"wait_for_background"` / etc.
+        strategy_kind: String,
+        root_cause: String,
+        #[ts(type = "number")]
+        action_count: u32,
+        directive_hash: String,
+    },
+
+    /// StageRefiner produced a deterministic repair directive after a submit or
+    /// per-org gate failure. The full directive is persisted in
+    /// `operation_state.state_blob.agent_run.repair_directive`; this trace keeps
+    /// the timeline readable.
+    StageRefinerDecision {
+        repair_kind: String,
+        root_cause: String,
+        #[ts(type = "number")]
+        action_count: u32,
+        #[ts(type = "number")]
+        gap_count: u32,
+        llm_escalated: bool,
+        directive_hash: String,
+    },
+
     /// `stage_run` tool: one organization's live progress for the current stage's
     /// per-org fan-out (design 2026-06-13-stage-run-fanout). The frontend upserts a
     /// row per `org_id` into the `stage_run` tool's detail pane; `stage_label`/
@@ -244,6 +283,59 @@ mod tests {
                 injected: false,
                 ..
             } if mode == "shadow"
+        ));
+    }
+
+    #[test]
+    fn stage_refiner_decision_serializes() {
+        let k = HarnessTraceKind::StageRefinerDecision {
+            repair_kind: "coverage_gap".into(),
+            root_cause: "deterministic gate found 3 gaps".into(),
+            action_count: 3,
+            gap_count: 3,
+            llm_escalated: false,
+            directive_hash: "abc123".into(),
+        };
+        let v = serde_json::to_value(&k).unwrap();
+        assert_eq!(v["kind"], "stage_refiner_decision");
+        assert_eq!(v["repair_kind"], "coverage_gap");
+        assert_eq!(v["action_count"], 3);
+        let back: HarnessTraceKind = serde_json::from_value(v).expect("round-trips");
+        assert!(matches!(
+            back,
+            HarnessTraceKind::StageRefinerDecision {
+                gap_count: 3,
+                llm_escalated: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn runtime_supervisor_decision_serializes() {
+        let k = HarnessTraceKind::RuntimeSupervisorDecision {
+            mode: "hard".into(),
+            trigger: "execution_monitor".into(),
+            tool: "whatweb".into(),
+            repeat_count: 3,
+            injected: true,
+            strategy_kind: "strategy_pivot".into(),
+            root_cause: "tool repeated without closing coverage".into(),
+            action_count: 1,
+            directive_hash: "abc123".into(),
+        };
+        let v = serde_json::to_value(&k).unwrap();
+        assert_eq!(v["kind"], "runtime_supervisor_decision");
+        assert_eq!(v["strategy_kind"], "strategy_pivot");
+        assert_eq!(v["action_count"], 1);
+        let back: HarnessTraceKind = serde_json::from_value(v).expect("round-trips");
+        assert!(matches!(
+            back,
+            HarnessTraceKind::RuntimeSupervisorDecision {
+                injected: true,
+                repeat_count: 3,
+                ..
+            }
         ));
     }
 

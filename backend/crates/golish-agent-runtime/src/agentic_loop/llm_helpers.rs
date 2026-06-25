@@ -25,7 +25,7 @@ Output a clean, structured summary. Keep it under 800 tokens."#;
 
     let user_msg = format!("Tool: {}\n\nOutput to summarize:\n{}", tool_name, content);
 
-    let summary = mentor_one_shot(client, system, &user_msg).await?;
+    let summary = one_shot_completion(client, system, &user_msg, 500).await?;
     if summary.trim().is_empty() {
         return Err(anyhow::anyhow!("LLM returned empty summary"));
     }
@@ -37,17 +37,31 @@ Output a clean, structured summary. Keep it under 800 tokens."#;
     ))
 }
 
-/// One-shot LLM completion for the Execution Mentor.
+async fn one_shot_completion(
+    client: &Arc<RwLock<golish_llm_providers::LlmClient>>,
+    system_prompt: &str,
+    user_message: &str,
+    max_tokens: u64,
+) -> anyhow::Result<String> {
+    let client_guard = client.read().await;
+    let advice = client_guard
+        .one_shot_completion(system_prompt, user_message, Some(0.4f64), Some(max_tokens))
+        .await?;
+    let advice = advice.trim();
+    if advice.is_empty() {
+        return Err(anyhow::anyhow!("LLM returned empty one-shot response"));
+    }
+    Ok(advice.to_string())
+}
+
+/// One-shot LLM completion for RuntimeSupervisor.
 ///
-/// Uses the session's model to generate strategic advice when the agent is stuck.
-/// Delegates to [`LlmClient::one_shot_completion`] which centralizes provider dispatch.
-pub(super) async fn mentor_one_shot(
+/// The caller parses and policy-sanitizes the returned JSON before any text is
+/// shown to the agent.
+pub(super) async fn runtime_supervisor_one_shot(
     client: &Arc<RwLock<golish_llm_providers::LlmClient>>,
     system_prompt: &str,
     user_message: &str,
 ) -> anyhow::Result<String> {
-    let client_guard = client.read().await;
-    client_guard
-        .one_shot_completion(system_prompt, user_message, Some(0.4f64), Some(500))
-        .await
+    one_shot_completion(client, system_prompt, user_message, 900).await
 }

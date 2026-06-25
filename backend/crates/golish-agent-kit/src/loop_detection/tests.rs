@@ -175,12 +175,25 @@ fn execution_monitor_modes_are_explicit() {
 }
 
 #[test]
-fn execution_monitor_triggers_on_repeated_tool_calls() {
+fn execution_monitor_does_not_trigger_on_successful_batch_scans() {
     let mut monitor = ExecutionMonitor::shadow();
-    assert!(!monitor.record_and_check("pentest_run", "nmap 1"));
-    assert!(!monitor.record_and_check("pentest_run", "nmap 2"));
-    assert!(monitor.record_and_check("pentest_run", "nmap 3"));
+    assert!(!monitor.record_result_and_check("whatweb", "https://a.test", true, "{}"));
+    assert!(!monitor.record_result_and_check("whatweb", "https://b.test", true, "{}"));
+    assert!(!monitor.record_result_and_check("whatweb", "https://c.test", true, "{}"));
+    assert_eq!(monitor.repeated_tool_name(), "unknown");
+    assert_eq!(monitor.same_tool_count(), 0);
+    assert!(monitor.recent_calls_summary().contains("https://c.test"));
+}
+
+#[test]
+fn execution_monitor_triggers_on_repeated_failed_pattern() {
+    let mut monitor = ExecutionMonitor::shadow();
+    let args = "nmap -bad-flag same-target";
+    let result = r#"{"error":"invalid option -bad-flag"}"#;
+    assert!(!monitor.record_result_and_check("pentest_run", args, false, result));
+    assert!(!monitor.record_result_and_check("pentest_run", args, false, result));
+    assert!(monitor.record_result_and_check("pentest_run", args, false, result));
     assert_eq!(monitor.repeated_tool_name(), "pentest_run");
     assert_eq!(monitor.same_tool_count(), 3);
-    assert!(monitor.recent_calls_summary().contains("nmap 3"));
+    assert!(monitor.recent_calls_summary().contains("invalid option"));
 }

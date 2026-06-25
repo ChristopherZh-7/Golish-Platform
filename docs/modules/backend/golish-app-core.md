@@ -59,6 +59,7 @@
 - **禁止向上依赖 `golish`**（会成环）；巨石 `AppState` 故意留在 `golish` crate。
 - `run_pty_cmd` / `pentest_run` 的 `background:true` 不是零等待返回：`pty_interactive` 会先做一个短启动确认窗口，窗口内的参数/运行时错误必须同步返回给 agent；只有确认仍在运行后才返回 `status:"backgrounded"`。
 - `wait_for_background_jobs` 是显式等待工具：只等当前 AI session 归因的后台 job，并返回完成 job 的 stdout/stderr tail + exit code，让模型在 `submit_stage_deliverable` 前能先读结果。
+- 用户停止/关闭 AI session 时，调用方应通过 `background_jobs::manager().kill_running_for_session(session_id)` 杀掉该 session 归因的后台 job；`kill()` 使用持久 notify permit，避免刚 spawn 就 kill 的竞态丢通知。
 
 ## 测试入口
 

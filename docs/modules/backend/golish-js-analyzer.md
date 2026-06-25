@@ -15,7 +15,7 @@
 
 ## 职责
 
-用**正则**（P0，非完整 AST）从 JS 抽取端点调用点。识别 `fetch` / `axios.<verb>` / `axios(config)` / `$.ajax` / `new Request`。结果带 `confidence`，调用方可按置信度过滤。
+用**正则**（P0，非完整 AST）从 JS 抽取端点调用点。识别 `fetch` / `axios.<verb>` / 自定义客户端 `client.<verb>`（如 `Wr.post('/system/auth/login')`）/ `axios(config)` / `$.ajax` / `new Request`。结果带 `confidence`，调用方可按置信度过滤。
 
 ## 公开接口 / 关键类型
 
@@ -39,7 +39,7 @@
 
 ## 注意事项 / 坑
 
-- P0 是**正则**抽取，不覆盖变量 URL / 模板插值 / 自定义 HTTP 包装（这些回退给 LLM）；P1 计划上 swc AST extractor（同 `extract_endpoints` 签名）。
+- P0 是**正则**抽取，不覆盖变量 URL / 无 HTTP 动词的 opaque wrapper（这些回退给 LLM）；`client.<verb>` 属于低一档置信度的确定性规则；P1 计划上 swc AST extractor（同 `extract_endpoints` 签名）。
 - `#![forbid(unsafe_code)]` + `#![deny(warnings)]`：改动不能引入 warning。
 - 低置信度行由 `Endpoint::confidence` 标记，别当成确定端点。
 

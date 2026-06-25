@@ -41,6 +41,8 @@
 | 2026-06-06 | [headless-single-stage-runner](2026-06-06-headless-single-stage-runner.md) | ✅ |
 | 2026-06-06 | [intel-stage-ai-driven-p0](2026-06-06-intel-stage-ai-driven-p0.md) | ✅ |
 | 2026-06-06 | [scoping-per-mode-gate-hitl-p0](2026-06-06-scoping-per-mode-gate-hitl-p0.md) | ✅ |
+| 2026-06-25 | [stage-aware-db-refiner](2026-06-25-stage-aware-db-refiner.md) | ✅ |
+| 2026-06-25 | [runtime-supervisor](2026-06-25-runtime-supervisor.md) | ✅ |
 
 ## 2. Crate-per-service / Servitization / 架构健康 / P0 契约
 
@@ -102,4 +104,4 @@
 
 ---
 
-共 **66** 篇（61 日期前缀 + 5 legacy）。对应设计决策见 [`../../design/INDEX.md`](../../design/INDEX.md)；落地状态以 `feature_list.json` 为准。
+共 **67** 篇（62 日期前缀 + 5 legacy）。对应设计决策见 [`../../design/INDEX.md`](../../design/INDEX.md)；落地状态以 `feature_list.json` 为准。

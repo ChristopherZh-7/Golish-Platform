@@ -1,4 +1,7 @@
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use rig::completion::request::ToolDefinition;
 use serde::{Deserialize, Serialize};
@@ -115,6 +118,26 @@ pub trait SubAgentChainPersistence: Send + Sync {
     async fn load_prompt_template_overrides(&self) -> Vec<(String, String)>;
 }
 
+/// Shared cancellation probe for sub-agent workers.
+///
+/// The top-level [`AgentBridge`](golish_agent_bridge) owns the flag. Worker
+/// executors only borrow it so user "Stop" requests can interrupt nested
+/// sub-agent loops without letting a child clear the parent cancellation.
+pub(crate) fn cancellation_requested(cancelled: Option<&Arc<AtomicBool>>) -> bool {
+    cancelled
+        .map(|flag| flag.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+pub(crate) async fn wait_for_cancelled(cancelled: Option<&Arc<AtomicBool>>) {
+    loop {
+        if cancellation_requested(cancelled) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Async callback invoked after a shell command completes.
 ///
 /// Arguments: (command, stdout, project_path).
@@ -222,6 +245,15 @@ pub enum SubmitRepairKind {
     CoverageGap,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoverageGapAction {
+    pub asset: String,
+    pub technique: String,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_tools: Vec<String>,
+}
+
 /// Deterministic refiner directive produced from `submit_stage_deliverable`
 /// `needs_fix`. It is intentionally small and serializable so upper runtime
 /// layers can persist it in `operation_state.state_blob.agent_run`, then inject
@@ -232,10 +264,18 @@ pub struct SubmitRepairMode {
     pub reason: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_required_checks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage_gap_actions: Vec<CoverageGapAction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools_override: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forbidden_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directive_message: Option<String>,
 }
 
 impl SubmitRepairMode {
-    fn allowed_tools(&self) -> &'static [&'static str] {
+    fn base_allowed_tools(&self) -> &'static [&'static str] {
         match self.kind {
             SubmitRepairKind::EvidenceRefs => &[
                 "submit_stage_deliverable",
@@ -251,15 +291,23 @@ impl SubmitRepairMode {
             SubmitRepairKind::CoverageGap => &[
                 "pentest_list_tools",
                 "pentest_run",
-                "list_in_scope_targets",
-                "list_attack_surface_seeds",
                 "query_target_data",
                 "wait_for_background_jobs",
                 "check_job",
                 "kill_job",
-                "manage_targets",
                 "submit_stage_deliverable",
             ],
+        }
+    }
+
+    fn effective_allowed_tools(&self) -> Vec<String> {
+        if self.allowed_tools_override.is_empty() {
+            self.base_allowed_tools()
+                .iter()
+                .map(|tool| (*tool).to_string())
+                .collect()
+        } else {
+            self.allowed_tools_override.clone()
         }
     }
 
@@ -271,16 +319,20 @@ impl SubmitRepairMode {
         }
     }
 
-    pub fn allowed_tool_names(&self) -> &'static [&'static str] {
-        self.allowed_tools()
+    pub fn allowed_tool_names(&self) -> Vec<String> {
+        self.effective_allowed_tools()
     }
 
     pub fn allows(&self, tool_name: &str) -> bool {
-        self.allowed_tools().contains(&tool_name)
+        !self.forbidden_tools.iter().any(|tool| tool == tool_name)
+            && self
+                .effective_allowed_tools()
+                .iter()
+                .any(|tool| tool == tool_name)
     }
 
     pub fn model_instruction(&self) -> String {
-        let mut message = match self.kind {
+        let mut message = self.directive_message.clone().unwrap_or_else(|| match self.kind {
             SubmitRepairKind::EvidenceRefs => {
                 "submit_stage_deliverable returned needs_fix for evidence/submit fields, so \
                  repair-only mode is active. Do NOT start fresh discovery or launch new scans. \
@@ -297,13 +349,15 @@ impl SubmitRepairMode {
             SubmitRepairKind::CoverageGap => {
                 "submit_stage_deliverable returned needs_fix because the stage coverage matrix \
                  still has missing or non-terminal cells. Targeted gap-closure mode is active: \
-                 first query existing targets/evidence, then run only the stage-allowed probes \
-                 needed for the exact assets/techniques named in the gate feedback. Do NOT restart \
-                 broad discovery or rescan already-covered assets. When each named gap has a \
-                 terminal coverage cell, resubmit."
+                 use the gate feedback and query_target_data instead of re-listing the entire \
+                 attack surface. Run only one narrow stage-allowed probe for one exact asset/technique \
+                 named in the gate feedback. Do NOT call list_in_scope_targets, \
+                 list_attack_surface_seeds, CIDR/range sweeps, multi-target batches, \
+                 bulk stdin/list-file probes, or broad rediscovery. \
+                 When each named gap has a terminal coverage cell, resubmit."
                     .to_string()
             }
-        };
+        });
         if !self.missing_required_checks.is_empty() {
             message.push_str(&format!(
                 " Also include these required_checks_done entries if the cited evidence backs \
@@ -311,22 +365,311 @@ impl SubmitRepairMode {
                 self.missing_required_checks.join(", ")
             ));
         }
+        if self.kind == SubmitRepairKind::CoverageGap && !self.coverage_gap_actions.is_empty() {
+            message.push_str(&coverage_gap_action_instruction(&self.coverage_gap_actions));
+        }
         message
     }
 
     pub fn block_result(&self, tool_name: &str) -> Option<serde_json::Value> {
+        self.block_result_with_args(tool_name, &serde_json::Value::Null)
+    }
+
+    pub fn block_result_with_args(
+        &self,
+        tool_name: &str,
+        tool_args: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
         if self.allows(tool_name) {
+            if self.kind == SubmitRepairKind::CoverageGap && tool_name == "pentest_run" {
+                if let Some(reason) = coverage_gap_pentest_run_block_reason(tool_args) {
+                    return Some(self.block_payload(tool_name, Some(reason)));
+                }
+                if let Some(reason) =
+                    coverage_gap_action_target_block_reason(tool_args, &self.coverage_gap_actions)
+                {
+                    return Some(self.block_payload(tool_name, Some(reason)));
+                }
+            }
             return None;
         }
-        Some(serde_json::json!({
+        Some(self.block_payload(tool_name, None))
+    }
+
+    fn block_payload(&self, tool_name: &str, blocked_reason: Option<String>) -> serde_json::Value {
+        let mut value = serde_json::json!({
             "error": self.model_instruction(),
             "blocked_by_submit_repair": true,
             "repair_kind": self.kind_str(),
             "blocked_tool": tool_name,
-            "allowed_tools": self.allowed_tools(),
+            "allowed_tools": self.effective_allowed_tools(),
             "last_needs_fix_reason": self.reason,
-        }))
+        });
+        if let Some(reason) = blocked_reason {
+            value["blocked_reason"] = serde_json::Value::String(reason);
+        }
+        if !self.coverage_gap_actions.is_empty() {
+            value["coverage_gap_actions"] =
+                serde_json::to_value(&self.coverage_gap_actions).unwrap_or_default();
+        }
+        if !self.forbidden_tools.is_empty() {
+            value["forbidden_tools"] =
+                serde_json::to_value(&self.forbidden_tools).unwrap_or_default();
+        }
+        value
     }
+}
+
+fn coverage_gap_action_instruction(actions: &[CoverageGapAction]) -> String {
+    let mut lines = vec![format!(
+        " Exact coverage_gap_actions from the gate: run ONLY these {} target/technique pairs. \
+         Do not run a target or technique that is absent from this list.",
+        actions.len()
+    )];
+    for (idx, action) in actions.iter().enumerate() {
+        let tools = if action.suggested_tools.is_empty() {
+            String::new()
+        } else {
+            format!("; suggested_tools={}", action.suggested_tools.join(", "))
+        };
+        lines.push(format!(
+            "{}. asset={} technique={} reason={}{}",
+            idx + 1,
+            action.asset,
+            action.technique,
+            action.reason,
+            tools
+        ));
+    }
+    format!("\n{}", lines.join("\n"))
+}
+
+fn coverage_gap_pentest_run_block_reason(tool_args: &serde_json::Value) -> Option<String> {
+    let args = tool_args
+        .get("args")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if args.is_empty() {
+        return None;
+    }
+
+    let tool = tool_args
+        .get("tool_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(
+        tool.as_str(),
+        "" | "httpx" | "nmap" | "naabu" | "masscan" | "whatweb"
+    ) {
+        return None;
+    }
+
+    let args_lc = args.to_ascii_lowercase();
+    if args_lc.contains("<<") || args_lc.contains("/dev/stdin") {
+        return Some(
+            "coverage-gap repair blocks bulk stdin probes; run a narrow probe for one named gap"
+                .to_string(),
+        );
+    }
+    if args_lc.contains(" -l ")
+        || args_lc.starts_with("-l ")
+        || args_lc.contains(" --list ")
+        || args_lc.starts_with("--list ")
+        || args_lc.contains(" -il ")
+        || args_lc.starts_with("-il ")
+    {
+        return Some(
+            "coverage-gap repair blocks list-file probes; use query_target_data and probe exact named gaps"
+                .to_string(),
+        );
+    }
+    let non_empty_lines = args.lines().filter(|line| !line.trim().is_empty()).count();
+    if non_empty_lines > 3 {
+        return Some(
+            "coverage-gap repair blocks multi-line bulk probes; split to exact named gaps"
+                .to_string(),
+        );
+    }
+    if contains_cidr_target(args) {
+        return Some(
+            "coverage-gap repair blocks CIDR/range sweeps; probe one exact named asset".to_string(),
+        );
+    }
+
+    let target_count = probe_targets(args).len();
+    if target_count > 1 {
+        return Some(format!(
+            "coverage-gap repair blocks multi-target probes over {target_count} targets; probe one exact named gap"
+        ));
+    }
+    None
+}
+
+fn coverage_gap_action_target_block_reason(
+    tool_args: &serde_json::Value,
+    actions: &[CoverageGapAction],
+) -> Option<String> {
+    if actions.is_empty() {
+        return None;
+    }
+    let args = tool_args
+        .get("args")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if args.is_empty() {
+        return None;
+    }
+    let targets = probe_targets(args);
+    if targets.is_empty() {
+        return None;
+    }
+    let allowed = actions
+        .iter()
+        .map(|action| normalize_probe_target(&action.asset))
+        .filter(|asset| !asset.is_empty())
+        .collect::<HashSet<_>>();
+    let blocked = targets
+        .iter()
+        .find(|target| !allowed.contains(&normalize_probe_target(target)))?;
+    let mut preview = actions
+        .iter()
+        .take(20)
+        .map(|action| format!("{} × {}", action.asset, action.technique))
+        .collect::<Vec<_>>();
+    if actions.len() > preview.len() {
+        preview.push(format!("... +{} more", actions.len() - preview.len()));
+    }
+    Some(format!(
+        "coverage-gap repair blocks target '{blocked}' because it is not in coverage_gap_actions; only probe [{}]",
+        preview.join(", ")
+    ))
+}
+
+fn contains_cidr_target(args: &str) -> bool {
+    args.split_whitespace().any(|token| {
+        let token = clean_probe_token(token);
+        let Some((host, prefix)) = token.split_once('/') else {
+            return false;
+        };
+        looks_like_ipv4(host) && prefix.parse::<u8>().is_ok_and(|bits| bits <= 32)
+    })
+}
+
+fn probe_targets(args: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut skip_next = false;
+    for raw in args.split_whitespace() {
+        let token = clean_probe_token(raw);
+        if token.is_empty() {
+            continue;
+        }
+        let token_lc = token.to_ascii_lowercase();
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if option_takes_value(&token_lc) {
+            skip_next = true;
+            continue;
+        }
+        if token.starts_with('-') {
+            continue;
+        }
+        if is_probe_target_token(&token_lc) {
+            targets.push(token.to_string());
+        }
+    }
+    targets
+}
+
+fn option_takes_value(token_lc: &str) -> bool {
+    matches!(
+        token_lc,
+        "-o" | "-oa"
+            | "-og"
+            | "-on"
+            | "-ox"
+            | "-ol"
+            | "-p"
+            | "-ports"
+            | "--ports"
+            | "--top-ports"
+            | "--rate"
+            | "-rate"
+            | "-t"
+            | "-timeout"
+            | "--timeout"
+            | "-output"
+            | "--output"
+    )
+}
+
+fn is_probe_target_token(token_lc: &str) -> bool {
+    if matches!(
+        token_lc,
+        "http" | "https" | "tcp" | "udp" | "true" | "false"
+    ) {
+        return false;
+    }
+    token_lc.starts_with("http://")
+        || token_lc.starts_with("https://")
+        || looks_like_ipv4(token_lc)
+        || (token_lc.contains('.') && !looks_like_output_path(token_lc))
+}
+
+fn looks_like_output_path(token_lc: &str) -> bool {
+    matches!(
+        token_lc.rsplit('.').next(),
+        Some("out" | "txt" | "json" | "xml" | "csv" | "log")
+    )
+}
+
+fn normalize_probe_target(value: &str) -> String {
+    let mut s = clean_probe_token(value).trim().to_ascii_lowercase();
+    if let Some(rest) = s.strip_prefix("http://") {
+        s = rest.to_string();
+    } else if let Some(rest) = s.strip_prefix("https://") {
+        s = rest.to_string();
+    }
+    if let Some(idx) = s.find(['/', '?', '#']) {
+        s.truncate(idx);
+    }
+    if let Some(idx) = s.rfind('@') {
+        s = s[idx + 1..].to_string();
+    }
+    if let Some((host, port)) = s.rsplit_once(':') {
+        if !host.contains(':') && port.chars().all(|c| c.is_ascii_digit()) {
+            s = host.to_string();
+        }
+    }
+    s.trim_end_matches('.').to_string()
+}
+
+fn clean_probe_token(token: &str) -> &str {
+    token.trim_matches(|c: char| {
+        matches!(
+            c,
+            '\'' | '"' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
+        )
+    })
+}
+
+fn looks_like_ipv4(value: &str) -> bool {
+    let mut parts = value.split('.');
+    let mut count = 0;
+    for part in &mut parts {
+        count += 1;
+        if part.is_empty() || !part.chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        if part.parse::<u8>().is_err() {
+            return false;
+        }
+    }
+    count == 4
 }
 
 /// Context needed for sub-agent execution.
@@ -345,6 +688,9 @@ pub struct SubAgentExecutorContext<'a> {
     pub transcript_base_dir: Option<&'a std::path::Path>,
     /// API request stats collector (per session, optional)
     pub api_request_stats: Option<&'a Arc<ApiRequestStats>>,
+    /// Shared top-level cancel flag. When set, this worker should stop before
+    /// starting a new LLM request/tool call and should interrupt stream waits.
+    pub cancelled: Option<&'a Arc<AtomicBool>>,
     /// Orchestrator briefing injected before execution. Contains relevant memories,
     /// execution plan context, and findings from other agents. Appended to the
     /// effective system prompt as a `## Briefing from Orchestrator` section.

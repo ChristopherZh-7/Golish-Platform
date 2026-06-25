@@ -42,12 +42,14 @@ fn execution_monitor_for_mode(
 fn execution_monitor_from_env(
 ) -> Option<std::sync::Arc<tokio::sync::RwLock<golish_agent_kit::loop_detection::ExecutionMonitor>>>
 {
-    let mode = std::env::var("GOLISH_EXECUTION_MENTOR").unwrap_or_else(|_| "hard".to_string());
+    let mode = std::env::var("GOLISH_RUNTIME_SUPERVISOR")
+        .or_else(|_| std::env::var("GOLISH_EXECUTION_MENTOR"))
+        .unwrap_or_else(|_| "hard".to_string());
     let monitor = execution_monitor_for_mode(&mode)?;
     tracing::info!(
-        target: "harness::mentor",
+        target: "harness::runtime_supervisor",
         mode = monitor.mode().as_str(),
-        "execution mentor monitor enabled for this agent turn"
+        "runtime supervisor monitor enabled for this agent turn"
     );
     Some(std::sync::Arc::new(tokio::sync::RwLock::new(monitor)))
 }
@@ -580,7 +582,7 @@ mod tests {
     use golish_agent_kit::loop_detection::ExecutionMonitorMode;
 
     #[test]
-    fn execution_monitor_defaults_to_hard_supervisor() {
+    fn execution_monitor_defaults_to_hard_runtime_supervisor() {
         let monitor = execution_monitor_for_mode("").expect("blank default should enable monitor");
         assert_eq!(monitor.mode(), ExecutionMonitorMode::HardInject);
 

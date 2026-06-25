@@ -37,18 +37,18 @@ approval.
 
 **Coverage + stop condition:**
 
-- Per in-scope asset, give GOLISH-EAS-LIVENESS / GOLISH-EAS-PORT /
-  GOLISH-EAS-SERVICE-FINGERPRINT a terminal status with evidence in `coverage`.
-- `found` and `checked_empty` coverage cells must cite the evidence id for the
-  probe/scan that produced that result. `blocked` and `not_applicable` must carry
-  a concrete `note`.
-- Use denominator fields on explicit coverage cells:
-  - liveness: `tested_units=1,total_units=1` for the checked host/url;
-  - port scan: `tested_units` and `total_units` describe the scanned port set;
-  - service fingerprint: `tested_units=<open ports fingerprinted>`,
-    `total_units=<open ports discovered>`;
-  - if there are no open ports, SERVICE-FINGERPRINT is `not_applicable` with a
-    note, not `checked_empty` with `total_units=0`.
+- The gate reads database truth for found GOLISH-EAS-LIVENESS /
+  GOLISH-EAS-PORT / GOLISH-EAS-SERVICE-FINGERPRINT cells. When `httpx`,
+  `naabu`/`masscan`/`nmap`, `whatweb`, or `nmap -sV` data lands in
+  `targets`, `targets.ports`, `fingerprints`, or `technique_outcomes`, the
+  corresponding found coverage is credited automatically.
+- Do NOT hand-write found coverage cells just to mirror the database. Add
+  `coverage` only for terminal states the database cannot derive yet:
+  `checked_empty` with the real scan/probe evidence for active negatives, or
+  `blocked` / `not_applicable` with a concrete note.
+- If there are no open ports, SERVICE-FINGERPRINT is `not_applicable` with a
+  note, not a fabricated found service and not `checked_empty` with
+  `total_units=0`. HTTP liveness alone is never PORT or SERVICE-FINGERPRINT.
 - Once every in-scope host has liveness + ports + service mapped (or an honest
   skip), `submit_stage_deliverable`. Do not jump into content enumeration or
   vuln scanning — the harness advances to `enumeration` for you.

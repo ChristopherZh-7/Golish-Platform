@@ -19,6 +19,7 @@ pub enum CallSiteKind {
     Fetch,
     AxiosVerb,
     AxiosConfig,
+    HttpClientVerb,
     JqueryAjax,
     NewRequest,
 }
@@ -38,6 +39,12 @@ pub(crate) const FETCH: &str = r#"(?m)\bfetch\s*\(\s*[`'"]([^`'"]+)[`'"]"#;
 /// `axios.<verb>('/path', ...)` — verb in capture group 1, url in 2.
 pub(crate) const AXIOS_VERB: &str =
     r#"(?m)\baxios\s*\.\s*(get|post|put|patch|delete|head|options)\s*\(\s*[`'"]([^`'"]+)[`'"]"#;
+
+/// `client.<verb>('/path', ...)` — custom axios/request wrapper helpers.
+///
+/// Captures client name, verb, and URL. This intentionally requires a
+/// root-relative URL to avoid noisy matches such as date/string helpers.
+pub(crate) const HTTP_CLIENT_VERB: &str = r#"(?m)\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*(get|post|put|patch|delete|head|options|download|upload)\s*\(\s*[`'"](/[^`'"]+)[`'"]"#;
 
 /// `axios({ url: '/path', method: 'POST' })` — captures url; method parsed by helper.
 pub(crate) const AXIOS_CONFIG: &str =
@@ -108,6 +115,35 @@ pub(crate) fn endpoint_from_axios_verb(
         line: line_of(source, match_start),
         confidence: 0.95, // verb is explicit, very high signal
         kind: CallSiteKind::AxiosVerb,
+        url_kind: UrlKind::Literal,
+        has_path_params,
+        id_param_position,
+    })
+}
+
+pub(crate) fn endpoint_from_http_client_verb(
+    cap: &Captures,
+    source: &str,
+    source_file: &str,
+) -> Option<Endpoint> {
+    let client = cap.get(1)?.as_str();
+    if client.eq_ignore_ascii_case("axios") {
+        return None;
+    }
+
+    let verb = cap.get(2)?.as_str();
+    let method = method_from_client_verb(verb);
+    let path = cap.get(3)?.as_str().to_string();
+    let match_start = cap.get(0)?.start();
+    let (has_path_params, id_param_position) = analyze_path(&path);
+    Some(Endpoint {
+        method,
+        path,
+        auth: auth_from_window(window_after(source, match_start, 400)),
+        source_file: source_file.to_string(),
+        line: line_of(source, match_start),
+        confidence: 0.78,
+        kind: CallSiteKind::HttpClientVerb,
         url_kind: UrlKind::Literal,
         has_path_params,
         id_param_position,
@@ -294,6 +330,14 @@ fn static_search_method_key(window: &str, key: &str) -> Option<String> {
         .ok()?;
     re.captures(window)
         .and_then(|c| c.get(1).map(|m| m.as_str().to_uppercase()))
+}
+
+fn method_from_client_verb(verb: &str) -> String {
+    match verb.to_ascii_lowercase().as_str() {
+        "download" => "GET".to_string(),
+        "upload" => "POST".to_string(),
+        other => other.to_ascii_uppercase(),
+    }
 }
 
 /// Heuristic auth detection inside the post-call-site window.

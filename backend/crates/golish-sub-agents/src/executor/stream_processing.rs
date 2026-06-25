@@ -14,6 +14,7 @@ use rig::streaming::StreamedAssistantContent;
 use uuid::Uuid;
 
 use crate::executor_helpers::epoch_secs;
+use crate::executor_types::wait_for_cancelled;
 use golish_core::events::AiEvent;
 use golish_llm_providers::{ProviderStreamQuirks, ReasoningHandling};
 
@@ -26,6 +27,7 @@ pub(super) struct StreamResult {
     pub tool_calls: Vec<ToolCall>,
     pub has_tool_calls: bool,
     pub idle_timeout_hit: bool,
+    pub cancelled: bool,
 }
 
 /// Process a streaming LLM response, accumulating text, thinking, and tool calls.
@@ -44,6 +46,7 @@ pub(super) async fn process_llm_stream<S, R, E>(
     event_tx: &tokio::sync::mpsc::UnboundedSender<AiEvent>,
     last_activity: &Arc<AtomicU64>,
     idle_timeout: Option<Duration>,
+    cancelled: Option<&Arc<std::sync::atomic::AtomicBool>>,
     llm_span: &tracing::Span,
     quirks: &ProviderStreamQuirks,
 ) -> StreamResult
@@ -67,6 +70,7 @@ where
     last_activity.store(epoch_secs(), Ordering::Relaxed);
 
     let mut idle_timeout_hit = false;
+    let mut cancelled_hit = false;
     loop {
         let chunk_opt = if let Some(idle_dur) = idle_timeout {
             let last = last_activity.load(Ordering::Relaxed);
@@ -78,16 +82,32 @@ where
                 break;
             }
 
-            match tokio::time::timeout(Duration::from_secs(remaining), stream.next()).await {
-                Ok(v) => v,
-                Err(_) => {
-                    idle_timeout_hit = true;
+            tokio::select! {
+                _ = wait_for_cancelled(cancelled) => {
+                    cancelled_hit = true;
                     break;
+                }
+                res = tokio::time::timeout(Duration::from_secs(remaining), stream.next()) => match res {
+                    Ok(v) => v,
+                    Err(_) => {
+                        idle_timeout_hit = true;
+                        break;
+                    }
                 }
             }
         } else {
-            stream.next().await
+            tokio::select! {
+                _ = wait_for_cancelled(cancelled) => {
+                    cancelled_hit = true;
+                    break;
+                }
+                v = stream.next() => v,
+            }
         };
+
+        if cancelled_hit {
+            break;
+        }
 
         let Some(chunk_result) = chunk_opt else {
             break;
@@ -412,6 +432,7 @@ where
         tool_calls: tool_calls_to_execute,
         has_tool_calls,
         idle_timeout_hit,
+        cancelled: cancelled_hit,
     }
 }
 
@@ -450,6 +471,7 @@ mod tests {
             "req-1",
             &event_tx,
             &last_activity,
+            None,
             None,
             &span,
             &quirks,
@@ -490,6 +512,34 @@ mod tests {
         assert!(!sr.has_tool_calls);
         assert!(sr.tool_calls.is_empty());
         assert_eq!(sr.text_content, "just a normal answer, no tool markup");
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_pending_sub_agent_stream() {
+        let mut stream =
+            futures::stream::pending::<Result<StreamedAssistantContent<DummyResp>, String>>();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let last_activity = Arc::new(AtomicU64::new(epoch_secs()));
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let quirks = golish_llm_providers::resolve_stream_quirks("openai", "gpt-4o", None);
+        let span = tracing::Span::none();
+
+        let sr = process_llm_stream(
+            &mut stream,
+            "pentester",
+            "req-1",
+            &event_tx,
+            &last_activity,
+            None,
+            Some(&cancelled),
+            &span,
+            &quirks,
+        )
+        .await;
+
+        assert!(sr.cancelled);
+        assert!(!sr.idle_timeout_hit);
+        assert!(sr.tool_calls.is_empty());
     }
 
     #[tokio::test]

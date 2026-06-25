@@ -29,6 +29,326 @@
 
 ---
 
+### 2026-06-25 · enumeration JS/API 动态采集首版实现
+
+- **本轮目标**：开始实现枚举阶段 JS/API 子链路：先解决 JS 抓取/提取/入库断链，再补一个动态浏览器采集入口，并用真实网站验证。
+- **已完成**：
+  - `backend/crates/golish-pentest-app/src/pentest_bridge/js_extract_apis.rs`：`js_extract_apis` 继续写 `js_analysis_results`，同时把可解析 endpoint 投影到 `api_endpoints(source='js_analysis')`；重复 `(target_id,url,method)` 计为 duplicate，不中断工具。
+  - `js_extract_apis` 改为递归读取 `.golish/captures/{host}/{port}/js/**/*.js|*.mjs`，修复真实站点 hash chunk 按 URL path 嵌套保存后提取阶段扫不到的问题。
+  - 新增 `scripts/browser_collect_js_api.mjs` + `BrowserCollectJsApiTool`：Playwright 打开页面、滚动/少量安全点击、监听 JS response 并保存到现有 captures 目录；同时解析已加载 JS 中的 `import()`、literal chunk path、webpack publicPath/chunk map，在 `max_recursive_scripts` 限制内递归拉取嵌套 chunk；监听 XHR/fetch 并写 `api_endpoints(source='crawler')`。
+  - `browser_collect_js_api` 增加 AI-assisted bounded recipe 协议：薄采集时返回 `ai_assist.context`（script snippets / refs / recursive errors / network sample）；外层 AI 可二次调用传 `recipe`（`manifest_paths` / `script_urls` / `routes` / `click_texts` / `public_path` + `chunk_pairs`），helper 仍只执行同源、限量、只读采集。
+  - 修复真实站点复测时的卡住问题：`response.body()`、manifest/chunk body、pending response wait、context/browser close 都加 bounded timeout；新增 `hard_timeout_ms` 总截止和 `status="timeout_partial"` 降级返回；默认拦截图片/字体/媒体/样式与常见 analytics 噪声，避免非 JS/API 资源拖死采集。
+  - 补掉第二层卡住路径：MDN 复测暴露出 JSON 已经生成但 Playwright/系统 Chrome dangling handle 让 Node 进程不退出的问题；helper 现在写完 JSON 后显式 `process.exit(0)`，Rust 外层不会继续等已完成的采集进程。
+  - 新增 JS closure crawl 语义：`crawl_mode=fast|deep`；deep 默认放宽 pages/actions、`max_recursive_scripts=1000`、更长 hard timeout，并输出 `closure_complete` / `closure_incomplete_reasons` / `recursive_queue_remaining` / `recursive_limit_hit`。非超时但未闭合返回 `status=closure_partial`，让 Enumerator 不会误判完成。
+  - 增强 bundler 解析：除 `import()` / literal path / webpack publicPath 外，新增 Vite `__vite__mapDeps`、Webpack/Next/Rspack runtime `.u()` chunk map、DOM `script` / `modulepreload` / `preload` / `prefetch` JS 收集，以及 Next/Nuxt 常见 manifest 推断。
+  - `pentest_bridge::create_pentest_bridge_tools` 注册 `browser_collect_js_api`；Enumerator/Browser agent 工具白名单与 Enumerator prompt 更新，提示 SPA/lazy-loaded 站点先/补跑动态采集。
+  - 同步模块卡：`docs/modules/backend/golish-pentest-app.md`、`docs/modules/backend/golish-pentest-app/pentest_bridge.md`。
+- **运行过的验证（实跑）**：
+  - `node --check scripts/browser_collect_js_api.mjs` → exit 0。
+  - `cd backend && cargo nextest run -p golish-pentest-app browser_collect_js_api js_extract_apis --status-level fail` → 6 passed / 58 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents enumerator browser --status-level fail` → 2 passed / 106 skipped。
+  - `cd backend && cargo clippy -p golish-pentest-app -p golish-sub-agents --all-targets -- -D warnings` → exit 0。
+  - `node scripts/browser_collect_js_api.mjs --url https://react.dev --workspace /tmp/golish-jsapi-react-test --max-pages 1 --max-actions 2 --timeout-ms 30000` → `scripts_saved=14`、`api_requests_total=8`，包含 Next `_next/static/chunks/*.js` 与 `_next/data/*.json` fetch。
+  - `node scripts/browser_collect_js_api.mjs --url https://react.dev --workspace /tmp/golish-jsapi-react-recursive-test --max-pages 1 --max-actions 1 --max-recursive-scripts 20 --timeout-ms 30000` → `scripts_saved=13`、`api_requests_total=8`、`recursive_errors=47`；404/非 JS 的递归候选不再污染 `scripts`。
+  - 本地临时 HTTP fixture（页面无 `<script>`，recipe 提供 `/manifest.json`）调用 `browser_collect_js_api --recipe-json '{"manifest_paths":["/manifest.json"]}'` → `scripts_saved=1`、`scripts_recursive_downloaded=1`、命中 `/assets/hidden-chunk.js`。
+  - `node scripts/browser_collect_js_api.mjs --url https://example.com --workspace /tmp/golish-jsapi-static-test --max-pages 1 --max-actions 0 --timeout-ms 15000` → `scripts_saved=0`、`api_requests_total=0`，静态空站点正常返回空结果。
+  - `node scripts/browser_collect_js_api.mjs --url https://example.com --workspace /tmp/golish-jsapi-timeout-example --max-pages 1 --max-actions 0 --max-recursive-scripts 2 --timeout-ms 8000 --hard-timeout-ms 25000` → `status=ok`、`scripts_saved=0`、`api_requests_total=0`。
+  - 多站点 smoke（`react.dev` / `vite.dev` / `vuejs.org` / `docs.astro.build` / `svelte.dev/docs`，统一 `timeout_ms=8000 hard_timeout_ms=25000 max_recursive_scripts=2`）→ 全部 exit 0；分别约 `scripts_saved=11/14/23/3/24`，没有外部 kill。
+  - `node scripts/browser_collect_js_api.mjs --url https://react.dev --workspace /tmp/golish-jsapi-timeout-react-tight --max-pages 1 --max-actions 0 --max-recursive-scripts 50 --timeout-ms 8000 --hard-timeout-ms 10000` → `status=timeout_partial`、`hard_deadline_hit=true`、`scripts_saved=10`、`api_requests_total=7`，证明紧 deadline 下返回部分 evidence 而不是挂死。
+  - `node scripts/browser_collect_js_api.mjs --url https://svelte.dev/docs --workspace /tmp/golish-jsapi-timeout-svelte-after-fix --max-pages 1 --max-actions 0 --max-recursive-scripts 2 --timeout-ms 8000 --hard-timeout-ms 25000` → `status=ok`、`scripts_saved=27`、`api_requests_total=1`、`scripts_recursive_downloaded=2`、无 deadline/body/close timeout。
+  - 追加 6 站 smoke（`nextjs.org/docs` / `nuxt.com/docs` / `tailwindcss.com/docs/installation` / `angular.dev/overview` / `developer.mozilla.org/en-US/docs/Web/JavaScript` / `nodejs.org/en/learn`）→ `nextjs` 10 JS + 2 recursive、`nuxt` 31 JS + 2 recursive、`tailwind` 17 JS + 111 runtime requests、`angular` 47 JS + 2 recursive + 1 request、`nodejs` 4 JS。
+  - 上述 MDN 首轮暴露 `browser_close_timed_out=true` 且进程未退出；补显式退出后复跑 `node scripts/browser_collect_js_api.mjs --url https://developer.mozilla.org/en-US/docs/Web/JavaScript --workspace /tmp/golish-jsapi-mdn-after-exit-fix --max-pages 1 --max-actions 0 --max-recursive-scripts 2 --timeout-ms 8000 --hard-timeout-ms 25000` → exit 0、18.9s、`status=ok`、`scripts_saved=30`、`api_requests_total=2`、`context_close_timed_out=false`、`browser_close_timed_out=false`。
+  - closure status 快测：`node scripts/browser_collect_js_api.mjs --url https://angular.dev/overview --workspace /tmp/golish-jsapi-status-angular-fast --crawl-mode fast --max-pages 1 --max-actions 0 --max-recursive-scripts 2 --timeout-ms 8000 --hard-timeout-ms 25000` → `status=closure_partial`、`scripts_saved=47`、`recursive_queue_remaining=236`、`closure_complete=false`。
+  - closure 对比批测：`angular-fast` → `scripts_saved=47`、`recursive_remaining=217`、`closure_partial`；`angular-deep --max-recursive-scripts 120 --hard-timeout-ms 90000` → `scripts_saved=165`、`recursive_downloaded=120`、`recursive_remaining=126`、`closure_partial`（命中 bounded limit）；`mdn-fast` → `scripts_saved=30`、`recursive_remaining=448`；`mdn-deep --max-recursive-scripts 120 --hard-timeout-ms 90000` → `scripts_saved=42`、`recursive_remaining=388`、`timeout_partial`（命中 hard deadline）。
+  - 本地内存 fixture（`main.js -> chunk-1.js -> ... -> chunk-8.js`，最后 chunk fetch `/api/final`）调用 deep 模式 → `status=ok`、`scripts_saved=9`、`api_requests_total=1`、`recursive_queue_remaining=0`、`closure_complete=true`。
+  - 真实站点 deep 追加测试：`nextjs.org/docs` → 31 JS、25 requests、queue=0、但有 body/close timeout diagnostics；`nuxt.com/docs` → 145 JS、107 recursive、queue=105、hard deadline partial；`tailwindcss.com/docs/installation` → 18 JS、117-194 requests、queue=0、`closure_complete=true`；`svelte.dev/docs` → 62 JS、37 recursive、queue=0、body timeout diagnostics。
+  - 修正状态语义：context/browser close timeout 现在只作为 cleanup diagnostic，不再污染 `closure_complete` 或 `status`；是否闭合只看 queue/limit/deadline/pending body/pending wait。
+  - `cd backend && cargo nextest run -p golish-pentest-app browser_collect_js_api --status-level fail` → 2 passed / 62 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents enumerator --status-level fail` → 2 passed / 106 skipped。
+  - `cd backend && cargo check -p golish-pentest-app -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo clippy -p golish-pentest-app -p golish-sub-agents --all-targets -- -D warnings` → exit 0。
+  - `pgrep -af 'browser_collect_js_api|GolishBrowserCollect|playwright_chromiumdev_profile-M0VSMM'` → exit 1（清理旧 Playwright/Chrome 残留后无匹配进程）。
+- **已记录证据**：
+  - `react.dev` 实测输出保存 14 个 JS：如 `.golish/captures/react.dev/443/js/_next/static/chunks/1133ac0b_4ad82c5e.aa059996e264f809.js`、`.../pages/0211657c_%5B%5B...markdownPath%5D%5D-ef91ae665155f68d.js`。
+  - `react.dev` runtime fetch 捕获 8 个同源请求：如 `https://react.dev/_next/data/n6eJ16bSmYRIt7f2sMyb1/learn.json?markdownPath=learn`。
+  - timeout 压力测在 10s hard deadline 下返回 `timeout_partial`，并保留 10 个 React JS capture 与 7 个 `_next/data` fetch 观测。
+  - `svelte.dev/docs` 复测保存 27 个 JS、2 个递归 chunk、1 个 `https://svelte.dev/content.json` fetch。
+  - MDN 显式退出修复后保存 30 个 JS、2 个 runtime fetch：`https://developer.mozilla.org/api/v1/whoami`、`https://developer.mozilla.org/pong/get`。
+  - Angular deep closure 验证保存 165 个 JS，证明 deep 模式可以处理上百个 nested chunk，并通过 `closure_partial` 暴露剩余 queue，而不是把 fast 结果伪装成完整。
+  - 新单测覆盖：JS source 递归读取 + `.mjs`、relative/protocol-relative endpoint 入库解析、browser API request query params 解析、Enumerator 带 `browser_collect_js_api`。
+- **未跑**：`./init.sh` / `just precommit` 全量（工作树已有大量其它未提交 WIP；本轮采用 scoped 验证）。
+- **已知风险或未解决问题**：
+  - 这轮没有实现独立 secret/token 扫描器；现有 `golish-js-analyzer` 只做 endpoint + auth hint（Bearer/Cookie/Header）识别，`secrets_found` 仍为空。后续可单独接 trufflehog/gitleaks 或轻量 secret classifier。
+  - `browser_collect_js_api` 依赖 Node + Playwright；脚本已 fallback 到系统 Chrome，且 close 超时会尝试杀浏览器进程；打包分发时还需要确认资源/浏览器安装策略。
+  - 没有做 AI 去噪/分类 UI 或 DB 字段扩展；目前先把 raw facts 落进 `api_endpoints`，让 enumeration coverage 能吃到。
+- **提交记录**：未 commit。
+- **下一步最佳动作**：用真实 Golish target 复跑 enumeration：先 `browser_collect_js_api(target_url)`，再 `js_extract_apis(target_url)`，最后看 `api_endpoints.source in ('crawler','js_analysis')` 是否让 `GOLISH-ENUM-JSAPI` 自动补 found。
+
+---
+
+### 2026-06-25 · enumeration JS/API 动态采集设计文档
+
+- **本轮目标**：按用户要求，把枚举阶段中 JS/API 子链路的思路落成设计文档；明确 JS 抓取属于 `enumeration`，不放进 EAS。
+- **已完成**：
+  - 新增 `docs/design/2026-06-25-enumeration-js-api-collection.md`。
+  - 设计明确：EAS 只产出 confirmed web root；enumeration 对每个 web root 做静态 + 动态浏览器 JS/API 采集、endpoint 入库、AI 去噪分类、coverage outcome 落库。
+  - 设计把当前实现缺口写清楚：`js_collect` 是静态 reqwest collector；`js_extract_apis` 当前只写 `js_analysis_results`、未同步 `api_endpoints`；`browser` sub-agent 还没有真正 DOM/network 浏览器工具。
+  - 更新 `docs/design/INDEX.md`，加入 `enumeration-js-api-collection` 条目并更新总数。
+- **运行过的验证（实跑）**：
+  - `test -f docs/design/2026-06-25-enumeration-js-api-collection.md && echo ok` → `ok`。
+  - `rg -n "enumeration-js-api-collection|共 \\*\\*62" docs/design/INDEX.md` → 命中新文档索引和总数。
+- **未跑**：`./init.sh` / `just precommit`（本轮仅新增设计文档与索引，不涉及代码实现）。
+- **提交记录**：未 commit。
+- **下一步建议**：如用户确认方向，下一轮先写实现计划；第一实现 slice 建议从 `js_extract_apis -> api_endpoints(source='js_analysis')` 断链修复开始。
+
+---
+
+### 2026-06-25 · ChatPanel Stop 取消传播到 stage_run worker + session 后台 job
+
+- **本轮目标**：修用户反馈：ChatPanel 停止后主 agent 会停，但 `stage_run` worker / sub-agent / background 扫描还会继续跑。
+- **根因结论**：
+  - 前端 Stop 调 `cancel_ai_generation(aiSessionId)`；后端只把 `AgentBridge.cancelled` 置 true。
+  - 主 `AgenticLoopContext` 会检查该 flag，但 `SubAgentExecutorContext` 没有 cancellation token，worker LLM stream / tool dispatch 不知道用户已停止。
+  - `cancel_ai_generation` 没有杀当前 session 归因的 background jobs；`BackgroundJobManager::kill()` 还存在 `notify_waiters()` 早于 waiter 注册时丢通知的竞态。
+- **已完成**：
+  - `golish-sub-agents`：`SubAgentExecutorContext` 新增 `cancelled`；worker loop 在每轮开始、LLM stream start、stream chunk wait、工具 dispatch 前和等待工具时检查；nested delegate 继续传递同一 flag。
+  - `golish-agent-runtime` / `golish-agent-bridge`：`sub_agent_call`、reflector、bridge executor 都把 `AgentBridge` / `AgenticLoopContext` 的 cancel flag 传给 worker；`stage_run` per-org worker 继承该路径。
+  - `golish-app-core`：新增 `kill_running_for_session(session_id)`；`kill()` 改用 `notify_one()`，避免刚 spawn 就 kill 时丢通知。
+  - `golish-agent-app`：`cancel_ai_generation` / `shutdown_ai_session` 会 kill 当前 AI session 归因的 running background jobs。
+  - 修掉当前工作树中阻塞 lint 的 Clippy 写法：`executor_types.rs` 的 char pattern，以及 `golish-agent-kit/harness/evidence_facts.rs` 的机械 clippy 建议。
+  - 同步模块卡：`golish-app-core`、`golish-agent-app/ai`、`golish-agent-bridge/bridge_executor`、`golish-agent-runtime/agentic_loop`、`golish-sub-agents/executor`。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → 失败于既有 `golish-sub-agents/src/executor_types.rs:615` Clippy `manual_pattern_char_comparison`，本轮已修。
+  - `cd backend && cargo fmt -p golish-app-core -p golish-agent-app -p golish-agent-bridge -p golish-agent-runtime -p golish-sub-agents && cargo check -p golish-app-core -p golish-agent-app -p golish-agent-bridge -p golish-agent-runtime -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo nextest run -p golish-sub-agents cancellation_interrupts_pending_sub_agent_stream --status-level fail` → 1 passed / 107 skipped。
+  - `cd backend && cargo nextest run -p golish-app-core background_jobs::tests::kill_running_for_session_only_signals_matching_jobs --status-level fail` → 1 passed / 43 skipped。
+  - `cd backend && cargo clippy -p golish-app-core -p golish-agent-app -p golish-agent-bridge -p golish-agent-runtime -p golish-sub-agents --all-targets -- -D warnings` → exit 0。
+  - `git diff --check -- <本轮后端取消链路相关文件>` → exit 0。
+- **未跑**：`just precommit` 全量（当前工作树已有大量其它未提交后端/前端改动；本轮采用 scoped Rust 验证）。
+- **提交记录**：未 commit。
+- **下一步建议**：重启 app/backend 后复测：启动 `stage_run` 让 worker 进入 running/backgrounded 状态，点击 ChatPanel Stop；预期主 agent、per-org worker LLM/tool dispatch 和当前 session 的 background jobs 都停止/kill，不再继续落 live output。
+
+---
+
+### 2026-06-25 · RuntimeSupervisor 设计 + PentAGI-style 首版实现
+
+- **本轮目标**：按用户澄清，把“Mentor 是否全删”改成更准确的架构：旧 Mentor 自由文本建议不要，保留 PentAGI-style 运行中策略监督能力；重复/停滞工具触发 RuntimeSupervisor，输出结构化 StrategyDirective 并按 stage/tool policy 裁剪后再给 agent。
+- **已完成**：
+  - 新增 `docs/design/2026-06-25-runtime-supervisor.md` 与 `docs/superpowers/plans/2026-06-25-runtime-supervisor.md`，明确 RuntimeSupervisor / StageRefiner / Gate / LoopDetector 分工。
+  - `golish-agent-kit::task_orchestrator::runtime_supervisor`：新增 `RuntimeSupervisorContext`、`StrategyDirective`、严格 JSON prompt、模型输出解析、deterministic fallback、stage/tool policy sanitizer；EAS/repair 下禁止 broad rediscovery。
+  - `single_tool_call.rs`：主 agent 工具结果后，当 `ExecutionMonitor` 触发时调用 RuntimeSupervisor LLM，解析/裁剪后 emit `RuntimeSupervisorDecision`，soft/hard 模式把 directive 附回 tool result。
+  - `sub_agent_call.rs`：sub-agent observer 同样走 RuntimeSupervisor；hard 模式复用现有 hard supervisor marker，跳过同一批剩余工具调用，避免一次性多工具跑偏。
+  - `golish-agent-bridge`：新增 `GOLISH_RUNTIME_SUPERVISOR` env 优先级，兼容旧 `GOLISH_EXECUTION_MENTOR`；日志 target 改为 `harness::runtime_supervisor`。
+  - `golish-core` / `golish-events` / `scripts/run_tree.py`：新增并渲染 `HarnessTraceKind::RuntimeSupervisorDecision`。
+  - 更新模块卡、design/plan 索引、`feature_list.json`。
+- **运行过的验证**:
+  - `cd backend && cargo fmt -p golish-core -p golish-events -p golish-agent-kit -p golish-agent-runtime -p golish-agent-bridge && cargo check -p golish-core -p golish-events -p golish-agent-kit -p golish-agent-runtime -p golish-agent-bridge` → exit 0。
+- **未跑**：`./init.sh` / `just precommit` / Rust nextest / frontend check（用户要求设计后实现，最后 build 一次；本轮采用 scoped Rust build）。
+- **提交记录**：未 commit。
+- **已知风险 / 后续**：
+  - 新增 `HarnessTraceKind::RuntimeSupervisorDecision` 后，ts-rs 前端 generated binding 本轮未重新生成；后续跑全量类型检查前需要走生成链。
+  - 当前 RuntimeSupervisor 触发仍是 repeated/total tool calls；“DB evidence delta 连续无进展”还没接成 trigger。
+  - 需要重启 app/backend 后真实复跑 EAS，确认 `run_tree.py` 出现 `runtime_supervisor ... injected=true/false`，并且 StageRefiner repair lock 仍优先。
+
+---
+
+### 2026-06-25 · Stage-aware DB-backed Refiner 设计 + 首版实现
+
+- **本轮目标**：把本次 EAS 活体 run 暴露出来的纠错机制混乱收成一套正式设计并直接落首版实现：gate/submit 出错后由按阶段专属的 DB-backed Refiner 诊断并生成结构化 RepairDirective，Mentor 不再作为主动纠错/硬拦截机制。
+- **已完成**：
+  - 新增 `docs/design/2026-06-25-stage-aware-db-refiner.md`：明确 Gate / StageRefiner / ToolGuard / StageRetry 分工；Refiner 只诊断和给修复指令，不决定 PASS/BLOCK、不伪造 deliverable。
+  - 新增并更新 `docs/superpowers/plans/2026-06-25-stage-aware-db-refiner.md`：首版实现完成 Task 1-9、11-12；RefinerLLM 仍 intentionally unimplemented。
+  - `golish-agent-kit::task_orchestrator::stage_refiner`：新增 `RepairDirective` / `RefinerContext` / submit/gate deterministic refiner；EAS 输出 coverage gap actions、liveness `not_applicable` 指导、service-fingerprint denominator 指导、禁止 broad list/bulk repair；TargetIntel 输出 provider-only repair 并禁止 scan fallback。
+  - `golish-agent-runtime`：`submit_stage_deliverable needs_fix` 和 `stage_run` per-org BLOCK 都先过 StageRefiner；checkpoint 同时保存 `repair_directive` + 派生 `submit_repair_mode`。
+  - `golish-sub-agents`：`SubmitRepairMode` 支持 StageRefiner 覆盖 allowed/forbidden tools 与 directive 文案，executor resume 后继续 repair lock。
+  - Mentor 主/子 agent tool-result 路径改为 telemetry-only：仍记录 `MentorAdviceRecorded`，但不再调用 mentor LLM，不再注入 `EXECUTION ADVISOR` / `EXECUTION SUPERVISOR (HARD)`。
+  - `golish-core` / `golish-events` / `scripts/run_tree.py`：新增并渲染 `HarnessTraceKind::StageRefinerDecision`。
+  - 更新 `docs/design/INDEX.md`、`docs/superpowers/plans/INDEX.md`、`feature_list.json`，feature `stage-aware-db-refiner-2026-06-25` 置为 `in_progress`。
+- **设计结论**：
+  - 确定性 gate 继续做 PASS/BLOCK；StageRefiner 在 `needs_fix` / BLOCK / repair stall 后介入，查 DB/evidence/stage spec/tool skill，产出结构化 action list。
+  - EAS 第一版 Refiner 要重点解决：coverage gap 精确动作、liveness 的 `not_applicable` vs `checked_empty` 语义、开放端口服务指纹 denominator、禁止 broad list/批量扫。
+  - Mentor 已降级为 telemetry-only，repair/stage_run 路径不再注入 advice 或硬拦截工具。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-core -p golish-events -p golish-sub-agents -p golish-agent-kit -p golish-agent-runtime` → exit 0。
+  - `cd backend && cargo check -p golish-core -p golish-events -p golish-sub-agents -p golish-agent-kit -p golish-agent-runtime` → exit 0。
+- **未跑**：`./init.sh` / `just precommit` / Rust nextest / frontend check（用户明确只要求最后 build 一次；本轮采用 scoped Rust build）。
+- **提交记录**：未 commit。
+- **已知风险 / 后续**：
+  - 新增 `HarnessTraceKind::StageRefinerDecision` 后，ts-rs 前端 generated binding 本轮未重新生成；后续跑全量类型检查前需要走生成链。
+  - 尚未用真实 EAS run 复测 gap 收敛轮数；需要重启 app/backend 后再跑。
+  - RefinerLLM 未实现；当前为 deterministic first slice。
+- **下一步建议**：重启 app/backend 后复跑 EAS，看 `run_tree.py --workspace <ws> <session> --db` 是否出现 `refiner coverage_gap actions=N`，以及 Mentor trace 是否 `injected=false`。
+
+---
+
+### 2026-06-25 · detail / thinking 用户上滚不再被 live auto-scroll 抢回底部
+
+- **本轮目标**：修用户反馈：detail 运行中/Thinking 流式输出时，用户想往上看，外层 detail 或 thinking 内部会不断自动滚回底部、抢鼠标。
+- **已完成**：
+  - 新增 `frontend/lib/scroll-stickiness.ts`：统一 live pane 贴底判定；向上滚动立即视为用户接管，只有滚回底部阈值内才恢复 auto-follow。
+  - `ThinkingBlock`：active streaming 时不再无条件滚到底；用户在 thinking 内容里向上滚会暂停内部 auto-scroll。
+  - `SubAgentDetailView`：外层 detail 改用同一 stickiness 判定，`onWheelCapture` 能捕捉 thinking 内部向上滚意图；用户在 detail 外层向上滚时也不会被下一帧内容拉回底部。
+  - 同步模块卡：`docs/modules/frontend/components.md`、`docs/modules/frontend/lib.md`。
+- **运行过的验证（实跑）**：
+  - `pnpm exec vitest run frontend/lib/scroll-stickiness.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/store/workflow.test.ts` → 3 files / 51 tests passed。
+  - `pnpm exec biome check frontend/lib/scroll-stickiness.ts frontend/lib/scroll-stickiness.test.ts frontend/components/AIChatPanel/ThinkingBlock.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0。
+  - `just check-fe` → exit 0。
+  - `just test-fe` → exit 0。
+- **未跑**：`./init.sh` / `just precommit` 全量（本轮为前端 UI 交互小范围修复；工作树已有其它未提交后端改动，采用 scoped 前端验证）。
+- **提交记录**：未 commit。
+
+---
+
+### 2026-06-25 · sub-agent detail accumulated 输出分段修复
+
+- **本轮目标**：修用户截图指出的 sub-agent/detail 中 `Agent Output` 被拆成 `n` / `Let me run` 短残片、再接 `Thought for ...`、再接完整 Output 的问题，避免治标隐藏。
+- **已完成**：
+  - `workflow/sub-agent`：`sub_agent_text_delta.accumulated` / `sub_agent_reasoning.accumulated` 现在按上一条 `tool_call` 之后的当前 response 回填同一个 text/thinking entry；interleaved thinking 不再导致完整 public output 被拆成重复块。
+  - `SubAgentDetailView`：渲染前规范化历史/旧 store entries，清理同一 response 内被后续完整 accumulated text 覆盖的短前缀残片；跨 `tool_call` 边界的相似前缀仍保留。
+  - 补测试锁定：`n -> thinking -> nmap needs root...` 不再渲染成两个 Agent Output；thinking accumulated 也能跨 public text 回填；tool call 后仍开启新的 response 边界。
+  - 同步模块卡：`docs/modules/frontend/components.md`、`docs/modules/frontend/store.md`。
+- **运行过的验证（实跑）**：
+  - `pnpm exec vitest run frontend/store/workflow.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 2 files / 48 tests passed。
+  - `pnpm exec biome check frontend/store/slices/workflow/sub-agent.ts frontend/store/workflow.test.ts frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0。
+  - `just check-fe` → exit 0。
+  - `just test-fe` → exit 0。
+  - `git diff --check -- frontend/store/slices/workflow/sub-agent.ts frontend/store/workflow.test.ts frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts docs/modules/frontend/components.md agent-progress.md` → exit 0。
+- **未跑**：`./init.sh` / `just precommit` 全量（本轮为前端 store/detail 小范围修复，工作树已有其它未提交后端改动；采用 scoped 前端验证）。
+- **提交记录**：未 commit。
+
+---
+
+### 2026-06-25 · coverage gap structured action list
+
+- **本轮目标**：把 gate 的真实 coverage 缺口变成结构化 action list，直接喂给 repair sub-agent，让它只补这些 `(asset × technique)`，不要从头重扫。
+- **已完成**：
+  - `golish-agent-kit`：新增 `CoverageGapAction`，`coverage_complete` BLOCK 时在 `HarnessRecoveryActions.coverage_gap_actions` 返回 `asset` / `technique` / `reason` / `suggested_tools`；gate aggregate 会合并该清单。
+  - `golish-agent-app`：`submit_stage_deliverable` 的 `needs_fix` JSON 现在会暴露 `coverage_gap_actions`，模型下一轮可直接读取结构化缺口。
+  - `golish-sub-agents`：`SubmitRepairMode` 持久化 `coverage_gap_actions`，repair instruction 明确列出“只跑这些”；`pentest_run` 继续拦 CIDR/stdin/list-file/multi-target，且 action list 非空时会拦截未列出的单目标。
+  - `golish-agent-runtime`：checkpoint restore 测试覆盖 `SubmitRepairMode.coverage_gap_actions` 随 retry/resume 保留。
+  - 同步模块卡：`docs/modules/backend/golish-agent-kit/harness.md`、`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-sub-agents/executor.md`。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-agent-app -p golish-sub-agents -p golish-agent-runtime` → exit 0。
+  - `cd backend && cargo nextest run -p golish-sub-agents coverage_gap --status-level fail` → 7 passed / 100 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit coverage_complete_blocks_on_missing_technique --status-level fail` → 1 passed / 729 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app eas_needs_fix_surfaces_structured_coverage_gap_actions --status-level fail` → 1 passed / 61 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-runtime submit_repair_mode_restores --status-level fail` → 2 passed / 264 skipped。
+  - `git diff --check` → exit 0。
+- **已记录证据**：
+  - `coverage_complete_blocks_on_missing_technique` 断言 recovery 里有 `coverage_gap_actions[0] = { asset: "a", technique: "xss", reason: "missing_terminal_coverage" }`。
+  - `eas_needs_fix_surfaces_structured_coverage_gap_actions` 断言 submit tool 输出包含 EAS PORT / SERVICE-FINGERPRINT action 和建议工具（如 `naabu`）。
+  - `coverage_gap_needs_fix_enters_targeted_gap_closure_mode` 断言 sub-agent repair instruction / block payload 都携带 action list。
+  - `coverage_gap_repair_blocks_single_target_outside_action_list` 断言未列入 `coverage_gap_actions` 的单目标 `pentest_run` 会被 block。
+- **未跑**：`./init.sh` / `just precommit`（用户明确要求不要跑慢 precommit）。
+- **提交记录**：未 commit。
+- **已知风险或未解决问题**：
+  - 运行中的旧 app/backend 进程需要重启后才会加载这次 Rust 改动。
+  - action list 会限制 repair 模式里的 `pentest_run` 目标；如果某个工具参数格式没有可解析 target，会先放行，后续可按实际日志再加解析规则。
+- **下一步最佳动作**：重启 app/backend 后复跑 EAS；如果 gate 仍 block，看 `needs_fix.coverage_gap_actions` 数量和具体 asset/technique，worker 应只补这些真缺口。
+
+### 2026-06-25 · EAS coverage_truth 端口事实投影修复
+
+- **本轮目标**：解释用户最新 EAS run 仍过不了 gate 的具体原因，并修复“工具已落库但 gate 不认”的 DB truth 漏洞。
+- **日志 / DB 结论**：
+  - 最新真实 run 仍是 `/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1782234945520-1`；最后一次 submit 已通过 `schema_check` / `contract_check` / `vacuous_check` / `freshness_check`，硬失败只剩 `coverage_complete`。
+  - live DB（org `fb90ef2a-eb1c-4288-8f7c-97dc957a26c0`，stage start `2026-06-24 13:42:55 +08:00`）显示：130 个 in-scope assets；旧规则下新鲜 `LIVENESS=2`、`SERVICE-FINGERPRINT=0`，但实际新鲜 `targets.ports=63`，且 63 个 ports 都带 service/version hint。
+  - 根因 1：`coverage_truth` 的 LIVENESS 只认 `http_status/real_ip`，不认新鲜端口扫描；所以 `nmap/naabu` 已证明 host 存活也仍报 LIVENESS gap。
+  - 根因 2：`coverage_truth` 的 SERVICE-FINGERPRINT 只认 `fingerprints` 表；但 `nmap -sV` / parsed port service 当前主要落在 `targets.ports[*].service/version`，没有同步写 `fingerprints`，所以服务指纹被漏算。
+  - 根因 3：domain 行多数通过 `real_ip` 指向已扫描 IP，旧规则不会从 `domain.real_ip -> IP target` 反投 PORT/SERVICE/LIVENESS，导致 domain 与 IP 重复要求覆盖。
+- **已完成**：
+  - `backend/crates/golish-db/src/repo/coverage_truth.rs`：EAS LIVENESS 现在把本 stage 新鲜 `targets.ports` 也作为存活事实。
+  - EAS SERVICE-FINGERPRINT 现在同时认 `fingerprints` 行和 `targets.ports[*]` 中的 `service` / `version` / `webserver` / `technologies` hint。
+  - EAS LIVENESS / PORT / SERVICE-FINGERPRINT 都支持从同 org、in-scope、IP-like 的 `real_ip` target 反投到 domain asset；仍要求 IP target 的端口/指纹是 freshness window 内的新鲜事实。
+  - SQL 保留非数组 JSONB 防护：`jsonb_array_elements` 只吃 guarded `CASE WHEN jsonb_typeof(...)='array' THEN ... ELSE '[]'`。
+  - 同步模块卡：`docs/modules/backend/golish-db/repo.md`。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-db` → exit 0。
+  - `cd backend && cargo nextest run -p golish-db coverage_truth --status-level fail` → 27 passed / 83 skipped。
+  - `cd backend && cargo check -p golish-db` → exit 0。
+  - `cd backend && cargo clippy -p golish-db --all-targets -- -D warnings` → exit 0。
+- **已记录证据**：
+  - 修复前 DB 估算：`live_old=2`、`service_old=0`、`port_found=63`。
+  - 仅 ports/service hint 语义后估算：`live_new=63`、`service_new=63`。
+  - 加 `real_ip` 反投后估算：`live_new=110`、`port_new=110`、`service_new=110`，其中 `domain_real_ip_port=49`、`domain_real_ip_service=49`。
+- **未跑**：`./init.sh` / `just precommit`（用户要求别跑慢 precommit）。
+- **提交记录**：未 commit。
+- **已知风险或未解决问题**：
+  - 运行中的旧 app 进程不会自动加载 Rust 改动；需要重启 app/backend 后复跑。
+  - 当前 DB 仍约有 20 个资产没有新鲜端口/指纹事实；修复后 gate 如果还 block，应该只剩这些真缺口，而不是已扫描 IP 的假缺口。
+
+---
+
+### 2026-06-25 · EAS retry broad-rescan diagnosis + coverage-gap repair lock
+
+- **本轮目标**：复查用户最新 EAS run “又卡住、又像从头跑”的日志，确认前面 mentor/WhatWeb/hard-supervisor 改动是否生效，并修掉 retry 后仍能 broad rescan 的缺口。
+- **日志结论**：
+  - 最新 run 仍是 `/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1782234945520-1`；不是全局重开新会话。集团 org 已 `passed ... 7d 内跳过重跑`，说明 stage resume/skip 生效。
+  - 中国平安人寿 org 在 `submit_stage_deliverable -> needs_fix` 后进入 `retry 2/3: closing gate gaps`，Prober 重新获得一轮执行；原 coverage-gap repair 仍允许 `list_in_scope_targets` / `list_attack_surface_seeds` / broad `pentest_run`，所以模型又开始 inventory 全量 IP 并重跑 `httpx`/`nmap`，造成“从头跑”的体感。
+  - 已验证此前改动生效：`harness::mentor mode=hard` 有 trace；monitor 记录底层 `naabu` / `whatweb` / `nmap`；空 mentor advice 会 fallback；同批 hard supervisor skip 生效；Ruby-wrapped WhatWeb evidence 进 `http_probe`。
+  - 当前现场最后写入约 `2026-06-25 11:42 CST`，无新的 `nmap/httpx/naabu/whatweb` 进程。
+- **已完成**：
+  - `SubmitRepairMode::CoverageGap` 从允许 broad repair 改为窄补洞：不再允许 `list_in_scope_targets` / `list_attack_surface_seeds` / `manage_targets`。
+  - coverage-gap repair 下 `pentest_run` 会在执行前拦截 stdin heredoc、`/dev/stdin`、`-l`/`--list`/`-iL` list-file、多行、多目标 bulk probe；仍放行单目标窄扫描（如 gate 点名 IP 的 `nmap -sV ...`）。
+  - `response_parsing.rs` 改为调用 `block_result_with_args`，让 repair lock 能看工具参数而不只是工具名。
+  - 补测试：bulk `httpx -l /dev/stdin` 被挡；单目标 `nmap -sV --top-ports 100 ...` 仍允许。
+  - 同步模块卡：`docs/modules/backend/golish-sub-agents/executor.md`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-sub-agents` → exit 0。
+  - `git diff --check` → exit 0。
+  - `cd backend && cargo check -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo nextest run -p golish-sub-agents response_parsing --status-level fail` → 18 passed / 86 skipped。
+  - `cd backend && cargo clippy -p golish-sub-agents --all-targets -- -D warnings` → exit 0。
+- **未跑**：`./init.sh` / `just precommit`（用户明确说别跑 precommit）。
+- **提交记录**：未 commit。
+- **下一步建议**：重启 app 后复跑 EAS；重点看 coverage gap retry 后是否直接进入 query/wait/单目标补洞/submit，而不是 `list_in_scope_targets` 后批量 `httpx -l /dev/stdin` 或大批 nmap。
+
+---
+
+### 2026-06-25 · detail live 状态对比度 + 后台 elapsed 实时刷新
+
+- **本轮目标**：修用户截图指出的两个前端问题：detail 里 running/backgrounded 状态颜色太暗；后台运行 popover 的 elapsed 秒数不实时刷新。
+- **已完成**：
+  - `SubAgentDetailView` / `ToolCallDetailView` 的 running badge、running footer 改为高对比 `ansi-blue`；backgrounded 态改为更清楚的 amber 文字/边框。
+  - `BackgroundJobsBadge` 触发器从弱 `text-accent` 改为蓝色高对比样式；popover 内 job elapsed 增加 1s interval，在 jobs 存在时自行刷新。
+  - `StatusIcon` 的 backgrounded 图标同步提亮到 `amber-300`。
+  - 补测试锁定：后台 elapsed 从 7s → 9s 自动更新；detail live badge 不退回弱对比样式。
+  - 同步模块卡：`docs/modules/frontend/components.md`。
+- **运行过的验证（实跑）**：
+  - `pnpm exec vitest run frontend/components/UnifiedInput/StatusBadges.test.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/ui/StatusIcon.test.tsx` → 4 files / 33 tests passed。
+  - `pnpm exec biome check frontend/components/UnifiedInput/StatusBadges.tsx frontend/components/UnifiedInput/StatusBadges.test.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/ui/StatusIcon.tsx frontend/components/ui/StatusIcon.test.tsx` → exit 0。
+  - `just check-fe` → exit 0。
+  - `just test-fe` → exit 0。
+  - `git diff --check` → exit 0。
+- **未跑**：`./init.sh` / `just precommit` 全量（本轮只改前端 UI；工作树已有另一轮未提交后端/文档改动，采用 scoped 前端验证）。
+- **提交记录**：未 commit。
+- **未提交的本轮改动文件**：`frontend/components/UnifiedInput/StatusBadges.tsx`、`frontend/components/UnifiedInput/StatusBadges.test.tsx`、`frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`、`frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts`、`frontend/components/ToolCallDetailView/ToolCallDetailView.tsx`、`frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts`、`frontend/components/ui/StatusIcon.tsx`、`docs/modules/frontend/components.md`、`agent-progress.md`。
+- **下一步建议**：刷新前端后复看截图中的 detail header 与右上角 background badge；预期 `运行中` / `1 running` 清晰可见，popover elapsed 每秒增长。
+
+---
+
+### 2026-06-25 · execution mentor stage-aware + WhatWeb background evidence 归因
+
+- **本轮目标**：接另一 session 卡住的 `task_orchestrator/prompts/pipeline.rs` 半成品，把 execution mentor 真正接成 stage-aware；同时补上今天 run 暴露的 Ruby-wrapped WhatWeb background evidence 归因漏点。
+- **已完成**：
+  - `golish-agent-kit` 的 mentor prompt 保留另一 session 已写的 `MentorPromptContext` / stage objective / hard stage guard，并补测试锁定 EAS boundary 文案。
+  - `golish-agent-runtime` 主 agent `single_tool_call.rs` 与 sub-agent `sub_agent_call.rs` 都改为调用 `mentor_user_prompt_with_context`：上下文包含 active stage、agent role、sub-agent visible tools、stage `allowed_tool_types`。
+  - hard supervisor 注入前新增确定性 stage boundary：如果模型 advice 和当前 stage/gate 冲突，agent 必须服从 boundary，避免 EAS prober 被推向 exploitation / nuclei / hydra 等下一阶段动作。
+  - `golish-agent-app` background command parser 透过 Ruby wrapper 识别真实工具名；`ruby .../whatweb` 现在落 `tool_name=whatweb`、`kind=http_probe`。
+  - 同步模块卡：`docs/modules/backend/golish-agent-kit/task_orchestrator.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/backend/golish-agent-app/ai.md`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-agent-runtime -p golish-agent-app` → exit 0。
+  - `git diff --check` → exit 0。
+  - `cd backend && cargo check -p golish-agent-kit -p golish-agent-runtime -p golish-agent-app` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-kit mentor --status-level fail` → 2 passed / 725 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app background_httpx_command_books_http_probe_kind background_ruby_wrapped_whatweb_books_http_probe_kind background_port_scan_commands_keep_real_tool_names background_unknown_command_keeps_generic_kind --status-level fail` → 4 passed / 57 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-runtime sub_agent --status-level fail` → 24 passed / 242 skipped。
+  - `cd backend && cargo clippy -p golish-agent-kit -p golish-agent-runtime -p golish-agent-app --all-targets -- -D warnings` → exit 0。
+- **未跑**：`./init.sh` / `just precommit`（用户明确说别跑 precommit）。
+- **提交记录**：未 commit。
+- **下一步建议**：重启 dev 后复跑真实 EAS run，重点看 `harness::mentor` advice 是否只推动 wait/read/consolidate/submit/coverage gap closure，以及 `background job evidence appended` 中 Ruby-wrapped WhatWeb 是否显示 `tool=whatweb` / `kind=http_probe`。
+
+---
+
 ### 2026-06-25 · resume/refiner 最终版骨架：submit repair checkpoint + 恢复注入
 
 - **本轮目标**：按用户“最终版弄完然后回头 build、改错、commit”要求，把 resume/refiner 体系从 P2a 扩到完整骨架：submit needs_fix、background wait、per-org stage_run retry 都走统一 `agent_run` checkpoint/refiner directive，而不是只靠一次 loop 内临时状态。
@@ -6109,7 +6429,204 @@
   - observer 复用同一个 `ExecutionMonitor`，当前阈值仍按工具名计数，不区分每个 org worker 的独立窗口；这符合本轮 shadow/soft 目标，但 P2 resume/monitor 状态仍需后续细化。
 - **下一步最佳动作**：重启 app 后用 `GOLISH_EXECUTION_MENTOR=shadow` 复跑 EAS；在 `run.log` / `transcript.json` 里检查 sub-agent 内部 repeated tool 后是否出现 `mentor_advice_recorded`，以及 failed `background:true` ToolResult 是否带 `RUNTIME CORRECTION`。
 
+### 2026-06-25 · EAS live gate failure diagnosis + repair lock tightening
+
+- **本轮目标**：解释用户当前 EAS live run 为什么一直过不了 gate，并把已确认的 deterministic 漏洞补掉。
+- **已完成**：
+  - 用 `scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1782234945520-1 --full --db` + `run.log` 还原 live run：最新真实 session 是 `pentest-chat-1782234945520-1`，日志最后写到 2026-06-25 12:17:41 CST。
+  - 确认 gate 失败不是 evidence 缺失：latest submit 的 schema / contract / vacuous / freshness 已过，`evidence_refs=38`；硬失败是 `surface_coverage`（claims 用 `kind:"discovery"`，不映射 Surface）和 `coverage_complete`（仍有 128 个 EAS coverage cells 未达 terminal）。
+  - 确认旧 repair lock 已生效但不够严：`manage_targets` 被 blocked，但仍放过 `masscan 124.196.9.0/24`、`nmap 124.196.9.0/24 -sn -n` 和 4-IP nmap batch，导致 worker 继续烧循环而不是只修命名 gap。
+  - `golish-sub-agents`：coverage-gap repair 模式现在明确禁止 CIDR/range sweep 和多目标 batch；`pentest_run` 只放行单目标窄 probe。
+  - `golish-sub-agents/defaults`：Prober / Enumerator 默认 allowed tools 补 `query_target_data`；否则 repair 指令要求“先查现有目标/证据”但 worker 实际看不到该工具，会退回 `manage_targets` 或继续扫描。
+  - `golish-agent-kit`：`surface_mapping` 将 `stage_run_pass_token` 映射为 EAS Surface closeout 信号，避免 per-org stage_run 已过后主 agent 只交 pass token 被 `surface_coverage` 误拦；没有把泛化 `discovery` 放宽。
+  - 同步模块卡：`docs/modules/backend/golish-sub-agents/executor.md`、`docs/modules/backend/golish-sub-agents/defaults.md`、`docs/modules/backend/golish-agent-kit/harness.md`。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-sub-agents -p golish-agent-kit` → exit 0。
+  - `cd backend && cargo nextest run -p golish-sub-agents coverage_gap_repair --status-level fail` → 4 passed / 102 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents defaults --status-level fail` → 21 passed / 85 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit surface_mapping --status-level fail` → 6 passed / 722 skipped。
+  - `cd backend && cargo check -p golish-sub-agents -p golish-agent-kit` → exit 0。
+  - `cd backend && cargo clippy -p golish-sub-agents -p golish-agent-kit --all-targets -- -D warnings` → exit 0。
+  - `git diff --check` → exit 0。
+- **已记录证据**：
+  - `run.log` 04:15:12-04:15:13 UTC：`surface_coverage` block + `coverage_complete gaps_total=128`，且前置 contract/freshness 已通过。
+  - `run_tree.py --db` 尾部显示 prober 自述“每次 submit 只 reveal 下一批 IP，会非常久”，随后仍尝试 CIDR/multi-target sweep；DB 自诊断为 `targets: 705 total`、`target_assets: 72`、`dns_records: 331`，不是空数据问题。
+  - `coverage_gap_repair_blocks_cidr_pentest_run` / `coverage_gap_repair_blocks_multi_target_pentest_run` 覆盖 CIDR 与多目标 batch 被阻断。
+  - `test_prober_has_active_surface_tools` / `test_enumerator_has_content_enum_tools` 覆盖 Prober/Enumerator 都暴露 `query_target_data`。
+  - `stage_run_pass_token_satisfies_surface_for_fanout_closeout` 覆盖 pass-token closeout 不再误触发 `surface_coverage`。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 `./init.sh` / `just precommit`；用户明确要求不要跑慢 precommit，本轮只跑 scoped 后端验证。
+  - 运行中的旧 app 进程不会自动加载这次 Rust 改动；需要重启后端/`just dev` 后复跑才会看到 repair lock 新行为。
+  - 仍有更大的产品问题：EAS 对 244 个 inherited assets 要求完整 LIVENESS/PORT/SERVICE terminal coverage，模型靠“submit 后 reveal 下一批 gap”会天然拖很久；下一刀应做确定性的 coverage-gap action list / explicit terminal closure，而不是让模型猜全量缺口。
+- **下一步最佳动作**：重启 app 后复跑 EAS；如果还卡在 coverage_complete，就实现 gate 返回完整机器可读 gap/action list，并让 repair mode 直接驱动/限制一批明确的单目标 closure。
+
+### 2026-06-25 · background job structured landing
+
+- **本轮目标**：确认用户看到的 “data 没 landing” 是否属实，并修复 EAS 后台扫描有 evidence 但 DB truth 不更新的问题。
+- **已完成**：
+  - 用 `run_tree.py` / `run.log` / live DB 还原 `pentest-chat-1782234945520-1`：最新真正 pentest run 仍是该 session，`pentest-chat-1782276262569-1` 只是中文问候，不是扫描。
+  - 确认根因：后台 `pentest_run` 完成后只走 `maybe_append_background_evidence`，会写 `audit_log`，但没有调用同步工具路径里的 `golish-pentest::output_store::maybe_detect_and_store_via`，所以 gate 从 `targets.ports` / `fingerprints` 读 DB truth 时仍看到缺口。
+  - `golish-agent-app/src/ai/commands/bridge_config.rs`：background completion listener 现在接入 `db_pool`，成功 job 会把 stdout tail 送入 structured output store，并打 `background job structured output stored` 日志。
+  - `golish-pentest/src/output_store/mod.rs`：`target_update_recon` 记录缺 `host/hostname/ip/url` 时，从单目标命令行兜底补 `host`；覆盖 nmap/WhatWeb wrapper tail 截掉 host 行的场景。
+  - 同步模块卡：`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-pentest/output_store.md`。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-agent-app -p golish-pentest` → exit 0。
+  - `cd backend && cargo test -p golish-pentest output_store::tests -- --nocapture` → 3 passed / 140 filtered。
+  - `cd backend && cargo check -p golish-agent-app -p golish-pentest` → exit 0。
+- **已记录证据**：
+  - live DB：`pingan.cn` / `test5-pazl.pingan.cn` / `www.pingan.cn` 仍 `ports_scanned_at=NULL`、`fingerprints=0`，但同 session `audit_log` 已有 naabu/whatweb/nmap background evidence ids，说明断点在 evidence → structured DB landing。
+  - `run.log` 尾部有大量 `background job evidence appended`，但没有旧进程中的 `background job structured output stored`；这条新日志需要重启后端后才会出现。
+  - 新单测 `enriches_missing_target_from_wrapped_nmap_command` / `enriches_missing_target_from_quoted_whatweb_command` / `keeps_existing_target_field` 覆盖 command-target 兜底。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 `./init.sh` / `just precommit`；用户明确要求不要跑慢 precommit，本轮只跑 scoped Rust 检查。
+  - 当前正在运行的旧 app 进程不会自动加载这次 Rust 改动；已有 background evidence 不会自动 retroactive 回填 `targets` / `fingerprints`。
+  - 后台 completion 当前只能拿 `stdout_tail`（8 KiB），超长 nmap 输出仍可能丢掉前部上下文；本轮已加命令 target 兜底，但如果 future 工具有多目标超长输出，需要扩展 background job 完整输出读取/产物文件策略。
+- **下一步最佳动作**：重启 app 后复跑 EAS；看新 run.log 是否出现 `background job structured output stored`，再用 `run_tree.py --db` 确认 port/fingerprint gaps 是否减少。如果要补救旧 session，需要做一次 audit_log raw_output backfill，而不是继续让旧进程重试。
+
+### 2026-06-25 · EAS liveness terminal fact landing
+
+- **本轮目标**：复查用户当前 live run 是否已落库，并修复 `pinganstock.com × GOLISH-EAS-LIVENESS` 反复 `never attempted` 的根因。
+- **已完成**：
+  - 复查 `/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1782234945520-1/run.log`、`run_tree.py --db` 和 live DB：后台 structured landing 已生效，`nmap` background job 已写 `targets.ports/liveness_checked_at`；gate 从 7/9 个 gap 收敛到 1 个。
+  - 确认剩余卡点：`pinganstock.com` 在 `targets` 里仍 `ports=[] / real_ip='' / liveness_checked_at=NULL`，`technique_outcomes` 无 `pinganstock` 行；大量 `httpx` / `nmap -sn` evidence 只进 `audit_log`，但 `evidence_technique/evidence_outcome/evidence_asset` 为空，所以 authoritative gate 仍判 `never attempted`。
+  - `golish-agent-kit/src/harness/evidence_facts.rs`：新增通用 `coverage_facts_from_command` / `coverage_outcome_for_run`，保留 passive intel 映射，同时让 `httpx` / `nmap -sn` / `naabu` / `whatweb` 派生 EAS coverage facts；`nmap` stderr 的 `Failed to resolve` 会产出 `error` terminal fact。
+  - `golish-agent-kit/src/harness/gate/rule_engine.rs`：authoritative coverage 现在可直接消费真实 `Empty` evidence fact 关闭 terminal gap，不再强迫模型把账本事实手抄成 coverage cell；仍禁止“自报 found + empty fact”蒙混。
+  - `golish-agent-runtime/src/agentic_loop/tool_execution/direct/mod.rs`：`run_pty_cmd` / `pentest_run` evidence append 改用通用 coverage facts，并把 stdout+stderr 一起传给 outcome 判定与 evidence body。
+  - `golish-agent-app/src/ai/commands/bridge_config.rs`：background evidence append 改用通用 coverage facts，EAS background job 的 stderr 也参与 terminal outcome 判定；失败的 mapped coverage probe 会作为 terminal evidence 入账，Killed job 仍只作为可见 note。
+  - 同步模块卡：`docs/modules/backend/golish-agent-kit/harness.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-agent-runtime -p golish-agent-app` → exit 0。
+  - `cd backend && cargo test -p golish-agent-kit harness::evidence_facts -- --nocapture` → 24 passed / 716 filtered。
+  - `cd backend && cargo test -p golish-agent-kit authoritative_ -- --nocapture` → 18 passed / 723 filtered。
+  - `cd backend && cargo check -p golish-agent-runtime -p golish-agent-app` → exit 0。
+  - `cd backend && cargo check -p golish-agent-app -p golish-agent-runtime -p golish-agent-kit` → exit 0。
+  - `git diff --check -- backend/crates/golish-agent-kit/src/harness/evidence_facts.rs backend/crates/golish-agent-kit/src/harness/gate/rule_engine.rs backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/mod.rs backend/crates/golish-agent-app/src/ai/commands/bridge_config.rs docs/modules/backend/golish-agent-kit/harness.md docs/modules/backend/golish-agent-runtime/agentic_loop.md agent-progress.md` → exit 0。
+- **已记录证据**：
+  - `run.log` 16:18-16:20 CST：`coverage gap matrix ... gaps_total=1 gaps=(pinganstock.com × GOLISH-EAS-LIVENESS)`，随后多次 `nmap -sn pinganstock.com` / `httpx` 仍 BLOCK。
+  - `audit_log` evidence ids `5404..5455` 显示多次 `httpx` / `nmap` / `whatweb` 已完成；其中 `nmap` raw output 明确包含 `Failed to resolve "pinganstock.com"`，但 evidence fact 三列为空。
+  - 重启后最新 evidence `5528` 已带 `GOLISH-EAS-LIVENESS | pinganstock.com | empty`，说明 EAS fact 派生链路已经生效；随后 gate 仍 block 是因为旧 gate 要模型手写空 coverage matrix，本轮已用 `authoritative_empty_fact_closes_cell_without_handwritten_coverage` 覆盖修复。
+  - 新单测覆盖 `nmap -sn pinganstock.com` → `GOLISH-EAS-LIVENESS`、quoted `httpx -u http://...` → liveness、Ruby-wrapped WhatWeb → service fingerprint、`Failed to resolve` → `error` terminal。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 `./init.sh` / `just precommit`；用户明确要求不要跑慢 precommit，本轮只跑 scoped Rust 验证。
+  - 当前已产生的旧 evidence 不会 retroactively 补 facts；需要重启后端并让 agent 再跑一次相关 probe，新的 evidence 才会带 EAS terminal fact。
+  - httpx / whatweb structured output parser 仍可能有 detect/parse 不完整问题；这次修的是 gate terminal fact，ports/found DB truth 的 background landing 已另行验证生效。
+- **下一步最佳动作**：重启 app 后复跑或让当前 run 再跑一次 `httpx` / `nmap -sn` 针对剩余 gap；确认新 evidence 行带 `GOLISH-EAS-LIVENESS` + `error/empty`，gate 不再在 `pinganstock.com` 上循环。
+
+### 2026-06-25 · JS/API browser-first + AI deep intervention validation
+
+- **本轮目标**：验证 enumeration 的 JS/API 采集是否能真正让模型介入：先 browser fast，看到 `ai_assist` / closure gap 后由模型自行 deep/recipe 二次调用。
+- **已完成**：
+  - 修复 `browser_collect_js_api` 虽已注册但被 execution-mode bridge allow-list 过滤的问题：`BridgeToolSelection` 新增 `browser_collect_js_api`，同步 chat/task policy、prompt tool table 与回归测试。
+  - 调整 `enumerator` / `browser` 默认 prompt：JS/API 改为 browser-first；`js_collect + js_extract_apis` 只作为 browser 结果后的静态补充；`ai_assist.recommended` / `closure_partial` / `timeout_partial` / `recursive_queue_remaining>0` 时由模型 bounded deep/recipe 二次调用。
+  - 同步模块卡 `docs/modules/backend/golish-sub-agents/defaults.md`。
+  - 真实 DeepSeek `deepseek-v4-flash` stage-run 验证：`http://8.138.179.62:8080/` 第一轮 `browser_collect_js_api fast` 返回 `closure_partial`、23 scripts、`recursive_queue_remaining=1800`、`ai_assist.recommended=true`；主模型随后自行派第二个 `sub_agent_browser` 调 `browser_collect_js_api deep(max_recursive_scripts=300)`，结果扩到 303 scripts，仍 `closure_partial`、`recursive_queue_remaining=1827`。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-sub-agents -p golish-agent-runtime` → exit 0。
+  - `cd backend && cargo check -p golish-sub-agents -p golish-agent-runtime` → exit 0。
+  - `cd backend && cargo nextest run -p golish-sub-agents defaults --status-level fail` → 22 passed / 87 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-runtime execution_mode --status-level fail` → 22 passed / 245 skipped。
+  - `cd backend && cargo run -p golish -- --stage-run --profile assessment --only enumeration --org JsClosure8080 --target 8.138.179.62:8080 ... --auto-approve --verbose` → interrupted after targeted browser/deep evidence was collected; no leftover `katana|gobuster|ffuf|whatweb|httpx|browser_collect_js_api` processes (`pgrep` exit 1).
+- **已记录证据**：
+  - `backend/.golish/transcripts/stage-run-ab11f6e5-5d91-4908-919e-6e36eb4433eb/run.log`：registered `browser_collect_js_api`，main model delegates `sub_agent_browser` twice.
+  - `scripts/run_tree.py --workspace /Users/christopherzheng/WebstormProjects/Golish-Platform/backend stage-run-ab11f6e5-5d91-4908-919e-6e36eb4433eb --full --db`：第一轮 browser tool args `{crawl_mode:"fast", max_recursive_scripts:20, ai_assist:true}`；第二轮 `{crawl_mode:"deep", max_recursive_scripts:300, timeout_ms:45000, hard_timeout_ms:90000}`。
+  - 第一轮 result summary：`closure_partial`, `closure_complete=false`, `scripts_saved=23`, `api_requests_total=0`, `recursive_queue_remaining=1800`, `ai_assist.recommended=true`。
+  - 第二轮 result summary：`closure_partial`, `closure_complete=false`, `scripts_saved=303`, `api_requests_total=0`, `recursive_queue_remaining=1827`；模型判断登录态 SPA 需要后续 bounded recipe / auth-aware path。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 `./init.sh` / `just precommit`；本轮只跑 scoped Rust 验证和一次活体 stage-run。
+  - `sub_agent_browser` 调 browser 工具时未带 `target_id`，日志显示 `no target_id, skipping API DB persistence`，所以这次主要证明模型闭环，不证明 `api_endpoints` 完整落库。
+  - tracking bridge 对 `agent_type="browser"` 报 DB enum warning；需要补 agent_type enum/映射，否则 browser sub-agent call 记录会失败。
+  - targeted browser 验证完成后，完整 `stage_run` 仍会回到 enumerator gate 流程并跑 whatweb/httpx/katana/gobuster；下一步要把 browser JS/API 结果纳入 enumeration gate/coverage，避免同一阶段重复走旧静态路径。
+- **下一步最佳动作**：先修 browser 工具 target_id 解析/传递与 browser agent_type DB enum，再让 enumerator worker 自身在 `stage_run` 内 browser-first 并把 browser/API 结果落到 DB truth；之后再处理目录/参数枚举的 bounded 策略。
+
+### 2026-06-26 · JS 获取闭环验证与提取 gap 定界
+
+- **本轮目标**：只验证 JS 获取是否能闭环；把 JS 获取、JS 提取两个问题拆开判断。
+- **已完成**：
+  - 新增 `backend/crates/golish-pentest-app/src/pentest_bridge/target_resolver.rs`，让 `browser_collect_js_api` / `js_collect` / `js_extract_apis` 都能从 URL 候选解析 `target_id`，覆盖 `8.138.179.62:8080` 这类 host:port seed。
+  - 复跑真实目标 `http://8.138.179.62:8080/`：模型按 `fast -> deep -> js_extract_apis` 顺序执行；JS 获取 fast 得到 23 个脚本，deep 得到 303 个脚本，`target_id` 正常落到 `b13f4f3d-8d06-443a-bf17-99bb2ab98627`。
+  - 定界提取问题：`js_extract_apis` 对 303 个文件返回 0 endpoint；browser agent 通过 grep/人工分析识别到 Vben custom axios wrapper `Wr` / `t3` 与 `/admin-api` base，说明问题不在 JS 获取，而在静态提取规则不能识别 wrapper。
+  - 轻补确定性提取规则：`golish-js-analyzer` 增加 `HttpClientVerb` 识别 `client.get/post/put/delete/download/upload('/path')`；`js_extract_apis` 从已抓配置识别 `VITE_GLOB_API_URL="/admin-api"` 并拼接入库路径。后续仍建议做 AI-assisted extraction fallback，避免靠无限 regex 堆规则。
+  - 补齐 JS 获取侧 framework manifest adapter：`browser_collect_js_api.mjs` 对 Next `_buildManifest.js` / app-build/build/react-loadable manifests、Nuxt `builds/latest.json` -> build manifest、CRA `asset-manifest.json` 做专门推断和引用解析，修正 Next manifest 中 `static/chunks/...` 的 base URL 拼接。
+  - 同步模块卡：`docs/modules/backend/golish-js-analyzer.md`、`docs/modules/backend/golish-pentest-app/pentest_bridge.md`。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-js-analyzer -p golish-pentest-app` → exit 0。
+  - `cd backend && cargo nextest run -p golish-js-analyzer --status-level fail` → 40 passed。
+  - `cd backend && cargo check -p golish-js-analyzer -p golish-pentest-app` → exit 0。
+  - `cd backend && cargo nextest run -p golish-pentest-app js_extract_apis --status-level fail` → 7 passed / 62 skipped。
+  - `node --check scripts/browser_collect_js_api.mjs` → exit 0。
+  - `git diff --check -- <JS analyzer / js_extract / module-card files>` → exit 0。
+- **已记录证据**：
+  - `backend/.golish/transcripts/stage-run-db81393f-fe19-47a2-96ba-c14acb3cee8d/subagents/browser-call_00_gBgDArO1UqUYMnu13fJR9634/transcript.json`：fast `status=closure_partial`, `scripts_saved=23`, `recursive_queue_remaining=1800`, `target_id=b13f4f3d-8d06-443a-bf17-99bb2ab98627`；deep `scripts_saved=303`, `recursive_queue_remaining=1827`。
+  - 同一 transcript：`js_extract_apis` `files_scanned=303`, `endpoints_total=0`, `persisted_endpoint_rows=0`；browser agent 人工确认 wrapper/baseURL 是提取 gap 根因。
+  - `scripts/run_tree.py --workspace /Users/christopherzheng/WebstormProjects/Golish-Platform/backend stage-run-db81393f-fe19-47a2-96ba-c14acb3cee8d --full --db`：完整展示 `fast -> deep -> js_extract_apis`，随后外层 enumeration gate 又回到旧 http_probe 流程，说明 JS 获取闭环和整体 stage gate 还需拆分。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 `./init.sh` / `just precommit`；本轮只跑 JS analyzer / pentest bridge scoped 验证。
+  - JS 获取是 bounded closure，不是无限穷尽；对 2000+ chunk 的站会返回 `closure_partial` 和剩余队列，由外层决定是否提高预算或停止。
+  - JS 提取仍需要 AI 介入：规则能补常见 wrapper，但更通用的 baseURL / request helper / 参数拼接需要模型输出结构化候选，再由 evidence validator 校验后入库。
+  - `agent_type="browser"` DB enum warning 仍在；这是 agent tracking 问题，不影响本次 JS 获取文件落盘结论。
+- **下一步最佳动作**：把 JS 获取独立成一个 stage/tool-chain contract：browser fast、条件 deep、bounded stop、保存 capture/evidence；提取阶段单独做 AI-assisted fallback，不再把两件事混进一个 enumeration gate。
+
 <!-- 新会话请在这里上方插入一条新记录，保持倒序 -->
+
+### 2026-06-25 · EAS DB-truth slim gate closeout
+
+- **本轮目标**：把 `external_attack_surface` 的 per-org gate 往 `target_intel` 的瘦交付模式靠拢，减少模型手填 coverage / denominator 导致的 gate retry loop。
+- **已完成**：
+  - `resources/harness/stages/external_attack_surface/spec.json`：EAS 开启 `facts_from_db_truth=true`，`coverage_complete.authoritative_found=true` 且限定三列 `GOLISH-EAS-LIVENESS/PORT/SERVICE-FINGERPRINT`；移除 `http_probe` hard `min_invocations`，`coverage_denominator` 改为 authoritative/no-op。
+  - `golish-agent-kit` gate：`coverage_denominator` 支持 `authoritative`；DB-truth-backed stage 的 legacy `surface_coverage` named check 不再要求模型手写 Surface claim，精确完整性由 `coverage_complete` 负责。
+  - `task_orchestrator` charter、EAS methodology、Prober prompt、submit tool schema：统一提示 EAS found cells 从 DB/ledger truth 自动投影；只提交 DB 不能推导的 `checked_empty` / `blocked` / `not_applicable` terminal cells。
+  - 更新回归测试：EAS happy path 改为注入 DB facts 的 slim deliverable；旧 denominator block 改为 authoritative no-op 回归；submit tool/min_invocations 回填测试不再假设 EAS 有 `http_probe` floor。
+  - 同步模块卡：`docs/modules/backend/golish-agent-kit/harness.md`、`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-sub-agents/defaults.md`。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-agent-app -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-kit external_attack_surface stage_charter coverage_denominator surface_coverage --status-level fail` → 38 passed / 692 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app harness_submit_tool --status-level fail` → 27 passed / 34 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents defaults --status-level fail` → 21 passed / 85 skipped。
+  - `cd backend && cargo check -p golish-agent-kit -p golish-agent-app -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-sub-agents --all-targets -- -D warnings` → exit 0。
+  - `git diff --check` → exit 0。
+- **已记录证据**：
+  - `db_truth_backed_surface_coverage_named_check_is_noop` 覆盖 DB-truth EAS 不再被手写 Surface category claim 阻塞。
+  - `coverage_denominator_authoritative_is_noop` 覆盖 authoritative denominator 不要求手抄 `tested_units/total_units`。
+  - `e2e_happy_path_external_attack_surface_passes_gate` 覆盖 EAS slim deliverable + injected DB facts 可通过 gate。
+  - `external_attack_surface_charter_surfaces_liveness_technique` 覆盖 EAS charter 渲染 DB auto-adjudicated 指引。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 `./init.sh` / `just precommit`；用户明确要求不要跑慢 precommit，本轮只跑相关 crate 的 targeted tests/check/clippy。
+  - EAS negative/empty terminal source 还没有完全结构化；无开放端口 / 无服务指纹这类负面仍需 worker 显式提交 `checked_empty+evidence` 或 `not_applicable+note`。
+  - 运行中的旧 app 进程需要重启后才会加载这次 Rust/spec/prompt 改动。
+- **下一步最佳动作**：重启 app 后复跑 EAS；重点看 per-org prober 是否停止手抄 found coverage / denominator，并让 DB facts 直接关闭 found cells。
+
+### 2026-06-25 · EAS rerun diagnosis + hard supervisor batch stop
+
+- **本轮目标**：看用户复跑的 EAS run 是否验证了前一刀，并修复 hard mentor 仍挡不住同批 `whatweb` 的执行缺口。
+- **已完成**：
+  - 复查 `/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1782234945520-1/run.log` + `scripts/run_tree.py --db`：最新日志停在 2026-06-25 11:01 CST 左右；新 run 尚未产生新 submit/gate，只是重新 dispatch 平安人寿 prober 后又排了一个 WhatWeb 后台 job。
+  - 确认前一刀方向有效：新 mentor advice 已聚焦 EAS liveness/port/service-fingerprint，不再建议 nuclei/hydra/exploitation；Ruby wrapper WhatWeb 新 evidence 归为 `http_probe`，不再是泛化 `background_job`。
+  - `golish-agent-runtime`：`mentor_one_shot` 对空/whitespace advice 返回 Err，触发静态 fallback；execution monitor 记录 `pentest_run` / wrapper 的真实底层工具名，避免日志和 mentor 上下文只显示 `pentest_run`。
+  - `golish-sub-agents`：当 observer 注入 `--- EXECUTION SUPERVISOR (HARD) ---` 后，同一批后续 tool call 不再真实执行，改写 synthetic failed ToolResult（保持 LLM tool-call/result 配对），让下一轮模型先读取 supervisor correction。
+  - 同步模块卡：`docs/modules/backend/golish-sub-agents.md`、`docs/modules/backend/golish-sub-agents/executor.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-agent-runtime -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo check -p golish-sub-agents -p golish-agent-runtime -p golish-agent-kit -p golish-agent-app` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-kit mentor --status-level fail` → 2 passed / 725 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents response_parsing --status-level fail` → 16 passed / 86 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-runtime sub_agent --status-level fail` → 24 passed / 242 skipped。
+- **已记录证据**：
+  - run_tree 最新尾部显示 `中国平安人寿保险股份有限公司: running ~ dispatching Prober`，随后 prober 只执行到 `pentest_list_tools` / `list_attack_surface_seeds`，没有新 submit；因此旧 `needs_fix` 汇总不能证明新逻辑已收敛或失败。
+  - clean backend log 最新 mentor preview：要求停止 guessed-url WhatWeb，先用 `list_attack_surface_seeds` / `list_in_scope_targets`，按 liveness / port discovery / service fingerprint 闭合覆盖。
+  - clean backend log 最新 WhatWeb 命令为 Ruby wrapper，但 run_tree 新 evidence #4834-#4893 多数已是 `http_probe`。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 `./init.sh` / `just precommit`；用户明确说不要跑慢 precommit，本轮只跑 targeted 后端验证。
+  - hard supervisor batch stop 解决“同一批已排队工具继续执行”的问题，但还不是完整 EAS deterministic gap closer；如果模型下一轮仍不按 coverage gaps 收敛，下一步应做显式 coverage-gap action list / tool lock。
+  - 工作树里有若干前端文件已修改（非本轮后端 scope），本轮没有碰它们。
+- **下一步最佳动作**：重启 app 后复跑 EAS；重点看 hard mentor 后同批后续 WhatWeb 是否被 synthetic skip，以及下一轮 prober 是否改为 wait/list/query/补 liveness-port-service coverage，而不是继续 guessed-url WhatWeb。
 
 ### 2026-06-24 · 前端 detail thinking/output 卡顿修复
 

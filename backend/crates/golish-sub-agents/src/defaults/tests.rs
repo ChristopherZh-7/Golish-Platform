@@ -1,7 +1,7 @@
 use super::builder::create_default_sub_agents;
 use super::prompts::{
-    build_coder_prompt, build_enumerator_prompt, build_pentester_prompt, build_planner_prompt,
-    build_prober_prompt, build_recon_prompt, build_researcher_prompt,
+    build_browser_prompt, build_coder_prompt, build_enumerator_prompt, build_pentester_prompt,
+    build_planner_prompt, build_prober_prompt, build_recon_prompt, build_researcher_prompt,
 };
 
 fn has_tool(agent: &crate::SubAgentDefinition, tool: &str) -> bool {
@@ -198,6 +198,8 @@ fn test_prober_has_active_surface_tools() {
     assert!(has_tool(prober, "list_in_scope_targets"));
     // L1b (design 2026-06-24): Prober gets the ranked attack-surface seed worklist.
     assert!(has_tool(prober, "list_attack_surface_seeds"));
+    // Repair mode relies on this read helper to inspect existing target/evidence detail.
+    assert!(has_tool(prober, "query_target_data"));
     assert!(has_tool(prober, "submit_stage_deliverable"));
     assert!(has_tool(prober, "search_knowledge_base"));
     assert!(has_tool(prober, "read_knowledge"));
@@ -222,8 +224,8 @@ fn test_prober_prompt_is_active_surface() {
     assert!(prompt.contains("port"));
     assert!(prompt.contains("list_attack_surface_seeds"));
     assert!(prompt.contains("wait_for_background_jobs"));
-    assert!(prompt.contains("tested_units"));
-    assert!(prompt.contains("total_units"));
+    assert!(prompt.contains("found cells are credited from the database"));
+    assert!(prompt.contains("Do NOT hand-copy found coverage cells"));
     assert!(prompt.contains("HTTP liveness alone"));
     // Prober is the ACTIVE counterpart of the ZERO-TOUCH Recon — it must NOT
     // describe itself as zero-touch.
@@ -245,10 +247,12 @@ fn test_enumerator_has_content_enum_tools() {
     assert!(has_tool(enumerator, "pentest_run"));
     assert!(has_tool(enumerator, "pentest_list_tools"));
     assert!(has_tool(enumerator, "wait_for_background_jobs"));
+    assert!(has_tool(enumerator, "browser_collect_js_api"));
     assert!(has_tool(enumerator, "js_collect"));
     assert!(has_tool(enumerator, "js_extract_apis"));
     assert!(has_tool(enumerator, "manage_targets"));
     assert!(has_tool(enumerator, "list_in_scope_targets"));
+    assert!(has_tool(enumerator, "query_target_data"));
     assert!(has_tool(enumerator, "submit_stage_deliverable"));
     assert!(has_tool(enumerator, "search_knowledge_base"));
     assert!(has_tool(enumerator, "read_knowledge"));
@@ -272,10 +276,28 @@ fn test_enumerator_prompt_is_content_enum() {
     // Content enumeration: directories / parameters / JS-API extraction.
     assert!(prompt.contains("director"));
     assert!(prompt.contains("param"));
+    assert!(prompt.contains("browser_collect_js_api"));
+    assert!(prompt.contains("run browser_collect_js_api first"));
+    assert!(prompt.contains("not as a substitute"));
+    assert!(prompt.contains("ai_assist"));
+    assert!(prompt.contains("recipe"));
     assert!(prompt.contains("js_extract_apis"));
     // Enumerator is the ACTIVE counterpart of the ZERO-TOUCH Recon — it must NOT
     // describe itself as zero-touch.
     assert!(!prompt.contains("ZERO-TOUCH"));
+}
+
+#[test]
+fn test_browser_prompt_prefers_browser_closure_collection() {
+    let prompt = build_browser_prompt();
+    assert!(prompt.contains("browser_collect_js_api"));
+    assert!(prompt.contains("Use `browser_collect_js_api` first"));
+    assert!(prompt.contains("crawl_mode=\"fast\""));
+    assert!(prompt.contains("ai_assist=true"));
+    assert!(prompt.contains("crawl_mode=\"deep\""));
+    assert!(prompt.contains("bounded `recipe`"));
+    assert!(prompt.contains("js_extract_apis"));
+    assert!(prompt.contains("not as a replacement"));
 }
 
 #[test]

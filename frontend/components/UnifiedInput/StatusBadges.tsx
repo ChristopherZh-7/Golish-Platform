@@ -14,8 +14,7 @@ function formatTokenCountDetailed(tokens: number): string {
   return tokens.toLocaleString();
 }
 
-function formatUptime(startedAtMs: number): string {
-  const now = Date.now();
+function formatUptime(startedAtMs: number, now = Date.now()): string {
   const elapsedMs = now - startedAtMs;
   if (elapsedMs < 0) return "0s";
   const seconds = Math.floor(elapsedMs / 1000);
@@ -38,15 +37,25 @@ export const BackgroundJobsBadge = memo(function BackgroundJobsBadge({
   fallbackCount = 0,
 }: BackgroundJobsBadgeProps) {
   const displayCount = jobs.length > 0 ? jobs.length : Math.max(0, fallbackCount);
-  if (displayCount === 0) return null;
   const hasJobDetails = jobs.length > 0;
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!hasJobDetails) return;
+    setNowMs(Date.now());
+    const intervalId = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(intervalId);
+  }, [hasJobDetails]);
+
+  if (displayCount === 0) return null;
+
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
           title={`${displayCount} command(s) running in the background`}
-          className="h-6 px-2 gap-1.5 text-xs font-medium rounded-lg flex items-center text-accent border border-[var(--border-subtle)]/60 bg-card/30 hover:bg-muted transition-colors"
+          className="h-6 px-2 gap-1.5 text-xs font-medium rounded-lg flex items-center text-[var(--ansi-blue)] border border-[var(--ansi-blue)]/35 bg-[var(--ansi-blue)]/10 hover:bg-[var(--ansi-blue)]/15 hover:border-[var(--ansi-blue)]/50 transition-colors"
         >
           <Loader2 className="size-icon-status-bar animate-spin" />
           <span>{displayCount} running</span>
@@ -66,8 +75,8 @@ export const BackgroundJobsBadge = memo(function BackgroundJobsBadge({
                 <span className="font-mono text-[11px] truncate" title={j.command}>
                   {j.command}
                 </span>
-                <span className="text-[11px] text-muted-foreground shrink-0 tabular-nums">
-                  {formatUptime(j.startedAt)}
+                <span className="text-[11px] text-foreground/75 shrink-0 tabular-nums">
+                  {formatUptime(j.startedAt, nowMs)}
                 </span>
               </li>
             ))}

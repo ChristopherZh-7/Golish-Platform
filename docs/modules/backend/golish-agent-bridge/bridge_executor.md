@@ -43,6 +43,7 @@
 - 历史在 A1-3 从 golish-ai 搬来，依赖 `AgentBridge`（所以放 bridge crate 而非 agent-kit）。
 - Task-mode Primary 每次进 loop 前会通过 `AgentBridge` side-channel 发布当前 `harness_stage` / `harness_authz` / engagement org / operation id；`stage_run` 等 loop 工具依赖 operation id 写同一条 `operation_state`，不要只猜 `DbTracker.session_uuid`。
 - `prepare.rs` 会把 `harness_active_org_id` 的共享 handle 放进 `AgenticLoopContext`；stage-run 子 agent 用它作 legacy fallback，同时对 org-aware registry 工具注入 per-call hidden org arg，避免 `manage_targets list` 泄露 sibling org 资产。
+- bridge executor 直接启动 sub-agent 的路径也必须传 `AgentBridge.cancelled`；否则 task-mode Stop 只能停 primary loop，不能停 executor path 的 worker。
 
 ## 测试入口
 

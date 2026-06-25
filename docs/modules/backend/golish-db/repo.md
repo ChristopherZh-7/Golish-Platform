@@ -35,6 +35,7 @@ owns 全部表的结构化访问。每个表一个子模块（如 `findings.rs` 
 | `mod.rs` | 仅 `pub mod` 声明（40+ 表模块 + `audit`） |
 | `scoped.rs` | scope/所有权校验基座（IDOR） |
 | `audit/` | 审计相关 repo（嵌套子目录） |
+| `coverage_truth.rs` | stage gate 的只读 DB 真值投影；EAS 会从 `targets.ports` / `fingerprints` / `real_ip` 关联 IP target 推导 found coverage |
 | `<table>.rs` | 各表 scoped CRUD（一个表一个文件） |
 
 ## 依赖
@@ -48,6 +49,7 @@ owns 全部表的结构化访问。每个表一个子模块（如 `findings.rs` 
 - **不变量 I9**：repo 方法别在事务里调外部 HTTP/MQ/长耗。
 - app crate **不直接写 SQL**：纵向走 `repo::*`，横向跨服务走 `golish-app-core/ports`。
 - `source_query_log` 的幂等键必须包含 `organization_id`：`(organization_id, run_id, source, query, target)`。多 org `stage_run` 扇出时，root/子公司同源 provider 查询不能互相覆盖；`list_for_run` 供 gate/reviewer 只读 `(org, run)` 的 source/provider terminal rows，证明 source 尝试，不可当作 found truth。
+- `coverage_truth.rs` 是 Found-only 投影：只能把业务表里确实存在的事实注入 gate，不从缺失数据推断 checked_empty；EAS 的 PORT/SERVICE/LIVENESS 必须保留 freshness window 约束。
 
 ## 测试入口
 

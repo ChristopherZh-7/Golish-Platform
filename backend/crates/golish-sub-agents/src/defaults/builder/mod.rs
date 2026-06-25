@@ -150,6 +150,7 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         .with_tools(vec![
             "list_in_scope_targets".to_string(),
             "list_attack_surface_seeds".to_string(),
+            "query_target_data".to_string(),
             "manage_targets".to_string(),
             // Active probing (httpx / naabu / masscan / whatweb / nmap / gowitness)
             // via pentest_run; the stage tool-type allowlist (recon/port-scan,
@@ -173,6 +174,7 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         )
         .with_tools(vec![
             "list_in_scope_targets".to_string(),
+            "query_target_data".to_string(),
             "manage_targets".to_string(),
             // Active content enumeration (ffuf/gobuster/feroxbuster -> dir, arjun/katana
             // -> param) via pentest_run; the stage tool-type allowlist (recon/http,
@@ -183,6 +185,7 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "wait_for_background_jobs".to_string(),
             // JS/API extraction (GOLISH-ENUM-JSAPI): collect a host's JS, then pull
             // endpoints/paths out of it.
+            "browser_collect_js_api".to_string(),
             "js_collect".to_string(),
             "js_extract_apis".to_string(),
             "submit_stage_deliverable".to_string(),
@@ -289,7 +292,9 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             build_browser_prompt(),
         )
         .with_tools(vec![
+            "browser_collect_js_api".to_string(),
             "js_collect".to_string(),
+            "js_extract_apis".to_string(),
             "web_fetch".to_string(),
             "web_search".to_string(),
             "read_file".to_string(),

@@ -2,11 +2,15 @@ use super::context::{
     emit_to_frontend, AgenticLoopContext, LoopCaptureContext, ToolExecutionResult,
 };
 use super::helpers::handle_loop_detection;
-use super::llm_helpers::{mentor_one_shot, summarize_tool_output};
+use super::llm_helpers::{runtime_supervisor_one_shot, summarize_tool_output};
 use super::tool_execution::execute_with_hitl_generic;
 use super::{normalize_run_pty_cmd_args, toolcall_fixer, SUMMARIZE_THRESHOLD_TOKENS};
 use golish_agent_kit::loop_detection::ExecutionMonitorMode;
 use golish_agent_kit::system_hooks::{HookRegistry, PostToolContext};
+use golish_agent_kit::task_orchestrator::runtime_supervisor::{
+    directive_from_model_response, runtime_supervisor_system_prompt,
+    runtime_supervisor_user_prompt, RuntimeSupervisorContext, StrategyDirective,
+};
 use golish_core::events::{AiEvent, HarnessTraceKind, ToolSource};
 use golish_core::utils::truncate_str;
 use golish_core::AgentToolContext;
@@ -16,7 +20,7 @@ use rig::message::{Text, ToolCall, ToolResult, ToolResultContent, UserContent};
 use rig::one_or_many::OneOrMany;
 use serde_json::json;
 
-fn mentor_agent_path(sub_agent_context: &SubAgentContext) -> String {
+fn runtime_supervisor_agent_path(sub_agent_context: &SubAgentContext) -> String {
     if sub_agent_context.depth == 0 {
         return "main".to_string();
     }
@@ -29,13 +33,14 @@ fn mentor_agent_path(sub_agent_context: &SubAgentContext) -> String {
     }
 }
 
-fn emit_mentor_advice_trace(
+fn emit_runtime_supervisor_trace(
     ctx: &AgenticLoopContext<'_>,
     sub_agent_context: &SubAgentContext,
     mode: ExecutionMonitorMode,
     repeated_tool: &str,
     repeat_count: usize,
-    advice_body: &str,
+    directive: &StrategyDirective,
+    injected: bool,
 ) {
     let operation_id = ctx
         .harness_operation_id
@@ -51,17 +56,29 @@ fn emit_mentor_advice_trace(
             .harness_stage
             .map(|stage| stage.as_str().to_string())
             .unwrap_or_default(),
-        agent_path: mentor_agent_path(sub_agent_context),
-        trace: HarnessTraceKind::MentorAdviceRecorded {
+        agent_path: runtime_supervisor_agent_path(sub_agent_context),
+        trace: HarnessTraceKind::RuntimeSupervisorDecision {
             mode: mode.as_str().to_string(),
             trigger: "execution_monitor".to_string(),
             tool: repeated_tool.to_string(),
             repeat_count: repeat_count.min(u32::MAX as usize) as u32,
-            injected: mode.injects(),
-            advice_preview: truncate_str(advice_body, 500).to_string(),
+            injected,
+            strategy_kind: directive.strategy_kind_label().to_string(),
+            root_cause: directive.root_cause.clone(),
+            action_count: directive.actions.len().min(u32::MAX as usize) as u32,
+            directive_hash: directive.directive_hash.clone(),
         },
     };
     let _ = ctx.events.event_tx.send(trace);
+}
+
+async fn visible_tool_names(ctx: &AgenticLoopContext<'_>) -> Vec<String> {
+    let registry = ctx.tool_registry.read().await;
+    registry
+        .get_tool_definitions()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect()
 }
 
 pub(super) async fn execute_single_tool_call<M>(
@@ -306,7 +323,7 @@ where
     let result_for_span = if result_str.len() > 1000 {
         format!("{}... [truncated]", truncate_str(&result_str, 1000))
     } else {
-        result_str
+        result_str.clone()
     };
     tool_span.record("langfuse.observation.output", result_for_span.as_str());
     tool_span.record("success", result.success);
@@ -322,15 +339,23 @@ where
     emit_to_frontend(ctx, result_event.clone());
     capture_ctx.process(&result_event);
 
-    // Execution Mentor check (PentAGI pattern): when the monitor detects
-    // repetitive tool usage, generate corrective advice and append it.
-    let mentor_advice = if let Some(ref monitor) = ctx.execution_monitor {
+    // RuntimeSupervisor check (PentAGI-inspired pattern): when the monitor
+    // detects repeated failed or stalled tool results, generate stage-aware
+    // strategy guidance.
+    let supervisor_note: Option<String> = if let Some(ref monitor) = ctx.execution_monitor {
         let args_summary = serde_json::to_string(&tool_args).unwrap_or_default();
-        let should_mentor = {
+        let monitor_tool_name =
+            golish_agent_kit::harness::underlying_tool_name(tool_name, &tool_args);
+        let should_supervise = {
             let mut mon = monitor.write().await;
-            mon.record_and_check(tool_name, &args_summary)
+            mon.record_result_and_check(
+                &monitor_tool_name,
+                &args_summary,
+                result.success,
+                &result_str,
+            )
         };
-        if should_mentor {
+        if should_supervise {
             let (mode, repeated_tool, repeat_count, recent_summary) = {
                 let mon = monitor.read().await;
                 (
@@ -341,80 +366,78 @@ where
                 )
             };
             tracing::info!(
-                "[ExecutionMentor] Monitor triggered: '{}' called {} times, invoking LLM mentor",
+                "[RuntimeSupervisor] Monitor recorded repeated failed tool pattern: '{}' failed {} times",
                 repeated_tool,
                 repeat_count,
             );
-            let advice = {
-                let mentor_system =
-                    golish_agent_kit::task_orchestrator::prompts::mentor_system_prompt();
-                let mentor_user = golish_agent_kit::task_orchestrator::prompts::mentor_user_prompt(
-                    tool_name,
-                    &repeated_tool,
-                    repeat_count,
-                    &recent_summary,
-                );
-                let advice_body =
-                    match mentor_one_shot(ctx.llm.client, mentor_system, &mentor_user).await {
-                        Ok(llm_advice) => {
-                            tracing::info!(
-                                "[ExecutionMentor] LLM mentor produced {} chars of advice",
-                                llm_advice.len()
-                            );
-                            llm_advice
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "[ExecutionMentor] LLM mentor failed, using static fallback: {}",
-                                e
-                            );
-                            format!(
-                                "You have called '{}' {} times. Consider a different approach:\n\
-                             - Try a different tool to make progress\n\
-                             - Check if previous results already contain the information you need\n\
-                             - If stuck, use a different strategy entirely\n\
-                             Recent calls: {}",
-                                repeated_tool, repeat_count, recent_summary,
-                            )
-                        }
-                    };
-                tracing::info!(
-                    target: "harness::mentor",
-                    mode = mode.as_str(),
-                    repeated_tool = %repeated_tool,
-                    repeat_count,
-                    advice_preview = %truncate_str(&advice_body, 500),
-                    "execution mentor advice recorded"
-                );
-                emit_mentor_advice_trace(
-                    ctx,
-                    sub_agent_context,
-                    mode,
-                    &repeated_tool,
-                    repeat_count,
-                    &advice_body,
-                );
-                match mode {
-                    ExecutionMonitorMode::Shadow => None,
-                    ExecutionMonitorMode::SoftInject => Some(format!(
-                        "\n\n--- EXECUTION ADVISOR ---\n{}\n-------------------------",
-                        advice_body
-                    )),
-                    ExecutionMonitorMode::HardInject => Some(format!(
-                        "\n\n--- EXECUTION SUPERVISOR (HARD) ---\n\
-                         You MUST treat this as a corrective instruction before choosing the next \
-                         tool. Stop the repeated pattern, address the specific failure, and only \
-                         continue once the stated correction is satisfied.\n\n{}\n\
-                         -----------------------------------",
-                        advice_body
-                    )),
+            let supervisor_ctx = RuntimeSupervisorContext {
+                stage: ctx.harness_stage,
+                agent_path: runtime_supervisor_agent_path(sub_agent_context),
+                agent_role: if sub_agent_context.depth == 0 {
+                    "main".to_string()
+                } else {
+                    format!("subagent_depth_{}", sub_agent_context.depth)
+                },
+                task: sub_agent_context.original_request.clone(),
+                trigger: "execution_monitor".to_string(),
+                repeated_tool: repeated_tool.clone(),
+                repeat_count,
+                recent_calls: recent_summary.clone(),
+                last_tool_name: tool_name.clone(),
+                last_tool_result: serde_json::to_string(&result.value).unwrap_or_default(),
+                visible_tools: visible_tool_names(ctx).await,
+                active_repair_directive: None,
+            };
+            let user_prompt = runtime_supervisor_user_prompt(&supervisor_ctx);
+            let model_response = match runtime_supervisor_one_shot(
+                ctx.llm.client,
+                runtime_supervisor_system_prompt(),
+                &user_prompt,
+            )
+            .await
+            {
+                Ok(response) => Some(response),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "harness::runtime_supervisor",
+                        error = %e,
+                        "runtime supervisor LLM call failed; using deterministic fallback"
+                    );
+                    None
                 }
             };
+            let directive =
+                directive_from_model_response(&supervisor_ctx, model_response.as_deref());
+            let injected = mode.injects();
+            tracing::info!(
+                target: "harness::runtime_supervisor",
+                mode = mode.as_str(),
+                repeated_tool = %repeated_tool,
+                repeat_count,
+                strategy_kind = directive.strategy_kind_label(),
+                directive_hash = %directive.directive_hash,
+                root_cause = %truncate_str(&directive.root_cause, 500),
+                injected,
+                "runtime supervisor decision recorded"
+            );
+            emit_runtime_supervisor_trace(
+                ctx,
+                sub_agent_context,
+                mode,
+                &repeated_tool,
+                repeat_count,
+                &directive,
+                injected,
+            );
             {
                 let mut mon = monitor.write().await;
-                mon.reset_after_mentor();
+                mon.reset_after_supervisor();
             }
-            advice
+            if injected {
+                Some(directive.model_instruction(matches!(mode, ExecutionMonitorMode::HardInject)))
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -424,8 +447,9 @@ where
 
     // Convert result to text and truncate if necessary
     let mut raw_result_text = serde_json::to_string(&result.value).unwrap_or_default();
-    if let Some(ref advice) = mentor_advice {
-        raw_result_text.push_str(advice);
+    if let Some(ref note) = supervisor_note {
+        raw_result_text.push_str("\n\n");
+        raw_result_text.push_str(note);
     }
     let truncation_result = ctx
         .context_manager

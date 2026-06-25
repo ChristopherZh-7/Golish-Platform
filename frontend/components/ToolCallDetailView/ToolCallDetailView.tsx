@@ -294,9 +294,9 @@ function formatShellLikeOutput(result: unknown, streamingOutput?: string): strin
   return [...header, ...body].join("\n\n") || null;
 }
 
-const STATUS_BADGE_STYLES: Record<AiToolExecution["status"], string> = {
-  running: "bg-[var(--accent-dim)] text-accent",
-  backgrounded: "bg-amber-400/10 text-amber-400",
+export const TOOL_DETAIL_STATUS_BADGE_STYLES: Record<AiToolExecution["status"], string> = {
+  running: "border-[var(--ansi-blue)]/45 bg-[var(--ansi-blue)]/15 text-[var(--ansi-blue)]",
+  backgrounded: "border-amber-300/45 bg-amber-400/15 text-amber-300",
   completed: "bg-[var(--success-dim)] text-[var(--success)]",
   error: "bg-destructive/10 text-destructive",
   interrupted: "bg-yellow-500/10 text-yellow-400",
@@ -523,7 +523,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           variant="outline"
           className={cn(
             "gap-1 flex items-center text-[10px] px-2 py-0.5",
-            STATUS_BADGE_STYLES[displayStatus]
+            TOOL_DETAIL_STATUS_BADGE_STYLES[displayStatus]
           )}
         >
           {isRunning && <Loader2 className={DETAIL_RUNNING_SPINNER_CLASS} />}
@@ -678,17 +678,20 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         <div
           className={cn(
             "px-3 py-2 border-t border-[var(--border-subtle)] flex items-center gap-2 flex-shrink-0",
-            isBackgrounded ? "bg-amber-400/5" : "bg-accent/5"
+            isBackgrounded ? "bg-amber-400/10" : "bg-[var(--ansi-blue)]/10"
           )}
         >
           <Loader2
             className={cn(
               DETAIL_RUNNING_SPINNER_CLASS,
-              isBackgrounded ? "text-amber-400" : "text-accent"
+              isBackgrounded ? "text-amber-300" : "text-[var(--ansi-blue)]"
             )}
           />
           <span
-            className={cn("text-[11px]", isBackgrounded ? "text-amber-400/80" : "text-accent/80")}
+            className={cn(
+              "text-[11px]",
+              isBackgrounded ? "text-amber-300" : "text-[var(--ansi-blue)]"
+            )}
           >
             {isBackgrounded ? "Running in background" : t("ai.toolDetail.running")}
           </span>

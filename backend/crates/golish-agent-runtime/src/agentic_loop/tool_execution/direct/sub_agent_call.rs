@@ -7,20 +7,26 @@ use anyhow::Result;
 use rig::completion::CompletionModel as RigCompletionModel;
 use serde_json::{json, Value};
 
-use golish_agent_kit::loop_detection::ExecutionMonitorMode;
 use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
     agent_run_from_state_blob, state_blob_with_agent_run, state_blob_without_agent_run,
     AgentRunCheckpoint, AgentRunStatus, RuntimeCorrectionCheckpoint, ToolCheckpoint,
     ToolCheckpointState,
 };
+use golish_agent_kit::task_orchestrator::runtime_supervisor::{
+    directive_from_model_response, runtime_supervisor_system_prompt,
+    runtime_supervisor_user_prompt, RuntimeSupervisorContext,
+};
+use golish_agent_kit::task_orchestrator::stage_refiner::{
+    refine_submit_needs_fix, RefinerContext, RepairDirective,
+};
 use golish_core::events::{AiEvent, HarnessTraceKind};
 use golish_core::utils::truncate_str;
 use golish_sub_agents::{
-    execute_sub_agent, submit_repair_mode_from_submit_result, SubAgentContext,
-    SubAgentExecutorContext, SubAgentToolObservation, SubmitRepairMode,
+    execute_sub_agent, SubAgentContext, SubAgentDefinition, SubAgentExecutorContext,
+    SubAgentToolObservation, SubmitRepairMode,
 };
 
-use super::super::super::llm_helpers::mentor_one_shot;
+use super::super::super::llm_helpers::runtime_supervisor_one_shot;
 use super::super::super::sub_agent_dispatch::{
     build_sub_agent_briefing, execute_sub_agent_with_client,
 };
@@ -28,7 +34,7 @@ use super::super::super::{AgenticLoopContext, ToolExecutionResult};
 use golish_agent_kit::tool_executors::extract_and_upsert_entities;
 use golish_agent_kit::tool_provider_impl::DefaultToolProvider;
 
-fn sub_agent_mentor_agent_path(agent_id: &str) -> String {
+fn sub_agent_runtime_agent_path(agent_id: &str) -> String {
     format!("main>{agent_id}")
 }
 
@@ -46,7 +52,7 @@ fn sub_agent_checkpoint_agent_path(
                 agent_id
             )
         }
-        _ => sub_agent_mentor_agent_path(agent_id),
+        _ => sub_agent_runtime_agent_path(agent_id),
     }
 }
 
@@ -77,6 +83,58 @@ fn background_job_ids_from_submit_result(result: &Value) -> Vec<String> {
         .collect()
 }
 
+fn strings_from_json_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|items| items.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.as_str().map(str::to_string))
+        .collect()
+}
+
+fn coverage_gap_actions_from_submit_result(
+    result: &Value,
+) -> Vec<golish_agent_kit::harness::CoverageGapAction> {
+    result
+        .get("coverage_gap_actions")
+        .and_then(|items| items.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            serde_json::from_value::<golish_agent_kit::harness::CoverageGapAction>(item.clone())
+                .ok()
+        })
+        .collect()
+}
+
+fn repair_directive_from_submit_result(
+    stage: Option<golish_agent_kit::harness::StageKind>,
+    org_id: Option<uuid::Uuid>,
+    agent_path: String,
+    result: &Value,
+) -> Option<RepairDirective> {
+    if result.get("status").and_then(|s| s.as_str()) != Some("needs_fix") {
+        return None;
+    }
+    let stage = stage?;
+    Some(refine_submit_needs_fix(RefinerContext {
+        stage,
+        org_id,
+        agent_path,
+        reasons: strings_from_json_array(result.get("reasons")),
+        coverage_gap_actions: coverage_gap_actions_from_submit_result(result),
+        available_evidence_ids: evidence_ids_from_submit_result(result),
+        running_background_jobs: background_job_ids_from_submit_result(result),
+    }))
+}
+
+fn repair_kind_label(directive: &RepairDirective) -> String {
+    serde_json::to_string(&directive.repair_kind)
+        .unwrap_or_else(|_| "\"generic\"".to_string())
+        .trim_matches('"')
+        .to_string()
+}
+
 fn submit_repair_mode_from_agent_run(checkpoint: &AgentRunCheckpoint) -> Option<SubmitRepairMode> {
     serde_json::from_value(checkpoint.submit_repair_mode.clone()?).ok()
 }
@@ -105,6 +163,7 @@ async fn persist_sub_agent_submit_repair_checkpoint(
     stage: Option<golish_agent_kit::harness::StageKind>,
     agent_path: String,
     tool_call_id: String,
+    directive: RepairDirective,
     mode: SubmitRepairMode,
     result: Value,
 ) {
@@ -124,6 +183,7 @@ async fn persist_sub_agent_submit_repair_checkpoint(
     let job_ids = background_job_ids_from_submit_result(&result);
     let evidence_ids = evidence_ids_from_submit_result(&result);
     let submit_repair_mode = serde_json::to_value(&mode).ok();
+    let repair_directive = serde_json::to_value(&directive).ok();
     let checkpoint = AgentRunCheckpoint {
         schema_v: 1,
         operation_id: Some(operation_id),
@@ -136,8 +196,9 @@ async fn persist_sub_agent_submit_repair_checkpoint(
         pending_gate_correction: Some(message.clone()),
         pending_submit_only: true,
         submit_repair_mode,
+        repair_directive,
         runtime_corrections: vec![RuntimeCorrectionCheckpoint {
-            source: "rule".to_string(),
+            source: "stage_refiner".to_string(),
             kind: format!("submit_{}", mode.kind_str()),
             message,
             job_ids: job_ids.clone(),
@@ -208,9 +269,12 @@ async fn clear_sub_agent_submit_repair_checkpoint(
 fn build_sub_agent_tool_observer(
     ctx: &AgenticLoopContext<'_>,
     agent_id: &str,
+    agent_def: &SubAgentDefinition,
+    task_desc: &str,
+    restored_submit_repair_mode: Option<SubmitRepairMode>,
 ) -> Option<golish_sub_agents::SubAgentToolObserver> {
     let monitor = ctx.execution_monitor.as_ref()?.clone();
-    let client = std::sync::Arc::clone(ctx.llm.client);
+    let llm_client = std::sync::Arc::clone(ctx.llm.client);
     let event_tx = (*ctx.events.event_tx).clone();
     let operation_id = ctx
         .harness_operation_id
@@ -224,14 +288,22 @@ fn build_sub_agent_tool_observer(
     let harness_stage = ctx.harness_stage;
     let db_tracker = ctx.events.db_tracker.cloned();
     let harness_operation_id = ctx.harness_operation_id;
+    let visible_tools = agent_def.allowed_tools.clone();
+    let agent_role = agent_def.id.clone();
+    let task_desc = task_desc.to_string();
+    let active_repair_directive = restored_submit_repair_mode.map(|mode| mode.model_instruction());
 
     let observer: golish_sub_agents::SubAgentToolObserver = std::sync::Arc::new(
         move |observation: SubAgentToolObservation| {
             let monitor = monitor.clone();
-            let client = std::sync::Arc::clone(&client);
+            let llm_client = std::sync::Arc::clone(&llm_client);
             let event_tx = event_tx.clone();
             let operation_id = operation_id.clone();
             let stage = stage.clone();
+            let visible_tools = visible_tools.clone();
+            let agent_role = agent_role.clone();
+            let task_desc = task_desc.clone();
+            let active_repair_directive = active_repair_directive.clone();
             let agent_path = sub_agent_checkpoint_agent_path(
                 harness_stage,
                 &observation.parent_request_id,
@@ -240,20 +312,46 @@ fn build_sub_agent_tool_observer(
             let db_tracker = db_tracker.clone();
             Box::pin(async move {
                 if observation.tool_name == "submit_stage_deliverable" {
-                    if let Some(mode) = submit_repair_mode_from_submit_result(
-                        &observation.tool_name,
+                    if let Some(directive) = repair_directive_from_submit_result(
+                        harness_stage,
+                        stage_run_org_id_from_request_id(&observation.parent_request_id),
+                        agent_path.clone(),
                         &observation.result,
                     ) {
-                        persist_sub_agent_submit_repair_checkpoint(
-                            db_tracker.clone(),
-                            harness_operation_id,
-                            harness_stage,
-                            agent_path.clone(),
-                            observation.parent_request_id.clone(),
-                            mode,
-                            observation.result.clone(),
-                        )
-                        .await;
+                        if let Some(operation_id) = operation_id.as_deref() {
+                            let _ = event_tx.send(AiEvent::HarnessTrace {
+                                operation_id: operation_id.to_string(),
+                                stage: stage.clone(),
+                                agent_path: agent_path.clone(),
+                                trace: HarnessTraceKind::StageRefinerDecision {
+                                    repair_kind: repair_kind_label(&directive),
+                                    root_cause: directive.root_cause.clone(),
+                                    action_count: directive.actions.len().min(u32::MAX as usize)
+                                        as u32,
+                                    gap_count: directive
+                                        .submit_guidance
+                                        .required_coverage_cells
+                                        .len()
+                                        .min(u32::MAX as usize)
+                                        as u32,
+                                    llm_escalated: directive.llm_escalated,
+                                    directive_hash: directive.gate_reason_hash.clone(),
+                                },
+                            });
+                        }
+                        if let Some(mode) = directive.to_submit_repair_mode() {
+                            persist_sub_agent_submit_repair_checkpoint(
+                                db_tracker.clone(),
+                                harness_operation_id,
+                                harness_stage,
+                                agent_path.clone(),
+                                observation.parent_request_id.clone(),
+                                directive,
+                                mode,
+                                observation.result.clone(),
+                            )
+                            .await;
+                        }
                     } else if matches!(
                         observation.result.get("status").and_then(|s| s.as_str()),
                         Some("accepted" | "received")
@@ -269,11 +367,21 @@ fn build_sub_agent_tool_observer(
 
                 let args_summary =
                     serde_json::to_string(&observation.tool_args).unwrap_or_default();
-                let should_mentor = {
+                let monitor_tool_name = golish_agent_kit::harness::underlying_tool_name(
+                    &observation.tool_name,
+                    &observation.tool_args,
+                );
+                let result_summary = serde_json::to_string(&observation.result).unwrap_or_default();
+                let should_supervise = {
                     let mut mon = monitor.write().await;
-                    mon.record_and_check(&observation.tool_name, &args_summary)
+                    mon.record_result_and_check(
+                        &monitor_tool_name,
+                        &args_summary,
+                        observation.success,
+                        &result_summary,
+                    )
                 };
-                if !should_mentor {
+                if !should_supervise {
                     return None;
                 }
 
@@ -287,67 +395,76 @@ fn build_sub_agent_tool_observer(
                     )
                 };
                 tracing::info!(
-                    "[ExecutionMentor] Sub-agent monitor triggered: '{}' called {} times in {}",
+                    "[RuntimeSupervisor] Sub-agent monitor recorded repeated failed tool pattern: '{}' failed {} times in {}",
                     repeated_tool,
                     repeat_count,
                     observation.agent_id,
                 );
 
-                let mentor_system =
-                    golish_agent_kit::task_orchestrator::prompts::mentor_system_prompt();
-                let mentor_user = golish_agent_kit::task_orchestrator::prompts::mentor_user_prompt(
-                    &observation.tool_name,
-                    &repeated_tool,
+                let supervisor_ctx = RuntimeSupervisorContext {
+                    stage: harness_stage,
+                    agent_path: agent_path.clone(),
+                    agent_role: agent_role.clone(),
+                    task: task_desc.clone(),
+                    trigger: "execution_monitor".to_string(),
+                    repeated_tool: repeated_tool.clone(),
                     repeat_count,
-                    &recent_summary,
-                );
-                let advice_body = match mentor_one_shot(&client, mentor_system, &mentor_user).await
+                    recent_calls: recent_summary.clone(),
+                    last_tool_name: observation.tool_name.clone(),
+                    last_tool_result: result_summary,
+                    visible_tools: visible_tools.clone(),
+                    active_repair_directive: active_repair_directive.clone(),
+                };
+                let user_prompt = runtime_supervisor_user_prompt(&supervisor_ctx);
+                let model_response = match runtime_supervisor_one_shot(
+                    &llm_client,
+                    runtime_supervisor_system_prompt(),
+                    &user_prompt,
+                )
+                .await
                 {
-                    Ok(llm_advice) => {
-                        tracing::info!(
-                            "[ExecutionMentor] Sub-agent LLM mentor produced {} chars of advice",
-                            llm_advice.len()
-                        );
-                        llm_advice
-                    }
+                    Ok(response) => Some(response),
                     Err(e) => {
                         tracing::warn!(
-                            "[ExecutionMentor] Sub-agent LLM mentor failed, using static fallback: {}",
-                            e
+                            target: "harness::runtime_supervisor",
+                            agent_id = %observation.agent_id,
+                            error = %e,
+                            "sub-agent runtime supervisor LLM call failed; using deterministic fallback"
                         );
-                        format!(
-                            "You have called '{}' {} times. Consider a different approach:\n\
-                             - Check whether previous tool results already contain the data you need\n\
-                             - Correct failed tool arguments before launching more work\n\
-                             - Use wait_for_background_jobs before submitting if background jobs are pending\n\
-                             Recent calls: {}",
-                            repeated_tool, repeat_count, recent_summary,
-                        )
+                        None
                     }
                 };
-
+                let directive =
+                    directive_from_model_response(&supervisor_ctx, model_response.as_deref());
+                let injected = mode.injects();
                 tracing::info!(
-                    target: "harness::mentor",
+                    target: "harness::runtime_supervisor",
                     mode = mode.as_str(),
                     repeated_tool = %repeated_tool,
                     repeat_count,
                     agent_id = %observation.agent_id,
                     parent_request_id = %observation.parent_request_id,
-                    advice_preview = %truncate_str(&advice_body, 500),
-                    "sub-agent execution mentor advice recorded"
+                    strategy_kind = directive.strategy_kind_label(),
+                    directive_hash = %directive.directive_hash,
+                    root_cause = %truncate_str(&directive.root_cause, 500),
+                    injected,
+                    "sub-agent runtime supervisor decision recorded"
                 );
                 if let Some(operation_id) = operation_id {
                     let trace = AiEvent::HarnessTrace {
                         operation_id,
                         stage,
                         agent_path,
-                        trace: HarnessTraceKind::MentorAdviceRecorded {
+                        trace: HarnessTraceKind::RuntimeSupervisorDecision {
                             mode: mode.as_str().to_string(),
                             trigger: "execution_monitor".to_string(),
                             tool: repeated_tool.clone(),
                             repeat_count: repeat_count.min(u32::MAX as usize) as u32,
-                            injected: mode.injects(),
-                            advice_preview: truncate_str(&advice_body, 500).to_string(),
+                            injected,
+                            strategy_kind: directive.strategy_kind_label().to_string(),
+                            root_cause: directive.root_cause.clone(),
+                            action_count: directive.actions.len().min(u32::MAX as usize) as u32,
+                            directive_hash: directive.directive_hash.clone(),
                         },
                     };
                     let _ = event_tx.send(trace);
@@ -355,24 +472,15 @@ fn build_sub_agent_tool_observer(
 
                 {
                     let mut mon = monitor.write().await;
-                    mon.reset_after_mentor();
+                    mon.reset_after_supervisor();
                 }
 
-                match mode {
-                    ExecutionMonitorMode::Shadow => None,
-                    ExecutionMonitorMode::SoftInject => Some(format!(
-                        "\n\n--- EXECUTION ADVISOR ---\n{}\n-------------------------",
-                        advice_body
-                    )),
-                    ExecutionMonitorMode::HardInject => Some(format!(
-                        "\n\n--- EXECUTION SUPERVISOR (HARD) ---\n\
-                         You MUST treat this as a corrective instruction before choosing the next \
-                         tool. Stop the repeated pattern, address the specific failure, and only \
-                         continue once the stated correction is satisfied.\n\n{}\n\
-                         -----------------------------------",
-                        advice_body
-                    )),
-                }
+                injected.then(|| {
+                    directive.model_instruction(matches!(
+                        mode,
+                        golish_agent_kit::loop_detection::ExecutionMonitorMode::HardInject
+                    ))
+                })
             })
         },
     );
@@ -583,7 +691,13 @@ where
             );
             hook
         });
-    let sub_tool_observer = build_sub_agent_tool_observer(ctx, agent_id);
+    let sub_tool_observer = build_sub_agent_tool_observer(
+        ctx,
+        agent_id,
+        &agent_def,
+        task_desc,
+        restored_submit_repair_mode.clone(),
+    );
 
     // P0-4: persist dispatch lifecycle so the next session can list
     // mid-flight invocations after a crash/restart. Best-effort —
@@ -665,6 +779,7 @@ where
                 session_id: ctx.events.session_id,
                 transcript_base_dir: ctx.events.transcript_base_dir,
                 api_request_stats: Some(ctx.api_request_stats),
+                cancelled: ctx.cancelled,
                 briefing: briefing.clone(),
                 temperature_override: agent_def.temperature,
                 max_tokens_override: agent_def.max_tokens,
@@ -708,6 +823,7 @@ where
                 session_id: ctx.events.session_id,
                 transcript_base_dir: ctx.events.transcript_base_dir,
                 api_request_stats: Some(ctx.api_request_stats),
+                cancelled: ctx.cancelled,
                 briefing: briefing.clone(),
                 temperature_override: agent_def.temperature,
                 max_tokens_override: agent_def.max_tokens,
@@ -752,6 +868,7 @@ where
             session_id: ctx.events.session_id,
             transcript_base_dir: ctx.events.transcript_base_dir,
             api_request_stats: Some(ctx.api_request_stats),
+            cancelled: ctx.cancelled,
             briefing,
             temperature_override: agent_def.temperature,
             max_tokens_override: agent_def.max_tokens,
@@ -942,6 +1059,10 @@ mod tests {
             kind: SubmitRepairKind::EvidenceRefs,
             reason: "real ids are [101]".to_string(),
             missing_required_checks: vec!["http_probe".to_string()],
+            coverage_gap_actions: Vec::new(),
+            allowed_tools_override: Vec::new(),
+            forbidden_tools: Vec::new(),
+            directive_message: None,
         };
         let checkpoint = AgentRunCheckpoint {
             schema_v: 1,
@@ -955,6 +1076,7 @@ mod tests {
             pending_gate_correction: Some(mode.model_instruction()),
             pending_submit_only: true,
             submit_repair_mode: Some(serde_json::to_value(&mode).unwrap()),
+            repair_directive: None,
             runtime_corrections: Vec::new(),
             background_job_ids: Vec::new(),
             evidence_watermark: None,
@@ -976,6 +1098,15 @@ mod tests {
             kind: SubmitRepairKind::CoverageGap,
             reason: "coverage cell missing".to_string(),
             missing_required_checks: Vec::new(),
+            coverage_gap_actions: vec![golish_sub_agents::CoverageGapAction {
+                asset: "example.com".to_string(),
+                technique: "GOLISH-EAS-LIVENESS".to_string(),
+                reason: "missing_terminal_coverage".to_string(),
+                suggested_tools: vec!["httpx".to_string()],
+            }],
+            allowed_tools_override: Vec::new(),
+            forbidden_tools: Vec::new(),
+            directive_message: None,
         };
         let checkpoint = AgentRunCheckpoint {
             schema_v: 1,
@@ -989,6 +1120,7 @@ mod tests {
             pending_gate_correction: Some("retry 2/3: close coverage gap".to_string()),
             pending_submit_only: false,
             submit_repair_mode: Some(serde_json::to_value(&mode).unwrap()),
+            repair_directive: None,
             runtime_corrections: Vec::new(),
             background_job_ids: Vec::new(),
             evidence_watermark: None,
@@ -998,6 +1130,7 @@ mod tests {
 
         let restored = submit_repair_mode_from_agent_run(&checkpoint).expect("mode restores");
         assert_eq!(restored.kind, SubmitRepairKind::CoverageGap);
+        assert_eq!(restored.coverage_gap_actions.len(), 1);
         assert!(restored.block_result("pentest_run").is_none());
     }
 }

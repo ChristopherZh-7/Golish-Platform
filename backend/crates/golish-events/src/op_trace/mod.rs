@@ -353,6 +353,27 @@ fn summarize_event(event: &AiEvent) -> String {
                 injected,
                 ..
             } => format!("mentor {mode} {tool} x{repeat_count} injected={injected}"),
+            K::RuntimeSupervisorDecision {
+                mode,
+                tool,
+                repeat_count,
+                injected,
+                strategy_kind,
+                action_count,
+                directive_hash,
+                ..
+            } => format!(
+                "runtime_supervisor {mode} {tool} x{repeat_count} {strategy_kind} actions={action_count} injected={injected} hash={directive_hash}"
+            ),
+            K::StageRefinerDecision {
+                repair_kind,
+                action_count,
+                gap_count,
+                directive_hash,
+                ..
+            } => format!(
+                "refiner {repair_kind} actions={action_count} gaps={gap_count} hash={directive_hash}"
+            ),
             K::StageRunOrgProgress {
                 org_name,
                 status,

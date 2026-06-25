@@ -42,9 +42,11 @@ agent 服务命令面宿主。`commands/` 是 Tauri handlers；各 `*_bridge` �
 
 - 各 bridge 是**依赖倒置的实现侧**：agent-kit 定义 trait（`db_traits`），这里用 golish-db 等实现并注入——别把 golish-db 依赖塞回 agent-kit。
 - `db_bridge/evidence.rs` 同时实现 evidence ledger、`technique_outcomes`、`source_query_log` 的 harness read/write seam；`source_query_facts` 只投影 source/provider terminal rows，不代表 found。
-- `harness_submit_tool` 的 `submit_stage_deliverable` schema 是模型看到 coverage cell 字段的最后一道说明；EAS 的 explicit coverage 要在这里也讲清 SERVICE-FINGERPRINT denominator（已指纹开放端口 / 发现开放端口），避免 gate retry 时继续交空分母。
+- `harness_submit_tool` 的 `submit_stage_deliverable` schema 是模型看到 coverage cell 字段的最后一道说明；DB-truth 阶段（target_intel / EAS found cells）要明确让模型不要手抄 found coverage，只提交 DB 不能推导的 terminal cells；保留 SERVICE-FINGERPRINT denominator 文案仅用于显式 non-DB-truth / negative cells。
+- `submit_stage_deliverable` 若 gate 因 `coverage_complete` BLOCK，会把 `HarnessRecoveryActions.coverage_gap_actions` 原样放进 `needs_fix.coverage_gap_actions`，让 sub-agent 下一轮拿到结构化 action list（而不是只读 `reasons` 里的前 8 个字符串）。
 - `submit_stage_deliverable` 在 active stage 内会先检查本 session 归因的 background jobs；生产默认快速 `needs_fix`，要求模型调用 `wait_for_background_jobs` 显式等待、读取完成 job 的 stdout/stderr tail 后再提交。`GOLISH_SUBMIT_RECONCILE_WAIT_MS` 可恢复旧的 bounded in-submit wait，但不应作为默认 UI 体验。
-- `commands/bridge_config.rs` 每个非 title-gen session 会监听 `background_jobs` completion 与 live output：completion 负责 evidence/note，live output 转成 `AiEvent::ToolOutputChunk` 给前端现有工具详情面板追加显示。后台 completion 的 evidence `tool_name` 必须从命令行解析真实工具名，不能统一记成 `background_job`：`httpx`/`whatweb`/`curl`/`wget` 要落 `http_probe`，`nmap` 落 `nmap`，`naabu` 落 `port_probe`，否则 submit preview / gate 的 `min_invocations` 看不到真实工具证据。
+- `commands/bridge_config.rs` 每个非 title-gen session 会监听 `background_jobs` completion 与 live output：completion 负责 evidence/note，并把成功 job 的 stdout tail 送入 `golish-pentest::output_store::maybe_detect_and_store_via` 做结构化落库；live output 转成 `AiEvent::ToolOutputChunk` 给前端现有工具详情面板追加显示。后台 completion 的 evidence `tool_name` 必须从命令行解析真实工具名，不能统一记成 `background_job`：`httpx`/`whatweb`/`curl`/`wget` 要落 `http_probe`，`nmap` 落 `nmap`，`naabu` 落 `port_probe`，否则 submit preview / gate 的 `min_invocations` 看不到真实工具证据。WhatWeb 可能通过 Ruby wrapper 启动（`ruby .../whatweb`），解析时要透过解释器取真实工具名。
+- `cancel_ai_generation` / `shutdown_ai_session` 不只设置 `AgentBridge.cancelled`；还必须 kill 当前 `session_id` 归因的 running background jobs，避免 ChatPanel Stop 只停主 agent 而留下 worker 扫描进程继续跑。
 - `harness_submit_tool` 在 validate-on-submit 前会从已引用的真实 evidence id（顶层 `evidence_refs`、claim `evidence_ids`、finding/coverage refs）查询 ledger kind，并按 stage spec 回填 `required_checks_done`（如 `http_probe`），避免后台证据已存在但模型漏填 hint 时被误导去重跑。
 - 扁平 re-export 是 A3 删 umbrella 的兼容垫片，镜像 umbrella 旧导出；别乱删。
 - **不变量 I4**：命令命名 `<domain>_<verb>_<object>`。

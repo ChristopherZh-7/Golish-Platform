@@ -159,6 +159,7 @@ pub async fn create_default_sub_agents_from_registry(
         .with_tools(vec![
             "list_in_scope_targets".into(),
             "list_attack_surface_seeds".into(),
+            "query_target_data".into(),
             "manage_targets".into(),
             "pentest_list_tools".into(),
             "pentest_run".into(),
@@ -182,10 +183,12 @@ pub async fn create_default_sub_agents_from_registry(
         )
         .with_tools(vec![
             "list_in_scope_targets".into(),
+            "query_target_data".into(),
             "manage_targets".into(),
             "pentest_list_tools".into(),
             "pentest_run".into(),
             "wait_for_background_jobs".into(),
+            "browser_collect_js_api".into(),
             "js_collect".into(),
             "js_extract_apis".into(),
             "submit_stage_deliverable".into(),
@@ -317,7 +320,7 @@ pub async fn create_default_sub_agents_from_registry(
             tmpl_or_fallback!("browser", build_browser_prompt()),
         )
         .with_tools(vec![
-            "js_collect".into(), "js_extract_apis".into(),
+            "browser_collect_js_api".into(), "js_collect".into(), "js_extract_apis".into(),
             "web_fetch".into(), "web_search".into(),
             "read_file".into(), "write_file".into(), "grep_file".into(), "record_finding".into(),
         ])

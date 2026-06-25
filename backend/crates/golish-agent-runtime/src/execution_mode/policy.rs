@@ -112,6 +112,7 @@ pub struct BridgeToolSelection {
     pub recon_list_providers: bool,
     pub record_finding: bool,
     pub vault: bool,
+    pub browser_collect_js_api: bool,
     pub js_collect: bool,
     pub js_extract_apis: bool,
     pub auth_probe: bool,
@@ -139,6 +140,7 @@ impl BridgeToolSelection {
             recon_list_providers: true,
             record_finding: true,
             vault: true,
+            browser_collect_js_api: true,
             js_collect: true,
             js_extract_apis: true,
             auth_probe: true,
@@ -160,6 +162,7 @@ impl BridgeToolSelection {
             recon_list_providers: false,
             record_finding: false,
             vault: false,
+            browser_collect_js_api: false,
             js_collect: false,
             js_extract_apis: false,
             auth_probe: false,
@@ -198,6 +201,9 @@ impl BridgeToolSelection {
         }
         if self.vault {
             out.push("vault");
+        }
+        if self.browser_collect_js_api {
+            out.push("browser_collect_js_api");
         }
         if self.js_collect {
             out.push("js_collect");
@@ -287,6 +293,7 @@ mod tests {
                 "recon_list_providers",
                 "record_finding",
                 "vault",
+                "browser_collect_js_api",
                 "js_collect",
                 "js_extract_apis",
                 "auth_probe",

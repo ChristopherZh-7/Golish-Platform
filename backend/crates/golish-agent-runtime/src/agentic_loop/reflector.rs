@@ -158,6 +158,7 @@ pub(crate) async fn maybe_run_reflector(
             session_id: ctx.events.session_id,
             transcript_base_dir: ctx.events.transcript_base_dir,
             api_request_stats: Some(ctx.api_request_stats),
+            cancelled: ctx.cancelled,
             briefing: None,
             temperature_override: reflector_def.temperature,
             max_tokens_override: reflector_def.max_tokens,

@@ -264,6 +264,22 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
                         repeat_count,
                         ..
                     } => format!("mentor {mode} {tool} x{repeat_count}"),
+                    K::RuntimeSupervisorDecision {
+                        mode,
+                        tool,
+                        repeat_count,
+                        strategy_kind,
+                        action_count,
+                        ..
+                    } => format!(
+                        "runtime_supervisor {mode} {tool} x{repeat_count} {strategy_kind} actions={action_count}"
+                    ),
+                    K::StageRefinerDecision {
+                        repair_kind,
+                        action_count,
+                        gap_count,
+                        ..
+                    } => format!("refiner {repair_kind} actions={action_count} gaps={gap_count}"),
                     K::StageRunOrgProgress {
                         org_name, status, ..
                     } => format!("stage_run {org_name} {status}"),

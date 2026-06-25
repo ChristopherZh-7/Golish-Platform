@@ -82,16 +82,31 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
     let coverage_line = if spec.expected_techniques.is_empty() {
         String::new()
     } else if spec.facts_from_db_truth {
+        let db_truth_action = if spec.kind == StageKind::ExternalAttackSurface {
+            "Run the EAS active mapping tools so their data LANDS in the database \
+             (list_attack_surface_seeds/list_in_scope_targets -> pentest_run httpx/naabu/nmap/whatweb \
+             as appropriate -> manage_targets/targets.ports/fingerprints/technique_outcomes)."
+        } else {
+            "Run the target_intel registry tools so their data LANDS in the database \
+             (e.g. recon_map_assets / recon_lookup_whois -> target_assets / dns_records where \
+             provider data exists / organizations.*)."
+        };
+        let terminal_hint = if spec.kind == StageKind::ExternalAttackSurface {
+            "ONLY add a `coverage` cell when the DB cannot derive the terminal state: \
+             for active negatives use checked_empty+evidence when a scan/probe really ran and found nothing, \
+             or blocked/not_applicable+note when the technique cannot apply or was blocked. \
+             If no ports are open, mark SERVICE-FINGERPRINT not_applicable with a note; do NOT invent \
+             a found service from HTTP liveness alone."
+        } else {
+            "ONLY add a `coverage` cell when a technique genuinely has no data source or is blocked \
+             for an asset: mark it `blocked` or `not_applicable` with a `note` naming the failed/absent source."
+        };
         format!(
             "\n- **Coverage (auto-adjudicated from the DATABASE)** — for these techniques: {}. \
-             Just RUN the target_intel registry tools so their data LANDS in the database (e.g. \
-             recon_map_assets / recon_lookup_whois → target_assets / dns_records where provider data \
-             exists / organizations.*); the deterministic gate reads \
+             {db_truth_action} The deterministic gate reads \
              the DB directly to score per-(asset × technique) completeness. You do NOT need to fill the \
              `coverage` matrix cell-by-cell, and you do NOT need to tag claims/findings with `technique` \
-             — leave found / checked_empty cells to the DB-truth projection. ONLY add a `coverage` cell \
-             when a technique genuinely has no data source or is blocked for an asset: mark it `blocked` \
-             or `not_applicable` with a `note` naming the failed/absent source. A `blocked` cell is \
+             — leave found cells to the DB-truth projection. {terminal_hint} A blocked/not_applicable cell is \
              TERMINAL and clears that gap — do NOT resubmit the same matrix expecting it to fill \
              (\"checked-empty\" is NOT \"unchecked\").",
             spec.expected_techniques.join(", ")
@@ -824,6 +839,61 @@ mod tests {
         assert!(r.to_uppercase().contains("READ THIS LAST"));
     }
 
+    #[test]
+    fn mentor_prompt_renders_stage_boundary_context() {
+        let context = MentorPromptContext {
+            stage: Some("external_attack_surface".to_string()),
+            agent_role: Some("prober (Recon Prober)".to_string()),
+            allowed_tools: vec![
+                "pentest_list_tools".to_string(),
+                "pentest_run".to_string(),
+                "wait_for_background_jobs".to_string(),
+                "submit_stage_deliverable".to_string(),
+            ],
+            allowed_tool_types: vec![
+                "recon/port-scan".to_string(),
+                "recon/http".to_string(),
+                "recon/visual".to_string(),
+            ],
+        };
+
+        let prompt = mentor_user_prompt_with_context(
+            "Close the current organization's EAS coverage gaps.",
+            "pentest_run",
+            3,
+            "pentest_run({\"tool_name\":\"httpx\"})",
+            &context,
+        );
+
+        assert!(prompt.contains("Current stage: external_attack_surface"));
+        assert!(prompt.contains("Agent role: prober (Recon Prober)"));
+        assert!(prompt.contains("Allowed visible tools: pentest_list_tools"));
+        assert!(prompt.contains("Allowed scan categories: recon/port-scan"));
+        assert!(prompt.contains("Close EAS coverage"));
+        assert!(prompt.contains("Do NOT recommend exploitation"));
+        assert!(prompt.contains("while staying inside the execution boundary"));
+    }
+
+    #[test]
+    fn mentor_hard_guard_prioritizes_stage_boundary_over_model_advice() {
+        let context = MentorPromptContext {
+            stage: Some("external_attack_surface".to_string()),
+            agent_role: Some("prober".to_string()),
+            allowed_tools: vec![
+                "pentest_run".to_string(),
+                "wait_for_background_jobs".to_string(),
+            ],
+            allowed_tool_types: vec!["recon/http".to_string()],
+        };
+
+        let guard = mentor_hard_stage_guard(&context);
+
+        assert!(guard.contains("Current stage: external_attack_surface"));
+        assert!(guard.contains("Objective now: Close EAS coverage"));
+        assert!(guard.contains("If the model advice below conflicts"));
+        assert!(guard.contains("Do NOT recommend or follow exploitation"));
+    }
+
     /// Coverage matrix (设计 2026-06-05): the charter must surface the stage's
     /// expected techniques + the per-cell coverage contract when set, and stay
     /// silent (no Coverage bullet) when the stage declares none.
@@ -909,9 +979,9 @@ mod tests {
         assert!(!charter.contains("Tag claims/findings with `technique`"));
     }
 
-    /// 2026-06-09 verify-first（纯 gate 配置版）：给 EAS 加 expected_techniques 后，
-    /// charter **自动**把 GOLISH-EAS-LIVENESS 的逐资产覆盖契约渲染给 agent——
-    /// 证明「核实存活」诉求无需改 charter 代码，纯配置即联动。
+    /// 2026-06-25 slim EAS closeout: EAS still surfaces the liveness technique,
+    /// but now via the DB-truth slim coverage instruction instead of telling the
+    /// agent to hand-fill the matrix.
     #[test]
     fn external_attack_surface_charter_surfaces_liveness_technique() {
         let spec = crate::harness::resources::load_embedded_stage_spec(
@@ -923,11 +993,11 @@ mod tests {
             charter.contains("GOLISH-EAS-LIVENESS"),
             "EAS charter must surface the liveness technique to the agent"
         );
-        assert!(charter.contains("Coverage (per in-scope asset)"));
-        assert!(charter.contains("EAS asset/port contract"));
-        assert!(charter.contains("open ports fingerprinted"));
-        assert!(charter.contains("HTTP liveness alone is never PORT"));
-        assert!(charter.contains("bare URL assets keep URL LIVENESS only"));
+        assert!(charter.contains("auto-adjudicated from the DATABASE"));
+        assert!(charter.contains("pentest_run httpx/naabu/nmap/whatweb"));
+        assert!(charter.contains("SERVICE-FINGERPRINT not_applicable"));
+        assert!(charter.contains("HTTP liveness alone"));
+        assert!(!charter.contains("Coverage (per in-scope asset)"));
     }
 
     /// 阶段级方法论 playbook (设计 2026-06-11): `stage_methodology` 为有 playbook 的

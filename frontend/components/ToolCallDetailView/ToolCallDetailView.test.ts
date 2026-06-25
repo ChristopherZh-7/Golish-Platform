@@ -4,6 +4,7 @@ import {
   DETAIL_RUNNING_SPINNER_CLASS,
   getShellOutputForDetail,
   isShellLikeToolForDetail,
+  TOOL_DETAIL_STATUS_BADGE_STYLES,
 } from "./ToolCallDetailView";
 
 describe("getShellOutputForDetail", () => {
@@ -68,5 +69,11 @@ describe("getShellOutputForDetail", () => {
     expect(DETAIL_RUNNING_SPINNER_CLASS).toContain("w-4");
     expect(DETAIL_PENDING_OUTPUT_SPINNER_CLASS).toContain("h-4");
     expect(DETAIL_PENDING_OUTPUT_SPINNER_CLASS).toContain("w-4");
+  });
+
+  it("uses high-contrast colors for live detail status badges", () => {
+    expect(TOOL_DETAIL_STATUS_BADGE_STYLES.running).toContain("text-[var(--ansi-blue)]");
+    expect(TOOL_DETAIL_STATUS_BADGE_STYLES.running).toContain("border-[var(--ansi-blue)]/45");
+    expect(TOOL_DETAIL_STATUS_BADGE_STYLES.backgrounded).toContain("text-amber-300");
   });
 });

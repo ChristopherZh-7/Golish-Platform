@@ -564,3 +564,71 @@ describe("Store Workflow Actions", () => {
     });
   });
 });
+
+describe("Store Workflow Actions — sub-agent streaming entries", () => {
+  const sessionId = "sub-agent-stream-session";
+  const parentRequestId = "call-sub-agent";
+
+  const entries = () => useStore.getState().activeSubAgents[sessionId][0].entries;
+
+  beforeEach(() => {
+    useStore.setState({
+      activeSubAgents: {},
+      subAgentBatchCounter: {},
+      timelines: {},
+      sessions: {},
+    });
+
+    useStore.getState().startSubAgent(sessionId, {
+      agentId: "prober",
+      agentName: "Prober",
+      parentRequestId,
+      task: "probe target",
+      depth: 1,
+    });
+  });
+
+  it("updates the current text response across interleaved thinking instead of duplicating prefixes", () => {
+    const store = useStore.getState();
+
+    store.updateSubAgentStreamingText(sessionId, parentRequestId, "n");
+    store.updateSubAgentThinking(sessionId, parentRequestId, "thinking");
+    store.updateSubAgentStreamingText(sessionId, parentRequestId, "nmap needs root for SYN scan.");
+
+    expect(entries()).toEqual([
+      { kind: "text", text: "nmap needs root for SYN scan." },
+      expect.objectContaining({ kind: "thinking", text: "thinking" }),
+    ]);
+  });
+
+  it("updates the current thinking response even when public text arrived after it", () => {
+    const store = useStore.getState();
+
+    store.updateSubAgentThinking(sessionId, parentRequestId, "T");
+    store.updateSubAgentStreamingText(sessionId, parentRequestId, "Let me run");
+    store.updateSubAgentThinking(sessionId, parentRequestId, "Thought through the next probe.");
+
+    expect(entries()).toEqual([
+      expect.objectContaining({ kind: "thinking", text: "Thought through the next probe." }),
+      { kind: "text", text: "Let me run" },
+    ]);
+  });
+
+  it("keeps text entries separate across tool-call boundaries", () => {
+    const store = useStore.getState();
+
+    store.updateSubAgentStreamingText(sessionId, parentRequestId, "Let me run");
+    store.addSubAgentToolCall(sessionId, parentRequestId, {
+      id: "tool-1",
+      name: "pentest_run",
+      args: {},
+    });
+    store.updateSubAgentStreamingText(sessionId, parentRequestId, "Let me run the next probe.");
+
+    expect(entries()).toEqual([
+      { kind: "text", text: "Let me run" },
+      { kind: "tool_call", toolCallId: "tool-1" },
+      { kind: "text", text: "Let me run the next probe." },
+    ]);
+  });
+});

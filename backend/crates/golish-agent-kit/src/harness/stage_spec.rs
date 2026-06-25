@@ -252,10 +252,12 @@ mod tests {
     #[test]
     fn external_attack_surface_min_invocations() {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
-        // 去上阶段工具（2026-06-10）：dns_resolve 不再是 EAS 硬地板（DNS 在 target_intel
-        // 完成）；存活由 http_probe(httpx) 兜底。
+        // 2026-06-25：EAS now uses DB-truth coverage as the hard floor. Do not
+        // force the model to hand-copy `required_checks_done` just to satisfy an
+        // http_probe minimum.
         assert_eq!(s.min_invocations.get("dns_resolve"), None);
-        assert_eq!(s.min_invocations.get("http_probe"), Some(&1));
+        assert_eq!(s.min_invocations.get("http_probe"), None);
+        assert!(s.min_invocations.is_empty());
         // 边界重构：被动子域名枚举不再钉为 EAS 硬地板（移交 target_intel）。
         assert_eq!(s.min_invocations.get("subdomain_enum_passive"), None);
     }
@@ -302,10 +304,15 @@ mod tests {
                 r,
                 crate::harness::gate::rule_engine::GateRule::CoverageDenominator {
                     min_sample_ratio_pct: 100,
+                    authoritative: true,
                     ..
                 }
             )),
-            "EAS gate_rules must require full denominator coverage for explicit cells"
+            "EAS denominator rule must be authoritative/no-op for DB-truth slim deliverables"
+        );
+        assert!(
+            s.facts_from_db_truth,
+            "EAS must opt into DB-truth slim deliverables"
         );
     }
 
@@ -424,12 +431,12 @@ mod tests {
         );
     }
 
-    // Phase 1 (2026-06-12-redteam-phase1 §5): EAS / enumeration coverage 必须开
+    // Phase 1 (2026-06-12-redteam-phase1 §5): active stages coverage 必须开
     // derive_from_evidence，让 coverage_truth 的主动维度（PORT/SERVICE/DIR/PARAM/
-    // JSAPI…）DB 投影能补格。**不开 authoritative**（主动命令派生的 Empty 事实源未
-    // 就绪，见 phase1 计划勘验4）——守卫断言这两点，防回归误开 authoritative。
+    // JSAPI…）DB 投影能补格。2026-06-25: EAS found coverage has been promoted to
+    // authoritative DB truth; enumeration remains non-authoritative.
     #[test]
-    fn active_stages_derive_from_evidence_but_not_authoritative() {
+    fn active_stages_derive_from_evidence_with_eas_authoritative_only() {
         for kind in [StageKind::ExternalAttackSurface, StageKind::Enumeration] {
             let s = crate::harness::resources::load_embedded_stage_spec(kind)
                 .unwrap_or_else(|_| panic!("load {kind:?} spec"));
@@ -443,15 +450,19 @@ mod tests {
                 )),
                 "{kind:?} coverage_complete must enable derive_from_evidence (Phase 1 DB-truth 补格)"
             );
-            assert!(
-                !s.gate_rules.iter().any(|r| matches!(
+            let has_authoritative = s.gate_rules.iter().any(|r| {
+                matches!(
                     r,
                     crate::harness::gate::rule_engine::GateRule::CoverageComplete {
                         authoritative_found: true,
                         ..
                     }
-                )),
-                "{kind:?} must NOT enable authoritative_found yet (active Empty fact source not ready)"
+                )
+            });
+            assert_eq!(
+                has_authoritative,
+                kind == StageKind::ExternalAttackSurface,
+                "only EAS should use authoritative found DB truth among active stages"
             );
         }
     }

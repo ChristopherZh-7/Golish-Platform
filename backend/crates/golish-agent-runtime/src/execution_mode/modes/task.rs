@@ -143,6 +143,7 @@ mod tests {
     async fn task_primary_only_dispatches_workers() {
         let s = TaskModePolicy.primary_tools(&mock_ctx()).await;
         assert!(!s.bridge_tools.js_collect);
+        assert!(!s.bridge_tools.browser_collect_js_api);
         assert!(!s.static_groups.file_ops);
         // The orchestrator still gets the harness deliverable channel so it can
         // submit the StageDeliverable itself after delegating report-writing.
@@ -188,6 +189,7 @@ mod tests {
     #[tokio::test]
     async fn task_subtask_full_with_dispatch() {
         let s = TaskModePolicy.subtask_tools(&mock_ctx()).await;
+        assert!(s.bridge_tools.browser_collect_js_api);
         assert!(s.bridge_tools.js_collect);
         assert!(s.static_groups.file_ops);
         // Specialists (e.g. the reporter) must be able to submit the deliverable.

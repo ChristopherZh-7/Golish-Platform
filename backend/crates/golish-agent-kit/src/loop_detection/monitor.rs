@@ -1,21 +1,18 @@
-//! Execution monitor for mentor-based corrective guidance (PentAGI pattern).
+//! Execution monitor trigger for RuntimeSupervisor guidance (PentAGI pattern).
 
-/// Threshold for same-tool calls before invoking the execution mentor.
-const MENTOR_SAME_TOOL_THRESHOLD: usize = 3;
-/// Threshold for total tool calls in a turn before invoking the mentor.
-const MENTOR_TOTAL_CALL_THRESHOLD: usize = 15;
+/// Threshold for consecutive equivalent failures before invoking RuntimeSupervisor.
+const SUPERVISOR_CONSECUTIVE_FAILURE_THRESHOLD: usize = 3;
 
-/// How execution mentor advice is handled when the monitor triggers.
+/// How RuntimeSupervisor guidance is handled when the monitor triggers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMonitorMode {
-    /// Call the mentor and record advice to logs/trace, but do not inject it into
-    /// the agent's next tool response.
+    /// Record guidance to logs/trace, but do not inject it into the agent's next
+    /// tool response.
     Shadow,
-    /// Call the mentor and append its advice to the tool response.
+    /// Append RuntimeSupervisor guidance to the tool response.
     SoftInject,
-    /// Call the mentor and append a stronger, blocking-style instruction to the
-    /// tool response. This is still model-mediated, but it is treated as a
-    /// supervisor correction rather than an advisory hint.
+    /// Append a stronger, blocking-style RuntimeSupervisor instruction to the
+    /// tool response.
     HardInject,
 }
 
@@ -33,22 +30,24 @@ impl ExecutionMonitorMode {
     }
 }
 
-/// Execution monitor that tracks tool call patterns to decide when
-/// to invoke the mentor for corrective guidance (PentAGI pattern).
+/// Execution monitor that tracks failed tool-result patterns to decide when
+/// to invoke RuntimeSupervisor for corrective guidance (PentAGI pattern).
 ///
 /// Unlike the `LoopDetector` which blocks repeated calls, the monitor
-/// triggers a mentor LLM call that provides strategic advice injected
-/// into the tool response.
+/// triggers a stage-aware strategy review that may be injected into the tool
+/// response after policy sanitization.
 #[derive(Debug)]
 pub struct ExecutionMonitor {
     mode: ExecutionMonitorMode,
-    /// Consecutive calls to the same tool name.
-    same_tool_count: usize,
-    /// Name of the last tool called.
-    last_tool_name: Option<String>,
-    /// Total tool calls since last mentor invocation.
-    total_since_mentor: usize,
-    /// Recent tool call log for mentor context.
+    /// Consecutive equivalent failed results.
+    consecutive_failure_count: usize,
+    /// Stable key of the last failed tool/result pattern.
+    last_failure_key: Option<String>,
+    /// Name of the tool involved in the current failed pattern.
+    last_failure_tool_name: Option<String>,
+    /// Total tool calls since last supervisor invocation.
+    total_since_supervisor: usize,
+    /// Recent tool call log for supervisor context.
     recent_calls: Vec<String>,
 }
 
@@ -72,9 +71,10 @@ impl ExecutionMonitor {
     pub fn with_mode(mode: ExecutionMonitorMode) -> Self {
         Self {
             mode,
-            same_tool_count: 0,
-            last_tool_name: None,
-            total_since_mentor: 0,
+            consecutive_failure_count: 0,
+            last_failure_key: None,
+            last_failure_tool_name: None,
+            total_since_supervisor: 0,
             recent_calls: Vec::new(),
         }
     }
@@ -83,44 +83,79 @@ impl ExecutionMonitor {
         self.mode
     }
 
-    /// Record a tool call and return whether the mentor should be invoked.
-    pub fn record_and_check(&mut self, tool_name: &str, args_summary: &str) -> bool {
-        self.total_since_mentor += 1;
+    /// Record a completed tool result and return whether RuntimeSupervisor
+    /// should be invoked.
+    ///
+    /// Normal repeated scans over different targets are expected in pentest
+    /// stages, so successful calls never trigger the supervisor. We only
+    /// escalate when the same tool/result failure pattern repeats.
+    pub fn record_result_and_check(
+        &mut self,
+        tool_name: &str,
+        args_summary: &str,
+        success: bool,
+        result_summary: &str,
+    ) -> bool {
+        self.total_since_supervisor += 1;
 
-        if self.last_tool_name.as_deref() == Some(tool_name) {
-            self.same_tool_count += 1;
+        let entry = if success {
+            format!("{}({}) ok", tool_name, truncate_args(args_summary, 100))
         } else {
-            self.same_tool_count = 1;
-            self.last_tool_name = Some(tool_name.to_string());
-        }
-
-        let entry = format!("{}({})", tool_name, truncate_args(args_summary, 100));
+            format!(
+                "{}({}) fail {}",
+                tool_name,
+                truncate_args(args_summary, 100),
+                failure_signature(result_summary, 120)
+            )
+        };
         self.recent_calls.push(entry);
         if self.recent_calls.len() > 10 {
             self.recent_calls.remove(0);
         }
 
-        self.same_tool_count >= MENTOR_SAME_TOOL_THRESHOLD
-            || self.total_since_mentor >= MENTOR_TOTAL_CALL_THRESHOLD
+        if success {
+            self.consecutive_failure_count = 0;
+            self.last_failure_key = None;
+            self.last_failure_tool_name = None;
+            return false;
+        }
+
+        let failure_key = format!(
+            "{}|{}|{}",
+            tool_name,
+            truncate_args(args_summary, 180),
+            failure_signature(result_summary, 240)
+        );
+        if self.last_failure_key.as_deref() == Some(failure_key.as_str()) {
+            self.consecutive_failure_count += 1;
+        } else {
+            self.consecutive_failure_count = 1;
+            self.last_failure_key = Some(failure_key);
+            self.last_failure_tool_name = Some(tool_name.to_string());
+        }
+
+        self.consecutive_failure_count >= SUPERVISOR_CONSECUTIVE_FAILURE_THRESHOLD
     }
 
-    /// Reset counters after a successful mentor intervention.
-    pub fn reset_after_mentor(&mut self) {
-        self.same_tool_count = 0;
-        self.total_since_mentor = 0;
+    /// Reset counters after a successful supervisor intervention.
+    pub fn reset_after_supervisor(&mut self) {
+        self.consecutive_failure_count = 0;
+        self.last_failure_key = None;
+        self.last_failure_tool_name = None;
+        self.total_since_supervisor = 0;
     }
 
-    /// Get the name of the most-repeated tool (for mentor context).
+    /// Get the name of the failed-pattern tool (for supervisor context).
     pub fn repeated_tool_name(&self) -> &str {
-        self.last_tool_name.as_deref().unwrap_or("unknown")
+        self.last_failure_tool_name.as_deref().unwrap_or("unknown")
     }
 
-    /// Get the same-tool count for mentor context.
+    /// Get the consecutive failure count for supervisor context.
     pub fn same_tool_count(&self) -> usize {
-        self.same_tool_count
+        self.consecutive_failure_count
     }
 
-    /// Get recent tool calls formatted for the mentor prompt.
+    /// Get recent tool calls formatted for the supervisor prompt.
     pub fn recent_calls_summary(&self) -> String {
         self.recent_calls.join("\n")
     }
@@ -142,4 +177,12 @@ fn truncate_args(s: &str, max: usize) -> &str {
         }
         &s[..end]
     }
+}
+
+fn failure_signature(s: &str, max: usize) -> &str {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return "(empty failure)";
+    }
+    truncate_args(trimmed, max)
 }

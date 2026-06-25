@@ -20,7 +20,9 @@ use uuid::Uuid;
 
 use crate::definition::{SubAgentContext, SubAgentDefinition, SubAgentResult};
 use crate::executor_helpers::{build_assistant_content, epoch_secs};
-use crate::executor_types::{SubAgentExecutorContext, ToolProvider};
+use crate::executor_types::{
+    cancellation_requested, wait_for_cancelled, SubAgentExecutorContext, ToolProvider,
+};
 use crate::executor_udiff::process_coder_udiff;
 use crate::transcript::SubAgentTranscriptWriter;
 use golish_core::events::AiEvent;
@@ -179,6 +181,23 @@ where
 
     loop {
         iteration += 1;
+        if cancellation_requested(ctx.cancelled) {
+            let message = "Agent stopped by user".to_string();
+            tracing::info!("[sub-agent:{}] cancelled before iteration", agent_id);
+            let _ = ctx.event_tx.send(AiEvent::SubAgentError {
+                agent_id: agent_id.to_string(),
+                error: message.clone(),
+                parent_request_id: parent_request_id.to_string(),
+            });
+            return Ok(SubAgentResult {
+                agent_id: agent_id.to_string(),
+                response: message,
+                context: sub_context,
+                success: false,
+                duration_ms: start_time.elapsed().as_millis() as u64,
+                files_modified,
+            });
+        }
         if iteration > agent_def.max_iterations {
             run_final_summary(
                 agent_def,
@@ -253,7 +272,28 @@ where
             stats.record_sent(ctx.provider_name).await;
         }
 
-        let mut stream = match model.stream(request).await {
+        let stream_result = tokio::select! {
+            _ = wait_for_cancelled(ctx.cancelled) => {
+                tracing::info!("[sub-agent:{}] cancelled before LLM stream started", agent_id);
+                let message = "Agent stopped by user".to_string();
+                let _ = ctx.event_tx.send(AiEvent::SubAgentError {
+                    agent_id: agent_id.to_string(),
+                    error: message.clone(),
+                    parent_request_id: parent_request_id.to_string(),
+                });
+                return Ok(SubAgentResult {
+                    agent_id: agent_id.to_string(),
+                    response: message,
+                    context: sub_context,
+                    success: false,
+                    duration_ms: start_time.elapsed().as_millis() as u64,
+                    files_modified,
+                });
+            }
+            result = model.stream(request) => result,
+        };
+
+        let mut stream = match stream_result {
             Ok(s) => {
                 if let Some(stats) = ctx.api_request_stats {
                     stats.record_received(ctx.provider_name).await;
@@ -295,10 +335,29 @@ where
             ctx.event_tx,
             &last_activity,
             idle_timeout,
+            ctx.cancelled,
             &llm_span,
             &quirks,
         )
         .await;
+
+        if sr.cancelled {
+            let message = "Agent stopped by user".to_string();
+            tracing::info!("[sub-agent:{}] cancelled during LLM stream", agent_id);
+            let _ = ctx.event_tx.send(AiEvent::SubAgentError {
+                agent_id: agent_id.to_string(),
+                error: message.clone(),
+                parent_request_id: parent_request_id.to_string(),
+            });
+            return Ok(SubAgentResult {
+                agent_id: agent_id.to_string(),
+                response: message,
+                context: sub_context,
+                success: false,
+                duration_ms: start_time.elapsed().as_millis() as u64,
+                files_modified,
+            });
+        }
 
         // ── Handle idle timeout ─────────────────────────────────────────
         if sr.idle_timeout_hit {
@@ -384,6 +443,23 @@ where
         });
 
         // ── Dispatch tool calls ─────────────────────────────────────────
+        if cancellation_requested(ctx.cancelled) {
+            let message = "Agent stopped by user".to_string();
+            tracing::info!("[sub-agent:{}] cancelled before tool dispatch", agent_id);
+            let _ = ctx.event_tx.send(AiEvent::SubAgentError {
+                agent_id: agent_id.to_string(),
+                error: message.clone(),
+                parent_request_id: parent_request_id.to_string(),
+            });
+            return Ok(SubAgentResult {
+                agent_id: agent_id.to_string(),
+                response: message,
+                context: sub_context,
+                success: false,
+                duration_ms: start_time.elapsed().as_millis() as u64,
+                files_modified,
+            });
+        }
         let dispatch = dispatch_tool_calls(
             sr.tool_calls,
             agent_def,
@@ -401,6 +477,24 @@ where
             &llm_span,
         )
         .await;
+
+        if dispatch.cancelled {
+            let message = "Agent stopped by user".to_string();
+            tracing::info!("[sub-agent:{}] cancelled during tool dispatch", agent_id);
+            let _ = ctx.event_tx.send(AiEvent::SubAgentError {
+                agent_id: agent_id.to_string(),
+                error: message.clone(),
+                parent_request_id: parent_request_id.to_string(),
+            });
+            return Ok(SubAgentResult {
+                agent_id: agent_id.to_string(),
+                response: message,
+                context: sub_context,
+                success: false,
+                duration_ms: start_time.elapsed().as_millis() as u64,
+                files_modified,
+            });
+        }
 
         if dispatch.barrier_hit {
             if let Some(resp) = dispatch.barrier_response {

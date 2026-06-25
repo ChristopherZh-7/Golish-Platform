@@ -20,7 +20,7 @@
   "$comment_host_aware": "Host-aware coverage 2b (design 2026-06-15-host-aware-coverage \u00a73.2): EAS is host-level \u2014 a bare URL endpoint drops GOLISH-EAS-PORT/SERVICE-FINGERPRINT (its host is already covered via the host/IP asset) but keeps LIVENESS; domain/IP/CIDR keep all 3; unknown class keeps all 3 (fail-safe). The per-asset technique_applies matrix landed inert (commit e12a7638); this flips the stage flag on so coverage_complete filters each in-scope asset to the techniques that apply to its class (via technique_applies_to_value). Default false = byte-for-byte unchanged.",
   "host_aware_coverage": true,
 
-  "$comment_freshness_window": "Phase E activation (design 2026-06-22 Phase D): gray-switch ON. The EAS DB-truth back-fill (GOLISH-EAS-LIVENESS/PORT/SERVICE-FINGERPRINT) only counts data collected this stage-run (targets.liveness_checked_at/ports_scanned_at + fingerprints.detected_at >= stage start; migration 20260623000001). EAS coverage_complete is derive_from_evidence (NOT authoritative), so this makes the DB auto-fill fresh-only; self-reported cells still fall back. Default false = presence-only.",
+  "$comment_freshness_window": "Phase E activation (design 2026-06-22 Phase D): gray-switch ON. The EAS DB-truth back-fill (GOLISH-EAS-LIVENESS/PORT/SERVICE-FINGERPRINT) only counts data collected this stage-run (targets.liveness_checked_at/ports_scanned_at + fingerprints.detected_at >= stage start; migration 20260623000001). EAS coverage_complete now uses authoritative DB/ledger found facts, so self-reported found cells cannot fake active surface coverage. Default false = presence-only.",
   "freshness_window": true,
 
   "gate_rules": [
@@ -62,7 +62,9 @@
       "op": "coverage_complete",
       "derive_from_evidence": true,
       "require_note_for_other": true,
-      "$comment_derive": "Phase 1 (2026-06-12-redteam-phase1): DB business-table truth补格 \u2014 GOLISH-EAS-LIVENESS\u2190targets(http_status/real_ip), -PORT\u2190targets.ports, -SERVICE-FINGERPRINT\u2190fingerprints. 真跑工具落库后 coverage 格自动补 found; 不开 authoritative (主动阶段命令派生的 Empty 事实源未就绪, 见 phase1 计划勘验4), 故自报 cell 仍兜底, DB 投影只增不减.",
+      "authoritative_found": true,
+      "authoritative_techniques": ["GOLISH-EAS-LIVENESS", "GOLISH-EAS-PORT", "GOLISH-EAS-SERVICE-FINGERPRINT"],
+      "$comment_derive": "2026-06-25 EAS slim closeout: DB business-table truth补格 \u2014 GOLISH-EAS-LIVENESS\u2190targets(http_status/real_ip), -PORT\u2190targets.ports, -SERVICE-FINGERPRINT\u2190fingerprints, plus technique_outcomes provenance where available. 真跑工具落库后 coverage 格自动补 found; authoritative_found means a hand-written found cell no longer counts without DB/ledger truth. Negative/blocked terminal cells still need explicit checked_empty+evidence or blocked/not_applicable+note until active Empty facts are complete.",
       "on_fail": {
         "reason": "external attack surface incomplete: some in-scope assets were not fully mapped (liveness / port / service-fingerprint)",
         "hints": [
@@ -73,7 +75,9 @@
     },
     {
       "op": "coverage_denominator",
+      "authoritative": true,
       "min_sample_ratio_pct": 100,
+      "$comment_authoritative": "EAS found coverage is now adjudicated from DB/ledger truth (targets.ports + fingerprints + technique_outcomes), so denominator fields should not be hand-copied into the deliverable. coverage_complete owns completeness; denominator remains as a documented no-op for this slim DB-truth stage.",
       "on_fail": {
         "reason": "external attack surface denominator incomplete",
         "hints": [
@@ -92,9 +96,11 @@
   "specialist": "prober",
   "coverage_axis": ["LIVENESS", "PORT", "SERVICE"],
 
-  "min_invocations": {
-    "http_probe": 1
-  },
+  "$comment_min_invocations": "2026-06-25 EAS slim DB-truth closeout: no hard tool floor in the deliverable. Active work is proven by coverage_complete reading DB/ledger facts (targets liveness/ports, fingerprints, technique_outcomes). A required_checks_done/http_probe floor only reintroduces model hand-copying and blocks otherwise valid DB-truth runs.",
+  "min_invocations": {},
+
+  "$comment_facts_from_db_truth": "2026-06-25: EAS now matches target_intel's slim deliverable pattern for found cells. The worker runs active tools and lets DB/ledger truth fill found LIVENESS/PORT/SERVICE-FINGERPRINT cells; submit only negative/blocked terminal cells the DB cannot derive.",
+  "facts_from_db_truth": true,
 
   "max_other_skips": 2,
 

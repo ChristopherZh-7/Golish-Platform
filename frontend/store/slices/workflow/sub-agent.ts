@@ -1,4 +1,4 @@
-import type { ActiveSubAgent, TaskPlan, UnifiedBlock } from "../../store-types";
+import type { ActiveSubAgent, SubAgentEntry, TaskPlan, UnifiedBlock } from "../../store-types";
 import type { ImmerSet } from "../types";
 import type { WorkflowStoreDraft } from "./types";
 
@@ -27,6 +27,50 @@ function backgroundJobIdFromResult(result: unknown): string | null {
   if (result == null || typeof result !== "object") return null;
   const jobId = (result as { job_id?: unknown }).job_id;
   return typeof jobId === "string" ? jobId : null;
+}
+
+function lastToolCallEntryIndex(entries: SubAgentEntry[]): number {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].kind === "tool_call") return i;
+  }
+  return -1;
+}
+
+function latestEntryIndexSinceLastToolCall(
+  entries: SubAgentEntry[],
+  kind: "text" | "thinking"
+): number {
+  const floor = lastToolCallEntryIndex(entries);
+  for (let i = entries.length - 1; i > floor; i--) {
+    if (entries[i].kind === kind) return i;
+  }
+  return -1;
+}
+
+function updateAccumulatedEntry(
+  entries: SubAgentEntry[],
+  kind: "text" | "thinking",
+  text: string,
+  fallbackEntry: SubAgentEntry
+): boolean {
+  const idx = latestEntryIndexSinceLastToolCall(entries, kind);
+  if (idx < 0) return false;
+
+  const existing = entries[idx].text ?? "";
+  if (!existing || text.startsWith(existing)) {
+    entries[idx].text = text;
+    if (kind === "thinking") {
+      entries[idx].startedAt ??= fallbackEntry.startedAt;
+      entries[idx].endedAt = fallbackEntry.endedAt;
+    }
+    return true;
+  }
+
+  // Streaming batches can occasionally flush out of order; never let a shorter
+  // accumulated frame regress the detail view.
+  if (existing.startsWith(text)) return true;
+
+  return false;
 }
 
 export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
@@ -331,10 +375,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         const agent = agents.find((a) => a.parentRequestId === parentRequestId);
         if (agent) {
           agent.streamingText = text;
-          const lastEntry = agent.entries[agent.entries.length - 1];
-          if (lastEntry && lastEntry.kind === "text") {
-            lastEntry.text = text;
-          } else {
+          if (!updateAccumulatedEntry(agent.entries, "text", text, { kind: "text", text })) {
             agent.entries.push({ kind: "text", text });
           }
         }
@@ -354,12 +395,14 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
           agent.thinking = text;
           agent.thinkingStartedAt ??= now;
           agent.thinkingEndedAt = now;
-          const lastEntry = agent.entries[agent.entries.length - 1];
-          if (lastEntry?.kind === "thinking") {
-            lastEntry.text = text;
-            lastEntry.startedAt ??= now;
-            lastEntry.endedAt = now;
-          } else {
+          if (
+            !updateAccumulatedEntry(agent.entries, "thinking", text, {
+              kind: "thinking",
+              text,
+              startedAt: now,
+              endedAt: now,
+            })
+          ) {
             agent.entries.push({
               kind: "thinking",
               text,

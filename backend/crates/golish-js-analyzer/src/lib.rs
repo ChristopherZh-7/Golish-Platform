@@ -25,6 +25,7 @@
 //! |---------|---------|--------|------|
 //! | `fetch(url, init)` | `fetch('/api/users', { method: 'POST' })` | from init.method | literal |
 //! | `axios.<verb>` | `axios.post('/api/orders', body)` | verb | literal |
+//! | `client.<verb>` | `Wr.post('/system/auth/login')` | verb | literal |
 //! | `axios(config)` | `axios({ url: '/x', method: 'PUT' })` | from config.method | literal |
 //! | `$.ajax(config)` | `$.ajax({ url: '/y', type: 'POST' })` | from config.type | literal |
 //! | `new Request(url, init)` | `new Request('/z', { method: 'DELETE' })` | from init.method | literal |
@@ -32,7 +33,7 @@
 //! ## What we DON'T cover (yet)
 //! - Variable URL like `fetch(API_BASE + '/users')` — only literal-tail captured
 //! - Template literals with interpolation: `` fetch(`/api/${id}`) `` — captured as `/api/${id}` raw
-//! - Wrapped HTTP clients (custom `request()` helpers) — fall back to LLM
+//! - Opaque wrapper functions like `request('/x')` without an HTTP verb — fall back to LLM
 //! - Multi-line config objects whose fields span many lines — only first 200 chars after match are scanned
 //!
 //! These gaps are documented in the `Endpoint::confidence` field so callers
@@ -183,6 +184,8 @@ pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
     // `lazy_static` later.
     let fetch_re = Regex::new(patterns::FETCH).expect("FETCH regex valid");
     let axios_verb_re = Regex::new(patterns::AXIOS_VERB).expect("AXIOS_VERB regex valid");
+    let http_client_verb_re =
+        Regex::new(patterns::HTTP_CLIENT_VERB).expect("HTTP_CLIENT_VERB regex valid");
     let axios_config_re = Regex::new(patterns::AXIOS_CONFIG).expect("AXIOS_CONFIG regex valid");
     let jquery_re = Regex::new(patterns::JQUERY_AJAX).expect("JQUERY_AJAX regex valid");
     let new_request_re = Regex::new(patterns::NEW_REQUEST).expect("NEW_REQUEST regex valid");
@@ -238,6 +241,13 @@ pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
     for cap in axios_verb_re.captures_iter(scrubbed_str) {
         let off = cap.get(0).map(|m| m.start()).unwrap_or(0);
         if let Some(ep) = patterns::endpoint_from_axios_verb(&cap, scrubbed_str, source_file) {
+            hits.push((off, ep));
+        }
+    }
+    for cap in http_client_verb_re.captures_iter(scrubbed_str) {
+        let off = cap.get(0).map(|m| m.start()).unwrap_or(0);
+        if let Some(ep) = patterns::endpoint_from_http_client_verb(&cap, scrubbed_str, source_file)
+        {
             hits.push((off, ep));
         }
     }

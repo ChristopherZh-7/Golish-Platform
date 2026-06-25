@@ -200,6 +200,10 @@ const BRIDGE_ROWS: &[ToolRow] = &[
     ToolRow { name: "record_finding", purpose: "Record a vulnerability finding." },
     ToolRow { name: "vault", purpose: "Store / retrieve credentials." },
     ToolRow {
+        name: "browser_collect_js_api",
+        purpose: "Open a SPA/lazy-loaded page in a browser, save loaded JS chunks, observe XHR/fetch API calls, and return closure/AI-assist signals.",
+    },
+    ToolRow {
         name: "js_collect",
         purpose: "Crawl HTML / inline scripts / build manifests of a target and download all JS chunks into `.golish/captures/<host>/<port>/js/`.",
     },

@@ -82,6 +82,8 @@ pub struct AgentRunCheckpoint {
     pub pending_submit_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submit_repair_mode: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_directive: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_corrections: Vec<RuntimeCorrectionCheckpoint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -140,6 +142,7 @@ mod tests {
             pending_gate_correction: Some("wait_for_background_jobs then resubmit".to_string()),
             pending_submit_only: false,
             submit_repair_mode: None,
+            repair_directive: None,
             runtime_corrections: vec![RuntimeCorrectionCheckpoint {
                 source: "rule".to_string(),
                 kind: "submit_needs_fix".to_string(),

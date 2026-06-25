@@ -639,7 +639,7 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "coverage": {
                     "type": "array",
-                    "description": "Coverage matrix: ONE cell per (asset × technique) you took to a terminal state. STAGES THAT RUN NO TOOLS (e.g. scoping, reporting) produce no evidence — submit an EMPTY array [] and do NOT invent cells (a 'found'/'checked_empty' cell ALWAYS needs real evidence_refs, so an evidence-less cell here just fails the gate). For tool stages: for EACH in-scope asset, give EVERY expected technique a cell — a MISSING (asset × technique) means not_attempted and FAILS the gate. A 'found' or 'checked_empty' cell MUST cite evidence_refs (PoC for found; the scan/probe evidence proving you tested it for checked_empty); 'blocked'/'not_applicable' MUST give a `note`. \"checked-empty\" is NOT \"unchecked\". For found/checked_empty cells with an enumerated denominator ALSO set tested_units/total_units; the gate requires full coverage (tested_units==total_units) unless you set sampling_rationale. EAS example: SERVICE-FINGERPRINT tested_units = open ports fingerprinted, total_units = open ports discovered; if no ports are open, submit not_applicable+note rather than checked_empty total_units=0. Omit optional fields you don't use — never pass null.",
+                    "description": "Coverage matrix: ONE cell per (asset × technique) you took to a terminal state. If the stage charter says coverage is auto-adjudicated from the DATABASE (for example target_intel or external_attack_surface found cells), submit [] for DB-derived found cells and include only terminal cells the DB cannot derive yet. STAGES THAT RUN NO TOOLS (e.g. scoping, reporting) produce no evidence — submit an EMPTY array [] and do NOT invent cells (a 'found'/'checked_empty' cell ALWAYS needs real evidence_refs, so an evidence-less cell here just fails the gate). For non-DB-truth tool stages: for EACH in-scope asset, give EVERY expected technique a cell — a MISSING (asset × technique) means not_attempted and FAILS the gate. A 'found' or 'checked_empty' cell MUST cite evidence_refs (PoC for found; the scan/probe evidence proving you tested it for checked_empty); 'blocked'/'not_applicable' MUST give a `note`. \"checked-empty\" is NOT \"unchecked\". For found/checked_empty cells with an enumerated denominator ALSO set tested_units/total_units; the gate requires full coverage (tested_units==total_units) unless you set sampling_rationale. EAS example: SERVICE-FINGERPRINT tested_units = open ports fingerprinted, total_units = open ports discovered; if no ports are open, submit not_applicable+note rather than checked_empty total_units=0. Omit optional fields you don't use — never pass null.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -833,6 +833,11 @@ impl Tool for SubmitStageDeliverableTool {
                 // failure — instead of the agent hunting for an id field that the
                 // sub-agent tool path never carries.
                 let available = self.available_real_ids().await;
+                let coverage_gap_actions = result
+                    .recovery_actions
+                    .as_ref()
+                    .map(|recovery| recovery.coverage_gap_actions.clone())
+                    .unwrap_or_default();
                 let mut reasons = result.reasons;
                 // No-tool stage trap: a stage with no expected techniques (e.g.
                 // scoping / reporting) has NO coverage matrix — but weak models
@@ -854,12 +859,16 @@ impl Tool for SubmitStageDeliverableTool {
                          evidence_ids and the top-level evidence_refs, then resubmit. Never invent ids."
                     ));
                 }
-                return Ok(json!({
+                let mut response = json!({
                     "status": "needs_fix",
                     "reasons": reasons,
                     "available_evidence_ids": available,
                     "note": "fix these and call submit_stage_deliverable again."
-                }));
+                });
+                if !coverage_gap_actions.is_empty() {
+                    response["coverage_gap_actions"] = json!(coverage_gap_actions);
+                }
+                return Ok(response);
             }
         }
 
@@ -986,6 +995,55 @@ mod tests {
         assert!(captured.contains("WSTG-ATHZ-04"));
     }
 
+    #[tokio::test]
+    async fn eas_needs_fix_surfaces_structured_coverage_gap_actions() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::ExternalAttackSurface);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
+
+        let args = json!({
+            "stage_id": "external_attack_surface",
+            "claims": [{
+                "kind": "host_observed",
+                "subject": "api.example.com",
+                "summary": "host is in the inherited active-mapping worklist",
+                "evidence_ids": [1]
+            }],
+            "evidence_refs": [1],
+            "findings": [],
+            "coverage": [{
+                "asset": "api.example.com",
+                "technique": "GOLISH-EAS-LIVENESS",
+                "status": "blocked",
+                "note": "liveness probe could not run in this test fixture"
+            }]
+        });
+
+        let out = tool.execute(args, Path::new("/tmp")).await.unwrap();
+        assert_eq!(out["status"].as_str(), Some("needs_fix"));
+        let actions = out["coverage_gap_actions"]
+            .as_array()
+            .expect("structured gap actions should be surfaced");
+        assert!(
+            actions.iter().any(|action| {
+                action["asset"] == "api.example.com"
+                    && action["technique"] == "GOLISH-EAS-PORT"
+                    && action["suggested_tools"]
+                        .as_array()
+                        .is_some_and(|tools| tools.iter().any(|tool| tool == "naabu"))
+            }),
+            "PORT gap action should name the asset, technique, and suggested tools: {out:?}"
+        );
+        assert!(
+            actions.iter().any(|action| {
+                action["asset"] == "api.example.com"
+                    && action["technique"] == "GOLISH-EAS-SERVICE-FINGERPRINT"
+            }),
+            "SERVICE-FINGERPRINT gap action should be present: {out:?}"
+        );
+        assert!(sink.read().await.is_some());
+    }
+
     // P5 Task 7 · a technique-tagged claim parses, passes the gate preview, and the
     // tag is carried verbatim into the side-channel JSON for the stage-close gate.
     #[tokio::test]
@@ -1101,8 +1159,9 @@ mod tests {
 
     #[test]
     fn backfills_required_checks_done_from_cited_http_probe_evidence() {
-        let spec =
+        let mut spec =
             load_embedded_stage_spec(StageKind::ExternalAttackSurface).expect("EAS spec loads");
+        spec.min_invocations.insert("http_probe".to_string(), 1);
         let mut deliverable = StageDeliverable {
             stage_id: StageKind::ExternalAttackSurface.as_str().to_string(),
             stage_run_id: uuid::Uuid::new_v4(),
@@ -1135,8 +1194,9 @@ mod tests {
 
     #[test]
     fn backfills_required_checks_done_from_claim_evidence_ids() {
-        let spec =
+        let mut spec =
             load_embedded_stage_spec(StageKind::ExternalAttackSurface).expect("EAS spec loads");
+        spec.min_invocations.insert("http_probe".to_string(), 1);
         let mut deliverable = StageDeliverable {
             stage_id: StageKind::ExternalAttackSurface.as_str().to_string(),
             stage_run_id: uuid::Uuid::new_v4(),

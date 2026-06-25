@@ -81,6 +81,7 @@ impl SurfaceCategory {
                 "banner",
                 "tls",
                 "subdomain",
+                "stage_run_pass_token",
             ],
         ) {
             return Some(Self::Surface);
@@ -170,6 +171,10 @@ mod tests {
             Some(SurfaceCategory::Surface)
         );
         assert_eq!(
+            SurfaceCategory::from_kind("stage_run_pass_token"),
+            Some(SurfaceCategory::Surface)
+        );
+        assert_eq!(
             SurfaceCategory::from_kind("api_endpoint"),
             Some(SurfaceCategory::JsApi)
         );
@@ -244,6 +249,22 @@ mod tests {
             kind: "api_endpoint_observed".to_string(),
             subject: "api.example.com/v1".to_string(),
             summary: "GET 200".to_string(),
+            evidence_ids: vec![EvidenceAuditId::new(1)],
+            technique: None,
+        });
+        assert!(missing_required_categories(&d).is_empty());
+    }
+
+    #[test]
+    fn stage_run_pass_token_satisfies_surface_for_fanout_closeout() {
+        // The token is only accepted after the orchestrator recomputes the per-org
+        // stage_run completion ledger, so it is a durable EAS surface closeout
+        // signal while keeping generic "discovery" claims unmapped.
+        let mut d = deliverable_with(vec![]);
+        d.claims.push(StageClaim {
+            kind: "stage_run_pass_token".to_string(),
+            subject: "external_attack_surface".to_string(),
+            summary: "deterministic-token".to_string(),
             evidence_ids: vec![EvidenceAuditId::new(1)],
             technique: None,
         });

@@ -40,6 +40,56 @@ fn axios_verb_helpers() {
 }
 
 #[test]
+fn custom_http_client_verb_helpers() {
+    let src = r#"
+            Wr.post('/system/auth/login', body);
+            t3.get('/system/auth/get-permission-info');
+            aa.download('/system/dict-data/export-excel', params);
+        "#;
+    let eps = extract_from_source("a.js", src);
+    assert_eq!(eps.len(), 3);
+    assert!(eps.iter().any(|e| {
+        e.method == "POST"
+            && e.path == "/system/auth/login"
+            && e.kind == CallSiteKind::HttpClientVerb
+    }));
+    assert!(eps.iter().any(|e| {
+        e.method == "GET"
+            && e.path == "/system/auth/get-permission-info"
+            && e.kind == CallSiteKind::HttpClientVerb
+    }));
+    assert!(eps.iter().any(|e| {
+        e.method == "GET"
+            && e.path == "/system/dict-data/export-excel"
+            && e.kind == CallSiteKind::HttpClientVerb
+    }));
+}
+
+#[test]
+fn axios_verb_helpers_are_not_double_emitted_by_generic_client_pattern() {
+    let src = r#"
+            axios.get('/api/me');
+            Wr.get('/system/user/simple-list');
+        "#;
+    let eps = extract_from_source("a.js", src);
+    assert_eq!(eps.len(), 2);
+    assert_eq!(
+        eps.iter()
+            .filter(|e| e.path == "/api/me" && e.kind == CallSiteKind::AxiosVerb)
+            .count(),
+        1
+    );
+    assert_eq!(
+        eps.iter()
+            .filter(
+                |e| e.path == "/system/user/simple-list" && e.kind == CallSiteKind::HttpClientVerb
+            )
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn axios_config_object() {
     let src = r#"
             axios({ url: '/api/login', method: 'PUT', data: payload });

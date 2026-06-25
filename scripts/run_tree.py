@@ -180,6 +180,30 @@ def _harness_summary(e: dict, trunc: int) -> str | None:
         return s
     if kind == "background_notes_injected":
         return f"background notes injected x{e.get('count')} {_short(e.get('evidence_ids'), 60)}".rstrip()
+    if kind == "stage_refiner_decision":
+        bits = [
+            f"refiner {e.get('repair_kind', '?')}",
+            f"actions={e.get('action_count', 0)}",
+            f"gaps={e.get('gap_count', 0)}",
+            f"hash={e.get('directive_hash', '')}",
+        ]
+        if e.get("llm_escalated"):
+            bits.append("llm=1")
+        if e.get("root_cause"):
+            bits.append(f"cause: {_short(e['root_cause'], trunc)}")
+        return " ".join(bits)
+    if kind == "runtime_supervisor_decision":
+        bits = [
+            f"runtime_supervisor {e.get('mode', '?')}",
+            f"{e.get('tool', '?')}x{e.get('repeat_count', 0)}",
+            f"{e.get('strategy_kind', '?')}",
+            f"actions={e.get('action_count', 0)}",
+            f"injected={str(e.get('injected', False)).lower()}",
+            f"hash={e.get('directive_hash', '')}",
+        ]
+        if e.get("root_cause"):
+            bits.append(f"cause: {_short(e['root_cause'], trunc)}")
+        return " ".join(bits)
     if kind == "stage_run_org_progress":
         org = e.get("org_name") or (e.get("org_id") or "")[:8]
         ev = e.get("evidence_count")

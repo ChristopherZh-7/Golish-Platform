@@ -142,6 +142,13 @@ fn contains_call_shape(bytes: &[u8]) -> bool {
         || contains_subseq(&lower, b"$.ajax")
         || contains_subseq(&lower, b"jquery.ajax")
         || contains_subseq(&lower, b"new request(")
+        || contains_subseq(&lower, b".get(")
+        || contains_subseq(&lower, b".post(")
+        || contains_subseq(&lower, b".put(")
+        || contains_subseq(&lower, b".patch(")
+        || contains_subseq(&lower, b".delete(")
+        || contains_subseq(&lower, b".download(")
+        || contains_subseq(&lower, b".upload(")
 }
 
 fn contains_subseq(haystack: &[u8], needle: &[u8]) -> bool {

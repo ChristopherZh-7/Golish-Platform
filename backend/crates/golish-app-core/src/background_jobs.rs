@@ -438,11 +438,31 @@ impl BackgroundJobManager {
     /// Request cancellation of a running job. Returns `true` if the job exists.
     pub fn kill(&self, job_id: &str) -> bool {
         if let Some(state) = self.jobs.lock().get(job_id).cloned() {
-            state.lock().kill.notify_waiters();
+            state.lock().kill.notify_one();
             true
         } else {
             false
         }
+    }
+
+    /// Request cancellation of every running job attributed to `session_id`.
+    /// Returns how many job handles were signalled.
+    pub fn kill_running_for_session(&self, session_id: &str) -> usize {
+        let ids: Vec<String> = {
+            let jobs = self.jobs.lock();
+            jobs.iter()
+                .filter_map(|(id, state)| {
+                    let s = state.lock();
+                    if s.status == JobStatus::Running && s.session_id.as_deref() == Some(session_id)
+                    {
+                        Some(id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        ids.iter().filter(|id| self.kill(id)).count()
     }
 
     /// Forget a job (used after its result has been consumed inline).
@@ -612,6 +632,37 @@ mod tests {
             mgr.kill(&j.job_id);
         }
         mgr.kill(&_b_long);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_running_for_session_only_signals_matching_jobs() {
+        let mgr = BackgroundJobManager::new();
+        let a_long = mgr.spawn_for_session(
+            "sleep 30",
+            &ws(),
+            Duration::from_secs(60),
+            Some("sess-A".to_string()),
+        );
+        let _b_long = mgr.spawn_for_session(
+            "sleep 30",
+            &ws(),
+            Duration::from_secs(60),
+            Some("sess-B".to_string()),
+        );
+
+        assert_eq!(mgr.kill_running_for_session("sess-A"), 1);
+        let snap = wait_terminal(&mgr, &a_long, Duration::from_secs(5)).await;
+        assert_eq!(snap.status, JobStatus::Killed);
+        assert_eq!(
+            mgr.running_for_session("sess-B").len(),
+            1,
+            "other sessions must not be killed by session cancellation"
+        );
+
+        for j in mgr.running_for_session("sess-B") {
+            mgr.kill(&j.job_id);
+        }
     }
 
     #[tokio::test]

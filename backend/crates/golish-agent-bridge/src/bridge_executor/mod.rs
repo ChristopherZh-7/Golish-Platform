@@ -115,6 +115,7 @@ impl BridgeAgentExecutor {
             session_id: None,
             transcript_base_dir: None,
             api_request_stats: Some(self.bridge.api_request_stats()),
+            cancelled: Some(&self.bridge.cancelled),
             briefing: None,
             temperature_override: agent_def.temperature,
             max_tokens_override: agent_def.max_tokens,

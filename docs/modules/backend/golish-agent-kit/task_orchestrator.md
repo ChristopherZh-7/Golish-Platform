@@ -25,6 +25,8 @@
 | `TaskOrchestrator`（`run`） | 编排主体 + 入口 + 事件发射 |
 | `AgentExecutor`（trait） | 每次 agent 调用的抽象（bridge 实现在 `golish-agent-bridge::bridge_executor`） |
 | `agent_run_checkpoint` | P2a 细粒度 agent-run checkpoint DTO + `state_blob.agent_run` merge helpers |
+| `stage_refiner` | Stage-aware deterministic repair owner：submit/gate 失败后生成 `RepairDirective`，并转换为 sub-agent `SubmitRepairMode` |
+| `runtime_supervisor` | PentAGI-style in-run strategy supervisor：重复/停滞工具触发后解析 LLM JSON，按 stage/tool policy 裁剪成 `StrategyDirective` |
 | `types`（planning DTO / token usage / 执行上下文） | 编排类型 |
 | `prompts` | 各阶段 prompt 模板 |
 
@@ -33,7 +35,9 @@
 | 文件 | 作用 |
 |---|---|
 | `orchestrator.rs` | `TaskOrchestrator` + `run` |
-| `agent_run_checkpoint.rs` | resumable agent-run 状态：pending correction、background job ids、last tool ref |
+| `agent_run_checkpoint.rs` | resumable agent-run 状态：pending correction、background job ids、last tool ref、`submit_repair_mode`、`repair_directive` |
+| `stage_refiner.rs` | `RepairDirective` DTO + deterministic StageRefiner：EAS coverage gaps / TargetIntel provider-only repair / background/evidence refs |
+| `runtime_supervisor.rs` | `StrategyDirective` DTO + RuntimeSupervisor prompt/parse/sanitize：运行中防跑偏，不决定 gate |
 | `subtask_phases/` | Executor loop + `execute_single_subtask`（per-stage gate） |
 | `types.rs` / `prompts/` / `helpers.rs` | DTO/trait · prompt 模板 · 共享小函数 |
 
@@ -47,8 +51,10 @@
 - `bridge_executor`（`AgentExecutor` 实现）在 `golish-agent-bridge`（依赖 AgentBridge）；本模块只持 trait。
 - graph-flow 的 `operation_state.current_stage` 表示**当前正在执行的 stage**：进入新 stage 时同步并刷新 `stage_started_at`；断线后回到同一 stage 时不能重复刷新，否则 freshness-window gate 会看不到断线前已落库的 evidence。
 - `operation_state.state_blob` 是 graph checkpoint、stage_run worker resume 等多消费者共享 JSON；更新 `graph_flow` 时要 merge 保留其他 key，不能整段覆盖。
-- `operation_state.state_blob.agent_run` 是 P2 细粒度恢复槽：只存稳定、可恢复的轻量状态（如 pending gate correction、submit repair directive、background job ids、last tool result ref），大段输出仍留 transcript/background job/evidence ledger。写入或清理时必须保留 `graph_flow` / `stage_run_workers` 等 sibling key。`submit_repair_mode` 保持为 JSON，避免 `golish-agent-kit` 反向依赖 `golish-sub-agents`。
+- `operation_state.state_blob.agent_run` 是 P2 细粒度恢复槽：只存稳定、可恢复的轻量状态（如 pending gate correction、submit repair directive、background job ids、last tool result ref），大段输出仍留 transcript/background job/evidence ledger。写入或清理时必须保留 `graph_flow` / `stage_run_workers` 等 sibling key。`repair_directive` 是 StageRefiner 的结构化真相源，`submit_repair_mode` 是给 executor/tool guard 的兼容投影。
+- `stage_refiner` 是 gate/submit 失败后的唯一修复建议来源：gate 仍决定 PASS/BLOCK，StageRefiner 只查询/汇总 gate+DB-backed context，生成下一步 `RepairDirective`，不能伪造 StageDeliverable。
 - `prompts::stage_charter` 会把 `StageSpec` 的 gate contract 渲染给执行 agent；`external_attack_surface` 有专门文案说明 domain/ip/url/cidr 的 coverage 差异，以及 SERVICE-FINGERPRINT 的 `tested_units/total_units = 已指纹开放端口/发现开放端口`。
+- RuntimeSupervisor 是运行中策略纠偏机制：只在 `ExecutionMonitor` 触发后运行，模型输出必须先解析成 `StrategyDirective` 并经过 stage/tool policy 裁剪，不能覆盖 gate，也不能覆盖 StageRefiner 的 post-gate `RepairDirective`。repair/stage_run 的确定性补洞仍以 StageRefiner 为准。
 
 ## 测试入口
 

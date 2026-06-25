@@ -623,6 +623,7 @@ mod tests {
             hints: vec!["hint-1".into()],
             repair_tool_calls: vec!["nuclei -u <asset>".into()],
             missing_evidence_kinds: vec!["http_probe".into()],
+            ..Default::default()
         };
         let mut i = base_input(&reasons, &kinds);
         i.gate_recovery = Some(&rec);

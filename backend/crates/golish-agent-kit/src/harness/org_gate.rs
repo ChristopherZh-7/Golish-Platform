@@ -12,7 +12,7 @@ use uuid::Uuid;
 use super::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
 use super::gate::{validate_stage_gate_with_context, GateContextBuilder, GateResult};
 use super::stage_spec::StageSpec;
-use super::types::StageDeliverable;
+use super::types::{HarnessRecoveryActions, StageDeliverable};
 use super::{load_embedded_stage_spec, StageKind};
 use crate::db_traits::DbRepoProvider;
 
@@ -21,8 +21,12 @@ use crate::db_traits::DbRepoProvider;
 pub enum OrgVerdict {
     /// gate 通过：可计入 passed_count + 写完成账本。
     Pass,
-    /// gate 未过：进 gaps，**不**写账本；`reasons` 供汇报 + 闭环回灌。
-    Block { reasons: Vec<String> },
+    /// gate 未过：进 gaps，**不**写账本；`reasons` 供汇报，
+    /// `recovery_actions` 供 StageRefiner 结构化闭环回灌。
+    Block {
+        reasons: Vec<String>,
+        recovery_actions: HarnessRecoveryActions,
+    },
 }
 
 /// `GateResult` → `OrgVerdict`（纯函数，单测）。
@@ -32,6 +36,7 @@ pub fn decide_org_verdict(gate: &GateResult) -> OrgVerdict {
     } else {
         OrgVerdict::Block {
             reasons: gate.reasons.clone(),
+            recovery_actions: gate.recovery_actions.clone().unwrap_or_default(),
         }
     }
 }
@@ -249,7 +254,7 @@ pub async fn evaluate_org_stage_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::types::HarnessRecoveryActions;
+    use crate::harness::types::{CoverageGapAction, HarnessRecoveryActions};
 
     #[test]
     fn verdict_pass_on_allowed() {
@@ -265,7 +270,30 @@ mod tests {
         assert_eq!(
             decide_org_verdict(&g),
             OrgVerdict::Block {
-                reasons: vec!["coverage incomplete".to_string()]
+                reasons: vec!["coverage incomplete".to_string()],
+                recovery_actions: HarnessRecoveryActions::default()
+            }
+        );
+    }
+
+    #[test]
+    fn verdict_block_carries_recovery_actions() {
+        let recovery = HarnessRecoveryActions {
+            coverage_gap_actions: vec![CoverageGapAction {
+                asset: "a.com".to_string(),
+                technique: "GOLISH-EAS-LIVENESS".to_string(),
+                reason: "missing liveness".to_string(),
+                suggested_tools: vec!["httpx".to_string()],
+            }],
+            ..Default::default()
+        };
+        let g = GateResult::block(vec!["coverage incomplete".to_string()], recovery.clone());
+
+        assert_eq!(
+            decide_org_verdict(&g),
+            OrgVerdict::Block {
+                reasons: vec!["coverage incomplete".to_string()],
+                recovery_actions: recovery
             }
         );
     }

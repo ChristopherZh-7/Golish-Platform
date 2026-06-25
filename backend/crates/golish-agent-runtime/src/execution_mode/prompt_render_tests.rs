@@ -17,6 +17,7 @@ fn render_includes_js_collect_when_enabled() {
         deny_overrides: vec![],
     };
     let table = render_tool_table_for_prompt(&s);
+    assert!(table.contains("`browser_collect_js_api`"));
     assert!(table.contains("`js_collect`"));
     assert!(table.contains("`manage_targets`"));
     assert!(table.contains("`manage_organizations`"));
@@ -83,6 +84,7 @@ fn selection_to_tool_names_matches_render() {
     assert!(names.contains("recon_lookup_whois"));
     assert!(names.contains("recon_lookup_company"));
     assert!(names.contains("recon_list_providers"));
+    assert!(names.contains("browser_collect_js_api"));
     assert!(names.contains("read_file"));
     assert!(names.contains("ask_human"));
     assert!(!names.contains("update_plan"));

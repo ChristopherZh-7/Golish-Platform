@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
   "version": "0.1.10",
-  "last_updated": "2026-06-24",
+  "last_updated": "2026-06-25",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -10,6 +10,28 @@
     "passing"
   ],
   "features": [
+    {
+      "id": "stage-aware-db-refiner-2026-06-25",
+      "priority": 1,
+      "area": "backend: golish-agent-kit/src/task_orchestrator/{stage_refiner.rs,runtime_supervisor.rs}; golish-agent-runtime/src/agentic_loop/{single_tool_call.rs,tool_execution/direct/{sub_agent_call.rs,stage_run_call.rs},llm_helpers.rs}; golish-agent-bridge/src/agent_bridge/prepare.rs; golish-core/src/events/harness_trace.rs; golish-events; golish-sub-agents repair lock; scripts/run_tree.py; resources/harness/stages/* methodology/spec + future tool skill cards",
+      "title": "Stage-aware DB-backed Refiner + RuntimeSupervisor：gate/submit 出错后生成结构化 RepairDirective；运行中重复/停滞工具触发 PentAGI-style RuntimeSupervisor，输出结构化 StrategyDirective 并按 stage/tool policy 裁剪。",
+      "user_visible_behavior": "AI 完成阶段并提交后，如果 gate 返回 needs_fix，系统按当前 stage/org 查真实数据库和证据账本，告诉 AI 具体缺哪个 asset×technique、该用什么工具、提交时应该填哪个终态，并用 ToolGuard 只允许这些修复动作。运行中如果 agent 重复工具或策略跑偏，RuntimeSupervisor 会在工具结果后介入，给一个 stage-aware 的下一步策略指令；该指令先解析成 JSON 并裁剪，不能覆盖 gate，也不能覆盖 StageRefiner repair lock。",
+      "status": "in_progress",
+      "design": "docs/design/2026-06-25-stage-aware-db-refiner.md",
+      "plan": "docs/superpowers/plans/2026-06-25-stage-aware-db-refiner.md",
+      "verification": [
+        "cd backend && cargo nextest run -p golish-agent-runtime runtime_supervisor submit_repair stage_run --status-level fail",
+        "cd backend && cargo nextest run -p golish-sub-agents submit_repair coverage_gap --status-level fail",
+        "cd backend && cargo nextest run -p golish-agent-kit refiner stage_refiner --status-level fail",
+        "cd backend && cargo nextest run -p golish-agent-app submit_stage_deliverable --status-level fail",
+        "python3 scripts/run_tree.py --workspace <ws> <session> --db confirms StageRefinerDecision + RuntimeSupervisorDecision traces and no raw Mentor advice injection",
+        "[✓] 2026-06-25 scoped build: cd backend && cargo check -p golish-core -p golish-events -p golish-sub-agents -p golish-agent-kit -p golish-agent-runtime → exit 0",
+        "[✓] 2026-06-25 RuntimeSupervisor scoped build: cd backend && cargo check -p golish-core -p golish-events -p golish-agent-kit -p golish-agent-runtime -p golish-agent-bridge → exit 0"
+      ],
+      "evidence": "2026-06-25 implementation slice. Root cause came from live EAS run: final org repair needed 7 submits (11 gaps -> 5 -> 5 -> 5 -> 3 -> 3 -> accepted); Mentor suggested broad list tools during repair while SubmitRepairMode blocked them. Implemented StageRefiner deterministic path: RepairDirective DTO + submit needs_fix integration + stage_run per-org BLOCK integration + SubmitRepairMode allowed/forbidden override + StageRefinerDecision trace + run_tree rendering. Follow-up RuntimeSupervisor slice implemented PentAGI-style in-run strategy supervision: RuntimeSupervisorContext/StrategyDirective JSON parser+sanitizer, main-agent and sub-agent post-tool injection, RuntimeSupervisorDecision trace, GOLISH_RUNTIME_SUPERVISOR env alias, and run_tree rendering. Scoped builds passed: cargo check -p golish-core -p golish-events -p golish-sub-agents -p golish-agent-kit -p golish-agent-runtime; then cargo check -p golish-core -p golish-events -p golish-agent-kit -p golish-agent-runtime -p golish-agent-bridge.",
+      "notes": "Implementation in_progress, not passing: no just precommit and no live EAS rerun yet. First slice has no DB schema migration and no DB evidence-delta supervisor trigger beyond repeated/total tool calls. StageRefiner consumes DB-backed gate/submit context; RuntimeSupervisor consumes prompt/context/tool-result summaries and sanitizes model JSON. ts-rs generated frontend bindings for new HarnessTraceKind variants were not regenerated in this turn.",
+      "remember": "StageRefiner chain: submit/gate needs_fix -> StageRefiner builds RepairDirective -> checkpoint stores repair_directive + submit_repair_mode -> SubmitRepairMode/ToolGuard enforce -> AI repair/resubmit. RuntimeSupervisor chain: ExecutionMonitor trigger -> RuntimeSupervisor LLM strict JSON -> StrategyDirective sanitizer -> RuntimeSupervisorDecision trace -> soft/hard model-visible directive. Gate remains only PASS/BLOCK authority."
+    },
     {
       "id": "intel-to-eas-handoff-2026-06-24",
       "priority": 2,

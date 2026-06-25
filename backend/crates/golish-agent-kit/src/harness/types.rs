@@ -298,7 +298,17 @@ impl HarnessStageHint {
 }
 
 /// Doc 3 §8 GateResult 配套 · recovery_actions 喂回 refiner 用.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoverageGapAction {
+    pub asset: String,
+    pub technique: String,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_tools: Vec<String>,
+}
+
+/// Doc 3 §8 GateResult 配套 · recovery_actions 喂回 refiner 用.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct HarnessRecoveryActions {
     /// 自然语言 hint, refiner 拼到 system prompt.
     pub hints: Vec<String>,
@@ -306,6 +316,10 @@ pub struct HarnessRecoveryActions {
     pub repair_tool_calls: Vec<String>,
     /// 期望补 evidence 的 kind (与 evidence_kinds.json 一致).
     pub missing_evidence_kinds: Vec<String>,
+    /// Machine-readable coverage gaps for targeted repair. Kept in recovery so
+    /// existing gates that only return textual reasons remain unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage_gap_actions: Vec<CoverageGapAction>,
 }
 
 impl HarnessRecoveryActions {
@@ -313,6 +327,7 @@ impl HarnessRecoveryActions {
         self.hints.is_empty()
             && self.repair_tool_calls.is_empty()
             && self.missing_evidence_kinds.is_empty()
+            && self.coverage_gap_actions.is_empty()
     }
 }
 

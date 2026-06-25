@@ -16,12 +16,14 @@ use uuid::Uuid;
 use crate::definition::{SubAgentContext, SubAgentDefinition};
 use crate::executor_helpers::{epoch_secs, extract_file_path, is_write_tool};
 use crate::executor_types::{
-    SubAgentExecutorContext, SubAgentToolObservation, SubmitRepairKind, SubmitRepairMode,
-    ToolProvider, BARRIER_TOOL_NAME,
+    cancellation_requested, wait_for_cancelled, CoverageGapAction, SubAgentExecutorContext,
+    SubAgentToolObservation, SubmitRepairKind, SubmitRepairMode, ToolProvider, BARRIER_TOOL_NAME,
 };
 use crate::transcript::SubAgentTranscriptWriter;
 use golish_core::events::{AiEvent, ToolSource};
 use golish_core::utils::{is_tool_result_success, truncate_str};
+
+const HARD_SUPERVISOR_MARKER: &str = "--- EXECUTION SUPERVISOR (HARD) ---";
 
 /// Result of dispatching tool calls within a sub-agent iteration.
 pub(super) struct ToolDispatchResult {
@@ -38,6 +40,7 @@ pub(super) struct ToolDispatchResult {
     /// the submission, query existing state, or wait for background jobs, but it
     /// must not restart broad scanning just because the prior submit failed.
     pub submit_repair_update: Option<SubmitRepairModeUpdate>,
+    pub cancelled: bool,
 }
 
 /// Bail-out threshold for the stage submit loop: after this many *consecutive*
@@ -265,7 +268,14 @@ fn needs_fix_coverage_gap(reasons: &[String]) -> bool {
 pub fn submit_coverage_gap_repair_mode_from_reasons(
     reasons: &[String],
 ) -> Option<SubmitRepairMode> {
-    if !needs_fix_coverage_gap(reasons) {
+    submit_coverage_gap_repair_mode(reasons, Vec::new())
+}
+
+fn submit_coverage_gap_repair_mode(
+    reasons: &[String],
+    coverage_gap_actions: Vec<CoverageGapAction>,
+) -> Option<SubmitRepairMode> {
+    if !needs_fix_coverage_gap(reasons) && coverage_gap_actions.is_empty() {
         return None;
     }
     Some(SubmitRepairMode {
@@ -276,6 +286,10 @@ pub fn submit_coverage_gap_repair_mode_from_reasons(
             reasons.join(" | ")
         },
         missing_required_checks: missing_min_invocation_tools(reasons),
+        coverage_gap_actions,
+        allowed_tools_override: Vec::new(),
+        forbidden_tools: Vec::new(),
+        directive_message: None,
     })
 }
 
@@ -310,10 +324,16 @@ pub fn submit_repair_mode_from_submit_result(
             kind: SubmitRepairKind::BackgroundJobs,
             reason,
             missing_required_checks: Vec::new(),
+            coverage_gap_actions: Vec::new(),
+            allowed_tools_override: Vec::new(),
+            forbidden_tools: Vec::new(),
+            directive_message: None,
         });
     }
 
-    if let Some(mode) = submit_coverage_gap_repair_mode_from_reasons(&reasons) {
+    if let Some(mode) =
+        submit_coverage_gap_repair_mode(&reasons, collect_coverage_gap_actions(result))
+    {
         return Some(mode);
     }
 
@@ -323,6 +343,10 @@ pub fn submit_repair_mode_from_submit_result(
             kind: SubmitRepairKind::EvidenceRefs,
             reason,
             missing_required_checks: missing_min_invocation_tools(&reasons),
+            coverage_gap_actions: Vec::new(),
+            allowed_tools_override: Vec::new(),
+            forbidden_tools: Vec::new(),
+            directive_message: None,
         });
     }
     None
@@ -355,6 +379,7 @@ fn submit_needs_fix_runtime_correction(
 
     let available_ids = collect_json_array_strings(result.get("available_evidence_ids"));
     let reasons = collect_json_array_strings(result.get("reasons"));
+    let coverage_gap_actions = collect_coverage_gap_actions(result);
     let reason_text = reasons.join(" | ");
     if needs_fix_coverage_gap(&reasons) {
         let ids_hint = if available_ids.is_empty() {
@@ -372,7 +397,7 @@ fn submit_needs_fix_runtime_correction(
                 preview_ids.join(", ")
             )
         };
-        let correction = format!(
+        let mut correction = format!(
             "submit_stage_deliverable returned coverage gaps, not a pure evidence-ref rewrite. \
              {ids_hint} Close ONLY the assets/techniques named by the gate: query_target_data or \
              prior wait_for_background_jobs output first, then run targeted stage-allowed probes \
@@ -385,6 +410,12 @@ fn submit_needs_fix_runtime_correction(
                 reason_text.as_str()
             }
         );
+        if !coverage_gap_actions.is_empty() {
+            correction.push(' ');
+            correction.push_str(&format_coverage_gap_actions_for_runtime(
+                &coverage_gap_actions,
+            ));
+        }
         if let Some(obj) = result.as_object_mut() {
             obj.insert(
                 "runtime_correction".to_string(),
@@ -440,6 +471,49 @@ fn submit_needs_fix_runtime_correction(
         );
     }
     Some(correction)
+}
+
+fn collect_coverage_gap_actions(result: &serde_json::Value) -> Vec<CoverageGapAction> {
+    result
+        .get("coverage_gap_actions")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| serde_json::from_value::<CoverageGapAction>(item.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn format_coverage_gap_actions_for_runtime(actions: &[CoverageGapAction]) -> String {
+    let mut preview = actions
+        .iter()
+        .take(40)
+        .enumerate()
+        .map(|(idx, action)| {
+            let tools = if action.suggested_tools.is_empty() {
+                String::new()
+            } else {
+                format!("; suggested_tools={}", action.suggested_tools.join(", "))
+            };
+            format!(
+                "{}. asset={} technique={} reason={}{}",
+                idx + 1,
+                action.asset,
+                action.technique,
+                action.reason,
+                tools
+            )
+        })
+        .collect::<Vec<_>>();
+    if actions.len() > preview.len() {
+        preview.push(format!("... +{} more", actions.len() - preview.len()));
+    }
+    format!(
+        "Exact coverage_gap_actions returned by the gate: {}. Run ONLY these listed target/technique pairs.",
+        preview.join(" | ")
+    )
 }
 
 fn background_failure_runtime_correction(
@@ -505,9 +579,89 @@ where
     // loop's stage-stall circuit breaker). Last write wins (one submit/turn).
     let mut last_block_sig: Option<String> = None;
     let mut submit_repair_update_seen: Option<SubmitRepairModeUpdate> = None;
+    let mut hard_supervisor_active = false;
 
     for tool_call in tool_calls {
         let tool_name = &tool_call.function.name;
+        if cancellation_requested(ctx.cancelled) {
+            tracing::info!(
+                "[sub-agent:{}] cancelled before tool call '{}'",
+                agent_id,
+                tool_name
+            );
+            return ToolDispatchResult {
+                tool_results,
+                barrier_hit,
+                barrier_response,
+                stage_block_signature: last_block_sig,
+                submit_repair_update: submit_repair_update_seen,
+                cancelled: true,
+            };
+        }
+        if hard_supervisor_active {
+            let tool_args = if tool_name == "run_pty_cmd" {
+                tool_provider.normalize_run_pty_cmd_args(tool_call.function.arguments.clone())
+            } else {
+                tool_call.function.arguments.clone()
+            };
+            let request_id = Uuid::new_v4().to_string();
+            let tool_request_event = AiEvent::SubAgentToolRequest {
+                agent_id: agent_id.to_string(),
+                tool_name: tool_name.to_string(),
+                args: tool_args,
+                request_id: request_id.clone(),
+                parent_request_id: parent_request_id.to_string(),
+            };
+            let _ = ctx.event_tx.send(tool_request_event.clone());
+
+            if let Some(ref writer) = transcript_writer {
+                let writer = Arc::clone(writer);
+                let event = tool_request_event;
+                tokio::spawn(async move {
+                    if let Err(e) = writer.append(&event).await {
+                        tracing::warn!("Failed to write to sub-agent transcript: {}", e);
+                    }
+                });
+            }
+
+            let result_value = serde_json::json!({
+                "error": "Skipped without execution because a hard execution supervisor correction was injected earlier in this tool batch. Start a new turn, read the supervisor correction, and choose the next action only after satisfying it.",
+                "blocked_by_hard_supervisor": true,
+            });
+            let tool_result_event = AiEvent::SubAgentToolResult {
+                agent_id: agent_id.to_string(),
+                tool_name: tool_name.to_string(),
+                success: false,
+                result: result_value.clone(),
+                request_id,
+                parent_request_id: parent_request_id.to_string(),
+            };
+            let _ = ctx.event_tx.send(tool_result_event.clone());
+
+            if let Some(ref writer) = transcript_writer {
+                let writer = Arc::clone(writer);
+                let event = tool_result_event;
+                tokio::spawn(async move {
+                    if let Err(e) = writer.append(&event).await {
+                        tracing::warn!("Failed to write to sub-agent transcript: {}", e);
+                    }
+                });
+            }
+
+            let tool_id = tool_call.id.clone();
+            let tool_call_id = tool_call
+                .call_id
+                .clone()
+                .unwrap_or_else(|| tool_call.id.clone());
+            let result_text = serde_json::to_string(&result_value).unwrap_or_default();
+            tool_results.push(UserContent::ToolResult(ToolResult {
+                id: tool_id,
+                call_id: Some(tool_call_id),
+                content: OneOrMany::one(ToolResultContent::Text(Text { text: result_text })),
+            }));
+            last_activity.store(epoch_secs(), Ordering::Relaxed);
+            continue;
+        }
 
         // ── Barrier tool ────────────────────────────────────────────────
         if tool_name == BARRIER_TOOL_NAME {
@@ -611,6 +765,7 @@ where
                         post_tool_result_hook: ctx.post_tool_result_hook.clone(),
                         tool_observer: ctx.tool_observer.clone(),
                         initial_submit_repair_mode: ctx.initial_submit_repair_mode.clone(),
+                        cancelled: ctx.cancelled,
                         // Propagate the stage boundary to nested sub-agents so a
                         // deeper delegate can't bypass the stage's forbidden tools.
                         stage_tool_guard: ctx.stage_tool_guard.clone(),
@@ -742,8 +897,25 @@ where
         let _tool_guard = tool_span.enter();
 
         let tool_timeout = idle_timeout.unwrap_or(tool_fallback_timeout);
-        let tool_result = tokio::time::timeout(tool_timeout, async {
-            if let Some(blocked) = submit_repair_mode.and_then(|mode| mode.block_result(tool_name))
+        let tool_result = tokio::select! {
+            _ = wait_for_cancelled(ctx.cancelled) => {
+                tracing::info!(
+                    "[sub-agent:{}] cancelled while waiting for tool '{}'",
+                    agent_id,
+                    tool_name
+                );
+                return ToolDispatchResult {
+                    tool_results,
+                    barrier_hit,
+                    barrier_response,
+                    stage_block_signature: last_block_sig,
+                    submit_repair_update: submit_repair_update_seen,
+                    cancelled: true,
+                };
+            }
+            result = tokio::time::timeout(tool_timeout, async {
+            if let Some(blocked) = submit_repair_mode
+                .and_then(|mode| mode.block_result_with_args(tool_name, &tool_args))
             {
                 tracing::warn!(
                     target: "harness::submit_repair",
@@ -901,8 +1073,8 @@ where
                 )
                 .await
             }
-        })
-        .await;
+            }) => result,
+        };
 
         let (mut result_value, mut success) = match tool_result {
             Ok(result) => result,
@@ -1047,6 +1219,9 @@ where
         }
 
         let mut result_text = serde_json::to_string(&result_value).unwrap_or_default();
+        let hard_supervisor_injected = model_visible_notes
+            .iter()
+            .any(|note| note.contains(HARD_SUPERVISOR_MARKER));
         for note in model_visible_notes {
             result_text.push_str(&note);
         }
@@ -1055,6 +1230,9 @@ where
             call_id: Some(tool_call_id),
             content: OneOrMany::one(ToolResultContent::Text(Text { text: result_text })),
         }));
+        if hard_supervisor_injected {
+            hard_supervisor_active = true;
+        }
     }
 
     ToolDispatchResult {
@@ -1063,6 +1241,7 @@ where
         barrier_response,
         stage_block_signature: last_block_sig,
         submit_repair_update: submit_repair_update_seen,
+        cancelled: false,
     }
 }
 
@@ -1136,8 +1315,8 @@ mod tests {
     use super::{
         annotate_list_tools_with_guard, background_failure_runtime_correction,
         execute_registry_tool_with_active_org, registry_tool_outcome,
-        structured_storage_hook_payload, submit_needs_fix_runtime_correction, submit_repair_update,
-        SubmitRepairModeUpdate,
+        structured_storage_hook_payload, submit_coverage_gap_repair_mode_from_reasons,
+        submit_needs_fix_runtime_correction, submit_repair_update, SubmitRepairModeUpdate,
     };
     use crate::SubmitRepairKind;
     use golish_core::Tool;
@@ -1229,6 +1408,7 @@ mod tests {
             session_id: None,
             transcript_base_dir: None,
             api_request_stats: None,
+            cancelled: None,
             briefing: None,
             temperature_override: None,
             max_tokens_override: None,
@@ -1288,6 +1468,7 @@ mod tests {
             session_id: None,
             transcript_base_dir: None,
             api_request_stats: None,
+            cancelled: None,
             briefing: None,
             temperature_override: None,
             max_tokens_override: None,
@@ -1492,6 +1673,20 @@ mod tests {
         let v = serde_json::json!({
             "status": "needs_fix",
             "available_evidence_ids": [4336, 4335],
+            "coverage_gap_actions": [
+                {
+                    "asset": "101.69.134.6",
+                    "technique": "GOLISH-EAS-LIVENESS",
+                    "reason": "missing_terminal_coverage",
+                    "suggested_tools": ["httpx", "nmap -sn"]
+                },
+                {
+                    "asset": "www.example.com",
+                    "technique": "GOLISH-EAS-SERVICE-FINGERPRINT",
+                    "reason": "missing_terminal_coverage",
+                    "suggested_tools": ["nmap -sV", "whatweb"]
+                }
+            ],
             "reasons": [
                 "external attack surface incomplete: (101.69.134.6 x GOLISH-EAS-LIVENESS) never attempted",
                 "This operation's REAL evidence ids (newest first) are [4336, 4335]."
@@ -1504,13 +1699,29 @@ mod tests {
         };
 
         assert_eq!(mode.kind, SubmitRepairKind::CoverageGap);
+        assert_eq!(mode.coverage_gap_actions.len(), 2);
+        assert!(mode
+            .model_instruction()
+            .contains("Exact coverage_gap_actions"));
+        assert!(mode.model_instruction().contains("www.example.com"));
         assert!(mode.block_result("query_target_data").is_none());
         assert!(mode.block_result("pentest_run").is_none());
         assert!(mode.block_result("submit_stage_deliverable").is_none());
         let blocked = mode
+            .block_result("list_in_scope_targets")
+            .expect("coverage repair should not restart full inventory");
+        assert_eq!(blocked["repair_kind"], "coverage_gap");
+        let blocked = mode
             .block_result("subfinder")
             .expect("unknown fresh discovery tool remains blocked");
         assert_eq!(blocked["repair_kind"], "coverage_gap");
+        assert_eq!(
+            blocked["coverage_gap_actions"]
+                .as_array()
+                .expect("actions included in block payload")
+                .len(),
+            2
+        );
         assert!(blocked["error"]
             .as_str()
             .unwrap()
@@ -1518,16 +1729,160 @@ mod tests {
     }
 
     #[test]
+    fn coverage_gap_repair_blocks_bulk_pentest_run_lists() {
+        let mode = submit_coverage_gap_repair_mode_from_reasons(&[
+            "external attack surface incomplete: never attempted (112.65.238.93 x GOLISH-EAS-LIVENESS)"
+                .to_string(),
+        ])
+        .expect("coverage gaps should activate repair mode");
+
+        let blocked = mode
+            .block_result_with_args(
+                "pentest_run",
+                &serde_json::json!({
+                    "tool_name": "httpx",
+                    "args": "-l /dev/stdin -silent << 'EOF'\n112.65.238.93\n113.105.78.22\nEOF"
+                }),
+            )
+            .expect("bulk stdin probes should be blocked");
+
+        assert_eq!(blocked["blocked_by_submit_repair"], true);
+        assert_eq!(blocked["repair_kind"], "coverage_gap");
+        assert!(blocked["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("bulk stdin"));
+    }
+
+    #[test]
+    fn coverage_gap_repair_allows_single_target_pentest_run() {
+        let mode = submit_coverage_gap_repair_mode_from_reasons(&[
+            "external attack surface incomplete: never attempted (112.65.238.93 x GOLISH-EAS-SERVICE-FINGERPRINT)"
+                .to_string(),
+        ])
+        .expect("coverage gaps should activate repair mode");
+
+        assert!(mode
+            .block_result_with_args(
+                "pentest_run",
+                &serde_json::json!({
+                    "tool_name": "nmap",
+                    "args": "-sV --top-ports 100 -T4 112.65.238.93"
+                }),
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn coverage_gap_repair_blocks_single_target_outside_action_list() {
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["external attack surface incomplete: never attempted"],
+            "coverage_gap_actions": [{
+                "asset": "112.65.238.93",
+                "technique": "GOLISH-EAS-LIVENESS",
+                "reason": "missing_terminal_coverage",
+                "suggested_tools": ["httpx"]
+            }]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("structured coverage gaps should activate repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
+
+        assert!(mode
+            .block_result_with_args(
+                "pentest_run",
+                &serde_json::json!({
+                    "tool_name": "httpx",
+                    "args": "-u https://112.65.238.93 -silent -json"
+                }),
+            )
+            .is_none());
+
+        let blocked = mode
+            .block_result_with_args(
+                "pentest_run",
+                &serde_json::json!({
+                    "tool_name": "httpx",
+                    "args": "-u https://203.0.113.10 -silent"
+                }),
+            )
+            .expect("unlisted target should be blocked");
+        assert_eq!(blocked["repair_kind"], "coverage_gap");
+        assert!(blocked["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("not in coverage_gap_actions"));
+    }
+
+    #[test]
+    fn coverage_gap_repair_blocks_cidr_pentest_run() {
+        let mode = submit_coverage_gap_repair_mode_from_reasons(&[
+            "external attack surface incomplete: never attempted (124.196.9.134 x GOLISH-EAS-LIVENESS)"
+                .to_string(),
+        ])
+        .expect("coverage gaps should activate repair mode");
+
+        let blocked = mode
+            .block_result_with_args(
+                "pentest_run",
+                &serde_json::json!({
+                    "tool_name": "masscan",
+                    "args": "124.196.9.0/24 -p 53,80,443,22 --rate 1000 -oL masscan.out"
+                }),
+            )
+            .expect("CIDR sweeps should be blocked during coverage repair");
+
+        assert_eq!(blocked["repair_kind"], "coverage_gap");
+        assert!(blocked["blocked_reason"].as_str().unwrap().contains("CIDR"));
+    }
+
+    #[test]
+    fn coverage_gap_repair_blocks_multi_target_pentest_run() {
+        let mode = submit_coverage_gap_repair_mode_from_reasons(&[
+            "external attack surface incomplete: never attempted (124.196.9.134 x GOLISH-EAS-LIVENESS)"
+                .to_string(),
+        ])
+        .expect("coverage gaps should activate repair mode");
+
+        let blocked = mode
+            .block_result_with_args(
+                "pentest_run",
+                &serde_json::json!({
+                    "tool_name": "nmap",
+                    "args": "-Pn -p 80,443,8080,8443,22,3389 -T4 124.196.9.134 124.196.9.146"
+                }),
+            )
+            .expect("multi-target probes should be blocked during coverage repair");
+
+        assert_eq!(blocked["repair_kind"], "coverage_gap");
+        assert!(blocked["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("multi-target"));
+    }
+
+    #[test]
     fn submit_needs_fix_correction_guides_coverage_gap_without_ids() {
         let mut v = serde_json::json!({
             "status": "needs_fix",
-            "reasons": ["coverage cell missing for host x service fingerprint"]
+            "reasons": ["coverage cell missing for host x service fingerprint"],
+            "coverage_gap_actions": [{
+                "asset": "app.example.com",
+                "technique": "GOLISH-EAS-SERVICE-FINGERPRINT",
+                "reason": "missing_terminal_coverage",
+                "suggested_tools": ["nmap -sV"]
+            }]
         });
 
         let note = submit_needs_fix_runtime_correction("submit_stage_deliverable", &mut v)
             .expect("coverage needs_fix should produce targeted correction");
 
         assert!(note.contains("coverage gaps"));
+        assert!(note.contains("Exact coverage_gap_actions"));
+        assert!(note.contains("app.example.com"));
         assert!(note.contains("targeted stage-allowed probes"));
         assert!(!note.contains("Do NOT launch more scans"));
         assert!(v.get("runtime_correction").is_some());

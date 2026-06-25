@@ -77,6 +77,16 @@ fn structured_storage_hook_payload(
     Some(StructuredStorageHookPayload { command, stdout })
 }
 
+fn combined_stdout_stderr(result: &serde_json::Value) -> String {
+    let stdout = result.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
+    let stderr = result.get("stderr").and_then(|s| s.as_str()).unwrap_or("");
+    if stderr.trim().is_empty() {
+        stdout.to_string()
+    } else {
+        format!("{stdout}\n[stderr]\n{stderr}")
+    }
+}
+
 async fn record_recon_passive_evidence(
     tracker: Option<&golish_agent_kit::db_tracking::DbTracker>,
     session_id: Option<&str>,
@@ -480,11 +490,7 @@ where
                             // callers yet; session keeps the chain working today
                             // and auto-upgrades to task_id once that is wired.)
                             let op_id = tracker.task_id().unwrap_or_else(|| tracker.session_uuid());
-                            let ev_stdout = v
-                                .get("stdout")
-                                .and_then(|s| s.as_str())
-                                .unwrap_or("")
-                                .to_string();
+                            let ev_output = combined_stdout_stderr(v);
                             let ev_subject = tool_args
                                 .get("command")
                                 .and_then(|c| c.as_str())
@@ -493,9 +499,9 @@ where
                             // PR2 (coverage 投影) · deterministically derive
                             // (technique, asset, outcome) from the shell command;
                             // unmapped commands stay None (never project).
-                            let facts = golish_agent_kit::harness::evidence_facts::passive_intel_facts_from_command(ev_subject)
+                            let facts = golish_agent_kit::harness::evidence_facts::coverage_facts_from_command(ev_subject)
                                 .map(|(technique, asset)| {
-                                    let outcome = golish_agent_kit::harness::evidence_facts::passive_intel_outcome(technique, &ev_stdout);
+                                    let outcome = golish_agent_kit::harness::evidence_facts::coverage_outcome_for_run(technique, &ev_output, true, false);
                                     (technique, asset, outcome)
                                 });
                             match repo
@@ -507,7 +513,7 @@ where
                                     effective_tool_name,
                                     effective_tool_name,
                                     ev_subject,
-                                    &ev_stdout,
+                                    &ev_output,
                                     facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
                                 )
                                 .await
@@ -574,21 +580,16 @@ where
             // cite (otherwise every scan-stage deliverable is "fabricated" and
             // the gate loops). Kept as a separate block so the working
             // run_pty_cmd path above is untouched.
-            // NOTE: NOT gated on `is_success`. A passive-intel scan that FAILS
+            // NOTE: NOT gated on `is_success`. A mapped coverage probe that FAILS
             // (non-zero exit / timeout / flaky external service such as crt.sh) must
-            // still book a coverage fact (outcome=checked_empty, I8) — otherwise the
-            // cell stays not_attempted and the deterministic gate loops forever on a
-            // service it can never reach. CT via `ctfr -> crt.sh` is the motivating
-            // case (see passive_intel_outcome_for_run).
+            // still book a terminal fact — otherwise the cell stays not_attempted
+            // and the deterministic gate loops forever on a service it can never
+            // reach.
             if effective_tool_name == "pentest_run" && ctx.harness_stage.is_some() {
                 if let Some(tracker) = ctx.events.db_tracker {
                     if let Some(repo) = tracker.repo() {
                         let op_id = tracker.task_id().unwrap_or_else(|| tracker.session_uuid());
-                        let ev_stdout = v
-                            .get("stdout")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                        let ev_output = combined_stdout_stderr(v);
                         let pt_tool = tool_args
                             .get("tool_name")
                             .and_then(|s| s.as_str())
@@ -603,32 +604,32 @@ where
                         // PR2 · "{tool} {args}" has the same shape as a shell
                         // command line; same deterministic facts derivation. A FAILED
                         // run resolves to checked_empty (I8) via
-                        // `passive_intel_outcome_for_run`; success keeps the
-                        // stdout-derived verdict.
+                        // `coverage_outcome_for_run`; success keeps the
+                        // output-derived verdict.
                         // T2 (设计 2026-06-23-failure-outcome-not-checked-empty): gray-switch
                         // 决定失败检查记 error 还是 empty（默认 off = empty，旧行为）。
                         let distinguish_failure =
                             golish_agent_kit::harness::feature_flags::failure_outcome_error_enabled(
                             );
-                        let facts = golish_agent_kit::harness::evidence_facts::passive_intel_facts_from_command(&ev_subject)
+                        let facts = golish_agent_kit::harness::evidence_facts::coverage_facts_from_command(&ev_subject)
                             .map(|(technique, asset)| {
-                                let outcome = golish_agent_kit::harness::evidence_facts::passive_intel_outcome_for_run(technique, &ev_stdout, is_success, distinguish_failure);
+                                let outcome = golish_agent_kit::harness::evidence_facts::coverage_outcome_for_run(technique, &ev_output, is_success, distinguish_failure);
                                 (technique, asset, outcome)
                             });
                         // A successful run always books (its ledger id is citable); a
-                        // FAILED run books only when it carries a passive-intel fact,
-                        // so the coverage cell gets its terminal status — a failed
-                        // UNmapped command has nothing citable and is skipped.
+                        // FAILED run books only when it carries a derived coverage
+                        // fact, so the coverage cell gets its terminal status — a
+                        // failed unmapped command has nothing citable and is skipped.
                         if is_success || facts.is_some() {
                             // On failure stdout is usually empty; record the error so
                             // the ledger row carries the real reason (crt.sh 502 /
                             // timeout) for audit, not a blank body.
-                            let ev_body = if is_success {
-                                ev_stdout.clone()
+                            let ev_body = if is_success || !ev_output.trim().is_empty() {
+                                ev_output.clone()
                             } else {
                                 v.get("error")
                                     .and_then(|s| s.as_str())
-                                    .unwrap_or("passive check failed")
+                                    .unwrap_or("coverage check failed")
                                     .to_string()
                             };
                             match repo

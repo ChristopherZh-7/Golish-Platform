@@ -48,18 +48,133 @@ The agent appears to be making suboptimal tool choices — calling the same tool
 repeatedly or not making meaningful progress. Review the execution history and
 provide strategic guidance.
 
+## STAGE BOUNDARY
+
+If the user prompt includes a current stage, agent role, allowed tools, or allowed
+scan categories, that boundary is mandatory. Do not recommend tools that are not
+visible to the agent. Do not recommend exploitation, credential attacks,
+vulnerability scanning, brute forcing, or next-stage actions unless the current
+stage explicitly permits that kind of work.
+
 ## INSTRUCTIONS
 
 1. Analyze what the agent has done so far
 2. Identify why it might be stuck (wrong approach, missing context, repeated errors)
 3. Suggest a specific alternative strategy or next tool to use
-4. Be concise (under 150 words) and actionable
+4. Keep the advice inside the current stage's gate objective
+5. Be concise (under 150 words) and actionable
 
 ## OUTPUT
 
 Provide advice as a direct message to the agent. No headers or formatting — just
 clear, actionable guidance on what to do differently.
 "#
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MentorPromptContext {
+    pub stage: Option<String>,
+    pub agent_role: Option<String>,
+    pub allowed_tools: Vec<String>,
+    pub allowed_tool_types: Vec<String>,
+}
+
+impl MentorPromptContext {
+    fn has_any_boundary(&self) -> bool {
+        self.stage.as_deref().is_some_and(|s| !s.trim().is_empty())
+            || self
+                .agent_role
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+            || !self.allowed_tools.is_empty()
+            || !self.allowed_tool_types.is_empty()
+    }
+}
+
+fn join_limited(items: &[String], limit: usize) -> String {
+    if items.is_empty() {
+        return "(not provided)".to_string();
+    }
+    let mut rendered = items
+        .iter()
+        .take(limit)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if items.len() > limit {
+        rendered.push_str(&format!(", +{} more", items.len() - limit));
+    }
+    rendered
+}
+
+fn mentor_stage_objective(stage: Option<&str>) -> &'static str {
+    match stage.unwrap_or_default() {
+        "target_intel" => {
+            "Close passive intelligence coverage with provider/source evidence. Do not run active scans."
+        }
+        "external_attack_surface" => {
+            "Close EAS coverage: liveness, port discovery, and service fingerprint cells must reach terminal states. Wait for background jobs, inspect outputs, update structured evidence, then submit."
+        }
+        "enumeration" => {
+            "Close authorized enumeration coverage and consolidate discovered endpoints. Do not jump to exploitation."
+        }
+        "vuln_triage" | "verification" | "exploitation" => {
+            "Stay within the current vulnerability-validation gate and cite real evidence."
+        }
+        _ => "Stay within the current stage gate and cite real evidence.",
+    }
+}
+
+fn render_mentor_context(context: &MentorPromptContext) -> String {
+    if !context.has_any_boundary() {
+        return String::new();
+    }
+    let stage = context.stage.as_deref().unwrap_or("(not provided)");
+    let role = context.agent_role.as_deref().unwrap_or("(not provided)");
+    format!(
+        r#"
+Current execution boundary:
+- Current stage: {stage}
+- Agent role: {role}
+- Allowed visible tools: {allowed_tools}
+- Allowed scan categories: {allowed_tool_types}
+- Stage objective: {objective}
+
+Boundary rules:
+- Stay inside the current stage and its gate objective.
+- Use only tools that are visible/allowed for this agent.
+- Do NOT recommend exploitation, credential attacks, brute force, vulnerability scanning, or next-stage work unless the current stage explicitly permits it.
+- If background jobs are pending or recent scan output has not been reviewed, prefer wait/read/consolidate/submit over launching more scans.
+"#,
+        stage = stage,
+        role = role,
+        allowed_tools = safe_truncate(&join_limited(&context.allowed_tools, 32), 1200),
+        allowed_tool_types = safe_truncate(&join_limited(&context.allowed_tool_types, 24), 800),
+        objective = mentor_stage_objective(context.stage.as_deref()),
+    )
+}
+
+pub fn mentor_hard_stage_guard(context: &MentorPromptContext) -> String {
+    if !context.has_any_boundary() {
+        return "Current stage boundary: obey the active harness stage, use only visible tools, and never bypass gate/submit requirements.".to_string();
+    }
+    let stage = context.stage.as_deref().unwrap_or("(not provided)");
+    let role = context.agent_role.as_deref().unwrap_or("(not provided)");
+    format!(
+        "Current stage boundary:\n\
+         - Current stage: {stage}\n\
+         - Agent role: {role}\n\
+         - Allowed visible tools: {allowed_tools}\n\
+         - Allowed scan categories: {allowed_tool_types}\n\
+         - Objective now: {objective}\n\
+         - Do NOT recommend or follow exploitation, credential attacks, brute force, vulnerability scanning, or next-stage work unless this exact stage permits it.\n\
+         - If the model advice below conflicts with this boundary, obey this boundary.",
+        stage = stage,
+        role = role,
+        allowed_tools = safe_truncate(&join_limited(&context.allowed_tools, 32), 1200),
+        allowed_tool_types = safe_truncate(&join_limited(&context.allowed_tool_types, 24), 800),
+        objective = mentor_stage_objective(context.stage.as_deref()),
+    )
 }
 
 /// Execution Mentor user prompt — provides context about the stuck agent.
@@ -69,16 +184,35 @@ pub fn mentor_user_prompt(
     repeat_count: usize,
     recent_tool_calls: &str,
 ) -> String {
+    mentor_user_prompt_with_context(
+        subtask_description,
+        repeated_tool,
+        repeat_count,
+        recent_tool_calls,
+        &MentorPromptContext::default(),
+    )
+}
+
+/// Execution Mentor user prompt with stage/role/tool boundary context.
+pub fn mentor_user_prompt_with_context(
+    subtask_description: &str,
+    repeated_tool: &str,
+    repeat_count: usize,
+    recent_tool_calls: &str,
+    context: &MentorPromptContext,
+) -> String {
     format!(
         r#"The agent is working on: {description}
+{context}
 
 It has called '{tool}' {count} times. This suggests it may be stuck.
 
 Recent tool calls:
 {recent}
 
-What should the agent do differently?"#,
+What should the agent do differently while staying inside the execution boundary?"#,
         description = subtask_description,
+        context = render_mentor_context(context),
         tool = repeated_tool,
         count = repeat_count,
         recent = safe_truncate(recent_tool_calls, 3000),

@@ -19,7 +19,7 @@ export function StatusIcon({
     case "running":
       return <Loader2 className={cn(iconClass, "text-[var(--ansi-blue)] animate-spin")} />;
     case "backgrounded":
-      return <Clock className={cn(iconClass, "text-amber-400 animate-pulse")} />;
+      return <Clock className={cn(iconClass, "text-amber-300 animate-pulse")} />;
     case "error":
       return <XCircle className={cn(iconClass, "text-[var(--ansi-red)]")} />;
     case "interrupted":

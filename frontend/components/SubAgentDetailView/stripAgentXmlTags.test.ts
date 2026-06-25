@@ -8,8 +8,10 @@ import {
   getSubAgentShellOutputJsonValueForDetail,
   getSubAgentToolDisplayStatus,
   isSubAgentShellLikeOutputTool,
+  normalizeSubAgentEntriesForDetail,
   SUB_AGENT_DETAIL_PENDING_OUTPUT_SPINNER_CLASS,
   SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS,
+  SUB_AGENT_HEADER_STATUS_BADGE_STYLES,
   SubAgentShellOutputText,
   stripAgentXmlTags,
 } from "./SubAgentDetailView";
@@ -174,6 +176,35 @@ describe("getSubAgentShellOutputForDetail", () => {
   });
 });
 
+describe("normalizeSubAgentEntriesForDetail", () => {
+  it("removes short streaming text prefixes covered by a later accumulated text entry", () => {
+    expect(
+      normalizeSubAgentEntriesForDetail([
+        { kind: "text", text: "n" },
+        { kind: "thinking", text: "thinking", startedAt: 1, endedAt: 2 },
+        { kind: "text", text: "nmap needs root for SYN scan." },
+      ])
+    ).toEqual([
+      { kind: "thinking", text: "thinking", startedAt: 1, endedAt: 2 },
+      { kind: "text", text: "nmap needs root for SYN scan." },
+    ]);
+  });
+
+  it("keeps matching prefixes once a tool call creates a new response boundary", () => {
+    expect(
+      normalizeSubAgentEntriesForDetail([
+        { kind: "text", text: "Let me run" },
+        { kind: "tool_call", toolCallId: "tool-1" },
+        { kind: "text", text: "Let me run the next probe." },
+      ])
+    ).toEqual([
+      { kind: "text", text: "Let me run" },
+      { kind: "tool_call", toolCallId: "tool-1" },
+      { kind: "text", text: "Let me run the next probe." },
+    ]);
+  });
+});
+
 describe("getSubAgentToolDisplayStatus", () => {
   it("treats completed sub-agent tool payload failures as error", () => {
     expect(
@@ -233,5 +264,17 @@ describe("getSubAgentHeaderDisplayStatus", () => {
         ],
       })
     ).toBe("error");
+  });
+
+  it("uses high-contrast colors for live header status badges", () => {
+    expect(SUB_AGENT_HEADER_STATUS_BADGE_STYLES.running.badgeClass).toContain(
+      "text-[var(--ansi-blue)]"
+    );
+    expect(SUB_AGENT_HEADER_STATUS_BADGE_STYLES.running.badgeClass).toContain(
+      "border-[var(--ansi-blue)]/45"
+    );
+    expect(SUB_AGENT_HEADER_STATUS_BADGE_STYLES.backgrounded.badgeClass).toContain(
+      "text-amber-300"
+    );
   });
 });

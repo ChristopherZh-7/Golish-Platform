@@ -41,7 +41,7 @@
 
 - 5 子系统是有意分解（隔离关注点）；加字段先想归哪个子系统，别全堆顶层。
 - 事件经 `BridgeEventBus` → coordinator（单任务）发射；别绕过 coordinator 直发。
-- `prepare.rs` 按 `GOLISH_EXECUTION_MENTOR` 给 runtime 注入 `ExecutionMonitor`：默认 hard supervisor（`just dev` 直接启用），`shadow` 只记录 mentor advice，`soft`/`on` 注入 advisor，`off`/`false`/`0` 才关闭。这个默认会增加额外 LLM 调用，改默认值必须有明确产品理由。
+- `prepare.rs` 按 `GOLISH_RUNTIME_SUPERVISOR`（兼容旧 `GOLISH_EXECUTION_MENTOR`）给 runtime 注入 `ExecutionMonitor`：默认 hard RuntimeSupervisor（`just dev` 直接启用），`shadow` 只记录结构化决策，`soft`/`on` 注入策略指令，`off`/`false`/`0` 关闭。这个默认会增加额外 LLM 调用，改默认值必须有明确产品理由。
 
 ## 测试入口
 

@@ -31,12 +31,15 @@ use golish_agent_kit::harness::org_gate::{
 };
 use golish_agent_kit::harness::{
     allowed_tool_names, evaluate_org_stage_gate, load_embedded_stage_spec, stage_methodology_md,
-    OrgVerdict, StageDeliverable, StageKind,
+    HarnessRecoveryActions, OrgVerdict, StageDeliverable, StageKind,
 };
 use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
     agent_run_from_state_blob, state_blob_with_agent_run, state_blob_without_agent_run,
     AgentRunCheckpoint, AgentRunStatus, RuntimeCorrectionCheckpoint, ToolCheckpoint,
     ToolCheckpointState,
+};
+use golish_agent_kit::task_orchestrator::stage_refiner::{
+    refine_gate_block, RefinerContext, RepairDirective,
 };
 use golish_core::events::{AiEvent, HarnessTraceKind};
 use golish_sub_agents::{
@@ -331,6 +334,45 @@ fn stage_run_agent_path(stage: StageKind, unit: &OrgUnit, specialist: &str) -> S
     )
 }
 
+fn repair_kind_label(directive: &RepairDirective) -> String {
+    serde_json::to_string(&directive.repair_kind)
+        .unwrap_or_else(|_| "\"generic\"".to_string())
+        .trim_matches('"')
+        .to_string()
+}
+
+fn emit_stage_refiner_decision(
+    ctx: &AgenticLoopContext<'_>,
+    stage: StageKind,
+    agent_path: &str,
+    directive: &RepairDirective,
+) {
+    let operation_id = ctx
+        .harness_operation_id
+        .map(|id| id.to_string())
+        .or_else(|| ctx.events.session_id.map(str::to_string));
+    let Some(operation_id) = operation_id else {
+        return;
+    };
+    let _ = ctx.events.event_tx.send(AiEvent::HarnessTrace {
+        operation_id,
+        stage: stage.as_str().to_string(),
+        agent_path: agent_path.to_string(),
+        trace: HarnessTraceKind::StageRefinerDecision {
+            repair_kind: repair_kind_label(directive),
+            root_cause: directive.root_cause.clone(),
+            action_count: directive.actions.len().min(u32::MAX as usize) as u32,
+            gap_count: directive
+                .submit_guidance
+                .required_coverage_cells
+                .len()
+                .min(u32::MAX as usize) as u32,
+            llm_escalated: directive.llm_escalated,
+            directive_hash: directive.gate_reason_hash.clone(),
+        },
+    });
+}
+
 async fn load_stage_run_worker_chain(
     ctx: &AgenticLoopContext<'_>,
     stage: StageKind,
@@ -456,6 +498,7 @@ struct StageRunCheckpointInput<'a> {
     pending_gate_correction: Option<String>,
     correction_kind: Option<&'a str>,
     submit_repair_mode: Option<SubmitRepairMode>,
+    repair_directive: Option<RepairDirective>,
 }
 
 fn build_stage_run_agent_checkpoint(input: StageRunCheckpointInput<'_>) -> AgentRunCheckpoint {
@@ -474,11 +517,19 @@ fn build_stage_run_agent_checkpoint(input: StageRunCheckpointInput<'_>) -> Agent
             .submit_repair_mode
             .as_ref()
             .and_then(|mode| serde_json::to_value(mode).ok()),
+        repair_directive: input
+            .repair_directive
+            .as_ref()
+            .and_then(|directive| serde_json::to_value(directive).ok()),
         runtime_corrections: input
             .pending_gate_correction
             .map(|message| {
                 vec![RuntimeCorrectionCheckpoint {
-                    source: "rule".to_string(),
+                    source: if input.repair_directive.is_some() {
+                        "stage_refiner".to_string()
+                    } else {
+                        "rule".to_string()
+                    },
                     kind: input
                         .correction_kind
                         .unwrap_or("per_org_gate_block")
@@ -568,7 +619,7 @@ enum OrgAttemptOutcome {
 fn next_org_action(verdict: &OrgVerdict, attempt: usize, max_attempts: usize) -> OrgAttemptOutcome {
     match verdict {
         OrgVerdict::Pass => OrgAttemptOutcome::Passed,
-        OrgVerdict::Block { reasons } => {
+        OrgVerdict::Block { reasons, .. } => {
             if attempt < max_attempts {
                 OrgAttemptOutcome::Retry {
                     feedback: gate_retry_feedback(attempt + 1, max_attempts, reasons),
@@ -593,6 +644,7 @@ fn fallback_org_verdict(repo_available: bool, sub_ok: bool) -> (OrgVerdict, bool
                      again before this organization can pass."
                         .to_string(),
                 ],
+                recovery_actions: HarnessRecoveryActions::default(),
             },
             true,
         );
@@ -603,6 +655,7 @@ fn fallback_org_verdict(repo_available: bool, sub_ok: bool) -> (OrgVerdict, bool
     } else {
         OrgVerdict::Block {
             reasons: vec!["sub-agent did not complete".to_string()],
+            recovery_actions: HarnessRecoveryActions::default(),
         }
     };
     (verdict, false)
@@ -628,6 +681,24 @@ fn gate_retry_feedback(attempt: usize, max_attempts: usize, reasons: &[String]) 
          NOT redo it; focus only on closing these specific gaps, then submit the \
          StageDeliverable again:\n\n{reasons_block}"
     )
+}
+
+fn stage_run_gate_repair_directive(
+    stage: StageKind,
+    org_id: Option<uuid::Uuid>,
+    agent_path: String,
+    reasons: Vec<String>,
+    recovery_actions: &HarnessRecoveryActions,
+) -> RepairDirective {
+    refine_gate_block(RefinerContext {
+        stage,
+        org_id,
+        agent_path,
+        reasons,
+        coverage_gap_actions: recovery_actions.coverage_gap_actions.clone(),
+        available_evidence_ids: Vec::new(),
+        running_background_jobs: Vec::new(),
+    })
 }
 
 /// Handle the `stage_run` tool call: per-org serial specialist fan-out.
@@ -912,6 +983,7 @@ where
                     pending_gate_correction: None,
                     correction_kind: None,
                     submit_repair_mode: carried_submit_repair_mode,
+                    repair_directive: None,
                 }),
             )
             .await;
@@ -982,12 +1054,35 @@ where
                     break;
                 }
                 OrgAttemptOutcome::Retry { feedback: fb } => {
-                    let submit_repair_mode = match &verdict {
-                        OrgVerdict::Block { reasons } => {
-                            submit_coverage_gap_repair_mode_from_reasons(reasons)
-                        }
+                    let repair_directive = match &verdict {
+                        OrgVerdict::Block {
+                            reasons,
+                            recovery_actions,
+                        } => Some(stage_run_gate_repair_directive(
+                            stage,
+                            uuid::Uuid::parse_str(&unit.id).ok(),
+                            agent_path.clone(),
+                            reasons.clone(),
+                            recovery_actions,
+                        )),
                         OrgVerdict::Pass => None,
                     };
+                    let submit_repair_mode = repair_directive
+                        .as_ref()
+                        .and_then(RepairDirective::to_submit_repair_mode)
+                        .or_else(|| match &verdict {
+                            OrgVerdict::Block { reasons, .. } => {
+                                submit_coverage_gap_repair_mode_from_reasons(reasons)
+                            }
+                            OrgVerdict::Pass => None,
+                        });
+                    let next_feedback = repair_directive
+                        .as_ref()
+                        .map(|directive| format!("{fb}\n\n{}", directive.model_instruction()))
+                        .unwrap_or(fb);
+                    if let Some(directive) = repair_directive.as_ref() {
+                        emit_stage_refiner_decision(ctx, stage, &agent_path, directive);
+                    }
                     persist_stage_run_agent_checkpoint(
                         ctx,
                         build_stage_run_agent_checkpoint(StageRunCheckpointInput {
@@ -999,13 +1094,14 @@ where
                             sub_agent_tool: &sub_agent_tool,
                             chain_id: resume_chain_id,
                             status: AgentRunStatus::GateBlocked,
-                            pending_gate_correction: Some(fb.clone()),
+                            pending_gate_correction: Some(next_feedback.clone()),
                             correction_kind: Some("per_org_gate_retry"),
                             submit_repair_mode,
+                            repair_directive,
                         }),
                     )
                     .await;
-                    feedback = Some(fb);
+                    feedback = Some(next_feedback);
                     continue;
                 }
                 OrgAttemptOutcome::Exhausted { reasons } => {
@@ -1169,6 +1265,7 @@ pub fn stage_run_tool_definition() -> rig::completion::ToolDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use golish_agent_kit::harness::CoverageGapAction;
 
     #[test]
     fn parse_org_units_reads_id_name_ownership() {
@@ -1359,6 +1456,7 @@ mod tests {
             pending_gate_correction: Some("retry 2/3: close liveness gap".to_string()),
             pending_submit_only: false,
             submit_repair_mode: None,
+            repair_directive: None,
             runtime_corrections: Vec::new(),
             background_job_ids: Vec::new(),
             evidence_watermark: None,
@@ -1386,6 +1484,7 @@ mod tests {
             pending_gate_correction: Some("retry".to_string()),
             pending_submit_only: false,
             submit_repair_mode: None,
+            repair_directive: None,
             runtime_corrections: Vec::new(),
             background_job_ids: Vec::new(),
             evidence_watermark: None,
@@ -1419,6 +1518,7 @@ mod tests {
             pending_gate_correction: Some("retry 2/3: close port gap".to_string()),
             correction_kind: Some("per_org_gate_retry"),
             submit_repair_mode: None,
+            repair_directive: None,
         });
 
         assert_eq!(checkpoint.status, AgentRunStatus::GateBlocked);
@@ -1452,6 +1552,7 @@ mod tests {
             pending_gate_correction: Some("retry 2/3: close coverage gap".to_string()),
             correction_kind: Some("per_org_gate_retry"),
             submit_repair_mode: Some(mode),
+            repair_directive: None,
         });
 
         let restored: SubmitRepairMode =
@@ -1482,6 +1583,7 @@ mod tests {
     fn next_org_action_block_with_attempts_left_retries_with_named_reasons() {
         let v = OrgVerdict::Block {
             reasons: vec!["missing GOLISH-INTEL-DNS on a.com".to_string()],
+            recovery_actions: HarnessRecoveryActions::default(),
         };
         match next_org_action(&v, 1, 3) {
             OrgAttemptOutcome::Retry { feedback } => {
@@ -1502,6 +1604,7 @@ mod tests {
     fn next_org_action_block_on_last_attempt_is_exhausted() {
         let v = OrgVerdict::Block {
             reasons: vec!["coverage incomplete".to_string()],
+            recovery_actions: HarnessRecoveryActions::default(),
         };
         assert_eq!(
             next_org_action(&v, 3, 3),
@@ -1516,6 +1619,7 @@ mod tests {
         // max_attempts == 1 (no-repo fallback path): a BLOCK is terminal, never retried.
         let v = OrgVerdict::Block {
             reasons: vec!["sub-agent did not complete".to_string()],
+            recovery_actions: HarnessRecoveryActions::default(),
         };
         assert_eq!(
             next_org_action(&v, 1, 1),
@@ -1534,7 +1638,7 @@ mod tests {
             "a live DB-backed stage must treat missing deliverable as a gate BLOCK so it retries"
         );
         match verdict {
-            OrgVerdict::Block { reasons } => {
+            OrgVerdict::Block { reasons, .. } => {
                 assert!(
                     reasons
                         .iter()
@@ -1546,6 +1650,45 @@ mod tests {
                 panic!("missing live deliverable must not pass via sub_ok fallback")
             }
         }
+    }
+
+    #[test]
+    fn stage_run_gate_repair_directive_uses_structured_gap_actions() {
+        let recovery_actions = HarnessRecoveryActions {
+            coverage_gap_actions: vec![CoverageGapAction {
+                asset: "pinganstock.com".to_string(),
+                technique: "GOLISH-EAS-LIVENESS".to_string(),
+                reason: "liveness cell never reached a terminal state".to_string(),
+                suggested_tools: vec!["httpx".to_string()],
+            }],
+            ..Default::default()
+        };
+        let directive = stage_run_gate_repair_directive(
+            StageKind::ExternalAttackSurface,
+            None,
+            "main>stage_run:external_attack_surface>org:abc>prober".to_string(),
+            vec!["coverage incomplete".to_string()],
+            &recovery_actions,
+        );
+
+        assert_eq!(directive.actions.len(), 1);
+        assert_eq!(
+            directive.actions[0].asset.as_deref(),
+            Some("pinganstock.com")
+        );
+        assert_eq!(directive.actions[0].tool.as_deref(), Some("httpx"));
+        assert_eq!(
+            directive.submit_guidance.required_coverage_cells[0].technique,
+            "GOLISH-EAS-LIVENESS"
+        );
+        let mode = directive
+            .to_submit_repair_mode()
+            .expect("coverage directive should become submit repair mode");
+        assert_eq!(mode.coverage_gap_actions.len(), 1);
+        assert_eq!(
+            mode.coverage_gap_actions[0].asset,
+            "pinganstock.com".to_string()
+        );
     }
 
     #[test]

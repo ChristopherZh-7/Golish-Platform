@@ -220,6 +220,9 @@ fn aggregate(outcomes: Vec<GateCheckOutcome>) -> GateResult {
             recovery
                 .missing_evidence_kinds
                 .extend(rec.missing_evidence_kinds);
+            recovery
+                .coverage_gap_actions
+                .extend(rec.coverage_gap_actions);
         }
     }
 

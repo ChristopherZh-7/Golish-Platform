@@ -35,12 +35,13 @@ import {
   stripOscSequences,
 } from "@/lib/ansi";
 import { copyToClipboard } from "@/lib/clipboard";
+import { shouldStickToBottomAfterScroll } from "@/lib/scroll-stickiness";
 import { getAgentColor, getAgentIcon } from "@/lib/sub-agent-theme";
 import { safeStringify } from "@/lib/text";
 import { formatDurationShort } from "@/lib/time";
 import { getToolPrimaryArg, toolResultIndicatesFailure } from "@/lib/tools";
 import { cn } from "@/lib/utils";
-import type { ActiveSubAgent, SubAgentToolCall } from "@/store";
+import type { ActiveSubAgent, SubAgentEntry, SubAgentToolCall } from "@/store";
 import { useStore } from "@/store";
 
 export const SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS = "h-4 w-4 shrink-0 animate-spin";
@@ -168,6 +169,35 @@ const AgentOutputBlock = memo(function AgentOutputBlock({
     </div>
   );
 });
+
+function comparableEntryText(text: string | undefined): string {
+  return (text ?? "").replace(/\s+/g, " ").trim();
+}
+
+function isCoveredByLaterTextEntry(entries: readonly SubAgentEntry[], index: number): boolean {
+  const current = comparableEntryText(entries[index].text);
+  if (!current) return false;
+
+  for (let i = index + 1; i < entries.length; i++) {
+    const next = entries[i];
+    if (next.kind === "tool_call") return false;
+    if (next.kind !== "text") continue;
+
+    const later = comparableEntryText(next.text);
+    if (later.length > current.length && later.startsWith(current)) return true;
+  }
+
+  return false;
+}
+
+export function normalizeSubAgentEntriesForDetail(
+  entries: readonly SubAgentEntry[]
+): SubAgentEntry[] {
+  return entries.filter((entry, index) => {
+    if (entry.kind !== "text") return true;
+    return !isCoveredByLaterTextEntry(entries, index);
+  });
+}
 
 /* ─── Structured args display ─── */
 
@@ -408,7 +438,7 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: Su
                     <Loader2
                       className={cn(
                         SUB_AGENT_DETAIL_PENDING_OUTPUT_SPINNER_CLASS,
-                        status === "backgrounded" && "text-amber-400"
+                        status === "backgrounded" && "text-amber-300"
                       )}
                     />
                   ) : status === "error" ? (
@@ -545,9 +575,14 @@ const NestedSubAgentCard = memo(function NestedSubAgentCard({
 
 /* ─── Status badge ─── */
 
-const STATUS_BADGE_STYLES: Record<SubAgentHeaderStatus, { badgeClass: string }> = {
-  running: { badgeClass: "bg-[var(--accent-dim)] text-accent" },
-  backgrounded: { badgeClass: "bg-amber-400/10 text-amber-400" },
+export const SUB_AGENT_HEADER_STATUS_BADGE_STYLES: Record<
+  SubAgentHeaderStatus,
+  { badgeClass: string }
+> = {
+  running: {
+    badgeClass: "border-[var(--ansi-blue)]/45 bg-[var(--ansi-blue)]/15 text-[var(--ansi-blue)]",
+  },
+  backgrounded: { badgeClass: "border-amber-300/45 bg-amber-400/15 text-amber-300" },
   completed: { badgeClass: "bg-[var(--success-dim)] text-[var(--success)]" },
   error: { badgeClass: "bg-destructive/10 text-destructive" },
   interrupted: { badgeClass: "bg-yellow-500/10 text-yellow-400" },
@@ -562,7 +597,6 @@ interface SubAgentDetailViewProps {
 const EMPTY_SUB_AGENT_LIST: ActiveSubAgent[] = [];
 /** Stable empty array so the background-jobs selector doesn't churn re-renders. */
 const EMPTY_BG_JOBS: never[] = [];
-const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
 const LIVE_OUTPUT_RENDER_LIMIT = 20000;
 
 function limitLiveOutputForRender(text: string, isLive: boolean): string {
@@ -595,6 +629,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const timelineScrollFrameRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
+  const previousTimelineScrollTopRef = useRef(0);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
   const [isTaskExpanded, setIsTaskExpanded] = useState(false);
   const isRunning = subAgent?.status === "running";
@@ -603,13 +638,13 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
     ? t("ai.subAgentDetail.backToParent")
     : t("ai.toolDetail.backToTerminal");
 
-  const latestEntry =
-    subAgent && subAgent.entries.length > 0 ? subAgent.entries[subAgent.entries.length - 1] : null;
+  const detailEntries = subAgent ? normalizeSubAgentEntriesForDetail(subAgent.entries) : [];
+  const latestEntry = detailEntries.length > 0 ? detailEntries[detailEntries.length - 1] : null;
   const latestRunningTool = subAgent?.toolCalls.find((tool) => tool.status === "running");
   const activityVersion = [
     subAgent?.parentRequestId,
     subAgent?.status,
-    subAgent?.entries.length ?? 0,
+    detailEntries.length,
     latestEntry?.kind,
     latestEntry?.text?.length ?? 0,
     latestEntry?.toolCallId ?? "",
@@ -621,8 +656,15 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
   const updateStickiness = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    shouldStickToBottomRef.current = distanceFromBottom <= AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
+    shouldStickToBottomRef.current = shouldStickToBottomAfterScroll(
+      previousTimelineScrollTopRef.current,
+      {
+        scrollTop: el.scrollTop,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+      }
+    );
+    previousTimelineScrollTopRef.current = el.scrollTop;
   }, []);
 
   const handleTimelineWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
@@ -638,6 +680,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
       const el = scrollRef.current;
       if (!el || !shouldStickToBottomRef.current) return;
       el.scrollTop = el.scrollHeight;
+      previousTimelineScrollTopRef.current = el.scrollTop;
     });
   }, []);
 
@@ -650,6 +693,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
 
   useEffect(() => {
     shouldStickToBottomRef.current = true;
+    previousTimelineScrollTopRef.current = scrollRef.current?.scrollTop ?? 0;
     if (scrollRef.current && isRunning) scheduleTimelineScrollToBottom();
   }, [targetRequestId, isRunning, scheduleTimelineScrollToBottom]);
 
@@ -725,11 +769,11 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
   const AgentIcon = getAgentIcon(subAgent.agentName);
   const agentColor = getAgentColor(subAgent.agentName);
   const headerDisplayStatus = getSubAgentHeaderDisplayStatus(subAgent);
-  const headerStatus = STATUS_BADGE_STYLES[headerDisplayStatus];
+  const headerStatus = SUB_AGENT_HEADER_STATUS_BADGE_STYLES[headerDisplayStatus];
   const isHeaderLive = headerDisplayStatus === "running" || headerDisplayStatus === "backgrounded";
   const toolMap = new Map(subAgent.toolCalls.map((tc) => [tc.id, tc]));
   const subAgentMap = new Map(subAgents.map((agent) => [agent.parentRequestId, agent]));
-  const hasEntries = subAgent.entries.length > 0;
+  const hasEntries = detailEntries.length > 0;
   const backgroundedToolCount = subAgent.toolCalls.filter(
     (tool) => getSubAgentToolDisplayStatus(tool) === "backgrounded"
   ).length;
@@ -760,7 +804,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
             <Loader2
               className={cn(
                 SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS,
-                headerDisplayStatus === "backgrounded" && "text-amber-400"
+                headerDisplayStatus === "backgrounded" && "text-amber-300"
               )}
             />
           )}
@@ -826,7 +870,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
         ref={scrollRef}
         className="flex-1 overflow-y-auto"
         onScroll={updateStickiness}
-        onWheel={handleTimelineWheel}
+        onWheelCapture={handleTimelineWheel}
       >
         {/* Prompt generation (collapsible) */}
         {subAgent.promptGeneration && (
@@ -876,7 +920,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
         {/* Interleaved timeline entries: text blocks + tool calls */}
         <div className="divide-y divide-border/10">
           {hasEntries
-            ? subAgent.entries.map((entry, i) => {
+            ? detailEntries.map((entry, i) => {
                 if (entry.kind === "thinking" && entry.text) {
                   return (
                     <div
@@ -885,7 +929,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                     >
                       <ThinkingBlock
                         content={entry.text}
-                        isActive={isRunning && i === subAgent.entries.length - 1}
+                        isActive={isRunning && i === detailEntries.length - 1}
                         startedAt={entry.startedAt}
                         endedAt={entry.endedAt}
                       />
@@ -897,7 +941,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                     <AgentOutputBlock
                       key={`entry-${i}`}
                       text={entry.text}
-                      streaming={isRunning && i === subAgent.entries.length - 1}
+                      streaming={isRunning && i === detailEntries.length - 1}
                     />
                   );
                 }
@@ -940,9 +984,13 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
 
       {/* Running footer */}
       {isRunning && (
-        <div className="px-3 py-2 border-t border-[var(--border-subtle)] bg-accent/5 flex items-center gap-2 flex-shrink-0">
-          <Loader2 className={cn(SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS, "text-accent")} />
-          <span className="text-[11px] text-accent/80">{t("ai.subAgentDetail.agentRunning")}</span>
+        <div className="px-3 py-2 border-t border-[var(--border-subtle)] bg-[var(--ansi-blue)]/10 flex items-center gap-2 flex-shrink-0">
+          <Loader2
+            className={cn(SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS, "text-[var(--ansi-blue)]")}
+          />
+          <span className="text-[11px] text-[var(--ansi-blue)]">
+            {t("ai.subAgentDetail.agentRunning")}
+          </span>
         </div>
       )}
     </div>

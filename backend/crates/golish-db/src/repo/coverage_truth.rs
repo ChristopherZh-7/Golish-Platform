@@ -161,34 +161,133 @@ fn build_subdomain_target_values_sql(apply_window: bool) -> String {
     )
 }
 
-/// EAS-LIVENESS：httpx 探活/解析 IP（`http_status` 非空或 `real_ip` 非空）。
-/// Phase D：`apply_window` ⇒ 只数本次 stage-run 探的活性（`t.liveness_checked_at >= $2`）。
-fn build_liveness_values_sql(apply_window: bool) -> String {
-    build_in_scope_values_sql(
-        "",
-        "AND (t.http_status IS NOT NULL OR t.real_ip <> '')",
-        apply_window.then_some("t.liveness_checked_at"),
+fn ports_non_empty_sql(alias: &str) -> String {
+    format!("jsonb_typeof({alias}.ports) = 'array' AND {alias}.ports <> '[]'::jsonb")
+}
+
+fn ports_have_service_hint_sql(alias: &str) -> String {
+    format!(
+        "EXISTS (
+        SELECT 1
+          FROM jsonb_array_elements(
+                 CASE WHEN jsonb_typeof({alias}.ports) = 'array'
+                      THEN {alias}.ports ELSE '[]'::jsonb END
+               ) p
+         WHERE NULLIF(p->>'service', '') IS NOT NULL
+            OR NULLIF(p->>'version', '') IS NOT NULL
+            OR NULLIF(p->>'webserver', '') IS NOT NULL
+            OR (p ? 'technologies' AND p->'technologies' <> 'null'::jsonb
+                                 AND p->'technologies' <> '[]'::jsonb
+                                 AND p->'technologies' <> '{{}}'::jsonb)
+    )"
     )
+}
+
+fn fresh_ports_sql(alias: &str, apply_window: bool) -> String {
+    let ports = ports_non_empty_sql(alias);
+    if apply_window {
+        format!("({ports} AND {alias}.ports_scanned_at >= $2)")
+    } else {
+        format!("({ports})")
+    }
+}
+
+fn real_ip_fresh_ports_exists_sql(apply_window: bool) -> String {
+    format!(
+        "EXISTS (
+            SELECT 1
+              FROM targets ip
+             WHERE t.real_ip <> ''
+               AND ip.value = t.real_ip
+               AND ip.scope::text = 'in'
+               AND ($1 IS NULL OR ip.organization_id = $1)
+               AND ip.target_type::text IN {IP_TYPE_IN_LIST}
+               AND {fresh_ports}
+        )",
+        fresh_ports = fresh_ports_sql("ip", apply_window)
+    )
+}
+
+fn fingerprint_exists_sql(alias: &str, apply_window: bool) -> String {
+    if apply_window {
+        format!(
+            "EXISTS (SELECT 1 FROM fingerprints f WHERE f.target_id = {alias}.id AND f.detected_at >= $2)"
+        )
+    } else {
+        format!("EXISTS (SELECT 1 FROM fingerprints f WHERE f.target_id = {alias}.id)")
+    }
+}
+
+fn service_from_ports_sql(alias: &str, apply_window: bool) -> String {
+    format!(
+        "({fresh_ports} AND {hints})",
+        fresh_ports = fresh_ports_sql(alias, apply_window),
+        hints = ports_have_service_hint_sql(alias)
+    )
+}
+
+fn real_ip_service_exists_sql(apply_window: bool) -> String {
+    format!(
+        "EXISTS (
+            SELECT 1
+              FROM targets ip
+             WHERE t.real_ip <> ''
+               AND ip.value = t.real_ip
+               AND ip.scope::text = 'in'
+               AND ($1 IS NULL OR ip.organization_id = $1)
+               AND ip.target_type::text IN {IP_TYPE_IN_LIST}
+               AND ({fp_exists} OR {service_from_ports})
+        )",
+        fp_exists = fingerprint_exists_sql("ip", apply_window),
+        service_from_ports = service_from_ports_sql("ip", apply_window)
+    )
+}
+
+/// EAS-LIVENESS：httpx 探活/解析 IP（`http_status` 非空或 `real_ip` 非空）；
+/// 端口扫描得到新鲜端口也证明 host 存活。Phase D：`apply_window` ⇒ 只数本次
+/// stage-run 探的活性（`t.liveness_checked_at` / `t.ports_scanned_at >= $2`）。
+fn build_liveness_values_sql(apply_window: bool) -> String {
+    let filter = if apply_window {
+        format!(
+            "AND (((t.http_status IS NOT NULL OR t.real_ip <> '') AND t.liveness_checked_at >= $2) \
+              OR {fresh_ports} OR {real_ip_ports})",
+            fresh_ports = fresh_ports_sql("t", true),
+            real_ip_ports = real_ip_fresh_ports_exists_sql(true)
+        )
+    } else {
+        format!(
+            "AND (t.http_status IS NOT NULL OR t.real_ip <> '' OR {fresh_ports} OR {real_ip_ports})",
+            fresh_ports = fresh_ports_sql("t", false),
+            real_ip_ports = real_ip_fresh_ports_exists_sql(false)
+        )
+    };
+    build_in_scope_values_sql("", &filter, None)
 }
 
 /// EAS-PORT：端口扫描结果（`ports` 为非空 JSONB 数组）。判空走 `jsonb_typeof =
 /// 'array'` + 比较式（不裸调 `jsonb_array_length`，否则非数组 `ports` 会抛
 /// `cannot get array length of a non-array`），与 `engagement_truth` 同款守卫。
 fn build_port_values_sql(apply_window: bool) -> String {
-    build_in_scope_values_sql(
-        "",
-        "AND jsonb_typeof(t.ports) = 'array' AND t.ports <> '[]'::jsonb",
-        apply_window.then_some("t.ports_scanned_at"),
-    )
+    let filter = format!(
+        "AND ({fresh_ports} OR {real_ip_ports})",
+        fresh_ports = fresh_ports_sql("t", apply_window),
+        real_ip_ports = real_ip_fresh_ports_exists_sql(apply_window)
+    );
+    build_in_scope_values_sql("", &filter, None)
 }
 
-/// EAS-SERVICE-FINGERPRINT：该 host 有服务/版本指纹行。Phase D 行级窗：
-/// `apply_window` ⇒ 只数本次 stage-run 探到的指纹（`f.detected_at >= $2`）。
+/// EAS-SERVICE-FINGERPRINT：该 host 有服务/版本指纹行，或端口扫描结果里已经
+/// 带 service/version/webserver/technology hint。Phase D 行级窗：`apply_window`
+/// ⇒ 只数本次 stage-run 探到的指纹/端口服务（`f.detected_at` /
+/// `t.ports_scanned_at >= $2`）。
 fn build_service_fp_values_sql(apply_window: bool) -> String {
+    let fp_exists = fingerprint_exists_sql("t", apply_window);
+    let ports_clause = service_from_ports_sql("t", apply_window);
+    let real_ip_service = real_ip_service_exists_sql(apply_window);
     build_in_scope_values_sql(
-        "JOIN fingerprints f ON f.target_id = t.id",
         "",
-        apply_window.then_some("f.detected_at"),
+        &format!("AND ({fp_exists} OR {ports_clause} OR {real_ip_service})"),
+        None,
     )
 }
 
@@ -723,11 +822,16 @@ mod tests {
 
     #[test]
     fn active_dimension_sqls_target_the_right_tables() {
-        assert!(build_liveness_values_sql(false).contains("t.http_status IS NOT NULL OR t.real_ip"));
+        let live = build_liveness_values_sql(false);
+        assert!(live.contains("t.http_status IS NOT NULL OR t.real_ip"));
+        assert!(live.contains("jsonb_typeof(t.ports) = 'array' AND t.ports <> '[]'::jsonb"));
         assert!(build_port_values_sql(false)
             .contains("jsonb_typeof(t.ports) = 'array' AND t.ports <> '[]'::jsonb"));
-        assert!(build_service_fp_values_sql(false)
-            .contains("JOIN fingerprints f ON f.target_id = t.id"));
+        let service = build_service_fp_values_sql(false);
+        assert!(service.contains("EXISTS (SELECT 1 FROM fingerprints f WHERE f.target_id = t.id)"));
+        assert!(service.contains("jsonb_array_elements("));
+        assert!(service.contains("p->>'service'"));
+        assert!(service.contains("p->>'version'"));
         assert!(build_dir_values_sql(false)
             .contains("JOIN directory_entries de ON de.target_id = t.id"));
         let param = build_param_values_sql(false);
@@ -744,6 +848,7 @@ mod tests {
     #[test]
     fn active_dimension_sqls_never_array_length_unguarded() {
         assert!(!build_port_values_sql(false).contains("jsonb_array_length(t.ports)"));
+        assert!(!build_service_fp_values_sql(false).contains("jsonb_array_elements(t.ports)"));
         assert!(!build_param_values_sql(false).contains("jsonb_array_length(ae.params)"));
     }
 
@@ -771,10 +876,14 @@ mod tests {
         // only counts rows collected this stage-run, via its per-dim timestamp >= $2.
         // PORT/LIVENESS/IPWHOIS = targets columns (migration 20260623000001);
         // SERVICE-FP/DIR/PARAM/JSAPI = existing child-table row timestamps.
-        assert!(build_liveness_values_sql(true).contains("t.liveness_checked_at >= $2"));
+        let live = build_liveness_values_sql(true);
+        assert!(live.contains("t.liveness_checked_at >= $2"));
+        assert!(live.contains("t.ports_scanned_at >= $2"));
         assert!(build_port_values_sql(true).contains("t.ports_scanned_at >= $2"));
         assert!(build_ipwhois_values_sql(true).contains("t.ip_whois_collected_at >= $2"));
-        assert!(build_service_fp_values_sql(true).contains("f.detected_at >= $2"));
+        let service = build_service_fp_values_sql(true);
+        assert!(service.contains("f.detected_at >= $2"));
+        assert!(service.contains("t.ports_scanned_at >= $2"));
         assert!(build_dir_values_sql(true).contains("de.created_at >= $2"));
         assert!(build_param_values_sql(true).contains("ae.discovered_at >= $2"));
         assert!(build_jsapi_values_sql(true).contains("ae.discovered_at >= $2"));

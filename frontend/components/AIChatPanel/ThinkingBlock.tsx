@@ -1,5 +1,6 @@
 import { ChevronDown, Loader2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type UIEvent, useEffect, useRef, useState, type WheelEvent } from "react";
+import { shouldStickToBottomAfterScroll } from "@/lib/scroll-stickiness";
 import { cn } from "@/lib/utils";
 
 interface ThinkingBlockProps {
@@ -42,8 +43,11 @@ export function ThinkingBlock({ content, isActive, startedAt, endedAt }: Thinkin
   const prevActiveRef = useRef<boolean>(isActive);
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollFrameRef = useRef<number | null>(null);
+  const shouldStickToBottomRef = useRef(true);
+  const previousScrollTopRef = useRef(0);
 
   useEffect(() => {
+    if (isActive) shouldStickToBottomRef.current = true;
     if (userToggledRef.current) return;
     if (prevActiveRef.current !== isActive) {
       setExpanded(isActive);
@@ -55,12 +59,15 @@ export function ThinkingBlock({ content, isActive, startedAt, endedAt }: Thinkin
   // newest thought stays in view (Cursor-style) instead of staying frozen at
   // the top once the content overflows the max height.
   useEffect(() => {
-    if (isActive && expanded && scrollRef.current) {
+    if (isActive && expanded && scrollRef.current && shouldStickToBottomRef.current) {
       if (scrollFrameRef.current != null) cancelAnimationFrame(scrollFrameRef.current);
       scrollFrameRef.current = requestAnimationFrame(() => {
         scrollFrameRef.current = null;
         const el = scrollRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
+        if (el && shouldStickToBottomRef.current) {
+          el.scrollTop = el.scrollHeight;
+          previousScrollTopRef.current = el.scrollTop;
+        }
       });
     }
     return () => {
@@ -74,6 +81,22 @@ export function ThinkingBlock({ content, isActive, startedAt, endedAt }: Thinkin
   const handleToggle = () => {
     userToggledRef.current = true;
     setExpanded((v) => !v);
+  };
+
+  const handleReasoningWheelCapture = (event: WheelEvent<HTMLDivElement>) => {
+    if (event.deltaY < 0) {
+      shouldStickToBottomRef.current = false;
+    }
+  };
+
+  const handleReasoningScroll = (event: UIEvent<HTMLDivElement>) => {
+    const el = event.currentTarget;
+    shouldStickToBottomRef.current = shouldStickToBottomAfterScroll(previousScrollTopRef.current, {
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    });
+    previousScrollTopRef.current = el.scrollTop;
   };
 
   const durationMs = startedAt && endedAt && endedAt >= startedAt ? endedAt - startedAt : null;
@@ -108,6 +131,8 @@ export function ThinkingBlock({ content, isActive, startedAt, endedAt }: Thinkin
         <div
           ref={scrollRef}
           className="mt-1.5 ml-1.5 pl-3 border-l-2 border-foreground/20 text-[12px] text-foreground/70 leading-[1.6] whitespace-pre-wrap max-h-64 overflow-y-auto overscroll-contain"
+          onScroll={handleReasoningScroll}
+          onWheelCapture={handleReasoningWheelCapture}
         >
           {content}
         </div>

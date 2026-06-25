@@ -37,7 +37,9 @@ pub mod harness_resume;
 mod helpers;
 mod orchestrator;
 pub(crate) mod refiner;
+pub mod runtime_supervisor;
 pub mod stage_execution;
+pub mod stage_refiner;
 mod subtask_phases;
 mod types;
 

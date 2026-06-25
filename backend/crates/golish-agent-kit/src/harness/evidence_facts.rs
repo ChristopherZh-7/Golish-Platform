@@ -16,6 +16,9 @@
 /// Phase 2 (2026-06-12-redteam-phase2): 子公司 / org 树发现 technique id
 /// (scoping 阶段维度; DB 端同名常量是 `golish_db::repo::coverage_truth::TECH_SUBSIDIARY`).
 pub const TECH_SUBSIDIARY: &str = "GOLISH-INTEL-SUBSIDIARY";
+pub const TECH_EAS_LIVENESS: &str = "GOLISH-EAS-LIVENESS";
+pub const TECH_EAS_PORT: &str = "GOLISH-EAS-PORT";
+pub const TECH_EAS_SERVICE_FINGERPRINT: &str = "GOLISH-EAS-SERVICE-FINGERPRINT";
 
 /// Phase 2 · 解析 `recon_discover_subsidiaries` 的结构化 JSON summary →
 /// SUBSIDIARY 维度事实 `(technique, asset=公司名, outcome)`.
@@ -128,6 +131,139 @@ pub fn passive_intel_facts_from_command(command: &str) -> Option<(&'static str, 
     }
 }
 
+/// Parse a command line into any coverage fact the deterministic gate can
+/// project. Passive intel mappings stay in [`passive_intel_facts_from_command`];
+/// active EAS mappings live here so scan stages can also turn real tool runs
+/// into `(asset, technique, outcome)` ledger facts.
+pub fn coverage_facts_from_command(command: &str) -> Option<(&'static str, String)> {
+    passive_intel_facts_from_command(command).or_else(|| eas_facts_from_command(command))
+}
+
+fn eas_facts_from_command(command: &str) -> Option<(&'static str, String)> {
+    let (tool, rest) = command_tool_and_rest(command.trim())?;
+    let rest_tokens: Vec<&str> = rest.split_whitespace().collect();
+    match tool.as_str() {
+        "httpx" => target_from_flags(&rest_tokens, &["-u", "-target"])
+            .or_else(|| first_target_like(&rest_tokens))
+            .map(|asset| (TECH_EAS_LIVENESS, asset)),
+        "nmap" => {
+            let asset = first_target_like(&rest_tokens)?;
+            if has_flag(&rest_tokens, &["-sn", "-sP"]) {
+                Some((TECH_EAS_LIVENESS, asset))
+            } else if has_flag(&rest_tokens, &["-sV", "-A"]) {
+                Some((TECH_EAS_SERVICE_FINGERPRINT, asset))
+            } else {
+                Some((TECH_EAS_PORT, asset))
+            }
+        }
+        "naabu" | "masscan" => target_from_flags(&rest_tokens, &["-host"])
+            .or_else(|| first_target_like(&rest_tokens))
+            .map(|asset| (TECH_EAS_PORT, asset)),
+        "whatweb" => {
+            first_target_like(&rest_tokens).map(|asset| (TECH_EAS_SERVICE_FINGERPRINT, asset))
+        }
+        _ => None,
+    }
+}
+
+fn command_tool_and_rest(command: &str) -> Option<(String, &str)> {
+    let (exe, rest) = split_executable(command);
+    let tool = exe.rsplit('/').next().unwrap_or(exe).to_ascii_lowercase();
+    if matches!(
+        tool.as_str(),
+        "ruby" | "ruby.exe" | "python" | "python3" | "python.exe" | "node" | "node.exe"
+    ) {
+        let (wrapped, wrapped_rest) = split_executable(rest.trim_start());
+        let wrapped_tool = wrapped
+            .rsplit('/')
+            .next()
+            .unwrap_or(wrapped)
+            .to_ascii_lowercase();
+        if wrapped_tool.is_empty() {
+            None
+        } else {
+            Some((wrapped_tool, wrapped_rest))
+        }
+    } else if tool.is_empty() {
+        None
+    } else {
+        Some((tool, rest))
+    }
+}
+
+fn has_flag(tokens: &[&str], flags: &[&str]) -> bool {
+    tokens.iter().any(|token| {
+        let token = token.trim_matches(|c| c == '"' || c == '\'');
+        flags.contains(&token)
+    })
+}
+
+fn target_from_flags(tokens: &[&str], flags: &[&str]) -> Option<String> {
+    tokens
+        .iter()
+        .position(|token| flags.contains(token))
+        .and_then(|idx| tokens.get(idx + 1))
+        .and_then(|token| normalize_target_token(token))
+}
+
+fn first_target_like(tokens: &[&str]) -> Option<String> {
+    tokens
+        .iter()
+        .filter(|token| !token.starts_with('-') && !token.starts_with('+'))
+        .find_map(|token| normalize_target_token(token))
+}
+
+fn normalize_target_token(token: &str) -> Option<String> {
+    let value = token
+        .trim()
+        .trim_matches(',')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_end_matches('.');
+    if value.is_empty()
+        || value.starts_with('-')
+        || value.starts_with('+')
+        || value.starts_with('@')
+        || value.contains(['|', ';', '&', '$', '`', '<', '>'])
+    {
+        return None;
+    }
+
+    let host = if let Some((scheme, rest)) = value.split_once("://") {
+        if !matches!(scheme, "http" | "https") {
+            return None;
+        }
+        rest.split(['/', '?', '#']).next().unwrap_or(rest)
+    } else {
+        if value.contains('/') {
+            return None;
+        }
+        value
+    };
+    let host = strip_port(host);
+    if host.is_empty() {
+        return None;
+    }
+    if host.parse::<std::net::IpAddr>().is_ok() || host.contains('.') {
+        Some(host.to_string())
+    } else {
+        None
+    }
+}
+
+fn strip_port(host: &str) -> &str {
+    if host.starts_with('[') {
+        return host
+            .strip_prefix('[')
+            .and_then(|rest| rest.split_once(']').map(|(inside, _)| inside))
+            .unwrap_or(host);
+    }
+    match host.rsplit_once(':') {
+        Some((without_port, port)) if port.chars().all(|c| c.is_ascii_digit()) => without_port,
+        _ => host,
+    }
+}
+
 /// Split a command line into `(executable, rest_args)`, honoring a leading
 /// double-quoted executable path that may contain spaces (e.g. the macOS
 /// `~/Library/Application Support/.../subfinder`). An unquoted command splits on
@@ -224,6 +360,70 @@ pub fn passive_intel_outcome_for_run(
         "error"
     } else {
         "empty"
+    }
+}
+
+pub fn coverage_outcome_for_run(
+    technique: &str,
+    raw_output: &str,
+    succeeded: bool,
+    distinguish_failure: bool,
+) -> &'static str {
+    if matches!(
+        technique,
+        TECH_EAS_LIVENESS | TECH_EAS_PORT | TECH_EAS_SERVICE_FINGERPRINT
+    ) {
+        eas_outcome_for_run(technique, raw_output, succeeded, distinguish_failure)
+    } else {
+        passive_intel_outcome_for_run(technique, raw_output, succeeded, distinguish_failure)
+    }
+}
+
+fn eas_outcome_for_run(
+    technique: &str,
+    raw_output: &str,
+    succeeded: bool,
+    distinguish_failure: bool,
+) -> &'static str {
+    if !succeeded {
+        return if distinguish_failure {
+            "error"
+        } else {
+            "empty"
+        };
+    }
+    let trimmed = raw_output.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("failed to resolve")
+        || lower.contains("no targets were specified")
+        || lower.contains("name or service not known")
+        || lower.contains("no such host")
+    {
+        return "error";
+    }
+    match technique {
+        TECH_EAS_LIVENESS
+            if trimmed.is_empty()
+                || lower.contains("0 hosts up")
+                || lower.contains("no alive hosts")
+                || lower.contains("no host found") =>
+        {
+            "empty"
+        }
+        TECH_EAS_PORT
+            if trimmed.is_empty()
+                || lower.contains("0 hosts up")
+                || lower.contains("no open ports")
+                || lower.contains("found 0 ports")
+                || lower.contains("all ")
+                    && lower.contains(" scanned ports ")
+                    && lower.contains("closed") =>
+        {
+            "empty"
+        }
+        TECH_EAS_SERVICE_FINGERPRINT if trimmed.is_empty() => "empty",
+        TECH_EAS_LIVENESS | TECH_EAS_PORT | TECH_EAS_SERVICE_FINGERPRINT => "found",
+        _ => "found",
     }
 }
 
@@ -348,6 +548,34 @@ mod tests {
         assert_eq!(passive_intel_facts_from_command(""), None);
     }
 
+    #[test]
+    fn coverage_maps_eas_liveness_tools() {
+        assert_eq!(
+            coverage_facts_from_command("nmap -sn pinganstock.com"),
+            Some((TECH_EAS_LIVENESS, "pinganstock.com".to_string()))
+        );
+        assert_eq!(
+            coverage_facts_from_command(
+                "\"/Users/me/Library/Application Support/golish-platform/tools/httpx/httpx\" -u http://pinganstock.com -sc -title"
+            ),
+            Some((TECH_EAS_LIVENESS, "pinganstock.com".to_string()))
+        );
+        assert_eq!(
+            coverage_facts_from_command("naabu -host pinganstock.com -top-ports 100 -silent"),
+            Some((TECH_EAS_PORT, "pinganstock.com".to_string()))
+        );
+    }
+
+    #[test]
+    fn coverage_maps_wrapped_whatweb_service_fingerprint() {
+        assert_eq!(
+            coverage_facts_from_command(
+                "\"/usr/bin/ruby\" \"/opt/tools/whatweb\" -a 1 https://www.example.com/login"
+            ),
+            Some((TECH_EAS_SERVICE_FINGERPRINT, "www.example.com".to_string()))
+        );
+    }
+
     // ── passive_intel_outcome: I8 的 empty 高置信判定 ──
 
     #[test]
@@ -438,6 +666,36 @@ mod tests {
         );
         assert_eq!(
             passive_intel_outcome_for_run("GOLISH-INTEL-SUBDOMAIN", "www.moresec.cn", true, true),
+            "found"
+        );
+    }
+
+    #[test]
+    fn eas_liveness_dns_failure_is_terminal_error() {
+        let raw = "Starting Nmap 7.99\nNmap done: 0 IP addresses (0 hosts up) scanned in 0.51 seconds\n\n[stderr]\nFailed to resolve \"pinganstock.com\".\nWARNING: No targets were specified, so 0 hosts scanned.";
+        assert_eq!(
+            coverage_outcome_for_run(TECH_EAS_LIVENESS, raw, true, false),
+            "error"
+        );
+    }
+
+    #[test]
+    fn eas_liveness_empty_http_probe_is_checked_empty() {
+        assert_eq!(
+            coverage_outcome_for_run(TECH_EAS_LIVENESS, "", true, false),
+            "empty"
+        );
+    }
+
+    #[test]
+    fn eas_liveness_host_up_is_found() {
+        assert_eq!(
+            coverage_outcome_for_run(
+                TECH_EAS_LIVENESS,
+                "Nmap scan report for a.example\nHost is up.",
+                true,
+                false
+            ),
             "found"
         );
     }
