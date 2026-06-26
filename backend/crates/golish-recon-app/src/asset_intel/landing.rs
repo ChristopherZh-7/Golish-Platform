@@ -15,8 +15,8 @@ use uuid::Uuid;
 
 use golish_app_core::GolishError;
 
-use crate::asset_intel::extract_host_ip_pairs;
 use crate::asset_intel::types::HostIpPair;
+use crate::asset_intel::{extract_host_ip_pairs, resolve_field_ref};
 use crate::organization_recon::value_belongs_to_organization;
 use crate::organizations::OrganizationCandidates;
 
@@ -374,6 +374,169 @@ pub(crate) async fn promote_profile_assets_to_targets(
     landed
 }
 
+/// A per-host service observed by a provider survey (port + optional
+/// protocol/service/version), lifted out of a candidate's `evidence.raw`.
+/// Lands as `target_assets(asset_type='service')` so the cyberspace-mapping
+/// port/service intel (quake/fofa/0.zone) becomes queryable instead of dying in
+/// raw JSON — providers return open ports + service banners per host, but the
+/// landing previously only wrote the bare subdomain and dropped all of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HostServiceAsset {
+    pub host: String,
+    pub port: i32,
+    pub protocol: Option<String>,
+    pub service: Option<String>,
+    pub version: Option<String>,
+}
+
+/// Host-owner fields tried (priority order) when lifting a service from a
+/// provider record — mirrors survey record shapes (quake/fofa/0.zone flat
+/// `domain`/`hostname`, quake nested `service.http.host`, shodan `ip_str`).
+const SERVICE_HOST_FIELDS: &[&str] = &[
+    "domain",
+    "hostname",
+    "host",
+    "service.http.host",
+    "ip",
+    "ip_str",
+];
+const SERVICE_PORT_FIELDS: &[&str] = &["port", "service.port"];
+const SERVICE_PROTOCOL_FIELDS: &[&str] = &["transport", "protocol", "service.transport"];
+const SERVICE_NAME_FIELDS: &[&str] = &[
+    "service.name",
+    "service.http.server",
+    "webserver",
+    "service",
+];
+const SERVICE_VERSION_FIELDS: &[&str] = &["service.version", "version"];
+
+fn record_field(record: &Value, fields: &[&str]) -> Option<String> {
+    fields.iter().find_map(|field| {
+        resolve_field_ref(
+            record,
+            &golish_pentest::models::AssetIntelFieldRef::Field((*field).to_string()),
+        )
+    })
+}
+
+/// Lift a single `(host, port, protocol, service, version)` service from one
+/// provider record. Returns `None` unless BOTH an owner host/IP and a valid
+/// port (1..=65535) resolve — a service without a port is not a service row.
+/// Pure.
+fn service_asset_from_record(record: &Value) -> Option<HostServiceAsset> {
+    let host = record_field(record, SERVICE_HOST_FIELDS)
+        .map(|value| value.trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|host| !host.is_empty())?;
+    let port = record_field(record, SERVICE_PORT_FIELDS)
+        .and_then(|raw| raw.trim().parse::<i32>().ok())
+        .filter(|port| (1..=65535).contains(port))?;
+    let protocol = record_field(record, SERVICE_PROTOCOL_FIELDS).map(|p| p.to_ascii_lowercase());
+    let service = record_field(record, SERVICE_NAME_FIELDS);
+    let version = record_field(record, SERVICE_VERSION_FIELDS);
+    Some(HostServiceAsset {
+        host,
+        port,
+        protocol,
+        service,
+        version,
+    })
+}
+
+/// Lift per-host service assets out of the in-memory survey candidates (each
+/// keeps the full provider record in `evidence.raw`). Deduped by
+/// `(host, port, protocol)`. Pure — no DB.
+pub(crate) fn service_assets_from_candidates(
+    candidates: &OrganizationCandidates,
+) -> Vec<HostServiceAsset> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for candidate in &candidates.targets {
+        let Some(raw) = candidate.evidence.get("raw") else {
+            continue;
+        };
+        let Some(asset) = service_asset_from_record(raw) else {
+            continue;
+        };
+        if seen.insert((asset.host.clone(), asset.port, asset.protocol.clone())) {
+            out.push(asset);
+        }
+    }
+    out
+}
+
+/// Persist provider-surveyed services as `target_assets(asset_type='service')`
+/// children of each owner's existing target (resolved after host promotion).
+/// `value` is `"<port>/<protocol>"` so the unique `(target_id, asset_type,
+/// value)` key dedupes per port/proto while `upsert` COALESCE-fills
+/// port/protocol/service/version. Scope-filtered (owned host or IP) and fully
+/// non-fatal — a miss only warns, never rolls back the committed enrich. Returns
+/// how many service rows landed.
+pub(crate) async fn land_service_assets(
+    pool: &sqlx::PgPool,
+    org: &golish_db::models::Organization,
+    assets: &[HostServiceAsset],
+) -> usize {
+    if assets.is_empty() {
+        return 0;
+    }
+    let metadata = serde_json::json!({ "source": "asset_intel" });
+    let mut target_cache: HashMap<String, Option<Uuid>> = HashMap::new();
+    let mut landed = 0usize;
+    for asset in assets {
+        if !value_belongs_to_organization(org, &asset.host) {
+            continue;
+        }
+        let target_id = match target_cache.get(&asset.host) {
+            Some(cached) => *cached,
+            None => {
+                let resolved: Option<Uuid> = sqlx::query_scalar(
+                    r#"SELECT id FROM targets
+                       WHERE value = $1
+                         AND project_path IS NOT DISTINCT FROM $2
+                       ORDER BY (scope::text = 'in') DESC, updated_at DESC
+                       LIMIT 1"#,
+                )
+                .bind(&asset.host)
+                .bind(&org.project_path)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten();
+                target_cache.insert(asset.host.clone(), resolved);
+                resolved
+            }
+        };
+        let Some(target_id) = target_id else {
+            continue;
+        };
+        let protocol = asset.protocol.as_deref().unwrap_or("tcp");
+        let value = format!("{}/{}", asset.port, protocol);
+        match golish_db::repo::target_assets::upsert(
+            pool,
+            target_id,
+            Some(org.project_path.as_str()),
+            "service",
+            &value,
+            Some(asset.port),
+            Some(protocol),
+            asset.service.as_deref(),
+            asset.version.as_deref(),
+            &metadata,
+        )
+        .await
+        {
+            Ok(_) => landed += 1,
+            Err(error) => tracing::warn!(
+                host = %asset.host,
+                port = asset.port,
+                %error,
+                "service target_assets upsert failed (non-fatal)"
+            ),
+        }
+    }
+    landed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,5 +711,61 @@ mod tests {
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].host, "www.pingan.com");
         assert_eq!(pairs[0].ip, "61.241.22.62");
+    }
+
+    #[test]
+    fn service_assets_extract_port_protocol_service_from_quake_record() {
+        // P1 (design 2026-06-26): cyberspace-mapping records carry per-host
+        // port/protocol/service; lift them so they land in target_assets columns
+        // instead of dying in evidence.raw / org-flat intel arrays.
+        let candidates = OrganizationCandidates {
+            targets: vec![target_candidate(
+                "quake",
+                serde_json::json!({
+                    "domain": "App.PingAn.com.",
+                    "ip": "1.2.3.4",
+                    "port": 443,
+                    "transport": "TCP",
+                    "service": { "name": "http", "http": { "server": "nginx" } }
+                }),
+            )],
+            ..Default::default()
+        };
+        let assets = service_assets_from_candidates(&candidates);
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].host, "app.pingan.com");
+        assert_eq!(assets[0].port, 443);
+        assert_eq!(assets[0].protocol.as_deref(), Some("tcp"));
+        assert_eq!(assets[0].service.as_deref(), Some("http"));
+    }
+
+    #[test]
+    fn service_assets_skip_records_without_a_port() {
+        // A host with no port is not a service row (it is already covered by the
+        // subdomain / host↔IP landing).
+        let candidates = OrganizationCandidates {
+            targets: vec![target_candidate(
+                "0.zone",
+                serde_json::json!({ "domain": "no-port.pingan.com", "ip": "1.2.3.4" }),
+            )],
+            ..Default::default()
+        };
+        assert!(service_assets_from_candidates(&candidates).is_empty());
+    }
+
+    #[test]
+    fn service_assets_dedupe_same_host_port_protocol() {
+        let record = serde_json::json!({"domain":"a.pingan.com","port":80,"transport":"tcp"});
+        let candidates = OrganizationCandidates {
+            targets: vec![
+                target_candidate("quake", record.clone()),
+                target_candidate("fofa", record),
+            ],
+            ..Default::default()
+        };
+        let assets = service_assets_from_candidates(&candidates);
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].port, 80);
+        assert!(assets[0].service.is_none());
     }
 }

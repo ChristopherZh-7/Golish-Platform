@@ -44,6 +44,7 @@ Phase 1 provider-agnostic 资产情报：`run_passive_intel` 等调被动 provid
 - **三个 runtime kind**（`AssetIntelRuntimeConfig`）：`cli_json` / `http_json` / `native_provider`。新加测绘 provider 若 `golish-intel-providers` 注册表已有实现（fofa/hunter/shodan/0.zone/quake），优先写 `native_provider` toolsconfig（复用原生鉴权/编码/字段映射），别在 toolsconfig 用 http_json 重写 API。
 - `native_provider` 凭据走 `read_vault_secret`（与 http_json 同款，含 legacy `name=tool_id` 回退）；无 key → `Unavailable`（不伪造，I8），`provider_output_is_trusted` 仅信 `Completed`/`CheckedEmpty`。
 - 在 `target_intel` 中，`recon_map_assets` 是 provider survey + DB landing 通道（`target_assets` / `organizations.*`），不是“全网完整收集”的证明；2026-06-23 起 target_intel 不再允许 scan-tool fallback，完整性由 harness 覆盖门按每个 technique 的 found/blocked/checked_empty 终态判定。
+- **`landing.rs` 落庫分三类**（agent 路径 `agent_intel.rs` enrich 段，promote 之后）：① `promote_profile_assets_to_targets` 把 owned host/ip/cidr/cert-host 升 `targets`（带 surveyed `real_ip`）；② `land_target_intel_coverage`→`target_assets(asset_type='subdomain')`；③ **P1（设计 2026-06-26）`land_service_assets`→`target_assets(asset_type='service', value='<port>/<proto>', port/protocol/service/version)`**——从 candidate `evidence.raw` 抽 per-host 端口/服务（`service_assets_from_candidates`，纯函数）。在此之前 provider 回的 port/transport/service 只活在 raw JSON / org-flat intel（`quake_services` 等），per-host 端口情报全丢；现在落进 `target_assets` 那 4 个现成列。字段映射默认覆盖 quake/fofa/0.zone（`domain/hostname/service.http.host/port/transport/service.name`），shodan/fofa 若 raw 键名不同为 best-effort（只在 port 解析成功时 emit）。`ReconRecordKind::Port|Service`（GUI org-recon 路径）仍无映射，是后续 follow-up。
 
 ## 测试入口
 

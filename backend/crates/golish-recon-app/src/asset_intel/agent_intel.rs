@@ -287,6 +287,28 @@ pub async fn run_passive_intel(
                     promoted,
                     "passive-intel auto-landing to targets (agent path)"
                 );
+
+                // P1 (design 2026-06-26): land per-host service assets
+                // (port/protocol/service/version) from the survey raw records.
+                // Host targets now exist (promoted above), so services attach to
+                // them. Cyberspace-mapping providers return open ports + service
+                // banners per host; they were previously dropped (only the bare
+                // subdomain landed, the 4 target_assets columns stayed NULL).
+                // Non-fatal — a miss only warns.
+                let services =
+                    crate::asset_intel::landing::service_assets_from_candidates(&run.candidates);
+                let service_assets = crate::asset_intel::landing::land_service_assets(
+                    pool.as_ref(),
+                    &fresh,
+                    &services,
+                )
+                .await;
+                tracing::info!(
+                    run_id = %run.run_id,
+                    services = services.len(),
+                    service_assets,
+                    "passive-intel service landing to target_assets (agent path)"
+                );
             }
             Ok(None) => {}
             Err(error) => {

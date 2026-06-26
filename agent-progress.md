@@ -29,6 +29,281 @@
 
 ---
 
+### 2026-06-26 · target_intel 被动埠/服务落库 P1（target_assets service assets）
+
+- **本轮目标**：按用户「动手做 P1」——赛博测绘（quake/fofa/0.zone/shodan）回的 per-host 端口/服务情报被丢弃（`target_assets` 的 port/protocol/service/version 列永远 NULL、`ReconRecordKind::Port|Service` 无持久化映射），把它们真正落进 `target_assets`。
+- **改前定位**：① `resources/intel-providers/quake.json` include 实证回传 port/transport/service.name/service.http.server 等；normalize 只把 service/title/server 拍平进 **org 层 intel 数组**（quake_services 等）、port/transport 干脆没 normalize 规则 → per-host 关联全丢；② agent 路径 `agent_intel.rs:241-289` enrich 段先 `pairs_from_candidates`（读 candidate.evidence.raw）再 `promote_profile_assets_to_targets`（建 host targets）；③ `golish_db::repo::target_assets::upsert` 已支持 port/protocol/service/version（ON CONFLICT COALESCE 合并），unique(target_id,asset_type,value)；④ `golish_core::utils::resolve_json_path` 数字→字串、点路径均 OK。
+- **已完成**：
+  - `asset_intel/landing.rs` 新增纯函数 `service_assets_from_candidates` / `service_asset_from_record`（从 evidence.raw 抽 host/port/protocol/service/version；host 取 domain/hostname/service.http.host/ip/ip_str；port 必须 1..=65535；按 (host,port,protocol) 去重）+ IO `land_service_assets`（scope 过滤 `value_belongs_to_organization` + 解析 host→target_id + upsert `target_assets(asset_type='service', value='<port>/<proto>')`，逐条非致命）。
+  - `agent_intel.rs` enrich 段在 `promote_profile_assets_to_targets` 之后接线调用，tracing 记 services/service_assets。
+  - 字段默认集覆盖 quake/fofa/0.zone；shodan/fofa 异名为 best-effort（仅 port 解析成功才 emit）。
+  - +3 单测（quake 记录抽取大小写/根点归一 + service.name / 无端口跳过 / 同 host:port:proto 去重）。
+  - 更新模组卡 `docs/modules/backend/golish-recon-app/asset_intel.md`。
+- **运行过的验证（实跑）**：
+  - `cargo check -p golish-recon-app --tests` → exit 0（首次即过）。
+  - `cargo fmt -p golish-recon-app && cargo nextest run -p golish-recon-app service_assets pairs_from_candidates plan_promotable hostnames_from provider_dns_record format_mx normalize_dns_target` → **11 passed / 0 failed**（3 新 service 测试 + DNS/landing 既有测试无回归）。
+  - `cargo clippy -p golish-recon-app --all-targets` → exit 0，零告警。
+  - `ReadLints`（landing.rs / agent_intel.rs）→ no linter errors。
+- **未跑**：`./init.sh` / `just precommit`；未对真实 provider 凭据实跑 `recon_map_assets`（无 key + 避免未授权）。service 落库的解析/写库为 I/O，单测只覆盖纯抽取逻辑。
+- **提交记录**：未 commit（本轮 DNS 补 CNAME/MX/TXT + P1 埠/服务落库两块改动均未 commit）。
+- **下一步建议**：① 真实 target_intel run 验证 `target_assets` 出现 `asset_type='service'` 行（`python3 scripts/run_tree.py --workspace <ws> --db`）；② GUI org-recon 路径（`NormalizedReconRecord` 的 `ReconRecordKind::Port|Service`）仍 unsupported_record，可补映射；③ 余下被动漏字段 P2（`upsert_target` 回填 `targets.ports/http_status/http_title/webserver`）、P3（工商 scalar 法人/注册资本/地址/成立/状态落库）。
+
+---
+
+### 2026-06-26 · target_intel 被动 DNS 落库补 CNAME/MX/TXT（land_dns_records）
+
+- **本轮目标**：按用户审视结论——「现在似乎已不主动调用 dig，CNAME/MX/TXT 永远不落」——给 target_intel 被动 DNS landing 补 CNAME/MX/TXT 采集（用户选范围 = CNAME+MX+TXT）。
+- **改前定位（证实用户判断）**：① `target_intel` methodology「no scan-tool fallback / Per-host A-record resolution is EAS's job」、`external_attack_surface` methodology「reuse inherited DNS instead of re-running dig」、`scoping`「no dig」→ 三阶段都不跑 dig；② 唯一 DNS 能力是 `tokio::net::lookup_host`（只回 A/AAAA），全依赖树无任何 DNS resolver crate（hickory/trust-dns 连 transitive 都没有）；③ `output_store/dns_records.rs` 的多型别落库路径需 dig full-banner 输出才触发 → 没人跑 dig，永不被走到。结论：`dns_records` 对 NS/MX/CNAME/TXT/SOA/PTR 是死字段。
+- **已完成**：
+  - 加 `hickory-resolver = 0.26`（`backend/Cargo.toml` [workspace.dependencies] + `golish-recon-app`；`default-features=false, features=["system-config","tokio"]`，纯 UDP/TCP DNS，无 TLS/DoH/DoT）。
+  - 扩 `organization_recon/persistence.rs::land_dns_records`：A/AAAA 仍走 tokio stub resolver；新增 CNAME/MX/TXT 走 hickory（resolver 构造一次、clone 进每个 task；每查询 3s bounded + 非致命；resolver 构造失败时仍落 A/AAAA），upsert 进 `dns_records`（idempotent，ON CONFLICT DO NOTHING）。DNS 查询打解析器不碰目标主机，仍属 zero-touch。
+  - **修正 real_ip 回归风险**：`primary_ip` 改为「首个 A，否则首个 AAAA」——原 `.or_else(|| records.first())` 在新增记录型别后可能把 CNAME/TXT 的 value 当 `targets.real_ip` 污染。
+  - 新增纯 helper `rdata_to_dns_record` / `normalize_dns_target` / `format_mx_value`（+2 单测）：MX 存 `"<pref> <host>"`、CNAME/MX host 去根点小写、TXT 多段拼接、空 TXT 丢弃。
+  - 更新 `docs/modules/backend/golish-recon-app/organization_recon.md` 坑位（DNS landing 记录型别 + real_ip 只认地址记录）。
+- **运行过的验证（实跑）**：
+  - `cargo check -p golish-recon-app --tests` → exit 0（首轮 4 个 0.26 API 误用：`MX.preference`/`MX.exchange`/`TXT.txt_data` 是字段非方法、`Lookup` 无 `iter()`；查 docs.rs 0.26.1 确认后改 `mx.preference`/`mx.exchange`/`txt.txt_data` + `lookup.answers()` 迭代 `&record.data`）。
+  - `cargo fmt -p golish-recon-app && cargo nextest run -p golish-recon-app <persistence/landing 纯测试集>` → **20 passed / 183 skipped / 0 failed**（含 2 个新 helper 测试）。
+  - `cargo clippy -p golish-recon-app --all-targets` → exit 0，零告警。
+  - `ReadLints`（persistence.rs + 两个 Cargo.toml）→ no linter errors。
+- **未跑**：`./init.sh` / `just precommit`（沿用本仓库近期约定，未调用全量门禁）；未对真实外网域名跑 `land_dns_records`（避免未授权解析；CNAME/MX/TXT 解析为 I/O，单测仅覆盖纯格式化 helper）。
+- **提交记录**：未 commit。
+- **下一步建议**：① 真实 target_intel run 验证 CNAME/MX/TXT 落 `dns_records`（`python3 scripts/run_tree.py --workspace <ws> --db`）；② vuln_triage worklist 派生时可读 `dns_records.record_type='CNAME'` 喂 CDN/子域接管判定；③ 被动采集更大头的漏字段仍待排期——P1 `target_assets` 的 port/protocol/service/version 列 + `ReconRecordKind::Port|Service` 持久化映射（赛博测绘埠/服务情报现被丢成 unsupported_record）、P2 `upsert_target` 回填 `targets.ports/http_status/http_title/webserver`、P3 工商 scalar（法人/注册资本/地址/成立/状态）落库。
+
+---
+
+### 2026-06-26 · enumeration arjun 主动参数发现 PARAM empty（output_store → GOLISH-ENUM-PARAM）
+
+- **本轮目标**：按用户「接arjun empty」，把「arjun/paramspider/x8 主动跑了但零参数」从 unchecked 变成 checked_empty（I8）。
+- **改前定位**：arjun `subcategory=param`、`db_action=endpoint_add`，走 `pentest_run` CLI → `output_store::maybe_detect_and_store_via`。空结果在 `records.is_empty()` 早返回而丢失；arjun toolsconfig 只解析 `count`（"found N parameters"）不解析参数名，所以参数本身也不落 `api_endpoints`（既有 toolsconfig 缺口，本轮不修）。`current_agent_session()` 是 task-local：前台 pentest_run 有 session（run_id 可得），后台 job 无。`OutputStore` 只有 1 个 impl（PgPentestStore），无 MockOutputStore。
+- **已完成**（设计 2026-06-26 §9）：
+  - `output_store/store_trait.rs`：`OutputStore` 加 `store_param_outcome`；`pg_adapter.rs` 实现转发；`endpoints.rs` 加 freestanding `store_param_outcome`（`-u` base → `find_or_create_target` → `targets::get` org/asset → `technique_outcomes::upsert(GOLISH-ENUM-PARAM)`；缺 target/org/run 跳过）。
+  - `output_store/mod.rs`：`DetectedTool` 加 `subcategory`（`detect_tool` 解析）；`param_discovery_result(records)` 纯函数（`count` 字段或 `param`/`params` 记录 → found/count）；`maybe_detect_and_store_via` 在空 records 早返回**之前**，对 `subcategory==param` 工具用 `current_agent_session()`+`-u` base 写 found/empty（前台才写）。
+  - 同步 output_store 模块卡 + 设计状态行。
+- **运行过的验证（实跑）**：
+  - `cargo nextest run -p golish-pentest output_store` → **22 passed / 131 skipped**（含 3 个新 param_discovery 测试）。
+  - clippy：`cargo clippy -p golish-pentest --all-targets` → exit 0 零告警。
+  - fmt：`cargo fmt -p golish-pentest`；fmt 后重跑 param 测试 → 3 passed。
+  - 呼叫端无破坏：`cargo check -p golish-agent-app` → exit 0。
+  - `ReadLints`（mod.rs/endpoints.rs/store_trait.rs/pg_adapter.rs）→ no linter errors。
+- **未跑**：`./init.sh` / `just precommit`（用户要求不调用）；未对真实外网跑 arjun；technique_outcomes 真实写入需 live PG，未跑集成。
+- **已知边界**：① 仅前台（同步）run 有 session→写 outcome；后台 job 无 session 时跳过。② arjun 参数名本身仍不落 api_endpoints（toolsconfig 解析缺口，待后续）。
+- **提交记录**：未 commit。
+- **下一步建议**：修 arjun toolsconfig 让参数名落 api_endpoints；soft-404、route-probe 规则外置、authoritative_found。
+
+---
+
+### 2026-06-26 · enumeration 参数发现 AI recipe（js_extract_apis param_hints → GOLISH-ENUM-PARAM）
+
+- **本轮目标**：按用户「按A直接实现」，给参数发现加 AI——regex 抽不到 POST body/表单参数，让 AI 读 JS 后把 body/form 参数喂回 `js_extract_apis`，合并进 api_endpoints.params 并写 PARAM outcome。
+- **改前定位**：`api_endpoints::insert` 是纯 INSERT（靠 unique index，冲突即错→当 duplicate 跳过），**没有 params 更新路径**；二次 recipe pass 要合并到既有行须 upsert。`api_endpoints` 是 recon-owned（js_extract 对它走 ReconScansPort），故新方法走 port。unique index `uq_api_endpoint_target_url_method (target_id,url,method)` 无 WHERE → `ON CONFLICT` 可推断。
+- **已完成**（设计 2026-06-26 §4.3，方案 A）：
+  - `golish-db/repo/api_endpoints.rs`：加 `upsert_merge_params`（SQL 抽 const `UPSERT_MERGE_PARAMS_SQL`：`ON CONFLICT (target_id,url,method) DO UPDATE SET params = jsonb 并集去重排序, updated_at=NOW()`；不动 source/auth_type 等 provenance）。
+  - `golish-app-core/ports/recon/scans.rs`：`ReconScansPort` + `PgReconScansAdapter` 加 `api_endpoints_upsert_merge_params`（仅此 1 个 impl，无 mock 需改）。
+  - `golish-pentest-app/pentest_bridge/js_extract_apis.rs`：加 `param_hints` 入参 + schema；`parse_param_hints` / `param_names_from_value` / `merged_params_for`（按 path+method 匹配并集）/ `param_outcome_from_recipe` / `upsert_param_outcome`（TECH_ENUM_PARAM）。持久化循环在 has_param_hints 时走 upsert-merge 并计 `param_bearing_endpoints`；带 hints 才写 PARAM found/empty/error（JS 抽取本身不是参数发现，不凭空声称 checked_empty）。响应加 `param_hints_count/param_endpoints/param_outcome/param_outcome_persisted`。
+  - 同步模块卡（pentest_bridge + ports）、设计状态行。
+- **运行过的验证（实跑）**：
+  - TDD 红灯：`cargo nextest -p golish-pentest-app param` → `param_outcome_found`/`param_outcome_error` 失败（stub 返回 empty），`parse_param_hints`/`merged_params` 通过。
+  - 绿灯：classifier 实现后全过。`cargo nextest -p golish-db api_endpoints` → 1 passed（SQL const shape）；`cargo nextest -p golish-pentest-app` → **84 passed / 3 skipped**（+6 新 param 测试）。
+  - clippy：`cargo clippy -p golish-db -p golish-app-core -p golish-pentest-app --all-targets` → exit 0 零告警。
+  - fmt：`cargo fmt -p golish-db -p golish-app-core -p golish-pentest-app`；fmt 后重跑 js_extract + api_endpoints → 18 passed。
+  - `ReadLints`（3 文件）→ no linter errors。
+- **未跑**：`./init.sh` / `just precommit`（用户要求不调用）；未对真实外网跑；DB 行为（upsert 并集）只过 SQL const 单测，未跑需要 live PG 的集成测试。
+- **提交记录**：未 commit。
+- **下一步建议**：arjun-CLI 的 PARAM empty（方案 B / output_store 派发层）；soft-404、route-probe 规则外置、authoritative_found。也可让 Enumerator prompt 教模型「先 js_extract 看 ai_analysis → 读 JS → 再带 param_hints 回调」。
+
+---
+
+### 2026-06-26 · enumeration Phase 3 ffuf/gobuster 目录落库带 target_id
+
+- **本轮目标**：按用户「接Phase3 ffuf落库」要求，修复 ffuf/gobuster 的 `directory_entry_add` 落库——它们 CLI 文本输出多是相对 token（ffuf 打印 fuzz 词 `admin`，gobuster 打印 `/admin`），导致 `store_directory_entry` 留 `target_id=NULL`，行不计入 `GOLISH-ENUM-DIR`。
+- **改前定位**：
+  - `store_directory_entry`（findings.rs）只在 url 绝对 http(s) 时 `find_or_create_target` → 否则 target_id NULL。
+  - `find_or_create_target`（targets.rs）会把绝对 URL 正规化成 host，所以只要把相对 token 物化成绝对 URL 即可。
+  - `fields_with_command_target`（mod.rs）是已有的 enrichment seam（之前只处理 target_update_recon 补 host）。
+- **已完成**（设计 2026-06-26 §2.5/§7.4 Phase 3，Option B）：
+  - `output_store/mod.rs` `fields_with_command_target` 新增 `directory_entry_add` 分支 + 助手 `absolutize_directory_url` / `extract_command_url` / `is_absolute_http_url`：相对 token + 命令 `-u`/`--url` base → 绝对 URL（base 含 `FUZZ`→替换；否则 `Url::join`）；token 已绝对 / 无 base 时退回旧行为。
+  - 同步 `docs/modules/backend/golish-pentest/output_store.md`（模块卡）+ 设计文档（状态行 + §2.5 Resolved + Phase 3 任务勾选）。
+- **运行过的验证（实跑）**：
+  - TDD 红灯：`cd backend && cargo nextest run -p golish-pentest output_store` → 2 个物化测试失败（left `admin`/`/admin`，right 绝对 URL），功能缺失。
+  - 实现后绿灯：同命令 → **19 passed / 131 skipped**（含 4 个新测试：ffuf FUZZ 物化 / gobuster origin join / 绝对 URL 不动 / 无 base 退回）。
+  - clippy：`cargo clippy -p golish-pentest --all-targets` → exit 0，零告警。
+  - 格式化：`cargo fmt -p golish-pentest` → exit 0；格式化后重跑 output_store → 19 passed。
+  - `ReadLints`（output_store/mod.rs）→ no linter errors。
+- **未跑**：`./init.sh` / `just precommit`（用户明确要求不要调用）；未对真实外网跑 ffuf/gobuster。
+- **提交记录**：未 commit。
+- **下一步建议**：PARAM empty 终态（arjun 走 CLI、空结果在 `maybe_detect_and_store_via` 因 `records.is_empty()` 早返回而丢失，需专门方案）；soft-404 baseline、route-probe 规则外置、authoritative_found 开关。
+
+---
+
+### 2026-06-26 · enumeration JS outcomes（browser_collect_js_api 接 GOLISH-ENUM-JSAPI）
+
+- **本轮目标**：接 MCP-3 转移过来的上下文，按用户「开始接JS outcomes」要求，把 JS/API 采集工具的 JSAPI 终态写进 `technique_outcomes(GOLISH-ENUM-JSAPI)`。承接现状：`js_extract_apis` 已在工作树接好 JSAPI outcomes（但缺单测）；`browser_collect_js_api`（已提交原状）尚未接。
+- **关键确认（改前定位）**：
+  - `technique_outcomes::upsert` 冲突键 = `UNIQUE(run_id, asset, technique)`，last-writer-wins。
+  - JSAPI 的 `found` 由 `api_endpoints` 业务表独立投影（`coverage_truth::build_jsapi_values_sql` JOIN `api_endpoints`），故两个工具写 outcome 不会抹掉对方已落的 found（empty 只补 DB 行表达不了的终态，I8）。
+- **已完成**：
+  - `browser_collect_js_api.rs` 接 `technique_outcomes(GOLISH-ENUM-JSAPI)`（source=`browser_collect_js_api`）：观察到/落库同源 XHR/fetch → `found`；helper 跑完零请求 → `empty`；hard timeout（`status=timeout`）/ helper 非零退出（`status=error`）→ `error`。新增 `run_id` 入参（缺省取当前 agent session，再退 `browser_collect_js_api:{target_id}`）+ schema 项；成功路径捕获 `audit_id` 进 `evidence_ids`；响应新增 `jsapi_outcome` / `outcome_persisted` / `run_id`。新增 `jsapi_outcome_from_browser` classifier + `record_jsapi_outcome` / `upsert_jsapi_outcome` 助手（镜像 `js_extract_apis`）。
+  - `js_extract_apis.rs` 为既有但未测的 `jsapi_outcome_from_extract` 补 4 个 characterization 单测（锁定 found/empty/error 行为）。
+  - 同步 `docs/modules/backend/golish-pentest-app/pentest_bridge.md`（模块卡）+ `docs/design/2026-06-26-enumeration-deliverables-and-flow.md`（状态 + §2.4 说明）。
+- **运行过的验证（实跑）**：
+  - TDD 红灯：`cd backend && cargo nextest run -p golish-pentest-app jsapi_outcome` → stub 永远返回 "empty"，4 测试中 3 失败（found×2、error），1 通过（empty），失败原因是功能缺失。
+  - 实现后绿灯：同命令 → 4 passed。
+  - 全套件无回归：`cargo nextest run -p golish-pentest-app` → **78 passed / 3 skipped / 0 failed**（含 browser×4 + js_extract×4 新 classifier 测试）。
+  - clippy：`cargo clippy -p golish-pentest-app --all-targets` → exit 0，零告警（`dead_code` 已随 production 调用消除）。
+  - 格式化：`cargo fmt -p golish-pentest-app` → exit 0；格式化后重跑 `browser_collect_js_api` + `js_extract_apis` + `route_probe_paths` → 21 passed。
+  - `ReadLints`（browser_collect_js_api.rs / js_extract_apis.rs）→ no linter errors。
+- **未跑**：`./init.sh` / `just precommit`（用户明确要求不要调用）；未对真实外网目标跑 browser/JS（避免未授权请求）。
+- **提交记录**：未 commit。
+- **下一步建议**：接 parameter discovery（arjun 等）的 `GOLISH-ENUM-PARAM` empty/blocked outcome；再评估把 browser timeout/helper-failure 早返回也补一条 audit 进 `evidence_ids`（当前为空）；最后做 soft-404 baseline + 规则外置，再评估开启 enumeration `authoritative_found`。
+
+---
+
+### 2026-06-26 · enumeration Phase 2 route_probe_paths P0 bridge
+
+- **本轮目标**：按用户「继续 Phase2」要求，实现 RouteVulScan-style 轻量路径前缀探测的 P0 bridge tool，确保 positive probes 能以 absolute URL + `target_id` 落 `directory_entries(tool='route_probe')`。
+- **已完成**：
+  - 新增 `backend/crates/golish-pentest-app/src/pentest_bridge/route_probe_paths.rs`：
+    - 输入 `target_id`、`base_url`、`observed_paths`、`max_depth`、`max_requests`、`rate_limit_per_sec`、`timeout_ms`、`same_origin`、`rule_groups`、`dry_run`。
+    - 从 observed paths 派生 parent prefixes，默认同源过滤，GET-only，bounded request/rate/timeout。
+    - 内置小型 curated rule set：docs / debug / admin / backup / upload / source_map。
+    - positive status（2xx/3xx/401/403）写 `directory_entries(tool='route_probe')`，并写 `route_probe_paths_completed` audit summary。
+    - 使用当前 agent session（或显式 `run_id`）把 DIR 终态 upsert 到 `technique_outcomes(GOLISH-ENUM-DIR)`；found/empty/error outcome 不再只存在于 tool result。
+  - `create_pentest_bridge_tools` 注册 `RouteProbePathsTool`。
+  - Enumerator 默认工具清单（builder + template registry）加入 `route_probe_paths`，prompt 明确在 dictionary backfill 前调用它。
+  - `resources/harness/stages/enumeration/methodology.md`、`docs/modules/backend/golish-pentest-app/pentest_bridge.md`、设计文档状态同步。
+- **运行过的验证（实跑）**：
+  - 首轮红灯：`cd backend && cargo nextest run -p golish-pentest-app route_probe_paths --status-level fail ...` 中 route_probe 2 个纯测试失败，原因是测试预期没有包含 leaf parent prefix，且 `max_requests=4` 太小。
+  - 修正测试预期后：`cd backend && cargo nextest run -p golish-pentest-app route_probe_paths --status-level fail && cargo nextest run -p golish-sub-agents test_enumerator_has_content_enum_tools test_enumerator_prompt_is_content_enum --status-level fail && cargo nextest run -p golish-agent-app derives_web_root coverage_summary cidr_does_not --status-level fail && cargo nextest run -p golish-agent-kit enumeration_declares_no_hard_tool_floor migrated_enumeration_named_min_invocations_passes_without_hard_floor --status-level fail` → 12 tests passed。
+  - `cargo fmt --package golish-pentest-app --package golish-sub-agents` → exit 0。
+  - 格式化后重跑直接受影响测试：`cargo nextest run -p golish-pentest-app route_probe_paths --status-level fail && cargo nextest run -p golish-sub-agents test_enumerator_has_content_enum_tools test_enumerator_prompt_is_content_enum --status-level fail` → 6 tests passed。
+  - DIR outcome 接线后：`cargo fmt --package golish-pentest-app` → exit 0；`cargo nextest run -p golish-pentest-app route_probe_paths --status-level fail` → 4 tests passed。
+  - `ReadLints` 检查 Phase2 已改 Rust 文件 → no linter errors。
+- **未跑**：`./init.sh` / `just precommit`（用户明确要求不要调用）；未做真实外网 route probe（避免未经授权目标请求）。
+- **提交记录**：未 commit。
+- **下一步建议**：后续可加厚 soft-404 baseline、把 rule set 外置到 `resources/route-probe/*.yml`、将 checked_empty/blocked/error outcome 写入 `technique_outcomes`，再考虑开启 enumeration `authoritative_found`。
+
+---
+
+### 2026-06-26 · enumeration Phase 1 query_target_data 读模型
+
+- **本轮目标**：按用户「继续 Phase1」要求，在不加 migration、不调用 `init` / `precommit` 的前提下，把 enumeration 需要的 WebRoot / DIR / coverage 可见性接进现有 `query_target_data`。
+- **已完成**：
+  - `backend/crates/golish-app-core/src/ports/recon/directory.rs`：`ReconDirectoryPort` 新增 additive `directory_entries_list_by_target(target_id)`，复用既有 `DirectoryEntry` DTO 与 `directory_entries::list_by_target` repo helper。
+  - `backend/crates/golish-agent-app/src/ai/db_bridge/mod.rs`：`GolishDbRepoProvider` 注入 `ReconDirectoryPort`。
+  - `backend/crates/golish-agent-app/src/ai/db_bridge/recon.rs`：`query_target_data` 新增 `sections=["directories","coverage","web_roots"]`：
+    - `directories` 返回 target-bound `directory_entries` 与 count。
+    - `web_roots` 从 EAS 已落的 URL target、HTTP metadata、web-like ports/service 派生 root URLs；CIDR/wildcard 不猜测。
+    - `coverage` 返回 DIR/PARAM/JSAPI 的 found-only DB truth summary，明确 absence is not checked_empty。
+  - `backend/crates/golish-sub-agents/src/defaults/prompts/execution_planning.rs`：Enumerator prompt 要求先 `list_in_scope_targets`，再对每个 target 调 `query_target_data(sections=["web_roots","directories","coverage","endpoints","js_analysis"])`。
+  - 模块卡同步：`docs/modules/backend/golish-app-core/ports.md`、`docs/modules/backend/golish-agent-app/ai.md`；设计文档状态更新为 Phase 1 `query_target_data` read-model slice 已落。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo nextest run -p golish-agent-app derives_web_root coverage_summary cidr_does_not --status-level fail && cargo nextest run -p golish-agent-kit enumeration_declares_no_hard_tool_floor migrated_enumeration_named_min_invocations_passes_without_hard_floor --status-level fail && cargo nextest run -p golish-sub-agents test_enumerator_prompt_is_content_enum --status-level fail` → 7 tests passed。
+  - `cargo fmt --package golish-app-core --package golish-agent-app --package golish-agent-kit --package golish-sub-agents` → exit 0。
+  - 格式化后重跑同一 nextest 命令 → 7 tests passed。
+  - `ReadLints` 检查 Phase1 已改 Rust 文件 → no linter errors。
+- **未跑**：`./init.sh` / `just precommit`（用户明确要求不要调用）。
+- **提交记录**：未 commit。
+- **下一步建议**：接 Phase 2：实现 `route_probe_paths` bridge tool + small auditable rule set，确保 positive probes 以 absolute URL + non-null `target_id` 落 `directory_entries(tool='route_probe')`。
+
+---
+
+### 2026-06-26 · enumeration Phase 0 contract 实作
+
+- **本轮目标**：依 `docs/design/2026-06-26-enumeration-deliverables-and-flow.md` 先落 Phase 0：移除 enumeration 阶段 stale `http_probe` hard floor，让流程与 prompt 对齐“EAS-confirmed WebRoots → browser/JS/API → route probe → bounded dir scan → params → slim submit”。
+- **已完成**：
+  - `resources/harness/stages/enumeration/spec.json`：`min_invocations` 改为 `{}`，明确 HTTP probing 属于 EAS；更新 coverage hint，要求 JSAPI / DIR / PARAM 由 DB truth 投影 found，submitted coverage 只承载 checked_empty / blocked / not_applicable 等 DB 暂不能推导的终态。
+  - `resources/harness/stages/enumeration/methodology.md`：把 recommended sequence 改成 WebRoot 输入、browser baseline + JS/API、seed normalization、lightweight route probe、bounded dictionary scan、parameter discovery、slim submit。
+  - `backend/crates/golish-sub-agents/src/defaults/prompts/execution_planning.rs`：同步 Enumerator prompt，避免子代理再按旧的 one-shot / dictionary-first 流程工作。
+  - `backend/crates/golish-agent-kit/src/harness/gate/{min_invocations_check.rs,mod.rs}` 与 `backend/crates/golish-sub-agents/src/defaults/tests.rs`：先改测试描述新 contract，再实作让测试转绿。
+  - `docs/design/2026-06-26-enumeration-deliverables-and-flow.md`：状态改为 Phase 0 contract alignment 已落地；WebRoot read model / route_probe_paths 仍 pending。
+- **运行过的验证（实跑）**：
+  - 红灯：`cd backend && cargo nextest run -p golish-agent-kit enumeration_declares_no_hard_tool_floor migrated_enumeration_named_min_invocations_passes_without_hard_floor --status-level fail` → 2 tests failed，原因均为 embedded enumeration spec 仍要求 `http_probe`。
+  - 绿灯：`cd backend && cargo nextest run -p golish-agent-kit enumeration_declares_no_hard_tool_floor migrated_enumeration_named_min_invocations_passes_without_hard_floor --status-level fail && cargo nextest run -p golish-sub-agents test_enumerator_prompt_is_content_enum --status-level fail` → 3 tests passed。
+  - 格式化后重跑同一命令 → 3 tests passed。
+  - `ReadLints` 检查已改 Rust 文件 → no linter errors。
+- **未跑**：`./init.sh` / `just precommit`（用户明确要求不要调用）。
+- **提交记录**：未 commit。
+- **下一步建议**：接 Phase 1：在 `query_target_data` 或新只读 tool 中暴露 enumeration web roots / directories / coverage 视图；再接 Phase 2 `route_probe_paths` bridge tool，确保 DIR positives 以 absolute URL + `target_id` 落 `directory_entries`。
+
+---
+
+### 2026-06-26 · enumeration 交付物与分步流程设计
+
+- **本轮目标**：按用户要求，针对枚举阶段不应“一键式”的问题，结合当前 stage harness / stage_run / Enumerator / JS/API 落库 / DIR/PARAM/JSAPI DB truth 代码，制定一份具体设计文档，重点明确交付物如何确定、流程如何调整，以及如何进入 `stage_run`。
+- **已完成**：
+  - 新增 `docs/design/2026-06-26-enumeration-deliverables-and-flow.md`。
+  - 文档按当前代码梳理：`enumeration` spec 的 `DIR/PARAM/JSAPI`、`specialist=enumerator`、`coverage_complete derive_from_evidence`、`freshness_window`；`StageDeliverable` 字段；`coverage_truth` 对 `directory_entries` / `api_endpoints` 的投影；`browser_collect_js_api` / `js_extract_apis` 的 JSAPI 落库闭环；`stage_run` 当前 org 维度扇出与串行 MVP；`ffuf/gobuster` 相对路径输出无法绑定 `target_id` 的 DIR gate 风险。
+  - 设计给出四层交付物：EAS 交给 enumeration 的 `WebRoot` 输入、落库的 content discovery units、供 `vuln_triage` 派生的 worklist、以及 slim `StageDeliverable`（只提交 summary claims 和 DB 推不出的 checked_empty/blocked/not_applicable）。
+  - 流程调整为：加载 EAS-confirmed WebRoots → baseline/soft-404 → browser JS/API → JS extraction + seed normalization → RouteVulScan-style lightweight recursive route probe → bounded dictionary scan → parameter discovery → slim submit。
+  - 明确 `stage_run` 只做 org 维度 fan-out/gate retry，不把 web-root/action 级流程隐藏成黑盒“一键扫描”；Enumerator 内部保持可见步骤。
+  - 更新 `docs/design/INDEX.md`，登记新文档并把总数改为 63。
+- **运行过的验证（实跑）**：
+  - `test -f docs/design/2026-06-26-enumeration-deliverables-and-flow.md && echo ok` → `ok`。
+  - `rg -n "enumeration-deliverables-and-flow|共 \\*\\*63" docs/design/INDEX.md` → 命中新文档索引和总数。
+  - `git diff --check -- docs/design/2026-06-26-enumeration-deliverables-and-flow.md docs/design/INDEX.md` → exit 0。
+  - `perl -ne 'print "$ARGV:$.:$_" if /[ \\t]$/ ' docs/design/2026-06-26-enumeration-deliverables-and-flow.md docs/design/INDEX.md` → 无输出。
+- **未跑**：`./init.sh` / `just precommit`（本轮仅新增设计文档和索引；仓库已有大量用户/前序 JS 闭环 WIP）。
+- **提交记录**：未 commit。
+- **下一步建议**：如用户确认设计方向，先按 Phase 0 改 `enumeration/spec.json` 和 methodology/prompt，移除 stale `http_probe` hard floor；随后实现 `list_enumeration_web_roots` 与 `route_probe_paths`。
+
+---
+
+### 2026-06-26 · JS 落地后分析候选与 AI 复核入口
+
+- **本轮目标**：在 JS 文件已经由 browser/static collector 落地之后，补第一层 JS 分析：endpoint 之外提取敏感信息/config/framework/library/rule_matches 候选，并把 AI 介入点收成结构化、可局部读文件的契约。
+- **已完成**：
+  - `golish-js-analyzer` 新增 `signals.rs` 与公开接口 `analyze_signals_from_files` / `analyze_signals_from_source`：从 JS 中提取脱敏后的 `SecretCandidate` / `ConfigCandidate` / `FrameworkCandidate` / `LibraryCandidate` / `RuleMatchCandidate`，覆盖 JWT、Bearer/API key、AWS access key、private key header、basic-auth URL、internal URL、API base/runtime config、Next/Nuxt/Vite/Webpack/React/Vue/Angular/Svelte、常见库，以及 curated rule-based signal 规则命中。
+  - 新增 `resources/js-analysis/js-signal-rules.yml`：参考 gh0stkey/HaE 的规则思想，但转换成 Rust `regex` 兼容的 Golish 子集，包含 JWT、Swagger/Vite、debug/upload/URL-as-value、Email/手机号/Internal IP、Cloud Key、Password/Username/Auth Header、Linkfinder/source map/URL scheme 等候选。
+  - 候选输出只含 `value_preview` / `match_preview`、`value_sha256` / `match_sha256`、`source_file`、`line`、`confidence`、`is_likely_test_value` / `ai_review` 和 redacted context；完整 secret 不进入 tool result / prompt。
+  - `js_extract_apis` 接入 signal report：继续写 `api_endpoints(source='js_analysis')`，同时把 frameworks/libraries/secrets/config candidates 和 `rule_matches` 写进 `js_analysis_results` 的既有 JSONB 字段和 `raw_analysis`；返回 `secret_candidates` / `config_candidates` / `frameworks` / `libraries` / `rule_matches` / `ai_analysis`。
+  - 新增 `resources/skills/js_extract_apis/rule-assisted-analysis.md`：规定先用 rule-based signal 抓候选，再由 AI 按 `source_file + line` 局部 `read_file` 分类 real/test/noise/needs_followup，规则名只是线索不是 proof。
+  - `ai_analysis` 明确模型介入边界：只按 `source_file + suggested_read_file_ranges` 局部 `read_file`，分类 real/test/noise/needs_followup；AI 推断 endpoint 不算 verified，enumeration 阶段不产 finding。
+  - 更新 enumerator/browser prompt、enumeration methodology、设计文档和模块卡，让 agent 在 `js_extract_apis.ai_analysis.recommended=true` 时做局部复核。
+  - 新增独立 JS-only 测试入口：`scripts/js_api_pipeline_test.mjs` 只跑 `browser_collect_js_api.mjs` fast/deep + `golish-js-analyzer` CLI + 可选 DeepSeek 过滤，不启动 `stage_run`、不走 enumeration gate、不依赖 DB。
+  - 新增 `golish-js-analyzer` bin `js_api_extract`：直接读取 `.golish/captures/<host>/<port>/js`，输出 endpoint/config/secret/framework/library/rule_matches 汇总，并内嵌 `context_snippets` 解决 AI 读取 `source_file` 相对路径找不到的问题。
+  - `browser_collect_js_api.mjs` 增加跨轮 JS manifest：按规范化 URL 去重、按 SHA-256 内容去重，并把 `.golish/captures/<host>/<port>/js/manifest.json` 作为后续 deep 轮次的缓存入口，避免 200+ chunk 站点每轮从头重复抓。
+  - `scripts/js_api_pipeline_test.mjs` 增加 `--closure full`：在 bounded fast/deep 之外允许多轮 deep 直到闭合或命中 `--max-closure-rounds` / `--max-total-scripts` / `--max-total-ms`，用于“尽量全面抓 JS，但不无限循环”。
+- **运行过的验证**：
+  - `./init.sh` → 已按用户指令中断；中断前已通过工具检查、依赖安装、fmt、check-fe、test-fe、lint-rust，停在 `test-rust-all`。
+  - `cd backend && cargo fmt -p golish-js-analyzer -p golish-pentest-app -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo check -p golish-js-analyzer -p golish-pentest-app -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo nextest run -p golish-js-analyzer --status-level fail` → 46 passed。
+  - `cd backend && cargo nextest run -p golish-pentest-app js_extract_apis --status-level fail` → 7 passed / 62 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents defaults --status-level fail` → 22 passed / 87 skipped。
+  - `cd backend && cargo clippy -p golish-js-analyzer -p golish-pentest-app -p golish-sub-agents --all-targets -- -D warnings` → exit 0。
+  - `git diff --check` → exit 0。
+  - `node --check scripts/js_api_pipeline_test.mjs` → exit 0。
+  - `cd backend && cargo check -p golish-js-analyzer` → exit 0。
+  - `node scripts/js_api_pipeline_test.mjs --url http://8.138.179.62:8080/ --workspace /tmp/golish-jsapi-8.138.179.62-8080 --deep auto --fast-max-pages 1 --fast-max-actions 2 --fast-max-recursive-scripts 120 --fast-timeout-ms 30000 --fast-hard-timeout-ms 60000 --deep-max-pages 2 --deep-max-actions 4 --deep-max-recursive-scripts 300 --deep-timeout-ms 60000 --deep-hard-timeout-ms 120000 --ai-filter true` → exit 0；fast/deep 均 `closure_partial`，最终 `scripts_saved=303`、`scripts_recursive_downloaded=300`、`recursive_queue_remaining=1827`、`files_scanned=303`、`api_base_path=/admin-api`、`endpoints_total=29`、`endpoints_unique=23`、`secret_candidates_total=10`、`rule_matches_total=9780`，AI 过滤返回 real endpoints 29、needs_followup 2。
+  - `node scripts/js_api_pipeline_test.mjs --url http://8.138.179.62:8080/ --workspace /tmp/golish-jsapi-closure-test --closure full --deep always --max-closure-rounds 2 --deep-max-recursive-scripts 50 --deep-hard-timeout-ms 90000 --ai-filter false` → exit 0；第二轮 deep 从 manifest 预加载 `173` 个脚本后继续下载 `50` 个，最终 `scripts_saved=223`、`files_scanned=223`、`endpoints_unique=29`、`recursive_queue_remaining=1892`。
+  - `node scripts/js_api_pipeline_test.mjs --url http://8.138.179.62:8080/ --workspace /tmp/golish-jsapi-closure-test --closure full --deep always --fast-max-recursive-scripts 0 --max-closure-rounds 6 --deep-max-recursive-scripts 1000 --deep-hard-timeout-ms 180000 --max-total-scripts 12000 --max-total-ms 900000 --ai-filter false` → exit 0；3 个 deep round 后 `final_status=ok`、`closure_complete=true`、`recursive_queue_remaining=0`、`scripts_saved=2370`、唯一落地 JS 文件 `1181`、`endpoints_unique=889`。
+  - `node scripts/js_api_pipeline_test.mjs --url http://8.138.179.62:8080/ --workspace /tmp/golish-jsapi-closure-test --closure full --deep always --fast-max-recursive-scripts 0 --max-closure-rounds 2 --deep-max-recursive-scripts 1000 --deep-hard-timeout-ms 180000 --max-total-scripts 12000 --max-total-ms 600000 --ai-filter true` → exit 0；复用 full manifest 后 `closure_complete=true`、`recursive_queue_remaining=0`、`files_scanned=1181`、`endpoints_unique=889`，DeepSeek `deepseek-v4-flash` 对当前 AI payload（前 120 个 endpoint 候选 + secret/rule 样本）返回 `real_endpoints_count=119`、`test_or_placeholder=1`、`secret_triage_count=8`。
+  - `node --check scripts/browser_collect_js_api.mjs` → exit 0。
+  - `node --check scripts/js_api_pipeline_test.mjs` → exit 0。
+  - `git diff --check` → exit 0。
+  - `cd backend && cargo check -p golish-js-analyzer` → exit 0。
+- **已记录证据**：
+  - 新单测 `signals::tests::extracts_redacted_secret_and_config_candidates` 覆盖 `VITE_GLOB_API_URL`、`accessToken`、internal URL，并断言 context 不泄露完整 token。
+  - 新单测 `signals::tests::detects_frameworks_and_common_libraries` 覆盖 Next/React/axios/ECharts 信号。
+  - 新单测 `signals::tests::flags_likely_test_values_without_dropping_them` 覆盖 example/test secret 候选保留但降置信度。
+  - 新单测 `signals::tests::embedded_signal_rules_parse_and_compile` 覆盖 embedded YAML 可解析且所有 signal 规则可被 Rust regex 编译。
+  - 新单测 `signals::tests::extracts_rule_matches_for_ai_review` 覆盖 Authorization Header、Swagger UI、Vite DevMode、Internal IP Address。
+  - 新单测 `signals::tests::rule_match_sensitive_context_is_redacted` 覆盖 Authorization rule hit 的 preview/context 不泄露完整 token。
+  - JS-only 测试产物：`/tmp/golish-jsapi-8.138.179.62-8080/.golish/js-api-test-results/2026-06-26T02-30-48-204Z/summary.json`，证明不经过 `stage_run` 也能闭环 JS 抓取、提取和 AI 过滤。
+  - closure-full 测试产物：`/tmp/golish-jsapi-closure-test/.golish/js-api-test-results/2026-06-26T03-02-38-026Z/summary.json`，deep round 1 `scripts_saved=173/scripts_cached_preloaded=123`，deep round 2 `scripts_saved=223/scripts_cached_preloaded=173`，证明后续轮次复用 manifest 并继续抓剩余 chunk。
+  - full-closure 测试产物：`/tmp/golish-jsapi-closure-test/.golish/js-api-test-results/2026-06-26T03-13-35-158Z/summary.json`，fast 预加载 `223` 个脚本且不递归；deep round 1/2 各补 `1000` 个，round 3 补 `147` 个后 `closure_complete=true`；manifest `2370` URL entries 映射到 `1181` 个唯一 SHA/唯一文件，证明跨 URL 内容去重生效。
+  - AI-filter 测试产物：`/tmp/golish-jsapi-closure-test/.golish/js-api-test-results/2026-06-26T03-30-09-512Z/summary.json`，模型把前 120 个 endpoint 候选里的 119 个判为真实 API，1 个截断 template URL 判为 placeholder；secret triage 中 8 个候选均判为 noise/test（翻译 key、CSS password selector、`no-api-key` 占位、示例 private key 等），rule summary 指出 `route/pii/secret` 命中大多是低信号 false positive。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 没有跑完整 `just precommit`；本轮按用户要求停止 `init.sh` 后只跑 scoped 验证。
+  - 这不是模型内置分类器；AI 介入目前发生在外层 enumerator/browser agent 读取 `ai_analysis` / `rule_matches` 后，用 `read_file` 局部复核。后续还需要独立 `api_analyze_candidates` / `js_classify_candidates` model-backed 工具。
+  - 没有新增 secrets 专表或 UI；P0 复用 `js_analysis_results` 既有 JSONB 字段。
+  - `--closure full` 仍带硬预算，不是真正无上限；如果站点持续产生大量动态/不可达 chunk，会保留 `closure_partial`、`recursive_queue_remaining` 和 incomplete reasons 供后续调高预算或 AI recipe 介入。
+  - 当前 JS-only AI 过滤为控 token 只送前 `120` 个 endpoint 候选给模型；`119 real` 不能解释成 889 个 unique endpoint 的全量模型复核。下一步应把 AI filter 改成 batch/分页式全量分类，并把 `ai_input_coverage` 写进结果。
+- **下一步最佳动作**：接一个 model-backed 分类工具：输入 `js_extract_apis` 候选 + 局部源码片段，输出 real/test/noise、endpoint/baseURL 修正建议、secret triage 建议；经 deterministic validator 后再更新 endpoint metadata / raw_analysis。
+
+---
+
 ### 2026-06-25 · enumeration JS/API 动态采集首版实现
 
 - **本轮目标**：开始实现枚举阶段 JS/API 子链路：先解决 JS 抓取/提取/入库断链，再补一个动态浏览器采集入口，并用真实网站验证。
