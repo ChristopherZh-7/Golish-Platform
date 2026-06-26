@@ -127,6 +127,9 @@ nmap_scan*.xml
 *.nmap
 nuclei_*.json
 nuclei_*.txt
+katana_*.txt
+katana_*.jsonl
+katana_response/
 
 # Pentest wordlists (data, not code; downloaded on-demand via
 # scripts/download_wordlists.sh from danielmiessler/SecLists).
