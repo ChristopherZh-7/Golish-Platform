@@ -535,19 +535,22 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AgentState) {
 
 fn configure_domain_hooks(bridge: &mut AgentBridge, state: &AgentState) {
     let pool = state.db_pool.clone();
-    bridge.set_post_shell_hook(std::sync::Arc::new(move |cmd, stdout, project_path| {
-        let pool = pool.clone();
-        Box::pin(async move {
-            let store = golish_pentest::output_store::PgPentestStore::new(&pool);
-            let _ = golish_pentest::output_store::maybe_detect_and_store_via(
-                &store,
-                &cmd,
-                &stdout,
-                project_path.as_deref(),
-            )
-            .await;
-        })
-    }));
+    bridge.set_post_shell_hook(std::sync::Arc::new(
+        move |cmd, stdout, project_path, organization_id| {
+            let pool = pool.clone();
+            Box::pin(async move {
+                let store = golish_pentest::output_store::PgPentestStore::new(&pool);
+                let _ = golish_pentest::output_store::maybe_detect_and_store_via_context(
+                    &store,
+                    &cmd,
+                    &stdout,
+                    project_path.as_deref(),
+                    golish_pentest::output_store::StoreContext { organization_id },
+                )
+                .await;
+            })
+        },
+    ));
     bridge.set_output_classifier(std::sync::Arc::new(|cmd, stdout| {
         golish_pentest::output_store::has_structured_storage(cmd, stdout)
     }));

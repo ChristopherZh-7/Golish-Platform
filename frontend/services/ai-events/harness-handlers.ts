@@ -30,6 +30,7 @@ const TECHNIQUE_STATES: readonly TechniqueState[] = [
   "found",
   "checked_empty",
   "blocked",
+  "not_applicable",
   "pending",
 ];
 
@@ -79,6 +80,7 @@ export const handleHarnessTrace: EventHandler<Extract<AiEvent, { type: "harness_
     activity: event.activity ?? undefined,
     evidenceCount: event.evidence_count ?? 0,
     coverage: toCoverage(event.coverage ?? []),
+    stage: event.stage,
   };
 
   ctx.getState().upsertStageRunRow(ctx.sessionId, row, {

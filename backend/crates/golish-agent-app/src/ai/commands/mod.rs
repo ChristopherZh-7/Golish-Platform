@@ -17,6 +17,7 @@ pub mod mode;
 pub mod plan;
 pub mod policy;
 pub mod session;
+pub mod stage_coverage;
 pub mod summarizer;
 pub mod workflow;
 
@@ -37,6 +38,7 @@ pub use mode::*;
 pub use plan::*;
 pub use policy::*;
 pub use session::*;
+pub use stage_coverage::*;
 pub use summarizer::*;
 pub use workflow::*;
 

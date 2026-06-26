@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { StageRunOrgRows, type StageRunRow } from "./StageRunOrgRows";
 
@@ -52,5 +52,24 @@ describe("StageRunOrgRows", () => {
     expect(screen.getByText("Stopped")).toBeInTheDocument();
     expect(screen.queryByText("Running")).not.toBeInTheDocument();
     expect(screen.queryByText(/Recon Agent 正在 recon_map_assets/)).not.toBeInTheDocument();
+  });
+
+  it("opens the org specialist detail when the org row is clicked", () => {
+    const drillIn = vi.fn();
+
+    render(
+      <StageRunOrgRows
+        rows={[makeRow()]}
+        summary={{ total: 1, covered: 0, active: 1, queued: 0, blocked: 0 }}
+        stageLabel="Target Intel"
+        roleLabel="Recon"
+        coverageAxis={["DNS", "WHOIS", "ASN", "CT", "Subdomain", "OSINT"]}
+        onDrillIn={drillIn}
+      />
+    );
+
+    fireEvent.click(screen.getByText("Acme Root"));
+
+    expect(drillIn).toHaveBeenCalledWith("tool-1::org::org-1");
   });
 });

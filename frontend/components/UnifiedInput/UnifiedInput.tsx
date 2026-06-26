@@ -188,7 +188,8 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
                 "font-mono text-[13px] text-foreground leading-[26px] align-middle",
                 "focus:outline-none focus:ring-0",
                 "disabled:opacity-50 disabled:cursor-not-allowed",
-                "placeholder:text-muted-foreground"
+                "placeholder:text-muted-foreground",
+                "unified-input-textarea"
               )}
               style={isBlockCaret ? { caretColor: "transparent" } : undefined}
               onFocus={handleFocus}

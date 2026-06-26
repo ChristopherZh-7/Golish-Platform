@@ -434,6 +434,43 @@
   scrollbar-width: none;
 }
 
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*:hover,
+*:focus,
+*:focus-within {
+  scrollbar-color: rgba(154, 160, 166, 0.28) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 999px;
+}
+
+*:hover::-webkit-scrollbar-thumb,
+*:focus::-webkit-scrollbar-thumb,
+*:focus-within::-webkit-scrollbar-thumb {
+  background-color: rgba(154, 160, 166, 0.28);
+}
+
+.unified-input-textarea {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 
 
 /* Clickable file path links in Markdown */

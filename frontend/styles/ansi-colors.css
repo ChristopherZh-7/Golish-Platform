@@ -178,8 +178,8 @@
 
 /* Custom scrollbar for output blocks */
 .ansi-output::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 .ansi-output::-webkit-scrollbar-track {
@@ -187,10 +187,12 @@
 }
 
 .ansi-output::-webkit-scrollbar-thumb {
-  background: #414868;
-  border-radius: 4px;
+  background: transparent;
+  border-radius: 999px;
 }
 
-.ansi-output::-webkit-scrollbar-thumb:hover {
-  background: #565f89;
+.ansi-output:hover::-webkit-scrollbar-thumb,
+.ansi-output:focus::-webkit-scrollbar-thumb,
+.ansi-output:focus-within::-webkit-scrollbar-thumb {
+  background: rgba(154, 160, 166, 0.28);
 }

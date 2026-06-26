@@ -8,11 +8,15 @@ import {
   getSubAgentShellOutputJsonValueForDetail,
   getSubAgentToolDisplayStatus,
   isSubAgentShellLikeOutputTool,
+  isTerminalStageRunToolStatus,
   normalizeSubAgentEntriesForDetail,
+  parseStageRunOrgRequestId,
+  resolveStageCoverageContextForSubAgent,
   SUB_AGENT_DETAIL_PENDING_OUTPUT_SPINNER_CLASS,
   SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS,
   SUB_AGENT_HEADER_STATUS_BADGE_STYLES,
   SubAgentShellOutputText,
+  shouldSeparateSubAgentDetailEntries,
   stripAgentXmlTags,
 } from "./SubAgentDetailView";
 
@@ -81,6 +85,13 @@ describe("getSubAgentShellOutputForDetail", () => {
       })
     ).toEqual({
       text: "whatweb scanning...",
+      pending: false,
+    });
+  });
+
+  it("does not keep a stopped child tool in pending output mode", () => {
+    expect(getSubAgentShellOutputForDetail({ status: "interrupted" })).toEqual({
+      text: null,
       pending: false,
     });
   });
@@ -205,7 +216,84 @@ describe("normalizeSubAgentEntriesForDetail", () => {
   });
 });
 
+describe("shouldSeparateSubAgentDetailEntries", () => {
+  it("keeps thought and agent output in the same visual group", () => {
+    expect(
+      shouldSeparateSubAgentDetailEntries({ kind: "thinking" }, { kind: "text" })
+    ).toBe(false);
+    expect(
+      shouldSeparateSubAgentDetailEntries({ kind: "text" }, { kind: "thinking" })
+    ).toBe(false);
+  });
+
+  it("separates tool calls from agent narrative blocks", () => {
+    expect(
+      shouldSeparateSubAgentDetailEntries({ kind: "text" }, { kind: "tool_call" })
+    ).toBe(true);
+    expect(
+      shouldSeparateSubAgentDetailEntries({ kind: "tool_call" }, { kind: "thinking" })
+    ).toBe(true);
+  });
+});
+
+describe("stage-run org coverage context", () => {
+  it("parses a stage_run org specialist request id", () => {
+    expect(parseStageRunOrgRequestId("tool-1::org::org-1")).toEqual({
+      stageRunRequestId: "tool-1",
+      organizationId: "org-1",
+    });
+    expect(parseStageRunOrgRequestId("plain-tool")).toBeNull();
+  });
+
+  it("resolves target_intel coverage context for the current sub-agent detail page", () => {
+    expect(
+      resolveStageCoverageContextForSubAgent(
+        "tool-1::org::org-1",
+        {
+          "tool-1": {
+            requestId: "tool-1",
+            stageLabel: "Target Intel",
+            roleLabel: "Recon",
+            coverageAxis: ["DNS", "WHOIS", "ASN", "CT", "Subdomain", "OSINT"],
+            summary: { total: 1, covered: 1, active: 0, queued: 0, blocked: 0 },
+            rows: [
+              {
+                id: "org-1",
+                name: "Acme Root",
+                ownershipPercent: 100,
+                status: "passed",
+                agentRequestId: "tool-1::org::org-1",
+                evidenceCount: 3,
+                coverage: { DNS: "found" },
+                stage: "target_intel",
+              },
+            ],
+          },
+        },
+        null
+      )
+    ).toEqual({
+      organizationId: "org-1",
+      organizationName: "Acme Root",
+      stage: "target_intel",
+      stageLabel: "Target Intel",
+    });
+  });
+});
+
 describe("getSubAgentToolDisplayStatus", () => {
+  it("projects a stale running sub-agent tool as interrupted after its parent stage stopped", () => {
+    expect(
+      getSubAgentToolDisplayStatus(
+        {
+          status: "running",
+          result: undefined,
+        },
+        { parentStageStopped: true }
+      )
+    ).toBe("interrupted");
+  });
+
   it("treats completed sub-agent tool payload failures as error", () => {
     expect(
       getSubAgentToolDisplayStatus({
@@ -231,6 +319,26 @@ describe("getSubAgentToolDisplayStatus", () => {
 });
 
 describe("getSubAgentHeaderDisplayStatus", () => {
+  it("projects a stale running sub-agent header as interrupted after its parent stage stopped", () => {
+    expect(
+      getSubAgentHeaderDisplayStatus(
+        {
+          status: "running",
+          toolCalls: [
+            {
+              id: "tool-1",
+              name: "recon_map_assets",
+              args: {},
+              status: "running",
+              startedAt: "2026-06-24T09:00:00.000Z",
+            },
+          ],
+        },
+        { parentStageStopped: true }
+      )
+    ).toBe("interrupted");
+  });
+
   it("keeps a completed sub-agent visually running while a tool is still running", () => {
     expect(
       getSubAgentHeaderDisplayStatus({
@@ -276,5 +384,19 @@ describe("getSubAgentHeaderDisplayStatus", () => {
     expect(SUB_AGENT_HEADER_STATUS_BADGE_STYLES.backgrounded.badgeClass).toContain(
       "text-amber-300"
     );
+  });
+});
+
+describe("isTerminalStageRunToolStatus", () => {
+  it("treats interrupted/completed/error parent stage_run states as terminal", () => {
+    expect(isTerminalStageRunToolStatus("interrupted")).toBe(true);
+    expect(isTerminalStageRunToolStatus("completed")).toBe(true);
+    expect(isTerminalStageRunToolStatus("error")).toBe(true);
+  });
+
+  it("does not stop child detail while the parent stage_run is still live or unknown", () => {
+    expect(isTerminalStageRunToolStatus("running")).toBe(false);
+    expect(isTerminalStageRunToolStatus("backgrounded")).toBe(false);
+    expect(isTerminalStageRunToolStatus(null)).toBe(false);
   });
 });

@@ -16,10 +16,11 @@ import {
   Wand2,
   XCircle,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useRef, useState, type WheelEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { ThinkingBlock } from "@/components/AIChatPanel/ThinkingBlock";
 import { Ansi } from "@/components/Ansi";
+import { StageAssetCoverageBlock } from "@/components/Engagement/StageAssetCoveragePanel";
 import { JsonView } from "@/components/JsonView/JsonView";
 import { Markdown } from "@/components/Markdown";
 import { BackgroundJobsBadge } from "@/components/UnifiedInput/StatusBadges";
@@ -43,6 +44,7 @@ import { getToolPrimaryArg, toolResultIndicatesFailure } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, SubAgentEntry, SubAgentToolCall } from "@/store";
 import { useStore } from "@/store";
+import type { SessionStageRun } from "@/store/types/session";
 
 export const SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS = "h-4 w-4 shrink-0 animate-spin";
 export const SUB_AGENT_DETAIL_PENDING_OUTPUT_SPINNER_CLASS =
@@ -52,6 +54,10 @@ type ShellOutputField = { key: string; value: string };
 type SubAgentToolStatus = SubAgentToolCall["status"];
 type DetailToolStatus = SubAgentToolStatus | "interrupted";
 type SubAgentHeaderStatus = ActiveSubAgent["status"] | "backgrounded";
+
+interface DisplayStatusOptions {
+  parentStageStopped?: boolean;
+}
 
 export function SubAgentShellOutputText({ text }: { text: string }) {
   return <Ansi>{text}</Ansi>;
@@ -74,7 +80,8 @@ function isLiveToolStatus(status: string | undefined): boolean {
 }
 
 export function getSubAgentToolDisplayStatus(
-  tool: Pick<SubAgentToolCall, "status" | "result">
+  tool: Pick<SubAgentToolCall, "status" | "result">,
+  options: DisplayStatusOptions = {}
 ): DetailToolStatus {
   const status: DetailToolStatus =
     (tool.status as string) === "completed"
@@ -87,21 +94,30 @@ export function getSubAgentToolDisplayStatus(
             ? "backgrounded"
             : "running";
 
+  if (options.parentStageStopped && status === "running") return "interrupted";
   return status === "completed" && toolResultIndicatesFailure(tool.result) ? "error" : status;
 }
 
 export function getSubAgentHeaderDisplayStatus(
-  agent: Pick<ActiveSubAgent, "status" | "toolCalls">
+  agent: Pick<ActiveSubAgent, "status" | "toolCalls">,
+  options: DisplayStatusOptions = {}
 ): SubAgentHeaderStatus {
-  if (agent.toolCalls.some((tool) => getSubAgentToolDisplayStatus(tool) === "running")) {
+  const toolStatuses = agent.toolCalls.map((tool) => getSubAgentToolDisplayStatus(tool, options));
+  if (toolStatuses.some((status) => status === "running")) {
     return "running";
   }
-  if (agent.toolCalls.some((tool) => getSubAgentToolDisplayStatus(tool) === "backgrounded")) {
+  if (toolStatuses.some((status) => status === "backgrounded")) {
     return "backgrounded";
   }
   if (agent.status === "completed" && agent.toolCalls.length > 0) {
-    const latestTool = agent.toolCalls[agent.toolCalls.length - 1];
-    if (getSubAgentToolDisplayStatus(latestTool) === "error") return "error";
+    const latestToolStatus = toolStatuses[toolStatuses.length - 1];
+    if (latestToolStatus === "error") return "error";
+  }
+  if (
+    options.parentStageStopped &&
+    (agent.status === "running" || toolStatuses.some((status) => status === "interrupted"))
+  ) {
+    return "interrupted";
   }
   return agent.status;
 }
@@ -199,6 +215,14 @@ export function normalizeSubAgentEntriesForDetail(
   });
 }
 
+export function shouldSeparateSubAgentDetailEntries(
+  previous: Pick<SubAgentEntry, "kind"> | null | undefined,
+  current: Pick<SubAgentEntry, "kind">
+): boolean {
+  if (!previous) return false;
+  return previous.kind === "tool_call" || current.kind === "tool_call";
+}
+
 /* ─── Structured args display ─── */
 
 function ToolArgsTable({ args }: { args: Record<string, unknown> }) {
@@ -207,7 +231,7 @@ function ToolArgsTable({ args }: { args: Record<string, unknown> }) {
 }
 
 export function getSubAgentShellOutputForDetail(
-  tool: Pick<SubAgentToolCall, "status" | "result" | "streamingOutput">
+  tool: Pick<SubAgentToolCall, "result" | "streamingOutput"> & { status?: DetailToolStatus }
 ): {
   text: string | null;
   pending: boolean;
@@ -244,7 +268,7 @@ export function getSubAgentShellOutputForDetail(
   const text = raw ? normalizeSubAgentShellText(raw) : null;
   const pending = isLiveToolStatus(tool.status) && !text;
   const terminalNoOutput =
-    (tool.status === "completed" || tool.status === "error") &&
+    (tool.status === "completed" || tool.status === "error" || tool.status === "interrupted") &&
     tool.result !== null &&
     tool.result !== undefined &&
     !text;
@@ -280,7 +304,7 @@ export function getSubAgentShellOutputFieldsForDetail(
 }
 
 export function getSubAgentShellOutputJsonValueForDetail(
-  tool: Pick<SubAgentToolCall, "result"> & Partial<Pick<SubAgentToolCall, "status">>
+  tool: Pick<SubAgentToolCall, "result"> & { status?: DetailToolStatus }
 ): Record<string, string> | null {
   if (isLiveToolStatus(tool.status)) return null;
   const fields = getSubAgentShellOutputFieldsForDetail(tool);
@@ -342,13 +366,20 @@ const ToolResultDisplay = memo(function ToolResultDisplay({ result }: { result: 
 
 /* ─── Sub-agent tool call block ─── */
 
-const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: SubAgentToolCall }) {
+const AgentToolCallBlock = memo(function AgentToolCallBlock({
+  tool,
+  parentStageStopped = false,
+}: {
+  tool: SubAgentToolCall;
+  parentStageStopped?: boolean;
+}) {
   const isShellRunner = tool.name === "run_pty_cmd" || tool.name === "run_command";
   const isShellLikeOutput = isSubAgentShellLikeOutputTool(tool);
   const [isExpanded, setIsExpanded] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
   const preScrollFrameRef = useRef<number | null>(null);
-  const status = getSubAgentToolDisplayStatus(tool);
+  const status = getSubAgentToolDisplayStatus(tool, { parentStageStopped });
+  const displayTool = { ...tool, status };
   const isLive = isLiveToolStatus(status);
   const isStreaming = isShellLikeOutput && isLive && !!tool.streamingOutput;
 
@@ -374,8 +405,8 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({ tool }: { tool: Su
   // nests the real tool under `tool_name`/`args`, so this renders e.g.
   // "nmap -sV target" inline without the user expanding the row.
   const summaryArg = getToolPrimaryArg(tool.name, tool.args);
-  const shellOutputState = getSubAgentShellOutputForDetail(tool);
-  const shellOutputJsonValue = getSubAgentShellOutputJsonValueForDetail(tool);
+  const shellOutputState = getSubAgentShellOutputForDetail(displayTool);
+  const shellOutputJsonValue = getSubAgentShellOutputJsonValueForDetail(displayTool);
 
   return (
     <div className="mx-3 my-2 rounded-lg border border-border/30 overflow-hidden bg-card/80 shadow-sm border-l-2 border-l-[var(--ansi-magenta)]/40">
@@ -599,6 +630,80 @@ const EMPTY_SUB_AGENT_LIST: ActiveSubAgent[] = [];
 const EMPTY_BG_JOBS: never[] = [];
 const LIVE_OUTPUT_RENDER_LIMIT = 20000;
 
+interface StageCoverageContext {
+  organizationId: string;
+  organizationName: string;
+  stage: string;
+  stageLabel: string;
+}
+
+export function parseStageRunOrgRequestId(
+  parentRequestId: string | null | undefined
+): { stageRunRequestId: string; organizationId: string } | null {
+  if (!parentRequestId) return null;
+  const marker = "::org::";
+  const idx = parentRequestId.indexOf(marker);
+  if (idx <= 0) return null;
+  const organizationId = parentRequestId.slice(idx + marker.length).trim();
+  if (!organizationId) return null;
+  return {
+    stageRunRequestId: parentRequestId.slice(0, idx),
+    organizationId,
+  };
+}
+
+function stageKeyFromLabel(stageLabel: string, coverageAxis: string[]): string | null {
+  const label = stageLabel.toLowerCase();
+  if (
+    label.includes("target") ||
+    label.includes("intel") ||
+    coverageAxis.some((tech) =>
+      ["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT"].includes(tech.toUpperCase())
+    )
+  ) {
+    return "target_intel";
+  }
+  if (label.includes("external") || coverageAxis.includes("LIVENESS")) {
+    return "external_attack_surface";
+  }
+  if (label.includes("enumeration") || coverageAxis.includes("DIR")) {
+    return "enumeration";
+  }
+  return null;
+}
+
+function stageSupportsAssetCoverage(stage: string | null) {
+  return stage === "target_intel" || stage === "external_attack_surface" || stage === "enumeration";
+}
+
+export function isTerminalStageRunToolStatus(status: string | null | undefined): boolean {
+  return Boolean(status && status !== "running" && status !== "backgrounded");
+}
+
+export function resolveStageCoverageContextForSubAgent(
+  parentRequestId: string | null | undefined,
+  stageRuns: Record<string, SessionStageRun> | undefined,
+  fallbackStageRun: SessionStageRun | null | undefined
+): StageCoverageContext | null {
+  const parsed = parseStageRunOrgRequestId(parentRequestId);
+  if (!parsed) return null;
+  const stageRun =
+    stageRuns?.[parsed.stageRunRequestId] ??
+    (fallbackStageRun?.requestId === parsed.stageRunRequestId ? fallbackStageRun : null);
+  if (!stageRun) return null;
+  const row =
+    stageRun.rows.find((candidate) => candidate.agentRequestId === parentRequestId) ??
+    stageRun.rows.find((candidate) => candidate.id === parsed.organizationId);
+  const stage = row?.stage ?? stageKeyFromLabel(stageRun.stageLabel, stageRun.coverageAxis);
+  if (!stageSupportsAssetCoverage(stage)) return null;
+  return {
+    organizationId: parsed.organizationId,
+    organizationName: row?.name ?? parsed.organizationId,
+    stage,
+    stageLabel: stageRun.stageLabel,
+  };
+}
+
 function limitLiveOutputForRender(text: string, isLive: boolean): string {
   if (!isLive || text.length <= LIVE_OUTPUT_RENDER_LIMIT) return text;
   return `... (showing latest output)\n${text.slice(-LIVE_OUTPUT_RENDER_LIMIT)}`;
@@ -621,6 +726,26 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
       ) ?? null
     );
   });
+  const sessionStageRuns = useStore((s) => s.sessions[sessionId]?.stageRuns);
+  const sessionStageRun = useStore((s) => s.sessions[sessionId]?.stageRun);
+  const stageCoverageContext = useMemo(
+    () =>
+      resolveStageCoverageContextForSubAgent(targetRequestId, sessionStageRuns, sessionStageRun),
+    [targetRequestId, sessionStageRuns, sessionStageRun]
+  );
+  const parentStageRunToolStatus = useStore((s) => {
+    const parsed = parseStageRunOrgRequestId(targetRequestId);
+    if (!parsed) return null;
+    const timeline = s.timelines[sessionId] ?? [];
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const block = timeline[i];
+      if (block.type === "ai_tool_execution" && block.data.requestId === parsed.stageRunRequestId) {
+        return block.data.status;
+      }
+    }
+    return null;
+  });
+  const parentStageStopped = isTerminalStageRunToolStatus(parentStageRunToolStatus);
   // Session-wide background jobs (soft-timeout→detached commands still running),
   // surfaced here so backgrounded recon/sub-agent commands are visible from the
   // detail view, not only the input-row badge.
@@ -632,7 +757,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
   const previousTimelineScrollTopRef = useRef(0);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
   const [isTaskExpanded, setIsTaskExpanded] = useState(false);
-  const isRunning = subAgent?.status === "running";
+  const isRunning = subAgent?.status === "running" && !parentStageStopped;
   const hasParentSubAgent = (requestIds?.length ?? 0) > 1;
   const backLabel = hasParentSubAgent
     ? t("ai.subAgentDetail.backToParent")
@@ -640,10 +765,13 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
 
   const detailEntries = subAgent ? normalizeSubAgentEntriesForDetail(subAgent.entries) : [];
   const latestEntry = detailEntries.length > 0 ? detailEntries[detailEntries.length - 1] : null;
-  const latestRunningTool = subAgent?.toolCalls.find((tool) => tool.status === "running");
+  const latestRunningTool = subAgent?.toolCalls.find(
+    (tool) => getSubAgentToolDisplayStatus(tool, { parentStageStopped }) === "running"
+  );
   const activityVersion = [
     subAgent?.parentRequestId,
     subAgent?.status,
+    parentStageStopped ? "parent-stopped" : "parent-active",
     detailEntries.length,
     latestEntry?.kind,
     latestEntry?.text?.length ?? 0,
@@ -768,14 +896,14 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
 
   const AgentIcon = getAgentIcon(subAgent.agentName);
   const agentColor = getAgentColor(subAgent.agentName);
-  const headerDisplayStatus = getSubAgentHeaderDisplayStatus(subAgent);
+  const headerDisplayStatus = getSubAgentHeaderDisplayStatus(subAgent, { parentStageStopped });
   const headerStatus = SUB_AGENT_HEADER_STATUS_BADGE_STYLES[headerDisplayStatus];
   const isHeaderLive = headerDisplayStatus === "running" || headerDisplayStatus === "backgrounded";
   const toolMap = new Map(subAgent.toolCalls.map((tc) => [tc.id, tc]));
   const subAgentMap = new Map(subAgents.map((agent) => [agent.parentRequestId, agent]));
   const hasEntries = detailEntries.length > 0;
   const backgroundedToolCount = subAgent.toolCalls.filter(
-    (tool) => getSubAgentToolDisplayStatus(tool) === "backgrounded"
+    (tool) => getSubAgentToolDisplayStatus(tool, { parentStageStopped }) === "backgrounded"
   ).length;
   const cleanedTask = stripAgentXmlTags(subAgent.task);
   const taskPreview = cleanedTask.replace(/\s+/g, " ").trim();
@@ -865,6 +993,19 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
         </Collapsible>
       )}
 
+      {stageCoverageContext && (
+        <div className="mx-3 mb-3 mt-2 flex-shrink-0">
+          <StageAssetCoverageBlock
+            organizationId={stageCoverageContext.organizationId}
+            stage={stageCoverageContext.stage}
+            sessionId={sessionId}
+            title="资产覆盖"
+            subtitle={`${stageCoverageContext.stageLabel} · ${stageCoverageContext.organizationName}`}
+            pollWhileActive={isHeaderLive}
+          />
+        </div>
+      )}
+
       {/* Timeline content */}
       <div
         ref={scrollRef}
@@ -917,55 +1058,72 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
           </div>
         )}
 
-        {/* Interleaved timeline entries: text blocks + tool calls */}
-        <div className="divide-y divide-border/10">
+        {/* Interleaved timeline entries: agent narrative blocks + tool calls */}
+        <div>
           {hasEntries
             ? detailEntries.map((entry, i) => {
-                if (entry.kind === "thinking" && entry.text) {
-                  return (
-                    <div
-                      key={`entry-${i}`}
-                      className="px-4 py-3 border-l-2 border-muted-foreground/15 bg-[var(--bg-hover)]/35"
-                    >
-                      <ThinkingBlock
-                        content={entry.text}
-                        isActive={isRunning && i === detailEntries.length - 1}
-                        startedAt={entry.startedAt}
-                        endedAt={entry.endedAt}
-                      />
-                    </div>
-                  );
-                }
-                if (entry.kind === "text" && entry.text) {
-                  return (
-                    <AgentOutputBlock
-                      key={`entry-${i}`}
-                      text={entry.text}
-                      streaming={isRunning && i === detailEntries.length - 1}
-                    />
-                  );
-                }
-                if (entry.kind === "tool_call" && entry.toolCallId) {
-                  const tool = toolMap.get(entry.toolCallId);
-                  if (tool?.name.startsWith("sub_agent_")) {
-                    const nestedAgent = subAgentMap.get(tool.id);
-                    if (nestedAgent) {
-                      return (
-                        <NestedSubAgentCard
-                          key={nestedAgent.parentRequestId}
-                          agent={nestedAgent}
-                          sessionId={sessionId}
-                          onOpen={openSubAgent}
+                const previous = i > 0 ? detailEntries[i - 1] : null;
+                const boundaryClass = shouldSeparateSubAgentDetailEntries(previous, entry)
+                  ? "border-t border-border/10"
+                  : "";
+                const renderedEntry = (() => {
+                  if (entry.kind === "thinking" && entry.text) {
+                    return (
+                      <div className="px-4 py-3 border-l-2 border-muted-foreground/15 bg-[var(--bg-hover)]/35">
+                        <ThinkingBlock
+                          content={entry.text}
+                          isActive={isRunning && i === detailEntries.length - 1}
+                          startedAt={entry.startedAt}
+                          endedAt={entry.endedAt}
                         />
+                      </div>
+                    );
+                  }
+                  if (entry.kind === "text" && entry.text) {
+                    return (
+                      <AgentOutputBlock
+                        text={entry.text}
+                        streaming={isRunning && i === detailEntries.length - 1}
+                      />
+                    );
+                  }
+                  if (entry.kind === "tool_call" && entry.toolCallId) {
+                    const tool = toolMap.get(entry.toolCallId);
+                    if (tool?.name.startsWith("sub_agent_")) {
+                      const nestedAgent = subAgentMap.get(tool.id);
+                      if (nestedAgent) {
+                        return (
+                          <NestedSubAgentCard
+                            agent={nestedAgent}
+                            sessionId={sessionId}
+                            onOpen={openSubAgent}
+                          />
+                        );
+                      }
+                    }
+                    if (tool) {
+                      return (
+                        <AgentToolCallBlock tool={tool} parentStageStopped={parentStageStopped} />
                       );
                     }
                   }
-                  if (tool) return <AgentToolCallBlock key={tool.id} tool={tool} />;
-                }
-                return null;
+                  return null;
+                })();
+                if (!renderedEntry) return null;
+                return (
+                  <div key={`entry-${i}`} className={boundaryClass}>
+                    {renderedEntry}
+                  </div>
+                );
               })
             : subAgent.toolCalls.length > 0
-              ? subAgent.toolCalls.map((tool) => <AgentToolCallBlock key={tool.id} tool={tool} />)
+              ? subAgent.toolCalls.map((tool) => (
+                  <AgentToolCallBlock
+                    key={tool.id}
+                    tool={tool}
+                    parentStageStopped={parentStageStopped}
+                  />
+                ))
               : null}
         </div>
 

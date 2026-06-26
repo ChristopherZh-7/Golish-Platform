@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
 export type StageRunStatus = "passed" | "running" | "queued" | "blocked" | "pending" | "stopped";
 
 /** Per-technique terminal state on the coverage axis (mirrors the gate contract). */
-export type TechniqueState = "found" | "checked_empty" | "blocked" | "pending";
+export type TechniqueState = "found" | "checked_empty" | "blocked" | "not_applicable" | "pending";
 
 export interface StageRunRow {
   id: string;
@@ -50,6 +50,8 @@ export interface StageRunRow {
   evidenceCount: number;
   /** Per-technique state, keyed by the stage's `coverageAxis` entries. */
   coverage: Record<string, TechniqueState>;
+  /** Stable harness stage key from the trace event, e.g. `external_attack_surface`. */
+  stage?: string;
 }
 
 export interface StageRunSummary {
@@ -73,6 +75,10 @@ const TECH_META: Record<TechniqueState, { className: string; mark: string }> = {
   found: { className: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30", mark: "✓" },
   checked_empty: { className: "bg-slate-500/15 text-slate-400 border-slate-500/30", mark: "∅" },
   blocked: { className: "bg-amber-500/15 text-amber-300 border-amber-500/30", mark: "!" },
+  not_applicable: {
+    className: "bg-muted/30 text-muted-foreground/50 border-border/30",
+    mark: "-",
+  },
   pending: { className: "bg-transparent text-muted-foreground/40 border-border/40", mark: "·" },
 };
 

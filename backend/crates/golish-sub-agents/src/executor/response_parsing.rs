@@ -1168,8 +1168,9 @@ where
                     ws.to_string_lossy().to_string()
                 };
                 let hook = Arc::clone(hook);
+                let org_id = ctx.active_org_id_override;
                 tokio::spawn(async move {
-                    hook(payload.command, payload.stdout, Some(pp)).await;
+                    hook(payload.command, payload.stdout, Some(pp), org_id).await;
                 });
             }
         }

@@ -110,13 +110,14 @@ pub struct LoopEventRefs<'a> {
 /// structured output (e.g. pentest tool results) without `golish-ai` depending
 /// on domain-specific crates.
 ///
-/// Arguments: (command, stdout, project_path).
+/// Arguments: (command, stdout, project_path, organization_id).
 /// The closure captures any external resources (e.g. a DB pool) it needs.
 pub type PostShellHook = Arc<
     dyn Fn(
             String,
             String,
             Option<String>,
+            Option<uuid::Uuid>,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
         + Send
         + Sync,

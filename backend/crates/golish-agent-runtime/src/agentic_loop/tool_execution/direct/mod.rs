@@ -468,8 +468,9 @@ where
                     let pp = ws.to_string_lossy().to_string();
                     drop(ws);
                     let hook = Arc::clone(hook);
+                    let org_id = ctx.harness_org_id;
                     tokio::spawn(async move {
-                        hook(payload.command, payload.stdout, Some(pp)).await;
+                        hook(payload.command, payload.stdout, Some(pp), org_id).await;
                     });
                 }
             }

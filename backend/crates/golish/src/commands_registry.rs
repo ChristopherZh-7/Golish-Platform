@@ -57,6 +57,7 @@ fn install_handlers(
         set_ai_session_persistence, is_ai_session_persistence_enabled,
         finalize_ai_session, restore_ai_session,
         get_tool_call_stats, get_db_token_usage_stats, get_usage_by_agent, get_audit_log,
+        ai_get_stage_asset_coverage,
         search_memories, list_recent_memories, get_memory_count,
         list_agent_definitions, read_agent_prompt, save_agent_definition, delete_agent_definition, seed_agents,
         get_approval_patterns, get_tool_approval_pattern, get_hitl_config, set_hitl_config,

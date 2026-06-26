@@ -29,6 +29,120 @@
 
 ---
 
+### 2026-06-26 · 全局细透明滚动条恢复
+
+- **本轮目标**：修复用户截图里所有原生滚动条又粗又大的问题，恢复为默认透明/低可见度、hover/focus/滚动时细滚动条的统一样式。
+- **已完成**：
+  - `frontend/index.css`：增加全局原生滚动条样式；默认透明，hover/focus/focus-within 时显示浅色 6px thumb；保留 `scrollbar-none` 显式隐藏语义。
+  - `frontend/components/UnifiedInput/UnifiedInput.tsx`：给命令输入 textarea 增加 `unified-input-textarea`，仅用于隐藏输入框横向 overflow，纵向滚动仍走全局细透明样式。
+  - `frontend/styles/ansi-colors.css`、`frontend/styles/xterm-overrides.css`：把 ANSI/xterm 旧的 8px 深色滚动条统一成 6px 透明/hover 显示。
+  - `frontend/components/ui/scroll-area.tsx`：Radix `ScrollArea` 自绘滚动条从 10px 收窄到 6px，并默认低可见度，visible/hover 时显示。
+  - `docs/modules/frontend/components.md`：记录全 app 滚动条视觉契约，`scrollbar-none` 和 `UnifiedTimeline` 自绘滚动条除外。
+- **运行过的验证（实跑）**：
+  - `./node_modules/.bin/biome check frontend/components/UnifiedInput/UnifiedInput.tsx frontend/components/ui/scroll-area.tsx frontend/index.css frontend/styles/ansi-colors.css frontend/styles/xterm-overrides.css` → exit 0。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+  - `git diff --check -- frontend/components/UnifiedInput/UnifiedInput.tsx frontend/components/ui/scroll-area.tsx frontend/index.css frontend/styles/ansi-colors.css frontend/styles/xterm-overrides.css docs/modules/frontend/components.md` → exit 0。
+- **未跑**：`./init.sh` / `just precommit`（本轮为 scoped 前端样式修复；当前工作树已有大量未提交改动）。
+- **提交记录**：未 commit。
+
+---
+
+### 2026-06-26 · SubAgent detail Thought/Output 视觉分组
+
+- **本轮目标**：回应用户截图反馈：detail 中 `Thought for ...` 和 `Agent Output` 都是 agent narrative，却被 full-width 横线分隔，看起来和工具调用边界混在一起。
+- **已完成**：
+  - `frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`：移除 timeline 全局 `divide-y`，改为 `shouldSeparateSubAgentDetailEntries` 只在 `tool_call` 与 agent narrative（Thought / Agent Output）之间画边界；Thought ↔ Agent Output 之间不再出现整行分隔线。
+  - `frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts`：新增视觉分组 helper 回归，锁定 Thought/Output 同组、工具调用与 agent narrative 分组。
+  - `docs/modules/frontend/components.md`：同步记录 `SubAgentDetailView` 的视觉分组规则：`tool_call` 是硬边界，Thought 和 Agent Output 属于同一组 agent narrative。
+- **运行过的验证（实跑）**：
+  - `./node_modules/.bin/biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts docs/modules/frontend/components.md` → exit 0。
+  - `./node_modules/.bin/vitest run frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 32 tests passed。
+  - `./node_modules/.bin/tsc --noEmit` → exit 0。
+  - `git diff --check -- frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts docs/modules/frontend/components.md` → exit 0。
+- **未跑**：`./init.sh` / `just precommit`（本轮为 scoped 前端视觉修复；当前工作树已有大量未提交改动）。
+- **提交记录**：未 commit。
+
+---
+
+### 2026-06-26 · stage_run 停止后子 agent detail 去运行中 spinner
+
+- **本轮目标**：修复用户截图中的 UI 状态问题：父级 `stage_run` 已经停止/中断，org 行也显示 stopped，但点进 Recon specialist detail 后 header 和 `recon_map_assets` 仍显示运行中 spinner。
+- **已完成**：
+  - `frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`：从子 agent 的 `parentRequestId` 反查父 `stage_run` tool execution；当父 tool 已 `completed/error/interrupted` 等终态时，只在展示层把残留的 running 子 tool/header 投影为 `interrupted`，不改 store 里的历史原始状态。
+  - 同一 display status 现在同时驱动 header badge、工具行 `StatusIcon`、shell-like Output pending 状态、自动滚动、底部 running footer 和 coverage polling，避免只改图标但 Output 还在 `Waiting for output...`。
+  - `frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts`：补回归测试，覆盖父 stage stopped 后子 tool/header 不再 running、interrupted 子 tool 不再 pending output、父 `stage_run` live/terminal 状态判定。
+- **运行过的验证（实跑）**：
+  - `./node_modules/.bin/vitest run frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 30 tests passed。
+  - `./node_modules/.bin/biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0。
+  - `./node_modules/.bin/tsc --noEmit` → exit 0。
+  - `git diff --check -- frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0。
+  - `./node_modules/.bin/vitest run frontend/components/Engagement/StageRunOrgRows.test.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 2 files / 33 tests passed。
+- **未跑**：`./init.sh` / `just precommit`（本轮为 scoped 前端状态修复；当前工作树已有大量未提交改动）。
+- **提交记录**：未 commit。
+
+---
+
+### 2026-06-26 · target_intel stage_run 同页资产矩阵
+
+- **本轮目标**：回应用户截图里的 Recon/target_intel detail：资产/情报维度矩阵要放在点进后的子 agent detail 页面里，而不是父级 `stage_run` org 行下面。
+- **已完成**：
+  - `backend/crates/golish-agent-app/src/ai/commands/stage_coverage.rs`：`ai_get_stage_asset_coverage` 支持 `target_intel`；增加 organization 虚拟资产行，展示 DNS/WHOIS/ASN/CT/Subdomain/OSINT 六维；`source_query_log` 的 `empty/error/blocked` terminal rows 会投影为 `checked_empty/error/blocked`，`found` 仍只来自 DB truth/evidence facts。
+  - `frontend/components/Engagement/StageAssetCoveragePanel.tsx`：抽出可复用资产覆盖卡，支持 loading/error/empty、seed/新增资产分组、动态 technique 列；在子 agent detail 里默认折叠成轻量入口，展开后才加载并在运行态轮询；展开矩阵改为无横向滚动的紧凑布局，type/source 收进 asset 副标题，并增加状态图例（命中/查空/错误/阻塞/未查/不适用）；target_intel 的 organization 行单独显示为「组织情报」，不进入资产列表或资产分母。
+  - `frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`：从当前子 agent `parentRequestId` 反推父 `stage_run` request、org id、stage 和 org 名，在任务块下方渲染资产覆盖卡。
+  - 修复重复崩溃：`SubAgentDetailView` 不再在 Zustand `useStore` selector 内返回新建 coverage context 对象，改为 selector 只取原始 `stageRuns/stageRun` 引用，再用 `useMemo` 计算派生对象，避免 React maximum update depth 循环。
+  - `frontend/components/Engagement/StageRunOrgRows.tsx`：撤掉父级 org 行内大矩阵，恢复点击 org 行进入对应 specialist detail。
+  - `frontend/components/Engagement/StageRunOrgRows.test.tsx` + `frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts`：新增/更新回归，锁定 org 行 drill-in 与子 agent detail 覆盖上下文解析。
+  - 同步模块卡：`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/frontend/components.md`；`feature_list.json` 补本 slice 证据。
+- **运行过的验证**：
+  - `cd backend && cargo fmt -p golish-agent-app -p golish` → exit 0。
+  - `cd backend && cargo test -p golish-agent-app stage_coverage -q` → 10 passed。
+  - `cd backend && cargo clippy -p golish-agent-app --all-targets -- -D warnings` → exit 0。
+  - `./node_modules/.bin/biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageRunOrgRows.tsx frontend/components/Engagement/StageRunOrgRows.test.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.tsx` → exit 0。
+  - `./node_modules/.bin/vitest run frontend/components/Engagement/StageRunOrgRows.test.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 2 files / 28 tests passed。
+  - `node frontend/scripts/generate-model-constants.mjs && ./node_modules/.bin/tsc --noEmit` → exit 0。
+  - `git diff --check` → exit 0。
+  - 崩溃修复后重跑：`./node_modules/.bin/biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0；`./node_modules/.bin/vitest run frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 25 passed；`node frontend/scripts/generate-model-constants.mjs && ./node_modules/.bin/tsc --noEmit` → exit 0；`git diff --check` → exit 0。
+  - 折叠/无横向滚动/状态图例调整后重跑：`cd backend && cargo fmt -p golish-agent-app && cargo test -p golish-agent-app stage_coverage -q` → 11 passed；`cd backend && cargo clippy -p golish-agent-app --all-targets -- -D warnings` → exit 0；`./node_modules/.bin/biome check frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx` → exit 0；`./node_modules/.bin/vitest run frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 25 passed；`node frontend/scripts/generate-model-constants.mjs && ./node_modules/.bin/tsc --noEmit` → exit 0；`git diff --check` → exit 0。
+- **已记录证据**：
+  - `stage_coverage` 新测覆盖：target_intel organization 行六维、source_query `found` 不直接变 found、`error` 不再混成 `blocked`、merge 保留更强 terminal state/evidence。
+  - `StageRunOrgRows` 新测覆盖：Target Intel 点击公司行会 drill-in 到 `tool-1::org::org-1`。
+  - `SubAgentDetailView` 新测覆盖：`tool-1::org::org-1` 可解析为 stage_run/org，并从 session stageRun rows 得到 `stage="target_intel"` 与 org 名。
+  - UI 行为证据：资产覆盖块折叠时不触发 `ai_get_stage_asset_coverage`、不启动 polling；展开后显示无横向滚动矩阵和状态图例，organization coverage 不进入资产列表/分母，运行态 polling 只在展开期间生效。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 full `just precommit`；本轮只跑本 slice 的 Rust/frontend targeted 验证。
+  - `./init.sh` 在本会话早前因 pnpm 非 TTY / ignored builds policy 卡在安装门禁，未在此 slice 后重跑。
+  - 未做活体 UI 截图验证；需重启 app 后打开正在跑的 target_intel `stage_run` detail，点公司行进入 Recon detail，确认任务块下方先显示折叠入口，展开后公司显示为「组织情报」而不是资产第一行。
+- **下一步最佳动作**：重启 app，跑/打开一次 target_intel；在父级 `stage_run` 点公司行进入 Recon detail，确认资产覆盖默认不挡时间线，展开后 organization 覆盖不计入资产分母，真实资产行按六维动态更新且无需左右拖动。
+
+---
+
+### 2026-06-26 · EAS stage_run 资产矩阵 + 新增资产 org 归属
+
+- **本轮目标**：按用户「开始吧」落地方案——主动扫描阶段的 `stage_run` 详情里能展开每个 org 的资产覆盖矩阵；主动扫描新发现资产要绑定当前 org，进入该 org 后续 gate 分母，而不是落成 `organization_id=NULL`。
+- **已完成**：
+  - `PostShellHook` 从 `(command, stdout, project_path)` 扩为 `(command, stdout, project_path, organization_id)`；主 agent 用 `AgenticLoopContext.harness_org_id`，sub-agent 用 `active_org_id_override`。
+  - `golish-pentest::output_store` 新增 `StoreContext` + `maybe_detect_and_store_via_context`；主动解析出的 target / DNS / endpoint / directory entry 走 scoped `find_or_create_target_scoped`，同值无归属 target 会补当前 org，已属其它 org 不静默抢归属；新建 target 标 `source='active_discovered'`。
+  - 新增 Tauri command `ai_get_stage_asset_coverage`：按 `(organization_id, stage, optional session_id)` 返回 asset × technique snapshot；found 来自 `coverage_truth`，checked_empty/blocked 来自 `technique_outcomes`，适用性复用 `technique_resolver`。新增 ts-rs generated 类型。
+  - `StageRunOrgRows` 增加 org 行资产覆盖能力，显示 seed/新增资产、Liveness/Port/Service 或 Enumeration 三维状态；支持 loading/error/empty；`not_applicable` 状态不再被吞成 pending。交互经用户澄清后改为**点击公司行进入对应 specialist detail**，资产覆盖块放在该 detail 顶部且默认折叠。
+  - 同步模块卡：`golish-pentest/output_store`、`golish-agent-app/ai`、`golish-agent-runtime/agentic_loop`、`frontend/components`；`feature_list.json` 的 `intel-to-eas-handoff-2026-06-24` 追加本 slice 验证记录，状态保持 `in_progress`。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → **失败**：Step 2 `pnpm install --silent` 退出 1；展开后 `pnpm install` 报 `[ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY]`，`CI=true pnpm install --reporter=append-only` 报 `[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: @swc/core/electron/esbuild`。未改工作区配置，后续用底层工具做 targeted 验证。
+  - `cd backend && cargo check -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents -p golish-pentest -p golish` → **exit 0**。
+  - `cd backend && cargo test -p golish-pentest output_store -q` → **22 passed**。
+  - `cd backend && cargo test -p golish-agent-app stage_coverage -q` → **7 passed**。
+  - `cd backend && cargo test -p golish-agent-app export_bindings -q` → **10 passed**，生成 `frontend/lib/generated/StageAssetCoverage*.ts`。
+  - `cd backend && cargo clippy -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents -p golish-pentest -p golish --all-targets -- -D warnings` → **exit 0**。
+  - `node frontend/scripts/generate-model-constants.mjs && ./node_modules/.bin/tsc --noEmit` → **exit 0**。
+  - `./node_modules/.bin/biome check frontend/components/Engagement/StageRunOrgRows.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/services/ai-events/harness-handlers.ts frontend/lib/api/stage-coverage.ts` → **exit 0**。
+  - `./node_modules/.bin/vitest run frontend/components/Engagement/StageRunOrgRows.test.tsx frontend/services/ai-events/harness-handlers.test.ts frontend/store/stage-run.test.ts` → **3 files / 8 tests passed**。
+  - 交互澄清后重跑：`./node_modules/.bin/biome check frontend/components/Engagement/StageRunOrgRows.tsx` → **exit 0**；`./node_modules/.bin/vitest run frontend/components/Engagement/StageRunOrgRows.test.tsx` → **2 passed**；`node frontend/scripts/generate-model-constants.mjs && ./node_modules/.bin/tsc --noEmit` → **exit 0**。
+- **未跑**：`just precommit` / `just check-fe` / `just test-fe`（pnpm install gate 当前被 ignored-builds approval 策略阻塞）；未对真实外网目标跑 EAS。
+- **风险 / 下一步建议**：后台 job completion 仍走旧 `maybe_detect_and_store_via`，没有持久化 org context；若 EAS 工具后台化后才完成，新资产仍可能无归属。下一步应把 background job 的 stage/org/session context 随 job 写入并在 completion 里走 scoped output_store。活体验证建议重启 app 后跑一次 EAS stage_run，用 `scripts/run_tree.py --workspace <ws> --full --db` 和 UI 展开面板复核新增资产是否进入 org denominator。
+- **提交记录**：未 commit。
+
+---
+
 ### 2026-06-26 · target_intel 被动埠/服务落库 P1（target_assets service assets）
 
 - **本轮目标**：按用户「动手做 P1」——赛博测绘（quake/fofa/0.zone/shodan）回的 per-host 端口/服务情报被丢弃（`target_assets` 的 port/protocol/service/version 列永远 NULL、`ReconRecordKind::Port|Service` 无持久化映射），把它们真正落进 `target_assets`。
