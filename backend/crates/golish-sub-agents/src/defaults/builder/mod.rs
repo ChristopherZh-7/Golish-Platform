@@ -188,6 +188,7 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "browser_collect_js_api".to_string(),
             "js_collect".to_string(),
             "js_extract_apis".to_string(),
+            "route_probe_paths".to_string(),
             "submit_stage_deliverable".to_string(),
             "record_finding".to_string(),
             "search_knowledge_base".to_string(),

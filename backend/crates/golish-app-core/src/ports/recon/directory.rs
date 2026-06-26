@@ -21,6 +21,11 @@ use crate::domain::targets::DirectoryEntry;
 /// Outbound port for recon directory-entry existence checks + inserts.
 #[async_trait]
 pub trait ReconDirectoryPort: Send + Sync {
+    async fn directory_entries_list_by_target(
+        &self,
+        target_id: Uuid,
+    ) -> anyhow::Result<Vec<DirectoryEntry>>;
+
     async fn directory_entries_exists_by_url_project(
         &self,
         url: &str,
@@ -89,6 +94,16 @@ impl From<DirEntryRow> for DirectoryEntry {
 
 #[async_trait]
 impl ReconDirectoryPort for PgReconDirectoryAdapter {
+    async fn directory_entries_list_by_target(
+        &self,
+        target_id: Uuid,
+    ) -> anyhow::Result<Vec<DirectoryEntry>> {
+        let rows: Vec<DirEntryRow> =
+            golish_db::repo::directory_entries::list_by_target(self.pool.as_ref(), target_id)
+                .await?;
+        Ok(rows.into_iter().map(DirectoryEntry::from).collect())
+    }
+
     async fn directory_entries_exists_by_url_project(
         &self,
         url: &str,

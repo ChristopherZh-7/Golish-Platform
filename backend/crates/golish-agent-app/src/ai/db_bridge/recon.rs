@@ -5,7 +5,195 @@
 use serde_json::json;
 use uuid::Uuid;
 
+use golish_app_core::domain::targets::{Target, TargetType};
+
 use super::GolishDbRepoProvider;
+
+fn section_requested(include_all: bool, sections: &[String], section: &str) -> bool {
+    include_all || sections.iter().any(|s| s == section)
+}
+
+fn json_string(v: &serde_json::Value, keys: &[&str]) -> String {
+    keys.iter()
+        .find_map(|key| v.get(*key).and_then(|value| value.as_str()))
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn json_port(v: &serde_json::Value) -> Option<u16> {
+    v.get("port")
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|s| s.parse::<u64>().ok()))
+        })
+        .and_then(|port| u16::try_from(port).ok())
+}
+
+fn is_web_like_port(port: Option<u16>, service: &str) -> bool {
+    service.contains("http")
+        || service.contains("web")
+        || matches!(
+            port,
+            Some(
+                80 | 81
+                    | 443
+                    | 3000
+                    | 5000
+                    | 7001
+                    | 8000
+                    | 8008
+                    | 8080
+                    | 8081
+                    | 8443
+                    | 8888
+                    | 9000
+                    | 9443
+            )
+        )
+}
+
+fn root_url_for(host: &str, port: Option<u16>, service: &str) -> (String, String, Option<u16>) {
+    let scheme = if service.contains("https")
+        || service.contains("ssl")
+        || matches!(port, Some(443 | 8443 | 9443))
+    {
+        "https"
+    } else {
+        "http"
+    };
+    let port_suffix = match (scheme, port) {
+        ("http", Some(80)) | ("https", Some(443)) | (_, None) => String::new(),
+        (_, Some(port)) => format!(":{port}"),
+    };
+    (
+        format!("{scheme}://{host}{port_suffix}/"),
+        scheme.to_string(),
+        port,
+    )
+}
+
+fn derive_enumeration_web_roots(target: &Target) -> Vec<serde_json::Value> {
+    let value = target.value.trim().trim_end_matches('/');
+    if value.is_empty() {
+        return Vec::new();
+    }
+
+    if matches!(target.target_type, TargetType::Url)
+        || value.starts_with("http://")
+        || value.starts_with("https://")
+    {
+        let scheme = if value.starts_with("https://") {
+            "https"
+        } else {
+            "http"
+        };
+        return vec![json!({
+            "web_root_id": format!("derived:{}:{}", target.id, value),
+            "target_id": target.id,
+            "organization_id": target.organization_id,
+            "root_url": format!("{value}/"),
+            "final_url": format!("{value}/"),
+            "scheme": scheme,
+            "host": value.trim_start_matches("https://").trim_start_matches("http://").split('/').next().unwrap_or(value),
+            "port": null,
+            "status": target.http_status,
+            "title": target.http_title,
+            "confidence": if target.http_status.is_some() { "high" } else { "medium" },
+            "needs_probe": target.http_status.is_none(),
+            "source_stage": "external_attack_surface",
+        })];
+    }
+
+    if matches!(target.target_type, TargetType::Cidr | TargetType::Wildcard) {
+        return Vec::new();
+    }
+
+    let has_web_metadata = target.http_status.is_some()
+        || !target.webserver.trim().is_empty()
+        || !target.content_type.trim().is_empty()
+        || !target.http_title.trim().is_empty();
+
+    let mut roots = Vec::new();
+    for port_entry in &target.ports {
+        let port = json_port(port_entry);
+        let service = json_string(port_entry, &["service", "name", "protocol", "proto"]);
+        if !is_web_like_port(port, &service) {
+            continue;
+        }
+        let (root_url, scheme, port) = root_url_for(value, port, &service);
+        roots.push(json!({
+            "web_root_id": format!("derived:{}:{}:{}", target.id, scheme, port.unwrap_or_default()),
+            "target_id": target.id,
+            "organization_id": target.organization_id,
+            "root_url": root_url,
+            "final_url": root_url,
+            "scheme": scheme,
+            "host": value,
+            "port": port,
+            "status": target.http_status,
+            "title": target.http_title,
+            "confidence": "high",
+            "needs_probe": false,
+            "source_stage": "external_attack_surface",
+        }));
+    }
+
+    if roots.is_empty() && has_web_metadata {
+        let (root_url, scheme, port) = root_url_for(value, None, "");
+        roots.push(json!({
+            "web_root_id": format!("derived:{}:{}:default", target.id, scheme),
+            "target_id": target.id,
+            "organization_id": target.organization_id,
+            "root_url": root_url,
+            "final_url": root_url,
+            "scheme": scheme,
+            "host": value,
+            "port": port,
+            "status": target.http_status,
+            "title": target.http_title,
+            "confidence": "medium",
+            "needs_probe": target.http_status.is_none(),
+            "source_stage": "external_attack_surface",
+        }));
+    }
+
+    roots
+}
+
+fn build_enumeration_coverage_summary(facts: &[(String, String)]) -> serde_json::Value {
+    let mut found = std::collections::BTreeSet::new();
+    for (_, technique) in facts {
+        if matches!(
+            technique.as_str(),
+            golish_db::repo::coverage_truth::TECH_ENUM_DIR
+                | golish_db::repo::coverage_truth::TECH_ENUM_PARAM
+                | golish_db::repo::coverage_truth::TECH_ENUM_JSAPI
+        ) {
+            found.insert(technique.clone());
+        }
+    }
+    let techniques = [
+        golish_db::repo::coverage_truth::TECH_ENUM_DIR,
+        golish_db::repo::coverage_truth::TECH_ENUM_PARAM,
+        golish_db::repo::coverage_truth::TECH_ENUM_JSAPI,
+    ];
+    let rows: Vec<_> = techniques
+        .iter()
+        .map(|technique| {
+            json!({
+                "technique": technique,
+                "db_found": found.contains(*technique),
+                "status_hint": if found.contains(*technique) { "found" } else { "no_found_fact" },
+            })
+        })
+        .collect();
+    json!({
+        "source": "coverage_truth",
+        "semantics": "found-only; absence is not checked_empty",
+        "techniques": rows,
+    })
+}
 
 impl GolishDbRepoProvider {
     pub(super) async fn vuln_intel_search_impl(
@@ -191,8 +379,24 @@ impl GolishDbRepoProvider {
     ) -> anyhow::Result<serde_json::Value> {
         let include_all = sections.contains(&"all".to_string());
         let mut data = json!({});
+        let needs_target_row = section_requested(include_all, sections, "web_roots")
+            || section_requested(include_all, sections, "coverage");
+        let target_row = if needs_target_row {
+            let target_id_str = target_id.to_string();
+            self.recon_targets
+                .in_scope_targets(None)
+                .await
+                .ok()
+                .and_then(|targets| {
+                    targets
+                        .into_iter()
+                        .find(|target| target.id == target_id_str)
+                })
+        } else {
+            None
+        };
 
-        if include_all || sections.contains(&"assets".to_string()) {
+        if section_requested(include_all, sections, "assets") {
             if let Ok(assets) = self
                 .recon_assets
                 .target_assets_list_by_target(target_id)
@@ -202,7 +406,7 @@ impl GolishDbRepoProvider {
                 data["assets_count"] = json!(assets.len());
             }
         }
-        if include_all || sections.contains(&"endpoints".to_string()) {
+        if section_requested(include_all, sections, "endpoints") {
             if let Ok(endpoints) = self
                 .recon_scans
                 .api_endpoints_list_by_target(target_id)
@@ -212,7 +416,17 @@ impl GolishDbRepoProvider {
                 data["endpoints_count"] = json!(endpoints.len());
             }
         }
-        if include_all || sections.contains(&"fingerprints".to_string()) {
+        if section_requested(include_all, sections, "directories") {
+            if let Ok(directories) = self
+                .recon_directory
+                .directory_entries_list_by_target(target_id)
+                .await
+            {
+                data["directories"] = serde_json::to_value(&directories)?;
+                data["directories_count"] = json!(directories.len());
+            }
+        }
+        if section_requested(include_all, sections, "fingerprints") {
             if let Ok(fps) = self
                 .recon_scans
                 .fingerprints_list_by_target(target_id)
@@ -221,12 +435,39 @@ impl GolishDbRepoProvider {
                 data["fingerprints"] = serde_json::to_value(&fps)?;
             }
         }
-        if include_all || sections.contains(&"js_analysis".to_string()) {
+        if section_requested(include_all, sections, "js_analysis") {
             if let Ok(results) = self.recon_scans.js_analysis_list_by_target(target_id).await {
                 data["js_analysis"] = serde_json::to_value(&results)?;
             }
         }
-        if include_all || sections.contains(&"scan_logs".to_string()) {
+        if section_requested(include_all, sections, "web_roots") {
+            let web_roots = target_row
+                .as_ref()
+                .map(derive_enumeration_web_roots)
+                .unwrap_or_default();
+            data["web_roots"] = json!(web_roots);
+            data["web_roots_count"] = json!(web_roots.len());
+        }
+        if section_requested(include_all, sections, "coverage") {
+            if let Some(target) = &target_row {
+                let org_id = target
+                    .organization_id
+                    .as_deref()
+                    .and_then(|id| Uuid::parse_str(id).ok());
+                let facts = self
+                    .db_truth_facts_impl(org_id, std::slice::from_ref(&target.value), None)
+                    .await
+                    .unwrap_or_default();
+                data["coverage"] = build_enumeration_coverage_summary(&facts);
+            } else {
+                data["coverage"] = json!({
+                    "source": "coverage_truth",
+                    "semantics": "found-only; absence is not checked_empty",
+                    "error": "target row not found in in-scope targets",
+                });
+            }
+        }
+        if section_requested(include_all, sections, "scan_logs") {
             if let Ok(logs) = self
                 .recon_scans
                 .passive_scans_list_by_target(target_id, 100)
@@ -470,5 +711,94 @@ impl GolishDbRepoProvider {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use golish_app_core::domain::targets::{Scope, TargetStatus};
+
+    fn target(value: &str, target_type: TargetType) -> Target {
+        Target {
+            id: "00000000-0000-0000-0000-000000000001".to_string(),
+            name: value.to_string(),
+            target_type,
+            value: value.to_string(),
+            tags: Vec::new(),
+            notes: String::new(),
+            scope: Scope::InScope,
+            status: TargetStatus::Active,
+            grp: "default".to_string(),
+            owner: String::new(),
+            time_window_start: None,
+            time_window_end: None,
+            organization_id: Some("00000000-0000-0000-0000-000000000002".to_string()),
+            source: "external_attack_surface".to_string(),
+            parent_id: None,
+            ports: Vec::new(),
+            real_ip: String::new(),
+            cdn_waf: String::new(),
+            http_title: String::new(),
+            http_status: None,
+            webserver: String::new(),
+            os_info: String::new(),
+            content_type: String::new(),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn derives_web_root_from_url_target() {
+        let mut target = target("https://app.example.com/app", TargetType::Url);
+        target.http_status = Some(200);
+        let roots = derive_enumeration_web_roots(&target);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0]["root_url"], "https://app.example.com/app/");
+        assert_eq!(roots[0]["scheme"], "https");
+        assert_eq!(roots[0]["needs_probe"], false);
+    }
+
+    #[test]
+    fn derives_web_root_from_web_like_port() {
+        let mut target = target("app.example.com", TargetType::Domain);
+        target.ports = vec![json!({"port": 8443, "service": "https"})];
+        let roots = derive_enumeration_web_roots(&target);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0]["root_url"], "https://app.example.com:8443/");
+        assert_eq!(roots[0]["port"], 8443);
+    }
+
+    #[test]
+    fn cidr_does_not_become_web_root_without_materialized_host() {
+        let target = target("10.0.0.0/24", TargetType::Cidr);
+        assert!(derive_enumeration_web_roots(&target).is_empty());
+    }
+
+    #[test]
+    fn coverage_summary_is_found_only() {
+        let facts = vec![(
+            "app.example.com".to_string(),
+            golish_db::repo::coverage_truth::TECH_ENUM_JSAPI.to_string(),
+        )];
+        let summary = build_enumeration_coverage_summary(&facts);
+        let techniques = summary["techniques"].as_array().unwrap();
+        let jsapi = techniques
+            .iter()
+            .find(|row| row["technique"] == golish_db::repo::coverage_truth::TECH_ENUM_JSAPI)
+            .unwrap();
+        let dir = techniques
+            .iter()
+            .find(|row| row["technique"] == golish_db::repo::coverage_truth::TECH_ENUM_DIR)
+            .unwrap();
+        assert_eq!(jsapi["db_found"], true);
+        assert_eq!(jsapi["status_hint"], "found");
+        assert_eq!(dir["db_found"], false);
+        assert_eq!(dir["status_hint"], "no_found_fact");
+        assert_eq!(
+            summary["semantics"],
+            "found-only; absence is not checked_empty"
+        );
     }
 }

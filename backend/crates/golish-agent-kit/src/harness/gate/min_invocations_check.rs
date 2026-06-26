@@ -75,17 +75,16 @@ mod tests {
     }
 
     #[test]
-    fn blocks_when_required_tool_not_done() {
-        // enumeration spec requires http_probe >= 1
+    fn enumeration_declares_no_hard_tool_floor() {
+        // Enumeration consumes EAS-confirmed live web services. HTTP probing is
+        // already an EAS responsibility, so enumeration must not force the model
+        // to hand-copy `http_probe` into required_checks_done.
         let spec = load_embedded_stage_spec(StageKind::Enumeration).unwrap();
         let outcome = run(&deliverable(vec!["dns_resolve"]), &spec);
-        assert!(matches!(outcome, GateCheckOutcome::Block { .. }));
-    }
-
-    #[test]
-    fn passes_when_required_tool_present_in_done() {
-        let spec = load_embedded_stage_spec(StageKind::Enumeration).unwrap();
-        let outcome = run(&deliverable(vec!["http_probe done"]), &spec);
+        assert!(
+            spec.min_invocations.is_empty(),
+            "enumeration completeness is enforced by DIR/PARAM/JSAPI DB truth, not a stale http_probe floor"
+        );
         assert!(matches!(outcome, GateCheckOutcome::Pass));
     }
 

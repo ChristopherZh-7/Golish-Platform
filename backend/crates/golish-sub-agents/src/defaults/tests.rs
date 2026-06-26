@@ -250,6 +250,7 @@ fn test_enumerator_has_content_enum_tools() {
     assert!(has_tool(enumerator, "browser_collect_js_api"));
     assert!(has_tool(enumerator, "js_collect"));
     assert!(has_tool(enumerator, "js_extract_apis"));
+    assert!(has_tool(enumerator, "route_probe_paths"));
     assert!(has_tool(enumerator, "manage_targets"));
     assert!(has_tool(enumerator, "list_in_scope_targets"));
     assert!(has_tool(enumerator, "query_target_data"));
@@ -282,6 +283,13 @@ fn test_enumerator_prompt_is_content_enum() {
     assert!(prompt.contains("ai_assist"));
     assert!(prompt.contains("recipe"));
     assert!(prompt.contains("js_extract_apis"));
+    assert!(prompt.contains("route probe"));
+    assert!(prompt.contains("route_probe_paths"));
+    assert!(prompt.contains("small bounded dictionary"));
+    assert!(prompt.contains("DB cannot derive"));
+    assert!(prompt.contains("\"web_roots\""));
+    assert!(prompt.contains("\"directories\""));
+    assert!(prompt.contains("\"coverage\""));
     // Enumerator is the ACTIVE counterpart of the ZERO-TOUCH Recon — it must NOT
     // describe itself as zero-touch.
     assert!(!prompt.contains("ZERO-TOUCH"));

@@ -51,8 +51,14 @@ use serde::{Deserialize, Serialize};
 mod ast_filter;
 mod noise;
 mod patterns;
+mod signals;
 
 pub use patterns::CallSiteKind;
+pub use signals::{
+    analyze_signals_from_files, analyze_signals_from_source, ConfigCandidate, ConfigKind,
+    FrameworkCandidate, JsSignalReport, LibraryCandidate, RuleMatchCandidate, RuleMatchKind,
+    SecretCandidate, SecretKind,
+};
 
 /// Authentication hint inferred from the surrounding code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

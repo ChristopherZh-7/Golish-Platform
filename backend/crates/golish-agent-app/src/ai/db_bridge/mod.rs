@@ -16,8 +16,8 @@ use uuid::Uuid;
 use golish_agent_kit::db_traits::*;
 use golish_app_core::ports::pentest::{PentestPlanPort, PgPentestPlanAdapter};
 use golish_app_core::ports::recon::{
-    PgReconAssetsAdapter, PgReconScansAdapter, PgReconTargetsAdapter, ReconAssetsPort,
-    ReconScansPort, ReconTargetsPort,
+    PgReconAssetsAdapter, PgReconDirectoryAdapter, PgReconScansAdapter, PgReconTargetsAdapter,
+    ReconAssetsPort, ReconDirectoryPort, ReconScansPort, ReconTargetsPort,
 };
 use golish_app_core::ports::vuln::{
     PgVulnIntelAdapter, PgWikiKbAdapter, VulnIntelPort, WikiKbPort,
@@ -36,6 +36,7 @@ pub struct GolishDbRepoProvider {
     // (servitization S1-2b) instead of calling `golish_db::repo::<recon>` here.
     recon_scans: Arc<dyn ReconScansPort>,
     recon_assets: Arc<dyn ReconAssetsPort>,
+    recon_directory: Arc<dyn ReconDirectoryPort>,
     // In-scope target reads (harness coverage gate) route through the recon
     // targets service port (recon-owned), not the targets repo directly.
     recon_targets: Arc<dyn ReconTargetsPort>,
@@ -54,6 +55,8 @@ impl GolishDbRepoProvider {
         let recon_scans: Arc<dyn ReconScansPort> = Arc::new(PgReconScansAdapter::new(pool.clone()));
         let recon_assets: Arc<dyn ReconAssetsPort> =
             Arc::new(PgReconAssetsAdapter::new(pool.clone()));
+        let recon_directory: Arc<dyn ReconDirectoryPort> =
+            Arc::new(PgReconDirectoryAdapter::new(pool.clone()));
         let recon_targets: Arc<dyn ReconTargetsPort> =
             Arc::new(PgReconTargetsAdapter::new(pool.clone()));
         let vuln_intel: Arc<dyn VulnIntelPort> = Arc::new(PgVulnIntelAdapter::new(pool.clone()));
@@ -64,6 +67,7 @@ impl GolishDbRepoProvider {
             pool,
             recon_scans,
             recon_assets,
+            recon_directory,
             recon_targets,
             vuln_intel,
             wiki_kb,

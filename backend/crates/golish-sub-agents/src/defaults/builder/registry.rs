@@ -191,6 +191,7 @@ pub async fn create_default_sub_agents_from_registry(
             "browser_collect_js_api".into(),
             "js_collect".into(),
             "js_extract_apis".into(),
+            "route_probe_paths".into(),
             "submit_stage_deliverable".into(),
             "record_finding".into(),
             "search_knowledge_base".into(),

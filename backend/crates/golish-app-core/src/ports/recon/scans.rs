@@ -63,6 +63,24 @@ pub trait ReconScansPort: Send + Sync {
         target_id: Uuid,
     ) -> anyhow::Result<Vec<ApiEndpoint>>;
 
+    /// Insert an endpoint or, on `(target_id, url, method)` conflict, merge
+    /// `params` into the existing row (set union). Backs the AI-assisted JS
+    /// param recipe so body/form params can be folded into already-persisted
+    /// endpoints without dropping URL-query params.
+    async fn api_endpoints_upsert_merge_params(
+        &self,
+        target_id: Uuid,
+        project_path: Option<&str>,
+        url: &str,
+        method: &str,
+        path: &str,
+        params: &serde_json::Value,
+        headers: &serde_json::Value,
+        auth_type: Option<&str>,
+        source: &str,
+        risk_level: &str,
+    ) -> anyhow::Result<ApiEndpoint>;
+
     async fn js_analysis_insert(
         &self,
         target_id: Uuid,
@@ -195,6 +213,35 @@ impl ReconScansPort for PgReconScansAdapter {
         risk_level: &str,
     ) -> anyhow::Result<ApiEndpoint> {
         Ok(golish_db::repo::api_endpoints::insert(
+            self.pool.as_ref(),
+            target_id,
+            project_path,
+            url,
+            method,
+            path,
+            params,
+            headers,
+            auth_type,
+            source,
+            risk_level,
+        )
+        .await?)
+    }
+
+    async fn api_endpoints_upsert_merge_params(
+        &self,
+        target_id: Uuid,
+        project_path: Option<&str>,
+        url: &str,
+        method: &str,
+        path: &str,
+        params: &serde_json::Value,
+        headers: &serde_json::Value,
+        auth_type: Option<&str>,
+        source: &str,
+        risk_level: &str,
+    ) -> anyhow::Result<ApiEndpoint> {
+        Ok(golish_db::repo::api_endpoints::upsert_merge_params(
             self.pool.as_ref(),
             target_id,
             project_path,

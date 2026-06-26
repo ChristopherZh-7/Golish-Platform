@@ -485,14 +485,15 @@ mod tests {
     }
 
     #[test]
-    fn migrated_enumeration_named_min_invocations_blocks_when_tool_absent() {
+    fn migrated_enumeration_named_min_invocations_passes_without_hard_floor() {
         use super::super::resources::load_embedded_stage_spec;
         use super::super::types::{FindingSeverity, HarnessFinding, StageKind};
         use golish_pentest::evidence_ledger::EvidenceAuditId;
 
         let spec = load_embedded_stage_spec(StageKind::Enumeration).unwrap();
-        // 非 vacuous + 证据足够过 scope/vacuous，但 required_checks_done 不含 http_probe
-        // → 迁移后的 named_check:min_invocations 应 Block（reason 含 min tool invocations）。
+        // Enumeration no longer declares a stale `http_probe` hard floor. The
+        // named_check remains in the rule list for compatibility, but an empty
+        // `spec.min_invocations` is a no-op.
         let d = StageDeliverable {
             stage_id: "enumeration".to_string(),
             stage_run_id: Uuid::new_v4(),
@@ -511,13 +512,12 @@ mod tests {
             coverage: vec![],
         };
         let result = validate_stage_gate(&d, &spec, None);
-        assert!(!result.allowed);
         assert!(
             result
                 .reasons
                 .iter()
-                .any(|r| r.contains("min tool invocations")),
-            "named_check:min_invocations should fire: {:?}",
+                .all(|r| !r.contains("min tool invocations")),
+            "enumeration must not block on stale min_invocations: {:?}",
             result.reasons
         );
     }
