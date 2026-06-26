@@ -40,12 +40,12 @@
     {
       "op": "coverage_complete",
       "derive_from_evidence": true,
-      "$comment_derive": "Phase 1 (2026-06-12-redteam-phase1): DB business-table truth 补格 — GOLISH-ENUM-DIR←directory_entries (ffuf/gobuster), -PARAM←api_endpoints.params (arjun/katana), -JSAPI←api_endpoints.source IN (js_analysis,crawler). 真跑工具落库后 coverage 格自动补 found; 不开 authoritative (主动 Empty 事实源未就绪), 自报 cell 仍兜底.",
+      "$comment_derive": "Phase 1 (2026-06-12-redteam-phase1) + 2026-06-26 enumeration deliverables/flow: DB business-table truth 补格 — GOLISH-ENUM-DIR←directory_entries (route_probe/ffuf/gobuster), -PARAM←api_endpoints.params (arjun/katana/browser/crawler), -JSAPI←api_endpoints.source IN (js_analysis,crawler). 真跑工具落库后 coverage 格自动补 found; 不开 authoritative (DIR/PARAM Empty 事实源未就绪), 自报 checked_empty/blocked/not_applicable 仍兜底.",
       "on_fail": {
         "reason": "content enumeration incomplete: some alive in-scope services were not fully enumerated (js/api / dir / param)",
         "hints": [
-          "for EVERY alive web service mapped by EAS, take each of GOLISH-ENUM-JSAPI (js_collect -> js_extract_apis) / GOLISH-ENUM-DIR (dir/path) / GOLISH-ENUM-PARAM (params) to a terminal coverage cell: found+evidence_refs / checked_empty+evidence_refs / not_applicable+note (e.g. PARAM n/a on a static host)",
-          "ports/services were already mapped in EAS — do NOT re-port-scan here; the gate auto-projects found cells from DB truth (ffuf/gobuster→directory_entries, katana/arjun→api_endpoints) so running the real tools fills coverage; the units you record become the vuln_triage coverage denominator — be thorough"
+          "for EVERY EAS-confirmed live web root, take GOLISH-ENUM-JSAPI (browser_collect_js_api -> js_extract_apis), GOLISH-ENUM-DIR (lightweight route probe -> bounded directory/path scan), and GOLISH-ENUM-PARAM (parameter discovery on discovered endpoints/forms) to a terminal state",
+          "do NOT hand-write found cells already backed by DB truth; found is projected from directory_entries/api_endpoints after real tools land rows with target_id. Use submitted coverage only for checked_empty+evidence, blocked+note, or not_applicable+note states the DB cannot derive yet"
         ]
       }
     }
@@ -60,9 +60,8 @@
   "specialist": "enumerator",
   "coverage_axis": ["DIR", "PARAM", "JSAPI"],
 
-  "min_invocations": {
-    "http_probe": 1
-  },
+  "$comment_min_invocations": "2026-06-26 enumeration deliverables/flow: no hard tool floor. HTTP probing belongs to external_attack_surface; enumeration completeness is DIR/PARAM/JSAPI DB truth plus explicit non-found terminal coverage.",
+  "min_invocations": {},
 
   "max_other_skips": 2,
 

@@ -41,6 +41,7 @@ agent 服务命令面宿主。`commands/` 是 Tauri handlers；各 `*_bridge` �
 ## 注意事项 / 坑
 
 - 各 bridge 是**依赖倒置的实现侧**：agent-kit 定义 trait（`db_traits`），这里用 golish-db 等实现并注入——别把 golish-db 依赖塞回 agent-kit。
+- `query_target_data` 的 enumeration 读模型支持 `sections=["directories","coverage","web_roots"]`：`directories` 读 target-bound `directory_entries`，`coverage` 返回 DIR/PARAM/JSAPI 的 found-only DB truth summary，`web_roots` 从 EAS 已落 target URL / http metadata / web-like ports 派生根 URL。缺席的 coverage fact 不是 checked_empty。
 - `db_bridge/evidence.rs` 同时实现 evidence ledger、`technique_outcomes`、`source_query_log` 的 harness read/write seam；`source_query_facts` 只投影 source/provider terminal rows，不代表 found。
 - `harness_submit_tool` 的 `submit_stage_deliverable` schema 是模型看到 coverage cell 字段的最后一道说明；DB-truth 阶段（target_intel / EAS found cells）要明确让模型不要手抄 found coverage，只提交 DB 不能推导的 terminal cells；保留 SERVICE-FINGERPRINT denominator 文案仅用于显式 non-DB-truth / negative cells。
 - `submit_stage_deliverable` 若 gate 因 `coverage_complete` BLOCK，会把 `HarnessRecoveryActions.coverage_gap_actions` 原样放进 `needs_fix.coverage_gap_actions`，让 sub-agent 下一轮拿到结构化 action list（而不是只读 `reasons` 里的前 8 个字符串）。

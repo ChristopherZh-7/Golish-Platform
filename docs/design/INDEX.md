@@ -51,6 +51,7 @@
 | 2026-06-25 | [stage-aware-db-refiner](2026-06-25-stage-aware-db-refiner.md) | ✅ |
 | 2026-06-25 | [runtime-supervisor](2026-06-25-runtime-supervisor.md) | ✅ |
 | 2026-06-25 | [enumeration-js-api-collection](2026-06-25-enumeration-js-api-collection.md) | ✅ |
+| 2026-06-26 | [enumeration-deliverables-and-flow](2026-06-26-enumeration-deliverables-and-flow.md) | ✅ |
 
 ## 2. Asset Intel / Recon / Targets / Integrations
 
@@ -99,4 +100,4 @@
 
 ---
 
-共 **62** 篇（含 1 csv）。设计→实现的配套计划见 [`../superpowers/plans/INDEX.md`](../superpowers/plans/INDEX.md)。
+共 **63** 篇（含 1 csv）。设计→实现的配套计划见 [`../superpowers/plans/INDEX.md`](../superpowers/plans/INDEX.md)。

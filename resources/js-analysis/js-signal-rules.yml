@@ -1,0 +1,222 @@
+# Curated Golish signal rules for JavaScript/content analysis.
+#
+# Source inspiration:
+# - gh0stkey/HaE, src/HaENet/src/main/resources/rules/Rules.yml
+# - Project: https://github.com/gh0stkey/HaE
+# - License: Apache-2.0
+#
+# This is not a verbatim full copy of HaE's Burp rules. It is a Rust-regex-
+# compatible subset/adaptation for JS bundle and HTTP-body analysis. HaE uses
+# F-Regex/S-Regex and Java regex engines; Golish converts the idea into
+# deterministic candidates plus AI line-range review.
+
+version: 1
+source: Golish curated JS signal rules inspired by gh0stkey/HaE Rules.yml
+license: Apache-2.0
+rules:
+  - name: JSON Web Token
+    group: Fingerprint
+    source_rule: JSON Web Token
+    kind: secret
+    regex: '\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9._/-]{10,}(?:\.[A-Za-z0-9._/-]{8,})?\b'
+    case_sensitive: true
+    confidence: 0.90
+    ai_review: true
+
+  - name: Swagger UI
+    group: Fingerprint
+    source_rule: Swagger UI
+    kind: framework
+    regex: 'swagger-ui\.html|"swagger"\s*:|Swagger UI|swaggerUi|swaggerVersion'
+    case_sensitive: false
+    confidence: 0.84
+    ai_review: false
+
+  - name: Vite DevMode
+    group: Fingerprint
+    source_rule: Vite DevMode
+    kind: framework
+    regex: '/@vite/client'
+    case_sensitive: true
+    confidence: 0.88
+    ai_review: true
+
+  - name: Java Deserialization Marker
+    group: Maybe Vulnerability
+    source_rule: Java Deserialization
+    kind: interesting
+    regex: 'javax\.faces\.ViewState'
+    case_sensitive: true
+    confidence: 0.72
+    ai_review: true
+
+  - name: Debug Logic Parameter
+    group: Maybe Vulnerability
+    source_rule: Debug Logic Parameters
+    kind: interesting
+    regex: '\b(?:access|adm|admin|alter|cfg|clone|config|create|dbg|debug|delete|disable|edit|enable|exec|execute|grant|load|make|modify|rename|reset|root|shell|test|toggl)='
+    case_sensitive: false
+    confidence: 0.56
+    ai_review: true
+
+  - name: URL As Value
+    group: Maybe Vulnerability
+    source_rule: URL As A Value
+    kind: config
+    regex: '=(?:https?)(?:://|%3a%2f%2f)'
+    case_sensitive: false
+    confidence: 0.58
+    ai_review: true
+
+  - name: Upload Form
+    group: Maybe Vulnerability
+    source_rule: Upload Form
+    kind: interesting
+    regex: 'type\s*=\s*["'']file["'']'
+    case_sensitive: false
+    confidence: 0.68
+    ai_review: true
+
+  - name: Pagination Or Size Parameter
+    group: Maybe Vulnerability
+    source_rule: DoS Paramters
+    kind: interesting
+    regex: '\b(?:size|page|num|limit|start|end|count)='
+    case_sensitive: false
+    confidence: 0.48
+    ai_review: false
+
+  - name: Passwd File Content
+    group: Maybe Vulnerability
+    source_rule: Passwd File
+    kind: secret
+    regex: '/root:/bin/bash'
+    case_sensitive: true
+    confidence: 0.96
+    ai_review: true
+
+  - name: Email
+    group: Basic Information
+    source_rule: Email
+    kind: pii
+    regex: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,8}\b'
+    case_sensitive: false
+    confidence: 0.62
+    ai_review: true
+
+  - name: Chinese Mobile Number
+    group: Basic Information
+    source_rule: Chinese Mobile Number
+    kind: pii
+    regex: '(?:\+?86)?1(?:3\d|4[5-79]|5[0-35-9]|6[5-7]|7[0-8]|8\d|9[189])\d{8}'
+    case_sensitive: true
+    confidence: 0.66
+    ai_review: true
+
+  - name: Internal IP Address
+    group: Basic Information
+    source_rule: Internal IP Address
+    kind: config
+    regex: '\b(?:127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b'
+    case_sensitive: true
+    confidence: 0.72
+    ai_review: true
+
+  - name: Cloud Key
+    group: Sensitive Information
+    source_rule: Cloud Key
+    kind: secret
+    regex: '\b(?:access[-_]?key[-_]?(?:id|secret)|LTAI[a-z0-9]{12,20}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16})\b'
+    case_sensitive: false
+    confidence: 0.88
+    ai_review: true
+
+  - name: Password Field
+    group: Sensitive Information
+    source_rule: Password Field
+    kind: secret
+    regex: '["'']?[\.\w]{0,32}p(?:ass|wd|asswd|assword)[\.\w]{0,32}["'']?\s*(?::|={1,3}|!={1,2})\s*["'']([^"'']{4,120})["'']'
+    case_sensitive: false
+    confidence: 0.76
+    ai_review: true
+
+  - name: Username Field
+    group: Sensitive Information
+    source_rule: Username Field
+    kind: pii
+    regex: '["'']?[\.\w]{0,32}(?:user|name|username|account|creator)[\.\w]{0,32}["'']?\s*(?::|={1,3}|!={1,2})\s*["'']([^"'']{2,120})["'']'
+    case_sensitive: false
+    confidence: 0.54
+    ai_review: true
+
+  - name: WeCom Key
+    group: Sensitive Information
+    source_rule: WeCom Key
+    kind: secret
+    regex: '\bcorp(?:id|secret)\b'
+    case_sensitive: false
+    confidence: 0.68
+    ai_review: true
+
+  - name: JDBC Connection
+    group: Sensitive Information
+    source_rule: JDBC Connection
+    kind: secret
+    regex: 'jdbc:[a-z:]+://[a-z0-9.\-_:;=/@?,&]+'
+    case_sensitive: false
+    confidence: 0.86
+    ai_review: true
+
+  - name: Authorization Header
+    group: Sensitive Information
+    source_rule: Authorization Header
+    kind: secret
+    regex: '\b(?:basic|bearer)\s+[a-z0-9_.=:+/-]{5,160}'
+    case_sensitive: false
+    confidence: 0.82
+    ai_review: true
+
+  - name: Sensitive Field
+    group: Sensitive Information
+    source_rule: Sensitive Field
+    kind: secret
+    regex: '["'']?[\.\w]{0,32}(?:key|secret|token|config|auth|access|admin|ticket)[\.\w]{0,32}["'']?\s*(?::|={1,3}|!={1,2})\s*["'']([^"'']{4,160})["'']'
+    case_sensitive: false
+    confidence: 0.70
+    ai_review: true
+
+  - name: User Identity Storage
+    group: Sensitive Information
+    source_rule: User Identity
+    kind: interesting
+    regex: '\b(?:(?:localStorage|sessionStorage)\.(?:setItem|getItem)|setCookie|Cookies\.set)\s*\(\s*["'']([^"'']+)["'']'
+    case_sensitive: true
+    confidence: 0.72
+    ai_review: true
+
+  - name: Linkfinder
+    group: Other
+    source_rule: Linkfinder
+    kind: route
+    regex: '["''`]((?:(?:[a-zA-Z]{1,10}://|//)[^"''`/]{1,}\.[A-Za-z]{2,}[^"''`]{0,})|(?:(?:/|\.\./|\./)[^"''`<>,;|*()\\\[\]]{2,})|(?:[A-Za-z0-9_/-]{1,}/[A-Za-z0-9_/-]{3,}(?:[?#][^"''`]{0,})?))["''`]'
+    case_sensitive: true
+    confidence: 0.50
+    ai_review: false
+
+  - name: Source Map
+    group: Other
+    source_rule: Source Map
+    kind: interesting
+    regex: '\.js\.map\b'
+    case_sensitive: true
+    confidence: 0.62
+    ai_review: true
+
+  - name: URL Schemes
+    group: Other
+    source_rule: URL Schemes
+    kind: route
+    regex: '\b[A-Za-z][A-Za-z0-9+.-]{1,20}://[-\w+&@#/%?=~_|!:,.;]*[-\w+&@#/%=~_|]'
+    case_sensitive: false
+    confidence: 0.54
+    ai_review: true

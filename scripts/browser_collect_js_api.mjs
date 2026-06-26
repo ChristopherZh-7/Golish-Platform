@@ -182,6 +182,21 @@ function sha256Prefix(buffer) {
   return crypto.createHash("sha256").update(buffer).digest("hex").slice(0, 8);
 }
 
+function sha256Hex(buffer) {
+  return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
+function canonicalScriptUrl(urlString) {
+  try {
+    const url = new URL(urlString);
+    url.hash = "";
+    url.searchParams.sort();
+    return url.href;
+  } catch {
+    return String(urlString || "");
+  }
+}
+
 function safeParentFromUrlPath(urlPath) {
   const clean = urlPath.replace(/^\/+/, "");
   const parent = path.posix.dirname(clean);
@@ -538,6 +553,93 @@ async function saveScriptCapture(workspace, targetHost, targetPort, scriptUrl, b
   return path.relative(workspace, fullPath);
 }
 
+function scriptManifestPath(workspace, targetHost, targetPort) {
+  return path.join(
+    workspace,
+    ".golish",
+    "captures",
+    targetHost,
+    String(targetPort),
+    "js",
+    "manifest.json",
+  );
+}
+
+async function loadScriptManifest(workspace, targetHost, targetPort, maxScriptBytes) {
+  const manifestPath = scriptManifestPath(workspace, targetHost, targetPort);
+  try {
+    const text = await fs.readFile(manifestPath, "utf8");
+    const parsed = JSON.parse(text);
+    const scripts = Array.isArray(parsed?.scripts)
+      ? parsed.scripts
+      : Array.isArray(parsed)
+        ? parsed
+        : [];
+    const entries = [];
+    let stale = 0;
+    for (const item of scripts) {
+      if (!item || typeof item !== "object") continue;
+      const url = typeof item.url === "string" ? item.url : "";
+      const diskPath = typeof item.path === "string" ? item.path : "";
+      if (!url || !diskPath) continue;
+      const fullPath = path.resolve(workspace, diskPath);
+      let stat;
+      try {
+        stat = await fs.stat(fullPath);
+      } catch {
+        stale += 1;
+        continue;
+      }
+      if (!stat.isFile() || stat.size > maxScriptBytes) {
+        stale += 1;
+        continue;
+      }
+      entries.push({
+        url,
+        key: canonicalScriptUrl(url),
+        path: diskPath,
+        size: stat.size,
+        status: item.status ?? 200,
+        content_type: item.content_type ?? "",
+        sha256: typeof item.sha256 === "string" ? item.sha256 : null,
+        cached: true,
+        full_path: fullPath,
+      });
+    }
+    return { path: manifestPath, entries, stale };
+  } catch {
+    return { path: manifestPath, entries: [], stale: 0 };
+  }
+}
+
+async function writeScriptManifest(workspace, targetHost, targetPort, scripts) {
+  const manifestPath = scriptManifestPath(workspace, targetHost, targetPort);
+  await fs.mkdir(path.dirname(manifestPath), { recursive: true });
+  const rows = scripts
+    .filter((script) => script.path && script.url)
+    .map((script) => ({
+      url: script.url,
+      canonical_url: canonicalScriptUrl(script.url),
+      path: script.path,
+      size: script.size ?? null,
+      status: script.status ?? null,
+      content_type: script.content_type ?? "",
+      sha256: script.sha256 ?? null,
+      discovered_by: script.discovered_by ?? null,
+      duplicate_of: script.duplicate_of ?? null,
+    }))
+    .sort((a, b) => a.canonical_url.localeCompare(b.canonical_url));
+  const payload = {
+    version: 1,
+    updated_at: new Date().toISOString(),
+    scripts: rows,
+  };
+  const tmpPath = `${manifestPath}.tmp`;
+  await fs.writeFile(tmpPath, `${JSON.stringify(payload, null, 2)}\n`);
+  await fs.rename(tmpPath, manifestPath);
+  return manifestPath;
+}
+
 function sameOrigin(urlString, origin) {
   try {
     return new URL(urlString).origin === origin;
@@ -868,6 +970,8 @@ async function main() {
   const scriptInsightsByUrl = new Map();
   const recursiveQueue = [];
   const queuedRecursiveUrls = new Set();
+  const scriptPathByHash = new Map();
+  const scannedScriptHashes = new Set();
   const apiRequestsByKey = new Map();
   const pending = new Set();
   const navigationErrors = [];
@@ -880,6 +984,7 @@ async function main() {
   let pendingWaitTimedOut = false;
   let contextCloseTimedOut = false;
   let browserCloseTimedOut = false;
+  let duplicateContentHits = 0;
 
   const recordRecursiveError = (url, status, reason) => {
     if (recursiveErrors.length >= 100) return;
@@ -891,19 +996,24 @@ async function main() {
   };
 
   const enqueueScriptUrl = (url, source) => {
-    if (!url || scriptsByUrl.has(url) || queuedRecursiveUrls.has(url)) return;
+    if (!url) return;
+    const key = canonicalScriptUrl(url);
+    if (!key || scriptsByUrl.has(key) || queuedRecursiveUrls.has(key)) return;
     try {
       const parsed = new URL(url);
       const sourceOrigin = source ? new URL(source).origin : targetUrl.origin;
       if (parsed.origin !== targetUrl.origin && parsed.origin !== sourceOrigin) return;
-      queuedRecursiveUrls.add(url);
-      recursiveQueue.push({ url, source });
+      queuedRecursiveUrls.add(key);
+      recursiveQueue.push({ url: parsed.href, key, source });
     } catch {
       // Ignore invalid chunk references.
     }
   };
 
   const enqueueRefsFromScript = (scriptUrl, body) => {
+    const hash = sha256Hex(body);
+    if (scannedScriptHashes.has(hash)) return;
+    scannedScriptHashes.add(hash);
     const text = body.toString("utf8");
     const detectedPublicPath = extractPublicPath(text);
     publicPathHint ||= recipePublicPath || detectedPublicPath;
@@ -942,6 +1052,37 @@ async function main() {
       enqueueScriptUrl(resolveScriptReference(chunkUrl, scriptUrl), scriptUrl);
     }
   };
+
+  const manifestCache = await loadScriptManifest(
+    workspace,
+    targetHost,
+    targetPort,
+    maxScriptBytes,
+  );
+  let cachedScriptsPreloaded = 0;
+  for (const entry of manifestCache.entries) {
+    if (!entry.key || scriptsByUrl.has(entry.key)) continue;
+    let body = null;
+    try {
+      body = await fs.readFile(entry.full_path);
+    } catch {
+      continue;
+    }
+    const sha = entry.sha256 || sha256Hex(body);
+    const cached = {
+      url: entry.url,
+      path: entry.path,
+      size: entry.size,
+      status: entry.status,
+      content_type: entry.content_type,
+      sha256: sha,
+      cached: true,
+    };
+    scriptsByUrl.set(entry.key, cached);
+    scriptPathByHash.set(sha, entry.path);
+    cachedScriptsPreloaded += 1;
+    enqueueRefsFromScript(entry.url, body);
+  }
 
   for (const scriptUrl of recipeScriptUrls) {
     enqueueScriptUrl(scriptUrl, targetUrl.href);
@@ -1061,10 +1202,11 @@ async function main() {
       apiRequestsByKey.get(`${request.method()} ${url}`).status = response.status();
     }
 
-    if (!isJavaScriptResponse(url, headers) || scriptsByUrl.has(url)) return;
+    const scriptKey = canonicalScriptUrl(url);
+    if (!isJavaScriptResponse(url, headers) || scriptsByUrl.has(scriptKey)) return;
     const contentLength = Number.parseInt(headers["content-length"] ?? "0", 10);
     if (Number.isFinite(contentLength) && contentLength > maxScriptBytes) {
-      scriptsByUrl.set(url, {
+      scriptsByUrl.set(scriptKey, {
         url,
         status: response.status(),
         skipped: true,
@@ -1080,7 +1222,7 @@ async function main() {
         );
         if (body === TIMEOUT) {
           pendingBodyTimeouts += 1;
-          scriptsByUrl.set(url, {
+          scriptsByUrl.set(scriptKey, {
             url,
             status: response.status(),
             skipped: true,
@@ -1089,7 +1231,7 @@ async function main() {
           return;
         }
         if (body.length > maxScriptBytes) {
-          scriptsByUrl.set(url, {
+          scriptsByUrl.set(scriptKey, {
             url,
             status: response.status(),
             skipped: true,
@@ -1097,24 +1239,35 @@ async function main() {
           });
           return;
         }
-        const pathOnDisk = await saveScriptCapture(
-          workspace,
-          targetHost,
-          targetPort,
-          url,
-          body,
-        );
+        const sha = sha256Hex(body);
+        let pathOnDisk = scriptPathByHash.get(sha);
+        let duplicateOf = null;
+        if (pathOnDisk) {
+          duplicateContentHits += 1;
+          duplicateOf = pathOnDisk;
+        } else {
+          pathOnDisk = await saveScriptCapture(
+            workspace,
+            targetHost,
+            targetPort,
+            url,
+            body,
+          );
+          scriptPathByHash.set(sha, pathOnDisk);
+        }
         enqueueRefsFromScript(url, body);
-        scriptsByUrl.set(url, {
+        scriptsByUrl.set(scriptKey, {
           url,
           path: pathOnDisk,
           size: body.length,
           status: response.status(),
           content_type: headers["content-type"] ?? "",
+          sha256: sha,
+          duplicate_of: duplicateOf,
         });
       })()
       .catch((error) => {
-        scriptsByUrl.set(url, {
+        scriptsByUrl.set(scriptKey, {
           url,
           status: response.status(),
           skipped: true,
@@ -1255,7 +1408,7 @@ async function main() {
     timeLeft(hardDeadline) > 0
   ) {
     const queued = recursiveQueue.shift();
-    if (!queued || scriptsByUrl.has(queued.url)) continue;
+    if (!queued || scriptsByUrl.has(queued.key)) continue;
 
     try {
       const fetchTimeout = timeLeft(hardDeadline, DEFAULT_FETCH_TIMEOUT_MS);
@@ -1275,6 +1428,10 @@ async function main() {
         fetchTimeout,
       );
       const headers = Object.fromEntries(response.headers.entries());
+      const responseKey = canonicalScriptUrl(response.url);
+      if (scriptsByUrl.has(responseKey)) {
+        continue;
+      }
       if (!response.ok || !isJavaScriptResponse(response.url, headers)) {
         recordRecursiveError(
           queued.url,
@@ -1306,20 +1463,31 @@ async function main() {
         recordRecursiveError(response.url, response.status, `body>${maxScriptBytes}`);
         continue;
       }
-      const pathOnDisk = await saveScriptCapture(
-        workspace,
-        targetHost,
-        targetPort,
-        response.url,
-        body,
-      );
-      scriptsByUrl.set(response.url, {
+      const sha = sha256Hex(body);
+      let pathOnDisk = scriptPathByHash.get(sha);
+      let duplicateOf = null;
+      if (pathOnDisk) {
+        duplicateContentHits += 1;
+        duplicateOf = pathOnDisk;
+      } else {
+        pathOnDisk = await saveScriptCapture(
+          workspace,
+          targetHost,
+          targetPort,
+          response.url,
+          body,
+        );
+        scriptPathByHash.set(sha, pathOnDisk);
+      }
+      scriptsByUrl.set(responseKey, {
         url: response.url,
         path: pathOnDisk,
         size: body.length,
         status: response.status,
         content_type: headers["content-type"] ?? "",
+        sha256: sha,
         discovered_by: "chunk_reference",
+        duplicate_of: duplicateOf,
       });
       recursiveScriptsDownloaded += 1;
       enqueueRefsFromScript(response.url, body);
@@ -1341,6 +1509,12 @@ async function main() {
 
   const scripts = [...scriptsByUrl.values()].sort((a, b) =>
     a.url.localeCompare(b.url),
+  );
+  const manifestPath = await writeScriptManifest(
+    workspace,
+    targetHost,
+    targetPort,
+    scripts,
   );
   const apiRequests = [...apiRequestsByKey.values()].sort((a, b) =>
     a.url.localeCompare(b.url),
@@ -1440,6 +1614,10 @@ async function main() {
         actions_clicked: actionsClicked,
         scripts_total: scripts.length,
         scripts_saved: scriptsSaved,
+        scripts_cached_preloaded: cachedScriptsPreloaded,
+        scripts_duplicate_content_hits: duplicateContentHits,
+        script_manifest: path.relative(workspace, manifestPath),
+        script_manifest_stale_entries: manifestCache.stale,
         scripts_recursive_downloaded: recursiveScriptsDownloaded,
         max_recursive_scripts: maxRecursiveScripts,
         recursive_queue_remaining: recursiveQueue.length,

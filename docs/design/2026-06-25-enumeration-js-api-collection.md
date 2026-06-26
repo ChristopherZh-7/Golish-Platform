@@ -1,7 +1,7 @@
 # Enumeration JS/API Collection
 
 > Date: 2026-06-25
-> Status: first implementation slice landed (2026-06-25); AI classification / secret scanning / WebRoot materialization still deferred
+> Status: browser JS acquisition + endpoint persistence + deterministic JS signal/rule-match candidate analysis landed (2026-06-26); model-side classification tool / WebRoot materialization still deferred
 > Related: `2026-06-24-intel-to-eas-handoff.md`, `2026-06-23-technique-outcomes-provenance.md`, `2026-06-23-source-query-log.md`, `resources/harness/stages/enumeration/spec.json`
 > Invariants: AGENTS.md I7 evidence-backed stage delivery, I8 checked_empty != unchecked, I9 no external long-running work inside transactions, deterministic gate remains final judge
 
@@ -138,7 +138,9 @@ The first browser-backed collector is implemented as:
   A closure-mode comparison showed `angular.dev/overview` fast mode saved 47 JS files and returned `closure_partial`; deep mode with `max_recursive_scripts=120` saved 165 JS files. MDN fast mode saved 30 JS files with 448 queued candidates; deep mode saved 42 JS files before a 90s hard deadline, correctly returning `timeout_partial` instead of claiming closure. A local nested fixture (`main.js -> chunk-1.js -> ... -> chunk-8.js`) returned `closure_complete=true` and captured the final `/api/final` fetch.
   A follow-up deep smoke found `tailwindcss.com/docs/installation` closed cleanly (`status=ok`, 18 JS, 117-194 runtime requests depending on run timing), while `nextjs.org/docs`, `nuxt.com/docs`, and `svelte.dev/docs` returned partial states with explicit queue/deadline/body-timeout diagnostics rather than hanging or pretending to be complete.
 
-Not yet implemented in this slice: AI navigation plan, endpoint de-noising/classification, and secret/token extraction beyond the current auth-hint detection in `golish-js-analyzer`.
+2026-06-26 implementation note: the "JS files are already landed" analysis step now has a deterministic first layer. `golish-js-analyzer` exposes `analyze_signals_from_files`, which extracts redacted secret/sensitive candidates (JWT/API key/token/private key/internal URL), runtime config/API base candidates, common framework/library signals, and curated rule-based signal hits with `source_file + line + preview + sha256`. `js_extract_apis` persists those into `js_analysis_results.frameworks/libraries/secrets_found/raw_analysis`, returns `rule_matches`, and returns an `ai_analysis` object with candidate files and suggested line ranges for targeted `read_file` review. The rule preset lives in `resources/js-analysis/js-signal-rules.yml`; the model review guidance lives in `resources/skills/js_extract_apis/rule-assisted-analysis.md`. This is not yet a model-calling classifier; the outer agent consumes the structured hints.
+
+Not yet implemented in this slice: AI navigation plan, endpoint de-noising/classification as a separate model-backed tool, and dedicated secrets table/report UI.
 
 ## 7. Proposed Architecture
 
@@ -388,6 +390,13 @@ Store them as:
 - audit/evidence payload on the collection run;
 - later, optionally a dedicated secrets table.
 
+2026-06-26 implementation note: P0 storage uses existing `js_analysis_results`.
+Secret values are not stored verbatim by the analyzer output; candidates carry
+`value_preview`, `value_sha256`, `source_file`, `line`, `confidence`,
+`is_likely_test_value`, and a redacted context line. Runtime config candidates
+are stored in `raw_analysis.config_candidates`, while frameworks/libraries use
+their existing JSONB columns.
+
 AI classification should produce:
 
 ```json
@@ -402,12 +411,25 @@ AI classification should produce:
 
 Do not emit findings in `enumeration`. The existing stage spec has `findings_allowed=false`.
 
+The P0 model handoff is the `ai_analysis` object returned by `js_extract_apis`.
+When `ai_analysis.recommended=true`, the agent should read only the suggested
+line ranges and classify candidates as real/test/noise/needs_followup. Full
+bundle reading is not the default path. `rule_matches` are first-pass candidates:
+the `rule_name` / `source_rule` explains why a line is suspicious, but proof
+still comes from local source context and deterministic tool evidence.
+
 ## 12. AI Analysis Contract
 
 AI is useful in two places:
 
 1. Navigation: decide which safe routes/clicks are likely to load more JS/API.
 2. Semantic analysis: classify endpoint/secret candidates.
+
+2026-06-26 status: semantic analysis now has a deterministic candidate feed and
+line-range handoff, including curated rule-based signal rules inspired by
+gh0stkey/HaE, but no in-tool model invocation. The model intervention is currently the outer
+enumerator/browser agent reading `ai_analysis`, using `read_file` for local
+context, and deciding whether candidates need later triage.
 
 AI must not:
 
@@ -475,7 +497,8 @@ Enumerator methodology should become:
 
 - Add sanitized DOM/network summary for AI.
 - Allow guided safe action plans.
-- Add `api_analyze_candidates` for de-noise/classification.
+- Add deterministic JS signal extraction for secrets/config/framework/library candidates and curated rule-based first-pass regex hits. **Done 2026-06-26 as P3a** via `analyze_signals_from_files` + `js_extract_apis.ai_analysis`.
+- Add `api_analyze_candidates` for model-backed de-noise/classification. **Deferred**.
 - Persist classification to endpoint notes/risk/auth metadata and `js_analysis_results.raw_analysis`.
 
 ### P4 - Coverage hardening
