@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use golish_app_core::GolishError;
+use hickory_resolver::proto::rr::{RData, RecordType};
+use hickory_resolver::TokioResolver;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sqlx::{Postgres, Transaction};
@@ -406,11 +408,16 @@ async fn land_subdomain_assets(
 }
 
 /// Resolve in-scope **domain** targets of this org that have no DNS record yet and
-/// land their A/AAAA answers into `dns_records` — the table the target_intel DNS
-/// coverage cell reads (`dns_records::present_target_values` /
+/// land their A/AAAA/CNAME/MX/TXT answers into `dns_records` — the table the
+/// target_intel DNS coverage cell reads (`dns_records::present_target_values` /
 /// `coverage_truth`). enrich records carry domains and IPs unpaired, so we do a
-/// bounded best-effort resolve (the honest way to produce real A records). DNS
-/// resolution is standard `recon/dns`; failures/timeouts are skipped, never fatal.
+/// bounded best-effort resolve (the honest way to produce real records). A/AAAA
+/// use the system stub resolver; CNAME/MX/TXT use a hickory resolver because
+/// `tokio::net::lookup_host` only returns address records. No stage drives `dig`
+/// (target_intel forbids scan-tool fallback, EAS reuses inherited DNS), so this
+/// landing is the only place those record types can be collected. DNS queries
+/// hit the resolver, not the target's own hosts, so it stays zero-touch.
+/// failures/timeouts are skipped, never fatal.
 async fn land_dns_records(
     pool: &sqlx::PgPool,
     organization: &golish_db::models::Organization,
@@ -432,25 +439,57 @@ async fn land_dns_records(
     if targets.is_empty() {
         return Ok(0);
     }
+    // Built once from the system resolver config and cloned into each task (the
+    // resolver is cheap to clone — Arc inside). If construction fails we still
+    // land A/AAAA from the stub resolver below.
+    let dns_resolver: Option<TokioResolver> = hickory_resolver::Resolver::builder_tokio()
+        .ok()
+        .and_then(|builder| builder.build().ok());
     let mut set = tokio::task::JoinSet::new();
     for (target_id, value) in targets {
+        let resolver = dns_resolver.clone();
         set.spawn(async move {
             let host = normalized_host(&value)?;
-            let lookup = tokio::time::timeout(
+            let mut records: Vec<(Uuid, &'static str, String, String)> = Vec::new();
+            // A/AAAA via the system stub resolver (unchanged real_ip semantics).
+            if let Ok(Ok(addrs)) = tokio::time::timeout(
                 std::time::Duration::from_secs(3),
                 tokio::net::lookup_host(format!("{host}:0")),
             )
             .await
-            .ok()?
-            .ok()?;
-            let records: Vec<(Uuid, &'static str, String, String)> = lookup
-                .map(|addr| {
+            {
+                for addr in addrs {
                     let ip = addr.ip();
                     let record_type = if ip.is_ipv4() { "A" } else { "AAAA" };
-                    (target_id, record_type, host.clone(), ip.to_string())
-                })
-                .collect();
-            Some(records)
+                    records.push((target_id, record_type, host.clone(), ip.to_string()));
+                }
+            }
+            // CNAME / MX / TXT via hickory (additive, each query independently
+            // bounded and non-fatal). CNAME backs CDN / subdomain-takeover
+            // analysis; MX / TXT back mail / SPF / DMARC intel.
+            if let Some(resolver) = resolver {
+                let fqdn = format!("{host}.");
+                for record_type in [RecordType::CNAME, RecordType::MX, RecordType::TXT] {
+                    let Ok(Ok(lookup)) = tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        resolver.lookup(fqdn.clone(), record_type),
+                    )
+                    .await
+                    else {
+                        continue;
+                    };
+                    for record in lookup.answers() {
+                        if let Some((rt, value)) = rdata_to_dns_record(&record.data) {
+                            records.push((target_id, rt, host.clone(), value));
+                        }
+                    }
+                }
+            }
+            if records.is_empty() {
+                None
+            } else {
+                Some(records)
+            }
         });
     }
     let mut landed = 0usize;
@@ -458,13 +497,18 @@ async fn land_dns_records(
         let Ok(Some(records)) = joined else {
             continue;
         };
-        // Primary IP for the host tree (design 2026-06-15 Phase 0): first IPv4 (A)
-        // answer, else the first answer. Captured before the consuming upsert loop
-        // below moves `records`.
+        // Primary IP for the host tree (design 2026-06-15 Phase 0): first A
+        // answer, else first AAAA. Only address records may set real_ip — a
+        // CNAME/MX/TXT value would corrupt it. Captured before the consuming
+        // upsert loop below moves `records`.
         let primary_ip: Option<(Uuid, String)> = records
             .iter()
             .find(|(_, record_type, _, _)| *record_type == "A")
-            .or_else(|| records.first())
+            .or_else(|| {
+                records
+                    .iter()
+                    .find(|(_, record_type, _, _)| *record_type == "AAAA")
+            })
             .map(|(target_id, _, _, ip)| (*target_id, ip.clone()));
         for (target_id, record_type, name, value) in records {
             if golish_db::repo::dns_records::upsert(
@@ -487,6 +531,45 @@ async fn land_dns_records(
         }
     }
     Ok(landed)
+}
+
+/// Map a hickory `RData` answer to a `(record_type, value)` tuple for
+/// `dns_records`. Only CNAME / MX / TXT are lifted here (A/AAAA come from the
+/// stub resolver). Returns `None` for record types we do not persist or an empty
+/// TXT payload.
+fn rdata_to_dns_record(rdata: &RData) -> Option<(&'static str, String)> {
+    match rdata {
+        RData::CNAME(name) => Some(("CNAME", normalize_dns_target(&name.0.to_utf8()))),
+        RData::MX(mx) => Some(("MX", format_mx_value(mx.preference, &mx.exchange.to_utf8()))),
+        RData::TXT(txt) => {
+            let joined: String = txt
+                .txt_data
+                .iter()
+                .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+                .collect::<Vec<_>>()
+                .concat();
+            let trimmed = joined.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(("TXT", trimmed.to_string()))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Normalize a DNS target name (CNAME target / MX exchange): strip the trailing
+/// root dot and lowercase so duplicate answers collapse on the `dns_records`
+/// unique key.
+fn normalize_dns_target(name: &str) -> String {
+    name.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Render an MX answer as `"<preference> <exchange>"` so the single `value`
+/// column keeps both the priority and the mail host.
+fn format_mx_value(preference: u16, exchange: &str) -> String {
+    format!("{preference} {}", normalize_dns_target(exchange))
 }
 
 /// JSONB "has content" predicate matching `coverage_truth`'s emptiness semantics
@@ -1464,5 +1547,27 @@ mod tests {
         assert!(json_value_is_empty(&json!("  ")));
         assert!(!json_value_is_empty(&json!(["AS1"])));
         assert!(!json_value_is_empty(&json!({ "handle": "X" })));
+    }
+
+    #[test]
+    fn normalize_dns_target_strips_root_dot_and_lowercases() {
+        // CNAME/MX answers arrive FQDN-style (trailing root dot) and mixed-case;
+        // collapse them so duplicate rows hit the dns_records unique key.
+        assert_eq!(normalize_dns_target("CDN.Example.COM."), "cdn.example.com");
+        assert_eq!(
+            normalize_dns_target("  alias.example.net  "),
+            "alias.example.net"
+        );
+        assert_eq!(normalize_dns_target("."), "");
+    }
+
+    #[test]
+    fn format_mx_value_keeps_preference_and_normalizes_host() {
+        assert_eq!(
+            format_mx_value(10, "MAIL.Example.com."),
+            "10 mail.example.com"
+        );
+        // RFC 7505 null MX ("0 .") — exchange normalizes to empty, preference kept.
+        assert_eq!(format_mx_value(0, "."), "0 ");
     }
 }

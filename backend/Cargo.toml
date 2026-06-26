@@ -238,6 +238,11 @@ reqwest = { version = "0.13", features = ["json", "socks"] }
 readability = { version = "0.3", default-features = false }
 url = "2.5"
 
+# DNS resolution — passive CNAME/MX/TXT landing in target_intel (design
+# 2026-06-26 enumeration-deliverables; tokio lookup_host only does A/AAAA).
+# Plain UDP/TCP DNS only: no TLS/DoH/DoT features.
+hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }
+
 # Token estimation
 tokenx-rs = "0.1"
 

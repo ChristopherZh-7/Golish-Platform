@@ -28,6 +28,9 @@ tauri = { workspace = true }
 # Async DB + HTTP + filesystem.
 sqlx = { workspace = true }
 reqwest = { workspace = true }
+# Passive CNAME/MX/TXT resolution for target_intel DNS landing (tokio
+# lookup_host only returns A/AAAA).
+hickory-resolver = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
