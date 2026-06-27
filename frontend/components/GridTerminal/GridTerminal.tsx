@@ -81,6 +81,7 @@ export const GridTerminal = memo(function GridTerminal({
     // the right order; otherwise auto-focus loses to a parent
     // focusing itself on mount.
     const handle = requestAnimationFrame(() => {
+      if (isTerminalAutoFocusSuppressed(sessionId)) return;
       el.focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(handle);

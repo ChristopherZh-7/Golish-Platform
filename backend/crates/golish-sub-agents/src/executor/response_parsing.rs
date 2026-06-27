@@ -1042,6 +1042,7 @@ where
                         agent_id: agent_id.to_string(),
                         agent_name: agent_def.name.clone(),
                     },
+                    organization_id: ctx.active_org_id_override,
                 };
                 golish_core::with_agent_session(
                     ctx.session_id.map(str::to_string),

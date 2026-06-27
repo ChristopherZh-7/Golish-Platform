@@ -113,8 +113,11 @@ export function Terminal({ sessionId }: TerminalProps) {
         });
       });
 
-      // Auto-focus terminal so user can interact with TUI apps immediately
-      terminalRef.current.focus();
+      // Auto-focus terminal so user can interact with TUI apps immediately,
+      // unless chat-first focus protection is active.
+      if (!isTerminalAutoFocusSuppressed(sessionId)) {
+        terminalRef.current.focus();
+      }
 
       return () => {
         cancelAnimationFrame(outerRafId);

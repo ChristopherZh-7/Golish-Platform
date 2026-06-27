@@ -476,6 +476,16 @@ fn block(stage: StageKind) -> HarnessGateOutcome {
     }
 }
 
+fn pass_without_findings(stage: StageKind, evidence_refs: Vec<i64>) -> HarnessGateOutcome {
+    let mut outcome = pass(stage);
+    outcome.findings_count = 0;
+    outcome.evidence_refs = evidence_refs;
+    outcome.evidence_summary = Some(
+        "- claims: stage_run_pass_token (external_attack_surface)\n- evidence refs: 25".to_string(),
+    );
+    outcome
+}
+
 fn drain(rx: &mut mpsc::UnboundedReceiver<AiEvent>) -> Vec<AiEvent> {
     let mut out = Vec::new();
     while let Ok(ev) = rx.try_recv() {
@@ -589,6 +599,26 @@ async fn block_emits_no_stage_passed() {
             .iter()
             .any(|e| matches!(e, AiEvent::TaskProgress { status, .. } if status == "stage_passed")),
         "gate BLOCK must not emit stage_passed"
+    );
+}
+
+#[test]
+fn info_stage_evidence_counts_as_progress_without_findings() {
+    let outcome = pass_without_findings(StageKind::ExternalAttackSurface, vec![9592, 9591]);
+
+    assert!(
+        super::gate_outcome_made_progress(&outcome),
+        "EAS/other recon stages suppress findings; evidence handoff still means progress"
+    );
+}
+
+#[test]
+fn vulnerability_stage_without_findings_is_not_progress() {
+    let outcome = pass_without_findings(StageKind::VulnTriage, vec![42]);
+
+    assert!(
+        !super::gate_outcome_made_progress(&outcome),
+        "vulnerability stages still need findings to take a progress-gated main path"
     );
 }
 

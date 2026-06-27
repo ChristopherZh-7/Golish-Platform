@@ -92,7 +92,8 @@ export function isVisibleTerminalCommand(tool: BaseToolCall): boolean {
 /** Format tool name for display (e.g., "read_file" -> "Read File") */
 export function formatToolName(name: string): string {
   return name
-    .split("_")
+    .split(/[_\s-]+/)
+    .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
 }
@@ -100,6 +101,7 @@ export function formatToolName(name: string): string {
 const TOOL_LABELS_SHORT: Record<string, string> = {
   run_command: "Shell",
   run_pty_cmd: "Shell",
+  wait_for_background_jobs: "Waiting",
   read_file: "Read",
   write_file: "Write",
   edit_file: "Edit",
@@ -116,6 +118,7 @@ const TOOL_LABELS_SHORT: Record<string, string> = {
 const TOOL_LABELS_STANDARD: Record<string, string> = {
   run_command: "Shell Command",
   run_pty_cmd: "Shell Command",
+  wait_for_background_jobs: "Waiting for background jobs",
   read_file: "Read File",
   write_file: "Write File",
   edit_file: "Edit File",
@@ -139,15 +142,121 @@ export function getToolLabel(name: string, variant: "short" | "standard" = "stan
   return map[name] || formatToolName(name);
 }
 
+const TOOL_ACTION_LABELS: Record<string, string> = {
+  run_command: "Running shell command",
+  run_pty_cmd: "Running shell command",
+  shell: "Running shell command",
+  wait_for_background_jobs: "Waiting for background jobs",
+  check_job: "Checking background job",
+  kill_job: "Stopping background job",
+  list_jobs: "Listing background jobs",
+  stage_run: "Running specialist agents",
+  submit_stage_deliverable: "Submitting stage deliverable",
+  check_stage_asset_coverage: "Checking asset coverage",
+  list_in_scope_targets: "Reading in-scope targets",
+  list_attack_surface_seeds: "Reading attack surface seeds",
+  query_target_data: "Reading target data",
+  manage_targets: "Updating targets",
+  manage_organizations: "Updating organizations",
+  pentest_list_tools: "Listing pentest tools",
+  pentest_read_skill: "Reading tool skill",
+  recon_map_assets: "Mapping assets",
+  recon_lookup_whois: "Looking up WHOIS",
+  recon_discover_subsidiaries: "Discovering subsidiaries",
+  recon_enrich_assets: "Enriching assets",
+  read_file: "Reading file",
+  write_file: "Writing file",
+  edit_file: "Editing file",
+  search_files: "Searching files",
+  grep_file: "Searching files",
+  web_search: "Searching the web",
+  web_search_answer: "Searching the web",
+  web_fetch: "Fetching URL",
+};
+
+const EXTERNAL_TOOL_LABELS: Record<string, string> = {
+  httpx: "HTTPX",
+  naabu: "Naabu",
+  nmap: "Nmap",
+  masscan: "Masscan",
+  whatweb: "WhatWeb",
+  gowitness: "GoWitness",
+  ffuf: "FFUF",
+  feroxbuster: "Feroxbuster",
+  gobuster: "Gobuster",
+  nuclei: "Nuclei",
+  dig: "dig",
+  whois: "WHOIS",
+};
+
+function formatExternalToolName(name: string): string {
+  const trimmed = name.trim();
+  const known = EXTERNAL_TOOL_LABELS[trimmed.toLowerCase()];
+  return known ?? formatToolName(trimmed);
+}
+
+export function getToolActionLabel(name: string, args?: Record<string, unknown>): string {
+  if (name === "pentest_run") {
+    return formatPentestRunActionLabel(args);
+  }
+
+  if (name.startsWith("sub_agent_")) {
+    const agentName = formatToolName(name.replace(/^sub_agent_/, ""));
+    return agentName ? `Starting ${agentName} agent` : "Starting sub-agent";
+  }
+
+  return TOOL_ACTION_LABELS[name] ?? `Using ${formatToolName(name)}`;
+}
+
+function formatPentestRunActionLabel(args?: Record<string, unknown>): string {
+  const toolName = typeof args?.tool_name === "string" ? args.tool_name.trim().toLowerCase() : "";
+  const rawArgs = typeof args?.args === "string" ? args.args.toLowerCase() : "";
+
+  switch (toolName) {
+    case "naabu":
+    case "masscan":
+      return "Scanning ports";
+    case "nmap":
+      if (/(^|\s)-sn(\s|$)/.test(rawArgs)) return "Checking host reachability";
+      if (/(^|\s)-sv(\s|$)/.test(rawArgs) || rawArgs.includes("service")) {
+        return "Probing services";
+      }
+      return "Running Nmap";
+    case "httpx":
+      return "Checking web services";
+    case "whatweb":
+      return "Fingerprinting web services";
+    case "gowitness":
+      return "Capturing screenshots";
+    case "nuclei":
+      return "Checking vulnerabilities";
+    case "ffuf":
+    case "feroxbuster":
+    case "gobuster":
+      return "Discovering paths";
+    case "dig":
+      return rawArgs.includes("axfr") ? "Checking DNS zone transfer" : "Querying DNS";
+    case "whois":
+      return "Looking up WHOIS";
+    default: {
+      const wrappedTool =
+        typeof args?.tool_name === "string" ? formatExternalToolName(args.tool_name) : null;
+      return wrappedTool ? `Running ${wrappedTool}` : "Running pentest tool";
+    }
+  }
+}
+
 export function getToolPrimaryArg(name: string, args: Record<string, unknown>): string | null {
+  if (name === "wait_for_background_jobs") {
+    return formatWaitForBackgroundJobsSummary(args);
+  }
   if ((name === "run_command" || name === "run_pty_cmd") && args.command)
     return formatCommandForDisplay(String(args.command));
-  // pentest_run wraps the real tool in `tool_name` + `args`; surface them as a
-  // single command-like line (e.g. "dig example.com NS") so the card explains
-  // what it did without the user expanding it.
+  // pentest_run wraps the real tool in `tool_name` + `args`; the card title now
+  // carries the action ("Probing services"), so the secondary line stays compact
+  // and avoids repeating the raw command prefix.
   if (typeof args.tool_name === "string") {
-    const toolArgs = args.args != null ? String(args.args) : "";
-    return formatCommandForDisplay(`${String(args.tool_name)} ${toolArgs}`.trim());
+    return formatPentestRunSummary(args);
   }
   if (args.path) return String(args.path);
   if (args.file_path) return String(args.file_path);
@@ -157,8 +266,153 @@ export function getToolPrimaryArg(name: string, args: Record<string, unknown>): 
   return null;
 }
 
+function formatWaitForBackgroundJobsSummary(args: Record<string, unknown>): string {
+  const timeoutSecs =
+    typeof args.timeout_secs === "number" && Number.isFinite(args.timeout_secs)
+      ? Math.max(0, Math.trunc(args.timeout_secs))
+      : null;
+  const pollMs =
+    typeof args.poll_interval_ms === "number" && Number.isFinite(args.poll_interval_ms)
+      ? Math.max(0, Math.trunc(args.poll_interval_ms))
+      : null;
+
+  const parts = [timeoutSecs == null ? "default wait up to 300s" : `wait up to ${timeoutSecs}s`];
+  if (pollMs != null) parts.push(`poll ${pollMs}ms`);
+  return parts.join(" | ");
+}
+
+function formatPentestRunSummary(args: Record<string, unknown>): string | null {
+  const rawToolName = typeof args.tool_name === "string" ? args.tool_name.trim() : "";
+  if (!rawToolName) return null;
+
+  const toolLabel = formatExternalToolName(rawToolName);
+  const rawArgs = args.args != null ? String(args.args) : "";
+  const batchSummary = formatPentestInputSummary(args);
+  const details = formatPentestRunDetailSummaries(rawToolName, rawArgs, Boolean(batchSummary));
+  if (!batchSummary && details.length === 0) return null;
+
+  return [toolLabel, batchSummary, ...details].filter(Boolean).join(" · ");
+}
+
 export function formatCommandForDisplay(command: string): string {
   return command.replace(/\\n/g, "\n").replace(/\\r/g, "").replace(/\\t/g, "    ");
+}
+
+const INPUT_FILE_PLACEHOLDER_RE =
+  /\{\{(?:input_file|targets_file|hosts_file|urls_file)\}\}|\{input_file\}|\$GOLISH_INPUT_FILE/g;
+
+function formatPentestCommandForDisplay(command: string, hasBatchInput: boolean): string {
+  const displayedCommand = hasBatchInput
+    ? command.replace(INPUT_FILE_PLACEHOLDER_RE, "[input file]")
+    : command;
+  return formatCommandForDisplay(displayedCommand);
+}
+
+function formatPentestRunDetailSummaries(
+  toolName: string,
+  rawArgs: string,
+  hasBatchInput: boolean
+): string[] {
+  const lowerTool = toolName.trim().toLowerCase();
+  const details: string[] = [];
+  const ports = matchCliArgValue(rawArgs, "-p");
+  const topPorts = matchCliArgValue(rawArgs, "-top-ports");
+
+  if (ports) details.push(`ports ${compactInlineValue(ports)}`);
+  if (topPorts) details.push(`top ${compactInlineValue(topPorts)} ports`);
+
+  if (
+    lowerTool === "nmap" ||
+    lowerTool === "naabu" ||
+    lowerTool === "masscan" ||
+    lowerTool === "httpx" ||
+    lowerTool === "whatweb" ||
+    lowerTool === "gowitness"
+  ) {
+    return details;
+  }
+
+  if (hasBatchInput) return details;
+
+  const cleaned = compactPentestArgsForDisplay(toolName, rawArgs);
+  return cleaned ? [...details, cleaned] : details;
+}
+
+function matchCliArgValue(rawArgs: string, flag: string): string | null {
+  const match = rawArgs.match(new RegExp(`(?:^|\\s)${escapeRegExp(flag)}(?:=|\\s+)([^\\s]+)`, "i"));
+  return match?.[1] ?? null;
+}
+
+function compactPentestArgsForDisplay(toolName: string, rawArgs: string): string | null {
+  let cleaned = formatPentestCommandForDisplay(rawArgs, false).replace(/\s+/g, " ").trim();
+  if (!cleaned) return null;
+
+  const toolPrefix = new RegExp(`^${escapeRegExp(toolName)}\\s+`, "i");
+  cleaned = cleaned.replace(toolPrefix, "").trim();
+  cleaned = cleaned
+    .replace(INPUT_FILE_PLACEHOLDER_RE, "[input file]")
+    .replace(/(?:^|\s)(?:-iL|-list|-l|-f|--input-file)(?:=|\s+)\[input file\]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return cleaned ? compactInlineValue(cleaned) : null;
+}
+
+function compactInlineValue(value: string): string {
+  const maxLength = 72;
+  const compacted = value.trim();
+  if (compacted.length <= maxLength) return compacted;
+  return `${compacted.slice(0, 44)}...${compacted.slice(-24)}`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function formatPentestInputSummary(args: Record<string, unknown>): string | null {
+  const inputLines = getPentestRunInputLines(args);
+  if (inputLines.length === 0) return null;
+
+  const noun = inputLines.length === 1 ? "target" : "targets";
+  const first = compactTargetLabel(inputLines[0] ?? "");
+  const last = compactTargetLabel(inputLines[inputLines.length - 1] ?? "");
+  if (!first) return `batch ${inputLines.length} ${noun}`;
+  if (inputLines.length === 1 || first === last)
+    return `batch ${inputLines.length} ${noun} (${first})`;
+  return `batch ${inputLines.length} ${noun} (${first} ... ${last})`;
+}
+
+export function getPentestRunInputLines(args: Record<string, unknown>): string[] {
+  if (Array.isArray(args.input_lines)) {
+    return args.input_lines
+      .map((line) => normalizeInputLine(line))
+      .filter((line): line is string => line != null);
+  }
+
+  if (typeof args.input_lines === "string") {
+    return splitInputLines(args.input_lines);
+  }
+
+  return typeof args.stdin === "string" ? splitInputLines(args.stdin) : [];
+}
+
+function splitInputLines(input: string): string[] {
+  return input
+    .split(/\r?\n/)
+    .map((line) => normalizeInputLine(line))
+    .filter((line): line is string => line != null);
+}
+
+function normalizeInputLine(line: unknown): string | null {
+  if (typeof line !== "string") return null;
+  const trimmed = line.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function compactTargetLabel(value: string): string {
+  const maxLength = 72;
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, 40)}...${value.slice(-24)}`;
 }
 
 /** Format result for display */
@@ -170,6 +424,7 @@ export function formatToolResult(result: unknown): string {
 }
 
 const FAILURE_STATUS_RE = /"status"\s*:\s*"(rejected|needs_fix|error|failed)"/i;
+const FAILURE_STATUSES = new Set(["rejected", "needs_fix", "error", "failed"]);
 const STDERR_FAILURE_RE = /(^|\s)(error|fatal|exception)([:\s]|$)/i;
 const OUTPUT_FAILURE_RE = /\b(not installed|missing dependenc(?:y|ies)|command not found)\b/i;
 
@@ -190,6 +445,10 @@ function parseResultObject(result: unknown): Record<string, unknown> | null {
   }
 }
 
+function topLevelStatusIndicatesFailure(status: unknown): boolean {
+  return typeof status === "string" && FAILURE_STATUSES.has(status.toLowerCase());
+}
+
 /**
  * Some tools return success at the transport layer while their payload is a
  * domain failure (e.g. `submit_stage_deliverable` needs_fix) or a shell-like
@@ -199,11 +458,13 @@ function parseResultObject(result: unknown): Record<string, unknown> | null {
 export function toolResultIndicatesFailure(result?: unknown): boolean {
   if (result == null || result === "") return false;
 
-  const text = typeof result === "string" ? result : safeStringify(result);
-  if (FAILURE_STATUS_RE.test(text)) return true;
-
   const obj = parseResultObject(result);
-  if (!obj) return false;
+  if (!obj) {
+    const text = typeof result === "string" ? result : safeStringify(result);
+    return FAILURE_STATUS_RE.test(text);
+  }
+
+  if (topLevelStatusIndicatesFailure(obj.status)) return true;
 
   const exitCode =
     typeof obj.exit_code === "number"

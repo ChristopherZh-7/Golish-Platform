@@ -37,7 +37,8 @@ pub(crate) async fn build_tool_list(
     let workspace_guard = ctx.workspace.read().await;
     let policy_ctx = PolicyContext::new(&workspace_guard, golish_core::AgentMode::default())
         .with_depth(sub_agent_context.depth)
-        .with_mcp_tool_count(ctx.additional_tool_definitions.len());
+        .with_mcp_tool_count(ctx.additional_tool_definitions.len())
+        .with_harness_active(ctx.harness_stage.is_some());
     let selection = if sub_agent_context.depth == 0 {
         policy.primary_tools(&policy_ctx).await
     } else {
@@ -57,6 +58,13 @@ pub(crate) async fn build_tool_list(
     // into targets or pop a target `scope_review` during scoping (user directive
     // 2026-06-13; methodology backstop at the tool boundary).
     hide_manage_targets_in_scoping(&mut tools, ctx.harness_stage);
+    // Stages that declare a per-org specialist (for example target_intel →
+    // recon) must be driven through `stage_run`; the depth-0 primary is only a
+    // coordinator. Hide direct work tools so the model cannot bypass per-org
+    // isolation and gates by calling recon/sub-agent tools itself.
+    if sub_agent_context.depth == 0 {
+        hide_direct_work_tools_for_specialist_stage(&mut tools, ctx.harness_stage);
+    }
     // Read-only coverage self-check: the depth-0 stage orchestrator builds its
     // coverage matrix from what actually landed in the DB, but task
     // `primary_tools` is orchestration-only (no static groups) so the read-only
@@ -96,6 +104,7 @@ fn add_read_only_target_query_tools_for_stage(
         "list_in_scope_targets",
         "list_attack_surface_seeds",
         "query_target_data",
+        "check_stage_asset_coverage",
     ];
     let any_missing = READ_ONLY_QUERY_TOOLS
         .iter()
@@ -141,6 +150,49 @@ fn hide_manage_targets_in_scoping(
             target: "harness::hook",
             stage = "scoping",
             "tool-list: hid manage_targets (scoping is org-tree-only; targets belong to target_intel)"
+        );
+    }
+}
+
+fn hide_direct_work_tools_for_specialist_stage(
+    tools: &mut Vec<rig::completion::ToolDefinition>,
+    harness_stage: Option<golish_agent_kit::harness::StageKind>,
+) {
+    let Some(kind) = harness_stage else {
+        return;
+    };
+    let Ok(spec) = golish_agent_kit::harness::load_embedded_stage_spec(kind) else {
+        return;
+    };
+    let Some(specialist) = spec
+        .specialist
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return;
+    };
+
+    const DIRECT_WORK_TOOLS: &[&str] = &[
+        "manage_targets",
+        "recon_discover_subsidiaries",
+        "recon_lookup_company",
+        "recon_lookup_whois",
+        "recon_list_providers",
+        "recon_map_assets",
+    ];
+
+    let before = tools.len();
+    tools.retain(|t| {
+        !DIRECT_WORK_TOOLS.contains(&t.name.as_str()) && !t.name.starts_with("sub_agent_")
+    });
+    if tools.len() != before {
+        tracing::debug!(
+            target: "harness::hook",
+            stage = %kind.as_str(),
+            specialist,
+            removed = before - tools.len(),
+            "tool-list: hid direct work tools for specialist stage; use stage_run"
         );
     }
 }
@@ -284,7 +336,7 @@ mod tests {
             "org/ask tools must survive scoping: {names:?}"
         );
 
-        // target_intel keeps manage_targets (that's where the target list lands).
+        // This helper is scoping-only; specialist-stage filtering is tested below.
         let mut ti = base();
         hide_manage_targets_in_scoping(&mut ti, Some(StageKind::TargetIntel));
         assert!(ti.iter().any(|t| t.name == "manage_targets"));
@@ -293,6 +345,59 @@ mod tests {
         let mut none = base();
         hide_manage_targets_in_scoping(&mut none, None);
         assert!(none.iter().any(|t| t.name == "manage_targets"));
+    }
+
+    #[test]
+    fn specialist_stage_primary_hides_direct_work_tools() {
+        use golish_agent_kit::harness::StageKind;
+
+        let mut tools = vec![
+            td("stage_run"),
+            td("submit_stage_deliverable"),
+            td("manage_organizations"),
+            td("manage_targets"),
+            td("recon_list_providers"),
+            td("recon_discover_subsidiaries"),
+            td("recon_map_assets"),
+            td("recon_lookup_whois"),
+            td("sub_agent_recon"),
+            td("query_target_data"),
+        ];
+        hide_direct_work_tools_for_specialist_stage(&mut tools, Some(StageKind::TargetIntel));
+
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        for kept in [
+            "stage_run",
+            "submit_stage_deliverable",
+            "manage_organizations",
+            "query_target_data",
+        ] {
+            assert!(
+                names.contains(&kept),
+                "specialist stage primary must keep {kept}; got: {names:?}"
+            );
+        }
+        for hidden in [
+            "manage_targets",
+            "recon_list_providers",
+            "recon_discover_subsidiaries",
+            "recon_map_assets",
+            "recon_lookup_whois",
+            "sub_agent_recon",
+        ] {
+            assert!(
+                !names.contains(&hidden),
+                "specialist stage primary must use stage_run instead of {hidden}; got: {names:?}"
+            );
+        }
+
+        let mut scoping_tools = vec![td("recon_map_assets")];
+        hide_direct_work_tools_for_specialist_stage(&mut scoping_tools, Some(StageKind::Scoping));
+        assert_eq!(
+            scoping_tools.len(),
+            1,
+            "non-specialist stages must not use the specialist-stage filter"
+        );
     }
 
     /// The depth-0 stage orchestrator must be handed the read-only target query
@@ -313,6 +418,10 @@ mod tests {
         assert!(
             names.contains(&"list_in_scope_targets"),
             "must also get its list companion (source of target ids): {names:?}"
+        );
+        assert!(
+            names.contains(&"check_stage_asset_coverage"),
+            "stage orchestrator must get the DB-truth coverage preflight: {names:?}"
         );
 
         // Idempotent: a second pass (or a tool already present) adds no dupes.
@@ -392,15 +501,24 @@ mod tests {
         );
     }
 
-    /// Task primary (depth=0) is orchestration-only: no static tools, no
-    /// run_command — only ask_human (sub-agent dispatchers come from the
-    /// sub_agent_registry which is empty in this test fixture).
+    /// Task/profile lead turns are flexible for chat/coding, but they must not
+    /// be able to run security operations directly. Real scoping/recon/pentest
+    /// work enters the harness only through `start_operation`.
     #[tokio::test]
-    async fn task_primary_has_no_static_tools_or_run_command() {
+    async fn task_lead_primary_includes_decision_tools_without_security_or_shell() {
         let test_ctx = TestContextBuilder::new()
             .execution_mode(ExecutionMode::Task)
             .build()
             .await;
+        {
+            let mut reg = test_ctx.tool_registry.write().await;
+            reg.register_tool(Arc::new(MockNamedTool("start_operation")));
+            reg.register_tool(Arc::new(MockNamedTool("submit_stage_deliverable")));
+            reg.register_tool(Arc::new(MockNamedTool("manage_organizations")));
+            reg.register_tool(Arc::new(MockNamedTool("manage_targets")));
+            reg.register_tool(Arc::new(MockNamedTool("recon_map_assets")));
+            reg.register_tool(Arc::new(MockNamedTool("pentest_run")));
+        }
         let client = Arc::new(RwLock::new(LlmClient::Mock));
         let ctx = test_ctx.as_agentic_context_with_client(&client);
 
@@ -411,12 +529,159 @@ mod tests {
             .collect();
 
         assert!(
+            names.iter().any(|n| n == "read_file"),
+            "task lead must expose static file_ops; got: {:?}",
+            names
+        );
+        for expected in ["grep_file", "list_files", "ast_grep"] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "task lead must keep normal coding/search helper {expected}; got: {:?}",
+                names
+            );
+        }
+        assert!(
+            !names.iter().any(|n| n == "run_pty_cmd"),
+            "task lead must not expose shell; got: {:?}",
+            names
+        );
+        assert!(
+            !names.iter().any(|n| n == "run_command"),
+            "task lead must not expose shell alias; got: {:?}",
+            names
+        );
+        assert!(names.iter().any(|n| n == "ask_human"));
+        assert!(names.iter().any(|n| n == "start_operation"));
+        assert!(
+            !names.iter().any(|n| n == "submit_stage_deliverable"),
+            "task lead must not expose harness submit; got: {:?}",
+            names
+        );
+        for forbidden in [
+            "query_target_data",
+            "list_in_scope_targets",
+            "list_attack_surface_seeds",
+            "check_stage_asset_coverage",
+            "ingest_cve",
+            "save_poc",
+            "search_exploits",
+            "manage_organizations",
+            "manage_targets",
+            "recon_map_assets",
+            "pentest_run",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "task lead must enter the harness via start_operation instead of exposing {forbidden}; got: {:?}",
+                names
+            );
+        }
+    }
+
+    /// Once a harness stage is active, the depth-0 primary switches to the
+    /// stage-orchestrator tool surface: no static tools or shell.
+    #[tokio::test]
+    async fn active_task_stage_primary_has_no_static_tools_or_run_command() {
+        let test_ctx = TestContextBuilder::new()
+            .execution_mode(ExecutionMode::Task)
+            .build()
+            .await;
+        {
+            let mut reg = test_ctx.tool_registry.write().await;
+            reg.register_tool(Arc::new(MockNamedTool("start_operation")));
+        }
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let mut ctx = test_ctx.as_agentic_context_with_client(&client);
+        ctx.harness_stage = Some(golish_agent_kit::harness::StageKind::Scoping);
+
+        let names: Vec<String> = build_tool_list(&ctx, &SubAgentContext::default())
+            .await
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+
+        assert!(
             !names.iter().any(|n| n == "read_file"),
-            "task primary must NOT expose static file_ops; got: {:?}",
+            "active task stage primary must NOT expose static file_ops; got: {:?}",
             names
         );
         assert!(!names.iter().any(|n| n == "run_pty_cmd"));
         assert!(names.iter().any(|n| n == "ask_human"));
+        assert!(
+            !names.iter().any(|n| n == "start_operation"),
+            "active task stage primary must not expose nested start_operation; got: {:?}",
+            names
+        );
+    }
+
+    #[tokio::test]
+    async fn active_specialist_stage_primary_must_use_stage_run_not_direct_recon() {
+        let test_ctx = TestContextBuilder::new()
+            .execution_mode(ExecutionMode::Task)
+            .build()
+            .await;
+        {
+            let mut reg = test_ctx.tool_registry.write().await;
+            for name in [
+                "submit_stage_deliverable",
+                "manage_organizations",
+                "manage_targets",
+                "recon_list_providers",
+                "recon_discover_subsidiaries",
+                "recon_map_assets",
+                "recon_lookup_whois",
+                "wait_for_background_jobs",
+                "check_job",
+                "kill_job",
+            ] {
+                reg.register_tool(Arc::new(MockNamedTool(name)));
+            }
+        }
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let mut ctx = test_ctx.as_agentic_context_with_client(&client);
+        ctx.harness_stage = Some(golish_agent_kit::harness::StageKind::TargetIntel);
+
+        let names: Vec<String> = build_tool_list(&ctx, &SubAgentContext::default())
+            .await
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+
+        assert!(
+            names.iter().any(|n| n == "stage_run"),
+            "target_intel primary must see stage_run; got: {:?}",
+            names
+        );
+        assert!(
+            names.iter().any(|n| n == "submit_stage_deliverable"),
+            "target_intel primary must keep submit for pass-token closeout; got: {:?}",
+            names
+        );
+        assert!(
+            names.iter().any(|n| n == "manage_organizations"),
+            "target_intel primary may need org ids for stage_run args; got: {:?}",
+            names
+        );
+        for control_tool in ["wait_for_background_jobs", "check_job", "kill_job"] {
+            assert!(
+                names.iter().any(|n| n == control_tool),
+                "specialist stage primary must keep background job control tool {control_tool}; got: {:?}",
+                names
+            );
+        }
+        for forbidden in [
+            "manage_targets",
+            "recon_list_providers",
+            "recon_discover_subsidiaries",
+            "recon_map_assets",
+            "recon_lookup_whois",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "target_intel primary must not bypass stage_run via {forbidden}; got: {:?}",
+                names
+            );
+        }
     }
 
     /// A minimal registry tool used to prove the bridge allow-list path
@@ -444,19 +709,22 @@ mod tests {
     }
 
     /// End-to-end wiring guard: a registry tool named `submit_stage_deliverable`
-    /// must reach the LLM tool list in task mode (both the depth-0 orchestrator
-    /// and depth-1 specialists) via the bridge allow-list, but must NOT leak
-    /// into chat mode (no active harness stage there).
+    /// must reach the LLM tool list only after the task harness is active (the
+    /// depth-0 stage orchestrator and depth-1 specialists) via the bridge
+    /// allow-list, but must NOT leak into task lead turns or chat mode.
     #[tokio::test]
-    async fn submit_stage_deliverable_surfaces_in_task_not_chat() {
-        async fn names_for(mode: ExecutionMode, depth: usize) -> Vec<String> {
+    async fn submit_stage_deliverable_surfaces_in_active_task_stage_not_lead_or_chat() {
+        async fn names_for(mode: ExecutionMode, depth: usize, active_stage: bool) -> Vec<String> {
             let test_ctx = TestContextBuilder::new().execution_mode(mode).build().await;
             {
                 let mut reg = test_ctx.tool_registry.write().await;
                 reg.register_tool(Arc::new(MockNamedTool("submit_stage_deliverable")));
             }
             let client = Arc::new(RwLock::new(LlmClient::Mock));
-            let ctx = test_ctx.as_agentic_context_with_client(&client);
+            let mut ctx = test_ctx.as_agentic_context_with_client(&client);
+            if active_stage {
+                ctx.harness_stage = Some(golish_agent_kit::harness::StageKind::Scoping);
+            }
             let sub = SubAgentContext {
                 depth,
                 ..Default::default()
@@ -468,19 +736,27 @@ mod tests {
                 .collect()
         }
 
-        let task_primary = names_for(ExecutionMode::Task, 0).await;
+        let task_lead = names_for(ExecutionMode::Task, 0, false).await;
         assert!(
-            task_primary.iter().any(|n| n == "submit_stage_deliverable"),
-            "task primary (orchestrator) must expose submit_stage_deliverable; got: {task_primary:?}"
+            !task_lead.iter().any(|n| n == "submit_stage_deliverable"),
+            "task lead must NOT expose submit_stage_deliverable; got: {task_lead:?}"
         );
 
-        let task_subtask = names_for(ExecutionMode::Task, 1).await;
+        let task_stage_primary = names_for(ExecutionMode::Task, 0, true).await;
+        assert!(
+            task_stage_primary
+                .iter()
+                .any(|n| n == "submit_stage_deliverable"),
+            "active task stage primary must expose submit_stage_deliverable; got: {task_stage_primary:?}"
+        );
+
+        let task_subtask = names_for(ExecutionMode::Task, 1, true).await;
         assert!(
             task_subtask.iter().any(|n| n == "submit_stage_deliverable"),
             "task subtask (specialist) must expose submit_stage_deliverable; got: {task_subtask:?}"
         );
 
-        let chat_primary = names_for(ExecutionMode::Chat, 0).await;
+        let chat_primary = names_for(ExecutionMode::Chat, 0, false).await;
         assert!(
             !chat_primary.iter().any(|n| n == "submit_stage_deliverable"),
             "chat mode must NOT expose submit_stage_deliverable; got: {chat_primary:?}"

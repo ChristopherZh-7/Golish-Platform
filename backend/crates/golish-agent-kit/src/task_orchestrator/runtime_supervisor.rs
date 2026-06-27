@@ -13,6 +13,7 @@ const HARD_SUPERVISOR_MARKER: &str = "--- EXECUTION SUPERVISOR (HARD) ---";
 
 const COMMON_STAGE_TOOLS: &[&str] = &[
     "query_target_data",
+    "check_stage_asset_coverage",
     "wait_for_background_jobs",
     "check_job",
     "kill_job",
@@ -439,6 +440,7 @@ fn normalize_tool_for_policy(
 fn best_fallback_tool(ctx: &RuntimeSupervisorContext) -> Option<String> {
     let allowed = policy_allowed_tools(ctx);
     for preferred in [
+        "check_stage_asset_coverage",
         "query_target_data",
         "wait_for_background_jobs",
         "submit_stage_deliverable",

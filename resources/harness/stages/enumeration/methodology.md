@@ -53,8 +53,10 @@ become the coverage denominator for `vuln_triage`.
   `tested_units == total_units`; to sample a huge surface you MUST set
   `sampling_rationale` and meet the ratio, else the cell counts as partial and the
   gate BLOCKS. Testing 3/5000 endpoints then claiming checked_empty is false coverage.
-- Once each live service has dir + param + JS/API enumerated (or an honest skip),
-  `submit_stage_deliverable`.
+- Before submitting, call `check_stage_asset_coverage`. If
+  `ready_to_submit=false`, use its `gap_examples` to enumerate the missing
+  service/technique cells or record honest checked_empty/blocked/not_applicable
+  terminal coverage. Submit only when the preflight says `ready_to_submit=true`.
 - Do not hand-write `found` cells that DB truth can derive from
   `directory_entries` or `api_endpoints`. Submitted coverage is for
   checked_empty, blocked, or not_applicable terminal states that still need notes

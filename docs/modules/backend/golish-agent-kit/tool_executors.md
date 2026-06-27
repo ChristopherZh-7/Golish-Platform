@@ -43,6 +43,7 @@
 
 - workflow 工具**不在这里**（在 golish，避循环依赖）；别往这加 workflow 执行。
 - graph 走 `graph_trait`（注入），不直接依赖 golish-graphiti 具体实现。
+- `security.rs` 里的 `check_stage_asset_coverage` 是只读提交预检：从 app bridge 取和前端覆盖面板同源的 stage asset snapshot，压缩成 `ready_to_submit`、cell 计数和 `gap_examples`。执行路径必须传入 active harness org/stage/operation，避免模型在 stage 外或错误组织上看覆盖。
 
 ## 测试入口
 

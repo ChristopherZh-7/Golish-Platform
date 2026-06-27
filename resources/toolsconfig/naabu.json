@@ -39,11 +39,18 @@
     },
     "params": [
       {
-        "description": "Target host, IP, or CIDR to scan",
+        "description": "Single target host, IP, or CIDR to scan. For EAS batches prefer -list {{input_file}} with pentest_run.input_lines.",
         "flag": "-host",
         "label": "Host",
         "placeholder": "scanme.nmap.org",
-        "required": true,
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "File with hosts, IPs, or CIDRs to scan in one batch (one per line)",
+        "flag": "-list",
+        "label": "Targets List",
+        "placeholder": "{{input_file}}",
         "type": "string"
       },
       {
@@ -149,6 +156,16 @@
         ]
       },
       {
+        "args": "-list {{input_file}} -top-ports 1000 -s c -silent",
+        "description": "CONNECT scan of the top 1000 ports across a host list",
+        "id": "batch-top1000",
+        "name": "Batch Top-1000 Ports",
+        "tags": [
+          "recon",
+          "bulk"
+        ]
+      },
+      {
         "args": "-host {{target}} -p - -s c -silent",
         "description": "Full TCP port sweep (slow, thorough)",
         "id": "full-ports",
@@ -166,6 +183,17 @@
         "tags": [
           "recon",
           "fingerprint"
+        ]
+      },
+      {
+        "args": "-list {{input_file}} -top-ports 1000 -s c -nmap-cli 'nmap -sV' -silent",
+        "description": "Batch discover open ports and hand them to nmap for service detection",
+        "id": "batch-naabu-to-nmap",
+        "name": "Batch naabu → nmap -sV",
+        "tags": [
+          "recon",
+          "fingerprint",
+          "bulk"
         ]
       }
     ],

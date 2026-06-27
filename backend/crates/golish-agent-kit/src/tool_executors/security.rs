@@ -1,5 +1,5 @@
 use super::common::{error_result, extract_string_param, ToolResult};
-use serde_json::json;
+use serde_json::{json, Value};
 
 pub async fn execute_security_analysis_tool(
     tool_name: &str,
@@ -11,6 +11,8 @@ pub async fn execute_security_analysis_tool(
     // root org. `list_in_scope_targets` confines its listing to this org's subtree
     // so a sibling engagement's targets left in the same workspace never surface.
     harness_org_id: Option<uuid::Uuid>,
+    harness_stage: Option<crate::harness::StageKind>,
+    harness_operation_id: Option<uuid::Uuid>,
 ) -> Option<ToolResult> {
     let is_sec_tool = matches!(
         tool_name,
@@ -22,6 +24,7 @@ pub async fn execute_security_analysis_tool(
             | "query_target_data"
             | "list_in_scope_targets"
             | "list_attack_surface_seeds"
+            | "check_stage_asset_coverage"
     );
     if !is_sec_tool {
         return None;
@@ -424,6 +427,236 @@ pub async fn execute_security_analysis_tool(
             Some((data, true))
         }
 
+        "check_stage_asset_coverage" => {
+            let stage = extract_string_param(args, &["stage"])
+                .or_else(|| harness_stage.map(|stage| stage.as_str().to_string()));
+            let Some(stage) = stage.filter(|stage| !stage.trim().is_empty()) else {
+                return Some(error_result(
+                    "check_stage_asset_coverage requires a 'stage' parameter when no harness stage is active",
+                ));
+            };
+            let org_id = extract_string_param(args, &["organization_id"])
+                .and_then(|s| uuid::Uuid::parse_str(&s).ok())
+                .or(harness_org_id);
+            let Some(org_id) = org_id else {
+                return Some(error_result(
+                    "check_stage_asset_coverage requires an organization_id when no active harness organization is bound",
+                ));
+            };
+            let max_gaps = args
+                .get("max_gaps")
+                .and_then(|v| v.as_u64())
+                .map(|n| n.clamp(1, 200) as usize)
+                .unwrap_or(25);
+            let include_assets = args
+                .get("include_assets")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let stage_started_at = match harness_operation_id {
+                Some(operation_id) => match repo.operation_state_get(operation_id).await {
+                    Ok(Some(state)) if state.current_stage == stage => Some(state.stage_started_at),
+                    Ok(_) => None,
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "harness::coverage_preflight",
+                            error = %err,
+                            "failed to read operation_state; coverage preflight falls back to presence-only freshness"
+                        );
+                        None
+                    }
+                },
+                None => None,
+            };
+            let snapshot = match repo
+                .stage_asset_coverage(org_id, &stage, session_id, stage_started_at)
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    return Some(error_result(format!(
+                        "Failed to check stage asset coverage: {err}"
+                    )))
+                }
+            };
+            Some((
+                compact_stage_asset_coverage(snapshot, max_gaps, include_assets),
+                true,
+            ))
+        }
+
         _ => None,
+    }
+}
+
+fn compact_stage_asset_coverage(
+    mut snapshot: Value,
+    max_gaps: usize,
+    include_assets: bool,
+) -> Value {
+    let assets = snapshot
+        .get("assets")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut total_cells = 0usize;
+    let mut pending_cells = 0usize;
+    let mut error_cells = 0usize;
+    let mut blocked_cells = 0usize;
+    let mut done_cells = 0usize;
+    let mut gaps = Vec::new();
+
+    for asset in &assets {
+        let value = asset.get("value").and_then(Value::as_str).unwrap_or("");
+        let target_type = asset
+            .get("target_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let target_id = asset.get("target_id").and_then(Value::as_str).unwrap_or("");
+        for cell in asset
+            .get("coverage")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            total_cells += 1;
+            let state = cell
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("pending");
+            match state {
+                "pending" => pending_cells += 1,
+                "error" => error_cells += 1,
+                "blocked" => {
+                    blocked_cells += 1;
+                    done_cells += 1;
+                }
+                _ => done_cells += 1,
+            }
+            if matches!(state, "pending" | "error") && gaps.len() < max_gaps {
+                gaps.push(json!({
+                    "target_id": target_id,
+                    "asset": value,
+                    "target_type": target_type,
+                    "technique": cell.get("technique").cloned().unwrap_or(Value::Null),
+                    "label": cell.get("label").cloned().unwrap_or(Value::Null),
+                    "state": state,
+                    "source": cell.get("source").cloned().unwrap_or(Value::Null),
+                    "evidence_refs": cell.get("evidence_refs").cloned().unwrap_or_else(|| json!([])),
+                    "note": cell.get("note").cloned().unwrap_or(Value::Null),
+                    "suggested_tools": cell.get("suggested_tools").cloned().unwrap_or_else(|| json!([])),
+                }));
+            }
+        }
+    }
+
+    let omitted_gap_count = pending_cells + error_cells;
+    let omitted_gap_count = omitted_gap_count.saturating_sub(gaps.len());
+    let ready_to_submit = pending_cells == 0 && error_cells == 0;
+    let mut out = json!({
+        "ready_to_submit": ready_to_submit,
+        "stage": snapshot.get("stage").cloned().unwrap_or(Value::Null),
+        "organization_id": snapshot.get("organization_id").cloned().unwrap_or(Value::Null),
+        "session_id": snapshot.get("session_id").cloned().unwrap_or(Value::Null),
+        "summary": snapshot.get("summary").cloned().unwrap_or_else(|| json!({})),
+        "cell_summary": {
+            "total_cells": total_cells,
+            "done_cells": done_cells,
+            "pending_cells": pending_cells,
+            "error_cells": error_cells,
+            "blocked_cells": blocked_cells
+        },
+        "gap_examples": gaps,
+        "omitted_gap_count": omitted_gap_count,
+        "next_action": if ready_to_submit {
+            "Coverage has no pending/error/blocked cells in this preflight. Build the final StageDeliverable with real evidence ids and submit_stage_deliverable."
+        } else {
+            "Do not submit yet. Close the pending/error cells first: run the suggested tools, wait for background jobs to land evidence, or mark truly blocked/not_applicable cells with concrete notes."
+        }
+    });
+    if include_assets {
+        out["assets"] = snapshot
+            .get_mut("assets")
+            .map(std::mem::take)
+            .unwrap_or_else(|| json!([]));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compact_stage_asset_coverage;
+    use serde_json::json;
+
+    #[test]
+    fn coverage_preflight_blocks_submit_when_cells_are_pending() {
+        let compact = compact_stage_asset_coverage(
+            json!({
+                "stage": "external_attack_surface",
+                "organization_id": "org-1",
+                "session_id": "sess",
+                "summary": {"total_assets": 1, "done_assets": 0, "pending_assets": 1, "blocked_assets": 0},
+                "assets": [{
+                    "target_id": "target-1",
+                    "value": "example.com",
+                    "target_type": "domain",
+                    "coverage": [
+                        {"technique": "GOLISH-EAS-LIVENESS", "label": "Liveness", "state": "found", "evidence_refs": [], "suggested_tools": []},
+                        {"technique": "GOLISH-EAS-PORT", "label": "Port", "state": "pending", "evidence_refs": [], "suggested_tools": ["naabu", "nmap"]}
+                    ]
+                }]
+            }),
+            10,
+            false,
+        );
+
+        assert_eq!(compact["ready_to_submit"], false);
+        assert_eq!(compact["cell_summary"]["pending_cells"], 1);
+        assert_eq!(compact["gap_examples"][0]["asset"], "example.com");
+        assert!(compact.get("assets").is_none());
+    }
+
+    #[test]
+    fn coverage_preflight_can_include_full_assets_when_requested() {
+        let compact = compact_stage_asset_coverage(
+            json!({
+                "summary": {},
+                "assets": [{
+                    "target_id": "target-1",
+                    "value": "example.com",
+                    "target_type": "domain",
+                    "coverage": [
+                        {"technique": "GOLISH-EAS-LIVENESS", "label": "Liveness", "state": "found", "evidence_refs": [], "suggested_tools": []}
+                    ]
+                }]
+            }),
+            10,
+            true,
+        );
+
+        assert_eq!(compact["ready_to_submit"], true);
+        assert_eq!(compact["assets"][0]["value"], "example.com");
+    }
+
+    #[test]
+    fn coverage_preflight_treats_blocked_as_terminal() {
+        let compact = compact_stage_asset_coverage(
+            json!({
+                "summary": {},
+                "assets": [{
+                    "target_id": "target-1",
+                    "value": "example.com",
+                    "target_type": "domain",
+                    "coverage": [
+                        {"technique": "GOLISH-EAS-PORT", "label": "Port", "state": "blocked", "evidence_refs": [1], "suggested_tools": []}
+                    ]
+                }]
+            }),
+            10,
+            false,
+        );
+
+        assert_eq!(compact["ready_to_submit"], true);
+        assert_eq!(compact["cell_summary"]["blocked_cells"], 1);
+        assert_eq!(compact["gap_examples"].as_array().unwrap().len(), 0);
     }
 }

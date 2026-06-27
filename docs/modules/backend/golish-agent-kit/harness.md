@@ -34,6 +34,7 @@
 |---|---|
 | `stage_harness.rs` / `stage_transition.rs` | 主入口 / gate→下一 stage |
 | `operation_graph.rs` / `profile.rs` / `stage_spec.rs` | DAG 投影 / profile / stage 定义 |
+| `operation_continuity.rs` | cross-session adoption 的 IO-free cursor math：按 reusable prefix 计算 entry stage + remaining DAG allowlist |
 | `gate/` | 6 个确定性 check |
 | `evidence_facts.rs` | 从工具命令/输出派生 coverage facts（passive intel + EAS） |
 | `intent_classifier.rs` / `nl_slice.rs` / `sprint_contract.rs` / `pre_action_authorizer.rs` | 分类 / 终态 / 契约 / authz |
@@ -52,6 +53,8 @@
 - `external_attack_surface` 现在走 DB-truth 瘦交付：`facts_from_db_truth=true`，`coverage_complete.authoritative_found=true` 只认 targets/ports/fingerprints/technique_outcomes 投影的 found LIVENESS/PORT/SERVICE-FINGERPRINT；`coverage_denominator.authoritative=true` 不再要求手抄 denominator。主动 negative 终态仍需显式 `checked_empty+evidence` 或 `blocked/not_applicable+note`，直到 active Empty 事实源完全覆盖。
 - EAS 工具证据事实也在 `evidence_facts.rs` 派生：`httpx` / `nmap -sn` / `naabu` / `whatweb` 会映射到对应 `GOLISH-EAS-*` technique；`nmap` 的 DNS failure（stderr `Failed to resolve`）会成为 `error` terminal fact，避免同一 liveness gap 无限重试。
 - `external_attack_surface` 的 `stage_run_pass_token` claim 视为 Surface closeout 信号：它只在 orchestrator 按 per-org completion ledger 重算通过后才有效，避免 fan-out 阶段主 agent 只交 pass token 时被 `surface_coverage` 误拦；泛化的 `discovery` claim 仍不映射到 Surface。
+- fan-out 阶段的 pass-token closeout 必须按 scoping 绑定的 engagement root org subtree 核 `org_stage_completions`；只有没有 root 绑定时才允许 legacy 全库 org 口径。若 `operation_state.current_stage` 仍是该 fan-out stage，closeout 还必须要求 completion 晚于本次 `operation_state.stage_started_at`，防止旧 run 的 passed ledger 生成当前 stage 的 pass token。否则同一 embedded DB 里的 sibling/test org 或旧 completion 会把当前 operation 卡死。
+- `operation_continuity` 只做纯决策：输入 profile-projected DAG + `ContinuitySnapshot`，输出已 adopt 阶段、第一未满足 stage、remaining-stage allowlist。是否允许复用、是否询问用户、DB snapshot 怎么构建都在上层；不要把 DB 查询塞进 harness 纯模块。上层 continuity preflight 必须有 engagement root 才能把 scoping 标为 reusable。
 - stage tool whitelist 只约束真实扫描调用；`check_job` / `kill_job` / `list_jobs` / `wait_for_background_jobs` 是后台 job 控制面，必须 exempt，否则 submit barrier 报“后台任务仍在跑”后 worker 无法等待输出或检查明显卡死的 job。
 - 设计见 `docs/design/2026-05-26-*`；内层 harness 当前 deferred（见 AGENTS.md §6）。
 

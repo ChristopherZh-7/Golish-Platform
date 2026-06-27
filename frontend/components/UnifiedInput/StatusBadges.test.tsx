@@ -46,4 +46,14 @@ describe("BackgroundJobsBadge", () => {
     expect(button.className).toContain("text-[var(--ansi-blue)]");
     expect(button.className).toContain("border-[var(--ansi-blue)]/35");
   });
+
+  it("can reserve a stable header slot while no jobs are running", () => {
+    const { container } = render(<BackgroundJobsBadge jobs={[]} reserveSpace />);
+
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    const placeholder = container.querySelector('[aria-hidden="true"]');
+    expect(placeholder).toBeInTheDocument();
+    expect(placeholder?.className).toContain("invisible");
+    expect(placeholder?.className).toContain("w-[7.25rem]");
+  });
 });

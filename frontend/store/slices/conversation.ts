@@ -5,6 +5,7 @@
  * left-side terminal tabs. Each conversation "owns" a group of terminals.
  */
 
+import { suppressTerminalAutoFocus } from "@/lib/terminal/terminalAutoFocus";
 import type { SliceCreator } from "./types";
 
 /**
@@ -290,6 +291,7 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
         // 1:1 sync: switch center timeline to this conversation's terminal
         const terminals = state.conversationTerminals[convId];
         if (terminals && terminals.length > 0 && state.activeSessionId !== terminals[0]) {
+          suppressTerminalAutoFocus(terminals[0]);
           state.activeSessionId = terminals[0];
           // Update activation history
           if (state.tabActivationHistory) {
@@ -533,6 +535,9 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
   addTerminalToConversation: (convId, terminalId) =>
     set((state) => {
       // 1:1 model: each conversation has exactly one terminal
+      if (state.activeConversationId === convId) {
+        suppressTerminalAutoFocus(terminalId);
+      }
       state.conversationTerminals[convId] = [terminalId];
     }),
 

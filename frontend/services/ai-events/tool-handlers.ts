@@ -448,8 +448,15 @@ export const handleAskHumanRequest: EventHandler<{
 
   state.setPendingAskHuman(ctx.sessionId, {
     requestId: event.request_id,
+    sessionId: event.session_id || ctx.sessionId,
     question: event.question,
-    inputType: event.input_type as "credentials" | "choice" | "freetext" | "confirmation",
+    inputType: event.input_type as
+      | "credentials"
+      | "choice"
+      | "freetext"
+      | "confirmation"
+      | "scope_review"
+      | "unit_review",
     options: event.options ?? [],
     context: event.context ?? "",
   });

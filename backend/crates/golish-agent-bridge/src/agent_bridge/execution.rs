@@ -40,6 +40,23 @@ impl AgentBridge {
             .await
     }
 
+    /// Execute a text prompt while appending hidden, single-turn instructions to
+    /// the system prompt. UI events, sidecar capture, and conversation history
+    /// still record the original user prompt.
+    pub async fn execute_with_turn_instructions(
+        &self,
+        prompt: &str,
+        turn_instructions: &str,
+    ) -> Result<String> {
+        self.execute_with_context_inner(
+            prompt,
+            SubAgentContext::default(),
+            true,
+            Some(turn_instructions),
+        )
+        .await
+    }
+
     /// Execute a prompt in an isolated conversation context.
     ///
     /// Saves the current conversation history, runs the prompt with a fresh
@@ -56,7 +73,7 @@ impl AgentBridge {
         let subtask_ctx = SubAgentContext::default();
 
         let result = self
-            .execute_with_context_inner(prompt, subtask_ctx, false)
+            .execute_with_context_inner(prompt, subtask_ctx, false, None)
             .await;
 
         {
@@ -208,7 +225,8 @@ impl AgentBridge {
         prompt: &str,
         context: SubAgentContext,
     ) -> Result<String> {
-        self.execute_with_context_inner(prompt, context, true).await
+        self.execute_with_context_inner(prompt, context, true, None)
+            .await
     }
 
     async fn execute_with_context_inner(
@@ -216,6 +234,7 @@ impl AgentBridge {
         prompt: &str,
         context: SubAgentContext,
         reset_top_level_cancel: bool,
+        turn_instructions: Option<&str>,
     ) -> Result<String> {
         if context.depth >= MAX_AGENT_DEPTH {
             return Err(anyhow::anyhow!(
@@ -249,12 +268,12 @@ impl AgentBridge {
             vertex_anthropic(va) => {
                 let va = va.clone();
                 drop(client);
-                self.run_anthropic_thinking_turn(&va, prompt, start_time, context).await
+                self.run_anthropic_thinking_turn(&va, prompt, start_time, context, turn_instructions).await
             },
             generic(m) => {
                 let m = m.clone();
                 drop(client);
-                self.run_generic_turn(&m, prompt, start_time, context).await
+                self.run_generic_turn(&m, prompt, start_time, context, turn_instructions).await
             },
             mock => {
                 drop(client);
@@ -270,7 +289,13 @@ impl AgentBridge {
         // (GOLISH_LLM_FALLBACK_MODEL unset → this is a no-op, primary `result`
         // passes through unchanged).
         let result = self
-            .maybe_failover_to_fallback_model(result, prompt, start_time, failover_context)
+            .maybe_failover_to_fallback_model(
+                result,
+                prompt,
+                start_time,
+                failover_context,
+                turn_instructions,
+            )
             .await;
 
         // Emit error event on failure so every Started has a matching terminal
@@ -314,12 +339,14 @@ impl AgentBridge {
         initial_prompt: &str,
         start_time: std::time::Instant,
         context: SubAgentContext,
+        turn_instructions: Option<&str>,
     ) -> Result<String>
     where
         M: rig::completion::CompletionModel + Sync,
     {
-        let (system_prompt, initial_history, loop_event_tx) =
-            self.prepare_execution_context(initial_prompt).await;
+        let (system_prompt, initial_history, loop_event_tx) = self
+            .prepare_execution_context(initial_prompt, turn_instructions)
+            .await;
         let loop_ctx = self.build_loop_context(&loop_event_tx).await;
 
         let (accumulated_response, reasoning, final_history, token_usage) =
@@ -363,6 +390,7 @@ impl AgentBridge {
         prompt: &str,
         start_time: std::time::Instant,
         context: SubAgentContext,
+        turn_instructions: Option<&str>,
     ) -> Result<String> {
         let e = match result {
             Ok(v) => return Ok(v),
@@ -413,11 +441,11 @@ impl AgentBridge {
         golish_llm_providers::dispatch_llm_client_split!(&*fallback_client,
             vertex_anthropic(va) => {
                 let va = va.clone();
-                self.run_anthropic_thinking_turn(&va, prompt, start_time, context).await
+                self.run_anthropic_thinking_turn(&va, prompt, start_time, context, turn_instructions).await
             },
             generic(m) => {
                 let m = m.clone();
-                self.run_generic_turn(&m, prompt, start_time, context).await
+                self.run_generic_turn(&m, prompt, start_time, context, turn_instructions).await
             },
             mock => Err(anyhow::anyhow!(
                 "Fallback model resolved to a mock client - check GOLISH_LLM_FALLBACK_MODEL"
@@ -433,9 +461,11 @@ impl AgentBridge {
         initial_prompt: &str,
         start_time: std::time::Instant,
         context: SubAgentContext,
+        turn_instructions: Option<&str>,
     ) -> Result<String> {
-        let (system_prompt, initial_history, loop_event_tx) =
-            self.prepare_execution_context(initial_prompt).await;
+        let (system_prompt, initial_history, loop_event_tx) = self
+            .prepare_execution_context(initial_prompt, turn_instructions)
+            .await;
         let loop_ctx = self.build_loop_context(&loop_event_tx).await;
 
         // run_agentic_loop is the Anthropic-specific entry point with

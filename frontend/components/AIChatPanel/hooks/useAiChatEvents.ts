@@ -391,6 +391,9 @@ export function useAiChatEvents({
               });
               break;
             }
+            case "ask_human_response":
+              setAskHumanRequest(null);
+              break;
             case "workflow_started":
               setActiveWorkflow({
                 id: event.workflow_id,

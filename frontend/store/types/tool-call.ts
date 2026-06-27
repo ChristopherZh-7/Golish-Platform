@@ -43,8 +43,15 @@ export interface ActiveToolCall {
 
 export interface AskHumanRequest {
   requestId: string;
+  sessionId?: string;
   question: string;
-  inputType: "credentials" | "choice" | "freetext" | "confirmation";
+  inputType:
+    | "credentials"
+    | "choice"
+    | "freetext"
+    | "confirmation"
+    | "scope_review"
+    | "unit_review";
   options: string[];
   context: string;
 }

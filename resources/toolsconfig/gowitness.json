@@ -43,8 +43,8 @@
         "label": "File",
         "flag": "-f",
         "type": "string",
-        "description": "file mode: URLs file",
-        "placeholder": "urls.txt"
+        "description": "file mode: URLs file. With pentest_run, use {{input_file}} plus input_lines for batch screenshots.",
+        "placeholder": "{{input_file}}"
       },
       {
         "label": "CIDR",
@@ -142,7 +142,7 @@
         "id": "bulk-file",
         "name": "Bulk from file",
         "description": "Screenshot all URLs in a file",
-        "args": "file -f {{urls}} -t 8",
+        "args": "file -f {{input_file}} -t 8",
         "tags": ["bulk"]
       },
       {
@@ -170,7 +170,7 @@
         "id": "ignore-ssl",
         "name": "Capture self-signed sites",
         "description": "Skip SSL cert verify",
-        "args": "file -f {{urls}} --ignore-cert-errors",
+        "args": "file -f {{input_file}} --ignore-cert-errors",
         "tags": ["bulk", "ssl"]
       }
     ],

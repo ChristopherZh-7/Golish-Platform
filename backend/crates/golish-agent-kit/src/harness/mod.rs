@@ -42,6 +42,7 @@ pub mod graph_engine;
 pub mod guardrail;
 pub mod intent_classifier;
 pub mod nl_slice;
+pub mod operation_continuity;
 pub mod operation_flow;
 pub mod operation_graph;
 pub mod operation_mermaid;
@@ -76,6 +77,10 @@ pub use gate::{
 };
 pub use intent_classifier::{IntentClassifier, IntentClassifierConfig};
 pub use nl_slice::NlSlice;
+pub use operation_continuity::{
+    plan_adoption_cursor, ContinuityAdoptionPlan, ContinuityDecision, ContinuitySnapshot,
+    StageReuseStatus, StageReuseSummary,
+};
 pub use operation_graph::{
     base_operation_graph, load_operation_graph_from_json, AllowedDag, OperationGraph,
     OperationGraphError, StageEdge,

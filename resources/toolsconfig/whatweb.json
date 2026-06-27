@@ -23,8 +23,15 @@
         "flag": "",
         "type": "string",
         "required": true,
-        "description": "Target URL or host (positional). Accepts comma-separated list or /24 range.",
+        "description": "Single target URL or host (positional). For batches prefer --input-file={{input_file}} with pentest_run.input_lines.",
         "placeholder": "https://target.com"
+      },
+      {
+        "label": "Input File",
+        "flag": "--input-file",
+        "type": "string",
+        "description": "File with URLs/hosts to fingerprint in one batch",
+        "placeholder": "{{input_file}}"
       },
       {
         "label": "Aggression",
@@ -94,6 +101,13 @@
         "description": "Structured fingerprint output for downstream parsing",
         "args": "-a 1 --log-json=whatweb.json {{target}}",
         "tags": ["recon", "structured"]
+      },
+      {
+        "id": "batch-stealth-fingerprint",
+        "name": "Batch Stealth Fingerprint",
+        "description": "Single-request technology fingerprint for a URL/host list",
+        "args": "-a 1 --input-file={{input_file}} --max-threads 25",
+        "tags": ["recon", "fast", "bulk"]
       }
     ],
     "output": {

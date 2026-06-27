@@ -126,6 +126,12 @@ pub struct BridgeToolSelection {
     /// calls this to begin the structured multi-stage planner. Task-primary
     /// (depth 0) only; never exposed in chat or to subtask specialists.
     pub start_operation: bool,
+    /// Background job control-plane tools. These do not widen a stage's scan
+    /// boundary; they let the agent wait for, inspect, or cancel jobs it already
+    /// launched when submit reports pending background work.
+    pub wait_for_background_jobs: bool,
+    pub check_job: bool,
+    pub kill_job: bool,
 }
 
 impl BridgeToolSelection {
@@ -148,6 +154,9 @@ impl BridgeToolSelection {
             // generic "all bridge tools" set so chat mode never exposes it.
             submit_stage_deliverable: false,
             start_operation: false,
+            wait_for_background_jobs: true,
+            check_job: true,
+            kill_job: true,
         }
     }
 
@@ -168,6 +177,9 @@ impl BridgeToolSelection {
             auth_probe: false,
             submit_stage_deliverable: false,
             start_operation: false,
+            wait_for_background_jobs: false,
+            check_job: false,
+            kill_job: false,
         }
     }
 
@@ -219,6 +231,15 @@ impl BridgeToolSelection {
         }
         if self.start_operation {
             out.push("start_operation");
+        }
+        if self.wait_for_background_jobs {
+            out.push("wait_for_background_jobs");
+        }
+        if self.check_job {
+            out.push("check_job");
+        }
+        if self.kill_job {
+            out.push("kill_job");
         }
         out
     }
@@ -297,6 +318,9 @@ mod tests {
                 "js_collect",
                 "js_extract_apis",
                 "auth_probe",
+                "wait_for_background_jobs",
+                "check_job",
+                "kill_job",
             ]
         );
     }

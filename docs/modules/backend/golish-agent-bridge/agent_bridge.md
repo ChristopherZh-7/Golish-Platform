@@ -24,6 +24,7 @@
 | `AgentBridge` | 桥接主体 |
 | `BridgeBackends` | 后端装配束 |
 | `constructors`（`new` / `with_*`） | 构造 impl |
+| `execute_with_turn_instructions` | 单 turn 隐藏 system instruction 注入；UI events / sidecar / history 仍记录原始用户 prompt |
 | `BridgeEventBus` / `BridgeLlmConfig` / `BridgeServices` / `BridgeAccessControl` / `BridgeSession` | 5 子系统 |
 
 ## 关键文件
@@ -41,6 +42,8 @@
 
 - 5 子系统是有意分解（隔离关注点）；加字段先想归哪个子系统，别全堆顶层。
 - 事件经 `BridgeEventBus` → coordinator（单任务）发射；别绕过 coordinator 直发。
+- `prepare.rs` 渲染 prompt 时，Task/Profile 的 lead turn（`harness_active_stage=None`）不应告诉模型有 sub-agent dispatch；只有真正进入 harness stage 后才把 sub-agent 能力写进 prompt。否则 lead turn 会被提示去走不存在的 stage/sub-agent 工具面。
+- `execute_with_turn_instructions` 只把本 turn 附加说明拼进 system prompt；`AiEvent::UserMessage`、sidecar capture、conversation history 都必须继续使用原始 prompt。Task/Profile lead policy 走这里，避免把控制指令显示成用户消息。
 - `prepare.rs` 按 `GOLISH_RUNTIME_SUPERVISOR`（兼容旧 `GOLISH_EXECUTION_MENTOR`）给 runtime 注入 `ExecutionMonitor`：默认 hard RuntimeSupervisor（`just dev` 直接启用），`shadow` 只记录结构化决策，`soft`/`on` 注入策略指令，`off`/`false`/`0` 关闭。这个默认会增加额外 LLM 调用，改默认值必须有明确产品理由。
 
 ## 测试入口

@@ -91,6 +91,11 @@ pub struct TaskOrchestrator {
     /// 阶段裁到一段切片 (`scoping..=to` 或 `{only}`)——切片终点无后继 → 跑完即
     /// Complete 停下. `None` (默认 / GUI 正常 run) = 用整张 profile DAG, 行为不变.
     pub(super) stage_allowlist: Option<std::collections::HashSet<crate::harness::StageKind>>,
+    /// Cross-session adoption plan selected by the user before this new
+    /// operation starts. When present, `run()` starts at `entry_stage` and
+    /// restricts the DAG to `remaining_stages`, so previously satisfied stages
+    /// are skipped deterministically instead of being prompt-only context.
+    pub(super) continuity_adoption: Option<crate::harness::ContinuityAdoptionPlan>,
 }
 
 impl TaskOrchestrator {
@@ -114,6 +119,7 @@ impl TaskOrchestrator {
             chat_session_id: None,
             approval_coordinator: None,
             stage_allowlist: None,
+            continuity_adoption: None,
         }
     }
 
@@ -169,14 +175,31 @@ impl TaskOrchestrator {
         self.stage_allowlist = allowlist;
     }
 
+    /// Apply a user-confirmed cross-session adoption plan before a fresh
+    /// operation starts. The plan is ignored by `resume()`, which always resumes
+    /// the original operation checkpoint.
+    pub fn set_continuity_adoption(
+        &mut self,
+        plan: Option<crate::harness::ContinuityAdoptionPlan>,
+    ) {
+        self.continuity_adoption = plan;
+    }
+
     /// Run a full Task mode execution.
     ///
     /// This is the top-level entry point, equivalent to PentAGI's
     /// `NewTaskWorker + tw.Run()`. The operation cursor starts at the DAG entry
     /// (`scoping`).
     pub async fn run(&mut self, task_input: &str, executor: &dyn AgentExecutor) -> Result<String> {
-        self.run_from_stage(task_input, executor, crate::harness::StageKind::Scoping)
-            .await
+        let entry_stage = if let Some(plan) = self.continuity_adoption.as_ref() {
+            if self.stage_allowlist.is_none() {
+                self.stage_allowlist = Some(plan.remaining_stages.iter().copied().collect());
+            }
+            plan.entry_stage
+        } else {
+            crate::harness::StageKind::Scoping
+        };
+        self.run_from_stage(task_input, executor, entry_stage).await
     }
 
     /// 方案 2 · headless single/range stage run: start a fresh operation whose
@@ -257,6 +280,17 @@ impl TaskOrchestrator {
             status: "running".to_string(),
             message: "Generating subtasks...".to_string(),
         });
+        if let Some(plan) = self.continuity_adoption.as_ref() {
+            self.emit(AiEvent::TaskProgress {
+                task_id: task.id.to_string(),
+                status: "running".to_string(),
+                message: format!(
+                    "Reusing DB-backed progress for {} stage(s); continuing at {}.",
+                    plan.adopted_stages.len(),
+                    plan.entry_stage.as_str()
+                ),
+            });
+        }
 
         // A1 · lazy per-stage planning: the harness Executor plans each stage on
         // entry (see run_stage_subtasks), so do NOT pre-generate a flat whole-run
@@ -357,6 +391,7 @@ impl TaskOrchestrator {
                     current_stage_run_id: Some(run_id),
                     queue_titles: queue.iter().map(|p| p.title.clone()).collect(),
                     completed_count: 0,
+                    continuity_adoption: self.continuity_adoption.clone(),
                     schema_v: 1,
                 };
                 let _ = crate::db_shim::operation_state::write_state_blob(

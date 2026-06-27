@@ -54,7 +54,7 @@
 ## 注意事项 / 坑
 
 - 跨 IPC 的类型若在此定义，必须 `#[derive(ts_rs::TS)]` 同步前端（不变量 I5）。
-- `agent_session.rs` 的 task-local attribution 是 best-effort：只对 inline awaited work 生效，启动后台 job 时要立即 capture，不能等到 spawned task 里再读。
+- `agent_session.rs` 的 task-local attribution 是 best-effort：只对 inline awaited work 生效，启动后台 job 时要立即 capture，不能等到 spawned task 里再读。`AgentToolContext.organization_id` 承载当前 harness org，后台 completion 用它把结构化扫描结果和 coverage outcome 写回正确 org。
 - 改动牵一发动全身：优先在子模块内部小改，避免改公共 `pub` 签名。
 
 ## 测试入口

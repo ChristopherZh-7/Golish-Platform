@@ -37,37 +37,57 @@ pub async fn list_by_session(pool: &PgPool, session_id: Uuid) -> Result<Vec<Tool
     Ok(rows)
 }
 
-/// Parse the org UUID a `manage_organizations(action="create")` call reported on
-/// success. The tool returns `{"action":"create","id":"<uuid>",...}` on success
+/// Parse the org UUID(s) a `manage_organizations(action="create"/"create_batch")`
+/// call reported on success. The single-create tool returns
+/// `{"action":"create","id":"<uuid>",...}` on success
 /// and `{"error":...}` on failure — and it **swallows** DB errors (e.g. a
 /// duplicate-name unique-constraint hit) into an `Ok({"error":...})` body, so the
 /// recorded `result` payload — NOT the tool_call `status` (always `finished`) —
-/// is the only reliable success signal. Returns `None` for a failed/garbage
+/// is the only reliable success signal. Returns an empty list for a failed/garbage
 /// result so a mere create *attempt* never counts as an actual creation.
-fn org_id_from_create_result(result: &str) -> Option<Uuid> {
-    let v: serde_json::Value = serde_json::from_str(result).ok()?;
+fn org_ids_from_create_result(result: &str) -> Vec<Uuid> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(result) else {
+        return Vec::new();
+    };
     if v.get("error").is_some() {
-        return None;
+        return Vec::new();
     }
-    v.get("id")
+    if let Some(id) = v
+        .get("id")
         .and_then(|x| x.as_str())
         .and_then(|s| s.parse().ok())
+    {
+        return vec![id];
+    }
+
+    let mut ids = Vec::new();
+    for key in ["created", "existing"] {
+        let Some(items) = v.get(key).and_then(|x| x.as_array()) else {
+            continue;
+        };
+        ids.extend(items.iter().filter_map(|item| {
+            item.get("id")
+                .and_then(|x| x.as_str())
+                .and_then(|s| s.parse::<Uuid>().ok())
+        }));
+    }
+    ids
 }
 
 /// For the red_team scoping gate: cross-verify (against real recorded tool calls
 /// AND the resulting DB state) whether this session actually performed the
-/// unit-candidate + organization-creation flow rather than just asserting a
-/// claim or merely *attempting* a create.
+/// unit-candidate review flow rather than just asserting a claim or merely
+/// *attempting* a create.
 ///
 /// Returns `(total_calls, unit_review_invoked, organization_created)`:
 /// - `total_calls` lets the caller FAIL OPEN when `0` (tracking disabled / no
 ///   calls recorded), never blocking on infra absence.
 /// - `unit_review_invoked`: a `ask_human(input_type="unit_review")` call exists.
-/// - `organization_created`: a `manage_organizations(action="create")` call this
-///   session reported a real org id for, AND that org row actually exists in
-///   `organizations` now. A swallowed duplicate-key failure (no id in the
-///   result) or a since-deleted row ⇒ `false`, so a failed create can no longer
-///   pass the gate (AGENTS.md I7/I8: "attempted" ≠ "actually recorded").
+/// - `organization_created`: a `manage_organizations(action="create"/"create_batch")`
+///   call this session reported a real org id for, AND that org row actually
+///   exists in `organizations` now. A swallowed duplicate-key failure (no id in
+///   the result) or a since-deleted row ⇒ `false`, so a failed create can no
+///   longer pass the gate (AGENTS.md I7/I8: "attempted" ≠ "actually recorded").
 pub async fn scoping_actions_for_session(
     pool: &PgPool,
     session_id: Uuid,
@@ -90,7 +110,7 @@ pub async fn scoping_actions_for_session(
         r#"SELECT result FROM tool_calls
            WHERE session_id = $1
              AND name = 'manage_organizations'
-             AND args->>'action' = 'create'"#,
+             AND args->>'action' IN ('create', 'create_batch')"#,
     )
     .bind(session_id)
     .fetch_all(pool)
@@ -98,7 +118,11 @@ pub async fn scoping_actions_for_session(
 
     let created_ids: Vec<Uuid> = create_results
         .iter()
-        .filter_map(|(r,)| r.as_deref().and_then(org_id_from_create_result))
+        .flat_map(|(r,)| {
+            r.as_deref()
+                .map(org_ids_from_create_result)
+                .unwrap_or_default()
+        })
         .collect();
 
     // "查 organizations 表": a reported id only counts if the row truly exists.
@@ -186,7 +210,7 @@ pub struct ToolCallStats {
 
 #[cfg(test)]
 mod tests {
-    use super::org_id_from_create_result;
+    use super::org_ids_from_create_result;
 
     /// A successful `manage_organizations(action="create")` result carries a real
     /// `id` ⇒ that's the org the gate must confirm exists.
@@ -194,7 +218,25 @@ mod tests {
     fn create_result_yields_id_on_success() {
         let id = uuid::Uuid::new_v4();
         let r = format!(r#"{{"action":"create","id":"{id}","name":"ACME Corp"}}"#);
-        assert_eq!(org_id_from_create_result(&r), Some(id));
+        assert_eq!(org_ids_from_create_result(&r), vec![id]);
+    }
+
+    /// `create_batch` is the recommended way to record multiple confirmed
+    /// subsidiaries; both newly-created and already-existing rows count as real
+    /// organization records for the scoping audit.
+    #[test]
+    fn create_batch_result_yields_created_and_existing_ids() {
+        let created = uuid::Uuid::new_v4();
+        let existing = uuid::Uuid::new_v4();
+        let r = format!(
+            r#"{{
+                "action":"create_batch",
+                "created":[{{"id":"{created}","name":"New Unit"}}],
+                "existing":[{{"id":"{existing}","name":"Existing Unit"}}],
+                "failed":[]
+            }}"#
+        );
+        assert_eq!(org_ids_from_create_result(&r), vec![created, existing]);
     }
 
     /// The tool swallows DB errors (e.g. duplicate root-org name) into an
@@ -204,22 +246,19 @@ mod tests {
     fn create_result_is_none_on_swallowed_error() {
         let r =
             r#"{"error":"duplicate key value violates unique constraint \"uq_orgs_root_name\""}"#;
-        assert_eq!(org_id_from_create_result(r), None);
+        assert!(org_ids_from_create_result(r).is_empty());
     }
 
     /// Defensive: missing id, a non-uuid id, and non-JSON garbage all yield None
     /// rather than a false positive.
     #[test]
     fn create_result_is_none_on_missing_or_garbage_id() {
-        assert_eq!(org_id_from_create_result(r#"{"action":"create"}"#), None);
-        assert_eq!(
-            org_id_from_create_result(r#"{"action":"create","id":"not-a-uuid"}"#),
-            None
-        );
-        assert_eq!(org_id_from_create_result("not json at all"), None);
+        assert!(org_ids_from_create_result(r#"{"action":"create"}"#).is_empty());
+        assert!(org_ids_from_create_result(r#"{"action":"create","id":"not-a-uuid"}"#).is_empty());
+        assert!(org_ids_from_create_result("not json at all").is_empty());
         // An `id` present alongside an `error` still counts as a failure.
         let id = uuid::Uuid::new_v4();
         let r = format!(r#"{{"id":"{id}","error":"boom"}}"#);
-        assert_eq!(org_id_from_create_result(&r), None);
+        assert!(org_ids_from_create_result(&r).is_empty());
     }
 }

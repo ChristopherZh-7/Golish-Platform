@@ -23,8 +23,15 @@
         "flag": "",
         "type": "string",
         "required": true,
-        "description": "IPs, CIDR, or ranges (comma-separated)",
+        "description": "Single IPs, CIDR, or ranges (comma-separated). For EAS batches prefer -iL {{input_file}} with pentest_run.input_lines.",
         "placeholder": "10.0.0.0/8,192.168.0.0/16"
+      },
+      {
+        "label": "Targets List",
+        "flag": "-iL",
+        "type": "string",
+        "description": "File with IPs/CIDRs/ranges to scan in one batch (one per line)",
+        "placeholder": "{{input_file}}"
       },
       {
         "label": "Ports",
@@ -135,6 +142,13 @@
         "tags": ["recon"]
       },
       {
+        "id": "batch-common-ports",
+        "name": "Batch common ports sweep",
+        "description": "Top web ports across a list of IPs/CIDRs/ranges at a safe rate",
+        "args": "-iL {{input_file}} -p 80,443,8080,8443,22,3389 --rate 1000",
+        "tags": ["recon", "bulk"]
+      },
+      {
         "id": "all-tcp",
         "name": "All TCP ports (single host)",
         "description": "Full 65535 TCP scan for one host",
@@ -168,6 +182,13 @@
         "description": "Two-stage: masscan discovery → nmap version detect",
         "args": "{{cidr}} -p 1-65535 --rate 10000 -oG masscan.gnmap",
         "tags": ["pipeline"]
+      },
+      {
+        "id": "batch-feed-nmap",
+        "name": "Batch discover then nmap deep",
+        "description": "Two-stage batch discovery across an input list, then nmap version detect",
+        "args": "-iL {{input_file}} -p 1-65535 --rate 5000",
+        "tags": ["pipeline", "bulk"]
       }
     ],
     "output": {

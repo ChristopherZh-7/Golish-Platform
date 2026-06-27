@@ -100,6 +100,45 @@ pub fn completion_is_fresh(passed_at: DateTime<Utc>, now: DateTime<Utc>, ttl_sec
     now.signed_duration_since(passed_at).num_seconds() <= ttl_secs
 }
 
+/// A stage completion is usable for the current operation only if it is fresh
+/// within the TTL and, when the operation has a stage-start anchor, was written
+/// after that stage began. This prevents a new operation from short-circuiting
+/// its workers using an older run's `org_stage_completions` rows while the
+/// current gate still expects current-run evidence/source rows.
+pub fn completion_is_fresh_for_stage(
+    passed_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+    ttl_secs: i64,
+    not_before: Option<DateTime<Utc>>,
+) -> bool {
+    if let Some(floor) = not_before {
+        if passed_at < floor {
+            return false;
+        }
+    }
+    completion_is_fresh(passed_at, now, ttl_secs)
+}
+
+/// Pick the org axis used by fan-out pass-token generation and closeout
+/// verification. Once scoping binds an engagement root, only that root's
+/// subtree belongs to this operation; sibling orgs elsewhere in the DB must not
+/// participate in token generation or block closeout.
+///
+/// `engagement_subtree_ids = None` is only used when there is no bound root; a
+/// bound root with an unreadable/empty subtree remains empty so callers
+/// fail-closed instead of falling back to the whole DB.
+pub fn fanout_completion_scope_ids(
+    engagement_root: Option<Uuid>,
+    engagement_subtree_ids: Option<Vec<Uuid>>,
+    legacy_in_scope_ids: Vec<Uuid>,
+) -> Vec<Uuid> {
+    if engagement_root.is_some() {
+        engagement_subtree_ids.unwrap_or_default()
+    } else {
+        legacy_in_scope_ids
+    }
+}
+
 /// 对 (stage, 全 org 的 PASS 行) 算确定性摘要令牌。**规范化**：org 行按 org_id 升序、用账本
 /// 里的 `passed_at` 微秒时间戳入摘要，保证 stage_run 端与 gate 端对同一张账本态算出同一串。
 /// 空行集 → 空串（调用方按「无 PASS」处理）。
@@ -357,6 +396,45 @@ mod tests {
     }
 
     #[test]
+    fn fanout_completion_scope_uses_engagement_subtree_when_bound() {
+        let root = Uuid::from_u128(1);
+        let child = Uuid::from_u128(2);
+        let sibling = Uuid::from_u128(3);
+
+        assert_eq!(
+            fanout_completion_scope_ids(
+                Some(root),
+                Some(vec![root, child]),
+                vec![root, child, sibling]
+            ),
+            vec![root, child],
+            "bound operations must not let sibling orgs from the whole DB block closeout"
+        );
+    }
+
+    #[test]
+    fn fanout_completion_scope_is_fail_closed_when_bound_subtree_missing() {
+        let root = Uuid::from_u128(1);
+        let sibling = Uuid::from_u128(3);
+
+        assert!(fanout_completion_scope_ids(Some(root), None, vec![root, sibling]).is_empty());
+        assert!(
+            fanout_completion_scope_ids(Some(root), Some(vec![]), vec![root, sibling]).is_empty()
+        );
+    }
+
+    #[test]
+    fn fanout_completion_scope_keeps_legacy_axis_without_root_binding() {
+        let root = Uuid::from_u128(1);
+        let sibling = Uuid::from_u128(3);
+
+        assert_eq!(
+            fanout_completion_scope_ids(None, Some(vec![root]), vec![root, sibling]),
+            vec![root, sibling]
+        );
+    }
+
+    #[test]
     fn extract_pass_token_reads_reserved_claim_trimmed() {
         use crate::harness::types::StageClaim;
         let d = StageDeliverable {
@@ -426,6 +504,32 @@ mod tests {
             now + chrono::Duration::hours(1),
             now,
             ttl
+        ));
+    }
+
+    #[test]
+    fn completion_fresh_for_stage_respects_stage_start_floor() {
+        let now = Utc::now();
+        let floor = now - chrono::Duration::minutes(10);
+        let ttl = STAGE_COMPLETION_TTL_SECS;
+
+        assert!(!completion_is_fresh_for_stage(
+            now - chrono::Duration::hours(1),
+            now,
+            ttl,
+            Some(floor)
+        ));
+        assert!(completion_is_fresh_for_stage(
+            now - chrono::Duration::minutes(5),
+            now,
+            ttl,
+            Some(floor)
+        ));
+        assert!(completion_is_fresh_for_stage(
+            now - chrono::Duration::hours(1),
+            now,
+            ttl,
+            None
         ));
     }
 }

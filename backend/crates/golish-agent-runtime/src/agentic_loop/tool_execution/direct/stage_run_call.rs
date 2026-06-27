@@ -21,13 +21,16 @@
 //! shared harness side-channels / conversation history / cancel flag); K-
 //! concurrency via `JoinSet` is a follow-up that keeps the per-org isolation.
 
+use std::collections::{HashMap, HashSet};
+
 use anyhow::Result;
 use rig::completion::CompletionModel as RigCompletionModel;
 use serde_json::{json, Value};
 
+use golish_agent_kit::db_traits::OrgScopeUnit;
 use golish_agent_kit::harness::org_gate::{
-    completion_is_fresh, decide_org_verdict, stage_pass_token, STAGE_COMPLETION_TTL_SECS,
-    STAGE_RUN_PASS_TOKEN_KIND,
+    completion_is_fresh_for_stage, decide_org_verdict, fanout_completion_scope_ids,
+    stage_pass_token, STAGE_COMPLETION_TTL_SECS, STAGE_RUN_PASS_TOKEN_KIND,
 };
 use golish_agent_kit::harness::{
     allowed_tool_names, evaluate_org_stage_gate, load_embedded_stage_spec, stage_methodology_md,
@@ -50,6 +53,7 @@ use super::super::super::{AgenticLoopContext, ToolExecutionResult};
 use super::sub_agent_call::execute_sub_agent_call;
 
 /// One per-org unit the fan-out runs the stage specialist against.
+#[derive(Debug, Clone, PartialEq)]
 struct OrgUnit {
     id: String,
     name: String,
@@ -87,6 +91,51 @@ fn parse_org_units(args: &Value) -> Vec<OrgUnit> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn org_unit_from_scope_unit(unit: OrgScopeUnit) -> OrgUnit {
+    OrgUnit {
+        id: unit.id.to_string(),
+        name: if unit.name.trim().is_empty() {
+            unit.id.to_string()
+        } else {
+            unit.name
+        },
+        ownership_percent: None,
+    }
+}
+
+fn merge_with_authoritative_subtree(
+    requested: Vec<OrgUnit>,
+    authoritative: Vec<OrgUnit>,
+) -> (Vec<OrgUnit>, Vec<String>, Vec<String>) {
+    let requested_by_id: HashMap<String, OrgUnit> = requested
+        .iter()
+        .cloned()
+        .map(|unit| (unit.id.clone(), unit))
+        .collect();
+    let authoritative_ids: HashSet<String> =
+        authoritative.iter().map(|unit| unit.id.clone()).collect();
+    let rejected = requested
+        .iter()
+        .filter(|unit| !authoritative_ids.contains(&unit.id))
+        .map(|unit| unit.name.clone())
+        .collect::<Vec<_>>();
+
+    let mut added = Vec::new();
+    let mut merged = Vec::with_capacity(authoritative.len());
+    for mut unit in authoritative {
+        match requested_by_id.get(&unit.id) {
+            Some(requested) => {
+                if unit.ownership_percent.is_none() {
+                    unit.ownership_percent = requested.ownership_percent;
+                }
+            }
+            None => added.push(unit.name.clone()),
+        }
+        merged.push(unit);
+    }
+    (merged, added, rejected)
 }
 
 /// Title-case a stage id for display: `target_intel` → `Target Intel`.
@@ -243,14 +292,43 @@ async fn resume_skip_passed_at(
     ctx: &AgenticLoopContext<'_>,
     stage: StageKind,
     unit: &OrgUnit,
+    not_before: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
     let tracker = ctx.events.db_tracker?;
     let org_id = uuid::Uuid::parse_str(&unit.id).ok()?;
     let passed_at = tracker
         .recent_org_stage_completion(org_id, stage.as_str())
         .await?;
-    completion_is_fresh(passed_at, chrono::Utc::now(), STAGE_COMPLETION_TTL_SECS)
-        .then_some(passed_at)
+    resume_skip_is_allowed(passed_at, chrono::Utc::now(), not_before).then_some(passed_at)
+}
+
+fn resume_skip_is_allowed(
+    passed_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+    not_before: Option<chrono::DateTime<chrono::Utc>>,
+) -> bool {
+    completion_is_fresh_for_stage(passed_at, now, STAGE_COMPLETION_TTL_SECS, not_before)
+}
+
+fn active_stage_skip_floor_from_state(
+    state: &golish_agent_kit::db_traits::OperationStateView,
+    stage: StageKind,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    (StageKind::try_parse(&state.current_stage) == Some(stage)).then_some(state.stage_started_at)
+}
+
+async fn active_stage_skip_floor(
+    ctx: &AgenticLoopContext<'_>,
+    stage: StageKind,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let tracker = ctx.events.db_tracker?;
+    let repo = tracker.repo()?;
+    let operation_id = stage_run_operation_id(ctx)?;
+    let state = golish_agent_kit::db_shim::operation_state::get(repo, operation_id)
+        .await
+        .ok()
+        .flatten()?;
+    active_stage_skip_floor_from_state(&state, stage)
 }
 
 fn parse_sub_agent_session_id(response: &str) -> Option<uuid::Uuid> {
@@ -747,8 +825,69 @@ where
     let role_label = role_label_for(&specialist);
     let coverage_axis = spec.coverage_axis.clone();
 
-    // 2. Per-org units (from the engagement org tree the agent built in scoping).
+    // 2. Per-org units. The model still passes `orgs` as a convenient hint, but
+    // once scoping has bound an engagement root the DB org subtree is the
+    // authoritative fan-out set. Continuation/repair turns are especially prone
+    // to reconstructing an incomplete org list from memory; `stage_run` must not
+    // let that silently skip a subsidiary and all of its assets.
     let mut units = parse_org_units(tool_args);
+    let requested_org_count = units.len();
+    let mut scope_source = "tool_args".to_string();
+    let mut auto_added_orgs: Vec<String> = Vec::new();
+    let mut rejected_orgs: Vec<String> = Vec::new();
+
+    // 2b. Engagement-org isolation (设计 2026-06-15-engagement-org-isolation):
+    // confine AND complete the fan-out to the scoping-confirmed root org's
+    // subtree (root + subsidiaries). Drop requested orgs outside it and add any
+    // DB subtree orgs the model omitted.
+    if let Some(root) = ctx.harness_org_id {
+        if let Some(repo) = ctx.events.db_tracker.and_then(|t| t.repo()) {
+            match repo.org_subtree_units(root).await {
+                Ok(authoritative) if !authoritative.is_empty() => {
+                    let before = units.len();
+                    let authoritative = authoritative
+                        .into_iter()
+                        .map(org_unit_from_scope_unit)
+                        .collect();
+                    let (merged, added, rejected) =
+                        merge_with_authoritative_subtree(units, authoritative);
+                    units = merged;
+                    auto_added_orgs = added;
+                    rejected_orgs = rejected;
+                    scope_source = "engagement_org_subtree".to_string();
+                    if !rejected_orgs.is_empty() {
+                        tracing::warn!(
+                            target: "harness::stage_run",
+                            root_org = %root,
+                            rejected = ?rejected_orgs,
+                            "stage_run dropped {}/{} requested org(s) outside the engagement org subtree",
+                            rejected_orgs.len(),
+                            before
+                        );
+                    }
+                    if !auto_added_orgs.is_empty() {
+                        tracing::info!(
+                            target: "harness::stage_run",
+                            root_org = %root,
+                            requested_orgs = before,
+                            total_orgs = units.len(),
+                            auto_added = ?auto_added_orgs,
+                            "stage_run filled missing requested org(s) from the engagement org subtree"
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        target: "harness::stage_run",
+                        root_org = %root,
+                        error = %error,
+                        "stage_run could not read engagement org subtree; falling back to requested orgs"
+                    );
+                }
+            }
+        }
+    }
     if units.is_empty() {
         return Ok(ToolExecutionResult {
             value: json!({
@@ -761,64 +900,21 @@ where
         });
     }
 
-    // 2b. Engagement-org isolation (设计 2026-06-15-engagement-org-isolation):
-    // confine the fan-out to the scoping-confirmed root org's subtree (root +
-    // subsidiaries). Drop any requested org outside it — a sibling engagement's
-    // org left in the same workspace (the "测 example 串成平安" bug) must never
-    // get a specialist dispatched against it. Enforced only when a root org is
-    // bound AND its subtree is readable; otherwise fail-open to legacy behavior
-    // (test doubles / no-DB return an empty subtree → no confinement).
-    if let Some(root) = ctx.harness_org_id {
-        if let Some(repo) = ctx.events.db_tracker.and_then(|t| t.repo()) {
-            let allowed: std::collections::HashSet<uuid::Uuid> = repo
-                .org_subtree_ids(root)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
-            if !allowed.is_empty() {
-                let before = units.len();
-                let mut rejected: Vec<String> = Vec::new();
-                units.retain(|u| match uuid::Uuid::parse_str(&u.id) {
-                    Ok(id) if allowed.contains(&id) => true,
-                    _ => {
-                        rejected.push(u.name.clone());
-                        false
-                    }
-                });
-                if !rejected.is_empty() {
-                    tracing::warn!(
-                        target: "harness::stage_run",
-                        root_org = %root,
-                        rejected = ?rejected,
-                        "stage_run dropped {}/{} org(s) outside the engagement org subtree",
-                        rejected.len(),
-                        before
-                    );
-                }
-                if units.is_empty() {
-                    return Ok(ToolExecutionResult {
-                        value: json!({
-                            "error": format!(
-                                "None of the requested organizations are within this engagement's \
-                                 scope (root org {root} plus its subsidiaries). Rejected: {rejected:?}. \
-                                 Pass only orgs from THIS engagement's scoping-confirmed org tree."
-                            ),
-                            "passed": false
-                        }),
-                        success: false,
-                    });
-                }
-            }
-        }
-    }
-
     // 3. Serial fan-out: dispatch the specialist sub-agent once per org. Serial
     //    (not parallel) because sibling runs share this bridge's harness side-
     //    channels + conversation history; K-concurrency is a safe follow-up.
     let sub_agent_tool = format!("sub_agent_{specialist}");
     let mut gaps: Vec<Value> = Vec::new();
     let mut passed_count = 0usize;
+    let resume_skip_not_before = active_stage_skip_floor(ctx, stage).await;
+    if let Some(floor) = resume_skip_not_before {
+        tracing::info!(
+            target: "harness::stage_run",
+            stage = %stage.as_str(),
+            stage_started_at = %floor,
+            "stage_run constrained resume-skip to completions from the current active stage"
+        );
+    }
 
     // Seed EVERY org as a queued row up-front so the UI's covered/total denominator
     // reflects the FULL fan-out immediately. Without this, serial execution emits
@@ -852,9 +948,13 @@ where
 
         // Resume-skip: if this org already passed THIS stage within the TTL
         // window, count it covered and DON'T re-dispatch the specialist — the
-        // fix for "为什么还带着已完成的 org 重新跑 / 很多操作重复做". Fail-open
-        // (no db_tracker / unparseable id / stale row → run; see helper).
-        if let Some(passed_at) = resume_skip_passed_at(ctx, stage, unit).await {
+        // fix for "为什么还带着已完成的 org 重新跑 / 很多操作重复做". In a
+        // new operation/current active stage, old completions are not enough:
+        // the current gate still needs evidence/source rows for this stage, so
+        // only completions written after this stage started may skip.
+        if let Some(passed_at) =
+            resume_skip_passed_at(ctx, stage, unit, resume_skip_not_before).await
+        {
             clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
             passed_count += 1;
             emit_org_progress(
@@ -1153,7 +1253,40 @@ where
     let pass_token: Option<String> = if passed {
         match ctx.events.db_tracker.and_then(|t| t.repo()) {
             Some(repo) => {
-                let org_ids = repo.in_scope_org_ids(None).await.unwrap_or_default();
+                let engagement_subtree_ids = if let Some(root) = ctx.harness_org_id {
+                    match repo.org_subtree_ids(root).await {
+                        Ok(ids) if !ids.is_empty() => Some(ids),
+                        Ok(_) => {
+                            tracing::warn!(
+                                target: "harness::stage_run",
+                                root_org = %root,
+                                "stage_run pass-token could not resolve engagement org subtree"
+                            );
+                            Some(vec![])
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "harness::stage_run",
+                                root_org = %root,
+                                error = %error,
+                                "stage_run pass-token org-subtree lookup failed"
+                            );
+                            Some(vec![])
+                        }
+                    }
+                } else {
+                    None
+                };
+                let legacy_org_ids = if ctx.harness_org_id.is_none() {
+                    repo.in_scope_org_ids(None).await.unwrap_or_default()
+                } else {
+                    vec![]
+                };
+                let org_ids = fanout_completion_scope_ids(
+                    ctx.harness_org_id,
+                    engagement_subtree_ids,
+                    legacy_org_ids,
+                );
                 if org_ids.is_empty() {
                     None
                 } else {
@@ -1163,7 +1296,14 @@ where
                         .await
                         .unwrap_or_default()
                         .into_iter()
-                        .filter(|(_, at)| completion_is_fresh(*at, now, STAGE_COMPLETION_TTL_SECS))
+                        .filter(|(_, at)| {
+                            completion_is_fresh_for_stage(
+                                *at,
+                                now,
+                                STAGE_COMPLETION_TTL_SECS,
+                                resume_skip_not_before,
+                            )
+                        })
                         .collect();
                     let have: std::collections::HashSet<uuid::Uuid> =
                         fresh.iter().map(|(o, _)| *o).collect();
@@ -1202,14 +1342,24 @@ where
             token
         ));
     }
+    if !auto_added_orgs.is_empty() {
+        summary.push_str(&format!(
+            " — auto-filled {} missing org(s) from the engagement tree",
+            auto_added_orgs.len()
+        ));
+    }
 
     Ok(ToolExecutionResult {
         value: json!({
             "passed": passed,
             "stage": stage.as_str(),
             "specialist": specialist,
+            "scope_source": scope_source,
+            "requested_orgs": requested_org_count,
             "total_orgs": units.len(),
             "passed_orgs": passed_count,
+            "auto_added_orgs": auto_added_orgs,
+            "rejected_orgs": rejected_orgs,
             "gaps": gaps,
             "summary": summary,
             "pass_token": pass_token,
@@ -1230,9 +1380,11 @@ pub fn stage_run_tool_definition() -> rig::completion::ToolDefinition {
                       target_intel) out, one run per org, each isolated and gated on its own \
                       evidence. Call this once you are inside a stage that has a per-org \
                       specialist, instead of dispatching sub_agent_* per org yourself. Pass the \
-                      organization tree you built during scoping. Returns { passed, gaps[] }: if \
-                      not passed, call stage_run again with `orgs` set to ONLY the blocked org(s) \
-                      to close the gap."
+                      organization tree you built during scoping; when an engagement root is \
+                      bound, the runtime expands this to the full DB-backed root subtree so \
+                      continuation turns cannot omit subsidiaries. Returns { passed, gaps[] }: if \
+                      not passed, call stage_run again; the runtime still checks the full bound \
+                      engagement tree and resumes/skips already-passed orgs."
             .to_string(),
         parameters: json!({
             "type": "object",
@@ -1265,6 +1417,7 @@ pub fn stage_run_tool_definition() -> rig::completion::ToolDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use golish_agent_kit::harness::org_gate::completion_is_fresh;
     use golish_agent_kit::harness::CoverageGapAction;
 
     #[test]
@@ -1288,6 +1441,57 @@ mod tests {
         assert!(parse_org_units(&json!({})).is_empty());
         let args = json!({ "orgs": [ { "id": "  ", "name": "x" }, { "name": "no id" } ] });
         assert!(parse_org_units(&args).is_empty());
+    }
+
+    #[test]
+    fn authoritative_subtree_fills_missing_requested_orgs() {
+        let requested = vec![
+            OrgUnit {
+                id: "root".to_string(),
+                name: "Root from model".to_string(),
+                ownership_percent: None,
+            },
+            OrgUnit {
+                id: "child-a".to_string(),
+                name: "Child A from model".to_string(),
+                ownership_percent: Some(100.0),
+            },
+            OrgUnit {
+                id: "outside".to_string(),
+                name: "Outside Org".to_string(),
+                ownership_percent: None,
+            },
+        ];
+        let authoritative = vec![
+            OrgUnit {
+                id: "root".to_string(),
+                name: "Root".to_string(),
+                ownership_percent: None,
+            },
+            OrgUnit {
+                id: "child-a".to_string(),
+                name: "Child A".to_string(),
+                ownership_percent: None,
+            },
+            OrgUnit {
+                id: "child-b".to_string(),
+                name: "Child B".to_string(),
+                ownership_percent: None,
+            },
+        ];
+
+        let (merged, added, rejected) = merge_with_authoritative_subtree(requested, authoritative);
+
+        assert_eq!(
+            merged
+                .iter()
+                .map(|unit| unit.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["root", "child-a", "child-b"]
+        );
+        assert_eq!(merged[1].ownership_percent, Some(100.0));
+        assert_eq!(added, vec!["Child B"]);
+        assert_eq!(rejected, vec!["Outside Org"]);
     }
 
     #[test]
@@ -1374,6 +1578,49 @@ mod tests {
             now,
             ttl
         ));
+    }
+
+    #[test]
+    fn resume_skip_floor_blocks_prior_continuity_completion() {
+        let now = chrono::Utc::now();
+        let floor = now - chrono::Duration::minutes(10);
+
+        assert!(
+            !resume_skip_is_allowed(now - chrono::Duration::hours(1), now, Some(floor)),
+            "a new active stage must not skip from old stage completions"
+        );
+        assert!(resume_skip_is_allowed(
+            now - chrono::Duration::minutes(5),
+            now,
+            Some(floor)
+        ));
+        assert!(resume_skip_is_allowed(
+            now - chrono::Duration::hours(1),
+            now,
+            None
+        ));
+    }
+
+    #[test]
+    fn active_stage_skip_floor_uses_current_operation_stage() {
+        let floor = chrono::Utc::now();
+        let state = golish_agent_kit::db_traits::OperationStateView {
+            operation_id: uuid::Uuid::new_v4(),
+            profile: "assessment".to_string(),
+            current_stage: "target_intel".to_string(),
+            engagement_org_id: None,
+            state_blob: json!({}),
+            stage_started_at: floor,
+        };
+
+        assert_eq!(
+            active_stage_skip_floor_from_state(&state, StageKind::TargetIntel),
+            Some(floor)
+        );
+        assert_eq!(
+            active_stage_skip_floor_from_state(&state, StageKind::ExternalAttackSurface),
+            None
+        );
     }
 
     #[test]

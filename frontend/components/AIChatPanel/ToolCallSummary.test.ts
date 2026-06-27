@@ -13,6 +13,21 @@ describe("toolResultIsFailure", () => {
     expect(toolResultIsFailure('{"status":"killed"}')).toBe(true);
   });
 
+  it("does not treat a partial provider survey as failed because one nested provider failed", () => {
+    expect(
+      toolResultIsFailure(
+        JSON.stringify({
+          status: "partial",
+          action: "map_assets",
+          providerStatus: [
+            { providerId: "0.zone", status: "failed", message: "HTTP 502" },
+            { providerId: "quake", status: "completed", message: "normalized 419 record(s)" },
+          ],
+        })
+      )
+    ).toBe(false);
+  });
+
   it("flags stderr ERROR output even when the process exit code is zero", () => {
     expect(
       toolResultIsFailure(

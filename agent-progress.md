@@ -29,6 +29,745 @@
 
 ---
 
+### 2026-06-28 · pentest_run 工具卡摘要降噪修复
+
+- **本轮目标**：回应用户截图里卡片显示 `Running Nmap nmap -sV -iL [input file] ...`，标题和后缀重复、后缀命令过长的问题。
+- **根因**：
+  - 上一轮把标题从 raw tool id 改成动作文案后，`pentest_run` 的参数摘要仍然返回完整 `<tool> <args>` 命令串；因此标题 `Running Nmap` 后面又出现 `nmap ...`。
+  - `SubAgentDetailView` 的 coverage 维度推断之前间接依赖摘要里出现 `-sV`；如果直接把命令串从摘要里删掉，需要让推断显式读取 raw args/action label，避免 SERVICE 维度丢失或误判。
+- **已完成**：
+  - `frontend/lib/tools.ts`：`getToolActionLabel("pentest_run")` 改成意图文案：`nmap -sV` → `Probing services`，`naabu/masscan` → `Scanning ports`，`httpx` → `Checking web services`，`whatweb` → `Fingerprinting web services` 等。
+  - `frontend/lib/tools.ts`：`getToolPrimaryArg("pentest_run")` 不再返回完整原始命令；现在返回短上下文，例如 `Nmap · batch 3 targets (...) · ports 80,443,10180`、`Naabu · batch ... · top 1000 ports`。
+  - `frontend/components/ToolExecutionCard/ToolExecutionCard.tsx`：标题也接入 `getToolActionLabel`，和聊天卡 / sub-agent detail 保持一致。
+  - `frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`：coverage 维度推断显式看 action + raw args；隐藏 `-sV` 后仍能推断 SERVICE，同时 `Checking web services` 不会误判 SERVICE。
+  - `frontend/lib/tools.test.ts`、`frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts`：新增/更新回归，锁定 nmap service probe、naabu batch 摘要、coverage 推断。
+  - `docs/modules/frontend/{components,lib}.md`：同步模块卡，记录工具卡标题用动作文案、`pentest_run` 摘要避免 `Running Nmap nmap ...`。
+- **运行过的验证（实跑）**：
+  - `./node_modules/.bin/biome check --write frontend/lib/tools.ts frontend/lib/tools.test.ts frontend/components/AIChatPanel/ToolCallSummary.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/ToolExecutionCard/ToolExecutionCard.tsx` → exit 0。
+  - `./node_modules/.bin/vitest run frontend/lib/tools.test.ts frontend/components/AIChatPanel/ToolCallSummary.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 3 files / 66 tests passed。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+  - `git diff --check -- frontend/lib/tools.ts frontend/lib/tools.test.ts frontend/components/AIChatPanel/ToolCallSummary.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/ToolExecutionCard/ToolExecutionCard.tsx docs/modules/frontend/lib.md docs/modules/frontend/components.md` → exit 0。
+  - `just precommit` → exit 1；失败在 `fmt-fe` recipe。
+  - `pnpm exec biome check frontend/lib/tools.ts frontend/lib/tools.test.ts frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/ToolExecutionCard/ToolExecutionCard.tsx` → exit 1；底层在执行脚本前触发 `ERR_PNPM_IGNORED_BUILDS`（`@swc/core@1.15.21`、`electron@23.3.13`、`esbuild@0.25.12` 需要 `pnpm approve-builds`）。
+- **未跑/未通过**：全量 `just precommit` 未绿，阻塞于既有 pnpm ignored-build approval gate；本轮已做 scoped 前端验证。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（工具卡摘要降噪 scope）**：`frontend/lib/tools.ts`、`frontend/lib/tools.test.ts`、`frontend/components/ToolExecutionCard/ToolExecutionCard.tsx`、`frontend/components/SubAgentDetailView/{SubAgentDetailView.tsx,stripAgentXmlTags.test.ts}`、`docs/modules/frontend/{components,lib}.md`、`agent-progress.md`。
+- **下一步建议**：刷新前端后，截图里的行应类似 `Probing services  Nmap · batch ... · ports 80,443,10180`，而不是 `Running Nmap nmap -sV -iL ...`。
+
+---
+
+### 2026-06-28 · 工具卡片人类动作文案修复
+
+- **本轮目标**：回应用户反馈工具卡片直接显示 `wait_for_background_jobs` 这类下划线内部名很难受，希望像 Cursor 一样显示“正在做什么”。
+- **根因**：
+  - 聊天流工具卡和 pending approval 卡片头部直接或间接展示内部 tool id；`SubAgentDetailView` 折叠工具行更是直接渲染 `tool.name`。
+  - `getToolPrimaryArg` 只负责参数摘要（如 timeout / command），没有单独的人类动作文案层，导致“工具是什么”和“正在做什么”混在一起。
+- **已完成**：
+  - `frontend/lib/tools.ts`：新增 `getToolActionLabel`，把内部 tool id 转成动作句子；例如 `wait_for_background_jobs` → `Waiting for background jobs`，`pentest_run` + `tool_name=whatweb` → `Running WhatWeb`，未知工具也 fallback 为 `Using Custom Internal Tool` 而不是露下划线。
+  - `frontend/components/AIChatPanel/ToolCallSummary.tsx`：聊天工具卡和 pending approval 卡头部改用 `getToolActionLabel`；raw tool id 只放在 `title` 里用于 hover/debug。
+  - `frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`：sub-agent detail 折叠工具行头部改用动作文案，参数摘要继续显示在后面（如 `wait up to 180s`）。
+  - `docs/modules/frontend/{components,lib}.md`：同步模块卡，记录折叠工具卡不直接展示 `snake_case` tool id。
+- **运行过的验证（实跑）**：
+  - `./node_modules/.bin/biome check --write frontend/lib/tools.ts frontend/lib/tools.test.ts frontend/components/AIChatPanel/ToolCallSummary.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx` → exit 0（fixed 1 file）。
+  - `./node_modules/.bin/vitest run frontend/lib/tools.test.ts frontend/components/AIChatPanel/ToolCallSummary.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 3 files / 63 tests passed。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+  - `git diff --check -- frontend/lib/tools.ts frontend/lib/tools.test.ts frontend/components/AIChatPanel/ToolCallSummary.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx docs/modules/frontend/lib.md docs/modules/frontend/components.md` → exit 0。
+  - `just precommit` → exit 1；失败在 `fmt-fe` recipe。
+  - `pnpm exec biome check frontend/lib/tools.ts frontend/lib/tools.test.ts frontend/components/AIChatPanel/ToolCallSummary.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx` → exit 1；底层在执行脚本前触发 `ERR_PNPM_IGNORED_BUILDS`（`@swc/core@1.15.21`、`electron@23.3.13`、`esbuild@0.25.12` 需要 `pnpm approve-builds`）。
+- **未跑/未通过**：全量 `just precommit` 未绿，阻塞于既有 pnpm ignored-build approval gate；本轮已做 scoped 前端验证。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（工具卡动作文案 scope）**：`frontend/lib/tools.ts`、`frontend/lib/tools.test.ts`、`frontend/components/AIChatPanel/ToolCallSummary.tsx`、`frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`、`docs/modules/frontend/{components,lib}.md`、`agent-progress.md`。
+- **下一步建议**：刷新前端后，工具卡标题应显示类似 `Waiting for background jobs` / `Running WhatWeb`，下一行或旁边再显示 `wait up to 180s` / batch targets 等参数摘要；不应再把 `wait_for_background_jobs` 作为卡片主标题。
+
+---
+
+### 2026-06-28 · wait_for_background_jobs 折叠摘要修复
+
+- **本轮目标**：回应用户截图里 `wait_for_background_jobs` 不展开时看不到等待秒数，并确认 `timeout_secs` 的来源。
+- **结论 / 根因**：
+  - 后端 `WaitForBackgroundJobsTool` 的 `timeout_secs` 是可选参数；不传时默认 `DEFAULT_WAIT_BACKGROUND_JOBS_TIMEOUT_MS=300_000`（300s），最大 900s。
+  - 截图里的 `timeout_secs: 180` 是模型本次实际传入的参数，不是前端默认值；前端之前只在展开 Input 后显示完整 args，折叠摘要没有 `wait_for_background_jobs` 分支。
+- **已完成**：
+  - `frontend/lib/tools.ts`：`getToolPrimaryArg("wait_for_background_jobs", args)` 现在返回折叠态摘要：传参时显示 `wait up to 180s`，未传时显示 `default wait up to 300s`，自定义 `poll_interval_ms` 时追加 `poll ...ms`。
+  - `frontend/lib/tools.test.ts`：新增 3 个回归，锁定显式 timeout、默认 timeout、poll interval 的折叠摘要。
+  - `docs/modules/frontend/lib.md`：同步模块卡，记录 `wait_for_background_jobs` 折叠态必须显示实际 timeout / 默认 300s。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → exit 1；Step 2 `just install` / `pnpm install --silent` 失败（本机 pnpm install gate：`ERR_PNPM_IGNORED_BUILDS`）。
+  - `./node_modules/.bin/biome check --write frontend/lib/tools.ts frontend/lib/tools.test.ts` → exit 0。
+  - `./node_modules/.bin/vitest run frontend/lib/tools.test.ts` → 1 file / 11 tests passed。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+  - `git diff --check -- frontend/lib/tools.ts frontend/lib/tools.test.ts docs/modules/frontend/lib.md` → exit 0。
+  - `just precommit` → exit 1；失败在 `fmt-fe` recipe。
+  - `just fmt-fe` / `just check-fe` / `just test-fe` → exit 1；just 包装层只输出 recipe failure。
+  - `pnpm exec biome check frontend/lib/tools.ts frontend/lib/tools.test.ts` / `pnpm test:run frontend/lib/tools.test.ts` → exit 1；底层均在执行脚本前触发 `ERR_PNPM_IGNORED_BUILDS`（`@swc/core@1.15.21`、`electron@23.3.13`、`esbuild@0.25.12` 需要 `pnpm approve-builds`）。
+- **未跑/未通过**：全量 `just precommit` 未绿，阻塞于既有 pnpm ignored-build approval gate；本轮已做 scoped 前端验证。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（wait 折叠摘要 scope）**：`frontend/lib/tools.ts`、`frontend/lib/tools.test.ts`、`docs/modules/frontend/lib.md`、`agent-progress.md`。
+- **下一步建议**：刷新前端后，`wait_for_background_jobs` 折叠行应显示 `wait up to 180s`；若模型没传 timeout，则显示 `default wait up to 300s`，方便直接判断是模型自填还是默认。
+
+---
+
+### 2026-06-28 · EAS 批量扫描 coverage 落库与 live 匹配修复
+
+- **本轮目标**：回应用户截图里 EAS 资产覆盖显示 `naabu -list [input file] ... | batch 226 targets` 正在跑，但覆盖面板显示 `0 组 / 0 资产`，并且“扫描完了提交过不了”的问题。
+- **根因**：
+  - 最新 Test1 run 的 submit gate 明确因为 EAS coverage incomplete BLOCK：仍有大量 `(asset × LIVENESS/PORT/SERVICE-FINGERPRINT)` 格子是 never attempted；这不是单纯前端显示问题。
+  - 前端 `SubAgentDetailView` 的 live work 匹配只看命令文本/单目标参数，没读 `pentest_run.input_lines` / `stdin`；批量命令里目标都在输入文件/批量参数中，所以 UI 只能显示“运行中但尚未匹配到资产行”。
+  - 后台 job completion 之前只拿 8KB `stdout_tail` 做 structured output 解析；批量 `naabu` / `whatweb` 这类长输出可能已经 append evidence，但完整结果没有写回 targets/ports/fingerprints，coverage truth 仍缺。
+  - `naabu -silent` 对无开放端口资产是零输出；旧逻辑没把 input file 中“扫过但无结果”的 host/IP 写入 `technique_outcomes`，gate 会把它们当 never attempted，而不是 checked-empty。
+- **已完成**：
+  - `frontend/lib/tools.ts` 导出 `getPentestRunInputLines`；`SubAgentDetailView` live coverage 资产提取复用它，能从 `pentest_run.input_lines` / `stdin` 展开批量资产。
+  - `backend/crates/golish-core/src/agent_session.rs` 的 `AgentToolContext` 增加 `organization_id`；主 agent 用 `harness_org_id`，sub-agent 用 `active_org_id_override`，后台 job completion 继承该 org。
+  - `background_jobs::JobCompletion` 增加 `organization_id`；`bridge_config.rs` 的后台 structured landing 优先读取 `background_jobs::manager().snapshot(job_id).stdout`，fallback completion tail，并调用 `maybe_detect_and_store_via_context` 带 org context。
+  - `bridge_config.rs` 对成功完成的 `naabu -list` / `masscan -iL` 批量端口扫描读取 input file，把每个非 CIDR host/IP 的 `GOLISH-EAS-PORT` outcome 写入 `technique_outcomes`：有开放端口 `found`，无开放端口 `empty`。
+  - 同步模块卡：`docs/modules/frontend/{components,lib}.md`、`docs/modules/backend/{golish-core.md,golish-app-core.md,golish-agent-app/ai.md,golish-agent-runtime/agentic_loop.md,golish-sub-agents/executor.md}`。
+- **运行过的验证（实跑）**：
+  - `./node_modules/.bin/biome check frontend/lib/tools.ts frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0。
+  - `./node_modules/.bin/vitest run frontend/lib/tools.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 2 files / 49 tests passed。
+  - `cd backend && cargo fmt -p golish-core -p golish-app-core -p golish-agent-runtime -p golish-sub-agents -p golish-agent-app` → exit 0。
+  - `cd backend && cargo nextest run -p golish-app-core background_jobs --status-level fail` → 13 passed / 31 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app bridge_config --status-level fail` → 9 passed / 80 skipped。
+  - `cd backend && cargo check -p golish-core -p golish-app-core -p golish-agent-runtime -p golish-sub-agents -p golish-agent-app` → exit 0。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+- **未跑**：`just precommit`（本工作区已有大量未提交跨模块改动，且前序记录显示 `./init.sh`/pnpm install 被 ignored-build approval gate 阻断；本轮做 scoped 前后端验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（EAS batch coverage landing scope）**：`frontend/lib/tools.ts`、`frontend/components/SubAgentDetailView/{SubAgentDetailView.tsx,stripAgentXmlTags.test.ts}`、`backend/crates/golish-core/src/agent_session.rs`、`backend/crates/golish-app-core/src/background_jobs.rs`、`backend/crates/golish-agent-runtime/src/agentic_loop/single_tool_call.rs`、`backend/crates/golish-sub-agents/src/executor/response_parsing.rs`、`backend/crates/golish-agent-app/src/ai/commands/bridge_config.rs`、上述模块卡、`agent-progress.md`。
+- **下一步建议**：重启 app 后重新跑/继续 EAS；正在运行的 `naabu -list [input file]` 应能在资产覆盖里匹配到批量资产，后台完成后 PORT 的 found/empty outcome 会落入 `technique_outcomes`。SERVICE-FINGERPRINT 对“无开放端口”的 not_applicable 仍依赖 gate/submit 语义后续扩展或模型自报 note，不在本轮 DB 投影里伪造。
+
+---
+
+### 2026-06-28 · pentest_run 批量输入摘要修复
+
+- **本轮目标**：回应用户截图里 `naabu -list {{input_file}} -top-ports 1000 -s c -silent` 连续显示 4 次，解释是否重复执行，并修掉 UI 摘要误导。
+- **根因**：
+  - 最新 Test1 transcript 里 4 次 `naabu` 并不是同一批目标：`input_lines` 分别为 96 / 76 / 55 / 34 条；实际执行时后端也替换成了不同的 `.golish/tool-inputs/pentest-input-*.txt` 临时文件。
+  - 前端工具卡共用 `getToolPrimaryArg`，之前只显示 `tool_name + args`，没有显示 `input_lines` / `stdin`，所以所有 list-file 批量命令都看起来像同一条模板命令重复跑。
+- **已完成**：
+  - `frontend/lib/tools.ts`：`pentest_run` 摘要现在会统计 `input_lines` / `stdin`，显示 `batch N targets (first ... last)`；带批量输入时把 `{{input_file}}` / `{{targets_file}}` / `{{hosts_file}}` / `{{urls_file}}` / `{input_file}` / `$GOLISH_INPUT_FILE` 展示为 `[input file]`。
+  - `frontend/lib/tools.test.ts`：补 `naabu -list {{input_file}}` 和 `httpx stdin` 批量摘要回归。
+  - `docs/modules/frontend/lib.md`：同步模块卡，记录工具卡共享摘要入口的 batch 展示规则。
+- **运行过的验证（实跑）**：
+  - `./node_modules/.bin/biome check frontend/lib/tools.ts frontend/lib/tools.test.ts` → exit 0。
+  - `./node_modules/.bin/vitest run frontend/lib/tools.test.ts` → 1 file / 8 tests passed。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+  - `git diff --check -- frontend/lib/tools.ts frontend/lib/tools.test.ts docs/modules/frontend/lib.md agent-progress.md` → exit 0。
+- **未跑**：`just precommit`（本机 `./init.sh` / `pnpm install` 仍受 `ERR_PNPM_IGNORED_BUILDS` 策略阻断；本轮做 scoped 前端验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（工具卡批量摘要 scope）**：`frontend/lib/tools.ts`、`frontend/lib/tools.test.ts`、`docs/modules/frontend/lib.md`、`agent-progress.md`。
+- **下一步建议**：刷新前端后，同样的 `naabu` 批量卡应显示类似 `naabu -list [input file] ... | batch 96 targets (113.105.78.99 ... 120.233.149.95)`，不再误以为同一命令重复执行。
+
+---
+
+### 2026-06-28 · stage_run 续跑 org 子树补齐修复
+
+- **本轮目标**：回应用户指出的“继续逻辑有问题，有时 `stage_run` 总是少几个资产”，定位续跑/repair 阶段为什么漏部分 org/资产，并做 runtime 侧兜底。
+- **根因**：
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1782574914157-1 --full --db` 显示同一 run 中 `target_intel` 的 `stage_run` 入参有 12 个 org；后续 EAS continuation 的 `stage_run` 入参只有 10 个 org；repair 轮进一步只剩 6 个 org。
+  - 旧 `stage_run_call.rs` 在已绑定 `harness_org_id` 时只会把 subtree 外的 org 丢掉，但不会把模型少传的 subtree 内 org 补回来；续跑/修复轮一旦靠模型重建 `orgs` 数组，就会让部分子公司及其资产完全不进入 fan-out 分母。
+- **已完成**：
+  - `golish-agent-kit::db_traits` 新增 `OrgScopeUnit` 与 `org_subtree_units` trait，保留默认 fallback 给测试 double。
+  - `golish-db::repo::organizations::subtree` 新增 read-only recursive CTE，返回 root + descendants 完整 organization 行；无 schema / migration。
+  - `golish-agent-app` 的 DB bridge 通过 `organizations::subtree` 实现 `org_subtree_units`。
+  - `stage_run_call.rs` 在 `harness_org_id` 已绑定时以 DB organization subtree 作为权威 fan-out 集合：模型传入 `orgs` 只保留 ownership hint；缺失的 subtree org 会自动补回，subtree 外 org 会记录并拒绝；工具返回新增 `scope_source` / `requested_orgs` / `auto_added_orgs` / `rejected_orgs`。
+  - 同步模块卡：`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/backend/golish-agent-kit.md`、`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-db.md`；`docs/modules/INDEX.md` 状态仍为 ✅，无需状态列变更。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → exit 1；Step 2 `just install` / `pnpm install --silent` 失败（本机 pnpm install gate：`ERR_PNPM_IGNORED_BUILDS`）。
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1782574914157-1 --full --db > /tmp/golish-run-tree-1782574914157.txt` → exit 0；证据显示同 run 内 `stage_run` org 入参从 12 → 10 → 6。
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-db` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-runtime authoritative_subtree_fills_missing_requested_orgs --status-level fail` → 1 passed / 275 skipped。
+  - `cd backend && cargo check -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-db` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-runtime stage_run --status-level fail` → 28 passed / 248 skipped。
+  - `cd backend && cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-db --all-targets -- -D warnings` → exit 0。
+  - `python3 -m json.tool feature_list.json >/dev/null` → exit 0。
+  - `git diff --check -- <本轮相关文件>` → exit 0。
+- **未跑**：`just precommit`（`./init.sh` 已在 pnpm install/build approval gate 阶段失败；本轮做 scoped Rust/JSON/doc 验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（stage_run 续跑 org 子树补齐 scope）**：`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`、`backend/crates/golish-agent-kit/src/db_traits/repo.rs`、`backend/crates/golish-agent-app/src/ai/db_bridge/{mod.rs,recon.rs}`、`backend/crates/golish-db/src/repo/organizations.rs`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/backend/golish-agent-kit.md`、`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-db.md`、`feature_list.json`、`agent-progress.md`。
+- **下一步建议**：重启 app 后用同一个 Test1 engagement 继续跑 EAS；观察 `stage_run` tool result 的 `scope_source` 应为 `engagement_org_subtree`，`total_orgs` 应回到 DB root subtree 数量，即使模型只传 blocked org 或少传子公司，也会通过 `auto_added_orgs` 补齐。
+
+---
+
+### 2026-06-28 · EAS 批量探测路径修复
+
+- **本轮目标**：回应用户发现 EAS 阶段 `httpx` 等工具被模型一个个调用、没有利用工具批量能力的问题。
+- **根因**：
+  - EAS `methodology.md` 已写 `httpx` 应批量跑，但 prober fallback prompt、primary stage 描述和 StageRefiner coverage-gap repair hint 仍会把 gap 拆成 `httpx -u <asset>` / `naabu -host <asset>` / `nmap ... <asset>` 这类单资产提示。
+  - `resources/toolsconfig/httpx.json` 的 skills 推荐 `-json`，但 output config 仍是 `format=text`；批量 JSONL 输出可能出现“工具跑了但 parser 不解析、不落 targets/fingerprints”，导致 DB truth 缺口继续触发补洞。
+  - `naabu` / `nmap` toolsconfig 没显式暴露 `-list` / `-iL` 批量参数和 bulk skills，模型看不到一等批量入口。
+  - 更深一层：`pentest_run.args` 本来不是固定参数，但 `pentest_list_tools` 只把 `skills[].args` 暴露给模型，没暴露完整 `params`；同时 `pentest_run` 没有结构化 `stdin/input_lines`，导致模型即使想 batch 也很容易退化成一资产一调用。
+  - `naabu` / `masscan` / `nmap` / `whatweb` / `gowitness` 这类工具的批量入口多是 list-file 参数，不是纯 stdin；之前没有 `{{input_file}}` 这类运行期占位，AI 没法可靠创建 hosts.txt，仍会抄单目标 recipe。
+- **已完成**：
+  - `resources/toolsconfig/httpx.json`：改为 `output.format=json_lines`，补 JSONL fields 映射（`ip` 取 `a[0]`，避免把 IP 数组字符串写进 `real_ip`），并保留旧文本 pattern fallback；批量 skills 改为带 `-json -sc -title -td -server`。
+  - `resources/toolsconfig/naabu.json` / `nmap.json`：显式加入 `-list` / `-iL` 参数与 batch skills，batch skill 统一使用 `{{input_file}}`。
+  - `resources/toolsconfig/masscan.json` / `whatweb.json` / `gowitness.json`：补 list-file batch 参数与 bulk skills，覆盖 EAS 端口发现、Web 指纹、截图工具，不只修 `httpx`。
+  - `backend/crates/golish-pentest-app/src/pentest_ai/list_tools.rs`：`pentest_list_tools` 现在返回 `params`、`batching`、`usage_hint`，明确 skills 是示例 recipe，不是固定调用签名；bulk skills 会排在前面并带 `batch: true`。
+  - `backend/crates/golish-pentest-app/src/pentest_ai/run.rs`：`pentest_run` schema 增加 `stdin` / `input_lines`；无 `{{input_file}}` 时用 quoted heredoc 喂 stdin，有 `{{input_file}}` 时自动写 workspace `.golish/tool-inputs/` 临时目标文件并替换占位符，支撑 `naabu -list` / `masscan -iL` / `nmap -iL` / `whatweb --input-file` / `gowitness file -f`。
+  - `resources/harness/stages/external_attack_surface/methodology.md`、`backend/crates/golish-sub-agents/src/defaults/prompts/execution_planning.rs`、`backend/crates/golish-agent-kit/src/task_orchestrator/{prompts/mod.rs,subtask_phases/execute.rs}`：统一 EAS/prober 为 batch-first 口径，primary 通过 `stage_run` 扇出 prober，并明确 list-file 工具使用 `{{input_file}} + input_lines`。
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/stage_refiner.rs`：EAS coverage-gap directive 现在按 technique 聚合同类 gap，明确要求少量批量 `pentest_run`，并把 command hints 从单资产命令改成 batch hints。
+  - `backend/crates/golish-pentest/src/output_parser.rs`：新增回归测试，锁定真实 `resources/toolsconfig/httpx.json` 同时解析 JSONL 和旧文本 fallback。
+  - 同步模块卡：`docs/modules/backend/golish-agent-kit/task_orchestrator.md`、`docs/modules/backend/golish-sub-agents/defaults.md`、`docs/modules/backend/golish-pentest/output_store.md`、`docs/modules/backend/golish-pentest-app/pentest_ai.md`。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → exit 1；Step 2 `just install` / `pnpm install --silent` 失败（延续本机 pnpm install gate）。
+  - `python3 -m json.tool resources/toolsconfig/httpx.json` → exit 0。
+  - `python3 -m json.tool resources/toolsconfig/naabu.json` → exit 0。
+  - `python3 -m json.tool resources/toolsconfig/nmap.json` → exit 0。
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-sub-agents -p golish-pentest` → exit 0。
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-sub-agents -p golish-pentest -- --check` → exit 0。
+  - `cd backend && cargo nextest run -p golish-pentest test_httpx_toolsconfig_parses_jsonl_and_text_fallback --status-level fail` → 1 passed / 153 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest test_httpx_json_parse --status-level fail` → 1 passed / 153 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest test_httpx_toolsconfig_parses_jsonl_and_text_fallback test_httpx_json_parse --status-level fail` → 2 passed / 152 skipped（补充锁定 `ip=a[0]` 解析为单 IP）。
+  - `cd backend && cargo nextest run -p golish-agent-kit eas_coverage_gap_instruction_is_batch_first --status-level fail` → 1 passed / 759 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit external_attack_surface_charter_surfaces_liveness_technique --status-level fail` → 1 passed / 759 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents test_prober_prompt_is_active_surface --status-level fail` → 1 passed / 108 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest-app list_tools_exposes_params_and_batching_not_only_skills input_lines_become_stdin_payload stdin_payload_wraps_command_in_quoted_heredoc heredoc_delimiter_avoids_payload_collision --status-level fail` → 4 passed / 87 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest-app list_tools_exposes_params_and_batching_not_only_skills input_lines_become_stdin_payload stdin_payload_wraps_command_in_quoted_heredoc heredoc_delimiter_avoids_payload_collision input_file_placeholder_writes_target_file input_without_file_placeholder_uses_stdin shell_quote_handles_single_quotes --status-level fail` → 7 passed / 87 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest-app list_tools_exposes_params_and_batching_not_only_skills --status-level fail` → 1 passed / 93 skipped（锁定 bulk skills 排序 + `batch` 标记）。
+  - `cd backend && cargo nextest run -p golish-agent-kit eas_coverage_gap_instruction_is_batch_first external_attack_surface_charter_surfaces_liveness_technique --status-level fail && cargo nextest run -p golish-sub-agents test_prober_prompt_is_active_surface --status-level fail` → 3 tests passed（锁定 `naabu` / `nmap` / `whatweb` / `gowitness` 的 `{{input_file}}` 批量提示）。
+  - `cd backend && cargo check -p golish-pentest -p golish-agent-kit -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo clippy -p golish-pentest -p golish-agent-kit -p golish-sub-agents --all-targets -- -D warnings` → exit 0。
+  - `cd backend && cargo check -p golish-pentest-app -p golish-pentest -p golish-agent-kit -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo clippy -p golish-pentest-app -p golish-pentest -p golish-agent-kit -p golish-sub-agents --all-targets -- -D warnings` → exit 0。
+  - `cd backend && cargo fmt -p golish-pentest-app -p golish-agent-kit -p golish-sub-agents -p golish-pentest -- --check` → exit 0。
+  - `python3 -m json.tool resources/toolsconfig/httpx.json >/dev/null && python3 -m json.tool resources/toolsconfig/naabu.json >/dev/null && python3 -m json.tool resources/toolsconfig/nmap.json >/dev/null && python3 -m json.tool feature_list.json >/dev/null` → exit 0。
+  - `python3 -m json.tool resources/toolsconfig/httpx.json >/dev/null && python3 -m json.tool resources/toolsconfig/naabu.json >/dev/null && python3 -m json.tool resources/toolsconfig/nmap.json >/dev/null && python3 -m json.tool resources/toolsconfig/masscan.json >/dev/null && python3 -m json.tool resources/toolsconfig/whatweb.json >/dev/null && python3 -m json.tool resources/toolsconfig/gowitness.json >/dev/null && python3 -m json.tool feature_list.json >/dev/null` → exit 0。
+  - `rg -n "{{hosts}}|{{urls}}|-host {{target}}|{{input_file}}" resources/toolsconfig/{httpx,naabu,nmap,masscan,whatweb,gowitness}.json backend/crates/golish-sub-agents/src/defaults/prompts/execution_planning.rs backend/crates/golish-agent-kit/src/task_orchestrator/stage_refiner.rs resources/harness/stages/external_attack_surface/methodology.md` → 只剩单目标 skills 仍含 `-host {{target}}`，所有 batch skills/prompt 均使用 `{{input_file}}`。
+  - `git diff --check -- <本轮相关文件>` → exit 0。
+- **未跑**：`just precommit`（`./init.sh` 仍在 pnpm install gate 失败；本轮做 scoped Rust/JSON 验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（EAS 批量探测 scope）**：`backend/crates/golish-agent-kit/src/task_orchestrator/{prompts/mod.rs,stage_refiner.rs,subtask_phases/execute.rs}`、`backend/crates/golish-pentest-app/src/pentest_ai/{list_tools.rs,run.rs}`、`backend/crates/golish-pentest/src/output_parser.rs`、`backend/crates/golish-sub-agents/src/defaults/{prompts/execution_planning.rs,tests.rs}`、`resources/toolsconfig/{httpx,naabu,nmap,masscan,whatweb,gowitness}.json`、`resources/harness/stages/external_attack_surface/methodology.md`、`docs/modules/backend/golish-agent-kit/task_orchestrator.md`、`docs/modules/backend/golish-pentest/output_store.md`、`docs/modules/backend/golish-pentest-app/pentest_ai.md`、`docs/modules/backend/golish-sub-agents/defaults.md`、`agent-progress.md`、`feature_list.json`。
+- **下一步建议**：重启 app 后重新跑 EAS；观察 prober 是否先调用 `pentest_list_tools` 读取 `params/batching`，再用少量 `pentest_run(args=..., input_lines=[...])`：`httpx` 可 stdin/`-l {{input_file}}`，`naabu` 用 `-list {{input_file}}`，`masscan`/`nmap` 用 `-iL {{input_file}}`，`whatweb` 用 `--input-file={{input_file}}`，`gowitness` 用 `file -f {{input_file}}`。
+
+---
+
+### 2026-06-28 · 资产覆盖运行态页面跳动修复
+
+- **本轮目标**：回应用户截图里完整资产覆盖页运行时顶部/当前资产区域一直跳动、刷新感很强的问题。
+- **根因**：
+  - `StageAssetCoveragePanel` 之前只在 live work 全部清空时短暂保留上一帧；如果运行中的 work item 切换、事件批次短暂漏掉某个 item，active slice 会立即缩小/扩大，导致「正在做的资产」区域频繁重排。
+  - 资产覆盖 summary chips、live count、顶部运行状态条和外层 panel header 的计数都依赖内容宽高自适应；running badge / 数字出现消失时会推动同一行元素位置，看起来像整块在刷新。
+- **已完成**：
+  - `frontend/components/Engagement/StageAssetCoveragePanel.tsx`：新增 `mergeDisplayLiveWorkItems`，运行中 work 切换时按 id 合并 incoming + 上一帧 display，并用 `LIVE_WORK_RETENTION_MS=3500` 延迟裁剪消失的 item；短暂轮询空隙不再让 active rows 立刻闪空或换位。
+  - 同文件把完整矩阵 header、`LiveFocusBar`、panel/collapsible header 的 summary/live chips 改成固定高度 / 最小宽度 / `tabular-nums` 槽位；live count 为 0 时保留 invisible 槽，避免右侧 `Live` / summary 位置左右跳。
+  - `frontend/components/Engagement/StageAssetCoveragePanel.test.tsx`：新增回归，锁定 live work 从资产 A 切到资产 B 时短窗口内保留 A+B，窗口后再裁剪旧资产；更新旧保留窗口测试使用导出的常量。
+  - `docs/modules/frontend/components.md`：同步模块卡，记录完整资产覆盖页运行态必须保留上一帧 active slice 并使用固定槽位。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → exit 1；Step 2 `just install` / `pnpm install --silent` 失败（本机 pnpm install gate 延续既有环境问题）。
+  - `./node_modules/.bin/biome check --write frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx` → exit 0。
+  - `./node_modules/.bin/biome check frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx` → exit 0。
+  - `./node_modules/.bin/vitest run frontend/components/Engagement/StageAssetCoveragePanel.test.tsx` → 1 file / 13 tests passed。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+  - `git diff --check -- frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx` → exit 0。
+- **未跑**：`just precommit` / `just check-fe` / `just test-fe`（本机 pnpm wrapper 当前被 `ERR_PNPM_IGNORED_BUILDS` 阻断：`@swc/core@1.15.21`、`electron@23.3.13`、`esbuild@0.25.12` 需要 `pnpm approve-builds`；本轮做 scoped 前端验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（资产覆盖跳动修复 scope）**：`frontend/components/Engagement/StageAssetCoveragePanel.tsx`、`frontend/components/Engagement/StageAssetCoveragePanel.test.tsx`、`docs/modules/frontend/components.md`、`agent-progress.md`。
+- **下一步建议**：刷新前端后进入 EAS 资产覆盖完整矩阵，运行中顶部 `15/332 done` / live count / `Live` 和下方「正在做的资产」区域应只更新内容，不再反复挤动整块布局。
+
+---
+
+### 2026-06-28 · ask_human Confirm 后卡片残留修复
+
+- **本轮目标**：回应用户截图里进入 `external_attack_surface` 后，阶段边界 `AI Needs Your Input` 点 Confirm 仍残留的问题。
+- **根因**：
+  - `AIChatPanel` 同时渲染 hook 本地 `askHumanRequest` 和全局 `pendingAskHuman` store 兜底；同一个 `ask_human_request` 可能同时被 hook 和 app-level AI event pipeline 记录。
+  - 点 Confirm 走本地 hook 分支时只清了本地态，没有同步清 store；下一帧 `visibleAskHumanRequest` 又从 store 兜底拿到同一 `requestId`，所以卡片看起来“确认了还有”。
+- **已完成**：
+  - 新增 `frontend/components/AIChatPanel/askHumanStore.ts`，按 `requestId` 清理同一 ask_human 请求在 AI session / terminal session / conversation key 下的 store 副本；不会误清同 session 上更晚的新 prompt。
+  - `frontend/components/AIChatPanel/AIChatPanel.tsx` 的 Confirm / Skip 两条路径都在 finally 里清理匹配的 store 副本；store-only 兜底路径仍直接响应对应 session。
+  - 补 `frontend/components/AIChatPanel/askHumanStore.test.ts` 回归；同步 `docs/modules/frontend/components.md` 模块卡。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → exit 1；Step 2 `just install` / `pnpm install --silent` 失败（本机 pnpm install gate 延续既有环境问题）。
+  - `./node_modules/.bin/biome check --write frontend/components/AIChatPanel/AIChatPanel.tsx frontend/components/AIChatPanel/askHumanStore.ts frontend/components/AIChatPanel/askHumanStore.test.ts` → exit 0。
+  - `./node_modules/.bin/biome check frontend/components/AIChatPanel/AIChatPanel.tsx frontend/components/AIChatPanel/askHumanStore.ts frontend/components/AIChatPanel/askHumanStore.test.ts` → exit 0。
+  - `./node_modules/.bin/vitest run frontend/components/AIChatPanel/askHumanStore.test.ts frontend/components/AIChatPanel/AskHumanInline.test.tsx frontend/components/AIChatPanel/hooks/useAiChatEvents.test.tsx` → 3 files / 42 tests passed。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+  - `git diff --check -- frontend/components/AIChatPanel/AIChatPanel.tsx frontend/components/AIChatPanel/askHumanStore.ts frontend/components/AIChatPanel/askHumanStore.test.ts docs/modules/frontend/components.md agent-progress.md` → exit 0。
+  - `just check-fe` / `just test-fe` → exit 1；底层 `pnpm check` / `pnpm typecheck` / `pnpm test:run ...` 均在执行脚本前被 `ERR_PNPM_IGNORED_BUILDS` 阻断（`@swc/core@1.15.21`、`electron@23.3.13`、`esbuild@0.25.12` 需要 `pnpm approve-builds`）。
+- **未跑**：`just precommit`（`./init.sh` / `just check-fe` / `just test-fe` 已在 pnpm install/build-approval gate 阶段失败；本轮做 scoped 前端验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（ask_human 残留修复 scope）**：`frontend/components/AIChatPanel/AIChatPanel.tsx`、`frontend/components/AIChatPanel/askHumanStore.ts`、`frontend/components/AIChatPanel/askHumanStore.test.ts`、`docs/modules/frontend/components.md`、`agent-progress.md`。
+- **下一步建议**：刷新/重启前端后复测阶段边界 prompt；点 Confirm 后卡片应立即消失，EAS 阶段继续跑。
+
+---
+
+### 2026-06-27 · Scoping REUSE 扩树导致资产爆炸诊断与门禁修复
+
+- **本轮目标**：回应用户“怎么越搞资产越多、很多乱七八糟的”，复盘前一次 run 为什么从平安 scope 膨胀到大量资产，并修复 scoping REUSE mode 被硬门禁逼着重复 create 的问题。
+- **日志证据 / 根因**：
+  - 最新相关 session：`/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1782571959315-1/`。
+  - `run_tree.py --full` 显示 scoping 明明识别为 REUSE mode，但仍执行 `manage_organizations(action="create_batch")`，一次新增/复用 18 个子公司；后续 org tree 变成 27 个 org。
+  - 根因是 prompt/gate 冲突：`resources/harness/stages/scoping/methodology.md` 写着 “REUSE mode: do NOT re-create”，但 `prompts/mod.rs` / `execute.rs` 的红队硬门禁仍写死 “必须 propose_candidates → unit_review → manage_organizations(create)”。
+  - 另一个放大器：`golish-db::repo::tool_calls::scoping_actions_for_session` 只统计 `action='create'`，不统计推荐的 `create_batch`。模型用 `create_batch` 批量扩树后，gate 审计还可能认为没有 create，诱发更多纠错/重跑。
+  - target_intel 阶段对 27 个 org 扇出；部分 org 的 provider survey 极大，例如 root org 记录 `subdomains=143 / subdomain_hosts=676`，root summary 自述 “499+ in-scope assets”；平安证券自述注册 168 targets；后续又出现 `blocked-org-1` 占位补跑并注册 158 assets。资产多不是单纯“扫出来了”，而是 scoping 扩树 + 大 org passive provider 泛匹配 + retry 占位补跑共同放大。
+- **已完成**：
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/prompts/mod.rs`：scoping charter 改为 REUSE mode 下不要为了 gate 调 `create`/`create_batch`；只有 root 缺失或用户显式新增/确认单位时才创建。
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs`：red-team scoping anti-shortcut gate 改为只强制真实 `unit_review`；已有 org tree 经人审确认即可通过，不再因缺 create BLOCK。
+  - `backend/crates/golish-db/src/repo/tool_calls.rs`：`create_batch` 的 `created` / `existing` id 也会被 scoping action audit 识别为真实组织记录，避免未来真正批量新增后被误判。
+  - `backend/crates/golish-agent-kit/src/db_traits/repo.rs`：同步 trait 注释，明确 `organization_created` 对 REUSE mode 只是 audit 信息，不是必须条件。
+  - 同步模块卡：`docs/modules/backend/golish-agent-kit/task_orchestrator.md`、`docs/modules/backend/golish-db.md`。
+- **运行过的验证（实跑）**：
+  - `cargo fmt -p golish-agent-kit -p golish-db`（cwd `backend`）→ exit 0。
+  - `cargo nextest run -p golish-agent-kit red_team_scoping_flow --status-level fail`（cwd `backend`）→ 1 passed / 758 skipped。
+  - `cargo nextest run -p golish-db create_result create_batch_result --status-level fail`（cwd `backend`）→ 4 passed / 108 skipped。
+  - `cargo check -p golish-db -p golish-agent-kit -p golish-agent-app`（cwd `backend`）→ exit 0。
+  - `cargo clippy -p golish-db -p golish-agent-kit --all-targets -- -D warnings`（cwd `backend`）→ exit 0。
+  - `git diff --check` → exit 0。
+- **未跑**：`just precommit`（本机 pnpm ignored-builds/install gate 仍是全量前置阻塞；本轮做 scoped 后端验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（scoping reuse gate scope）**：`backend/crates/golish-agent-kit/src/task_orchestrator/prompts/mod.rs`、`backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs`、`backend/crates/golish-agent-kit/src/db_traits/repo.rs`、`backend/crates/golish-db/src/repo/tool_calls.rs`、`docs/modules/backend/golish-agent-kit/task_orchestrator.md`、`docs/modules/backend/golish-db.md`、`agent-progress.md`。
+- **下一步建议**：数据库清空后重启 app 再跑“搞一下平安”。第一轮如果 root 不存在，可以按 unit_review 新建确认的 org；之后再次跑同一 root 时应该只复用/确认现有树，不应再自动 `create_batch` 扩到几十个 org。若还出现单 org 落几百资产，下一刀应收紧 `recon_map_assets` provider result 的 ownership/domain relevance threshold。
+
+---
+
+### 2026-06-27 · StageRun active-stage completion floor + pass-token submit preview
+
+- **本轮目标**：回应用户“最后一次日志还是过不去”，诊断最新 run 的 target_intel submit loop，并修复新一轮 active stage 被旧 `org_stage_completions` 短路的问题。
+- **日志证据 / 根因**：
+  - 最新真实 session：`/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1782570596001-2/`。
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1782570596001-2 --full --db` 显示 scoping 已 PASS，`operation_state.engagement_org_id=e51a6ae1-c6f4-4dc7-9c57-d8263d9fc107`，`current_stage=target_intel`，`stage_started_at=2026-06-27 22:31:32 +0800`。
+  - 但 target_intel `stage_run` 8/8 org 都从旧 completion 跳过：completed at `2026-06-27 13:25 UTC` 等，早于本次 `stage_started_at=2026-06-27 14:31 UTC`；所以本轮没有新的 worker/evidence/source rows。
+  - 随后的 `check_stage_asset_coverage` 仍有 `pending_cells=2119`，`source_query_log: none for this run`；`submit_stage_deliverable` 一直被 `coverage_complete` / `source_coverage` 打回，不是 askman 没走，也不是 scoping root 没绑。
+  - 另一个下游症状：主 agent 提交 `stage_run_pass_token` claim 时，submit preview 先按普通 claim 要 evidence，返回 `every claim must cite evidence`，导致它继续乱补 invalid skipped_check；该 pass token 应由 final fan-out closeout 从 DB ledger 重算验证。
+- **已完成**：
+  - `backend/crates/golish-agent-kit/src/harness/org_gate.rs`：新增 `completion_is_fresh_for_stage`，在 TTL 之外支持 active-stage `not_before` floor；补单测锁定旧 completion 不能跨 stage start 复用。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`：`stage_run` resume-skip、pass-token generation 都使用当前 `operation_state.current_stage == stage` 时的 `stage_started_at` floor；旧 completion 不再短路当前 active stage worker。
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs`：fan-out closeout 验 pass_token 时同样用 current active-stage floor 过滤 `org_stage_completions`，避免旧 ledger 生成当前 token。
+  - `backend/crates/golish-agent-app/src/ai/harness_submit_tool.rs`：specialist stage 的 `stage_run_pass_token` claim 在 submit preview 阶段只做结构/伪造 evidence-id 检查并收进 side-channel；最终由 orchestrator closeout 重算 DB token 判定。
+  - 同步模块卡：`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/backend/golish-agent-kit/harness.md`、`docs/modules/backend/golish-agent-app/ai.md`。
+  - `feature_list.json`：更新 operation-continuity evidence / verification，状态仍 `in_progress`（全量 precommit 仍受 pnpm install gate 阻塞）。
+- **运行过的验证（实跑）**：
+  - `cargo fmt -p golish-agent-kit -p golish-agent-runtime -p golish-agent-app`（cwd `backend`）→ exit 0。
+  - `cargo nextest run -p golish-agent-kit completion_fresh_for_stage fanout_completion_scope --status-level fail`（cwd `backend`）→ 4 passed / 755 skipped。
+  - `cargo nextest run -p golish-agent-runtime resume_skip_floor active_stage_skip_floor --status-level fail`（cwd `backend`）→ 2 passed / 273 skipped。
+  - `cargo nextest run -p golish-agent-app stage_run_pass_token --status-level fail`（cwd `backend`）→ 1 passed / 86 skipped。
+  - `cargo check -p golish-agent-kit -p golish-agent-runtime -p golish-agent-app`（cwd `backend`）→ exit 0。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-runtime -p golish-agent-app --all-targets -- -D warnings`（cwd `backend`）→ exit 0。
+  - `git diff --check` → exit 0。
+  - `python3 -m json.tool feature_list.json` → exit 0。
+- **未跑**：`just precommit`（前面 `./init.sh` 已在 `pnpm install --silent` / ignored-builds gate 卡住：`@swc/core`、`electron`、`esbuild`；本轮做 scoped 后端验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（active-stage completion floor scope）**：`backend/crates/golish-agent-kit/src/harness/org_gate.rs`、`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`、`backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs`、`backend/crates/golish-agent-app/src/ai/harness_submit_tool.rs`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/backend/golish-agent-kit/harness.md`、`docs/modules/backend/golish-agent-app/ai.md`、`feature_list.json`、`agent-progress.md`。
+- **下一步建议**：重启 app 后重新跑这条 operation；target_intel 的 `stage_run` 不应再显示“已完成于 13:25 UTC 跳过重跑”，而应实际 dispatch worker 或只跳过本次 `stage_started_at` 之后新写的 completion。拿到新的 pass_token 后，`submit_stage_deliverable` 应先 accepted，再由 closeout 重算 DB ledger 判定。
+
+---
+
+### 2026-06-27 · Continuity rootless adoption 全库污染修复
+
+- **本轮目标**：回应用户“最后一次日志一直跑不通”，诊断最新复用流程为什么又卡住，并修复没有绑定 engagement root 时跳过 scoping 导致的全库污染。
+- **日志证据 / 根因**：
+  - 最新真实 session 是 `/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1782566555331-1/`；默认 `run_tree.py` 会先捞到 title-gen，因此本轮指定了 `pentest-chat-1782566555331-1`。
+  - 这次 AskHuman 正常：transcript 里有 `ask_human_request`，用户选择了“复用已有数据继续”。
+  - `stage_run` 也没有再全 org skip：run.log 里出现 continuity entry stage 的 resume-skip floor，worker 实际跑起来了。
+  - 当前 blocker 是新的：`operation_state.engagement_org_id = NULL`，复用 scoping 后没有把“中国平安”的 root org 绑定进 operation。于是 `list_in_scope_targets` / pass-token closeout / coverage preflight 都落到 legacy 全库口径。
+  - 结果 first `target_intel` stage_run 对 13 个平安 org passed，但 `pass_token=null`；后续 main agent 从全库历史资产里挑了 `AngularDocs` / `JsRuleFilter8080` / `example.org` / `8.138.179.62:8080` 等目标继续补洞，gate 一直报这些测试资产缺 `GOLISH-INTEL-*` 终态，不是平安本身没采完。
+- **已完成**：
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/continuity.rs`：没有 `engagement_root` 时，`scoping` summary 改为 `Missing`，明确要求先跑 scoping 绑定当前任务；不再把 legacy `in_scope_org_ids(None)` 当作可安全 adopt 的 scope。
+  - 同文件新增 `non_empty_adoption_cursor`，如果没有任何前缀 stage 真正能被 adopt，就不弹 continuity 选择框，避免“问复用但实际从 scoping 开始”的误导。
+  - 补单测：无 root 的 scoping 不能 adopt；有 root 才能复用 scoping；即便后续 `target_intel` completion fresh，只要 scoping/root 缺失，也不会生成空 adoption plan。
+  - 同步模块卡：`docs/modules/backend/golish-agent-kit/{task_orchestrator,harness}.md`。
+- **运行过的验证（实跑）**：
+  - `cargo fmt -p golish-agent-kit`（cwd `backend`）→ exit 0。
+  - `cargo nextest run -p golish-agent-kit continuity --status-level fail`（cwd `backend`）→ 10 passed / 748 skipped。
+  - `cargo check -p golish-agent-kit`（cwd `backend`）→ exit 0。
+  - `cargo clippy -p golish-agent-kit --all-targets -- -D warnings`（cwd `backend`）→ exit 0。
+  - `git diff --check` → exit 0。
+- **未跑**：`just precommit`（此前同日 `./init.sh` / `just install` 已被本机 pnpm `ERR_PNPM_IGNORED_BUILDS` 卡住：`@swc/core` / `electron` / `esbuild` build scripts 未 approve；本轮做 scoped 后端验证）。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 运行中的 app 需要重启后才会加载这次 Rust 改动。
+  - 这刀是 fail-safe：没有 root 时不跳 scoping。更好的后续增强是从用户目标文本/旧 scope 精确解析出唯一 root org 后，再允许带 root 的 continuity adoption。
+  - 当前工作树已有大量非本轮脏改动，本轮未回退或清理。
+- **下一步最佳动作**：重启 app 后重新发“搞一搞平安”。如果没有可靠 root，系统应直接进入 scoping 重新绑定 root；如果未来传入 root，才允许安全跳过 scoping。用 `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 <session> --full --db` 确认 `operation_state.engagement_org_id` 不再为 NULL。
+
+---
+
+### 2026-06-27 · continuity 复用确认走 ask_human 卡片
+
+- **本轮目标**：回应用户截图里 DB progress 复用确认显示成普通 Golish AI 文本、没有走 ask_human/AskHumanInline 的问题。
+- **根因**：
+  - `backend/crates/golish-agent-app/src/ai/commands/core/chat.rs` 的 continuity preflight 在 `AskBeforeReuse` 且发现 `ContinuityAdoptionPlan` 时，直接 `render_continuity_offer()` + `emit_immediate_task_response(... Completed ...)` 后 `return Ok(message)`。
+  - 这条路径没有 `CoordinatorHandle::register_approval`，也没有发 `AiEvent::AskHumanRequest`；前端只有收到 `ask_human_request` 事件才会渲染 `AskHumanInline`，所以截图里只出现普通 assistant 文本。
+- **已完成**：
+  - `commands/core/chat.rs`：continuity ask-before-reuse 改为有 coordinator 时注册 approval、发 `AiEvent::AskHumanRequest(input_type="choice")`，等待用户选择；选择“复用已有数据继续”才把 `ContinuityAdoptionPlan` 交给 orchestrator，选择“重新开始”/Skip/timeout 走 `start_fresh`。
+  - 同路径保留无 coordinator 的文本 fallback（单测/降级环境）。
+  - 因前端现有 `choice` 会自动提交第一个选项，选项顺序用“重新开始”在前，避免静默复用旧 DB facts。
+  - `docs/modules/backend/golish-agent-app/ai.md`：同步模块卡，明确 continuity preflight 必须走共享 ask_human/approval coordinator。
+  - `feature_list.json`：给 `operation-continuity-adoption-2026-06-27` 追加本轮 scoped evidence，状态仍 `in_progress`。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → exit 1；Step 2 `just install` / `pnpm install --silent` 失败（pnpm ignored-builds/install gate，延续此前环境限制）。
+  - `cargo fmt -p golish-agent-app`（cwd `backend`）→ exit 0。
+  - `cargo nextest run -p golish-agent-app chat_title_tests --status-level fail`（cwd `backend`）→ 22 passed / 64 skipped。
+  - `cargo nextest run -p golish-agent-app start_operation continuity --status-level fail`（cwd `backend`）→ 8 passed / 78 skipped。
+  - `cargo check -p golish-agent-app`（cwd `backend`）→ exit 0。
+  - `cargo clippy -p golish-agent-app --all-targets -- -D warnings`（cwd `backend`）→ exit 0。
+  - `git diff --check -- backend/crates/golish-agent-app/src/ai/commands/core/chat.rs` → exit 0。
+- **未跑**：`just precommit`（`./init.sh` 仍被 pnpm install gate 卡住；当前工作树已有大量前序未提交改动，本轮做 scoped 后端验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（continuity ask_human scope）**：`backend/crates/golish-agent-app/src/ai/commands/core/chat.rs`、`docs/modules/backend/golish-agent-app/ai.md`、`feature_list.json`、`agent-progress.md`。
+- **下一步建议**：重启/刷新 app 后重新触发 fresh Task/Profile operation；发现旧 DB progress 时应出现 `AI Needs Your Input` 的 choice 卡片，而不是普通 Golish AI 文本。点“复用已有数据继续”后才采用旧 DB facts 并从第一个未满足 stage 接着跑。
+
+---
+
+### 2026-06-27 · 信息收集阶段 progress 路由修复
+
+- **本轮目标**：回应用户发现 EAS 完成后跳到 `reporting` 而不是 `enumeration`；确认信息收集阶段不应靠 `findings` 判断进展。
+- **日志证据 / 根因**：
+  - 最新 session `/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1782488490399-1`：EAS gate `2026-06-27T11:20:36Z` PASS 后，下一 turn `2026-06-27T11:20:55Z` 进入 `reporting` 的 `Final Report Compilation`。
+  - `check_stage_asset_coverage` 曾明确显示 EAS 有 `615/825` done、`210` pending；后续补 blocked cells 后 PASS，说明不是 UI 误显，而是 graph-flow 路由走了 `external_attack_surface -> reporting` 短路。
+  - 代码根因：`consume_gate_outcome` 把 `made_progress` 写死为 `outcome.findings_count > 0`；而 `external_attack_surface` / `target_intel` / `enumeration` 都是 `findings_allowed=false` 的信息收集/覆盖矩阵阶段，正常交付就是 `findings=[]`。
+- **已完成**：
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs`：新增 `gate_outcome_made_progress`，blocked outcome 永不算进展；vuln 阶段继续用 `findings_count`；`findings_allowed=false` 的 recon/info 阶段改按 evidence refs、handoff summary、engagement org binding 判断有无阶段产出，避免 EAS 因无 findings 跳 `reporting`。
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute_harness_loop_tests.rs`：新增回归，锁定 EAS 无 findings 但有 evidence refs 算进展；`vuln_triage` 无 findings 不算进展。
+  - `docs/modules/backend/golish-agent-kit/task_orchestrator.md`：同步模块卡，记录 graph-flow progress 不能再 findings-only。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → exit 1；Step 2 `just install` / `pnpm install --silent` 失败（pnpm install gate，延续此前环境限制）。
+  - `cargo fmt -p golish-agent-kit`（cwd `backend`）→ exit 0。
+  - `cargo nextest run -p golish-agent-kit info_stage_evidence_counts_as_progress_without_findings vulnerability_stage_without_findings_is_not_progress --status-level fail`（cwd `backend`）→ 2 passed / 747 skipped。
+  - `cargo nextest run -p golish-agent-kit pass_emits_stage_passed_progress block_emits_no_stage_passed --status-level fail`（cwd `backend`）→ 2 passed / 747 skipped。
+  - `cargo check -p golish-agent-kit`（cwd `backend`）→ exit 0。
+  - `cargo clippy -p golish-agent-kit --all-targets -- -D warnings`（cwd `backend`）→ exit 0。
+  - `git diff --check -- backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute_harness_loop_tests.rs` → exit 0。
+  - `git diff --check -- backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute_harness_loop_tests.rs docs/modules/backend/golish-agent-kit/task_orchestrator.md agent-progress.md` → exit 0。
+- **未跑**：`just precommit`（`./init.sh` 已被 pnpm install gate 卡住；当前工作树已有大量前序未提交改动，本轮做 scoped backend 验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（progress routing scope）**：`backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs`、`backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute_harness_loop_tests.rs`、`docs/modules/backend/golish-agent-kit/task_orchestrator.md`、`agent-progress.md`。
+- **下一步建议**：重启/刷新 app 后，EAS PASS 且有 evidence/handoff 时 graph-flow 应走主路 `enumeration`；当前已停在 `reporting` 的旧 operation 仍是旧 checkpoint 状态，需重新跑或修复 operation cursor 才能从 `enumeration` 接上。
+
+---
+
+### 2026-06-27 · SubAgent detail 资产覆盖二级视图
+
+- **本轮目标**：回应用户看完整左右布局后的确认：右侧已经是 ChatPanel，资产覆盖不做右侧 drawer；在左侧 `SubAgentDetailView` 内改成 summary 进入的轻量二级视图，默认保持 Codex 风格的干净运行流。
+- **已完成**：
+  - `frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`：默认运行流只显示任务块、轻量资产覆盖 summary strip、Thought/Agent Output/tool call 时间线；去掉「运行流 / 资产覆盖」两个大 tab，点 summary 进入完整矩阵，避免矩阵挤占 agent 叙事流。
+  - `frontend/components/Engagement/StageAssetCoveragePanel.tsx`：`StageAssetCoverageBlock` 增加 `summary` / `panel` 呈现模式；summary 模式只加载并显示 done/live/current-tool 摘要，不渲染矩阵，右侧只留小箭头；panel 模式渲染完整 coverage matrix，并在卡 header 右侧提供小号「运行流」返回按钮，避开页面左上角返回上级 Agent。独立 coverage view 改为占满 detail 内容区、列表自身滚动，不再显示底部拖拽高度 handle。
+  - `frontend/components/Engagement/StageAssetCoveragePanel.test.tsx`：新增回归，锁定 summary 模式不渲染矩阵且点击进入覆盖视图、panel 模式渲染完整矩阵、小号返回动作，并确认独立 panel 不显示高度调节控件。
+  - `docs/modules/frontend/components.md`：同步模块卡，记录 coverage matrix 不能再 inline 展开在运行流里，也不要铺两个大 tab；完整矩阵由 summary 进入、卡内小按钮返回运行流，独立覆盖视图不显示高度拖拽控件。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → exit 1；Step 2 `just install` / `pnpm install --silent` 失败（pnpm install gate，延续此前环境限制）。
+  - `./node_modules/.bin/biome format --write frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx` → exit 0。
+  - `./node_modules/.bin/biome check --write frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx` → exit 0（fixed import order）。
+  - `./node_modules/.bin/vitest run frontend/components/Engagement/StageAssetCoveragePanel.test.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0（2 files / 51 tests passed）。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+- **未跑**：`just precommit` / `just check-fe` 全量（`./init.sh` 仍被 pnpm install gate 卡住；本轮做 scoped 前端验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（coverage detail view scope）**：`frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`、`frontend/components/Engagement/StageAssetCoveragePanel.tsx`、`frontend/components/Engagement/StageAssetCoveragePanel.test.tsx`、`docs/modules/frontend/components.md`、`agent-progress.md`。
+- **下一步建议**：刷新前端后进入正在运行的 EAS/target_intel specialist detail；默认应只看到一条资产覆盖摘要和下方 Thought/Output/tool stream；点击摘要进入完整矩阵，点矩阵 header 右侧小号「运行流」返回时间线。
+
+---
+
+### 2026-06-27 · EAS sub-agent 当前资产作业可视化
+
+- **本轮目标**：回应用户反馈 EAS 顶部资产覆盖“不像动态的”，看不出 AI 正在扫哪个资产、正在补哪个覆盖维度；把现有 sub-agent 工具流合并进资产覆盖矩阵，并用 target_intel 已落的 `real_ip` 关系把 domain/url 挂到 IP 聚合下。
+- **已完成**：
+  - `backend/crates/golish-agent-app/src/ai/commands/stage_coverage.rs`：`StageAssetCoverageRow` 增加只读 `real_ip` 字段，`ai_get_stage_asset_coverage` 从 `targets.real_ip` 带出解析关系；不改 DB schema，不改 gate 判定。
+  - `frontend/lib/generated/StageAssetCoverageRow.ts`：通过 ts-rs 重新生成，前端类型同步 `real_ip`。
+  - `frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`：保留 live work 解析函数，从正在运行/最近的 sub-agent 工具调用中解析 `target/url/host/domain/ip`，也能从 `pentest_run.tool_name + args` 或 shell command 里提取 URL/IP/domain；并按工具推断覆盖维度（`httpx/curl/gowitness`→LIVENESS，`naabu/masscan/nmap`→PORT，`whatweb/nmap -sV`→SERVICE）。
+  - `frontend/components/Engagement/StageAssetCoveragePanel.tsx`：资产覆盖表按 `real_ip` 做 IP 聚合；真实 IP 行显示 direct 覆盖，解析到该 IP 的 domain/url 作为子行显示。domain 的 `httpx` 会在 IP 行展示“关联 ...”弱提示，但只点亮 domain 子行自己的 LIVENESS cell，不误算成 IP 本体 direct scan。
+  - 同一组件继续合并 live work：匹配到资产行时显示“正在补 LIVENESS/PORT/SERVICE · tool”并点亮对应 technique cell；匹配不到已登记资产行的 running work 放到表底部“运行中但尚未匹配到资产行”。
+  - 同一组件追加紧凑运行状态条：有 running/backgrounded work 时，在矩阵顶部用单行展示正在运行的工具、覆盖维度、批量/当前目标、涉及资产数；默认仍保持完整矩阵，避免 running 有无导致布局跳动；用户手动点「只看运行中」时才过滤到正在做的 IP/domain 组。完整矩阵里收敛重复 running/related badge，只保留行高亮和 cell spinner，减少对下方 AI 输出空间的挤占。
+  - 「只看运行中 / 看全部」切换入口常驻资产覆盖 header：即使默认还没有 running work，也能手动切到运行中空态；运行状态条只播报当前作业，不再承载筛选入口。
+  - 资产覆盖手动展开后默认显示正在做的资产：初始或后续出现 live work 时，如果用户没有手动选择「看全部」，自动进入 active slice；用户选择后尊重用户选择。
+  - 「只看运行中」保持为用户选择状态：如果用户停留在该筛选下而 running work 清空，组件显示“当前没有运行中的资产任务”和「看全部」按钮，不再自动跳回完整矩阵；live work 清空/切换时保留上一帧 1.2s，避免完成与下一个任务之间空态闪烁。
+  - 资产覆盖列表从 `max-height` 改为固定视口高度：拖拽调节的是内部滚动区域的 `height`，切换「正在做/看全部」或 active 行数变化时外层高度不再跟内容行数缩小后又展开。
+  - `BackgroundJobsBadge` 增加 `reserveSpace` 模式；`SubAgentDetailView` / `ToolCallDetailView` header 使用稳定槽位显示后台任务，`N running` 出现/消失时不再改变 header 宽度导致页面抖动。
+  - `TaskGroupShell` 去掉 `grid-template-rows` 高度动画和 `transition-all`，避免大量 live tool/sub-agent 行展开/收起时逐帧重排卡顿；资产覆盖初次 loading 态增加最小高度，减少展开后加载完成的二次跳高。
+  - 资产覆盖列表区域改为用户可调高度：底部增加细拖拽 handle，默认高度保持 224px，限制在 160–560px；支持鼠标拖拽和键盘方向键/PageUp/PageDown/Home/End 调整，不再固定为单一 `max-h-56`。
+  - 批量扫描命令做显式归纳：如果一个命令里出现多个 URL/IP/domain，会显示“批量 N 个资产”语义，不再把第一个资产误报成唯一当前资产。
+  - `StageAssetCoverageBlock` 保留手动展开入口和 `workItems` live 数字；运行态 worker 详情不再自动展开资产覆盖，用户点开后才加载矩阵并在运行态轮询。
+  - `frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts`：补解析回归，覆盖 `nmap -sV 10.18.2.4`、`httpx https://edge.example.com`、`whatweb api.example.com`、多资产批量命令、工具→覆盖维度映射，并确保 `submit_stage_deliverable` 不被误当成资产扫描动作。
+  - `frontend/components/Engagement/StageAssetCoveragePanel.test.tsx`：补组件回归，确认 running work 存在时资产覆盖入口仍默认收起、展开矩阵默认显示正在做的资产、active/all 切换时滚动视口高度保持不变、live work 后续出现时自动切 active slice、live work 清空时短暂保留上一帧避免闪空、无 running work 时也显示「只看运行中」入口、资产覆盖列表可拖拽/键盘调整高度、IP direct work 显示在 IP 行内部、domain `httpx` 作为 IP 组 related activity 展示且不变成未匹配项、running 清空时保留 active 空态不自动切回全部、未匹配 running work 仍留在资产覆盖表底部。
+  - `frontend/components/UnifiedInput/StatusBadges.test.tsx`：补 `BackgroundJobsBadge reserveSpace` 回归，确认无后台任务时渲染不可见占位而不是 button。
+  - `docs/modules/frontend/components.md`、`docs/modules/backend/golish-agent-app/ai.md`：同步模块卡，记录 IP 聚合、direct/related live work 边界和 `real_ip` read model 语义。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → exit 1；Step 2 `just install` / `pnpm install --silent` 失败（pnpm ignored-builds/install gate，和本 UI 切片无关）。
+  - `cd backend && cargo test -p golish-agent-app export_bindings -q` → exit 0（10 passed）。
+  - `cd backend && cargo test -p golish-agent-app stage_coverage -q` → exit 0（11 passed）。
+  - `./node_modules/.bin/biome format --write frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx` → exit 0（Formatted 1 file, no fixes applied）。
+  - `./node_modules/.bin/vitest run frontend/components/Engagement/StageAssetCoveragePanel.test.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts frontend/components/Engagement/StageRunOrgRows.test.tsx` → exit 0（3 files / 47 tests passed）。
+  - `./node_modules/.bin/vitest run frontend/components/Engagement/StageAssetCoveragePanel.test.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0（2 files / 45 tests passed）。
+  - `./node_modules/.bin/biome check --write frontend/components/Engagement/StageAssetCoveragePanel.tsx` → exit 0（fixed import order）。
+  - `./node_modules/.bin/biome check frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx docs/modules/frontend/components.md` → exit 0。
+  - `./node_modules/.bin/biome format --write frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx docs/modules/frontend/components.md agent-progress.md` → exit 0（Formatted 1 file, no fixes applied）。
+  - `./node_modules/.bin/vitest run frontend/components/Engagement/StageAssetCoveragePanel.test.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0（2 files / 46 tests passed）。
+  - `./node_modules/.bin/biome format --write frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx` → exit 0（Formatted 1 file, fixed 1 file）。
+  - `./node_modules/.bin/vitest run frontend/components/Engagement/StageAssetCoveragePanel.test.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0（2 files / 48 tests passed）。
+  - `./node_modules/.bin/biome check frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx` → exit 0。
+  - `./node_modules/.bin/biome format --write frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx docs/modules/frontend/components.md agent-progress.md` → exit 0（Formatted 1 file, no fixes applied）。
+  - `./node_modules/.bin/vitest run frontend/components/Engagement/StageAssetCoveragePanel.test.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0（2 files / 48 tests passed）。
+  - `./node_modules/.bin/biome check frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx docs/modules/frontend/components.md agent-progress.md` → exit 0。
+  - `./node_modules/.bin/biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx docs/modules/frontend/components.md agent-progress.md` → exit 0。
+  - `./node_modules/.bin/biome format --write frontend/components/UnifiedInput/StatusBadges.tsx frontend/components/UnifiedInput/StatusBadges.test.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/components/TaskGroupShell/TaskGroupShell.tsx frontend/components/Engagement/StageAssetCoveragePanel.tsx` → exit 0（Formatted 5 files, no fixes applied）。
+  - `./node_modules/.bin/vitest run frontend/components/UnifiedInput/StatusBadges.test.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts frontend/components/Engagement/StageAssetCoveragePanel.test.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0（4 files / 56 tests passed）。
+  - `./node_modules/.bin/biome check frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts docs/modules/frontend/components.md docs/modules/backend/golish-agent-app/ai.md agent-progress.md` → exit 0。
+  - `./node_modules/.bin/biome check frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx docs/modules/frontend/components.md agent-progress.md` → exit 0。
+  - `./node_modules/.bin/biome check frontend/components/UnifiedInput/StatusBadges.tsx frontend/components/UnifiedInput/StatusBadges.test.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/components/TaskGroupShell/TaskGroupShell.tsx frontend/components/Engagement/StageAssetCoveragePanel.tsx docs/modules/frontend/components.md` → exit 0。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+  - `cd backend && cargo fmt --check` → exit 0。
+  - `git diff --check -- <本轮 EAS coverage files>` → exit 0。
+  - `git diff --check -- frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx docs/modules/frontend/components.md agent-progress.md` → exit 0。
+  - `git diff --check -- frontend/components/UnifiedInput/StatusBadges.tsx frontend/components/UnifiedInput/StatusBadges.test.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/components/TaskGroupShell/TaskGroupShell.tsx frontend/components/Engagement/StageAssetCoveragePanel.tsx docs/modules/frontend/components.md agent-progress.md` → exit 0。
+- **未跑**：`just precommit` / `just check-fe` 全量（`./init.sh` 已被 pnpm install gate 卡住；本轮做 scoped 前后端验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（EAS/live detail UI scope）**：`backend/crates/golish-agent-app/src/ai/commands/stage_coverage.rs`、`frontend/lib/generated/StageAssetCoverageRow.ts`、`frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`、`frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts`、`frontend/components/ToolCallDetailView/ToolCallDetailView.tsx`、`frontend/components/UnifiedInput/StatusBadges.tsx`、`frontend/components/UnifiedInput/StatusBadges.test.tsx`、`frontend/components/TaskGroupShell/TaskGroupShell.tsx`、`frontend/components/Engagement/StageAssetCoveragePanel.tsx`、`frontend/components/Engagement/StageAssetCoveragePanel.test.tsx`、`docs/modules/frontend/components.md`、`docs/modules/backend/golish-agent-app/ai.md`、`agent-progress.md`。
+- **下一步建议**：重启/刷新前端后进入正在运行的 EAS org specialist detail；资产覆盖矩阵应按 IP 聚合显示 domain/url 子行，domain `httpx` 在 IP 行表现为关联活动，在子行 LIVENESS cell 显示 live spinner，IP direct PORT/SERVICE 仍由 nmap/naabu 等直接扫描点亮。
+
+---
+
+### 2026-06-27 · Task/Profile “继续” deterministic resume 入口修复
+
+- **本轮目标**：回应用户反馈“改完后发继续却不能直接接上，还得找日志”，排查 Task/Profile continuation 为什么没有直接恢复上一个 operation checkpoint。
+- **日志证据 / 根因**：
+  - 复核最新 session `/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1782488490399-1`：用户在 `2026-06-26T16:26:36Z` 发“继续”，turn 完成于 `16:28:43Z`。
+  - 该 turn 的文本层声称 target_intel 已完成并进入 EAS，但实际 reasoning/tool surface 是 Task/Profile lead/flexible turn，模型在说缺少 `query_target_data`、`run_pty_cmd`、`web_fetch` 等工具，并从文件/上下文生成报告；没有先进入 `TaskOrchestrator::resume`。
+  - 代码根因：`TaskOrchestrator::resume` 和 `latest_resumable_by_session` 已存在，但入口在 `execute_task_mode` 内；`send_ai_prompt_session` 只有显式 `/task` 或 `implicit_operation_prompt` 命中才会进 `execute_task_mode`。短“继续”不属于新 operation intent，于是先落到 `execute_task_profile_turn`，导致模型尝试重建上下文而不是恢复 checkpoint。
+- **已完成**：
+  - `backend/crates/golish-agent-app/src/ai/commands/core/chat.rs`：Task/Profile 分支最前增加 resume preflight。对短“继续/接着/resume/continue”类 operation continuation，先 upsert 当前 chat session row，再查 `latest_resumable_by_session`；存在 checkpointed task 时直接调用 `execute_task_mode`，由已有 `TaskOrchestrator::resume` 接管。
+  - 同文件新增 `looks_like_resume_operation_prompt` 窄口径识别：覆盖“继续”“继续吧”“接着跑”“继续刚才那个 EAS 阶段”“继续上次的 target_intel”“resume”“continue the previous operation”；代码/文档/日志类“继续改/分析/看/写”留在 flexible lead。
+  - 若 preflight 查询失败或没有 checkpoint，保持原行为回落到 normal Task/Profile lead，避免纯聊天或无状态 session 被“继续”误启动假的 operation。
+  - 同步模块卡：`docs/modules/backend/golish-agent-app/ai.md`。
+- **运行过的验证（实跑）**：
+  - `cargo fmt -p golish-agent-app`（cwd `backend`）→ exit 0。
+  - `cargo nextest run -p golish-agent-app resume_operation_prompt --status-level fail`（cwd `backend`）→ 2 passed / 80 skipped。
+  - `cargo check -p golish-agent-app`（cwd `backend`）→ exit 0。
+  - `cargo clippy -p golish-agent-app --all-targets -- -D warnings`（cwd `backend`）→ exit 0。
+  - `git diff --check -- <本轮继续入口 files>` → exit 0。
+- **未跑**：`just precommit`（当前工作树已有大量前序未提交改动；且此前 `./init.sh` 被 pnpm ignored-builds install gate 卡住。本轮做 scoped 后端验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（Task/Profile resume scope）**：`backend/crates/golish-agent-app/src/ai/commands/core/chat.rs`、`docs/modules/backend/golish-agent-app/ai.md`、`agent-progress.md`。
+- **下一步建议**：重启/刷新 app 后，在同一 chat session 对 checkpointed operation 发送“继续”；预期日志应出现 `resume-like prompt matched a checkpointed task; entering task harness directly`，并由 `TaskOrchestrator::resume` 从 `graph_flow` cursor 接着跑，而不是先进入 lead turn 重新找材料。
+
+---
+
+### 2026-06-27 · target_intel fan-out closeout 全库 org 污染修复
+
+- **本轮目标**：排查用户最后一次 Ping An operation 为什么 `target_intel` 看似 12/12 org 已采集并提交 accepted，但 graph-flow 仍停在 target_intel。
+- **日志证据 / 根因**：
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1782488490399-1 --full --db` 显示：`stage_run` 里 Ping An root + 11 subsidiaries 都 passed；第一次 submit 因 `every claim must cite evidence` needs_fix，随后用真实 evidence ids resubmit accepted；最终 graph-flow 仍 `gate blocked at stage 'target_intel'`。
+  - `run.log` / transcript correction 明确阻塞为：`4 of 16 in-scope orgs have not freshly passed this stage's per-org gate`，缺口 UUID 为 `3a2f14d8...` / `65d77f69...` / `89f72e98...` / `a8609c24...`。
+  - 直连 embedded DB 复核：这 4 个 org 分别是 `AngularDocs`、`JsClosure8080`、`JsClosure8080B`、`JsRuleFilter8080`，`project_path=/Users/christopherzheng/WebstormProjects/Golish-Platform/backend`，不是 Ping An engagement；Ping An root subtree 只有 12 个 org，而全库 organizations 是 16 个。
+  - 代码根因：`stage_run` pass_token 生成和 orchestrator closeout 复核都使用 `in_scope_org_ids(None)` 全库口径；`stage_run` dispatch 前虽已按 `harness_org_id` 过滤传入 org，但 pass_token/closeout 没同步这个 subtree 口径，导致 unrelated test org 永远卡住本次 stage。
+- **已完成**：
+  - `backend/crates/golish-agent-kit/src/harness/org_gate.rs`：新增 `fanout_completion_scope_ids` 纯函数。有 engagement root 时只使用 root subtree；subtree 读不到时 fail-closed；没有 root 绑定才保留 legacy 全库口径。补 3 个单测覆盖 bound subtree / bound empty fail-closed / unbound legacy。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`：pass_token 生成改为优先 `ctx.harness_org_id -> org_subtree_ids(root)`，不再被全库 sibling/test org 污染。
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs`：最终 fan-out closeout 复核改为同样的 engagement root subtree 口径，与 `stage_run` 发 token 口径一致。
+  - 同步模块卡：`docs/modules/backend/golish-agent-kit/harness.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → failed：Step 2 `just install` / `pnpm install --silent` exit 1（pnpm ignored-builds 策略，和本 bug 无关）。
+  - `cargo fmt -p golish-agent-kit -p golish-agent-runtime`（cwd `backend`）→ exit 0。
+  - `cargo nextest run -p golish-agent-kit fanout_completion_scope --status-level fail` → 3 passed / 741 skipped。
+  - `cargo nextest run -p golish-agent-kit org_gate --status-level fail` → 13 passed / 731 skipped。
+  - `cargo check -p golish-agent-kit -p golish-agent-runtime`（cwd `backend`）→ exit 0。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-runtime --all-targets -- -D warnings`（cwd `backend`）→ exit 0。
+  - `git diff --check -- <本轮 fan-out closeout files>` → exit 0。
+  - DB 复核脚本：Ping An root subtree = 12 org；全库 organizations = 16 org；旧代码会核 16，新代码核 12。
+- **未跑**：`just precommit`（当前工作树已有大量前序未提交改动，且 `./init.sh` 被 pnpm ignored-builds 策略卡住；本轮做 scoped 后端验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（target_intel fan-out closeout scope）**：`backend/crates/golish-agent-kit/src/harness/org_gate.rs`、`backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs`、`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`、`docs/modules/backend/golish-agent-kit/harness.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`agent-progress.md`。
+- **下一步建议**：重启/刷新 app 后恢复该 operation 或新跑 Ping An：`stage_run` 对 root+11 子公司全部 fresh PASS 后应返回非空 `pass_token`，随后 `submit_stage_deliverable` 需带 `stage_run_pass_token` claim；closeout 应只核这 12 个 org，不再要求 `AngularDocs` / `JsClosure8080*` / `JsRuleFilter8080` 过 target_intel。
+
+---
+
+### 2026-06-26 · Task/Profile ask_human 可见性与人审边界修复
+
+- **本轮目标**：处理用户反馈“感觉可以了，但是没有 ask human”，确认后端是否真的调用 `ask_human`，并修复前端未稳定展示 / review 被默认确认的问题。
+- **日志证据 / 根因**：
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1782487338959-1 --full --db` 显示本次 operation 已进入 scoping 并通过；`run.log` 精确记录 `15:23:15` 执行 `ask_human`、`input_type=unit_review`、request_id `b2e1b774-9838-4bc5-985f-3488ecbd7c2c`，说明后端不是没问。
+  - 前端存在两套 AI event 消费路径：AIChatPanel 本地 hook state 与 app-level `pendingAskHuman` store。全局 pipeline 会把 conversation AI session 的事件路由到绑定 terminal session；AIChatPanel 只看本地 state 时，可能出现全局收到但聊天面板未渲染的缝。
+  - `AskHumanInline` 对 `scope_review` / `unit_review` 也使用 60s auto-confirm 倒计时；安全范围/组织树确认不应默认帮用户通过。
+- **已完成**：
+  - `frontend/components/AIChatPanel/AIChatPanel.tsx`：`AskHumanInline` 渲染改为本地 hook state 优先、全局 `pendingAskHuman` store 兜底；兜底提交/跳过走原始 AI session id 回 `respond_to_tool_approval`，并清掉 terminal/session 两侧 pending 状态。
+  - `frontend/store/types/tool-call.ts` + `frontend/services/ai-events/tool-handlers.ts`：`AskHumanRequest` 支持 `scope_review` / `unit_review`，并保留原始 `event.session_id`，避免 review 型 HITL 被窄化成普通输入。
+  - `frontend/components/AIChatPanel/AskHumanInline.tsx`：`scope_review` / `unit_review` 禁用 auto-confirm 倒计时，改为等待用户显式确认/跳过；普通 confirmation/choice/freetext/credentials 保留原倒计时。
+  - `frontend/components/AIChatPanel/hooks/useAiChatEvents.ts`：收到 `ask_human_response` 时清理本地 pending prompt。
+  - 同步模块卡：`docs/modules/frontend/components.md`。
+- **运行过的验证（实跑）**：
+  - `./node_modules/.bin/vitest run frontend/components/AIChatPanel/AskHumanInline.test.tsx frontend/components/AIChatPanel/hooks/useAiChatEvents.test.tsx frontend/services/ai-events/tool-handlers.test.ts` → exit 0（3 files / 47 tests passed）。
+  - `./node_modules/.bin/biome check frontend/components/AIChatPanel/AIChatPanel.tsx frontend/components/AIChatPanel/AskHumanInline.tsx frontend/components/AIChatPanel/AskHumanInline.test.tsx frontend/components/AIChatPanel/hooks/useAiChatEvents.ts frontend/components/AIChatPanel/hooks/useAiChatEvents.test.tsx frontend/services/ai-events/tool-handlers.ts frontend/services/ai-events/tool-handlers.test.ts frontend/store/types/tool-call.ts` → exit 0。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+- **未跑**：`just precommit` / `just check-fe` 全量（当前工作树已有大量前序未提交改动；本轮做 scoped 前端验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（ask_human scope）**：`frontend/components/AIChatPanel/AIChatPanel.tsx`、`frontend/components/AIChatPanel/AskHumanInline.tsx`、`frontend/components/AIChatPanel/AskHumanInline.test.tsx`、`frontend/components/AIChatPanel/hooks/useAiChatEvents.ts`、`frontend/components/AIChatPanel/hooks/useAiChatEvents.test.tsx`、`frontend/services/ai-events/tool-handlers.ts`、`frontend/services/ai-events/tool-handlers.test.ts`、`frontend/store/types/tool-call.ts`、`docs/modules/frontend/components.md`、`agent-progress.md`。
+- **下一步建议**：重启/刷新前端后复跑 `帮我搞一下平安咯`：scoping 的 `unit_review` 应在聊天底部稳定出现并停留，必须手动确认后才进入后续阶段。
+
+---
+
+### 2026-06-26 · recon_map_assets partial provider 误红叉修复
+
+- **本轮目标**：解释并修复用户截图里 `recon_map_assets` 已正常产出（如 quake 419 records、组织/公司信息齐全），但工具卡仍显示红叉的问题。
+- **根因**：前端共享 `toolResultIndicatesFailure()` 先把整个 JSON payload stringify，再用正则搜索任意 `"status":"failed"`；`recon_map_assets` 的顶层状态可以是 `partial`，但 `providerStatus[].status` 里某个 provider（截图为 `0.zone` HTTP 502）是 `failed`，于是嵌套 provider 失败被误提升成整个 tool error。
+- **已改**：
+  - `frontend/lib/tools.ts`：parse 成对象后只用顶层 `status` 判定业务失败；非 JSON 字符串才保留旧正则兜底。shell exit code、fatal stderr、缺依赖文本判定保持不变。
+  - `frontend/components/AIChatPanel/ToolCallSummary.test.ts`：补回归，顶层 `status: "partial"` + 嵌套 provider failed 不再算失败。
+  - `frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts`：补回归，sub-agent detail 里的 completed `recon_map_assets` partial survey 不再显示 error。
+- **验证**：
+  - `./node_modules/.bin/vitest run frontend/components/AIChatPanel/ToolCallSummary.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0（2 files / 42 tests passed）。
+  - `./node_modules/.bin/biome check frontend/lib/tools.ts frontend/components/AIChatPanel/ToolCallSummary.test.ts frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0。
+  - `pnpm exec ...` 曾被本机 pnpm ignored-builds install gate 拦截（`@swc/core` / `electron` / `esbuild` build scripts 未 approve），所以改用已存在的 `node_modules/.bin` 跑同一组窄验证。
+- **未跑**：`just precommit` / `just check-fe` 全量（当前工作树已有大量其他 in-flight 改动，本轮只做局部 UI 状态修复）。
+
+### 2026-06-26 · target_intel primary 强制走 stage_run 修复
+
+- **本轮目标**：排查用户刚试的 Task/Profile operation 为什么到了 `target_intel` 没进 `stage_run`，并修正 primary 绕过 per-org specialist fan-out 的路径。
+- **日志证据 / 根因**：
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1782486335784-1 --full --db` 显示：`scoping` PASS 后进入 `target_intel`，主 agent 的 plan 明确写了“Fan out recon specialist via stage_run”，但实际工具调用是 `recon_list_providers` → `recon_discover_subsidiaries` → `recon_map_assets`，没有调用 `stage_run`。
+  - 同一 run 的 `run.log` 显示 target_intel depth-0 tool list 同时暴露了 `stage_run` 和 `recon_list_providers` / `recon_discover_subsidiaries` / `recon_map_assets` / `recon_lookup_whois` / `sub_agent_*`；模型选择了直接 recon 工具。
+  - `task_orchestrator/subtask_phases/execute.rs` 里虽然对 `StageSpec.specialist` 追加了 `DELEGATE target_intel — fan out with stage_run`，但 `synthesize_stage_subtask(TargetIntel)` 的原始 subtask description 仍写着“Call recon_list_providers / recon_map_assets / recon_lookup_whois”，形成 prompt 矛盾。
+- **已完成**：
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_list.rs`：新增 specialist-stage depth-0 过滤。对 `StageSpec.specialist` 非空的 active stage（如 `target_intel`）隐藏 `recon_*`、`manage_targets`、`sub_agent_*` 直接干活工具，保留 `stage_run`、`submit_stage_deliverable`、`manage_organizations` 和只读查询工具，强制 main agent 走 per-org fan-out。
+  - `backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs`：`target_intel` 的 primary subtask description 改为“这是 per-org specialist work；不要直接 call recon_*；调用 `stage_run`，所有 org 过后提交 stage_run pass token”。具体 provider 方法论仍由 `stage_run` 注入给 recon worker。
+  - 同步模块卡：`docs/modules/backend/golish-agent-kit/task_orchestrator.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`。
+- **运行过的验证（实跑）**：
+  - `cargo fmt -p golish-agent-runtime -p golish-agent-kit`（cwd `backend`）→ exit 0。
+  - `cargo test -p golish-agent-runtime tool_list -q` → 11 passed。
+  - `cargo test -p golish-agent-kit target_intel_prompt_varies_by_intel_policy -q` → 1 passed。
+  - `cargo check -p golish-agent-runtime -p golish-agent-kit`（cwd `backend`）→ exit 0。
+  - `cargo clippy -p golish-agent-runtime -p golish-agent-kit --all-targets -- -D warnings`（cwd `backend`）→ exit 0。
+  - `git diff --check -- <本轮 target_intel stage_run files>` → exit 0。
+- **未跑**：`just precommit`（当前工作树已有大量前序未提交改动，且 `./init.sh` 被 pnpm ignored-builds 策略卡住；本轮做 scoped 验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（target_intel stage_run scope）**：`backend/crates/golish-agent-runtime/src/agentic_loop/tool_list.rs`、`backend/crates/golish-agent-kit/src/task_orchestrator/subtask_phases/execute.rs`、`docs/modules/backend/golish-agent-kit/task_orchestrator.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`agent-progress.md`。
+- **下一步建议**：重启/刷新 app 后新开 Task/Profile operation，再跑到 `target_intel` 时，main agent tool list 应不再出现 `recon_map_assets` 等直接工具；应先调用 `stage_run`，由 recon worker per-org 执行 provider survey 并各自过 gate。
+
+---
+
+### 2026-06-26 · Task/Profile lead 口语化 operation handoff 修正
+
+- **本轮目标**：重查用户截图和最新日志，修正上一版把「搞一下平安」当成必须反复澄清的错误策略；Task/Profile 应保持聊天灵活，但出现“搞/打/测/扫某目标、开搞、进红队模式”等操作意图时要进入 `start_operation`，把范围/授权确认交给 Scoping harness。
+- **日志证据 / 根因**：
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1782484831433-1 --full` 显示：前两轮「你好」「你是谁」正常纯回复；「帮我搞一下平安咯」时 lead 曾被前端全量工具上下文诱导尝试 `recon_lookup_company`，随后调用 `start_operation`，又被 reflector 纠偏成“Stop waiting for permission and start executing”。
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1782485975235-1 --full` 显示：上一版 hidden policy 写了 `vague target phrases` / `Do not call start_operation yet`，导致模型在「帮我搞一下平安」「就搞他」「整个集团」「进红队模式」后一直在 lead 外层追问授权/范围，没有进入 harness。
+  - 真实边界应拆开：lead 不直接查库/跑工具/扩大 scope；但口语化 operation intent 应 `start_operation` handoff。Scoping stage 再负责合法范围、目标归一、证据和 gate。
+- **已完成**：
+  - `backend/crates/golish-agent-app/src/ai/commands/core/chat.rs`：Task/Profile lead hidden policy 改为“口语化操作请求即可 handoff”：`搞一下 <公司>`、`帮我打/测/扫 <目标>`、`开始/开打/开搞`、`进红队模式`、以及已有目标后的`就搞他/整个集团`都会调用 `start_operation`；objective 只保留用户目标标签和活动，不虚构域名/子公司/IP/扫描范围。
+  - 同一文件新增窄口径确定性入口：当前消息已经包含明显目标+操作意图（如`帮我搞一下平安咯`、`对 https://target.tld 做渗透`、`目标 example.com 进红队模式`、`scan example.com`）时直接进入 TaskOrchestrator，不再赌 lead 模型是否愿意调用 `start_operation`；问候、身份问题、无目标的`开搞`、代码/编译/日志类“搞一下”仍留在 flexible lead。
+  - hidden policy 只在“没有可用目标且无法从上下文恢复目标”或“不确定是聊天/研究/帮忙还是 operation”时问一个简短澄清；禁止在 lead turn 调 `recon_lookup_company` / `manage_*` / `pentest_run` / `run_pty_cmd` / `stage_run` / web search。
+  - `frontend/components/AIChatPanel/hooks/useChatSend.ts`：首条消息只在纯 `chat` 模式注入全量 `pentestSystemPrompt`；Task/Profile lead 不再把前端全量工具上下文塞进 `[System Context]` 用户消息。
+  - `backend/crates/golish-agent-runtime/src/execution_mode/modes/task.rs`：Task lead 关闭 Tavily/web search，只保留文件/知识库/`ask_human`/`start_operation` 的 lead 面。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/first_iter_hooks.rs`：Task/Profile lead（无 `harness_stage`）禁用 reflector；进入真实 harness stage 后仍保留原 Task reflector 行为。
+  - 新增 `frontend/components/AIChatPanel/hooks/useChatSend.test.ts`；补 Rust 回归覆盖 lead policy、Task lead tool 面和 reflector 开关。
+  - 同步模块卡：`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-agent-runtime/{execution_mode,agentic_loop}.md`、`docs/modules/frontend/components.md`。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → failed：Step 2 `just install` / `pnpm install --silent` exit 1（pnpm ignored-builds 策略，和本 bug 无关）。
+  - `cargo fmt -p golish-agent-app -p golish-agent-runtime`（cwd `backend`）→ exit 0。
+  - `cargo test -p golish-agent-app chat_title_tests -q` → 17 passed。
+  - `cargo test -p golish-agent-runtime first_iter_hooks -q` → 10 passed。
+  - `cargo test -p golish-agent-runtime task_lead_turn_is_flexible_and_can_start_operation -q` → 1 passed。
+  - `cargo test -p golish-agent-runtime task_stage_primary_only_dispatches_workers -q` → 1 passed。
+  - `./node_modules/.bin/vitest run frontend/components/AIChatPanel/hooks/useChatSend.test.ts` → 1 passed。
+  - `./node_modules/.bin/biome check frontend/components/AIChatPanel/hooks/useChatSend.ts frontend/components/AIChatPanel/hooks/useChatSend.test.ts` → exit 0。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+  - `cargo check -p golish-agent-app -p golish-agent-runtime`（cwd `backend`）→ exit 0。
+  - `cargo clippy -p golish-agent-app -p golish-agent-runtime --all-targets -- -D warnings`（cwd `backend`）→ exit 0。
+  - `git diff --check -- <本轮 Task/Profile lead files>` → exit 0。
+- **未跑**：`just precommit`（当前工作树已有大量前序未提交改动，且 `./init.sh` 被 pnpm ignored-builds 策略卡住；本轮做 scoped 验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（Task/Profile lead scope）**：`backend/crates/golish-agent-app/src/ai/commands/core/chat.rs`、`backend/crates/golish-agent-runtime/src/agentic_loop/first_iter_hooks.rs`、`backend/crates/golish-agent-runtime/src/execution_mode/modes/task.rs`、`frontend/components/AIChatPanel/hooks/useChatSend.ts`、`frontend/components/AIChatPanel/hooks/useChatSend.test.ts`、`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/backend/golish-agent-runtime/execution_mode.md`、`docs/modules/frontend/components.md`、`agent-progress.md`。
+- **下一步建议**：重启/刷新 app 后新开一个 Task/Profile conversation，先试「你好」「你是谁」应正常聊天；再试「帮我搞一下平安」「就搞他」「进红队模式」应触发 `start_operation` 进入 Scoping，而不是在 lead 外层反复追问。
+
+---
+
+### 2026-06-26 · terminal 自动抢焦点修复
+
+- **本轮目标**：修复打开程序、创建/切换 chat tab 后几秒光标自动跳到左侧 terminal 的问题；判断是否与输入法切换逻辑有关。
+- **根因判断**：
+  - 输入法切换不是主动根因；`GridTerminal` / `UnifiedInput` 获得 terminal 焦点后才会触发 ABC 输入法切换。
+  - 真正问题是 terminal auto-focus suppression 只靠 6s 窗口且有漏网路径：启动恢复、conversation 绑定 terminal、legacy xterm/live terminal 以及 rAF 排队 focus 都可能在 chat 输入框已聚焦后再抢焦点。
+- **已完成**：
+  - `frontend/lib/terminal/terminalAutoFocus.ts`：默认 suppression 窗口 6s → 30s；新增“当前 `[data-ai-chat-input]` 有焦点时，terminal 自动 focus 一律 suppressed”的硬保护。
+  - `frontend/store/slices/conversation.ts`：当前 conversation 绑定 terminal、切换 conversation 激活 terminal 时，先打 suppression 再改 active terminal，覆盖 app 启动恢复/手动补 terminal 分支。
+  - `frontend/components/GridTerminal/GridTerminal.tsx`、`frontend/components/Terminal/Terminal.tsx`、`frontend/components/UnifiedInput/useUnifiedInputState.ts`、`frontend/lib/terminal/LiveTerminalManager.ts`：所有 terminal 自动 focus 入口统一尊重 suppression，并在 rAF 内二次检查，避免帧级竞态。
+  - 补回归：`terminalAutoFocus.test.ts` 覆盖 chat 输入框硬保护；`conversation.test.ts` 覆盖 active conversation 绑定/切换 terminal 前 suppression。
+  - `docs/modules/frontend/components.md` 同步焦点契约。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → failed：Step 2 `just install` / `pnpm install --silent` exit 1（pnpm ignored-builds 策略，和本 bug 无关）。
+  - `./node_modules/.bin/vitest run frontend/lib/terminal/terminalAutoFocus.test.ts frontend/store/slices/conversation.test.ts frontend/components/GridTerminal/GridTerminal.test.tsx` → 3 files / 27 tests passed。
+  - `./node_modules/.bin/vitest run frontend/lib/terminal/terminalAutoFocus.test.ts frontend/store/slices/conversation.test.ts frontend/components/GridTerminal/GridTerminal.test.tsx frontend/lib/terminal/LiveTerminalManager.test.ts frontend/lib/terminal/TerminalInstanceManager.test.ts` → 5 files / 32 tests passed。
+  - `./node_modules/.bin/biome check frontend/lib/terminal/terminalAutoFocus.ts frontend/lib/terminal/terminalAutoFocus.test.ts frontend/store/slices/conversation.ts frontend/store/slices/conversation.test.ts frontend/components/Terminal/Terminal.tsx frontend/lib/terminal/LiveTerminalManager.ts frontend/components/GridTerminal/GridTerminal.tsx frontend/components/UnifiedInput/useUnifiedInputState.ts docs/modules/frontend/components.md` → exit 0。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+  - `./node_modules/.bin/vitest run --reporter=dot --silent` → 136 files passed；1411 passed / 12 skipped。
+  - `git diff --check -- frontend/lib/terminal/terminalAutoFocus.ts frontend/lib/terminal/terminalAutoFocus.test.ts frontend/store/slices/conversation.ts frontend/store/slices/conversation.test.ts frontend/components/Terminal/Terminal.tsx frontend/lib/terminal/LiveTerminalManager.ts frontend/components/GridTerminal/GridTerminal.tsx frontend/components/UnifiedInput/useUnifiedInputState.ts docs/modules/frontend/components.md` → exit 0。
+- **未跑 / 阻塞**：
+  - `just check-fe` 与 `just test-fe` 均被 pnpm deps-status/install 前置检查挡住；直接展开命令显示 `[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: @swc/core, electron, esbuild`，需 `pnpm approve-builds` 类交互授权后才可跑 just recipe。
+  - `just precommit` 未跑（同一 pnpm ignored-builds 门禁会阻塞前端 recipe）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交**：`frontend/lib/terminal/terminalAutoFocus.ts`、`frontend/lib/terminal/terminalAutoFocus.test.ts`、`frontend/store/slices/conversation.ts`、`frontend/store/slices/conversation.test.ts`、`frontend/components/GridTerminal/GridTerminal.tsx`、`frontend/components/Terminal/Terminal.tsx`、`frontend/components/UnifiedInput/useUnifiedInputState.ts`、`frontend/lib/terminal/LiveTerminalManager.ts`、`docs/modules/frontend/components.md`。
+- **下一步建议**：重启 dev app 后做活体验证：打开程序、点右侧 `+` 新建 chat、切换旧 chat，确认 chat 输入框有焦点时 30s 内/慢 shell ready 后都不会跳到左侧 terminal；主动点击 terminal 时仍能立即聚焦并切 ABC。
+
+---
+
+### 2026-06-26 · Task/Profile 改为 flexible lead + start_operation
+
+- **本轮目标**：修复用户截图里的 task/profile 模式路由问题；profile 选择应像 IDE debug/profile 一样是能力/行为预设，而不是“每次回车都强制进 harness”或“只有显式 `/task` 才能开始任务”。
+- **已完成**：
+  - `backend/crates/golish-agent-app/src/ai/commands/core/chat.rs`：Task/profile 下普通发送先跑 flexible lead-agent turn（正常聊天/写代码/调试工具 + `start_operation` handoff）。模型没调用 `start_operation` 时直接返回 lead 回复；模型调用后再用其 `objective` 进入 Scoping→Reporting 的 `TaskOrchestrator`。
+  - 同一文件保留显式 harness 入口：用户消息以 `/task ...` / `/harness ...` / `task:` / `harness:` 开头时，绕过 lead turn 直接进入 TaskOrchestrator；wrapped prompt 会保留 system context 并剥掉前缀。
+  - `backend/crates/golish-agent-runtime/src/execution_mode/`：给 `PolicyContext` 增加 `harness_active`，Task policy 分成两种 depth-0 工具面：lead turn 暴露普通 chat/coding 工具 + `start_operation`；active harness stage primary 才暴露 `submit_stage_deliverable` / `stage_run` / stage orchestration 工具。
+  - 修正 lead 工具面：Task/Profile lead 不再暴露 `manage_organizations` / `manage_targets` / `recon_*` / `pentest_run`，避免模型在 harness 外直接创建组织、绕过 Scoping 的 `ask_human` 交互。
+  - 追加修复真实泄漏点：`selection_apply.rs` 原先只看 `StaticGroupSelection::any_enabled()`，没有按 group 过滤静态目录，导致 Task/Profile lead 虽然关了 bridge/recon 工具，仍能拿到 `query_target_data` / `list_in_scope_targets` / `list_attack_surface_seeds` 和 shell。现在静态目录会按 `ToolName::category()` + 少数 legacy tool 名称兜底做 group allow-list 机械过滤。
+  - `TaskModePolicy` 的 lead turn 进一步收紧：保留普通协作静态组 + `ask_human` + `start_operation`，关闭 `security_analysis` / graph / sploitus 和 `run_command`。真实 scope/recon/pentest 请求只能通过 `start_operation` 进入 harness。
+  - `AgentBridge` 新增 `execute_with_turn_instructions`：Task/Profile lead policy 作为隐藏单 turn system instruction 注入，不污染 `AiEvent::UserMessage`、sidecar capture 或 conversation history。
+  - `backend/crates/golish-agent-bridge/src/agent_bridge/prepare.rs`：prompt 里只有 active harness stage 才声明 sub-agent dispatch 能力，避免 lead turn 被提示去走 stage/sub-agent 工具面。
+  - 同步模块卡：`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-agent-runtime/execution_mode.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/backend/golish-agent-bridge/agent_bridge.md` 记录 flexible lead、hidden instruction 与 active-stage 工具面边界。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-agent-app -p golish-agent-runtime -p golish-agent-bridge` → exit 0。
+  - `git diff --check -- backend/crates/golish-agent-app/src/ai/commands/core/chat.rs backend/crates/golish-agent-runtime/src/execution_mode/context.rs backend/crates/golish-agent-runtime/src/agentic_loop/tool_list.rs backend/crates/golish-agent-runtime/src/execution_mode/modes/task.rs backend/crates/golish-agent-bridge/src/agent_bridge/prepare.rs docs/modules/backend/golish-agent-app/ai.md docs/modules/backend/golish-agent-runtime/execution_mode.md docs/modules/backend/golish-agent-bridge/agent_bridge.md agent-progress.md` → exit 0。
+  - `cd backend && cargo test -p golish-agent-app chat_title_tests -q` → 14 passed。
+  - `cd backend && cargo test -p golish-agent-app start_operation_tool -q` → 2 passed。
+  - `cd backend && cargo test -p golish-agent-runtime tool_list -q` → 9 passed。
+  - `cd backend && cargo test -p golish-agent-runtime execution_mode -q` → 23 passed。
+  - 收紧 Task/Profile lead 工具面后复跑 `cd backend && cargo test -p golish-agent-runtime execution_mode -q` → 23 passed。
+  - 收紧 Task/Profile lead 工具面后复跑 `cd backend && cargo test -p golish-agent-runtime tool_list -q` → 9 passed。
+  - `cd backend && cargo check -p golish-agent-app -p golish-agent-runtime -p golish-agent-bridge` → exit 0。
+  - 收紧 Task/Profile lead 工具面后复跑 `cd backend && cargo check -p golish-agent-runtime` → exit 0。
+  - `cd backend && cargo clippy -p golish-agent-app -p golish-agent-runtime -p golish-agent-bridge --all-targets -- -D warnings` → exit 0。
+  - 收紧 Task/Profile lead 工具面后复跑 `cd backend && cargo clippy -p golish-agent-runtime --all-targets -- -D warnings` → exit 0。
+  - 追加静态工具组过滤 + hidden instruction 后复跑 `cd backend && cargo fmt -p golish-agent-runtime -p golish-agent-app -p golish-agent-bridge` → exit 0。
+  - 追加静态工具组过滤 + hidden instruction 后复跑 `cd backend && cargo test -p golish-agent-runtime tool_list -q` → 9 passed（覆盖 Task/Profile lead 保留 `read_file` / `grep_file` / `list_files` / `ast_grep`，排除 shell、安全查询、CVE/PoC/exploit 工具）。
+  - 追加静态工具组过滤 + hidden instruction 后复跑 `cd backend && cargo test -p golish-agent-runtime execution_mode -q` → 23 passed。
+  - 追加静态工具组过滤 + hidden instruction 后复跑 `cd backend && cargo test -p golish-agent-app chat_title_tests -q` → 15 passed。
+  - 追加静态工具组过滤 + hidden instruction 后复跑 `cd backend && cargo test -p golish-agent-app start_operation_tool -q` → 2 passed。
+  - 追加静态工具组过滤 + hidden instruction 后复跑 `cd backend && cargo check -p golish-agent-app -p golish-agent-runtime -p golish-agent-bridge` → exit 0。
+  - 追加静态工具组过滤 + hidden instruction 后复跑 `cd backend && cargo clippy -p golish-agent-app -p golish-agent-runtime -p golish-agent-bridge --all-targets -- -D warnings` → exit 0。
+  - `git diff --check -- <Task/Profile routing backend/docs/progress files>` → exit 0。
+- **未跑**：`./init.sh` / `just precommit`（本轮为 scoped agent-routing 修复，且当前工作树已有用户/前序未提交改动）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（Task/Profile routing scope）**：`backend/crates/golish-agent-app/src/ai/commands/core/chat.rs`、`backend/crates/golish-agent-bridge/src/agent_bridge/execution.rs`、`backend/crates/golish-agent-bridge/src/agent_bridge/prepare.rs`、`backend/crates/golish-agent-runtime/src/agentic_loop/tool_list.rs`、`backend/crates/golish-agent-runtime/src/execution_mode/context.rs`、`backend/crates/golish-agent-runtime/src/execution_mode/modes/task.rs`、`backend/crates/golish-agent-runtime/src/execution_mode/selection_apply.rs`、`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-agent-bridge/agent_bridge.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/backend/golish-agent-runtime/execution_mode.md`、`agent-progress.md`。
+
+---
+
+### 2026-06-26 · AIChatPanel 输入框禁止可见滚动滑块
+
+- **本轮目标**：修复用户截图里 chat panel 输入框出现滚动滑块的问题；输入框宽度是多少就按多少换行/断行，不显示横向或纵向 scrollbar thumb。
+- **已完成**：
+  - `frontend/components/AIChatPanel/AIChatPanel.tsx`：聊天 textarea 明确设置 `wrap="soft"`，并挂 `ai-chat-input-textarea`。
+  - `frontend/index.css`：`ai-chat-input-textarea` 强制隐藏横向 overflow，长消息/URL/token 用 `overflow-wrap:anywhere` / `word-break:break-word` 断行；同时用 `scrollbar-width:none`、transparent scrollbar color 和 WebKit scrollbar override 隐藏横向/纵向可见滑块。
+  - `docs/modules/frontend/components.md`：记录 `AIChatPanel` 底部聊天 textarea 不显示任何 scrollbar thumb。
+- **运行过的验证（实跑）**：
+  - `./node_modules/.bin/biome check frontend/components/AIChatPanel/AIChatPanel.tsx frontend/index.css` → exit 0。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+  - `git diff --check -- frontend/components/AIChatPanel/AIChatPanel.tsx frontend/index.css docs/modules/frontend/components.md agent-progress.md` → exit 0。
+- **未跑**：`./init.sh` / `just precommit`（本轮为 scoped 前端样式修复）。
+- **提交记录**：未 commit。
+
+---
+
+### 2026-06-26 · SubAgent detail 工具调用归属视觉
+
+- **本轮目标**：回应用户截图反馈：detail 里工具调用卡片背景太硬，像突然切断 agent 对话；需要能看出 tool call 属于前一段 Thought/Agent Output。
+- **已完成**：
+  - `frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`：`text/thinking -> tool_call` 不再画 hard separator；紧跟 narrative 的工具调用会以 `after_narrative` 关系渲染，连续工具调用以 `stacked` 关系渲染，只有 `tool_call -> text/thinking` 才开新视觉组。
+  - `AgentToolCallBlock` 样式降噪：去掉厚卡片/阴影，改为低背景、细边框、轻量 hover，并在跟随 narrative 或连续工具时画细连接线，表达“这是上一段话触发的 action”。
+  - `frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts`：更新视觉分组回归，锁定 narrative 后的 tool 不分隔、tool 后的新 narrative 分隔、连续工具堆叠。
+  - `docs/modules/frontend/components.md`：同步记录新的 detail 分组语义。
+- **运行过的验证（实跑）**：
+  - `./node_modules/.bin/biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0。
+  - `./node_modules/.bin/vitest run frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 33 tests passed。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+- **未跑**：`./init.sh` / `just precommit`（本轮为 scoped 前端视觉修复）。
+- **提交记录**：未 commit。
+
+---
+
 ### 2026-06-26 · 全局细透明滚动条恢复
 
 - **本轮目标**：修复用户截图里所有原生滚动条又粗又大的问题，恢复为默认透明/低可见度、hover/focus/滚动时细滚动条的统一样式。
@@ -7040,6 +7779,125 @@
   - 未跑 `./init.sh` / `just precommit`；本轮为前端性能修复，已跑 `just check-fe` + `just test-fe`。
   - 未做 Playwright 活体性能录制；需要在真实 thinking + 大 stdout 流场景下再观察主线程帧率。
 - **下一步最佳动作**：重启前端，复现一次 thinking + 大 Output 同时流式更新；若仍卡，下一刀把 store 内 streamingOutput 从全量字符串改成 ring buffer/line buffer。
+
+### 2026-06-27 · Stage coverage preflight tool before submit
+
+- **本轮目标**：回答“模型为什么看不到前端资产覆盖、没搞完还会 submit”，并给 active stage agent 一个和前端覆盖面板同源的提交前自检工具。
+- **已完成**：
+  - 新增只读工具 `check_stage_asset_coverage`：复用 `ai_get_stage_asset_coverage` 的 DB-truth snapshot，返回 `ready_to_submit`、cell 计数、`gap_examples`、`next_action`；默认使用 active harness org/current stage/current session，并读取 `operation_state.stage_started_at` 做 freshness anchor。
+  - 工具 schema、main-agent selection、execution_mode 静态分组、direct executor、sub-agent router、RuntimeSupervisor、StageRefiner repair allowed-tools 全部接通，避免“LLM 看得到但执行 Unknown tool”。
+  - EAS / target_intel / enumeration methodology 和动态 stage prompt 都改为：submit 前先调用 `check_stage_asset_coverage`；`ready_to_submit=false` 时按 `gap_examples` 补 pending/error cell，true 后再 `submit_stage_deliverable`。
+  - 同步模块卡：`golish-agent-app/ai`、`golish-agent-runtime/{agentic_loop,execution_mode}`、`golish-agent-kit/{tool_executors,tool_definitions}`、`golish-tools/definitions`。
+- **运行过的验证**：
+  - `./init.sh` → 失败；Step 2 `just install` / `pnpm install --silent` exit 1，未进入 full check/test。
+  - `rustfmt --edition 2021 <本轮相关 Rust 文件>` → exit 0。
+  - `cd backend && cargo test -p golish-agent-kit coverage_preflight -q` → 3 passed / 744 filtered。
+  - `cd backend && cargo test -p golish-tools test_build_function_declarations_returns_all_tools -q` → 1 passed / 73 filtered。
+  - `cd backend && cargo test -p golish-agent-runtime read_only_query_tools_surfaced_for_active_stage_orchestrator -q` → 1 passed / 272 filtered。
+  - `cd backend && cargo test -p golish-agent-runtime attack_surface_seeds_routes_through_security_analysis_executor -q` → 1 passed / 272 filtered。
+  - `cd backend && cargo check -p golish-agent-kit -p golish-agent-runtime -p golish-agent-app -p golish-tools` → exit 0。
+  - `cd backend && cargo clippy -p golish-agent-kit -p golish-agent-runtime -p golish-agent-app -p golish-tools --all-targets -- -D warnings` → exit 0。
+  - `git diff --check` → exit 0。
+- **已记录证据**：
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db` 显示最新 EAS retry 仍被 `coverage_complete` BLOCK；DB 自诊断为 561 targets，其中 70 个 `organization_id=NULL`，并列出 EAS liveness/port/service-fingerprint facts。
+  - `run.log` 最新主 agent gate：`2026-06-27T04:52:35Z ... coverage_complete ... gaps_total=115`，first gaps 包括 `101.226.26.45 × GOLISH-EAS-LIVENESS`、`101.226.28.237 × GOLISH-EAS-SERVICE-FINGERPRINT` 等。
+  - `coverage_preflight_blocks_submit_when_cells_are_pending` 覆盖 pending cell 时 `ready_to_submit=false` 且返回 gap。
+  - `coverage_preflight_treats_blocked_as_terminal` 覆盖 blocked terminal 不会让自检永远 false。
+  - `read_only_query_tools_surfaced_for_active_stage_orchestrator` 覆盖 active stage 工具面包含 coverage preflight。
+  - `attack_surface_seeds_routes_through_security_analysis_executor` 同时断言 `check_stage_asset_coverage` 走 direct security-analysis executor。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 `just precommit`；本轮 `./init.sh` 已在 pnpm install 阶段失败，后续只跑了相关后端 targeted 验证。
+  - 工作树还有大量非本轮既有脏改动，本轮未尝试清理或回退。
+  - 需要重启 app 后复跑真实 EAS/target_intel run，观察模型是否在 submit 前调用 `check_stage_asset_coverage` 并按 gap 补洞。
+- **下一步最佳动作**：重启 app，复跑当前卡住的 stage；在 `run_tree.py --full --db` 里确认 submit 前出现 `check_stage_asset_coverage`，且 `ready_to_submit=false` 时不会调用 `submit_stage_deliverable`。
+
+### 2026-06-27 · EAS submit background job control tools
+
+- **本轮目标**：修复最后一次平安 EAS 已 `stage_run` 12/12 passed 但最终 `submit_stage_deliverable` 一直被 2 个 hung WhatWeb background job 卡住的问题。
+- **日志证据 / 根因**：
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1782488490399-1 --full --db` 显示最新 EAS 已进入 `external_attack_surface`，后续 `stage_run` 返回 `12/12 orgs passed` 并给出 pass token `96612149ea2bebea3dce7aa4ba9f7262e760e0fce08e4a644d17a5939d4ee825`。
+  - 最终 submit 仍 `needs_fix`：2 个后台 job 还在 running，分别是 `job_898357ed` (`whatweb ... https://61.172.180.149 -timeout 15`) 和 `job_60245ced` (`whatweb ... https://61.241.21.205 -timeout 15`)。
+  - 日志显示 main agent 尝试 `check_job` / `kill_job`，但 active specialist stage 的工具面没有暴露这些 registry control tools，ToolGuard 阻止了正确修复动作。
+- **已完成**：
+  - `backend/crates/golish-agent-runtime/src/execution_mode/policy.rs`：`BridgeToolSelection` 增加 `wait_for_background_jobs` / `check_job` / `kill_job`，纳入稳定工具名列表。
+  - `backend/crates/golish-agent-runtime/src/execution_mode/modes/task.rs`：active harness stage 的 depth-0 primary 显式暴露这 3 个后台 job 控制工具；普通 Task/Profile lead turn 仍不暴露 submit/stage/security/shell。
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_list.rs`：补 active specialist stage 回归测试，确认 direct recon/sub-agent 工具被隐藏时，job-control tools 仍保留。
+  - 停掉两个旧 orphan WhatWeb 进程：PID `98845` / `1240`，`ps -p 1240,98845` 已无进程。
+  - 同步模块卡：`docs/modules/backend/golish-agent-runtime/execution_mode.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-agent-runtime` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-runtime bridge_all_enabled_lists_tools_in_stable_order task_stage_primary_only_dispatches_workers active_specialist_stage_primary_must_use_stage_run_not_direct_recon submit_stage_deliverable_surfaces_in_active_task_stage_not_lead_or_chat --status-level fail` → 4 passed / 269 skipped。
+  - `cd backend && cargo check -p golish-agent-runtime` → exit 0。
+  - `git diff --check -- backend/crates/golish-agent-runtime/src/execution_mode/policy.rs backend/crates/golish-agent-runtime/src/execution_mode/modes/task.rs backend/crates/golish-agent-runtime/src/agentic_loop/tool_list.rs` → exit 0。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 `just precommit`；本轮只跑了相关 runtime crate 的 targeted tests/check。
+  - 运行中的 app 需要重启/重载后才会使用新的工具选择逻辑；旧 session 的 in-memory background job registry 若已随进程丢失，可能需要重新 resume/submit 才能观察 closeout。
+- **下一步最佳动作**：重启 app 后恢复/复跑 EAS；如果 submit 再报 pending background jobs，主 agent 应能直接调用 `wait_for_background_jobs` / `check_job` / `kill_job`，而不是再次被 ToolGuard BLOCK。
+
+### 2026-06-27 · Operation continuity adoption
+
+- **本轮目标**：解决 A session 放弃但 DB 不清理后，B session 是否应询问复用旧 DB 进度并直接跳到应继续阶段的问题。
+- **已完成**：
+  - 先诊断最新 Test1 run：`target_intel` 的 per-org `stage_run` 已 PASS 并给出 pass token，但最终 submit 仍因当前 session/root org 缺 `source_query_log` terminal rows 被 `source_coverage` BLOCK；另有 `hebei.182.61.IN-ADDR.ARPA` 这类 EAS 反向 DNS 资产污染 target_intel denominator 的历史噪声。
+  - 新增设计文档 `docs/design/2026-06-27-operation-continuity-adoption.md` 和计划 `docs/superpowers/plans/2026-06-27-operation-continuity-adoption.md`。
+  - `golish-agent-kit::harness::operation_continuity`：新增 IO-free `ContinuitySnapshot` / `ContinuityAdoptionPlan` / `ContinuityDecision`，按 profile DAG reusable prefix 计算 entry stage + remaining-stage allowlist，并复用 live branch 规则处理 no-progress bail。
+  - `golish-agent-kit::task_orchestrator::continuity`：新增只读 DB preflight，用 `in_scope_org_ids` + `org_stage_completions` freshness 构建 continuity snapshot；无 migration、确认前不写库。
+  - `TaskOrchestrator` 新增 `set_continuity_adoption`：确认复用后从 plan.entry_stage 启动，并设置 remaining-stage allowlist，避免 metalcraft Executor 仍从 scoping 跑；初始 resume state 记录 adoption plan。
+  - `start_operation` 工具新增 `continuity_decision=ask_before_reuse|reuse_existing|start_fresh`；Task/Profile 入口发现可复用旧 DB progress 且用户未选择时，会先返回确认问题、不创建新 task；用户明确“复用/沿用/用已有”则 adoption，明确“重新开始/不要复用”则 start fresh。
+  - 同步模块卡：`docs/modules/backend/golish-agent-kit/{harness,task_orchestrator}.md`、`docs/modules/backend/golish-agent-app/ai.md`；追加 `feature_list.json` 条目 `operation-continuity-adoption-2026-06-27`。
+- **运行过的验证**：
+  - `./init.sh` → 失败：Step 2 `just install` / `pnpm install --silent` exit 1，真实错误为 `ERR_PNPM_IGNORED_BUILDS`，需要 approve `@swc/core` / `electron` / `esbuild` build scripts。
+  - `cd backend && cargo fmt --check` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-kit operation_continuity continuity harness_resume --status-level fail` → 9 passed / 746 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app start_operation continuity --status-level fail` → 8 passed / 78 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app chat_title_tests --status-level fail` → 22 passed / 64 skipped。
+  - `cd backend && cargo check -p golish-agent-kit -p golish-agent-app` → exit 0。
+  - `git diff --check` → exit 0。
+  - `python3 -m json.tool feature_list.json` → exit 0。
+- **已记录证据**：
+  - `operation_continuity` tests 覆盖 reusable prefix 跳到第一缺口、ReusableNoProgress 走 bail 分支到 reporting、无 reusable progress 返回 None。
+  - `task_orchestrator::continuity` tests 覆盖 all-fresh completion rows → reusable，以及 partial/stale completion rows 区分。
+  - `start_operation_tool` tests 覆盖默认 ask_before_reuse 和 reuse_existing capture。
+  - `commands/core/chat.rs` tests 覆盖 start_operation payload continuity_decision、用户文本“复用已有数据继续”/“不要复用，重新开始”解析、continuity offer 文案包含 adopted stages + next entry。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 `just precommit`；`./init.sh` 已被本机 pnpm ignored-build approval policy 阻塞，故本条保持 `in_progress`，不标 passing。
+  - 当前 DB preflight 仍用 legacy in-scope org axis；后续应做目标/engagement root 匹配和前端 continuity card，避免同一 embedded DB 中 sibling/test org 混入。
+  - 工作树已有大量非本轮脏改动，本轮没有回退或清理。
+- **下一步最佳动作**：重启 app 后在新 B session 对同一目标发起 Task/Profile operation；应先看到“复用已有数据继续/重新开始”确认。选择复用后，run_tree 应显示 operation 从第一缺口阶段启动，`operation_state.state_blob.continuity_adoption` 记录 adopted stages。
+
+### 2026-06-27 · Continuity entry stage submit-loop diagnosis
+
+- **本轮目标**：诊断用户选择复用旧 DB 进度后，后续 `submit_stage_deliverable` 为什么一直过不去，并修掉导致 target_intel 被空跑/空提交流程卡住的 runtime 问题。
+- **日志证据 / 根因**：
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db` 最新 run `pentest-chat-1782565600140-1` 显示 ask_human 卡片已出现，用户在 `2026-06-27T13:06:45` 选择“复用已有数据继续”。
+  - 复用 plan 只 adopted `scoping`，entry stage 是 `target_intel`；但 `target_intel` 内部 `stage_run` 又用旧 `org_stage_completions` 判定所有 org “7d 内已通过本阶段”，直接跳过所有 specialist worker。
+  - 本轮没有新的 worker/evidence/source query：DB 自诊断显示 current session 无 source-query evidence facts，`source_query_log` 本 run 为空；submit gate 随后 BLOCK `coverage_complete` / `source_coverage`，root org 的 `GOLISH-INTEL-DNS/WHOIS/ASN/CT/SUBDOMAIN/OSINT` 六个 cell 没有 terminal state。
+  - 后续 submit retry 还出现了模型 payload 症状：`coverage[].evidence_refs=null` 被反序列化拒绝、`skipped_checks.reason.evidence_ref` 缺失、以及 vacuous deliverable（无 claims/findings/skipped_checks）。这些是没有真实本轮证据后的连锁反应，不是应放宽 gate 的根因。
+- **已完成**：
+  - `backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`：给 resume-skip 增加 `not_before` 下限；当 `operation_state.state_blob.continuity_adoption.entry_stage == 当前 stage` 时，下限取本次 `operation_state.stage_started_at`。
+  - 这样旧 session 的 `org_stage_completions` 不会把 continuity entry stage 的 worker 全部短路；但本轮 stage 已经新写入的 completion 仍可被 skip，避免 retry 时重复跑已通过 org。
+  - 新增单测覆盖 old completion before floor 不允许 skip、无 floor 保持旧行为，以及从 resume blob 读取 continuity entry stage。
+  - 同步模块卡：`docs/modules/backend/golish-agent-runtime/agentic_loop.md`。
+- **运行过的验证**：
+  - `./init.sh` → 失败：Step 2 `just install` / `pnpm install --silent` exit 1，仍是本机 `ERR_PNPM_IGNORED_BUILDS`（`@swc/core` / `electron` / `esbuild` build scripts 未 approve）。
+  - `cd backend && cargo fmt -p golish-agent-runtime` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-runtime resume_skip_floor continuity_entry_stage --status-level fail` → 2 passed / 273 skipped。
+  - `cd backend && cargo check -p golish-agent-runtime` → exit 0。
+  - `cd backend && cargo clippy -p golish-agent-runtime --all-targets -- -D warnings` → exit 0。
+  - `git diff --check` → exit 0。
+- **已记录证据**：
+  - `run_tree.py --full --db` 对最新 run 的主因定位：复用后 entry stage 是 `target_intel`，但 `stage_run` 全部走“跳过重跑（7d 内已通过本阶段）”，无本轮 source-query terminal rows，最终 submit 被 deterministic coverage/source gates 卡住。
+  - `resume_skip_floor_blocks_prior_continuity_completion` 防止旧 completion 在 continuity entry stage 触发 skip。
+  - `continuity_entry_stage_is_read_from_resume_blob` 覆盖从 `operation_state.state_blob.continuity_adoption.entry_stage` 解析 stage。
+- **提交记录**：待提交。
+- **已知风险或未解决问题**：
+  - 未跑 `just precommit`；原因同上，`./init.sh` 被 pnpm ignored-build approval policy 阻塞。
+  - 需要重启 app 后重新跑一次复用流程，确认 `target_intel` entry stage 真实 dispatch worker，并在 submit 前产生当前 run 的 source_query terminal rows。
+  - 工作树已有大量非本轮脏改动，本轮未清理或回退。
+- **下一步最佳动作**：重启 app，重新选择“复用已有数据继续”；用 `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db` 确认 `target_intel` 不再全 org skip，submit 前 source_coverage 由本轮工具调用写入。
 
 ## 模板（复制下面这块当新会话记录）
 

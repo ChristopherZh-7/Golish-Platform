@@ -84,8 +84,9 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
     } else if spec.facts_from_db_truth {
         let db_truth_action = if spec.kind == StageKind::ExternalAttackSurface {
             "Run the EAS active mapping tools so their data LANDS in the database \
-             (list_attack_surface_seeds/list_in_scope_targets -> pentest_run httpx/naabu/nmap/whatweb \
-             as appropriate -> manage_targets/targets.ports/fingerprints/technique_outcomes)."
+             (stage_run -> prober -> list_attack_surface_seeds/list_in_scope_targets -> \
+             batch-first pentest_run httpx/naabu/nmap/whatweb as appropriate -> \
+             manage_targets/targets.ports/fingerprints/technique_outcomes)."
         } else {
             "Run the target_intel registry tools so their data LANDS in the database \
              (e.g. recon_map_assets / recon_lookup_whois -> target_assets / dns_records where \
@@ -106,7 +107,9 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
              {db_truth_action} The deterministic gate reads \
              the DB directly to score per-(asset × technique) completeness. You do NOT need to fill the \
              `coverage` matrix cell-by-cell, and you do NOT need to tag claims/findings with `technique` \
-             — leave found cells to the DB-truth projection. {terminal_hint} A blocked/not_applicable cell is \
+             — leave found cells to the DB-truth projection. {terminal_hint} Before submit, call \
+             `check_stage_asset_coverage`; if `ready_to_submit=false`, close the reported `gap_examples` \
+             instead of submitting. A blocked/not_applicable cell is \
              TERMINAL and clears that gap — do NOT resubmit the same matrix expecting it to fill \
              (\"checked-empty\" is NOT \"unchecked\").",
             spec.expected_techniques.join(", ")
@@ -126,7 +129,8 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
              `tested_units = open ports fingerprinted` and `total_units = open ports discovered`. \
              If no ports are open, mark SERVICE-FINGERPRINT `not_applicable` with a note; do NOT \
              submit checked_empty with total_units=0. HTTP liveness alone is never PORT or \
-             SERVICE-FINGERPRINT coverage.",
+             SERVICE-FINGERPRINT coverage. Before submit, call `check_stage_asset_coverage`; if \
+             `ready_to_submit=false`, close the reported `gap_examples` instead of submitting.",
             spec.expected_techniques.join(", ")
         )
     } else {
@@ -146,7 +150,8 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
              the matching expected technique id above, using the SAME `subject` string as the cell's \
              `asset`. Technique-tagged items corroborate your 'found' coverage cells (a 'found' cell with \
              NO matching tagged claim/finding on the same asset is rejected) and can auto-derive cells you \
-             did the work for but forgot to declare.",
+             did the work for but forgot to declare. Before submit, call `check_stage_asset_coverage`; if \
+             `ready_to_submit=false`, close the reported `gap_examples` instead of submitting.",
             spec.expected_techniques.join(", ")
         )
     };
@@ -201,7 +206,7 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
         // NOT pass. State it plainly so the model performs the steps.
         if scoping_policy.require_unit_candidates {
             s.push_str(
-                "- HARD GATE — RED-TEAM unit flow is VERIFIED against your actual tool calls (not just claims): you MUST really call `manage_organizations(action=\"propose_candidates\")`, then `ask_human(input_type=\"unit_review\")` for the user to judge candidate units, then `manage_organizations(action=\"create\")` to record the organization. Skipping these and only emitting a scope_human_approved claim will BLOCK the gate.\n",
+                "- HARD GATE — RED-TEAM unit flow is VERIFIED against your actual tool calls (not just claims): you MUST really call `manage_organizations(action=\"propose_candidates\")`, then `ask_human(input_type=\"unit_review\")` for the user to judge candidate units. If the root org/tree already exists (REUSE mode), DO NOT call `create`/`create_batch` just to satisfy the gate; the human-confirmed existing org tree is the record. Only call `manage_organizations(action=\"create\"/\"create_batch\")` for a missing root or units the user explicitly added/confirmed. Skipping the real `unit_review` and only emitting a scope_human_approved claim will BLOCK the gate.\n",
             );
         }
         s

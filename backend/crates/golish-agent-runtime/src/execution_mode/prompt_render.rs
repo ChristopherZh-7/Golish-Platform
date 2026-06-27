@@ -145,6 +145,10 @@ const STATIC_SECURITY_ANALYSIS: &[ToolRow] = &[
         name: "list_in_scope_targets",
         purpose: "List in-scope recon targets (id+value+type); call first to discover assets, then query_target_data each.",
     },
+    ToolRow {
+        name: "check_stage_asset_coverage",
+        purpose: "Preflight DB-truth stage coverage and see pending asset-technique gaps before submit.",
+    },
 ];
 
 const STATIC_GRAPH: &[ToolRow] = &[

@@ -275,7 +275,7 @@ impl TaskOrchestrator {
                     // 跳过整阶段 coverage；非 fan-out / 不可解析交付物走常规 gate。
                     let mut specialist_gated = false;
                     let (gated_content, gate_outcome) = if let Some(res) = self
-                        .try_specialist_stage_gate(planned, &agent_result.content)
+                        .try_specialist_stage_gate(planned, &agent_result.content, task_id)
                         .await
                     {
                         specialist_gated = true;
@@ -467,23 +467,25 @@ impl TaskOrchestrator {
         let refine_facts = evidence_facts.clone();
         // Phase 1.5: fan-out 阶段收尾改判 stage_run pass_token；非 fan-out 走常规 gate。
         let mut specialist_gated = false;
-        let (out, gate_outcome) =
-            if let Some(res) = self.try_specialist_stage_gate(planned, &fallback).await {
-                specialist_gated = true;
-                res
-            } else {
-                apply_harness_gate_hook(
-                    planned,
-                    exec_ctx,
-                    fallback,
-                    in_scope_assets,
-                    asset_types,
-                    in_scope_target_types,
-                    evidence_facts,
-                    source_queries,
-                    self.harness_subsidiary_policy.map(|p| p.threshold_pct),
-                )
-            };
+        let (out, gate_outcome) = if let Some(res) = self
+            .try_specialist_stage_gate(planned, &fallback, task_id)
+            .await
+        {
+            specialist_gated = true;
+            res
+        } else {
+            apply_harness_gate_hook(
+                planned,
+                exec_ctx,
+                fallback,
+                in_scope_assets,
+                asset_types,
+                in_scope_target_types,
+                evidence_facts,
+                source_queries,
+                self.harness_subsidiary_policy.map(|p| p.threshold_pct),
+            )
+        };
         if let Some(mut outcome) = gate_outcome {
             self.enforce_evidence_existence(&mut outcome).await;
             self.enforce_evidence_kinds(&mut outcome).await;
@@ -600,7 +602,7 @@ impl TaskOrchestrator {
         }
         let flow = crate::harness::operation_flow::StageFlowOutcome {
             gate_allowed: outcome.gate_allowed,
-            made_progress: outcome.findings_count > 0,
+            made_progress: gate_outcome_made_progress(&outcome),
         };
         self.stage_outcome_acc = Some(match self.stage_outcome_acc.take() {
             Some(prev) => crate::harness::operation_flow::StageFlowOutcome {
@@ -1423,6 +1425,7 @@ impl TaskOrchestrator {
         &self,
         planned: &PlannedSubtask,
         content: &str,
+        task_id: Uuid,
     ) -> Option<(String, Option<HarnessGateOutcome>)> {
         let stage = planned.harness_stage.as_ref()?.stage_kind;
         let is_fanout = crate::harness::load_embedded_stage_spec(stage)
@@ -1433,7 +1436,7 @@ impl TaskOrchestrator {
         }
         let deliverable = parse_deliverable_from_content(content)?;
         Some(
-            self.verify_stage_run_pass_token(stage, content, &deliverable)
+            self.verify_stage_run_pass_token(stage, content, &deliverable, task_id)
                 .await,
         )
     }
@@ -1447,12 +1450,46 @@ impl TaskOrchestrator {
         stage: crate::harness::StageKind,
         content: &str,
         deliverable: &crate::harness::StageDeliverable,
+        task_id: Uuid,
     ) -> (String, Option<HarnessGateOutcome>) {
         use crate::harness::org_gate::{
-            completion_is_fresh, extract_pass_token, stage_pass_token, STAGE_COMPLETION_TTL_SECS,
+            completion_is_fresh_for_stage, extract_pass_token, fanout_completion_scope_ids,
+            stage_pass_token, STAGE_COMPLETION_TTL_SECS,
         };
-        // 整库口径（与 in_scope_assets 一致；chat 会话无 project key）。
-        let org_ids = self.repo.in_scope_org_ids(None).await.unwrap_or_default();
+        let engagement_subtree_ids = if let Some(root) = self.harness_org_id {
+            match self.repo.org_subtree_ids(root).await {
+                Ok(ids) if !ids.is_empty() => Some(ids),
+                Ok(_) => {
+                    tracing::warn!(
+                        target: "harness::hook",
+                        root_org = %root,
+                        "fan-out closeout could not resolve engagement org subtree"
+                    );
+                    Some(vec![])
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "harness::hook",
+                        root_org = %root,
+                        error = %error,
+                        "fan-out closeout org-subtree lookup failed"
+                    );
+                    Some(vec![])
+                }
+            }
+        } else {
+            None
+        };
+        let legacy_org_ids = if self.harness_org_id.is_none() {
+            self.repo.in_scope_org_ids(None).await.unwrap_or_default()
+        } else {
+            vec![]
+        };
+        let org_ids = fanout_completion_scope_ids(
+            self.harness_org_id,
+            engagement_subtree_ids,
+            legacy_org_ids,
+        );
         if org_ids.is_empty() {
             return render_specialist_gate(
                 content,
@@ -1466,6 +1503,22 @@ impl TaskOrchestrator {
                 deliverable,
             );
         }
+        let completion_not_before = crate::db_shim::operation_state::get(&*self.repo, task_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|state| {
+                (crate::harness::StageKind::try_parse(&state.current_stage) == Some(stage))
+                    .then_some(state.stage_started_at)
+            });
+        if let Some(floor) = completion_not_before {
+            tracing::info!(
+                target: "harness::hook",
+                stage = %stage.as_str(),
+                stage_started_at = %floor,
+                "fan-out closeout constrained pass-token completions to current active stage"
+            );
+        }
         let now = chrono::Utc::now();
         let fresh: Vec<(uuid::Uuid, chrono::DateTime<chrono::Utc>)> = self
             .repo
@@ -1473,7 +1526,14 @@ impl TaskOrchestrator {
             .await
             .unwrap_or_default()
             .into_iter()
-            .filter(|(_, at)| completion_is_fresh(*at, now, STAGE_COMPLETION_TTL_SECS))
+            .filter(|(_, at)| {
+                completion_is_fresh_for_stage(
+                    *at,
+                    now,
+                    STAGE_COMPLETION_TTL_SECS,
+                    completion_not_before,
+                )
+            })
             .collect();
         let have: std::collections::HashSet<uuid::Uuid> = fresh.iter().map(|(o, _)| *o).collect();
         let missing: Vec<uuid::Uuid> = org_ids
@@ -1801,8 +1861,13 @@ impl TaskOrchestrator {
     /// claim EXISTS — which a weak model can fabricate without doing the work. For
     /// red_team profiles (`scoping_policy.require_unit_candidates`) cross-verify
     /// against this session's REAL `tool_calls` that the model actually invoked
-    /// `ask_human(input_type="unit_review")` AND `manage_organizations(action="create")`.
-    /// Missing either ⇒ flip PASS→BLOCK + corrective hint. Fails OPEN when the
+    /// `ask_human(input_type="unit_review")`. Earlier versions also forced a
+    /// `manage_organizations(action="create")`, but that made REUSE mode unsafe:
+    /// an existing root org/tree would be re-created or expanded just to appease
+    /// the gate. Creation is still fine when the org is missing or the user
+    /// explicitly added units, but a human-confirmed existing tree is already a
+    /// persisted record. Missing unit_review ⇒ flip PASS→BLOCK + corrective hint.
+    /// Fails OPEN when the
     /// action set can't be verified (no tool_calls recorded), mirroring the
     /// evidence cross-checks (never block on infra absence).
     async fn enforce_scoping_red_team_flow(
@@ -1818,7 +1883,7 @@ impl TaskOrchestrator {
             return;
         }
         // Only red_team-style profiles (require_unit_candidates) enforce the
-        // unit-candidate + organization-creation flow.
+        // unit-candidate review flow.
         if !scoping_policy_for_ctx(exec_ctx).require_unit_candidates {
             return;
         }
@@ -1837,7 +1902,7 @@ impl TaskOrchestrator {
             tracing::warn!(
                 target: "harness::hook",
                 stage = %outcome.gated_stage.as_str(),
-                "gate BLOCK: red_team scoping skipped the unit-candidate / organization-creation flow"
+                "gate BLOCK: red_team scoping skipped the unit-candidate review flow"
             );
             // 设计 2026-06-12-unified-refiner · 只置事实标记，Refiner G 类透传该文本。
             outcome.gate_allowed = false;
@@ -1999,10 +2064,9 @@ struct HarnessGateOutcome {
     /// `StageSpec.required_evidence_kinds`); the caller cross-checks them against
     /// the ledger before honoring a PASS. Empty = stage declares no requirement.
     required_evidence_kinds: Vec<String>,
-    /// P2 (graph flow) · how many findings the deliverable carried. Used as the
-    /// "made progress" signal for conditional branch routing: a stage that
-    /// passes its gate but surfaces NO findings can bail to reporting instead of
-    /// descending into enumeration/triage (see `operation_flow::chosen_next_stage`).
+    /// P2 (graph flow) · how many findings the deliverable carried. Vulnerability
+    /// stages use this as their progress signal; recon/info stages can suppress
+    /// findings and still make progress through evidence/coverage handoff.
     findings_count: usize,
     /// Observability (design 2026-06-05) · when an evidence-existence BLOCK fired,
     /// the cited ids absent from the ledger (fabricated) and the real ids that
@@ -2065,6 +2129,41 @@ impl HarnessGateOutcome {
             evidence_facts: facts,
         }
     }
+}
+
+fn gate_outcome_made_progress(outcome: &HarnessGateOutcome) -> bool {
+    if !outcome.gate_allowed {
+        return false;
+    }
+    if outcome.findings_count > 0 {
+        return true;
+    }
+
+    let findings_suppressed = crate::harness::load_embedded_stage_spec(outcome.gated_stage)
+        .map(|spec| !spec.findings_allowed)
+        .unwrap_or(false);
+    if !findings_suppressed {
+        return false;
+    }
+
+    outcome.engagement_org_id.is_some()
+        || !outcome.evidence_refs.is_empty()
+        || outcome
+            .evidence_summary
+            .as_deref()
+            .is_some_and(stage_summary_indicates_progress)
+}
+
+fn stage_summary_indicates_progress(summary: &str) -> bool {
+    summary.lines().any(|line| {
+        let line = line.trim();
+        if line.starts_with("- claims:") || line.starts_with("- findings:") {
+            return true;
+        }
+        line.strip_prefix("- evidence refs:")
+            .and_then(|count| count.trim().parse::<usize>().ok())
+            .is_some_and(|count| count > 0)
+    })
 }
 
 /// 返回 `(content, Option<outcome>)`: `None` 表示 hook 透传 (未跑 gate); `Some` 表示
@@ -2645,35 +2744,25 @@ fn scoping_policy_for_ctx(exec_ctx: &ExecutionContext) -> crate::harness::profil
 
 /// Pure decision for [`TaskOrchestrator::enforce_scoping_red_team_flow`]: given the
 /// cross-verified scoping actions, return `Some(correction)` when the red_team
-/// unit-candidate / organization-creation flow was skipped (⇒ BLOCK), or `None`
-/// to allow. `None` actions (unverifiable, e.g. no recorded tool_calls) allow
-/// (fail open).
+/// unit-review flow was skipped (⇒ BLOCK), or `None` to allow. `None` actions
+/// (unverifiable, e.g. no recorded tool_calls) allow (fail open).
 fn evaluate_red_team_scoping_flow(
     seen: Option<crate::db_traits::ScopingActionsSeen>,
 ) -> Option<String> {
     let seen = seen?; // unverifiable → fail open (allow)
-    if seen.unit_review_invoked && seen.organization_created {
+    if seen.unit_review_invoked {
         return None;
     }
     let mut missing = Vec::new();
-    if !seen.unit_review_invoked {
-        missing.push(
-            "ask_human(input_type=\"unit_review\") for the user to confirm/edit candidate units",
-        );
-    }
-    if !seen.organization_created {
-        missing.push(
-            "a SUCCESSFUL manage_organizations(action=\"create\") that actually records the \
-             organization (a create that returns an error — e.g. a duplicate name — does NOT \
-             count; resolve it and retry)",
-        );
-    }
+    missing
+        .push("ask_human(input_type=\"unit_review\") for the user to confirm/edit candidate units");
     Some(format!(
         "RED-TEAM SCOPING INCOMPLETE — a `scope_human_approved` claim is present but this run never \
-         performed the required unit-candidate flow. Missing: {}. Before you submit the scoping \
+         performed the required human unit-review flow. Missing: {}. Before you submit the scoping \
          deliverable you MUST actually call manage_organizations(action=\"propose_candidates\"), then \
-         ask_human(input_type=\"unit_review\") so the user judges the candidate units, then \
-         manage_organizations(action=\"create\"). A claim alone is not sufficient.",
+         ask_human(input_type=\"unit_review\") so the user judges the candidate units. If the root \
+         org/tree already exists, DO NOT call create/create_batch just to satisfy the gate; only create \
+         a missing root or units the user explicitly added/confirmed. A claim alone is not sufficient.",
         missing.join(" and ")
     ))
 }
@@ -2727,7 +2816,7 @@ fn synthesize_stage_subtask(
             }
             if scoping_policy.require_unit_candidates {
                 steps.push_str(
-                    "2) Call manage_organizations(action=\"propose_candidates\") to list candidate unit/organization names (subsidiaries, aliases), then ask_human(input_type=\"unit_review\") so the user can judge/edit them; create confirmed orgs with manage_organizations(action=\"create\"). ",
+                    "2) Call manage_organizations(action=\"propose_candidates\") to list candidate unit/organization names (subsidiaries, aliases), then ask_human(input_type=\"unit_review\") so the user can judge/edit them. If the engagement root/tree already exists, reuse it and do not create more orgs; only call manage_organizations(action=\"create\"/\"create_batch\") for a missing root or units the user explicitly added/confirmed. ",
                 );
             }
             if matches!(
@@ -2760,26 +2849,9 @@ fn synthesize_stage_subtask(
                     "Assets were already confirmed during scoping; this engagement SKIPS passive intel. Do NOT run passive providers. Mark each expected intel technique coverage cell as not_applicable with a short note (\"assets confirmed in scoping; passive intel skipped per mode\"), then submit_stage_deliverable.",
                 );
             } else {
-                let mut n = 1;
-                steps.push_str(&format!(
-                    "{n}) Call recon_list_providers first to see which passive providers have a configured credential; only invoke providers reported as available, and for any expected intel technique with no available provider record its coverage as blocked (no credential configured) — do NOT fabricate. ",
-                ));
-                n += 1;
-                if intel_policy.discover_subsidiaries {
-                    steps.push_str(&format!(
-                        "{n}) Call recon_discover_subsidiaries(organization_id=<confirmed subject org>) to passively enumerate subsidiary/affiliate organizations via enterprise intel (ENScan); review the candidates it records. ",
-                    ));
-                    n += 1;
-                }
-                if intel_policy.enrich_assets {
-                    steps.push_str(&format!(
-                        "{n}) Call recon_map_assets(organization_id=<org>) to passively survey domains/IPs/DNS-adjacent asset facts/ASN/subdomains/certificates/ICP/apps/emails via intel providers (0.zone/quake/…), then recon_lookup_whois(organization_id=<org>) for WHOIS (RDAP, once per org). target_intel is provider/registry-tool backed; do not run scan-tool fallback here. ",
-                    ));
-                    n += 1;
-                }
-                steps.push_str(&format!(
-                    "{n}) For each in-scope asset, give every expected intel technique (GOLISH-INTEL-DNS/WHOIS/ASN/CT/SUBDOMAIN/OSINT) a terminal coverage status, citing the evidence ids the tools recorded. If recon_map_assets/recon_lookup_whois cannot land a required technique, record it as blocked/checked_empty/not_applicable with note/evidence instead of switching tools. Then submit_stage_deliverable. Do NOT perform active scanning in this stage.",
-                ));
+                steps.push_str(
+                    "This stage is per-org specialist work. Do NOT call recon_list_providers, recon_discover_subsidiaries, recon_map_assets, recon_lookup_whois, or any sub_agent_* directly from the primary stage agent. Instead call stage_run with the confirmed root org plus subsidiaries from scoping; the recon worker receives the provider-survey methodology and submits each per-org deliverable. Re-run stage_run only for blocked orgs until all pass, then submit the stage_run pass token via submit_stage_deliverable to close target_intel.",
+                );
             }
             (
                 "Passive Target Intelligence",
@@ -2791,12 +2863,13 @@ fn synthesize_stage_subtask(
             "External Attack Surface Mapping",
             format!(
                 "DEFINE the external attack surface of the hosts inherited from target_intel \
-                 for `{target}`: PORT SCANNING, service/version fingerprinting, HTTP probing, \
-                 and screenshots — establish host x port x service x live-web. Confirm liveness \
-                 with httpx (it resolves + probes in one shot). Passive provider survey \
-                 was ALREADY done upstream in target_intel — REUSE the inherited evidence \
-                 and do NOT re-enumerate. JS/API extraction happens in the \
-                 NEXT stage (enumeration) on the services you map here."
+                 for `{target}` through stage_run/prober per-org workers: PORT SCANNING, \
+                 service/version fingerprinting, HTTP probing, and screenshots — establish \
+                 host x port x service x live-web. Prober should batch httpx/naabu/nmap \
+                 over list/stdin inputs where possible instead of one foreground call per \
+                 asset. Passive provider survey was ALREADY done upstream in target_intel — \
+                 REUSE the inherited evidence and do NOT re-enumerate. JS/API extraction \
+                 happens in the NEXT stage (enumeration) on the services you map here."
             ),
             "pentester",
         ),
@@ -2979,7 +3052,7 @@ mod dag_driven_helper_tests {
     }
 
     /// T4 (设计 2026-06-06 §3.3): scoping 子任务描述随 profile 的 scoping_policy 分流——
-    /// 红队 (require_unit_candidates + human gate) 出 unit_review + scope_review +
+    /// 红队 (require_unit_candidates + human gate) 出 unit_review +
     /// scope_human_approved; smoke (gate off, asset_confirmation=none) 全不出现.
     #[test]
     fn scoping_subtask_prompt_varies_by_policy() {
@@ -3010,15 +3083,24 @@ mod dag_driven_helper_tests {
     }
 
     /// 红队 scoping 防偷懒硬门禁 (设计 2026-06-06 §3.4 P1 强化): 仅凭 claim 不够,
-    /// 必须真的 invoke 了 unit_review + 建组织; 缺任一 → BLOCK; 无法核验 (None) → 放行.
+    /// 必须真的 invoke 了 unit_review；已有树可复用，不再强制建组织。
+    /// 无法核验 (None) → 放行.
     #[test]
     fn red_team_scoping_flow_blocks_when_steps_skipped() {
         use crate::db_traits::ScopingActionsSeen;
 
-        // Both real steps performed → allow.
+        // Unit review plus creation → allow.
         assert!(evaluate_red_team_scoping_flow(Some(ScopingActionsSeen {
             unit_review_invoked: true,
             organization_created: true,
+        }))
+        .is_none());
+
+        // REUSE mode: the existing org tree was human-reviewed, so a fresh create
+        // is not required. This prevents runaway create_batch expansion.
+        assert!(evaluate_red_team_scoping_flow(Some(ScopingActionsSeen {
+            unit_review_invoked: true,
+            organization_created: false,
         }))
         .is_none());
 
@@ -3030,26 +3112,20 @@ mod dag_driven_helper_tests {
         .expect("missing unit_review must block");
         assert!(c.contains("unit_review"));
 
-        // Missing organization create → BLOCK, correction names it.
-        let c2 = evaluate_red_team_scoping_flow(Some(ScopingActionsSeen {
-            unit_review_invoked: true,
-            organization_created: false,
-        }))
-        .expect("missing org-create must block");
-        assert!(c2.contains("manage_organizations(action=\"create\")"));
-
-        // Both missing (the MiMo shortcut) → BLOCK, names both.
+        // Both missing (the shortcut) → BLOCK, names unit_review but does not
+        // instruct the model to create more orgs.
         let c3 = evaluate_red_team_scoping_flow(Some(ScopingActionsSeen::default()))
             .expect("both missing must block");
-        assert!(c3.contains("unit_review") && c3.contains("create"));
+        assert!(c3.contains("unit_review"));
+        assert!(!c3.contains("manage_organizations(action=\"create\")"));
 
         // Unverifiable (no recorded tool_calls) → fail open (allow).
         assert!(evaluate_red_team_scoping_flow(None).is_none());
     }
 
-    /// T7 (设计 2026-06-06-intel-stage §3.5): target_intel 子任务描述随 intel_policy
-    /// 分流——红队 (discover+enrich) 出 recon_discover_subsidiaries + recon_map_assets;
-    /// 渗透 (passive_intel=skip) 出 not_applicable、不出现 recon 工具.
+    /// target_intel is a specialist stage: the primary prompt must route through
+    /// `stage_run`, while the recon worker receives the provider methodology.
+    /// Skip mode remains a direct not_applicable closeout.
     #[test]
     fn target_intel_prompt_varies_by_intel_policy() {
         use crate::harness::profile::{IntelPolicy, PassiveIntelMode, ScopingPolicy};
@@ -3062,9 +3138,15 @@ mod dag_driven_helper_tests {
             enrich_assets: true,
         };
         let s = synthesize_stage_subtask(StageKind::TargetIntel, "acme corp", &scoping, &red);
-        assert!(s.description.contains("recon_list_providers"));
-        assert!(s.description.contains("recon_discover_subsidiaries"));
+        assert!(s.description.contains("stage_run"));
+        assert!(s.description.contains("per-org specialist work"));
+        assert!(s.description.contains("Do NOT call recon_list_providers"));
         assert!(s.description.contains("recon_map_assets"));
+        assert!(s.description.contains("submit the stage_run pass token"));
+        assert!(s.description.contains("recon worker"));
+        assert!(!s
+            .description
+            .contains("Call recon_map_assets(organization_id=<org>)"));
         assert!(!s.description.contains("SKIPS passive intel"));
         assert!(!s.description.contains("subfinder"));
         assert!(!s.description.contains("dig"));

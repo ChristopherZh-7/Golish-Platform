@@ -5,6 +5,7 @@
 use serde_json::json;
 use uuid::Uuid;
 
+use golish_agent_kit::db_traits::OrgScopeUnit;
 use golish_app_core::domain::targets::{Target, TargetType};
 
 use super::GolishDbRepoProvider;
@@ -639,6 +640,26 @@ impl GolishDbRepoProvider {
             .collect())
     }
 
+    pub(super) async fn stage_asset_coverage_impl(
+        &self,
+        organization_id: Uuid,
+        stage: &str,
+        session_id: Option<&str>,
+        stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let stage_kind = golish_agent_kit::harness::StageKind::try_parse(stage)
+            .ok_or_else(|| anyhow::anyhow!("unknown stage: {stage}"))?;
+        let snapshot = crate::ai::commands::stage_coverage::stage_asset_coverage_snapshot(
+            &self.pool,
+            organization_id,
+            stage_kind,
+            session_id,
+            stage_started_at,
+        )
+        .await?;
+        Ok(serde_json::to_value(snapshot)?)
+    }
+
     /// P3 Phase B (2026-06-11): distinct `targets.type` of the in-scope assets,
     /// so the harness coverage gate derives dynamic expected techniques per asset
     /// class (`technique_resolver`). Reuses the recon targets port (no new SQL /
@@ -693,6 +714,21 @@ impl GolishDbRepoProvider {
     /// sibling engagement's org (left in the same workspace) is never targeted.
     pub(super) async fn org_subtree_ids_impl(&self, root_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
         Ok(golish_db::repo::organizations::subtree_ids(&self.pool, root_id).await?)
+    }
+
+    pub(super) async fn org_subtree_units_impl(
+        &self,
+        root_id: Uuid,
+    ) -> anyhow::Result<Vec<OrgScopeUnit>> {
+        Ok(golish_db::repo::organizations::subtree(&self.pool, root_id)
+            .await?
+            .into_iter()
+            .map(|org| OrgScopeUnit {
+                id: org.id,
+                name: org.name,
+                parent_id: org.parent_id,
+            })
+            .collect())
     }
 
     /// Phase 1.5 阶段过门：批量取 per-org 完成账本行 `(organization_id, passed_at)`（收尾

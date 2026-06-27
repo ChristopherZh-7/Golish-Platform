@@ -3,6 +3,7 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import { Terminal } from "@xterm/xterm";
 import { logger } from "@/lib/logger";
 import { ThemeManager } from "@/lib/theme";
+import { isTerminalAutoFocusSuppressed } from "./terminalAutoFocus";
 
 /**
  * LiveTerminalManager - Singleton manager for a single xterm.js instance
@@ -301,7 +302,9 @@ class LiveTerminalManagerClass {
     this.disableInput(sessionId);
     instance.terminal.options.disableStdin = false;
     instance.inputDisposable = instance.terminal.onData(onData);
-    instance.terminal.focus();
+    if (!isTerminalAutoFocusSuppressed(sessionId)) {
+      instance.terminal.focus();
+    }
   }
 
   /**
@@ -323,7 +326,7 @@ class LiveTerminalManagerClass {
    */
   focus(sessionId: string): void {
     const instance = this.instances.get(sessionId);
-    if (instance?.isOpened) {
+    if (instance?.isOpened && !isTerminalAutoFocusSuppressed(sessionId)) {
       instance.terminal.focus();
     }
   }

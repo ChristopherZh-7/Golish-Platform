@@ -9,15 +9,19 @@
  * A one-shot mark only stops the first of these, so focus still jumps to the
  * terminal a moment later.
  *
- * Instead we mark the session as suppressed for a short WINDOW. Every auto-focus
- * source checks `isTerminalAutoFocusSuppressed` (non-consuming) and skips while
- * the window is open, so the cursor stays in the chat input throughout startup.
+ * Instead we mark the session as suppressed for a startup WINDOW. Every
+ * auto-focus source checks `isTerminalAutoFocusSuppressed` (non-consuming) and
+ * skips while the window is open, so the cursor stays in the chat input
+ * throughout startup. The focused AI chat textarea is also a hard guard: if the
+ * user is actively typing in chat, terminal auto-focus must never steal focus,
+ * even after a slow shell prompt becomes ready later than the startup window.
  * User-initiated focus (clicking the terminal) is never gated — it goes through
  * the DOM directly — and clears the window early via
  * `clearTerminalAutoFocusSuppression` so normal terminal focus resumes at once.
  */
 
-const DEFAULT_WINDOW_MS = 6000;
+const DEFAULT_WINDOW_MS = 30_000;
+const AI_CHAT_INPUT_SELECTOR = "[data-ai-chat-input]";
 
 /** Epoch-ms (Date.now) until which a session's auto-focus stays suppressed. */
 const suppressedUntil = new Map<string, number>();
@@ -31,12 +35,21 @@ export function suppressTerminalAutoFocus(sessionId: string, windowMs = DEFAULT_
   if (sessionId) suppressedUntil.set(sessionId, Date.now() + Math.max(0, windowMs));
 }
 
+function isAiChatInputFocused(): boolean {
+  if (typeof document === "undefined") return false;
+  const active = document.activeElement;
+  return active instanceof HTMLElement && active.matches(AI_CHAT_INPUT_SELECTOR);
+}
+
 /**
  * True while the session is still inside its suppression window. Non-consuming
  * (auto-expires) so every async focus attempt during startup is covered, not
  * just the first one.
  */
 export function isTerminalAutoFocusSuppressed(sessionId: string): boolean {
+  if (!sessionId) return false;
+  if (isAiChatInputFocused()) return true;
+
   const until = suppressedUntil.get(sessionId);
   if (until === undefined) return false;
   if (Date.now() >= until) {

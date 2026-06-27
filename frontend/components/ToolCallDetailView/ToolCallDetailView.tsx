@@ -536,8 +536,12 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
             {formatDurationLong(execution.durationMs)}
           </span>
         )}
-        <div className="ml-auto flex items-center">
-          <BackgroundJobsBadge jobs={backgroundJobs} fallbackCount={backgroundedToolCount} />
+        <div className="ml-auto flex items-center justify-end">
+          <BackgroundJobsBadge
+            jobs={backgroundJobs}
+            fallbackCount={backgroundedToolCount}
+            reserveSpace
+          />
         </div>
       </div>
 

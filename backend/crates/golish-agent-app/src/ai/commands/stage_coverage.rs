@@ -50,6 +50,7 @@ pub struct StageAssetCoverageRow {
     pub target_id: String,
     pub value: String,
     pub target_type: String,
+    pub real_ip: String,
     pub source: String,
     pub discovered_phase: String,
     pub created_at: String,
@@ -75,6 +76,7 @@ struct TargetCoverageRow {
     id: Uuid,
     value: String,
     target_type: String,
+    real_ip: String,
     source: Option<String>,
     parent_id: Option<Uuid>,
     created_at: DateTime<Utc>,
@@ -101,12 +103,30 @@ pub async fn ai_get_stage_asset_coverage(
         .ok_or_else(|| GolishError::Validation(format!("unknown stage: {stage}")))?;
     let run_start = parse_rfc3339_utc(stage_started_at.as_deref());
 
-    let assets = list_stage_targets(&state.db_pool, org_id, stage_kind).await?;
+    stage_asset_coverage_snapshot(
+        &state.db_pool,
+        org_id,
+        stage_kind,
+        session_id.as_deref(),
+        run_start,
+    )
+    .await
+    .map_err(GolishError::from)
+}
+
+pub(crate) async fn stage_asset_coverage_snapshot(
+    pool: &sqlx::PgPool,
+    org_id: Uuid,
+    stage_kind: StageKind,
+    session_id: Option<&str>,
+    run_start: Option<DateTime<Utc>>,
+) -> anyhow::Result<StageAssetCoverageSnapshot> {
+    let assets = list_stage_targets(pool, org_id, stage_kind).await?;
     let asset_values: Vec<String> = assets.iter().map(|a| a.value.clone()).collect();
     let asset_types: Vec<String> = assets.iter().map(|a| a.target_type.clone()).collect();
 
     let found_facts = golish_db::repo::coverage_truth::coverage_truth_facts(
-        &state.db_pool,
+        pool,
         Some(org_id),
         &asset_values,
         &asset_types,
@@ -118,8 +138,8 @@ pub async fn ai_get_stage_asset_coverage(
         .map(|(asset, technique)| (asset, technique.to_string()))
         .collect();
 
-    let outcomes = if let Some(run_id) = session_id.as_deref() {
-        stage_outcomes(&state.db_pool, org_id, stage_kind, run_id, &asset_values).await?
+    let outcomes = if let Some(run_id) = session_id {
+        stage_outcomes(pool, org_id, stage_kind, run_id, &asset_values).await?
     } else {
         BTreeMap::new()
     };
@@ -154,6 +174,7 @@ pub async fn ai_get_stage_asset_coverage(
             target_id: asset.id.to_string(),
             value: asset.value,
             target_type: asset.target_type,
+            real_ip: asset.real_ip,
             source: asset.source.unwrap_or_default(),
             discovered_phase: phase,
             created_at: asset.created_at.to_rfc3339(),
@@ -163,9 +184,9 @@ pub async fn ai_get_stage_asset_coverage(
     }
 
     Ok(StageAssetCoverageSnapshot {
-        stage,
-        organization_id,
-        session_id,
+        stage: stage_kind.as_str().to_string(),
+        organization_id: org_id.to_string(),
+        session_id: session_id.map(str::to_string),
         summary: StageAssetCoverageSummary {
             total_assets: rows.len(),
             seed_assets,
@@ -201,6 +222,7 @@ async fn get_organization_row(
         r#"SELECT id,
                   name AS value,
                   'organization'::text AS target_type,
+                  ''::text AS real_ip,
                   'engagement_org'::text AS source,
                   parent_id,
                   created_at
@@ -217,7 +239,7 @@ async fn list_org_targets(
     organization_id: Uuid,
 ) -> anyhow::Result<Vec<TargetCoverageRow>> {
     Ok(sqlx::query_as::<_, TargetCoverageRow>(
-        r#"SELECT id, value, target_type::text AS target_type, source, parent_id, created_at
+        r#"SELECT id, value, target_type::text AS target_type, real_ip, source, parent_id, created_at
            FROM targets
            WHERE scope::text = 'in' AND organization_id = $1
            ORDER BY created_at ASC, value ASC"#,
@@ -514,6 +536,7 @@ mod tests {
             id: Uuid::new_v4(),
             value: value.to_string(),
             target_type: target_type.to_string(),
+            real_ip: String::new(),
             source: Some("asset_intel".to_string()),
             parent_id: None,
             created_at: Utc::now(),

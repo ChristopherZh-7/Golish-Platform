@@ -8,9 +8,9 @@ import { cancelBackgroundJob } from "@/lib/ai";
 import { stripAllAnsi } from "@/lib/ansi";
 import { formatDurationShort } from "@/lib/time";
 import {
+  getToolActionLabel,
   getToolColor,
   getToolIcon,
-  getToolLabel,
   getToolPrimaryArg,
   toolResultIndicatesFailure,
 } from "@/lib/tools";
@@ -192,7 +192,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
 
   const toolColor = getToolColor(execution.toolName);
   const ToolIcon = getToolIcon(execution.toolName);
-  const toolLabel = getToolLabel(execution.toolName);
+  const toolLabel = getToolActionLabel(execution.toolName, execution.args);
   const primary = getToolPrimaryArg(execution.toolName, execution.args);
 
   const isRunning = execution.status === "running";
@@ -290,7 +290,10 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
               className={cn("flex-shrink-0", compact ? "h-3.5 w-3.5" : "h-4 w-4")}
               style={{ color: toolColor }}
             />
-            <span className={cn("font-medium truncate", compact ? "text-xs" : "text-sm")}>
+            <span
+              className={cn("font-medium truncate", compact ? "text-xs" : "text-sm")}
+              title={execution.toolName}
+            >
               {toolLabel}
             </span>
             <AnchorChip sessionId={sessionId} requestId={execution.requestId} />

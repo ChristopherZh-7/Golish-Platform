@@ -26,6 +26,10 @@ pub struct AgentToolContext {
     pub request_id: String,
     pub tool_name: String,
     pub source: ToolSource,
+    /// Active harness organization for tools spawned from a stage run. Background
+    /// jobs finish outside the agent turn, so completion listeners need this to
+    /// persist structured coverage facts into the correct org.
+    pub organization_id: Option<uuid::Uuid>,
 }
 
 tokio::task_local! {
@@ -110,6 +114,7 @@ mod tests {
             request_id: "req-1".to_string(),
             tool_name: "pentest_run".to_string(),
             source: ToolSource::Main,
+            organization_id: None,
         };
         let got =
             with_agent_tool_context(Some(ctx.clone()), async { current_agent_tool_context() })
@@ -123,6 +128,7 @@ mod tests {
             request_id: "outer".to_string(),
             tool_name: "run_command".to_string(),
             source: ToolSource::Main,
+            organization_id: None,
         };
         let inner = AgentToolContext {
             request_id: "inner".to_string(),
@@ -131,6 +137,7 @@ mod tests {
                 agent_id: "recon".to_string(),
                 agent_name: "Recon".to_string(),
             },
+            organization_id: Some(uuid::Uuid::nil()),
         };
         let got = with_agent_tool_context(Some(outer.clone()), async {
             let nested = with_agent_tool_context(Some(inner.clone()), async {

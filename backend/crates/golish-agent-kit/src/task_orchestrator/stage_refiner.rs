@@ -134,6 +134,9 @@ impl RepairDirective {
                 self.forbidden_tools.join(", ")
             ));
         }
+        if let Some(batch_hint) = self.eas_batch_instruction() {
+            out.push_str(&batch_hint);
+        }
         if !self.actions.is_empty() {
             out.push_str("\nActions:");
             for (idx, action) in self.actions.iter().enumerate() {
@@ -159,6 +162,64 @@ impl RepairDirective {
         }
         out.push_str("\nThen call submit_stage_deliverable once with terminal coverage/claims that cite real evidence ids when required.");
         out
+    }
+
+    fn eas_batch_instruction(&self) -> Option<String> {
+        if self.stage != StageKind::ExternalAttackSurface.as_str() {
+            return None;
+        }
+        if !matches!(
+            self.repair_kind,
+            RepairKind::CoverageGap | RepairKind::GateBlock
+        ) {
+            return None;
+        }
+
+        let assets_for = |technique: &str| -> Vec<String> {
+            self.actions
+                .iter()
+                .filter(|action| action.technique.as_deref() == Some(technique))
+                .filter_map(|action| action.asset.clone())
+                .collect()
+        };
+        let liveness = assets_for("GOLISH-EAS-LIVENESS");
+        let ports = assets_for("GOLISH-EAS-PORT");
+        let services = assets_for("GOLISH-EAS-SERVICE-FINGERPRINT");
+        if liveness.is_empty() && ports.is_empty() && services.is_empty() {
+            return None;
+        }
+
+        let mut out = String::from(
+            "\nBatching: EAS repair is batch-first. Group sibling gap actions by \
+             technique and use as few pentest_run calls as possible; do not run \
+             one foreground tool call per asset when httpx/naabu/masscan/nmap/whatweb/gowitness \
+             can consume batch input. For stdin-capable tools, pass newline-separated targets \
+             through `input_lines` or `stdin`; for list-file tools, put `{{input_file}}` in \
+             `args` and pass the actual targets through `input_lines`.",
+        );
+        if !liveness.is_empty() {
+            out.push_str(&format!(
+                "\n- LIVENESS/httpx: one pentest_run tool_name=httpx with args like \
+                 `-json -sc -title -td -server -silent` and input_lines like:\n{}",
+                sample_assets(&liveness)
+            ));
+        }
+        if !ports.is_empty() {
+            out.push_str(&format!(
+                "\n- PORT/naabu: one pentest_run tool_name=naabu with args like \
+                 `-list {{{{input_file}}}} -top-ports 1000 -s c -silent` and input_lines like:\n{}",
+                sample_assets(&ports)
+            ));
+        }
+        if !services.is_empty() {
+            out.push_str(&format!(
+                "\n- SERVICE/nmap: group hosts that share the same open-port set \
+                 and run one pentest_run tool_name=nmap with args like \
+                 `-sV -iL {{{{input_file}}}} -p <ports> -T3` per group; sample targets:\n{}",
+                sample_assets(&services)
+            ));
+        }
+        Some(out)
     }
 
     pub fn to_submit_repair_mode(&self) -> Option<golish_sub_agents::SubmitRepairMode> {
@@ -424,6 +485,7 @@ fn allowed_tools_for(stage: StageKind, repair_kind: RepairKind) -> Vec<String> {
         RepairKind::CoverageGap | RepairKind::GateBlock => match stage {
             StageKind::TargetIntel => vec![
                 "query_target_data",
+                "check_stage_asset_coverage",
                 "recon_map_assets",
                 "recon_lookup_whois",
                 "wait_for_background_jobs",
@@ -433,6 +495,7 @@ fn allowed_tools_for(stage: StageKind, repair_kind: RepairKind) -> Vec<String> {
                 "pentest_list_tools",
                 "pentest_run",
                 "query_target_data",
+                "check_stage_asset_coverage",
                 "wait_for_background_jobs",
                 "check_job",
                 "kill_job",
@@ -442,6 +505,7 @@ fn allowed_tools_for(stage: StageKind, repair_kind: RepairKind) -> Vec<String> {
         },
         RepairKind::Generic => vec![
             "query_target_data",
+            "check_stage_asset_coverage",
             "wait_for_background_jobs",
             "submit_stage_deliverable",
         ],
@@ -489,12 +553,20 @@ fn suggested_tool_for(stage: StageKind, technique: &str) -> Option<String> {
 
 fn command_hint_for(stage: StageKind, tool: &str, asset: &str, technique: &str) -> String {
     match (stage, tool, technique) {
-        (StageKind::ExternalAttackSurface, "httpx", _) => format!("httpx -u {asset} -json"),
-        (StageKind::ExternalAttackSurface, "naabu", _) => format!("naabu -host {asset}"),
+        (StageKind::ExternalAttackSurface, "httpx", _) => format!(
+            "httpx batch: include {asset} with sibling LIVENESS gaps in one JSONL run; use args `-json -sc -title -td -server -silent` plus pentest_run.input_lines"
+        ),
+        (StageKind::ExternalAttackSurface, "naabu", _) => format!(
+            "naabu batch: include {asset} with sibling PORT gaps in one pentest_run; use args `-list {{{{input_file}}}} -top-ports 1000 -s c -silent` plus pentest_run.input_lines"
+        ),
         (StageKind::ExternalAttackSurface, "nmap", _) => {
-            format!("nmap -sV --top-ports 100 {asset}")
+            format!(
+                "nmap batch: fingerprint {asset} with sibling SERVICE gaps by shared port set; use args `-sV -iL {{{{input_file}}}} -p <open-ports> -T3` plus pentest_run.input_lines"
+            )
         }
-        (StageKind::ExternalAttackSurface, "whatweb", _) => format!("whatweb -a 1 {asset}"),
+        (StageKind::ExternalAttackSurface, "whatweb", _) => format!(
+            "whatweb batch: include {asset} with sibling HTTP(S) services when Ruby is ready; otherwise prefer nmap -sV/httpx evidence"
+        ),
         (StageKind::TargetIntel, "recon_lookup_whois", _) => {
             "recon_lookup_whois(organization_id=<current org>)".to_string()
         }
@@ -533,6 +605,14 @@ fn note_for(stage: StageKind, technique: &str) -> Option<String> {
         ),
         _ => None,
     }
+}
+
+fn sample_assets(assets: &[String]) -> String {
+    let mut sample: Vec<String> = assets.iter().take(5).cloned().collect();
+    if assets.len() > sample.len() {
+        sample.push(format!("# plus {} more", assets.len() - sample.len()));
+    }
+    sample.join("\n")
 }
 
 fn reasons_contain(reasons: &[String], needles: &[&str]) -> bool {
@@ -615,5 +695,68 @@ mod tests {
 
         assert!(d.allowed_tools.contains(&"recon_lookup_whois".to_string()));
         assert!(d.forbidden_tools.contains(&"pentest_run".to_string()));
+    }
+
+    #[test]
+    fn eas_coverage_gap_instruction_is_batch_first() {
+        let d = refine_submit_needs_fix(RefinerContext {
+            stage: StageKind::ExternalAttackSurface,
+            org_id: None,
+            agent_path: "main>stage_run:external_attack_surface>org:o>prober".to_string(),
+            reasons: vec!["external attack surface incomplete: never attempted".to_string()],
+            coverage_gap_actions: vec![
+                CoverageGapAction {
+                    asset: "a.example.com".to_string(),
+                    technique: "GOLISH-EAS-LIVENESS".to_string(),
+                    reason: "missing_terminal_coverage".to_string(),
+                    suggested_tools: vec!["httpx".to_string()],
+                },
+                CoverageGapAction {
+                    asset: "b.example.com".to_string(),
+                    technique: "GOLISH-EAS-LIVENESS".to_string(),
+                    reason: "missing_terminal_coverage".to_string(),
+                    suggested_tools: vec!["httpx".to_string()],
+                },
+                CoverageGapAction {
+                    asset: "c.example.com".to_string(),
+                    technique: "GOLISH-EAS-PORT".to_string(),
+                    reason: "missing_terminal_coverage".to_string(),
+                    suggested_tools: vec!["naabu".to_string()],
+                },
+                CoverageGapAction {
+                    asset: "d.example.com".to_string(),
+                    technique: "GOLISH-EAS-SERVICE-FINGERPRINT".to_string(),
+                    reason: "missing_terminal_coverage".to_string(),
+                    suggested_tools: vec!["nmap".to_string()],
+                },
+            ],
+            available_evidence_ids: Vec::new(),
+            running_background_jobs: Vec::new(),
+        });
+
+        let instruction = d.model_instruction();
+        assert!(instruction.contains("EAS repair is batch-first"));
+        assert!(instruction.contains("tool_name=httpx"));
+        assert!(instruction.contains("tool_name=naabu"));
+        assert!(instruction.contains("tool_name=nmap"));
+        assert!(instruction.contains("{{input_file}}"));
+        assert!(instruction.contains("input_lines"));
+        assert!(instruction.contains("a.example.com"));
+        assert!(instruction.contains("b.example.com"));
+        assert!(d.actions[0]
+            .command_hint
+            .as_deref()
+            .unwrap()
+            .starts_with("httpx batch:"));
+        assert!(d.actions[2]
+            .command_hint
+            .as_deref()
+            .unwrap()
+            .contains("-list {{input_file}}"));
+        assert!(d.actions[3]
+            .command_hint
+            .as_deref()
+            .unwrap()
+            .contains("-iL {{input_file}}"));
     }
 }

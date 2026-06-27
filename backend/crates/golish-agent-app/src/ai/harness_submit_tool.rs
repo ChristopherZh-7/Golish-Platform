@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use golish_agent_kit::harness::org_gate::extract_pass_token;
 use golish_agent_kit::harness::{
     load_embedded_stage_spec, validate_stage_gate_with_context, EvidenceFact, EvidenceOutcome,
     GateContext, GateContextBuilder, SourceQueryFact, StageDeliverable, StageKind,
@@ -767,6 +768,30 @@ impl Tool for SubmitStageDeliverableTool {
                     .await;
                 let authoritative = golish_agent_kit::harness::feature_flags::submit_preview_authoritative_context_enabled();
                 let ctx = self.gate_context(kind, authoritative).await;
+                if spec.specialist.is_some() && extract_pass_token(&deliverable).is_some() {
+                    if let Ok(json_str) = serde_json::to_string(&deliverable) {
+                        *self.last_deliverable.write().await = Some(json_str);
+                    }
+                    let fabricated = self.fabricated_refs(&deliverable).await;
+                    if fabricated.is_empty() {
+                        return Ok(json!({
+                            "status": "accepted",
+                            "note": "stage_run pass_token captured; the final fan-out closeout gate will recompute it from org_stage_completions."
+                        }));
+                    }
+                    let available = self.available_real_ids().await;
+                    return Ok(json!({
+                        "status": "needs_fix",
+                        "reasons": [format!(
+                            "cited evidence ids {fabricated:?} do not exist in the evidence ledger. \
+                             The stage_run pass_token claim itself does not need evidence ids, but any \
+                             additional evidence refs you cite must be real. Available ids: {available:?}."
+                        )],
+                        "fabricated_evidence_refs": fabricated,
+                        "available_evidence_ids": available,
+                        "note": "fix these and call submit_stage_deliverable again."
+                    }));
+                }
                 let result =
                     validate_stage_gate_with_context(&deliverable, &spec, None, None, &ctx);
                 // Stash the canonical JSON regardless — the stage-close gate is
@@ -968,6 +993,38 @@ mod tests {
 
         let captured = sink.read().await.clone().expect("deliverable captured");
         assert!(captured.contains("\"stage_id\":\"scoping\""));
+    }
+
+    #[tokio::test]
+    async fn accepts_stage_run_pass_token_for_specialist_stage_without_evidence() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::TargetIntel);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
+
+        let out = tool
+            .execute(
+                json!({
+                    "stage_id": "target_intel",
+                    "claims": [{
+                        "kind": "stage_run_pass_token",
+                        "subject": "target_intel",
+                        "summary": "abc123",
+                        "evidence_ids": []
+                    }],
+                    "evidence_refs": [],
+                    "findings": [],
+                    "coverage": [],
+                    "skipped_checks": [],
+                    "required_checks_done": ["stage_run"]
+                }),
+                Path::new("/tmp"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["status"].as_str(), Some("accepted"));
+        let captured = sink.read().await.clone().expect("deliverable captured");
+        assert!(captured.contains("stage_run_pass_token"));
     }
 
     // Coverage-matrix cells are an additive, optional part of the submission: a

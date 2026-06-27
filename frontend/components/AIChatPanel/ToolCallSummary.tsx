@@ -18,8 +18,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  getToolActionLabel,
   getToolColor,
-  getToolLabel,
   getToolPrimaryArg,
   toolResultIndicatesFailure,
 } from "@/lib/tools";
@@ -107,6 +107,15 @@ export function parseToolPrimary(name: string, argsStr?: string): string | null 
   }
 }
 
+export function parseToolActionLabel(name: string, argsStr?: string): string {
+  if (!argsStr) return getToolActionLabel(name);
+  try {
+    return getToolActionLabel(name, JSON.parse(argsStr));
+  } catch {
+    return getToolActionLabel(name);
+  }
+}
+
 /**
  * Some tools complete as a CALL (success=true) but carry the real outcome in a
  * `status` field — e.g. `submit_stage_deliverable` returns
@@ -152,7 +161,7 @@ function ToolCallCard({
   approvalMode?: string;
   onApprovalModeChange?: (mode: ApprovalMode) => void;
 }) {
-  const label = getToolLabel(tc.name, "short");
+  const label = parseToolActionLabel(tc.name, tc.args);
   const color = getToolColor(tc.name);
   const isNoResult = tc.success === undefined;
   const isExpired = isNoResult && isMessageComplete;
@@ -228,7 +237,9 @@ function ToolCallCard({
           className="w-3.5 h-3.5 flex-shrink-0"
           style={{ color: isExpired ? "var(--muted-foreground)" : color }}
         />
-        <span className="text-[11px] font-medium text-foreground/80">{label}</span>
+        <span className="text-[11px] font-medium text-foreground/80" title={tc.name}>
+          {label}
+        </span>
         <AnchorChip sessionId={sessionId} requestId={requestId} />
         <div className="ml-auto flex items-center gap-1.5">
           {isExpired ? (
@@ -387,6 +398,7 @@ export function CollapsibleToolCall({
 }) {
   const [expanded, setExpanded] = useState(false);
   const isPending = !!approval;
+  const label = parseToolActionLabel(tc.name, tc.args);
 
   return (
     <div
@@ -402,7 +414,9 @@ export function CollapsibleToolCall({
       >
         <ChevronDown className={cn("w-3 h-3 transition-transform", !expanded && "-rotate-90")} />
         <Wrench className="w-3 h-3" />
-        <span className="font-mono font-medium">{tc.name}</span>
+        <span className="font-medium text-foreground/80" title={tc.name}>
+          {label}
+        </span>
         {tc.success !== undefined &&
           (() => {
             // success=true but a rejected/needs_fix status body still reads ❌.

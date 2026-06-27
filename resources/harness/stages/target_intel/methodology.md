@@ -71,7 +71,10 @@ targets bound to this `organization_id`.
   - `blocked` / `not_applicable` + note — no provider/credential, or it does not apply.
   Leave `found` cells out (the DB supplies them); `claims` may be empty; put real
   vulnerabilities (rare in passive intel) in `findings`.
-- Stop condition: once the provider survey and WHOIS have run AND every expected
-  technique has either landed in the DB or been recorded as checked_empty /
-  blocked / not_applicable, call `submit_stage_deliverable` ONCE. Do not loop
-  hand-building a big matrix — the gate reads the DB, not your self-report.
+- Stop condition: once the provider survey and WHOIS have run, call
+  `check_stage_asset_coverage`. If `ready_to_submit=false`, use its
+  `gap_examples` to run the missing provider/action or record honest
+  checked_empty / blocked / not_applicable terminal coverage. Call
+  `submit_stage_deliverable` ONCE only after the preflight says
+  `ready_to_submit=true`. Do not loop hand-building a big matrix — the gate
+  reads the DB, not your self-report.

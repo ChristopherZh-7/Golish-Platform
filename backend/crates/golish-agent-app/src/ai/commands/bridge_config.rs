@@ -179,6 +179,14 @@ fn spawn_background_completion_listener(
                         &jc,
                     )
                     .await;
+                    maybe_store_background_batch_port_outcomes(
+                        &db_pool,
+                        &session_id,
+                        project_path.as_deref(),
+                        &jc,
+                        evidence_id,
+                    )
+                    .await;
 
                     // Observability (design 2026-06-05): surface background-job
                     // evidence as a first-class HarnessTrace so it appears in the
@@ -229,17 +237,25 @@ async fn maybe_store_background_structured_output(
     if jc.status != JobStatus::Done {
         return;
     }
-    let stdout = jc.stdout_tail.trim();
+    let retained_stdout = golish_app_core::background_jobs::manager()
+        .snapshot(&jc.job_id)
+        .map(|snapshot| snapshot.stdout)
+        .filter(|stdout| !stdout.trim().is_empty());
+    let stdout = retained_stdout.unwrap_or_else(|| jc.stdout_tail.clone());
+    let stdout = stdout.trim();
     if stdout.is_empty() {
         return;
     }
 
     let store = golish_pentest::output_store::PgPentestStore::new(db_pool);
-    match golish_pentest::output_store::maybe_detect_and_store_via(
+    match golish_pentest::output_store::maybe_detect_and_store_via_context(
         &store,
         &jc.command,
         stdout,
         project_path,
+        golish_pentest::output_store::StoreContext {
+            organization_id: jc.organization_id,
+        },
     )
     .await
     {
@@ -247,6 +263,7 @@ async fn maybe_store_background_structured_output(
             tracing::info!(
                 target: "harness::evidence",
                 job_id = %jc.job_id,
+                org_id = ?jc.organization_id,
                 tool = %stats.tool_name,
                 parsed = stats.parsed_count,
                 stored = stats.stored_count,
@@ -262,6 +279,174 @@ async fn maybe_store_background_structured_output(
                 "background job structured output not detected"
             );
         }
+    }
+}
+
+async fn maybe_store_background_batch_port_outcomes(
+    db_pool: &sqlx::PgPool,
+    session_id: &str,
+    project_path: Option<&str>,
+    jc: &golish_app_core::background_jobs::JobCompletion,
+    evidence_id: Option<i64>,
+) {
+    use golish_agent_kit::harness::evidence_facts::TECH_EAS_PORT;
+    use golish_app_core::background_jobs::JobStatus;
+
+    if jc.status != JobStatus::Done {
+        return;
+    }
+    let Some(organization_id) = jc.organization_id else {
+        return;
+    };
+    let Some(evidence_id) = evidence_id else {
+        return;
+    };
+    let Some(tool) = background_command_tool_name(&jc.command) else {
+        return;
+    };
+    if !matches!(tool.as_str(), "naabu" | "masscan") {
+        return;
+    }
+    let Some(input_file) = batch_input_file_from_command(&jc.command, project_path, tool.as_str())
+    else {
+        return;
+    };
+    let Ok(input) = tokio::fs::read_to_string(&input_file).await else {
+        tracing::debug!(
+            target: "harness::evidence",
+            job_id = %jc.job_id,
+            input_file = %input_file.display(),
+            "background batch port outcome input file unavailable"
+        );
+        return;
+    };
+    let targets = batch_input_targets(&input);
+    if targets.is_empty() {
+        return;
+    }
+    let retained_stdout = golish_app_core::background_jobs::manager()
+        .snapshot(&jc.job_id)
+        .map(|snapshot| snapshot.stdout)
+        .unwrap_or_else(|| jc.stdout_tail.clone());
+    let open_counts = open_port_counts(tool.as_str(), &retained_stdout);
+    let source = background_evidence_tool_name(&jc.command);
+
+    let mut stored = 0usize;
+    let mut skipped = 0usize;
+    for target in targets {
+        if target.contains('/') {
+            skipped += 1;
+            continue;
+        }
+        let Some(asset) = golish_pentest_domain::canonical_asset_key(&target).map(|key| key.key)
+        else {
+            skipped += 1;
+            continue;
+        };
+        let count = open_counts.get(&asset).copied().unwrap_or(0);
+        let outcome = if count > 0 { "found" } else { "empty" };
+        let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
+            organization_id,
+            run_id: session_id.to_string(),
+            asset,
+            technique: TECH_EAS_PORT.to_string(),
+            outcome: outcome.to_string(),
+            source: Some(source.clone()),
+            query: Some(jc.command.clone()),
+            result_count: Some(count.min(i32::MAX as usize) as i32),
+            confidence: None,
+            evidence_ids: vec![evidence_id],
+            collected_at: Some(chrono::Utc::now()),
+        };
+        match golish_db::repo::technique_outcomes::upsert(db_pool, &write).await {
+            Ok(()) => stored += 1,
+            Err(err) => {
+                tracing::warn!(
+                    target: "harness::evidence",
+                    job_id = %jc.job_id,
+                    error = %err,
+                    "background batch port outcome upsert failed"
+                );
+            }
+        }
+    }
+
+    if stored > 0 || skipped > 0 {
+        tracing::info!(
+            target: "harness::evidence",
+            job_id = %jc.job_id,
+            org_id = %organization_id,
+            source = %source,
+            stored,
+            skipped,
+            "background batch port outcomes stored"
+        );
+    }
+}
+
+fn batch_input_targets(input: &str) -> Vec<String> {
+    input
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
+fn open_port_counts(tool: &str, stdout: &str) -> std::collections::HashMap<String, usize> {
+    let mut counts = std::collections::HashMap::new();
+    for line in stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let host = match tool {
+            "naabu" => host_from_naabu_line(line),
+            "masscan" => host_from_masscan_line(line),
+            _ => None,
+        };
+        let Some(host) = host else {
+            continue;
+        };
+        if let Some(asset) = golish_pentest_domain::canonical_asset_key(host).map(|key| key.key) {
+            *counts.entry(asset).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+fn host_from_naabu_line(line: &str) -> Option<&str> {
+    let (host, port) = line.rsplit_once(':')?;
+    port.chars().all(|c| c.is_ascii_digit()).then_some(host)
+}
+
+fn host_from_masscan_line(line: &str) -> Option<&str> {
+    line.strip_prefix("Discovered open port ")
+        .and_then(|rest| rest.split_once(" on "))
+        .map(|(_, host)| host.trim())
+        .filter(|host| !host.is_empty())
+}
+
+fn batch_input_file_from_command(
+    command: &str,
+    project_path: Option<&str>,
+    tool: &str,
+) -> Option<std::path::PathBuf> {
+    let flags: &[&str] = match tool {
+        "naabu" => &["-list"],
+        "masscan" => &["-iL"],
+        _ => return None,
+    };
+    let tokens = command_tokens(command);
+    let raw = tokens
+        .windows(2)
+        .find(|pair| flags.contains(&pair[0].as_str()))
+        .map(|pair| pair[1].as_str())?;
+    let path = std::path::PathBuf::from(raw);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        project_path.map(|base| std::path::Path::new(base).join(path))
     }
 }
 
@@ -390,6 +575,22 @@ fn command_token(command: &str) -> Option<(&str, &str)> {
             }
         },
     )
+}
+
+fn command_tokens(command: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut rest = command;
+    while let Some((token, next)) = command_token(rest) {
+        if token.is_empty() {
+            break;
+        }
+        tokens.push(token.to_string());
+        if next.len() == rest.len() {
+            break;
+        }
+        rest = next;
+    }
+    tokens
 }
 
 fn command_token_base(token: &str) -> String {
@@ -912,6 +1113,7 @@ mod tests {
         JobCompletion {
             job_id: "job_abc123".to_string(),
             session_id: Some("sess-1".to_string()),
+            organization_id: None,
             command: "nmap -p- example.com".to_string(),
             status: JobStatus::Done,
             exit_code: Some(0),
@@ -969,6 +1171,24 @@ mod tests {
         let cmd = r#""/Users/me/Application Support/golish-platform/tools/naabu/naabu" -host 1.2.3.4 -silent"#;
         assert_eq!(background_evidence_tool_name(cmd), "naabu");
         assert_eq!(background_evidence_kind(cmd), "port_probe");
+    }
+
+    #[test]
+    fn batch_port_input_file_is_recovered_from_quoted_command() {
+        let cmd = r#""/Users/me/Application Support/golish-platform/tools/naabu/naabu" -list .golish/tool-inputs/targets.txt -silent"#;
+        assert_eq!(
+            batch_input_file_from_command(cmd, Some("/tmp/ws"), "naabu")
+                .unwrap()
+                .to_string_lossy(),
+            "/tmp/ws/.golish/tool-inputs/targets.txt"
+        );
+    }
+
+    #[test]
+    fn open_port_counts_canonicalize_batch_hits() {
+        let counts = open_port_counts("naabu", "Example.COM:443\n1.2.3.4:80\nnoise\n");
+        assert_eq!(counts.get("example.com"), Some(&1));
+        assert_eq!(counts.get("1.2.3.4"), Some(&1));
     }
 
     #[test]

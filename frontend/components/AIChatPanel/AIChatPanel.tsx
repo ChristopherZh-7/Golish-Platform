@@ -3,12 +3,19 @@ import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
+import { respondToToolApproval } from "@/lib/ai";
 import { formatModelName } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { type ChatMessage, useStore } from "@/store";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
+import { clearMatchingPendingAskHuman } from "./askHumanStore";
 import { ChatModelSelector } from "./ChatModelSelector";
-import { AskHumanInline, CompactionNotice, WorkflowProgress } from "./ChatSubComponents";
+import {
+  AskHumanInline,
+  type AskHumanState,
+  CompactionNotice,
+  WorkflowProgress,
+} from "./ChatSubComponents";
 import { ContextUsageRing } from "./ContextUsageRing";
 import { ConversationTabs } from "./ConversationTabs";
 import { activateConversationTerminalFromChat } from "./conversationTerminalActivation";
@@ -41,6 +48,22 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const activeConv = useStore((s) =>
     s.activeConversationId ? (s.conversations[s.activeConversationId] ?? null) : null
   );
+  const storeAskHumanRequest = useStore((s) => {
+    const convId = s.activeConversationId;
+    if (!convId) return null;
+    const aiSessionId = s.conversations[convId]?.aiSessionId;
+    const terminalId = s.conversationTerminals[convId]?.[0];
+    if (aiSessionId) {
+      const pending = s.pendingAskHuman[aiSessionId] ?? null;
+      if (pending) return pending;
+    }
+    if (terminalId) return s.pendingAskHuman[terminalId] ?? null;
+    return null;
+  });
+  const activeConversationTerminalId = useStore((s) => {
+    const convId = s.activeConversationId;
+    return convId ? (s.conversationTerminals[convId]?.[0] ?? null) : null;
+  });
   const messages = activeConv?.messages ?? EMPTY_MESSAGES;
   const isStreaming = activeConv?.isStreaming ?? false;
 
@@ -148,6 +171,86 @@ export const AIChatPanel = memo(function AIChatPanel() {
     messages,
     planMessageIdRef
   );
+  const askHumanSessionId =
+    storeAskHumanRequest?.sessionId ??
+    activeConv?.aiSessionId ??
+    activeConversationTerminalId ??
+    "";
+  const visibleAskHumanRequest =
+    askHumanRequest ??
+    (storeAskHumanRequest && askHumanSessionId
+      ? {
+          requestId: storeAskHumanRequest.requestId,
+          sessionId: askHumanSessionId,
+          question: storeAskHumanRequest.question,
+          inputType: storeAskHumanRequest.inputType,
+          options: storeAskHumanRequest.options,
+          context: storeAskHumanRequest.context,
+        }
+      : null);
+  const clearStoreAskHumanRequest = useCallback(
+    (request: Pick<AskHumanState, "requestId" | "sessionId">) => {
+      clearMatchingPendingAskHuman(useStore.getState(), request, [
+        activeConvId,
+        activeConv?.aiSessionId,
+        activeConversationTerminalId,
+        storeAskHumanRequest?.sessionId,
+      ]);
+    },
+    [
+      activeConvId,
+      activeConv?.aiSessionId,
+      activeConversationTerminalId,
+      storeAskHumanRequest?.sessionId,
+    ]
+  );
+  const handleVisibleAskHumanSubmit = useCallback(
+    async (response: string) => {
+      if (askHumanRequest) {
+        try {
+          await handleAskHumanSubmit(response);
+        } finally {
+          clearStoreAskHumanRequest(askHumanRequest);
+        }
+        return;
+      }
+      if (!visibleAskHumanRequest) return;
+      try {
+        await respondToToolApproval(visibleAskHumanRequest.sessionId, {
+          request_id: visibleAskHumanRequest.requestId,
+          approved: true,
+          reason: response,
+          remember: false,
+          always_allow: false,
+        });
+      } finally {
+        clearStoreAskHumanRequest(visibleAskHumanRequest);
+      }
+    },
+    [askHumanRequest, clearStoreAskHumanRequest, handleAskHumanSubmit, visibleAskHumanRequest]
+  );
+  const handleVisibleAskHumanSkip = useCallback(async () => {
+    if (askHumanRequest) {
+      try {
+        await handleAskHumanSkip();
+      } finally {
+        clearStoreAskHumanRequest(askHumanRequest);
+      }
+      return;
+    }
+    if (!visibleAskHumanRequest) return;
+    try {
+      await respondToToolApproval(visibleAskHumanRequest.sessionId, {
+        request_id: visibleAskHumanRequest.requestId,
+        approved: false,
+        reason: null,
+        remember: false,
+        always_allow: false,
+      });
+    } finally {
+      clearStoreAskHumanRequest(visibleAskHumanRequest);
+    }
+  }, [askHumanRequest, clearStoreAskHumanRequest, handleAskHumanSkip, visibleAskHumanRequest]);
 
   // Sticky "you-are-here" bar visibility. Reveal it only once the inline roadmap
   // (`[data-stage-roadmap]`) has fully scrolled out of view ABOVE the viewport —
@@ -372,12 +475,12 @@ export const AIChatPanel = memo(function AIChatPanel() {
                     tokensBefore={compactionState.tokensBefore}
                   />
                 )}
-                {askHumanRequest && (
+                {visibleAskHumanRequest && (
                   <AskHumanInline
-                    key={askHumanRequest.requestId}
-                    request={askHumanRequest}
-                    onSubmit={handleAskHumanSubmit}
-                    onSkip={handleAskHumanSkip}
+                    key={visibleAskHumanRequest.requestId}
+                    request={visibleAskHumanRequest}
+                    onSubmit={handleVisibleAskHumanSubmit}
+                    onSkip={handleVisibleAskHumanSkip}
                     fallbackOrgId={lastDiscoverOrgId}
                     minOwnershipPercent={lastDiscoverThreshold}
                   />
@@ -429,10 +532,12 @@ export const AIChatPanel = memo(function AIChatPanel() {
             onInput={handleTextareaInput}
             placeholder={t("ai.inputPlaceholder")}
             rows={1}
+            wrap="soft"
             className={cn(
               "w-full bg-transparent border-none outline-none resize-none",
               "text-[13px] text-foreground placeholder:text-muted-foreground/40",
-              "leading-relaxed max-h-[160px] px-3 pt-2.5 pb-1.5"
+              "leading-relaxed max-h-[160px] px-3 pt-2.5 pb-1.5",
+              "ai-chat-input-textarea"
             )}
           />
           {/* Bottom toolbar */}

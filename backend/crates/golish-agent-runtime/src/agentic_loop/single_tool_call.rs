@@ -179,6 +179,7 @@ where
         request_id: tool_id.clone(),
         tool_name: tool_name.to_string(),
         source: ToolSource::Main,
+        organization_id: ctx.harness_org_id,
     };
     let mut result = golish_core::with_agent_tool_context(Some(tool_context.clone()), async {
         execute_with_hitl_generic(

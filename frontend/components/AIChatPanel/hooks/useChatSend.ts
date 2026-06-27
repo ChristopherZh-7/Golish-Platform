@@ -36,6 +36,10 @@ interface UseChatSendOptions {
   t: (key: string, fallback?: string) => string;
 }
 
+export function shouldInjectPentestSystemPrompt(executionModeId: string): boolean {
+  return executionModeId === "chat";
+}
+
 export function useChatSend(opts: UseChatSendOptions) {
   const {
     input,
@@ -129,7 +133,8 @@ export function useChatSend(opts: UseChatSendOptions) {
     }
 
     let prompt = text;
-    if (conv.messages.length === 0) {
+    const executionModeId = chatExecutionModeRef.current;
+    if (conv.messages.length === 0 && shouldInjectPentestSystemPrompt(executionModeId)) {
       const systemPrompt = buildPentestSystemPrompt();
       if (systemPrompt) {
         prompt = `[System Context]\n${systemPrompt}\n\n[User Message]\n${text}`;
@@ -139,10 +144,10 @@ export function useChatSend(opts: UseChatSendOptions) {
     try {
       clearGenerationSuppressForAiSession(conv.aiSessionId);
       useStore.getState().setConversationStreaming(conv.id, true);
-      const isTaskMode = chatExecutionModeRef.current !== "chat";
+      const isTaskMode = executionModeId !== "chat";
       if (isTaskMode) taskInProgressRef.current = true;
 
-      await setExecutionModeBackend(conv.aiSessionId, chatExecutionModeRef.current).catch(() => {});
+      await setExecutionModeBackend(conv.aiSessionId, executionModeId).catch(() => {});
 
       if (imageAttachments.length > 0) {
         const payload = createTextPayload(prompt);

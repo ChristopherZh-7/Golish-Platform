@@ -12,6 +12,7 @@ describe("terminalAutoFocus", () => {
 
   afterEach(() => {
     clearTerminalAutoFocusSuppression("s1");
+    document.body.innerHTML = "";
     vi.useRealTimers();
   });
 
@@ -28,6 +29,26 @@ describe("terminalAutoFocus", () => {
 
   it("reports false for sessions that were never suppressed", () => {
     expect(isTerminalAutoFocusSuppressed("never")).toBe(false);
+  });
+
+  it("treats the focused AI chat input as a hard auto-focus guard", () => {
+    const input = document.createElement("textarea");
+    input.setAttribute("data-ai-chat-input", "true");
+    document.body.append(input);
+
+    input.focus();
+
+    expect(isTerminalAutoFocusSuppressed("s1")).toBe(true);
+  });
+
+  it("does not suppress empty session ids even when chat is focused", () => {
+    const input = document.createElement("textarea");
+    input.setAttribute("data-ai-chat-input", "true");
+    document.body.append(input);
+
+    input.focus();
+
+    expect(isTerminalAutoFocusSuppressed("")).toBe(false);
   });
 
   it("can be cleared early (e.g. user focuses the terminal)", () => {

@@ -438,20 +438,20 @@ describe("AskHumanInline auto-confirm countdown", () => {
     expect(onSkip).toHaveBeenCalledTimes(1);
   });
 
-  it("auto-confirms the review table's seeded rows on timeout (user chose default-confirm)", () => {
+  it("keeps review tables waiting for an explicit human decision", () => {
     const onSubmit = vi.fn();
+    const onSkip = vi.fn();
     render(
       <AskHumanInline
         request={req({ inputType: "unit_review", options: [], context: '[{"name":"Acme Sub"}]' })}
         onSubmit={onSubmit}
-        onSkip={vi.fn()}
+        onSkip={onSkip}
       />
     );
+    expect(screen.getByText("Waiting for your review")).toBeInTheDocument();
     runOutClock();
-    expect(onSubmit).toHaveBeenCalledTimes(1);
-    expect(onSubmit).toHaveBeenCalledWith(
-      JSON.stringify([{ name: "Acme Sub", aliases: "", domains: "" }])
-    );
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSkip).not.toHaveBeenCalled();
   });
 
   it("fires the default action only once even past the deadline", () => {

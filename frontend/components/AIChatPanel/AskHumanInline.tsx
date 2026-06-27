@@ -113,10 +113,9 @@ function isUuid(value: string | null | undefined): value is string {
 }
 
 /**
- * How long the ask_human box waits before auto-running its default action.
- * Cursor-style: a progress bar counts this down so a request a user never gets
- * around to doesn't dangle forever (the backend gives up after 600s and the AI
- * moves on, but nothing used to clear the stuck box).
+ * How long non-review ask_human boxes wait before auto-running their default
+ * action. Scope/unit reviews are deliberate security boundaries and never
+ * auto-confirm.
  */
 export const ASK_HUMAN_COUNTDOWN_MS = 60_000;
 const COUNTDOWN_TICK_MS = 100;
@@ -258,12 +257,13 @@ export function AskHumanInline({
     }
   };
 
-  // Auto-confirm countdown (Cursor-style). It pauses while the user hovers the
-  // box or has any field focused so reading/editing never triggers a submit.
+  // Auto-confirm countdown for lightweight prompts. Review tables are explicit
+  // human gates, so they stay visible until the user confirms or skips.
   const reviewTableRef = useRef<ScopeReviewHandle>(null);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const paused = hovered || focused;
+  const autoConfirmEnabled = !isReviewTable;
 
   // Some inputs (the options-less "Other" field) autofocus on mount. That mount
   // focus must NOT pause the clock, otherwise an unattended box would dangle
@@ -317,7 +317,7 @@ export function AskHumanInline({
 
   const remainingMs = useAutoConfirmCountdown(
     ASK_HUMAN_COUNTDOWN_MS,
-    paused,
+    paused || !autoConfirmEnabled,
     request.requestId,
     performDefaultAction
   );
@@ -476,24 +476,28 @@ export function AskHumanInline({
         </div>
       )}
 
-      {/* Cursor-style auto-confirm countdown. The pause-on-hover/focus handlers
-          live on the box wrapper above, so reading or editing freezes it. */}
-      <div className="mt-2.5 select-none">
-        <div className="h-1 w-full overflow-hidden rounded-full bg-border/40">
-          <div
-            className={cn(
-              "h-full rounded-full transition-[width] duration-100 ease-linear",
-              paused ? "bg-muted-foreground/40" : "bg-[#e0af68]"
-            )}
-            style={{ width: `${countdownPct}%` }}
-          />
+      {autoConfirmEnabled ? (
+        <div className="mt-2.5 select-none">
+          <div className="h-1 w-full overflow-hidden rounded-full bg-border/40">
+            <div
+              className={cn(
+                "h-full rounded-full transition-[width] duration-100 ease-linear",
+                paused ? "bg-muted-foreground/40" : "bg-[#e0af68]"
+              )}
+              style={{ width: `${countdownPct}%` }}
+            />
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground/60">
+            {paused
+              ? "Paused — auto-confirm resumes when you move away"
+              : `Auto-confirming in ${countdownSeconds}s`}
+          </div>
         </div>
-        <div className="mt-1 text-[10px] text-muted-foreground/60">
-          {paused
-            ? "Paused — auto-confirm resumes when you move away"
-            : `Auto-confirming in ${countdownSeconds}s`}
+      ) : (
+        <div className="mt-2.5 rounded-md border border-[#e0af68]/20 bg-background/30 px-2 py-1 text-[10px] text-muted-foreground/70">
+          Waiting for your review
         </div>
-      </div>
+      )}
     </div>
   );
 }

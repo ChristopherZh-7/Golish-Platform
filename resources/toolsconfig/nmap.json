@@ -22,9 +22,16 @@
         "label": "Target",
         "flag": "",
         "type": "string",
-        "required": true,
-        "description": "Target host, CIDR, or hostname (e.g. 192.168.1.0/24, scanme.nmap.org)",
+        "required": false,
+        "description": "Single target host, CIDR, or hostname (e.g. 192.168.1.0/24, scanme.nmap.org). For batches prefer -iL {{input_file}} with pentest_run.input_lines.",
         "placeholder": "scanme.nmap.org"
+      },
+      {
+        "label": "Targets List",
+        "flag": "-iL",
+        "type": "string",
+        "description": "File with hosts or IPs to scan in one batch (one per line)",
+        "placeholder": "{{input_file}}"
       },
       {
         "label": "Scan Type",
@@ -142,6 +149,13 @@
         "description": "Find live hosts in CIDR without port scanning",
         "args": "-sn {{target}}",
         "tags": ["discovery"]
+      },
+      {
+        "id": "service-version-list",
+        "name": "Batch Service Version",
+        "description": "Run service/version detection for a host list with a shared port set",
+        "args": "-sV -iL {{input_file}} -p {{ports}} -T3",
+        "tags": ["recon", "fingerprint", "bulk"]
       },
       {
         "id": "aggressive-all",

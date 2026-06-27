@@ -43,8 +43,11 @@ impl Tool for StartOperationTool {
          Call this ONLY after you have thought through the request and decided it \
          needs the staged planner (recon -> enumerate -> ...). Pass a refined \
          `objective` (what the operation should achieve / its scope) and a short \
-         `analysis`. If the request is a simple question or conversation, do NOT \
-         call this — just answer the user directly."
+         `analysis`. If the user is answering a continuity question, set \
+         `continuity_decision` to `reuse_existing` or `start_fresh`. Otherwise \
+         leave it as `ask_before_reuse` so the harness can ask before adopting \
+         older DB-backed facts. If the request is a simple question or \
+         conversation, do NOT call this — just answer the user directly."
     }
 
     fn parameters(&self) -> Value {
@@ -58,6 +61,11 @@ impl Tool for StartOperationTool {
                 "analysis": {
                     "type": "string",
                     "description": "Your short analysis of the request to seed the planner."
+                },
+                "continuity_decision": {
+                    "type": "string",
+                    "enum": ["ask_before_reuse", "reuse_existing", "start_fresh"],
+                    "description": "How to handle prior DB-backed progress in a different/older session. Use reuse_existing only when the user explicitly chooses reuse; use start_fresh when the user explicitly rejects reuse; otherwise ask_before_reuse."
                 }
             },
             "required": ["objective"]
@@ -82,7 +90,17 @@ impl Tool for StartOperationTool {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let payload = json!({ "objective": objective, "analysis": analysis }).to_string();
+        let continuity_decision = args
+            .get("continuity_decision")
+            .and_then(|v| v.as_str())
+            .filter(|v| matches!(*v, "ask_before_reuse" | "reuse_existing" | "start_fresh"))
+            .unwrap_or("ask_before_reuse");
+        let payload = json!({
+            "objective": objective,
+            "analysis": analysis,
+            "continuity_decision": continuity_decision
+        })
+        .to_string();
         *self.pending.write().await = Some(payload);
         Ok(json!({ "status": "planning_started" }))
     }
@@ -107,6 +125,7 @@ mod tests {
         let captured = sink.read().await.clone().expect("captured");
         assert!(captured.contains("Recon example.com"));
         assert!(captured.contains("passive only"));
+        assert!(captured.contains("ask_before_reuse"));
     }
 
     #[tokio::test]
@@ -119,5 +138,25 @@ mod tests {
             .unwrap();
         assert_eq!(out["status"].as_str(), Some("rejected"));
         assert!(sink.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn captures_continuity_decision() {
+        let sink: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+        let tool = StartOperationTool::new(Arc::clone(&sink));
+        let out = tool
+            .execute(
+                json!({
+                    "objective": "Continue prior operation",
+                    "continuity_decision": "reuse_existing"
+                }),
+                Path::new("/tmp"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["status"].as_str(), Some("planning_started"));
+        let captured = sink.read().await.clone().expect("captured");
+        assert!(captured.contains("reuse_existing"));
     }
 }

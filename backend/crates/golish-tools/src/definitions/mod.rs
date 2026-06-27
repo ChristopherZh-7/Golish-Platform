@@ -59,7 +59,7 @@ mod tests {
     fn test_build_function_declarations_returns_all_tools() {
         let declarations = build_function_declarations();
 
-        assert_eq!(declarations.len(), 42);
+        assert_eq!(declarations.len(), 43);
 
         let names: Vec<&str> = declarations.iter().map(|d| d.name.as_str()).collect();
 
@@ -101,6 +101,8 @@ mod tests {
         assert!(names.contains(&"log_scan_result"));
         assert!(names.contains(&"query_target_data"));
         assert!(names.contains(&"list_in_scope_targets"));
+        assert!(names.contains(&"list_attack_surface_seeds"));
+        assert!(names.contains(&"check_stage_asset_coverage"));
 
         assert!(names.contains(&"graph_add_entity"));
         assert!(names.contains(&"graph_add_relation"));

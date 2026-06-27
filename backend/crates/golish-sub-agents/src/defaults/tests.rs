@@ -227,6 +227,10 @@ fn test_prober_prompt_is_active_surface() {
     assert!(prompt.contains("found cells are credited from the database"));
     assert!(prompt.contains("Do NOT hand-copy found coverage cells"));
     assert!(prompt.contains("HTTP liveness alone"));
+    assert!(prompt.contains("-list {{input_file}}"));
+    assert!(prompt.contains("-iL {{input_file}}"));
+    assert!(prompt.contains("--input-file={{input_file}}"));
+    assert!(prompt.contains("file -f {{input_file}}"));
     // Prober is the ACTIVE counterpart of the ZERO-TOUCH Recon — it must NOT
     // describe itself as zero-touch.
     assert!(!prompt.contains("ZERO-TOUCH"));

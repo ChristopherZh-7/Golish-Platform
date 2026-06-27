@@ -20,7 +20,10 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEven
 import { useTranslation } from "react-i18next";
 import { ThinkingBlock } from "@/components/AIChatPanel/ThinkingBlock";
 import { Ansi } from "@/components/Ansi";
-import { StageAssetCoverageBlock } from "@/components/Engagement/StageAssetCoveragePanel";
+import {
+  StageAssetCoverageBlock,
+  type StageAssetCoverageWorkItem,
+} from "@/components/Engagement/StageAssetCoveragePanel";
 import { JsonView } from "@/components/JsonView/JsonView";
 import { Markdown } from "@/components/Markdown";
 import { BackgroundJobsBadge } from "@/components/UnifiedInput/StatusBadges";
@@ -40,7 +43,12 @@ import { shouldStickToBottomAfterScroll } from "@/lib/scroll-stickiness";
 import { getAgentColor, getAgentIcon } from "@/lib/sub-agent-theme";
 import { safeStringify } from "@/lib/text";
 import { formatDurationShort } from "@/lib/time";
-import { getToolPrimaryArg, toolResultIndicatesFailure } from "@/lib/tools";
+import {
+  getPentestRunInputLines,
+  getToolActionLabel,
+  getToolPrimaryArg,
+  toolResultIndicatesFailure,
+} from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, SubAgentEntry, SubAgentToolCall } from "@/store";
 import { useStore } from "@/store";
@@ -54,6 +62,8 @@ type ShellOutputField = { key: string; value: string };
 type SubAgentToolStatus = SubAgentToolCall["status"];
 type DetailToolStatus = SubAgentToolStatus | "interrupted";
 type SubAgentHeaderStatus = ActiveSubAgent["status"] | "backgrounded";
+type SubAgentToolCallVisualRelation = "after_narrative" | "stacked" | "standalone";
+type SubAgentDetailTab = "run" | "coverage";
 
 interface DisplayStatusOptions {
   parentStageStopped?: boolean;
@@ -77,6 +87,217 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isLiveToolStatus(status: string | undefined): boolean {
   return status === "running" || status === "backgrounded";
+}
+
+const TARGET_ARG_KEYS = [
+  "target",
+  "target_url",
+  "targetUrl",
+  "url",
+  "base_url",
+  "baseUrl",
+  "host",
+  "hostname",
+  "domain",
+  "ip",
+  "address",
+  "asset",
+  "asset_value",
+  "assetValue",
+  "value",
+];
+
+const COMMAND_ARG_KEYS = ["command", "args", "query"];
+
+function cleanAssetSubject(subject: string): string {
+  return subject
+    .trim()
+    .replace(/^['"`]+|['"`),;]+$/g, "")
+    .replace(/[),;]+$/g, "");
+}
+
+function uniqueAssetSubjects(subjects: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const subject of subjects) {
+    const cleaned = cleanAssetSubject(subject);
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+  }
+  return out;
+}
+
+export function extractAssetSubjectsFromText(text: string): string[] {
+  const normalized = text.replace(/\\n/g, " ").replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+
+  const subjects: string[] = [];
+  const withoutUrls = normalized.replace(/https?:\/\/[^\s"'<>]+/gi, (match) => {
+    subjects.push(match);
+    return " ";
+  });
+
+  for (const match of withoutUrls.matchAll(
+    /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?:\/\d{1,2})?\b/g
+  )) {
+    subjects.push(match[0]);
+  }
+
+  for (const match of withoutUrls.matchAll(
+    /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}(?::\d{1,5})?\b/gi
+  )) {
+    subjects.push(match[0]);
+  }
+
+  return uniqueAssetSubjects(subjects);
+}
+
+export function extractAssetSubjectFromText(text: string): string | null {
+  return extractAssetSubjectsFromText(text)[0] ?? null;
+}
+
+function firstStringArg(args: Record<string, unknown>, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function nestedArgsRecord(args: Record<string, unknown>): Record<string, unknown> | null {
+  const nested = args.args;
+  return isRecord(nested) ? nested : null;
+}
+
+function displayToolNameForAssetWork(tool: Pick<SubAgentToolCall, "name" | "args">): string {
+  const wrappedName = tool.args.tool_name;
+  return typeof wrappedName === "string" && wrappedName.trim() ? wrappedName.trim() : tool.name;
+}
+
+function assetSubjectsFromCandidate(value: string): string[] {
+  const parsed = extractAssetSubjectsFromText(value);
+  return parsed.length > 0 ? parsed : [cleanAssetSubject(value)];
+}
+
+function batchAssetSubjectsFromToolArgs(args: Record<string, unknown>): string[] {
+  return uniqueAssetSubjects(getPentestRunInputLines(args).flatMap(assetSubjectsFromCandidate));
+}
+
+export function extractAssetSubjectsFromToolCall(
+  tool: Pick<SubAgentToolCall, "name" | "args">
+): string[] {
+  const directTarget = firstStringArg(tool.args, TARGET_ARG_KEYS);
+  if (directTarget) return assetSubjectsFromCandidate(directTarget);
+
+  const nested = nestedArgsRecord(tool.args);
+  const nestedTarget = nested ? firstStringArg(nested, TARGET_ARG_KEYS) : null;
+  if (nestedTarget) return assetSubjectsFromCandidate(nestedTarget);
+
+  const batchSubjects = batchAssetSubjectsFromToolArgs(tool.args);
+  if (batchSubjects.length > 0) return batchSubjects;
+
+  const commandLike = [
+    firstStringArg(tool.args, COMMAND_ARG_KEYS),
+    nested ? firstStringArg(nested, COMMAND_ARG_KEYS) : null,
+    getToolPrimaryArg(tool.name, tool.args),
+  ].find((value): value is string => Boolean(value));
+
+  return commandLike ? extractAssetSubjectsFromText(commandLike) : [];
+}
+
+export function extractAssetSubjectFromToolCall(
+  tool: Pick<SubAgentToolCall, "name" | "args">
+): string | null {
+  return extractAssetSubjectsFromToolCall(tool)[0] ?? null;
+}
+
+function latestOutputPreview(
+  tool: Pick<SubAgentToolCall, "streamingOutput" | "result">
+): string | null {
+  const raw =
+    tool.streamingOutput ??
+    (isRecord(tool.result) && typeof tool.result.partial_stdout === "string"
+      ? tool.result.partial_stdout
+      : null);
+  if (!raw) return null;
+  const lines = stripAllAnsi(raw)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const latest = lines[lines.length - 1];
+  return latest ? latest.slice(0, 160) : null;
+}
+
+function uniqueTechniqueLabels(labels: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const label of labels) {
+    const normalized = label.toUpperCase();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+export function inferCoverageTechniquesFromToolCall(
+  tool: Pick<SubAgentToolCall, "name" | "args">
+): string[] {
+  const displayName = displayToolNameForAssetWork(tool).toLowerCase();
+  const action = getToolActionLabel(tool.name, tool.args).toLowerCase();
+  const primary = (getToolPrimaryArg(tool.name, tool.args) ?? "").toLowerCase();
+  const rawArgs = typeof tool.args.args === "string" ? tool.args.args.toLowerCase() : "";
+  const text = `${tool.name} ${displayName} ${action} ${primary} ${rawArgs}`;
+  const techniques: string[] = [];
+
+  if (/\b(httpx|curl|wget|gowitness)\b/.test(text) || text.includes("liveness")) {
+    techniques.push("LIVENESS");
+  }
+  if (/\b(naabu|masscan|nmap)\b/.test(text) || text.includes("port")) {
+    techniques.push("PORT");
+  }
+  const serviceFingerprintIntent =
+    action.includes("probing services") || action.includes("fingerprinting");
+  if (
+    /\b(whatweb)\b/.test(text) ||
+    text.includes("-sv") ||
+    text.includes("-s v") ||
+    text.includes("fingerprint") ||
+    serviceFingerprintIntent
+  ) {
+    techniques.push("SERVICE");
+  }
+
+  return uniqueTechniqueLabels(techniques);
+}
+
+export function summarizeSubAgentAssetWork(
+  tools: readonly SubAgentToolCall[],
+  options: DisplayStatusOptions = {}
+): StageAssetCoverageWorkItem[] {
+  return tools
+    .map((tool): StageAssetCoverageWorkItem => {
+      const status = getSubAgentToolDisplayStatus(tool, options);
+      const primary = getToolPrimaryArg(tool.name, tool.args);
+      const subjects = extractAssetSubjectsFromToolCall(tool);
+      return {
+        id: tool.id,
+        displayToolName: displayToolNameForAssetWork(tool),
+        rawToolName: tool.name,
+        subject: subjects[0] ?? null,
+        subjects,
+        primary,
+        techniques: inferCoverageTechniquesFromToolCall(tool),
+        status,
+        startedAt: tool.startedAt,
+        completedAt: tool.completedAt,
+        outputPreview: latestOutputPreview(tool) ?? undefined,
+      };
+    })
+    .filter((item) => item.subject || item.primary);
 }
 
 export function getSubAgentToolDisplayStatus(
@@ -220,7 +441,15 @@ export function shouldSeparateSubAgentDetailEntries(
   current: Pick<SubAgentEntry, "kind">
 ): boolean {
   if (!previous) return false;
-  return previous.kind === "tool_call" || current.kind === "tool_call";
+  return previous.kind === "tool_call" && current.kind !== "tool_call";
+}
+
+export function getSubAgentToolCallVisualRelation(
+  previous: Pick<SubAgentEntry, "kind"> | null | undefined
+): SubAgentToolCallVisualRelation {
+  if (previous?.kind === "thinking" || previous?.kind === "text") return "after_narrative";
+  if (previous?.kind === "tool_call") return "stacked";
+  return "standalone";
 }
 
 /* ─── Structured args display ─── */
@@ -369,9 +598,11 @@ const ToolResultDisplay = memo(function ToolResultDisplay({ result }: { result: 
 const AgentToolCallBlock = memo(function AgentToolCallBlock({
   tool,
   parentStageStopped = false,
+  visualRelation = "standalone",
 }: {
   tool: SubAgentToolCall;
   parentStageStopped?: boolean;
+  visualRelation?: SubAgentToolCallVisualRelation;
 }) {
   const isShellRunner = tool.name === "run_pty_cmd" || tool.name === "run_command";
   const isShellLikeOutput = isSubAgentShellLikeOutputTool(tool);
@@ -405,130 +636,150 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({
   // nests the real tool under `tool_name`/`args`, so this renders e.g.
   // "nmap -sV target" inline without the user expanding the row.
   const summaryArg = getToolPrimaryArg(tool.name, tool.args);
+  const actionLabel = getToolActionLabel(tool.name, tool.args);
   const shellOutputState = getSubAgentShellOutputForDetail(displayTool);
   const shellOutputJsonValue = getSubAgentShellOutputJsonValueForDetail(displayTool);
+  const isAttachedToNarrative = visualRelation === "after_narrative";
+  const isStackedTool = visualRelation === "stacked";
 
   return (
-    <div className="mx-3 my-2 rounded-lg border border-border/30 overflow-hidden bg-card/80 shadow-sm border-l-2 border-l-[var(--ansi-magenta)]/40">
-      <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-        <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-1.5 px-3 py-2 text-xs hover:bg-accent/20 transition-colors">
-          {isExpanded ? (
-            <ChevronDown className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-          ) : (
-            <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+    <div
+      className={cn(
+        "relative mx-4 my-1.5",
+        isAttachedToNarrative && "mt-0 pl-5",
+        isStackedTool && "-mt-0.5 pl-5"
+      )}
+    >
+      {(isAttachedToNarrative || isStackedTool) && (
+        <div
+          aria-hidden="true"
+          className={cn(
+            "absolute left-2 top-0 w-px bg-[var(--ansi-magenta)]/25",
+            isAttachedToNarrative ? "-translate-y-3 h-3" : "-translate-y-2 h-2"
           )}
-          <Wand2 className="h-3 w-3 text-[var(--ansi-magenta)]/70 flex-shrink-0" />
-          <StatusIcon status={status} size="sm" />
-          {isShellLikeOutput ? (
-            <Terminal className="h-3 w-3 text-[var(--ansi-green)] flex-shrink-0" />
-          ) : null}
-          <span className="shrink-0 font-mono text-[var(--ansi-cyan)]">
-            {isShellRunner ? "" : tool.name}
-          </span>
-          {summaryArg && (
-            <span
-              className={cn(
-                "min-w-0 truncate font-mono",
-                isShellRunner ? "text-[var(--ansi-green)]/80" : "text-muted-foreground"
-              )}
-              title={summaryArg}
-            >
-              {isShellRunner && <span className="text-muted-foreground/50 mr-1">$</span>}
-              {summaryArg}
-            </span>
-          )}
-          <div className="flex-1" />
-          {tool.completedAt && (
-            <span className="text-[10px] text-muted-foreground tabular-nums flex-shrink-0">
-              {formatDurationShort(
-                new Date(tool.completedAt).getTime() - new Date(tool.startedAt).getTime()
-              )}
-            </span>
-          )}
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="px-4 pb-3 space-y-2.5 text-xs overflow-hidden border-t border-border/20 pt-2.5">
-            {!isShellRunner && tool.args && typeof tool.args === "object" && (
-              <div className="overflow-hidden">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <ChevronRight className="w-2.5 h-2.5 text-[var(--ansi-cyan)]/50" />
-                  <span className="text-[9px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
-                    Input
-                  </span>
-                </div>
-                <div className="rounded-md bg-muted/40 border border-border/20 overflow-hidden">
-                  <ToolArgsTable args={tool.args as Record<string, unknown>} />
-                </div>
-              </div>
+        />
+      )}
+      <div className="overflow-hidden rounded-md border border-border/15 border-l border-l-[var(--ansi-magenta)]/35 bg-background/35">
+        <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
+          <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-1.5 px-3 py-2 text-xs transition-colors hover:bg-foreground/[0.035]">
+            {isExpanded ? (
+              <ChevronDown className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+            ) : (
+              <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
             )}
-
-            {isShellLikeOutput && shellOutputState.text && (
-              <div className="overflow-hidden">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  {isLive ? (
-                    <Loader2
-                      className={cn(
-                        SUB_AGENT_DETAIL_PENDING_OUTPUT_SPINNER_CLASS,
-                        status === "backgrounded" && "text-amber-300"
-                      )}
-                    />
-                  ) : status === "error" ? (
-                    <XCircle className="w-2.5 h-2.5 text-[var(--ansi-red)]/70" />
-                  ) : (
-                    <CheckCircle2 className="w-2.5 h-2.5 text-[var(--ansi-green)]/50" />
-                  )}
-                  <span className="text-[9px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
-                    Output
-                  </span>
-                </div>
-                {shellOutputJsonValue ? (
-                  <div className="max-h-60 overflow-auto rounded-md border border-border/20 bg-muted/40">
-                    <JsonView value={shellOutputJsonValue} className="px-3 py-2" />
-                  </div>
-                ) : (
-                  <pre
-                    ref={preRef}
-                    className={cn(
-                      "ansi-output max-h-60 overflow-auto whitespace-pre-wrap rounded border border-border/15 bg-background/40 px-3 py-2 text-[11px] font-mono text-muted-foreground",
-                      isStreaming && "border-l-2 border-[var(--ansi-blue)]"
-                    )}
-                  >
-                    <SubAgentShellOutputText
-                      text={limitLiveOutputForRender(shellOutputState.text, isLive)}
-                    />
-                  </pre>
+            <Wand2 className="h-3 w-3 text-[var(--ansi-magenta)]/55 flex-shrink-0" />
+            <StatusIcon status={status} size="sm" />
+            {isShellLikeOutput ? (
+              <Terminal className="h-3 w-3 text-[var(--ansi-green)]/85 flex-shrink-0" />
+            ) : null}
+            <span className="shrink-0 text-[12px] font-medium text-foreground/85" title={tool.name}>
+              {actionLabel}
+            </span>
+            {summaryArg && (
+              <span
+                className={cn(
+                  "min-w-0 truncate font-mono",
+                  isShellRunner ? "text-[var(--ansi-green)]/80" : "text-muted-foreground/85"
                 )}
-              </div>
+                title={summaryArg}
+              >
+                {isShellRunner && <span className="text-muted-foreground/50 mr-1">$</span>}
+                {summaryArg}
+              </span>
             )}
-
-            {!isShellLikeOutput && tool.result !== undefined && (
-              <div className="overflow-hidden">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  {status === "error" ? (
-                    <XCircle className="w-2.5 h-2.5 text-[var(--ansi-red)]/70" />
-                  ) : (
-                    <CheckCircle2 className="w-2.5 h-2.5 text-[var(--ansi-green)]/50" />
-                  )}
-                  <span className="text-[9px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
-                    Output
-                  </span>
-                </div>
-                <ToolResultDisplay result={tool.result} />
-              </div>
+            <div className="flex-1" />
+            {tool.completedAt && (
+              <span className="text-[10px] text-muted-foreground/80 tabular-nums flex-shrink-0">
+                {formatDurationShort(
+                  new Date(tool.completedAt).getTime() - new Date(tool.startedAt).getTime()
+                )}
+              </span>
             )}
-
-            {isShellLikeOutput &&
-              !!tool.result &&
-              typeof tool.result === "object" &&
-              !!(tool.result as Record<string, unknown>).error && (
-                <div className="flex items-start gap-2 rounded-md bg-[var(--ansi-red)]/10 px-3 py-2 text-[11px] text-[var(--ansi-red)]">
-                  <XCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-                  <span>{String((tool.result as Record<string, unknown>).error)}</span>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="px-4 pb-3 space-y-2.5 text-xs overflow-hidden border-t border-border/10 bg-background/25 pt-2.5">
+              {!isShellRunner && tool.args && typeof tool.args === "object" && (
+                <div className="overflow-hidden">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <ChevronRight className="w-2.5 h-2.5 text-[var(--ansi-cyan)]/50" />
+                    <span className="text-[9px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
+                      Input
+                    </span>
+                  </div>
+                  <div className="rounded-md bg-muted/30 border border-border/15 overflow-hidden">
+                    <ToolArgsTable args={tool.args as Record<string, unknown>} />
+                  </div>
                 </div>
               )}
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+
+              {isShellLikeOutput && shellOutputState.text && (
+                <div className="overflow-hidden">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    {isLive ? (
+                      <Loader2
+                        className={cn(
+                          SUB_AGENT_DETAIL_PENDING_OUTPUT_SPINNER_CLASS,
+                          status === "backgrounded" && "text-amber-300"
+                        )}
+                      />
+                    ) : status === "error" ? (
+                      <XCircle className="w-2.5 h-2.5 text-[var(--ansi-red)]/70" />
+                    ) : (
+                      <CheckCircle2 className="w-2.5 h-2.5 text-[var(--ansi-green)]/50" />
+                    )}
+                    <span className="text-[9px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
+                      Output
+                    </span>
+                  </div>
+                  {shellOutputJsonValue ? (
+                    <div className="max-h-60 overflow-auto rounded-md border border-border/15 bg-muted/30">
+                      <JsonView value={shellOutputJsonValue} className="px-3 py-2" />
+                    </div>
+                  ) : (
+                    <pre
+                      ref={preRef}
+                      className={cn(
+                        "ansi-output max-h-60 overflow-auto whitespace-pre-wrap rounded border border-border/15 bg-background/35 px-3 py-2 text-[11px] font-mono text-muted-foreground",
+                        isStreaming && "border-l-2 border-[var(--ansi-blue)]"
+                      )}
+                    >
+                      <SubAgentShellOutputText
+                        text={limitLiveOutputForRender(shellOutputState.text, isLive)}
+                      />
+                    </pre>
+                  )}
+                </div>
+              )}
+
+              {!isShellLikeOutput && tool.result !== undefined && (
+                <div className="overflow-hidden">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    {status === "error" ? (
+                      <XCircle className="w-2.5 h-2.5 text-[var(--ansi-red)]/70" />
+                    ) : (
+                      <CheckCircle2 className="w-2.5 h-2.5 text-[var(--ansi-green)]/50" />
+                    )}
+                    <span className="text-[9px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
+                      Output
+                    </span>
+                  </div>
+                  <ToolResultDisplay result={tool.result} />
+                </div>
+              )}
+
+              {isShellLikeOutput &&
+                !!tool.result &&
+                typeof tool.result === "object" &&
+                !!(tool.result as Record<string, unknown>).error && (
+                  <div className="flex items-start gap-2 rounded-md bg-[var(--ansi-red)]/10 px-3 py-2 text-[11px] text-[var(--ansi-red)]">
+                    <XCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                    <span>{String((tool.result as Record<string, unknown>).error)}</span>
+                  </div>
+                )}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      </div>
     </div>
   );
 });
@@ -757,6 +1008,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
   const previousTimelineScrollTopRef = useRef(0);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
   const [isTaskExpanded, setIsTaskExpanded] = useState(false);
+  const [activeDetailTab, setActiveDetailTab] = useState<SubAgentDetailTab>("run");
   const isRunning = subAgent?.status === "running" && !parentStageStopped;
   const hasParentSubAgent = (requestIds?.length ?? 0) > 1;
   const backLabel = hasParentSubAgent
@@ -827,7 +1079,14 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
 
   useEffect(() => {
     setIsTaskExpanded(false);
+    setActiveDetailTab("run");
   }, [targetRequestId]);
+
+  useEffect(() => {
+    if (!stageCoverageContext && activeDetailTab === "coverage") {
+      setActiveDetailTab("run");
+    }
+  }, [activeDetailTab, stageCoverageContext]);
 
   useEffect(() => {
     return () => {
@@ -899,6 +1158,10 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
   const headerDisplayStatus = getSubAgentHeaderDisplayStatus(subAgent, { parentStageStopped });
   const headerStatus = SUB_AGENT_HEADER_STATUS_BADGE_STYLES[headerDisplayStatus];
   const isHeaderLive = headerDisplayStatus === "running" || headerDisplayStatus === "backgrounded";
+  const stageAssetWorkItems = summarizeSubAgentAssetWork(subAgent.toolCalls, {
+    parentStageStopped,
+  });
+  const showCoverageView = Boolean(stageCoverageContext && activeDetailTab === "coverage");
   const toolMap = new Map(subAgent.toolCalls.map((tc) => [tc.id, tc]));
   const subAgentMap = new Map(subAgents.map((agent) => [agent.parentRequestId, agent]));
   const hasEntries = detailEntries.length > 0;
@@ -947,8 +1210,12 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
         <span className="text-[11px] text-muted-foreground/60 tabular-nums">
           {subAgent.toolCalls.length} {t("ai.agentTree.tools")}
         </span>
-        <div className="ml-auto flex items-center">
-          <BackgroundJobsBadge jobs={backgroundJobs} fallbackCount={backgroundedToolCount} />
+        <div className="ml-auto flex items-center justify-end">
+          <BackgroundJobsBadge
+            jobs={backgroundJobs}
+            fallbackCount={backgroundedToolCount}
+            reserveSpace
+          />
         </div>
       </div>
 
@@ -993,152 +1260,175 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
         </Collapsible>
       )}
 
-      {stageCoverageContext && (
-        <div className="mx-3 mb-3 mt-2 flex-shrink-0">
+      {stageCoverageContext && !showCoverageView && (
+        <div className="mx-3 mb-2 flex-shrink-0">
           <StageAssetCoverageBlock
+            displayMode="summary"
             organizationId={stageCoverageContext.organizationId}
             stage={stageCoverageContext.stage}
             sessionId={sessionId}
             title="资产覆盖"
             subtitle={`${stageCoverageContext.stageLabel} · ${stageCoverageContext.organizationName}`}
             pollWhileActive={isHeaderLive}
+            workItems={stageAssetWorkItems}
+            onOpenCoverage={() => setActiveDetailTab("coverage")}
           />
         </div>
       )}
 
-      {/* Timeline content */}
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto"
-        onScroll={updateStickiness}
-        onWheelCapture={handleTimelineWheel}
-      >
-        {/* Prompt generation (collapsible) */}
-        {subAgent.promptGeneration && (
-          <div className="border-b border-border/20">
-            <Collapsible>
-              <CollapsibleTrigger className="group flex w-full items-center gap-1.5 px-4 py-2 text-xs hover:bg-accent/30 transition-colors">
-                {subAgent.promptGeneration.status === "generating" ? (
-                  <Loader2 className="h-3 w-3 text-[var(--ansi-yellow)] animate-spin" />
-                ) : subAgent.promptGeneration.status === "completed" ? (
-                  <CheckCircle2 className="h-3 w-3 text-[var(--ansi-green)]" />
-                ) : (
-                  <XCircle className="h-3 w-3 text-[var(--ansi-red)]" />
-                )}
-                <Wand2 className="h-3 w-3 text-[var(--ansi-yellow)]" />
-                <span className="text-muted-foreground">
-                  {subAgent.promptGeneration.status === "generating"
-                    ? t("ai.subAgentDetail.promptGenerating")
-                    : subAgent.promptGeneration.status === "completed"
-                      ? t("ai.subAgentDetail.promptGenerated")
-                      : t("ai.subAgentDetail.promptFailed")}
-                </span>
-                {subAgent.promptGeneration.durationMs != null && (
-                  <span className="ml-auto text-[10px] text-muted-foreground flex items-center gap-0.5">
-                    <Clock className="h-2.5 w-2.5" />
-                    {formatDurationShort(subAgent.promptGeneration.durationMs)}
-                  </span>
-                )}
-              </CollapsibleTrigger>
-              <CollapsibleContent className="px-4 pb-2">
-                <div className="space-y-1.5 text-xs">
-                  {subAgent.promptGeneration.generatedPrompt && (
-                    <details className="group" open>
-                      <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground/80">
-                        Generated system prompt
-                      </summary>
-                      <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted px-2 py-1 text-[10px]">
-                        {subAgent.promptGeneration.generatedPrompt}
-                      </pre>
-                    </details>
+      {stageCoverageContext && showCoverageView ? (
+        <div className="min-h-0 flex-1 px-3 pb-3">
+          <StageAssetCoverageBlock
+            displayMode="panel"
+            organizationId={stageCoverageContext.organizationId}
+            stage={stageCoverageContext.stage}
+            sessionId={sessionId}
+            title="资产覆盖"
+            subtitle={`${stageCoverageContext.stageLabel} · ${stageCoverageContext.organizationName}`}
+            pollWhileActive={isHeaderLive}
+            workItems={stageAssetWorkItems}
+            onBackToRun={() => setActiveDetailTab("run")}
+          />
+        </div>
+      ) : (
+        /* Timeline content */
+        <div
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto"
+          onScroll={updateStickiness}
+          onWheelCapture={handleTimelineWheel}
+        >
+          {/* Prompt generation (collapsible) */}
+          {subAgent.promptGeneration && (
+            <div className="border-b border-border/20">
+              <Collapsible>
+                <CollapsibleTrigger className="group flex w-full items-center gap-1.5 px-4 py-2 text-xs hover:bg-accent/30 transition-colors">
+                  {subAgent.promptGeneration.status === "generating" ? (
+                    <Loader2 className="h-3 w-3 text-[var(--ansi-yellow)] animate-spin" />
+                  ) : subAgent.promptGeneration.status === "completed" ? (
+                    <CheckCircle2 className="h-3 w-3 text-[var(--ansi-green)]" />
+                  ) : (
+                    <XCircle className="h-3 w-3 text-[var(--ansi-red)]" />
                   )}
-                </div>
-              </CollapsibleContent>
-            </Collapsible>
-          </div>
-        )}
+                  <Wand2 className="h-3 w-3 text-[var(--ansi-yellow)]" />
+                  <span className="text-muted-foreground">
+                    {subAgent.promptGeneration.status === "generating"
+                      ? t("ai.subAgentDetail.promptGenerating")
+                      : subAgent.promptGeneration.status === "completed"
+                        ? t("ai.subAgentDetail.promptGenerated")
+                        : t("ai.subAgentDetail.promptFailed")}
+                  </span>
+                  {subAgent.promptGeneration.durationMs != null && (
+                    <span className="ml-auto text-[10px] text-muted-foreground flex items-center gap-0.5">
+                      <Clock className="h-2.5 w-2.5" />
+                      {formatDurationShort(subAgent.promptGeneration.durationMs)}
+                    </span>
+                  )}
+                </CollapsibleTrigger>
+                <CollapsibleContent className="px-4 pb-2">
+                  <div className="space-y-1.5 text-xs">
+                    {subAgent.promptGeneration.generatedPrompt && (
+                      <details className="group" open>
+                        <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground/80">
+                          Generated system prompt
+                        </summary>
+                        <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted px-2 py-1 text-[10px]">
+                          {subAgent.promptGeneration.generatedPrompt}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            </div>
+          )}
 
-        {/* Interleaved timeline entries: agent narrative blocks + tool calls */}
-        <div>
-          {hasEntries
-            ? detailEntries.map((entry, i) => {
-                const previous = i > 0 ? detailEntries[i - 1] : null;
-                const boundaryClass = shouldSeparateSubAgentDetailEntries(previous, entry)
-                  ? "border-t border-border/10"
-                  : "";
-                const renderedEntry = (() => {
-                  if (entry.kind === "thinking" && entry.text) {
-                    return (
-                      <div className="px-4 py-3 border-l-2 border-muted-foreground/15 bg-[var(--bg-hover)]/35">
-                        <ThinkingBlock
-                          content={entry.text}
-                          isActive={isRunning && i === detailEntries.length - 1}
-                          startedAt={entry.startedAt}
-                          endedAt={entry.endedAt}
+          {/* Interleaved timeline entries: agent narrative blocks + tool calls */}
+          <div>
+            {hasEntries
+              ? detailEntries.map((entry, i) => {
+                  const previous = i > 0 ? detailEntries[i - 1] : null;
+                  const boundaryClass = shouldSeparateSubAgentDetailEntries(previous, entry)
+                    ? "border-t border-border/10"
+                    : "";
+                  const renderedEntry = (() => {
+                    if (entry.kind === "thinking" && entry.text) {
+                      return (
+                        <div className="px-4 py-3 border-l-2 border-muted-foreground/15 bg-[var(--bg-hover)]/35">
+                          <ThinkingBlock
+                            content={entry.text}
+                            isActive={isRunning && i === detailEntries.length - 1}
+                            startedAt={entry.startedAt}
+                            endedAt={entry.endedAt}
+                          />
+                        </div>
+                      );
+                    }
+                    if (entry.kind === "text" && entry.text) {
+                      return (
+                        <AgentOutputBlock
+                          text={entry.text}
+                          streaming={isRunning && i === detailEntries.length - 1}
                         />
-                      </div>
-                    );
-                  }
-                  if (entry.kind === "text" && entry.text) {
-                    return (
-                      <AgentOutputBlock
-                        text={entry.text}
-                        streaming={isRunning && i === detailEntries.length - 1}
-                      />
-                    );
-                  }
-                  if (entry.kind === "tool_call" && entry.toolCallId) {
-                    const tool = toolMap.get(entry.toolCallId);
-                    if (tool?.name.startsWith("sub_agent_")) {
-                      const nestedAgent = subAgentMap.get(tool.id);
-                      if (nestedAgent) {
+                      );
+                    }
+                    if (entry.kind === "tool_call" && entry.toolCallId) {
+                      const tool = toolMap.get(entry.toolCallId);
+                      if (tool?.name.startsWith("sub_agent_")) {
+                        const nestedAgent = subAgentMap.get(tool.id);
+                        if (nestedAgent) {
+                          return (
+                            <NestedSubAgentCard
+                              agent={nestedAgent}
+                              sessionId={sessionId}
+                              onOpen={openSubAgent}
+                            />
+                          );
+                        }
+                      }
+                      if (tool) {
                         return (
-                          <NestedSubAgentCard
-                            agent={nestedAgent}
-                            sessionId={sessionId}
-                            onOpen={openSubAgent}
+                          <AgentToolCallBlock
+                            tool={tool}
+                            parentStageStopped={parentStageStopped}
+                            visualRelation={getSubAgentToolCallVisualRelation(previous)}
                           />
                         );
                       }
                     }
-                    if (tool) {
-                      return (
-                        <AgentToolCallBlock tool={tool} parentStageStopped={parentStageStopped} />
-                      );
-                    }
-                  }
-                  return null;
-                })();
-                if (!renderedEntry) return null;
-                return (
-                  <div key={`entry-${i}`} className={boundaryClass}>
-                    {renderedEntry}
-                  </div>
-                );
-              })
-            : subAgent.toolCalls.length > 0
-              ? subAgent.toolCalls.map((tool) => (
-                  <AgentToolCallBlock
-                    key={tool.id}
-                    tool={tool}
-                    parentStageStopped={parentStageStopped}
-                  />
-                ))
-              : null}
-        </div>
-
-        {/* Error */}
-        {subAgent.error && (
-          <div className="mx-3 my-2.5 rounded-lg bg-destructive/10 border border-destructive/25 p-3.5 overflow-hidden">
-            <div className="flex items-start gap-2">
-              <XCircle className="w-3.5 h-3.5 text-destructive mt-0.5 flex-shrink-0" />
-              <p className="text-[12.5px] text-destructive leading-[1.6] whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-                {subAgent.error}
-              </p>
-            </div>
+                    return null;
+                  })();
+                  if (!renderedEntry) return null;
+                  return (
+                    <div key={`entry-${i}`} className={boundaryClass}>
+                      {renderedEntry}
+                    </div>
+                  );
+                })
+              : subAgent.toolCalls.length > 0
+                ? subAgent.toolCalls.map((tool) => (
+                    <AgentToolCallBlock
+                      key={tool.id}
+                      tool={tool}
+                      parentStageStopped={parentStageStopped}
+                    />
+                  ))
+                : null}
           </div>
-        )}
-      </div>
+
+          {/* Error */}
+          {subAgent.error && (
+            <div className="mx-3 my-2.5 rounded-lg bg-destructive/10 border border-destructive/25 p-3.5 overflow-hidden">
+              <div className="flex items-start gap-2">
+                <XCircle className="w-3.5 h-3.5 text-destructive mt-0.5 flex-shrink-0" />
+                <p className="text-[12.5px] text-destructive leading-[1.6] whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                  {subAgent.error}
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Running footer */}
       {isRunning && (

@@ -22,15 +22,15 @@
         "label": "URL",
         "flag": "-u",
         "type": "string",
-        "description": "Single target URL or host",
+        "description": "Single target URL or host. For EAS batches prefer -l or stdin so one run covers many hosts.",
         "placeholder": "https://target.com"
       },
       {
         "label": "Targets List",
         "flag": "-l",
         "type": "string",
-        "description": "File with hosts (one per line)",
-        "placeholder": "hosts.txt"
+        "description": "File with hosts (one per line). With pentest_run, use {{input_file}} plus input_lines for batch runs.",
+        "placeholder": "{{input_file}}"
       },
       {
         "label": "Ports",
@@ -147,42 +147,51 @@
         "id": "alive-only",
         "name": "Alive URLs only",
         "description": "Probe and output only live URLs",
-        "args": "-l {{hosts}} -silent -o live.txt",
-        "tags": ["probe", "fast"]
+        "args": "-l {{input_file}} -json -silent -o httpx.jsonl",
+        "tags": ["probe", "fast", "bulk"]
       },
       {
         "id": "rich-info",
         "name": "Status + title + tech",
         "description": "Live URL with status, title, tech, server",
-        "args": "-l {{hosts}} -sc -title -td -server",
-        "tags": ["recon"]
+        "args": "-l {{input_file}} -json -sc -title -td -server",
+        "tags": ["recon", "bulk"]
       },
       {
         "id": "json-pipeline",
         "name": "JSONL for pipeline",
         "description": "Probe and output JSONL with full metadata",
-        "args": "-l {{hosts}} -json -o httpx.jsonl",
-        "tags": ["pipeline"]
+        "args": "-l {{input_file}} -json -sc -title -td -server -o httpx.jsonl",
+        "tags": ["pipeline", "bulk"]
       },
       {
         "id": "screenshots",
         "name": "Screenshots all live hosts",
         "description": "Probe + take screenshots into output/ dir",
-        "args": "-l {{hosts}} -ss -silent",
-        "tags": ["recon", "visual"]
+        "args": "-l {{input_file}} -ss -silent",
+        "tags": ["recon", "visual", "bulk"]
       },
       {
         "id": "common-ports",
         "name": "Common web ports probe",
         "description": "Probe alternate web ports beyond 80/443",
-        "args": "-l {{hosts}} -ports 80,443,8080,8443,8000,8888,9000",
-        "tags": ["ports"]
+        "args": "-l {{input_file}} -ports 80,443,8080,8443,8000,8888,9000 -json -sc -title -td -server",
+        "tags": ["ports", "bulk"]
       }
     ],
     "output": {
-      "format": "text",
-      "produces": ["url", "host"],
-      "detect": "httpx|^https?://",
+      "format": "json_lines",
+      "produces": ["url", "host", "technology"],
+      "fields": {
+        "url": "url",
+        "status_code": "status_code",
+        "title": "title",
+        "webserver": "webserver",
+        "technologies": "tech",
+        "host": "host",
+        "ip": "a[0]"
+      },
+      "detect": "httpx|\\{\"url\"|^https?://",
       "db_action": "target_update_recon",
       "patterns": [
         {

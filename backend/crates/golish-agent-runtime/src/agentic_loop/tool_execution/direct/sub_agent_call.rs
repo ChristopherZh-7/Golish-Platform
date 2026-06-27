@@ -548,12 +548,16 @@ where
         let project_path = project_id_opt.clone();
         let session_id = ctx.events.session_id.map(str::to_string);
         let harness_org_id = effective_harness_org_id;
+        let harness_stage = ctx.harness_stage;
+        let harness_operation_id = ctx.harness_operation_id;
         let router: golish_sub_agents::SubAgentToolRouter =
             std::sync::Arc::new(move |name: String, args: serde_json::Value| {
                 let graph = graph.clone();
                 let tracker = tracker.clone();
                 let project_path = project_path.clone();
                 let session_id = session_id.clone();
+                let harness_stage = harness_stage;
+                let harness_operation_id = harness_operation_id;
                 Box::pin(async move {
                     if let Some(result) =
                         golish_agent_kit::tool_executors::execute_security_analysis_tool(
@@ -563,6 +567,8 @@ where
                             project_path.as_deref(),
                             session_id.as_deref(),
                             harness_org_id,
+                            harness_stage,
+                            harness_operation_id,
                         )
                         .await
                     {

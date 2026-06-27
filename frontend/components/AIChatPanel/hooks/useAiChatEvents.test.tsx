@@ -152,6 +152,29 @@ describe("useAiChatEvents — ask_human lifecycle", () => {
     expect(screen.getByTestId("ask-human")).toHaveTextContent("absent");
   });
 
+  it("clears a pending ask_human box when the response event arrives", async () => {
+    render(<AskHumanHarness />);
+    await waitFor(() => expect(aiMock.cb).toBeTruthy());
+
+    fire({
+      type: "ask_human_request",
+      request_id: "r-done",
+      question: "Confirm units?",
+      input_type: "unit_review",
+      options: [],
+      context: "",
+    });
+    expect(screen.getByTestId("ask-human")).toHaveTextContent("present");
+
+    fire({
+      type: "ask_human_response",
+      request_id: "r-done",
+      response: "ok",
+      skipped: false,
+    });
+    expect(screen.getByTestId("ask-human")).toHaveTextContent("absent");
+  });
+
   it("captures the org id from a recon_discover_subsidiaries tool call (unit_review fallback)", async () => {
     render(<AskHumanHarness />);
     await waitFor(() => expect(aiMock.cb).toBeTruthy());

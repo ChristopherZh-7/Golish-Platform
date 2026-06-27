@@ -16,6 +16,7 @@ pub struct PolicyContext<'a> {
     pub workspace: &'a Path,
     pub mcp_tool_count: usize,
     pub depth: usize,
+    pub harness_active: bool,
 }
 
 impl<'a> PolicyContext<'a> {
@@ -25,6 +26,7 @@ impl<'a> PolicyContext<'a> {
             workspace,
             mcp_tool_count: 0,
             depth: 0,
+            harness_active: false,
         }
     }
 
@@ -35,6 +37,11 @@ impl<'a> PolicyContext<'a> {
 
     pub fn with_mcp_tool_count(mut self, count: usize) -> Self {
         self.mcp_tool_count = count;
+        self
+    }
+
+    pub fn with_harness_active(mut self, active: bool) -> Self {
+        self.harness_active = active;
         self
     }
 }
@@ -48,9 +55,11 @@ mod tests {
         let ws = Path::new("/tmp");
         let ctx = PolicyContext::new(ws, AgentMode::default())
             .with_depth(3)
-            .with_mcp_tool_count(5);
+            .with_mcp_tool_count(5)
+            .with_harness_active(true);
         assert_eq!(ctx.depth, 3);
         assert_eq!(ctx.mcp_tool_count, 5);
+        assert!(ctx.harness_active);
         assert_eq!(ctx.workspace, ws);
     }
 }

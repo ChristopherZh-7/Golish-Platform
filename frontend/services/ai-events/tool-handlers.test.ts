@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  handleAskHumanRequest,
+  handleAskHumanResponse,
   handleToolApprovalRequest,
   handleToolAutoApproved,
   handleToolOutputChunk,
@@ -18,6 +20,8 @@ function mockCtx() {
     setDetailViewMode: vi.fn(),
     setSessionStageRun: vi.fn(),
     setPendingToolApproval: vi.fn(),
+    setPendingAskHuman: vi.fn(),
+    clearPendingAskHuman: vi.fn(),
     sessions: { "sess-1": { id: "sess-1", agentMode: "manual" } },
   };
   const ctx: EventHandlerContext = {
@@ -151,5 +155,52 @@ describe("tool event detail pane behavior", () => {
       "sub line\n",
       "sub_agent"
     );
+  });
+});
+
+describe("ask_human event handling", () => {
+  it("keeps review input types and original AI session id in pendingAskHuman", () => {
+    const { state, ctx } = mockCtx();
+
+    handleAskHumanRequest(
+      {
+        type: "ask_human_request",
+        request_id: "A1",
+        question: "确认组织树？",
+        input_type: "unit_review",
+        options: [],
+        context: '{"organization_id":"org-1"}',
+        session_id: "ai-session-1",
+      },
+      ctx
+    );
+
+    expect(state.setAgentThinking).toHaveBeenCalledWith("sess-1", false);
+    expect(ctx.flushSessionDeltas).toHaveBeenCalledWith("sess-1");
+    expect(state.setPendingAskHuman).toHaveBeenCalledWith(
+      "sess-1",
+      expect.objectContaining({
+        requestId: "A1",
+        sessionId: "ai-session-1",
+        inputType: "unit_review",
+      })
+    );
+  });
+
+  it("clears pending ask_human when the response event arrives", () => {
+    const { state, ctx } = mockCtx();
+
+    handleAskHumanResponse(
+      {
+        type: "ask_human_response",
+        request_id: "A1",
+        response: "ok",
+        skipped: false,
+        session_id: "ai-session-1",
+      },
+      ctx
+    );
+
+    expect(state.clearPendingAskHuman).toHaveBeenCalledWith("sess-1");
   });
 });

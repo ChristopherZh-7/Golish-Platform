@@ -2,11 +2,17 @@ import { render } from "@testing-library/react";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
 import {
+  extractAssetSubjectFromText,
+  extractAssetSubjectFromToolCall,
+  extractAssetSubjectsFromText,
+  extractAssetSubjectsFromToolCall,
   getSubAgentHeaderDisplayStatus,
   getSubAgentShellOutputFieldsForDetail,
   getSubAgentShellOutputForDetail,
   getSubAgentShellOutputJsonValueForDetail,
+  getSubAgentToolCallVisualRelation,
   getSubAgentToolDisplayStatus,
+  inferCoverageTechniquesFromToolCall,
   isSubAgentShellLikeOutputTool,
   isTerminalStageRunToolStatus,
   normalizeSubAgentEntriesForDetail,
@@ -18,6 +24,7 @@ import {
   SubAgentShellOutputText,
   shouldSeparateSubAgentDetailEntries,
   stripAgentXmlTags,
+  summarizeSubAgentAssetWork,
 } from "./SubAgentDetailView";
 
 describe("stripAgentXmlTags", () => {
@@ -187,6 +194,137 @@ describe("getSubAgentShellOutputForDetail", () => {
   });
 });
 
+describe("sub-agent asset work summary", () => {
+  it("extracts the active asset from wrapped pentest_run args", () => {
+    expect(
+      extractAssetSubjectFromToolCall({
+        name: "pentest_run",
+        args: {
+          tool_name: "nmap",
+          args: "-sV 10.18.2.4 -p 443",
+        },
+      })
+    ).toBe("10.18.2.4");
+  });
+
+  it("extracts urls and domains from command text", () => {
+    expect(extractAssetSubjectFromText("httpx -title https://pay.example.com:8443")).toBe(
+      "https://pay.example.com:8443"
+    );
+    expect(extractAssetSubjectFromText("whatweb --no-errors api.example.com")).toBe(
+      "api.example.com"
+    );
+  });
+
+  it("extracts multiple assets from batch commands", () => {
+    expect(
+      extractAssetSubjectsFromText(
+        "httpx https://a.example.com https://b.example.com 10.18.2.4:443"
+      )
+    ).toEqual(["https://a.example.com", "https://b.example.com", "10.18.2.4:443"]);
+    expect(
+      extractAssetSubjectsFromToolCall({
+        name: "pentest_run",
+        args: {
+          tool_name: "nmap",
+          args: "-sV 10.18.2.4 10.18.2.5 -p 80,443",
+        },
+      })
+    ).toEqual(["10.18.2.4", "10.18.2.5"]);
+  });
+
+  it("extracts multiple assets from pentest_run batch input lines", () => {
+    expect(
+      extractAssetSubjectsFromToolCall({
+        name: "pentest_run",
+        args: {
+          tool_name: "naabu",
+          args: "-list {{input_file}} -top-ports 1000 -s c -silent",
+          input_lines: ["120.233.149.102", "yun.pingan.com.cdn.pingan.com.cn"],
+        },
+      })
+    ).toEqual(["120.233.149.102", "yun.pingan.com.cdn.pingan.com.cn"]);
+  });
+
+  it("maps active EAS tools to coverage dimensions", () => {
+    expect(
+      inferCoverageTechniquesFromToolCall({
+        name: "pentest_run",
+        args: { tool_name: "httpx", args: "-json https://edge.example.com" },
+      })
+    ).toEqual(["LIVENESS"]);
+    expect(
+      inferCoverageTechniquesFromToolCall({
+        name: "pentest_run",
+        args: { tool_name: "nmap", args: "-sV 10.18.2.4 -p 443" },
+      })
+    ).toEqual(["PORT", "SERVICE"]);
+  });
+
+  it("summarizes running tool calls into asset work items", () => {
+    expect(
+      summarizeSubAgentAssetWork([
+        {
+          id: "tool-1",
+          name: "pentest_run",
+          args: {
+            tool_name: "httpx",
+            args: "-json https://edge.example.com",
+          },
+          status: "running",
+          startedAt: "2026-06-27T10:00:00.000Z",
+          streamingOutput: "probing\nhttps://edge.example.com [200]\n",
+        },
+        {
+          id: "tool-2",
+          name: "submit_stage_deliverable",
+          args: {},
+          status: "running",
+          startedAt: "2026-06-27T10:00:03.000Z",
+        },
+      ])
+    ).toEqual([
+      expect.objectContaining({
+        id: "tool-1",
+        displayToolName: "httpx",
+        subject: "https://edge.example.com",
+        subjects: ["https://edge.example.com"],
+        techniques: ["LIVENESS"],
+        status: "running",
+        outputPreview: "https://edge.example.com [200]",
+      }),
+    ]);
+  });
+
+  it("summarizes batch pentest runs with expanded subjects", () => {
+    expect(
+      summarizeSubAgentAssetWork([
+        {
+          id: "tool-batch",
+          name: "pentest_run",
+          args: {
+            tool_name: "naabu",
+            args: "-list {{input_file}} -top-ports 1000 -s c -silent",
+            input_lines: ["120.233.149.102", "yun.pingan.com.cdn.pingan.com.cn"],
+          },
+          status: "running",
+          startedAt: "2026-06-27T10:00:00.000Z",
+        },
+      ])
+    ).toEqual([
+      expect.objectContaining({
+        id: "tool-batch",
+        displayToolName: "naabu",
+        subject: "120.233.149.102",
+        subjects: ["120.233.149.102", "yun.pingan.com.cdn.pingan.com.cn"],
+        techniques: ["PORT"],
+        primary:
+          "Naabu · batch 2 targets (120.233.149.102 ... yun.pingan.com.cdn.pingan.com.cn) · top 1000 ports",
+      }),
+    ]);
+  });
+});
+
 describe("normalizeSubAgentEntriesForDetail", () => {
   it("removes short streaming text prefixes covered by a later accumulated text entry", () => {
     expect(
@@ -226,13 +364,23 @@ describe("shouldSeparateSubAgentDetailEntries", () => {
     ).toBe(false);
   });
 
-  it("separates tool calls from agent narrative blocks", () => {
+  it("connects a tool call to the preceding agent narrative", () => {
     expect(
       shouldSeparateSubAgentDetailEntries({ kind: "text" }, { kind: "tool_call" })
-    ).toBe(true);
+    ).toBe(false);
+    expect(getSubAgentToolCallVisualRelation({ kind: "text" })).toBe("after_narrative");
+    expect(getSubAgentToolCallVisualRelation({ kind: "thinking" })).toBe("after_narrative");
+  });
+
+  it("starts a new visual group after tool calls", () => {
     expect(
       shouldSeparateSubAgentDetailEntries({ kind: "tool_call" }, { kind: "thinking" })
     ).toBe(true);
+    expect(
+      shouldSeparateSubAgentDetailEntries({ kind: "tool_call" }, { kind: "tool_call" })
+    ).toBe(false);
+    expect(getSubAgentToolCallVisualRelation({ kind: "tool_call" })).toBe("stacked");
+    expect(getSubAgentToolCallVisualRelation(null)).toBe("standalone");
   });
 });
 
@@ -306,6 +454,22 @@ describe("getSubAgentToolDisplayStatus", () => {
         },
       })
     ).toBe("error");
+  });
+
+  it("keeps partial recon provider surveys completed when only a nested provider failed", () => {
+    expect(
+      getSubAgentToolDisplayStatus({
+        status: "completed",
+        result: {
+          status: "partial",
+          action: "map_assets",
+          providerStatus: [
+            { providerId: "0.zone", status: "failed", message: "HTTP 502" },
+            { providerId: "quake", status: "completed", message: "normalized 419 record(s)" },
+          ],
+        },
+      })
+    ).toBe("completed");
   });
 
   it("keeps completed sub-agent tool warnings as completed", () => {

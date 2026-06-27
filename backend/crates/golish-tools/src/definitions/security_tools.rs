@@ -254,5 +254,32 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
                 "additionalProperties": false
             }),
         },
+        FunctionDeclaration {
+            name: "check_stage_asset_coverage".to_string(),
+            description: "Read the current stage asset-coverage matrix from database truth before submitting. Use this after scans/probes land and BEFORE submit_stage_deliverable. It returns ready_to_submit=false when any asset×technique cell is still pending/error, with sample gaps and suggested tools. blocked/not_applicable are terminal when honestly recorded. Defaults to the active harness organization, current session, and current stage when available.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "stage": {
+                        "type": "string",
+                        "enum": ["target_intel", "external_attack_surface", "enumeration"],
+                        "description": "Stage to inspect. Omit to use the active harness stage."
+                    },
+                    "organization_id": {
+                        "type": "string",
+                        "description": "Organization UUID to inspect. Omit to use the active per-org/root organization."
+                    },
+                    "max_gaps": {
+                        "type": "integer",
+                        "description": "Maximum pending/error cells to return as examples. Defaults to 25."
+                    },
+                    "include_assets": {
+                        "type": "boolean",
+                        "description": "Set true only when you need the full asset matrix. Default false returns a compact preflight summary."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
     ]
 }

@@ -12,9 +12,10 @@ use golish_agent_kit::tool_definitions::{
     get_all_tool_definitions, get_all_tool_definitions_with_config, get_ask_human_tool_definition,
     get_run_command_tool_definition, get_sub_agent_tool_definitions, sanitize_schema,
 };
+use golish_core::{ToolCategory, ToolName};
 use golish_sub_agents::{SubAgentContext, MAX_AGENT_DEPTH};
 
-use super::policy::ToolSelection;
+use super::policy::{StaticGroupSelection, ToolSelection};
 use crate::agentic_loop::AgenticLoopContext;
 
 pub async fn apply_tool_selection(
@@ -37,7 +38,13 @@ pub async fn apply_tool_selection(
     //    the existing ToolSelectionConfig still narrows by tool name within the
     //    enabled groups.
     if selection.static_groups.any_enabled() {
-        tools.extend(get_all_tool_definitions_with_config(ctx.tool_config));
+        let mut static_tools = get_all_tool_definitions_with_config(ctx.tool_config);
+        if selection.static_groups != StaticGroupSelection::all_enabled() {
+            static_tools.retain(|tool| {
+                static_tool_allowed_by_selection(&tool.name, &selection.static_groups)
+            });
+        }
+        tools.extend(static_tools);
     }
 
     // 2. run_command (the user-visible alias of run_pty_cmd).
@@ -157,4 +164,43 @@ pub async fn apply_tool_selection(
     );
 
     tools
+}
+
+fn static_tool_allowed_by_selection(tool_name: &str, groups: &StaticGroupSelection) -> bool {
+    if matches!(
+        tool_name,
+        "search_exploits"
+            | "ingest_cve"
+            | "save_poc"
+            | "list_cves_with_pocs"
+            | "list_unresearched_cves"
+            | "poc_stats"
+    ) {
+        return groups.sploitus;
+    }
+
+    if let Some(tool_name) = ToolName::from_str(tool_name) {
+        return match tool_name.category() {
+            ToolCategory::FileOps | ToolCategory::DirectoryOps => groups.file_ops,
+            ToolCategory::Web
+            | ToolCategory::Planning
+            | ToolCategory::Indexer
+            | ToolCategory::Ast
+            | ToolCategory::Workflow => groups.core,
+            ToolCategory::KnowledgeBase => groups.knowledge_base,
+            ToolCategory::SecurityAnalysis => groups.security_analysis,
+            ToolCategory::Graph => groups.graph,
+            ToolCategory::Shell | ToolCategory::SubAgent => false,
+        };
+    }
+
+    match tool_name {
+        "search_memories" | "store_memory" | "list_memories" => groups.memory,
+        "search_guide" | "save_guide" | "search_code" | "save_code" | "execute_code"
+        | "apply_patch" => groups.core,
+        "list_in_scope_targets" | "list_attack_surface_seeds" | "check_stage_asset_coverage" => {
+            groups.security_analysis
+        }
+        _ => false,
+    }
 }

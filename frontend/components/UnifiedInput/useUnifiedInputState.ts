@@ -310,7 +310,10 @@ export function useInputState({
     // Chat-first: a terminal opened from the AI chat panel's "+" must not pull
     // the cursor out of the chat input during its startup window.
     if (isTerminalAutoFocusSuppressed(sessionId)) return;
-    const handle = requestAnimationFrame(() => textareaRef.current?.focus());
+    const handle = requestAnimationFrame(() => {
+      if (isTerminalAutoFocusSuppressed(sessionId)) return;
+      textareaRef.current?.focus();
+    });
     return () => cancelAnimationFrame(handle);
   }, [sessionId, inputMode, isProcessRunning]);
 
@@ -321,7 +324,10 @@ export function useInputState({
       // The shell prompt becomes ready a few seconds after the tab is created;
       // honour the chat-first suppression window so focus doesn't jump here then.
       if (isTerminalAutoFocusSuppressed(sessionId)) return;
-      requestAnimationFrame(() => textareaRef.current?.focus());
+      requestAnimationFrame(() => {
+        if (isTerminalAutoFocusSuppressed(sessionId)) return;
+        textareaRef.current?.focus();
+      });
     }
   }, [sessionId, isProcessRunning]);
 

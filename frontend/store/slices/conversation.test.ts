@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  clearTerminalAutoFocusSuppression,
+  isTerminalAutoFocusSuppressed,
+} from "@/lib/terminal/terminalAutoFocus";
 import { useStore } from "../index";
 import type { ChatConversation } from "./conversation";
 
@@ -85,6 +89,79 @@ describe("Conversation Slice — thinking segments", () => {
 
     expect(lastMsg().thinking).toBe("ab");
     expect(lastMsg().thinkingSegments).toHaveLength(2);
+  });
+});
+
+describe("Conversation Slice — terminal focus suppression", () => {
+  const ACTIVE_CONV = "conv-active";
+  const NEXT_CONV = "conv-next";
+
+  beforeEach(() => {
+    clearTerminalAutoFocusSuppression("term-active");
+    clearTerminalAutoFocusSuppression("term-next");
+    useStore.setState({
+      conversations: {},
+      activeConversationId: null,
+      conversationOrder: [],
+      conversationTerminals: {},
+      sessions: {},
+      activeSessionId: null,
+      tabActivationHistory: [],
+      tabHasNewActivity: {},
+    });
+    useStore.getState().addConversation({
+      id: ACTIVE_CONV,
+      title: "active",
+      messages: [],
+      createdAt: 0,
+      aiSessionId: ACTIVE_CONV,
+      aiInitialized: false,
+      isStreaming: false,
+    });
+  });
+
+  afterEach(() => {
+    clearTerminalAutoFocusSuppression("term-active");
+    clearTerminalAutoFocusSuppression("term-next");
+  });
+
+  it("suppresses terminal auto-focus when linking a terminal to the active conversation", () => {
+    useStore.getState().addTerminalToConversation(ACTIVE_CONV, "term-active");
+
+    expect(isTerminalAutoFocusSuppressed("term-active")).toBe(true);
+  });
+
+  it("suppresses terminal auto-focus before switching to a conversation terminal", () => {
+    useStore.setState((state) => {
+      state.conversations[NEXT_CONV] = {
+        id: NEXT_CONV,
+        title: "next",
+        messages: [],
+        createdAt: 0,
+        aiSessionId: NEXT_CONV,
+        aiInitialized: false,
+        isStreaming: false,
+      };
+      state.conversationOrder.push(NEXT_CONV);
+      state.conversationTerminals[NEXT_CONV] = ["term-next"];
+      state.sessions["term-next"] = {
+        id: "term-next",
+        name: "Terminal",
+        workingDirectory: "/tmp",
+        createdAt: new Date().toISOString(),
+        mode: "terminal",
+        tabType: "terminal",
+      };
+      state.activeConversationId = ACTIVE_CONV;
+      state.activeSessionId = "term-active";
+      state.tabActivationHistory = ["term-active"];
+      state.tabHasNewActivity = {};
+    });
+
+    useStore.getState().setActiveConversation(NEXT_CONV);
+
+    expect(useStore.getState().activeSessionId).toBe("term-next");
+    expect(isTerminalAutoFocusSuppressed("term-next")).toBe(true);
   });
 });
 

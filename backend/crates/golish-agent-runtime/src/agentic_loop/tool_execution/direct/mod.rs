@@ -248,6 +248,7 @@ fn is_security_analysis_direct_tool(tool_name: &str) -> bool {
             | "query_target_data"
             | "list_in_scope_targets"
             | "list_attack_surface_seeds"
+            | "check_stage_asset_coverage"
     )
 }
 
@@ -360,6 +361,8 @@ where
                 Some(project_path_str.as_str()),
                 ctx.events.session_id,
                 ctx.harness_org_id,
+                ctx.harness_stage,
+                ctx.harness_operation_id,
             )
             .await
         {
@@ -868,6 +871,11 @@ mod direct_tool_routing_tests {
             is_security_analysis_direct_tool("list_attack_surface_seeds"),
             "tool_list exposes list_attack_surface_seeds to the main stage orchestrator, \
              so direct execution must route it instead of falling through to Unknown tool"
+        );
+        assert!(
+            is_security_analysis_direct_tool("check_stage_asset_coverage"),
+            "stage coverage preflight is exposed to active stages and must route through \
+             the security-analysis executor"
         );
     }
 }

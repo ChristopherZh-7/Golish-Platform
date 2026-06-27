@@ -43,6 +43,7 @@
 - 加新后端域：加 `lib/api/<domain>.ts` wrapper + 在 `api/index.ts` 注册。
 - `target-panel/org-tree.ts` 是 TargetPanel 左侧组织树投影入口，默认只用于公司层级和计数；`target-panel/asset-groups.ts` 负责右侧 Targets 面板的 IP ⇄ 域名/URL 联合分组，避免大型客户的资产列表遮住子公司层级。
 - `tools.ts::toolResultIndicatesFailure` 是工具结果显示态的共享判定：transport success 不等于业务成功，组件画状态图标前要检查 rejected/needs_fix/error/failed、非 0 exit、以及 stderr 里的 ERROR/FATAL/EXCEPTION。
+- `tools.ts::getToolActionLabel` 是工具卡片头部的共享人类动作文案入口，折叠态不要直接展示 `snake_case` 内部工具名；raw tool name 只作为 hover/debug 信息。`pentest_run` 应优先显示意图（如 `Probing services` / `Scanning ports`），不要把 `Running Nmap nmap ...` 这种重复文案带到卡片里。`tools.ts::getToolPrimaryArg` 是聊天工具卡、sub-agent 折叠行、工具执行卡的共享参数摘要入口；`wait_for_background_jobs` 必须在折叠态显示实际 `timeout_secs`，没传时显示默认 300s；`pentest_run` 带 `input_lines` / `stdin` 批量输入时必须显示 batch 数量和首尾目标，并把 `{{input_file}}` 这类展示占位替换成 `[input file]`，避免多批次工具看起来像重复执行同一条命令。`getPentestRunInputLines` 是同一批量输入的共享解析器，live coverage 资产匹配也要复用它，避免 UI 展示是 batch、覆盖匹配却看不到资产。
 
 ## 测试入口
 

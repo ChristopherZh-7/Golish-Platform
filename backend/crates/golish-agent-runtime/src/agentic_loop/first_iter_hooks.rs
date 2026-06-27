@@ -89,6 +89,23 @@ pub(super) fn is_low_signal_input(text: &str) -> bool {
     )
 }
 
+fn should_enable_reflector_for_turn(
+    is_task_mode: bool,
+    harness_stage_active: bool,
+    is_low_signal: bool,
+    has_pentest_keyword: bool,
+    is_trivial: bool,
+    wants_memory: bool,
+) -> bool {
+    if is_task_mode && !harness_stage_active {
+        return false;
+    }
+    if is_task_mode {
+        return !is_trivial || wants_memory;
+    }
+    !is_low_signal && (has_pentest_keyword || wants_memory)
+}
+
 /// Run synchronous message hooks + the async memory gatekeeper, and inject any
 /// resulting system-hook user message into `chat_history`.
 pub(super) async fn run_first_iteration_hooks(
@@ -177,14 +194,14 @@ pub(super) async fn run_first_iteration_hooks(
             );
         }
 
-        outcome.reflector_active = if ctx.execution_mode.is_task() {
-            !is_trivial || wants_memory
-        } else {
-            // Chat mode: only nudge when the user explicitly used pentest
-            // keywords. Wants-memory alone is not enough to justify a nudge.
-            // Also skip the nudge entirely when the input gate fired.
-            !is_low_signal && (has_pentest_keyword || wants_memory)
-        };
+        outcome.reflector_active = should_enable_reflector_for_turn(
+            ctx.execution_mode.is_task(),
+            ctx.harness_stage.is_some(),
+            is_low_signal,
+            has_pentest_keyword,
+            is_trivial,
+            wants_memory,
+        );
     }
 
     if !hook_messages.is_empty() {
@@ -251,5 +268,28 @@ mod tests {
         ));
         assert!(!is_low_signal_input("分析 src/auth.rs 的鉴权逻辑"));
         assert!(!is_low_signal_input("请帮我看下登录流程的潜在 IDOR 漏洞"));
+    }
+
+    #[test]
+    fn task_lead_turn_keeps_reflector_off() {
+        assert!(!should_enable_reflector_for_turn(
+            true, false, false, false, false, false
+        ));
+        assert!(!should_enable_reflector_for_turn(
+            true, false, false, true, false, true
+        ));
+    }
+
+    #[test]
+    fn task_harness_stage_can_enable_reflector() {
+        assert!(should_enable_reflector_for_turn(
+            true, true, false, false, false, false
+        ));
+        assert!(should_enable_reflector_for_turn(
+            true, true, false, false, true, true
+        ));
+        assert!(!should_enable_reflector_for_turn(
+            true, true, false, false, true, false
+        ));
     }
 }

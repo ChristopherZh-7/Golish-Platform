@@ -117,6 +117,8 @@ pub struct JobCompletion {
     pub job_id: String,
     /// Session the job was attributed to at spawn, if any.
     pub session_id: Option<String>,
+    /// Harness organization active when the launching tool call started, if any.
+    pub organization_id: Option<uuid::Uuid>,
     pub command: String,
     pub status: JobStatus,
     pub exit_code: Option<i32>,
@@ -372,6 +374,10 @@ impl BackgroundJobManager {
                         JobCompletion {
                             job_id,
                             session_id: s.session_id.clone(),
+                            organization_id: s
+                                .tool_context
+                                .as_ref()
+                                .and_then(|ctx| ctx.organization_id),
                             command: s.command.clone(),
                             status: s.status,
                             exit_code: s.exit_code,
@@ -700,6 +706,7 @@ mod tests {
             request_id: "req-live".to_string(),
             tool_name: "pentest_run".to_string(),
             source: golish_core::events::ToolSource::Main,
+            organization_id: None,
         };
         let id = mgr.spawn_for_session_and_tool(
             "printf live-out",

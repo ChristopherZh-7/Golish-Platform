@@ -1,8 +1,11 @@
 //! `TaskModePolicy` — multi-agent orchestration mode.
 //!
-//! - **Primary** (depth == 0): the LLM acts as project manager. It only
-//!   sees `sub_agent_*` dispatchers + `ask_human`; no file ops, no shell,
-//!   no pentest tools — those are the specialists' job.
+//! - **Lead primary** (depth == 0, no active harness stage): the LLM behaves
+//!   like a flexible chat/coding agent and may call `start_operation` to enter
+//!   the structured harness.
+//! - **Stage primary** (depth == 0, active harness stage): the LLM acts as
+//!   project manager. It only sees orchestration/scoping tools; no file ops,
+//!   no shell, no pentest tools — those are the specialists' job.
 //! - **Subtask** (depth > 0): the dispatched specialist sees the full
 //!   toolbox minus `update_plan` (only the primary may rewrite the plan).
 
@@ -38,7 +41,40 @@ impl ExecutionModePolicy for TaskModePolicy {
         true
     }
 
-    async fn primary_tools(&self, _ctx: &PolicyContext<'_>) -> ToolSelection {
+    async fn primary_tools(&self, ctx: &PolicyContext<'_>) -> ToolSelection {
+        if !ctx.harness_active {
+            // Profile lead turn: act like a normal flexible coding/chat agent
+            // for non-operation requests, with one extra control-plane tool for
+            // entering the structured operation harness. Do not expose target
+            // DB/security-query tools or shell here: once the user asks to
+            // scope/recon/scan/pentest a real target, the only valid path is
+            // `start_operation` -> active harness stage.
+            return ToolSelection {
+                static_groups: StaticGroupSelection {
+                    file_ops: true,
+                    core: true,
+                    memory: true,
+                    knowledge_base: true,
+                    security_analysis: false,
+                    graph: false,
+                    sploitus: false,
+                },
+                bridge_tools: BridgeToolSelection {
+                    start_operation: true,
+                    ..BridgeToolSelection::none()
+                },
+                runtime_tools: RuntimeToolSelection {
+                    pentest_runtime: false,
+                    tavily: false,
+                },
+                agent_tools: AgentToolSelection::none(),
+                include_run_command: false,
+                include_ask_human: true,
+                include_update_plan: false,
+                deny_overrides: vec![],
+            };
+        }
+
         // Task primary (depth==0) is orchestration-only. The legacy
         // `tool_list.rs` explicitly filtered out four "internal"
         // sub-agents from the dispatch list: orchestrator (always
@@ -55,9 +91,9 @@ impl ExecutionModePolicy for TaskModePolicy {
             // stage gate has nothing to validate and the cursor never advances.
             bridge_tools: BridgeToolSelection {
                 submit_stage_deliverable: true,
-                // D1=B (设计 2026-06-04): the lead decision turn is gone — task mode
-                // enters the harness directly, so the depth-0 primary runs *inside*
-                // a stage and must NOT see `start_operation` (no nested operations).
+                // Once the lead has entered the harness, the depth-0 primary
+                // runs inside a stage and must NOT see `start_operation` (no
+                // nested operations).
                 start_operation: false,
                 // Engagement-scope bookkeeping is orchestration-level work the
                 // depth-0 primary must do itself, not specialist scanning. The
@@ -75,6 +111,12 @@ impl ExecutionModePolicy for TaskModePolicy {
                 recon_lookup_whois: true,
                 recon_lookup_company: true,
                 recon_list_providers: true,
+                // Submit may defer while session-attributed background jobs are
+                // still running. The stage primary must be able to wait, inspect
+                // and cancel those jobs without receiving scan/shell tools.
+                wait_for_background_jobs: true,
+                check_job: true,
+                kill_job: true,
                 ..BridgeToolSelection::none()
             },
             runtime_tools: RuntimeToolSelection::none(),
@@ -140,8 +182,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_primary_only_dispatches_workers() {
+    async fn task_lead_turn_is_flexible_and_can_start_operation() {
         let s = TaskModePolicy.primary_tools(&mock_ctx()).await;
+        assert!(s.static_groups.file_ops);
+        assert!(!s.static_groups.security_analysis);
+        assert!(s.bridge_tools.start_operation);
+        assert!(!s.bridge_tools.manage_organizations);
+        assert!(!s.bridge_tools.manage_targets);
+        assert!(!s.bridge_tools.recon_map_assets);
+        assert!(!s.bridge_tools.submit_stage_deliverable);
+        assert!(
+            !s.runtime_tools.pentest_runtime,
+            "task lead must not run pentest tools outside the harness"
+        );
+        assert!(!s.runtime_tools.tavily);
+        assert!(!s.include_run_command);
+        assert!(s.include_ask_human);
+        assert!(!s.agent_tools.include_dispatch_tools);
+    }
+
+    #[tokio::test]
+    async fn task_stage_primary_only_dispatches_workers() {
+        let s = TaskModePolicy
+            .primary_tools(&mock_ctx().with_harness_active(true))
+            .await;
         assert!(!s.bridge_tools.js_collect);
         assert!(!s.bridge_tools.browser_collect_js_api);
         assert!(!s.static_groups.file_ops);
@@ -169,6 +233,9 @@ mod tests {
             "task primary must expose recon_lookup_company or scoping 纠名 (Phase A) is unsatisfiable"
         );
         assert!(s.bridge_tools.recon_list_providers);
+        assert!(s.bridge_tools.wait_for_background_jobs);
+        assert!(s.bridge_tools.check_job);
+        assert!(s.bridge_tools.kill_job);
         assert!(s.agent_tools.include_dispatch_tools);
         // Legacy parity: the four "internal" sub-agents are filtered
         // out at the primary layer.
@@ -184,6 +251,7 @@ mod tests {
             s.include_update_plan,
             "task primary must expose update_plan for stage todo self-management"
         );
+        assert!(!s.bridge_tools.start_operation);
     }
 
     #[tokio::test]

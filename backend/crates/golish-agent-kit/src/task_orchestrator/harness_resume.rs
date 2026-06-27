@@ -16,6 +16,8 @@ pub struct HarnessResumeState {
     pub current_stage_run_id: Option<Uuid>,
     pub queue_titles: Vec<String>,
     pub completed_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuity_adoption: Option<crate::harness::ContinuityAdoptionPlan>,
     #[serde(default = "default_schema_v")]
     pub schema_v: u32,
 }
@@ -37,6 +39,7 @@ mod tests {
             current_stage_run_id: Some(run),
             queue_titles: vec!["recon".into(), "enumerate".into()],
             completed_count: 1,
+            continuity_adoption: None,
             schema_v: 1,
         };
         let v = serde_json::to_value(&s).expect("to_value");
@@ -62,5 +65,19 @@ mod tests {
         });
         let back: HarnessResumeState = serde_json::from_value(v).expect("from_value");
         assert_eq!(back.schema_v, 1);
+    }
+
+    #[test]
+    fn continuity_adoption_is_optional_for_old_blobs() {
+        let v = serde_json::json!({
+            "profile": "assessment",
+            "current_stage": "target_intel",
+            "current_stage_run_id": null,
+            "queue_titles": [],
+            "completed_count": 0,
+            "schema_v": 1
+        });
+        let back: HarnessResumeState = serde_json::from_value(v).expect("from_value");
+        assert!(back.continuity_adoption.is_none());
     }
 }

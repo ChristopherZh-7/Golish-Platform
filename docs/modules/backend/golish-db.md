@@ -57,6 +57,8 @@
 - **不变量 I2**：所有 CRUD 验资源所有权（IDOR），含批量；repo 是 scoped CRUD。
 - **不变量 I9**：事务内禁止外部 HTTP/MQ/长耗操作（连接池雪崩）。
 - **不变量 I10**：改 schema 必须向后兼容（先扩字段→上新代码→清旧字段）。
+- `repo/organizations.rs::subtree` 返回 root organization + descendants 的完整行，并按 root first / child sort order 排序；runtime `stage_run` 用它作为 continuation fan-out scope truth，防止模型续跑少传子公司导致资产分母缺口。
+- `repo/tool_calls.rs::scoping_actions_for_session` 是 red-team scoping anti-shortcut gate 的 DB 审计口径：必须能识别真实 `unit_review`，并把 `manage_organizations(create_batch)` 的 `created`/`existing` id 当作已记录组织；但 REUSE 模式不应强迫创建。
 - 相关设计：`docs/database-and-tools.md`、`docs/superpowers/plans/2026-05-30-p1-1-golish-db-scoped-crud-helper.md`。
 
 ## 测试入口

@@ -142,6 +142,28 @@ pub async fn subtree_ids(pool: &PgPool, root_id: Uuid) -> Result<Vec<Uuid>> {
     Ok(ids)
 }
 
+/// Full organization rows in the subtree rooted at `root_id`, ordered root
+/// first then child sort/name order. Used by runtime fan-out paths that need the
+/// DB tree as the authoritative scope, not a model-reconstructed copy.
+pub async fn subtree(pool: &PgPool, root_id: Uuid) -> Result<Vec<Organization>> {
+    let rows = sqlx::query_as::<_, Organization>(
+        r#"WITH RECURSIVE subtree AS (
+               SELECT id, 0 AS depth FROM organizations WHERE id = $1
+               UNION ALL
+               SELECT o.id, s.depth + 1 FROM organizations o
+                 JOIN subtree s ON o.parent_id = s.id
+           )
+           SELECT o.*
+           FROM organizations o
+           JOIN subtree s ON o.id = s.id
+           ORDER BY s.depth, o.parent_id NULLS FIRST, o.sort_order, o.name"#,
+    )
+    .bind(root_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// The engagement-org subtree id set as `String`s, ready to compare against a
 /// `Target.organization_id` (stored as `String`). Shared by the AI listing
 /// paths — `in_scope_targets_impl` and the `manage_targets` `list` action — so

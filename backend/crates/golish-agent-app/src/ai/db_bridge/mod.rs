@@ -307,6 +307,17 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.attack_surface_seeds_impl(org_id, cap).await
     }
 
+    async fn stage_asset_coverage(
+        &self,
+        organization_id: Uuid,
+        stage: &str,
+        session_id: Option<&str>,
+        stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.stage_asset_coverage_impl(organization_id, stage, session_id, stage_started_at)
+            .await
+    }
+
     async fn in_scope_target_types(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {
         self.in_scope_target_types_impl(org_id).await
     }
@@ -334,6 +345,10 @@ impl DbRepoProvider for GolishDbRepoProvider {
 
     async fn org_subtree_ids(&self, root_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
         self.org_subtree_ids_impl(root_id).await
+    }
+
+    async fn org_subtree_units(&self, root_id: Uuid) -> anyhow::Result<Vec<OrgScopeUnit>> {
+        self.org_subtree_units_impl(root_id).await
     }
 
     async fn org_stage_completions_get(

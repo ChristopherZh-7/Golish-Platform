@@ -15,18 +15,30 @@ approval.
    - `cidr`: treat as a range. Get approval when required, sweep it, register
      discovered live IPs as concrete targets, then scan each IP.
    - wildcard: do not brute-force here; concrete inherited hosts carry the work.
-3. Liveness + HTTP fingerprint — `httpx` over host/url targets in batches. DNS was
-   already done in `target_intel`; reuse inherited DNS instead of re-running `dig`.
-4. Port discovery — `naabu` / `masscan` / `nmap` for concrete host/IP targets.
-   Every IP or host must have a fresh port-scan terminal result.
-5. Service/version fingerprint — prefer `nmap -sV` for every discovered open
-   port; use `whatweb` only for HTTP(S) services when its Ruby runtime is ready.
+3. Liveness + HTTP fingerprint — batch host/url targets through `httpx` first.
+   Prefer one JSONL run per org/worklist chunk: call `pentest_run` with
+   `tool_name="httpx"`, `args="-json -sc -title -td -server -silent"`, and
+   newline-separated targets in `input_lines` / `stdin` instead of one `httpx -u`
+   call per host. DNS was already done in `target_intel`; reuse inherited DNS
+   instead of re-running `dig`.
+4. Port discovery — batch concrete host/IP/CIDR targets with `naabu` / `masscan`
+   / `nmap` where the tool accepts list input. With `pentest_run`, put
+   `{{input_file}}` in `args` and pass the actual targets via `input_lines`:
+   `naabu -list {{input_file}} ...`, `masscan -iL {{input_file}} ...`, or
+   `nmap -iL {{input_file}} ...`. Every IP or host must have a fresh port-scan
+   terminal result.
+5. Service/version fingerprint — prefer `nmap -sV` for discovered open ports,
+   grouping hosts that share the same port set with `-iL {{input_file}}` + `-p`
+   instead of launching one foreground command per host/port. Use
+   `whatweb --input-file={{input_file}}` only for HTTP(S) services when its Ruby
+   runtime is ready.
    If `whatweb` returns a runtime/SSL/opening error, record the failed attempt,
    do not retry it on the same host, and continue with `nmap -sV` / `httpx`
    evidence. NEVER assume a service from the port number alone (8080 is not
    proof of Tomcat), and never treat HTTP liveness alone as PORT/SERVICE
    coverage.
-6. (Optional) `gowitness` screenshots of live web services for the record.
+6. (Optional) `gowitness file -f {{input_file}}` screenshots of live web
+   services for the record.
 
 **If a tool is missing or errors:**
 
@@ -34,6 +46,8 @@ approval.
   is unavailable, use `nmap -sV` / `nmap -Pn -p- --open` for liveness+service).
 - Do NOT install tools, spawn extra sub-agents, or retry a blocked/missing tool in
   a loop. Note it and move on — "checked_empty" is NOT "unchecked".
+- If only one target in a batch fails, do not downgrade the whole batch. Re-run or
+  mark only that target's terminal cell, and keep the successful batch evidence.
 
 **Coverage + stop condition:**
 
@@ -49,6 +63,15 @@ approval.
 - If there are no open ports, SERVICE-FINGERPRINT is `not_applicable` with a
   note, not a fabricated found service and not `checked_empty` with
   `total_units=0`. HTTP liveness alone is never PORT or SERVICE-FINGERPRINT.
-- Once every in-scope host has liveness + ports + service mapped (or an honest
-  skip), `submit_stage_deliverable`. Do not jump into content enumeration or
-  vuln scanning — the harness advances to `enumeration` for you.
+- Before submitting, call `check_stage_asset_coverage`. If
+  `ready_to_submit=false`, use its `gap_examples` to close the missing
+  asset-technique cells by grouping gaps with the same technique/tool into batch
+  probes where possible. For list-file tools use `{{input_file}}` in
+  `pentest_run.args` and provide targets through `input_lines`.
+  `pentest_list_tools.params` is the parameter catalog; skills are examples, not
+  fixed call signatures. Use honest
+  checked_empty/blocked/not_applicable coverage when a tool cannot run. Submit
+  only when the preflight says
+  `ready_to_submit=true`.
+- Do not jump into content enumeration or vuln scanning — the harness advances
+  to `enumeration` for you.

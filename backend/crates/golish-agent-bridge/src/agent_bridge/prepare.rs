@@ -126,6 +126,7 @@ impl AgentBridge {
     pub(super) async fn prepare_execution_context(
         &self,
         initial_prompt: &str,
+        turn_instructions: Option<&str>,
     ) -> (String, Vec<Message>, mpsc::UnboundedSender<AiEvent>) {
         let workspace_path = self.workspace.read().await;
         let agent_mode = *self.access.agent_mode.read().await;
@@ -144,11 +145,11 @@ impl AgentBridge {
             .available_tools()
             .iter()
             .any(|t| t.starts_with("web_"));
-        // Sub-agent dispatch is now strictly bound to execution mode:
-        // chat mode is single-agent, task mode is multi-agent. The
-        // legacy `use_agents` per-conversation toggle has been retired.
+        // Chat/task lead turns are single-agent. Sub-agent visibility is only
+        // rendered once a structured harness stage is active.
         let execution_mode = *self.execution_mode.read().await;
-        let has_sub_agents = execution_mode.is_task();
+        let harness_active = self.harness_active_stage.read().await.is_some();
+        let has_sub_agents = execution_mode.is_task() && harness_active;
 
         let (available_skills, matched_skills) = self.match_and_load_skills(initial_prompt).await;
 
@@ -187,6 +188,14 @@ impl AgentBridge {
             );
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&plan_status);
+        }
+
+        if let Some(turn_instructions) = turn_instructions {
+            let turn_instructions = turn_instructions.trim();
+            if !turn_instructions.is_empty() {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(turn_instructions);
+            }
         }
 
         self.append_background_notes(&mut system_prompt);
@@ -240,11 +249,11 @@ impl AgentBridge {
             .available_tools()
             .iter()
             .any(|t| t.starts_with("web_"));
-        // Same parity as `prepare_execution_context` — sub-agent
-        // visibility in the system prompt now follows execution mode
-        // alone (the per-conversation `use_agents` toggle is retired).
+        // Same parity as `prepare_execution_context`: only active harness
+        // stages render sub-agent dispatch capability.
         let execution_mode = *self.execution_mode.read().await;
-        let has_sub_agents = execution_mode.is_task();
+        let harness_active = self.harness_active_stage.read().await.is_some();
+        let has_sub_agents = execution_mode.is_task() && harness_active;
 
         let (available_skills, matched_skills) = self.match_and_load_skills(text_for_logging).await;
 

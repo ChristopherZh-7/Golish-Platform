@@ -30,15 +30,21 @@ function formatUptime(startedAtMs: number, now = Date.now()): string {
 interface BackgroundJobsBadgeProps {
   jobs: Array<{ jobId: string; command: string; startedAt: number }>;
   fallbackCount?: number;
+  reserveSpace?: boolean;
 }
 
 export const BackgroundJobsBadge = memo(function BackgroundJobsBadge({
   jobs,
   fallbackCount = 0,
+  reserveSpace = false,
 }: BackgroundJobsBadgeProps) {
   const displayCount = jobs.length > 0 ? jobs.length : Math.max(0, fallbackCount);
   const hasJobDetails = jobs.length > 0;
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const triggerClassName = cn(
+    "h-6 px-2 gap-1.5 text-xs font-medium rounded-lg flex items-center transition-colors",
+    reserveSpace && "w-[7.25rem] justify-center"
+  );
 
   useEffect(() => {
     if (!hasJobDetails) return;
@@ -47,7 +53,21 @@ export const BackgroundJobsBadge = memo(function BackgroundJobsBadge({
     return () => window.clearInterval(intervalId);
   }, [hasJobDetails]);
 
-  if (displayCount === 0) return null;
+  if (displayCount === 0) {
+    if (!reserveSpace) return null;
+    return (
+      <span
+        aria-hidden="true"
+        className={cn(
+          triggerClassName,
+          "invisible pointer-events-none select-none border border-transparent"
+        )}
+      >
+        <Loader2 className="size-icon-status-bar" />
+        <span>0 running</span>
+      </span>
+    );
+  }
 
   return (
     <Popover>
@@ -55,7 +75,10 @@ export const BackgroundJobsBadge = memo(function BackgroundJobsBadge({
         <button
           type="button"
           title={`${displayCount} command(s) running in the background`}
-          className="h-6 px-2 gap-1.5 text-xs font-medium rounded-lg flex items-center text-[var(--ansi-blue)] border border-[var(--ansi-blue)]/35 bg-[var(--ansi-blue)]/10 hover:bg-[var(--ansi-blue)]/15 hover:border-[var(--ansi-blue)]/50 transition-colors"
+          className={cn(
+            triggerClassName,
+            "text-[var(--ansi-blue)] border border-[var(--ansi-blue)]/35 bg-[var(--ansi-blue)]/10 hover:bg-[var(--ansi-blue)]/15 hover:border-[var(--ansi-blue)]/50"
+          )}
         >
           <Loader2 className="size-icon-status-bar animate-spin" />
           <span>{displayCount} running</span>

@@ -12,14 +12,26 @@ use super::types::*;
 
 /// Real, persisted red_team scoping actions observed for a session (read from
 /// `tool_calls`). The scoping gate uses this to verify the model actually
-/// performed the unit-candidate + organization-creation flow instead of merely
-/// asserting a `scope_human_approved` claim (which a weak model can fabricate).
+/// performed the unit-candidate review flow instead of merely asserting a
+/// `scope_human_approved` claim (which a weak model can fabricate). Creation is
+/// no longer mandatory in REUSE mode: an existing org tree confirmed by
+/// `unit_review` is already a persisted scope record.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ScopingActionsSeen {
     /// The model invoked `ask_human(input_type="unit_review")` this run.
     pub unit_review_invoked: bool,
-    /// The model invoked `manage_organizations(action="create")` this run.
+    /// The model invoked `manage_organizations(action="create"/"create_batch")`
+    /// and the resulting org row still exists. Informational for audit; REUSE
+    /// mode may legitimately leave this false.
     pub organization_created: bool,
+}
+
+/// One organization in the scoping-confirmed engagement tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrgScopeUnit {
+    pub id: Uuid,
+    pub name: String,
+    pub parent_id: Option<Uuid>,
 }
 
 /// Provides all database repository operations that golish-ai needs.
@@ -208,6 +220,33 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<Vec<serde_json::Value>> {
         let _ = (org_id, cap);
         Ok(Vec::new())
+    }
+
+    /// Read-only stage asset coverage snapshot. This mirrors the UI coverage
+    /// panel's DB-truth projection so the agent can preflight pending/error
+    /// cells before deciding whether to submit a stage deliverable.
+    async fn stage_asset_coverage(
+        &self,
+        organization_id: Uuid,
+        stage: &str,
+        session_id: Option<&str>,
+        stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let _ = stage_started_at;
+        Ok(serde_json::json!({
+            "stage": stage,
+            "organization_id": organization_id,
+            "session_id": session_id,
+            "summary": {
+                "total_assets": 0,
+                "seed_assets": 0,
+                "new_assets": 0,
+                "done_assets": 0,
+                "pending_assets": 0,
+                "blocked_assets": 0
+            },
+            "assets": []
+        }))
     }
 
     // ── Tasks & Subtasks ────────────────────────────────────────────────
@@ -552,6 +591,22 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Same scope as [`DbRepoProvider::org_subtree_ids`], but with display names
+    /// for deterministic `stage_run` fan-out. Default keeps older test doubles
+    /// working by falling back to id-as-name rows.
+    async fn org_subtree_units(&self, root_id: Uuid) -> anyhow::Result<Vec<OrgScopeUnit>> {
+        Ok(self
+            .org_subtree_ids(root_id)
+            .await?
+            .into_iter()
+            .map(|id| OrgScopeUnit {
+                id,
+                name: id.to_string(),
+                parent_id: None,
+            })
+            .collect())
+    }
+
     /// Phase 1.5 阶段过门：批量取 `org_stage_completions` 行 `(organization_id, passed_at)`
     /// （收尾 gate 走 repo 通道，取不到 tracking trait 的 `recent_org_stage_completion`）。
     /// 无行的 org 自然缺席（调用方据此判缺口）。默认空。
@@ -634,7 +689,7 @@ pub trait DbRepoProvider: Send + Sync {
     /// Cross-verify the red_team scoping flow against this session's REAL
     /// `tool_calls` (so the gate can reject a deliverable that asserts human
     /// scope approval without the model having actually run
-    /// `ask_human(input_type="unit_review")` + `manage_organizations(action="create")`).
+    /// `ask_human(input_type="unit_review")`).
     ///
     /// Returns `None` when verification is impossible (no `tool_calls` recorded
     /// for this session — test doubles or tracking disabled) so the gate FAILS
