@@ -59,8 +59,11 @@ import {
   buildOrgTree,
   collectSubtreeTargets,
   countOrgDeletionImpact,
+  findOrgTreeNode,
   type OrgTreeNode,
   ROOT_PARENT_KEY,
+  summarizeTargetCounts,
+  type TargetCountSummary,
   UNASSIGNED_KEY,
 } from "@/lib/target-panel/org-tree";
 import {
@@ -341,6 +344,10 @@ export function TargetGroupedView({
     [orgs, selectedOrgId]
   );
   const selectedMode = getEffectiveEngagementMode(selectedOrg ?? undefined, orgs);
+  const selectedOrgNode = useMemo(
+    () => (selectedOrg ? findOrgTreeNode(roots, selectedOrg.id) : null),
+    [roots, selectedOrg]
+  );
   const selectedTargets = useMemo(
     () =>
       selectedOrg
@@ -348,6 +355,20 @@ export function TargetGroupedView({
         : [],
     [selectedOrg, visibleTargets]
   );
+  const selectedSubtreeTargets = useMemo(
+    () => (selectedOrgNode ? collectSubtreeTargets(selectedOrgNode) : selectedTargets),
+    [selectedOrgNode, selectedTargets]
+  );
+  const emptyTargetSummary: TargetCountSummary = {
+    ownTotal: 0,
+    ownInScope: 0,
+    subtreeTotal: 0,
+    subtreeInScope: 0,
+    descendantOrgCount: 0,
+  };
+  const selectedTargetSummary = selectedOrgNode
+    ? summarizeTargetCounts(selectedOrgNode)
+    : emptyTargetSummary;
   const selectedTarget = useMemo(
     () => visibleTargets.find((target) => target.id === selectedTargetId) ?? null,
     [selectedTargetId, visibleTargets]
@@ -999,6 +1020,8 @@ export function TargetGroupedView({
                 selectedOrg={selectedOrg}
                 selectedMode={selectedMode}
                 selectedTargets={selectedTargets}
+                selectedSubtreeTargets={selectedSubtreeTargets}
+                targetSummary={selectedTargetSummary}
                 t={t}
                 workspaceTab={workspaceTab}
                 setWorkspaceTab={setWorkspaceTab}

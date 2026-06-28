@@ -120,8 +120,8 @@
   },
   "targetWorkspace": {
     "tabs": {
-      "overview": "总览",
-      "fields": "字段",
+      "overview": "资产",
+      "fields": "组织资料",
       "scope": "范围",
       "targets": "目标",
       "candidates": "候选项",
@@ -129,9 +129,16 @@
     },
     "metrics": {
       "targets": "目标",
+      "ownTargets": "本公司",
+      "subtreeTargets": "含子公司",
+      "subOrgs": "子公司",
       "in": "范围内",
       "out": "范围外",
       "orgTargetCount": "{{orgs}} 个组织 · {{targets}} 个目标"
+    },
+    "assetScope": {
+      "own": "本公司",
+      "subtree": "含子公司"
     },
     "actions": {
       "newEngagement": "新建任务",
@@ -165,7 +172,7 @@
     },
     "targetsPanel": {
       "title": "按 IP 联合资产",
-      "description": "IP、域名和 URL 在右侧合并展示，左侧只保留公司层级。",
+      "description": "IP、域名和 URL 按主机合并展示。",
       "moreLinked": "更多关联目标",
       "noLinkedTargets": "暂无绑定域名或 URL。"
     },
@@ -739,6 +746,8 @@
     "historyTitle": "历史对话",
     "noHistory": "暂无历史对话",
     "placeholder": "今天要做点什么呢",
+    "loadingWorkspace": "正在载入工作区",
+    "loadingWorkspaceDetail": "正在恢复会话和终端...",
     "inputPlaceholder": "输入消息...",
     "agent": "Agent",
     "usage": "用量",

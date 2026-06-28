@@ -351,6 +351,14 @@ async fn execute_task_mode_with_continuity(
                 task_id = %task.id,
                 "task mode: resuming prior operation for this chat session"
             );
+            if looks_like_bare_stage_run_resume_prompt(task_input) {
+                tracing::info!(
+                    target: "harness::task_mode",
+                    task_id = %task.id,
+                    "bare continuation prompt: enabling one-shot stage_run fast resume"
+                );
+                orchestrator.set_force_stage_run_on_resume_once(true);
+            }
             orchestrator.resume(task.id, task_input, &executor).await
         }
         None => orchestrator.run(task_input, &executor).await,
@@ -732,6 +740,80 @@ fn looks_like_resume_operation_prompt(user_message: &str) -> bool {
         && stage_terms.iter().any(|term| lower.contains(term))
 }
 
+fn looks_like_bare_stage_run_resume_prompt(user_message: &str) -> bool {
+    let trimmed = user_message
+        .trim()
+        .trim_matches(|c: char| c.is_ascii_punctuation() || "，。！？；：、 ".contains(c));
+    if trimmed.is_empty() || trimmed.len() > 64 {
+        return false;
+    }
+
+    let lower = trimmed.to_lowercase();
+    if matches!(
+        lower.as_str(),
+        "继续"
+            | "继续吧"
+            | "接着"
+            | "接着来"
+            | "接着跑"
+            | "继续跑"
+            | "继续推进"
+            | "继续执行"
+            | "继续任务"
+            | "继续流程"
+            | "continue"
+            | "go on"
+            | "resume"
+            | "resume it"
+            | "continue it"
+    ) {
+        return true;
+    }
+
+    if contains_any(
+        &lower,
+        &[
+            "但是", "不过", "先", "别", "不要", "换", "改", "解释", "分析", "看看", "日志", "代码",
+            "文档", "why", "but", "first", "don't", "dont", "instead",
+        ],
+    ) {
+        return false;
+    }
+
+    let resume_prefixes = [
+        "继续刚才",
+        "继续上次",
+        "继续之前",
+        "继续补",
+        "接着刚才",
+        "接着上次",
+        "接着之前",
+        "接上刚才",
+        "接上上次",
+        "resume ",
+        "continue ",
+    ];
+    let stage_terms = [
+        "阶段",
+        "任务",
+        "流程",
+        "operation",
+        "stage",
+        "harness",
+        "eas",
+        "target_intel",
+        "external_attack_surface",
+        "blocked",
+        "补",
+        "那几个",
+        "这几个",
+        "扫描",
+        "测绘",
+    ];
+    resume_prefixes.iter().any(|p| lower.starts_with(p))
+        && stage_terms.iter().any(|term| lower.contains(term))
+}
+
 fn should_auto_start_task_operation(user_message: &str) -> bool {
     let trimmed = user_message.trim();
     if trimmed.is_empty() {
@@ -986,8 +1068,9 @@ mod chat_title_tests {
     use super::{
         continuity_decision_from_prompt, continuity_decision_from_start_operation_payload,
         explicit_task_prompt, extract_user_message_from_wrapped_prompt, implicit_operation_prompt,
-        is_conversational_planner_failure, looks_like_resume_operation_prompt,
-        render_continuity_offer, should_auto_start_task_operation, task_profile_lead_instructions,
+        is_conversational_planner_failure, looks_like_bare_stage_run_resume_prompt,
+        looks_like_resume_operation_prompt, render_continuity_offer,
+        should_auto_start_task_operation, task_profile_lead_instructions,
         task_prompt_from_start_operation, truncate_for_title,
     };
 
@@ -1153,6 +1236,38 @@ mod chat_title_tests {
             assert!(
                 !looks_like_resume_operation_prompt(message),
                 "non-operation continuation should stay in the flexible lead turn: {message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_resume_prompt_enables_stage_run_fast_path() {
+        for message in [
+            "继续",
+            "继续吧",
+            "接着跑",
+            "继续刚才那个 EAS 阶段",
+            "继续补刚才那3个",
+            "continue the previous stage",
+        ] {
+            assert!(
+                looks_like_bare_stage_run_resume_prompt(message),
+                "bare operation continuation should enable fast stage_run resume: {message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn steered_resume_prompt_stays_on_normal_resume_path() {
+        for message in [
+            "继续，但是先别扫端口",
+            "继续，不过先解释一下",
+            "继续看日志为什么爆了",
+            "continue but first inspect the logs",
+        ] {
+            assert!(
+                !looks_like_bare_stage_run_resume_prompt(message),
+                "steered continuation should not force stage_run: {message:?}"
             );
         }
     }

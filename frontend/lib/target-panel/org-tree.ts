@@ -27,6 +27,14 @@ export interface OrgTreeNode {
   targets: Target[];
 }
 
+export interface TargetCountSummary {
+  ownTotal: number;
+  ownInScope: number;
+  subtreeTotal: number;
+  subtreeInScope: number;
+  descendantOrgCount: number;
+}
+
 /**
  * Build the redteam tree: organizations form the spine (parent_id chain),
  * targets attach to their `organization_id`, and any orphan targets land in
@@ -161,14 +169,38 @@ export function buildHostTree(
 }
 
 export function countAllTargets(node: OrgTreeNode): { total: number; inScope: number } {
-  let total = node.targets.length;
-  let inScope = node.targets.filter((t) => t.scope === "in").length;
+  const summary = summarizeTargetCounts(node);
+  return { total: summary.subtreeTotal, inScope: summary.subtreeInScope };
+}
+
+export function summarizeTargetCounts(node: OrgTreeNode): TargetCountSummary {
+  const ownTotal = node.targets.length;
+  const ownInScope = node.targets.filter((t) => t.scope === "in").length;
+  let subtreeTotal = ownTotal;
+  let subtreeInScope = ownInScope;
+  let descendantOrgCount = 0;
+
   for (const child of node.children) {
-    const sub = countAllTargets(child);
-    total += sub.total;
-    inScope += sub.inScope;
+    const sub = summarizeTargetCounts(child);
+    subtreeTotal += sub.subtreeTotal;
+    subtreeInScope += sub.subtreeInScope;
+    if ((child.kind ?? "org") === "org" && child.id !== UNASSIGNED_KEY) {
+      descendantOrgCount += 1 + sub.descendantOrgCount;
+    } else {
+      descendantOrgCount += sub.descendantOrgCount;
+    }
   }
-  return { total, inScope };
+
+  return { ownTotal, ownInScope, subtreeTotal, subtreeInScope, descendantOrgCount };
+}
+
+export function findOrgTreeNode(nodes: OrgTreeNode[], id: string): OrgTreeNode | null {
+  for (const node of nodes) {
+    if (node.id === id) return node;
+    const child = findOrgTreeNode(node.children, id);
+    if (child) return child;
+  }
+  return null;
 }
 
 /**

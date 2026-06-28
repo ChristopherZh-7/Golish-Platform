@@ -292,6 +292,15 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.in_scope_assets_impl(org_id).await
     }
 
+    async fn in_scope_assets_created_before(
+        &self,
+        org_id: Option<Uuid>,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<String>> {
+        self.in_scope_assets_created_before_impl(org_id, cutoff)
+            .await
+    }
+
     async fn in_scope_targets(
         &self,
         org_id: Option<Uuid>,
@@ -457,6 +466,46 @@ impl DbRepoProvider for GolishDbRepoProvider {
 
     async fn stage_run_mark_terminal(&self, id: Uuid, status: &str) -> anyhow::Result<()> {
         self.stage_run_mark_terminal_impl(id, status).await
+    }
+
+    async fn stage_asset_wave_current_or_create_initial(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+        started_at: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        self.stage_asset_wave_current_or_create_initial_impl(
+            operation_id,
+            organization_id,
+            stage_kind,
+            started_at,
+            limit,
+        )
+        .await
+    }
+
+    async fn stage_asset_wave_create_next(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+        parent_wave_id: Option<Uuid>,
+        limit: i64,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        self.stage_asset_wave_create_next_impl(
+            operation_id,
+            organization_id,
+            stage_kind,
+            parent_wave_id,
+            limit,
+        )
+        .await
+    }
+
+    async fn stage_asset_wave_complete(&self, wave_id: Uuid) -> anyhow::Result<()> {
+        self.stage_asset_wave_complete_impl(wave_id).await
     }
 
     async fn operation_state_write_state_blob(

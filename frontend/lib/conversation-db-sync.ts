@@ -29,6 +29,7 @@ import type {
   ChatToolCall,
   ThinkingSegment,
 } from "@/store/slices/conversation";
+import type { SessionStageRun } from "@/store/store-types";
 
 /** Normalize a project path for consistent DB lookups (strip trailing slash, resolve ~). */
 function normalizePath(p: string): string {
@@ -45,6 +46,9 @@ const MAX_SCROLLBACK = 100_000;
 const MAX_BLOCK_OUTPUT = 50_000;
 const SAVE_MAX_RETRIES = 2;
 const SAVE_RETRY_BASE_MS = 300;
+const FINGERPRINT_TEXT_LIMIT = 1_600;
+const FINGERPRINT_TEXT_HEAD = 500;
+const FINGERPRINT_TEXT_TAIL = 900;
 
 /**
  * Module-level handle to the current auto-saver's immediate-save function.
@@ -91,6 +95,197 @@ function stageRunFingerprint(sr: Session["stageRun"]): string {
   const s = sr.summary;
   const rows = sr.rows.map((r) => `${r.id}:${r.status}`).join(",");
   return `${sr.requestId ?? ""}|${s.total}/${s.covered}/${s.active}/${s.queued}/${s.blocked}|${rows}`;
+}
+
+export interface PersistedStageRunState {
+  version: 2;
+  current: SessionStageRun | null;
+  byRequestId: Record<string, SessionStageRun>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function looksLikeStageRun(value: unknown): value is SessionStageRun {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.rows) &&
+    isRecord(value.summary) &&
+    typeof value.stageLabel === "string" &&
+    typeof value.roleLabel === "string" &&
+    Array.isArray(value.coverageAxis)
+  );
+}
+
+export function serializeStageRunState(
+  session: Pick<Session, "stageRun" | "stageRuns">
+): PersistedStageRunState | null {
+  const byRequestId: Record<string, SessionStageRun> = { ...(session.stageRuns ?? {}) };
+  if (session.stageRun?.requestId) {
+    byRequestId[session.stageRun.requestId] = session.stageRun;
+  }
+
+  if (!session.stageRun && Object.keys(byRequestId).length === 0) return null;
+
+  return {
+    version: 2,
+    current: session.stageRun ?? null,
+    byRequestId,
+  };
+}
+
+export function normalizePersistedStageRunState(raw: unknown): PersistedStageRunState | null {
+  if (!raw) return null;
+
+  if (looksLikeStageRun(raw)) {
+    return {
+      version: 2,
+      current: raw,
+      byRequestId: raw.requestId ? { [raw.requestId]: raw } : {},
+    };
+  }
+
+  if (!isRecord(raw)) return null;
+
+  const current = looksLikeStageRun(raw.current) ? raw.current : null;
+  const byRequestId: Record<string, SessionStageRun> = {};
+  if (isRecord(raw.byRequestId)) {
+    for (const [requestId, stageRun] of Object.entries(raw.byRequestId)) {
+      if (looksLikeStageRun(stageRun)) byRequestId[requestId] = stageRun;
+    }
+  }
+  if (current?.requestId) byRequestId[current.requestId] = current;
+
+  if (!current && Object.keys(byRequestId).length === 0) return null;
+  return { version: 2, current, byRequestId };
+}
+
+function stageRunsFingerprint(stageRuns: Session["stageRuns"]): string {
+  if (!stageRuns) return "";
+  return Object.keys(stageRuns)
+    .sort()
+    .map((requestId) => `${requestId}:${stageRunFingerprint(stageRuns[requestId])}`)
+    .join("|");
+}
+
+function feedTextFingerprint(feed: (s: string) => void, value: unknown): void {
+  const text = value == null ? "" : String(value);
+  feed(String(text.length));
+  if (text.length <= FINGERPRINT_TEXT_LIMIT) {
+    feed(text);
+    return;
+  }
+  feed(text.slice(0, FINGERPRINT_TEXT_HEAD));
+  feed(text.slice(-FINGERPRINT_TEXT_TAIL));
+}
+
+function feedJsonFingerprint(feed: (s: string) => void, value: unknown): void {
+  if (value === undefined) {
+    feed("undefined");
+    return;
+  }
+  try {
+    feedTextFingerprint(feed, typeof value === "string" ? value : JSON.stringify(value));
+  } catch {
+    feed("[unserializable]");
+  }
+}
+
+function feedTimelineBlockData(feed: (s: string) => void, block: UnifiedBlock): void {
+  feed(block.id);
+  feed(block.type);
+  feed(block.timestamp ?? "");
+
+  if (block.type === "ai_tool_execution") {
+    const d = block.data;
+    feed(d.requestId);
+    feed(d.toolName);
+    feed(d.status);
+    feed(d.completedAt ?? "");
+    feed(String(d.durationMs ?? ""));
+    feedJsonFingerprint(feed, d.args);
+    feedJsonFingerprint(feed, d.result);
+    feedTextFingerprint(feed, d.streamingOutput);
+    feedJsonFingerprint(feed, d.toolIntent);
+    return;
+  }
+
+  if (block.type === "sub_agent_activity") {
+    const d = block.data;
+    feed(d.parentRequestId);
+    feed(d.agentId);
+    feed(d.agentName);
+    feed(d.status);
+    feed(String(d.depth));
+    feed(d.startedAt);
+    feed(d.completedAt ?? "");
+    feed(String(d.durationMs ?? ""));
+    feedTextFingerprint(feed, d.task);
+    feedTextFingerprint(feed, d.response);
+    feedTextFingerprint(feed, d.error);
+    feedTextFingerprint(feed, d.streamingText);
+    feedTextFingerprint(feed, d.thinking);
+    feed(String(d.thinkingStartedAt ?? ""));
+    feed(String(d.thinkingEndedAt ?? ""));
+    feed(d.promptGeneration?.status ?? "");
+    feedTextFingerprint(feed, d.promptGeneration?.generatedPrompt);
+
+    feed(String(d.entries.length));
+    for (const entry of d.entries) {
+      feed(entry.kind);
+      feed(entry.toolCallId ?? "");
+      feed(String(entry.startedAt ?? ""));
+      feed(String(entry.endedAt ?? ""));
+      feedTextFingerprint(feed, entry.text);
+    }
+
+    feed(String(d.toolCalls.length));
+    for (const tool of d.toolCalls) {
+      feed(tool.id);
+      feed(tool.name);
+      feed(tool.status);
+      feed(tool.startedAt);
+      feed(tool.completedAt ?? "");
+      feedJsonFingerprint(feed, tool.args);
+      feedJsonFingerprint(feed, tool.result);
+      feedTextFingerprint(feed, tool.streamingOutput);
+    }
+    return;
+  }
+
+  if (block.type === "command") {
+    const d = block.data;
+    feed(d.id);
+    feed(d.command);
+    feed(String(d.exitCode ?? ""));
+    feed(String(d.durationMs ?? ""));
+    feed(d.workingDirectory);
+    feedTextFingerprint(feed, d.output);
+    return;
+  }
+
+  if (block.type === "agent_message" || block.type === "agent_streaming") {
+    feedJsonFingerprint(feed, block.data);
+    return;
+  }
+
+  feedJsonFingerprint(feed, block.data);
+}
+
+export function timelineBlocksFingerprint(blocks: UnifiedBlock[] | undefined): string {
+  let hash = 5381;
+  const feed = (s: string) => {
+    for (let i = 0; i < s.length; i++) {
+      hash = ((hash << 5) + hash + s.charCodeAt(i)) | 0;
+    }
+  };
+
+  feed(String(blocks?.length ?? 0));
+  for (const block of blocks ?? []) {
+    feedTimelineBlockData(feed, block);
+  }
+  return String(hash);
 }
 
 /**
@@ -156,6 +351,7 @@ function buildChangeFingerprint(state: {
           feed(String(sess.retiredPlans?.length ?? 0));
           feed(sess.planMessageId ?? "");
           feed(stageRunFingerprint(sess.stageRun));
+          feed(stageRunsFingerprint(sess.stageRuns));
         }
       }
     }
@@ -163,12 +359,7 @@ function buildChangeFingerprint(state: {
 
   for (const [tid, blocks] of Object.entries(state.timelines)) {
     feed(tid);
-    feed(String(blocks.length));
-    if (blocks.length > 0) {
-      const last = blocks[blocks.length - 1];
-      feed(last.id);
-      feed(last.type);
-    }
+    feed(timelineBlocksFingerprint(blocks));
   }
 
   return String(hash);
@@ -487,18 +678,14 @@ function convFingerprint(
   for (const tid of termIds) {
     feed(tid);
     const blocks = timelines[tid];
-    feed(String(blocks?.length ?? 0));
-    if (blocks && blocks.length > 0) {
-      const last = blocks[blocks.length - 1];
-      feed(last.id);
-      feed(last.type);
-    }
+    feed(timelineBlocksFingerprint(blocks));
     const sess = sessions[tid];
     if (sess) {
       feed(sess.executionMode ?? "");
       feed(String(sess.retiredPlans?.length ?? 0));
       feed(sess.planMessageId ?? "");
       feed(stageRunFingerprint(sess.stageRun));
+      feed(stageRunsFingerprint(sess.stageRuns));
     }
   }
   return String(h);
@@ -621,7 +808,7 @@ async function saveConversationsToDb(
         executionMode: sess.executionMode ?? null,
         retiredPlansJson: sess.retiredPlans?.length ? sess.retiredPlans : null,
         planMessageId: sess.planMessageId ?? null,
-        stageRunJson: sess.stageRun ?? null,
+        stageRunJson: serializeStageRunState(sess),
       });
 
       const timeline = timelines[tid];

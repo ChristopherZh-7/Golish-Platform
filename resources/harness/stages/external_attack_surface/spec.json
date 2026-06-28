@@ -23,6 +23,9 @@
   "$comment_freshness_window": "Phase E activation (design 2026-06-22 Phase D): gray-switch ON. The EAS DB-truth back-fill (GOLISH-EAS-LIVENESS/PORT/SERVICE-FINGERPRINT) only counts data collected this stage-run (targets.liveness_checked_at/ports_scanned_at + fingerprints.detected_at >= stage start; migration 20260623000001). EAS coverage_complete now uses authoritative DB/ledger found facts, so self-reported found cells cannot fake active surface coverage. Default false = presence-only.",
   "freshness_window": true,
 
+  "$comment_asset_wave_barrier": "Stage expansion wave barrier Phase 1 (design 2026-06-28): freeze the current EAS coverage denominator to assets that existed at operation_state.stage_started_at. Assets discovered during the wave are persisted and shown as new_assets / next-wave pending, but do not block the current wave's gate. Durable wave tables + automatic next-wave dispatch are deferred.",
+  "asset_wave_barrier": true,
+
   "gate_rules": [
     {
       "op": "for_all",

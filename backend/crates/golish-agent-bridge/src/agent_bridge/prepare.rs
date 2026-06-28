@@ -416,6 +416,7 @@ impl AgentBridge {
             // 设计 2026-06-11 · targeted gate-repair pass: lock this run's
             // tool_choice to `submit_stage_deliverable`.
             harness_submit_only: *self.harness_submit_only.read().await,
+            harness_forced_tool: self.harness_forced_tool.read().await.clone(),
             // C2c · give the loop a writable handle so a delegated sub-agent's
             // StageDeliverable can be captured and later fed to the gate.
             harness_deliverable_sink: Some(self.harness_last_deliverable.clone()),

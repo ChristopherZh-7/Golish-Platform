@@ -48,6 +48,10 @@ pub struct TurnState {
     /// working. Only meaningful while `ctx.harness_stage` is set; that tool only
     /// exists in harness stages, so this is inert in chat / non-harness runs.
     pub stage_deliverable_submitted: bool,
+    /// Whether the optional one-shot `ctx.harness_forced_tool` has already been
+    /// dispatched in this agent run. Once true, subsequent iterations fall back
+    /// to normal tool-choice behavior so the stage can submit or repair.
+    pub forced_tool_dispatched: bool,
 }
 
 impl Default for TurnState {
@@ -60,6 +64,7 @@ impl Default for TurnState {
             repetition_recoveries: 0,
             mid_stream_retries: 0,
             stage_deliverable_submitted: false,
+            forced_tool_dispatched: false,
         }
     }
 }

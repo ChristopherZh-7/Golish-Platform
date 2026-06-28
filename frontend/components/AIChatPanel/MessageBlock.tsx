@@ -213,6 +213,7 @@ export const MessageBlock = memo(function MessageBlock({
           <div className="flex flex-col gap-2">
             {showPlanAtTop && planNode}
             {segments.map((seg, idx) => {
+              const previousSegment = idx > 0 ? segments[idx - 1] : null;
               if (seg.kind === "thinking") {
                 return (
                   <ThinkingBlock
@@ -262,7 +263,13 @@ export const MessageBlock = memo(function MessageBlock({
                 }
 
                 return (
-                  <div key={`seg-${idx}`} className="text-[12px] text-foreground leading-[1.55]">
+                  <div
+                    key={`seg-${idx}`}
+                    className={cn(
+                      "text-[12px] leading-[1.55] text-foreground",
+                      previousSegment?.kind === "thinking" && "-mt-1"
+                    )}
+                  >
                     <Markdown content={displayContent} />
                   </div>
                 );

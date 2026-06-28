@@ -232,6 +232,11 @@ pub struct AgentBridge {
     /// `build_loop_context` so the turn's `tool_choice` can be locked to
     /// `submit_stage_deliverable`. `false` = normal pass.
     pub(crate) harness_submit_only: Arc<RwLock<bool>>,
+    /// One-shot forced tool for deterministic harness continuations. Set
+    /// per-subtask alongside `harness_active_stage`; read by `build_loop_context`
+    /// so the runtime can force the first turn to a known orchestration tool
+    /// such as `stage_run`. `None` = normal provider/tool-choice behavior.
+    pub(crate) harness_forced_tool: Arc<RwLock<Option<String>>>,
     /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): the
     /// scoping-confirmed root organization id of the active operation. Set
     /// per-subtask alongside `harness_active_stage`; read by `build_loop_context`

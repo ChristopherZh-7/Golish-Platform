@@ -68,9 +68,10 @@ impl GolishDbRepoProvider {
     }
 
     /// PR-C step2b（#4 / E3，设计 2026-06-23-technique-outcomes-provenance）：upsert 一条
-    /// 覆盖结局 + provenance 进 `technique_outcomes`。`asset` 在此过 `canonical_asset_key`
-    /// 归一（E1：表的 UNIQUE/gate join 依赖规范键，否则身份漂移）。`collected_at` 取
-    /// 当前时刻；`result_count`/`confidence` 暂留 None（落点暂无该信号）。
+    /// 覆盖结局 + provenance 进 `technique_outcomes`。EAS LIVENESS 使用 gate-compatible
+    /// endpoint key（保留 URL port/path），其它 host-level technique 仍过
+    /// `canonical_asset_key` 归一。`collected_at` 取当前时刻；`result_count`/`confidence`
+    /// 暂留 None（落点暂无该信号）。
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn upsert_technique_outcome_impl(
         &self,
@@ -83,9 +84,15 @@ impl GolishDbRepoProvider {
         query: Option<&str>,
         evidence_ids: &[i64],
     ) -> anyhow::Result<()> {
-        let canonical = golish_pentest_domain::canonical_asset_key(asset)
-            .map(|k| k.key)
-            .unwrap_or_else(|| asset.to_string());
+        let canonical = if technique == golish_agent_kit::harness::evidence_facts::TECH_EAS_LIVENESS
+        {
+            golish_agent_kit::harness::evidence_facts::eas_liveness_asset_key(asset)
+                .unwrap_or_else(|| asset.to_string())
+        } else {
+            golish_pentest_domain::canonical_asset_key(asset)
+                .map(|k| k.key)
+                .unwrap_or_else(|| asset.to_string())
+        };
         let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
             organization_id,
             run_id: run_id.to_string(),
@@ -341,11 +348,18 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
         org_id: Option<uuid::Uuid>,
         assets: &[String],
     ) -> Vec<golish_agent_kit::harness::EvidenceFact> {
+        self.db_truth_facts_with_run_start(org_id, assets, None)
+            .await
+    }
+
+    async fn db_truth_facts_with_run_start(
+        &self,
+        org_id: Option<uuid::Uuid>,
+        assets: &[String],
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<golish_agent_kit::harness::EvidenceFact> {
         use golish_agent_kit::harness::{EvidenceFact, EvidenceOutcome};
-        // Submit preview is a non-authoritative hint shown to the agent during
-        // submit; keep it presence-only (run_start=None). The authoritative
-        // stage-close gate applies the freshness window via DbRepoProvider.
-        match self.db_truth_facts_impl(org_id, assets, None).await {
+        match self.db_truth_facts_impl(org_id, assets, run_start).await {
             // coverage_truth is Found-only (it never infers checked_empty), and
             // the projection is evidence-id-agnostic, so the business-table truth
             // maps to Found facts with the sentinel id 0.
@@ -375,6 +389,16 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
         self.in_scope_assets_impl(org_id).await.unwrap_or_default()
     }
 
+    async fn in_scope_assets_created_before(
+        &self,
+        org_id: Option<uuid::Uuid>,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<String> {
+        self.in_scope_assets_created_before_impl(org_id, cutoff)
+            .await
+            .unwrap_or_default()
+    }
+
     async fn in_scope_typed_assets(&self, org_id: Option<uuid::Uuid>) -> Vec<(String, String)> {
         // T3 (设计 2026-06-23-submit-preview-authoritative-context): host-aware
         // asset_types for the submit preview (same source as the stage-close gate).
@@ -401,5 +425,17 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
 
     async fn source_query_facts(&self, org_id: uuid::Uuid, run_id: &str) -> Vec<SourceQueryFact> {
         self.source_query_facts_impl(org_id, run_id).await
+    }
+
+    async fn operation_stage_started_at(
+        &self,
+        operation_id: uuid::Uuid,
+    ) -> Option<(
+        golish_agent_kit::harness::StageKind,
+        chrono::DateTime<chrono::Utc>,
+    )> {
+        let state = self.operation_state_get_impl(operation_id).await.ok()??;
+        let stage = golish_agent_kit::harness::StageKind::try_parse(&state.current_stage)?;
+        Some((stage, state.stage_started_at))
     }
 }

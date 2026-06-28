@@ -8,7 +8,7 @@
  */
 
 import { Building2, Crosshair, Globe, Network } from "lucide-react";
-import type { Dispatch, SetStateAction } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useMemo, useState } from "react";
 import type { AssetIntelProviderDescriptor, AssetIntelRun } from "@/lib/api/asset-intel";
 import type { OrganizationReconRunSnapshot } from "@/lib/api/organization-recon";
 import type { Organization, OrganizationCandidate } from "@/lib/api/organizations";
@@ -31,6 +31,7 @@ import {
   translateOrgFieldGroups,
   translateWithFallback,
 } from "@/lib/target-panel/org-fields";
+import type { TargetCountSummary } from "@/lib/target-panel/org-tree";
 import { hasExportableCurrentReconAssets } from "@/lib/target-panel/organization-recon";
 import type { AssetIntelOrgActionKind, WorkspaceTab } from "@/lib/target-panel/types";
 import { cn } from "@/lib/utils";
@@ -44,6 +45,8 @@ interface OrgWorkspacePanelProps {
   selectedOrg: Organization | null;
   selectedMode: EngagementMode | null;
   selectedTargets: Target[];
+  selectedSubtreeTargets: Target[];
+  targetSummary: TargetCountSummary;
   t: (key: string) => string;
   workspaceTab: WorkspaceTab;
   setWorkspaceTab: Dispatch<SetStateAction<WorkspaceTab>>;
@@ -78,6 +81,8 @@ export function OrgWorkspacePanel({
   selectedOrg,
   selectedMode,
   selectedTargets,
+  selectedSubtreeTargets,
+  targetSummary,
   t,
   workspaceTab,
   setWorkspaceTab,
@@ -101,6 +106,26 @@ export function OrgWorkspacePanel({
   handlePromoteCandidate,
   handleCandidateStatus,
 }: OrgWorkspacePanelProps) {
+  const [assetScope, setAssetScope] = useState<"own" | "subtree">("own");
+  const hasSubtreeTargets = selectedSubtreeTargets.length !== selectedTargets.length;
+  const unresolvedLabel = translateWithFallback(t, "targets.unresolvedGroup", "Unresolved");
+  const assetTargets =
+    assetScope === "subtree" && hasSubtreeTargets ? selectedSubtreeTargets : selectedTargets;
+  const targetGroups = useMemo(
+    () => groupTargetsByHost(assetTargets, unresolvedLabel),
+    [assetTargets, unresolvedLabel]
+  );
+
+  useEffect(() => {
+    setAssetScope("own");
+  }, [selectedOrg?.id]);
+
+  useEffect(() => {
+    if (!hasSubtreeTargets && assetScope === "subtree") {
+      setAssetScope("own");
+    }
+  }, [assetScope, hasSubtreeTargets]);
+
   if (!selectedOrg) {
     return (
       <div className="h-full flex items-center justify-center text-center text-muted-foreground px-8">
@@ -142,18 +167,13 @@ export function OrgWorkspacePanel({
     organizations: organizationCandidates.length,
     targets: targetCandidates.length,
   };
-  const inScopeCount = selectedTargets.filter((target) => target.scope === "in").length;
-  const outScopeCount = selectedTargets.filter((target) => target.scope === "out").length;
+  const ownOutScopeCount = Math.max(0, targetSummary.ownTotal - targetSummary.ownInScope);
   const badge = selectedMode ? ENGAGEMENT_BADGES[selectedMode] : null;
   const fieldGroups = translateOrgFieldGroups(getOrgFieldGroups(selectedOrg), t);
   const selectedOrgActions = getOrgActionModel(selectedMode, {
     isChild: selectedOrgIsChild,
   });
-  const targetGroups = groupTargetsByHost(
-    selectedTargets,
-    translateWithFallback(t, "targets.unresolvedGroup", "Unresolved")
-  );
-  const visibleTargetGroups = workspaceTab === "overview" ? targetGroups.slice(0, 5) : targetGroups;
+
   const openTarget = (targetId: string) => {
     setEditingTargetId(null);
     setSelectedTargetId(targetId);
@@ -198,26 +218,38 @@ export function OrgWorkspacePanel({
 
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <span className="rounded bg-muted/20 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-            {translateWithFallback(t, "targetWorkspace.metrics.targets", "Targets")}{" "}
-            <span className="text-foreground">{selectedTargets.length}</span>
+            {translateWithFallback(t, "targetWorkspace.metrics.ownTargets", "This org")}{" "}
+            <span className="text-foreground">{targetSummary.ownTotal}</span>
           </span>
           <span className="rounded bg-green-500/10 px-1.5 py-0.5 text-[10px] text-green-400">
             {translateWithFallback(t, "targetWorkspace.metrics.in", "In")}{" "}
-            <span className="text-green-300">{inScopeCount}</span>
+            <span className="text-green-300">{targetSummary.ownInScope}</span>
           </span>
-          <span className="rounded bg-muted/20 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-            {translateWithFallback(t, "targetWorkspace.metrics.out", "Out")}{" "}
-            <span className="text-foreground/75">{outScopeCount}</span>
-          </span>
+          {ownOutScopeCount > 0 && (
+            <span className="rounded bg-muted/20 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              {translateWithFallback(t, "targetWorkspace.metrics.out", "Out")}{" "}
+              <span className="text-foreground/75">{ownOutScopeCount}</span>
+            </span>
+          )}
+          {hasSubtreeTargets && (
+            <span className="rounded border border-border/30 bg-background/35 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              {translateWithFallback(t, "targetWorkspace.metrics.subtreeTargets", "With sub-orgs")}{" "}
+              <span className="text-foreground/80">{targetSummary.subtreeTotal}</span>
+            </span>
+          )}
+          {targetSummary.descendantOrgCount > 0 && (
+            <span className="rounded bg-muted/20 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              {translateWithFallback(t, "targetWorkspace.metrics.subOrgs", "Sub-orgs")}{" "}
+              <span className="text-foreground/75">{targetSummary.descendantOrgCount}</span>
+            </span>
+          )}
         </div>
       </section>
 
       <nav className="flex items-center gap-1 border-b border-border/30 pb-2">
         {[
-          ["overview", translateWithFallback(t, "targetWorkspace.tabs.overview", "Overview")],
-          ["fields", translateWithFallback(t, "targetWorkspace.tabs.fields", "Fields")],
-          ["scope", translateWithFallback(t, "targetWorkspace.tabs.scope", "Scope")],
-          ["targets", translateWithFallback(t, "targetWorkspace.tabs.targets", "Targets")],
+          ["overview", translateWithFallback(t, "targetWorkspace.tabs.overview", "Assets")],
+          ["fields", translateWithFallback(t, "targetWorkspace.tabs.fields", "Profile")],
           ["candidates", translateWithFallback(t, "targetWorkspace.tabs.candidates", "Candidates")],
           ["activity", translateWithFallback(t, "targetWorkspace.tabs.activity", "Activity")],
         ].map(([id, label]) => (
@@ -300,25 +332,55 @@ export function OrgWorkspacePanel({
               <h4 className="text-xs font-medium text-foreground">
                 {workspaceTab === "targets"
                   ? translateWithFallback(t, "targetWorkspace.targetsPanel.title", "Assets by IP")
-                  : workspace.title}
+                  : translateWithFallback(t, "targetWorkspace.targetsPanel.title", "Assets by IP")}
               </h4>
               <p className="text-[10px] text-muted-foreground/70 mt-1">
                 {workspaceTab === "targets"
                   ? translateWithFallback(
                       t,
                       "targetWorkspace.targetsPanel.description",
-                      "IPs, domains, and URLs are grouped together so the tree can stay focused on organizations."
+                      "IPs, domains, and URLs grouped by host."
                     )
                   : translateWithFallback(
                       t,
-                      "targetWorkspace.overview.placeholder",
-                      "Mode-aware workspace skeleton. Backend orchestration and coverage panels come next."
+                      "targetWorkspace.targetsPanel.description",
+                      "IPs, domains, and URLs grouped by host."
                     )}
               </p>
             </div>
+            {hasSubtreeTargets && (
+              <div className="inline-flex flex-shrink-0 overflow-hidden rounded border border-border/30 bg-background/30">
+                <button
+                  type="button"
+                  className={cn(
+                    "px-2 py-1 text-[10px] tabular-nums transition-colors",
+                    assetScope === "own"
+                      ? "bg-muted/35 text-foreground"
+                      : "text-muted-foreground hover:bg-muted/20 hover:text-foreground"
+                  )}
+                  onClick={() => setAssetScope("own")}
+                >
+                  {translateWithFallback(t, "targetWorkspace.assetScope.own", "This org")}{" "}
+                  {targetSummary.ownTotal}
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "border-l border-border/25 px-2 py-1 text-[10px] tabular-nums transition-colors",
+                    assetScope === "subtree"
+                      ? "bg-muted/35 text-foreground"
+                      : "text-muted-foreground hover:bg-muted/20 hover:text-foreground"
+                  )}
+                  onClick={() => setAssetScope("subtree")}
+                >
+                  {translateWithFallback(t, "targetWorkspace.assetScope.subtree", "With sub-orgs")}{" "}
+                  {targetSummary.subtreeTotal}
+                </button>
+              </div>
+            )}
           </div>
 
-          {selectedTargets.length === 0 ? (
+          {assetTargets.length === 0 ? (
             <div className="mt-3 rounded border border-dashed border-border/35 p-3 text-center">
               <Crosshair className="w-5 h-5 mx-auto text-muted-foreground/35 mb-1.5" />
               <p className="text-[11px] text-muted-foreground">
@@ -331,12 +393,9 @@ export function OrgWorkspacePanel({
             </div>
           ) : (
             <div className="mt-3 space-y-2">
-              {visibleTargetGroups.map((group) => {
+              {targetGroups.map((group) => {
                 const primaryTarget = group.ipTarget ?? group.targets[0];
-                const shownLinkedTargets =
-                  workspaceTab === "overview"
-                    ? group.linkedTargets.slice(0, 4)
-                    : group.linkedTargets;
+                const shownLinkedTargets = group.linkedTargets;
                 const hiddenLinkedCount = group.linkedTargets.length - shownLinkedTargets.length;
 
                 return (

@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getStageAssetCoverage } from "@/lib/api/stage-coverage";
 import {
+  ASSET_COVERAGE_READING_FREEZE_MS,
   LIVE_WORK_RETENTION_MS,
   StageAssetCoverageBlock,
   StageAssetCoveragePanel,
@@ -12,6 +13,28 @@ vi.mock("@/lib/api/stage-coverage", () => ({
 }));
 
 const mockedGetStageAssetCoverage = vi.mocked(getStageAssetCoverage);
+
+function testRect({
+  height = 0,
+  top = 0,
+  width = 0,
+}: {
+  height?: number;
+  top?: number;
+  width?: number;
+}): DOMRect {
+  return {
+    bottom: top + height,
+    height,
+    left: 0,
+    right: width,
+    top,
+    width,
+    x: 0,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
 
 function coverageCell(technique: string, label: string) {
   return {
@@ -88,6 +111,143 @@ function snapshot() {
   };
 }
 
+function largeSnapshot(assetCount = 80) {
+  return {
+    ...snapshot(),
+    summary: {
+      total_assets: assetCount,
+      seed_assets: assetCount,
+      new_assets: 0,
+      done_assets: 0,
+      pending_assets: assetCount,
+      blocked_assets: 0,
+    },
+    assets: Array.from({ length: assetCount }, (_, index) => ({
+      target_id: `target-${index}`,
+      value: `10.18.3.${index}`,
+      target_type: "ip",
+      real_ip: "",
+      source: "seed",
+      discovered_phase: "seed",
+      created_at: "2026-06-27T10:00:00.000Z",
+      parent_id: null,
+      coverage: [
+        coverageCell("GOLISH-EAS-LIVENESS", "LIVENESS"),
+        coverageCell("GOLISH-EAS-PORT", "PORT"),
+        coverageCell("GOLISH-EAS-SERVICE-FINGERPRINT", "SERVICE"),
+      ],
+    })),
+  };
+}
+
+function nextWaveSnapshot() {
+  return {
+    stage: "external_attack_surface",
+    organization_id: "org-1",
+    session_id: "session-1",
+    summary: {
+      total_assets: 1,
+      seed_assets: 1,
+      new_assets: 1,
+      done_assets: 1,
+      pending_assets: 0,
+      blocked_assets: 0,
+    },
+    assets: [
+      {
+        target_id: "target-1",
+        value: "seed.example.com",
+        target_type: "domain",
+        real_ip: "",
+        source: "seed",
+        discovered_phase: "seed",
+        created_at: "2026-06-27T10:00:00.000Z",
+        parent_id: null,
+        coverage: [
+          {
+            ...coverageCell("GOLISH-EAS-LIVENESS", "LIVENESS"),
+            state: "found",
+            evidence_refs: [1],
+          },
+        ],
+      },
+      {
+        target_id: "target-2",
+        value: "new.example.com",
+        target_type: "domain",
+        real_ip: "",
+        source: "active_discovered",
+        discovered_phase: "new_in_stage",
+        created_at: "2026-06-27T10:05:00.000Z",
+        parent_id: null,
+        coverage: [
+          {
+            ...coverageCell("GOLISH-EAS-LIVENESS", "LIVENESS"),
+            state: "next_wave_pending",
+            note: "newly discovered during this stage; queued for the next wave",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function syntheticHostSnapshot() {
+  const base = snapshot();
+  return {
+    ...base,
+    summary: {
+      ...base.summary,
+      total_assets: 1,
+      pending_assets: 1,
+    },
+    assets: [
+      {
+        ...base.assets[1],
+        target_id: "resolved-domain-only",
+        value: "resolved.example.com",
+        real_ip: "203.0.113.10",
+      },
+    ],
+  };
+}
+
+function targetIntelOrgOnlySnapshot() {
+  return {
+    stage: "target_intel",
+    organization_id: "org-1",
+    session_id: "session-1",
+    summary: {
+      total_assets: 0,
+      seed_assets: 0,
+      new_assets: 0,
+      done_assets: 0,
+      pending_assets: 0,
+      blocked_assets: 0,
+    },
+    assets: [
+      {
+        target_id: "org-1",
+        value: "中国平安保险公司证券交易珠海营业部",
+        target_type: "organization",
+        real_ip: "",
+        source: "engagement_org",
+        discovered_phase: "historical",
+        created_at: "2026-06-27T10:00:00.000Z",
+        parent_id: null,
+        coverage: [
+          coverageCell("GOLISH-INTEL-DNS", "DNS"),
+          coverageCell("GOLISH-INTEL-WHOIS", "WHOIS"),
+          coverageCell("GOLISH-INTEL-ASN", "ASN"),
+          coverageCell("GOLISH-INTEL-CT", "CT"),
+          coverageCell("GOLISH-INTEL-SUBDOMAIN", "Subdomain"),
+          coverageCell("GOLISH-INTEL-OSINT", "OSINT"),
+        ],
+      },
+    ],
+  };
+}
+
 describe("StageAssetCoveragePanel", () => {
   beforeEach(() => {
     mockedGetStageAssetCoverage.mockReset();
@@ -138,6 +298,7 @@ describe("StageAssetCoveragePanel", () => {
         organizationId="org-1"
         stage="external_attack_surface"
         sessionId="session-1"
+        stageStartedAt="2026-06-27T10:00:00.000Z"
         subtitle="External Attack Surface · Acme"
         workItems={[
           {
@@ -157,8 +318,14 @@ describe("StageAssetCoveragePanel", () => {
     );
 
     expect(screen.queryByTestId("stage-asset-coverage-scroll")).not.toBeInTheDocument();
-    expect(await screen.findByText("0/3 done")).toBeInTheDocument();
+    expect(await screen.findByText("0/1 done")).toBeInTheDocument();
     expect(screen.getByText("nmap · PORT/SERVICE · 10.18.2.4")).toBeInTheDocument();
+    expect(mockedGetStageAssetCoverage).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      sessionId: "session-1",
+      stage: "external_attack_surface",
+      stageStartedAt: "2026-06-27T10:00:00.000Z",
+    });
 
     fireEvent.click(screen.getByRole("button", { name: /资产覆盖/ }));
 
@@ -181,7 +348,58 @@ describe("StageAssetCoveragePanel", () => {
     await screen.findByTestId("stage-asset-coverage-scroll");
 
     expect(screen.getByText("app.example.com")).toBeInTheDocument();
+    expect(screen.getAllByText(/未查 LIVE\/PORT\/SVC/).length).toBeGreaterThan(0);
     expect(screen.queryByRole("separator", { name: "调整资产覆盖高度" })).not.toBeInTheDocument();
+  });
+
+  it("shows next-wave assets without counting them in the current denominator", () => {
+    render(
+      <StageAssetCoveragePanel
+        snapshot={nextWaveSnapshot()}
+        loading={false}
+        error={null}
+        workItems={[]}
+      />
+    );
+
+    expect(screen.getByText("1/1 done")).toBeInTheDocument();
+    expect(screen.getByText("1 下批")).toBeInTheDocument();
+    expect(screen.getByText("new.example.com")).toBeInTheDocument();
+    expect(screen.getByText(/下批待查 LIVE/)).toBeInTheDocument();
+    expect(screen.getAllByText(/下批/).length).toBeGreaterThan(0);
+  });
+
+  it("marks synthetic resolved IP groups as grouping rows instead of unchecked coverage", () => {
+    render(
+      <StageAssetCoveragePanel
+        snapshot={syntheticHostSnapshot()}
+        loading={false}
+        error={null}
+        workItems={[]}
+      />
+    );
+
+    expect(screen.getByText("203.0.113.10")).toBeInTheDocument();
+    expect(screen.getByText(/仅分组，不计覆盖/)).toBeInTheDocument();
+    expect(screen.getByText("resolved.example.com")).toBeInTheDocument();
+    expect(screen.getByText(/未查 LIVE\/PORT\/SVC/)).toBeInTheDocument();
+  });
+
+  it("shows readable target intel organization coverage dimensions", () => {
+    render(
+      <StageAssetCoveragePanel
+        snapshot={targetIntelOrgOnlySnapshot()}
+        loading={false}
+        error={null}
+        workItems={[]}
+      />
+    );
+
+    expect(screen.getByText("组织情报")).toBeInTheDocument();
+    expect(screen.getByText("中国平安保险公司证券交易珠海营业部")).toBeInTheDocument();
+    for (const label of ["DNS", "WHOIS", "ASN", "CT证书", "子域", "OSINT"]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
   });
 
   it("shows a compact return action in coverage panel mode", async () => {
@@ -358,6 +576,138 @@ describe("StageAssetCoveragePanel", () => {
     fireEvent.keyDown(resizeHandle, { key: "Home" });
 
     expect(scrollBody).toHaveStyle({ height: "160px", maxHeight: "160px" });
+  });
+
+  it("renders the current full coverage scale directly to avoid fast-scroll blanking", () => {
+    render(
+      <StageAssetCoveragePanel
+        snapshot={largeSnapshot(332)}
+        loading={false}
+        error={null}
+        workItems={[]}
+      />
+    );
+
+    expect(screen.queryByTestId("stage-asset-coverage-virtual-groups")).not.toBeInTheDocument();
+    expect(screen.getByText("10.18.3.0")).toBeInTheDocument();
+    expect(screen.getByText("10.18.3.331")).toBeInTheDocument();
+  });
+
+  it("virtualizes very large coverage matrices so fast scrolling only paints visible groups", async () => {
+    render(
+      <StageAssetCoveragePanel
+        snapshot={largeSnapshot(600)}
+        loading={false}
+        error={null}
+        workItems={[]}
+      />
+    );
+
+    expect(screen.getByTestId("stage-asset-coverage-virtual-groups")).toBeInTheDocument();
+    expect(await screen.findByText("10.18.3.0")).toBeInTheDocument();
+    expect(screen.queryByText("10.18.3.599")).not.toBeInTheDocument();
+  });
+
+  it("renders medium running slices directly to keep wheel scrolling smooth", () => {
+    render(
+      <StageAssetCoveragePanel
+        snapshot={largeSnapshot(89)}
+        loading={false}
+        error={null}
+        workItems={[]}
+      />
+    );
+
+    expect(screen.queryByTestId("stage-asset-coverage-virtual-groups")).not.toBeInTheDocument();
+    expect(screen.getByText("10.18.3.0")).toBeInTheDocument();
+    expect(screen.getByText("10.18.3.88")).toBeInTheDocument();
+  });
+
+  it("does not replace the visible matrix while the user is reading after scroll", () => {
+    vi.useFakeTimers();
+    const first = largeSnapshot(3);
+    const second = {
+      ...largeSnapshot(3),
+      assets: largeSnapshot(3).assets.map((asset, index) => ({
+        ...asset,
+        target_id: `refreshed-${index}`,
+        value: `198.51.100.${index}`,
+      })),
+    };
+    const { rerender } = render(
+      <StageAssetCoveragePanel snapshot={first} loading={false} error={null} workItems={[]} />
+    );
+    const scrollBody = screen.getByTestId("stage-asset-coverage-scroll");
+
+    expect(screen.getByText("10.18.3.0")).toBeInTheDocument();
+    fireEvent.wheel(scrollBody);
+    rerender(
+      <StageAssetCoveragePanel snapshot={second} loading={false} error={null} workItems={[]} />
+    );
+
+    expect(screen.getByText("10.18.3.0")).toBeInTheDocument();
+    expect(screen.queryByText("198.51.100.0")).not.toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(ASSET_COVERAGE_READING_FREEZE_MS + 100);
+    });
+
+    expect(screen.getByText("198.51.100.0")).toBeInTheDocument();
+    expect(screen.queryByText("10.18.3.0")).not.toBeInTheDocument();
+  });
+
+  it("updates the virtual coverage window immediately on fast scroll", async () => {
+    let scrollTop = 0;
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const testId = this.getAttribute("data-testid");
+        if (testId === "stage-asset-coverage-scroll") {
+          return testRect({ height: 224, width: 800 });
+        }
+        if (testId === "stage-asset-coverage-groups") {
+          return testRect({ top: -scrollTop, width: 800 });
+        }
+        return testRect({ width: 800 });
+      });
+    try {
+      render(
+        <StageAssetCoveragePanel
+          snapshot={largeSnapshot(600)}
+          loading={false}
+          error={null}
+          workItems={[]}
+        />
+      );
+
+      const scrollBody = screen.getByTestId("stage-asset-coverage-scroll");
+      Object.defineProperty(scrollBody, "scrollTop", {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value) => {
+          scrollTop = Number(value);
+        },
+      });
+      Object.defineProperty(scrollBody, "clientHeight", {
+        configurable: true,
+        value: 224,
+      });
+      Object.defineProperty(scrollBody, "scrollHeight", {
+        configurable: true,
+        value: 33600,
+      });
+
+      await screen.findByText("10.18.3.0");
+      act(() => {
+        scrollBody.scrollTop = 32000;
+        scrollBody.dispatchEvent(new Event("scroll"));
+      });
+
+      expect(await screen.findByText("10.18.3.599")).toBeInTheDocument();
+      expect(screen.queryByText("10.18.3.0")).not.toBeInTheDocument();
+    } finally {
+      rectSpy.mockRestore();
+    }
   });
 
   it("shows domain http probing as related activity under the resolved IP group", () => {

@@ -503,6 +503,7 @@ fn compact_stage_asset_coverage(
     let mut error_cells = 0usize;
     let mut blocked_cells = 0usize;
     let mut done_cells = 0usize;
+    let mut next_wave_cells = 0usize;
     let mut gaps = Vec::new();
 
     for asset in &assets {
@@ -526,6 +527,7 @@ fn compact_stage_asset_coverage(
             match state {
                 "pending" => pending_cells += 1,
                 "error" => error_cells += 1,
+                "next_wave_pending" => next_wave_cells += 1,
                 "blocked" => {
                     blocked_cells += 1;
                     done_cells += 1;
@@ -564,11 +566,16 @@ fn compact_stage_asset_coverage(
             "pending_cells": pending_cells,
             "error_cells": error_cells,
             "blocked_cells": blocked_cells
+            ,"next_wave_cells": next_wave_cells
         },
         "gap_examples": gaps,
         "omitted_gap_count": omitted_gap_count,
         "next_action": if ready_to_submit {
-            "Coverage has no pending/error/blocked cells in this preflight. Build the final StageDeliverable with real evidence ids and submit_stage_deliverable."
+            if next_wave_cells > 0 {
+                "Current wave has no pending/error cells. Submit this wave's StageDeliverable with real evidence ids; next_wave_pending assets are newly discovered and should be handled by the next stage_run wave after this wave passes."
+            } else {
+                "Coverage has no pending/error/blocked cells in this preflight. Build the final StageDeliverable with real evidence ids and submit_stage_deliverable."
+            }
         } else {
             "Do not submit yet. Close the pending/error cells first: run the suggested tools, wait for background jobs to land evidence, or mark truly blocked/not_applicable cells with concrete notes."
         }
@@ -658,5 +665,44 @@ mod tests {
         assert_eq!(compact["ready_to_submit"], true);
         assert_eq!(compact["cell_summary"]["blocked_cells"], 1);
         assert_eq!(compact["gap_examples"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn coverage_preflight_does_not_block_on_next_wave_pending_cells() {
+        let compact = compact_stage_asset_coverage(
+            json!({
+                "summary": {"total_assets": 1, "new_assets": 1},
+                "assets": [
+                    {
+                        "target_id": "target-1",
+                        "value": "seed.example.com",
+                        "target_type": "domain",
+                        "discovered_phase": "seed",
+                        "coverage": [
+                            {"technique": "GOLISH-EAS-LIVENESS", "label": "Liveness", "state": "found", "evidence_refs": [1], "suggested_tools": []}
+                        ]
+                    },
+                    {
+                        "target_id": "target-2",
+                        "value": "new.example.com",
+                        "target_type": "domain",
+                        "discovered_phase": "new_in_stage",
+                        "coverage": [
+                            {"technique": "GOLISH-EAS-LIVENESS", "label": "Liveness", "state": "next_wave_pending", "evidence_refs": [], "suggested_tools": []}
+                        ]
+                    }
+                ]
+            }),
+            10,
+            false,
+        );
+
+        assert_eq!(compact["ready_to_submit"], true);
+        assert_eq!(compact["cell_summary"]["next_wave_cells"], 1);
+        assert_eq!(compact["gap_examples"].as_array().unwrap().len(), 0);
+        assert!(compact["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("next_wave_pending"));
     }
 }

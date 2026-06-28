@@ -10,6 +10,7 @@ interface ThinkingBlockProps {
   startedAt?: number;
   /** Epoch ms when the last reasoning chunk arrived (set on each delta). */
   endedAt?: number;
+  variant?: "message" | "detail";
 }
 
 function formatThinkingDuration(ms: number | null): string {
@@ -33,7 +34,13 @@ function formatThinkingDuration(ms: number | null): string {
  * - Settled, collapsed: shows "Thought for 3.4s" (or "0.7s", "1m 12s").
  * - Expanded: reveals the raw reasoning text with a hairline left rail.
  */
-export function ThinkingBlock({ content, isActive, startedAt, endedAt }: ThinkingBlockProps) {
+export function ThinkingBlock({
+  content,
+  isActive,
+  startedAt,
+  endedAt,
+  variant = "message",
+}: ThinkingBlockProps) {
   // Auto-open while the model is actively thinking so the user can watch the
   // chain-of-thought stream in real time; auto-collapse once thinking ends.
   // Track whether the user has manually overridden this default so we don't
@@ -105,14 +112,18 @@ export function ThinkingBlock({ content, isActive, startedAt, endedAt }: Thinkin
     : durationMs != null
       ? `Thought for ${formatThinkingDuration(durationMs)}`
       : "Thought";
+  const isDetailVariant = variant === "detail";
 
   return (
-    <div className="mb-2">
+    <div className="m-0">
       <button
         type="button"
         onClick={handleToggle}
         className={cn(
-          "flex items-center gap-1.5 text-[11px] text-foreground/60 hover:text-foreground/80 transition-colors",
+          "flex items-center gap-1.5 text-[11px] leading-5 transition-colors",
+          isDetailVariant
+            ? "w-full font-normal text-muted-foreground/65 hover:text-muted-foreground/90"
+            : "text-foreground/60 hover:text-foreground/80",
           "focus:outline-none"
         )}
         aria-expanded={expanded}
@@ -130,7 +141,12 @@ export function ThinkingBlock({ content, isActive, startedAt, endedAt }: Thinkin
       {expanded && content && (
         <div
           ref={scrollRef}
-          className="mt-1.5 ml-1.5 pl-3 border-l-2 border-foreground/20 text-[12px] text-foreground/70 leading-[1.6] whitespace-pre-wrap max-h-64 overflow-y-auto overscroll-contain"
+          className={cn(
+            "ml-1.5 whitespace-pre-wrap overflow-y-auto overscroll-contain",
+            isDetailVariant
+              ? "mt-1.5 max-h-64 border-l-2 border-foreground/10 pl-3 text-[12.5px] leading-[1.65] text-muted-foreground/80"
+              : "mt-1.5 max-h-64 border-l-2 border-foreground/20 pl-3 text-[12px] leading-[1.6] text-foreground/70"
+          )}
           onScroll={handleReasoningScroll}
           onWheelCapture={handleReasoningWheelCapture}
         >

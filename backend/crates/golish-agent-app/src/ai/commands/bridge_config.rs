@@ -179,7 +179,23 @@ fn spawn_background_completion_listener(
                         &jc,
                     )
                     .await;
+                    maybe_store_background_batch_liveness_outcomes(
+                        &db_pool,
+                        &session_id,
+                        project_path.as_deref(),
+                        &jc,
+                        evidence_id,
+                    )
+                    .await;
                     maybe_store_background_batch_port_outcomes(
+                        &db_pool,
+                        &session_id,
+                        project_path.as_deref(),
+                        &jc,
+                        evidence_id,
+                    )
+                    .await;
+                    maybe_store_background_batch_service_outcomes(
                         &db_pool,
                         &session_id,
                         project_path.as_deref(),
@@ -282,6 +298,106 @@ async fn maybe_store_background_structured_output(
     }
 }
 
+async fn maybe_store_background_batch_liveness_outcomes(
+    db_pool: &sqlx::PgPool,
+    session_id: &str,
+    project_path: Option<&str>,
+    jc: &golish_app_core::background_jobs::JobCompletion,
+    evidence_id: Option<i64>,
+) {
+    use golish_agent_kit::harness::evidence_facts::TECH_EAS_LIVENESS;
+    use golish_app_core::background_jobs::JobStatus;
+
+    if jc.status != JobStatus::Done {
+        return;
+    }
+    let Some(organization_id) = jc.organization_id else {
+        return;
+    };
+    let Some(evidence_id) = evidence_id else {
+        return;
+    };
+    let Some(tool) = background_command_tool_name(&jc.command) else {
+        return;
+    };
+    if !is_batch_liveness_command(tool.as_str(), &jc.command) {
+        return;
+    }
+    let Some(input) = batch_input_text_from_command(
+        &jc.command,
+        project_path,
+        tool.as_str(),
+        &jc.job_id,
+        "liveness",
+    )
+    .await
+    else {
+        return;
+    };
+    let targets = batch_input_targets(&input);
+    if targets.is_empty() {
+        return;
+    }
+    let retained_stdout = golish_app_core::background_jobs::manager()
+        .snapshot(&jc.job_id)
+        .map(|snapshot| snapshot.stdout)
+        .unwrap_or_else(|| jc.stdout_tail.clone());
+    let source = background_evidence_tool_name(&jc.command);
+
+    let mut stored = 0usize;
+    let mut skipped = 0usize;
+    for target in targets {
+        if target.contains('/') && !target.starts_with("http://") && !target.starts_with("https://")
+        {
+            skipped += 1;
+            continue;
+        }
+        let Some(asset) =
+            golish_agent_kit::harness::evidence_facts::eas_liveness_asset_key(&target)
+        else {
+            skipped += 1;
+            continue;
+        };
+        let found = batch_output_mentions_target(&retained_stdout, &asset);
+        let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
+            organization_id,
+            run_id: session_id.to_string(),
+            asset,
+            technique: TECH_EAS_LIVENESS.to_string(),
+            outcome: if found { "found" } else { "empty" }.to_string(),
+            source: Some(source.clone()),
+            query: Some(jc.command.clone()),
+            result_count: Some(if found { 1 } else { 0 }),
+            confidence: None,
+            evidence_ids: vec![evidence_id],
+            collected_at: Some(chrono::Utc::now()),
+        };
+        match golish_db::repo::technique_outcomes::upsert(db_pool, &write).await {
+            Ok(()) => stored += 1,
+            Err(err) => {
+                tracing::warn!(
+                    target: "harness::evidence",
+                    job_id = %jc.job_id,
+                    error = %err,
+                    "background batch liveness outcome upsert failed"
+                );
+            }
+        }
+    }
+
+    if stored > 0 || skipped > 0 {
+        tracing::info!(
+            target: "harness::evidence",
+            job_id = %jc.job_id,
+            org_id = %organization_id,
+            source = %source,
+            stored,
+            skipped,
+            "background batch liveness outcomes stored"
+        );
+    }
+}
+
 async fn maybe_store_background_batch_port_outcomes(
     db_pool: &sqlx::PgPool,
     session_id: &str,
@@ -307,17 +423,10 @@ async fn maybe_store_background_batch_port_outcomes(
     if !matches!(tool.as_str(), "naabu" | "masscan") {
         return;
     }
-    let Some(input_file) = batch_input_file_from_command(&jc.command, project_path, tool.as_str())
+    let Some(input) =
+        batch_input_text_from_command(&jc.command, project_path, tool.as_str(), &jc.job_id, "port")
+            .await
     else {
-        return;
-    };
-    let Ok(input) = tokio::fs::read_to_string(&input_file).await else {
-        tracing::debug!(
-            target: "harness::evidence",
-            job_id = %jc.job_id,
-            input_file = %input_file.display(),
-            "background batch port outcome input file unavailable"
-        );
         return;
     };
     let targets = batch_input_targets(&input);
@@ -334,7 +443,8 @@ async fn maybe_store_background_batch_port_outcomes(
     let mut stored = 0usize;
     let mut skipped = 0usize;
     for target in targets {
-        if target.contains('/') {
+        if target.contains('/') && !target.starts_with("http://") && !target.starts_with("https://")
+        {
             skipped += 1;
             continue;
         }
@@ -384,6 +494,105 @@ async fn maybe_store_background_batch_port_outcomes(
     }
 }
 
+async fn maybe_store_background_batch_service_outcomes(
+    db_pool: &sqlx::PgPool,
+    session_id: &str,
+    project_path: Option<&str>,
+    jc: &golish_app_core::background_jobs::JobCompletion,
+    evidence_id: Option<i64>,
+) {
+    use golish_agent_kit::harness::evidence_facts::TECH_EAS_SERVICE_FINGERPRINT;
+    use golish_app_core::background_jobs::JobStatus;
+
+    if jc.status != JobStatus::Done {
+        return;
+    }
+    let Some(organization_id) = jc.organization_id else {
+        return;
+    };
+    let Some(evidence_id) = evidence_id else {
+        return;
+    };
+    let Some(tool) = background_command_tool_name(&jc.command) else {
+        return;
+    };
+    if !is_batch_service_command(tool.as_str(), &jc.command) {
+        return;
+    }
+    let Some(input) = batch_input_text_from_command(
+        &jc.command,
+        project_path,
+        tool.as_str(),
+        &jc.job_id,
+        "service",
+    )
+    .await
+    else {
+        return;
+    };
+    let targets = batch_input_targets(&input);
+    if targets.is_empty() {
+        return;
+    }
+    let retained_stdout = golish_app_core::background_jobs::manager()
+        .snapshot(&jc.job_id)
+        .map(|snapshot| snapshot.stdout)
+        .unwrap_or_else(|| jc.stdout_tail.clone());
+    let source = background_evidence_tool_name(&jc.command);
+
+    let mut stored = 0usize;
+    let mut skipped = 0usize;
+    for target in targets {
+        if target.contains('/') && !target.starts_with("http://") && !target.starts_with("https://")
+        {
+            skipped += 1;
+            continue;
+        }
+        let Some(asset) = golish_pentest_domain::canonical_asset_key(&target).map(|key| key.key)
+        else {
+            skipped += 1;
+            continue;
+        };
+        let found = service_output_mentions_target(&retained_stdout, &asset);
+        let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
+            organization_id,
+            run_id: session_id.to_string(),
+            asset,
+            technique: TECH_EAS_SERVICE_FINGERPRINT.to_string(),
+            outcome: if found { "found" } else { "empty" }.to_string(),
+            source: Some(source.clone()),
+            query: Some(jc.command.clone()),
+            result_count: Some(if found { 1 } else { 0 }),
+            confidence: None,
+            evidence_ids: vec![evidence_id],
+            collected_at: Some(chrono::Utc::now()),
+        };
+        match golish_db::repo::technique_outcomes::upsert(db_pool, &write).await {
+            Ok(()) => stored += 1,
+            Err(err) => {
+                tracing::warn!(
+                    target: "harness::evidence",
+                    job_id = %jc.job_id,
+                    error = %err,
+                    "background batch service outcome upsert failed"
+                );
+            }
+        }
+    }
+
+    if stored > 0 || skipped > 0 {
+        tracing::info!(
+            target: "harness::evidence",
+            job_id = %jc.job_id,
+            org_id = %organization_id,
+            source = %source,
+            stored,
+            skipped,
+            "background batch service outcomes stored"
+        );
+    }
+}
+
 fn batch_input_targets(input: &str) -> Vec<String> {
     input
         .lines()
@@ -391,6 +600,72 @@ fn batch_input_targets(input: &str) -> Vec<String> {
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(str::to_string)
         .collect()
+}
+
+fn is_batch_liveness_command(tool: &str, command: &str) -> bool {
+    match tool {
+        "httpx" => {
+            command_has_any_flag(command, &["-l", "-list", "--list", "-input"])
+                || heredoc_body_from_command(command).is_some()
+        }
+        "nmap" => {
+            command_has_any_flag(command, &["-iL"])
+                && command_has_any_flag(command, &["-sn", "-sP"])
+        }
+        _ => false,
+    }
+}
+
+fn is_batch_service_command(tool: &str, command: &str) -> bool {
+    match tool {
+        "whatweb" => true,
+        "nmap" => {
+            command_has_any_flag(command, &["-iL"])
+                && !command_has_any_flag(command, &["-sn", "-sP"])
+                && command_has_any_flag(command, &["-sV", "-A", "--version-all", "--version-light"])
+        }
+        _ => false,
+    }
+}
+
+async fn batch_input_text_from_command(
+    command: &str,
+    project_path: Option<&str>,
+    tool: &str,
+    job_id: &str,
+    kind: &str,
+) -> Option<String> {
+    if let Some(input) = heredoc_body_from_command(command) {
+        return Some(input);
+    }
+
+    let input_file = batch_input_file_from_command(command, project_path, tool)?;
+    match tokio::fs::read_to_string(&input_file).await {
+        Ok(input) => Some(input),
+        Err(err) => {
+            tracing::debug!(
+                target: "harness::evidence",
+                job_id = %job_id,
+                input_file = %input_file.display(),
+                kind,
+                error = %err,
+                "background batch outcome input file unavailable"
+            );
+            None
+        }
+    }
+}
+
+fn command_has_any_flag(command: &str, flags: &[&str]) -> bool {
+    command_tokens(command).iter().any(|token| {
+        flags.iter().any(|flag| {
+            token.eq_ignore_ascii_case(flag)
+                || token
+                    .strip_prefix(flag)
+                    .map(|rest| rest.starts_with('='))
+                    .unwrap_or(false)
+        })
+    })
 }
 
 fn open_port_counts(tool: &str, stdout: &str) -> std::collections::HashMap<String, usize> {
@@ -434,20 +709,102 @@ fn batch_input_file_from_command(
 ) -> Option<std::path::PathBuf> {
     let flags: &[&str] = match tool {
         "naabu" => &["-list"],
-        "masscan" => &["-iL"],
+        "httpx" => &["-l", "-list", "--list", "-input"],
+        "masscan" | "nmap" => &["-iL"],
+        "whatweb" => &["--input-file"],
         _ => return None,
     };
     let tokens = command_tokens(command);
     let raw = tokens
         .windows(2)
-        .find(|pair| flags.contains(&pair[0].as_str()))
-        .map(|pair| pair[1].as_str())?;
-    let path = std::path::PathBuf::from(raw);
+        .find_map(|pair| {
+            flags
+                .contains(&pair[0].as_str())
+                .then_some(pair[1].as_str())
+        })
+        .or_else(|| {
+            tokens.iter().find_map(|token| {
+                flags
+                    .iter()
+                    .find_map(|flag| token.strip_prefix(&format!("{flag}=")))
+            })
+        })?;
+    let path = std::path::PathBuf::from(clean_command_path_arg(raw));
     if path.is_absolute() {
         Some(path)
     } else {
         project_path.map(|base| std::path::Path::new(base).join(path))
     }
+}
+
+fn clean_command_path_arg(raw: &str) -> String {
+    raw.trim().trim_matches('"').trim_matches('\'').to_string()
+}
+
+fn heredoc_body_from_command(command: &str) -> Option<String> {
+    let heredoc_at = command.find("<<")?;
+    let mut rest = &command[heredoc_at + 2..];
+    if let Some(after_dash) = rest.strip_prefix('-') {
+        rest = after_dash;
+    }
+    rest = rest.trim_start();
+
+    let (delimiter, after_delimiter) =
+        if let Some(quote) = rest.chars().next().filter(|c| *c == '\'' || *c == '"') {
+            let quoted = &rest[quote.len_utf8()..];
+            let end = quoted.find(quote)?;
+            (&quoted[..end], &quoted[end + quote.len_utf8()..])
+        } else {
+            let end = rest.find(char::is_whitespace)?;
+            (&rest[..end], &rest[end..])
+        };
+    if delimiter.is_empty() {
+        return None;
+    }
+
+    let body_start = after_delimiter.find('\n')?;
+    let body = &after_delimiter[body_start + 1..];
+    let mut lines = Vec::new();
+    for line in body.lines() {
+        let normalized = line.trim_end_matches('\r');
+        if normalized == delimiter {
+            return Some(lines.join("\n"));
+        }
+        lines.push(line);
+    }
+    None
+}
+
+fn service_output_mentions_target(stdout: &str, asset: &str) -> bool {
+    batch_output_mentions_target(stdout, asset)
+}
+
+fn batch_output_mentions_target(stdout: &str, asset: &str) -> bool {
+    let needle = asset.to_ascii_lowercase();
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .any(|line| contains_asset_token(&line.to_ascii_lowercase(), &needle))
+}
+
+fn contains_asset_token(line: &str, needle: &str) -> bool {
+    let mut search_from = 0usize;
+    while let Some(relative) = line[search_from..].find(needle) {
+        let start = search_from + relative;
+        let end = start + needle.len();
+        let before_ok = start == 0 || !is_asset_char(line.as_bytes()[start - 1]);
+        let after_ok = end == line.len() || !is_asset_char(line.as_bytes()[end]);
+        if before_ok && after_ok {
+            return true;
+        }
+        search_from = start + 1;
+    }
+    false
+}
+
+fn is_asset_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')
 }
 
 /// Append a **successful** background job's output to the evidence ledger (P3-c),
@@ -893,6 +1250,11 @@ async fn register_pentest_tools(
         // the per-org recon sub-agent's submit gate marks ASN/CT/OSINT "never
         // attempted" forever and dead-loops even after enrich landed the data.
         .with_org_id_source(bridge.harness_active_org_id_handle())
+        // Wave-aware stages freeze their submit-preview denominator to targets
+        // present at operation_state.stage_started_at; discoveries during this
+        // stage are queued for a follow-up wave instead of moving the current
+        // gate.
+        .with_operation_id_source(bridge.harness_active_operation_id_handle())
         // Piece 3 · closeout reconciliation barrier: a submit that arrives while
         // this session still has backgrounded scans running defers fast by default
         // and tells the model to call wait_for_background_jobs. Operators can opt
@@ -1182,6 +1544,108 @@ mod tests {
                 .to_string_lossy(),
             "/tmp/ws/.golish/tool-inputs/targets.txt"
         );
+    }
+
+    #[test]
+    fn batch_service_input_file_is_recovered_from_equals_command() {
+        let cmd = r#""/Users/me/Application Support/golish-platform/tools/whatweb/whatweb" -a 1 --input-file=.golish/tool-inputs/urls.txt --max-threads 25"#;
+        assert_eq!(
+            batch_input_file_from_command(cmd, Some("/tmp/ws"), "whatweb")
+                .unwrap()
+                .to_string_lossy(),
+            "/tmp/ws/.golish/tool-inputs/urls.txt"
+        );
+    }
+
+    #[test]
+    fn batch_service_input_file_strips_quotes_around_absolute_equals_value() {
+        let cmd = r#"whatweb -a 1 --input-file='/Users/me/ws/.golish/tool-inputs/urls.txt' --max-threads 25"#;
+        assert_eq!(
+            batch_input_file_from_command(cmd, Some("/tmp/ws"), "whatweb")
+                .unwrap()
+                .to_string_lossy(),
+            "/Users/me/ws/.golish/tool-inputs/urls.txt"
+        );
+    }
+
+    #[test]
+    fn batch_liveness_input_file_is_recovered_from_httpx_l_flag() {
+        let cmd = r#""/Users/me/Application Support/golish-platform/tools/httpx/httpx" -l .golish/tool-inputs/hosts.txt -json -silent"#;
+        assert_eq!(
+            batch_input_file_from_command(cmd, Some("/tmp/ws"), "httpx")
+                .unwrap()
+                .to_string_lossy(),
+            "/tmp/ws/.golish/tool-inputs/hosts.txt"
+        );
+    }
+
+    #[test]
+    fn batch_liveness_input_is_recovered_from_httpx_quoted_heredoc() {
+        let cmd = "\"/Users/me/Application Support/golish-platform/tools/httpx/httpx\" -json -sc -silent <<'GOLISH_STDIN'\nhttp://39.99.254.48\nqs.stock.pingan.com\nGOLISH_STDIN";
+        assert_eq!(
+            heredoc_body_from_command(cmd).as_deref(),
+            Some("http://39.99.254.48\nqs.stock.pingan.com")
+        );
+        assert!(is_batch_liveness_command("httpx", cmd));
+        assert_eq!(
+            batch_input_targets(&heredoc_body_from_command(cmd).unwrap()),
+            vec!["http://39.99.254.48", "qs.stock.pingan.com"]
+        );
+    }
+
+    #[test]
+    fn batch_liveness_input_is_recovered_from_httpx_dev_stdin_heredoc() {
+        let cmd = "\"/Users/me/Application Support/golish-platform/tools/httpx/httpx\" -l /dev/stdin -sc -silent 2>&1 << 'EOF'\nhttps://www.example.com\nhttp://www.example.net\nEOF";
+        assert_eq!(
+            heredoc_body_from_command(cmd).as_deref(),
+            Some("https://www.example.com\nhttp://www.example.net")
+        );
+        assert!(is_batch_liveness_command("httpx", cmd));
+    }
+
+    #[test]
+    fn batch_liveness_and_service_commands_are_classified_by_intent() {
+        assert!(is_batch_liveness_command(
+            "httpx",
+            r#"httpx -l .golish/tool-inputs/hosts.txt -json -silent"#
+        ));
+        assert!(is_batch_liveness_command(
+            "httpx",
+            r#"httpx --list=.golish/tool-inputs/hosts.txt -json -silent"#
+        ));
+        assert!(is_batch_liveness_command(
+            "nmap",
+            r#"nmap -sn -iL .golish/tool-inputs/hosts.txt -T4"#
+        ));
+        assert!(!is_batch_service_command(
+            "nmap",
+            r#"nmap -sn -iL .golish/tool-inputs/hosts.txt -T4"#
+        ));
+        assert!(is_batch_service_command(
+            "nmap",
+            r#"nmap -sV -iL .golish/tool-inputs/hosts.txt -T4"#
+        ));
+        assert!(is_batch_service_command(
+            "whatweb",
+            r#"whatweb --input-file=.golish/tool-inputs/urls.txt"#
+        ));
+    }
+
+    #[test]
+    fn service_output_mentions_canonical_target_from_url_input() {
+        let stdout = "https://Example.COM [200 OK] nginx";
+        assert!(service_output_mentions_target(stdout, "example.com"));
+        assert!(!service_output_mentions_target(
+            stdout,
+            "missing.example.com"
+        ));
+    }
+
+    #[test]
+    fn service_output_target_match_does_not_hit_ip_prefix() {
+        let stdout = "http://120.233.149.110 [200 OK] nginx";
+        assert!(service_output_mentions_target(stdout, "120.233.149.110"));
+        assert!(!service_output_mentions_target(stdout, "120.233.149.1"));
     }
 
     #[test]

@@ -84,6 +84,16 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         Vec::new()
     }
 
+    async fn db_truth_facts_with_run_start(
+        &self,
+        org_id: Option<Uuid>,
+        assets: &[String],
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<EvidenceFact> {
+        let _ = run_start;
+        self.db_truth_facts(org_id, assets).await
+    }
+
     /// The authoritative in-scope asset values for `org_id` (org-isolated via
     /// `in_scope_values(None, org_id)`). Used as the coverage asset axis for the
     /// submit preview so it matches the org's real targets — NOT the whole-DB
@@ -93,6 +103,15 @@ pub trait EvidenceLedgerQuery: Send + Sync {
     async fn in_scope_assets(&self, org_id: Option<Uuid>) -> Vec<String> {
         let _ = org_id;
         Vec::new()
+    }
+
+    async fn in_scope_assets_created_before(
+        &self,
+        org_id: Option<Uuid>,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<String> {
+        let _ = cutoff;
+        self.in_scope_assets(org_id).await
     }
 
     /// In-scope typed assets `(value, targets.type)` for `org_id`. Feeds the
@@ -132,6 +151,14 @@ pub trait EvidenceLedgerQuery: Send + Sync {
     async fn source_query_facts(&self, org_id: Uuid, run_id: &str) -> Vec<SourceQueryFact> {
         let _ = (org_id, run_id);
         Vec::new()
+    }
+
+    async fn operation_stage_started_at(
+        &self,
+        operation_id: Uuid,
+    ) -> Option<(StageKind, chrono::DateTime<chrono::Utc>)> {
+        let _ = operation_id;
+        None
     }
 }
 
@@ -253,6 +280,10 @@ pub struct SubmitStageDeliverableTool {
     /// run's org, mirroring the main-agent stage-close hook. `None` ⇒ no org
     /// binding ⇒ db-truth projection skipped (preview keeps prior behaviour).
     org_id_source: Option<Arc<RwLock<Option<Uuid>>>>,
+    /// Active operation id source. Wave-aware stages use the operation state's
+    /// `stage_started_at` as the current-wave asset cutoff so assets discovered
+    /// during this stage do not move the submit-preview denominator.
+    operation_id_source: Option<Arc<RwLock<Option<Uuid>>>>,
     /// Piece 3 (closeout reconciliation barrier) · background-job manager seam.
     /// When present (and a `session_id` is set), a submit that arrives while the
     /// session still has backgrounded scans running defers before gate preview.
@@ -281,6 +312,7 @@ impl SubmitStageDeliverableTool {
             evidence_repo: None,
             session_id: None,
             org_id_source: None,
+            operation_id_source: None,
             bg_jobs: None,
             reconcile_wait_ms: 0,
             reconcile_poll_ms: 1000,
@@ -304,6 +336,14 @@ impl SubmitStageDeliverableTool {
     /// authoritative in-scope asset axis into the gate context.
     pub fn with_org_id_source(mut self, src: Arc<RwLock<Option<Uuid>>>) -> Self {
         self.org_id_source = Some(src);
+        self
+    }
+
+    /// Share the bridge's active operation id so wave-aware stage submit previews
+    /// can freeze the coverage denominator to assets present when the stage
+    /// started.
+    pub fn with_operation_id_source(mut self, src: Arc<RwLock<Option<Uuid>>>) -> Self {
+        self.operation_id_source = Some(src);
         self
     }
 
@@ -466,6 +506,26 @@ impl SubmitStageDeliverableTool {
         }
     }
 
+    async fn asset_wave_cutoff(
+        &self,
+        repo: &Arc<dyn EvidenceLedgerQuery>,
+        stage: StageKind,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        let spec = load_embedded_stage_spec(stage).ok()?;
+        if !spec.asset_wave_barrier {
+            return None;
+        }
+        let operation_id = {
+            let src = self.operation_id_source.as_ref()?;
+            *src.read().await
+        }?;
+        let (active_stage, started_at) = repo.operation_stage_started_at(operation_id).await?;
+        if active_stage != stage {
+            return None;
+        }
+        Some(started_at)
+    }
+
     /// Build the gate context for the submit-time preview by projecting the
     /// session's evidence facts into it. Without this the preview runs on an
     /// empty (`default`) context, so a stage with `authoritative_found` (e.g.
@@ -507,14 +567,34 @@ impl SubmitStageDeliverableTool {
             Some(src) => *src.read().await,
             None => None,
         };
+        let wave_cutoff = self.asset_wave_cutoff(repo, stage).await;
         let mut in_scope_assets: Vec<String> = Vec::new();
         let mut typed_assets: Vec<(String, String)> = Vec::new();
         let mut expected_techniques: Option<Vec<String>> = None;
         let mut source_queries: Vec<SourceQueryFact> = Vec::new();
         if let Some(org_id) = org_id {
-            let assets = repo.in_scope_assets(Some(org_id)).await;
+            let assets = match wave_cutoff {
+                Some(cutoff) => {
+                    repo.in_scope_assets_created_before(Some(org_id), cutoff)
+                        .await
+                }
+                None => repo.in_scope_assets(Some(org_id)).await,
+            };
             if !assets.is_empty() {
-                facts.extend(repo.db_truth_facts(Some(org_id), &assets).await);
+                facts.extend(
+                    repo.db_truth_facts_with_run_start(Some(org_id), &assets, wave_cutoff)
+                        .await,
+                );
+                if let Some(cutoff) = wave_cutoff {
+                    tracing::info!(
+                        target: "harness::submit_tool",
+                        stage = %stage.as_str(),
+                        org_id = %org_id,
+                        asset_count = assets.len(),
+                        cutoff = %cutoff,
+                        "using current-wave in-scope assets for submit preview"
+                    );
+                }
                 in_scope_assets = assets;
             }
             // (3) T3 · authoritative口径补全: host-aware asset_types + dynamic

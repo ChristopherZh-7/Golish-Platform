@@ -120,8 +120,8 @@
   },
   "targetWorkspace": {
     "tabs": {
-      "overview": "Overview",
-      "fields": "Fields",
+      "overview": "Assets",
+      "fields": "Profile",
       "scope": "Scope",
       "targets": "Targets",
       "candidates": "Candidates",
@@ -129,9 +129,16 @@
     },
     "metrics": {
       "targets": "Targets",
+      "ownTargets": "This org",
+      "subtreeTargets": "With sub-orgs",
+      "subOrgs": "Sub-orgs",
       "in": "In",
       "out": "Out",
       "orgTargetCount": "{{orgs}} orgs · {{targets}} targets"
+    },
+    "assetScope": {
+      "own": "This org",
+      "subtree": "With sub-orgs"
     },
     "actions": {
       "newEngagement": "New Engagement",
@@ -165,7 +172,7 @@
     },
     "targetsPanel": {
       "title": "Assets by IP",
-      "description": "IPs, domains, and URLs are grouped on the right so the left tree stays focused on organizations.",
+      "description": "IPs, domains, and URLs grouped by host.",
       "moreLinked": "More linked targets",
       "noLinkedTargets": "No linked domains or URLs yet."
     },
@@ -739,6 +746,8 @@
     "historyTitle": "Chat History",
     "noHistory": "No chat history",
     "placeholder": "What would you like to do today?",
+    "loadingWorkspace": "Loading workspace",
+    "loadingWorkspaceDetail": "Restoring conversations and terminals...",
     "inputPlaceholder": "Type a message...",
     "agent": "Agent",
     "usage": "Usage",

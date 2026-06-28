@@ -103,6 +103,10 @@ where
     // dispatched (`stage_deliverable_submitted`) so the loop can wind down
     // normally instead of being forced into duplicate submissions.
     let submit_only = ctx.harness_submit_only && !state.stage_deliverable_submitted;
+    let forced_tool = ctx
+        .harness_forced_tool
+        .as_deref()
+        .filter(|_| !state.forced_tool_dispatched);
 
     let stream = start_completion_stream(
         ctx,
@@ -114,6 +118,7 @@ where
         &llm_span,
         accumulated_response,
         submit_only,
+        forced_tool,
     )
     .await?;
 

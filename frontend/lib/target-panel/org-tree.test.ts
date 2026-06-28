@@ -6,6 +6,7 @@ import {
   buildOrgTree,
   collectSubtreeTargets,
   countOrgDeletionImpact,
+  summarizeTargetCounts,
   UNASSIGNED_KEY,
 } from "./org-tree";
 
@@ -13,8 +14,8 @@ function org(id: string, parentId: string | null = null): Organization {
   return { id, parent_id: parentId, name: id, sort_order: 0 } as Organization;
 }
 
-function tgt(id: string, organizationId: string | null): Target {
-  return { id, organization_id: organizationId } as Target;
+function tgt(id: string, organizationId: string | null, scope: "in" | "out" = "in"): Target {
+  return { id, organization_id: organizationId, scope } as Target;
 }
 
 // P ─ C1 ─ G1   (a 3-level branch)  +  U (unrelated root)
@@ -82,6 +83,22 @@ describe("buildOrgTree unassigned bucket", () => {
     expect(unassigned?.targets.map((t) => t.id)).toEqual(["t2", "t3"]);
     const p = roots.find((n) => n.id === "P");
     expect(p?.targets.map((t) => t.id)).toEqual(["t1"]);
+  });
+});
+
+describe("summarizeTargetCounts", () => {
+  it("keeps an org's own target count separate from the subtree rollup", () => {
+    const roots = buildOrgTree(orgs, [...targets, tgt("t6", "G1", "out")], "未分组");
+    const p = roots.find((n) => n.id === "P");
+    expect(p).toBeDefined();
+
+    expect(summarizeTargetCounts(p as NonNullable<typeof p>)).toEqual({
+      ownTotal: 1,
+      ownInScope: 1,
+      subtreeTotal: 4,
+      subtreeInScope: 3,
+      descendantOrgCount: 2,
+    });
   });
 });
 

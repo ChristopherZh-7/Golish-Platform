@@ -82,6 +82,13 @@ pub struct ExecutionContext {
     /// `submit_stage_deliverable` (released once it is dispatched). `false` =
     /// normal pass, no behavior change.
     pub harness_submit_only: bool,
+    /// Optional one-shot tool lock for deterministic harness continuations.
+    ///
+    /// Unlike `harness_submit_only`, this is not a gate-repair semantic; it is a
+    /// routing hint for cases where the orchestrator already knows the next
+    /// action (for example, a bare "继续" while parked on a specialist stage).
+    /// The runtime releases the lock once the named tool has been dispatched.
+    pub harness_forced_tool: Option<String>,
     /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): the
     /// scoping-confirmed root organization id of THIS operation. Threaded to the
     /// bridge → agentic loop so fan-out / in-scope reads confine to this org's

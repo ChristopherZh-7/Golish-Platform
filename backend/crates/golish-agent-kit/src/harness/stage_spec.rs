@@ -145,6 +145,14 @@ pub struct StageSpec {
     #[serde(default)]
     pub freshness_window: bool,
 
+    /// Stage expansion wave barrier (design 2026-06-28): when true, the current
+    /// wave's coverage denominator is frozen to assets that already existed when
+    /// the stage started. Assets discovered during the wave remain persisted as DB
+    /// truth, but are held for a next-wave expansion check instead of moving the
+    /// current gate target.
+    #[serde(default)]
+    pub asset_wave_barrier: bool,
+
     /// Host-aware coverage (design 2026-06-15-host-aware-coverage, Phase 2a):
     /// when true, `coverage_complete` holds each in-scope asset only to the
     /// techniques that apply to its class (a bare IP is not asked for
@@ -599,6 +607,25 @@ mod tests {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
         assert_eq!(s.specialist.as_deref(), Some("prober"));
         assert_eq!(s.coverage_axis, vec!["LIVENESS", "PORT", "SERVICE"]);
+    }
+
+    #[test]
+    fn external_attack_surface_enables_asset_wave_barrier_only() {
+        let eas =
+            crate::harness::resources::load_embedded_stage_spec(StageKind::ExternalAttackSurface)
+                .expect("load external_attack_surface spec");
+        assert!(
+            eas.asset_wave_barrier,
+            "EAS must freeze its current-wave coverage denominator"
+        );
+
+        let target_intel =
+            crate::harness::resources::load_embedded_stage_spec(StageKind::TargetIntel)
+                .expect("load target_intel spec");
+        assert!(
+            !target_intel.asset_wave_barrier,
+            "passive intel keeps its anchor-only denominator, not the active wave barrier"
+        );
     }
 
     // stage_run fan-out (2026-06-13-stage-run-fanout §3.2 · enumeration rollout): enumeration

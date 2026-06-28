@@ -285,7 +285,6 @@ const CompactSubAgentCard = memo(function CompactSubAgentCard({
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const agentColor = getAgentColor(subAgent.agentName);
   const AgentIcon = getAgentIcon(subAgent.agentName);
-  const totalToolCalls = subAgent.toolCalls.length;
   const hasEntries = subAgent.entries.length > 0;
 
   return (
@@ -304,11 +303,6 @@ const CompactSubAgentCard = memo(function CompactSubAgentCard({
               {subAgent.agentName || subAgent.agentId}
             </span>
             <AnchorChip sessionId={sessionId} requestId={subAgent.parentRequestId} />
-            {totalToolCalls > 0 && (
-              <span className="text-[10px] text-muted-foreground flex-shrink-0">
-                {totalToolCalls} tool{totalToolCalls > 1 ? "s" : ""}
-              </span>
-            )}
             {subAgent.durationMs !== undefined && (
               <span className="ml-auto text-[10px] text-muted-foreground flex-shrink-0">
                 {formatDurationShort(subAgent.durationMs)}
@@ -464,11 +458,6 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
                 </span>
                 <AnchorChip sessionId={sessionId} requestId={subAgent.parentRequestId} />
                 <StatusBadge status={subAgent.status} />
-                {totalToolCalls > 0 && (
-                  <span className="text-[10px] text-muted-foreground flex-shrink-0">
-                    {totalToolCalls} tool{totalToolCalls > 1 ? "s" : ""}
-                  </span>
-                )}
               </CollapsibleTrigger>
               <div className="flex items-center gap-2 flex-shrink-0">
                 {subAgent.durationMs !== undefined && (

@@ -9,6 +9,25 @@ use super::convert::*;
 use super::GolishDbRepoProvider;
 use golish_agent_kit::db_traits::*;
 
+fn stage_asset_wave_to_view(
+    wave: golish_db::repo::stage_asset_waves::StageAssetWaveWithItems,
+) -> StageAssetWaveView {
+    StageAssetWaveView {
+        id: wave.wave.id,
+        operation_id: wave.wave.operation_id,
+        organization_id: wave.wave.organization_id,
+        stage_kind: wave.wave.stage_kind,
+        wave_index: wave.wave.wave_index,
+        started_at: wave.wave.started_at,
+        asset_hash: wave.wave.asset_hash,
+        asset_values: wave
+            .items
+            .into_iter()
+            .map(|item| item.asset_value)
+            .collect(),
+    }
+}
+
 impl GolishDbRepoProvider {
     pub(super) async fn operation_state_insert_impl(
         &self,
@@ -63,6 +82,54 @@ impl GolishDbRepoProvider {
         status: &str,
     ) -> anyhow::Result<()> {
         golish_db::repo::stage_runs::mark_terminal(&self.pool, id, status)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub(super) async fn stage_asset_wave_current_or_create_initial_impl(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+        started_at: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        golish_db::repo::stage_asset_waves::current_or_create_initial(
+            &self.pool,
+            operation_id,
+            organization_id,
+            stage_kind,
+            started_at,
+            limit,
+        )
+        .await
+        .map(|maybe| maybe.map(stage_asset_wave_to_view))
+        .map_err(Into::into)
+    }
+
+    pub(super) async fn stage_asset_wave_create_next_impl(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+        parent_wave_id: Option<Uuid>,
+        limit: i64,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        golish_db::repo::stage_asset_waves::create_next(
+            &self.pool,
+            operation_id,
+            organization_id,
+            stage_kind,
+            parent_wave_id,
+            limit,
+        )
+        .await
+        .map(|maybe| maybe.map(stage_asset_wave_to_view))
+        .map_err(Into::into)
+    }
+
+    pub(super) async fn stage_asset_wave_complete_impl(&self, wave_id: Uuid) -> anyhow::Result<()> {
+        golish_db::repo::stage_asset_waves::complete(&self.pool, wave_id)
             .await
             .map_err(Into::into)
     }

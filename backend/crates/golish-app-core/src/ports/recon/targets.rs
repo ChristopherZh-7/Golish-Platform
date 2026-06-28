@@ -81,6 +81,17 @@ pub trait ReconTargetsPort: Send + Sync {
         org_id: Option<Uuid>,
     ) -> anyhow::Result<Vec<String>>;
 
+    /// Same as [`ReconTargetsPort::in_scope_values`], but only returns target
+    /// rows that existed at or before `cutoff`. Used by stage expansion wave
+    /// barrier Phase 1 to freeze the active coverage denominator while newly
+    /// discovered targets wait for the next wave.
+    async fn in_scope_values_created_before(
+        &self,
+        project_path: Option<&str>,
+        org_id: Option<Uuid>,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<String>>;
+
     /// In-scope (`scope='in'`) targets as full [`Target`] rows (id + value +
     /// type) within legacy visibility. Lets an agent enumerate recon-collected
     /// assets, then drill into each via `query_target_data(target_id)`. `None`
@@ -308,6 +319,23 @@ impl ReconTargetsPort for PgReconTargetsAdapter {
                 self.pool.as_ref(),
                 project_path,
                 org_id,
+            )
+            .await?,
+        )
+    }
+
+    async fn in_scope_values_created_before(
+        &self,
+        project_path: Option<&str>,
+        org_id: Option<Uuid>,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok(
+            golish_db::repo::targets::list_in_scope_values_created_before(
+                self.pool.as_ref(),
+                project_path,
+                org_id,
+                cutoff,
             )
             .await?,
         )

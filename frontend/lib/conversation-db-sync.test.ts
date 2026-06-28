@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessageRow } from "@/lib/api/conversation-db";
+import type { UnifiedBlock } from "@/store";
 import type { ChatMessage, ThinkingSegment } from "@/store/slices/conversation";
+import type { SessionStageRun } from "@/store/store-types";
 import {
   chatMessageToDbRow,
   dbMsgToChatMessage,
   isPersistableMessage,
   type LoadedTerminalData,
   loadedToPersistedTerminalData,
+  normalizePersistedStageRunState,
+  serializeStageRunState,
+  timelineBlocksFingerprint,
 } from "./conversation-db-sync";
 
 function chatMessage(overrides: Partial<ChatMessage>): ChatMessage {
@@ -140,6 +145,153 @@ describe("isPersistableMessage", () => {
     expect(isPersistableMessage(chatMessage({ role: "system", content: "Stage complete" }))).toBe(
       false
     );
+  });
+});
+
+describe("timelineBlocksFingerprint", () => {
+  it("changes when an existing sub-agent block receives tool output", () => {
+    const blocks: UnifiedBlock[] = [
+      {
+        id: "sub-agent-stage-run::org::org-1",
+        type: "sub_agent_activity",
+        timestamp: "2026-06-28T10:00:00.000Z",
+        data: {
+          agentId: "recon",
+          agentName: "Recon",
+          parentRequestId: "stage-run::org::org-1",
+          task: "Collect org intel",
+          depth: 1,
+          status: "running",
+          toolCalls: [
+            {
+              id: "tool-1",
+              name: "recon_map_assets",
+              args: { org: "Acme" },
+              status: "running",
+              startedAt: "2026-06-28T10:00:01.000Z",
+            },
+          ],
+          entries: [{ kind: "tool_call", toolCallId: "tool-1" }],
+          startedAt: "2026-06-28T10:00:00.000Z",
+        },
+      },
+      {
+        id: "tool-exec-stage-run",
+        type: "ai_tool_execution",
+        timestamp: "2026-06-28T10:00:00.000Z",
+        data: {
+          requestId: "stage-run",
+          toolName: "stage_run",
+          args: {},
+          status: "running",
+          startedAt: "2026-06-28T10:00:00.000Z",
+        },
+      },
+    ];
+
+    const before = timelineBlocksFingerprint(blocks);
+    const subAgentBlock = blocks[0];
+    if (subAgentBlock.type !== "sub_agent_activity") {
+      throw new Error("expected sub-agent block");
+    }
+    subAgentBlock.data.toolCalls[0].result = { stdout: "mapped 12 assets" };
+    subAgentBlock.data.toolCalls[0].status = "completed";
+
+    expect(timelineBlocksFingerprint(blocks)).not.toBe(before);
+  });
+
+  it("changes when a non-last tool execution appends streaming output", () => {
+    const blocks: UnifiedBlock[] = [
+      {
+        id: "tool-exec-httpx",
+        type: "ai_tool_execution",
+        timestamp: "2026-06-28T10:00:00.000Z",
+        data: {
+          requestId: "httpx-1",
+          toolName: "pentest_run",
+          args: { tool_name: "httpx" },
+          status: "running",
+          startedAt: "2026-06-28T10:00:00.000Z",
+          streamingOutput: "first line",
+        },
+      },
+      {
+        id: "tool-exec-stage-run",
+        type: "ai_tool_execution",
+        timestamp: "2026-06-28T10:00:02.000Z",
+        data: {
+          requestId: "stage-run",
+          toolName: "stage_run",
+          args: {},
+          status: "running",
+          startedAt: "2026-06-28T10:00:02.000Z",
+        },
+      },
+    ];
+
+    const before = timelineBlocksFingerprint(blocks);
+    const toolBlock = blocks[0];
+    if (toolBlock.type !== "ai_tool_execution") {
+      throw new Error("expected tool block");
+    }
+    toolBlock.data.streamingOutput += "\nsecond line";
+
+    expect(timelineBlocksFingerprint(blocks)).not.toBe(before);
+  });
+});
+
+describe("stage_run persistence shape", () => {
+  const current: SessionStageRun = {
+    requestId: "T2",
+    rows: [
+      {
+        id: "org-2",
+        name: "Beta",
+        ownershipPercent: null,
+        status: "running",
+        evidenceCount: 0,
+        coverage: {},
+      },
+    ],
+    summary: { total: 1, covered: 0, active: 1, queued: 0, blocked: 0 },
+    stageLabel: "External Attack Surface",
+    roleLabel: "Prober",
+    coverageAxis: ["LIVE"],
+  };
+  const previous: SessionStageRun = {
+    requestId: "T1",
+    rows: [
+      {
+        id: "org-1",
+        name: "Acme",
+        ownershipPercent: null,
+        status: "passed",
+        evidenceCount: 1,
+        coverage: {},
+      },
+    ],
+    summary: { total: 1, covered: 1, active: 0, queued: 0, blocked: 0 },
+    stageLabel: "Target Intel",
+    roleLabel: "Recon",
+    coverageAxis: ["DNS"],
+  };
+
+  it("serializes current and request-scoped stage_run snapshots", () => {
+    const persisted = serializeStageRunState({
+      stageRun: current,
+      stageRuns: { T1: previous },
+    });
+
+    expect(persisted?.current).toBe(current);
+    expect(persisted?.byRequestId.T1).toBe(previous);
+    expect(persisted?.byRequestId.T2).toBe(current);
+  });
+
+  it("normalizes legacy single-stage_run JSON into the request map", () => {
+    const normalized = normalizePersistedStageRunState(previous);
+
+    expect(normalized?.current).toBe(previous);
+    expect(normalized?.byRequestId.T1).toBe(previous);
   });
 });
 

@@ -432,6 +432,13 @@ impl AgentBridge {
         self.harness_active_org_id.clone()
     }
 
+    /// Side-channel handle: the active operation id. Harness tools use this to
+    /// read operation_state metadata such as `stage_started_at` without coupling
+    /// the bridge to the DB implementation.
+    pub fn harness_active_operation_id_handle(&self) -> Arc<RwLock<Option<uuid::Uuid>>> {
+        self.harness_active_operation_id.clone()
+    }
+
     /// C2c · Side-channel handle: the captured-StageDeliverable sink (write side).
     /// The `submit_stage_deliverable` tool writes here; the Task-mode executor
     /// reads it at stage close and feeds it to the deterministic gate.

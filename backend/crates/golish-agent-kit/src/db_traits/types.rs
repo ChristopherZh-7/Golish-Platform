@@ -242,6 +242,19 @@ pub struct OperationStateView {
     pub stage_started_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Durable asset wave read model for wave-aware `stage_run` fan-out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StageAssetWaveView {
+    pub id: Uuid,
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_kind: String,
+    pub wave_index: i32,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub asset_hash: String,
+    pub asset_values: Vec<String>,
+}
+
 /// Minimal view of a sub-agent dispatch row, exposed to higher layers
 /// (Tauri command + frontend) for the "resume after restart" feature.
 #[derive(Debug, Clone, Serialize, Deserialize)]

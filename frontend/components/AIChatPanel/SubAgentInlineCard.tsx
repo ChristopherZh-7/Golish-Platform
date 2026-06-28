@@ -6,8 +6,8 @@
  *
  * 设计取自 ChatPanel.mock.tsx 的 SubAgentInlineCard：
  *   - 一个紧凑的卡片，左边状态图标 + agent 头像
- *   - 中间 agent 名 + AnchorChip + task 摘要
- *   - 右边 Duration + tool count + "详情 →"
+ *   - 中间 agent 名 + task 摘要
+ *   - 右边 Duration + "详情 →"
  *   - 点击：跳到 sub-agent-detail 模式，展示该单个 sub-agent 的完整详情
  */
 import { ChevronRight } from "lucide-react";
@@ -45,7 +45,6 @@ interface ResolvedSubAgent {
   task: string;
   status: ActiveSubAgent["status"];
   durationMs?: number;
-  toolCount: number;
   error?: string;
   /** Live activity, only present while the agent is running. */
   activity?: SubAgentActivity;
@@ -137,7 +136,6 @@ function deriveFallback(tc: ChatToolCall): ResolvedSubAgent {
     agentName: fallbackName,
     task,
     status,
-    toolCount: 0,
   };
 }
 
@@ -172,7 +170,6 @@ function useResolvedSubAgent(
         task: activeAgent.task ?? "",
         status: activeAgent.status,
         durationMs: activeAgent.durationMs,
-        toolCount: activeAgent.toolCalls?.length ?? 0,
         error: activeAgent.error,
         activity: deriveActivity(activeAgent),
       };
@@ -344,15 +341,9 @@ export const SubAgentInlineCard = memo(function SubAgentInlineCard({
         </div>
       )}
 
-      {(resolved.toolCount > 0 || resolved.error) && (
+      {resolved.error && (
         <div className="mt-1 ml-5 flex items-center gap-2 text-[10px] text-muted-foreground/55">
-          {resolved.toolCount > 0 && (
-            <span className="tabular-nums">
-              {resolved.toolCount} {t("ai.agentTree.tools")}
-            </span>
-          )}
-          {resolved.error && resolved.toolCount > 0 && <span>·</span>}
-          {resolved.error && <span className="text-red-400/70 truncate">{resolved.error}</span>}
+          <span className="text-red-400/70 truncate">{resolved.error}</span>
         </div>
       )}
     </button>

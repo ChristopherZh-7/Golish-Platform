@@ -1731,29 +1731,77 @@ mod tests {
     }
 
     #[test]
-    fn coverage_gap_repair_blocks_bulk_pentest_run_lists() {
-        let mode = submit_coverage_gap_repair_mode_from_reasons(&[
-            "external attack surface incomplete: never attempted (112.65.238.93 x GOLISH-EAS-LIVENESS)"
-                .to_string(),
-        ])
-        .expect("coverage gaps should activate repair mode");
+    fn coverage_gap_repair_allows_batch_input_lines_for_listed_gap_targets() {
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["external attack surface incomplete: never attempted"],
+            "coverage_gap_actions": [
+                {
+                    "asset": "112.65.238.93",
+                    "technique": "GOLISH-EAS-LIVENESS",
+                    "reason": "missing_terminal_coverage",
+                    "suggested_tools": ["httpx"]
+                },
+                {
+                    "asset": "113.105.78.22",
+                    "technique": "GOLISH-EAS-LIVENESS",
+                    "reason": "missing_terminal_coverage",
+                    "suggested_tools": ["httpx"]
+                }
+            ]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("coverage gaps should activate repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
+
+        assert!(mode
+            .block_result_with_args(
+                "pentest_run",
+                &serde_json::json!({
+                    "tool_name": "httpx",
+                    "args": "-json -sc -silent -l {{input_file}}",
+                    "input_lines": ["112.65.238.93", "113.105.78.22"]
+                }),
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn coverage_gap_repair_blocks_list_file_without_visible_targets() {
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["external attack surface incomplete: never attempted"],
+            "coverage_gap_actions": [{
+                "asset": "112.65.238.93",
+                "technique": "GOLISH-EAS-LIVENESS",
+                "reason": "missing_terminal_coverage",
+                "suggested_tools": ["httpx"]
+            }]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("coverage gaps should activate repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
 
         let blocked = mode
             .block_result_with_args(
                 "pentest_run",
                 &serde_json::json!({
                     "tool_name": "httpx",
-                    "args": "-l /dev/stdin -silent << 'EOF'\n112.65.238.93\n113.105.78.22\nEOF"
+                    "args": "-l /tmp/all-targets.txt -silent"
                 }),
             )
-            .expect("bulk stdin probes should be blocked");
+            .expect("hidden list-file probes should be blocked");
 
         assert_eq!(blocked["blocked_by_submit_repair"], true);
         assert_eq!(blocked["repair_kind"], "coverage_gap");
         assert!(blocked["blocked_reason"]
             .as_str()
             .unwrap()
-            .contains("bulk stdin"));
+            .contains("input_lines"));
     }
 
     #[test]
@@ -1843,11 +1891,21 @@ mod tests {
 
     #[test]
     fn coverage_gap_repair_blocks_multi_target_pentest_run() {
-        let mode = submit_coverage_gap_repair_mode_from_reasons(&[
-            "external attack surface incomplete: never attempted (124.196.9.134 x GOLISH-EAS-LIVENESS)"
-                .to_string(),
-        ])
-        .expect("coverage gaps should activate repair mode");
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["external attack surface incomplete: never attempted"],
+            "coverage_gap_actions": [{
+                "asset": "124.196.9.134",
+                "technique": "GOLISH-EAS-LIVENESS",
+                "reason": "missing_terminal_coverage",
+                "suggested_tools": ["httpx"]
+            }]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("coverage gaps should activate repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
 
         let blocked = mode
             .block_result_with_args(
@@ -1863,7 +1921,7 @@ mod tests {
         assert!(blocked["blocked_reason"]
             .as_str()
             .unwrap()
-            .contains("multi-target"));
+            .contains("not in coverage_gap_actions"));
     }
 
     #[test]

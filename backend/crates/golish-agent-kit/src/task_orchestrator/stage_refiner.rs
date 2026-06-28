@@ -215,7 +215,9 @@ impl RepairDirective {
             out.push_str(&format!(
                 "\n- SERVICE/nmap: group hosts that share the same open-port set \
                  and run one pentest_run tool_name=nmap with args like \
-                 `-sV -iL {{{{input_file}}}} -p <ports> -T3` per group; sample targets:\n{}",
+                 `-sV -iL {{{{input_file}}}} -p <confirmed-open-ports> -T3 --open` per group. \
+                 Do not include unresolved hosts or assets with no confirmed open ports; close \
+                 those cells as not_applicable/blocked with a concrete note instead. Sample targets:\n{}",
                 sample_assets(&services)
             ));
         }
@@ -561,7 +563,7 @@ fn command_hint_for(stage: StageKind, tool: &str, asset: &str, technique: &str) 
         ),
         (StageKind::ExternalAttackSurface, "nmap", _) => {
             format!(
-                "nmap batch: fingerprint {asset} with sibling SERVICE gaps by shared port set; use args `-sV -iL {{{{input_file}}}} -p <open-ports> -T3` plus pentest_run.input_lines"
+                "nmap batch: fingerprint {asset} only if it has confirmed open ports; group sibling SERVICE gaps by shared port set and use args `-sV -iL {{{{input_file}}}} -p <confirmed-open-ports> -T3 --open` plus pentest_run.input_lines. Do not include unresolved/no-open-port assets in the nmap batch."
             )
         }
         (StageKind::ExternalAttackSurface, "whatweb", _) => format!(
@@ -758,5 +760,12 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("-iL {{input_file}}"));
+        assert!(instruction.contains("<confirmed-open-ports>"));
+        assert!(instruction.contains("Do not include unresolved hosts"));
+        assert!(d.actions[3]
+            .command_hint
+            .as_deref()
+            .unwrap()
+            .contains("confirmed open ports"));
     }
 }

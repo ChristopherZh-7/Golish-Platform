@@ -33,6 +33,9 @@ use super::super::super::unified_helpers::push_unavailable_tool_results;
 /// call (including ones the textual tool-adapter recovered from prose, which
 /// bypass the API-layer `tool_choice`) is refused here, before it reaches an
 /// executor, and answered with a corrective tool-result.
+///
+/// `forced_tool_lock` is the same hardening for deterministic resume turns:
+/// only the named tool is allowed until it has been dispatched once.
 #[allow(clippy::too_many_arguments)]
 pub async fn run<M>(
     tool_calls_to_execute: Vec<ToolCall>,
@@ -45,6 +48,7 @@ pub async fn run<M>(
     llm_span: &Span,
     chat_history: &mut Vec<Message>,
     submit_only_lock: bool,
+    forced_tool_lock: Option<&str>,
 ) where
     M: rig::completion::CompletionModel + Sync,
 {
@@ -65,6 +69,20 @@ pub async fn run<M>(
             push_submit_only_rejections(chat_history, &blocked);
         }
         submit
+    } else if let Some(forced_tool) = forced_tool_lock {
+        let (allowed, blocked) = split_for_forced_tool(tool_calls_to_execute, forced_tool);
+        if !blocked.is_empty() {
+            let blocked_names: Vec<&str> =
+                blocked.iter().map(|tc| tc.function.name.as_str()).collect();
+            tracing::warn!(
+                target: "agent-observe",
+                forced_tool,
+                blocked = ?blocked_names,
+                "[forced-tool-lock] refused non-forced tool call(s) during deterministic resume"
+            );
+            push_forced_tool_rejections(chat_history, &blocked, forced_tool);
+        }
+        allowed
     } else {
         tool_calls_to_execute
     };
@@ -313,6 +331,15 @@ fn split_for_submit_only(calls: Vec<ToolCall>) -> (Vec<ToolCall>, Vec<ToolCall>)
         .partition(|tc| tc.function.name == SUBMIT_STAGE_DELIVERABLE_TOOL)
 }
 
+fn split_for_forced_tool(
+    calls: Vec<ToolCall>,
+    forced_tool: &str,
+) -> (Vec<ToolCall>, Vec<ToolCall>) {
+    calls
+        .into_iter()
+        .partition(|tc| tc.function.name == forced_tool)
+}
+
 /// 防御 B · push one corrective `ToolResult` per blocked call so the assistant
 /// tool_call ↔ tool_result pairing stays intact and the model is told plainly
 /// that only the submission is permitted this turn.
@@ -332,6 +359,33 @@ fn push_submit_only_rejections(chat_history: &mut Vec<Message>, blocked: &[ToolC
                         tc.function.name,
                         SUBMIT_STAGE_DELIVERABLE_TOOL,
                         SUBMIT_STAGE_DELIVERABLE_TOOL
+                    ),
+                })),
+            })
+        })
+        .collect();
+
+    if let Ok(content) = OneOrMany::many(results) {
+        chat_history.push(Message::User { content });
+    }
+}
+
+fn push_forced_tool_rejections(
+    chat_history: &mut Vec<Message>,
+    blocked: &[ToolCall],
+    forced_tool: &str,
+) {
+    let results: Vec<UserContent> = blocked
+        .iter()
+        .map(|tc| {
+            UserContent::ToolResult(ToolResult {
+                id: tc.id.clone(),
+                call_id: Some(tc.id.clone()),
+                content: OneOrMany::one(ToolResultContent::Text(Text {
+                    text: format!(
+                        "Error: '{}' is not allowed right now. This is a deterministic resume \
+                         turn; the only permitted action is calling `{}` once. Call `{}` now.",
+                        tc.function.name, forced_tool, forced_tool
                     ),
                 })),
             })
@@ -509,6 +563,7 @@ mod tests {
             &Span::none(),
             &mut history,
             false,
+            None,
         )
         .await;
 
@@ -540,6 +595,7 @@ mod tests {
             &Span::none(),
             &mut history,
             false,
+            None,
         )
         .await;
 
@@ -583,6 +639,7 @@ mod tests {
             &Span::none(),
             &mut history,
             false,
+            None,
         )
         .await;
 
@@ -621,6 +678,21 @@ mod tests {
         assert_eq!(blocked.len(), 2, "non-submit calls are blocked");
     }
 
+    #[test]
+    fn split_for_forced_tool_partitions_named_tool_vs_rest() {
+        let (allowed, blocked) = split_for_forced_tool(
+            vec![
+                make_tool_call("tc-1", "update_plan"),
+                make_tool_call("tc-2", "stage_run"),
+                make_tool_call("tc-3", "list_in_scope_targets"),
+            ],
+            "stage_run",
+        );
+        assert_eq!(allowed.len(), 1, "only the forced tool is kept");
+        assert_eq!(allowed[0].function.name, "stage_run");
+        assert_eq!(blocked.len(), 2, "non-forced calls are blocked");
+    }
+
     #[tokio::test]
     async fn submit_only_lock_refuses_non_submit_even_when_allow_listed() {
         // update_plan IS a normally-allowed orchestration tool, but the
@@ -647,6 +719,7 @@ mod tests {
             &Span::none(),
             &mut history,
             true,
+            None,
         )
         .await;
 
@@ -700,6 +773,7 @@ mod tests {
             &Span::none(),
             &mut history,
             true,
+            None,
         )
         .await;
 
@@ -716,6 +790,57 @@ mod tests {
         assert!(
             !pushed_submit_only_rejection,
             "the submit call must not be refused by the lock"
+        );
+    }
+
+    #[tokio::test]
+    async fn forced_tool_lock_refuses_other_allow_listed_tools() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let capture = test_ctx.create_capture_context();
+        let model = MockCompletionModel::with_text("ignored");
+        let sub_ctx = SubAgentContext::default();
+        let registry = HookRegistry::new();
+        let mut history: Vec<Message> = vec![];
+        let tools = [tool_def("update_plan")];
+
+        run(
+            vec![make_tool_call("textual-tool-call-1-0", "update_plan")],
+            &tools,
+            &ctx,
+            &capture,
+            &model,
+            &sub_ctx,
+            &registry,
+            &Span::none(),
+            &mut history,
+            false,
+            Some("stage_run"),
+        )
+        .await;
+
+        assert_eq!(history.len(), 1, "the blocked call gets one tool-result");
+        let Message::User { content } = &history[0] else {
+            panic!("expected User message holding ToolResult content");
+        };
+        let text = content
+            .iter()
+            .find_map(|c| match c {
+                UserContent::ToolResult(tr) => tr.content.iter().find_map(|rc| match rc {
+                    ToolResultContent::Text(t) => Some(t.text.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("a textual tool-result");
+        assert!(
+            text.contains("deterministic resume"),
+            "rejection must use the forced-tool message, got: {text}"
+        );
+        assert!(
+            text.contains("stage_run"),
+            "rejection must name the forced tool"
         );
     }
 }

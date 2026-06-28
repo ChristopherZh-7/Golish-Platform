@@ -172,6 +172,22 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Same axis as [`DbRepoProvider::in_scope_assets`], but frozen to target rows
+    /// that existed at or before `cutoff`. Wave-aware stages use this as a
+    /// no-schema current-wave denominator: newly discovered targets remain
+    /// persisted, but do not block the current wave's gate.
+    ///
+    /// Default delegates to the live axis so test doubles and non-app impls keep
+    /// prior behavior until they opt into cutoff support.
+    async fn in_scope_assets_created_before(
+        &self,
+        org_id: Option<Uuid>,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<String>> {
+        let _ = cutoff;
+        self.in_scope_assets(org_id).await
+    }
+
     /// P3 ③ seam: distinct `targets.type` values of the in-scope assets (org
     /// narrowed), so the harness coverage gate can derive **dynamic** expected
     /// techniques per asset class (e.g. an IP-only scope drops web-only
@@ -649,6 +665,48 @@ pub trait DbRepoProvider: Send + Sync {
     /// `paused_needs_user`). Default no-op.
     async fn stage_run_mark_terminal(&self, id: Uuid, status: &str) -> anyhow::Result<()> {
         let _ = (id, status);
+        Ok(())
+    }
+
+    /// Current or initial durable asset wave for a wave-aware stage. App-backed
+    /// impls freeze the current denominator to the returned `asset_values`; the
+    /// default `None` keeps non-DB test/eval contexts on the legacy live axis.
+    async fn stage_asset_wave_current_or_create_initial(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+        started_at: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        let _ = (operation_id, organization_id, stage_kind, started_at, limit);
+        Ok(None)
+    }
+
+    /// Promote unassigned in-scope targets into the next wave for the same
+    /// `(operation, organization, stage)`. `None` means no new assets are waiting.
+    async fn stage_asset_wave_create_next(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+        parent_wave_id: Option<Uuid>,
+        limit: i64,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        let _ = (
+            operation_id,
+            organization_id,
+            stage_kind,
+            parent_wave_id,
+            limit,
+        );
+        Ok(None)
+    }
+
+    /// Mark a durable wave as completed after its per-org gate passes. Default
+    /// no-op so legacy/non-DB contexts remain unchanged.
+    async fn stage_asset_wave_complete(&self, wave_id: Uuid) -> anyhow::Result<()> {
+        let _ = wave_id;
         Ok(())
     }
 

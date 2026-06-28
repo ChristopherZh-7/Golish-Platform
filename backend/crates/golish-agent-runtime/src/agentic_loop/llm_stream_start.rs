@@ -56,6 +56,7 @@ pub(crate) async fn start_completion_stream<M>(
     llm_span: &tracing::Span,
     accumulated_response: &str,
     submit_only: bool,
+    forced_tool: Option<&str>,
 ) -> Result<StreamingCompletionResponse<M::StreamingResponse>>
 where
     M: rig::completion::CompletionModel + Sync,
@@ -71,10 +72,15 @@ where
     };
 
     let mut additional_params = build_additional_params(ctx);
+    let request_tools = tools.to_vec();
+    let submit_tool_available = request_tools
+        .iter()
+        .any(|t| t.name == SUBMIT_STAGE_DELIVERABLE_TOOL);
+    let forced_tool = forced_tool.filter(|tool| request_tools.iter().any(|t| t.name == *tool));
 
     // 设计 2026-06-12 (防御 C) · submit-only 轮把「只准提交」硬约束写进模型可见的
     // 系统提示（API 层 tool_choice 对忽略它的 provider 无效时兜底）。
-    let effective_system_prompt = compose_system_prompt(system_prompt, submit_only);
+    let effective_system_prompt = compose_system_prompt(system_prompt, submit_only, forced_tool);
 
     // NVIDIA NIM workaround: see module docs.
     let is_nvidia_provider = ctx.llm.provider_name == "nvidia";
@@ -89,22 +95,37 @@ where
     };
     let request_chat_history = OneOrMany::many(request_history.clone())
         .unwrap_or_else(|_| OneOrMany::one(request_history[0].clone()));
-    let request_tools = tools.to_vec();
 
     // Force native tool calls for the autonomous depth-0 primary inside a
     // harness stage on providers that otherwise narrate tool calls as
     // text/XML or empty args under load (see `resolve_stage_tool_choice`).
     // 设计 2026-06-11 · on a targeted gate-repair pass (`submit_only`) the
     // choice tightens further to the specific `submit_stage_deliverable` tool.
-    let submit_tool_available = request_tools
-        .iter()
-        .any(|t| t.name == SUBMIT_STAGE_DELIVERABLE_TOOL);
+    // 2026-06-28 · bare resume can also force a known orchestration tool
+    // (`stage_run`) for the first resumed iteration, bypassing context-probing
+    // tools while still using the normal runtime/gate path.
+    let native_tool_choice_allowed = !request_uses_tool_choice_incompatible_thinking_mode(
+        ctx.llm.provider_name,
+        ctx.llm.model_name,
+        config.capabilities.supports_thinking_history,
+        ctx.llm.openai_reasoning_effort.is_some(),
+        additional_params.as_ref(),
+    );
+    if !native_tool_choice_allowed {
+        tracing::info!(
+            provider = ctx.llm.provider_name,
+            model = ctx.llm.model_name,
+            "[tool-choice] Suppressing native tool_choice because thinking mode is active"
+        );
+    }
     let tool_choice = resolve_stage_tool_choice(
         ctx.llm.provider_name,
         ctx.harness_stage.is_some(),
         config.is_sub_agent,
         !request_tools.is_empty(),
         submit_only && submit_tool_available,
+        forced_tool,
+        native_tool_choice_allowed,
     );
     // rig-core's OpenAI Chat provider hard-errors on `ToolChoice::Specific`,
     // while its Anthropic provider converts it natively. For OpenAI-protocol
@@ -112,32 +133,38 @@ where
     // merges it top-level into the request body) in OpenAI wire format instead.
     // Live-probed 2026-06-11: both Xiaomi endpoints accept their respective
     // named tool_choice wire formats and answer with exactly the named tool.
-    let tool_choice = if matches!(tool_choice, Some(ToolChoice::Specific { .. }))
-        && !ctx.llm.client.read().await.is_anthropic()
-    {
-        let named = json!({
-            "tool_choice": {
-                "type": "function",
-                "function": { "name": SUBMIT_STAGE_DELIVERABLE_TOOL }
-            }
-        });
-        additional_params = Some(match additional_params.take() {
-            Some(serde_json::Value::Object(mut obj)) => {
-                obj.extend(named.as_object().cloned().unwrap_or_default());
-                serde_json::Value::Object(obj)
-            }
-            _ => named,
-        });
-        None
-    } else {
-        tool_choice
+    let specific_tool_name = match &tool_choice {
+        Some(ToolChoice::Specific { function_names }) => function_names.first().cloned(),
+        _ => None,
     };
-    if tool_choice.is_some() || submit_only {
+    let client_is_anthropic = ctx.llm.client.read().await.is_anthropic();
+    let mut tool_choice =
+        if let Some(tool_name) = specific_tool_name.filter(|_| !client_is_anthropic) {
+            let named = json!({
+                "tool_choice": {
+                    "type": "function",
+                    "function": { "name": tool_name }
+                }
+            });
+            additional_params = Some(match additional_params.take() {
+                Some(serde_json::Value::Object(mut obj)) => {
+                    obj.extend(named.as_object().cloned().unwrap_or_default());
+                    serde_json::Value::Object(obj)
+                }
+                _ => named,
+            });
+            None
+        } else {
+            tool_choice
+        };
+    if tool_choice.is_some() || submit_only || forced_tool.is_some() {
         tracing::info!(
             provider = ctx.llm.provider_name,
             harness_stage = ctx.harness_stage.is_some(),
             submit_only,
+            forced_tool,
             submit_tool_available,
+            native_tool_choice_allowed,
             choice = ?tool_choice,
             "[tool-choice] Forcing tool_choice for harness-stage primary"
         );
@@ -215,6 +242,20 @@ where
                     STREAM_START_MAX_ATTEMPTS,
                     error_str
                 );
+
+                if tool_choice_rejected_by_thinking_mode(&error_str)
+                    && (tool_choice.is_some()
+                        || additional_params_has_tool_choice(&additional_params))
+                {
+                    tracing::warn!(
+                        provider = ctx.llm.provider_name,
+                        model = ctx.llm.model_name,
+                        "[tool-choice] Provider rejected tool_choice in thinking mode; retrying without native tool_choice"
+                    );
+                    tool_choice = None;
+                    strip_tool_choice_from_additional_params(&mut additional_params);
+                    continue;
+                }
 
                 if should_retry_stream_start(attempt, &classification) {
                     let delay = compute_retry_backoff_delay(attempt);
@@ -423,11 +464,33 @@ const SUBMIT_ONLY_PROMPT_DIRECTIVE: &str = "\n\n## MANDATORY — SUBMIT-ONLY TUR
      write analysis, plans, or narration. Cite ONLY the real evidence ids already provided. \
      Emit the `submit_stage_deliverable` call now — nothing else.";
 
+fn forced_tool_prompt_directive(tool_name: &str) -> String {
+    let args_hint = if tool_name == "stage_run" {
+        " Use arguments {\"orgs\":[]} so the runtime expands the bound engagement \
+         organization subtree from the database."
+    } else {
+        " Use the minimal valid arguments for that tool."
+    };
+    format!(
+        "\n\n## MANDATORY — TOOL-LOCKED TURN\n\
+         The runtime is resuming a checkpoint and already knows the next action. \
+         Your ENTIRE next response MUST be a single `{tool_name}` tool call.{args_hint} \
+         Do NOT call update_plan, read/list/query tools, or write analysis, plans, or narration. \
+         Emit `{tool_name}` now — nothing else."
+    )
+}
+
 /// 设计 2026-06-12 · submit-only 轮在系统提示末尾追加 [`SUBMIT_ONLY_PROMPT_DIRECTIVE`]；
 /// 否则原样返回。纯函数，便于单测。
-pub(crate) fn compose_system_prompt(system_prompt: &str, submit_only: bool) -> String {
+pub(crate) fn compose_system_prompt(
+    system_prompt: &str,
+    submit_only: bool,
+    forced_tool: Option<&str>,
+) -> String {
     if submit_only {
         format!("{system_prompt}{SUBMIT_ONLY_PROMPT_DIRECTIVE}")
+    } else if let Some(tool_name) = forced_tool {
+        format!("{system_prompt}{}", forced_tool_prompt_directive(tool_name))
     } else {
         system_prompt.to_string()
     }
@@ -460,12 +523,20 @@ fn resolve_stage_tool_choice(
     is_sub_agent: bool,
     has_tools: bool,
     submit_only: bool,
+    forced_tool: Option<&str>,
+    native_tool_choice_allowed: bool,
 ) -> Option<ToolChoice> {
-    if in_harness_stage
-        && !is_sub_agent
-        && has_tools
-        && FORCE_REQUIRED_TOOL_CHOICE_PROVIDERS.contains(&provider_name)
-    {
+    if !(native_tool_choice_allowed && in_harness_stage && !is_sub_agent && has_tools) {
+        return None;
+    }
+
+    if let Some(tool_name) = forced_tool {
+        return Some(ToolChoice::Specific {
+            function_names: vec![tool_name.to_string()],
+        });
+    }
+
+    if FORCE_REQUIRED_TOOL_CHOICE_PROVIDERS.contains(&provider_name) {
         if submit_only {
             Some(ToolChoice::Specific {
                 function_names: vec![SUBMIT_STAGE_DELIVERABLE_TOOL.to_string()],
@@ -475,6 +546,112 @@ fn resolve_stage_tool_choice(
         }
     } else {
         None
+    }
+}
+
+fn request_uses_tool_choice_incompatible_thinking_mode(
+    provider_name: &str,
+    model_name: &str,
+    supports_thinking_history: bool,
+    openai_reasoning_effort_set: bool,
+    additional_params: Option<&serde_json::Value>,
+) -> bool {
+    if request_explicitly_enables_thinking(openai_reasoning_effort_set, additional_params) {
+        return true;
+    }
+
+    provider_defaults_to_tool_choice_incompatible_thinking(
+        provider_name,
+        model_name,
+        supports_thinking_history,
+    )
+}
+
+fn provider_defaults_to_tool_choice_incompatible_thinking(
+    provider_name: &str,
+    model_name: &str,
+    supports_thinking_history: bool,
+) -> bool {
+    if !supports_thinking_history {
+        return false;
+    }
+
+    match provider_name {
+        "deepseek" => !model_name.to_lowercase().ends_with("deepseek-chat"),
+        "openai_reasoning" | "openai_responses" => true,
+        "openai" => golish_llm_providers::is_reasoning_model(model_name),
+        _ => false,
+    }
+}
+
+fn request_explicitly_enables_thinking(
+    openai_reasoning_effort_set: bool,
+    additional_params: Option<&serde_json::Value>,
+) -> bool {
+    if openai_reasoning_effort_set {
+        return true;
+    }
+
+    let Some(serde_json::Value::Object(params)) = additional_params else {
+        return false;
+    };
+
+    if matches!(
+        params.get("enable_thinking"),
+        Some(serde_json::Value::Bool(true))
+    ) {
+        return true;
+    }
+
+    if matches!(
+        params
+            .get("chat_template_kwargs")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|obj| obj.get("enable_thinking")),
+        Some(serde_json::Value::Bool(true))
+    ) {
+        return true;
+    }
+
+    if let Some(reasoning) = params
+        .get("reasoning")
+        .and_then(serde_json::Value::as_object)
+    {
+        if matches!(
+            reasoning.get("exclude"),
+            Some(serde_json::Value::Bool(true))
+        ) {
+            return false;
+        }
+        return true;
+    }
+
+    false
+}
+
+fn tool_choice_rejected_by_thinking_mode(error: &str) -> bool {
+    let err = error.to_lowercase();
+    err.contains("tool_choice")
+        && (err.contains("thinking") || err.contains("reasoning"))
+        && (err.contains("does not support")
+            || err.contains("not support")
+            || err.contains("unsupported")
+            || err.contains("invalid_request"))
+}
+
+fn additional_params_has_tool_choice(additional_params: &Option<serde_json::Value>) -> bool {
+    matches!(
+        additional_params,
+        Some(serde_json::Value::Object(obj)) if obj.contains_key("tool_choice")
+    )
+}
+
+fn strip_tool_choice_from_additional_params(additional_params: &mut Option<serde_json::Value>) {
+    if let Some(serde_json::Value::Object(obj)) = additional_params {
+        obj.remove("tool_choice");
+        if obj.is_empty() {
+            *additional_params = None;
+        }
     }
 }
 
@@ -490,18 +667,25 @@ async fn wait_for_cancelled(ctx: &AgenticLoopContext<'_>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        compose_system_prompt, resolve_stage_tool_choice, ToolChoice, SUBMIT_STAGE_DELIVERABLE_TOOL,
+        additional_params_has_tool_choice, compose_system_prompt,
+        request_uses_tool_choice_incompatible_thinking_mode, resolve_stage_tool_choice,
+        strip_tool_choice_from_additional_params, tool_choice_rejected_by_thinking_mode,
+        ToolChoice, SUBMIT_STAGE_DELIVERABLE_TOOL,
     };
+    use serde_json::json;
 
     // 设计 2026-06-12 (防御 C) · prompt 级硬约束注入。
     #[test]
     fn compose_system_prompt_is_identity_when_not_submit_only() {
-        assert_eq!(compose_system_prompt("base prompt", false), "base prompt");
+        assert_eq!(
+            compose_system_prompt("base prompt", false, None),
+            "base prompt"
+        );
     }
 
     #[test]
     fn compose_system_prompt_appends_submit_only_directive() {
-        let out = compose_system_prompt("base prompt", true);
+        let out = compose_system_prompt("base prompt", true, None);
         assert!(out.starts_with("base prompt"), "original prompt preserved");
         assert!(
             out.contains("SUBMIT-ONLY TURN"),
@@ -514,9 +698,27 @@ mod tests {
     }
 
     #[test]
+    fn compose_system_prompt_appends_forced_stage_run_directive() {
+        let out = compose_system_prompt("base prompt", false, Some("stage_run"));
+        assert!(out.starts_with("base prompt"), "original prompt preserved");
+        assert!(
+            out.contains("TOOL-LOCKED TURN"),
+            "forced-tool directive injected"
+        );
+        assert!(
+            out.contains("`stage_run`"),
+            "directive names the forced tool"
+        );
+        assert!(
+            out.contains("\"orgs\":[]"),
+            "stage_run resume should tell the model to let runtime expand the org subtree"
+        );
+    }
+
+    #[test]
     fn forces_required_for_xiaomi_primary_in_harness_stage_with_tools() {
         assert_eq!(
-            resolve_stage_tool_choice("xiaomi", true, false, true, false),
+            resolve_stage_tool_choice("xiaomi", true, false, true, false, None, true),
             Some(ToolChoice::Required)
         );
     }
@@ -525,7 +727,7 @@ mod tests {
     fn no_force_outside_harness_stage() {
         // Chat / non-harness task turns keep provider-default `auto`.
         assert_eq!(
-            resolve_stage_tool_choice("xiaomi", false, false, true, false),
+            resolve_stage_tool_choice("xiaomi", false, false, true, false, None, true),
             None
         );
     }
@@ -534,7 +736,7 @@ mod tests {
     fn no_force_for_sub_agent() {
         // Sub-agents must be able to end on a text-only summary turn.
         assert_eq!(
-            resolve_stage_tool_choice("xiaomi", true, true, true, false),
+            resolve_stage_tool_choice("xiaomi", true, true, true, false, None, true),
             None
         );
     }
@@ -543,7 +745,7 @@ mod tests {
     fn no_force_without_tools() {
         // Forcing a tool call with no tools available would be unsatisfiable.
         assert_eq!(
-            resolve_stage_tool_choice("xiaomi", true, false, false, false),
+            resolve_stage_tool_choice("xiaomi", true, false, false, false, None, true),
             None
         );
     }
@@ -552,15 +754,37 @@ mod tests {
     fn no_force_for_reliable_providers() {
         // Reliable native providers keep their existing behavior unchanged.
         assert_eq!(
-            resolve_stage_tool_choice("anthropic", true, false, true, false),
+            resolve_stage_tool_choice("anthropic", true, false, true, false, None, true),
             None
         );
         assert_eq!(
-            resolve_stage_tool_choice("openai", true, false, true, false),
+            resolve_stage_tool_choice("openai", true, false, true, false, None, true),
             None
         );
         assert_eq!(
-            resolve_stage_tool_choice("nvidia", true, false, true, false),
+            resolve_stage_tool_choice("nvidia", true, false, true, false, None, true),
+            None
+        );
+    }
+
+    #[test]
+    fn forced_stage_run_locks_any_provider_inside_primary_harness_stage() {
+        assert_eq!(
+            resolve_stage_tool_choice("openai", true, false, true, false, Some("stage_run"), true,),
+            Some(ToolChoice::Specific {
+                function_names: vec!["stage_run".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn thinking_mode_suppresses_native_tool_choice_lock() {
+        assert_eq!(
+            resolve_stage_tool_choice("openai", true, false, true, false, Some("stage_run"), false,),
+            None
+        );
+        assert_eq!(
+            resolve_stage_tool_choice("xiaomi", true, false, true, true, None, false),
             None
         );
     }
@@ -571,7 +795,7 @@ mod tests {
     #[test]
     fn submit_only_tightens_to_specific_submit_tool_for_xiaomi() {
         assert_eq!(
-            resolve_stage_tool_choice("xiaomi", true, false, true, true),
+            resolve_stage_tool_choice("xiaomi", true, false, true, true, None, true),
             Some(ToolChoice::Specific {
                 function_names: vec![SUBMIT_STAGE_DELIVERABLE_TOOL.to_string()],
             })
@@ -582,20 +806,98 @@ mod tests {
     fn submit_only_does_not_leak_outside_the_provider_gate() {
         // Other providers / sub-agents / no-stage turns never get the lock.
         assert_eq!(
-            resolve_stage_tool_choice("anthropic", true, false, true, true),
+            resolve_stage_tool_choice("anthropic", true, false, true, true, None, true),
             None
         );
         assert_eq!(
-            resolve_stage_tool_choice("xiaomi", false, false, true, true),
+            resolve_stage_tool_choice("xiaomi", false, false, true, true, None, true),
             None
         );
         assert_eq!(
-            resolve_stage_tool_choice("xiaomi", true, true, true, true),
+            resolve_stage_tool_choice("xiaomi", true, true, true, true, None, true),
             None
         );
         assert_eq!(
-            resolve_stage_tool_choice("xiaomi", true, false, false, true),
+            resolve_stage_tool_choice("xiaomi", true, false, false, true, None, true),
             None
+        );
+    }
+
+    #[test]
+    fn detects_request_level_thinking_mode() {
+        assert!(request_uses_tool_choice_incompatible_thinking_mode(
+            "openai", "gpt-4o", false, true, None
+        ));
+        assert!(request_uses_tool_choice_incompatible_thinking_mode(
+            "openai",
+            "gpt-4o",
+            false,
+            false,
+            Some(&json!({"enable_thinking": true}))
+        ));
+        assert!(request_uses_tool_choice_incompatible_thinking_mode(
+            "openai",
+            "gpt-4o",
+            false,
+            false,
+            Some(&json!({"chat_template_kwargs": {"enable_thinking": true}}))
+        ));
+        assert!(request_uses_tool_choice_incompatible_thinking_mode(
+            "openai",
+            "gpt-4o",
+            false,
+            false,
+            Some(&json!({"reasoning": {"effort": "medium"}}))
+        ));
+        assert!(!request_uses_tool_choice_incompatible_thinking_mode(
+            "openai",
+            "gpt-4o",
+            false,
+            false,
+            Some(&json!({"reasoning": {"exclude": true}}))
+        ));
+    }
+
+    #[test]
+    fn deepseek_thinking_model_defaults_suppress_native_tool_choice() {
+        assert!(request_uses_tool_choice_incompatible_thinking_mode(
+            "deepseek",
+            "deepseek-v4-flash",
+            true,
+            false,
+            None
+        ));
+        assert!(!request_uses_tool_choice_incompatible_thinking_mode(
+            "deepseek",
+            "deepseek-chat",
+            true,
+            false,
+            None
+        ));
+    }
+
+    #[test]
+    fn strips_tool_choice_after_thinking_mode_rejection() {
+        assert!(tool_choice_rejected_by_thinking_mode(
+            "ProviderError: Thinking mode does not support this tool_choice"
+        ));
+        assert!(!tool_choice_rejected_by_thinking_mode(
+            "ProviderError: request timed out"
+        ));
+
+        let mut additional_params = Some(json!({
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "stage_run"}
+            },
+            "reasoning": {"effort": "low"}
+        }));
+        assert!(additional_params_has_tool_choice(&additional_params));
+        strip_tool_choice_from_additional_params(&mut additional_params);
+        assert!(!additional_params_has_tool_choice(&additional_params));
+        assert_eq!(
+            additional_params,
+            Some(json!({"reasoning": {"effort": "low"}}))
         );
     }
 }

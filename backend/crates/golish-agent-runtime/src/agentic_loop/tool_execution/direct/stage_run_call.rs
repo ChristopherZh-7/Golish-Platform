@@ -27,7 +27,7 @@ use anyhow::Result;
 use rig::completion::CompletionModel as RigCompletionModel;
 use serde_json::{json, Value};
 
-use golish_agent_kit::db_traits::OrgScopeUnit;
+use golish_agent_kit::db_traits::{OrgScopeUnit, StageAssetWaveView};
 use golish_agent_kit::harness::org_gate::{
     completion_is_fresh_for_stage, decide_org_verdict, fanout_completion_scope_ids,
     stage_pass_token, STAGE_COMPLETION_TTL_SECS, STAGE_RUN_PASS_TOKEN_KIND,
@@ -60,7 +60,16 @@ struct OrgUnit {
     ownership_percent: Option<f64>,
 }
 
+#[derive(Debug, Clone)]
+struct QueuedStageAssetBatch {
+    org_id: String,
+    org_name: String,
+    wave_index: i32,
+    asset_count: usize,
+}
+
 const STAGE_RUN_WORKERS_KEY: &str = "stage_run_workers";
+const MAX_STAGE_ASSET_WAVE_ASSETS: i64 = 200;
 
 /// Parse the `orgs` argument into per-org units. The main agent passes the
 /// in-scope organization tree it built during scoping (each `{id, name,
@@ -226,6 +235,38 @@ fn build_org_objective(
              tools returned — never placeholder ids like 1, 2, 3.",
             expected_techniques.join(", "),
         ));
+        obj.push_str(&format!(
+            " PRE-SUBMIT SELF-CHECK (mandatory): before calling submit_stage_deliverable, call \
+             check_stage_asset_coverage with stage=\"{}\" and organization_id=\"{}\". If \
+             ready_to_submit=false, do NOT submit yet; use gap_examples, cell_summary, and \
+             next_action to close missing cells, wait for attributed background jobs, or record \
+             honest blocked/not_applicable terminal coverage. Only call submit_stage_deliverable \
+             after ready_to_submit=true. next_wave_pending is visible expansion backlog for a \
+             later global delta pass and does not block the current batch.",
+            stage.as_str(),
+            unit.id,
+        ));
+    }
+    if stage == StageKind::ExternalAttackSurface {
+        obj.push_str(
+            " EAS SCAN STRATEGY: this is coverage-driven, not a fixed pipeline. Start by \
+             understanding the current asset/coverage state with check_stage_asset_coverage \
+             and query_target_data, then choose the smallest useful batch that closes real gaps. \
+             Use httpx early when liveness/HTTP evidence is missing, but do not treat it as \
+             a mechanical prerequisite for every later action when fresh DB truth already exists. \
+             Do not run broad `nmap -sV -iL` against every raw in-scope domain/IP. Confirm open \
+             ports with naabu/masscan/nmap port-scan output or existing target port data, then \
+             run service fingerprinting only on confirmed open host:port groups. Normalize URL \
+             assets before nmap; never feed `https://...` URL strings to nmap target lists. If an \
+             asset has no open ports, cannot resolve, or is URL-only for PORT/SERVICE, close the \
+             applicable cells with honest checked_empty/blocked/not_applicable terminal coverage \
+             and a concrete note instead of launching a speculative service sweep. If a scan is \
+             backgrounded, use wait_for_background_jobs as an incremental visible wait/check loop: \
+             when any job completes, inspect its output and newly landed evidence before deciding \
+             whether the remaining jobs should continue, be narrowed, or be killed. If it returns \
+             idle_timeout or check_job shows no useful progress, kill_job the stuck/broad job \
+             before submitting or narrowing the batch.",
+        );
     }
     // The recon "how-to" playbook belongs to the WORKER that actually collects
     // (this specialist sub-agent), not the orchestrator. Append the stage
@@ -308,6 +349,15 @@ fn resume_skip_is_allowed(
     not_before: Option<chrono::DateTime<chrono::Utc>>,
 ) -> bool {
     completion_is_fresh_for_stage(passed_at, now, STAGE_COMPLETION_TTL_SECS, not_before)
+}
+
+fn resume_skip_covers_current_wave(
+    passed_at: chrono::DateTime<chrono::Utc>,
+    current_wave: Option<&StageAssetWaveView>,
+) -> bool {
+    current_wave
+        .map(|wave| passed_at >= wave.started_at)
+        .unwrap_or(true)
 }
 
 fn active_stage_skip_floor_from_state(
@@ -401,6 +451,147 @@ fn stage_run_operation_id(ctx: &AgenticLoopContext<'_>) -> Option<uuid::Uuid> {
             .db_tracker
             .map(|tracker| tracker.task_id().unwrap_or_else(|| tracker.session_uuid()))
     })
+}
+
+fn stage_asset_wave_instruction(stage: StageKind, wave: &StageAssetWaveView) -> String {
+    let preview_limit = 80usize;
+    let mut assets = wave
+        .asset_values
+        .iter()
+        .take(preview_limit)
+        .map(|asset| format!("- {asset}"))
+        .collect::<Vec<_>>();
+    if wave.asset_values.len() > preview_limit {
+        assets.push(format!(
+            "- ... {} more assets in this wave",
+            wave.asset_values.len() - preview_limit
+        ));
+    }
+    let asset_list = if assets.is_empty() {
+        "- (empty wave)".to_string()
+    } else {
+        assets.join("\n")
+    };
+    format!(
+        "## CURRENT ASSET WAVE\n\n\
+         This {} run is on durable asset wave #{} ({} asset(s), hash {}). \
+         Close coverage only for the assets in this batch. Assets discovered while \
+         this batch runs are intentionally held as expansion backlog for a later \
+         global delta pass and must not be counted as current coverage gaps.\n\n{}",
+        stage.as_str(),
+        wave.wave_index + 1,
+        wave.asset_values.len(),
+        wave.asset_hash,
+        asset_list
+    )
+}
+
+async fn prepare_stage_asset_wave(
+    ctx: &AgenticLoopContext<'_>,
+    stage: StageKind,
+    unit: &OrgUnit,
+    started_at: chrono::DateTime<chrono::Utc>,
+) -> Option<StageAssetWaveView> {
+    let tracker = ctx.events.db_tracker?;
+    let repo = tracker.repo()?;
+    let operation_id = stage_run_operation_id(ctx)?;
+    let organization_id = uuid::Uuid::parse_str(&unit.id).ok()?;
+    match repo
+        .stage_asset_wave_current_or_create_initial(
+            operation_id,
+            organization_id,
+            stage.as_str(),
+            started_at,
+            MAX_STAGE_ASSET_WAVE_ASSETS,
+        )
+        .await
+    {
+        Ok(wave) => wave,
+        Err(error) => {
+            tracing::warn!(
+                target: "harness::stage_run",
+                stage = %stage.as_str(),
+                org_id = %unit.id,
+                error = %error,
+                "stage_run could not prepare durable asset wave; falling back to stage-start cutoff"
+            );
+            None
+        }
+    }
+}
+
+async fn complete_stage_asset_wave(
+    ctx: &AgenticLoopContext<'_>,
+    wave: &StageAssetWaveView,
+) -> std::result::Result<(), String> {
+    let Some(tracker) = ctx.events.db_tracker else {
+        return Ok(());
+    };
+    let Some(repo) = tracker.repo() else {
+        return Ok(());
+    };
+    if let Err(error) = repo.stage_asset_wave_complete(wave.id).await {
+        tracing::warn!(
+            target: "harness::stage_run",
+            wave_id = %wave.id,
+            wave_index = wave.wave_index,
+            error = %error,
+            "stage_run failed to mark asset wave completed"
+        );
+        return Err(format!(
+            "asset wave #{} passed gate but could not be marked completed: {error}",
+            wave.wave_index + 1
+        ));
+    }
+    Ok(())
+}
+
+async fn queue_global_delta_asset_batches(
+    ctx: &AgenticLoopContext<'_>,
+    stage: StageKind,
+    units: &[OrgUnit],
+) -> std::result::Result<Vec<QueuedStageAssetBatch>, String> {
+    let Some(tracker) = ctx.events.db_tracker else {
+        return Ok(Vec::new());
+    };
+    let Some(repo) = tracker.repo() else {
+        return Ok(Vec::new());
+    };
+    let Some(operation_id) = stage_run_operation_id(ctx) else {
+        return Ok(Vec::new());
+    };
+
+    let mut queued = Vec::new();
+    for unit in units {
+        let organization_id = match uuid::Uuid::parse_str(&unit.id) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        let next = repo
+            .stage_asset_wave_create_next(
+                operation_id,
+                organization_id,
+                stage.as_str(),
+                None,
+                MAX_STAGE_ASSET_WAVE_ASSETS,
+            )
+            .await
+            .map_err(|error| {
+                format!(
+                    "global delta expansion queue failed for {} ({}): {error}",
+                    unit.name, unit.id
+                )
+            })?;
+        if let Some(next) = next {
+            queued.push(QueuedStageAssetBatch {
+                org_id: unit.id.clone(),
+                org_name: unit.name.clone(),
+                wave_index: next.wave_index,
+                asset_count: next.asset_values.len(),
+            });
+        }
+    }
+    Ok(queued)
 }
 
 fn stage_run_agent_path(stage: StageKind, unit: &OrgUnit, specialist: &str) -> String {
@@ -916,20 +1107,41 @@ where
         );
     }
 
-    // Seed EVERY org as a queued row up-front so the UI's covered/total denominator
-    // reflects the FULL fan-out immediately. Without this, serial execution emits
-    // one row at a time, so the count visibly grows from "0/1" instead of showing
-    // "0/N" — exactly the "怎么就记录了这么点" the user saw. Each org flips to
-    // running → passed/blocked as the serial loop reaches it (merged by org id).
+    let mut resume_skips: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
+    for unit in &units {
+        if let Some(passed_at) =
+            resume_skip_passed_at(ctx, stage, unit, resume_skip_not_before).await
+        {
+            resume_skips.insert(unit.id.clone(), passed_at);
+        }
+    }
+
+    // Seed EVERY org up-front so the UI's covered/total denominator reflects the
+    // FULL fan-out immediately. Resume-skipped rows are seeded as `passed`, not
+    // `queued`: continuation/repair often passes only blocked orgs, then runtime
+    // auto-fills the authoritative org subtree. Already-passed siblings must not
+    // briefly look like queued work just because they appear after the current
+    // blocked org in the serial loop.
     for unit in &units {
         let org_request_id = format!("{tool_id}::org::{}", unit.id);
+        let passed_at = resume_skips.get(&unit.id);
         emit_org_progress(
             ctx,
             stage,
             unit,
             &org_request_id,
-            "queued",
-            None,
+            if passed_at.is_some() {
+                "passed"
+            } else {
+                "queued"
+            },
+            passed_at.map(|passed_at| {
+                format!(
+                    "已完成于 {} · 跳过重跑（{}d 内已通过本阶段）",
+                    passed_at.format("%Y-%m-%d %H:%M UTC"),
+                    STAGE_COMPLETION_TTL_SECS / 86_400
+                )
+            }),
             0,
             &stage_label,
             &role_label,
@@ -945,6 +1157,14 @@ where
         // `agent_request_id` field on the StageRunOrgProgress event.
         let org_request_id = format!("{tool_id}::org::{}", unit.id);
         let agent_path = stage_run_agent_path(stage, unit, &specialist);
+        let mut current_wave = if spec.asset_wave_barrier {
+            match resume_skip_not_before {
+                Some(started_at) => prepare_stage_asset_wave(ctx, stage, unit, started_at).await,
+                None => None,
+            }
+        } else {
+            None
+        };
 
         // Resume-skip: if this org already passed THIS stage within the TTL
         // window, count it covered and DON'T re-dispatch the specialist — the
@@ -952,28 +1172,34 @@ where
         // new operation/current active stage, old completions are not enough:
         // the current gate still needs evidence/source rows for this stage, so
         // only completions written after this stage started may skip.
-        if let Some(passed_at) =
-            resume_skip_passed_at(ctx, stage, unit, resume_skip_not_before).await
-        {
-            clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
-            passed_count += 1;
-            emit_org_progress(
-                ctx,
-                stage,
-                unit,
-                &org_request_id,
-                "passed",
-                Some(format!(
-                    "已完成于 {} · 跳过重跑（{}d 内已通过本阶段）",
-                    passed_at.format("%Y-%m-%d %H:%M UTC"),
-                    STAGE_COMPLETION_TTL_SECS / 86_400
-                )),
-                0,
-                &stage_label,
-                &role_label,
-                &coverage_axis,
-            );
-            continue;
+        if let Some(passed_at) = resume_skips.get(&unit.id).copied() {
+            if resume_skip_covers_current_wave(passed_at, current_wave.as_ref()) {
+                if let Some(wave) = current_wave.take() {
+                    if let Err(reason) = complete_stage_asset_wave(ctx, &wave).await {
+                        emit_org_progress(
+                            ctx,
+                            stage,
+                            unit,
+                            &org_request_id,
+                            "blocked",
+                            Some(reason.clone()),
+                            0,
+                            &stage_label,
+                            &role_label,
+                            &coverage_axis,
+                        );
+                        gaps.push(json!({
+                            "org_id": unit.id,
+                            "org_name": unit.name,
+                            "detail": reason
+                        }));
+                        continue;
+                    }
+                }
+                clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
+                passed_count += 1;
+                continue;
+            }
         }
 
         // Phase 2 闸1·A-lite: run this org's dispatch→gate inside a bounded retry
@@ -1025,6 +1251,12 @@ where
                     &spec.expected_techniques,
                     &spec.allowed_tool_types,
                 );
+                let base = match current_wave.as_ref() {
+                    Some(wave) => {
+                        format!("{base}\n\n{}", stage_asset_wave_instruction(stage, wave))
+                    }
+                    None => base,
+                };
                 match &feedback {
                     Some(fb) => format!("{base}\n\n{fb}"),
                     None => base,
@@ -1112,7 +1344,23 @@ where
                 (Some(repo), Some(deliv)) => {
                     let org_uuid = uuid::Uuid::parse_str(&unit.id).ok();
                     let session = ctx.events.session_id.unwrap_or("");
-                    let gate = evaluate_org_stage_gate(repo, org_uuid, session, stage, deliv).await;
+                    let wave_cutoff = current_wave
+                        .as_ref()
+                        .map(|wave| wave.started_at)
+                        .or(resume_skip_not_before);
+                    let wave_assets = current_wave
+                        .as_ref()
+                        .map(|wave| wave.asset_values.as_slice());
+                    let gate = evaluate_org_stage_gate(
+                        repo,
+                        org_uuid,
+                        session,
+                        stage,
+                        deliv,
+                        wave_cutoff,
+                        wave_assets,
+                    )
+                    .await;
                     (decide_org_verdict(&gate), true)
                 }
                 (repo, None) => fallback_org_verdict(repo.is_some(), sub_ok),
@@ -1124,6 +1372,33 @@ where
             match next_org_action(&verdict, attempt, max_attempts) {
                 OrgAttemptOutcome::Passed => {
                     clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
+                    let mut passed_note = None;
+                    if let Some(wave) = current_wave.take() {
+                        if let Err(reason) = complete_stage_asset_wave(ctx, &wave).await {
+                            emit_org_progress(
+                                ctx,
+                                stage,
+                                unit,
+                                &org_request_id,
+                                "blocked",
+                                Some(reason.clone()),
+                                0,
+                                &stage_label,
+                                &role_label,
+                                &coverage_axis,
+                            );
+                            gaps.push(json!({
+                                "org_id": unit.id,
+                                "org_name": unit.name,
+                                "detail": reason
+                            }));
+                            break;
+                        }
+                        passed_note = Some(format!(
+                            "asset batch #{} passed; newly discovered assets remain backlog for the global expansion pass",
+                            wave.wave_index + 1
+                        ));
+                    }
                     passed_count += 1;
                     // Record this org's pass into the resume ledger so a later run
                     // can skip it (upsert latest). Fail-open: no db_tracker /
@@ -1145,7 +1420,7 @@ where
                         unit,
                         &org_request_id,
                         "passed",
-                        None,
+                        passed_note,
                         0,
                         &stage_label,
                         &role_label,
@@ -1244,7 +1519,23 @@ where
     }
 
     // 4. Aggregate: engagement passes only when EVERY org passed (design §2).
-    let passed = gaps.is_empty();
+    // For wave-aware stages, newly discovered assets are queued only after all
+    // org seed batches close, so delta work is global rather than per-org
+    // recursion. Queued delta batches intentionally withhold the close token.
+    let mut expansion_batches = Vec::new();
+    if gaps.is_empty() && spec.asset_wave_barrier {
+        match queue_global_delta_asset_batches(ctx, stage, &units).await {
+            Ok(queued) => expansion_batches = queued,
+            Err(reason) => {
+                gaps.push(json!({
+                    "org_id": null,
+                    "org_name": "global_delta_expansion",
+                    "detail": reason
+                }));
+            }
+        }
+    }
+    let passed = gaps.is_empty() && expansion_batches.is_empty();
 
     // Phase 1.5 阶段过门令牌：仅当本阶段**全 in-scope org**（不只本次 `units`——D11 只重跑
     // 缺口 org 的场景也要看累积账本是否齐）都已 fresh PASS 时，对账本回读值算一个确定性 hash
@@ -1325,7 +1616,7 @@ where
         stage.as_str(),
         passed_count,
         units.len(),
-        if passed {
+        if gaps.is_empty() {
             String::new()
         } else {
             format!(
@@ -1340,6 +1631,17 @@ where
             STAGE_RUN_PASS_TOKEN_KIND,
             stage.as_str(),
             token
+        ));
+    }
+    if !expansion_batches.is_empty() {
+        let asset_count: usize = expansion_batches
+            .iter()
+            .map(|batch| batch.asset_count)
+            .sum();
+        summary.push_str(&format!(
+            " — seed batches passed; queued global delta expansion for {} newly discovered asset(s) across {} org(s). Re-run stage_run to process this delta batch before closing the stage.",
+            asset_count,
+            expansion_batches.len()
         ));
     }
     if !auto_added_orgs.is_empty() {
@@ -1361,6 +1663,12 @@ where
             "auto_added_orgs": auto_added_orgs,
             "rejected_orgs": rejected_orgs,
             "gaps": gaps,
+            "expansion_batches": expansion_batches.iter().map(|batch| json!({
+                "org_id": batch.org_id.as_str(),
+                "org_name": batch.org_name.as_str(),
+                "wave_index": batch.wave_index,
+                "asset_count": batch.asset_count,
+            })).collect::<Vec<_>>(),
             "summary": summary,
             "pass_token": pass_token,
         }),
@@ -1501,6 +1809,28 @@ mod tests {
     }
 
     #[test]
+    fn stage_asset_wave_instruction_pins_current_batch() {
+        let wave = StageAssetWaveView {
+            id: uuid::Uuid::from_u128(1),
+            operation_id: uuid::Uuid::from_u128(2),
+            organization_id: uuid::Uuid::from_u128(3),
+            stage_kind: "external_attack_surface".to_string(),
+            wave_index: 1,
+            started_at: chrono::Utc::now(),
+            asset_hash: "abc123".to_string(),
+            asset_values: vec!["a.example.com".to_string(), "1.2.3.4".to_string()],
+        };
+
+        let instruction = stage_asset_wave_instruction(StageKind::ExternalAttackSurface, &wave);
+
+        assert!(instruction.contains("wave #2"));
+        assert!(instruction.contains("a.example.com"));
+        assert!(instruction.contains("1.2.3.4"));
+        assert!(instruction.contains("expansion backlog"));
+        assert!(instruction.contains("global delta pass"));
+    }
+
+    #[test]
     fn build_org_objective_pins_org_id_and_scope() {
         let unit = OrgUnit {
             id: "abc".to_string(),
@@ -1533,11 +1863,41 @@ mod tests {
         assert!(obj.contains("GOLISH-INTEL-DNS"));
         assert!(obj.contains("GOLISH-INTEL-WHOIS"));
         assert!(obj.contains("FAILS the gate"));
+        assert!(obj.contains("PRE-SUBMIT SELF-CHECK"));
+        assert!(obj.contains("check_stage_asset_coverage"));
+        assert!(obj.contains("stage=\"target_intel\""));
+        assert!(obj.contains("organization_id=\"abc\""));
+        assert!(obj.contains("ready_to_submit=false"));
+        assert!(obj.contains("gap_examples"));
+        assert!(obj.contains("next_action"));
+        assert!(obj.contains("Only call submit_stage_deliverable after ready_to_submit=true"));
         // Tool boundary is listed so the specialist stays in-stage + background guidance.
         assert!(obj.contains("recon/dns"));
         assert!(obj.contains("submit_stage_deliverable waits"));
         assert!(obj.contains("completion notes"));
         assert!(obj.contains("do NOT re-run"));
+    }
+
+    #[test]
+    fn build_eas_objective_blocks_broad_service_sweeps() {
+        let unit = OrgUnit {
+            id: "abc".to_string(),
+            name: "ACME".to_string(),
+            ownership_percent: None,
+        };
+        let obj = build_org_objective(
+            StageKind::ExternalAttackSurface,
+            &unit,
+            &["GOLISH-EAS-SERVICE-FINGERPRINT".to_string()],
+            &["nmap".to_string()],
+        );
+
+        assert!(obj.contains("EAS SCAN STRATEGY"));
+        assert!(obj.contains("do not run broad `nmap -sV -iL`"));
+        assert!(obj.contains("confirmed open host:port groups"));
+        assert!(obj.contains("visible wait/check loop"));
+        assert!(obj.contains("stdout/stderr is"));
+        assert!(obj.contains("kill_job"));
     }
 
     #[test]
@@ -1599,6 +1959,34 @@ mod tests {
             now,
             None
         ));
+    }
+
+    #[test]
+    fn resume_skip_only_covers_waves_started_before_completion() {
+        let wave_started_at = chrono::Utc::now();
+        let wave = StageAssetWaveView {
+            id: uuid::Uuid::from_u128(1),
+            operation_id: uuid::Uuid::from_u128(2),
+            organization_id: uuid::Uuid::from_u128(3),
+            stage_kind: "external_attack_surface".to_string(),
+            wave_index: 0,
+            started_at: wave_started_at,
+            asset_hash: "abc123".to_string(),
+            asset_values: vec!["a.example.com".to_string()],
+        };
+
+        assert!(resume_skip_covers_current_wave(
+            wave_started_at + chrono::Duration::minutes(1),
+            Some(&wave)
+        ));
+        assert!(
+            !resume_skip_covers_current_wave(
+                wave_started_at - chrono::Duration::minutes(1),
+                Some(&wave)
+            ),
+            "a completion before the current wave must not suppress new work"
+        );
+        assert!(resume_skip_covers_current_wave(wave_started_at, None));
     }
 
     #[test]

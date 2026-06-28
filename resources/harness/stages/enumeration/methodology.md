@@ -57,6 +57,8 @@ become the coverage denominator for `vuln_triage`.
   `ready_to_submit=false`, use its `gap_examples` to enumerate the missing
   service/technique cells or record honest checked_empty/blocked/not_applicable
   terminal coverage. Submit only when the preflight says `ready_to_submit=true`.
+  This is a required self-check before submit, not a trial submit: do not call
+  `submit_stage_deliverable` just to discover missing cells.
 - Do not hand-write `found` cells that DB truth can derive from
   `directory_entries` or `api_endpoints`. Submitted coverage is for
   checked_empty, blocked, or not_applicable terminal states that still need notes

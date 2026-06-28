@@ -3,8 +3,8 @@
  *
  * "Sub-Agent 调用树"视图。展示当前会话下所有 sub-agent 的调用层次：
  *   - 主 agent 是树根（虚拟）
- *   - 每个 sub-agent 显示其状态、AnchorChip ([A#])、task 摘要
- *   - 每个 sub-agent 的 tool calls 作为子节点（带 [T#] / 命令预览 / 状态）
+ *   - 每个 sub-agent 显示其状态、task 摘要
+ *   - 每个 sub-agent 的 tool calls 作为子节点（带命令预览 / 状态）
  *   - 嵌套 sub-agent 通过 `parentRequestId` 反查上一级的 toolCalls 关联起来
  *
  * 数据来源：useAgentTree(sessionId) selector。
@@ -191,7 +191,6 @@ function AgentRow({
   hoveredId,
   setHoveredId,
   sessionId,
-  toolsLabel,
   viewDetailsLabel,
 }: {
   row: FlatRow;
@@ -200,7 +199,6 @@ function AgentRow({
   hoveredId: string | null;
   setHoveredId: (id: string | null) => void;
   sessionId: string;
-  toolsLabel: string;
   viewDetailsLabel: string;
 }) {
   const node = row.node as AgentTreeAgentNode;
@@ -214,16 +212,6 @@ function AgentRow({
     if (!row.hasChildren) return;
     onToggle(node.id);
   };
-
-  const toolCount = useMemo(() => {
-    let n = 0;
-    const visit = (x: AgentTreeAgentNode | AgentTreeToolNode) => {
-      if (x.kind === "tool") n++;
-      else for (const c of x.children) visit(c);
-    };
-    visit(node);
-    return n;
-  }, [node]);
 
   return (
     <div
@@ -286,12 +274,6 @@ function AgentRow({
           </span>
         )}
         {!node.task && <div className="flex-1" />}
-
-        {row.hasChildren && (
-          <span className="text-[10px] text-muted-foreground/55 flex-shrink-0 tabular-nums">
-            {toolCount} {toolsLabel}
-          </span>
-        )}
 
         <DurationLabel ms={node.durationMs} />
       </button>
@@ -460,10 +442,6 @@ export const SubAgentTreeView = memo(function SubAgentTreeView({
           <span className="tabular-nums">
             {tree.totalAgents} {t("ai.agentTree.agents")}
           </span>
-          <span className="text-muted-foreground/30">·</span>
-          <span className="tabular-nums">
-            {tree.totalTools} {t("ai.agentTree.tools")}
-          </span>
           {stats.running > 0 && (
             <>
               <span className="text-muted-foreground/30">·</span>
@@ -520,7 +498,6 @@ export const SubAgentTreeView = memo(function SubAgentTreeView({
                   hoveredId={hoveredId}
                   setHoveredId={setHoveredId}
                   sessionId={sessionId}
-                  toolsLabel={t("ai.agentTree.tools")}
                   viewDetailsLabel={t("ai.agentTree.viewDetails")}
                 />
               ) : (

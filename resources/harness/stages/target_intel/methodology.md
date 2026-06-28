@@ -77,4 +77,6 @@ targets bound to this `organization_id`.
   checked_empty / blocked / not_applicable terminal coverage. Call
   `submit_stage_deliverable` ONCE only after the preflight says
   `ready_to_submit=true`. Do not loop hand-building a big matrix — the gate
-  reads the DB, not your self-report.
+  reads the DB, not your self-report. This preflight is a required self-check
+  before submit, not a trial submit: do not call `submit_stage_deliverable` just
+  to discover missing cells.

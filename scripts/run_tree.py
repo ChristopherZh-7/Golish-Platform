@@ -86,6 +86,15 @@ def _candidate_roots(workspace: str | None) -> list[Path]:
     return uniq
 
 
+def _is_default_session_candidate(path: Path) -> bool:
+    name = path.name
+    if name.startswith("_") or name.startswith("."):
+        return False
+    if name.startswith("title-gen-"):
+        return False
+    return (path / "transcript.json").exists()
+
+
 def resolve_session_dir(arg: str | None, workspace: str | None) -> Path:
     # Explicit path to a session dir.
     if arg:
@@ -100,7 +109,7 @@ def resolve_session_dir(arg: str | None, workspace: str | None) -> Path:
             if cand.is_dir():
                 return cand
         else:
-            sessions = [d for d in root.iterdir() if d.is_dir() and (d / "transcript.json").exists()]
+            sessions = [d for d in root.iterdir() if d.is_dir() and _is_default_session_candidate(d)]
             if sessions:
                 return max(sessions, key=lambda d: d.stat().st_mtime)
     raise SystemExit(

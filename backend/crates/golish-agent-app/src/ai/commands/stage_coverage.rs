@@ -89,6 +89,46 @@ struct OutcomeProjection {
     evidence_refs: Vec<i64>,
 }
 
+#[derive(Debug, FromRow)]
+struct TechniqueOutcomeProjectionRow {
+    asset: String,
+    technique: String,
+    outcome: String,
+    source: Option<String>,
+    evidence_refs: Vec<i64>,
+}
+
+#[derive(Debug, FromRow)]
+struct SourceQueryProjectionRow {
+    source: String,
+    target: String,
+    technique: Option<String>,
+    status: String,
+    evidence_refs: Vec<i64>,
+}
+
+const NEXT_WAVE_PENDING: &str = "next_wave_pending";
+
+const LATEST_TECHNIQUE_OUTCOMES_SQL: &str = r#"SELECT asset, technique, outcome, source, evidence_ids AS evidence_refs
+   FROM (
+     SELECT DISTINCT ON (asset, technique)
+            id, asset, technique, outcome, source, evidence_ids, collected_at, updated_at
+     FROM technique_outcomes
+     WHERE organization_id = $1 AND technique = ANY($2::text[])
+     ORDER BY asset, technique, collected_at DESC NULLS LAST, updated_at DESC, id DESC
+   ) latest
+   ORDER BY asset, technique"#;
+
+const LATEST_SOURCE_QUERY_ROWS_SQL: &str = r#"SELECT source, target, technique, status, evidence_ids AS evidence_refs
+   FROM (
+     SELECT DISTINCT ON (target, technique, source, query)
+            id, source, target, technique, status, evidence_ids, finished_at, created_at
+     FROM source_query_log
+     WHERE organization_id = $1 AND technique = ANY($2::text[])
+     ORDER BY target, technique, source, query, finished_at DESC NULLS LAST, created_at DESC, id DESC
+   ) latest
+   ORDER BY target, technique, source"#;
+
 #[tauri::command]
 pub async fn ai_get_stage_asset_coverage(
     state: State<'_, AgentState>,
@@ -109,6 +149,7 @@ pub async fn ai_get_stage_asset_coverage(
         stage_kind,
         session_id.as_deref(),
         run_start,
+        true,
     )
     .await
     .map_err(GolishError::from)
@@ -120,10 +161,24 @@ pub(crate) async fn stage_asset_coverage_snapshot(
     stage_kind: StageKind,
     session_id: Option<&str>,
     run_start: Option<DateTime<Utc>>,
+    allow_latest_outcome_fallback: bool,
 ) -> anyhow::Result<StageAssetCoverageSnapshot> {
     let assets = list_stage_targets(pool, org_id, stage_kind).await?;
-    let asset_values: Vec<String> = assets.iter().map(|a| a.value.clone()).collect();
-    let asset_types: Vec<String> = assets.iter().map(|a| a.target_type.clone()).collect();
+    let wave_cutoff = asset_wave_cutoff(stage_kind, run_start);
+    let current_assets: Vec<&TargetCoverageRow> = assets
+        .iter()
+        .filter(|asset| !is_next_wave_asset(asset, wave_cutoff))
+        .collect();
+    let asset_values: Vec<String> = current_assets.iter().map(|a| a.value.clone()).collect();
+    let asset_types: Vec<String> = current_assets
+        .iter()
+        .map(|a| a.target_type.clone())
+        .collect();
+    let organization_asset_values: Vec<String> = current_assets
+        .iter()
+        .filter(|asset| is_organization_coverage_row(asset))
+        .map(|asset| asset.value.clone())
+        .collect();
 
     let found_facts = golish_db::repo::coverage_truth::coverage_truth_facts(
         pool,
@@ -135,14 +190,24 @@ pub(crate) async fn stage_asset_coverage_snapshot(
     .await?;
     let found: BTreeSet<(String, String)> = found_facts
         .into_iter()
-        .map(|(asset, technique)| (asset, technique.to_string()))
+        .map(|(asset, technique)| {
+            (
+                coverage_lookup_asset(&asset, technique),
+                technique.to_string(),
+            )
+        })
         .collect();
 
-    let outcomes = if let Some(run_id) = session_id {
-        stage_outcomes(pool, org_id, stage_kind, run_id, &asset_values).await?
-    } else {
-        BTreeMap::new()
-    };
+    let outcomes = stage_outcomes(
+        pool,
+        org_id,
+        stage_kind,
+        session_id,
+        &asset_values,
+        &organization_asset_values,
+        allow_latest_outcome_fallback,
+    )
+    .await?;
 
     let mut rows = Vec::with_capacity(assets.len());
     let mut done_assets = 0usize;
@@ -150,25 +215,41 @@ pub(crate) async fn stage_asset_coverage_snapshot(
     let mut blocked_assets = 0usize;
     let mut seed_assets = 0usize;
     let mut new_assets = 0usize;
+    let mut current_wave_assets = 0usize;
 
     for asset in assets {
-        let phase = discovered_phase(&asset, run_start);
-        if phase == "new_in_stage" {
+        let next_wave = is_next_wave_asset(&asset, wave_cutoff);
+        let phase = if next_wave {
+            "new_in_stage".to_string()
+        } else {
+            discovered_phase(&asset, run_start)
+        };
+        let coverage = if next_wave {
+            next_wave_coverage_cells(stage_kind, &asset)
+        } else {
+            coverage_cells(stage_kind, &asset, &found, &outcomes)
+        };
+
+        if next_wave {
             new_assets += 1;
         } else {
-            seed_assets += 1;
-        }
-        let coverage = coverage_cells(stage_kind, &asset, &found, &outcomes);
-        let has_blocked = coverage
-            .iter()
-            .any(|cell| matches!(cell.state.as_str(), "blocked" | "error"));
-        let has_pending = coverage.iter().any(|cell| cell.state == "pending");
-        if has_blocked {
-            blocked_assets += 1;
-        } else if has_pending {
-            pending_assets += 1;
-        } else {
-            done_assets += 1;
+            current_wave_assets += 1;
+            if phase == "new_in_stage" {
+                new_assets += 1;
+            } else {
+                seed_assets += 1;
+            }
+            let has_blocked = coverage
+                .iter()
+                .any(|cell| matches!(cell.state.as_str(), "blocked" | "error"));
+            let has_pending = coverage.iter().any(|cell| cell.state == "pending");
+            if has_blocked {
+                blocked_assets += 1;
+            } else if has_pending {
+                pending_assets += 1;
+            } else {
+                done_assets += 1;
+            }
         }
         rows.push(StageAssetCoverageRow {
             target_id: asset.id.to_string(),
@@ -188,7 +269,7 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         organization_id: org_id.to_string(),
         session_id: session_id.map(str::to_string),
         summary: StageAssetCoverageSummary {
-            total_assets: rows.len(),
+            total_assets: current_wave_assets,
             seed_assets,
             new_assets,
             done_assets,
@@ -197,6 +278,15 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         },
         assets: rows,
     })
+}
+
+fn asset_wave_cutoff(stage: StageKind, run_start: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
+    let spec = golish_agent_kit::harness::load_embedded_stage_spec(stage).ok()?;
+    spec.asset_wave_barrier.then_some(run_start).flatten()
+}
+
+fn is_next_wave_asset(asset: &TargetCoverageRow, wave_cutoff: Option<DateTime<Utc>>) -> bool {
+    wave_cutoff.is_some_and(|cutoff| asset.created_at > cutoff)
 }
 
 async fn list_stage_targets(
@@ -253,60 +343,212 @@ async fn stage_outcomes(
     pool: &sqlx::PgPool,
     organization_id: Uuid,
     stage: StageKind,
-    run_id: &str,
+    run_id: Option<&str>,
     asset_values: &[String],
+    organization_asset_values: &[String],
+    allow_latest_fallback: bool,
 ) -> anyhow::Result<BTreeMap<(String, String), OutcomeProjection>> {
     let mut out = BTreeMap::new();
     let stage_techniques: BTreeSet<String> = techniques_for_stage(stage)
         .into_iter()
         .map(str::to_string)
         .collect();
-    for row in
-        golish_db::repo::technique_outcomes::list_for_run(pool, organization_id, run_id).await?
-    {
-        if !stage_techniques.contains(&row.technique) {
-            continue;
+
+    if let Some(run_id) = run_id.filter(|id| !id.trim().is_empty()) {
+        for row in
+            golish_db::repo::technique_outcomes::list_for_run(pool, organization_id, run_id).await?
+        {
+            merge_technique_outcome_row(
+                &mut out,
+                asset_values,
+                &stage_techniques,
+                TechniqueOutcomeProjectionRow {
+                    asset: row.asset,
+                    technique: row.technique,
+                    outcome: row.outcome,
+                    source: row.source,
+                    evidence_refs: row.evidence_ids,
+                },
+            );
         }
-        merge_outcome(
-            &mut out,
-            (row.asset, row.technique),
-            OutcomeProjection {
-                state: outcome_state(&row.outcome),
-                source: row.source,
-                evidence_refs: row.evidence_ids,
-            },
-        );
-    }
-    for row in
-        golish_db::repo::source_query_log::list_for_run(pool, organization_id, run_id).await?
-    {
-        let Some(technique) = row.technique else {
-            continue;
-        };
-        if !stage_techniques.contains(&technique) {
-            continue;
-        }
-        let Some(state) = source_query_terminal_state(&row.status) else {
-            continue;
-        };
-        let projection = OutcomeProjection {
-            state,
-            source: Some(row.source),
-            evidence_refs: row.evidence_ids,
-        };
-        if row.target.is_empty() {
-            for asset in asset_values {
-                merge_outcome(
-                    &mut out,
-                    (asset.clone(), technique.clone()),
-                    projection.clone(),
-                );
-            }
-        } else if asset_values.iter().any(|asset| asset == &row.target) {
-            merge_outcome(&mut out, (row.target, technique), projection);
+
+        for row in
+            golish_db::repo::source_query_log::list_for_run(pool, organization_id, run_id).await?
+        {
+            merge_source_query_row(
+                &mut out,
+                asset_values,
+                &stage_techniques,
+                SourceQueryProjectionRow {
+                    source: row.source,
+                    target: row.target,
+                    technique: row.technique,
+                    status: row.status,
+                    evidence_refs: row.evidence_ids,
+                },
+                organization_asset_values,
+            );
         }
     }
+
+    if allow_latest_fallback && out.is_empty() {
+        for row in latest_technique_outcomes(pool, organization_id, &stage_techniques).await? {
+            merge_technique_outcome_row(&mut out, asset_values, &stage_techniques, row);
+        }
+        for row in latest_source_query_rows(pool, organization_id, &stage_techniques).await? {
+            merge_source_query_row(
+                &mut out,
+                asset_values,
+                &stage_techniques,
+                row,
+                organization_asset_values,
+            );
+        }
+    }
+
     Ok(out)
+}
+
+async fn latest_technique_outcomes(
+    pool: &sqlx::PgPool,
+    organization_id: Uuid,
+    stage_techniques: &BTreeSet<String>,
+) -> anyhow::Result<Vec<TechniqueOutcomeProjectionRow>> {
+    if stage_techniques.is_empty() {
+        return Ok(Vec::new());
+    }
+    let techniques: Vec<String> = stage_techniques.iter().cloned().collect();
+    Ok(
+        sqlx::query_as::<_, TechniqueOutcomeProjectionRow>(LATEST_TECHNIQUE_OUTCOMES_SQL)
+            .bind(organization_id)
+            .bind(&techniques)
+            .fetch_all(pool)
+            .await?,
+    )
+}
+
+async fn latest_source_query_rows(
+    pool: &sqlx::PgPool,
+    organization_id: Uuid,
+    stage_techniques: &BTreeSet<String>,
+) -> anyhow::Result<Vec<SourceQueryProjectionRow>> {
+    if stage_techniques.is_empty() {
+        return Ok(Vec::new());
+    }
+    let techniques: Vec<String> = stage_techniques.iter().cloned().collect();
+    Ok(
+        sqlx::query_as::<_, SourceQueryProjectionRow>(LATEST_SOURCE_QUERY_ROWS_SQL)
+            .bind(organization_id)
+            .bind(&techniques)
+            .fetch_all(pool)
+            .await?,
+    )
+}
+
+fn merge_technique_outcome_row(
+    out: &mut BTreeMap<(String, String), OutcomeProjection>,
+    asset_values: &[String],
+    stage_techniques: &BTreeSet<String>,
+    row: TechniqueOutcomeProjectionRow,
+) {
+    if !stage_techniques.contains(&row.technique) {
+        return;
+    }
+    let Some(asset_key) = matching_stage_asset_key(asset_values, &row.asset, &row.technique) else {
+        return;
+    };
+    merge_outcome(
+        out,
+        (asset_key, row.technique),
+        OutcomeProjection {
+            state: outcome_state(&row.outcome),
+            source: row.source,
+            evidence_refs: row.evidence_refs,
+        },
+    );
+}
+
+fn merge_source_query_row(
+    out: &mut BTreeMap<(String, String), OutcomeProjection>,
+    asset_values: &[String],
+    stage_techniques: &BTreeSet<String>,
+    row: SourceQueryProjectionRow,
+    organization_asset_values: &[String],
+) {
+    let Some(technique) = row.technique else {
+        return;
+    };
+    if !stage_techniques.contains(&technique) {
+        return;
+    }
+    let Some(state) = source_query_terminal_state(&row.status) else {
+        return;
+    };
+    let projection = OutcomeProjection {
+        state,
+        source: Some(row.source),
+        evidence_refs: row.evidence_refs,
+    };
+    if row.target.is_empty() {
+        for asset in asset_values {
+            merge_outcome(
+                out,
+                (coverage_lookup_asset(asset, &technique), technique.clone()),
+                projection.clone(),
+            );
+        }
+        return;
+    }
+    if let Some(target_key) = matching_stage_asset_key(asset_values, &row.target, &technique) {
+        merge_outcome(out, (target_key, technique), projection);
+        return;
+    }
+    if target_intel_source_technique(&technique) {
+        for asset in organization_asset_values {
+            merge_outcome(
+                out,
+                (coverage_lookup_asset(asset, &technique), technique.clone()),
+                projection.clone(),
+            );
+        }
+    }
+}
+
+fn target_intel_source_technique(technique: &str) -> bool {
+    matches!(
+        technique,
+        golish_db::repo::coverage_truth::TECH_DNS
+            | golish_db::repo::coverage_truth::TECH_WHOIS
+            | golish_db::repo::coverage_truth::TECH_ASN
+            | golish_db::repo::coverage_truth::TECH_CT
+            | golish_db::repo::coverage_truth::TECH_SUBDOMAIN
+            | golish_db::repo::coverage_truth::TECH_OSINT
+    )
+}
+
+fn matching_stage_asset_key(
+    asset_values: &[String],
+    candidate: &str,
+    technique: &str,
+) -> Option<String> {
+    let candidate_key = coverage_lookup_asset(candidate, technique);
+    asset_values
+        .iter()
+        .map(|asset| coverage_lookup_asset(asset, technique))
+        .find(|asset_key| asset_key == &candidate_key)
+}
+
+fn coverage_lookup_asset(asset: &str, technique: &str) -> String {
+    if technique == golish_db::repo::coverage_truth::TECH_EAS_LIVENESS {
+        golish_agent_kit::harness::evidence_facts::eas_liveness_asset_key(asset)
+            .unwrap_or_else(|| asset.to_string())
+    } else {
+        asset.to_string()
+    }
+}
+
+fn is_organization_coverage_row(asset: &TargetCoverageRow) -> bool {
+    asset.target_type == "organization" && asset.source.as_deref() == Some("engagement_org")
 }
 
 fn coverage_cells(
@@ -315,9 +557,80 @@ fn coverage_cells(
     found: &BTreeSet<(String, String)>,
     outcomes: &BTreeMap<(String, String), OutcomeProjection>,
 ) -> Vec<StageAssetCoverageCell> {
-    let class = golish_agent_kit::harness::technique_resolver::AssetClass::from_target_type(
-        &asset.target_type,
+    let class = coverage_asset_class(asset);
+    let mut cells: Vec<StageAssetCoverageCell> = techniques_for_stage(stage)
+        .into_iter()
+        .map(|technique| {
+            if !golish_agent_kit::harness::technique_resolver::technique_applies_to_value(
+                stage,
+                class,
+                &asset.value,
+                technique,
+            ) {
+                return cell(
+                    technique,
+                    "not_applicable",
+                    None,
+                    Vec::new(),
+                    Some("not applicable to this asset type".to_string()),
+                );
+            }
+            let asset_key = coverage_lookup_asset(&asset.value, technique);
+            if found.contains(&(asset_key.clone(), technique.to_string())) {
+                return cell(technique, "found", None, Vec::new(), None);
+            }
+            if let Some(outcome) = outcomes.get(&(asset_key, technique.to_string())) {
+                return cell(
+                    technique,
+                    &outcome.state,
+                    outcome.source.clone(),
+                    outcome.evidence_refs.clone(),
+                    None,
+                );
+            }
+            cell(technique, "pending", None, Vec::new(), None)
+        })
+        .collect();
+    apply_eas_service_dependency(stage, &mut cells);
+    cells
+}
+
+fn apply_eas_service_dependency(stage: StageKind, cells: &mut [StageAssetCoverageCell]) {
+    if stage != StageKind::ExternalAttackSurface {
+        return;
+    }
+    let port_has_no_service_surface = cells.iter().any(|coverage_cell| {
+        coverage_cell.technique == golish_db::repo::coverage_truth::TECH_EAS_PORT
+            && matches!(
+                coverage_cell.state.as_str(),
+                "checked_empty" | "not_applicable"
+            )
+    });
+    if !port_has_no_service_surface {
+        return;
+    }
+    let Some(service_cell) = cells.iter_mut().find(|coverage_cell| {
+        coverage_cell.technique == golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP
+    }) else {
+        return;
+    };
+    if service_cell.state != "pending" {
+        return;
+    }
+    *service_cell = cell(
+        golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP,
+        "not_applicable",
+        None,
+        Vec::new(),
+        Some("no open ports were found, so service fingerprinting is not applicable".to_string()),
     );
+}
+
+fn next_wave_coverage_cells(
+    stage: StageKind,
+    asset: &TargetCoverageRow,
+) -> Vec<StageAssetCoverageCell> {
+    let class = coverage_asset_class(asset);
     techniques_for_stage(stage)
         .into_iter()
         .map(|technique| {
@@ -335,21 +648,24 @@ fn coverage_cells(
                     Some("not applicable to this asset type".to_string()),
                 );
             }
-            if found.contains(&(asset.value.clone(), technique.to_string())) {
-                return cell(technique, "found", None, Vec::new(), None);
-            }
-            if let Some(outcome) = outcomes.get(&(asset.value.clone(), technique.to_string())) {
-                return cell(
-                    technique,
-                    &outcome.state,
-                    outcome.source.clone(),
-                    outcome.evidence_refs.clone(),
-                    None,
-                );
-            }
-            cell(technique, "pending", None, Vec::new(), None)
+            cell(
+                technique,
+                NEXT_WAVE_PENDING,
+                None,
+                Vec::new(),
+                Some("newly discovered during this stage; queued for the next wave".to_string()),
+            )
         })
         .collect()
+}
+
+fn coverage_asset_class(
+    asset: &TargetCoverageRow,
+) -> golish_agent_kit::harness::technique_resolver::AssetClass {
+    golish_agent_kit::harness::technique_resolver::AssetClass::classify(
+        Some(&asset.target_type),
+        &asset.value,
+    )
 }
 
 fn techniques_for_stage(stage: StageKind) -> Vec<&'static str> {
@@ -404,6 +720,7 @@ fn outcome_state(outcome: &str) -> String {
         "empty" => "checked_empty",
         "blocked" => "blocked",
         "error" => "error",
+        "not_applicable" => "not_applicable",
         _ => "pending",
     }
     .to_string()
@@ -507,7 +824,7 @@ fn suggested_tools(technique: &str) -> Vec<String> {
 }
 
 fn discovered_phase(asset: &TargetCoverageRow, run_start: Option<DateTime<Utc>>) -> String {
-    if run_start.is_some_and(|started_at| asset.created_at >= started_at)
+    if run_start.is_some_and(|started_at| asset.created_at > started_at)
         || asset.source.as_deref() == Some("active_discovered")
     {
         "new_in_stage".to_string()
@@ -544,17 +861,57 @@ mod tests {
     }
 
     #[test]
+    fn latest_fallback_sql_aliases_evidence_ids_for_projection_rows() {
+        assert!(LATEST_TECHNIQUE_OUTCOMES_SQL.contains("evidence_ids AS evidence_refs"));
+        assert!(LATEST_SOURCE_QUERY_ROWS_SQL.contains("evidence_ids AS evidence_refs"));
+    }
+
+    #[test]
     fn eas_url_asset_only_requires_liveness() {
         let asset = target("https://app.example.com/login", "url");
-        let found = BTreeSet::from([(
-            asset.value.clone(),
+        let host_only_found = BTreeSet::from([(
+            "app.example.com".to_string(),
+            golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string(),
+        )]);
+
+        let host_only_cells = coverage_cells(
+            golish_agent_kit::harness::StageKind::ExternalAttackSurface,
+            &asset,
+            &host_only_found,
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(host_only_cells[0].state, "pending");
+
+        let endpoint_found = BTreeSet::from([(
+            "app.example.com/login".to_string(),
             golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string(),
         )]);
 
         let cells = coverage_cells(
             golish_agent_kit::harness::StageKind::ExternalAttackSurface,
             &asset,
-            &found,
+            &endpoint_found,
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(cells[0].state, "found");
+        assert_eq!(cells[1].state, "not_applicable");
+        assert_eq!(cells[2].state, "not_applicable");
+    }
+
+    #[test]
+    fn eas_url_shaped_hostname_domain_asset_uses_value_aware_applicability() {
+        let asset = target("https://app.example.com/login", "domain");
+        let endpoint_found = BTreeSet::from([(
+            "app.example.com/login".to_string(),
+            golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string(),
+        )]);
+
+        let cells = coverage_cells(
+            golish_agent_kit::harness::StageKind::ExternalAttackSurface,
+            &asset,
+            &endpoint_found,
             &BTreeMap::new(),
         );
 
@@ -591,6 +948,127 @@ mod tests {
     }
 
     #[test]
+    fn eas_port_checked_empty_makes_service_not_applicable() {
+        let asset = target("122.114.60.205", "ip");
+        let outcomes = BTreeMap::from([(
+            (
+                asset.value.clone(),
+                golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string(),
+            ),
+            OutcomeProjection {
+                state: outcome_state("empty"),
+                source: Some("naabu".to_string()),
+                evidence_refs: vec![42],
+            },
+        )]);
+
+        let cells = coverage_cells(
+            golish_agent_kit::harness::StageKind::ExternalAttackSurface,
+            &asset,
+            &BTreeSet::new(),
+            &outcomes,
+        );
+
+        assert_eq!(cells[1].state, "checked_empty");
+        assert_eq!(cells[2].state, "not_applicable");
+        assert_eq!(
+            cells[2].note.as_deref(),
+            Some("no open ports were found, so service fingerprinting is not applicable")
+        );
+        assert!(cells[2].suggested_tools.is_empty());
+    }
+
+    #[test]
+    fn eas_port_found_keeps_service_pending_without_service_outcome() {
+        let asset = target("122.114.60.205", "ip");
+        let found = BTreeSet::from([(
+            asset.value.clone(),
+            golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string(),
+        )]);
+
+        let cells = coverage_cells(
+            golish_agent_kit::harness::StageKind::ExternalAttackSurface,
+            &asset,
+            &found,
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(cells[1].state, "found");
+        assert_eq!(cells[2].state, "pending");
+        assert_eq!(
+            cells[2].suggested_tools,
+            vec!["nmap -sV".to_string(), "whatweb".to_string()]
+        );
+    }
+
+    #[test]
+    fn eas_explicit_service_outcome_wins_over_port_empty_derivation() {
+        let asset = target("122.114.60.205", "ip");
+        let outcomes = BTreeMap::from([
+            (
+                (
+                    asset.value.clone(),
+                    golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string(),
+                ),
+                OutcomeProjection {
+                    state: outcome_state("empty"),
+                    source: Some("naabu".to_string()),
+                    evidence_refs: vec![42],
+                },
+            ),
+            (
+                (
+                    asset.value.clone(),
+                    golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP.to_string(),
+                ),
+                OutcomeProjection {
+                    state: outcome_state("error"),
+                    source: Some("nmap".to_string()),
+                    evidence_refs: vec![43],
+                },
+            ),
+        ]);
+
+        let cells = coverage_cells(
+            golish_agent_kit::harness::StageKind::ExternalAttackSurface,
+            &asset,
+            &BTreeSet::new(),
+            &outcomes,
+        );
+
+        assert_eq!(cells[1].state, "checked_empty");
+        assert_eq!(cells[2].state, "error");
+        assert_eq!(cells[2].source.as_deref(), Some("nmap"));
+        assert_eq!(cells[2].evidence_refs, vec![43]);
+    }
+
+    #[test]
+    fn not_applicable_outcome_stays_terminal_in_read_model() {
+        let asset = target("internal.example.com", "domain");
+        let outcomes = BTreeMap::from([(
+            (
+                asset.value.clone(),
+                golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string(),
+            ),
+            OutcomeProjection {
+                state: outcome_state("not_applicable"),
+                source: Some("submit_stage_deliverable".to_string()),
+                evidence_refs: Vec::new(),
+            },
+        )]);
+
+        let cells = coverage_cells(
+            golish_agent_kit::harness::StageKind::ExternalAttackSurface,
+            &asset,
+            &BTreeSet::new(),
+            &outcomes,
+        );
+
+        assert_eq!(cells[1].state, "not_applicable");
+        assert_eq!(cells[1].source.as_deref(), Some("submit_stage_deliverable"));
+    }
+
+    #[test]
     fn error_outcome_is_distinct_from_blocked() {
         let asset = target("app.example.com", "domain");
         let outcomes = BTreeMap::from([(
@@ -622,6 +1100,29 @@ mod tests {
         let mut asset = target("203.0.113.10", "ip");
         asset.source = Some("active_discovered".to_string());
         assert_eq!(discovered_phase(&asset, None), "new_in_stage");
+    }
+
+    #[test]
+    fn next_wave_cells_are_marked_without_suggested_tools() {
+        let asset = target("203.0.113.10", "ip");
+
+        let cells = next_wave_coverage_cells(StageKind::ExternalAttackSurface, &asset);
+
+        assert_eq!(cells[0].state, NEXT_WAVE_PENDING);
+        assert_eq!(
+            cells[0].note.as_deref(),
+            Some("newly discovered during this stage; queued for the next wave")
+        );
+        assert!(cells[0].suggested_tools.is_empty());
+    }
+
+    #[test]
+    fn wave_cutoff_treats_equal_timestamp_as_current_wave() {
+        let mut asset = target("203.0.113.10", "ip");
+        let cutoff = Utc::now();
+        asset.created_at = cutoff;
+
+        assert!(!is_next_wave_asset(&asset, Some(cutoff)));
     }
 
     #[test]
@@ -664,6 +1165,153 @@ mod tests {
             source_query_terminal_state("error").as_deref(),
             Some("error")
         );
+    }
+
+    #[test]
+    fn outcome_row_matches_liveness_endpoint_alias() {
+        let asset_values = vec!["http://app.example.com:90".to_string()];
+        let stage_techniques =
+            BTreeSet::from([golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string()]);
+        let mut outcomes = BTreeMap::new();
+
+        merge_technique_outcome_row(
+            &mut outcomes,
+            &asset_values,
+            &stage_techniques,
+            TechniqueOutcomeProjectionRow {
+                asset: "app.example.com:90".to_string(),
+                technique: golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string(),
+                outcome: "empty".to_string(),
+                source: Some("httpx".to_string()),
+                evidence_refs: vec![7],
+            },
+        );
+
+        let key = (
+            coverage_lookup_asset(
+                &asset_values[0],
+                golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+            ),
+            golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string(),
+        );
+        let outcome = outcomes.get(&key).expect("endpoint outcome is merged");
+        assert_eq!(outcome.state, "checked_empty");
+        assert_eq!(outcome.source.as_deref(), Some("httpx"));
+        assert_eq!(outcome.evidence_refs, vec![7]);
+    }
+
+    #[test]
+    fn outcome_row_ignores_assets_outside_current_snapshot() {
+        let asset_values = vec!["app.example.com".to_string()];
+        let stage_techniques =
+            BTreeSet::from([golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string()]);
+        let mut outcomes = BTreeMap::new();
+
+        merge_technique_outcome_row(
+            &mut outcomes,
+            &asset_values,
+            &stage_techniques,
+            TechniqueOutcomeProjectionRow {
+                asset: "other.example.com".to_string(),
+                technique: golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string(),
+                outcome: "empty".to_string(),
+                source: Some("naabu".to_string()),
+                evidence_refs: vec![9],
+            },
+        );
+
+        assert!(outcomes.is_empty());
+    }
+
+    #[test]
+    fn org_level_source_query_terminal_state_fans_out_to_current_assets() {
+        let asset_values = vec!["a.example.com".to_string(), "b.example.com".to_string()];
+        let stage_techniques =
+            BTreeSet::from([golish_db::repo::coverage_truth::TECH_WHOIS.to_string()]);
+        let mut outcomes = BTreeMap::new();
+
+        merge_source_query_row(
+            &mut outcomes,
+            &asset_values,
+            &stage_techniques,
+            SourceQueryProjectionRow {
+                source: "rdap".to_string(),
+                target: String::new(),
+                technique: Some(golish_db::repo::coverage_truth::TECH_WHOIS.to_string()),
+                status: "empty".to_string(),
+                evidence_refs: vec![11],
+            },
+            &[],
+        );
+
+        for asset in asset_values {
+            let key = (
+                asset,
+                golish_db::repo::coverage_truth::TECH_WHOIS.to_string(),
+            );
+            let outcome = outcomes.get(&key).expect("org-level source row fans out");
+            assert_eq!(outcome.state, "checked_empty");
+            assert_eq!(outcome.source.as_deref(), Some("rdap"));
+            assert_eq!(outcome.evidence_refs, vec![11]);
+        }
+    }
+
+    #[test]
+    fn target_intel_source_query_with_unmatched_target_rolls_up_to_org_row() {
+        let organization_asset_values = vec!["大连平安大厦开发有限公司".to_string()];
+        let asset_values = organization_asset_values.clone();
+        let stage_techniques =
+            BTreeSet::from([golish_db::repo::coverage_truth::TECH_DNS.to_string()]);
+        let mut outcomes = BTreeMap::new();
+
+        merge_source_query_row(
+            &mut outcomes,
+            &asset_values,
+            &stage_techniques,
+            SourceQueryProjectionRow {
+                source: "crt.sh".to_string(),
+                target: "pingan.com".to_string(),
+                technique: Some(golish_db::repo::coverage_truth::TECH_DNS.to_string()),
+                status: "empty".to_string(),
+                evidence_refs: vec![21],
+            },
+            &organization_asset_values,
+        );
+
+        let key = (
+            organization_asset_values[0].clone(),
+            golish_db::repo::coverage_truth::TECH_DNS.to_string(),
+        );
+        let outcome = outcomes
+            .get(&key)
+            .expect("unmatched target_intel source query rolls up to organization row");
+        assert_eq!(outcome.state, "checked_empty");
+        assert_eq!(outcome.source.as_deref(), Some("crt.sh"));
+        assert_eq!(outcome.evidence_refs, vec![21]);
+    }
+
+    #[test]
+    fn unmatched_source_query_without_org_row_is_ignored() {
+        let asset_values = vec!["registered.example.com".to_string()];
+        let stage_techniques =
+            BTreeSet::from([golish_db::repo::coverage_truth::TECH_DNS.to_string()]);
+        let mut outcomes = BTreeMap::new();
+
+        merge_source_query_row(
+            &mut outcomes,
+            &asset_values,
+            &stage_techniques,
+            SourceQueryProjectionRow {
+                source: "crt.sh".to_string(),
+                target: "other.example.com".to_string(),
+                technique: Some(golish_db::repo::coverage_truth::TECH_DNS.to_string()),
+                status: "empty".to_string(),
+                evidence_refs: vec![22],
+            },
+            &[],
+        );
+
+        assert!(outcomes.is_empty());
     }
 
     #[test]

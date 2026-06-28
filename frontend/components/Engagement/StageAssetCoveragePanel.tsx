@@ -8,9 +8,13 @@ import {
 } from "lucide-react";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
   type PointerEvent as ReactPointerEvent,
+  useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { getStageAssetCoverage, type StageAssetCoverageSnapshot } from "@/lib/api/stage-coverage";
@@ -43,6 +47,7 @@ type TechniqueState =
   | "error"
   | "blocked"
   | "not_applicable"
+  | "next_wave_pending"
   | "pending";
 
 const TECH_META: Record<TechniqueState, { className: string; label: string; mark: string }> = {
@@ -71,10 +76,15 @@ const TECH_META: Record<TechniqueState, { className: string; label: string; mark
     label: "不适用",
     mark: "-",
   },
+  next_wave_pending: {
+    className: "bg-sky-500/10 text-sky-300 border-sky-500/25",
+    label: "下批",
+    mark: "↻",
+  },
   pending: {
-    className: "bg-transparent text-muted-foreground/40 border-border/40",
+    className: "bg-transparent text-muted-foreground/55 border-border/45",
     label: "未查",
-    mark: "·",
+    mark: "?",
   },
 };
 
@@ -83,9 +93,28 @@ const STATUS_LEGEND: TechniqueState[] = [
   "checked_empty",
   "error",
   "blocked",
+  "next_wave_pending",
   "pending",
   "not_applicable",
 ];
+
+const ROW_STATUS_SUMMARY_ORDER: TechniqueState[] = [
+  "error",
+  "blocked",
+  "pending",
+  "next_wave_pending",
+  "checked_empty",
+  "not_applicable",
+];
+
+const ROW_STATUS_SUMMARY_LABEL: Partial<Record<TechniqueState, string>> = {
+  blocked: "阻塞",
+  checked_empty: "查空",
+  error: "错误",
+  next_wave_pending: "下批待查",
+  not_applicable: "不适用",
+  pending: "未查",
+};
 
 type CoverageCell = StageAssetCoverageSnapshot["assets"][number]["coverage"][number];
 type CoverageRow = StageAssetCoverageSnapshot["assets"][number];
@@ -102,7 +131,30 @@ const ASSET_COVERAGE_BODY_DEFAULT_HEIGHT = 224;
 const ASSET_COVERAGE_BODY_MIN_HEIGHT = 160;
 const ASSET_COVERAGE_BODY_MAX_HEIGHT = 560;
 const ASSET_COVERAGE_BODY_KEYBOARD_STEP = 24;
+const ASSET_COVERAGE_GROUP_VIRTUALIZATION_THRESHOLD = 512;
+const ASSET_COVERAGE_GROUP_OVERSCAN = 24;
 export const LIVE_WORK_RETENTION_MS = 3500;
+export const ASSET_COVERAGE_READING_FREEZE_MS = 8000;
+
+const virtualItemBaseStyle = {
+  left: 0,
+  position: "absolute",
+  top: 0,
+  width: "100%",
+} as const;
+
+function coverageScrollRect(element: Element | null): { height: number; width: number } {
+  if (!element) return { height: ASSET_COVERAGE_BODY_DEFAULT_HEIGHT, width: 0 };
+  const rect = element.getBoundingClientRect();
+  const styleHeight =
+    element instanceof HTMLElement ? Number.parseFloat(element.style.height || "") : 0;
+  const height =
+    rect.height || element.clientHeight || styleHeight || ASSET_COVERAGE_BODY_DEFAULT_HEIGHT;
+  return {
+    height: Math.round(height),
+    width: Math.round(rect.width || element.clientWidth || 0),
+  };
+}
 
 function clampAssetCoverageBodyHeight(height: number): number {
   return Math.min(
@@ -131,36 +183,6 @@ function isOrganizationCoverageRow(row: CoverageRow) {
   return row.target_type === "organization" && row.source === "engagement_org";
 }
 
-function coverageRowsSummary(rows: CoverageRow[]): CoverageSummary {
-  return rows.reduce<CoverageSummary>(
-    (summary, row) => {
-      const hasBlocked = row.coverage.some((cell) =>
-        ["blocked", "error"].includes(normalizeTechniqueState(cell.state))
-      );
-      const hasPending = row.coverage.some(
-        (cell) => normalizeTechniqueState(cell.state) === "pending"
-      );
-      summary.total_assets += 1;
-      if (row.discovered_phase === "new_in_stage") summary.new_assets += 1;
-      if (hasBlocked) {
-        summary.blocked_assets += 1;
-      } else if (hasPending) {
-        summary.pending_assets += 1;
-      } else {
-        summary.done_assets += 1;
-      }
-      return summary;
-    },
-    {
-      blocked_assets: 0,
-      done_assets: 0,
-      new_assets: 0,
-      pending_assets: 0,
-      total_assets: 0,
-    }
-  );
-}
-
 function coverageSummaryText(summary: CoverageSummary) {
   if (summary.total_assets === 0) return "0 assets";
   return `${summary.done_assets}/${summary.total_assets} done`;
@@ -177,6 +199,20 @@ function liveWorkItemsKey(items: StageAssetCoverageWorkItem[]): string {
         item.id,
         item.status,
         item.displayToolName,
+        item.subject ?? "",
+        item.subjects.join(","),
+        item.techniques.join(","),
+      ].join(":")
+    )
+    .join("|");
+}
+
+function workItemsRefreshKey(items: StageAssetCoverageWorkItem[]): string {
+  return items
+    .map((item) =>
+      [
+        item.id,
+        item.status,
         item.subject ?? "",
         item.subjects.join(","),
         item.techniques.join(","),
@@ -342,6 +378,234 @@ function groupRows(group: AssetCoverageGroup): CoverageRow[] {
   return group.hostRow ? [group.hostRow, ...group.childRows] : group.childRows;
 }
 
+function estimateCoverageGroupHeight(group?: AssetCoverageGroup): number {
+  if (!group) return 72;
+  const syntheticHostRows =
+    !group.hostRow && group.resolvedGroup && group.childRows.length > 0 ? 1 : 0;
+  const rowCount = groupRows(group).length + syntheticHostRows;
+  return Math.max(52, rowCount * 54 + 2);
+}
+
+type RenderCoverageGroup = (group: AssetCoverageGroup, showActivityBadges: boolean) => ReactNode;
+
+interface CoverageGroupMeasurement {
+  end: number;
+  group: AssetCoverageGroup;
+  index: number;
+  size: number;
+  start: number;
+}
+
+function buildCoverageGroupMeasurements(groups: AssetCoverageGroup[]) {
+  let offset = 0;
+  const measurements = groups.map((group, index): CoverageGroupMeasurement => {
+    const size = estimateCoverageGroupHeight(group);
+    const start = offset;
+    offset += size;
+    return {
+      end: offset,
+      group,
+      index,
+      size,
+      start,
+    };
+  });
+  return { measurements, totalSize: offset };
+}
+
+function firstVisibleCoverageGroupIndex(
+  measurements: CoverageGroupMeasurement[],
+  scrollTop: number
+): number {
+  let low = 0;
+  let high = measurements.length - 1;
+  let result = 0;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    if ((measurements[mid]?.end ?? 0) >= scrollTop) {
+      result = mid;
+      high = mid - 1;
+    } else {
+      low = mid + 1;
+    }
+  }
+  return result;
+}
+
+function CoverageGroupsList({
+  groups,
+  renderCoverageGroup,
+  resetKey,
+  scrollParent,
+  showActivityBadges,
+}: {
+  groups: AssetCoverageGroup[];
+  renderCoverageGroup: RenderCoverageGroup;
+  resetKey: string;
+  scrollParent: HTMLDivElement | null;
+  showActivityBadges: boolean;
+}) {
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  const [scrollMetrics, setScrollMetrics] = useState({
+    scrollTop: 0,
+    viewportHeight: ASSET_COVERAGE_BODY_DEFAULT_HEIGHT,
+  });
+  const { measurements, totalSize } = useMemo(
+    () => buildCoverageGroupMeasurements(groups),
+    [groups]
+  );
+
+  useLayoutEffect(() => {
+    const updateScrollMargin = () => {
+      const anchor = anchorRef.current;
+      const parent = scrollParent;
+      if (!anchor || !parent) return;
+      const nextMargin =
+        anchor.getBoundingClientRect().top - parent.getBoundingClientRect().top + parent.scrollTop;
+      setScrollMargin(Math.max(0, Math.round(nextMargin)));
+    };
+
+    updateScrollMargin();
+    const frame = window.requestAnimationFrame(updateScrollMargin);
+    let resizeObserver: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(updateScrollMargin);
+      if (scrollParent) resizeObserver.observe(scrollParent);
+      if (anchorRef.current?.parentElement) resizeObserver.observe(anchorRef.current.parentElement);
+    }
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+    };
+  }, [resetKey, scrollParent]);
+
+  useLayoutEffect(() => {
+    const scrollElement = scrollParent;
+    if (!scrollElement) return;
+
+    let frame: number | null = null;
+    const readMetrics = () => {
+      frame = null;
+      const rect = coverageScrollRect(scrollElement);
+      setScrollMetrics((previous) => {
+        const next = {
+          scrollTop: Math.max(0, scrollElement.scrollTop),
+          viewportHeight: rect.height,
+        };
+        return previous.scrollTop === next.scrollTop &&
+          previous.viewportHeight === next.viewportHeight
+          ? previous
+          : next;
+      });
+    };
+    const scheduleRead = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(readMetrics);
+    };
+    const readScrollMetrics = () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+        frame = null;
+      }
+      readMetrics();
+    };
+
+    readMetrics();
+    scrollElement.addEventListener("scroll", readScrollMetrics, { passive: true });
+    let resizeObserver: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(scheduleRead);
+      resizeObserver.observe(scrollElement);
+    }
+    window.addEventListener("resize", scheduleRead, { passive: true });
+
+    return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      scrollElement.removeEventListener("scroll", readScrollMetrics);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", scheduleRead);
+    };
+  }, [scrollParent]);
+
+  useLayoutEffect(() => {
+    const scrollElement = scrollParent;
+    if (!scrollElement) return;
+    const clampScrollTop = () => {
+      const maxScrollTop = Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight);
+      if (scrollElement.scrollTop > maxScrollTop) {
+        scrollElement.scrollTop = maxScrollTop;
+      }
+      const rect = coverageScrollRect(scrollElement);
+      setScrollMetrics((previous) => {
+        const next = {
+          scrollTop: Math.max(0, scrollElement.scrollTop),
+          viewportHeight: rect.height,
+        };
+        return previous.scrollTop === next.scrollTop &&
+          previous.viewportHeight === next.viewportHeight
+          ? previous
+          : next;
+      });
+    };
+    clampScrollTop();
+    const frame = window.requestAnimationFrame(clampScrollTop);
+    return () => window.cancelAnimationFrame(frame);
+  }, [groups.length, resetKey, scrollParent, totalSize]);
+
+  if (groups.length < ASSET_COVERAGE_GROUP_VIRTUALIZATION_THRESHOLD) {
+    return (
+      <div ref={anchorRef} className="w-full" data-testid="stage-asset-coverage-groups">
+        {groups.map((group) => renderCoverageGroup(group, showActivityBadges))}
+      </div>
+    );
+  }
+
+  const listScrollTop = Math.max(0, scrollMetrics.scrollTop - scrollMargin);
+  const viewportHeight = Math.max(1, scrollMetrics.viewportHeight);
+  const firstVisibleIndex = firstVisibleCoverageGroupIndex(measurements, listScrollTop);
+  const startIndex = Math.max(0, firstVisibleIndex - ASSET_COVERAGE_GROUP_OVERSCAN);
+  const viewportEnd = listScrollTop + viewportHeight;
+  let endIndex = firstVisibleIndex;
+  while (endIndex < measurements.length - 1 && (measurements[endIndex]?.start ?? 0) < viewportEnd) {
+    endIndex += 1;
+  }
+  endIndex = Math.min(measurements.length - 1, endIndex + ASSET_COVERAGE_GROUP_OVERSCAN);
+  const virtualItems = measurements.slice(startIndex, endIndex + 1);
+
+  return (
+    <div
+      ref={anchorRef}
+      className="w-full bg-background/40"
+      data-testid="stage-asset-coverage-groups"
+    >
+      <div
+        className="relative w-full bg-background/40"
+        data-testid="stage-asset-coverage-virtual-groups"
+        style={{ height: totalSize }}
+      >
+        {virtualItems.map((virtualRow) => {
+          const { group } = virtualRow;
+          return (
+            <div
+              key={group.key}
+              data-index={virtualRow.index}
+              style={{
+                ...virtualItemBaseStyle,
+                contain: "layout paint",
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+            >
+              {renderCoverageGroup(group, showActivityBadges)}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function groupMatchesLiveWork(
   group: AssetCoverageGroup,
   liveWorkItems: StageAssetCoverageWorkItem[]
@@ -368,9 +632,34 @@ function groupRelatedWorkItems(
   );
 }
 
+function formatTechniqueList(labels: string[]): string {
+  const uniqueLabels = Array.from(new Set(labels.filter(Boolean)));
+  if (uniqueLabels.length <= 3) return uniqueLabels.join("/");
+  return `${uniqueLabels.slice(0, 3).join("/")} +${uniqueLabels.length - 3}`;
+}
+
+function coverageRowStatusSummary(row: CoverageRow): string | null {
+  const grouped = new Map<TechniqueState, string[]>();
+  row.coverage.forEach((cell) => {
+    const state = normalizeTechniqueState(cell.state);
+    if (state === "found") return;
+    grouped.set(state, [...(grouped.get(state) ?? []), techniqueShortLabel(cell.label)]);
+  });
+
+  const parts = ROW_STATUS_SUMMARY_ORDER.flatMap((state) => {
+    const labels = grouped.get(state);
+    const summaryLabel = ROW_STATUS_SUMMARY_LABEL[state];
+    if (!labels || labels.length === 0 || !summaryLabel) return [];
+    return `${summaryLabel} ${formatTechniqueList(labels)}`;
+  });
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 function rowMetaLabel(row: CoverageRow, child = false): string {
   const parts = [assetPhaseLabel(row.discovered_phase), row.target_type, row.source || "-"];
   if (child && rowResolvedIp(row)) parts.push(`解析到 ${rowResolvedIp(row)}`);
+  const statusSummary = coverageRowStatusSummary(row);
+  if (statusSummary) parts.push(statusSummary);
   return parts.join(" · ");
 }
 
@@ -506,10 +795,38 @@ function CoverageStatusCell({
   );
 }
 
+function organizationTechniqueLabel(cell: CoverageCell): string {
+  const text = `${cell.technique} ${cell.label}`.toUpperCase();
+  if (text.includes("WHOIS")) return "WHOIS";
+  if (text.includes("ASN")) return "ASN";
+  if (text.includes("SUBDOMAIN")) return "子域";
+  if (text.includes("OSINT")) return "OSINT";
+  if (text.includes("DNS")) return "DNS";
+  if (text.includes("CT")) return "CT证书";
+  return techniqueShortLabel(cell.label);
+}
+
+function OrganizationCoverageStatusCell({ cell }: { cell: CoverageCell }) {
+  const state = normalizeTechniqueState(cell.state);
+  const meta = TECH_META[state];
+  return (
+    <span
+      className={cn(
+        "inline-flex h-6 min-w-[3.75rem] items-center justify-between gap-1 rounded-sm border px-1.5 text-[9px] font-medium",
+        meta.className
+      )}
+      title={coverageCellTitle(cell, state)}
+    >
+      <span className="truncate">{organizationTechniqueLabel(cell)}</span>
+      <span className="shrink-0 text-[10px] tabular-nums">{meta.mark}</span>
+    </span>
+  );
+}
+
 function assetPhaseLabel(phase: string) {
   switch (phase) {
     case "new_in_stage":
-      return "新增";
+      return "下批";
     case "seed":
       return "种子";
     default:
@@ -571,6 +888,59 @@ export function StageAssetCoveragePanel({
   const [coverageBodyMaxHeight, setCoverageBodyMaxHeight] = useState(
     clampAssetCoverageBodyHeight(defaultBodyHeight)
   );
+  const [scrollBodyElement, setScrollBodyElement] = useState<HTMLDivElement | null>(null);
+  const setScrollBodyNode = useCallback((node: HTMLDivElement | null) => {
+    setScrollBodyElement(node);
+  }, []);
+  const [readingFrozen, setReadingFrozen] = useState(false);
+  const readingFrozenRef = useRef(false);
+  const readingFreezeTimerRef = useRef<number | null>(null);
+  const [displaySnapshot, setDisplaySnapshot] = useState<StageAssetCoverageSnapshot | null>(
+    snapshot
+  );
+  const [matrixLiveWorkItems, setMatrixLiveWorkItems] =
+    useState<StageAssetCoverageWorkItem[]>(incomingLiveWorkItems);
+  const displayLiveWorkKey = useMemo(
+    () => liveWorkItemsKey(displayLiveWorkItems),
+    [displayLiveWorkItems]
+  );
+  const matrixLiveWorkKey = useMemo(
+    () => liveWorkItemsKey(matrixLiveWorkItems),
+    [matrixLiveWorkItems]
+  );
+  const markReadingInteraction = useCallback(() => {
+    if (!readingFrozenRef.current) {
+      readingFrozenRef.current = true;
+      setReadingFrozen(true);
+    }
+    if (readingFreezeTimerRef.current !== null) {
+      window.clearTimeout(readingFreezeTimerRef.current);
+    }
+    readingFreezeTimerRef.current = window.setTimeout(() => {
+      readingFrozenRef.current = false;
+      setReadingFrozen(false);
+      readingFreezeTimerRef.current = null;
+    }, ASSET_COVERAGE_READING_FREEZE_MS);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (readingFreezeTimerRef.current !== null) {
+        window.clearTimeout(readingFreezeTimerRef.current);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!snapshot) {
+      setDisplaySnapshot(snapshot);
+      return;
+    }
+    if (!readingFrozen || !displaySnapshot) {
+      setDisplaySnapshot(snapshot);
+    }
+  }, [snapshot, readingFrozen, displaySnapshot]);
 
   useEffect(() => {
     if (incomingLiveWorkItems.length > 0) {
@@ -597,6 +967,19 @@ export function StageAssetCoveragePanel({
   ]);
 
   useEffect(() => {
+    if (readingFrozen && matrixLiveWorkItems.length > 0) return;
+    if (matrixLiveWorkKey !== displayLiveWorkKey) {
+      setMatrixLiveWorkItems(displayLiveWorkItems);
+    }
+  }, [
+    displayLiveWorkItems,
+    displayLiveWorkKey,
+    matrixLiveWorkItems.length,
+    matrixLiveWorkKey,
+    readingFrozen,
+  ]);
+
+  useEffect(() => {
     if (
       !coverageViewTouched &&
       (incomingLiveWorkItems.length > 0 || displayLiveWorkItems.length > 0)
@@ -605,7 +988,7 @@ export function StageAssetCoveragePanel({
     }
   }, [coverageViewTouched, incomingLiveWorkItems.length, displayLiveWorkItems.length]);
 
-  if (loading) {
+  if (loading && !displaySnapshot) {
     return (
       <div className="flex min-h-28 items-center rounded-md border border-border/30 bg-background/40 px-3 py-2 text-[11px] text-muted-foreground">
         <span className="inline-flex items-center gap-2">
@@ -622,9 +1005,9 @@ export function StageAssetCoveragePanel({
       </div>
     );
   }
-  if (!snapshot) return null;
-  const organizationRows = snapshot.assets.filter(isOrganizationCoverageRow);
-  const assetRows = snapshot.assets.filter((asset) => !isOrganizationCoverageRow(asset));
+  if (!displaySnapshot) return null;
+  const organizationRows = displaySnapshot.assets.filter(isOrganizationCoverageRow);
+  const assetRows = displaySnapshot.assets.filter((asset) => !isOrganizationCoverageRow(asset));
   if (assetRows.length === 0 && organizationRows.length === 0) {
     return (
       <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2 text-[11px] text-muted-foreground">
@@ -633,9 +1016,9 @@ export function StageAssetCoveragePanel({
     );
   }
 
-  const summary = coverageRowsSummary(assetRows);
+  const summary = displaySnapshot.summary;
   const groups = buildAssetCoverageGroups(assetRows);
-  const liveWorkItems = displayLiveWorkItems;
+  const liveWorkItems = matrixLiveWorkItems;
   const activeGroups = groups.filter((group) => groupMatchesLiveWork(group, liveWorkItems));
   const activeAssetCount = assetRows.filter((row) =>
     liveWorkItems.some((item) => workMatchesAsset(row, item))
@@ -650,6 +1033,7 @@ export function StageAssetCoveragePanel({
   const showCoverageViewToggle =
     assetRows.length > 0 || liveWorkItems.length > 0 || effectiveActiveView;
   const visibleGroups = effectiveActiveView ? activeGroups : groups;
+  const visibleGroupsKey = visibleGroups.map((group) => group.key).join("|");
   const handleCoverageViewChange = (mode: CoverageViewMode) => {
     setCoverageViewTouched(true);
     setCoverageView(mode);
@@ -711,6 +1095,7 @@ export function StageAssetCoveragePanel({
   ) => {
     const rowWorkItems = liveWorkItems.filter((item) => workMatchesAsset(asset, item));
     const showActivityBadges = options.showActivityBadges ?? true;
+    const metaLabel = rowMetaLabel(asset, options.child);
     return (
       <div
         key={asset.target_id}
@@ -738,8 +1123,8 @@ export function StageAssetCoveragePanel({
               {asset.value}
             </div>
           </div>
-          <div className="mt-0.5 truncate text-[9px] text-muted-foreground/50">
-            {rowMetaLabel(asset, options.child)}
+          <div className="mt-0.5 truncate text-[9px] text-muted-foreground/50" title={metaLabel}>
+            {metaLabel}
           </div>
           {showActivityBadges && <WorkItemBadges items={rowWorkItems} />}
           {showActivityBadges && options.relatedWorkItems && (
@@ -777,7 +1162,7 @@ export function StageAssetCoveragePanel({
           </div>
         </div>
         <div className="mt-0.5 truncate text-[9px] text-muted-foreground/50">
-          解析聚合 · {group.childRows.length} 关联资产 · 未登记 IP direct 行
+          解析聚合 · {group.childRows.length} 关联资产 · 仅分组，不计覆盖
         </div>
         {showActivityBadges && <WorkItemBadges items={relatedWorkItems} related />}
       </div>
@@ -793,7 +1178,14 @@ export function StageAssetCoveragePanel({
     const shouldRenderSyntheticHost =
       !group.hostRow && group.resolvedGroup && group.childRows.length > 0;
     return (
-      <div key={group.key} className="border-b border-border/10 last:border-b-0">
+      <div
+        key={group.key}
+        className="border-b border-border/10 last:border-b-0"
+        style={{
+          containIntrinsicSize: `${estimateCoverageGroupHeight(group)}px`,
+          contentVisibility: "auto",
+        }}
+      >
         {group.hostRow &&
           renderAssetRow(group.hostRow, {
             host: true,
@@ -829,12 +1221,12 @@ export function StageAssetCoveragePanel({
           </span>
           {summary.new_assets > 0 && (
             <span className="inline-flex h-6 min-w-16 items-center justify-center rounded bg-sky-500/15 px-1.5 tabular-nums text-sky-300">
-              {summary.new_assets} 新增
+              {summary.new_assets} 下批
             </span>
           )}
           {summary.pending_assets > 0 && (
             <span className="inline-flex h-6 min-w-24 items-center justify-center rounded bg-muted/40 px-1.5 tabular-nums">
-              {summary.pending_assets} pending
+              {summary.pending_assets} 未查
             </span>
           )}
           {summary.blocked_assets > 0 && (
@@ -893,8 +1285,15 @@ export function StageAssetCoveragePanel({
         liveWorkItems={liveWorkItems}
       />
       <div
-        className={cn("overflow-y-auto overflow-x-hidden", fillHeight && "min-h-0 flex-1")}
+        ref={setScrollBodyNode}
+        className={cn(
+          "overflow-y-auto overflow-x-hidden bg-background/40",
+          fillHeight && "min-h-0 flex-1"
+        )}
         data-testid="stage-asset-coverage-scroll"
+        onPointerDown={markReadingInteraction}
+        onScroll={markReadingInteraction}
+        onWheel={markReadingInteraction}
         style={
           fillHeight
             ? undefined
@@ -913,7 +1312,7 @@ export function StageAssetCoveragePanel({
                 </span>
                 <div className="flex shrink-0 flex-wrap items-center gap-1">
                   {row.coverage.map((cell) => (
-                    <CoverageStatusCell key={cell.technique} cell={cell} compact />
+                    <OrganizationCoverageStatusCell key={cell.technique} cell={cell} />
                   ))}
                 </div>
               </div>
@@ -947,7 +1346,13 @@ export function StageAssetCoveragePanel({
                 正在做的资产
               </div>
             )}
-            {visibleGroups.map((group) => renderCoverageGroup(group, effectiveActiveView))}
+            <CoverageGroupsList
+              groups={visibleGroups}
+              renderCoverageGroup={renderCoverageGroup}
+              resetKey={visibleGroupsKey}
+              scrollParent={scrollBodyElement}
+              showActivityBadges={effectiveActiveView}
+            />
             {effectiveActiveView &&
               activeGroups.length === 0 &&
               unmatchedLiveWorkItems.length === 0 && (
@@ -1006,14 +1411,18 @@ function useStageAssetCoverageSnapshot({
   enabled,
   organizationId,
   pollWhileActive,
+  refreshKey,
   sessionId,
   stage,
+  stageStartedAt,
 }: {
   enabled: boolean;
   organizationId: string;
   pollWhileActive: boolean;
+  refreshKey?: string;
   sessionId?: string | null;
   stage: string;
+  stageStartedAt?: string | null;
 }) {
   const [snapshot, setSnapshot] = useState<StageAssetCoverageSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1023,7 +1432,7 @@ function useStageAssetCoverageSnapshot({
     setSnapshot(null);
     setError(null);
     setLoading(false);
-  }, [organizationId, sessionId, stage]);
+  }, [organizationId, sessionId, stage, stageStartedAt]);
 
   useEffect(() => {
     if (!enabled) {
@@ -1042,6 +1451,7 @@ function useStageAssetCoverageSnapshot({
           organizationId,
           stage,
           sessionId,
+          stageStartedAt,
         });
         if (!cancelled) setSnapshot(next);
       } catch (err) {
@@ -1060,7 +1470,7 @@ function useStageAssetCoverageSnapshot({
       cancelled = true;
       if (timer) clearInterval(timer);
     };
-  }, [enabled, organizationId, pollWhileActive, sessionId, stage]);
+  }, [enabled, organizationId, pollWhileActive, refreshKey, sessionId, stage, stageStartedAt]);
 
   return { error, loading, snapshot };
 }
@@ -1073,9 +1483,7 @@ function stageAssetCoverageSummaryText(
   if (error) return "加载失败";
   if (loading && !snapshot) return "加载中";
   if (!snapshot) return "查看";
-  return coverageSummaryText(
-    coverageRowsSummary(snapshot.assets.filter((asset) => !isOrganizationCoverageRow(asset)))
-  );
+  return coverageSummaryText(snapshot.summary);
 }
 
 function StageAssetCoverageSummaryStrip({
@@ -1142,6 +1550,7 @@ export function StageAssetCoverageBlock({
   organizationId,
   stage,
   sessionId,
+  stageStartedAt,
   title = "资产覆盖",
   subtitle,
   pollWhileActive = false,
@@ -1156,6 +1565,7 @@ export function StageAssetCoverageBlock({
   organizationId: string;
   stage: string;
   sessionId?: string | null;
+  stageStartedAt?: string | null;
   title?: string;
   subtitle?: string;
   pollWhileActive?: boolean;
@@ -1166,12 +1576,15 @@ export function StageAssetCoverageBlock({
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const shouldLoadCoverage = displayMode === "summary" || displayMode === "panel" || expanded;
+  const coverageRefreshKey = useMemo(() => workItemsRefreshKey(workItems), [workItems]);
   const { error, loading, snapshot } = useStageAssetCoverageSnapshot({
     enabled: shouldLoadCoverage,
     organizationId,
     pollWhileActive,
+    refreshKey: coverageRefreshKey,
     sessionId,
     stage,
+    stageStartedAt,
   });
 
   useEffect(() => {
@@ -1182,9 +1595,7 @@ export function StageAssetCoverageBlock({
     if (defaultExpanded) setExpanded(true);
   }, [defaultExpanded]);
 
-  const summary = snapshot
-    ? coverageRowsSummary(snapshot.assets.filter((asset) => !isOrganizationCoverageRow(asset)))
-    : null;
+  const summary = snapshot ? snapshot.summary : null;
   const summaryText = summary
     ? coverageSummaryText(summary)
     : stageAssetCoverageSummaryText(snapshot, shouldLoadCoverage && loading, error);
@@ -1312,7 +1723,7 @@ export function StageAssetCoverageBlock({
           </span>
           {summary && summary.new_assets > 0 && (
             <span className="inline-flex h-6 min-w-8 items-center justify-center rounded bg-sky-500/15 px-1.5 tabular-nums text-sky-300">
-              +{summary.new_assets}
+              下批 {summary.new_assets}
             </span>
           )}
           {summary && summary.blocked_assets > 0 && (

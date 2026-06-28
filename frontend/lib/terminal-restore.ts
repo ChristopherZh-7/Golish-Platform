@@ -10,11 +10,12 @@
  * so a clean project switch can proceed without leaking resources.
  */
 
+import { normalizePersistedStageRunState } from "@/lib/conversation-db-sync";
 import { getAllLeafPanes } from "@/lib/pane-utils";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type { PersistedTerminalData, PersistedTimelineBlock } from "@/lib/workspace-storage";
 import { useStore } from "@/store";
-import type { ActiveSubAgent, SessionStageRun } from "@/store/store-types";
+import type { ActiveSubAgent } from "@/store/store-types";
 
 type CreateTerminalFn = (
   workingDirectory?: string,
@@ -76,7 +77,14 @@ function restoreRetiredPlans(sessionId: string, termInfo: PersistedTerminalData)
  */
 function restoreStageRun(sessionId: string, termInfo: PersistedTerminalData) {
   if (!termInfo.stageRunJson) return;
-  useStore.getState().setSessionStageRun(sessionId, termInfo.stageRunJson as SessionStageRun);
+  const restored = normalizePersistedStageRunState(termInfo.stageRunJson);
+  if (!restored) return;
+  useStore.setState((state) => {
+    const session = state.sessions[sessionId];
+    if (!session) return;
+    session.stageRuns = { ...(session.stageRuns ?? {}), ...restored.byRequestId };
+    session.stageRun = restored.current ?? session.stageRun ?? null;
+  });
 }
 
 /** Rebuild activeSubAgents from timeline sub_agent_activity blocks so subagent state is restored after restart. */

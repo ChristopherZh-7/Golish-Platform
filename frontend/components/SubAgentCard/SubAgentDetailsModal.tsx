@@ -188,9 +188,9 @@ export function SubAgentDetailsModal({ subAgent, onClose }: SubAgentDetailsModal
                   {subAgent.agentName}
                 </DialogTitle>
                 <DialogDescription className="text-sm text-muted-foreground mt-1">
-                  {subAgent.toolCalls.length} tool call{subAgent.toolCalls.length !== 1 ? "s" : ""}
-                  {subAgent.durationMs !== undefined &&
-                    ` • ${formatDurationShort(subAgent.durationMs)}`}
+                  {subAgent.durationMs !== undefined
+                    ? formatDurationShort(subAgent.durationMs)
+                    : "Execution details"}
                 </DialogDescription>
               </div>
             </div>
@@ -274,7 +274,7 @@ export function SubAgentDetailsModal({ subAgent, onClose }: SubAgentDetailsModal
             {subAgent.toolCalls.length > 0 && (
               <div className="space-y-2 overflow-hidden">
                 <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-                  Tool Calls ({subAgent.toolCalls.length})
+                  Tool Calls
                 </h3>
                 <div className="bg-muted/50 rounded-lg border border-border overflow-hidden">
                   <div className="divide-y divide-border overflow-hidden">

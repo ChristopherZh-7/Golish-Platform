@@ -3333,6 +3333,48 @@ mod tests {
     }
 
     #[test]
+    fn coverage_complete_liveness_fact_must_preserve_url_port_endpoint() {
+        let techs = ["GOLISH-EAS-LIVENESS"];
+        let d = deliverable_with_coverage(vec![]);
+        let spec = host_aware_spec("external_attack_surface", "external_attack_surface", false);
+
+        let host_only_ctx = GateContext {
+            in_scope_assets: Some(vec!["http://linquankuaipin.com:90".to_string()]),
+            asset_types: None,
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: Some(vec![fact(
+                "linquankuaipin.com",
+                "GOLISH-EAS-LIVENESS",
+                EvidenceOutcome::Found,
+                1,
+            )]),
+            source_queries: None,
+        };
+        assert!(
+            !eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &host_only_ctx)[0]
+                .is_pass(),
+            "host-only liveness must not close a distinct URL:port endpoint"
+        );
+
+        let endpoint_ctx = GateContext {
+            in_scope_assets: Some(vec!["http://linquankuaipin.com:90".to_string()]),
+            asset_types: None,
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: Some(vec![fact(
+                "linquankuaipin.com:90",
+                "GOLISH-EAS-LIVENESS",
+                EvidenceOutcome::Found,
+                1,
+            )]),
+            source_queries: None,
+        };
+        assert!(
+            eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &endpoint_ctx)[0].is_pass(),
+            "endpoint liveness fact must close the matching URL:port cell"
+        );
+    }
+
+    #[test]
     fn coverage_corroborated_canonicalizes_asset_identity() {
         // found cell 的 asset(`http://pingan.com`) 与佐证 claim 的 subject(`PINGAN.COM.`)
         // 是同一资产的不同写法 → 归一后判已佐证 PASS。

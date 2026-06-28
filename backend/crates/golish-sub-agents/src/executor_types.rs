@@ -333,32 +333,36 @@ impl SubmitRepairMode {
     }
 
     pub fn model_instruction(&self) -> String {
-        let mut message = self.directive_message.clone().unwrap_or_else(|| match self.kind {
-            SubmitRepairKind::EvidenceRefs => {
-                "submit_stage_deliverable returned needs_fix for evidence/submit fields, so \
+        let mut message = self
+            .directive_message
+            .clone()
+            .unwrap_or_else(|| match self.kind {
+                SubmitRepairKind::EvidenceRefs => {
+                    "submit_stage_deliverable returned needs_fix for evidence/submit fields, so \
                  repair-only mode is active. Do NOT start fresh discovery or launch new scans. \
                  Rebuild the StageDeliverable from the real evidence ids already returned, use \
                  query_target_data only if you need to map ids to claims, then resubmit."
-                    .to_string()
-            }
-            SubmitRepairKind::BackgroundJobs => {
-                "submit_stage_deliverable returned needs_fix because background jobs are still \
+                        .to_string()
+                }
+                SubmitRepairKind::BackgroundJobs => {
+                    "submit_stage_deliverable returned needs_fix because background jobs are still \
                  pending. Do NOT launch replacement scans. Call wait_for_background_jobs, inspect \
                  the completed output tails, then resubmit."
-                    .to_string()
-            }
-            SubmitRepairKind::CoverageGap => {
-                "submit_stage_deliverable returned needs_fix because the stage coverage matrix \
+                        .to_string()
+                }
+                SubmitRepairKind::CoverageGap => {
+                    "submit_stage_deliverable returned needs_fix because the stage coverage matrix \
                  still has missing or non-terminal cells. Targeted gap-closure mode is active: \
                  use the gate feedback and query_target_data instead of re-listing the entire \
-                 attack surface. Run only one narrow stage-allowed probe for one exact asset/technique \
-                 named in the gate feedback. Do NOT call list_in_scope_targets, \
-                 list_attack_surface_seeds, CIDR/range sweeps, multi-target batches, \
-                 bulk stdin/list-file probes, or broad rediscovery. \
+                 attack surface. Run only stage-allowed probes for the exact asset/technique \
+                 pairs named in the gate feedback. Batch sibling gap assets with \
+                 input_lines/list-file mode when every target is present in coverage_gap_actions. \
+                 Do NOT call list_in_scope_targets, list_attack_surface_seeds, \
+                 CIDR/range sweeps, targets outside coverage_gap_actions, or broad rediscovery. \
                  When each named gap has a terminal coverage cell, resubmit."
-                    .to_string()
-            }
-        });
+                        .to_string()
+                }
+            });
         if !self.missing_required_checks.is_empty() {
             message.push_str(&format!(
                 " Also include these required_checks_done entries if the cited evidence backs \
@@ -446,17 +450,11 @@ fn coverage_gap_action_instruction(actions: &[CoverageGapAction]) -> String {
 }
 
 fn coverage_gap_pentest_run_block_reason(tool_args: &serde_json::Value) -> Option<String> {
-    let args = tool_args
-        .get("args")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim();
-    if args.is_empty() {
-        return None;
-    }
+    let args = pentest_run_args(tool_args);
 
     let tool = tool_args
         .get("tool_name")
+        .or_else(|| tool_args.get("tool"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_ascii_lowercase();
@@ -467,43 +465,10 @@ fn coverage_gap_pentest_run_block_reason(tool_args: &serde_json::Value) -> Optio
         return None;
     }
 
-    let args_lc = args.to_ascii_lowercase();
-    if args_lc.contains("<<") || args_lc.contains("/dev/stdin") {
-        return Some(
-            "coverage-gap repair blocks bulk stdin probes; run a narrow probe for one named gap"
-                .to_string(),
-        );
-    }
-    if args_lc.contains(" -l ")
-        || args_lc.starts_with("-l ")
-        || args_lc.contains(" --list ")
-        || args_lc.starts_with("--list ")
-        || args_lc.contains(" -il ")
-        || args_lc.starts_with("-il ")
-    {
-        return Some(
-            "coverage-gap repair blocks list-file probes; use query_target_data and probe exact named gaps"
-                .to_string(),
-        );
-    }
-    let non_empty_lines = args.lines().filter(|line| !line.trim().is_empty()).count();
-    if non_empty_lines > 3 {
-        return Some(
-            "coverage-gap repair blocks multi-line bulk probes; split to exact named gaps"
-                .to_string(),
-        );
-    }
-    if contains_cidr_target(args) {
+    if contains_cidr_target(&args) || contains_cidr_target_values(&input_line_targets(tool_args)) {
         return Some(
             "coverage-gap repair blocks CIDR/range sweeps; probe one exact named asset".to_string(),
         );
-    }
-
-    let target_count = probe_targets(args).len();
-    if target_count > 1 {
-        return Some(format!(
-            "coverage-gap repair blocks multi-target probes over {target_count} targets; probe one exact named gap"
-        ));
     }
     None
 }
@@ -515,16 +480,18 @@ fn coverage_gap_action_target_block_reason(
     if actions.is_empty() {
         return None;
     }
-    let args = tool_args
-        .get("args")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim();
+    let args = pentest_run_args(tool_args);
     if args.is_empty() {
         return None;
     }
-    let targets = probe_targets(args);
+    let targets = probe_targets_from_tool_args(tool_args);
     if targets.is_empty() {
+        if uses_hidden_target_file(&args) {
+            return Some(
+                "coverage-gap repair list-file/stdin probes must provide input_lines/stdin so targets can be checked against coverage_gap_actions"
+                    .to_string(),
+            );
+        }
         return None;
     }
     let allowed = actions
@@ -549,6 +516,57 @@ fn coverage_gap_action_target_block_reason(
     ))
 }
 
+fn pentest_run_args(tool_args: &serde_json::Value) -> String {
+    tool_args
+        .get("args")
+        .or_else(|| tool_args.get("arguments"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+fn probe_targets_from_tool_args(tool_args: &serde_json::Value) -> Vec<String> {
+    let mut targets = probe_targets(&pentest_run_args(tool_args));
+    targets.extend(input_line_targets(tool_args));
+    targets.sort();
+    targets.dedup();
+    targets
+}
+
+fn input_line_targets(tool_args: &serde_json::Value) -> Vec<String> {
+    let mut targets = Vec::new();
+    if let Some(lines) = tool_args.get("input_lines").and_then(|v| v.as_array()) {
+        for line in lines {
+            if let Some(line) = line.as_str() {
+                targets.extend(probe_targets(line));
+            }
+        }
+    }
+    if let Some(stdin) = tool_args.get("stdin").and_then(|v| v.as_str()) {
+        for line in stdin.lines() {
+            targets.extend(probe_targets(line));
+        }
+    }
+    targets
+}
+
+fn uses_hidden_target_file(args: &str) -> bool {
+    let args_lc = args.to_ascii_lowercase();
+    args_lc.contains("<<")
+        || args_lc.contains("/dev/stdin")
+        || args_lc.contains(" -l ")
+        || args_lc.starts_with("-l ")
+        || args_lc.contains(" --list ")
+        || args_lc.starts_with("--list ")
+        || args_lc.contains(" -list ")
+        || args_lc.starts_with("-list ")
+        || args_lc.contains(" -il ")
+        || args_lc.starts_with("-il ")
+        || args_lc.contains(" --input-file")
+        || args_lc.starts_with("--input-file")
+}
+
 fn contains_cidr_target(args: &str) -> bool {
     args.split_whitespace().any(|token| {
         let token = clean_probe_token(token);
@@ -557,6 +575,10 @@ fn contains_cidr_target(args: &str) -> bool {
         };
         looks_like_ipv4(host) && prefix.parse::<u8>().is_ok_and(|bits| bits <= 32)
     })
+}
+
+fn contains_cidr_target_values(values: &[String]) -> bool {
+    values.iter().any(|value| contains_cidr_target(value))
 }
 
 fn probe_targets(args: &str) -> Vec<String> {

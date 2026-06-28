@@ -20,6 +20,39 @@ pub const TECH_EAS_LIVENESS: &str = "GOLISH-EAS-LIVENESS";
 pub const TECH_EAS_PORT: &str = "GOLISH-EAS-PORT";
 pub const TECH_EAS_SERVICE_FINGERPRINT: &str = "GOLISH-EAS-SERVICE-FINGERPRINT";
 
+/// Coverage gate join key for URL endpoint liveness.
+///
+/// This intentionally mirrors the gate's asset join semantics for endpoint
+/// assets: erase the scheme and casing, but keep port/path. Host-level helpers
+/// such as `canonical_asset_key` are still correct for PORT/SERVICE, but they
+/// collapse `http://host:90` to `host`, which cannot close a URL:port liveness
+/// cell.
+pub fn eas_liveness_asset_key(value: &str) -> Option<String> {
+    let key = coverage_join_asset_key(value);
+    if key.is_empty() {
+        return None;
+    }
+    let host = key.split(['/', '?', '#']).next().unwrap_or(key.as_str());
+    let host = strip_port(host);
+    if host.is_empty() {
+        return None;
+    }
+    (host.parse::<std::net::IpAddr>().is_ok() || host.contains('.')).then_some(key)
+}
+
+fn coverage_join_asset_key(value: &str) -> String {
+    let lowered = value.trim().to_ascii_lowercase();
+    let no_scheme = match lowered.split_once("://") {
+        Some((scheme, rest))
+            if !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphabetic()) =>
+        {
+            rest
+        }
+        _ => lowered.as_str(),
+    };
+    no_scheme.trim_end_matches('.').to_string()
+}
+
 /// Phase 2 · 解析 `recon_discover_subsidiaries` 的结构化 JSON summary →
 /// SUBSIDIARY 维度事实 `(technique, asset=公司名, outcome)`.
 ///
@@ -143,11 +176,15 @@ fn eas_facts_from_command(command: &str) -> Option<(&'static str, String)> {
     let (tool, rest) = command_tool_and_rest(command.trim())?;
     let rest_tokens: Vec<&str> = rest.split_whitespace().collect();
     match tool.as_str() {
-        "httpx" => target_from_flags(&rest_tokens, &["-u", "-target"])
-            .or_else(|| first_target_like(&rest_tokens))
-            .map(|asset| (TECH_EAS_LIVENESS, asset)),
+        "httpx" => target_from_flags(
+            &rest_tokens,
+            &["-u", "-target"],
+            normalize_liveness_target_token,
+        )
+        .or_else(|| first_target_like(&rest_tokens, normalize_liveness_target_token))
+        .map(|asset| (TECH_EAS_LIVENESS, asset)),
         "nmap" => {
-            let asset = first_target_like(&rest_tokens)?;
+            let asset = first_target_like(&rest_tokens, normalize_target_token)?;
             if has_flag(&rest_tokens, &["-sn", "-sP"]) {
                 Some((TECH_EAS_LIVENESS, asset))
             } else if has_flag(&rest_tokens, &["-sV", "-A"]) {
@@ -156,12 +193,11 @@ fn eas_facts_from_command(command: &str) -> Option<(&'static str, String)> {
                 Some((TECH_EAS_PORT, asset))
             }
         }
-        "naabu" | "masscan" => target_from_flags(&rest_tokens, &["-host"])
-            .or_else(|| first_target_like(&rest_tokens))
+        "naabu" | "masscan" => target_from_flags(&rest_tokens, &["-host"], normalize_target_token)
+            .or_else(|| first_target_like(&rest_tokens, normalize_target_token))
             .map(|asset| (TECH_EAS_PORT, asset)),
-        "whatweb" => {
-            first_target_like(&rest_tokens).map(|asset| (TECH_EAS_SERVICE_FINGERPRINT, asset))
-        }
+        "whatweb" => first_target_like(&rest_tokens, normalize_target_token)
+            .map(|asset| (TECH_EAS_SERVICE_FINGERPRINT, asset)),
         _ => None,
     }
 }
@@ -198,36 +234,32 @@ fn has_flag(tokens: &[&str], flags: &[&str]) -> bool {
     })
 }
 
-fn target_from_flags(tokens: &[&str], flags: &[&str]) -> Option<String> {
+fn target_from_flags(
+    tokens: &[&str],
+    flags: &[&str],
+    normalize: fn(&str) -> Option<String>,
+) -> Option<String> {
     tokens
         .iter()
         .position(|token| flags.contains(token))
         .and_then(|idx| tokens.get(idx + 1))
-        .and_then(|token| normalize_target_token(token))
+        .and_then(|token| normalize(token))
 }
 
-fn first_target_like(tokens: &[&str]) -> Option<String> {
+fn first_target_like(tokens: &[&str], normalize: fn(&str) -> Option<String>) -> Option<String> {
     tokens
         .iter()
         .filter(|token| !token.starts_with('-') && !token.starts_with('+'))
-        .find_map(|token| normalize_target_token(token))
+        .find_map(|token| normalize(token))
+}
+
+fn normalize_liveness_target_token(token: &str) -> Option<String> {
+    let value = clean_target_token(token)?;
+    eas_liveness_asset_key(value)
 }
 
 fn normalize_target_token(token: &str) -> Option<String> {
-    let value = token
-        .trim()
-        .trim_matches(',')
-        .trim_matches('"')
-        .trim_matches('\'')
-        .trim_end_matches('.');
-    if value.is_empty()
-        || value.starts_with('-')
-        || value.starts_with('+')
-        || value.starts_with('@')
-        || value.contains(['|', ';', '&', '$', '`', '<', '>'])
-    {
-        return None;
-    }
+    let value = clean_target_token(token)?;
 
     let host = if let Some((scheme, rest)) = value.split_once("://") {
         if !matches!(scheme, "http" | "https") {
@@ -248,6 +280,25 @@ fn normalize_target_token(token: &str) -> Option<String> {
         Some(host.to_string())
     } else {
         None
+    }
+}
+
+fn clean_target_token(token: &str) -> Option<&str> {
+    let value = token
+        .trim()
+        .trim_matches(',')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_end_matches('.');
+    if value.is_empty()
+        || value.starts_with('-')
+        || value.starts_with('+')
+        || value.starts_with('@')
+        || value.contains(['|', ';', '&', '$', '`', '<', '>'])
+    {
+        None
+    } else {
+        Some(value)
     }
 }
 
@@ -561,9 +612,28 @@ mod tests {
             Some((TECH_EAS_LIVENESS, "pinganstock.com".to_string()))
         );
         assert_eq!(
+            coverage_facts_from_command(
+                "\"/Users/me/Library/Application Support/golish-platform/tools/httpx/httpx\" -u http://linquankuaipin.com:90 -json -silent"
+            ),
+            Some((TECH_EAS_LIVENESS, "linquankuaipin.com:90".to_string()))
+        );
+        assert_eq!(
             coverage_facts_from_command("naabu -host pinganstock.com -top-ports 100 -silent"),
             Some((TECH_EAS_PORT, "pinganstock.com".to_string()))
         );
+    }
+
+    #[test]
+    fn eas_liveness_asset_key_preserves_url_endpoint_port() {
+        assert_eq!(
+            eas_liveness_asset_key("http://LinQuanKuaiPin.com:90").as_deref(),
+            Some("linquankuaipin.com:90")
+        );
+        assert_eq!(
+            eas_liveness_asset_key("https://example.com/login").as_deref(),
+            Some("example.com/login")
+        );
+        assert_eq!(eas_liveness_asset_key("not-a-host"), None);
     }
 
     #[test]

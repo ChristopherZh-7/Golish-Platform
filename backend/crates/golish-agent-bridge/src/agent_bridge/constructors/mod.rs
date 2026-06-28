@@ -389,6 +389,7 @@ impl AgentBridge {
             harness_active_org_id: Arc::new(RwLock::new(None)),
             harness_active_operation_id: Arc::new(RwLock::new(None)),
             harness_submit_only: Arc::new(RwLock::new(false)),
+            harness_forced_tool: Arc::new(RwLock::new(None)),
             harness_profile: Arc::new(RwLock::new(None)),
             harness_last_deliverable: Arc::new(RwLock::new(None)),
             pending_plan_request: Arc::new(RwLock::new(None)),

@@ -34,6 +34,7 @@ pub mod sessions;
 pub mod sitemap_store;
 pub mod source_query_log;
 pub mod sprint_contracts;
+pub mod stage_asset_waves;
 pub mod stage_runs;
 pub mod sub_agent_dispatches;
 pub mod subtasks;

@@ -1,6 +1,7 @@
 import { render } from "@testing-library/react";
 import { createElement } from "react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useStore } from "@/store";
 import {
   extractAssetSubjectFromText,
   extractAssetSubjectFromToolCall,
@@ -16,16 +17,27 @@ import {
   isSubAgentShellLikeOutputTool,
   isTerminalStageRunToolStatus,
   normalizeSubAgentEntriesForDetail,
+  parseStageRefinerDirectiveSummary,
   parseStageRunOrgRequestId,
   resolveStageCoverageContextForSubAgent,
   SUB_AGENT_DETAIL_PENDING_OUTPUT_SPINNER_CLASS,
   SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS,
   SUB_AGENT_HEADER_STATUS_BADGE_STYLES,
+  SubAgentDetailView,
   SubAgentShellOutputText,
   shouldSeparateSubAgentDetailEntries,
   stripAgentXmlTags,
   summarizeSubAgentAssetWork,
 } from "./SubAgentDetailView";
+
+beforeEach(() => {
+  useStore.setState({
+    activeSubAgents: {},
+    backgroundJobs: {},
+    sessions: {},
+    timelines: {},
+  });
+});
 
 describe("stripAgentXmlTags", () => {
   it("removes empty <tool_call></tool_call> wrappers", () => {
@@ -59,8 +71,149 @@ describe("stripAgentXmlTags", () => {
     expect(out).not.toContain("task_assignment");
   });
 
+  it("removes DSML textual tool-call blocks leaked into sub-agent prose", () => {
+    const text =
+      'Let me submit directly:< | | DSML | | tool_calls>< | | DSML | | invoke name="submit_stage_deliverable">< | | DSML | | parameter name="claims" string="false">[{"subject":"http://115.159.235.124:8080"}]< / | | DSML | | parameter>< / | | DSML | | invoke>< / | | DSML | | tool_calls>done.';
+    const out = stripAgentXmlTags(text);
+
+    expect(out).toBe("Let me submit directly:done.");
+    expect(out).not.toContain("DSML");
+    expect(out).not.toContain("submit_stage_deliverable");
+    expect(out).not.toContain("115.159.235.124");
+  });
+
+  it("removes unterminated DSML blocks from the first leaked tag onward", () => {
+    const text =
+      'Before submit.<|DSML|tool_calls><|DSML|invoke name="submit_stage_deliverable"><|DSML|parameter name="coverage">[';
+
+    expect(stripAgentXmlTags(text)).toBe("Before submit.");
+  });
+
   it("leaves plain prose untouched", () => {
     expect(stripAgentXmlTags("just a normal answer")).toBe("just a normal answer");
+  });
+});
+
+describe("SubAgentDetailView rendering", () => {
+  it("renders stage-run backed detail without unstable selector loops", () => {
+    const sessionId = "detail-session";
+    const startedAt = "2026-06-28T14:00:00.000Z";
+    const parentRequestId = "stage-run-request::org::org-1";
+
+    useStore.setState({
+      activeSubAgents: {
+        [sessionId]: [
+          {
+            agentId: "agent-1",
+            agentName: "Prober Agent",
+            depth: 0,
+            entries: [
+              { kind: "thinking", text: "Reviewing the target batch.", startedAt: 1, endedAt: 2 },
+              { kind: "text", text: "Let me probe the live services." },
+            ],
+            parentRequestId,
+            startedAt,
+            status: "running",
+            task: "Probe services",
+            toolCalls: [],
+          },
+        ],
+      },
+      backgroundJobs: {},
+      sessions: {
+        [sessionId]: {
+          createdAt: startedAt,
+          detailViewMode: "sub-agent-detail",
+          id: sessionId,
+          mode: "agent",
+          name: "Detail Session",
+          toolDetailRequestIds: [parentRequestId],
+          workingDirectory: "/tmp",
+        },
+      },
+      timelines: {
+        [sessionId]: [
+          {
+            data: {
+              args: {},
+              requestId: "stage-run-request",
+              startedAt,
+              status: "running",
+              toolName: "stage_run",
+            },
+            id: "stage-run-block",
+            timestamp: startedAt,
+            type: "ai_tool_execution",
+          },
+        ],
+      },
+    });
+
+    const { container } = render(createElement(SubAgentDetailView, { sessionId }));
+
+    expect(container.textContent).toContain("Prober Agent");
+    expect(container.textContent).toContain("Let me probe the live services.");
+  });
+});
+
+describe("parseStageRefinerDirectiveSummary", () => {
+  it("returns null for ordinary agent output", () => {
+    expect(parseStageRefinerDirectiveSummary("I've completed the scan.")).toBeNull();
+  });
+
+  it("extracts a compact summary from resumed coverage-gap directives", () => {
+    const summary = parseStageRefinerDirectiveSummary(
+      "Resuming submit repair: STAGE REFINER DIRECTIVE (deterministic, DB-backed): deterministic gate found 289 non-terminal coverage gap action(s)\n" +
+        "Stage: external_attack_surface. Repair kind: CoverageGap. Do not restart the stage; perform only the actions below.\n" +
+        "Allowed next tools: [pentest_list_tools, pentest_run, query_target_data, check_stage_asset_coverage, wait_for_background_jobs, check_job, kill_job, submit_stage_deliverable].\n" +
+        "Forbidden in this repair: [list_in_scope_targets, list_attack_surface_seeds, manage_targets, manage_organizations].\n" +
+        "Batching: EAS repair is batch-first.\n" +
+        "Actions:\n 1. PORT/naabu: one pentest_run tool_name=naabu\n 2. SERVICE/nmap: group hosts\nThen call submit_stage_deliverable once."
+    );
+
+    expect(summary).toEqual({
+      rootCause: "deterministic gate found 289 non-terminal coverage gap action(s)",
+      stageLabel: "External Attack Surface",
+      repairKindLabel: "Coverage Gap",
+      gapCount: 289,
+      actionCount: 2,
+      allowedTools: [
+        "pentest_list_tools",
+        "pentest_run",
+        "query_target_data",
+        "check_stage_asset_coverage",
+        "wait_for_background_jobs",
+        "check_job",
+        "kill_job",
+        "submit_stage_deliverable",
+      ],
+      forbiddenTools: [
+        "list_in_scope_targets",
+        "list_attack_surface_seeds",
+        "manage_targets",
+        "manage_organizations",
+      ],
+      batchFirst: true,
+    });
+  });
+
+  it("extracts evidence-ref repair directives without a gap count", () => {
+    const summary = parseStageRefinerDirectiveSummary(
+      "STAGE REFINER DIRECTIVE (deterministic, DB-backed): deliverable evidence references are missing\n" +
+        "Stage: target_intel. Repair kind: EvidenceRefs. Do not restart the stage.\n" +
+        "Allowed next tools: [query_target_data, submit_stage_deliverable].\n" +
+        "Actions:\n 1. map real evidence ids to claims"
+    );
+
+    expect(summary).toMatchObject({
+      rootCause: "deliverable evidence references are missing",
+      stageLabel: "Target Intel",
+      repairKindLabel: "Evidence Refs",
+      gapCount: null,
+      actionCount: 1,
+      allowedTools: ["query_target_data", "submit_stage_deliverable"],
+      batchFirst: false,
+    });
   });
 });
 

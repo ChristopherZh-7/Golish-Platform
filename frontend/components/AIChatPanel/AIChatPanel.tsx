@@ -1,4 +1,4 @@
-import { ArrowUp, Image, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Image, LoaderCircle, Square, Wrench, X } from "lucide-react";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
@@ -31,6 +31,7 @@ import { useChatSessionInit } from "./hooks/useChatSessionInit";
 import { useTaskPlanState } from "./hooks/useTaskPlanState";
 import { MessageBlock } from "./MessageBlock";
 import { buildPentestSystemPrompt } from "./pentestSystemPrompt";
+import { shouldShowChatRestoreLoading } from "./restoreLoadingState";
 import { StageMarker } from "./StageMarker";
 import { StageProgressBar } from "./StageProgressBar";
 import { useChatAutoScroll } from "./useChatAutoScroll";
@@ -66,6 +67,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
   });
   const messages = activeConv?.messages ?? EMPTY_MESSAGES;
   const isStreaming = activeConv?.isStreaming ?? false;
+  const activeSessionId = useStore((s) => s.activeSessionId);
+  const workspaceDataReady = useStore((s) => s.workspaceDataReady);
+  const pendingTerminalRestoreData = useStore((s) => s.pendingTerminalRestoreData);
 
   const storeAiModel = useStore((s) => s.selectedAiModel);
   const [selectedModel, setSelectedModel] = useState<{ model: string; provider: string } | null>(
@@ -337,6 +341,12 @@ export const AIChatPanel = memo(function AIChatPanel() {
   // ── Derived data ─────────────────────────────────────────────────────
   const currentModel = selectedModel?.model ?? "";
   const currentProvider = selectedModel?.provider ?? "";
+  const showRestoreLoading = shouldShowChatRestoreLoading({
+    workspaceDataReady,
+    terminalRestoreInProgress,
+    pendingTerminalRestoreData,
+    activeSessionId,
+  });
 
   const stablePendingApproval = useMemo(
     () =>
@@ -421,7 +431,17 @@ export const AIChatPanel = memo(function AIChatPanel() {
             />
           )}
           <div ref={messagesContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden">
-            {messages.length === 0 ? (
+            {messages.length === 0 && showRestoreLoading ? (
+              <div className="flex flex-col items-center justify-center h-full select-none gap-3 text-center px-6">
+                <LoaderCircle className="w-5 h-5 text-accent/70 animate-spin" />
+                <div className="space-y-1">
+                  <p className="text-[13px] text-foreground/80">{t("ai.loadingWorkspace")}</p>
+                  <p className="text-[11px] text-muted-foreground/55">
+                    {t("ai.loadingWorkspaceDetail")}
+                  </p>
+                </div>
+              </div>
+            ) : messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full select-none gap-4">
                 <div className="flex items-center gap-1.5">
                   {[0, 1, 2].map((i) => (

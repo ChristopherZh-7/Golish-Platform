@@ -260,7 +260,8 @@ impl TaskOrchestrator {
                         continue;
                     }
 
-                    let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned).await;
+                    let in_scope_assets =
+                        self.fetch_in_scope_assets_for_gate(planned, task_id).await;
                     let asset_types = self.fetch_in_scope_typed_assets_for_gate(planned).await;
                     let in_scope_target_types =
                         self.fetch_in_scope_target_types_for_gate(planned).await;
@@ -457,7 +458,7 @@ impl TaskOrchestrator {
             .unwrap_or_else(|| "Subtask completed without tool usage.".to_string());
         // Loop exhausted: run the gate once on the fallback content (no further
         // retry possible) and drive the transition on whatever it decides.
-        let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned).await;
+        let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned, task_id).await;
         let asset_types = self.fetch_in_scope_typed_assets_for_gate(planned).await;
         let in_scope_target_types = self.fetch_in_scope_target_types_for_gate(planned).await;
         let evidence_facts = self
@@ -679,6 +680,7 @@ impl TaskOrchestrator {
             harness_authz: None,
             harness_profile_id: op_profile_id.clone(),
             harness_submit_only: false,
+            harness_forced_tool: None,
             harness_org_id: self.harness_org_id,
         };
 
@@ -1083,6 +1085,22 @@ impl TaskOrchestrator {
         // tools (manage_targets org backfill) + submit gate (org-keyed DB-truth
         // projection) see the bound org instead of a stale `None`.
         self.sync_engagement_org_into(exec_ctx);
+        let force_stage_run = if std::mem::take(&mut self.force_stage_run_on_resume_once) {
+            let can_force =
+                exec_ctx.harness_org_id.is_some() && stage_has_stage_run_specialist(stage);
+            if !can_force {
+                tracing::info!(
+                    target: "harness::hook",
+                    stage = %stage.as_str(),
+                    has_engagement_org = exec_ctx.harness_org_id.is_some(),
+                    "fast resume did not force stage_run for this stage"
+                );
+            }
+            can_force
+        } else {
+            false
+        };
+        exec_ctx.harness_forced_tool = force_stage_run.then(|| "stage_run".to_string());
         exec_ctx.harness_authz = op_max_authz.map(|max_authorization| {
             let intent = crate::harness::IntentClassifier::with_default_keywords()
                 .classify(&planned.description, stage);
@@ -1124,10 +1142,21 @@ impl TaskOrchestrator {
             status: "running".to_string(),
             message: format!("Stage '{}' executing (agent-driven).", stage.as_str()),
         });
+        if force_stage_run {
+            self.emit(AiEvent::TaskProgress {
+                task_id: task_id.to_string(),
+                status: "running".to_string(),
+                message: format!(
+                    "Fast resume: dispatching stage_run directly for '{}'.",
+                    stage.as_str()
+                ),
+            });
+        }
 
         let (result_text, _usage) = self
             .execute_single_subtask(&planned, exec_ctx, executor, &None, task_id)
             .await;
+        exec_ctx.harness_forced_tool = None;
 
         self.emit(AiEvent::SubtaskCompleted {
             task_id: task_id.to_string(),
@@ -1345,15 +1374,26 @@ impl TaskOrchestrator {
     async fn fetch_in_scope_assets_for_gate(
         &self,
         planned: &PlannedSubtask,
+        task_id: Uuid,
     ) -> Option<Vec<String>> {
         // Only stage-tagged subtasks run a gate; skip the DB hit otherwise.
         planned.harness_stage.as_ref()?;
-        match self.repo.in_scope_assets(self.harness_org_id).await {
+        let wave_cutoff = self.asset_wave_cutoff_for_gate(planned, task_id).await;
+        let result = match wave_cutoff {
+            Some(cutoff) => {
+                self.repo
+                    .in_scope_assets_created_before(self.harness_org_id, cutoff)
+                    .await
+            }
+            None => self.repo.in_scope_assets(self.harness_org_id).await,
+        };
+        match result {
             Ok(v) if !v.is_empty() => {
                 tracing::info!(
                     target: "harness::hook",
                     asset_count = v.len(),
                     org_id = ?self.harness_org_id,
+                    wave_cutoff = ?wave_cutoff,
                     "injecting authoritative in-scope assets into coverage gate"
                 );
                 Some(v)
@@ -1368,6 +1408,24 @@ impl TaskOrchestrator {
                 None
             }
         }
+    }
+
+    async fn asset_wave_cutoff_for_gate(
+        &self,
+        planned: &PlannedSubtask,
+        task_id: Uuid,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        let stage = planned.harness_stage.as_ref()?.stage_kind;
+        let spec = crate::harness::load_embedded_stage_spec(stage).ok()?;
+        if !spec.asset_wave_barrier {
+            return None;
+        }
+        let state = crate::db_shim::operation_state::get(&*self.repo, task_id)
+            .await
+            .ok()
+            .flatten()?;
+        (crate::harness::StageKind::try_parse(&state.current_stage) == Some(stage))
+            .then_some(state.stage_started_at)
     }
 
     /// 2c-1 (设计 2026-06-15-host-aware-coverage-2c §4.1): fetch authoritative
@@ -2780,6 +2838,14 @@ fn intel_policy_for_ctx(exec_ctx: &ExecutionContext) -> crate::harness::profile:
         .unwrap_or_default()
 }
 
+fn stage_has_stage_run_specialist(stage: crate::harness::StageKind) -> bool {
+    crate::harness::load_embedded_stage_spec(stage)
+        .ok()
+        .and_then(|spec| spec.specialist)
+        .map(|specialist| !specialist.trim().is_empty())
+        .unwrap_or(false)
+}
+
 fn synthesize_stage_subtask(
     stage: crate::harness::StageKind,
     task_input: &str,
@@ -3868,5 +3934,20 @@ mod missing_deliverable_fail_closed_tests {
             "the retry must lock tool_choice to submit"
         );
         assert_eq!(out, "prose");
+    }
+
+    #[test]
+    fn specialist_stages_are_fast_resume_stage_run_candidates() {
+        assert!(stage_has_stage_run_specialist(StageKind::TargetIntel));
+        assert!(stage_has_stage_run_specialist(
+            StageKind::ExternalAttackSurface
+        ));
+        assert!(stage_has_stage_run_specialist(StageKind::Enumeration));
+    }
+
+    #[test]
+    fn non_specialist_stages_do_not_force_stage_run_on_resume() {
+        assert!(!stage_has_stage_run_specialist(StageKind::Scoping));
+        assert!(!stage_has_stage_run_specialist(StageKind::Reporting));
     }
 }

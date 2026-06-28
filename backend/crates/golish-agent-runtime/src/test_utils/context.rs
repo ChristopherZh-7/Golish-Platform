@@ -337,6 +337,7 @@ impl TestContext {
             harness_stage: None,
             harness_authz: None,
             harness_submit_only: false,
+            harness_forced_tool: None,
             harness_deliverable_sink: None,
             harness_org_id: None,
             harness_org_id_source: None,

@@ -96,6 +96,10 @@ pub struct TaskOrchestrator {
     /// restricts the DAG to `remaining_stages`, so previously satisfied stages
     /// are skipped deterministically instead of being prompt-only context.
     pub(super) continuity_adoption: Option<crate::harness::ContinuityAdoptionPlan>,
+    /// One-shot fast path for a bare continuation prompt. The next resumed stage
+    /// request consumes this flag; if that stage is a DB-root-bound specialist
+    /// stage, its first primary-agent turn is locked to `stage_run`.
+    pub(super) force_stage_run_on_resume_once: bool,
 }
 
 impl TaskOrchestrator {
@@ -120,6 +124,7 @@ impl TaskOrchestrator {
             approval_coordinator: None,
             stage_allowlist: None,
             continuity_adoption: None,
+            force_stage_run_on_resume_once: false,
         }
     }
 
@@ -183,6 +188,13 @@ impl TaskOrchestrator {
         plan: Option<crate::harness::ContinuityAdoptionPlan>,
     ) {
         self.continuity_adoption = plan;
+    }
+
+    /// Prefer a deterministic `stage_run` dispatch for the next resumed stage
+    /// when it is safe to do so. Callers should only set this for bare
+    /// continuation prompts, not for "继续，但是..." steering text.
+    pub fn set_force_stage_run_on_resume_once(&mut self, enabled: bool) {
+        self.force_stage_run_on_resume_once = enabled;
     }
 
     /// Run a full Task mode execution.

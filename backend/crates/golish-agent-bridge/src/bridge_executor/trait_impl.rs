@@ -124,6 +124,8 @@ impl AgentExecutor for BridgeAgentExecutor {
         // to `submit_stage_deliverable` (work already evidenced, only the
         // submission is missing). Reset per-subtask like the other side-channels.
         *self.bridge.harness_submit_only.write().await = execution_context.harness_submit_only;
+        *self.bridge.harness_forced_tool.write().await =
+            execution_context.harness_forced_tool.clone();
         // C2c/PR1 · reset the deliverable-capture sink — UNLESS the capture
         // belongs to this very stage: the retry loop re-enters here once per gate
         // attempt, and a same-stage capture from the previous attempt is the
@@ -142,7 +144,12 @@ impl AgentExecutor for BridgeAgentExecutor {
             }
         }
 
-        let content = self.bridge.execute_isolated(&prompt).await?;
+        let content_result = self.bridge.execute_isolated(&prompt).await;
+        // Forced tool locks are one-shot runtime hints. Clear the bridge
+        // side-channel even when the isolated loop returns an error so a later
+        // plain chat turn cannot inherit a stale tool lock.
+        *self.bridge.harness_forced_tool.write().await = None;
+        let content = content_result?;
 
         // C2c/PR1 · The orchestrator often delegates the StageDeliverable to a
         // sub-agent / the submit tool and then narrates (or says nothing): the

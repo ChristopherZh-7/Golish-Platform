@@ -186,6 +186,10 @@ pub struct AgenticLoopContext<'a> {
     /// `submit_stage_deliverable` (released once it has been dispatched).
     /// `false` = normal pass, tool_choice behavior unchanged.
     pub harness_submit_only: bool,
+    /// Optional one-shot forced orchestration tool for deterministic resume
+    /// turns. The turn state releases this after the named tool is dispatched.
+    /// `None` = normal provider/tool-choice behavior.
+    pub harness_forced_tool: Option<String>,
     /// C2c · optional sink for a `StageDeliverable` produced by a delegated
     /// sub-agent (e.g. `reporter`). When set, the sub-agent call handler writes
     /// any result carrying a deliverable signature here, so the Task-mode

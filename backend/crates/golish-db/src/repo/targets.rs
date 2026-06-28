@@ -154,6 +154,16 @@ fn build_list_in_scope_values_legacy_sql() -> String {
         .to_string()
 }
 
+fn build_list_in_scope_values_before_legacy_sql() -> String {
+    "SELECT DISTINCT value FROM targets \
+       WHERE scope::text = 'in' \
+         AND ($1 IS NULL OR project_path = $1 OR project_path = '') \
+         AND ($2 IS NULL OR organization_id = $2) \
+         AND created_at <= $3 \
+       ORDER BY value"
+        .to_string()
+}
+
 fn build_clear_by_project_exact_sql() -> String {
     "DELETE FROM targets WHERE project_path = $1".to_string()
 }
@@ -312,6 +322,26 @@ pub async fn list_in_scope_values(
     let rows = sqlx::query_scalar::<_, String>(&build_list_in_scope_values_legacy_sql())
         .bind(project_path)
         .bind(org_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}
+
+/// Distinct in-scope target values that existed at or before `cutoff`.
+///
+/// Used by stage expansion wave barrier Phase 1 to freeze the current wave's
+/// coverage denominator without adding a schema table. Same project/org/scope
+/// visibility as [`list_in_scope_values`], plus `targets.created_at <= cutoff`.
+pub async fn list_in_scope_values_created_before(
+    pool: &PgPool,
+    project_path: Option<&str>,
+    org_id: Option<Uuid>,
+    cutoff: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<String>> {
+    let rows = sqlx::query_scalar::<_, String>(&build_list_in_scope_values_before_legacy_sql())
+        .bind(project_path)
+        .bind(org_id)
+        .bind(cutoff)
         .fetch_all(pool)
         .await?;
     Ok(rows)
@@ -666,6 +696,19 @@ mod tests {
                WHERE scope::text = 'in' \
                  AND ($1 IS NULL OR project_path = $1 OR project_path = '') \
                  AND ($2 IS NULL OR organization_id = $2) \
+               ORDER BY value"
+        );
+    }
+
+    #[test]
+    fn list_in_scope_values_before_sql_adds_wave_cutoff() {
+        assert_eq!(
+            build_list_in_scope_values_before_legacy_sql(),
+            "SELECT DISTINCT value FROM targets \
+               WHERE scope::text = 'in' \
+                 AND ($1 IS NULL OR project_path = $1 OR project_path = '') \
+                 AND ($2 IS NULL OR organization_id = $2) \
+                 AND created_at <= $3 \
                ORDER BY value"
         );
     }

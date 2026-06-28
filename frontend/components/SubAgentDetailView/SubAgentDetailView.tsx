@@ -5,6 +5,7 @@
  * 文字输出和工具调用按时间顺序交错显示，类似右侧 ChatPanel 的 primary agent 消息流。
  */
 import {
+  AlertTriangle,
   ArrowLeft,
   CheckCircle2,
   ChevronDown,
@@ -14,6 +15,7 @@ import {
   Loader2,
   Terminal,
   Wand2,
+  Wrench,
   XCircle,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from "react";
@@ -57,6 +59,8 @@ import type { SessionStageRun } from "@/store/types/session";
 export const SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS = "h-4 w-4 shrink-0 animate-spin";
 export const SUB_AGENT_DETAIL_PENDING_OUTPUT_SPINNER_CLASS =
   "h-4 w-4 shrink-0 animate-spin text-[var(--ansi-blue)]/80";
+const SUB_AGENT_DETAIL_NARRATIVE_BLOCK_CLASS = "bg-[var(--bg-hover)]/25 px-4 py-2.5";
+const SUB_AGENT_DETAIL_NARRATIVE_COMPACT_TOP_CLASS = "bg-[var(--bg-hover)]/25 px-4 pb-2.5 pt-0.5";
 
 type ShellOutputField = { key: string; value: string };
 type SubAgentToolStatus = SubAgentToolCall["status"];
@@ -67,6 +71,17 @@ type SubAgentDetailTab = "run" | "coverage";
 
 interface DisplayStatusOptions {
   parentStageStopped?: boolean;
+}
+
+interface StageRefinerDirectiveSummary {
+  rootCause: string;
+  stageLabel: string | null;
+  repairKindLabel: string | null;
+  gapCount: number | null;
+  actionCount: number | null;
+  allowedTools: string[];
+  forbiddenTools: string[];
+  batchFirst: boolean;
 }
 
 export function SubAgentShellOutputText({ text }: { text: string }) {
@@ -358,9 +373,26 @@ export function isSubAgentShellLikeOutputTool(
   );
 }
 
+const DSML_TAG_PREFIX = String.raw`<\s*/?\s*(?:\|\s*)+DSML\s*(?:\|\s*)+/?\s*`;
+
+function dsmlBlockRegex(tagPattern: string): RegExp {
+  return new RegExp(
+    `${DSML_TAG_PREFIX}${tagPattern}\\b[^>]*>[\\s\\S]*?(?:${DSML_TAG_PREFIX}${tagPattern}\\b[^>]*>|$)`,
+    "gi"
+  );
+}
+
+function stripDsmlToolCallMarkup(text: string): string {
+  return text
+    .replace(dsmlBlockRegex("tool_calls?"), "")
+    .replace(dsmlBlockRegex("invoke"), "")
+    .replace(dsmlBlockRegex("parameter"), "")
+    .replace(new RegExp(`${DSML_TAG_PREFIX}(?:tool_calls?|invoke|parameter)\\b[^>]*>`, "gi"), "");
+}
+
 export function stripAgentXmlTags(text: string): string {
   return stripAllAnsi(
-    text
+    stripDsmlToolCallMarkup(text)
       .replace(
         /<\/?(task_assignment|original_request|execution_plan|execution_context|prior_knowledge)>/gi,
         ""
@@ -381,26 +413,197 @@ export function stripAgentXmlTags(text: string): string {
   ).trim();
 }
 
+function humanizeDirectiveToken(value: string): string {
+  const spaced = value
+    .replace(/_/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .trim();
+  if (!spaced) return "";
+  return spaced
+    .toLowerCase()
+    .replace(/\b[a-z]/g, (match) => match.toUpperCase())
+    .replace(/\bEas\b/g, "EAS")
+    .replace(/\bDb\b/g, "DB");
+}
+
+function parseDirectiveList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+export function parseStageRefinerDirectiveSummary(
+  text: string
+): StageRefinerDirectiveSummary | null {
+  const cleaned = stripAgentXmlTags(text);
+  const markerIndex = cleaned.indexOf("STAGE REFINER DIRECTIVE");
+  if (markerIndex < 0) return null;
+
+  const directive = cleaned.slice(markerIndex);
+  const rootCause =
+    directive.match(/STAGE REFINER DIRECTIVE\s*(?:\([^)]+\))?:\s*([^\n]+)/)?.[1]?.trim() ??
+    "Deterministic repair directive";
+  const stageMatch = directive.match(/Stage:\s*([^.]+)\.\s*Repair kind:\s*([^.]+)\./);
+  const gapCountText = directive.match(
+    /deterministic gate found\s+(\d+)\s+non-terminal coverage gap action\(s\)/i
+  )?.[1];
+  const allowedTools = parseDirectiveList(
+    directive.match(/Allowed next tools:\s*\[([^\]]*)\]/)?.[1]
+  );
+  const forbiddenTools = parseDirectiveList(
+    directive.match(/Forbidden in this repair:\s*\[([^\]]*)\]/)?.[1]
+  );
+  const actionCount = (directive.match(/^\s*\d+\.\s+/gm) ?? []).length;
+
+  return {
+    rootCause,
+    stageLabel: stageMatch?.[1] ? humanizeDirectiveToken(stageMatch[1]) : null,
+    repairKindLabel: stageMatch?.[2] ? humanizeDirectiveToken(stageMatch[2]) : null,
+    gapCount: gapCountText ? Number(gapCountText) : null,
+    actionCount: actionCount > 0 ? actionCount : null,
+    allowedTools,
+    forbiddenTools,
+    batchFirst: /batch-first/i.test(directive),
+  };
+}
+
+function compactToolName(tool: string): string {
+  return tool.replace(/_/g, " ");
+}
+
 /* ─── Sub-agent text output block ─── */
 
+const StageRefinerDirectiveBlock = memo(function StageRefinerDirectiveBlock({
+  text,
+  summary,
+  streaming = false,
+}: {
+  text: string;
+  summary: StageRefinerDirectiveSummary;
+  streaming?: boolean;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const allowedPreview = summary.allowedTools.slice(0, 4);
+  const hiddenAllowed = Math.max(0, summary.allowedTools.length - allowedPreview.length);
+  const workCountLabel =
+    summary.gapCount != null
+      ? `${summary.gapCount} gaps`
+      : summary.actionCount != null
+        ? `${summary.actionCount} actions`
+        : null;
+
+  return (
+    <Collapsible
+      open={isExpanded}
+      onOpenChange={setIsExpanded}
+      className="mx-4 my-2 overflow-hidden rounded-md border border-amber-300/20 border-l-2 border-l-amber-300/70 bg-amber-400/[0.055]"
+    >
+      <div className="px-3 py-2.5">
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-amber-300/12 text-amber-300">
+            {streaming ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Wrench className="h-3 w-3" />
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-200/90">
+                Stage Refiner
+              </span>
+              {summary.repairKindLabel && (
+                <span className="rounded border border-amber-300/20 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-100">
+                  {summary.repairKindLabel}
+                </span>
+              )}
+              {workCountLabel && (
+                <span className="rounded border border-border/25 bg-background/35 px-1.5 py-0.5 text-[10px] tabular-nums text-foreground/75">
+                  {workCountLabel}
+                </span>
+              )}
+              {summary.batchFirst && (
+                <span className="rounded border border-[var(--ansi-blue)]/25 bg-[var(--ansi-blue)]/10 px-1.5 py-0.5 text-[10px] text-[var(--ansi-blue)]">
+                  Batch-first
+                </span>
+              )}
+            </div>
+            <div className="mt-1 min-w-0 text-[12.5px] font-medium text-foreground/90">
+              {summary.stageLabel ?? "Harness repair directive"}
+            </div>
+            <div className="mt-0.5 line-clamp-2 text-[11.5px] leading-relaxed text-muted-foreground/85">
+              {summary.rootCause}
+            </div>
+            {summary.allowedTools.length > 0 && (
+              <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
+                <span className="text-[10px] font-medium text-muted-foreground/65">Allowed</span>
+                {allowedPreview.map((tool) => (
+                  <span
+                    key={tool}
+                    className="rounded bg-background/45 px-1.5 py-0.5 font-mono text-[10px] text-foreground/70"
+                  >
+                    {compactToolName(tool)}
+                  </span>
+                ))}
+                {hiddenAllowed > 0 && (
+                  <span className="text-[10px] text-muted-foreground/65">+{hiddenAllowed}</span>
+                )}
+                {summary.forbiddenTools.length > 0 && (
+                  <span className="ml-1 inline-flex items-center gap-1 text-[10px] text-muted-foreground/60">
+                    <AlertTriangle className="h-2.5 w-2.5 text-amber-300/70" />
+                    {summary.forbiddenTools.length} blocked
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+          <CollapsibleTrigger className="mt-0.5 inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[10px] text-muted-foreground/75 transition-colors hover:bg-foreground/5 hover:text-foreground/90">
+            {isExpanded ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
+            Details
+          </CollapsibleTrigger>
+        </div>
+      </div>
+      <CollapsibleContent className="border-t border-amber-300/15 bg-background/25 px-3 py-2.5">
+        <div className="max-h-72 overflow-auto break-words text-[11.5px] leading-[1.65] text-foreground/80 [overflow-wrap:anywhere] [&_code]:break-words [&_p]:mb-2 [&_p:last-child]:mb-0 [&_pre]:my-2 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_ul]:my-1.5">
+          <Markdown content={text} streaming={streaming} />
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+});
+
 const AgentOutputBlock = memo(function AgentOutputBlock({
+  compactTop = false,
   text,
   streaming = false,
 }: {
+  compactTop?: boolean;
   text: string;
   streaming?: boolean;
 }) {
   const cleaned = stripAgentXmlTags(text);
   if (!cleaned) return null;
+  const refinerDirective = parseStageRefinerDirectiveSummary(cleaned);
+  if (refinerDirective) {
+    return (
+      <StageRefinerDirectiveBlock text={cleaned} summary={refinerDirective} streaming={streaming} />
+    );
+  }
   return (
-    <div className="px-4 py-3 border-l-2 border-accent/25 bg-[var(--bg-hover)]/60">
-      <div className="flex items-center gap-1.5 mb-1.5">
-        <Wand2 className="w-2.5 h-2.5 text-foreground/55" />
-        <span className="text-[9px] font-semibold text-foreground/60 uppercase tracking-wider">
-          Agent Output
-        </span>
-      </div>
-      <div className="overflow-hidden break-words text-[12.5px] text-foreground leading-[1.7] [overflow-wrap:anywhere] [&_blockquote]:my-2 [&_code]:break-words [&_h1]:!text-foreground [&_h1]:mt-3 [&_h2]:!text-foreground/90 [&_h2]:mt-2.5 [&_h3]:!text-foreground/85 [&_h3]:mt-2 [&_ol]:my-1.5 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_pre]:my-2 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:my-2 [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_td]:break-words [&_th]:break-words [&_ul]:my-1.5">
+    <div
+      className={
+        compactTop
+          ? SUB_AGENT_DETAIL_NARRATIVE_COMPACT_TOP_CLASS
+          : SUB_AGENT_DETAIL_NARRATIVE_BLOCK_CLASS
+      }
+    >
+      <div className="overflow-hidden break-words text-[12.5px] leading-[1.65] text-foreground/90 [overflow-wrap:anywhere] [&_blockquote]:my-2 [&_code]:break-words [&_h1]:!text-foreground [&_h1]:mt-3 [&_h2]:!text-foreground/90 [&_h2]:mt-2.5 [&_h3]:!text-foreground/85 [&_h3]:mt-2 [&_ol]:my-1.5 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_pre]:my-2 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:my-2 [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_td]:break-words [&_th]:break-words [&_ul]:my-1.5">
         <Markdown content={cleaned} streaming={streaming} />
       </div>
     </div>
@@ -830,9 +1033,6 @@ const NestedSubAgentCard = memo(function NestedSubAgentCard({
             {formatDurationShort(agent.durationMs)}
           </span>
         )}
-        <span className="flex-shrink-0 text-[10px] text-muted-foreground/55">
-          {agent.toolCalls.length} {t("ai.agentTree.tools")}
-        </span>
         <ChevronRight className="h-3 w-3 flex-shrink-0 text-muted-foreground/45 transition-colors group-hover:text-accent/70" />
       </div>
       {agent.task && (
@@ -992,6 +1192,18 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
       const block = timeline[i];
       if (block.type === "ai_tool_execution" && block.data.requestId === parsed.stageRunRequestId) {
         return block.data.status;
+      }
+    }
+    return null;
+  });
+  const parentStageRunToolStartedAt = useStore((s) => {
+    const parsed = parseStageRunOrgRequestId(targetRequestId);
+    if (!parsed) return null;
+    const timeline = s.timelines[sessionId] ?? [];
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const block = timeline[i];
+      if (block.type === "ai_tool_execution" && block.data.requestId === parsed.stageRunRequestId) {
+        return block.data.startedAt ?? null;
       }
     }
     return null;
@@ -1207,9 +1419,6 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
             {formatDurationShort(subAgent.durationMs)}
           </span>
         )}
-        <span className="text-[11px] text-muted-foreground/60 tabular-nums">
-          {subAgent.toolCalls.length} {t("ai.agentTree.tools")}
-        </span>
         <div className="ml-auto flex items-center justify-end">
           <BackgroundJobsBadge
             jobs={backgroundJobs}
@@ -1267,6 +1476,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
             organizationId={stageCoverageContext.organizationId}
             stage={stageCoverageContext.stage}
             sessionId={sessionId}
+            stageStartedAt={parentStageRunToolStartedAt}
             title="资产覆盖"
             subtitle={`${stageCoverageContext.stageLabel} · ${stageCoverageContext.organizationName}`}
             pollWhileActive={isHeaderLive}
@@ -1283,6 +1493,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
             organizationId={stageCoverageContext.organizationId}
             stage={stageCoverageContext.stage}
             sessionId={sessionId}
+            stageStartedAt={parentStageRunToolStartedAt}
             title="资产覆盖"
             subtitle={`${stageCoverageContext.stageLabel} · ${stageCoverageContext.organizationName}`}
             pollWhileActive={isHeaderLive}
@@ -1354,12 +1565,13 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                   const renderedEntry = (() => {
                     if (entry.kind === "thinking" && entry.text) {
                       return (
-                        <div className="px-4 py-3 border-l-2 border-muted-foreground/15 bg-[var(--bg-hover)]/35">
+                        <div className={SUB_AGENT_DETAIL_NARRATIVE_BLOCK_CLASS}>
                           <ThinkingBlock
                             content={entry.text}
                             isActive={isRunning && i === detailEntries.length - 1}
                             startedAt={entry.startedAt}
                             endedAt={entry.endedAt}
+                            variant="detail"
                           />
                         </div>
                       );
@@ -1367,6 +1579,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                     if (entry.kind === "text" && entry.text) {
                       return (
                         <AgentOutputBlock
+                          compactTop={previous?.kind === "thinking"}
                           text={entry.text}
                           streaming={isRunning && i === detailEntries.length - 1}
                         />

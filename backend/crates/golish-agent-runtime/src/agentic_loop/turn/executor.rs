@@ -268,6 +268,10 @@ where
             // 走文本通道恢复的调用，这道闸在真正执行前堵死侧门。
             let submit_only_lock =
                 ctx.harness_submit_only && !turn_state.stage_deliverable_submitted;
+            let forced_tool_lock = ctx
+                .harness_forced_tool
+                .as_deref()
+                .filter(|_| !turn_state.forced_tool_dispatched);
 
             // Harness stage barrier: remember when the agent submits a
             // StageDeliverable. A later idle turn (in ReflectorOrBreak) then ends
@@ -280,6 +284,16 @@ where
                 .any(|tc| tc.function.name == "submit_stage_deliverable")
             {
                 turn_state.stage_deliverable_submitted = true;
+            }
+            if forced_tool_lock
+                .map(|tool| {
+                    tool_calls_to_execute
+                        .iter()
+                        .any(|tc| tc.function.name == tool)
+                })
+                .unwrap_or(false)
+            {
+                turn_state.forced_tool_dispatched = true;
             }
 
             // Phase 6: AssistantPush — append assistant content to history.
@@ -369,6 +383,7 @@ where
                 &llm_span,
                 &mut chat_history,
                 submit_only_lock,
+                forced_tool_lock,
             )
             .await;
         }

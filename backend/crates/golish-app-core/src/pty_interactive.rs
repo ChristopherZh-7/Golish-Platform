@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -68,6 +68,7 @@ const DEFAULT_DNS_HARD_TIMEOUT_MS: u64 = 15_000; // 15s
 /// tool card, then receive the finished job tails before re-submitting.
 const DEFAULT_WAIT_BACKGROUND_JOBS_TIMEOUT_MS: u64 = 300_000;
 const MAX_WAIT_BACKGROUND_JOBS_TIMEOUT_MS: u64 = 900_000;
+const DEFAULT_WAIT_BACKGROUND_JOBS_IDLE_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_WAIT_BACKGROUND_JOBS_POLL_MS: u64 = 1_000;
 const WAIT_BACKGROUND_JOBS_OUTPUT_TAIL_BYTES: usize = 12 * 1024;
 
@@ -477,9 +478,10 @@ impl Tool for KillJobTool {
 }
 
 /// Tool that turns "wait for background scans" into an explicit, visible agent
-/// step. It waits for all running jobs attributed to the current AI session,
-/// then returns each completed job's stdout/stderr tail so the model can inspect
-/// the results before calling `submit_stage_deliverable`.
+/// step. It returns when all tracked jobs settle, when any tracked job completes,
+/// or when the remaining jobs go idle/timeout, so the model can inspect landed
+/// output incrementally instead of blocking an entire stage behind the slowest
+/// batch.
 pub struct WaitForBackgroundJobsTool;
 
 #[async_trait::async_trait]
@@ -489,10 +491,10 @@ impl Tool for WaitForBackgroundJobsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Wait for background jobs started by this AI session to finish, then return a compact \
-         summary of each completed job's stdout/stderr tail and exit code. Use this before \
-         submit_stage_deliverable when scans were backgrounded, so you can inspect their output \
-         and let evidence land instead of hiding the wait inside submit."
+        "Wait for background jobs started by this AI session. Return as soon as all tracked \
+         jobs finish, any tracked job finishes while others are still running, or the remaining \
+         jobs go idle/timeout. The result includes completed stdout/stderr tails plus still-running \
+         jobs, so inspect landed output before deciding whether to wait again, narrow, kill, or submit."
     }
 
     fn parameters(&self) -> Value {
@@ -501,7 +503,11 @@ impl Tool for WaitForBackgroundJobsTool {
             "properties": {
                 "timeout_secs": {
                     "type": "integer",
-                    "description": "Maximum time to wait, in seconds. Default 300, max 900."
+                    "description": "Maximum time to wait, in seconds. Default 300, max 900. The tool returns earlier when any tracked job completes, or when remaining jobs go idle."
+                },
+                "idle_timeout_secs": {
+                    "type": "integer",
+                    "description": "Return early if running jobs produce no new stdout/stderr for this many seconds. Default 60. If output is moving, the wait continues up to timeout_secs."
                 },
                 "poll_interval_ms": {
                     "type": "integer",
@@ -530,15 +536,24 @@ impl Tool for WaitForBackgroundJobsTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_WAIT_BACKGROUND_JOBS_POLL_MS)
             .clamp(100, 10_000);
+        let idle_timeout_ms = args
+            .get("idle_timeout_secs")
+            .and_then(|v| v.as_u64())
+            .map(|s| s.saturating_mul(1_000))
+            .unwrap_or(DEFAULT_WAIT_BACKGROUND_JOBS_IDLE_TIMEOUT_MS)
+            .clamp(1_000, timeout_ms.max(1_000));
 
         let manager = crate::background_jobs::manager();
         let started_at = Instant::now();
         let deadline = started_at + Duration::from_millis(timeout_ms);
+        let mut last_progress_at = started_at;
+        let mut wait_reason = "timeout";
         let mut tracked_ids = BTreeSet::new();
         let mut running = manager.running_for_session(&session_id);
         for job in &running {
             tracked_ids.insert(job.job_id.clone());
         }
+        let mut last_sizes = background_output_sizes(manager, &running);
 
         while !running.is_empty() && Instant::now() < deadline {
             let now = Instant::now();
@@ -548,6 +563,27 @@ impl Tool for WaitForBackgroundJobsTool {
             running = manager.running_for_session(&session_id);
             for job in &running {
                 tracked_ids.insert(job.job_id.clone());
+            }
+            let any_tracked_finished = tracked_ids.iter().any(|job_id| {
+                manager
+                    .snapshot(job_id)
+                    .map(|snap| snap.finished)
+                    .unwrap_or(false)
+            });
+            if any_tracked_finished {
+                wait_reason = "job_completed";
+                break;
+            }
+            let sizes = background_output_sizes(manager, &running);
+            if sizes != last_sizes {
+                last_progress_at = Instant::now();
+                last_sizes = sizes;
+            } else if !running.is_empty()
+                && Instant::now().duration_since(last_progress_at)
+                    >= Duration::from_millis(idle_timeout_ms)
+            {
+                wait_reason = "idle_timeout";
+                break;
             }
         }
 
@@ -585,11 +621,33 @@ impl Tool for WaitForBackgroundJobsTool {
         Ok(json!({
             "status": "still_running",
             "waited_ms": waited_ms,
+            "wait_reason": wait_reason,
             "completed_background_jobs": completed_jobs,
             "running_background_jobs": running_jobs,
-            "note": "Some background jobs are still running. If a job is clearly stuck with no useful output, use check_job once and kill_job if needed; otherwise wait_for_background_jobs again later."
+            "recommended_action": if wait_reason == "idle_timeout" {
+                "check_job_once_then_kill_or_narrow_if_stuck"
+            } else if wait_reason == "job_completed" {
+                "inspect_completed_output_then_wait_again_or_check_remaining"
+            } else {
+                "check_job_once_then_wait_again_if_progressing"
+            },
+            "note": "Some background jobs are still running. First inspect any completed job output above and let its evidence land. Then use check_job once on the remaining jobs if needed. If stdout/stderr is still moving and the batch is appropriate, wait again; if it has gone idle or the batch is too broad, kill_job it and close the affected cells with a concrete blocked/error/not_applicable note or a narrower batch."
         }))
     }
+}
+
+fn background_output_sizes(
+    manager: &crate::background_jobs::BackgroundJobManager,
+    running: &[crate::background_jobs::RunningJob],
+) -> BTreeMap<String, (usize, usize)> {
+    running
+        .iter()
+        .filter_map(|job| {
+            manager
+                .snapshot(&job.job_id)
+                .map(|snap| (job.job_id.clone(), (snap.stdout.len(), snap.stderr.len())))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -741,5 +799,99 @@ mod tests {
                 .contains("wait-done"),
             "completed stdout tail should be returned: {res:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn wait_for_background_jobs_returns_on_idle_timeout() {
+        let session_id = format!("test-session-{}", uuid::Uuid::new_v4());
+        let job_id = crate::background_jobs::manager().spawn_for_session(
+            "sleep 30",
+            &ws(),
+            Duration::from_secs(60),
+            Some(session_id.clone()),
+        );
+
+        let start = Instant::now();
+        let res = golish_core::with_agent_session(Some(session_id), async {
+            WaitForBackgroundJobsTool
+                .execute(
+                    json!({
+                        "timeout_secs": 5,
+                        "idle_timeout_secs": 1,
+                        "poll_interval_ms": 50
+                    }),
+                    &ws(),
+                )
+                .await
+        })
+        .await
+        .expect("wait_for_background_jobs execute ok");
+
+        assert_eq!(res.get("status"), Some(&json!("still_running")));
+        assert_eq!(res.get("wait_reason"), Some(&json!("idle_timeout")));
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "idle timeout should return before full timeout: {res:?}"
+        );
+        let _ = crate::background_jobs::manager().kill(&job_id);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn wait_for_background_jobs_returns_when_any_job_completes() {
+        let session_id = format!("test-session-{}", uuid::Uuid::new_v4());
+        crate::background_jobs::manager().spawn_for_session(
+            "sleep 0.1; printf fast-done",
+            &ws(),
+            Duration::from_secs(5),
+            Some(session_id.clone()),
+        );
+        let slow_job_id = crate::background_jobs::manager().spawn_for_session(
+            "sleep 30",
+            &ws(),
+            Duration::from_secs(60),
+            Some(session_id.clone()),
+        );
+
+        let res = golish_core::with_agent_session(Some(session_id), async {
+            WaitForBackgroundJobsTool
+                .execute(
+                    json!({
+                        "timeout_secs": 5,
+                        "idle_timeout_secs": 4,
+                        "poll_interval_ms": 50
+                    }),
+                    &ws(),
+                )
+                .await
+        })
+        .await
+        .expect("wait_for_background_jobs execute ok");
+
+        assert_eq!(res.get("status"), Some(&json!("still_running")));
+        assert_eq!(res.get("wait_reason"), Some(&json!("job_completed")));
+        assert_eq!(
+            res["completed_background_jobs"]
+                .as_array()
+                .expect("completed jobs")
+                .len(),
+            1
+        );
+        assert!(
+            res["completed_background_jobs"][0]["stdout_tail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("fast-done"),
+            "completed output should be returned: {res:?}"
+        );
+        assert_eq!(
+            res["running_background_jobs"]
+                .as_array()
+                .expect("running jobs")
+                .len(),
+            1
+        );
+        let _ = crate::background_jobs::manager().kill(&slow_job_id);
     }
 }

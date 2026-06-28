@@ -21,7 +21,7 @@
 
 | 子模块 | 说明 |
 |---|---|
-| `recon` | recon 出站端口（`ReconTargetsPort`/`ReconScansPort`/`ReconDirectoryPort`/… + `Pg*Adapter`）；`ReconDirectoryPort` 提供 `directory_entries` list / exists / insert；`ReconScansPort` 提供 `api_endpoints` insert / list / count + `api_endpoints_upsert_merge_params`（`ON CONFLICT (target_id,url,method)` 并集合并 params，给 js_extract AI param recipe 用）/ js_analysis / fingerprints / passive_scans |
+| `recon` | recon 出站端口（`ReconTargetsPort`/`ReconScansPort`/`ReconDirectoryPort`/… + `Pg*Adapter`）；`ReconTargetsPort::in_scope_values_created_before` 用 `targets.created_at <= cutoff` 给 wave-aware stage 冻结资产轴；`ReconDirectoryPort` 提供 `directory_entries` list / exists / insert；`ReconScansPort` 提供 `api_endpoints` insert / list / count + `api_endpoints_upsert_merge_params`（`ON CONFLICT (target_id,url,method)` 并集合并 params，给 js_extract AI param recipe 用）/ js_analysis / fingerprints / passive_scans |
 | `pentest` / `vuln` / `agent` / `platform` | 各服务出站端口 + adapter |
 
 ## 关键文件

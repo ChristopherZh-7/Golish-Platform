@@ -184,6 +184,8 @@ pub async fn evaluate_org_stage_gate(
     session_id: &str,
     stage: StageKind,
     deliverable: &StageDeliverable,
+    wave_cutoff: Option<DateTime<Utc>>,
+    wave_assets: Option<&[String]>,
 ) -> GateResult {
     let spec: StageSpec = match load_embedded_stage_spec(stage) {
         Ok(s) => s,
@@ -197,6 +199,19 @@ pub async fn evaluate_org_stage_gate(
             )
         }
     };
+    let effective_wave_cutoff = spec.asset_wave_barrier.then_some(wave_cutoff).flatten();
+    let wave_asset_override = spec
+        .asset_wave_barrier
+        .then_some(wave_assets)
+        .flatten()
+        .map(|assets| {
+            assets
+                .iter()
+                .filter(|asset| !asset.trim().is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .filter(|assets| !assets.is_empty());
 
     // 1) fabricated-ref 兜底（scoping 不要求账本证据，跳过）。
     if stage != StageKind::Scoping {
@@ -226,8 +241,22 @@ pub async fn evaluate_org_stage_gate(
 
     // 2) 资产轴 + 类型（org 隔离）。空资产集 → 不注入（gate 回退自报，coverage_complete
     //    自带「空矩阵但声明了期望技术 → BLOCK」保护）。
-    let in_scope_assets = repo.in_scope_assets(org_id).await.unwrap_or_default();
-    let typed_assets = repo.in_scope_typed_assets(org_id).await.unwrap_or_default();
+    let in_scope_assets = match wave_asset_override {
+        Some(assets) => assets,
+        None => match effective_wave_cutoff {
+            Some(cutoff) => repo
+                .in_scope_assets_created_before(org_id, cutoff)
+                .await
+                .unwrap_or_default(),
+            None => repo.in_scope_assets(org_id).await.unwrap_or_default(),
+        },
+    };
+    let mut typed_assets = repo.in_scope_typed_assets(org_id).await.unwrap_or_default();
+    if spec.asset_wave_barrier && !in_scope_assets.is_empty() {
+        let current_wave: std::collections::HashSet<&str> =
+            in_scope_assets.iter().map(String::as_str).collect();
+        typed_assets.retain(|(asset, _)| current_wave.contains(asset.as_str()));
+    }
 
     // 3) 证据事实：账本投影 + DB 业务表真值（Found）合并。
     let mut facts: Vec<EvidenceFact> = repo
@@ -236,11 +265,14 @@ pub async fn evaluate_org_stage_gate(
         .map(facts_from_rows)
         .unwrap_or_default();
     if !in_scope_assets.is_empty() {
-        // Per-org fan-out scoping gate stays presence-only (run_start=None): the
-        // per-dimension freshness window (design 2026-06-22) is wired on the
-        // single-org target_intel execute.rs path; threading the stage-run anchor
-        // through the multi-org fan-out gate is separate, deferred work.
-        if let Ok(truth) = repo.db_truth_facts(org_id, &in_scope_assets, None).await {
+        let run_start = spec
+            .freshness_window
+            .then_some(effective_wave_cutoff)
+            .flatten();
+        if let Ok(truth) = repo
+            .db_truth_facts(org_id, &in_scope_assets, run_start)
+            .await
+        {
             facts.extend(db_truth_to_facts(truth));
         }
     }

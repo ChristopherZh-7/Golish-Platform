@@ -30,7 +30,11 @@ import {
   getOrgActionModel,
   isAssetIntelOrgAction,
 } from "@/lib/target-panel/engagement";
-import { countAllTargets, type OrgTreeNode, UNASSIGNED_KEY } from "@/lib/target-panel/org-tree";
+import {
+  type OrgTreeNode,
+  summarizeTargetCounts,
+  UNASSIGNED_KEY,
+} from "@/lib/target-panel/org-tree";
 import type {
   AssetIntelOrgActionKind,
   OrgActionItem,
@@ -226,7 +230,7 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
     );
   };
 
-  const counts = countAllTargets(node);
+  const counts = summarizeTargetCounts(node);
   const isUnassigned = node.id === UNASSIGNED_KEY;
   // Synthetic IP-centric nodes (`buildHostTree`): host = an IP group, bucket =
   // catch-all (e.g. unresolved). Only real org nodes carry org-level actions.
@@ -262,6 +266,7 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
   const actionModel = getOrgActionModel(engagementMode, {
     isChild: Boolean(orgRow?.parent_id),
   });
+  const hasRollupCount = counts.subtreeTotal !== counts.ownTotal;
 
   // The flat list of asset rows (+ "show more"), shared by both the org-level
   // "资产" sub-group and the bare host/bucket rendering below.
@@ -384,11 +389,19 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
                 isSelectedOrg ? "text-accent/80" : "text-muted-foreground/55"
               )}
             >
-              {counts.total}
+              {counts.ownTotal}
             </span>
-            {counts.inScope > 0 && (
+            {counts.ownInScope > 0 && (
               <span className="flex-shrink-0 whitespace-nowrap rounded bg-green-500/10 px-1 py-0.5 text-[9px] text-green-400">
-                {counts.inScope} in
+                {counts.ownInScope} in
+              </span>
+            )}
+            {hasRollupCount && (
+              <span
+                className="flex-shrink-0 whitespace-nowrap rounded border border-border/25 bg-background/25 px-1 py-0.5 text-[9px] text-muted-foreground/65"
+                title={`Subtree targets: ${counts.subtreeTotal}, in scope: ${counts.subtreeInScope}`}
+              >
+                Σ {counts.subtreeTotal}
               </span>
             )}
             {showModeBadge && (
@@ -420,7 +433,7 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
                   >
                     <Crosshair className="w-3 h-3" />
                   </button>
-                  {counts.total > 0 && (
+                  {counts.subtreeTotal > 0 && (
                     <button
                       type="button"
                       className="p-1 rounded hover:bg-red-500/20 text-muted-foreground hover:text-red-400"
@@ -474,7 +487,7 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
 
           {/* Synthetic IP host / catch-all bucket leaves carry no org actions,
               but still need a way to clear out their underlying targets. */}
-          {isLeafSelectable && counts.total > 0 && (
+          {isLeafSelectable && counts.subtreeTotal > 0 && (
             <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
               <button
                 type="button"
