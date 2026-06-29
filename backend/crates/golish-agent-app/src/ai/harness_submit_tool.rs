@@ -684,7 +684,7 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "claims": {
                     "type": "array",
-                    "description": "Observations. EVERY claim must cite real evidence_ids (also include them in top-level evidence_refs). When a claim evidences one of the stage's expected techniques, set `technique` to that REGISTERED id (e.g. GOLISH-INTEL-DNS, WSTG-INPV-05) and use the SAME `subject` string as the matching coverage cell's `asset` — technique-tagged claims corroborate 'found' coverage cells. Unregistered technique ids are rejected.",
+                    "description": "Observations. EVERY claim must cite real evidence_ids (also include them in top-level evidence_refs). When a claim evidences one of the stage's expected techniques, set `technique` to that REGISTERED id (e.g. GOLISH-INTEL-DNS, WSTG-INPV-05) and use the SAME `subject` string as the matching coverage cell's `asset` — technique-tagged claims corroborate 'found' coverage cells. Unregistered technique ids are rejected. Enumeration claim kinds should summarize content mapping, e.g. web_root_enumerated, directories_discovered, api_endpoints_discovered, params_discovered, js_candidates_reviewed.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -720,7 +720,7 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "coverage": {
                     "type": "array",
-                    "description": "Coverage matrix: ONE cell per (asset × technique) you took to a terminal state. If the stage charter says coverage is auto-adjudicated from the DATABASE (for example target_intel or external_attack_surface found cells), submit [] for DB-derived found cells and include only terminal cells the DB cannot derive yet. STAGES THAT RUN NO TOOLS (e.g. scoping, reporting) produce no evidence — submit an EMPTY array [] and do NOT invent cells (a 'found'/'checked_empty' cell ALWAYS needs real evidence_refs, so an evidence-less cell here just fails the gate). For non-DB-truth tool stages: for EACH in-scope asset, give EVERY expected technique a cell — a MISSING (asset × technique) means not_attempted and FAILS the gate. A 'found' or 'checked_empty' cell MUST cite evidence_refs (PoC for found; the scan/probe evidence proving you tested it for checked_empty); 'blocked'/'not_applicable' MUST give a `note`. \"checked-empty\" is NOT \"unchecked\". For found/checked_empty cells with an enumerated denominator ALSO set tested_units/total_units; the gate requires full coverage (tested_units==total_units) unless you set sampling_rationale. EAS example: SERVICE-FINGERPRINT tested_units = open ports fingerprinted, total_units = open ports discovered; if no ports are open, submit not_applicable+note rather than checked_empty total_units=0. Omit optional fields you don't use — never pass null.",
+                    "description": "Coverage matrix: ONE cell per (asset × technique) you took to a terminal state. If the stage charter says coverage is auto-adjudicated from the DATABASE (for example target_intel, external_attack_surface, or enumeration found cells), submit [] for DB-derived found cells and include only terminal cells the DB cannot derive yet. In enumeration, DB-derived found cells come from directory_entries and api_endpoints; submit only checked_empty/blocked/not_applicable exceptions after check_stage_asset_coverage says the EAS-confirmed web-root worklist is closed. STAGES THAT RUN NO TOOLS (e.g. scoping, reporting) produce no evidence — submit an EMPTY array [] and do NOT invent cells (a 'found'/'checked_empty' cell ALWAYS needs real evidence_refs, so an evidence-less cell here just fails the gate). For non-DB-truth tool stages: for EACH in-scope asset, give EVERY expected technique a cell — a MISSING (asset × technique) means not_attempted and FAILS the gate. A 'found' or 'checked_empty' cell MUST cite evidence_refs (PoC for found; the scan/probe evidence proving you tested it for checked_empty); 'blocked'/'not_applicable' MUST give a `note`. \"checked-empty\" is NOT \"unchecked\". For found/checked_empty cells with an enumerated denominator ALSO set tested_units/total_units; the gate requires full coverage (tested_units==total_units) unless you set sampling_rationale. EAS example: SERVICE-FINGERPRINT tested_units = open ports fingerprinted, total_units = open ports discovered; if no ports are open, submit not_applicable+note rather than checked_empty total_units=0. Omit optional fields you don't use — never pass null.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -1014,6 +1014,19 @@ mod tests {
             "skipped_checks": [],
             "required_checks_done": []
         })
+    }
+
+    #[test]
+    fn parameters_describe_enumeration_slim_deliverable_contract() {
+        let (stage, sink) = handles();
+        let tool = SubmitStageDeliverableTool::new(stage, sink);
+        let params = tool.parameters().to_string();
+
+        assert!(params.contains("web_root_enumerated"));
+        assert!(params.contains("api_endpoints_discovered"));
+        assert!(params.contains("check_stage_asset_coverage"));
+        assert!(params.contains("directory_entries"));
+        assert!(params.contains("api_endpoints"));
     }
 
     // §8.1 — prose / malformed args cannot be "described": they fail to parse

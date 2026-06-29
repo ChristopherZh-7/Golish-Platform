@@ -1707,6 +1707,7 @@ mod tests {
             .contains("Exact coverage_gap_actions"));
         assert!(mode.model_instruction().contains("www.example.com"));
         assert!(mode.block_result("query_target_data").is_none());
+        assert!(mode.block_result("check_stage_asset_coverage").is_none());
         assert!(mode.block_result("pentest_run").is_none());
         assert!(mode.block_result("submit_stage_deliverable").is_none());
         let blocked = mode
@@ -1769,6 +1770,75 @@ mod tests {
     }
 
     #[test]
+    fn coverage_gap_repair_allows_direct_enumeration_tools_for_listed_gap_targets() {
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["enumeration incomplete: never attempted"],
+            "coverage_gap_actions": [
+                {
+                    "asset": "https://app.example.com",
+                    "technique": "GOLISH-ENUM-JSAPI",
+                    "reason": "missing_terminal_coverage",
+                    "suggested_tools": ["browser_collect_js_api", "js_extract_apis"]
+                },
+                {
+                    "asset": "https://app.example.com",
+                    "technique": "GOLISH-ENUM-DIR",
+                    "reason": "missing_terminal_coverage",
+                    "suggested_tools": ["route_probe_paths", "ffuf"]
+                }
+            ]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("enumeration coverage gaps should activate repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
+
+        assert!(mode.allows("browser_collect_js_api"));
+        assert!(mode.allows("js_collect"));
+        assert!(mode.allows("js_extract_apis"));
+        assert!(mode.allows("route_probe_paths"));
+        assert!(mode
+            .block_result_with_args(
+                "browser_collect_js_api",
+                &serde_json::json!({"target_url": "https://app.example.com"})
+            )
+            .is_none());
+        assert!(mode
+            .block_result_with_args(
+                "route_probe_paths",
+                &serde_json::json!({
+                    "target_id": "target-1",
+                    "base_url": "https://app.example.com"
+                })
+            )
+            .is_none());
+
+        let missing_target = mode
+            .block_result_with_args(
+                "route_probe_paths",
+                &serde_json::json!({"target_id": "target-1"}),
+            )
+            .expect("direct enumeration repair tools must name their root");
+        assert!(missing_target["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("base_url"));
+
+        let blocked = mode
+            .block_result_with_args(
+                "browser_collect_js_api",
+                &serde_json::json!({"target_url": "https://other.example.com"}),
+            )
+            .expect("unlisted direct enumeration target should be blocked");
+        assert!(blocked["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("not in coverage_gap_actions"));
+    }
+
+    #[test]
     fn coverage_gap_repair_blocks_list_file_without_visible_targets() {
         let v = serde_json::json!({
             "status": "needs_fix",
@@ -1805,14 +1875,14 @@ mod tests {
     }
 
     #[test]
-    fn coverage_gap_repair_allows_single_target_pentest_run() {
+    fn coverage_gap_repair_without_actions_blocks_pentest_run() {
         let mode = submit_coverage_gap_repair_mode_from_reasons(&[
             "external attack surface incomplete: never attempted (112.65.238.93 x GOLISH-EAS-SERVICE-FINGERPRINT)"
                 .to_string(),
         ])
         .expect("coverage gaps should activate repair mode");
 
-        assert!(mode
+        let blocked = mode
             .block_result_with_args(
                 "pentest_run",
                 &serde_json::json!({
@@ -1820,7 +1890,15 @@ mod tests {
                     "args": "-sV --top-ports 100 -T4 112.65.238.93"
                 }),
             )
-            .is_none());
+            .expect("coverage repair without structured actions should not scan");
+
+        assert_eq!(blocked["repair_kind"], "coverage_gap");
+        assert!(blocked["error"].as_str().unwrap().contains("did not name"));
+        assert!(blocked["allowed_tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tool| tool.as_str() != Some("pentest_run")));
     }
 
     #[test]
@@ -1869,11 +1947,21 @@ mod tests {
 
     #[test]
     fn coverage_gap_repair_blocks_cidr_pentest_run() {
-        let mode = submit_coverage_gap_repair_mode_from_reasons(&[
-            "external attack surface incomplete: never attempted (124.196.9.134 x GOLISH-EAS-LIVENESS)"
-                .to_string(),
-        ])
-        .expect("coverage gaps should activate repair mode");
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["external attack surface incomplete: never attempted"],
+            "coverage_gap_actions": [{
+                "asset": "124.196.9.134",
+                "technique": "GOLISH-EAS-LIVENESS",
+                "reason": "missing_terminal_coverage",
+                "suggested_tools": ["httpx"]
+            }]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("coverage gaps should activate repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
 
         let blocked = mode
             .block_result_with_args(

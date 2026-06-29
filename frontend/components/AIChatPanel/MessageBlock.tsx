@@ -210,7 +210,7 @@ export const MessageBlock = memo(function MessageBlock({
         if (showPlanAtTop) planInserted = true;
 
         return (
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-2.5">
             {showPlanAtTop && planNode}
             {segments.map((seg, idx) => {
               const previousSegment = idx > 0 ? segments[idx - 1] : null;

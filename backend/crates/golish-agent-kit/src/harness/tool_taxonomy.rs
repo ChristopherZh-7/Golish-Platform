@@ -44,7 +44,12 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
         "nmap" | "masscan" | "rustscan" | "naabu" => ("recon", "port-scan"),
         "httpx" | "whatweb" | "curl" | "wget" | "http" => ("recon", "http"),
         "amass" | "subfinder" | "assetfinder" | "sublist3r" | "findomain" => ("recon", "subdomain"),
-        "katana" | "hakrawler" | "gospider" => ("recon", "crawler"),
+        "katana"
+        | "hakrawler"
+        | "gospider"
+        | "browser_collect_js_api"
+        | "js_collect"
+        | "js_extract_apis" => ("recon", "crawler"),
         "gau" | "waybackurls" => ("recon", "url-history"),
         // whois / ASN lookups are zero-touch (query the registrar/RIR, not the
         // target's own hosts). Some stages may opt into this scan wrapper; current
@@ -71,7 +76,9 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
         | "gcpbucketbrute" => ("recon", "osint"),
         "gowitness" | "aquatone" | "eyewitness" | "cutycapt" => ("recon", "visual"),
         // ── web ──────────────────────────────────────────────────────────────
-        "ffuf" | "gobuster" | "dirb" | "dirsearch" | "feroxbuster" => ("web", "fuzzer"),
+        "ffuf" | "gobuster" | "dirb" | "dirsearch" | "feroxbuster" | "route_probe_paths" => {
+            ("web", "fuzzer")
+        }
         "arjun" | "paramspider" | "x8" => ("web", "param"),
         "nikto" | "nuclei" | "dalfox" => ("web", "scanner"),
         "wpscan" => ("web", "cms"),
@@ -115,6 +122,9 @@ const CANONICAL_TOOLS: &[&str] = &[
     "subfinder",
     "amass",
     "katana",
+    "browser_collect_js_api",
+    "js_collect",
+    "js_extract_apis",
     "gau",
     "waybackurls",
     "whois",
@@ -124,6 +134,7 @@ const CANONICAL_TOOLS: &[&str] = &[
     "gowitness",
     // web
     "ffuf",
+    "route_probe_paths",
     "arjun",
     "nuclei",
     "wpscan",
@@ -323,6 +334,12 @@ mod tests {
         assert_eq!(tool_category("sqlmap"), Some(("web", "injection")));
         assert_eq!(tool_category("nuclei"), Some(("web", "scanner")));
         assert_eq!(tool_category("arjun"), Some(("web", "param")));
+        assert_eq!(
+            tool_category("browser_collect_js_api"),
+            Some(("recon", "crawler"))
+        );
+        assert_eq!(tool_category("js_extract_apis"), Some(("recon", "crawler")));
+        assert_eq!(tool_category("route_probe_paths"), Some(("web", "fuzzer")));
         assert_eq!(tool_category("msfconsole"), Some(("exploit", "framework")));
         assert_eq!(
             tool_category("bloodhound-python"),
@@ -551,6 +568,8 @@ mod tests {
             "nuclei",
             "sqlmap",
             "subfinder",
+            "browser_collect_js_api",
+            "route_probe_paths",
         ] {
             assert!(is_scan_tool_name(scan), "{scan} must be a scan tool");
         }
@@ -639,6 +658,41 @@ mod tests {
                 !names.contains(&never),
                 "{never} must NOT be listed: {names:?}"
             );
+        }
+    }
+
+    #[test]
+    fn allowed_tool_names_enumeration_selectors_include_direct_enum_tools() {
+        let allowed = allow(&["recon/crawler", "web/fuzzer", "web/param"]);
+        let names = allowed_tool_names(&allowed);
+        for must in [
+            "katana",
+            "browser_collect_js_api",
+            "js_collect",
+            "js_extract_apis",
+            "ffuf",
+            "route_probe_paths",
+            "arjun",
+        ] {
+            assert!(names.contains(&must), "{must} must be listed: {names:?}");
+            assert!(stage_allows(must, &json!({}), &allowed));
+        }
+        for never in [
+            "httpx",
+            "whatweb",
+            "curl",
+            "wget",
+            "nmap",
+            "naabu",
+            "sqlmap",
+            "nuclei",
+            "metasploit",
+        ] {
+            assert!(
+                !names.contains(&never),
+                "{never} must NOT be listed: {names:?}"
+            );
+            assert!(!stage_allows(never, &json!({}), &allowed));
         }
     }
 

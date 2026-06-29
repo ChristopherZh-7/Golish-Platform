@@ -173,13 +173,12 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             build_enumerator_prompt(),
         )
         .with_tools(vec![
-            "list_in_scope_targets".to_string(),
+            "list_enumeration_web_roots".to_string(),
             "query_target_data".to_string(),
-            "manage_targets".to_string(),
             // Active content enumeration (ffuf/gobuster/feroxbuster -> dir, arjun/katana
-            // -> param) via pentest_run; the stage tool-type allowlist (recon/http,
-            // recon/crawler, web/fuzzer, web/param) keeps it to content mapping, not
-            // exploitation.
+            // -> param) via pentest_run; the stage tool-type allowlist
+            // (recon/crawler, web/fuzzer, web/param) keeps it to content mapping,
+            // not EAS probing/fingerprinting or exploitation.
             "pentest_list_tools".to_string(),
             "pentest_run".to_string(),
             "wait_for_background_jobs".to_string(),
@@ -190,7 +189,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "js_extract_apis".to_string(),
             "route_probe_paths".to_string(),
             "submit_stage_deliverable".to_string(),
-            "record_finding".to_string(),
             "search_knowledge_base".to_string(),
             "read_knowledge".to_string(),
         ])

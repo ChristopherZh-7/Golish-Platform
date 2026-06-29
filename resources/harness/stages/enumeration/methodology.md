@@ -32,9 +32,11 @@ become the coverage denominator for `vuln_triage`.
 6. Parameter discovery — run `arjun` (or equivalent) on discovered endpoints and
    forms, not blindly across the whole host. Persist parameter names into
    `api_endpoints.params`.
-7. Slim submit — wait for background jobs, sanity-check the DB-visible content
-   units, then submit only summary claims plus checked_empty/blocked/not_applicable
-   coverage that the database cannot derive.
+7. Slim submit — call `check_stage_asset_coverage` and treat its `gap_examples`
+   as the current EAS-confirmed web-root worklist. Wait for background jobs,
+   sanity-check the DB-visible content units, then submit only summary claims
+   plus checked_empty/blocked/not_applicable coverage that the database cannot
+   derive.
 
 **Efficiency red lines:**
 
@@ -63,3 +65,8 @@ become the coverage denominator for `vuln_triage`.
   `directory_entries` or `api_endpoints`. Submitted coverage is for
   checked_empty, blocked, or not_applicable terminal states that still need notes
   or evidence.
+- The stage deliverable has `findings: []`. Summarize discoveries as claims with
+  kinds like `web_root_enumerated`, `directories_discovered`,
+  `api_endpoints_discovered`, `params_discovered`, and
+  `js_candidates_reviewed`; each claim must cite real evidence ids. Do not use
+  `record_finding` in enumeration.

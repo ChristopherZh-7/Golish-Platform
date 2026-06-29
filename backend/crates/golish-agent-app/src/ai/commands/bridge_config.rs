@@ -1,6 +1,7 @@
 //! Agent-bridge wiring: assembles shared services (sidecar, db, graph,
 //! memory, sub-agents, pentest/MCP tools) onto a per-session [`AgentBridge`].
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::super::agent_bridge::AgentBridge;
@@ -338,6 +339,20 @@ async fn maybe_store_background_batch_liveness_outcomes(
     if targets.is_empty() {
         return;
     }
+    let Some(allowed_assets) =
+        scoped_eas_outcome_asset_keys(db_pool, organization_id, EasOutcomeKeyMode::Liveness).await
+    else {
+        return;
+    };
+    if allowed_assets.is_empty() {
+        tracing::info!(
+            target: "harness::evidence",
+            job_id = %jc.job_id,
+            org_id = %organization_id,
+            "background batch liveness outcomes skipped: org has no in-scope EAS assets"
+        );
+        return;
+    }
     let retained_stdout = golish_app_core::background_jobs::manager()
         .snapshot(&jc.job_id)
         .map(|snapshot| snapshot.stdout)
@@ -352,12 +367,15 @@ async fn maybe_store_background_batch_liveness_outcomes(
             skipped += 1;
             continue;
         }
-        let Some(asset) =
-            golish_agent_kit::harness::evidence_facts::eas_liveness_asset_key(&target)
+        let Some(asset) = eas_outcome_asset_key_for_mode(&target, EasOutcomeKeyMode::Liveness)
         else {
             skipped += 1;
             continue;
         };
+        if !allowed_assets.contains(&asset) {
+            skipped += 1;
+            continue;
+        }
         let found = batch_output_mentions_target(&retained_stdout, &asset);
         let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
             organization_id,
@@ -433,6 +451,20 @@ async fn maybe_store_background_batch_port_outcomes(
     if targets.is_empty() {
         return;
     }
+    let Some(allowed_assets) =
+        scoped_eas_outcome_asset_keys(db_pool, organization_id, EasOutcomeKeyMode::Host).await
+    else {
+        return;
+    };
+    if allowed_assets.is_empty() {
+        tracing::info!(
+            target: "harness::evidence",
+            job_id = %jc.job_id,
+            org_id = %organization_id,
+            "background batch port outcomes skipped: org has no in-scope EAS assets"
+        );
+        return;
+    }
     let retained_stdout = golish_app_core::background_jobs::manager()
         .snapshot(&jc.job_id)
         .map(|snapshot| snapshot.stdout)
@@ -453,6 +485,10 @@ async fn maybe_store_background_batch_port_outcomes(
             skipped += 1;
             continue;
         };
+        if !allowed_assets.contains(&asset) {
+            skipped += 1;
+            continue;
+        }
         let count = open_counts.get(&asset).copied().unwrap_or(0);
         let outcome = if count > 0 { "found" } else { "empty" };
         let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
@@ -534,6 +570,20 @@ async fn maybe_store_background_batch_service_outcomes(
     if targets.is_empty() {
         return;
     }
+    let Some(allowed_assets) =
+        scoped_eas_outcome_asset_keys(db_pool, organization_id, EasOutcomeKeyMode::Host).await
+    else {
+        return;
+    };
+    if allowed_assets.is_empty() {
+        tracing::info!(
+            target: "harness::evidence",
+            job_id = %jc.job_id,
+            org_id = %organization_id,
+            "background batch service outcomes skipped: org has no in-scope EAS assets"
+        );
+        return;
+    }
     let retained_stdout = golish_app_core::background_jobs::manager()
         .snapshot(&jc.job_id)
         .map(|snapshot| snapshot.stdout)
@@ -553,6 +603,10 @@ async fn maybe_store_background_batch_service_outcomes(
             skipped += 1;
             continue;
         };
+        if !allowed_assets.contains(&asset) {
+            skipped += 1;
+            continue;
+        }
         let found = service_output_mentions_target(&retained_stdout, &asset);
         let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
             organization_id,
@@ -625,6 +679,77 @@ fn is_batch_service_command(tool: &str, command: &str) -> bool {
                 && command_has_any_flag(command, &["-sV", "-A", "--version-all", "--version-light"])
         }
         _ => false,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EasOutcomeKeyMode {
+    /// Endpoint liveness keeps URL port/path in the coverage key.
+    Liveness,
+    /// Port/service coverage is host-level.
+    Host,
+}
+
+async fn scoped_eas_outcome_asset_keys(
+    db_pool: &sqlx::PgPool,
+    organization_id: uuid::Uuid,
+    mode: EasOutcomeKeyMode,
+) -> Option<BTreeSet<String>> {
+    let rows = match sqlx::query_as::<_, (String, String)>(
+        "SELECT value, real_ip FROM targets WHERE scope::text = 'in' AND organization_id = $1",
+    )
+    .bind(organization_id)
+    .fetch_all(db_pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::warn!(
+                target: "harness::evidence",
+                org_id = %organization_id,
+                error = %err,
+                "failed to load org in-scope assets for EAS outcome scoping"
+            );
+            return None;
+        }
+    };
+    Some(eas_outcome_asset_keys_from_rows(rows, mode))
+}
+
+fn eas_outcome_asset_keys_from_rows(
+    rows: Vec<(String, String)>,
+    mode: EasOutcomeKeyMode,
+) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    for (value, real_ip) in rows {
+        if let Some(key) = eas_outcome_asset_key_for_mode(&value, mode) {
+            keys.insert(key);
+        }
+        for ip in real_ip
+            .split([',', ';', '\n', '\r', '\t', ' '])
+            .map(str::trim)
+            .filter(|ip| !ip.is_empty())
+        {
+            if let Some(key) = eas_outcome_asset_key_for_mode(ip, mode) {
+                keys.insert(key);
+            }
+        }
+    }
+    keys
+}
+
+fn eas_outcome_asset_key_for_mode(value: &str, mode: EasOutcomeKeyMode) -> Option<String> {
+    match mode {
+        EasOutcomeKeyMode::Liveness => {
+            golish_agent_kit::harness::evidence_facts::eas_liveness_asset_key(value).or_else(|| {
+                golish_pentest_domain::canonical_asset_key(value).and_then(|key| {
+                    matches!(key.class, golish_pentest_domain::AssetClass::Ip).then_some(key.key)
+                })
+            })
+        }
+        EasOutcomeKeyMode::Host => {
+            golish_pentest_domain::canonical_asset_key(value).map(|key| key.key)
+        }
     }
 }
 
@@ -1653,6 +1778,43 @@ mod tests {
         let counts = open_port_counts("naabu", "Example.COM:443\n1.2.3.4:80\nnoise\n");
         assert_eq!(counts.get("example.com"), Some(&1));
         assert_eq!(counts.get("1.2.3.4"), Some(&1));
+    }
+
+    #[test]
+    fn eas_outcome_scope_keys_include_target_value_and_real_ip() {
+        let rows = vec![
+            (
+                "https://Example.COM/login".to_string(),
+                "1.2.3.4".to_string(),
+            ),
+            (
+                "www.example.net".to_string(),
+                "5.6.7.8; 2001:db8::1".to_string(),
+            ),
+        ];
+
+        let liveness = eas_outcome_asset_keys_from_rows(rows.clone(), EasOutcomeKeyMode::Liveness);
+        assert!(liveness.contains("example.com/login"));
+        assert!(liveness.contains("1.2.3.4"));
+        assert!(liveness.contains("www.example.net"));
+        assert!(liveness.contains("5.6.7.8"));
+        assert!(liveness.contains("2001:db8::1"));
+
+        let host = eas_outcome_asset_keys_from_rows(rows, EasOutcomeKeyMode::Host);
+        assert!(host.contains("example.com"));
+        assert!(!host.contains("example.com/login"));
+        assert!(host.contains("1.2.3.4"));
+        assert!(host.contains("www.example.net"));
+    }
+
+    #[test]
+    fn eas_outcome_scope_keys_do_not_include_unrelated_guess() {
+        let rows = vec![("pinganfdc.com".to_string(), String::new())];
+        let liveness = eas_outcome_asset_keys_from_rows(rows, EasOutcomeKeyMode::Liveness);
+
+        assert!(liveness.contains("pinganfdc.com"));
+        assert!(!liveness.contains("149.120.175.217"));
+        assert!(!liveness.contains("fzpingan.cn"));
     }
 
     #[test]

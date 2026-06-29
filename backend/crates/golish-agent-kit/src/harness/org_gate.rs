@@ -7,14 +7,18 @@
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
 use super::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
 use super::gate::{validate_stage_gate_with_context, GateContextBuilder, GateResult};
 use super::stage_spec::StageSpec;
+use super::technique_resolver::AssetClass;
 use super::types::{HarnessRecoveryActions, StageDeliverable};
 use super::{load_embedded_stage_spec, StageKind};
 use crate::db_traits::DbRepoProvider;
+
+const TECH_EAS_LIVENESS: &str = "GOLISH-EAS-LIVENESS";
 
 /// 一个 org 在某 stage 的裁决。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,7 +245,7 @@ pub async fn evaluate_org_stage_gate(
 
     // 2) 资产轴 + 类型（org 隔离）。空资产集 → 不注入（gate 回退自报，coverage_complete
     //    自带「空矩阵但声明了期望技术 → BLOCK」保护）。
-    let in_scope_assets = match wave_asset_override {
+    let mut in_scope_assets = match wave_asset_override {
         Some(assets) => assets,
         None => match effective_wave_cutoff {
             Some(cutoff) => repo
@@ -256,6 +260,18 @@ pub async fn evaluate_org_stage_gate(
         let current_wave: std::collections::HashSet<&str> =
             in_scope_assets.iter().map(String::as_str).collect();
         typed_assets.retain(|(asset, _)| current_wave.contains(asset.as_str()));
+    }
+    if stage == StageKind::Enumeration && !in_scope_assets.is_empty() {
+        let inherited_truth = repo
+            .db_truth_facts(org_id, &in_scope_assets, None)
+            .await
+            .unwrap_or_default();
+        if let Some(worklist) =
+            enumeration_eas_live_web_worklist(&in_scope_assets, &typed_assets, &inherited_truth)
+        {
+            in_scope_assets.retain(|asset| worklist.contains(asset));
+            typed_assets.retain(|(asset, _)| worklist.contains(asset));
+        }
     }
 
     // 3) 证据事实：账本投影 + DB 业务表真值（Found）合并。
@@ -320,6 +336,41 @@ pub async fn evaluate_org_stage_gate(
         .build();
 
     validate_stage_gate_with_context(deliverable, &spec, None, None, &ctx)
+}
+
+fn enumeration_eas_live_web_worklist(
+    assets: &[String],
+    typed_assets: &[(String, String)],
+    truth_rows: &[(String, String)],
+) -> Option<BTreeSet<String>> {
+    let live_liveness_keys: BTreeSet<String> = truth_rows
+        .iter()
+        .filter(|(_, technique)| technique == TECH_EAS_LIVENESS)
+        .map(|(asset, _)| eas_liveness_lookup_key(asset))
+        .collect();
+    if live_liveness_keys.is_empty() {
+        return None;
+    }
+
+    let type_by_asset: HashMap<&str, &str> = typed_assets
+        .iter()
+        .map(|(asset, target_type)| (asset.as_str(), target_type.as_str()))
+        .collect();
+    let worklist: BTreeSet<String> = assets
+        .iter()
+        .filter(|asset| {
+            let class = AssetClass::classify(type_by_asset.get(asset.as_str()).copied(), asset);
+            matches!(class, AssetClass::Domain | AssetClass::Url)
+                && live_liveness_keys.contains(&eas_liveness_lookup_key(asset))
+        })
+        .cloned()
+        .collect();
+
+    (!worklist.is_empty()).then_some(worklist)
+}
+
+fn eas_liveness_lookup_key(asset: &str) -> String {
+    super::evidence_facts::eas_liveness_asset_key(asset).unwrap_or_else(|| asset.to_string())
 }
 
 #[cfg(test)]
@@ -390,6 +441,58 @@ mod tests {
         let f = db_truth_to_facts(vec![("a.com".into(), "GOLISH-INTEL-ASN".into())]);
         assert_eq!(f[0].outcome, EvidenceOutcome::Found);
         assert_eq!(f[0].evidence_id, 0);
+    }
+
+    #[test]
+    fn enumeration_worklist_keeps_only_eas_live_web_assets_when_present() {
+        let assets = vec![
+            "app.example.com".to_string(),
+            "dead.example.com".to_string(),
+            "https://portal.example.com/login".to_string(),
+            "203.0.113.10".to_string(),
+        ];
+        let typed_assets = vec![
+            ("app.example.com".to_string(), "domain".to_string()),
+            ("dead.example.com".to_string(), "domain".to_string()),
+            (
+                "https://portal.example.com/login".to_string(),
+                "url".to_string(),
+            ),
+            ("203.0.113.10".to_string(), "ip".to_string()),
+        ];
+        let truth = vec![
+            ("app.example.com".to_string(), TECH_EAS_LIVENESS.to_string()),
+            (
+                "portal.example.com/login".to_string(),
+                TECH_EAS_LIVENESS.to_string(),
+            ),
+            ("203.0.113.10".to_string(), TECH_EAS_LIVENESS.to_string()),
+        ];
+
+        let worklist = enumeration_eas_live_web_worklist(&assets, &typed_assets, &truth)
+            .expect("live web roots narrow enumeration");
+
+        assert_eq!(
+            worklist,
+            BTreeSet::from([
+                "app.example.com".to_string(),
+                "https://portal.example.com/login".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn enumeration_worklist_is_fail_safe_when_eas_has_no_live_truth() {
+        let assets = vec!["app.example.com".to_string(), "203.0.113.10".to_string()];
+        let typed_assets = vec![
+            ("app.example.com".to_string(), "domain".to_string()),
+            ("203.0.113.10".to_string(), "ip".to_string()),
+        ];
+
+        assert!(
+            enumeration_eas_live_web_worklist(&assets, &typed_assets, &[]).is_none(),
+            "no inherited EAS liveness truth must not collapse the gate denominator to empty"
+        );
     }
 
     // ── Phase 1.5 token / freshness ──────────────────────────────────────

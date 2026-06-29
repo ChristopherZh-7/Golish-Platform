@@ -683,6 +683,19 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(None)
     }
 
+    /// Current running durable asset wave without creating a new one. Used when
+    /// an org-level completion already exists and the runtime only needs to
+    /// decide whether a pending wave is truly new work or legacy bookkeeping.
+    async fn stage_asset_wave_current_running(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        let _ = (operation_id, organization_id, stage_kind);
+        Ok(None)
+    }
+
     /// Promote unassigned in-scope targets into the next wave for the same
     /// `(operation, organization, stage)`. `None` means no new assets are waiting.
     async fn stage_asset_wave_create_next(
@@ -708,6 +721,18 @@ pub trait DbRepoProvider: Send + Sync {
     async fn stage_asset_wave_complete(&self, wave_id: Uuid) -> anyhow::Result<()> {
         let _ = wave_id;
         Ok(())
+    }
+
+    /// Whether every item in a wave points to a target created no later than
+    /// `cutoff`. This lets resume skip backfill completed waves for historical
+    /// assets covered by an older deterministic org gate pass.
+    async fn stage_asset_wave_all_items_created_at_or_before(
+        &self,
+        wave_id: Uuid,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<bool> {
+        let _ = (wave_id, cutoff);
+        Ok(false)
     }
 
     /// Overwrite `operation_state.state_blob` (harness resume checkpoint).

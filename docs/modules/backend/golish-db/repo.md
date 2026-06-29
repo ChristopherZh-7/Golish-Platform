@@ -52,7 +52,7 @@ owns 全部表的结构化访问。每个表一个子模块（如 `findings.rs` 
 - app crate **不直接写 SQL**：纵向走 `repo::*`，横向跨服务走 `golish-app-core/ports`。
 - `source_query_log` 的幂等键必须包含 `organization_id`：`(organization_id, run_id, source, query, target)`。多 org `stage_run` 扇出时，root/子公司同源 provider 查询不能互相覆盖；`list_for_run` 供 gate/reviewer 只读 `(org, run)` 的 source/provider terminal rows，证明 source 尝试，不可当作 found truth。
 - `coverage_truth.rs` 是 Found-only 投影：只能把业务表里确实存在的事实注入 gate，不从缺失数据推断 checked_empty；EAS 的 PORT/SERVICE/LIVENESS 必须保留 freshness window 约束。
-- `stage_asset_waves` 是 additive schema：wave items 固定 `target_id/value/type/source` 成员关系，gate 仍从业务表/ledger 读事实；新发现 target 不会进入当前 batch denominator，也不会在单个 org PASS 后被自动重跑，后续由 global delta expansion pass 统一消费。
+- `stage_asset_waves` 是 additive schema：wave items 固定 `target_id/value/type/source` 成员关系，gate 仍从业务表/ledger 读事实；新发现 target 不会进入当前 batch denominator，也不会在单个 org PASS 后被自动重跑，后续由 global delta expansion pass 统一消费。兼容旧 org-level pass ledger 时，没有历史 wave 的 org 只把 `org_stage_completions.passed_at` 之后新增的 target 作为 delta；若已存在 running wave 但全部 item 早于该 pass，runtime 会补 complete 并跳过 worker。
 
 ## 测试入口
 

@@ -595,13 +595,23 @@ fn coverage_complete(
 
     // P0 (2026-06-11 coverage-empty-bypass): we already returned Pass above when
     // `techniques` is empty, so reaching here means the stage DECLARES expected
-    // techniques. An empty asset set at this point means no authoritative
-    // in-scope assets were injected AND the deliverable self-reported no coverage
-    // at all — i.e. the agent omitted the matrix entirely. Treating that as a
-    // vacuous Pass conflates "omitted" with "checked-empty" (AGENTS.md I8) and
-    // lets the whole coverage gate be skipped. Block instead: a coverage-bearing
-    // stage must submit at least one (asset × technique) terminal cell.
+    // techniques. An empty SELF-REPORTED asset set means the agent omitted the
+    // matrix entirely. That must still BLOCK because "omitted" is not
+    // "checked-empty" (AGENTS.md I8).
+    //
+    // If the caller injected `Some([])` as the authoritative in-scope axis,
+    // however, DB truth says there are no assets to cover. That is a real
+    // vacuous pass, and must match the read-only `check_stage_asset_coverage`
+    // precheck; otherwise zero-asset orgs enter repair mode and workers start
+    // inventing probes.
     if assets.is_empty() {
+        if ctx
+            .in_scope_assets
+            .as_ref()
+            .is_some_and(|list| list.is_empty())
+        {
+            return GateCheckOutcome::Pass;
+        }
         return GateCheckOutcome::Block {
             reasons: vec![format!(
                 "{}: coverage matrix is empty but the stage declares {} expected technique(s) — submit a per-asset terminal cell (found/checked_empty/blocked/not_applicable) for each, omission is not checked-empty (I8)",
@@ -2411,6 +2421,24 @@ mod tests {
                 panic!("empty coverage on a stage that declares expected_techniques must BLOCK")
             }
         }
+    }
+
+    #[test]
+    fn coverage_complete_passes_empty_coverage_when_injected_scope_is_empty() {
+        // Explicit DB truth: there are zero in-scope assets for this org/stage.
+        // This is different from an agent omitting coverage with no authoritative
+        // axis, and it must stay consistent with check_stage_asset_coverage.
+        let rule = coverage_complete_rule();
+        let spec = spec_with_expected(&["GOLISH-EAS-LIVENESS", "GOLISH-EAS-PORT"]);
+        let d = deliverable_with_coverage(vec![]);
+        let ctx = GateContext {
+            in_scope_assets: Some(vec![]),
+            ..GateContext::default()
+        };
+        assert!(
+            eval_with_context(&d, &spec, &[rule], &ctx)[0].is_pass(),
+            "explicit zero in-scope assets should be a vacuous coverage pass"
+        );
     }
 
     #[test]

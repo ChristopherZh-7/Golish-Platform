@@ -107,6 +107,35 @@ impl GolishDbRepoProvider {
         .map_err(Into::into)
     }
 
+    pub(super) async fn stage_asset_wave_current_running_impl(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        golish_db::repo::stage_asset_waves::current_running(
+            &self.pool,
+            operation_id,
+            organization_id,
+            stage_kind,
+        )
+        .await
+        .map(|maybe| maybe.map(stage_asset_wave_to_view))
+        .map_err(Into::into)
+    }
+
+    pub(super) async fn stage_asset_wave_all_items_created_at_or_before_impl(
+        &self,
+        wave_id: Uuid,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<bool> {
+        golish_db::repo::stage_asset_waves::all_items_created_at_or_before(
+            &self.pool, wave_id, cutoff,
+        )
+        .await
+        .map_err(Into::into)
+    }
+
     pub(super) async fn stage_asset_wave_create_next_impl(
         &self,
         operation_id: Uuid,

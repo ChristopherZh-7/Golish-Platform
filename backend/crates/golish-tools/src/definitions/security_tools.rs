@@ -255,6 +255,28 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
             }),
         },
         FunctionDeclaration {
+            name: "list_enumeration_web_roots".to_string(),
+            description: "List the enumeration worklist: only EAS-confirmed live web roots for the active organization, with current JSAPI/DIR/PARAM coverage state and suggested next tools. Call this FIRST in enumeration instead of list_in_scope_targets; it is read-only and does not mutate target status.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "organization_id": {
+                        "type": "string",
+                        "description": "Organization UUID to inspect. Omit to use the active per-org/root organization."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Optional cap: return only the first N live web roots. Default 100, max 500."
+                    },
+                    "include_coverage": {
+                        "type": "boolean",
+                        "description": "Include the full coverage cells for each web root. Default true."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        FunctionDeclaration {
             name: "check_stage_asset_coverage".to_string(),
             description: "Read the current stage asset-coverage matrix from database truth before submitting. Use this after scans/probes land and BEFORE submit_stage_deliverable. It returns ready_to_submit=false when any asset×technique cell is still pending/error, with sample gaps and suggested tools. blocked/not_applicable are terminal when honestly recorded. Defaults to the active harness organization, current session, and current stage when available.".to_string(),
             parameters: json!({

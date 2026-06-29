@@ -280,10 +280,20 @@ impl SubmitRepairMode {
         match self.kind {
             SubmitRepairKind::EvidenceRefs => &[
                 "submit_stage_deliverable",
+                "check_stage_asset_coverage",
                 "query_target_data",
                 "wait_for_background_jobs",
             ],
             SubmitRepairKind::BackgroundJobs => &[
+                "wait_for_background_jobs",
+                "check_job",
+                "kill_job",
+                "check_stage_asset_coverage",
+                "submit_stage_deliverable",
+            ],
+            SubmitRepairKind::CoverageGap if self.coverage_gap_actions.is_empty() => &[
+                "check_stage_asset_coverage",
+                "query_target_data",
                 "wait_for_background_jobs",
                 "check_job",
                 "kill_job",
@@ -292,6 +302,7 @@ impl SubmitRepairMode {
             SubmitRepairKind::CoverageGap => &[
                 "pentest_list_tools",
                 "pentest_run",
+                "check_stage_asset_coverage",
                 "query_target_data",
                 "wait_for_background_jobs",
                 "check_job",
@@ -302,14 +313,18 @@ impl SubmitRepairMode {
     }
 
     fn effective_allowed_tools(&self) -> Vec<String> {
-        if self.allowed_tools_override.is_empty() {
+        let mut tools = if self.allowed_tools_override.is_empty() {
             self.base_allowed_tools()
                 .iter()
                 .map(|tool| (*tool).to_string())
                 .collect()
         } else {
             self.allowed_tools_override.clone()
+        };
+        if self.kind == SubmitRepairKind::CoverageGap && !self.coverage_gap_actions.is_empty() {
+            append_direct_enumeration_repair_tools(&mut tools, &self.coverage_gap_actions);
         }
+        tools
     }
 
     pub fn kind_str(&self) -> &'static str {
@@ -351,16 +366,26 @@ impl SubmitRepairMode {
                         .to_string()
                 }
                 SubmitRepairKind::CoverageGap => {
-                    "submit_stage_deliverable returned needs_fix because the stage coverage matrix \
-                 still has missing or non-terminal cells. Targeted gap-closure mode is active: \
-                 use the gate feedback and query_target_data instead of re-listing the entire \
-                 attack surface. Run only stage-allowed probes for the exact asset/technique \
-                 pairs named in the gate feedback. Batch sibling gap assets with \
-                 input_lines/list-file mode when every target is present in coverage_gap_actions. \
-                 Do NOT call list_in_scope_targets, list_attack_surface_seeds, \
-                 CIDR/range sweeps, targets outside coverage_gap_actions, or broad rediscovery. \
-                 When each named gap has a terminal coverage cell, resubmit."
-                        .to_string()
+                    if self.coverage_gap_actions.is_empty() {
+                        "submit_stage_deliverable returned needs_fix for coverage, but the gate \
+                     did not name any concrete coverage_gap_actions. Repair-only mode is active. \
+                     Do NOT launch discovery, guessed-domain probes, pentest_run, CIDR/range \
+                     sweeps, or broad rediscovery. Call check_stage_asset_coverage/query_target_data \
+                     to reconcile DB truth; if there are no in-scope assets or no named gaps, \
+                     resubmit the no-asset/terminal deliverable instead of inventing targets."
+                            .to_string()
+                    } else {
+                        "submit_stage_deliverable returned needs_fix because the stage coverage matrix \
+                     still has missing or non-terminal cells. Targeted gap-closure mode is active: \
+                     use the gate feedback and query_target_data instead of re-listing the entire \
+                     attack surface. Run only stage-allowed probes for the exact asset/technique \
+                     pairs named in the gate feedback. Batch sibling gap assets with \
+                     input_lines/list-file mode when every target is present in coverage_gap_actions. \
+                     Do NOT call list_in_scope_targets, list_attack_surface_seeds, \
+                     CIDR/range sweeps, targets outside coverage_gap_actions, or broad rediscovery. \
+                     When each named gap has a terminal coverage cell, resubmit."
+                            .to_string()
+                    }
                 }
             });
         if !self.missing_required_checks.is_empty() {
@@ -396,6 +421,17 @@ impl SubmitRepairMode {
                     return Some(self.block_payload(tool_name, Some(reason)));
                 }
             }
+            if self.kind == SubmitRepairKind::CoverageGap
+                && is_direct_enumeration_repair_tool(tool_name)
+            {
+                if let Some(reason) = coverage_gap_direct_tool_target_block_reason(
+                    tool_name,
+                    tool_args,
+                    &self.coverage_gap_actions,
+                ) {
+                    return Some(self.block_payload(tool_name, Some(reason)));
+                }
+            }
             return None;
         }
         Some(self.block_payload(tool_name, None))
@@ -428,7 +464,10 @@ impl SubmitRepairMode {
 fn coverage_gap_action_instruction(actions: &[CoverageGapAction]) -> String {
     let mut lines = vec![format!(
         " Exact coverage_gap_actions from the gate: run ONLY these {} target/technique pairs. \
-         Do not run a target or technique that is absent from this list.",
+         Do not run a target or technique that is absent from this list. Direct enumeration tools \
+         (browser_collect_js_api/js_collect/js_extract_apis/route_probe_paths) may be called by \
+         name when suggested here; CLI tools such as ffuf/gobuster/feroxbuster/arjun/katana must \
+         be run through pentest_run(tool_name=...).",
         actions.len()
     )];
     for (idx, action) in actions.iter().enumerate() {
@@ -447,6 +486,45 @@ fn coverage_gap_action_instruction(actions: &[CoverageGapAction]) -> String {
         ));
     }
     format!("\n{}", lines.join("\n"))
+}
+
+fn append_direct_enumeration_repair_tools(tools: &mut Vec<String>, actions: &[CoverageGapAction]) {
+    for action in actions {
+        for suggested in &action.suggested_tools {
+            let suggested = suggested
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            if is_direct_enumeration_repair_tool(&suggested) {
+                push_unique_tool(tools, &suggested);
+            }
+        }
+        match action.technique.as_str() {
+            "GOLISH-ENUM-JSAPI" => {
+                push_unique_tool(tools, "browser_collect_js_api");
+                push_unique_tool(tools, "js_collect");
+                push_unique_tool(tools, "js_extract_apis");
+            }
+            "GOLISH-ENUM-DIR" => push_unique_tool(tools, "route_probe_paths"),
+            "GOLISH-ENUM-PARAM" => push_unique_tool(tools, "js_extract_apis"),
+            _ => {}
+        }
+    }
+}
+
+fn push_unique_tool(tools: &mut Vec<String>, tool: &str) {
+    if !tool.is_empty() && !tools.iter().any(|existing| existing == tool) {
+        tools.push(tool.to_string());
+    }
+}
+
+fn is_direct_enumeration_repair_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "browser_collect_js_api" | "js_collect" | "js_extract_apis" | "route_probe_paths"
+    )
 }
 
 fn coverage_gap_pentest_run_block_reason(tool_args: &serde_json::Value) -> Option<String> {
@@ -471,6 +549,51 @@ fn coverage_gap_pentest_run_block_reason(tool_args: &serde_json::Value) -> Optio
         );
     }
     None
+}
+
+fn coverage_gap_direct_tool_target_block_reason(
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+    actions: &[CoverageGapAction],
+) -> Option<String> {
+    if actions.is_empty() {
+        return None;
+    }
+    let target_key = match tool_name {
+        "route_probe_paths" => "base_url",
+        "browser_collect_js_api" | "js_collect" | "js_extract_apis" => "target_url",
+        _ => return None,
+    };
+    let target = tool_args
+        .get(target_key)
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim();
+    if target.is_empty() {
+        return Some(format!(
+            "coverage-gap repair requires {tool_name}.{target_key} so the target can be checked against coverage_gap_actions"
+        ));
+    }
+    let allowed = actions
+        .iter()
+        .map(|action| normalize_probe_target(&action.asset))
+        .filter(|asset| !asset.is_empty())
+        .collect::<HashSet<_>>();
+    if allowed.contains(&normalize_probe_target(target)) {
+        return None;
+    }
+    let mut preview = actions
+        .iter()
+        .take(20)
+        .map(|action| format!("{} × {}", action.asset, action.technique))
+        .collect::<Vec<_>>();
+    if actions.len() > preview.len() {
+        preview.push(format!("... +{} more", actions.len() - preview.len()));
+    }
+    Some(format!(
+        "coverage-gap repair blocks {tool_name} target '{target}' because it is not in coverage_gap_actions; only probe [{}]",
+        preview.join(", ")
+    ))
 }
 
 fn coverage_gap_action_target_block_reason(

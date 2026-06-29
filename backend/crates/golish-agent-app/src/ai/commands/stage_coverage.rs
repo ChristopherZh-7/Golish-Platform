@@ -71,7 +71,7 @@ pub struct StageAssetCoverageCell {
     pub suggested_tools: Vec<String>,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 struct TargetCoverageRow {
     id: Uuid,
     value: String,
@@ -107,6 +107,16 @@ struct SourceQueryProjectionRow {
     evidence_refs: Vec<i64>,
 }
 
+#[derive(Debug, FromRow)]
+struct EvidenceFactProjectionRow {
+    asset: String,
+    technique: String,
+    outcome: String,
+    source: Option<String>,
+    evidence_refs: Vec<i64>,
+    raw_output: Option<String>,
+}
+
 const NEXT_WAVE_PENDING: &str = "next_wave_pending";
 
 const LATEST_TECHNIQUE_OUTCOMES_SQL: &str = r#"SELECT asset, technique, outcome, source, evidence_ids AS evidence_refs
@@ -128,6 +138,20 @@ const LATEST_SOURCE_QUERY_ROWS_SQL: &str = r#"SELECT source, target, technique, 
      ORDER BY target, technique, source, query, finished_at DESC NULLS LAST, created_at DESC, id DESC
    ) latest
    ORDER BY target, technique, source"#;
+
+const SESSION_EVIDENCE_FACT_ROWS_SQL: &str = r#"SELECT evidence_asset AS asset,
+          evidence_technique AS technique,
+          evidence_outcome AS outcome,
+          tool_name AS source,
+          ARRAY[id]::bigint[] AS evidence_refs,
+          NULLIF(COALESCE(detail->>'raw_output', details), '') AS raw_output
+   FROM audit_log
+   WHERE audit_role = 'evidence'
+     AND session_id = $1
+     AND evidence_technique = ANY($2::text[])
+     AND evidence_asset IS NOT NULL
+     AND evidence_outcome IS NOT NULL
+   ORDER BY id ASC"#;
 
 #[tauri::command]
 pub async fn ai_get_stage_asset_coverage(
@@ -163,8 +187,11 @@ pub(crate) async fn stage_asset_coverage_snapshot(
     run_start: Option<DateTime<Utc>>,
     allow_latest_outcome_fallback: bool,
 ) -> anyhow::Result<StageAssetCoverageSnapshot> {
-    let assets = list_stage_targets(pool, org_id, stage_kind).await?;
+    let mut assets = list_stage_targets(pool, org_id, stage_kind).await?;
     let wave_cutoff = asset_wave_cutoff(stage_kind, run_start);
+    if stage_kind == StageKind::Enumeration {
+        assets = filter_enumeration_assets_by_eas_worklist(pool, org_id, assets).await?;
+    }
     let current_assets: Vec<&TargetCoverageRow> = assets
         .iter()
         .filter(|asset| !is_next_wave_asset(asset, wave_cutoff))
@@ -304,6 +331,67 @@ async fn list_stage_targets(
     Ok(rows)
 }
 
+async fn filter_enumeration_assets_by_eas_worklist(
+    pool: &sqlx::PgPool,
+    org_id: Uuid,
+    assets: Vec<TargetCoverageRow>,
+) -> anyhow::Result<Vec<TargetCoverageRow>> {
+    if assets.is_empty() {
+        return Ok(assets);
+    }
+    let asset_values: Vec<String> = assets.iter().map(|a| a.value.clone()).collect();
+    let asset_types: Vec<String> = assets.iter().map(|a| a.target_type.clone()).collect();
+    let found_facts = golish_db::repo::coverage_truth::coverage_truth_facts(
+        pool,
+        Some(org_id),
+        &asset_values,
+        &asset_types,
+        None,
+    )
+    .await?;
+    let found: BTreeSet<(String, String)> = found_facts
+        .into_iter()
+        .map(|(asset, technique)| {
+            (
+                coverage_lookup_asset(&asset, technique),
+                technique.to_string(),
+            )
+        })
+        .collect();
+    Ok(filter_enumeration_assets_by_eas_found(assets, &found))
+}
+
+fn filter_enumeration_assets_by_eas_found(
+    assets: Vec<TargetCoverageRow>,
+    found: &BTreeSet<(String, String)>,
+) -> Vec<TargetCoverageRow> {
+    let worklist_ids: BTreeSet<Uuid> = assets
+        .iter()
+        .filter(|asset| {
+            matches!(
+                coverage_asset_class(asset),
+                golish_agent_kit::harness::technique_resolver::AssetClass::Domain
+                    | golish_agent_kit::harness::technique_resolver::AssetClass::Url
+            ) && found.contains(&(
+                coverage_lookup_asset(
+                    &asset.value,
+                    golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+                ),
+                golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string(),
+            ))
+        })
+        .map(|asset| asset.id)
+        .collect();
+
+    if worklist_ids.is_empty() {
+        return assets;
+    }
+    assets
+        .into_iter()
+        .filter(|asset| worklist_ids.contains(&asset.id))
+        .collect()
+}
+
 async fn get_organization_row(
     pool: &sqlx::PgPool,
     organization_id: Uuid,
@@ -389,6 +477,10 @@ async fn stage_outcomes(
                 organization_asset_values,
             );
         }
+
+        for row in evidence_fact_rows_for_session(pool, run_id, &stage_techniques).await? {
+            merge_evidence_fact_row(&mut out, asset_values, &stage_techniques, row);
+        }
     }
 
     if allow_latest_fallback && out.is_empty() {
@@ -445,6 +537,24 @@ async fn latest_source_query_rows(
     )
 }
 
+async fn evidence_fact_rows_for_session(
+    pool: &sqlx::PgPool,
+    run_id: &str,
+    stage_techniques: &BTreeSet<String>,
+) -> anyhow::Result<Vec<EvidenceFactProjectionRow>> {
+    if stage_techniques.is_empty() {
+        return Ok(Vec::new());
+    }
+    let techniques: Vec<String> = stage_techniques.iter().cloned().collect();
+    Ok(
+        sqlx::query_as::<_, EvidenceFactProjectionRow>(SESSION_EVIDENCE_FACT_ROWS_SQL)
+            .bind(run_id)
+            .bind(&techniques)
+            .fetch_all(pool)
+            .await?,
+    )
+}
+
 fn merge_technique_outcome_row(
     out: &mut BTreeMap<(String, String), OutcomeProjection>,
     asset_values: &[String],
@@ -462,6 +572,29 @@ fn merge_technique_outcome_row(
         (asset_key, row.technique),
         OutcomeProjection {
             state: outcome_state(&row.outcome),
+            source: row.source,
+            evidence_refs: row.evidence_refs,
+        },
+    );
+}
+
+fn merge_evidence_fact_row(
+    out: &mut BTreeMap<(String, String), OutcomeProjection>,
+    asset_values: &[String],
+    stage_techniques: &BTreeSet<String>,
+    row: EvidenceFactProjectionRow,
+) {
+    if !stage_techniques.contains(&row.technique) {
+        return;
+    }
+    let Some(asset_key) = matching_stage_asset_key(asset_values, &row.asset, &row.technique) else {
+        return;
+    };
+    merge_outcome(
+        out,
+        (asset_key, row.technique.clone()),
+        OutcomeProjection {
+            state: evidence_outcome_state(&row.outcome, &row.technique, row.raw_output.as_deref()),
             source: row.source,
             evidence_refs: row.evidence_refs,
         },
@@ -539,11 +672,18 @@ fn matching_stage_asset_key(
 }
 
 fn coverage_lookup_asset(asset: &str, technique: &str) -> String {
-    if technique == golish_db::repo::coverage_truth::TECH_EAS_LIVENESS {
-        golish_agent_kit::harness::evidence_facts::eas_liveness_asset_key(asset)
-            .unwrap_or_else(|| asset.to_string())
-    } else {
-        asset.to_string()
+    match technique {
+        golish_db::repo::coverage_truth::TECH_EAS_LIVENESS => {
+            golish_agent_kit::harness::evidence_facts::eas_liveness_asset_key(asset)
+                .unwrap_or_else(|| asset.to_string())
+        }
+        golish_db::repo::coverage_truth::TECH_EAS_PORT
+        | golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP => {
+            golish_pentest_domain::canonical_asset_key(asset)
+                .map(|key| key.key)
+                .unwrap_or_else(|| asset.to_string())
+        }
+        _ => asset.to_string(),
     }
 }
 
@@ -726,6 +866,32 @@ fn outcome_state(outcome: &str) -> String {
     .to_string()
 }
 
+fn evidence_outcome_state(outcome: &str, technique: &str, raw_output: Option<&str>) -> String {
+    if outcome == "error" && eas_no_target_error_is_checked_empty(technique, raw_output) {
+        return "checked_empty".to_string();
+    }
+    outcome_state(outcome)
+}
+
+fn eas_no_target_error_is_checked_empty(technique: &str, raw_output: Option<&str>) -> bool {
+    if !matches!(
+        technique,
+        golish_db::repo::coverage_truth::TECH_EAS_LIVENESS
+            | golish_db::repo::coverage_truth::TECH_EAS_PORT
+    ) {
+        return false;
+    }
+    let Some(raw_output) = raw_output else {
+        return false;
+    };
+    let output = raw_output.to_ascii_lowercase();
+    output.contains("failed to resolve")
+        || output.contains("no valid ipv4 or ipv6 targets")
+        || output.contains("no valid ipv4/ipv6 targets")
+        || output.contains("no targets were specified")
+        || output.contains("0 ip addresses (0 hosts up)")
+}
+
 fn source_query_terminal_state(status: &str) -> Option<String> {
     match status {
         // Source rows prove the provider/source was tried and ended empty, but
@@ -816,6 +982,7 @@ fn suggested_tools(technique: &str) -> Vec<String> {
         golish_db::repo::coverage_truth::TECH_ENUM_JSAPI => {
             vec![
                 "browser_collect_js_api".to_string(),
+                "js_collect".to_string(),
                 "js_extract_apis".to_string(),
             ]
         }
@@ -861,9 +1028,66 @@ mod tests {
     }
 
     #[test]
+    fn enumeration_worklist_read_model_keeps_eas_live_web_roots() {
+        let live_domain = target("app.example.com", "domain");
+        let live_url = target("https://portal.example.com/login", "url");
+        let dead_domain = target("dead.example.com", "domain");
+        let live_ip = target("203.0.113.10", "ip");
+        let found = BTreeSet::from([
+            (
+                coverage_lookup_asset(
+                    &live_domain.value,
+                    golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+                ),
+                golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string(),
+            ),
+            (
+                coverage_lookup_asset(
+                    &live_url.value,
+                    golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+                ),
+                golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string(),
+            ),
+            (
+                coverage_lookup_asset(
+                    &live_ip.value,
+                    golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+                ),
+                golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string(),
+            ),
+        ]);
+
+        let filtered = filter_enumeration_assets_by_eas_found(
+            vec![live_domain.clone(), live_url.clone(), dead_domain, live_ip],
+            &found,
+        );
+
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|asset| asset.value.as_str())
+                .collect::<Vec<_>>(),
+            vec![live_domain.value.as_str(), live_url.value.as_str()]
+        );
+    }
+
+    #[test]
+    fn enumeration_worklist_read_model_does_not_filter_to_empty_without_eas_truth() {
+        let assets = vec![
+            target("app.example.com", "domain"),
+            target("203.0.113.10", "ip"),
+        ];
+
+        let filtered = filter_enumeration_assets_by_eas_found(assets.clone(), &BTreeSet::new());
+
+        assert_eq!(filtered.len(), assets.len());
+    }
+
+    #[test]
     fn latest_fallback_sql_aliases_evidence_ids_for_projection_rows() {
         assert!(LATEST_TECHNIQUE_OUTCOMES_SQL.contains("evidence_ids AS evidence_refs"));
         assert!(LATEST_SOURCE_QUERY_ROWS_SQL.contains("evidence_ids AS evidence_refs"));
+        assert!(SESSION_EVIDENCE_FACT_ROWS_SQL.contains("ARRAY[id]::bigint[] AS evidence_refs"));
     }
 
     #[test]
@@ -1168,6 +1392,93 @@ mod tests {
     }
 
     #[test]
+    fn evidence_fact_row_fills_missing_liveness_cell() {
+        let asset_values = vec!["157.240.9.36".to_string()];
+        let stage_techniques =
+            BTreeSet::from([golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string()]);
+        let mut outcomes = BTreeMap::new();
+
+        merge_evidence_fact_row(
+            &mut outcomes,
+            &asset_values,
+            &stage_techniques,
+            EvidenceFactProjectionRow {
+                asset: "157.240.9.36".to_string(),
+                technique: golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string(),
+                outcome: "empty".to_string(),
+                source: Some("httpx".to_string()),
+                evidence_refs: vec![12699],
+                raw_output: None,
+            },
+        );
+
+        let key = (
+            coverage_lookup_asset(
+                &asset_values[0],
+                golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+            ),
+            golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string(),
+        );
+        let outcome = outcomes.get(&key).expect("evidence fact is merged");
+        assert_eq!(outcome.state, "checked_empty");
+        assert_eq!(outcome.source.as_deref(), Some("httpx"));
+        assert_eq!(outcome.evidence_refs, vec![12699]);
+    }
+
+    #[test]
+    fn unresolvable_eas_port_error_is_displayed_as_checked_empty() {
+        let asset = target(
+            "www.google.com.box.promo-bentley.nts-app-xt-stg5.stock.pinganjrkj.com",
+            "domain",
+        );
+        let asset_values = vec![asset.value.clone()];
+        let stage_techniques =
+            BTreeSet::from([golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string()]);
+        let mut outcomes = BTreeMap::new();
+
+        merge_evidence_fact_row(
+            &mut outcomes,
+            &asset_values,
+            &stage_techniques,
+            EvidenceFactProjectionRow {
+                asset: asset.value.clone(),
+                technique: golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string(),
+                outcome: "error".to_string(),
+                source: Some("nmap".to_string()),
+                evidence_refs: vec![12710],
+                raw_output: Some(
+                    "Failed to resolve \"www.google...\".\nWARNING: No targets were specified, so 0 hosts scanned."
+                        .to_string(),
+                ),
+            },
+        );
+
+        let cells = coverage_cells(
+            StageKind::ExternalAttackSurface,
+            &asset,
+            &BTreeSet::new(),
+            &outcomes,
+        );
+
+        assert_eq!(cells[1].state, "checked_empty");
+        assert_eq!(cells[1].source.as_deref(), Some("nmap"));
+        assert_eq!(cells[1].evidence_refs, vec![12710]);
+        assert_eq!(cells[2].state, "not_applicable");
+    }
+
+    #[test]
+    fn generic_evidence_error_stays_error() {
+        assert_eq!(
+            evidence_outcome_state(
+                "error",
+                golish_db::repo::coverage_truth::TECH_EAS_PORT,
+                Some("nmap crashed while parsing arguments"),
+            ),
+            "error"
+        );
+    }
+
+    #[test]
     fn outcome_row_matches_liveness_endpoint_alias() {
         let asset_values = vec!["http://app.example.com:90".to_string()];
         let stage_techniques =
@@ -1198,6 +1509,41 @@ mod tests {
         assert_eq!(outcome.state, "checked_empty");
         assert_eq!(outcome.source.as_deref(), Some("httpx"));
         assert_eq!(outcome.evidence_refs, vec![7]);
+    }
+
+    #[test]
+    fn host_level_eas_outcome_matches_url_wrapped_ip_asset() {
+        let asset_values = vec!["http://115.159.235.124:8080".to_string()];
+        let stage_techniques =
+            BTreeSet::from([golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string()]);
+        let mut outcomes = BTreeMap::new();
+
+        merge_technique_outcome_row(
+            &mut outcomes,
+            &asset_values,
+            &stage_techniques,
+            TechniqueOutcomeProjectionRow {
+                asset: "115.159.235.124".to_string(),
+                technique: golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string(),
+                outcome: "empty".to_string(),
+                source: Some("naabu".to_string()),
+                evidence_refs: vec![42],
+            },
+        );
+
+        let key = (
+            coverage_lookup_asset(
+                &asset_values[0],
+                golish_db::repo::coverage_truth::TECH_EAS_PORT,
+            ),
+            golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string(),
+        );
+        let outcome = outcomes
+            .get(&key)
+            .expect("host-level outcome is merged onto URL-wrapped IP asset");
+        assert_eq!(outcome.state, "checked_empty");
+        assert_eq!(outcome.source.as_deref(), Some("naabu"));
+        assert_eq!(outcome.evidence_refs, vec![42]);
     }
 
     #[test]

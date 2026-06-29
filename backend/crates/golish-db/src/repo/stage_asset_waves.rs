@@ -80,6 +80,15 @@ fn build_items_for_wave_sql() -> String {
     format!("SELECT {ITEM_ROW_COLS} FROM stage_asset_wave_items WHERE wave_id = $1 ORDER BY id")
 }
 
+fn build_all_items_created_at_or_before_sql() -> String {
+    "SELECT COUNT(*) > 0 \
+            AND BOOL_AND(t.created_at IS NOT NULL AND t.created_at <= $2) \
+       FROM stage_asset_wave_items i \
+       LEFT JOIN targets t ON t.id = i.target_id \
+      WHERE i.wave_id = $1"
+        .to_string()
+}
+
 fn build_initial_candidates_sql() -> String {
     "SELECT id AS target_id, value AS asset_value, target_type::text AS asset_type, source \
        FROM targets \
@@ -96,6 +105,21 @@ fn build_next_candidates_sql() -> String {
        FROM targets t \
       WHERE t.scope::text = 'in' \
         AND t.organization_id = $2 \
+        AND ( \
+            EXISTS ( \
+                SELECT 1 \
+                  FROM stage_asset_waves existing \
+                 WHERE existing.operation_id = $1 \
+                   AND existing.organization_id = $2 \
+                   AND existing.stage_kind = $3 \
+            ) \
+            OR t.created_at > COALESCE(( \
+                SELECT c.passed_at \
+                  FROM org_stage_completions c \
+                 WHERE c.organization_id = $2 \
+                   AND c.stage_kind = $3 \
+            ), '-infinity'::timestamptz) \
+        ) \
         AND NOT EXISTS ( \
             SELECT 1 \
               FROM stage_asset_wave_items i \
@@ -206,6 +230,19 @@ pub async fn list_items(pool: &PgPool, wave_id: Uuid) -> Result<Vec<StageAssetWa
         .fetch_all(pool)
         .await?;
     Ok(rows)
+}
+
+pub async fn all_items_created_at_or_before(
+    pool: &PgPool,
+    wave_id: Uuid,
+    cutoff: DateTime<Utc>,
+) -> Result<bool> {
+    let covered = sqlx::query_scalar::<_, bool>(&build_all_items_created_at_or_before_sql())
+        .bind(wave_id)
+        .bind(cutoff)
+        .fetch_one(pool)
+        .await?;
+    Ok(covered)
 }
 
 pub async fn current_or_create_initial(
@@ -379,6 +416,25 @@ mod tests {
         assert!(sql.contains("w.operation_id = $1"));
         assert!(sql.contains("w.organization_id = $2"));
         assert!(sql.contains("w.stage_kind = $3"));
+    }
+
+    #[test]
+    fn stage_asset_wave_next_candidates_respect_legacy_completion_floor() {
+        let sql = build_next_candidates_sql();
+        assert!(sql.contains("org_stage_completions"));
+        assert!(sql.contains("c.organization_id = $2"));
+        assert!(sql.contains("c.stage_kind = $3"));
+        assert!(sql.contains("t.created_at > COALESCE"));
+        assert!(sql.contains("existing.operation_id = $1"));
+    }
+
+    #[test]
+    fn stage_asset_wave_item_coverage_query_requires_all_targets_before_cutoff() {
+        let sql = build_all_items_created_at_or_before_sql();
+        assert!(sql.contains("COUNT(*) > 0"));
+        assert!(sql.contains("BOOL_AND"));
+        assert!(sql.contains("t.created_at <= $2"));
+        assert!(sql.contains("LEFT JOIN targets"));
     }
 
     #[test]

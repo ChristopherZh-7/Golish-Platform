@@ -182,9 +182,8 @@ pub async fn create_default_sub_agents_from_registry(
             tmpl_or_fallback!("enumerator", build_enumerator_prompt()),
         )
         .with_tools(vec![
-            "list_in_scope_targets".into(),
+            "list_enumeration_web_roots".into(),
             "query_target_data".into(),
-            "manage_targets".into(),
             "pentest_list_tools".into(),
             "pentest_run".into(),
             "wait_for_background_jobs".into(),
@@ -193,7 +192,6 @@ pub async fn create_default_sub_agents_from_registry(
             "js_extract_apis".into(),
             "route_probe_paths".into(),
             "submit_stage_deliverable".into(),
-            "record_finding".into(),
             "search_knowledge_base".into(),
             "read_knowledge".into(),
         ])

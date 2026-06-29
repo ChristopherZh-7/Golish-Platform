@@ -493,9 +493,24 @@ fn allowed_tools_for(stage: StageKind, repair_kind: RepairKind) -> Vec<String> {
                 "wait_for_background_jobs",
                 "submit_stage_deliverable",
             ],
-            StageKind::ExternalAttackSurface | StageKind::Enumeration => vec![
+            StageKind::ExternalAttackSurface => vec![
                 "pentest_list_tools",
                 "pentest_run",
+                "query_target_data",
+                "check_stage_asset_coverage",
+                "wait_for_background_jobs",
+                "check_job",
+                "kill_job",
+                "submit_stage_deliverable",
+            ],
+            StageKind::Enumeration => vec![
+                "list_enumeration_web_roots",
+                "pentest_list_tools",
+                "pentest_run",
+                "browser_collect_js_api",
+                "js_collect",
+                "js_extract_apis",
+                "route_probe_paths",
                 "query_target_data",
                 "check_stage_asset_coverage",
                 "wait_for_background_jobs",
@@ -547,6 +562,9 @@ fn suggested_tool_for(stage: StageKind, technique: &str) -> Option<String> {
         (StageKind::ExternalAttackSurface, "GOLISH-EAS-SERVICE-FINGERPRINT") => {
             Some("nmap".to_string())
         }
+        (StageKind::Enumeration, "GOLISH-ENUM-JSAPI") => Some("browser_collect_js_api".to_string()),
+        (StageKind::Enumeration, "GOLISH-ENUM-DIR") => Some("route_probe_paths".to_string()),
+        (StageKind::Enumeration, "GOLISH-ENUM-PARAM") => Some("arjun".to_string()),
         (StageKind::TargetIntel, "GOLISH-INTEL-WHOIS") => Some("recon_lookup_whois".to_string()),
         (StageKind::TargetIntel, _) => Some("recon_map_assets".to_string()),
         _ => None,
@@ -568,6 +586,15 @@ fn command_hint_for(stage: StageKind, tool: &str, asset: &str, technique: &str) 
         }
         (StageKind::ExternalAttackSurface, "whatweb", _) => format!(
             "whatweb batch: include {asset} with sibling HTTP(S) services when Ruby is ready; otherwise prefer nmap -sV/httpx evidence"
+        ),
+        (StageKind::Enumeration, "browser_collect_js_api", _) => format!(
+            "browser_collect_js_api direct call: target_url={asset}, crawl_mode=\"fast\", ai_assist=true; use deep/recipe only for bounded JS closure follow-up"
+        ),
+        (StageKind::Enumeration, "route_probe_paths", _) => format!(
+            "route_probe_paths direct call: base_url={asset}; use observed JS/browser/crawler prefixes before any dictionary backfill"
+        ),
+        (StageKind::Enumeration, "arjun", _) => format!(
+            "arjun is a pentest_run tool_name, not a direct function; run it only against discovered endpoints/forms for {asset}"
         ),
         (StageKind::TargetIntel, "recon_lookup_whois", _) => {
             "recon_lookup_whois(organization_id=<current org>)".to_string()

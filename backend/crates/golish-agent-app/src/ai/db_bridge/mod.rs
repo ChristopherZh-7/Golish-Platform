@@ -504,8 +504,27 @@ impl DbRepoProvider for GolishDbRepoProvider {
         .await
     }
 
+    async fn stage_asset_wave_current_running(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        self.stage_asset_wave_current_running_impl(operation_id, organization_id, stage_kind)
+            .await
+    }
+
     async fn stage_asset_wave_complete(&self, wave_id: Uuid) -> anyhow::Result<()> {
         self.stage_asset_wave_complete_impl(wave_id).await
+    }
+
+    async fn stage_asset_wave_all_items_created_at_or_before(
+        &self,
+        wave_id: Uuid,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<bool> {
+        self.stage_asset_wave_all_items_created_at_or_before_impl(wave_id, cutoff)
+            .await
     }
 
     async fn operation_state_write_state_blob(

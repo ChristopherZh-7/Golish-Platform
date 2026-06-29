@@ -354,9 +354,10 @@ fn resume_skip_is_allowed(
 fn resume_skip_covers_current_wave(
     passed_at: chrono::DateTime<chrono::Utc>,
     current_wave: Option<&StageAssetWaveView>,
+    legacy_wave_items_covered_by_pass: bool,
 ) -> bool {
     current_wave
-        .map(|wave| passed_at >= wave.started_at)
+        .map(|wave| passed_at >= wave.started_at || legacy_wave_items_covered_by_pass)
         .unwrap_or(true)
 }
 
@@ -516,6 +517,62 @@ async fn prepare_stage_asset_wave(
                 "stage_run could not prepare durable asset wave; falling back to stage-start cutoff"
             );
             None
+        }
+    }
+}
+
+async fn current_running_stage_asset_wave(
+    ctx: &AgenticLoopContext<'_>,
+    stage: StageKind,
+    unit: &OrgUnit,
+) -> Option<StageAssetWaveView> {
+    let tracker = ctx.events.db_tracker?;
+    let repo = tracker.repo()?;
+    let operation_id = stage_run_operation_id(ctx)?;
+    let organization_id = uuid::Uuid::parse_str(&unit.id).ok()?;
+    match repo
+        .stage_asset_wave_current_running(operation_id, organization_id, stage.as_str())
+        .await
+    {
+        Ok(wave) => wave,
+        Err(error) => {
+            tracing::warn!(
+                target: "harness::stage_run",
+                stage = %stage.as_str(),
+                org_id = %unit.id,
+                error = %error,
+                "stage_run could not read current durable asset wave"
+            );
+            None
+        }
+    }
+}
+
+async fn stage_asset_wave_items_covered_by_pass(
+    ctx: &AgenticLoopContext<'_>,
+    wave: &StageAssetWaveView,
+    passed_at: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    let Some(tracker) = ctx.events.db_tracker else {
+        return false;
+    };
+    let Some(repo) = tracker.repo() else {
+        return false;
+    };
+    match repo
+        .stage_asset_wave_all_items_created_at_or_before(wave.id, passed_at)
+        .await
+    {
+        Ok(covered) => covered,
+        Err(error) => {
+            tracing::warn!(
+                target: "harness::stage_run",
+                wave_id = %wave.id,
+                wave_index = wave.wave_index,
+                error = %error,
+                "stage_run could not compare asset wave items against org pass time"
+            );
+            false
         }
     }
 }
@@ -1157,10 +1214,14 @@ where
         // `agent_request_id` field on the StageRunOrgProgress event.
         let org_request_id = format!("{tool_id}::org::{}", unit.id);
         let agent_path = stage_run_agent_path(stage, unit, &specialist);
+        let passed_at = resume_skips.get(&unit.id).copied();
         let mut current_wave = if spec.asset_wave_barrier {
-            match resume_skip_not_before {
-                Some(started_at) => prepare_stage_asset_wave(ctx, stage, unit, started_at).await,
-                None => None,
+            match (passed_at, resume_skip_not_before) {
+                (Some(_), _) => current_running_stage_asset_wave(ctx, stage, unit).await,
+                (None, Some(started_at)) => {
+                    prepare_stage_asset_wave(ctx, stage, unit, started_at).await
+                }
+                (None, None) => None,
             }
         } else {
             None
@@ -1172,8 +1233,18 @@ where
         // new operation/current active stage, old completions are not enough:
         // the current gate still needs evidence/source rows for this stage, so
         // only completions written after this stage started may skip.
-        if let Some(passed_at) = resume_skips.get(&unit.id).copied() {
-            if resume_skip_covers_current_wave(passed_at, current_wave.as_ref()) {
+        if let Some(passed_at) = passed_at {
+            let legacy_wave_items_covered = match current_wave.as_ref() {
+                Some(wave) if passed_at < wave.started_at => {
+                    stage_asset_wave_items_covered_by_pass(ctx, wave, passed_at).await
+                }
+                _ => false,
+            };
+            if resume_skip_covers_current_wave(
+                passed_at,
+                current_wave.as_ref(),
+                legacy_wave_items_covered,
+            ) {
                 if let Some(wave) = current_wave.take() {
                     if let Err(reason) = complete_stage_asset_wave(ctx, &wave).await {
                         emit_org_progress(
@@ -1962,7 +2033,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_skip_only_covers_waves_started_before_completion() {
+    fn resume_skip_covers_current_or_legacy_backfilled_wave() {
         let wave_started_at = chrono::Utc::now();
         let wave = StageAssetWaveView {
             id: uuid::Uuid::from_u128(1),
@@ -1977,16 +2048,27 @@ mod tests {
 
         assert!(resume_skip_covers_current_wave(
             wave_started_at + chrono::Duration::minutes(1),
-            Some(&wave)
+            Some(&wave),
+            false
         ));
         assert!(
             !resume_skip_covers_current_wave(
                 wave_started_at - chrono::Duration::minutes(1),
-                Some(&wave)
+                Some(&wave),
+                false
             ),
             "a completion before the current wave must not suppress new work"
         );
-        assert!(resume_skip_covers_current_wave(wave_started_at, None));
+        assert!(resume_skip_covers_current_wave(
+            wave_started_at - chrono::Duration::minutes(1),
+            Some(&wave),
+            true
+        ));
+        assert!(resume_skip_covers_current_wave(
+            wave_started_at,
+            None,
+            false
+        ));
     }
 
     #[test]

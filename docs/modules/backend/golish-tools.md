@@ -28,7 +28,7 @@
 | `ToolRegistry::execute_tool(name, args) -> Result<Value>` | 按名执行工具 |
 | `ToolRegistry::available_tools() -> Vec<String>` | 列出已注册工具名 |
 | `ToolRegistryConfig` | 携带 `GolishSettings`，决定是否启用联网搜索工具 |
-| `build_function_declarations() -> Vec<FunctionDeclaration>` | 导出全部工具 schema（当前 41 个）给 LLM |
+| `build_function_declarations() -> Vec<FunctionDeclaration>` | 导出全部工具 schema（当前 44 个）给 LLM |
 | `FunctionDeclaration` | `{ name, description, parameters }` 的 LLM 工具声明格式 |
 | `ToolError` | 工具层错误（如 `UnknownTool`） |
 | `Tool`（re-export 自 golish-core） | 所有工具实现的 trait |
@@ -76,7 +76,7 @@ registry.available_tools()                  // -> Vec<String>
 
 - 联网搜索工具（Tavily / Brave）**条件注册**：只有配置了对应 API key（或显式开 `tools.web_search`）才会出现在 `available_tools()` 里，写测试别假设它们总在。
 - 改 `execute_tool` 返回结构前，先确认不破坏「成功/失败契约」，否则 agentic loop 会误判工具成败。
-- 新增工具要两处同步：① 在 `registry.rs` 注册实例；② 在 `definitions/` 加 schema，否则 LLM 看不到或调不通。
+- 新增工具要同步注册/声明路径：常规 registry 工具在 `registry.rs` 注册实例并在 `definitions/` 加 schema；security bridge 这类上层路由工具至少要在 `definitions/` 暴露 schema，并在对应 executor/config allow-list 加名，否则 LLM 看得到但执行器或配置不认。
 
 ## 测试入口
 

@@ -9,7 +9,7 @@
   "requires_stages": ["external_attack_surface"],
   "allowed_next_stages": ["vuln_triage", "reporting"],
 
-  "allowed_tool_types": ["recon/http", "recon/crawler", "web/fuzzer", "web/param"],
+  "allowed_tool_types": ["recon/crawler", "web/fuzzer", "web/param"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
@@ -60,7 +60,7 @@
   "specialist": "enumerator",
   "coverage_axis": ["DIR", "PARAM", "JSAPI"],
 
-  "$comment_min_invocations": "2026-06-26 enumeration deliverables/flow: no hard tool floor. HTTP probing belongs to external_attack_surface; enumeration completeness is DIR/PARAM/JSAPI DB truth plus explicit non-found terminal coverage.",
+  "$comment_min_invocations": "2026-06-26 enumeration deliverables/flow: no hard tool floor. HTTP probing and service fingerprinting belong to external_attack_surface; enumeration completeness is DIR/PARAM/JSAPI DB truth plus explicit non-found terminal coverage.",
   "min_invocations": {},
 
   "max_other_skips": 2,

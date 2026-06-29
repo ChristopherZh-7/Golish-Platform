@@ -255,10 +255,12 @@ fn test_enumerator_has_content_enum_tools() {
     assert!(has_tool(enumerator, "js_collect"));
     assert!(has_tool(enumerator, "js_extract_apis"));
     assert!(has_tool(enumerator, "route_probe_paths"));
-    assert!(has_tool(enumerator, "manage_targets"));
-    assert!(has_tool(enumerator, "list_in_scope_targets"));
+    assert!(has_tool(enumerator, "list_enumeration_web_roots"));
+    assert!(!has_tool(enumerator, "manage_targets"));
+    assert!(!has_tool(enumerator, "list_in_scope_targets"));
     assert!(has_tool(enumerator, "query_target_data"));
     assert!(has_tool(enumerator, "submit_stage_deliverable"));
+    assert!(!has_tool(enumerator, "record_finding"));
     assert!(has_tool(enumerator, "search_knowledge_base"));
     assert!(has_tool(enumerator, "read_knowledge"));
 
@@ -290,13 +292,21 @@ fn test_enumerator_prompt_is_content_enum() {
     assert!(prompt.contains("route probe"));
     assert!(prompt.contains("route_probe_paths"));
     assert!(prompt.contains("small bounded dictionary"));
+    assert!(prompt.contains("list_enumeration_web_roots"));
+    assert!(prompt.contains("pentest_run(tool_name=..., args=...)"));
     assert!(prompt.contains("DB cannot derive"));
+    assert!(prompt.contains("check_stage_asset_coverage"));
+    assert!(prompt.contains("web_root_enumerated"));
+    assert!(prompt.contains("api_endpoints_discovered"));
+    assert!(prompt.contains("do not call record_finding"));
     assert!(prompt.contains("\"web_roots\""));
     assert!(prompt.contains("\"directories\""));
     assert!(prompt.contains("\"coverage\""));
     // Enumerator is the ACTIVE counterpart of the ZERO-TOUCH Recon — it must NOT
     // describe itself as zero-touch.
     assert!(!prompt.contains("ZERO-TOUCH"));
+    assert!(!prompt.contains("list_in_scope_targets first"));
+    assert!(!prompt.contains("Confirm/annotate targets via manage_targets"));
 }
 
 #[test]
