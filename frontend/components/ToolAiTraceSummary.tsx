@@ -33,15 +33,6 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function stringArray(value: unknown, limit = 6): string[] {
-  return Array.isArray(value)
-    ? value
-        .map((v) => asString(v))
-        .filter((v): v is string => !!v)
-        .slice(0, limit)
-    : [];
-}
-
 function recordArray(value: unknown, limit = 6): JsonRecord[] {
   return Array.isArray(value)
     ? value.filter((v): v is JsonRecord => isRecord(v)).slice(0, limit)
@@ -53,10 +44,6 @@ function countChip(label: string, value: unknown): string | null {
   return n === null ? null : `${label} ${n}`;
 }
 
-function boolChip(label: string, value: unknown): string | null {
-  return typeof value === "boolean" ? `${label} ${value ? "yes" : "no"}` : null;
-}
-
 function lineHintText(value: unknown): string[] {
   return recordArray(value, 3)
     .map((hint) => {
@@ -66,65 +53,6 @@ function lineHintText(value: unknown): string[] {
       return end !== null && end !== start ? `L${start}-${end}` : `L${start}`;
     })
     .filter((v): v is string => !!v);
-}
-
-function buildAssistSection(result: JsonRecord): AiTraceSection | null {
-  const assist = result.ai_assist;
-  if (!isRecord(assist)) return null;
-
-  const context = isRecord(assist.context) ? assist.context : {};
-  const signals = isRecord(context.signals) ? context.signals : {};
-  const chips = [
-    typeof assist.recommended === "boolean"
-      ? assist.recommended
-        ? "recommended"
-        : "no second pass"
-      : null,
-    boolChip("closure", signals.closure_complete ?? result.closure_complete),
-    countChip("scripts", signals.scripts_saved ?? result.scripts_saved ?? result.scripts_total),
-    countChip("api", signals.api_requests_total ?? result.api_requests_total),
-    countChip("review refs", signals.ai_review_refs ?? result.ai_review_refs_total),
-    countChip("recursive errors", result.recursive_errors_total),
-  ].filter((v): v is string => !!v);
-
-  const samples: AiTraceSection["samples"] = [];
-  for (const [label, key] of [
-    ["API sample", "api_requests_sample"],
-    ["Console sample", "console_errors_sample"],
-    ["Recursive errors", "recursive_errors_sample"],
-    ["Review refs", "ai_review_refs_sample"],
-  ] as const) {
-    const value = context[key];
-    if (Array.isArray(value) && value.length > 0) {
-      samples.push({ label, value: value.slice(0, 5) });
-    }
-  }
-
-  const fileRows = recordArray(context.script_observations, 5).map((file) => {
-    const source = asString(file.url) ?? asString(file.source_file) ?? "script";
-    const chunkUrls = Array.isArray(file.chunk_urls_sample) ? file.chunk_urls_sample.length : 0;
-    const refs = Array.isArray(file.refs_sample) ? file.refs_sample.length : 0;
-    const size = asNumber(file.size);
-    return {
-      source,
-      meta: [
-        size !== null ? `${Math.round(size / 1024)} KB` : null,
-        chunkUrls > 0 ? `${chunkUrls} chunks` : null,
-        refs > 0 ? `${refs} refs` : null,
-      ].filter((v): v is string => !!v),
-      lines: stringArray(file.snippets, 2).map((snippet) => snippet.slice(0, 180)),
-    };
-  });
-
-  return {
-    title: "Collector Hints",
-    icon: "assist",
-    chips,
-    reasons: stringArray(assist.reasons, 5),
-    nextStep: asString(assist.next_step) ?? undefined,
-    fileRows,
-    samples,
-  };
 }
 
 function buildAnalysisSection(result: JsonRecord): AiTraceSection | null {
@@ -181,9 +109,10 @@ function buildAnalysisSection(result: JsonRecord): AiTraceSection | null {
 
 export function extractToolAiTraceSections(value: unknown): AiTraceSection[] {
   if (!isRecord(value)) return [];
-  return [buildAssistSection(value), buildAnalysisSection(value)].filter(
-    (section): section is AiTraceSection => !!section
-  );
+  // "Collector Hints" (ai_assist) was removed for a simpler tool detail view —
+  // the live run window + result fields carry that context. Only the static
+  // analysis handoff is surfaced now.
+  return [buildAnalysisSection(value)].filter((section): section is AiTraceSection => !!section);
 }
 
 function TraceIcon({ kind }: { kind: AiTraceSection["icon"] }) {

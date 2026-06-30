@@ -2,36 +2,20 @@ import { describe, expect, it } from "vitest";
 import { extractToolAiTraceSections } from "./ToolAiTraceSummary";
 
 describe("extractToolAiTraceSections", () => {
-  it("surfaces browser collector hint context", () => {
+  it("no longer surfaces browser collector hints (removed for a simpler detail view)", () => {
     const sections = extractToolAiTraceSections({
       ai_assist: {
         recommended: true,
         reasons: ["js_saved_but_no_runtime_api_requests"],
         next_step: "Inspect context and call browser_collect_js_api again with a bounded recipe.",
         context: {
-          signals: {
-            closure_complete: true,
-            scripts_saved: 3,
-            api_requests_total: 0,
-            ai_review_refs: 0,
-          },
-          script_observations: [
-            {
-              url: "https://example.test/app.js",
-              size: 2048,
-              snippets: ["fetch('/api/v1/users')"],
-            },
-          ],
+          signals: { closure_complete: true, scripts_saved: 3, api_requests_total: 0 },
+          script_observations: [{ url: "https://example.test/app.js", size: 2048 }],
         },
       },
     });
 
-    expect(sections).toHaveLength(1);
-    expect(sections[0].title).toBe("Collector Hints");
-    expect(sections[0].chips).toContain("recommended");
-    expect(sections[0].chips).toContain("scripts 3");
-    expect(sections[0].reasons).toContain("js_saved_but_no_runtime_api_requests");
-    expect(sections[0].fileRows[0].source).toBe("https://example.test/app.js");
+    expect(sections).toHaveLength(0);
   });
 
   it("surfaces JS extraction static analysis handoff", () => {
