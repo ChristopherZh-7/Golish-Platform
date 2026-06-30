@@ -57,7 +57,7 @@
 - **不变量 I2**：`scoping` 是 IDOR 守卫，所有 CRUD 验所有权（含批量）。
 - **不变量 I5**：`domain` DTO 用 `ts_rs::TS` 同步前端，不要手写第二份。
 - **禁止向上依赖 `golish`**（会成环）；巨石 `AppState` 故意留在 `golish` crate。
-- `run_pty_cmd` / `pentest_run` 的 `background:true` 不是零等待返回：`pty_interactive` 会先做一个短启动确认窗口，窗口内的参数/运行时错误必须同步返回给 agent；只有确认仍在运行后才返回 `status:"backgrounded"`。
+- `run_pty_cmd` / `pentest_run` 的 `background:true` 不是零等待返回：`pty_interactive` 会先做一个短启动确认窗口，窗口内的参数/运行时错误必须同步返回给 agent；只有确认仍在运行后才返回 `status:"backgrounded"`。调用方仍可用 foreground-only 模式禁用后台化：超时会 kill 并把 stdout/stderr 作为当前 tool result 返回，不产生后台 job handle，适合需要先确认参数/输出形态的 bounded 工具。
 - `wait_for_background_jobs` 是显式等待工具：只等当前 AI session 归因的后台 job，并返回完成 job 的 stdout/stderr tail + exit code，让模型在 `submit_stage_deliverable` 前能先读结果。它按 Cursor/Codex 式 wait/check 节奏工作：总等待窗口仍可较长（默认 300s），但任一 tracked job 完成时会提前返回 `still_running` + `wait_reason=job_completed`（带已完成输出和仍运行 job），让 agent 先处理已落库 evidence；如果 remaining jobs 在 idle 窗口内没有 stdout/stderr 新进展则提前返回 `wait_reason=idle_timeout`。agent 应先检查完成输出，再决定继续等、`check_job`、`kill_job` / 缩窄批次 / 用具体 blocked/error/not_applicable 终态收口。
 - 用户停止/关闭 AI session 时，调用方应通过 `background_jobs::manager().kill_running_for_session(session_id)` 杀掉该 session 归因的后台 job；`kill()` 使用持久 notify permit，避免刚 spawn 就 kill 的竞态丢通知。
 - `JobCompletion` 只携带 stdout/stderr tail 给 UI/agent note，但 manager `snapshot()` 保留完整 capped stdout/stderr；结构化落库或 coverage outcome 补写应优先读 snapshot，不能只解析 completion tail。completion 也携带 launching tool context 的 `organization_id`，供后台 EAS 扫描结果按 org 入库。

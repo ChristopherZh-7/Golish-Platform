@@ -15,7 +15,12 @@ approval.
    which assets are `domain` / `ip` / `url` / `cidr`. Decide the next batch from
    that state; do not submit just to learn what is missing.
 3. Classify each seed:
-   - `domain` / `ip`: scan ports and establish liveness.
+   - `ip`: scan ports and establish liveness.
+   - `domain`: establish liveness. If the domain resolves to an in-scope IP
+     target, its PORT/SERVICE coverage is delegated to that IP — scan the IP
+     once instead of the domain (the gate drops the domain's PORT/SERVICE for
+     such aliases). Only port-scan a domain whose resolved IP is NOT an in-scope
+     IP target. This needs `targets.real_ip` populated (from `target_intel` DNS).
    - `url`: probe URL liveness; do not assign PORT/SERVICE to the path URL.
    - `cidr`: treat as a range. Get approval when required, sweep it, register
      discovered live IPs as concrete targets, then scan each IP.

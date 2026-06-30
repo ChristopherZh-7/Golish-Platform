@@ -987,6 +987,83 @@ fn fallback_org_verdict(repo_available: bool, sub_ok: bool) -> (OrgVerdict, bool
     (verdict, false)
 }
 
+fn harness_recovery_actions_from_submit_repair_mode(
+    mode: &SubmitRepairMode,
+) -> HarnessRecoveryActions {
+    HarnessRecoveryActions {
+        coverage_gap_actions: mode
+            .coverage_gap_actions
+            .iter()
+            .map(|action| golish_agent_kit::harness::CoverageGapAction {
+                asset: action.asset.clone(),
+                technique: action.technique.clone(),
+                reason: action.reason.clone(),
+                suggested_tools: action.suggested_tools.clone(),
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+fn submit_repair_mode_reasons(mode: &SubmitRepairMode) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if !mode.reason.trim().is_empty() {
+        reasons.push(mode.reason.clone());
+    }
+    if reasons.is_empty() {
+        reasons.extend(mode.coverage_gap_actions.iter().take(20).map(|action| {
+            format!(
+                "coverage cell missing for {} x {}: {}",
+                action.asset, action.technique, action.reason
+            )
+        }));
+    }
+    if reasons.is_empty() {
+        reasons.push(
+            "submit_stage_deliverable returned needs_fix; resume deterministic repair mode"
+                .to_string(),
+        );
+    }
+    reasons
+}
+
+fn fallback_org_verdict_with_repair_mode(
+    repo_available: bool,
+    sub_ok: bool,
+    repair_mode: Option<&SubmitRepairMode>,
+) -> (OrgVerdict, bool) {
+    if repo_available {
+        if let Some(mode) = repair_mode {
+            return (
+                OrgVerdict::Block {
+                    reasons: submit_repair_mode_reasons(mode),
+                    recovery_actions: harness_recovery_actions_from_submit_repair_mode(mode),
+                },
+                true,
+            );
+        }
+    }
+    fallback_org_verdict(repo_available, sub_ok)
+}
+
+fn submit_repair_mode_for_retry(
+    repair_directive: Option<&RepairDirective>,
+    carried_submit_repair_mode: Option<&SubmitRepairMode>,
+    reasons: &[String],
+) -> Option<SubmitRepairMode> {
+    let directive_mode = repair_directive.and_then(RepairDirective::to_submit_repair_mode);
+    match (directive_mode, carried_submit_repair_mode.cloned()) {
+        (Some(mode), Some(carried))
+            if mode.coverage_gap_actions.is_empty() && !carried.coverage_gap_actions.is_empty() =>
+        {
+            Some(carried)
+        }
+        (Some(mode), _) => Some(mode),
+        (None, Some(carried)) => Some(carried),
+        (None, None) => submit_coverage_gap_repair_mode_from_reasons(reasons),
+    }
+}
+
 /// Build the feedback block appended to the specialist's objective on a retry,
 /// naming the gate's BLOCK reasons so it closes exactly those gaps. `attempt` is
 /// the (1-based) NEXT attempt number being launched.
@@ -1385,7 +1462,7 @@ where
                     status: AgentRunStatus::ToolCompleted,
                     pending_gate_correction: None,
                     correction_kind: None,
-                    submit_repair_mode: carried_submit_repair_mode,
+                    submit_repair_mode: carried_submit_repair_mode.clone(),
                     repair_directive: None,
                 }),
             )
@@ -1434,8 +1511,16 @@ where
                     .await;
                     (decide_org_verdict(&gate), true)
                 }
-                (repo, None) => fallback_org_verdict(repo.is_some(), sub_ok),
-                (None, Some(_)) => fallback_org_verdict(false, sub_ok),
+                (repo, None) => fallback_org_verdict_with_repair_mode(
+                    repo.is_some(),
+                    sub_ok,
+                    carried_submit_repair_mode.as_ref(),
+                ),
+                (None, Some(_)) => fallback_org_verdict_with_repair_mode(
+                    false,
+                    sub_ok,
+                    carried_submit_repair_mode.as_ref(),
+                ),
             };
 
             // Only the real DB gate earns retries; the fallback path is terminal.
@@ -1513,15 +1598,14 @@ where
                         )),
                         OrgVerdict::Pass => None,
                     };
-                    let submit_repair_mode = repair_directive
-                        .as_ref()
-                        .and_then(RepairDirective::to_submit_repair_mode)
-                        .or_else(|| match &verdict {
-                            OrgVerdict::Block { reasons, .. } => {
-                                submit_coverage_gap_repair_mode_from_reasons(reasons)
-                            }
-                            OrgVerdict::Pass => None,
-                        });
+                    let submit_repair_mode = match &verdict {
+                        OrgVerdict::Block { reasons, .. } => submit_repair_mode_for_retry(
+                            repair_directive.as_ref(),
+                            carried_submit_repair_mode.as_ref(),
+                            reasons,
+                        ),
+                        OrgVerdict::Pass => None,
+                    };
                     let next_feedback = repair_directive
                         .as_ref()
                         .map(|directive| format!("{fb}\n\n{}", directive.model_instruction()))
@@ -1964,7 +2048,7 @@ mod tests {
         );
 
         assert!(obj.contains("EAS SCAN STRATEGY"));
-        assert!(obj.contains("do not run broad `nmap -sV -iL`"));
+        assert!(obj.contains("Do not run broad `nmap -sV -iL`"));
         assert!(obj.contains("confirmed open host:port groups"));
         assert!(obj.contains("visible wait/check loop"));
         assert!(obj.contains("stdout/stderr is"));
@@ -2278,10 +2362,89 @@ mod tests {
             restored.kind,
             golish_sub_agents::SubmitRepairKind::CoverageGap
         );
-        assert!(restored.block_result("pentest_run").is_none());
-        assert!(restored
-            .model_instruction()
-            .contains("Targeted gap-closure"));
+        assert!(
+            restored.block_result("pentest_run").is_some(),
+            "coverage repair without structured gap actions must not restart broad pentest_run"
+        );
+        assert!(restored.coverage_gap_actions.is_empty());
+    }
+
+    #[test]
+    fn fallback_org_verdict_preserves_carried_coverage_repair_actions() {
+        let mode = SubmitRepairMode {
+            kind: golish_sub_agents::SubmitRepairKind::CoverageGap,
+            reason: "enumeration coverage incomplete".to_string(),
+            missing_required_checks: Vec::new(),
+            coverage_gap_actions: vec![golish_sub_agents::CoverageGapAction {
+                asset: "https://dayu.moresec.cn".to_string(),
+                technique: "GOLISH-ENUM-JSAPI".to_string(),
+                reason: "JS/API cell never reached a terminal state".to_string(),
+                suggested_tools: vec!["js_extract_apis".to_string()],
+            }],
+            allowed_tools_override: Vec::new(),
+            forbidden_tools: Vec::new(),
+            directive_message: None,
+        };
+
+        let (verdict, from_gate) = fallback_org_verdict_with_repair_mode(true, false, Some(&mode));
+
+        assert!(from_gate);
+        match verdict {
+            OrgVerdict::Block {
+                reasons,
+                recovery_actions,
+            } => {
+                assert_eq!(reasons, vec!["enumeration coverage incomplete"]);
+                assert_eq!(recovery_actions.coverage_gap_actions.len(), 1);
+                assert_eq!(
+                    recovery_actions.coverage_gap_actions[0].technique,
+                    "GOLISH-ENUM-JSAPI"
+                );
+                assert_eq!(
+                    recovery_actions.coverage_gap_actions[0].suggested_tools,
+                    vec!["js_extract_apis".to_string()]
+                );
+            }
+            OrgVerdict::Pass => panic!("carried needs_fix repair mode must block"),
+        }
+    }
+
+    #[test]
+    fn retry_submit_repair_mode_prefers_carried_structured_actions() {
+        let carried = SubmitRepairMode {
+            kind: golish_sub_agents::SubmitRepairKind::CoverageGap,
+            reason: "coverage gap actions from submit_stage_deliverable".to_string(),
+            missing_required_checks: Vec::new(),
+            coverage_gap_actions: vec![golish_sub_agents::CoverageGapAction {
+                asset: "https://dayu.moresec.cn".to_string(),
+                technique: "GOLISH-ENUM-DIR".to_string(),
+                reason: "directory cell never reached a terminal state".to_string(),
+                suggested_tools: vec!["route_probe_paths".to_string()],
+            }],
+            allowed_tools_override: Vec::new(),
+            forbidden_tools: Vec::new(),
+            directive_message: None,
+        };
+        let directive = stage_run_gate_repair_directive(
+            StageKind::Enumeration,
+            None,
+            "main>stage_run:enumeration>org:abc>enumerator".to_string(),
+            vec!["sub-agent completed without a StageDeliverable accepted".to_string()],
+            &HarnessRecoveryActions::default(),
+        );
+
+        let selected = submit_repair_mode_for_retry(
+            Some(&directive),
+            Some(&carried),
+            &["sub-agent completed without a StageDeliverable accepted".to_string()],
+        )
+        .expect("retry should keep a submit repair mode");
+
+        assert_eq!(selected.coverage_gap_actions.len(), 1);
+        assert_eq!(
+            selected.coverage_gap_actions[0].suggested_tools,
+            vec!["route_probe_paths".to_string()]
+        );
     }
 
     #[test]

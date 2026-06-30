@@ -72,6 +72,13 @@ const DEFAULT_WAIT_BACKGROUND_JOBS_IDLE_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_WAIT_BACKGROUND_JOBS_POLL_MS: u64 = 1_000;
 const WAIT_BACKGROUND_JOBS_OUTPUT_TAIL_BYTES: usize = 12 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellRunMode {
+    AutoBackgroundAfterSoftTimeout,
+    BackgroundAfterStartup,
+    ForegroundOnly,
+}
+
 fn env_ms(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
@@ -114,6 +121,26 @@ fn finished_job_value(command: &str, snap: crate::background_jobs::JobSnapshot) 
     })
 }
 
+fn timeout_job_value(
+    command: &str,
+    snap: crate::background_jobs::JobSnapshot,
+    timeout_ms: u64,
+) -> Value {
+    json!({
+        "status": "timeout",
+        "error_kind": "COMMAND_TIMEOUT",
+        "error": format!(
+            "Command exceeded the {}s timeout and was killed before being moved to the background.",
+            timeout_ms.div_ceil(1000)
+        ),
+        "stdout": truncate_output(snap.stdout),
+        "stderr": truncate_output(snap.stderr),
+        "command": command,
+        "exit_code": snap.exit_code.unwrap_or(124),
+        "duration_ms": snap.duration_ms,
+    })
+}
+
 /// Run a shell command outside the visible terminal and return structured
 /// output for the AI tool detail panel.
 ///
@@ -135,13 +162,46 @@ pub async fn run_shell_command_detail(
     // immediately without waiting the soft timeout, so the agent continues async.
     background: bool,
 ) -> Result<Value> {
+    let mode = if background {
+        ShellRunMode::BackgroundAfterStartup
+    } else {
+        ShellRunMode::AutoBackgroundAfterSoftTimeout
+    };
+    run_shell_command_detail_with_mode(command, workspace, timeout_ms, mode).await
+}
+
+/// Run a shell command in the current tool call only.
+///
+/// Unlike [`run_shell_command_detail`], timeout does not create a background
+/// handle. The process is killed and the retained stdout/stderr are returned so
+/// callers can decide whether to retry with narrower flags.
+pub async fn run_shell_command_detail_foreground_only(
+    command: &str,
+    workspace: &Path,
+    timeout_ms: u64,
+) -> Result<Value> {
+    run_shell_command_detail_with_mode(command, workspace, timeout_ms, ShellRunMode::ForegroundOnly)
+        .await
+}
+
+async fn run_shell_command_detail_with_mode(
+    command: &str,
+    workspace: &Path,
+    timeout_ms: u64,
+    mode: ShellRunMode,
+) -> Result<Value> {
     let soft_cap = env_ms("GOLISH_TOOL_SOFT_TIMEOUT_MS", DEFAULT_SOFT_TIMEOUT_MS);
     let soft_ms = timeout_ms.min(soft_cap).max(1);
     // The background hard limit normally outlasts the caller's timeout so the job
     // can continue past the point where it would previously have been killed —
     // except DNS zone-transfer probes, which are capped short (they hang forever
     // against resolvers that drop TCP AXFR). See [`compute_hard_ms`].
-    let hard_ms = compute_hard_ms(command, timeout_ms);
+    let hard_ms = match mode {
+        ShellRunMode::ForegroundOnly => timeout_ms.saturating_add(1_000).max(1),
+        ShellRunMode::AutoBackgroundAfterSoftTimeout | ShellRunMode::BackgroundAfterStartup => {
+            compute_hard_ms(command, timeout_ms)
+        }
+    };
 
     let started_at = std::time::Instant::now();
     // Attribute the job to the session whose agentic loop is currently running
@@ -149,8 +209,15 @@ pub async fn run_shell_command_detail(
     // can be routed back to that session. Capture the current tool context too
     // so live stdout/stderr chunks can update the existing tool-call detail UI.
     // `None` when not attributable.
-    let session_id = golish_core::current_agent_session();
-    let tool_context = golish_core::current_agent_tool_context();
+    let (session_id, tool_context) = match mode {
+        // Foreground-only jobs are consumed by this tool call, so they should
+        // not hold the stage-close background barrier open.
+        ShellRunMode::ForegroundOnly => (None, None),
+        ShellRunMode::AutoBackgroundAfterSoftTimeout | ShellRunMode::BackgroundAfterStartup => (
+            golish_core::current_agent_session(),
+            golish_core::current_agent_tool_context(),
+        ),
+    };
     let job_id = crate::background_jobs::manager().spawn_for_session_and_tool(
         command,
         workspace,
@@ -160,8 +227,9 @@ pub async fn run_shell_command_detail(
     );
 
     tracing::info!(
-        "[run_pty_cmd] backgrounded spawn: command={}, soft_ms={}, hard_ms={}, job_id={}, session={:?}",
+        "[run_pty_cmd] spawn: command={}, mode={:?}, soft_ms={}, hard_ms={}, job_id={}, session={:?}",
         command,
+        mode,
         soft_ms,
         hard_ms,
         job_id,
@@ -172,14 +240,14 @@ pub async fn run_shell_command_detail(
     // if the child exits immediately with a usage/runtime error, return that
     // inline so the model can correct its command. Once the window expires and
     // the child is still running, hand back the job handle and let it continue.
-    let inline_wait_ms = if background {
-        env_ms(
+    let inline_wait_ms = match mode {
+        ShellRunMode::BackgroundAfterStartup => env_ms(
             "GOLISH_TOOL_BACKGROUND_STARTUP_GRACE_MS",
             DEFAULT_BACKGROUND_STARTUP_GRACE_MS,
         )
-        .min(soft_ms)
-    } else {
-        soft_ms
+        .min(soft_ms),
+        ShellRunMode::AutoBackgroundAfterSoftTimeout => soft_ms,
+        ShellRunMode::ForegroundOnly => timeout_ms.max(1),
     };
 
     if inline_wait_ms > 0 {
@@ -198,6 +266,37 @@ pub async fn run_shell_command_detail(
         }
     }
 
+    if mode == ShellRunMode::ForegroundOnly {
+        if let Some(snap) = crate::background_jobs::manager().snapshot(&job_id) {
+            if snap.finished {
+                crate::background_jobs::manager().remove(&job_id);
+                return Ok(finished_job_value(command, snap));
+            }
+        }
+        let _ = crate::background_jobs::manager().kill(&job_id);
+        let settle_deadline = std::time::Instant::now() + Duration::from_millis(750);
+        let snap = loop {
+            if let Some(snap) = crate::background_jobs::manager().snapshot(&job_id) {
+                if snap.finished || std::time::Instant::now() >= settle_deadline {
+                    break snap;
+                }
+            } else {
+                break crate::background_jobs::JobSnapshot {
+                    command: command.to_string(),
+                    status: crate::background_jobs::JobStatus::Killed,
+                    exit_code: Some(124),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    finished: true,
+                };
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        crate::background_jobs::manager().remove(&job_id);
+        return Ok(timeout_job_value(command, snap, timeout_ms));
+    }
+
     // Still running → hand back a background handle. Deliberately no `error` and
     // no non-zero `exit_code`, so the agentic loop treats this as a successful
     // tool result and the model reads `status: "backgrounded"`.
@@ -205,7 +304,7 @@ pub async fn run_shell_command_detail(
         .snapshot(&job_id)
         .map(|s| (truncate_output(s.stdout), truncate_output(s.stderr)))
         .unwrap_or_default();
-    let hint = if background {
+    let hint = if mode == ShellRunMode::BackgroundAfterStartup {
         format!(
             "Started in the background as requested (job {job_id}); continue with other work. \
              Its result is auto-delivered when it finishes — do NOT poll it in a loop or re-run \
@@ -733,6 +832,21 @@ mod tests {
         assert!(
             crate::background_jobs::manager().kill(job_id),
             "test long-runner should be cancellable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foreground_only_timeout_kills_instead_of_backgrounding() {
+        let res = run_shell_command_detail_foreground_only("sleep 30", &ws(), 250)
+            .await
+            .expect("foreground-only command should return a structured result");
+
+        assert_eq!(res.get("status"), Some(&json!("timeout")));
+        assert_eq!(res.get("exit_code"), Some(&json!(124)));
+        assert!(
+            res.get("job_id").is_none(),
+            "foreground-only timeout must not hand the model a background job: {res:?}"
         );
     }
 

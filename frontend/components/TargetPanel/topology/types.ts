@@ -12,6 +12,13 @@ export interface TopologyVisibility {
   evidence: boolean;
 }
 
+export interface TargetTopologySurfaceSummary {
+  endpoints: number;
+  params: number;
+  paths: number;
+  js: number;
+}
+
 export interface TopologyNode {
   id: string;
   kind: TopologyNodeKind;
@@ -31,6 +38,9 @@ export interface TopologyNode {
     inScopeTargets?: number;
     ports?: number;
     endpoints?: number;
+    params?: number;
+    paths?: number;
+    js?: number;
     evidence?: number;
     findings?: number;
   };
@@ -51,6 +61,10 @@ export interface TopologyModel {
     organizations: number;
     targets: number;
     services: number;
+    endpoints: number;
+    params: number;
+    paths: number;
+    js: number;
     evidence: number;
   };
   bounds: {

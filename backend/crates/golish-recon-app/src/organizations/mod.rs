@@ -24,6 +24,7 @@ use golish_app_core::DbState;
 use golish_app_core::GolishError;
 use uuid::Uuid;
 
+mod artifact_cleanup;
 mod candidates;
 mod types;
 mod validation;
@@ -167,6 +168,7 @@ pub async fn organization_delete(
     let uid: Uuid = id
         .parse()
         .map_err(|e: uuid::Error| GolishError::from(e.to_string()))?;
+    artifact_cleanup::cleanup_before_delete(pool, uid).await?;
     golish_db::repo::organizations::delete(pool, uid).await?;
     Ok(())
 }

@@ -175,10 +175,10 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         .with_tools(vec![
             "list_enumeration_web_roots".to_string(),
             "query_target_data".to_string(),
-            // Active content enumeration (ffuf/gobuster/feroxbuster -> dir, arjun/katana
-            // -> param) via pentest_run; the stage tool-type allowlist
-            // (recon/crawler, web/fuzzer, web/param) keeps it to content mapping,
-            // not EAS probing/fingerprinting or exploitation.
+            // Active content enumeration. DIR uses the direct internal
+            // route_probe_paths tool; pentest_run remains for bounded crawler
+            // URL sources such as katana. The stage tool-type allowlist keeps it
+            // to content mapping, not EAS probing/fingerprinting or exploitation.
             "pentest_list_tools".to_string(),
             "pentest_run".to_string(),
             "wait_for_background_jobs".to_string(),

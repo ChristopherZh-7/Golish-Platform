@@ -7,6 +7,9 @@
 //! `sqlx::FromRow` row adapters (`TargetRow` / `DirEntryRow`) and their `From`
 //! conversions stay private inside `golish-recon-app` (DB-layer detail).
 
+use std::collections::BTreeSet;
+use std::net::IpAddr;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
@@ -204,20 +207,117 @@ pub fn attack_surface_priority(t: &Target) -> i32 {
     score
 }
 
+fn normalized_ip(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_matches(['[', ']']);
+    trimmed.parse::<IpAddr>().ok().map(|ip| ip.to_string())
+}
+
+fn url_host_ip(value: &str) -> Option<String> {
+    let raw = value.trim();
+    let rest = raw
+        .strip_prefix("http://")
+        .or_else(|| raw.strip_prefix("https://"))?;
+    let authority = rest
+        .split('/')
+        .next()
+        .unwrap_or(rest)
+        .split('@')
+        .next_back()
+        .unwrap_or(rest);
+    let host = if let Some(stripped) = authority.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or(stripped)
+    } else {
+        authority.split(':').next().unwrap_or(authority)
+    };
+    normalized_ip(host)
+}
+
+fn direct_ip_seed_key(target: &Target) -> Option<String> {
+    if target.target_type != TargetType::Ip {
+        return None;
+    }
+    normalized_ip(&target.value)
+}
+
+fn resolved_seed_ip_key(target: &Target) -> Option<String> {
+    normalized_ip(&target.real_ip).or_else(|| url_host_ip(&target.value))
+}
+
+fn direct_ip_alias_keys(targets: &[Target]) -> BTreeSet<String> {
+    let direct_ips: BTreeSet<String> = targets.iter().filter_map(direct_ip_seed_key).collect();
+    if direct_ips.is_empty() {
+        return BTreeSet::new();
+    }
+    targets
+        .iter()
+        .filter(|target| direct_ip_seed_key(target).is_none())
+        .filter_map(resolved_seed_ip_key)
+        .filter(|ip| direct_ips.contains(ip))
+        .collect()
+}
+
+fn attack_surface_sort_priority(t: &Target, direct_ip_aliases: &BTreeSet<String>) -> i32 {
+    let mut score = attack_surface_priority(t);
+    if direct_ip_seed_key(t).is_some_and(|ip| direct_ip_aliases.contains(&ip)) {
+        score += 50;
+    }
+    score
+}
+
+fn collapse_attack_surface_seed_aliases(targets: Vec<Target>) -> (Vec<Target>, BTreeSet<String>) {
+    let direct_ips: BTreeSet<String> = targets.iter().filter_map(direct_ip_seed_key).collect();
+    let direct_ip_aliases = direct_ip_alias_keys(&targets);
+    if direct_ips.is_empty() {
+        return (targets, direct_ip_aliases);
+    }
+    let collapsed = targets
+        .into_iter()
+        .filter(|target| {
+            if direct_ip_seed_key(target).is_some() {
+                return true;
+            }
+            resolved_seed_ip_key(target).is_none_or(|ip| !direct_ips.contains(&ip))
+        })
+        .collect();
+    (collapsed, direct_ip_aliases)
+}
+
 /// Rank in-scope targets into attack-surface seeds by descending priority
 /// (stable tiebreak on value), optionally capping to `cap` (D3: per-org cap,
 /// `None` = no cap / default off). Pure — the caller projects each ranked target
 /// into the rich seed JSON the EAS handoff returns.
-pub fn rank_attack_surface_seeds(mut targets: Vec<Target>, cap: Option<usize>) -> Vec<Target> {
+pub fn rank_attack_surface_seeds(targets: Vec<Target>, cap: Option<usize>) -> Vec<Target> {
+    let (mut targets, direct_ip_aliases) = collapse_attack_surface_seed_aliases(targets);
     targets.sort_by(|a, b| {
-        attack_surface_priority(b)
-            .cmp(&attack_surface_priority(a))
+        attack_surface_sort_priority(b, &direct_ip_aliases)
+            .cmp(&attack_surface_sort_priority(a, &direct_ip_aliases))
             .then_with(|| a.value.cmp(&b.value))
     });
     if let Some(n) = cap {
         targets.truncate(n);
     }
     targets
+}
+
+/// EAS host-aware port/service delegation (design 2026-06-30-eas-domain-port-
+/// delegation): the set of non-IP in-scope asset values whose resolved IP is
+/// already an in-scope IP target. Their `GOLISH-EAS-PORT` /
+/// `GOLISH-EAS-SERVICE-FINGERPRINT` coverage is delegated to that IP target, so
+/// the EAS gate drops those two techniques for these assets (LIVENESS stays
+/// required). Mirrors [`collapse_attack_surface_seed_aliases`]'s alias rule but
+/// keeps the domain in the coverage denominator for liveness. Empty when there
+/// are no in-scope IP targets to receive the delegated coverage.
+pub fn eas_port_delegated_domain_values(targets: &[Target]) -> BTreeSet<String> {
+    let direct_ips: BTreeSet<String> = targets.iter().filter_map(direct_ip_seed_key).collect();
+    if direct_ips.is_empty() {
+        return BTreeSet::new();
+    }
+    targets
+        .iter()
+        .filter(|t| direct_ip_seed_key(t).is_none())
+        .filter(|t| resolved_seed_ip_key(t).is_some_and(|ip| direct_ips.contains(&ip)))
+        .map(|t| t.value.clone())
+        .collect()
 }
 
 /// Infer a [`TargetType`] from a raw target value (URL > CIDR > wildcard > IP >
@@ -333,6 +433,74 @@ mod tests {
         let capped = rank_attack_surface_seeds(all, Some(2));
         assert_eq!(capped.len(), 2);
         assert_eq!(capped[0].value, "resolved.example.com");
+    }
+
+    #[test]
+    fn rank_attack_surface_seeds_collapses_domain_aliases_to_existing_ip_targets() {
+        let ip = seed("115.28.135.55", "ip", "", None);
+        let alias = seed("moresec.cn", "domain", "115.28.135.55", Some(200));
+        let www_alias = seed("www.moresec.cn", "domain", "115.28.135.55", None);
+        let sibling = seed("m.moresec.cn", "domain", "", None);
+
+        let ranked = rank_attack_surface_seeds(vec![alias, www_alias, sibling, ip], None);
+
+        assert_eq!(
+            ranked
+                .iter()
+                .map(|target| target.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["115.28.135.55", "m.moresec.cn"]
+        );
+    }
+
+    #[test]
+    fn rank_attack_surface_seeds_collapses_ip_url_endpoint_aliases_before_cap() {
+        let ip = seed("115.28.135.55", "ip", "", None);
+        let endpoint = seed("http://115.28.135.55:8080/login", "url", "", Some(200));
+        let bare_domain = seed("bare.example.com", "domain", "", None);
+
+        let ranked = rank_attack_surface_seeds(vec![endpoint, bare_domain, ip], Some(1));
+
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].value, "115.28.135.55");
+    }
+
+    #[test]
+    fn eas_port_delegated_domain_values_delegates_alias_keeps_orphan_domain() {
+        let ip = seed("115.28.135.55", "ip", "", None);
+        let alias = seed("moresec.cn", "domain", "115.28.135.55", Some(200));
+        let www_alias = seed("www.moresec.cn", "domain", "115.28.135.55", None);
+        // real_ip resolves to an IP that is NOT an in-scope IP target.
+        let orphan = seed("m.moresec.cn", "domain", "203.0.113.9", None);
+        let no_ip = seed("bare.example.com", "domain", "", None);
+
+        let delegated =
+            eas_port_delegated_domain_values(&[ip, alias, www_alias, orphan, no_ip]);
+
+        // Domains resolving to the in-scope IP delegate PORT/SERVICE to it …
+        assert!(delegated.contains("moresec.cn"));
+        assert!(delegated.contains("www.moresec.cn"));
+        // … a domain whose real_ip is NOT an in-scope IP keeps its own PORT/SERVICE.
+        assert!(!delegated.contains("m.moresec.cn"));
+        assert!(!delegated.contains("bare.example.com"));
+        // The IP target itself is never delegated (it carries the coverage).
+        assert!(!delegated.contains("115.28.135.55"));
+    }
+
+    #[test]
+    fn eas_port_delegated_domain_values_empty_without_ip_targets() {
+        let a = seed("a.example.com", "domain", "1.2.3.4", None);
+        let b = seed("b.example.com", "domain", "", None);
+        assert!(eas_port_delegated_domain_values(&[a, b]).is_empty());
+    }
+
+    #[test]
+    fn eas_port_delegated_domain_values_delegates_ip_url_endpoint() {
+        // A bare-IP URL endpoint resolves (by host) to the in-scope IP target.
+        let ip = seed("115.28.135.55", "ip", "", None);
+        let endpoint = seed("http://115.28.135.55:8080/login", "url", "", Some(200));
+        let delegated = eas_port_delegated_domain_values(&[ip, endpoint]);
+        assert!(delegated.contains("http://115.28.135.55:8080/login"));
     }
 
     #[test]

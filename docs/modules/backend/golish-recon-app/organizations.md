@@ -31,16 +31,18 @@
 | 文件 | 作用 |
 |---|---|
 | `mod.rs` | 组织命令 |
+| `artifact_cleanup.rs` | 删除组织前清理 target-bound 本地 artifact / sitemap / operation 绑定 |
 | `types.rs` / `candidates.rs` / `validation.rs` | wire 类型 / 候选 / 校验 |
 
 ## 依赖
 
-- crate 内 app-core、`golish-db`（repo::organizations）；`serde`
+- crate 内 app-core、`golish-db`（repo::organizations / targets / sitemap_store / operation_state）；`serde` / `url`
 
 ## 注意事项 / 坑
 
 - `grp` 字符串分级（§S1）兼容保留作回退；新 target 直接关联 `organization_id`。
 - 树形 `parent_id` 自引用：删/移组织注意级联与环检测。
+- 删除组织会先按 org 子树 target 引用解析 host，清理工作区内 target-bound `.golish/captures/<host>`、`.golish/analysis/<host>`、`sitemap_store` 中对应 entry，并清空指向该 org 子树的 `operation_state.engagement_org_id`；日志 / transcript / audit / finding 历史证据不在这里删除。
 - **不变量 I2**：组织 CRUD 验所有权（IDOR）。
 
 ## 测试入口

@@ -127,7 +127,7 @@ pub fn technique_applies_to_value(
     if matches!(stage, StageKind::TargetIntel)
         && tech == "GOLISH-INTEL-SUBDOMAIN"
         && matches!(class, AssetClass::Domain)
-        && !is_registrable_apex(value)
+        && (!is_registrable_apex(value) || is_www_prefixed_host(value))
     {
         return false;
     }
@@ -136,13 +136,33 @@ pub fn technique_applies_to_value(
 
 /// True when `value`'s host is its own registrable apex (`niuza.com`,
 /// `pingan.com.cn`) rather than a leaf subdomain (`s.niuza.com`,
-/// `a.pingan.com.cn`); `www.` is treated as the apex. Delegates to the single
-/// source [`golish_pentest_domain::is_registrable_apex`], which recon's
+/// `a.pingan.com.cn`). The shared domain helper still treats `www.` as apex for
+/// compatibility, so `technique_applies_to_value` adds the target_intel-specific
+/// `www.*` exemption above. Delegates to the single source
+/// [`golish_pentest_domain::is_registrable_apex`], which recon's
 /// `registrable_domain` also uses — keeping the two-level-TLD table in one place
 /// so the gate and recon can never drift (the duplicated table previously missed
 /// ccTLD second levels like `.ne.jp`, mis-classifying real apexes as leaves).
 fn is_registrable_apex(value: &str) -> bool {
     golish_pentest_domain::is_registrable_apex(value)
+}
+
+fn is_www_prefixed_host(value: &str) -> bool {
+    let host = value
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split('/').next())
+        .unwrap_or(value)
+        .split('@')
+        .next_back()
+        .unwrap_or(value)
+        .split(':')
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .trim_matches('.')
+        .to_ascii_lowercase();
+    host.strip_prefix("www.")
+        .is_some_and(|rest| rest.contains('.'))
 }
 
 #[cfg(test)]
@@ -284,7 +304,7 @@ mod tests {
     fn is_registrable_apex_distinguishes_roots_from_leaves() {
         assert!(is_registrable_apex("niuza.com"));
         assert!(is_registrable_apex("pingan.com.cn"));
-        assert!(is_registrable_apex("www.niuza.com")); // www treated as the apex
+        assert!(is_registrable_apex("www.niuza.com")); // shared domain helper still treats www as apex
         assert!(!is_registrable_apex("s.niuza.com"));
         assert!(!is_registrable_apex("icorepnbs.pingan-property.com.cn"));
         assert!(!is_registrable_apex("a.b.pingan.com.cn"));
@@ -318,6 +338,18 @@ mod tests {
             Ti,
             AssetClass::Domain,
             "icorepnbs.pingan-property.com.cn",
+            "GOLISH-INTEL-SUBDOMAIN"
+        ));
+        assert!(!technique_applies_to_value(
+            Ti,
+            AssetClass::Domain,
+            "www.niuza.com",
+            "GOLISH-INTEL-SUBDOMAIN"
+        ));
+        assert!(!technique_applies_to_value(
+            Ti,
+            AssetClass::Domain,
+            "https://www.niuza.com/login",
             "GOLISH-INTEL-SUBDOMAIN"
         ));
         // DNS/CT still apply to a leaf domain (only SUBDOMAIN is apex-scoped).

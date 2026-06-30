@@ -3,9 +3,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { organizations as orgsApi } from "@/lib/api";
 import type { Organization } from "@/lib/api/organizations";
 import { onCustomEvent, onEvent } from "@/lib/events";
+import { listDirectoryEntries } from "@/lib/pentest/api";
 import type { Target } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
+import { apiEndpointsList, jsAnalysisList } from "@/lib/security-analysis";
+import { countEndpointParams } from "./surface/endpointParams";
 import {
   applyTopologyFocus,
   buildTopologyModel,
@@ -14,7 +17,11 @@ import {
 import { TopologyCanvas } from "./topology/TopologyCanvas";
 import { TopologyControls } from "./topology/TopologyControls";
 import { TopologyInspector } from "./topology/TopologyInspector";
-import type { TopologyMode, TopologyVisibility } from "./topology/types";
+import type {
+  TargetTopologySurfaceSummary,
+  TopologyMode,
+  TopologyVisibility,
+} from "./topology/types";
 
 const DEFAULT_VISIBILITY: TopologyVisibility = {
   organization: true,
@@ -22,11 +29,72 @@ const DEFAULT_VISIBILITY: TopologyVisibility = {
   service: true,
   evidence: true,
 };
+const SURFACE_REFRESH_TOOLS = new Set([
+  "browser_collect_js_api",
+  "js_extract_apis",
+  "route_probe_paths",
+  "pentest_run",
+  "output_parse_and_store",
+  "discover_apis",
+]);
+const SURFACE_SUMMARY_CONCURRENCY = 8;
+
+async function loadTargetTopologySurfaceSummary(
+  targetId: string
+): Promise<TargetTopologySurfaceSummary> {
+  const [endpoints, jsResults, directoryEntries] = await Promise.all([
+    apiEndpointsList(targetId),
+    jsAnalysisList(targetId),
+    listDirectoryEntries({ targetId }),
+  ]);
+  const pathKeys = new Set<string>();
+  for (const entry of directoryEntries) {
+    if (entry.url) pathKeys.add(entry.url);
+  }
+  for (const endpoint of endpoints) {
+    const path = endpoint.url || endpoint.path;
+    if (path) pathKeys.add(path);
+  }
+  return {
+    endpoints: endpoints.length,
+    params: countEndpointParams(endpoints),
+    paths: pathKeys.size,
+    js: jsResults.length,
+  };
+}
+
+async function loadTopologySurfaceSummaries(
+  targets: Target[]
+): Promise<Map<string, TargetTopologySurfaceSummary>> {
+  const ids = [...new Set(targets.map((target) => target.id).filter(Boolean))];
+  const out = new Map<string, TargetTopologySurfaceSummary>();
+  let index = 0;
+  const worker = async () => {
+    while (index < ids.length) {
+      const id = ids[index];
+      index += 1;
+      try {
+        out.set(id, await loadTargetTopologySurfaceSummary(id));
+      } catch {
+        out.set(id, { endpoints: 0, params: 0, paths: 0, js: 0 });
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(SURFACE_SUMMARY_CONCURRENCY, ids.length) }, () => worker())
+  );
+  return out;
+}
 
 export function TargetGraphView({ targets }: { targets: Target[] }) {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [surfaceByTargetId, setSurfaceByTargetId] = useState(
+    new Map<string, TargetTopologySurfaceSummary>()
+  );
   const [orgLoading, setOrgLoading] = useState(true);
+  const [surfaceLoading, setSurfaceLoading] = useState(false);
   const [orgError, setOrgError] = useState<string | null>(null);
+  const [surfaceError, setSurfaceError] = useState<string | null>(null);
   const [mode, setMode] = useState<TopologyMode>("ownership");
   const [visibility, setVisibility] = useState<TopologyVisibility>(DEFAULT_VISIBILITY);
   const [query, setQuery] = useState("");
@@ -47,9 +115,31 @@ export function TargetGraphView({ targets }: { targets: Target[] }) {
     }
   }, []);
 
+  const loadSurfaceSummaries = useCallback(async () => {
+    if (targets.length === 0) {
+      setSurfaceByTargetId(new Map());
+      setSurfaceError(null);
+      return;
+    }
+    setSurfaceLoading(true);
+    setSurfaceError(null);
+    try {
+      setSurfaceByTargetId(await loadTopologySurfaceSummaries(targets));
+    } catch (error) {
+      setSurfaceByTargetId(new Map());
+      setSurfaceError(String(error));
+    } finally {
+      setSurfaceLoading(false);
+    }
+  }, [targets]);
+
   useEffect(() => {
     loadOrgs();
   }, [loadOrgs]);
+
+  useEffect(() => {
+    void loadSurfaceSummaries();
+  }, [loadSurfaceSummaries]);
 
   // Refresh the topology when the AI writes orgs (scoping:
   // manage_organizations / recon_discover_subsidiaries) or on the umbrella
@@ -62,17 +152,29 @@ export function TargetGraphView({ targets }: { targets: Target[] }) {
       if (p.type === "tool_result" && p.tool_name && ORG_WRITE_TOOLS.has(p.tool_name)) {
         loadOrgs();
       }
+      if (p.type === "tool_result" && p.tool_name && SURFACE_REFRESH_TOOLS.has(p.tool_name)) {
+        void loadSurfaceSummaries();
+      }
     });
-    const unlistenChanged = onCustomEvent("targets-changed", () => loadOrgs());
+    const unlistenChanged = onCustomEvent("targets-changed", () => {
+      loadOrgs();
+      void loadSurfaceSummaries();
+    });
     return () => {
       runTauriUnlistenFromPromise(unlistenAi);
       runTauriUnlistenFromPromise(unlistenChanged);
     };
-  }, [loadOrgs]);
+  }, [loadOrgs, loadSurfaceSummaries]);
 
   const fullModel = useMemo(
-    () => buildTopologyModel(organizations, targets, { mode, visibility, query }),
-    [organizations, targets, mode, visibility, query]
+    () =>
+      buildTopologyModel(organizations, targets, {
+        mode,
+        visibility,
+        query,
+        surfaceByTargetId,
+      }),
+    [organizations, targets, mode, visibility, query, surfaceByTargetId]
   );
 
   const model = useMemo(() => applyTopologyFocus(fullModel, focusNodeId), [fullModel, focusNodeId]);
@@ -159,10 +261,22 @@ export function TargetGraphView({ targets }: { targets: Target[] }) {
             Loading organizations
           </div>
         )}
+        {surfaceLoading && !orgLoading && (
+          <div className="absolute left-4 top-4 z-20 inline-flex items-center gap-2 rounded-md border border-border/35 bg-card/90 px-3 py-2 text-[11px] text-muted-foreground shadow-sm">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Loading surface evidence
+          </div>
+        )}
         {orgError && (
           <div className="absolute left-4 top-4 z-20 inline-flex max-w-md items-center gap-2 rounded-md border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-[11px] text-amber-200 shadow-sm">
             <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
             {orgError}
+          </div>
+        )}
+        {surfaceError && (
+          <div className="absolute left-4 top-16 z-20 inline-flex max-w-md items-center gap-2 rounded-md border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-[11px] text-amber-200 shadow-sm">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            {surfaceError}
           </div>
         )}
         <TopologyCanvas

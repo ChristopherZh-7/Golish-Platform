@@ -21,6 +21,13 @@ interface AddForm {
   organizationId?: string;
 }
 
+function normalizeTarget(target: Target): Target {
+  return {
+    ...target,
+    ports: Array.isArray(target.ports) ? target.ports : [],
+  };
+}
+
 export function useTargetData() {
   const workspaceReady = useStore((s) => s.workspaceDataReady);
   const [store, setStore] = useState<TargetStore>({ targets: [] });
@@ -277,7 +284,7 @@ export function useTargetData() {
     [loadTargets]
   );
 
-  const safeTargets = store?.targets ?? [];
+  const safeTargets = useMemo(() => (store?.targets ?? []).map(normalizeTarget), [store?.targets]);
 
   const stats = useMemo(
     () => ({

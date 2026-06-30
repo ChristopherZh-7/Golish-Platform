@@ -10,6 +10,7 @@
  * so a clean project switch can proceed without leaking resources.
  */
 
+import { normalizeExecutionModeId } from "@/lib/ai/execution-mode";
 import { normalizePersistedStageRunState } from "@/lib/conversation-db-sync";
 import { getAllLeafPanes } from "@/lib/pane-utils";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
@@ -30,12 +31,14 @@ type CreateTerminalFn = (
  * execution mode (chat = single-agent, task = multi-agent).
  */
 function restoreSessionMode(sessionId: string, termInfo: PersistedTerminalData) {
-  if (termInfo.executionMode === "task") {
-    useStore.getState().setExecutionMode(sessionId, "task");
+  if (termInfo.executionMode) {
+    useStore
+      .getState()
+      .setExecutionMode(sessionId, normalizeExecutionModeId(termInfo.executionMode));
   } else if (termInfo.executionMode == null && termInfo.planJson) {
     // Older snapshots predate the explicit executionMode column; fall
     // back to "had a plan -> was task mode".
-    useStore.getState().setExecutionMode(sessionId, "task");
+    useStore.getState().setExecutionMode(sessionId, normalizeExecutionModeId("task"));
   }
 }
 

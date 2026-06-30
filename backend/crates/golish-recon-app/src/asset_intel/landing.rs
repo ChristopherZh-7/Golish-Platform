@@ -23,7 +23,7 @@ use crate::organizations::OrganizationCandidates;
 /// Host-side fields tried (in priority order) when a provider declares no
 /// `normalize.pairs` rule — covers the http_json record shapes (0.zone / quake)
 /// so landing still pairs a domain with its surveyed IP.
-const DEFAULT_HOST_FIELDS: &[&str] = &["domain", "hostname", "host", "url", "service.http.host"];
+const DEFAULT_HOST_FIELDS: &[&str] = &["domain", "service.http.host", "host", "hostname", "url"];
 /// IP-side fields tried (in priority order); mirrors the providers' IP keys.
 const DEFAULT_IP_FIELDS: &[&str] = &["ip", "msg.ip", "ip_addr"];
 
@@ -85,6 +85,57 @@ pub(crate) fn profile_ip_strings(org: &golish_db::models::Organization) -> Vec<S
     json_atom_strings(&org.ip_ranges)
 }
 
+fn normalize_landing_host(host: &str) -> String {
+    host.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn landing_alias_host_key(host: &str) -> String {
+    let normalized = normalize_landing_host(host);
+    normalized
+        .strip_prefix("www.")
+        .unwrap_or(normalized.as_str())
+        .to_string()
+}
+
+fn is_www_alias_host(host: &str) -> bool {
+    normalize_landing_host(host)
+        .strip_prefix("www.")
+        .is_some_and(|rest| rest.contains('.'))
+}
+
+fn prefer_landing_host(candidate: &str, current: &str) -> bool {
+    let candidate_is_www = is_www_alias_host(candidate);
+    let current_is_www = is_www_alias_host(current);
+    if candidate_is_www != current_is_www {
+        return !candidate_is_www;
+    }
+    candidate.len() < current.len()
+}
+
+fn dedupe_landing_hosts<I>(hosts: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut out: Vec<String> = Vec::new();
+    let mut index_by_alias: HashMap<String, usize> = HashMap::new();
+    for host in hosts {
+        let host = normalize_landing_host(&host);
+        if host.is_empty() {
+            continue;
+        }
+        let alias_key = landing_alias_host_key(&host);
+        if let Some(index) = index_by_alias.get(&alias_key).copied() {
+            if prefer_landing_host(&host, out[index].as_str()) {
+                out[index] = host;
+            }
+            continue;
+        }
+        index_by_alias.insert(alias_key, out.len());
+        out.push(host);
+    }
+    out
+}
+
 fn json_atom_strings(value: &Value) -> Vec<String> {
     match value {
         Value::String(text) => {
@@ -110,15 +161,27 @@ pub(crate) fn plan_promotable_assets(
     pairs: &[HostIpPair],
     profile_ips: &[String],
 ) -> (Vec<(String, Option<String>)>, Vec<String>) {
-    let mut domains = Vec::new();
+    let mut domains: Vec<(String, Option<String>)> = Vec::new();
     let mut seen_hosts = HashSet::new();
+    let mut index_by_alias_and_ip: HashMap<String, usize> = HashMap::new();
     for pair in pairs {
-        if !value_belongs_to_organization(org, &pair.host) {
+        let host = normalize_landing_host(&pair.host);
+        let ip = pair.ip.trim().to_string();
+        if !value_belongs_to_organization(org, &host) {
             continue;
         }
-        if seen_hosts.insert(pair.host.clone()) {
-            domains.push((pair.host.clone(), Some(pair.ip.clone())));
+        if !seen_hosts.insert(host.clone()) {
+            continue;
         }
+        let alias_key = format!("{}\0{}", landing_alias_host_key(&host), ip);
+        if let Some(index) = index_by_alias_and_ip.get(&alias_key).copied() {
+            if prefer_landing_host(&host, domains[index].0.as_str()) {
+                domains[index] = (host, Some(ip));
+            }
+            continue;
+        }
+        index_by_alias_and_ip.insert(alias_key, domains.len());
+        domains.push((host, Some(ip)));
     }
     let mut seen_ips = HashSet::new();
     let ips = profile_ips
@@ -170,7 +233,7 @@ pub(crate) fn hostnames_from_certificates(certificates: &Value) -> Vec<String> {
             }
         }
     }
-    out
+    dedupe_landing_hosts(out)
 }
 
 /// Pull dotted-hostname tokens out of free text (a cert subject DN, SAN list,
@@ -391,12 +454,14 @@ pub(crate) struct HostServiceAsset {
 
 /// Host-owner fields tried (priority order) when lifting a service from a
 /// provider record — mirrors survey record shapes (quake/fofa/0.zone flat
-/// `domain`/`hostname`, quake nested `service.http.host`, shodan `ip_str`).
+/// `domain`/`host`, quake nested `service.http.host`, shodan `ip_str`). Quake
+/// `hostname` can be PTR/rDNS noise, so prefer the HTTP host before falling
+/// back to it.
 const SERVICE_HOST_FIELDS: &[&str] = &[
     "domain",
-    "hostname",
-    "host",
     "service.http.host",
+    "host",
+    "hostname",
     "ip",
     "ip_str",
 ];
@@ -489,15 +554,17 @@ pub(crate) async fn land_service_assets(
         let target_id = match target_cache.get(&asset.host) {
             Some(cached) => *cached,
             None => {
+                let alias_host = landing_alias_host_key(&asset.host);
                 let resolved: Option<Uuid> = sqlx::query_scalar(
                     r#"SELECT id FROM targets
-                       WHERE value = $1
+                       WHERE (value = $1 OR value = $3)
                          AND project_path IS NOT DISTINCT FROM $2
-                       ORDER BY (scope::text = 'in') DESC, updated_at DESC
+                       ORDER BY (value = $1) DESC, (scope::text = 'in') DESC, updated_at DESC
                        LIMIT 1"#,
                 )
                 .bind(&asset.host)
                 .bind(&org.project_path)
+                .bind(&alias_host)
                 .fetch_optional(pool)
                 .await
                 .ok()
@@ -620,6 +687,43 @@ mod tests {
     }
 
     #[test]
+    fn plan_promotable_assets_dedupes_www_aliases_for_same_resolved_ip() {
+        let org = org_with_domains(serde_json::json!(["moresec.cn"]));
+        let pairs = vec![
+            HostIpPair {
+                host: "www.moresec.cn".into(),
+                ip: "115.28.135.55".into(),
+            },
+            HostIpPair {
+                host: "moresec.cn".into(),
+                ip: "115.28.135.55".into(),
+            },
+            HostIpPair {
+                host: "m.moresec.cn".into(),
+                ip: "115.28.135.55".into(),
+            },
+            HostIpPair {
+                host: "www.moresec.cn".into(),
+                ip: "203.0.113.10".into(),
+            },
+        ];
+
+        let (domains, ips) = plan_promotable_assets(&org, &pairs, &[]);
+
+        assert!(ips.is_empty());
+        assert_eq!(
+            domains,
+            vec![
+                ("moresec.cn".to_string(), Some("115.28.135.55".to_string())),
+                (
+                    "m.moresec.cn".to_string(),
+                    Some("115.28.135.55".to_string())
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn plan_promotable_cidrs_keeps_networks_drops_bare_and_garbage() {
         // L0a (design 2026-06-24): only well-formed CIDR networks survive; bare
         // IPs (handled elsewhere), non-CIDR atoms, and over-wide prefixes drop.
@@ -648,6 +752,7 @@ mod tests {
         // objects; strip wildcards; drop IPs and non-host DN tokens (O=/C=).
         let certs = serde_json::json!([
             "CN=*.pingan.com",
+            "CN=www.pingan.com",
             "CN=bank.pingan.com, O=Ping An, C=CN",
             "mail.pingan.com",
             "1.2.3.4",
@@ -737,6 +842,26 @@ mod tests {
         assert_eq!(assets[0].port, 443);
         assert_eq!(assets[0].protocol.as_deref(), Some("tcp"));
         assert_eq!(assets[0].service.as_deref(), Some("http"));
+    }
+
+    #[test]
+    fn service_assets_prefer_http_host_over_quake_hostname_noise() {
+        let candidates = OrganizationCandidates {
+            targets: vec![target_candidate(
+                "quake",
+                serde_json::json!({
+                    "hostname": "mail.bimlmvcg.cfd",
+                    "ip": "1.2.3.4",
+                    "port": 443,
+                    "transport": "tcp",
+                    "service": { "http": { "host": "ai-sales.moresec.cn" } }
+                }),
+            )],
+            ..Default::default()
+        };
+        let assets = service_assets_from_candidates(&candidates);
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].host, "ai-sales.moresec.cn");
     }
 
     #[test]

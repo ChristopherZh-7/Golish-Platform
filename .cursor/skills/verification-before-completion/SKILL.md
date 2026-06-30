@@ -130,6 +130,6 @@ description: 在宣称工作完成、已修复或测试通过之前使用，在�
 
 这没有商量余地。
 
-## BaJie-MCP 集成说明
+## BajieAsk 集成说明
 
-本 skill 被 BaJie-MCP 所有执行角色在通过 `send_to_session(messageType:"result")` 回报结果之前使用。主控汇总结果时会检查是否附带了验证证据。
+本 skill 被 BajieAsk 所有执行角色在通过 `send_to_session(messageType:"result")` 回报结果之前使用。主控汇总结果时会检查是否附带了验证证据。

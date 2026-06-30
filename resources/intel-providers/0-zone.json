@@ -34,45 +34,48 @@
             "method": "POST",
             "url": "https://0.zone/api/data/",
             "headers": {
+              "Content-Type": "application/json",
               "User-Agent": "Golish Asset Intel"
             },
-            "form": {
+            "json": {
               "query": "{{company_name}}",
               "query_type": "domain",
-              "page": "1",
-              "pagesize": "40",
+              "page": 1,
+              "pagesize": 40,
               "zone_key_id": "{{secret:api_key}}"
             },
             "timeout_secs": 30
           },
           {
-            "id": "site",
+            "id": "domain_root",
             "method": "POST",
             "url": "https://0.zone/api/data/",
             "headers": {
+              "Content-Type": "application/json",
               "User-Agent": "Golish Asset Intel"
             },
-            "form": {
-              "query": "{{company_name}}",
-              "query_type": "site",
-              "page": "1",
-              "pagesize": "40",
+            "json": {
+              "query": "root_domain=={{domain}}",
+              "query_type": "domain",
+              "page": 1,
+              "pagesize": 40,
               "zone_key_id": "{{secret:api_key}}"
             },
-            "timeout_secs": 60
+            "timeout_secs": 30
           },
           {
             "id": "apk",
             "method": "POST",
             "url": "https://0.zone/api/data/",
             "headers": {
+              "Content-Type": "application/json",
               "User-Agent": "Golish Asset Intel"
             },
-            "form": {
+            "json": {
               "query": "{{company_name}}",
               "query_type": "apk",
-              "page": "1",
-              "pagesize": "40",
+              "page": 1,
+              "pagesize": 40,
               "zone_key_id": "{{secret:api_key}}"
             },
             "timeout_secs": 30
@@ -82,13 +85,14 @@
             "method": "POST",
             "url": "https://0.zone/api/data/",
             "headers": {
+              "Content-Type": "application/json",
               "User-Agent": "Golish Asset Intel"
             },
-            "form": {
+            "json": {
               "query": "{{company_name}}",
               "query_type": "org",
-              "page": "1",
-              "pagesize": "20",
+              "page": 1,
+              "pagesize": 20,
               "zone_key_id": "{{secret:api_key}}"
             },
             "timeout_secs": 30
@@ -98,45 +102,31 @@
             "method": "POST",
             "url": "https://0.zone/api/data/",
             "headers": {
+              "Content-Type": "application/json",
               "User-Agent": "Golish Asset Intel"
             },
-            "form": {
+            "json": {
               "query": "{{company_name}}",
               "query_type": "email",
-              "page": "1",
-              "pagesize": "40",
+              "page": 1,
+              "pagesize": 40,
               "zone_key_id": "{{secret:api_key}}"
             },
             "timeout_secs": 30
-          },
-          {
-            "id": "code",
-            "method": "POST",
-            "url": "https://0.zone/api/data/",
-            "headers": {
-              "User-Agent": "Golish Asset Intel"
-            },
-            "form": {
-              "query": "{{company_name}}",
-              "query_type": "code",
-              "page": "1",
-              "pagesize": "40",
-              "zone_key_id": "{{secret:api_key}}"
-            },
-            "timeout_secs": 90
           },
           {
             "id": "member",
             "method": "POST",
             "url": "https://0.zone/api/data/",
             "headers": {
+              "Content-Type": "application/json",
               "User-Agent": "Golish Asset Intel"
             },
-            "form": {
+            "json": {
               "query": "{{company_name}}",
               "query_type": "member",
-              "page": "1",
-              "pagesize": "40",
+              "page": 1,
+              "pagesize": 40,
               "zone_key_id": "{{secret:api_key}}"
             },
             "timeout_secs": 30
@@ -147,8 +137,8 @@
         "pairs": [
           {
             "path": "$..data[*]",
-            "host_field": ["domain", "url", "host"],
-            "ip_field": ["ip", "msg.ip", "ip_addr"]
+            "host_field": ["domain", "root_domain"],
+            "ip_field": ["msg.ip"]
           }
         ],
         "organization": [
@@ -162,15 +152,9 @@
         "target": [
           {
             "path": "$..data[*]",
-            "label": ["title", "domain", "url", "host", "ip"],
-            "value": ["domain", "url", "host", "ip"],
+            "label": ["domain", "root_domain", "url"],
+            "value": ["domain", "root_domain"],
             "confidence": 0.72
-          },
-          {
-            "path": "$..data[*]",
-            "label": ["title", "msg.app_id"],
-            "value": ["msg.app_url", "msg.app_id", "title"],
-            "confidence": 0.66
           }
         ],
         "profile_fields": [
@@ -180,13 +164,6 @@
             "target_field": "domains",
             "transform": "lower",
             "when": [{ "field": "domain", "op": "exists", "value": "" }]
-          },
-          {
-            "path": "$..data[*]",
-            "source_field": "url",
-            "target_field": "domains",
-            "transform": "lower",
-            "when": [{ "field": "url", "op": "exists", "value": "" }]
           },
           {
             "path": "$..data[*]",
@@ -204,31 +181,10 @@
           },
           {
             "path": "$..data[*]",
-            "source_field": "ip",
-            "target_field": "ip_ranges",
-            "transform": "trim",
-            "when": [{ "field": "ip", "op": "exists", "value": "" }]
-          },
-          {
-            "path": "$..data[*]",
-            "source_field": "ip_addr",
-            "target_field": "ip_ranges",
-            "transform": "trim",
-            "when": [{ "field": "ip_addr", "op": "exists", "value": "" }]
-          },
-          {
-            "path": "$..data[*]",
-            "source_field": "asn",
-            "target_field": "asns",
-            "transform": "asn",
-            "when": [{ "field": "asn", "op": "exists", "value": "" }]
-          },
-          {
-            "path": "$..data[*]",
-            "source_field": ["url", "domain", "host", "redirect_url"],
+            "source_field": ["domain", "root_domain"],
             "target_field": "business_systems",
             "transform": "trim",
-            "when": [{ "field": "url", "op": "exists", "value": "" }]
+            "when": [{ "field": "domain", "op": "exists", "value": "" }]
           },
           {
             "path": "$..data[*]",

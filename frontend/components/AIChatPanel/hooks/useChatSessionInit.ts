@@ -3,6 +3,7 @@ import {
   type AgentMode,
   cancelAiGeneration,
   initAiSession,
+  normalizeExecutionModeId,
   restoreAiConversation,
   sendPromptSession,
   setAgentMode,
@@ -115,9 +116,10 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
         for (const tid of termIds) {
           const sess = storeState.sessions[tid];
           if (sess?.executionMode && sess.executionMode !== "chat") {
-            restoredExecMode = sess.executionMode;
+            restoredExecMode = normalizeExecutionModeId(sess.executionMode);
           }
         }
+        restoredExecMode = normalizeExecutionModeId(restoredExecMode);
 
         if (restoredExecMode !== "chat") {
           await setExecutionModeBackend(conv.aiSessionId, restoredExecMode).catch(() => {});

@@ -466,8 +466,9 @@ fn coverage_gap_action_instruction(actions: &[CoverageGapAction]) -> String {
         " Exact coverage_gap_actions from the gate: run ONLY these {} target/technique pairs. \
          Do not run a target or technique that is absent from this list. Direct enumeration tools \
          (browser_collect_js_api/js_collect/js_extract_apis/route_probe_paths) may be called by \
-         name when suggested here; CLI tools such as ffuf/gobuster/feroxbuster/arjun/katana must \
-         be run through pentest_run(tool_name=...).",
+         name when suggested here; directory discovery must use route_probe_paths, not external \
+         ffuf/gobuster/feroxbuster. Bounded crawler CLIs such as katana must be run through \
+         pentest_run(tool_name=...) and used only as URL sources.",
         actions.len()
     )];
     for (idx, action) in actions.iter().enumerate() {

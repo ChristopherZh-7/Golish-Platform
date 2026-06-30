@@ -407,6 +407,14 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
             .unwrap_or_default()
     }
 
+    async fn eas_port_delegated_assets(&self, org_id: Option<uuid::Uuid>) -> Vec<String> {
+        // 方案 A (设计 2026-06-30-eas-domain-port-delegation): EAS alias delegation
+        // for the submit preview (same source as the stage-close gate).
+        self.eas_port_delegated_assets_impl(org_id)
+            .await
+            .unwrap_or_default()
+    }
+
     async fn in_scope_target_types(&self, org_id: Option<uuid::Uuid>) -> Vec<String> {
         // T3: distinct targets.type for the preview's dynamic expected_techniques.
         self.in_scope_target_types_impl(org_id)

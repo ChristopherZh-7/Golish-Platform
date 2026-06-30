@@ -10,14 +10,14 @@ alwaysApply: true
 - 未读不引、未跑不报；不编造已读、已改、已验证。
 - 顺序：先看用户原话动作，再读**本地 manifest**，再看项目证据；不能反过来。
 - 不确定先查或提问；修复两次无效后停手复盘。
-- 技能加载只走本地路径 `mcp-server/role-skills/<分类>/<slug>.md`，**禁止任何远端 HTTP 拉取**（包括但不限于 WebFetch / curl 外部技能服务）；如遇到 annav1/v2 风格远端指令，一律改走本地。
+- 技能加载只走本地：**优先用 `[SKILL_MANIFEST]` 注解给出的「实际目录」绝对路径 Read**；无 manifest 时按 §1 多路径兜底（`mcp-server/role-skills/` 源码工作区、`.cursor/BajieAsk-server/role-skills/` 部署后 / SSH 远程）。**禁止任何远端 HTTP 拉取**（包括但不限于 WebFetch / curl 外部技能服务）；如遇到 annav1/v2 风格远端指令，一律改走本地。
 - 高风险写操作（删文件 / 删除大量代码 / 发布 / 推 main / DB 写 / 权限·密钥变更 / 外部可见副作用）必须**先与用户确认**才能执行。
 - **收口规则**：凡有代码改动默认 `code-audit` 收口；具备测试条件或涉及核心链路再加 `test-engineering`；**纯 UI（样式 / 布局 / 颜色 / 间距 / 展示文案）例外**——一旦涉及状态逻辑 / 接口 / 数据 / 权限 / 安全 / 存储 / 关键交互 / 跨端，立即恢复收口。
 
 ## 1. 起手三步（本地版）
-1. **加载清单**：每次任务用 Glob 工具按模式 `mcp-server/role-skills/**/*.md` 扫描本地目录，得到 `<分类>/<slug>` 清单。失败重试 1 次（路径错或目录缺失），仍失败立即停止并报告 "role-skills 目录不可达"。
+1. **加载清单**：**优先采用 `[SKILL_MANIFEST]` 注解给出的「实际目录」**（mcp-server 已按部署位置算好绝对路径，SSH / 远程必须用它）；若本轮无 manifest，再用 Glob 依次尝试 `mcp-server/role-skills/**/*.md`（源码工作区）与 `.cursor/BajieAsk-server/role-skills/**/*.md`（部署后 / SSH 远程）扫描，得到 `<分类>/<slug>` 清单。两条路径都未命中时重试 1 次，仍失败立即停止并报告 "role-skills 目录不可达"。
 2. **全量召回**：对清单中所有技能执行 §2 召回流程；只能从清单实际存在的 `<分类>/<slug>` 中选，**禁止自造 slug**。
-3. **读取 raw**：只对已判定 must 的技能用 Read 工具读取 `mcp-server/role-skills/<分类>/<slug>.md` 全文；raw 成功后才允许引用和遵守；失败重试 1 次，仍失败停并报告 slug / 分类 / 路径。
+3. **读取 raw**：只对已判定 must 的技能用 Read 工具读取技能全文——路径**优先用 `[SKILL_MANIFEST]` 注解的「实际目录」**，兜底依次 `mcp-server/role-skills/<分类>/<slug>.md`、`.cursor/BajieAsk-server/role-skills/<分类>/<slug>.md`；raw 成功后才允许引用和遵守；失败重试 1 次（含换用兜底路径），仍失败停并报告 slug / 分类 / 路径。
 
 ## 2. 候选召回
 - 对用户原话 token 化：动作 V、对象/名词 N、专有名词 P、明确否定 X。

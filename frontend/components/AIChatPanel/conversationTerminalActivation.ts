@@ -1,3 +1,4 @@
+import { normalizeExecutionModeId } from "@/lib/ai";
 import { suppressTerminalAutoFocus } from "@/lib/terminal/terminalAutoFocus";
 import { useStore } from "@/store";
 
@@ -33,7 +34,9 @@ export function activateConversationTerminalFromChat(
     for (const tid of terminals) {
       const em = store.sessions[tid]?.executionMode;
       if (em && em !== "chat") {
-        opts.setChatExecutionMode(em);
+        const mode = normalizeExecutionModeId(em);
+        if (mode !== em) store.setExecutionMode(tid, mode);
+        opts.setChatExecutionMode(mode);
         break;
       }
     }

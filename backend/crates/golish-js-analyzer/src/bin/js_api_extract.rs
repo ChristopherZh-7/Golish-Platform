@@ -15,6 +15,10 @@ use serde_json::{json, Value};
 const DEFAULT_ENDPOINT_LIMIT: usize = 200;
 const DEFAULT_SIGNAL_LIMIT: usize = 160;
 const DEFAULT_CONTEXT_LIMIT: usize = 32;
+const DEFAULT_MAX_FILE_BYTES: u64 = 1_500_000;
+
+type JsSource = (String, String);
+type JsSources = Vec<JsSource>;
 
 #[derive(Debug)]
 struct Args {
@@ -24,6 +28,14 @@ struct Args {
     endpoint_limit: usize,
     signal_limit: usize,
     context_limit: usize,
+    max_file_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct SkippedJsSource {
+    source_file: String,
+    reason: String,
+    size_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -45,15 +57,19 @@ struct ContextSnippet {
 
 fn main() -> Result<()> {
     let args = parse_args(env::args().skip(1).collect())?;
-    let (sources, read_errors) = load_js_sources(&args.js_dir)?;
+    let (sources, read_errors, skipped_js_files) =
+        load_js_sources(&args.js_dir, args.max_file_bytes)?;
     if sources.is_empty() {
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
-                "status": "empty",
+                "status": if skipped_js_files.is_empty() && read_errors.is_empty() { "empty" } else { "partial" },
                 "js_dir": args.js_dir,
                 "files_scanned": 0,
                 "read_errors": read_errors,
+                "files_skipped": skipped_js_files.len(),
+                "skipped_js_files": skipped_js_files,
+                "max_file_bytes": args.max_file_bytes,
             }))?
         );
         return Ok(());
@@ -78,11 +94,14 @@ fn main() -> Result<()> {
     let context_snippets = context_snippets(&args.js_dir, &filtered, &signals, args.context_limit);
 
     let output = json!({
-        "status": if read_errors.is_empty() { "ok" } else { "partial" },
+        "status": if read_errors.is_empty() && skipped_js_files.is_empty() { "ok" } else { "partial" },
         "target_url": args.target_url,
         "js_dir": args.js_dir,
         "files_scanned": sources.len(),
+        "files_skipped": skipped_js_files.len(),
         "read_errors": read_errors,
+        "skipped_js_files": skipped_js_files,
+        "max_file_bytes": args.max_file_bytes,
         "api_base_path": api_base_path,
         "endpoints_total": filtered.len(),
         "endpoints_unique": unique_endpoint_count(&filtered),
@@ -125,6 +144,7 @@ fn parse_args(raw: Vec<String>) -> Result<Args> {
     let mut endpoint_limit = DEFAULT_ENDPOINT_LIMIT;
     let mut signal_limit = DEFAULT_SIGNAL_LIMIT;
     let mut context_limit = DEFAULT_CONTEXT_LIMIT;
+    let mut max_file_bytes = DEFAULT_MAX_FILE_BYTES;
 
     let mut i = 0;
     while i < raw.len() {
@@ -157,6 +177,10 @@ fn parse_args(raw: Vec<String>) -> Result<Args> {
                 i += 1;
                 context_limit = parse_usize(raw.get(i), "--context-limit")?;
             }
+            "--max-file-bytes" => {
+                i += 1;
+                max_file_bytes = parse_u64(raw.get(i), "--max-file-bytes")?;
+            }
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -174,6 +198,7 @@ fn parse_args(raw: Vec<String>) -> Result<Args> {
         endpoint_limit,
         signal_limit,
         context_limit,
+        max_file_bytes,
     })
 }
 
@@ -184,15 +209,25 @@ fn parse_usize(value: Option<&String>, name: &str) -> Result<usize> {
         .with_context(|| format!("invalid {name}"))
 }
 
+fn parse_u64(value: Option<&String>, name: &str) -> Result<u64> {
+    value
+        .with_context(|| format!("{name} requires a value"))?
+        .parse()
+        .with_context(|| format!("invalid {name}"))
+}
+
 fn print_help() {
     eprintln!(
         "Usage: js_api_extract --js-dir <capture-js-dir> [--target-url <url>] \
          [--min-confidence 0.0] [--endpoint-limit 200] [--signal-limit 160] \
-         [--context-limit 32]"
+         [--context-limit 32] [--max-file-bytes 1500000]"
     );
 }
 
-fn load_js_sources(js_dir: &Path) -> Result<(Vec<(String, String)>, Vec<String>)> {
+fn load_js_sources(
+    js_dir: &Path,
+    max_file_bytes: u64,
+) -> Result<(JsSources, Vec<String>, Vec<SkippedJsSource>)> {
     if !js_dir.exists() {
         bail!("JS capture directory does not exist: {}", js_dir.display());
     }
@@ -202,13 +237,23 @@ fn load_js_sources(js_dir: &Path) -> Result<(Vec<(String, String)>, Vec<String>)
 
     let mut sources = Vec::new();
     let mut read_errors = Vec::new();
+    let mut skipped_js_files = Vec::new();
     for (source_name, path) in files {
+        let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or_default();
+        if size_bytes > max_file_bytes {
+            skipped_js_files.push(SkippedJsSource {
+                source_file: source_name,
+                reason: "exceeds_max_file_bytes".to_string(),
+                size_bytes,
+            });
+            continue;
+        }
         match fs::read_to_string(&path) {
             Ok(content) => sources.push((source_name, content)),
             Err(error) => read_errors.push(format!("{}: {}", path.display(), error)),
         }
     }
-    Ok((sources, read_errors))
+    Ok((sources, read_errors, skipped_js_files))
 }
 
 fn collect_js_files(root: &Path, current: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
@@ -504,6 +549,7 @@ fn context_snippets(
             continue;
         };
         let (line_start, line_end, snippet) = slice_lines(&source, line, 3);
+        let snippet = redact_sensitive_snippet(&snippet);
         snippets.push(ContextSnippet {
             source_file,
             absolute_path: path.to_string_lossy().to_string(),
@@ -541,4 +587,51 @@ fn slice_lines(source: &str, center_line: usize, radius: usize) -> (usize, usize
         .collect::<Vec<_>>()
         .join("\n");
     (start, end, snippet)
+}
+
+fn redact_sensitive_snippet(snippet: &str) -> String {
+    let mut redacted = snippet.to_string();
+    let assignment_patterns = [
+        r#"(?i)(["']?[A-Za-z0-9_.-]*(?:api[-_]?key|access[-_]?token|auth[-_]?token|token|secret|password|passwd|pwd)["']?\s*[:=]\s*["'`])([^"'`\n]{4,})(["'`])"#,
+        r#"(?i)(authorization["']?\s*[:=]\s*["'`]\s*(?:bearer|basic)\s+)([^"'`\n]{4,})(["'`])"#,
+    ];
+    for pattern in assignment_patterns {
+        let re = Regex::new(pattern).expect("redaction regex is valid");
+        redacted = re.replace_all(&redacted, "$1***REDACTED***$3").to_string();
+    }
+
+    let token_patterns = [
+        r#"(?i)\b(bearer|basic)\s+[A-Za-z0-9_.=:+/\-]{5,160}"#,
+        r#"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9._/-]{10,}(?:\.[A-Za-z0-9._/-]{8,})?\b"#,
+        r#"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"#,
+        r#"\bLTAI[a-zA-Z0-9]{12,20}\b"#,
+        r#"\bsk_(?:live|test)_[A-Za-z0-9_-]{8,}\b"#,
+    ];
+    for pattern in token_patterns {
+        let re = Regex::new(pattern).expect("redaction regex is valid");
+        redacted = re.replace_all(&redacted, "***REDACTED***").to_string();
+    }
+
+    redacted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_sensitive_snippet;
+
+    #[test]
+    fn redacts_sensitive_values_from_context_snippets() {
+        let snippet = r#"
+             1: const accessToken = "sk_live_SECRET_REAL_ABCDEFG1234567890";
+             2: const dbPassword = "P@ssw0rd!Realish98765";
+             3: fetch("/api", { headers: { Authorization: "Bearer runtime-token-12345" }});
+        "#;
+
+        let redacted = redact_sensitive_snippet(snippet);
+
+        assert!(!redacted.contains("sk_live_SECRET_REAL_ABCDEFG1234567890"));
+        assert!(!redacted.contains("P@ssw0rd!Realish98765"));
+        assert!(!redacted.contains("runtime-token-12345"));
+        assert!(redacted.contains("***REDACTED***"));
+    }
 }

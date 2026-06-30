@@ -799,7 +799,33 @@ fn rule_match_preview(kind: RuleMatchKind, value: &str) -> String {
 fn redacted_line_context(source: &str, offset: usize, value: &str) -> String {
     let line = line_text(source, offset);
     let redacted = line.replace(value, &redacted_preview(value));
-    collapse_ws(&redacted)
+    redact_sensitive_context(&collapse_ws(&redacted))
+}
+
+fn redact_sensitive_context(context: &str) -> String {
+    let mut redacted = context.to_string();
+    let assignment_patterns = [
+        r#"(?i)(["']?[A-Za-z0-9_.-]*(?:api[-_]?key|access[-_]?token|auth[-_]?token|token|secret|password|passwd|pwd)["']?\s*[:=]\s*["'`])([^"'`\n]{4,})(["'`])"#,
+        r#"(?i)(authorization["']?\s*[:=]\s*["'`]\s*(?:bearer|basic)\s+)([^"'`\n]{4,})(["'`])"#,
+    ];
+    for pattern in assignment_patterns {
+        let re = Regex::new(pattern).expect("redaction regex is valid");
+        redacted = re.replace_all(&redacted, "$1***REDACTED***$3").to_string();
+    }
+
+    let token_patterns = [
+        r#"(?i)\b(bearer|basic)\s+[A-Za-z0-9_.=:+/\-]{5,160}"#,
+        r#"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9._/-]{10,}(?:\.[A-Za-z0-9._/-]{8,})?\b"#,
+        r#"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"#,
+        r#"\bLTAI[a-zA-Z0-9]{12,20}\b"#,
+        r#"\bsk_(?:live|test)_[A-Za-z0-9_-]{8,}\b"#,
+    ];
+    for pattern in token_patterns {
+        let re = Regex::new(pattern).expect("redaction regex is valid");
+        redacted = re.replace_all(&redacted, "***REDACTED***").to_string();
+    }
+
+    redacted
 }
 
 fn line_text(source: &str, offset: usize) -> &str {
@@ -951,5 +977,20 @@ mod tests {
         assert_eq!(hit.kind, RuleMatchKind::Secret);
         assert!(!hit.match_preview.contains("super-secret-token"));
         assert!(!hit.context.contains("super-secret-token"));
+    }
+
+    #[test]
+    fn rule_match_context_redacts_neighboring_sensitive_values() {
+        let source = r#"fetch('/api/users?page=1', { headers: { Authorization: 'Bearer runtime-token-12345' }});"#;
+        let report = analyze_signals_from_source("bundle.js", source);
+
+        assert!(report
+            .rule_matches
+            .iter()
+            .any(|hit| hit.rule_name == "Pagination Or Size Parameter"));
+        assert!(report
+            .rule_matches
+            .iter()
+            .all(|hit| !hit.context.contains("runtime-token-12345")));
     }
 }

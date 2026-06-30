@@ -16,3 +16,11 @@
 - Status: draft
 - CVE: CVE-2024-00000
 
+
+## [2026-06-30 02:49] create | 杭州默安科技有限公司 (默安科技) — Target Overview
+
+- Path: `analysis/默安科技/target-overview.md`
+- Category: analysis
+- Tags: moresec, 默安科技, cybersecurity, scoping
+- Status: draft
+

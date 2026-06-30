@@ -37,6 +37,21 @@ describe("groupTargetsByHost", () => {
     expect(groups[0].linkedTargets.map((item) => item.id).sort()).toEqual(["domain", "url"]);
   });
 
+  it("keeps IP rows under their own value even when real_ip carries provider attribution", () => {
+    const groups = groupTargetsByHost(
+      [
+        target("ip-child", { type: "ip", value: "115.223.9.114", real_ip: "124.71.187.144" }),
+        target("ip-parent", { type: "ip", value: "124.71.187.144" }),
+        target("domain", { value: "dayu.example.com", real_ip: "124.71.187.144" }),
+      ],
+      "Unresolved"
+    );
+
+    expect(groups.map((group) => group.label)).toEqual(["115.223.9.114", "124.71.187.144"]);
+    expect(groups[0].targets.map((item) => item.id)).toEqual(["ip-child"]);
+    expect(groups[1].targets.map((item) => item.id).sort()).toEqual(["domain", "ip-parent"]);
+  });
+
   it("keeps unresolved domains in a final catch-all group", () => {
     const groups = groupTargetsByHost(
       [
@@ -48,5 +63,27 @@ describe("groupTargetsByHost", () => {
 
     expect(groups.map((group) => group.label)).toEqual(["2.2.2.2", "Unresolved"]);
     expect(groups[1].linkedTargets.map((item) => item.id)).toEqual(["domain"]);
+  });
+
+  it("dedupes www aliases in the display list without hiding sibling subdomains", () => {
+    const groups = groupTargetsByHost(
+      [
+        target("ip", { type: "ip", value: "115.28.135.55" }),
+        target("mobile", { value: "m.moresec.cn", real_ip: "115.28.135.55" }),
+        target("apex", { value: "moresec.cn", real_ip: "115.28.135.55" }),
+        target("www", { value: "www.moresec.cn", real_ip: "115.28.135.55" }),
+      ],
+      "Unresolved"
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].inScope).toBe(4);
+    expect(groups[0].targets.map((item) => item.id).sort()).toEqual([
+      "apex",
+      "ip",
+      "mobile",
+      "www",
+    ]);
+    expect(groups[0].linkedTargets.map((item) => item.id).sort()).toEqual(["apex", "mobile"]);
   });
 });

@@ -172,6 +172,26 @@ fn build_exists_by_value_exact_sql() -> String {
     "SELECT EXISTS(SELECT 1 FROM targets WHERE value = $1 AND project_path = $2)".to_string()
 }
 
+fn build_artifact_reference_values_by_org_subtree_sql() -> String {
+    "WITH RECURSIVE subtree AS ( \
+         SELECT id FROM organizations WHERE id = $1 \
+         UNION ALL \
+         SELECT o.id FROM organizations o JOIN subtree s ON o.parent_id = s.id \
+       ), org_targets AS ( \
+         SELECT id, value, real_ip FROM targets WHERE organization_id IN (SELECT id FROM subtree) \
+       ), refs AS ( \
+         SELECT value AS ref FROM org_targets \
+         UNION ALL SELECT real_ip AS ref FROM org_targets WHERE real_ip <> '' \
+         UNION ALL SELECT ta.value AS ref FROM target_assets ta JOIN org_targets t ON t.id = ta.target_id \
+         UNION ALL SELECT ae.url AS ref FROM api_endpoints ae JOIN org_targets t ON t.id = ae.target_id \
+         UNION ALL SELECT de.url AS ref FROM directory_entries de JOIN org_targets t ON t.id = de.target_id \
+         UNION ALL SELECT ja.url AS ref FROM js_analysis_results ja JOIN org_targets t ON t.id = ja.target_id \
+         UNION ALL SELECT ps.url AS ref FROM passive_scan_logs ps JOIN org_targets t ON t.id = ps.target_id \
+       ) \
+       SELECT DISTINCT ref FROM refs WHERE ref IS NOT NULL AND btrim(ref) <> ''"
+        .to_string()
+}
+
 /// Ownership guard (legacy visibility). `None` == missing or cross-project.
 pub async fn get_id_scoped_legacy(
     pool: &PgPool,
@@ -369,6 +389,21 @@ pub async fn exists_by_value_exact(
         .fetch_one(pool)
         .await?;
     Ok(exists)
+}
+
+/// Collect target-bound values/URLs for an organization subtree before cascade
+/// delete removes the rows. Used by callers that must clean local artifacts
+/// keyed by host (captures/js/api output, sitemap entries, etc.).
+pub async fn artifact_reference_values_by_org_subtree(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<Vec<String>> {
+    let rows =
+        sqlx::query_scalar::<_, String>(&build_artifact_reference_values_by_org_subtree_sql())
+            .bind(org_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows)
 }
 
 /// Resolve a target id by matching `value` **or** `name` within a project,
@@ -731,6 +766,20 @@ mod tests {
             build_exists_by_value_exact_sql(),
             "SELECT EXISTS(SELECT 1 FROM targets WHERE value = $1 AND project_path = $2)"
         );
+    }
+
+    #[test]
+    fn artifact_reference_values_by_org_subtree_sql_collects_target_bound_refs() {
+        let sql = build_artifact_reference_values_by_org_subtree_sql();
+        assert!(sql.contains("WITH RECURSIVE subtree"));
+        assert!(sql.contains("JOIN subtree s ON o.parent_id = s.id"));
+        assert!(sql.contains("SELECT id, value, real_ip FROM targets"));
+        assert!(sql.contains("UNION ALL SELECT ta.value AS ref FROM target_assets"));
+        assert!(sql.contains("UNION ALL SELECT ae.url AS ref FROM api_endpoints"));
+        assert!(sql.contains("UNION ALL SELECT de.url AS ref FROM directory_entries"));
+        assert!(sql.contains("UNION ALL SELECT ja.url AS ref FROM js_analysis_results"));
+        assert!(sql.contains("UNION ALL SELECT ps.url AS ref FROM passive_scan_logs"));
+        assert!(sql.contains("SELECT DISTINCT ref FROM refs"));
     }
 
     #[test]

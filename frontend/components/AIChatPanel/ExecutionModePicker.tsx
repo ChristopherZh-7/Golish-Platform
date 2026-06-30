@@ -159,15 +159,19 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
 
   const engine = resolveEngine(chatExecutionMode);
   const isTask = engine === "task";
-  const activeProfileId = isTask ? chatExecutionMode : null;
-  const activeProfile = useMemo(
-    () => profiles.find((p) => p.id === activeProfileId) ?? null,
-    [profiles, activeProfileId]
-  );
 
   // Persistently remember the last Task profile: the header + Task row reflect
   // it, and switching into Task reuses it until the user changes it.
   const [lastProfileId, setLastProfileId] = useState<string | null>(() => readLastProfile());
+  const activeProfileId = useMemo(() => {
+    if (!isTask) return null;
+    if (chatExecutionMode === "task") return pickTaskProfile(lastProfileId, profiles);
+    return chatExecutionMode;
+  }, [isTask, chatExecutionMode, lastProfileId, profiles]);
+  const activeProfile = useMemo(
+    () => profiles.find((p) => p.id === activeProfileId) ?? null,
+    [profiles, activeProfileId]
+  );
 
   // The gear's profile flyout opens on click only (not hover). Keeping the Radix
   // submenu controlled lets us suppress its default hover-to-open; it self-resets
@@ -178,8 +182,20 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
     writeLastProfile(id);
   }, []);
   useEffect(() => {
-    if (activeProfileId) rememberProfile(activeProfileId);
-  }, [activeProfileId, rememberProfile]);
+    if (activeProfileId && activeProfile) rememberProfile(activeProfileId);
+  }, [activeProfileId, activeProfile, rememberProfile]);
+  useEffect(() => {
+    if (chatExecutionMode !== "task" || !activeProfileId) return;
+    rememberProfile(activeProfileId);
+    onExecutionModeChange(activeProfileId);
+    onAgentModeChange("auto-approve");
+  }, [
+    chatExecutionMode,
+    activeProfileId,
+    rememberProfile,
+    onExecutionModeChange,
+    onAgentModeChange,
+  ]);
 
   const hintProfile = useMemo(
     () => activeProfile ?? profiles.find((p) => p.id === lastProfileId) ?? null,

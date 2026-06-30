@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DETAIL_PENDING_OUTPUT_SPINNER_CLASS,
   DETAIL_RUNNING_SPINNER_CLASS,
+  getLiveOutputForDetail,
   getShellOutputForDetail,
   isShellLikeToolForDetail,
   TOOL_DETAIL_STATUS_BADGE_STYLES,
@@ -75,5 +76,21 @@ describe("getShellOutputForDetail", () => {
     expect(TOOL_DETAIL_STATUS_BADGE_STYLES.running).toContain("text-[var(--ansi-blue)]");
     expect(TOOL_DETAIL_STATUS_BADGE_STYLES.running).toContain("border-[var(--ansi-blue)]/45");
     expect(TOOL_DETAIL_STATUS_BADGE_STYLES.backgrounded).toContain("text-amber-300");
+  });
+});
+
+describe("getLiveOutputForDetail", () => {
+  it("shows a placeholder for running non-shell tools before chunks arrive", () => {
+    expect(getLiveOutputForDetail(undefined, "running")).toEqual({
+      text: "Waiting for output...",
+      pending: true,
+    });
+  });
+
+  it("uses streamed chunks for running non-shell tools", () => {
+    expect(getLiveOutputForDetail("scanned 2 JS files\nfound 3 endpoints\n", "running")).toEqual({
+      text: "scanned 2 JS files\nfound 3 endpoints",
+      pending: false,
+    });
   });
 });

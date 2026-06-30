@@ -181,18 +181,21 @@ where
         source: ToolSource::Main,
         organization_id: ctx.harness_org_id,
     };
-    let mut result = golish_core::with_agent_tool_context(Some(tool_context.clone()), async {
-        execute_with_hitl_generic(
-            tool_name,
-            &tool_args,
-            &tool_id,
-            ctx,
-            capture_ctx,
-            model,
-            sub_agent_context,
-        )
-        .await
-    })
+    let mut result = golish_core::with_agent_tool_context(
+        Some(tool_context.clone()),
+        golish_core::with_agent_tool_output_sender(Some(ctx.events.event_tx.clone()), async {
+            execute_with_hitl_generic(
+                tool_name,
+                &tool_args,
+                &tool_id,
+                ctx,
+                capture_ctx,
+                model,
+                sub_agent_context,
+            )
+            .await
+        }),
+    )
     .await
     .unwrap_or_else(|e| ToolExecutionResult {
         value: json!({ "error": e.to_string() }),
@@ -231,18 +234,24 @@ where
                 "[toolcall-fixer] Retrying '{}' with repaired args",
                 tool_name
             );
-            result = golish_core::with_agent_tool_context(Some(tool_context.clone()), async {
-                execute_with_hitl_generic(
-                    tool_name,
-                    &fixed_args,
-                    &tool_id,
-                    ctx,
-                    capture_ctx,
-                    model,
-                    sub_agent_context,
-                )
-                .await
-            })
+            result = golish_core::with_agent_tool_context(
+                Some(tool_context.clone()),
+                golish_core::with_agent_tool_output_sender(
+                    Some(ctx.events.event_tx.clone()),
+                    async {
+                        execute_with_hitl_generic(
+                            tool_name,
+                            &fixed_args,
+                            &tool_id,
+                            ctx,
+                            capture_ctx,
+                            model,
+                            sub_agent_context,
+                        )
+                        .await
+                    },
+                ),
+            )
             .await
             .unwrap_or_else(|e| ToolExecutionResult {
                 value: json!({ "error": e.to_string() }),

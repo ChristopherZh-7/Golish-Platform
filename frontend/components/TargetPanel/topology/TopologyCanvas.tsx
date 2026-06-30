@@ -140,7 +140,7 @@ export function TopologyCanvas({
           </div>
         </div>
         <div className="flex items-center gap-1.5">
-          {["Root", "Sub org", "Target", "Service", "Evidence"].map((label) => (
+          {["Root", "Sub org", "Target", "Service", "Surface"].map((label) => (
             <span
               key={label}
               className="rounded-md border border-border/30 bg-background/25 px-2 py-1 text-[10px] font-medium text-muted-foreground"
@@ -198,7 +198,7 @@ export function TopologyCanvas({
             <ColumnGuide x={268} label="SUB ORG" height={model.bounds.height} />
             <ColumnGuide x={486} label="TARGET" height={model.bounds.height} />
             <ColumnGuide x={704} label="SERVICE" height={model.bounds.height} />
-            <ColumnGuide x={884} label="EVIDENCE" height={model.bounds.height} />
+            <ColumnGuide x={884} label="SURFACE" height={model.bounds.height} />
 
             <svg
               className="pointer-events-none absolute inset-0"
@@ -406,7 +406,18 @@ function NodeMetric({ node }: { node: TopologyNode }) {
   if (node.kind === "target") {
     return (
       <div className="mt-1 text-[9px] text-muted-foreground/75">
-        {node.metrics?.ports ?? 0} ports · {node.metrics?.evidence ?? 0} evidence
+        {node.metrics?.ports ?? 0} ports · {node.metrics?.endpoints ?? 0} API ·{" "}
+        {node.metrics?.params ?? 0} params
+      </div>
+    );
+  }
+  if (
+    node.kind === "evidence" &&
+    (node.metrics?.endpoints || node.metrics?.paths || node.metrics?.js)
+  ) {
+    return (
+      <div className="mt-1 text-[9px] text-muted-foreground/75">
+        {node.metrics?.paths ?? 0} paths · {node.metrics?.js ?? 0} JS
       </div>
     );
   }

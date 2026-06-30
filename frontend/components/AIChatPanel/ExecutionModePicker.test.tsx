@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExecutionModePicker } from "./ExecutionModePicker";
-import { readLastProfile } from "./executionModePicker.utils";
+import { readLastProfile, writeLastProfile } from "./executionModePicker.utils";
 
 // The picker fetches modes on mount; stub it so it deterministically falls back
 // to the embedded list (which already carries the profiles) without hitting IPC.
@@ -47,5 +47,24 @@ describe("ExecutionModePicker", () => {
   it("remembers the active Task profile in localStorage", async () => {
     setup("red_team");
     await waitFor(() => expect(readLastProfile()).toBe("red_team"));
+  });
+
+  it("repairs legacy bare Task mode to the remembered profile", async () => {
+    writeLastProfile("red_team");
+    const { onExecutionModeChange, onAgentModeChange } = setup("task");
+
+    expect(screen.getByRole("button", { name: "Execution mode" })).toHaveTextContent("Red Team");
+    await waitFor(() => expect(onExecutionModeChange).toHaveBeenCalledWith("red_team"));
+    expect(onAgentModeChange).toHaveBeenCalledWith("auto-approve");
+    expect(readLastProfile()).toBe("red_team");
+  });
+
+  it("repairs legacy bare Task mode to the default profile when no profile is remembered", async () => {
+    const { onExecutionModeChange } = setup("task");
+
+    expect(screen.getByRole("button", { name: "Execution mode" })).toHaveTextContent(
+      "Security Assessment"
+    );
+    await waitFor(() => expect(onExecutionModeChange).toHaveBeenCalledWith("assessment"));
   });
 });

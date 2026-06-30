@@ -133,6 +133,15 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         Vec::new()
     }
 
+    /// EAS host-aware alias delegation (设计 2026-06-30-eas-domain-port-delegation):
+    /// in-scope asset values whose resolved IP is already an in-scope IP target,
+    /// so the submit preview drops their EAS coverage to match the stage-close
+    /// gate (org_gate) and the read-only precheck. Default empty ⇒ no delegation.
+    async fn eas_port_delegated_assets(&self, org_id: Option<Uuid>) -> Vec<String> {
+        let _ = org_id;
+        Vec::new()
+    }
+
     /// #4/E3 (设计 2026-06-23-technique-outcomes-provenance): project
     /// `(asset, technique, outcome, evidence_id)` from the `technique_outcomes`
     /// table for the submit preview's dual-read (always on, no gray-switch).
@@ -637,6 +646,21 @@ impl SubmitStageDeliverableTool {
                     .collect();
                 facts.extend(projected);
                 source_queries = repo.source_query_facts(org_id, sid).await;
+            }
+            // 方案 A (设计 2026-06-30-eas-domain-port-delegation): EAS host-aware
+            // alias delegation — drop assets whose resolved IP is already an
+            // in-scope IP target so the submit preview matches the stage-close
+            // gate (org_gate) and the read-only precheck.
+            if stage == StageKind::ExternalAttackSurface && !in_scope_assets.is_empty() {
+                let delegated: std::collections::HashSet<String> = repo
+                    .eas_port_delegated_assets(Some(org_id))
+                    .await
+                    .into_iter()
+                    .collect();
+                if !delegated.is_empty() {
+                    in_scope_assets.retain(|asset| !delegated.contains(asset));
+                    typed_assets.retain(|(asset, _)| !delegated.contains(asset));
+                }
             }
         }
         // 统一组装入口（设计 2026-06-23-unified-gate-context-builder）。

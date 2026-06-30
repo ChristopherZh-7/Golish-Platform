@@ -157,6 +157,33 @@ pub async fn update_capture_path(pool: &PgPool, id: Uuid, capture_path: &str) ->
     Ok(())
 }
 
+pub async fn update_response_evidence(
+    pool: &PgPool,
+    id: Uuid,
+    headers: &serde_json::Value,
+    response_type: Option<&str>,
+    status_code: Option<i32>,
+    capture_path: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        r#"UPDATE api_endpoints
+           SET headers = $2,
+               response_type = COALESCE($3, response_type),
+               status_code = COALESCE($4, status_code),
+               capture_path = COALESCE($5, capture_path),
+               updated_at = NOW()
+           WHERE id = $1"#,
+    )
+    .bind(id)
+    .bind(headers)
+    .bind(response_type)
+    .bind(status_code)
+    .bind(capture_path)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
     super::scoped::delete_by_id(pool, "api_endpoints", id).await?;
     Ok(())

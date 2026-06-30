@@ -2,6 +2,7 @@ import type { Organization } from "@/lib/api/organizations";
 import type { PortInfo, Target } from "@/lib/pentest/types";
 import { formatRelativeAgo } from "@/lib/time";
 import type {
+  TargetTopologySurfaceSummary,
   TopologyEdge,
   TopologyMode,
   TopologyModel,
@@ -22,6 +23,7 @@ interface BuildOptions {
   mode: TopologyMode;
   visibility: TopologyVisibility;
   query?: string;
+  surfaceByTargetId?: Map<string, TargetTopologySurfaceSummary>;
 }
 
 interface OrgBucket {
@@ -64,7 +66,8 @@ export function buildTopologyModel(
   const renderTarget = (target: Target): { start: number; end: number } => {
     const targetColumn = targetNodeColumn();
     const ports = target.ports ?? [];
-    const evidenceCount = estimateEvidenceCount(target);
+    const surface = options.surfaceByTargetId?.get(target.id);
+    const evidenceCount = estimateEvidenceCount(target, surface);
     const targetNodeId = `target:${target.id}`;
     const start = nextRow;
     addNode(
@@ -78,6 +81,10 @@ export function buildTopologyModel(
         target,
         metrics: {
           ports: ports.length,
+          endpoints: surface?.endpoints ?? 0,
+          params: surface?.params ?? 0,
+          paths: surface?.paths ?? 0,
+          js: surface?.js ?? 0,
           evidence: evidenceCount,
         },
       },
@@ -112,6 +119,36 @@ export function buildTopologyModel(
       }
     }
 
+    if (options.mode === "surface" && surfaceHasData(surface)) {
+      const surfaceNodeId = `surface:${target.id}`;
+      addNode(
+        {
+          id: surfaceNodeId,
+          kind: "evidence",
+          label: "API surface",
+          subtitle: surfaceSubtitle(surface),
+          column: evidenceColumnForTargetColumn(targetColumn),
+          scope: target.scope,
+          target,
+          metrics: {
+            endpoints: surface?.endpoints ?? 0,
+            params: surface?.params ?? 0,
+            paths: surface?.paths ?? 0,
+            js: surface?.js ?? 0,
+            evidence: evidenceCount,
+          },
+        },
+        start
+      );
+      edges.push({
+        id: `edge:${targetNodeId}:${surfaceNodeId}`,
+        source: targetNodeId,
+        target: surfaceNodeId,
+        kind: "produced",
+        label: "surface",
+      });
+    }
+
     if (options.mode === "evidence") {
       const evidenceNodeId = `evidence:${target.id}`;
       addNode(
@@ -119,11 +156,15 @@ export function buildTopologyModel(
           id: evidenceNodeId,
           kind: "evidence",
           label: evidenceLabel(target, evidenceCount),
-          subtitle: evidenceSubtitle(target),
+          subtitle: surfaceHasData(surface) ? surfaceSubtitle(surface) : evidenceSubtitle(target),
           column: evidenceColumnForTargetColumn(targetColumn),
           scope: target.scope,
           target,
           metrics: {
+            endpoints: surface?.endpoints ?? 0,
+            params: surface?.params ?? 0,
+            paths: surface?.paths ?? 0,
+            js: surface?.js ?? 0,
             evidence: evidenceCount,
             findings: target.status === "verified" ? 1 : 0,
           },
@@ -215,6 +256,7 @@ export function buildTopologyModel(
     (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)
   );
   const orderedNodes = [...nodes].sort((a, b) => a.column - b.column || a.y - b.y);
+  const surfaceStats = sumSurfaceStats(targets, options.surfaceByTargetId);
 
   return {
     nodes: orderedNodes,
@@ -223,7 +265,15 @@ export function buildTopologyModel(
       organizations: organizations.length,
       targets: targets.length,
       services: targets.reduce((sum, target) => sum + (target.ports?.length ?? 0), 0),
-      evidence: targets.reduce((sum, target) => sum + estimateEvidenceCount(target), 0),
+      endpoints: surfaceStats.endpoints,
+      params: surfaceStats.params,
+      paths: surfaceStats.paths,
+      js: surfaceStats.js,
+      evidence: targets.reduce(
+        (sum, target) =>
+          sum + estimateEvidenceCount(target, options.surfaceByTargetId?.get(target.id)),
+        0
+      ),
     },
     bounds: {
       width: CANVAS_WIDTH,
@@ -422,7 +472,7 @@ function serviceSubtitle(port: PortInfo) {
   return `${port.service || port.webserver || "service"}${status}`;
 }
 
-function estimateEvidenceCount(target: Target) {
+function estimateEvidenceCount(target: Target, surface?: TargetTopologySurfaceSummary) {
   let count = 0;
   if (target.source) count++;
   if (target.real_ip) count++;
@@ -430,6 +480,7 @@ function estimateEvidenceCount(target: Target) {
   if (target.cdn_waf) count++;
   if (target.ports?.length) count += target.ports.length;
   if (target.technologies?.length) count += target.technologies.length;
+  if (surface) count += surface.endpoints + surface.params + surface.paths + surface.js;
   return count;
 }
 
@@ -449,4 +500,32 @@ function evidenceSubtitle(target: Target) {
       futureLabel: "recently",
     })}`;
   return target.source || "local ledger";
+}
+
+function surfaceHasData(surface?: TargetTopologySurfaceSummary) {
+  return Boolean(
+    surface && (surface.endpoints > 0 || surface.params > 0 || surface.paths > 0 || surface.js > 0)
+  );
+}
+
+function surfaceSubtitle(surface?: TargetTopologySurfaceSummary) {
+  if (!surface) return "no API surface yet";
+  return `${surface.endpoints} API · ${surface.params} params · ${surface.paths} paths · ${surface.js} JS`;
+}
+
+function sumSurfaceStats(
+  targets: Target[],
+  surfaceByTargetId?: Map<string, TargetTopologySurfaceSummary>
+): TargetTopologySurfaceSummary {
+  const total: TargetTopologySurfaceSummary = { endpoints: 0, params: 0, paths: 0, js: 0 };
+  if (!surfaceByTargetId) return total;
+  for (const target of targets) {
+    const surface = surfaceByTargetId.get(target.id);
+    if (!surface) continue;
+    total.endpoints += surface.endpoints;
+    total.params += surface.params;
+    total.paths += surface.paths;
+    total.js += surface.js;
+  }
+  return total;
 }

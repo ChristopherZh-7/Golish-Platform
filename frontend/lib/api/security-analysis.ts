@@ -49,6 +49,7 @@ export interface ApiEndpoint {
   source: string;
   riskLevel: string;
   tested: boolean;
+  capturePath: string | null;
   discoveredAt: string;
   updatedAt: string;
 }
@@ -143,14 +144,212 @@ export interface TimelineEntry {
   createdAt: string;
 }
 
+type ApiRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): ApiRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as ApiRecord) : {};
+}
+
+function get(row: ApiRecord, ...keys: string[]): unknown {
+  for (const key of keys) {
+    if (key in row) return row[key];
+  }
+  return undefined;
+}
+
+function stringField(row: ApiRecord, ...keys: string[]): string {
+  const value = get(row, ...keys);
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  return String(value);
+}
+
+function nullableStringField(row: ApiRecord, ...keys: string[]): string | null {
+  const value = get(row, ...keys);
+  if (value == null) return null;
+  return typeof value === "string" ? value : String(value);
+}
+
+function nullableNumberField(row: ApiRecord, ...keys: string[]): number | null {
+  const value = get(row, ...keys);
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function booleanField(row: ApiRecord, ...keys: string[]): boolean {
+  const value = get(row, ...keys);
+  return typeof value === "boolean" ? value : value === "true";
+}
+
+function arrayField(row: ApiRecord, ...keys: string[]): unknown[] {
+  const value = get(row, ...keys);
+  return Array.isArray(value) ? value : [];
+}
+
+function recordField(row: ApiRecord, ...keys: string[]): Record<string, unknown> {
+  return asRecord(get(row, ...keys));
+}
+
+function listOf<T>(value: unknown, normalize: (row: unknown) => T): T[] {
+  return Array.isArray(value) ? value.map(normalize) : [];
+}
+
+function normalizeAuditRow(value: unknown): AuditRow {
+  const row = asRecord(value);
+  return {
+    ...(row as Partial<AuditRow>),
+    id: nullableNumberField(row, "id") ?? 0,
+    action: stringField(row, "action"),
+    category: stringField(row, "category"),
+    details: stringField(row, "details"),
+    entityType: nullableStringField(row, "entityType", "entity_type"),
+    entityId: nullableStringField(row, "entityId", "entity_id"),
+    source: stringField(row, "source"),
+    projectPath: nullableStringField(row, "projectPath", "project_path"),
+    targetId: nullableStringField(row, "targetId", "target_id"),
+    sessionId: nullableStringField(row, "sessionId", "session_id"),
+    toolName: nullableStringField(row, "toolName", "tool_name"),
+    status: stringField(row, "status"),
+    detail: recordField(row, "detail"),
+    createdAt: nullableNumberField(row, "createdAt", "created_at") ?? 0,
+  };
+}
+
+function normalizeTargetAsset(value: unknown): TargetAsset {
+  const row = asRecord(value);
+  return {
+    ...(row as Partial<TargetAsset>),
+    id: stringField(row, "id"),
+    targetId: stringField(row, "targetId", "target_id"),
+    projectPath: nullableStringField(row, "projectPath", "project_path"),
+    assetType: stringField(row, "assetType", "asset_type"),
+    value: stringField(row, "value"),
+    port: nullableNumberField(row, "port"),
+    protocol: nullableStringField(row, "protocol"),
+    service: nullableStringField(row, "service"),
+    version: nullableStringField(row, "version"),
+    metadata: recordField(row, "metadata"),
+    status: stringField(row, "status"),
+    discoveredAt: stringField(row, "discoveredAt", "discovered_at"),
+    updatedAt: stringField(row, "updatedAt", "updated_at"),
+  };
+}
+
+function normalizeApiEndpoint(value: unknown): ApiEndpoint {
+  const row = asRecord(value);
+  return {
+    ...(row as Partial<ApiEndpoint>),
+    id: stringField(row, "id"),
+    targetId: stringField(row, "targetId", "target_id"),
+    projectPath: nullableStringField(row, "projectPath", "project_path"),
+    url: stringField(row, "url"),
+    method: stringField(row, "method"),
+    path: stringField(row, "path"),
+    params: arrayField(row, "params"),
+    headers: recordField(row, "headers"),
+    authType: nullableStringField(row, "authType", "auth_type"),
+    responseType: nullableStringField(row, "responseType", "response_type"),
+    statusCode: nullableNumberField(row, "statusCode", "status_code"),
+    notes: stringField(row, "notes"),
+    source: stringField(row, "source"),
+    riskLevel: stringField(row, "riskLevel", "risk_level"),
+    tested: booleanField(row, "tested"),
+    capturePath: nullableStringField(row, "capturePath", "capture_path"),
+    discoveredAt: stringField(row, "discoveredAt", "discovered_at"),
+    updatedAt: stringField(row, "updatedAt", "updated_at"),
+  };
+}
+
+function normalizeFingerprint(value: unknown): Fingerprint {
+  const row = asRecord(value);
+  return {
+    ...(row as Partial<Fingerprint>),
+    id: stringField(row, "id"),
+    targetId: stringField(row, "targetId", "target_id"),
+    projectPath: nullableStringField(row, "projectPath", "project_path"),
+    category: stringField(row, "category"),
+    name: stringField(row, "name"),
+    version: nullableStringField(row, "version"),
+    confidence: nullableNumberField(row, "confidence") ?? 0,
+    evidence: arrayField(row, "evidence"),
+    cpe: nullableStringField(row, "cpe"),
+    source: stringField(row, "source"),
+    detectedAt: stringField(row, "detectedAt", "detected_at"),
+  };
+}
+
+function normalizeJsAnalysisResult(value: unknown): JsAnalysisResult {
+  const row = asRecord(value);
+  return {
+    ...(row as Partial<JsAnalysisResult>),
+    id: stringField(row, "id"),
+    targetId: stringField(row, "targetId", "target_id"),
+    projectPath: nullableStringField(row, "projectPath", "project_path"),
+    url: stringField(row, "url"),
+    filename: stringField(row, "filename"),
+    sizeBytes: nullableNumberField(row, "sizeBytes", "size_bytes"),
+    hashSha256: nullableStringField(row, "hashSha256", "hash_sha256"),
+    frameworks: arrayField(row, "frameworks"),
+    libraries: arrayField(row, "libraries"),
+    endpointsFound: arrayField(row, "endpointsFound", "endpoints_found"),
+    secretsFound: arrayField(row, "secretsFound", "secrets_found"),
+    comments: arrayField(row, "comments"),
+    sourceMaps: booleanField(row, "sourceMaps", "source_maps"),
+    riskSummary: stringField(row, "riskSummary", "risk_summary"),
+    rawAnalysis: recordField(row, "rawAnalysis", "raw_analysis"),
+    analyzedAt: stringField(row, "analyzedAt", "analyzed_at"),
+  };
+}
+
+function normalizePassiveScanLog(value: unknown): PassiveScanLog {
+  const row = asRecord(value);
+  return {
+    ...(row as Partial<PassiveScanLog>),
+    id: stringField(row, "id"),
+    targetId: stringField(row, "targetId", "target_id"),
+    projectPath: nullableStringField(row, "projectPath", "project_path"),
+    testType: stringField(row, "testType", "test_type"),
+    payload: stringField(row, "payload"),
+    url: stringField(row, "url"),
+    parameter: stringField(row, "parameter"),
+    result: stringField(row, "result"),
+    evidence: stringField(row, "evidence"),
+    severity: stringField(row, "severity"),
+    toolUsed: stringField(row, "toolUsed", "tool_used"),
+    tester: stringField(row, "tester"),
+    notes: stringField(row, "notes"),
+    detail: recordField(row, "detail"),
+    testedAt: stringField(row, "testedAt", "tested_at"),
+  };
+}
+
+function normalizeTimelineEntry(value: unknown): TimelineEntry {
+  const row = asRecord(value);
+  return {
+    ...(row as Partial<TimelineEntry>),
+    source: stringField(row, "source"),
+    event: stringField(row, "event"),
+    category: stringField(row, "category"),
+    details: stringField(row, "details"),
+    toolName: nullableStringField(row, "toolName", "tool_name"),
+    status: stringField(row, "status"),
+    detail: recordField(row, "detail"),
+    createdAt: stringField(row, "createdAt", "created_at"),
+  };
+}
+
 // ─── Operation / Audit Log ─────────────────────────────────────────────
 
 export async function oplogList(projectPath: string, limit?: number): Promise<AuditRow[]> {
-  return invoke("oplog_list", { projectPath, limit });
+  return listOf(await invoke("oplog_list", { projectPath, limit }), normalizeAuditRow);
 }
 
 export async function oplogListByTarget(targetId: string, limit?: number): Promise<AuditRow[]> {
-  return invoke("oplog_list_by_target", { targetId, limit });
+  return listOf(await invoke("oplog_list_by_target", { targetId, limit }), normalizeAuditRow);
 }
 
 export async function oplogListByType(
@@ -158,7 +357,10 @@ export async function oplogListByType(
   opType: string,
   limit?: number
 ): Promise<AuditRow[]> {
-  return invoke("oplog_list_by_type", { projectPath, opType, limit });
+  return listOf(
+    await invoke("oplog_list_by_type", { projectPath, opType, limit }),
+    normalizeAuditRow
+  );
 }
 
 export async function oplogSearch(
@@ -166,7 +368,7 @@ export async function oplogSearch(
   query: string,
   limit?: number
 ): Promise<AuditRow[]> {
-  return invoke("oplog_search", { projectPath, query, limit });
+  return listOf(await invoke("oplog_search", { projectPath, query, limit }), normalizeAuditRow);
 }
 
 export async function oplogCount(projectPath: string): Promise<number> {
@@ -176,34 +378,34 @@ export async function oplogCount(projectPath: string): Promise<number> {
 // ─── Target Security Data ──────────────────────────────────────────────
 
 export async function targetAssetsList(targetId: string): Promise<TargetAsset[]> {
-  return invoke("target_assets_list", { targetId });
+  return listOf(await invoke("target_assets_list", { targetId }), normalizeTargetAsset);
 }
 
 export async function apiEndpointsList(targetId: string): Promise<ApiEndpoint[]> {
-  return invoke("api_endpoints_list", { targetId });
+  return listOf(await invoke("api_endpoints_list", { targetId }), normalizeApiEndpoint);
 }
 
 export async function apiEndpointsUntested(targetId: string): Promise<ApiEndpoint[]> {
-  return invoke("api_endpoints_untested", { targetId });
+  return listOf(await invoke("api_endpoints_untested", { targetId }), normalizeApiEndpoint);
 }
 
 export async function fingerprintsList(targetId: string): Promise<Fingerprint[]> {
-  return invoke("fingerprints_list", { targetId });
+  return listOf(await invoke("fingerprints_list", { targetId }), normalizeFingerprint);
 }
 
 export async function jsAnalysisList(targetId: string): Promise<JsAnalysisResult[]> {
-  return invoke("js_analysis_list", { targetId });
+  return listOf(await invoke("js_analysis_list", { targetId }), normalizeJsAnalysisResult);
 }
 
 export async function passiveScansList(
   targetId: string,
   limit?: number
 ): Promise<PassiveScanLog[]> {
-  return invoke("passive_scans_list", { targetId, limit });
+  return listOf(await invoke("passive_scans_list", { targetId, limit }), normalizePassiveScanLog);
 }
 
 export async function passiveScansVulnerable(targetId: string): Promise<PassiveScanLog[]> {
-  return invoke("passive_scans_vulnerable", { targetId });
+  return listOf(await invoke("passive_scans_vulnerable", { targetId }), normalizePassiveScanLog);
 }
 
 export async function passiveScansStats(targetId: string): Promise<Record<string, number>> {
@@ -222,5 +424,5 @@ export async function targetSecurityOverview(targetId: string): Promise<Security
  * and `findings`. Newest event first. `limit` defaults to 200 server-side.
  */
 export async function targetTimeline(targetId: string, limit?: number): Promise<TimelineEntry[]> {
-  return invoke("target_timeline", { targetId, limit });
+  return listOf(await invoke("target_timeline", { targetId, limit }), normalizeTimelineEntry);
 }

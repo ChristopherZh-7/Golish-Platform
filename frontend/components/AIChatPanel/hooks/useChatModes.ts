@@ -7,7 +7,11 @@ import {
 } from "@/lib/ai";
 import { flushDbSave } from "@/lib/conversation-db-sync";
 import { useStore } from "@/store";
-import { readLastExecutionMode, writeLastExecutionMode } from "../executionModePicker.utils";
+import {
+  normalizeExecutionModeId,
+  readLastExecutionMode,
+  writeLastExecutionMode,
+} from "../executionModePicker.utils";
 
 type ApprovalMode = "ask" | "run-all";
 
@@ -65,21 +69,23 @@ export function useChatModes() {
 
   const handleExecutionModeChange = useCallback(
     (mode: string) => {
-      if (mode === chatExecutionMode) return;
-      setChatExecutionMode(mode);
+      const nextMode = normalizeExecutionModeId(mode);
+      if (nextMode === chatExecutionMode) return;
+      chatExecutionModeRef.current = nextMode;
+      setChatExecutionMode(nextMode);
       // Persist the explicit choice so new tabs / sessions reopen in it.
-      writeLastExecutionMode(mode);
+      writeLastExecutionMode(nextMode);
       const storeState = useStore.getState();
       const activeConvId = storeState.activeConversationId;
       if (activeConvId) {
         const termIds = storeState.conversationTerminals[activeConvId] ?? [];
-        for (const tid of termIds) storeState.setExecutionMode(tid, mode);
+        for (const tid of termIds) storeState.setExecutionMode(tid, nextMode);
       }
       flushDbSave().catch(console.warn);
       const conv = activeConvId ? storeState.conversations[activeConvId] : null;
       if (!conv) return;
       if (conv.aiInitialized) {
-        setExecutionModeBackend(conv.aiSessionId, mode).catch(console.error);
+        setExecutionModeBackend(conv.aiSessionId, nextMode).catch(console.error);
       }
       // Sub-agent dispatch is now unconditional across modes — see the
       // `SUB_AGENTS_ALWAYS_ON` note at the top of this hook. Switching

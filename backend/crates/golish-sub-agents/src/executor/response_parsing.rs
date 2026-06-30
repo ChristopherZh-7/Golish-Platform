@@ -1046,31 +1046,40 @@ where
                 };
                 golish_core::with_agent_session(
                     ctx.session_id.map(str::to_string),
-                    golish_core::with_agent_tool_context(Some(tool_context), async {
-                        // Try the injected router first (security/graph tools that live
-                        // outside the ToolRegistry); fall through to the registry.
-                        let routed = match &ctx.sub_tool_router {
-                            Some(router) => router(tool_name.to_string(), tool_args.clone()).await,
-                            None => None,
-                        };
-                        match routed {
-                            Some((value, success)) => (value, success),
-                            None => {
-                                match execute_registry_tool_with_active_org(
-                                    ctx,
-                                    tool_name,
-                                    tool_args.clone(),
-                                )
-                                .await
-                                {
-                                    Ok(v) => registry_tool_outcome(v),
-                                    Err(e) => {
-                                        (serde_json::json!({ "error": e.to_string() }), false)
+                    golish_core::with_agent_tool_context(
+                        Some(tool_context),
+                        golish_core::with_agent_tool_output_sender(
+                            Some(ctx.event_tx.clone()),
+                            async {
+                                // Try the injected router first (security/graph tools that live
+                                // outside the ToolRegistry); fall through to the registry.
+                                let routed = match &ctx.sub_tool_router {
+                                    Some(router) => {
+                                        router(tool_name.to_string(), tool_args.clone()).await
+                                    }
+                                    None => None,
+                                };
+                                match routed {
+                                    Some((value, success)) => (value, success),
+                                    None => {
+                                        match execute_registry_tool_with_active_org(
+                                            ctx,
+                                            tool_name,
+                                            tool_args.clone(),
+                                        )
+                                        .await
+                                        {
+                                            Ok(v) => registry_tool_outcome(v),
+                                            Err(e) => (
+                                                serde_json::json!({ "error": e.to_string() }),
+                                                false,
+                                            ),
+                                        }
                                     }
                                 }
-                            }
-                        }
-                    }),
+                            },
+                        ),
+                    ),
                 )
                 .await
             }
@@ -1785,7 +1794,7 @@ mod tests {
                     "asset": "https://app.example.com",
                     "technique": "GOLISH-ENUM-DIR",
                     "reason": "missing_terminal_coverage",
-                    "suggested_tools": ["route_probe_paths", "ffuf"]
+                    "suggested_tools": ["route_probe_paths"]
                 }
             ]
         });

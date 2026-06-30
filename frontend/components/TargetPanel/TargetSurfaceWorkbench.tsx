@@ -1,18 +1,18 @@
-import { ArrowLeft, FileCode2, Globe, Loader2, Radar, RefreshCw, Search } from "lucide-react";
+import { ArrowLeft, Globe, Loader2, RefreshCw } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Target } from "@/lib/pentest/types";
 import { cn } from "@/lib/utils";
 import { useTargetSurfaceData } from "./hooks/useTargetSurfaceData";
-import { StageButton } from "./surface/SurfaceParts";
+import { countEndpointParams } from "./surface/endpointParams";
 import {
   buildSensitiveFindings,
   buildSitemapItems,
+  buildSitemapTree,
   formatLatestEvidence,
   isHttpPort,
 } from "./surface/surfaceModel";
 import { EvidenceTab } from "./surface/tabs/EvidenceTab";
 import { IdentityTab } from "./surface/tabs/IdentityTab";
-import { JsApiTab } from "./surface/tabs/JsApiTab";
 import { SensitiveTab } from "./surface/tabs/SensitiveTab";
 import { SitemapTab } from "./surface/tabs/SitemapTab";
 import { SurfaceTabView } from "./surface/tabs/SurfaceTabView";
@@ -38,15 +38,36 @@ export function TargetSurfaceWorkbench({
   onSelectDomain?: (id: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<SurfaceTab>("surface");
-  const { data, loading, error, reload } = useTargetSurfaceData(target.id);
+  const safeTarget = useMemo(
+    () => ({
+      ...target,
+      ports: Array.isArray(target.ports) ? target.ports : [],
+    }),
+    [target]
+  );
+  const safeRelatedDomains = useMemo(
+    () =>
+      relatedDomains?.map((domain) => ({
+        ...domain,
+        ports: Array.isArray(domain.ports) ? domain.ports : [],
+      })),
+    [relatedDomains]
+  );
+  const relatedTargetIds = useMemo(
+    () => safeRelatedDomains?.map((domain) => domain.id).filter(Boolean) ?? [],
+    [safeRelatedDomains]
+  );
+  const { data, loading, error, reload } = useTargetSurfaceData(safeTarget.id, relatedTargetIds);
 
-  const httpPorts = useMemo(() => target.ports.filter((port) => isHttpPort(port)), [target.ports]);
+  const httpPorts = useMemo(
+    () => safeTarget.ports.filter((port) => isHttpPort(port)),
+    [safeTarget.ports]
+  );
   const apiEndpoints = data.endpoints;
   const jsResults = data.jsResults;
-  const sitemapItems = useMemo(
-    () => buildSitemapItems(data.assets, data.directoryEntries),
-    [data.assets, data.directoryEntries]
-  );
+  const sitemapItems = useMemo(() => buildSitemapItems(apiEndpoints), [apiEndpoints]);
+  const sitemapTree = useMemo(() => buildSitemapTree(sitemapItems), [sitemapItems]);
+  const endpointParamCount = useMemo(() => countEndpointParams(apiEndpoints), [apiEndpoints]);
   const sensitiveFindings = useMemo(
     () => buildSensitiveFindings(jsResults, data.passiveScans),
     [jsResults, data.passiveScans]
@@ -56,9 +77,8 @@ export function TargetSurfaceWorkbench({
     [sensitiveFindings]
   );
   const tabCounts: Partial<Record<SurfaceTab, number>> = {
-    surface: target.ports.length + data.fingerprints.length + (relatedDomains?.length ?? 0),
+    surface: safeTarget.ports.length + data.fingerprints.length + (safeRelatedDomains?.length ?? 0),
     sitemap: sitemapItems.length,
-    "js-api": apiEndpoints.length + jsResults.length,
     sensitive: sensitiveCount,
     evidence: data.timeline.length || data.logs.length,
   };
@@ -85,23 +105,25 @@ export function TargetSurfaceWorkbench({
                 </button>
               )}
               <Globe className="w-3.5 h-3.5 text-accent flex-shrink-0" />
-              <h3 className="truncate text-[13px] font-semibold text-foreground">{target.value}</h3>
+              <h3 className="truncate text-[13px] font-semibold text-foreground">
+                {safeTarget.value}
+              </h3>
               <span
                 className={cn(
                   "rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase leading-none",
-                  target.scope === "in"
+                  safeTarget.scope === "in"
                     ? "bg-green-500/10 text-green-300"
                     : "bg-red-500/10 text-red-300"
                 )}
               >
-                {target.scope} scope
+                {safeTarget.scope} scope
               </span>
             </div>
             <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
-              <span>{target.type}</span>
-              <span>{target.source || "manual"}</span>
-              {target.real_ip && <span className="font-mono">{target.real_ip}</span>}
-              {target.cdn_waf && <span>{target.cdn_waf}</span>}
+              <span>{safeTarget.type}</span>
+              <span>{safeTarget.source || "manual"}</span>
+              {safeTarget.real_ip && <span className="font-mono">{safeTarget.real_ip}</span>}
+              {safeTarget.cdn_waf && <span>{safeTarget.cdn_waf}</span>}
               <span>
                 {loading
                   ? "refreshing surface data"
@@ -112,9 +134,6 @@ export function TargetSurfaceWorkbench({
             </div>
           </div>
           <div className="flex flex-wrap justify-end gap-1">
-            <StageButton icon={<Radar className="w-3 h-3" />} label="Run baseline recon" />
-            <StageButton icon={<FileCode2 className="w-3 h-3" />} label="Collect JS" muted />
-            <StageButton icon={<Search className="w-3 h-3" />} label="Match vulns" muted />
             <button
               type="button"
               className="inline-flex h-6 items-center gap-1 rounded border border-border/30 bg-background/20 px-1.5 text-[10px] text-muted-foreground hover:bg-muted/25 hover:text-foreground"
@@ -167,22 +186,29 @@ export function TargetSurfaceWorkbench({
       </nav>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
-        {activeTab === "identity" && <IdentityTab target={target} onUpdateNotes={onUpdateNotes} />}
+        {activeTab === "identity" && (
+          <IdentityTab target={safeTarget} onUpdateNotes={onUpdateNotes} />
+        )}
         {activeTab === "surface" && (
           <SurfaceTabView
-            target={target}
+            target={safeTarget}
             httpPorts={httpPorts}
             endpointCount={apiEndpoints.length}
+            endpointParamCount={endpointParamCount}
             jsCount={jsResults.length}
             fingerprints={data.fingerprints}
             loading={loading}
-            relatedDomains={relatedDomains}
+            relatedDomains={safeRelatedDomains}
             onSelectDomain={onSelectDomain}
           />
         )}
-        {activeTab === "sitemap" && <SitemapTab items={sitemapItems} loading={loading} />}
-        {activeTab === "js-api" && (
-          <JsApiTab endpoints={apiEndpoints} jsResults={jsResults} loading={loading} />
+        {activeTab === "sitemap" && (
+          <SitemapTab
+            items={sitemapItems}
+            tree={sitemapTree}
+            jsResults={jsResults}
+            loading={loading}
+          />
         )}
         {activeTab === "sensitive" && (
           <SensitiveTab
@@ -193,7 +219,7 @@ export function TargetSurfaceWorkbench({
         )}
         {activeTab === "evidence" && (
           <EvidenceTab
-            target={target}
+            target={safeTarget}
             timeline={data.timeline}
             logs={data.logs}
             loading={loading}

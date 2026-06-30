@@ -16,6 +16,7 @@ import type { PortInfo, Target } from "@/lib/pentest/types";
 import type { ApiEndpoint, AuditRow, JsAnalysisResult } from "@/lib/security-analysis";
 import { cn } from "@/lib/utils";
 import { useTargetSurfaceData } from "./hooks/useTargetSurfaceData";
+import { EndpointParamChips } from "./surface/EndpointParamChips";
 
 export function TargetDetailView({
   target,
@@ -340,36 +341,53 @@ export function TargetDetailView({
                             Endpoints
                           </div>
                           {portEndpoints.map((ep) => (
-                            <div key={ep.id} className="flex items-center gap-2 py-0.5 text-[10px]">
-                              <span
-                                className={cn(
-                                  "font-mono font-medium w-10 text-right flex-shrink-0",
-                                  methodCol[ep.method] ?? "text-muted-foreground"
-                                )}
-                              >
-                                {ep.method}
-                              </span>
-                              <span className="font-mono text-foreground/60 flex-1 truncate">
-                                {ep.path}
-                              </span>
-                              {ep.authType && (
-                                <span className="text-muted-foreground/30 text-[9px]">
-                                  {ep.authType}
+                            <div
+                              key={ep.id}
+                              className="rounded border border-border/10 bg-background/25 px-1.5 py-1"
+                            >
+                              <div className="flex items-center gap-2 text-[10px]">
+                                <span
+                                  className={cn(
+                                    "font-mono font-medium w-10 text-right flex-shrink-0",
+                                    methodCol[ep.method] ?? "text-muted-foreground"
+                                  )}
+                                >
+                                  {ep.method}
                                 </span>
-                              )}
-                              <span
-                                className={cn(
-                                  "text-[8px] px-1 py-0.5 rounded",
-                                  riskCol[ep.riskLevel] ?? "bg-zinc-500/10 text-zinc-400"
+                                <span className="font-mono text-foreground/60 flex-1 truncate">
+                                  {ep.path || ep.url}
+                                </span>
+                                {ep.authType && (
+                                  <span className="text-muted-foreground/30 text-[9px]">
+                                    {ep.authType}
+                                  </span>
                                 )}
-                              >
-                                {ep.riskLevel}
-                              </span>
-                              {ep.tested ? (
-                                <Check className="w-2.5 h-2.5 text-green-400" />
-                              ) : (
-                                <span className="text-muted-foreground/15 text-[9px]">—</span>
-                              )}
+                                {ep.source && (
+                                  <span className="text-[8px] px-1 py-0.5 rounded bg-muted/20 text-muted-foreground">
+                                    {ep.source}
+                                  </span>
+                                )}
+                                <span
+                                  className={cn(
+                                    "text-[8px] px-1 py-0.5 rounded",
+                                    riskCol[ep.riskLevel] ?? "bg-zinc-500/10 text-zinc-400"
+                                  )}
+                                >
+                                  {ep.riskLevel}
+                                </span>
+                                {ep.tested ? (
+                                  <Check className="w-2.5 h-2.5 text-green-400" />
+                                ) : (
+                                  <span className="text-muted-foreground/15 text-[9px]">—</span>
+                                )}
+                              </div>
+                              <div className="mt-1 pl-12">
+                                <EndpointParamChips
+                                  params={ep.params}
+                                  compact
+                                  emptyLabel="0 params"
+                                />
+                              </div>
                             </div>
                           ))}
                         </div>

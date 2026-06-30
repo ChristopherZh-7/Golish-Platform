@@ -241,7 +241,8 @@ fn test_enumerator_has_content_enum_tools() {
     // stage_run fan-out (2026-06-13-stage-run-fanout · enumeration rollout): Enumerator is
     // the active content-enumeration mapper split out of the Pentester (mirroring how Prober
     // was split for external_attack_surface). It must carry the content-probe tools
-    // (pentest_run for ffuf/gobuster/arjun/katana + js_collect/js_extract_apis for JS-API)
+    // (route_probe_paths for DIR, pentest_run for bounded crawler URL sources,
+    // and js_collect/js_extract_apis for JS-API/PARAM extraction)
     // + target state + the stage submit tool, and must NOT carry the passive provider recon_*
     // tools (Recon's) nor the Pentester's offensive surface (exploits, graph writes, vault).
     let agents = create_default_sub_agents();
@@ -289,9 +290,10 @@ fn test_enumerator_prompt_is_content_enum() {
     assert!(prompt.contains("ai_assist"));
     assert!(prompt.contains("recipe"));
     assert!(prompt.contains("js_extract_apis"));
-    assert!(prompt.contains("route probe"));
     assert!(prompt.contains("route_probe_paths"));
-    assert!(prompt.contains("small bounded dictionary"));
+    assert!(prompt.contains("observed JS/API path prefixes"));
+    assert!(prompt.contains("small local wordlist"));
+    assert!(prompt.contains("Do not call external directory tools"));
     assert!(prompt.contains("list_enumeration_web_roots"));
     assert!(prompt.contains("pentest_run(tool_name=..., args=...)"));
     assert!(prompt.contains("DB cannot derive"));
@@ -314,9 +316,9 @@ fn test_browser_prompt_prefers_browser_closure_collection() {
     let prompt = build_browser_prompt();
     assert!(prompt.contains("browser_collect_js_api"));
     assert!(prompt.contains("Use `browser_collect_js_api` first"));
-    assert!(prompt.contains("crawl_mode=\"fast\""));
+    assert!(prompt.contains("crawl_mode=\"standard\""));
     assert!(prompt.contains("ai_assist=true"));
-    assert!(prompt.contains("crawl_mode=\"deep\""));
+    assert!(prompt.contains("same standard mode"));
     assert!(prompt.contains("bounded `recipe`"));
     assert!(prompt.contains("js_extract_apis"));
     assert!(prompt.contains("not as a replacement"));

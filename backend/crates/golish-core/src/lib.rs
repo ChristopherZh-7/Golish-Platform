@@ -47,8 +47,9 @@ pub mod web_fetch;
 // Re-exports
 pub use agent_mode::AgentMode;
 pub use agent_session::{
-    current_agent_session, current_agent_tool_context, with_agent_session, with_agent_tool_context,
-    AgentToolContext,
+    current_agent_session, current_agent_tool_context, current_agent_tool_output_sender,
+    emit_current_agent_tool_output_chunk, with_agent_session, with_agent_tool_context,
+    with_agent_tool_output_sender, AgentToolContext,
 };
 pub use api_request_stats::{
     ApiRequestStats, ApiRequestStatsSnapshot, ProviderRequestStatsSnapshot,

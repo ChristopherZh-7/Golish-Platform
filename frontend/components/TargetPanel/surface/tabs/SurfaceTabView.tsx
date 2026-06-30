@@ -1,4 +1,4 @@
-import { ChevronRight, Code2, FileCode2, Globe, Server } from "lucide-react";
+import { Braces, ChevronRight, Code2, FileCode2, Globe, ScanSearch, Server } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { PortInfo, Target } from "@/lib/pentest/types";
 import type { Fingerprint } from "@/lib/security-analysis";
@@ -15,6 +15,7 @@ export function SurfaceTabView({
   target,
   httpPorts,
   endpointCount,
+  endpointParamCount,
   jsCount,
   fingerprints,
   loading,
@@ -24,6 +25,7 @@ export function SurfaceTabView({
   target: Target;
   httpPorts: PortInfo[];
   endpointCount: number;
+  endpointParamCount: number;
   jsCount: number;
   fingerprints: Fingerprint[];
   loading: boolean;
@@ -113,7 +115,17 @@ export function SurfaceTabView({
                 value={httpPorts.length}
               />
               <Metric icon={<Code2 className="w-3.5 h-3.5" />} label="API" value={endpointCount} />
+              <Metric
+                icon={<Braces className="w-3.5 h-3.5" />}
+                label="Params"
+                value={endpointParamCount}
+              />
               <Metric icon={<FileCode2 className="w-3.5 h-3.5" />} label="JS" value={jsCount} />
+              <Metric
+                icon={<ScanSearch className="w-3.5 h-3.5" />}
+                label="Fingerprints"
+                value={fingerprints.length}
+              />
             </div>
           </Section>
           <Section title="Fingerprints" subtitle={`${fingerprints.length} detected`}>

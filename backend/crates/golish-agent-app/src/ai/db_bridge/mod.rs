@@ -338,6 +338,10 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.in_scope_typed_assets_impl(org_id).await
     }
 
+    async fn eas_port_delegated_assets(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {
+        self.eas_port_delegated_assets_impl(org_id).await
+    }
+
     async fn db_truth_facts(
         &self,
         org_id: Option<Uuid>,

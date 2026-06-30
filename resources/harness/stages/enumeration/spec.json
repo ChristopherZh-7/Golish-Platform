@@ -9,7 +9,7 @@
   "requires_stages": ["external_attack_surface"],
   "allowed_next_stages": ["vuln_triage", "reporting"],
 
-  "allowed_tool_types": ["recon/crawler", "web/fuzzer", "web/param"],
+  "allowed_tool_types": ["recon/crawler", "web/route-probe"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
@@ -40,11 +40,11 @@
     {
       "op": "coverage_complete",
       "derive_from_evidence": true,
-      "$comment_derive": "Phase 1 (2026-06-12-redteam-phase1) + 2026-06-26 enumeration deliverables/flow: DB business-table truth 补格 — GOLISH-ENUM-DIR←directory_entries (route_probe/ffuf/gobuster), -PARAM←api_endpoints.params (arjun/katana/browser/crawler), -JSAPI←api_endpoints.source IN (js_analysis,crawler). 真跑工具落库后 coverage 格自动补 found; 不开 authoritative (DIR/PARAM Empty 事实源未就绪), 自报 checked_empty/blocked/not_applicable 仍兜底.",
+      "$comment_derive": "Phase 1 (2026-06-12-redteam-phase1) + 2026-06-26 enumeration deliverables/flow + 2026-06-29 internal DIR probe: DB business-table truth 补格 — GOLISH-ENUM-DIR←directory_entries(route_probe_paths), -PARAM←api_endpoints.params(browser/js_extract/crawler observed params), -JSAPI←api_endpoints.source IN (js_analysis,crawler). 真跑工具落库后 coverage 格自动补 found; 不开 authoritative (DIR/PARAM Empty 事实源未就绪), 自报 checked_empty/blocked/not_applicable 仍兜底.",
       "on_fail": {
         "reason": "content enumeration incomplete: some alive in-scope services were not fully enumerated (js/api / dir / param)",
         "hints": [
-          "for EVERY EAS-confirmed live web root, take GOLISH-ENUM-JSAPI (browser_collect_js_api -> js_extract_apis), GOLISH-ENUM-DIR (lightweight route probe -> bounded directory/path scan), and GOLISH-ENUM-PARAM (parameter discovery on discovered endpoints/forms) to a terminal state",
+          "for EVERY EAS-confirmed live web root, take GOLISH-ENUM-JSAPI (browser_collect_js_api -> js_extract_apis), GOLISH-ENUM-DIR (lightweight route probe -> bounded directory/path scan), and GOLISH-ENUM-PARAM (observed request/query/form parameters plus targeted js_extract_apis param_hints) to a terminal state",
           "do NOT hand-write found cells already backed by DB truth; found is projected from directory_entries/api_endpoints after real tools land rows with target_id. Use submitted coverage only for checked_empty+evidence, blocked+note, or not_applicable+note states the DB cannot derive yet"
         ]
       }

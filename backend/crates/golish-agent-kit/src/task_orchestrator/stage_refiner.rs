@@ -564,7 +564,7 @@ fn suggested_tool_for(stage: StageKind, technique: &str) -> Option<String> {
         }
         (StageKind::Enumeration, "GOLISH-ENUM-JSAPI") => Some("browser_collect_js_api".to_string()),
         (StageKind::Enumeration, "GOLISH-ENUM-DIR") => Some("route_probe_paths".to_string()),
-        (StageKind::Enumeration, "GOLISH-ENUM-PARAM") => Some("arjun".to_string()),
+        (StageKind::Enumeration, "GOLISH-ENUM-PARAM") => Some("js_extract_apis".to_string()),
         (StageKind::TargetIntel, "GOLISH-INTEL-WHOIS") => Some("recon_lookup_whois".to_string()),
         (StageKind::TargetIntel, _) => Some("recon_map_assets".to_string()),
         _ => None,
@@ -588,13 +588,13 @@ fn command_hint_for(stage: StageKind, tool: &str, asset: &str, technique: &str) 
             "whatweb batch: include {asset} with sibling HTTP(S) services when Ruby is ready; otherwise prefer nmap -sV/httpx evidence"
         ),
         (StageKind::Enumeration, "browser_collect_js_api", _) => format!(
-            "browser_collect_js_api direct call: target_url={asset}, crawl_mode=\"fast\", ai_assist=true; use deep/recipe only for bounded JS closure follow-up"
+            "browser_collect_js_api direct call: target_url={asset}, crawl_mode=\"standard\", ai_assist=true; use a bounded recipe only for one same-mode JS closure follow-up"
         ),
         (StageKind::Enumeration, "route_probe_paths", _) => format!(
-            "route_probe_paths direct call: base_url={asset}; use observed JS/browser/crawler prefixes before any dictionary backfill"
+            "route_probe_paths direct call: base_url={asset}; use observed JS/API prefixes plus the small local wordlist when available, keep requests bounded, and avoid external directory tools by default"
         ),
-        (StageKind::Enumeration, "arjun", _) => format!(
-            "arjun is a pentest_run tool_name, not a direct function; run it only against discovered endpoints/forms for {asset}"
+        (StageKind::Enumeration, "js_extract_apis", _) => format!(
+            "js_extract_apis direct call: use saved JS/browser observations for {asset}; merge observed query keys, form field names, and targeted param_hints into api_endpoints.params"
         ),
         (StageKind::TargetIntel, "recon_lookup_whois", _) => {
             "recon_lookup_whois(organization_id=<current org>)".to_string()

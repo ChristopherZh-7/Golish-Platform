@@ -28,6 +28,7 @@ import {
 } from "@/components/Engagement/StageAssetCoveragePanel";
 import { JsonView } from "@/components/JsonView/JsonView";
 import { Markdown } from "@/components/Markdown";
+import { ToolAiTraceSummary } from "@/components/ToolAiTraceSummary";
 import { BackgroundJobsBadge } from "@/components/UnifiedInput/StatusBadges";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
@@ -373,7 +374,8 @@ export function isSubAgentShellLikeOutputTool(
   );
 }
 
-const DSML_TAG_PREFIX = String.raw`<\s*/?\s*(?:\|\s*)+DSML\s*(?:\|\s*)+/?\s*`;
+const DSML_BAR = "[|｜]";
+const DSML_TAG_PREFIX = String.raw`<\s*/?\s*(?:${DSML_BAR}\s*)+DSML\s*(?:${DSML_BAR}\s*)+/?\s*`;
 
 function dsmlBlockRegex(tagPattern: string): RegExp {
   return new RegExp(
@@ -710,6 +712,20 @@ export function getSubAgentShellOutputForDetail(
   };
 }
 
+export function getSubAgentLiveOutputForDetail(
+  tool: Pick<SubAgentToolCall, "streamingOutput"> & { status?: string }
+): {
+  text: string | null;
+  pending: boolean;
+} {
+  const text = tool.streamingOutput ? normalizeSubAgentShellText(tool.streamingOutput) : null;
+  const pending = isLiveToolStatus(tool.status) && !text;
+  return {
+    text: text ?? (pending ? "Waiting for output..." : null),
+    pending,
+  };
+}
+
 export function getSubAgentShellOutputFieldsForDetail(
   tool: Pick<SubAgentToolCall, "result">
 ): ShellOutputField[] {
@@ -783,8 +799,11 @@ const ToolResultDisplay = memo(function ToolResultDisplay({ result }: { result: 
   }
   if (structured !== undefined) {
     return (
-      <div className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-64 overflow-auto">
-        <JsonView value={structured} />
+      <div className="space-y-2">
+        <ToolAiTraceSummary value={structured} />
+        <div className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-64 overflow-auto">
+          <JsonView value={structured} />
+        </div>
       </div>
     );
   }
@@ -842,6 +861,12 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({
   const actionLabel = getToolActionLabel(tool.name, tool.args);
   const shellOutputState = getSubAgentShellOutputForDetail(displayTool);
   const shellOutputJsonValue = getSubAgentShellOutputJsonValueForDetail(displayTool);
+  const liveOutputState = !isShellLikeOutput
+    ? getSubAgentLiveOutputForDetail(displayTool)
+    : { text: null, pending: false };
+  const displayedLiveOutputText = liveOutputState.text
+    ? limitLiveOutputForRender(liveOutputState.text, isLive)
+    : null;
   const isAttachedToNarrative = visualRelation === "after_narrative";
   const isStackedTool = visualRelation === "stacked";
 
@@ -954,7 +979,26 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({
                 </div>
               )}
 
-              {!isShellLikeOutput && tool.result !== undefined && (
+              {!isShellLikeOutput && isLive && displayedLiveOutputText && (
+                <div className="overflow-hidden">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <Loader2
+                      className={cn(
+                        SUB_AGENT_DETAIL_PENDING_OUTPUT_SPINNER_CLASS,
+                        status === "backgrounded" && "text-amber-300"
+                      )}
+                    />
+                    <span className="text-[9px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
+                      Output
+                    </span>
+                  </div>
+                  <pre className="ansi-output max-h-60 overflow-auto whitespace-pre-wrap rounded border border-border/15 border-l-2 border-[var(--ansi-blue)] bg-background/35 px-3 py-2 text-[11px] font-mono text-muted-foreground">
+                    <SubAgentShellOutputText text={displayedLiveOutputText} />
+                  </pre>
+                </div>
+              )}
+
+              {!isShellLikeOutput && !isLive && tool.result !== undefined && (
                 <div className="overflow-hidden">
                   <div className="flex items-center gap-1.5 mb-1.5">
                     {status === "error" ? (

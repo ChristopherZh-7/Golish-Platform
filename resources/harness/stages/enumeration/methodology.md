@@ -10,7 +10,8 @@ become the coverage denominator for `vuln_triage`.
    and org boundary attached to every downstream action. Do not enumerate passive
    candidates that EAS did not prove live.
 2. Browser baseline + JS/API — run `browser_collect_js_api` first on each live
-   web root, then one bounded deep/recipe pass when closure is partial. After JS
+   web root with the unified standard strategy, then one bounded recipe pass only
+   when closure is partial and the recipe has real work. After JS
    files are saved, run `js_extract_apis`; it persists deterministic endpoints
    and returns redacted secret/config/framework candidates plus rule-based
    `rule_matches` and `ai_analysis` line ranges for targeted model review.
@@ -20,18 +21,24 @@ become the coverage denominator for `vuln_triage`.
    links/forms, and well-known docs paths into scoped same-origin path seeds.
    Normalize host/scheme/port, route templates, query parameter names, trailing
    slashes, and static asset noise before probing.
-4. Lightweight recursive route probe — run `route_probe_paths` over observed path prefixes with a small
-   curated rule set (docs/debug/admin/backup/upload/source-map style checks)
-   before broad dictionary fuzzing. Store positives as absolute
-   `directory_entries` with `target_id`; store empty/blocked/error states as
-   explicit evidence-backed terminal coverage when DB truth cannot derive them.
-5. Bounded directory/path discovery — use `ffuf` / `gobuster` only as a small
-   scoped backfill against live roots or high-value prefixes. Do not treat CLI
-   output as coverage unless it lands with an absolute URL and non-null
-   `target_id`.
-6. Parameter discovery — run `arjun` (or equivalent) on discovered endpoints and
-   forms, not blindly across the whole host. Persist parameter names into
-   `api_endpoints.params`.
+4. Lightweight recursive route probe — run `route_probe_paths` over observed
+   JS/API path prefixes, using the small local wordlist when available
+   (`wordlist_path` or workspace `1.txt`). It de-duplicates observed paths,
+   probes each parent prefix, and can recurse one bounded level from positive
+   wordlist hits. It verifies positive status responses against a per-prefix
+   random baseline and rejects soft-404 / uniform error pages into
+   `rejected_candidates`; do not promote rejected candidates by hand. Store
+   verified positives as absolute `directory_entries` with `target_id`; store
+   empty/blocked/error states as explicit evidence-backed terminal coverage when
+   DB truth cannot derive them.
+5. Do not use external directory tools (`ffuf`, `gobuster`, `feroxbuster`,
+   `dirb`, `dirsearch`) in enumeration. If DIR coverage is incomplete, refine
+   observed_paths / the small wordlist and rerun `route_probe_paths` within the
+   bounded request budget.
+6. Parameter discovery — derive parameters from observed browser requests,
+   crawler URLs with query strings, HTML forms, and targeted `js_extract_apis`
+   `param_hints` after reviewing saved JS. Persist parameter names into
+   `api_endpoints.params`; do not default to active hidden-parameter brute-force.
 7. Slim submit — call `check_stage_asset_coverage` and treat its `gap_examples`
    as the current EAS-confirmed web-root worklist. Wait for background jobs,
    sanity-check the DB-visible content units, then submit only summary claims
@@ -42,7 +49,8 @@ become the coverage denominator for `vuln_triage`.
 
 - Do NOT re-scan ports or re-fingerprint services — reuse EAS's evidence.
 - Enumerate only the live services EAS confirmed; don't fuzz dead hosts.
-- Route probe before dictionary fuzzing; dictionary scans are bounded backfill.
+- Route probe with observed JS/API prefixes and the small local wordlist; do not
+  call external directory tools in enumeration.
 - One sensible wordlist pass per service or prefix; don't loop swapping wordlists
   endlessly.
 

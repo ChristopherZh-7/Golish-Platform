@@ -58,7 +58,16 @@ export function TopologyControls({
   mode: TopologyMode;
   visibility: TopologyVisibility;
   query: string;
-  stats: { organizations: number; targets: number; services: number; evidence: number };
+  stats: {
+    organizations: number;
+    targets: number;
+    services: number;
+    endpoints: number;
+    params: number;
+    paths: number;
+    js: number;
+    evidence: number;
+  };
   selectedLabel: string;
   onModeChange: (mode: TopologyMode) => void;
   onVisibilityChange: (kind: keyof TopologyVisibility) => void;
@@ -77,6 +86,9 @@ export function TopologyControls({
         <div className="mt-1 text-[15px] font-semibold text-foreground">Attack Surface Map</div>
         <div className="mt-1 text-[11px] text-muted-foreground">
           {stats.organizations} orgs · {stats.targets} targets · {stats.evidence} evidence
+        </div>
+        <div className="mt-1 text-[10px] text-muted-foreground/75">
+          {stats.endpoints} API · {stats.params} params · {stats.paths} paths · {stats.js} JS
         </div>
         <label className="relative mt-3 block">
           <Search className="absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/55" />

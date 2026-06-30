@@ -10,6 +10,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { ToolAiTraceSummary } from "@/components/ToolAiTraceSummary";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import {
   DropdownMenu,
@@ -344,30 +345,33 @@ function ToolResultPreview({ result }: { result: string }) {
   const entries = parsed ? Object.entries(parsed) : null;
   if (entries && entries.length > 0) {
     return (
-      <div className="divide-y divide-border/15 max-h-[220px] overflow-auto rounded bg-muted/20">
-        {entries.map(([key, val]) => {
-          const strValue = typeof val === "string" ? val : JSON.stringify(val, null, 2);
-          const isLong = strValue.length > 80 || strValue.includes("\n");
-          return (
-            <div key={key} className={cn("px-2 py-1", !isLong && "flex items-baseline gap-2")}>
-              <span className="text-[10px] font-mono text-[var(--ansi-cyan)]/70 flex-shrink-0">
-                {key}
-              </span>
-              {isLong ? (
-                <pre className="mt-0.5 text-[11px] text-muted-foreground/80 font-mono whitespace-pre-wrap break-all max-h-[150px] overflow-auto">
-                  {strValue}
-                </pre>
-              ) : (
-                <span
-                  className="text-[11px] text-muted-foreground/80 font-mono truncate"
-                  title={strValue}
-                >
-                  {strValue}
+      <div className="space-y-1.5">
+        <ToolAiTraceSummary value={parsed} dense />
+        <div className="divide-y divide-border/15 max-h-[220px] overflow-auto rounded bg-muted/20">
+          {entries.map(([key, val]) => {
+            const strValue = typeof val === "string" ? val : JSON.stringify(val, null, 2);
+            const isLong = strValue.length > 80 || strValue.includes("\n");
+            return (
+              <div key={key} className={cn("px-2 py-1", !isLong && "flex items-baseline gap-2")}>
+                <span className="text-[10px] font-mono text-[var(--ansi-cyan)]/70 flex-shrink-0">
+                  {key}
                 </span>
-              )}
-            </div>
-          );
-        })}
+                {isLong ? (
+                  <pre className="mt-0.5 text-[11px] text-muted-foreground/80 font-mono whitespace-pre-wrap break-all max-h-[150px] overflow-auto">
+                    {strValue}
+                  </pre>
+                ) : (
+                  <span
+                    className="text-[11px] text-muted-foreground/80 font-mono truncate"
+                    title={strValue}
+                  >
+                    {strValue}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     );
   }

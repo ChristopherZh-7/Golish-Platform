@@ -18,6 +18,7 @@ import { Ansi } from "@/components/Ansi";
 import { StageRunOrgRows } from "@/components/Engagement/StageRunOrgRows";
 import { JsonView } from "@/components/JsonView/JsonView";
 import { Markdown } from "@/components/Markdown";
+import { ToolAiTraceSummary } from "@/components/ToolAiTraceSummary";
 import { BackgroundJobsBadge } from "@/components/UnifiedInput/StatusBadges";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
@@ -217,8 +218,11 @@ function ToolResultDisplay({ result }: { result: unknown }) {
   // `\n` / `\t` sequences, which renders as unreadable noise in a <pre>.
   if (isRecord(value)) {
     return (
-      <div className="rounded-md bg-muted/40 border border-border/20 max-h-[480px] overflow-auto">
-        <RecordTable value={value} />
+      <div className="space-y-2">
+        <ToolAiTraceSummary value={value} />
+        <div className="rounded-md bg-muted/40 border border-border/20 max-h-[480px] overflow-auto">
+          <RecordTable value={value} />
+        </div>
       </div>
     );
   }
@@ -343,9 +347,7 @@ export function getShellOutputForDetail(
   status: AiToolExecution["status"]
 ): { text: string | null; pending: boolean } {
   const shellOutput = formatShellLikeOutput(result, streamingOutput);
-  const cleanedShellOutput = shellOutput
-    ? expandTerminalTabs(collapseProgressBars(stripOscSequences(shellOutput)))
-    : null;
+  const cleanedShellOutput = shellOutput ? normalizeLiveToolOutput(shellOutput) : null;
   const displayShellOutput =
     cleanedShellOutput && cleanedShellOutput.length > 8000
       ? `${cleanedShellOutput.slice(0, 8000)}\n... (truncated)`
@@ -360,6 +362,22 @@ export function getShellOutputForDetail(
     text:
       displayShellOutput ??
       (pending ? "Waiting for output..." : terminalNoOutput ? "No output." : null),
+    pending,
+  };
+}
+
+function normalizeLiveToolOutput(raw: string): string {
+  return expandTerminalTabs(collapseProgressBars(stripOscSequences(raw))).trim();
+}
+
+export function getLiveOutputForDetail(
+  streamingOutput: string | undefined,
+  status: AiToolExecution["status"]
+): { text: string | null; pending: boolean } {
+  const cleanedOutput = streamingOutput ? normalizeLiveToolOutput(streamingOutput) : null;
+  const pending = (status === "running" || status === "backgrounded") && !cleanedOutput;
+  return {
+    text: cleanedOutput ?? (pending ? "Waiting for output..." : null),
     pending,
   };
 }
@@ -501,6 +519,12 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
   const displayedShellOutputText = shellOutputText
     ? limitLiveOutputForRender(shellOutputText, isRunning || isBackgrounded)
     : null;
+  const liveOutputState = !isShellCmd
+    ? getLiveOutputForDetail(execution.streamingOutput, displayStatus)
+    : { text: null, pending: false };
+  const displayedLiveOutputText = liveOutputState.text
+    ? limitLiveOutputForRender(liveOutputState.text, isRunning || isBackgrounded)
+    : null;
 
   return (
     <div className="h-full flex flex-col bg-card">
@@ -639,7 +663,9 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         {isShellCmd && displayedShellOutputText && (
           <div className="px-4 py-3 border-b border-border/20">
             <div className="flex items-center gap-1.5 mb-2">
-              {pendingShellOutput && <Loader2 className={DETAIL_PENDING_OUTPUT_SPINNER_CLASS} />}
+              {(pendingShellOutput || isRunning || isBackgrounded) && (
+                <Loader2 className={DETAIL_PENDING_OUTPUT_SPINNER_CLASS} />
+              )}
               <span className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
                 Output
               </span>
@@ -650,21 +676,39 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           </div>
         )}
 
-        {!isShellCmd && execution.result !== undefined && execution.result !== null && (
+        {!isShellCmd && (isRunning || isBackgrounded) && displayedLiveOutputText && (
           <div className="px-4 py-3 border-b border-border/20">
             <div className="flex items-center gap-1.5 mb-2">
-              {isError ? (
-                <XCircle className="w-3 h-3 text-destructive" />
-              ) : (
-                <CheckCircle2 className="w-3 h-3 text-[var(--success)]" />
-              )}
+              <Loader2 className={DETAIL_PENDING_OUTPUT_SPINNER_CLASS} />
               <span className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
                 Output
               </span>
             </div>
-            <ToolResultDisplay result={execution.result} />
+            <pre className="ansi-output max-h-[480px] overflow-auto whitespace-pre-wrap rounded border border-border/15 bg-background/40 px-3 py-2 text-[11px] font-mono text-muted-foreground">
+              <Ansi>{displayedLiveOutputText}</Ansi>
+            </pre>
           </div>
         )}
+
+        {!isShellCmd &&
+          !isRunning &&
+          !isBackgrounded &&
+          execution.result !== undefined &&
+          execution.result !== null && (
+            <div className="px-4 py-3 border-b border-border/20">
+              <div className="flex items-center gap-1.5 mb-2">
+                {isError ? (
+                  <XCircle className="w-3 h-3 text-destructive" />
+                ) : (
+                  <CheckCircle2 className="w-3 h-3 text-[var(--success)]" />
+                )}
+                <span className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
+                  Output
+                </span>
+              </div>
+              <ToolResultDisplay result={execution.result} />
+            </div>
+          )}
 
         {errorMessage && (
           <div className="mx-4 my-3 rounded-lg bg-destructive/10 border border-destructive/25 p-3.5">

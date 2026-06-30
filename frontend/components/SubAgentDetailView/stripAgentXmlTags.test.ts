@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react";
+import { fireEvent, render } from "@testing-library/react";
 import { createElement } from "react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useStore } from "@/store";
@@ -8,6 +8,7 @@ import {
   extractAssetSubjectsFromText,
   extractAssetSubjectsFromToolCall,
   getSubAgentHeaderDisplayStatus,
+  getSubAgentLiveOutputForDetail,
   getSubAgentShellOutputFieldsForDetail,
   getSubAgentShellOutputForDetail,
   getSubAgentShellOutputJsonValueForDetail,
@@ -82,6 +83,19 @@ describe("stripAgentXmlTags", () => {
     expect(out).not.toContain("115.159.235.124");
   });
 
+  it("removes full-width DSML textual tool-call blocks leaked into sub-agent prose", () => {
+    const text =
+      'Let me attempt a probe on route.moresec.cn to confirm it is unresolvable. <｜｜DSML｜｜tool_calls> <｜｜DSML｜｜invoke name="pentest_run"> <｜｜DSML｜｜parameter name="args" string="true">-host route.moresec.cn -top-ports 100</｜｜DSML｜｜parameter> <｜｜DSML｜｜parameter name="tool_name" string="true">naabu</｜｜DSML｜｜parameter> </｜｜DSML｜｜invoke> </｜｜DSML｜｜tool_calls>';
+    const out = stripAgentXmlTags(text);
+
+    expect(out).toBe(
+      "Let me attempt a probe on route.moresec.cn to confirm it is unresolvable."
+    );
+    expect(out).not.toContain("DSML");
+    expect(out).not.toContain("pentest_run");
+    expect(out).not.toContain("naabu");
+  });
+
   it("removes unterminated DSML blocks from the first leaked tag onward", () => {
     const text =
       'Before submit.<|DSML|tool_calls><|DSML|invoke name="submit_stage_deliverable"><|DSML|parameter name="coverage">[';
@@ -153,6 +167,66 @@ describe("SubAgentDetailView rendering", () => {
 
     expect(container.textContent).toContain("Prober Agent");
     expect(container.textContent).toContain("Let me probe the live services.");
+  });
+
+  it("renders live output for running direct tools such as js_extract_apis", () => {
+    const sessionId = "direct-tool-session";
+    const startedAt = "2026-06-29T10:00:00.000Z";
+    const parentRequestId = "stage-run-request::org::org-1";
+
+    useStore.setState({
+      activeSubAgents: {
+        [sessionId]: [
+          {
+            agentId: "agent-1",
+            agentName: "Enumerator Agent",
+            depth: 0,
+            entries: [{ kind: "tool_call", toolCallId: "tool-js" }],
+            parentRequestId,
+            startedAt,
+            status: "running",
+            task: "Extract JS APIs",
+            toolCalls: [
+              {
+                args: {
+                  target_id: "target-1",
+                  target_url: "https://example.com",
+                },
+                id: "tool-js",
+                name: "js_extract_apis",
+                startedAt,
+                status: "running",
+              },
+            ],
+          },
+        ],
+      },
+      backgroundJobs: {},
+      sessions: {
+        [sessionId]: {
+          createdAt: startedAt,
+          detailViewMode: "sub-agent-detail",
+          id: sessionId,
+          mode: "agent",
+          name: "Direct Tool Session",
+          toolDetailRequestIds: [parentRequestId],
+          workingDirectory: "/tmp",
+        },
+      },
+      timelines: {},
+    });
+
+    const { container } = render(createElement(SubAgentDetailView, { sessionId }));
+    const toolTrigger = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Using Js Extract Apis")
+    );
+
+    expect(toolTrigger).toBeTruthy();
+    fireEvent.click(toolTrigger as HTMLButtonElement);
+
+    expect(container.textContent).toContain("Using Js Extract Apis");
+    expect(container.textContent).toContain("Output");
+    expect(container.textContent).toContain("Waiting for output...");
   });
 });
 
@@ -344,6 +418,27 @@ describe("getSubAgentShellOutputForDetail", () => {
     expect(container.textContent).toContain("FTL Could not open/create output file");
     expect(container.textContent).not.toContain("[1;31m");
     expect(container.textContent).not.toContain("[0m");
+  });
+});
+
+describe("getSubAgentLiveOutputForDetail", () => {
+  it("shows a pending output placeholder for running direct tools", () => {
+    expect(getSubAgentLiveOutputForDetail({ status: "running" })).toEqual({
+      text: "Waiting for output...",
+      pending: true,
+    });
+  });
+
+  it("normalizes streamed chunks for direct tools", () => {
+    expect(
+      getSubAgentLiveOutputForDetail({
+        status: "running",
+        streamingOutput: "loaded 2 scripts\nfound 5 endpoints\n",
+      })
+    ).toEqual({
+      text: "loaded 2 scripts\nfound 5 endpoints",
+      pending: false,
+    });
   });
 });
 

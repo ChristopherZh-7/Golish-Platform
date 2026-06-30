@@ -91,9 +91,7 @@ function runJsonCommand(command, commandArgs, options = {}) {
   }
 }
 
-function runBrowserCollect(url, workspace, mode, args) {
-  const deep = mode === "deep";
-  const prefix = deep ? "deep" : "fast";
+function runBrowserCollect(url, workspace, args) {
   const fullClosure = String(args.closure || "bounded").toLowerCase() === "full";
   const commandArgs = [
     BROWSER_COLLECTOR,
@@ -102,27 +100,27 @@ function runBrowserCollect(url, workspace, mode, args) {
     "--workspace",
     workspace,
     "--crawl-mode",
-    mode,
+    "standard",
     "--max-pages",
-    String(toInt(args[`${prefix}_max_pages`], deep ? 2 : 1, 1, 100)),
+    String(toInt(args.max_pages, 12, 1, 100)),
     "--max-actions",
-    String(toInt(args[`${prefix}_max_actions`], deep ? 4 : 2, 0, 100)),
+    String(toInt(args.max_actions, 12, 0, 100)),
     "--max-recursive-scripts",
     String(
       toInt(
-        args[`${prefix}_max_recursive_scripts`],
-        deep ? (fullClosure ? 1_000 : 300) : 120,
+        args.max_recursive_scripts,
+        1_000,
         0,
         10_000,
       ),
     ),
     "--timeout-ms",
-    String(toInt(args[`${prefix}_timeout_ms`], deep ? 60_000 : 30_000, 5_000, 300_000)),
+    String(toInt(args.timeout_ms, 60_000, 5_000, 300_000)),
     "--hard-timeout-ms",
     String(
       toInt(
-        args[`${prefix}_hard_timeout_ms`],
-        deep ? (fullClosure ? 240_000 : 120_000) : 60_000,
+        args.hard_timeout_ms,
+        fullClosure ? 240_000 : 120_000,
         10_000,
         600_000,
       ),
@@ -135,16 +133,6 @@ function runBrowserCollect(url, workspace, mode, args) {
     "true",
   ];
   return runJsonCommand(process.env.NODE || "node", commandArgs, { cwd: REPO_ROOT });
-}
-
-function shouldRunDeep(fastResult, deepMode) {
-  if (deepMode === "always") return true;
-  if (deepMode === "never") return false;
-  if (fastResult?.status === "closure_partial" || fastResult?.status === "timeout_partial") {
-    return true;
-  }
-  if (Number(fastResult?.recursive_queue_remaining ?? 0) > 0) return true;
-  return Boolean(fastResult?.ai_assist?.recommended);
 }
 
 function shouldContinueFullClosure(result, args, round, startedAt) {
@@ -161,30 +149,44 @@ function shouldContinueFullClosure(result, args, round, startedAt) {
 }
 
 function runCollection(url, workspace, args) {
+  if (toBool(args.skip_collection, false)) {
+    return skippedCollection(url);
+  }
   const startedAt = Date.now();
-  const deepMode = String(args.deep || "auto").toLowerCase();
-  if (!["auto", "always", "never"].includes(deepMode)) {
-    throw new Error("--deep must be auto, always, or never");
-  }
-  const fast = runBrowserCollect(url, workspace, "fast", args);
-  const deepRounds = [];
-  if (shouldRunDeep(fast, deepMode)) {
-    let round = 0;
-    do {
-      round += 1;
-      const result = runBrowserCollect(url, workspace, "deep", args);
-      deepRounds.push(result);
-      if (!shouldContinueFullClosure(result, args, round, startedAt)) break;
-    } while (true);
-  }
-  const final = deepRounds.at(-1) ?? fast;
+  const rounds = [];
+  let round = 0;
+  do {
+    round += 1;
+    const result = runBrowserCollect(url, workspace, args);
+    rounds.push(result);
+    if (!shouldContinueFullClosure(result, args, round, startedAt)) break;
+  } while (true);
+  const final = rounds.at(-1);
   return {
-    fast,
-    deep: deepRounds.at(-1) ?? null,
-    deep_rounds: deepRounds,
+    rounds,
     final,
     closure_mode: String(args.closure || "bounded").toLowerCase(),
     elapsed_ms: Date.now() - startedAt,
+  };
+}
+
+function skippedCollection(url) {
+  const final = {
+    status: "skipped",
+    target_url: url,
+    closure_complete: true,
+    scripts_saved: null,
+    scripts_cached_preloaded: null,
+    scripts_duplicate_content_hits: null,
+    scripts_recursive_downloaded: null,
+    recursive_queue_remaining: 0,
+    api_requests_total: null,
+  };
+  return {
+    rounds: [final],
+    final,
+    closure_mode: "skipped",
+    elapsed_ms: 0,
   };
 }
 
@@ -250,11 +252,15 @@ function loadGolishDeepSeekConfig() {
 }
 
 function compactForAi(analysis, collection) {
+  const endpoints = sampleForAi(analysis.endpoints, 120);
+  const secretCandidates = sampleForAi(analysis.secret_candidates, 80);
+  const configCandidates = sampleForAi(analysis.config_candidates, 40);
+  const contextSnippets = sampleForAi(analysis.ai_review?.context_snippets, 30);
+  const ruleMatches = sampleForAi(analysis.rule_matches, 80);
   return {
     collection: {
       final_status: collection.final?.status,
-      fast_status: collection.fast?.status,
-      deep_status: collection.deep?.status ?? null,
+      rounds: collection.rounds?.length ?? 0,
       scripts_saved: collection.final?.scripts_saved,
       scripts_recursive_downloaded: collection.final?.scripts_recursive_downloaded,
       recursive_queue_remaining: collection.final?.recursive_queue_remaining,
@@ -274,11 +280,34 @@ function compactForAi(analysis, collection) {
       summary: analysis.summary,
       ai_review_reasons: analysis.ai_review?.reasons ?? [],
     },
-    endpoints: (analysis.endpoints ?? []).slice(0, 120),
-    secret_candidates: (analysis.secret_candidates ?? []).slice(0, 80),
-    config_candidates: (analysis.config_candidates ?? []).slice(0, 40),
-    context_snippets: (analysis.ai_review?.context_snippets ?? []).slice(0, 30),
-    rule_matches_sample: (analysis.rule_matches ?? []).slice(0, 80),
+    sampling: {
+      endpoints: endpoints.meta,
+      secret_candidates: secretCandidates.meta,
+      config_candidates: configCandidates.meta,
+      context_snippets: contextSnippets.meta,
+      rule_matches: ruleMatches.meta,
+      interpretation:
+        "AI classifications apply only to included sample arrays. Deterministic totals in analysis remain the full extractor counts.",
+    },
+    endpoints: endpoints.items,
+    secret_candidates: secretCandidates.items,
+    config_candidates: configCandidates.items,
+    context_snippets: contextSnippets.items,
+    rule_matches_sample: ruleMatches.items,
+  };
+}
+
+function sampleForAi(items, limit) {
+  const source = Array.isArray(items) ? items : [];
+  const sampled = source.slice(0, limit);
+  return {
+    items: sampled,
+    meta: {
+      total: source.length,
+      included: sampled.length,
+      limit,
+      truncated: source.length > sampled.length,
+    },
   };
 }
 
@@ -309,6 +338,8 @@ async function runAiFilter(analysis, collection, args) {
     "You are filtering JavaScript enumeration output for an authorized security test.",
     "Use only the supplied structured data and local source snippets.",
     "Classify API endpoints, secret candidates, and rule matches as real, test, noise, or needs_followup.",
+    "Candidate arrays may be sampled; use the sampling metadata and never present sample classifications as full deterministic counts.",
+    "Never output raw secrets. Use only source_file, line, kind, value_preview, value_sha256, and concise rationale for secret_triage.",
     "Do not claim verification of live vulnerability. Do not suggest exploitation.",
     "Return strict JSON with keys: status, provider, model, real_endpoints, test_or_placeholder, noise, needs_followup, secret_triage, rule_filter_summary, notes.",
     "Keep reasons concise and cite source_file/line when available.",
@@ -347,6 +378,7 @@ async function runAiFilter(analysis, collection, args) {
     ...parsed,
     provider: "deepseek",
     model,
+    input_sampling: payload.sampling,
   };
 }
 
@@ -372,7 +404,7 @@ async function main() {
 
   const collection = runCollection(url, workspace, args);
   const finalCollection = collection.final;
-  const jsDir = captureJsDir(workspace, url);
+  const jsDir = args.js_dir ? path.resolve(String(args.js_dir)) : captureJsDir(workspace, url);
   const analysis = runStaticExtract(url, jsDir, args);
   const ai_filter = aiFilter
     ? await runAiFilter(analysis, collection, args)
@@ -400,9 +432,7 @@ async function main() {
     output_dir: outputDir,
     collection: {
       closure_mode: collection.closure_mode,
-      fast_status: collection.fast.status,
-      deep_status: collection.deep?.status ?? null,
-      deep_rounds: collection.deep_rounds.length,
+      rounds: collection.rounds.length,
       final_status: finalCollection.status,
       closure_complete: finalCollection.closure_complete,
       scripts_saved: finalCollection.scripts_saved,

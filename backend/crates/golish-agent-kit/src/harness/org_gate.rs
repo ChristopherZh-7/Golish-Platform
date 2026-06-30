@@ -274,6 +274,25 @@ pub async fn evaluate_org_stage_gate(
         }
     }
 
+    // 方案 A (设计 2026-06-30-eas-domain-port-delegation): EAS host-aware alias
+    // delegation — drop in-scope assets whose resolved IP is already an in-scope
+    // IP target from the coverage denominator. Their LIVENESS/PORT/SERVICE
+    // coverage is delegated to that IP target (mirrors the read-only precheck's
+    // `eas_alias_coverage_cells`), so removing them from the asset axis stops the
+    // authoritative gate from holding them to any EAS technique.
+    if stage == StageKind::ExternalAttackSurface && !in_scope_assets.is_empty() {
+        let delegated: std::collections::HashSet<String> = repo
+            .eas_port_delegated_assets(org_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        if !delegated.is_empty() {
+            in_scope_assets.retain(|asset| !delegated.contains(asset));
+            typed_assets.retain(|(asset, _)| !delegated.contains(asset));
+        }
+    }
+
     // 3) 证据事实：账本投影 + DB 业务表真值（Found）合并。
     let mut facts: Vec<EvidenceFact> = repo
         .evidence_facts_for_session(session_id)

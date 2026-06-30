@@ -227,6 +227,91 @@ fn quake_config_maps_service_cert_to_certificates() {
 }
 
 #[test]
+fn zone_config_uses_json_body_and_owner_semantic_requests() {
+    let json = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../resources/intel-providers/0-zone.json"
+    ));
+    let value: serde_json::Value = serde_json::from_str(json).unwrap();
+    let requests = value["tool"]["asset_intel"]["runtime"]["requests"]
+        .as_array()
+        .expect("0.zone runtime requests");
+    let ids = requests
+        .iter()
+        .map(|request| request["id"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec!["domain", "domain_root", "apk", "org", "email", "member"]
+    );
+    assert!(
+        !ids.iter().any(|id| matches!(*id, "site" | "code")),
+        "0.zone site/code are broad search APIs and must not run in asset-scope enrichment"
+    );
+    let domain_root = requests
+        .iter()
+        .find(|request| request["id"] == "domain_root")
+        .expect("0.zone root-domain query");
+    assert_eq!(
+        domain_root["json"]["query"].as_str(),
+        Some("root_domain=={{domain}}")
+    );
+    for request in requests {
+        assert!(
+            request.get("json").is_some(),
+            "0.zone request {} must use the documented JSON body",
+            request["id"]
+        );
+        assert!(
+            request.get("form").is_none(),
+            "0.zone request {} must not use x-www-form-urlencoded form bodies",
+            request["id"]
+        );
+        assert_eq!(
+            request["headers"]["Content-Type"].as_str(),
+            Some("application/json")
+        );
+    }
+}
+
+#[test]
+fn quake_config_does_not_promote_hostname_as_asset_owner() {
+    let json = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../resources/intel-providers/quake.json"
+    ));
+    let value: serde_json::Value = serde_json::from_str(json).unwrap();
+    let normalize = &value["tool"]["asset_intel"]["normalize"];
+    let profile_fields = normalize["profile_fields"]
+        .as_array()
+        .expect("quake normalize.profile_fields");
+    assert!(
+        !profile_fields.iter().any(|rule| {
+            rule["source_field"] == "hostname" && rule["target_field"] == "domains"
+        }),
+        "Quake hostname can be PTR/rDNS noise and must not hydrate owned domains"
+    );
+    let target_rules = normalize["target"].as_array().expect("quake target rules");
+    assert!(
+        target_rules.iter().all(|rule| {
+            rule["value"]
+                .as_array()
+                .is_none_or(|fields| !fields.iter().any(|field| field == "hostname"))
+        }),
+        "Quake hostname must not become a target candidate"
+    );
+    let pair_rules = normalize["pairs"].as_array().expect("quake pair rules");
+    assert!(
+        pair_rules.iter().all(|rule| {
+            rule["host_field"]
+                .as_array()
+                .is_none_or(|fields| !fields.iter().any(|field| field == "hostname"))
+        }),
+        "Quake hostname must not be used for host/IP ownership pairs"
+    );
+}
+
+#[test]
 fn native_bridge_record_maps_surface_and_profile() {
     use golish_intel_providers::{ProviderRecord, QueryType};
     let mut fields = std::collections::HashMap::new();
@@ -1498,24 +1583,24 @@ fn fixture_enrichment_profile_fields_cover_observed_provider_keys() {
         .expect("ENScan enrichment provider fixture");
 
     assert!(
-        has_rule(
+        !has_rule(
             zone,
             "$..data[*]",
             "ip",
             "ip_ranges",
             golish_pentest::models::AssetIntelProfileFieldTarget::Scalar
         ),
-        "0.zone site.ip should hydrate organization ip_ranges"
+        "0.zone site.ip must not hydrate organization ip_ranges; only org/domain-owned fields may expand scan scope"
     );
     assert!(
-        has_rule(
+        !has_rule(
             zone,
             "$..data[*]",
             "asn",
             "asns",
             golish_pentest::models::AssetIntelProfileFieldTarget::Scalar
         ),
-        "0.zone site.asn should hydrate organization asns"
+        "0.zone site.asn must not hydrate organization asns from broad search hits"
     );
     assert!(
         has_rule(

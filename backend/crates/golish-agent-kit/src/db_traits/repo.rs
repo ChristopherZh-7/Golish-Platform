@@ -211,6 +211,16 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// EAS host-aware port/service delegation (design 2026-06-30-eas-domain-port-
+    /// delegation): in-scope asset values whose resolved IP is already an
+    /// in-scope IP target, so the EAS gate delegates their PORT /
+    /// SERVICE-FINGERPRINT coverage to that IP and only requires LIVENESS.
+    /// Default empty ⇒ no delegation (every asset keeps its class's full set).
+    async fn eas_port_delegated_assets(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {
+        let _ = org_id;
+        Ok(Vec::new())
+    }
+
     /// In-scope recon targets as JSON rows (`target_id` / `value` / `type`) so an
     /// agent tool can enumerate the recon-collected assets, then drill into each
     /// via [`Self::query_target_data`]. Default empty (test doubles); the app

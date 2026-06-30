@@ -192,16 +192,19 @@ pub(crate) async fn stage_asset_coverage_snapshot(
     if stage_kind == StageKind::Enumeration {
         assets = filter_enumeration_assets_by_eas_worklist(pool, org_id, assets).await?;
     }
+    let eas_ip_targets = eas_direct_ip_target_keys(&assets);
     let current_assets: Vec<&TargetCoverageRow> = assets
         .iter()
         .filter(|asset| !is_next_wave_asset(asset, wave_cutoff))
         .collect();
-    let asset_values: Vec<String> = current_assets.iter().map(|a| a.value.clone()).collect();
-    let asset_types: Vec<String> = current_assets
+    let truth_assets: Vec<&TargetCoverageRow> = current_assets
         .iter()
-        .map(|a| a.target_type.clone())
+        .copied()
+        .filter(|asset| eas_alias_parent_ip_key(stage_kind, asset, &eas_ip_targets).is_none())
         .collect();
-    let organization_asset_values: Vec<String> = current_assets
+    let asset_values: Vec<String> = truth_assets.iter().map(|a| a.value.clone()).collect();
+    let asset_types: Vec<String> = truth_assets.iter().map(|a| a.target_type.clone()).collect();
+    let organization_asset_values: Vec<String> = truth_assets
         .iter()
         .filter(|asset| is_organization_coverage_row(asset))
         .map(|asset| asset.value.clone())
@@ -251,15 +254,22 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         } else {
             discovered_phase(&asset, run_start)
         };
+        let counts_as_asset = counts_as_coverage_asset(stage_kind, &asset, &eas_ip_targets);
         let coverage = if next_wave {
-            next_wave_coverage_cells(stage_kind, &asset)
+            next_wave_coverage_cells_with_eas_parent_ips(stage_kind, &asset, &eas_ip_targets)
         } else {
-            coverage_cells(stage_kind, &asset, &found, &outcomes)
+            coverage_cells_with_eas_parent_ips(
+                stage_kind,
+                &asset,
+                &found,
+                &outcomes,
+                &eas_ip_targets,
+            )
         };
 
-        if next_wave {
+        if next_wave && counts_as_asset {
             new_assets += 1;
-        } else {
+        } else if counts_as_asset {
             current_wave_assets += 1;
             if phase == "new_in_stage" {
                 new_assets += 1;
@@ -650,11 +660,8 @@ fn merge_source_query_row(
 fn target_intel_source_technique(technique: &str) -> bool {
     matches!(
         technique,
-        golish_db::repo::coverage_truth::TECH_DNS
-            | golish_db::repo::coverage_truth::TECH_WHOIS
+        golish_db::repo::coverage_truth::TECH_WHOIS
             | golish_db::repo::coverage_truth::TECH_ASN
-            | golish_db::repo::coverage_truth::TECH_CT
-            | golish_db::repo::coverage_truth::TECH_SUBDOMAIN
             | golish_db::repo::coverage_truth::TECH_OSINT
     )
 }
@@ -688,19 +695,119 @@ fn coverage_lookup_asset(asset: &str, technique: &str) -> String {
 }
 
 fn is_organization_coverage_row(asset: &TargetCoverageRow) -> bool {
-    asset.target_type == "organization" && asset.source.as_deref() == Some("engagement_org")
+    asset.target_type == "organization"
 }
 
+fn organization_context_technique_applies(technique: &str) -> bool {
+    matches!(
+        technique,
+        golish_db::repo::coverage_truth::TECH_WHOIS
+            | golish_db::repo::coverage_truth::TECH_ASN
+            | golish_db::repo::coverage_truth::TECH_OSINT
+    )
+}
+
+fn counts_as_coverage_asset(
+    stage: StageKind,
+    asset: &TargetCoverageRow,
+    eas_ip_targets: &BTreeSet<String>,
+) -> bool {
+    !is_organization_coverage_row(asset)
+        && eas_alias_parent_ip_key(stage, asset, eas_ip_targets).is_none()
+}
+
+fn eas_direct_ip_target_keys(assets: &[TargetCoverageRow]) -> BTreeSet<String> {
+    assets
+        .iter()
+        .filter(|asset| is_direct_eas_ip_target(asset))
+        .filter_map(|asset| eas_ip_key_from_value(&asset.value))
+        .collect()
+}
+
+fn is_direct_eas_ip_target(asset: &TargetCoverageRow) -> bool {
+    matches!(
+        asset.target_type.to_ascii_lowercase().as_str(),
+        "ip" | "ipv4" | "ipv6" | "ip_address"
+    )
+}
+
+fn eas_ip_key_from_value(value: &str) -> Option<String> {
+    let key = golish_pentest_domain::canonical_asset_key(value)?;
+    matches!(
+        key.class,
+        golish_agent_kit::harness::technique_resolver::AssetClass::Ip
+    )
+    .then_some(key.key)
+}
+
+fn eas_alias_parent_ip_key(
+    stage: StageKind,
+    asset: &TargetCoverageRow,
+    eas_ip_targets: &BTreeSet<String>,
+) -> Option<String> {
+    if stage != StageKind::ExternalAttackSurface
+        || is_direct_eas_ip_target(asset)
+        || is_organization_coverage_row(asset)
+    {
+        return None;
+    }
+    let resolved_ip =
+        eas_ip_key_from_value(&asset.real_ip).or_else(|| eas_ip_key_from_value(&asset.value))?;
+    eas_ip_targets.contains(&resolved_ip).then_some(resolved_ip)
+}
+
+fn eas_alias_coverage_cells(parent_ip: &str) -> Vec<StageAssetCoverageCell> {
+    techniques_for_stage(StageKind::ExternalAttackSurface)
+        .into_iter()
+        .map(|technique| {
+            cell(
+                technique,
+                "not_applicable",
+                None,
+                Vec::new(),
+                Some(format!(
+                    "covered by resolved IP {parent_ip}; scan the host/IP once instead of each domain or endpoint alias"
+                )),
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
 fn coverage_cells(
     stage: StageKind,
     asset: &TargetCoverageRow,
     found: &BTreeSet<(String, String)>,
     outcomes: &BTreeMap<(String, String), OutcomeProjection>,
 ) -> Vec<StageAssetCoverageCell> {
+    coverage_cells_with_eas_parent_ips(stage, asset, found, outcomes, &BTreeSet::new())
+}
+
+fn coverage_cells_with_eas_parent_ips(
+    stage: StageKind,
+    asset: &TargetCoverageRow,
+    found: &BTreeSet<(String, String)>,
+    outcomes: &BTreeMap<(String, String), OutcomeProjection>,
+    eas_ip_targets: &BTreeSet<String>,
+) -> Vec<StageAssetCoverageCell> {
+    if let Some(parent_ip) = eas_alias_parent_ip_key(stage, asset, eas_ip_targets) {
+        return eas_alias_coverage_cells(&parent_ip);
+    }
     let class = coverage_asset_class(asset);
     let mut cells: Vec<StageAssetCoverageCell> = techniques_for_stage(stage)
         .into_iter()
         .map(|technique| {
+            if is_organization_coverage_row(asset)
+                && !organization_context_technique_applies(technique)
+            {
+                return cell(
+                    technique,
+                    "not_applicable",
+                    None,
+                    Vec::new(),
+                    Some("organization context row; this technique applies to concrete domain/IP/URL assets".to_string()),
+                );
+            }
             if !golish_agent_kit::harness::technique_resolver::technique_applies_to_value(
                 stage,
                 class,
@@ -766,14 +873,37 @@ fn apply_eas_service_dependency(stage: StageKind, cells: &mut [StageAssetCoverag
     );
 }
 
+#[cfg(test)]
 fn next_wave_coverage_cells(
     stage: StageKind,
     asset: &TargetCoverageRow,
 ) -> Vec<StageAssetCoverageCell> {
+    next_wave_coverage_cells_with_eas_parent_ips(stage, asset, &BTreeSet::new())
+}
+
+fn next_wave_coverage_cells_with_eas_parent_ips(
+    stage: StageKind,
+    asset: &TargetCoverageRow,
+    eas_ip_targets: &BTreeSet<String>,
+) -> Vec<StageAssetCoverageCell> {
+    if let Some(parent_ip) = eas_alias_parent_ip_key(stage, asset, eas_ip_targets) {
+        return eas_alias_coverage_cells(&parent_ip);
+    }
     let class = coverage_asset_class(asset);
     techniques_for_stage(stage)
         .into_iter()
         .map(|technique| {
+            if is_organization_coverage_row(asset)
+                && !organization_context_technique_applies(technique)
+            {
+                return cell(
+                    technique,
+                    "not_applicable",
+                    None,
+                    Vec::new(),
+                    Some("organization context row; this technique applies to concrete domain/IP/URL assets".to_string()),
+                );
+            }
             if !golish_agent_kit::harness::technique_resolver::technique_applies_to_value(
                 stage,
                 class,
@@ -974,15 +1104,17 @@ fn suggested_tools(technique: &str) -> Vec<String> {
             vec!["nmap -sV".to_string(), "whatweb".to_string()]
         }
         golish_db::repo::coverage_truth::TECH_ENUM_DIR => {
-            vec!["route_probe_paths".to_string(), "ffuf".to_string()]
+            vec!["route_probe_paths".to_string()]
         }
         golish_db::repo::coverage_truth::TECH_ENUM_PARAM => {
-            vec!["arjun".to_string(), "js_extract_apis".to_string()]
+            vec![
+                "browser_collect_js_api".to_string(),
+                "js_extract_apis".to_string(),
+            ]
         }
         golish_db::repo::coverage_truth::TECH_ENUM_JSAPI => {
             vec![
                 "browser_collect_js_api".to_string(),
-                "js_collect".to_string(),
                 "js_extract_apis".to_string(),
             ]
         }
@@ -991,6 +1123,9 @@ fn suggested_tools(technique: &str) -> Vec<String> {
 }
 
 fn discovered_phase(asset: &TargetCoverageRow, run_start: Option<DateTime<Utc>>) -> String {
+    if is_organization_coverage_row(asset) {
+        return "organization_context".to_string();
+    }
     if run_start.is_some_and(|started_at| asset.created_at > started_at)
         || asset.source.as_deref() == Some("active_discovered")
     {
@@ -1084,6 +1219,41 @@ mod tests {
     }
 
     #[test]
+    fn enumeration_pending_cells_only_suggest_current_first_party_tools() {
+        let asset = target("https://app.example.com", "url");
+
+        let cells = coverage_cells(
+            StageKind::Enumeration,
+            &asset,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(
+            cells[0].suggested_tools,
+            vec!["route_probe_paths".to_string()]
+        );
+        assert_eq!(
+            cells[1].suggested_tools,
+            vec![
+                "browser_collect_js_api".to_string(),
+                "js_extract_apis".to_string()
+            ]
+        );
+        assert_eq!(
+            cells[2].suggested_tools,
+            vec![
+                "browser_collect_js_api".to_string(),
+                "js_extract_apis".to_string()
+            ]
+        );
+        assert!(cells
+            .iter()
+            .flat_map(|cell| cell.suggested_tools.iter())
+            .all(|tool| tool != "ffuf" && tool != "arjun"));
+    }
+
+    #[test]
     fn latest_fallback_sql_aliases_evidence_ids_for_projection_rows() {
         assert!(LATEST_TECHNIQUE_OUTCOMES_SQL.contains("evidence_ids AS evidence_refs"));
         assert!(LATEST_SOURCE_QUERY_ROWS_SQL.contains("evidence_ids AS evidence_refs"));
@@ -1142,6 +1312,78 @@ mod tests {
         assert_eq!(cells[0].state, "found");
         assert_eq!(cells[1].state, "not_applicable");
         assert_eq!(cells[2].state, "not_applicable");
+    }
+
+    #[test]
+    fn eas_domain_alias_to_existing_ip_does_not_count_as_direct_coverage_asset() {
+        let ip = target("115.28.135.55", "ip");
+        let mut domain = target("moresec.cn", "domain");
+        domain.real_ip = "115.28.135.55".to_string();
+        let assets = vec![ip, domain.clone()];
+        let parent_ips = eas_direct_ip_target_keys(&assets);
+
+        assert!(!counts_as_coverage_asset(
+            StageKind::ExternalAttackSurface,
+            &domain,
+            &parent_ips
+        ));
+
+        let cells = coverage_cells_with_eas_parent_ips(
+            StageKind::ExternalAttackSurface,
+            &domain,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &parent_ips,
+        );
+
+        assert!(cells.iter().all(|cell| cell.state == "not_applicable"));
+        assert!(cells.iter().all(|cell| cell.suggested_tools.is_empty()));
+        assert!(cells[0]
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("115.28.135.55")));
+    }
+
+    #[test]
+    fn eas_ip_endpoint_alias_to_existing_ip_does_not_count_as_direct_coverage_asset() {
+        let ip = target("115.28.135.55", "ip");
+        let endpoint = target("http://115.28.135.55:8080/login", "url");
+        let assets = vec![ip, endpoint.clone()];
+        let parent_ips = eas_direct_ip_target_keys(&assets);
+
+        assert!(!counts_as_coverage_asset(
+            StageKind::ExternalAttackSurface,
+            &endpoint,
+            &parent_ips
+        ));
+
+        let cells = coverage_cells_with_eas_parent_ips(
+            StageKind::ExternalAttackSurface,
+            &endpoint,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &parent_ips,
+        );
+
+        assert_eq!(
+            cells
+                .iter()
+                .map(|cell| cell.state.as_str())
+                .collect::<Vec<_>>(),
+            vec!["not_applicable", "not_applicable", "not_applicable"]
+        );
+    }
+
+    #[test]
+    fn eas_domain_without_existing_ip_remains_a_direct_coverage_asset() {
+        let mut domain = target("moresec.cn", "domain");
+        domain.real_ip = "115.28.135.55".to_string();
+
+        assert!(counts_as_coverage_asset(
+            StageKind::ExternalAttackSurface,
+            &domain,
+            &BTreeSet::new()
+        ));
     }
 
     #[test]
@@ -1350,7 +1592,7 @@ mod tests {
     }
 
     #[test]
-    fn target_intel_org_row_exposes_six_passive_dimensions() {
+    fn target_intel_org_row_only_requires_org_context_dimensions() {
         let asset = target("Acme Root", "organization");
 
         let cells = coverage_cells(
@@ -1367,7 +1609,15 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["DNS", "WHOIS", "ASN", "CT", "Subdomain", "OSINT"]
         );
-        assert!(cells.iter().all(|cell| cell.state == "pending"));
+        assert_eq!(cells[0].state, "not_applicable");
+        assert_eq!(cells[1].state, "pending");
+        assert_eq!(cells[2].state, "pending");
+        assert_eq!(cells[3].state, "not_applicable");
+        assert_eq!(cells[4].state, "not_applicable");
+        assert_eq!(cells[5].state, "pending");
+        assert!(cells[0].suggested_tools.is_empty());
+        assert!(cells[3].suggested_tools.is_empty());
+        assert!(cells[4].suggested_tools.is_empty());
         assert_eq!(
             cells[1].suggested_tools,
             vec!["recon_lookup_whois".to_string()]
@@ -1607,7 +1857,7 @@ mod tests {
         let organization_asset_values = vec!["大连平安大厦开发有限公司".to_string()];
         let asset_values = organization_asset_values.clone();
         let stage_techniques =
-            BTreeSet::from([golish_db::repo::coverage_truth::TECH_DNS.to_string()]);
+            BTreeSet::from([golish_db::repo::coverage_truth::TECH_WHOIS.to_string()]);
         let mut outcomes = BTreeMap::new();
 
         merge_source_query_row(
@@ -1617,7 +1867,7 @@ mod tests {
             SourceQueryProjectionRow {
                 source: "crt.sh".to_string(),
                 target: "pingan.com".to_string(),
-                technique: Some(golish_db::repo::coverage_truth::TECH_DNS.to_string()),
+                technique: Some(golish_db::repo::coverage_truth::TECH_WHOIS.to_string()),
                 status: "empty".to_string(),
                 evidence_refs: vec![21],
             },
@@ -1626,7 +1876,7 @@ mod tests {
 
         let key = (
             organization_asset_values[0].clone(),
-            golish_db::repo::coverage_truth::TECH_DNS.to_string(),
+            golish_db::repo::coverage_truth::TECH_WHOIS.to_string(),
         );
         let outcome = outcomes
             .get(&key)
@@ -1634,6 +1884,34 @@ mod tests {
         assert_eq!(outcome.state, "checked_empty");
         assert_eq!(outcome.source.as_deref(), Some("crt.sh"));
         assert_eq!(outcome.evidence_refs, vec![21]);
+    }
+
+    #[test]
+    fn domain_only_source_query_does_not_roll_up_to_org_row() {
+        let organization_asset_values = vec!["大连平安大厦开发有限公司".to_string()];
+        let asset_values = organization_asset_values.clone();
+        let stage_techniques =
+            BTreeSet::from([golish_db::repo::coverage_truth::TECH_DNS.to_string()]);
+        let mut outcomes = BTreeMap::new();
+
+        merge_source_query_row(
+            &mut outcomes,
+            &asset_values,
+            &stage_techniques,
+            SourceQueryProjectionRow {
+                source: "resolver".to_string(),
+                target: "pingan.com".to_string(),
+                technique: Some(golish_db::repo::coverage_truth::TECH_DNS.to_string()),
+                status: "empty".to_string(),
+                evidence_refs: vec![21],
+            },
+            &organization_asset_values,
+        );
+
+        assert!(
+            outcomes.is_empty(),
+            "domain-only DNS source rows should not create company-name coverage"
+        );
     }
 
     #[test]

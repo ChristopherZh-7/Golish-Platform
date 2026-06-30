@@ -144,15 +144,15 @@
         "pairs": [
           {
             "path": "$..data[*]",
-            "host_field": ["domain", "hostname", "service.http.host"],
+            "host_field": ["domain", "service.http.host"],
             "ip_field": ["ip"]
           }
         ],
         "target": [
           {
             "path": "$..data[*]",
-            "label": ["service.http.title", "service.http.host", "hostname", "domain", "ip"],
-            "value": ["service.http.host", "hostname", "domain", "ip"],
+            "label": ["service.http.title", "service.http.host", "domain", "ip"],
+            "value": ["service.http.host", "domain", "ip"],
             "confidence": 0.72
           }
         ],
@@ -163,13 +163,6 @@
             "target_field": "domains",
             "transform": "lower",
             "when": [{ "field": "domain", "op": "exists", "value": "" }]
-          },
-          {
-            "path": "$..data[*]",
-            "source_field": "hostname",
-            "target_field": "domains",
-            "transform": "lower",
-            "when": [{ "field": "hostname", "op": "exists", "value": "" }]
           },
           {
             "path": "$..data[*]",
@@ -201,7 +194,7 @@
           },
           {
             "path": "$..data[*]",
-            "source_field": ["service.http.host", "hostname", "domain", "ip"],
+            "source_field": ["service.http.host", "domain", "ip"],
             "target_field": "business_systems",
             "transform": "trim",
             "when": [{ "field": "ip", "op": "exists", "value": "" }]

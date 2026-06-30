@@ -710,6 +710,25 @@ impl GolishDbRepoProvider {
             .collect())
     }
 
+    /// EAS host-aware port/service delegation (设计 2026-06-30-eas-domain-port-
+    /// delegation): in-scope asset values whose resolved IP is already an
+    /// in-scope IP target. Reuses the recon targets port (mirrors
+    /// [`Self::in_scope_typed_assets_impl`]; no new SQL). org_id narrowing is
+    /// deferred (chat sessions carry no org binding) — a superset is harmless:
+    /// the gate only drops PORT/SERVICE for assets that are ALSO on its
+    /// org-narrowed asset axis.
+    pub(super) async fn eas_port_delegated_assets_impl(
+        &self,
+        _org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<String>> {
+        let targets = self.recon_targets.in_scope_targets(None).await?;
+        Ok(
+            golish_app_core::domain::targets::eas_port_delegated_domain_values(&targets)
+                .into_iter()
+                .collect(),
+        )
+    }
+
     /// Phase 1.5 阶段过门：列全库（或指定 project）的 organization id。组织树属 recon 资产
     /// 域；chat 走整库口径（project_path=None），与 `in_scope_assets_impl` 同口径。
     pub(super) async fn in_scope_org_ids_impl(

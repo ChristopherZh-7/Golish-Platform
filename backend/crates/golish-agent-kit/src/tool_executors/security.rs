@@ -500,10 +500,16 @@ pub async fn execute_security_analysis_tool(
                 .and_then(|v| v.as_u64())
                 .map(|n| n.clamp(1, 200) as usize)
                 .unwrap_or(25);
-            let include_assets = args
+            let include_assets_requested = args
                 .get("include_assets")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            if include_assets_requested {
+                tracing::debug!(
+                    target: "harness::coverage_preflight",
+                    "check_stage_asset_coverage ignores include_assets=true; agent preflight stays summary-only"
+                );
+            }
             let stage_started_at = match harness_operation_id {
                 Some(operation_id) => match repo.operation_state_get(operation_id).await {
                     Ok(Some(state)) if state.current_stage == stage => Some(state.stage_started_at),
@@ -531,7 +537,7 @@ pub async fn execute_security_analysis_tool(
                 }
             };
             Some((
-                compact_stage_asset_coverage(snapshot, max_gaps, include_assets),
+                compact_stage_asset_coverage(snapshot, max_gaps, include_assets_requested),
                 true,
             ))
         }
@@ -608,12 +614,11 @@ fn enumeration_web_roots_worklist(snapshot: Value, limit: usize, include_coverag
         "execution_order": [
             "browser_collect_js_api",
             "js_extract_apis",
-            "route_probe_paths",
-            "bounded pentest_run(ffuf/gobuster/feroxbuster)",
-            "pentest_run(arjun/katana) on discovered endpoints/forms",
+            "route_probe_paths with observed prefixes and the small local wordlist",
+            "parameter extraction from observed requests, query strings, forms, and targeted param_hints",
             "check_stage_asset_coverage before submit_stage_deliverable"
         ],
-        "tool_boundary": "Call browser_collect_js_api/js_collect/js_extract_apis/route_probe_paths directly. Call ffuf/gobuster/feroxbuster/arjun/katana only through pentest_run(tool_name=...). Do not call manage_targets in enumeration.",
+        "tool_boundary": "Call browser_collect_js_api/js_collect/js_extract_apis/route_probe_paths directly. Directory discovery must use route_probe_paths plus observed JS/API prefixes and a small local wordlist; do not use external directory tools such as ffuf/gobuster/feroxbuster in enumeration. Bounded crawler CLIs such as katana must be called through pentest_run(tool_name=...) and used only as URL sources. Do not call manage_targets in enumeration.",
     })
 }
 
@@ -631,10 +636,13 @@ fn enumeration_web_root_next_steps(coverage: &[Value]) -> Vec<&'static str> {
             "GOLISH-ENUM-JSAPI" => {
                 steps.push("run browser_collect_js_api first, then js_extract_apis on saved JS")
             }
-            "GOLISH-ENUM-DIR" => steps
-                .push("run route_probe_paths over observed prefixes before bounded ffuf/gobuster"),
+            "GOLISH-ENUM-DIR" => steps.push(
+                "run route_probe_paths over observed JS/API prefixes with the small local wordlist",
+            ),
             "GOLISH-ENUM-PARAM" => {
-                steps.push("run parameter discovery only on discovered endpoints/forms")
+                steps.push(
+                    "derive parameters from observed requests/query strings/forms and targeted js_extract_apis param_hints",
+                )
             }
             _ => steps
                 .push("close this pending/error coverage cell with a real run or terminal note"),
@@ -645,11 +653,7 @@ fn enumeration_web_root_next_steps(coverage: &[Value]) -> Vec<&'static str> {
     steps
 }
 
-fn compact_stage_asset_coverage(
-    mut snapshot: Value,
-    max_gaps: usize,
-    include_assets: bool,
-) -> Value {
+fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets: bool) -> Value {
     let stage = snapshot.get("stage").and_then(Value::as_str).unwrap_or("");
     let is_enumeration = stage == "enumeration";
     let assets = snapshot
@@ -728,7 +732,7 @@ fn compact_stage_asset_coverage(
             "Coverage has no pending/error/blocked cells in this preflight. Build the final StageDeliverable with real evidence ids and submit_stage_deliverable."
         }
     } else if is_enumeration {
-        "Do not submit yet. Treat gap_examples as the exact EAS-confirmed live web-root worklist for this org: close JSAPI with browser_collect_js_api/js_extract_apis, DIR with route_probe_paths or bounded ffuf/gobuster, and PARAM with arjun/js-derived endpoints. Do not re-port-scan or hand-write found cells."
+        "Do not submit yet. Treat gap_examples as the exact EAS-confirmed live web-root worklist for this org: close JSAPI with browser_collect_js_api/js_extract_apis, DIR with route_probe_paths over observed JS/API prefixes plus the small local wordlist, and PARAM from observed browser requests, query strings, forms, and targeted js_extract_apis param_hints. Do not re-port-scan, default to external directory tools, or hand-write found cells."
     } else {
         "Do not submit yet. Close the pending/error cells first: run the suggested tools, wait for background jobs to land evidence, or mark truly blocked/not_applicable cells with concrete notes."
     };
@@ -755,10 +759,16 @@ fn compact_stage_asset_coverage(
         out["deliverable_contract"] = json!("Submit no findings. DB-derived found cells come from directory_entries/api_endpoints; coverage should only contain checked_empty, blocked, or not_applicable terminal cells the DB cannot derive.");
     }
     if include_assets {
-        out["assets"] = snapshot
-            .get_mut("assets")
-            .map(std::mem::take)
-            .unwrap_or_else(|| json!([]));
+        let asset_count = snapshot
+            .get("assets")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default();
+        out["assets_omitted"] = json!(true);
+        out["assets_omitted_count"] = json!(asset_count);
+        out["asset_detail_hint"] = json!(
+            "Full asset matrices are intentionally omitted from agent preflight output. Use gap_examples and cell_summary; the UI coverage panel can fetch full assets separately."
+        );
     }
     out
 }
@@ -769,10 +779,10 @@ fn enumeration_gap_focus(technique: &str) -> &'static str {
             "Collect browser-observed JS/API first, then run js_extract_apis on saved JS."
         }
         "GOLISH-ENUM-DIR" => {
-            "Probe observed route prefixes first; use bounded directory fuzzing only as backfill."
+            "Probe observed JS/API route prefixes with the small local wordlist; avoid external directory tools by default."
         }
         "GOLISH-ENUM-PARAM" => {
-            "Discover parameters on known endpoints/forms, not blindly across the whole host."
+            "Derive parameters from observed requests, query strings, forms, and targeted js_extract_apis param_hints."
         }
         _ => "Close this enumeration cell with a real run or an honest terminal note.",
     }
@@ -812,7 +822,7 @@ mod tests {
     }
 
     #[test]
-    fn coverage_preflight_can_include_full_assets_when_requested() {
+    fn coverage_preflight_omits_full_assets_even_when_requested() {
         let compact = compact_stage_asset_coverage(
             json!({
                 "summary": {},
@@ -830,7 +840,9 @@ mod tests {
         );
 
         assert_eq!(compact["ready_to_submit"], true);
-        assert_eq!(compact["assets"][0]["value"], "example.com");
+        assert!(compact.get("assets").is_none());
+        assert_eq!(compact["assets_omitted"], true);
+        assert_eq!(compact["assets_omitted_count"], 1);
     }
 
     #[test]

@@ -76,10 +76,9 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
         | "gcpbucketbrute" => ("recon", "osint"),
         "gowitness" | "aquatone" | "eyewitness" | "cutycapt" => ("recon", "visual"),
         // ── web ──────────────────────────────────────────────────────────────
-        "ffuf" | "gobuster" | "dirb" | "dirsearch" | "feroxbuster" | "route_probe_paths" => {
-            ("web", "fuzzer")
-        }
-        "arjun" | "paramspider" | "x8" => ("web", "param"),
+        "ffuf" | "gobuster" | "dirb" | "dirsearch" | "feroxbuster" => ("web", "dir-fuzzer"),
+        "route_probe_paths" => ("web", "route-probe"),
+        "paramspider" | "x8" => ("web", "param"),
         "nikto" | "nuclei" | "dalfox" => ("web", "scanner"),
         "wpscan" => ("web", "cms"),
         "sqlmap" => ("web", "injection"),
@@ -135,7 +134,6 @@ const CANONICAL_TOOLS: &[&str] = &[
     // web
     "ffuf",
     "route_probe_paths",
-    "arjun",
     "nuclei",
     "wpscan",
     "sqlmap",
@@ -333,13 +331,17 @@ mod tests {
         assert_eq!(tool_category("subfinder"), Some(("recon", "subdomain")));
         assert_eq!(tool_category("sqlmap"), Some(("web", "injection")));
         assert_eq!(tool_category("nuclei"), Some(("web", "scanner")));
-        assert_eq!(tool_category("arjun"), Some(("web", "param")));
+        assert_eq!(tool_category("arjun"), None);
         assert_eq!(
             tool_category("browser_collect_js_api"),
             Some(("recon", "crawler"))
         );
         assert_eq!(tool_category("js_extract_apis"), Some(("recon", "crawler")));
-        assert_eq!(tool_category("route_probe_paths"), Some(("web", "fuzzer")));
+        assert_eq!(tool_category("ffuf"), Some(("web", "dir-fuzzer")));
+        assert_eq!(
+            tool_category("route_probe_paths"),
+            Some(("web", "route-probe"))
+        );
         assert_eq!(tool_category("msfconsole"), Some(("exploit", "framework")));
         assert_eq!(
             tool_category("bloodhound-python"),
@@ -445,14 +447,20 @@ mod tests {
 
     #[test]
     fn deny_by_default_for_unmatched() {
-        // enumeration-style allow; sqlmap (web/injection) is not in it → denied
-        let allowed = allow(&["recon/port-scan", "recon/http", "web/fuzzer"]);
+        // stage allow-list is precise: route_probe is allowed without opening
+        // external directory fuzzers or injection/scanner tools.
+        let allowed = allow(&["recon/port-scan", "recon/http", "web/route-probe"]);
         assert!(stage_allows(
             "pentest_run",
             &json!({"tool_name": "nmap"}),
             &allowed
         ));
         assert!(stage_allows(
+            "pentest_run",
+            &json!({"tool_name": "route_probe_paths"}),
+            &allowed
+        ));
+        assert!(!stage_allows(
             "pentest_run",
             &json!({"tool_name": "gobuster"}),
             &allowed
@@ -491,7 +499,7 @@ mod tests {
             "pentest_run",
             &json!({"tool_name": "ffuf"}),
             &allowed
-        )); // web/fuzzer not allowed
+        )); // external dir-fuzzer not allowed
     }
 
     #[test]
@@ -663,16 +671,14 @@ mod tests {
 
     #[test]
     fn allowed_tool_names_enumeration_selectors_include_direct_enum_tools() {
-        let allowed = allow(&["recon/crawler", "web/fuzzer", "web/param"]);
+        let allowed = allow(&["recon/crawler", "web/route-probe"]);
         let names = allowed_tool_names(&allowed);
         for must in [
             "katana",
             "browser_collect_js_api",
             "js_collect",
             "js_extract_apis",
-            "ffuf",
             "route_probe_paths",
-            "arjun",
         ] {
             assert!(names.contains(&must), "{must} must be listed: {names:?}");
             assert!(stage_allows(must, &json!({}), &allowed));
@@ -685,6 +691,10 @@ mod tests {
             "nmap",
             "naabu",
             "sqlmap",
+            "ffuf",
+            "gobuster",
+            "feroxbuster",
+            "arjun",
             "nuclei",
             "metasploit",
         ] {

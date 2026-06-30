@@ -4,6 +4,7 @@ import {
   DEFAULT_PROFILE_ID,
   LAST_MODE_STORAGE_KEY,
   LAST_PROFILE_STORAGE_KEY,
+  normalizeExecutionModeId,
   pickTaskProfile,
   readLastExecutionMode,
   readLastProfile,
@@ -69,6 +70,10 @@ describe("pickTaskProfile", () => {
     expect(pickTaskProfile("does-not-exist", PROFILES)).toBe(DEFAULT_PROFILE_ID);
   });
 
+  it("does not treat the legacy bare task id as a profile", () => {
+    expect(pickTaskProfile("task", PROFILES)).toBe(DEFAULT_PROFILE_ID);
+  });
+
   it("falls back to the first profile when neither remembered nor default exist", () => {
     const noDefault = [mode("pentest"), mode("red_team")];
     expect(pickTaskProfile(null, noDefault)).toBe("pentest");
@@ -86,6 +91,11 @@ describe("last-profile memory", () => {
     expect(readLastProfile()).toBe("red_team");
     expect(globalThis.localStorage?.getItem(LAST_PROFILE_STORAGE_KEY)).toBe("red_team");
   });
+
+  it("ignores legacy bare task if it was previously written as the profile", () => {
+    globalThis.localStorage?.setItem(LAST_PROFILE_STORAGE_KEY, "task");
+    expect(readLastProfile()).toBeNull();
+  });
 });
 
 describe("last-execution-mode memory", () => {
@@ -97,6 +107,20 @@ describe("last-execution-mode memory", () => {
     writeLastExecutionMode("pentest");
     expect(readLastExecutionMode()).toBe("pentest");
     expect(globalThis.localStorage?.getItem(LAST_MODE_STORAGE_KEY)).toBe("pentest");
+  });
+
+  it("normalizes legacy bare task to the remembered profile", () => {
+    writeLastProfile("red_team");
+    globalThis.localStorage?.setItem(LAST_MODE_STORAGE_KEY, "task");
+    expect(readLastExecutionMode()).toBe("red_team");
+    expect(globalThis.localStorage?.getItem(LAST_MODE_STORAGE_KEY)).toBe("red_team");
+    expect(normalizeExecutionModeId("task")).toBe("red_team");
+  });
+
+  it("stores a concrete default profile instead of bare task", () => {
+    writeLastExecutionMode("task");
+    expect(readLastExecutionMode()).toBe(DEFAULT_PROFILE_ID);
+    expect(globalThis.localStorage?.getItem(LAST_MODE_STORAGE_KEY)).toBe(DEFAULT_PROFILE_ID);
   });
 
   it("remembers an explicit switch back to chat", () => {

@@ -59,163 +59,173 @@ export function useChatSend(opts: UseChatSendOptions) {
     t,
   } = opts;
 
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if (!text || isStreaming) return;
-    if (!activeConvId) return;
-    const conv = useStore.getState().conversations[activeConvId];
-    if (!conv) return;
+  const handleSend = useCallback(
+    async (promptOverride?: string) => {
+      const hasPromptOverride = promptOverride !== undefined;
+      const text = (promptOverride ?? input).trim();
+      if (!text || isStreaming) return;
+      if (!activeConvId) return;
+      const conv = useStore.getState().conversations[activeConvId];
+      if (!conv) return;
 
-    const userMsg: ChatMessage = {
-      id: `user-${Date.now()}`,
-      role: "user",
-      content: text,
-      timestamp: Date.now(),
-    };
+      const userMsg: ChatMessage = {
+        id: `user-${Date.now()}`,
+        role: "user",
+        content: text,
+        timestamp: Date.now(),
+      };
 
-    const newTitle =
-      conv.title === "New Chat" ? text.slice(0, 30) + (text.length > 30 ? "..." : "") : conv.title;
+      const newTitle =
+        conv.title === "New Chat"
+          ? text.slice(0, 30) + (text.length > 30 ? "..." : "")
+          : conv.title;
 
-    const store = useStore.getState();
-    store.addConversationMessage(conv.id, userMsg);
-    if (newTitle !== conv.title) store.updateConversation(conv.id, { title: newTitle });
-    setInput("");
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
-    userScrolledUpRef.current = false;
-
-    const storeNow = useStore.getState();
-    const convTerminals = storeNow.conversationTerminals[conv.id] ?? [];
-    let activeTermId: string | null = null;
-    if (convTerminals.length === 0) {
-      const currentActive = storeNow.activeSessionId;
-      if (currentActive && storeNow.sessions[currentActive]) {
-        const ownerConv = storeNow.getConversationForTerminal(currentActive);
-        if (!ownerConv || ownerConv === conv.id) {
-          activeTermId = currentActive;
-          storeNow.addTerminalToConversation(conv.id, currentActive);
-        }
+      const store = useStore.getState();
+      store.addConversationMessage(conv.id, userMsg);
+      if (newTitle !== conv.title) store.updateConversation(conv.id, { title: newTitle });
+      if (!hasPromptOverride) {
+        setInput("");
+        if (textareaRef.current) textareaRef.current.style.height = "auto";
       }
-      if (!activeTermId) {
-        try {
-          activeTermId = await createTerminalTab(undefined, true);
-          if (activeTermId) {
-            useStore.getState().addTerminalToConversation(conv.id, activeTermId);
+      userScrolledUpRef.current = false;
+
+      const storeNow = useStore.getState();
+      const convTerminals = storeNow.conversationTerminals[conv.id] ?? [];
+      let activeTermId: string | null = null;
+      if (convTerminals.length === 0) {
+        const currentActive = storeNow.activeSessionId;
+        if (currentActive && storeNow.sessions[currentActive]) {
+          const ownerConv = storeNow.getConversationForTerminal(currentActive);
+          if (!ownerConv || ownerConv === conv.id) {
+            activeTermId = currentActive;
+            storeNow.addTerminalToConversation(conv.id, currentActive);
           }
-        } catch {
-          // Terminal creation failed
         }
-      }
-    } else {
-      activeTermId = convTerminals[0];
-      if (storeNow.sessions[activeTermId] && storeNow.activeSessionId !== activeTermId) {
-        storeNow.setActiveSession(activeTermId);
-      }
-    }
-
-    if (activeTermId) {
-      try {
-        const { setActiveTerminalSession } = await import("@/lib/api/pty");
-        await setActiveTerminalSession(activeTermId);
-      } catch {
-        /* ignore */
-      }
-    }
-
-    const initialized = await initializeSession(conv);
-    if (!initialized) {
-      useStore
-        .getState()
-        .setMessageError(
-          conv.id,
-          t("ai.noModelSelected", "Please select a model first (bottom-left dropdown)")
-        );
-      return;
-    }
-
-    let prompt = text;
-    const executionModeId = chatExecutionModeRef.current;
-    if (conv.messages.length === 0 && shouldInjectPentestSystemPrompt(executionModeId)) {
-      const systemPrompt = buildPentestSystemPrompt();
-      if (systemPrompt) {
-        prompt = `[System Context]\n${systemPrompt}\n\n[User Message]\n${text}`;
-      }
-    }
-
-    try {
-      clearGenerationSuppressForAiSession(conv.aiSessionId);
-      useStore.getState().setConversationStreaming(conv.id, true);
-      const isTaskMode = executionModeId !== "chat";
-      if (isTaskMode) taskInProgressRef.current = true;
-
-      await setExecutionModeBackend(conv.aiSessionId, executionModeId).catch(() => {});
-
-      if (imageAttachments.length > 0) {
-        const payload = createTextPayload(prompt);
-        for (const img of imageAttachments) {
-          payload.parts.push({ type: "image", data: img.data, media_type: img.mediaType });
+        if (!activeTermId) {
+          try {
+            activeTermId = await createTerminalTab(undefined, true);
+            if (activeTermId) {
+              useStore.getState().addTerminalToConversation(conv.id, activeTermId);
+            }
+          } catch {
+            // Terminal creation failed
+          }
         }
-        await sendPromptWithAttachments(conv.aiSessionId, payload);
-        setImageAttachments([]);
       } else {
-        await sendPromptSession(conv.aiSessionId, prompt);
-      }
-
-      if (isTaskMode) {
-        taskInProgressRef.current = false;
-        useStore.getState().finalizeStreamingMessage(conv.id);
-      }
-
-      // Idle timeout: reset stuck streaming after 60s of inactivity
-      const convId = conv.id;
-      let lastMsgLength = 0;
-      let lastToolCount = 0;
-      let idleChecks = 0;
-      const checkInterval = setInterval(() => {
-        const s = useStore.getState();
-        const c = s.conversations[convId];
-        if (!c?.isStreaming) {
-          clearInterval(checkInterval);
-          return;
+        activeTermId = convTerminals[0];
+        if (storeNow.sessions[activeTermId] && storeNow.activeSessionId !== activeTermId) {
+          storeNow.setActiveSession(activeTermId);
         }
-        const lastMsg = c.messages[c.messages.length - 1];
-        const currentLength = lastMsg?.content?.length ?? 0;
-        const currentToolCount = lastMsg?.toolCalls?.length ?? 0;
-        const hasPendingTools = lastMsg?.toolCalls?.some((tc) => tc.success === undefined) ?? false;
-        if (hasPendingTools) {
-          idleChecks = 0;
-        } else if (currentLength === lastMsgLength && currentToolCount === lastToolCount) {
-          idleChecks++;
-          if (idleChecks >= 12) {
-            s.finalizeStreamingMessage(convId);
-            clearInterval(checkInterval);
+      }
+
+      if (activeTermId) {
+        try {
+          const { setActiveTerminalSession } = await import("@/lib/api/pty");
+          await setActiveTerminalSession(activeTermId);
+        } catch {
+          /* ignore */
+        }
+      }
+
+      const initialized = await initializeSession(conv);
+      if (!initialized) {
+        useStore
+          .getState()
+          .setMessageError(
+            conv.id,
+            t("ai.noModelSelected", "Please select a model first (bottom-left dropdown)")
+          );
+        return;
+      }
+
+      let prompt = text;
+      const executionModeId = chatExecutionModeRef.current;
+      if (conv.messages.length === 0 && shouldInjectPentestSystemPrompt(executionModeId)) {
+        const systemPrompt = buildPentestSystemPrompt();
+        if (systemPrompt) {
+          prompt = `[System Context]\n${systemPrompt}\n\n[User Message]\n${text}`;
+        }
+      }
+
+      try {
+        clearGenerationSuppressForAiSession(conv.aiSessionId);
+        useStore.getState().setConversationStreaming(conv.id, true);
+        const isTaskMode = executionModeId !== "chat";
+        if (isTaskMode) taskInProgressRef.current = true;
+
+        await setExecutionModeBackend(conv.aiSessionId, executionModeId).catch(() => {});
+
+        const attachmentsForSend = hasPromptOverride ? [] : imageAttachments;
+        if (attachmentsForSend.length > 0) {
+          const payload = createTextPayload(prompt);
+          for (const img of attachmentsForSend) {
+            payload.parts.push({ type: "image", data: img.data, media_type: img.mediaType });
           }
+          await sendPromptWithAttachments(conv.aiSessionId, payload);
+          setImageAttachments([]);
         } else {
-          lastMsgLength = currentLength;
-          lastToolCount = currentToolCount;
-          idleChecks = 0;
+          await sendPromptSession(conv.aiSessionId, prompt);
         }
-      }, 5_000);
-    } catch (err) {
-      taskInProgressRef.current = false;
-      const errMsg = err instanceof Error ? err.message : String(err);
-      useStore.getState().setMessageError(conv.id, errMsg, classifyErrorSeverity(errMsg));
-    }
-  }, [
-    input,
-    isStreaming,
-    activeConvId,
-    initializeSession,
-    buildPentestSystemPrompt,
-    imageAttachments,
-    setImageAttachments,
-    setInput,
-    textareaRef,
-    userScrolledUpRef,
-    chatExecutionModeRef,
-    taskInProgressRef,
-    createTerminalTab,
-    t,
-  ]);
+
+        if (isTaskMode) {
+          taskInProgressRef.current = false;
+          useStore.getState().finalizeStreamingMessage(conv.id);
+        }
+
+        // Idle timeout: reset stuck streaming after 60s of inactivity
+        const convId = conv.id;
+        let lastMsgLength = 0;
+        let lastToolCount = 0;
+        let idleChecks = 0;
+        const checkInterval = setInterval(() => {
+          const s = useStore.getState();
+          const c = s.conversations[convId];
+          if (!c?.isStreaming) {
+            clearInterval(checkInterval);
+            return;
+          }
+          const lastMsg = c.messages[c.messages.length - 1];
+          const currentLength = lastMsg?.content?.length ?? 0;
+          const currentToolCount = lastMsg?.toolCalls?.length ?? 0;
+          const hasPendingTools =
+            lastMsg?.toolCalls?.some((tc) => tc.success === undefined) ?? false;
+          if (hasPendingTools) {
+            idleChecks = 0;
+          } else if (currentLength === lastMsgLength && currentToolCount === lastToolCount) {
+            idleChecks++;
+            if (idleChecks >= 12) {
+              s.finalizeStreamingMessage(convId);
+              clearInterval(checkInterval);
+            }
+          } else {
+            lastMsgLength = currentLength;
+            lastToolCount = currentToolCount;
+            idleChecks = 0;
+          }
+        }, 5_000);
+      } catch (err) {
+        taskInProgressRef.current = false;
+        const errMsg = err instanceof Error ? err.message : String(err);
+        useStore.getState().setMessageError(conv.id, errMsg, classifyErrorSeverity(errMsg));
+      }
+    },
+    [
+      input,
+      isStreaming,
+      activeConvId,
+      initializeSession,
+      buildPentestSystemPrompt,
+      imageAttachments,
+      setImageAttachments,
+      setInput,
+      textareaRef,
+      userScrolledUpRef,
+      chatExecutionModeRef,
+      taskInProgressRef,
+      createTerminalTab,
+      t,
+    ]
+  );
 
   const handleStop = useCallback(() => {
     if (!activeConvId) return;

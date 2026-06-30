@@ -114,6 +114,6 @@ description: 遇到任何 bug、测试失败或异常行为时使用，在提出
 - 一次修复成功率：95% vs 40%
 - 引入新 bug：几乎为零 vs 经常发生
 
-## BaJie-MCP 集成说明
+## BajieAsk 集成说明
 
-本 skill 被 BaJie-MCP 主控中心在任务分发时使用。当主控派发 bug 修复任务给 bug_fix 角色时，会附带 `[SKILL: systematic-debugging]` 指引。
+本 skill 被 BajieAsk 主控中心在任务分发时使用。当主控派发 bug 修复任务给 bug_fix 角色时，会附带 `[SKILL: systematic-debugging]` 指引。

@@ -43,7 +43,7 @@
 
 - workflow 工具**不在这里**（在 golish，避循环依赖）；别往这加 workflow 执行。
 - graph 走 `graph_trait`（注入），不直接依赖 golish-graphiti 具体实现。
-- `security.rs` 里的 `check_stage_asset_coverage` 是只读提交预检：从 app bridge 取和前端覆盖面板同源的 stage asset snapshot，压缩成 `ready_to_submit`、cell 计数和 `gap_examples`。执行路径必须传入 active harness org/stage/operation，避免模型在 stage 外或错误组织上看覆盖。`next_wave_pending` cell 表示当前 stage 中新发现、等待下一批 `stage_run` 的资产，不能当作当前 wave 的 pending/error gap 阻止提交。
+- `security.rs` 里的 `check_stage_asset_coverage` 是只读提交预检：从 app bridge 取和前端覆盖面板同源的 stage asset snapshot，但 agent-facing 输出必须压缩成 `ready_to_submit`、cell 计数和 `gap_examples`；即使模型传 `include_assets=true` 也不返回完整 `assets` 矩阵，避免把大覆盖表灌回 LLM 上下文。执行路径必须传入 active harness org/stage/operation，避免模型在 stage 外或错误组织上看覆盖。`next_wave_pending` cell 表示当前 stage 中新发现、等待下一批 `stage_run` 的资产，不能当作当前 wave 的 pending/error gap 阻止提交。
 - `check_stage_asset_coverage` 在 `enumeration` 会把 `gap_examples` 解释为 EAS-confirmed live web-root worklist，并附带 `worklist_semantics` / `deliverable_contract`：worker 应先补 JSAPI/DIR/PARAM 缺口，不应重跑端口扫描、手写 DB-derived found cells 或提交 findings。
 - `list_enumeration_web_roots` 是 enumeration 的只读入口：复用同一 coverage snapshot，返回 EAS-confirmed live web roots、pending/terminal techniques、suggested tools 和 direct-vs-`pentest_run` 工具边界。Enumerator 应先用它拿工作单，不能用 `manage_targets` 改资产状态。
 

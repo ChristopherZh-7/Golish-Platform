@@ -48,6 +48,24 @@ enum RequestOutcome {
     },
 }
 
+/// Mirrors the native-provider query gate: company-name surveys run only
+/// requests that do not reference `{{domain}}`; domain-keyed surveys run only
+/// requests that do. This prevents domain expansion from re-firing broad org
+/// searches and keeps `root_domain=={{domain}}` templates from running empty.
+fn request_applies_to_domain_mode(
+    request: &golish_pentest::models::AssetIntelHttpRequest,
+    domain_mode: bool,
+) -> bool {
+    let is_domain_request = serde_json::to_string(request)
+        .map(|text| text.contains("{{domain}}"))
+        .unwrap_or(false);
+    if domain_mode {
+        is_domain_request
+    } else {
+        !is_domain_request
+    }
+}
+
 pub(crate) async fn run_http_json_provider(
     pool: &sqlx::PgPool,
     tool: &ToolConfig,
@@ -124,6 +142,38 @@ pub(crate) async fn run_http_json_provider(
         );
     }
 
+    let domain_mode = config
+        .domain
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|domain| !domain.is_empty());
+    let applicable_requests = requests
+        .iter()
+        .filter(|request| request_applies_to_domain_mode(request, domain_mode))
+        .collect::<Vec<_>>();
+    if applicable_requests.is_empty() {
+        let status = AssetIntelProviderRunStatus {
+            provider_id: provider_id.clone(),
+            status: AssetIntelProviderRunState::CheckedEmpty,
+            message: "http_json provider has no requests for this survey mode".into(),
+        };
+        return finish_provider_run(
+            sink,
+            run_id,
+            status,
+            0,
+            OrganizationCandidates::default(),
+            serde_json::json!({
+                "provider": provider_id,
+                "runId": run_id,
+                "state": "checked_empty",
+                "reason": "no_applicable_requests",
+                "domainMode": domain_mode,
+            }),
+            profile_entries,
+        );
+    }
+
     let secrets = match resolve_http_secrets(pool, asset, requests).await? {
         Ok(values) => values,
         Err(missing) => {
@@ -165,7 +215,7 @@ pub(crate) async fn run_http_json_provider(
     // failure is logged + recorded and the loop continues; the provider only
     // ends `Failed` when *nothing* succeeded.
     let mut any_request_succeeded = false;
-    'requests: for (index, request) in requests.iter().enumerate() {
+    'requests: for (index, request) in applicable_requests.iter().enumerate() {
         if index > 0 && !request_delay.is_zero() {
             // Rate-limit pacing: keep back-to-back requests under the upstream
             // ceiling (0.zone ≤ 2 req/s) so the server doesn't drop big bodies.
@@ -803,6 +853,29 @@ fn persist_http_artifacts(
 #[cfg(test)]
 mod http_runner_tests {
     use super::*;
+
+    fn request_for_test(query: &str) -> golish_pentest::models::AssetIntelHttpRequest {
+        golish_pentest::models::AssetIntelHttpRequest {
+            id: "test".into(),
+            method: "POST".into(),
+            url: "https://example.test/api".into(),
+            headers: std::collections::HashMap::new(),
+            form: std::collections::HashMap::new(),
+            json: serde_json::json!({ "query": query }),
+            timeout_secs: 5,
+        }
+    }
+
+    #[test]
+    fn request_applies_gates_http_requests_by_domain_mode() {
+        let company_request = request_for_test("{{company_name}}");
+        let domain_request = request_for_test("root_domain=={{domain}}");
+
+        assert!(request_applies_to_domain_mode(&company_request, false));
+        assert!(!request_applies_to_domain_mode(&company_request, true));
+        assert!(request_applies_to_domain_mode(&domain_request, true));
+        assert!(!request_applies_to_domain_mode(&domain_request, false));
+    }
 
     #[test]
     fn summarize_failed_when_no_request_succeeded() {

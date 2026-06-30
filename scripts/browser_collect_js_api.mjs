@@ -4,20 +4,25 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_MAX_PAGES = 6;
-const DEFAULT_MAX_ACTIONS = 8;
+const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_MAX_PAGES = 12;
+const DEFAULT_MAX_ACTIONS = 12;
 const DEFAULT_MAX_SCRIPT_BYTES = 5_000_000;
-const DEFAULT_MAX_RECURSIVE_SCRIPTS = 200;
-const DEFAULT_DEEP_TIMEOUT_MS = 60_000;
-const DEFAULT_DEEP_MAX_PAGES = 12;
-const DEFAULT_DEEP_MAX_ACTIONS = 12;
-const DEFAULT_DEEP_MAX_RECURSIVE_SCRIPTS = 1_000;
+const DEFAULT_MAX_RECURSIVE_SCRIPTS = 1_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
 const DEFAULT_BODY_TIMEOUT_MS = 3_000;
+const MAX_API_CAPTURE_BYTES = 512_000;
 const DEFAULT_CONTEXT_CLOSE_TIMEOUT_MS = 2_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 3_000;
 const TIMEOUT = Symbol("timeout");
+
+function progress(label, fields = {}) {
+  const suffix = Object.entries(fields)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `${key}=${String(value).replace(/\s+/g, " ").slice(0, 180)}`)
+    .join(" ");
+  process.stderr.write(`[browser_collect_js_api] ${label}${suffix ? ` ${suffix}` : ""}\n`);
+}
 
 function parseArgs(argv) {
   const args = {};
@@ -48,8 +53,8 @@ function toBool(value, fallback) {
   return ["1", "true", "yes", "y"].includes(String(value).toLowerCase());
 }
 
-function parseCrawlMode(value) {
-  return String(value ?? "fast").toLowerCase() === "deep" ? "deep" : "fast";
+function parseCrawlMode(_value) {
+  return "standard";
 }
 
 function parseRecipe(value) {
@@ -225,7 +230,12 @@ function looksLikeJsRef(value) {
   );
 }
 
-function scanJsForReferences(text) {
+function isBundledModuleSpecifier(ref) {
+  return ref.startsWith("./") || ref.startsWith("../");
+}
+
+function scanJsForReferenceCandidates(text, options = {}) {
+  const allowRelativeModules = Boolean(options.allowRelativeModules);
   const patterns = [
     /import\s*\(\s*["']([^"']+\.(?:js|mjs|cjs)(?:\?[^"']*)?)["']\s*\)/g,
     /["']((?:\.{0,2}\/)[^"']*?\.(?:js|mjs|cjs)(?:\?[^"']*)?)["']/g,
@@ -235,18 +245,35 @@ function scanJsForReferences(text) {
     /\b(?:src|file|path|chunk|url)["']?\s*:\s*["']([^"']+\.(?:js|mjs|cjs)(?:\?[^"']*)?)["']/g,
   ];
 
-  const refs = [];
+  const autoRefs = [];
+  const aiReviewRefs = [];
   const seen = new Set();
-  for (const pattern of patterns) {
+  const reviewSeen = new Set();
+  for (const [patternIndex, pattern] of patterns.entries()) {
     for (const match of text.matchAll(pattern)) {
       const ref = match[1];
+      if (
+        patternIndex !== 0 &&
+        !allowRelativeModules &&
+        isBundledModuleSpecifier(ref)
+      ) {
+        if (!reviewSeen.has(ref)) {
+          reviewSeen.add(ref);
+          aiReviewRefs.push(ref);
+        }
+        continue;
+      }
       if (looksLikeJsRef(ref) && !seen.has(ref)) {
         seen.add(ref);
-        refs.push(ref);
+        autoRefs.push(ref);
       }
     }
   }
-  return refs;
+  return { auto_refs: autoRefs, ai_review_refs: aiReviewRefs };
+}
+
+function scanJsForReferences(text, options = {}) {
+  return scanJsForReferenceCandidates(text, options).auto_refs;
 }
 
 function extractInterestingSnippets(text) {
@@ -529,6 +556,78 @@ function outputFilenameForScript(scriptUrl, body) {
   return `${sha256Prefix(body)}_${sanitizeFilename(basename)}`;
 }
 
+function outputFilenameForApiCapture(method, urlString) {
+  let basename = "api";
+  try {
+    const url = new URL(urlString);
+    basename = path.posix.basename(url.pathname) || basename;
+  } catch {
+    basename = String(urlString || basename).split("/").pop() || basename;
+  }
+  const hash = crypto.createHash("sha256").update(`${method} ${urlString}`).digest("hex").slice(0, 12);
+  return `${method.toLowerCase()}_${hash}_${sanitizeFilename(basename)}.json`;
+}
+
+function textualBodySample(contentType, body) {
+  if (!body || body.length === 0) return "";
+  if (!/(?:text|json|javascript|xml|x-www-form-urlencoded|graphql)/i.test(contentType || "")) {
+    return "";
+  }
+  return body.toString("utf8").slice(0, 64_000);
+}
+
+async function saveApiResponseCapture(
+  workspace,
+  targetHost,
+  targetPort,
+  entry,
+  headers,
+  body,
+  extra = {},
+) {
+  let urlPath = "/api";
+  try {
+    urlPath = new URL(entry.url).pathname || urlPath;
+  } catch {
+    // keep fallback
+  }
+  const parent = safeParentFromUrlPath(urlPath);
+  const relativeDir = path.join(
+    ".golish",
+    "captures",
+    targetHost,
+    String(targetPort),
+    "api",
+    parent,
+  );
+  const dir = path.join(workspace, relativeDir);
+  await fs.mkdir(dir, { recursive: true });
+  const fullPath = path.join(dir, outputFilenameForApiCapture(entry.method, entry.url));
+  const contentType = headers["content-type"] ?? "";
+  const bodyBuffer = Buffer.isBuffer(body) ? body : null;
+  const payload = {
+    version: 1,
+    captured_at: new Date().toISOString(),
+    request: {
+      method: entry.method,
+      url: entry.url,
+      resource_type: entry.resource_type,
+    },
+    response: {
+      status: entry.status,
+      headers,
+      content_type: contentType,
+      body_len: bodyBuffer?.length ?? 0,
+      body_sha256: bodyBuffer ? sha256Hex(bodyBuffer) : null,
+      body_text_sample: textualBodySample(contentType, bodyBuffer),
+      body_base64: bodyBuffer ? bodyBuffer.toString("base64") : null,
+      ...extra,
+    },
+  };
+  await fs.writeFile(fullPath, `${JSON.stringify(payload, null, 2)}\n`);
+  return path.relative(workspace, fullPath);
+}
+
 async function saveScriptCapture(workspace, targetHost, targetPort, scriptUrl, body) {
   let urlPath = "/unknown.js";
   try {
@@ -648,6 +747,20 @@ function sameOrigin(urlString, origin) {
   }
 }
 
+function summarizeRecursiveErrors(errors, sampleLimit = 20) {
+  const byStatus = new Map();
+  for (const error of errors) {
+    const status = error?.status == null ? "network" : String(error.status);
+    byStatus.set(status, (byStatus.get(status) ?? 0) + 1);
+  }
+  return {
+    sample: errors.slice(0, sampleLimit),
+    by_status: [...byStatus.entries()]
+      .map(([status, count]) => ({ status, count }))
+      .sort((a, b) => b.count - a.count || a.status.localeCompare(b.status)),
+  };
+}
+
 function resolveSameOriginUrl(value, targetUrl) {
   try {
     const resolved = new URL(value, targetUrl.href);
@@ -663,6 +776,16 @@ function resolveSameOriginPath(value, targetUrl) {
     const resolved = new URL(value, targetUrl.href);
     if (resolved.origin !== targetUrl.origin) return null;
     return `${resolved.pathname}${resolved.search}`;
+  } catch {
+    return null;
+  }
+}
+
+function resolveAllowedScriptUrl(value, targetUrl, allowedOrigins) {
+  try {
+    const resolved = new URL(value, targetUrl.href);
+    if (!allowedOrigins.has(resolved.origin)) return null;
+    return resolved.href;
   } catch {
     return null;
   }
@@ -878,29 +1001,28 @@ async function main() {
   const targetPort =
     targetUrl.port || (targetUrl.protocol === "http:" ? "80" : "443");
   const crawlMode = parseCrawlMode(args.crawl_mode);
-  const deepMode = crawlMode === "deep";
   const timeoutMs = toInt(
     args.timeout_ms,
-    deepMode ? DEFAULT_DEEP_TIMEOUT_MS : DEFAULT_TIMEOUT_MS,
+    DEFAULT_TIMEOUT_MS,
     5_000,
     300_000,
   );
   const hardTimeoutMs = toInt(
     args.hard_timeout_ms,
-    deepMode ? Math.max(timeoutMs + 90_000, 120_000) : timeoutMs + 20_000,
+    Math.max(timeoutMs + 60_000, 120_000),
     10_000,
     600_000,
   );
   const hardDeadline = Date.now() + hardTimeoutMs;
   const maxPages = toInt(
     args.max_pages,
-    deepMode ? DEFAULT_DEEP_MAX_PAGES : DEFAULT_MAX_PAGES,
+    DEFAULT_MAX_PAGES,
     1,
     100,
   );
   const maxActions = toInt(
     args.max_actions,
-    deepMode ? DEFAULT_DEEP_MAX_ACTIONS : DEFAULT_MAX_ACTIONS,
+    DEFAULT_MAX_ACTIONS,
     0,
     100,
   );
@@ -912,7 +1034,7 @@ async function main() {
   );
   const maxRecursiveScripts = toInt(
     args.max_recursive_scripts,
-    deepMode ? DEFAULT_DEEP_MAX_RECURSIVE_SCRIPTS : DEFAULT_MAX_RECURSIVE_SCRIPTS,
+    DEFAULT_MAX_RECURSIVE_SCRIPTS,
     0,
     10_000,
   );
@@ -926,23 +1048,30 @@ async function main() {
   const recipeManifestPaths = safeStringArray(recipe.manifest_paths, 20)
     .map((route) => resolveSameOriginPath(route, targetUrl))
     .filter(Boolean);
-  const recipeScriptUrls = safeStringArray(recipe.script_urls, deepMode ? 500 : 100)
-    .map((route) => resolveSameOriginUrl(route, targetUrl))
-    .filter(Boolean);
+  const recipeScriptUrlHints = safeStringArray(recipe.script_urls, DEFAULT_MAX_RECURSIVE_SCRIPTS);
   const recipeClickTexts = safeStringArray(recipe.click_texts, 20, 120);
   const recipePublicPath =
     typeof recipe.public_path === "string" ? recipe.public_path.trim().slice(0, 300) : null;
-  const recipeChunkPairs = safeChunkPairs(recipe.chunk_pairs, deepMode ? 1_000 : 200);
+  const recipeChunkPairs = safeChunkPairs(recipe.chunk_pairs, DEFAULT_MAX_RECURSIVE_SCRIPTS);
   const recipeSummary = {
     crawl_mode: crawlMode,
     routes: recipeRoutes.length,
     manifest_paths: recipeManifestPaths.length,
-    script_urls: recipeScriptUrls.length,
+    script_urls: recipeScriptUrlHints.length,
     click_texts: recipeClickTexts.length,
     public_path: recipePublicPath || null,
     chunk_pairs: recipeChunkPairs.length,
   };
 
+  progress("start", {
+    target: targetUrl.href,
+    timeout_ms: timeoutMs,
+    hard_timeout_ms: hardTimeoutMs,
+    max_pages: maxPages,
+    max_actions: maxActions,
+    max_recursive_scripts: maxRecursiveScripts,
+  });
+  progress("launch_browser");
   const browser = await withTimeout(launchBrowser(), timeLeft(hardDeadline, 15_000));
   if (browser === TIMEOUT) {
     throw new Error(`browser launch timed out after ${hardTimeoutMs} ms hard deadline`);
@@ -965,9 +1094,11 @@ async function main() {
     await route.continue().catch(() => {});
   });
   const page = await context.newPage();
+  progress("browser_ready", { block_noise: blockNoise, same_origin: restrictApisToSameOrigin });
 
   const scriptsByUrl = new Map();
   const scriptInsightsByUrl = new Map();
+  const aiReviewRefsByKey = new Map();
   const recursiveQueue = [];
   const queuedRecursiveUrls = new Set();
   const scriptPathByHash = new Map();
@@ -985,6 +1116,9 @@ async function main() {
   let contextCloseTimedOut = false;
   let browserCloseTimedOut = false;
   let duplicateContentHits = 0;
+  let apiTraceCount = 0;
+  let scriptTraceCount = 0;
+  let recursiveTraceCount = 0;
 
   const recordRecursiveError = (url, status, reason) => {
     if (recursiveErrors.length >= 100) return;
@@ -992,6 +1126,17 @@ async function main() {
       url,
       status,
       reason,
+    });
+  };
+
+  const recordAiReviewRef = (ref, source) => {
+    const key = `${source} ${ref}`;
+    if (aiReviewRefsByKey.has(key) || aiReviewRefsByKey.size >= 500) return;
+    aiReviewRefsByKey.set(key, {
+      ref,
+      source_url: source,
+      resolved_candidate: resolveScriptReference(ref, source),
+      reason: "relative_js_module_specifier_not_auto_fetched",
     });
   };
 
@@ -1017,7 +1162,11 @@ async function main() {
     const text = body.toString("utf8");
     const detectedPublicPath = extractPublicPath(text);
     publicPathHint ||= recipePublicPath || detectedPublicPath;
-    const refs = scanJsForReferences(text);
+    const refCandidates = scanJsForReferenceCandidates(text);
+    const refs = refCandidates.auto_refs;
+    for (const ref of refCandidates.ai_review_refs) {
+      recordAiReviewRef(ref, scriptUrl);
+    }
     const runtimeChunkUrls = expandRuntimeChunkUrls(
       text,
       recipePublicPath || detectedPublicPath || publicPathHint,
@@ -1040,6 +1189,7 @@ async function main() {
       size: body.length,
       public_path_detected: detectedPublicPath,
       refs_sample: refs.slice(0, 20),
+      ai_review_refs_sample: refCandidates.ai_review_refs.slice(0, 20),
       chunk_urls_sample: chunkUrls.slice(0, 20),
       runtime_chunk_urls_sample: runtimeChunkUrls.slice(0, 20),
       vite_chunk_urls_sample: viteChunkUrls.slice(0, 20),
@@ -1083,6 +1233,25 @@ async function main() {
     cachedScriptsPreloaded += 1;
     enqueueRefsFromScript(entry.url, body);
   }
+  progress("preload_cached_scripts", {
+    cached: cachedScriptsPreloaded,
+    queued_recursive: recursiveQueue.length,
+  });
+
+  const allowedRecipeScriptOrigins = new Set([targetUrl.origin]);
+  for (const script of scriptsByUrl.values()) {
+    try {
+      allowedRecipeScriptOrigins.add(new URL(script.url).origin);
+    } catch {
+      // Ignore malformed cached script URLs.
+    }
+  }
+  const recipeScriptUrls = recipeScriptUrlHints
+    .map((scriptUrl) =>
+      resolveAllowedScriptUrl(scriptUrl, targetUrl, allowedRecipeScriptOrigins),
+    )
+    .filter(Boolean);
+  recipeSummary.script_urls = recipeScriptUrls.length;
 
   for (const scriptUrl of recipeScriptUrls) {
     enqueueScriptUrl(scriptUrl, targetUrl.href);
@@ -1143,7 +1312,7 @@ async function main() {
         }
         fetched += 1;
         for (const ref of [
-          ...scanJsForReferences(body),
+          ...scanJsForReferences(body, { allowRelativeModules: true }),
           ...extractJsonManifestReferences(body, manifestUrl),
         ]) {
           enqueueScriptUrl(resolveManifestReference(ref, manifestUrl), manifestUrl);
@@ -1189,6 +1358,10 @@ async function main() {
         resource_type: type,
         status: null,
       });
+      if (apiTraceCount < 80) {
+        progress("api_observed", { method: request.method(), url });
+        apiTraceCount += 1;
+      }
     }
   });
 
@@ -1199,7 +1372,49 @@ async function main() {
     const type = request.resourceType();
 
     if ((type === "xhr" || type === "fetch") && apiRequestsByKey.has(`${request.method()} ${url}`)) {
-      apiRequestsByKey.get(`${request.method()} ${url}`).status = response.status();
+      const entry = apiRequestsByKey.get(`${request.method()} ${url}`);
+      entry.status = response.status();
+      entry.headers = headers;
+      entry.content_type = headers["content-type"] ?? "";
+      const contentLength = Number.parseInt(headers["content-length"] ?? "0", 10);
+      const task = (async () => {
+        try {
+          if (Number.isFinite(contentLength) && contentLength > MAX_API_CAPTURE_BYTES) {
+            entry.capture_path = await saveApiResponseCapture(
+              workspace,
+              targetHost,
+              targetPort,
+              entry,
+              headers,
+              null,
+              {
+                body_truncated: true,
+                body_skipped_reason: `content-length>${MAX_API_CAPTURE_BYTES}`,
+              },
+            );
+            return;
+          }
+          const body = await withTimeout(response.body(), timeLeft(hardDeadline, 10_000));
+          if (body === TIMEOUT) {
+            pendingBodyTimeouts += 1;
+            entry.capture_error = "body-timeout";
+            return;
+          }
+          entry.capture_path = await saveApiResponseCapture(
+            workspace,
+            targetHost,
+            targetPort,
+            entry,
+            headers,
+            body,
+            { body_truncated: false },
+          );
+        } catch (error) {
+          entry.capture_error = String(error?.message ?? error).slice(0, 300);
+        }
+      })();
+      pending.add(task);
+      task.finally(() => pending.delete(task));
     }
 
     const scriptKey = canonicalScriptUrl(url);
@@ -1265,6 +1480,15 @@ async function main() {
           sha256: sha,
           duplicate_of: duplicateOf,
         });
+        if (scriptTraceCount < 80) {
+          progress(duplicateOf ? "script_seen_duplicate" : "script_saved", {
+            status: response.status(),
+            bytes: body.length,
+            path: pathOnDisk,
+            url,
+          });
+          scriptTraceCount += 1;
+        }
       })()
       .catch((error) => {
         scriptsByUrl.set(scriptKey, {
@@ -1297,6 +1521,12 @@ async function main() {
         hardDeadlineHit = true;
         break;
       }
+      progress("goto", {
+        page: seenPages.size,
+        queued: queue.length,
+        url: nextUrl,
+        timeout_ms: navTimeout,
+      });
       await page.goto(nextUrl, {
         waitUntil: "commit",
         timeout: Math.max(1, navTimeout),
@@ -1340,6 +1570,14 @@ async function main() {
           .catch(() => {});
       }
       await waitWithinDeadline(750, hardDeadline);
+      progress("page_exercised", {
+        url: page.url(),
+        clicked: exercised.clicked,
+        total_actions: actionsClicked,
+        scripts_seen: scriptsByUrl.size,
+        api_seen: apiRequestsByKey.size,
+        queued_recursive: recursiveQueue.length,
+      });
 
       const domScriptUrls = await withTimeout(
         collectDomScriptCandidates(
@@ -1389,9 +1627,11 @@ async function main() {
   );
   if (pendingResult === TIMEOUT) {
     pendingWaitTimedOut = true;
+    progress("pending_response_wait_timeout", { pending: pending.size });
   }
 
   if (timeLeft(hardDeadline) > 0) {
+    progress("fetch_manifests", { queued_recursive: recursiveQueue.length });
     await fetchManifests();
   } else {
     hardDeadlineHit = true;
@@ -1399,7 +1639,7 @@ async function main() {
 
   const recursiveDeadline = Math.min(
     hardDeadline,
-    Date.now() + (deepMode ? Math.min(hardTimeoutMs, 180_000) : Math.min(timeoutMs, 30_000)),
+    Date.now() + Math.min(hardTimeoutMs, 180_000),
   );
   while (
     recursiveQueue.length > 0 &&
@@ -1490,6 +1730,16 @@ async function main() {
         duplicate_of: duplicateOf,
       });
       recursiveScriptsDownloaded += 1;
+      if (recursiveTraceCount < 120) {
+        progress(duplicateOf ? "recursive_script_duplicate" : "recursive_script_saved", {
+          count: recursiveScriptsDownloaded,
+          status: response.status,
+          bytes: body.length,
+          path: pathOnDisk,
+          url: response.url,
+        });
+        recursiveTraceCount += 1;
+      }
       enqueueRefsFromScript(response.url, body);
     } catch (error) {
       recordRecursiveError(
@@ -1504,6 +1754,12 @@ async function main() {
     hardDeadlineHit = true;
   }
 
+  progress("close_browser", {
+    scripts_seen: scriptsByUrl.size,
+    recursive_downloaded: recursiveScriptsDownloaded,
+    api_seen: apiRequestsByKey.size,
+    deadline_hit: hardDeadlineHit,
+  });
   contextCloseTimedOut = await closeContextHard(context);
   browserCloseTimedOut = await closeBrowserHard(browser);
 
@@ -1519,10 +1775,16 @@ async function main() {
   const apiRequests = [...apiRequestsByKey.values()].sort((a, b) =>
     a.url.localeCompare(b.url),
   );
-  const scriptsSaved = scripts.filter((s) => s.path).length;
+  const scriptsWithPath = scripts.filter((s) => s.path);
+  const uniqueScriptPaths = new Set(scriptsWithPath.map((s) => s.path));
+  const scriptsObserved = scripts.length;
+  const scriptManifestEntries = scriptsWithPath.length;
+  const scriptsSaved = uniqueScriptPaths.size;
   const scriptObservations = [...scriptInsightsByUrl.values()]
     .sort((a, b) => b.size - a.size)
     .slice(0, 8);
+  const recursiveErrorSummary = summarizeRecursiveErrors(recursiveErrors);
+  const aiReviewRefs = [...aiReviewRefsByKey.values()].slice(0, 100);
   const aiAssistReasons = [];
   if (scriptsSaved === 0) {
     aiAssistReasons.push("no_js_saved");
@@ -1535,6 +1797,9 @@ async function main() {
   }
   if (navigationErrors.length > 0) {
     aiAssistReasons.push("navigation_or_interaction_errors");
+  }
+  if (aiReviewRefs.length > 0) {
+    aiAssistReasons.push("relative_js_refs_need_ai_review");
   }
   const recursiveLimitHit =
     recursiveQueue.length > 0 && recursiveScriptsDownloaded >= maxRecursiveScripts;
@@ -1574,16 +1839,23 @@ async function main() {
           signals: {
             crawl_mode: crawlMode,
             scripts_saved: scriptsSaved,
+            unique_scripts_saved: scriptsSaved,
+            scripts_observed: scriptsObserved,
+            script_manifest_entries: scriptManifestEntries,
+            scripts_duplicate_content_hits: duplicateContentHits,
             api_requests_total: apiRequests.length,
             scripts_recursive_downloaded: recursiveScriptsDownloaded,
             recursive_queue_remaining: recursiveQueue.length,
             closure_complete: closureComplete,
             recursive_errors: recursiveErrors.length,
+            recursive_errors_by_status: recursiveErrorSummary.by_status,
+            ai_review_refs: aiReviewRefsByKey.size,
             pages_visited: seenPages.size,
           },
-          recursive_errors_sample: recursiveErrors.slice(0, 20),
+          recursive_errors_sample: recursiveErrorSummary.sample,
           script_observations: scriptObservations,
           api_requests_sample: apiRequests.slice(0, 20),
+          ai_review_refs_sample: aiReviewRefs.slice(0, 30),
           console_errors_sample: consoleErrors.slice(0, 10),
           navigation_errors_sample: navigationErrors.slice(0, 10),
         },
@@ -1597,6 +1869,16 @@ async function main() {
       : !closureComplete
         ? "closure_partial"
       : "ok";
+
+  progress("summary", {
+    status,
+    scripts_saved: scriptsSaved,
+    scripts_observed: scriptsObserved,
+    script_manifest_entries: scriptManifestEntries,
+    api_requests: apiRequests.length,
+    recursive_errors: recursiveErrors.length,
+    closure_complete: closureComplete,
+  });
 
   await writeJsonAndExit({
         status,
@@ -1612,7 +1894,10 @@ async function main() {
         blocked_resource_requests: blockedResourceRequests,
         pages_visited: [...seenPages],
         actions_clicked: actionsClicked,
-        scripts_total: scripts.length,
+        scripts_total: scriptsObserved,
+        scripts_observed: scriptsObserved,
+        script_manifest_entries: scriptManifestEntries,
+        unique_scripts_saved: scriptsSaved,
         scripts_saved: scriptsSaved,
         scripts_cached_preloaded: cachedScriptsPreloaded,
         scripts_duplicate_content_hits: duplicateContentHits,
@@ -1625,7 +1910,13 @@ async function main() {
         recursive_limit_hit: recursiveLimitHit,
         closure_complete: closureComplete,
         closure_incomplete_reasons: closureIncompleteReasons,
-        recursive_errors: recursiveErrors,
+        recursive_errors_total: recursiveErrors.length,
+        recursive_errors_by_status: recursiveErrorSummary.by_status,
+        recursive_errors_truncated: recursiveErrors.length > recursiveErrorSummary.sample.length,
+        recursive_errors: recursiveErrorSummary.sample,
+        ai_review_refs_total: aiReviewRefsByKey.size,
+        ai_review_refs_truncated: aiReviewRefsByKey.size > aiReviewRefs.length,
+        ai_review_refs: aiReviewRefs,
         recipe_applied: recipeSummary,
         ai_assist: aiAssist,
         scripts,

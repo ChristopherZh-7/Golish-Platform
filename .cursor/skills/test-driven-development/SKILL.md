@@ -220,6 +220,6 @@ PASS
 
 没有你的人类伙伴的许可，没有例外。
 
-## BaJie-MCP 集成说明
+## BajieAsk 集成说明
 
-本 skill 被 BaJie-MCP 主控中心在任务分发时使用。当主控派发功能开发任务给 feature_dev / backend_dev / frontend_dev 时，会附带 `[SKILL: test-driven-development]` 指引。
+本 skill 被 BajieAsk 主控中心在任务分发时使用。当主控派发功能开发任务给 feature_dev / backend_dev / frontend_dev 时，会附带 `[SKILL: test-driven-development]` 指引。

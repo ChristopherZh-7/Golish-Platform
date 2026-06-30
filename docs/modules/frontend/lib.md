@@ -29,6 +29,7 @@
 | `models/` / `settings/` / `theme/` / `i18n/` / `terminal/` / `ui-state/` / `serde_json/` | 模型 / 设置 / 主题 / 国际化 / 终端 / UI 状态 / JSON 工具 |
 
 `ai/streaming-buffer.ts` 是流式更新的节流入口：text delta、reasoning/thinking、sub-agent thinking、tool output chunk、聊天气泡 thinking 都应先进入 16ms batch，再统一写 store；非文本边界事件（tool request/result/completed/error）前要 flush 对应 session/conv，保证显示顺序不漂。
+`ai/execution-mode.ts` 是 execution mode/profile 的共享归一入口：`task` 是 legacy Task engine alias，恢复或写入持久化前必须用 `normalizeExecutionModeId` 转成具体 harness profile id（优先 last profile，否则 `assessment`）。`lastExecutionMode` localStorage 也存 profile id，不存裸 `task`，避免 reopen 后 UI 只显示普通 Task。
 `scroll-stickiness.ts` 是 live detail / thinking panes 的贴底判定：向上滚动是用户接管信号，必须暂停 auto-follow；只有滚回底部阈值内才重新启用。
 `conversation-db-sync.ts` 的 autosave 指纹必须覆盖 timeline block 内容变化，而不只看 block 数量/最后一块 id；`sub_agent_activity.entries/toolCalls/result/thinking`、`ai_tool_execution.streamingOutput/result` 和 `Session.stageRuns[requestId]` 都是恢复 stage_run 历史详情所需状态，关窗前必须能触发 DB 保存。`terminal_state.stage_run_json` 允许 v2 包 `{ current, byRequestId }`，恢复端仍兼容旧的单个 `SessionStageRun` JSON。
 
@@ -42,7 +43,8 @@
 - **不变量（AGENTS.md §2.3）**：组件调后端走 `lib/api/<domain>.ts`，**禁裸 `invoke()`**；`invoke` 只在 `api/client.ts`。
 - **不变量 I1**：错误按 `error-codes.ts` 的 `code` 翻译，不靠 HTTP status 做业务判断。
 - 加新后端域：加 `lib/api/<domain>.ts` wrapper + 在 `api/index.ts` 注册。
-- `target-panel/org-tree.ts` 是 TargetPanel 左侧组织树投影入口，默认只用于公司层级和计数；`summarizeTargetCounts` 同时给出 own 与 subtree 口径，UI 主数字必须用 own，删除/汇总才用 subtree；`target-panel/asset-groups.ts` 负责右侧 Targets 面板的 IP ⇄ 域名/URL 联合分组，避免大型客户的资产列表遮住子公司层级。
+- `target-panel/org-tree.ts` 是 TargetPanel 左侧组织树投影入口，默认只用于公司层级和计数；`summarizeTargetCounts` 同时给出 own 与 subtree 口径，UI 主数字必须用 own，删除/汇总才用 subtree；`target-panel/asset-groups.ts` 负责右侧 Targets 面板的 IP ⇄ 域名/URL 联合分组，避免大型客户的资产列表遮住子公司层级。IP target 必须按自己的 `value` 成组，即使 `real_ip` 里有 provider 归因值；只有 domain / url 才用 `real_ip` 挂到 IP 组，否则会出现“IP 下面挂 IP”的误导。IP 组的展示列表要把 `www.<apex>` 折叠到 `<apex>`，优先展示 apex，但不要折叠 `m.` / `api.` 等真实子域，底层 `targets` 和计数仍保留原始资产。
+- `api/security-analysis.ts` 是 Target Surface 安全数据的 IPC 边界；后端命令返回 `serde_json` 时字段是 Rust snake_case（如 `asset_type` / `target_id` / `status_code`），wrapper 必须在这里归一成前端接口声明的 camelCase（`assetType` / `targetId` / `statusCode` 等），不要让组件直接消费未规整的原始行。
 - `tools.ts::toolResultIndicatesFailure` 是工具结果显示态的共享判定：transport success 不等于业务成功，组件画状态图标前要检查 rejected/needs_fix/error/failed、非 0 exit、以及 stderr 里的 ERROR/FATAL/EXCEPTION。
 - `tools.ts::getToolActionLabel` 是工具卡片头部的共享人类动作文案入口，折叠态不要直接展示 `snake_case` 内部工具名；raw tool name 只作为 hover/debug 信息。`pentest_run` 应优先显示意图（如 `Probing services` / `Scanning ports`），不要把 `Running Nmap nmap ...` 这种重复文案带到卡片里。`tools.ts::getToolPrimaryArg` 是聊天工具卡、sub-agent 折叠行、工具执行卡的共享参数摘要入口；`wait_for_background_jobs` 必须在折叠态显示实际 `timeout_secs`，没传时显示默认 300s；`pentest_run` 带 `input_lines` / `stdin` 批量输入时必须显示 batch 数量和首尾目标，并把 `{{input_file}}` 这类展示占位替换成 `[input file]`，避免多批次工具看起来像重复执行同一条命令。`getPentestRunInputLines` 是同一批量输入的共享解析器，live coverage 资产匹配也要复用它，避免 UI 展示是 batch、覆盖匹配却看不到资产。
 

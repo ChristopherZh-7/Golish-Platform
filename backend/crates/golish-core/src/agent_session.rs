@@ -15,7 +15,9 @@
 //! (e.g. the eval harness or a direct `execute_tool` call), and callers must
 //! treat the absence of a session id as "not attributable", never as an error.
 
-use crate::events::ToolSource;
+use tokio::sync::mpsc;
+
+use crate::events::{AiEvent, ToolSource};
 
 /// The currently executing tool call, when a tool is running inside the agentic
 /// loop. This is intentionally tiny and UI-oriented: it is only for correlating
@@ -35,6 +37,7 @@ pub struct AgentToolContext {
 tokio::task_local! {
     static CURRENT_AGENT_SESSION: Option<String>;
     static CURRENT_AGENT_TOOL_CONTEXT: Option<AgentToolContext>;
+    static CURRENT_AGENT_TOOL_OUTPUT_SENDER: Option<mpsc::UnboundedSender<AiEvent>>;
 }
 
 /// Run `fut` with `session_id` set as the current agent session for the whole
@@ -56,6 +59,21 @@ where
     CURRENT_AGENT_TOOL_CONTEXT.scope(tool_context, fut).await
 }
 
+/// Run `fut` with a sender that lets ordinary tool implementations emit live
+/// output chunks back to the visible tool card without widening the `Tool`
+/// trait signature.
+pub async fn with_agent_tool_output_sender<F, T>(
+    output_sender: Option<mpsc::UnboundedSender<AiEvent>>,
+    fut: F,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    CURRENT_AGENT_TOOL_OUTPUT_SENDER
+        .scope(output_sender, fut)
+        .await
+}
+
 /// The current agent session id, or `None` when not running inside
 /// [`with_agent_session`]. Never panics if the task-local is unset.
 pub fn current_agent_session() -> Option<String> {
@@ -69,6 +87,37 @@ pub fn current_agent_tool_context() -> Option<AgentToolContext> {
         .try_with(|ctx| ctx.clone())
         .ok()
         .flatten()
+}
+
+/// The current live-output sender, or `None` outside an agent tool execution
+/// scope.
+pub fn current_agent_tool_output_sender() -> Option<mpsc::UnboundedSender<AiEvent>> {
+    CURRENT_AGENT_TOOL_OUTPUT_SENDER
+        .try_with(|sender| sender.clone())
+        .ok()
+        .flatten()
+}
+
+/// Emit a live output chunk for the currently executing tool call. This is
+/// best-effort and no-ops when a tool is run outside the agent UI.
+pub fn emit_current_agent_tool_output_chunk(chunk: impl Into<String>, stream: impl Into<String>) {
+    let chunk = chunk.into();
+    if chunk.is_empty() {
+        return;
+    }
+    let Some(tool_context) = current_agent_tool_context() else {
+        return;
+    };
+    let Some(sender) = current_agent_tool_output_sender() else {
+        return;
+    };
+    let _ = sender.send(AiEvent::ToolOutputChunk {
+        request_id: tool_context.request_id,
+        tool_name: tool_context.tool_name,
+        chunk,
+        stream: stream.into(),
+        source: tool_context.source,
+    });
 }
 
 #[cfg(test)]
@@ -149,5 +198,41 @@ mod tests {
         .await;
         assert_eq!(got.0, Some(inner));
         assert_eq!(got.1, Some(outer));
+    }
+
+    #[tokio::test]
+    async fn tool_output_chunk_emits_inside_scope() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let ctx = AgentToolContext {
+            request_id: "req-1".to_string(),
+            tool_name: "browser_collect_js_api".to_string(),
+            source: ToolSource::Main,
+            organization_id: None,
+        };
+
+        with_agent_tool_context(
+            Some(ctx),
+            with_agent_tool_output_sender(Some(tx), async {
+                emit_current_agent_tool_output_chunk("opening page\n", "stderr");
+            }),
+        )
+        .await;
+
+        match rx.try_recv().expect("chunk should be emitted") {
+            AiEvent::ToolOutputChunk {
+                request_id,
+                tool_name,
+                chunk,
+                stream,
+                source,
+            } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(tool_name, "browser_collect_js_api");
+                assert_eq!(chunk, "opening page\n");
+                assert_eq!(stream, "stderr");
+                assert_eq!(source, ToolSource::Main);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }

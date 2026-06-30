@@ -112,6 +112,35 @@ describe("buildTopologyModel", () => {
       })
     );
   });
+
+  it("projects DB-backed JS/API/path/param summaries into surface mode", () => {
+    const root = makeOrg("root", "Root");
+    const target = makeTarget("target-1", "app.example.com", root.id);
+    const model = buildTopologyModel([root], [target], {
+      mode: "surface",
+      visibility: visible,
+      surfaceByTargetId: new Map([
+        [target.id, { endpoints: 3, params: 5, paths: 7, js: 2 }],
+      ]),
+    });
+
+    expect(model.stats).toMatchObject({
+      endpoints: 3,
+      params: 5,
+      paths: 7,
+      js: 2,
+    });
+    expect(model.nodes.find((node) => node.id === "target:target-1")?.metrics).toMatchObject({
+      endpoints: 3,
+      params: 5,
+      paths: 7,
+      js: 2,
+    });
+    expect(model.nodes.find((node) => node.id === "surface:target-1")).toMatchObject({
+      label: "API surface",
+      subtitle: "3 API · 5 params · 7 paths · 2 JS",
+    });
+  });
 });
 
 describe("topology focus / lineage", () => {

@@ -11,6 +11,18 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+fn build_clear_engagement_org_for_subtree_sql() -> String {
+    "WITH RECURSIVE subtree AS ( \
+         SELECT id FROM organizations WHERE id = $1 \
+         UNION ALL \
+         SELECT o.id FROM organizations o JOIN subtree s ON o.parent_id = s.id \
+       ) \
+       UPDATE operation_state \
+       SET engagement_org_id = NULL \
+       WHERE engagement_org_id IN (SELECT id FROM subtree)"
+        .to_string()
+}
+
 /// `operation_state` 行映射 (`sqlx::FromRow`).
 #[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
 pub struct OperationStateRow {
@@ -163,6 +175,18 @@ pub async fn set_engagement_org(
     Ok(())
 }
 
+/// Clear operation bindings that point at a deleted organization subtree.
+///
+/// `operation_state.engagement_org_id` is intentionally a soft cursor, not a FK,
+/// so organization delete has to null it explicitly before the org row is gone.
+pub async fn clear_engagement_org_for_subtree(pool: &PgPool, root_org_id: Uuid) -> Result<u64> {
+    let res = sqlx::query(&build_clear_engagement_org_for_subtree_sql())
+        .bind(root_org_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,5 +210,15 @@ mod tests {
         assert_eq!(row.operation_id, back.operation_id);
         assert_eq!(row.current_stage, back.current_stage);
         assert_eq!(row.state_blob, back.state_blob);
+    }
+
+    #[test]
+    fn clear_engagement_org_for_subtree_sql_recurses_org_tree() {
+        let sql = build_clear_engagement_org_for_subtree_sql();
+        assert!(sql.contains("WITH RECURSIVE subtree"));
+        assert!(sql.contains("JOIN subtree s ON o.parent_id = s.id"));
+        assert!(sql.contains("UPDATE operation_state"));
+        assert!(sql.contains("SET engagement_org_id = NULL"));
+        assert!(sql.contains("engagement_org_id IN (SELECT id FROM subtree)"));
     }
 }

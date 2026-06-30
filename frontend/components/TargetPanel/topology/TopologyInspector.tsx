@@ -43,7 +43,7 @@ export function TopologyInspector({ node }: { node: TopologyNode | null }) {
         {node.kind === "target" && <TargetSurfaceSummary node={node} />}
         {node.kind === "organization" && <OrganizationSummary node={node} />}
         {node.kind === "service" && <ServiceSummary node={node} />}
-        {node.kind === "evidence" && <EvidenceSummary />}
+        {node.kind === "evidence" && <EvidenceSummary node={node} />}
       </div>
 
       <div className="grid grid-cols-2 gap-2 border-t border-border/25 p-4">
@@ -100,6 +100,10 @@ function TargetSurfaceSummary({ node }: { node: TopologyNode }) {
       <div className="text-[10px] font-bold uppercase text-muted-foreground">Surface</div>
       <div className="mt-2 grid grid-cols-2 gap-2">
         <Metric label="Open ports" value={node.metrics?.ports ?? 0} />
+        <Metric label="API" value={node.metrics?.endpoints ?? 0} tone="cyan" />
+        <Metric label="Params" value={node.metrics?.params ?? 0} tone="cyan" />
+        <Metric label="Paths" value={node.metrics?.paths ?? 0} />
+        <Metric label="JS files" value={node.metrics?.js ?? 0} />
         <Metric label="Evidence" value={node.metrics?.evidence ?? 0} tone="cyan" />
         <Metric label="HTTP" value={node.target?.http_status ?? "—"} />
         <Metric label="Status" value={node.target?.status ?? "new"} />
@@ -134,7 +138,26 @@ function ServiceSummary({ node }: { node: TopologyNode }) {
   );
 }
 
-function EvidenceSummary() {
+function EvidenceSummary({ node }: { node: TopologyNode }) {
+  if (
+    (node.metrics?.endpoints ?? 0) > 0 ||
+    (node.metrics?.params ?? 0) > 0 ||
+    (node.metrics?.paths ?? 0) > 0 ||
+    (node.metrics?.js ?? 0) > 0
+  ) {
+    return (
+      <section className="mt-5">
+        <div className="text-[10px] font-bold uppercase text-muted-foreground">API surface</div>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <Metric label="API" value={node.metrics?.endpoints ?? 0} tone="cyan" />
+          <Metric label="Params" value={node.metrics?.params ?? 0} tone="cyan" />
+          <Metric label="Paths" value={node.metrics?.paths ?? 0} />
+          <Metric label="JS files" value={node.metrics?.js ?? 0} />
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="mt-5">
       <div className="text-[10px] font-bold uppercase text-muted-foreground">Evidence trail</div>
