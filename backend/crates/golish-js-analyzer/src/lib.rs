@@ -57,7 +57,7 @@ pub use patterns::CallSiteKind;
 pub use signals::{
     analyze_signals_from_files, analyze_signals_from_source, ConfigCandidate, ConfigKind,
     FrameworkCandidate, JsSignalReport, LibraryCandidate, RuleMatchCandidate, RuleMatchKind,
-    SecretCandidate, SecretKind,
+    RuleMatchSeverity, SecretCandidate, SecretKind,
 };
 
 /// Authentication hint inferred from the surrounding code.
@@ -97,6 +97,20 @@ pub enum UrlKind {
     TemplateLiteral,
 }
 
+/// Which extraction path produced an [`Endpoint`]: the deterministic regex
+/// pass (default) or the AI-assisted hybrid pass (设计
+/// 2026-06-30-jsapi-ai-tools). `#[serde(default)]` on the field keeps old
+/// persisted JSON (without this key) deserializing as [`EndpointSource::Regex`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EndpointSource {
+    /// Found by deterministic regex/AST analysis.
+    #[default]
+    Regex,
+    /// Recovered by an LLM pass and anchored back to the source text.
+    Ai,
+}
+
 /// One extracted API call-site.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Endpoint {
@@ -131,6 +145,10 @@ pub struct Endpoint {
     /// values not visible to the static analyzer.
     #[serde(default)]
     pub id_param_position: Option<usize>,
+    /// Which extraction path produced this endpoint. Defaults to
+    /// [`EndpointSource::Regex`] for backward-compatible deserialization.
+    #[serde(default)]
+    pub source: EndpointSource,
 }
 
 /// Aggregated extraction result for one or more JS files.

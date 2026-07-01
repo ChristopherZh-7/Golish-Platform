@@ -11,7 +11,7 @@
 //! 设计 `docs/design/2026-06-23-unified-gate-context-builder.md`。仅做组装：repo
 //! **查询**仍在各入口（跨 crate / freshness 与 subsidiary 语义有意不同），不在此。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::rule_engine::{EvidenceFact, GateContext, SourceQueryFact};
 
@@ -22,6 +22,7 @@ use super::rule_engine::{EvidenceFact, GateContext, SourceQueryFact};
 pub struct GateContextBuilder {
     in_scope_assets: Vec<String>,
     asset_types: HashMap<String, String>,
+    web_capable_assets: HashSet<String>,
     evidence_facts: Vec<EvidenceFact>,
     source_queries: Vec<SourceQueryFact>,
     expected_techniques: Option<Vec<String>>,
@@ -50,6 +51,15 @@ impl GateContextBuilder {
     /// 调用方已持有 `value -> targets.type` map 时直接喂入（覆盖）。空 ⇒ `None`。
     pub fn asset_types_map(mut self, map: HashMap<String, String>) -> Self {
         self.asset_types = map;
+        self
+    }
+
+    /// EAS/httpx-proven IP/CIDR web targets for enumeration. Empty ⇒ `None`.
+    pub fn web_capable_assets<I>(mut self, assets: I) -> Self
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.web_capable_assets = assets.into_iter().collect();
         self
     }
 
@@ -85,6 +95,8 @@ impl GateContextBuilder {
         GateContext {
             in_scope_assets: (!self.in_scope_assets.is_empty()).then_some(self.in_scope_assets),
             asset_types: (!self.asset_types.is_empty()).then_some(self.asset_types),
+            web_capable_assets: (!self.web_capable_assets.is_empty())
+                .then_some(self.web_capable_assets),
             expected_techniques: self.expected_techniques,
             evidence_facts: (!self.evidence_facts.is_empty()).then_some(self.evidence_facts),
             source_queries: (!self.source_queries.is_empty()).then_some(self.source_queries),
@@ -112,6 +124,7 @@ mod tests {
         let def = GateContext::default();
         assert_eq!(ctx.in_scope_assets, def.in_scope_assets);
         assert_eq!(ctx.asset_types, def.asset_types);
+        assert_eq!(ctx.web_capable_assets, def.web_capable_assets);
         assert_eq!(ctx.expected_techniques, def.expected_techniques);
         assert!(ctx.evidence_facts.is_none() && def.evidence_facts.is_none());
         assert!(ctx.source_queries.is_none() && def.source_queries.is_none());
@@ -123,11 +136,13 @@ mod tests {
         let ctx = GateContextBuilder::new()
             .in_scope_assets(vec![])
             .typed_assets(vec![])
+            .web_capable_assets(Vec::new())
             .extend_evidence_facts(std::iter::empty::<EvidenceFact>())
             .extend_source_queries(std::iter::empty::<SourceQueryFact>())
             .build();
         assert!(ctx.in_scope_assets.is_none());
         assert!(ctx.asset_types.is_none());
+        assert!(ctx.web_capable_assets.is_none());
         assert!(ctx.evidence_facts.is_none());
         assert!(ctx.source_queries.is_none());
     }
@@ -165,6 +180,17 @@ mod tests {
             ctx.asset_types.and_then(|m| m.get("a.com").cloned()),
             Some("domain".to_string())
         );
+    }
+
+    #[test]
+    fn web_capable_assets_normalize_to_some_when_present() {
+        let ctx = GateContextBuilder::new()
+            .web_capable_assets(vec!["1.2.3.4".to_string()])
+            .build();
+        let assets = ctx
+            .web_capable_assets
+            .expect("web_capable_assets should be Some");
+        assert!(assets.contains("1.2.3.4"));
     }
 
     #[test]
@@ -247,6 +273,7 @@ mod tests {
         let manual = GateContext {
             in_scope_assets: Some(assets),
             asset_types: Some(types),
+            web_capable_assets: None,
             expected_techniques: Some(vec!["GOLISH-INTEL-DNS".to_string()]),
             evidence_facts: Some(facts),
             source_queries: None,
@@ -254,6 +281,7 @@ mod tests {
 
         assert_eq!(built.in_scope_assets, manual.in_scope_assets);
         assert_eq!(built.asset_types, manual.asset_types);
+        assert_eq!(built.web_capable_assets, manual.web_capable_assets);
         assert_eq!(built.expected_techniques, manual.expected_techniques);
         assert_eq!(built.evidence_facts, manual.evidence_facts);
     }

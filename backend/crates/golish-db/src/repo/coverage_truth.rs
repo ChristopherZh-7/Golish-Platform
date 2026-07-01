@@ -49,8 +49,11 @@ pub const TECH_EAS_PORT: &str = "GOLISH-EAS-PORT";
 pub const TECH_EAS_SERVICE_FP: &str = "GOLISH-EAS-SERVICE-FINGERPRINT";
 
 /// 内容枚举 technique id（enumeration）。
+/// JS 资产收集（design 2026-07-01 §4.1）：真值 = 该 host 已落 js_analysis_results 行。
+pub const TECH_ENUM_JS: &str = "GOLISH-ENUM-JS";
 pub const TECH_ENUM_DIR: &str = "GOLISH-ENUM-DIR";
 pub const TECH_ENUM_PARAM: &str = "GOLISH-ENUM-PARAM";
+/// JSAPI 收窄语义（design 2026-07-01 §4.1）：从 JS/爬虫抽取的 API 端点（SQL 不变）。
 pub const TECH_ENUM_JSAPI: &str = "GOLISH-ENUM-JSAPI";
 
 /// 某 JSONB 列「有内容」的 shape 无关判据：把 SQL NULL / `'null'` / `'[]'` /
@@ -264,6 +267,17 @@ fn build_liveness_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql("", &filter, None)
 }
 
+/// Enumeration IP-web denominator: in-scope IP/CIDR assets that EAS/httpx has
+/// proven to be HTTP services (`targets.http_status IS NOT NULL`). This is more
+/// specific than EAS-LIVENESS, which may also be satisfied by ping/port evidence.
+fn build_web_capable_ip_values_sql() -> String {
+    build_in_scope_values_sql(
+        "",
+        &format!("AND t.http_status IS NOT NULL AND t.target_type::text IN {IP_TYPE_IN_LIST}"),
+        None,
+    )
+}
+
 /// EAS-PORT：端口扫描结果（`ports` 为非空 JSONB 数组）。判空走 `jsonb_typeof =
 /// 'array'` + 比较式（不裸调 `jsonb_array_length`，否则非数组 `ports` 会抛
 /// `cannot get array length of a non-array`），与 `engagement_truth` 同款守卫。
@@ -288,6 +302,16 @@ fn build_service_fp_values_sql(apply_window: bool) -> String {
         "",
         &format!("AND ({fp_exists} OR {ports_clause} OR {real_ip_service})"),
         None,
+    )
+}
+
+/// ENUM-JS：该 host 已收集到 JS 资产（browser_collect_js_api → js_analysis_results）。
+/// Phase D 行级窗：`apply_window` ⇒ 只数本次 stage-run 落库（`jar.analyzed_at >= $2`）。
+fn build_js_values_sql(apply_window: bool) -> String {
+    build_in_scope_values_sql(
+        "JOIN js_analysis_results jar ON jar.target_id = t.id",
+        "",
+        apply_window.then_some("jar.analyzed_at"),
     )
 }
 
@@ -361,6 +385,8 @@ pub(crate) struct TruthInputs<'a> {
     pub liveness_values: &'a HashSet<String>,
     pub port_values: &'a HashSet<String>,
     pub service_fp_values: &'a HashSet<String>,
+    /// ENUM-JS（design 2026-07-01 §4.1）：该 host 已收集 JS 资产（js_analysis_results 有行）。
+    pub js_values: &'a HashSet<String>,
     pub dir_values: &'a HashSet<String>,
     pub param_values: &'a HashSet<String>,
     pub jsapi_values: &'a HashSet<String>,
@@ -427,6 +453,9 @@ pub(crate) fn assemble_truth_facts_typed(
         }
         if inputs.service_fp_values.contains(asset) {
             facts.push((asset.clone(), TECH_EAS_SERVICE_FP));
+        }
+        if inputs.js_values.contains(asset) {
+            facts.push((asset.clone(), TECH_ENUM_JS));
         }
         if inputs.dir_values.contains(asset) {
             facts.push((asset.clone(), TECH_ENUM_DIR));
@@ -525,6 +554,7 @@ pub async fn coverage_truth_facts(
     let port_values = fetch_values(pool, &build_port_values_sql(aw), org_id, run_start).await?;
     let service_fp_values =
         fetch_values(pool, &build_service_fp_values_sql(aw), org_id, run_start).await?;
+    let js_values = fetch_values(pool, &build_js_values_sql(aw), org_id, run_start).await?;
     let dir_values = fetch_values(pool, &build_dir_values_sql(aw), org_id, run_start).await?;
     let param_values = fetch_values(pool, &build_param_values_sql(aw), org_id, run_start).await?;
     let jsapi_values = fetch_values(pool, &build_jsapi_values_sql(aw), org_id, run_start).await?;
@@ -544,11 +574,18 @@ pub async fn coverage_truth_facts(
             liveness_values: &liveness_values,
             port_values: &port_values,
             service_fp_values: &service_fp_values,
+            js_values: &js_values,
             dir_values: &dir_values,
             param_values: &param_values,
             jsapi_values: &jsapi_values,
         },
     ))
+}
+
+/// In-scope IP/CIDR target values that are content-enumeration capable because
+/// EAS/httpx observed an HTTP response (`targets.http_status` is non-null).
+pub async fn web_capable_ip_assets(pool: &PgPool, org_id: Option<Uuid>) -> Result<HashSet<String>> {
+    fetch_values(pool, &build_web_capable_ip_values_sql(), org_id, None).await
 }
 
 #[cfg(test)]
@@ -574,6 +611,7 @@ mod tests {
             liveness_values: empty,
             port_values: empty,
             service_fp_values: empty,
+            js_values: empty,
             dir_values: empty,
             param_values: empty,
             jsapi_values: empty,
@@ -842,6 +880,48 @@ mod tests {
         assert!(jsapi.contains("ae.source IN ('js_analysis', 'crawler')"));
     }
 
+    #[test]
+    fn js_values_sql_joins_js_analysis_results_and_scoping() {
+        // ENUM-JS 真值（design 2026-07-01 §4.1）：join js_analysis_results + org/scope 隔离。
+        let sql = build_js_values_sql(false);
+        assert!(sql.contains("JOIN js_analysis_results jar ON jar.target_id = t.id"));
+        assert!(sql.contains("t.scope::text = 'in'"));
+        assert!(sql.contains("($1 IS NULL OR t.organization_id = $1)"));
+        assert!(!sql.contains("$2"), "off must bind only $1: {sql}");
+        // freshness window on ⇒ 只数本次 stage-run 落库（jar.analyzed_at >= $2）。
+        assert!(build_js_values_sql(true).contains("jar.analyzed_at >= $2"));
+    }
+
+    #[test]
+    fn web_capable_ip_values_sql_uses_http_status_and_ip_types() {
+        let sql = build_web_capable_ip_values_sql();
+        assert!(sql.contains("t.http_status IS NOT NULL"));
+        assert!(sql.contains("t.target_type::text IN"));
+        assert!(sql.contains("'ip'"));
+        assert!(sql.contains("'cidr'"));
+        assert!(sql.contains("t.scope::text = 'in'"));
+        assert!(sql.contains("($1 IS NULL OR t.organization_id = $1)"));
+        assert!(
+            !sql.contains("$2"),
+            "web-capable IP lookup is presence-only: {sql}"
+        );
+    }
+
+    #[test]
+    fn assemble_projects_js_per_asset() {
+        // 只有真收集到 JS 的 host 才产 GOLISH-ENUM-JS fact（per-asset）。
+        let empty = subs(&[]);
+        let js = subs(&["a.com"]);
+        let mut inputs = empty_inputs(&empty);
+        inputs.js_values = &js;
+        let assets = vec!["a.com".to_string(), "b.com".to_string()];
+        let facts = assemble_truth_facts_typed(&assets, &[], &inputs);
+        assert!(facts.contains(&("a.com".to_string(), TECH_ENUM_JS)));
+        assert!(!facts
+            .iter()
+            .any(|(a, t)| a == "b.com" && *t == TECH_ENUM_JS));
+    }
+
     /// 回归：per-asset 维度 SQL 也不能对可能为非数组的 `ports`/`params` 裸调
     /// `jsonb_array_length`（同 org-level presence 的 crash 类），否则会让整条
     /// `coverage_truth_facts` 抛错、db_truth 投影整体失效。
@@ -991,6 +1071,7 @@ mod tests {
         let dir = subs(&["a.com"]);
         let param = subs(&["b.com"]);
         let jsapi = subs(&["a.com"]);
+        let js = subs(&["a.com"]);
         let out = assemble_truth_facts_typed(
             &assets,
             &[],
@@ -1007,6 +1088,7 @@ mod tests {
                 liveness_values: &liveness,
                 port_values: &port,
                 service_fp_values: &service_fp,
+                js_values: &js,
                 dir_values: &dir,
                 param_values: &param,
                 jsapi_values: &jsapi,
@@ -1017,6 +1099,7 @@ mod tests {
             vec![
                 ("a.com".to_string(), TECH_EAS_LIVENESS),
                 ("a.com".to_string(), TECH_EAS_PORT),
+                ("a.com".to_string(), TECH_ENUM_JS),
                 ("a.com".to_string(), TECH_ENUM_DIR),
                 ("a.com".to_string(), TECH_ENUM_JSAPI),
                 ("b.com".to_string(), TECH_EAS_SERVICE_FP),
@@ -1044,6 +1127,7 @@ mod tests {
                 liveness_values: &one,
                 port_values: &one,
                 service_fp_values: &one,
+                js_values: &one,
                 dir_values: &one,
                 param_values: &one,
                 jsapi_values: &one,
@@ -1064,6 +1148,7 @@ mod tests {
                 ("a.com".to_string(), TECH_EAS_LIVENESS),
                 ("a.com".to_string(), TECH_EAS_PORT),
                 ("a.com".to_string(), TECH_EAS_SERVICE_FP),
+                ("a.com".to_string(), TECH_ENUM_JS),
                 ("a.com".to_string(), TECH_ENUM_DIR),
                 ("a.com".to_string(), TECH_ENUM_PARAM),
                 ("a.com".to_string(), TECH_ENUM_JSAPI),

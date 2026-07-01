@@ -729,6 +729,20 @@ impl GolishDbRepoProvider {
         )
     }
 
+    /// Enumeration IP-web coverage (design 2026-07-01): IP/CIDR targets that
+    /// EAS/httpx has proven are HTTP services via `targets.http_status`.
+    pub(super) async fn enumeration_web_capable_assets_impl(
+        &self,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok(
+            golish_db::repo::coverage_truth::web_capable_ip_assets(&self.pool, org_id)
+                .await?
+                .into_iter()
+                .collect(),
+        )
+    }
+
     /// Phase 1.5 阶段过门：列全库（或指定 project）的 organization id。组织树属 recon 资产
     /// 域；chat 走整库口径（project_path=None），与 `in_scope_assets_impl` 同口径。
     pub(super) async fn in_scope_org_ids_impl(

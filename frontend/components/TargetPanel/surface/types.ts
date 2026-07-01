@@ -8,12 +8,20 @@ export const SURFACE_TABS: Array<{ id: SurfaceTab; label: string }> = [
   { id: "evidence", label: "Evidence" },
 ];
 
+export type SitemapItemKind = "endpoint" | "script" | "directory";
+
 export interface SitemapItem {
   id: string;
   url: string;
   method: string;
   path: string;
   source: string;
+  // Burp-style sitemap: endpoints (API/XHR paths) and scripts (.js assets)
+  // live in the same host→path tree, distinguished by `kind`.
+  kind: SitemapItemKind;
+  // Byte size for `script` items (from js_analysis_results.size_bytes); null
+  // for endpoints or when the size was not recorded.
+  sizeBytes: number | null;
   params: unknown[];
   headers: Record<string, unknown>;
   statusCode: number | null;

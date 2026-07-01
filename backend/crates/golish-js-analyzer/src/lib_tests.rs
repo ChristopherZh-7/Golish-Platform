@@ -13,6 +13,22 @@ fn fetch_post_with_init() {
 }
 
 #[test]
+fn regex_extraction_marks_source_regex() {
+    let eps = extract_from_source("a.js", "fetch('/api/me')");
+    assert_eq!(eps.len(), 1);
+    assert_eq!(eps[0].source, EndpointSource::Regex);
+}
+
+#[test]
+fn endpoint_source_defaults_to_regex_on_old_json() {
+    // Persisted js_analysis_results rows written before the `source` field
+    // existed must still deserialize (defaulting to Regex), not error.
+    let old = r#"{"method":"GET","path":"/a","auth":"none","source_file":"a.js","line":1,"confidence":1.0,"kind":"fetch","url_kind":"literal","has_path_params":false,"id_param_position":null}"#;
+    let ep: Endpoint = serde_json::from_str(old).expect("old endpoint JSON deserializes");
+    assert_eq!(ep.source, EndpointSource::Regex);
+}
+
+#[test]
 fn fetch_default_get() {
     let src = "fetch('/api/me')";
     let eps = extract_from_source("a.js", src);

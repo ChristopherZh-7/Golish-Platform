@@ -13,7 +13,7 @@ import type { AssetIntelProviderDescriptor, AssetIntelRun } from "@/lib/api/asse
 import type { OrganizationReconRunSnapshot } from "@/lib/api/organization-recon";
 import type { Organization, OrganizationCandidate } from "@/lib/api/organizations";
 import type { Target } from "@/lib/pentest/types";
-import { groupTargetsByHost } from "@/lib/target-panel/asset-groups";
+import { groupTargetsByHost, type TargetAssetGroup } from "@/lib/target-panel/asset-groups";
 import {
   getCandidateSourceFilter,
   getVisibleCandidateBuckets,
@@ -64,6 +64,7 @@ interface OrgWorkspacePanelProps {
   setExpandedCandidateIds: Dispatch<SetStateAction<Set<string>>>;
   setEditingTargetId: Dispatch<SetStateAction<string | null>>;
   setSelectedTargetId: Dispatch<SetStateAction<string | null>>;
+  openHostGroup: (group: TargetAssetGroup) => void;
   handleRunAssetIntel: (org: Organization, action: AssetIntelOrgActionKind) => void;
   handleRunOrganizationRecon: (org: Organization) => void;
   handleExportOrganizationReconAssets: (
@@ -100,6 +101,7 @@ export function OrgWorkspacePanel({
   setExpandedCandidateIds,
   setEditingTargetId,
   setSelectedTargetId,
+  openHostGroup,
   handleRunAssetIntel,
   handleRunOrganizationRecon,
   handleExportOrganizationReconAssets,
@@ -394,9 +396,10 @@ export function OrgWorkspacePanel({
           ) : (
             <div className="mt-3 space-y-2">
               {targetGroups.map((group) => {
-                const primaryTarget = group.ipTarget ?? group.targets[0];
                 const shownLinkedTargets = group.linkedTargets;
                 const hiddenLinkedCount = group.linkedTargets.length - shownLinkedTargets.length;
+                const groupLabelIsIp = Boolean(group.host);
+                const linkedTargetsAreDirectEntries = !group.host;
 
                 return (
                   <div
@@ -405,13 +408,19 @@ export function OrgWorkspacePanel({
                   >
                     <div className="flex min-w-0 items-center gap-2">
                       <Network className="h-3.5 w-3.5 flex-shrink-0 text-blue-400/75" />
-                      <button
-                        type="button"
-                        className="min-w-0 flex-1 truncate text-left font-mono text-xs text-foreground hover:text-accent"
-                        onClick={() => openTarget(primaryTarget.id)}
-                      >
-                        {group.label}
-                      </button>
+                      {groupLabelIsIp ? (
+                        <button
+                          type="button"
+                          className="min-w-0 flex-1 truncate text-left font-mono text-xs text-foreground hover:text-accent"
+                          onClick={() => openHostGroup(group)}
+                        >
+                          {group.label}
+                        </button>
+                      ) : (
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
+                          {group.label}
+                        </span>
+                      )}
                       <span className="rounded bg-muted/30 px-1.5 py-0.5 text-[9px] text-muted-foreground">
                         {group.targets.length}
                       </span>
@@ -424,31 +433,46 @@ export function OrgWorkspacePanel({
 
                     {shownLinkedTargets.length > 0 ? (
                       <div className="mt-2 space-y-1 border-l border-border/30 pl-2">
-                        {shownLinkedTargets.map((target) => (
-                          <button
-                            key={target.id}
-                            type="button"
-                            className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-muted/25"
-                            onClick={() => openTarget(target.id)}
-                          >
-                            {TYPE_ICONS[target.type] || (
-                              <Globe className="h-3.5 w-3.5 flex-shrink-0" />
-                            )}
-                            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/90">
-                              {target.value}
-                            </span>
-                            <span
-                              className={cn(
-                                "rounded px-1.5 py-0.5 text-[9px]",
-                                target.scope === "in"
-                                  ? "bg-green-500/10 text-green-400"
-                                  : "bg-muted/40 text-muted-foreground"
+                        {shownLinkedTargets.map((target) => {
+                          const content = (
+                            <>
+                              {TYPE_ICONS[target.type] || (
+                                <Globe className="h-3.5 w-3.5 flex-shrink-0" />
                               )}
+                              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/90">
+                                {target.value}
+                              </span>
+                              <span
+                                className={cn(
+                                  "rounded px-1.5 py-0.5 text-[9px]",
+                                  target.scope === "in"
+                                    ? "bg-green-500/10 text-green-400"
+                                    : "bg-muted/40 text-muted-foreground"
+                                )}
+                              >
+                                {target.scope}
+                              </span>
+                            </>
+                          );
+
+                          return linkedTargetsAreDirectEntries ? (
+                            <button
+                              key={target.id}
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-muted/25"
+                              onClick={() => openTarget(target.id)}
                             >
-                              {target.scope}
-                            </span>
-                          </button>
-                        ))}
+                              {content}
+                            </button>
+                          ) : (
+                            <div
+                              key={target.id}
+                              className="flex w-full items-center gap-2 rounded px-1.5 py-1"
+                            >
+                              {content}
+                            </div>
+                          );
+                        })}
                         {hiddenLinkedCount > 0 && (
                           <p className="px-1.5 text-[10px] text-muted-foreground/65">
                             {translateWithFallback(

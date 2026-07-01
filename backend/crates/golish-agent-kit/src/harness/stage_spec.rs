@@ -161,6 +161,12 @@ pub struct StageSpec {
     #[serde(default)]
     pub host_aware_coverage: bool,
 
+    /// Enumeration IP-web coverage (design 2026-07-01): when true, the gate/UI
+    /// may inject EAS/httpx-proven IP/CIDR web services into the content
+    /// enumeration denominator. Default false = old bare-IP behavior.
+    #[serde(default)]
+    pub enum_ip_web_coverage: bool,
+
     /// Anchor-only coverage denominator (design 2026-06-16-coverage-anchor-axis):
     /// when true, `coverage_complete` first drops any in-scope asset that is a
     /// strict subdomain of ANOTHER in-scope asset in the same set, so subdomains
@@ -499,6 +505,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn enumeration_enables_ip_web_coverage_only() {
+        let enumeration =
+            crate::harness::resources::load_embedded_stage_spec(StageKind::Enumeration)
+                .expect("load enumeration spec");
+        assert!(
+            enumeration.enum_ip_web_coverage,
+            "enumeration must include EAS/httpx-proven IP web roots"
+        );
+
+        for kind in [StageKind::TargetIntel, StageKind::ExternalAttackSurface] {
+            let spec =
+                crate::harness::resources::load_embedded_stage_spec(kind).expect("load spec");
+            assert!(
+                !spec.enum_ip_web_coverage,
+                "{kind:?} should not opt into enumeration IP-web coverage"
+            );
+        }
+    }
+
     // Phase 2 (2026-06-12-redteam-phase2): scoping 子公司 gate 的零回归静态前提。
     // 1. 静态 expected_techniques 必须为空——SUBSIDIARY 只由 execute.rs hook 在
     //    `--include-subsidiaries` 时动态注入; 不带 flag → coverage_complete 看不到
@@ -631,14 +657,14 @@ mod tests {
     // stage_run fan-out (2026-06-13-stage-run-fanout §3.2 · enumeration rollout): enumeration
     // declares its per-org specialist (`enumerator`, the active content-enumeration mapper
     // split from Pentester, mirroring how `prober` was split for EAS) + the display coverage
-    // axis (its 3 expected techniques: dir / param / js-api). Without this, the chat
+    // axis (its 4 expected techniques: js / dir / param / js-api). Without this, the chat
     // `stage_run` tool refuses enumeration ("stage has no `specialist` configured").
     #[test]
     fn enumeration_declares_stage_run_specialist_and_axis() {
         let s = crate::harness::resources::load_embedded_stage_spec(StageKind::Enumeration)
             .expect("load enumeration spec");
         assert_eq!(s.specialist.as_deref(), Some("enumerator"));
-        assert_eq!(s.coverage_axis, vec!["DIR", "PARAM", "JSAPI"]);
+        assert_eq!(s.coverage_axis, vec!["JS", "DIR", "PARAM", "JSAPI"]);
     }
 
     #[test]

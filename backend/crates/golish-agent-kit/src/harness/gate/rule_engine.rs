@@ -242,6 +242,10 @@ pub struct GateContext {
     /// `targets.type`，让 `coverage_complete` 按**权威**类型给资产分类（回退
     /// `from_value` → `Other`）。`None` = 回退按值推断（2a/2b 行为，逐字节一致）。
     pub asset_types: Option<std::collections::HashMap<String, String>>,
+    /// Enumeration IP-web coverage (design 2026-07-01): asset values proven by
+    /// EAS/httpx to be HTTP-capable IP/CIDR targets. `None` preserves the old
+    /// class-only host-aware behavior.
+    pub web_capable_assets: Option<std::collections::HashSet<String>>,
     pub expected_techniques: Option<Vec<String>>,
     /// PR3 (设计 2026-06-11-coverage-auto-derive §5.2) · 证据账本投影事实：
     /// 从 `audit_log` 三列 (`evidence_asset/technique/outcome`) 注入的只读三元组。
@@ -646,14 +650,19 @@ fn coverage_complete(
                     .map(String::as_str),
                 asset,
             );
+            let asset_key = canon_asset(asset);
+            let web_capable = ctx.web_capable_assets.as_ref().is_some_and(|assets| {
+                assets.contains(*asset) || assets.contains(asset_key.as_str())
+            });
             techniques
                 .iter()
                 .filter(|t| {
-                    crate::harness::technique_resolver::technique_applies_to_value(
+                    crate::harness::technique_resolver::technique_applies_web_aware(
                         spec.kind,
                         class,
                         asset,
                         t.as_str(),
+                        web_capable,
                     )
                 })
                 .collect()
@@ -1709,6 +1718,7 @@ mod tests {
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: facts,
             source_queries: None,
+            web_capable_assets: None,
         }
     }
 
@@ -1763,6 +1773,7 @@ mod tests {
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: None,
             source_queries: None,
+            web_capable_assets: None,
         };
         let rule = coverage_complete_rule();
 
@@ -1793,6 +1804,7 @@ mod tests {
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: None,
             source_queries: None,
+            web_capable_assets: None,
         };
         // 只覆盖了 a，没覆盖 b → 两个都在轴里时必 BLOCK（证明 b 没被剔除）。
         let d = deliverable_with_coverage(vec![cov_cell(
@@ -1839,6 +1851,7 @@ mod tests {
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
             source_queries: None,
+            web_capable_assets: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -1900,6 +1913,7 @@ mod tests {
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
             source_queries: None,
+            web_capable_assets: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -1921,9 +1935,14 @@ mod tests {
     #[test]
     fn host_aware_coverage_drops_content_enum_for_ip_in_enumeration() {
         // 设计 §3.3 parity（2b）：enumeration 开关开后唯一变化 = 裸 IP（非 web）的
-        // DIR/PARAM/JSAPI BLOCK→PASS（内容枚举仅对 web 资产有意义）；域名仍核全 3。
-        let techs = ["GOLISH-ENUM-DIR", "GOLISH-ENUM-PARAM", "GOLISH-ENUM-JSAPI"];
-        // domain 有全部 3 个 Found；裸 IP 无内容枚举事实。
+        // JS/DIR/PARAM/JSAPI BLOCK→PASS（内容枚举仅对 web 资产有意义）；域名仍核全 4。
+        let techs = [
+            "GOLISH-ENUM-JS",
+            "GOLISH-ENUM-DIR",
+            "GOLISH-ENUM-PARAM",
+            "GOLISH-ENUM-JSAPI",
+        ];
+        // domain 有全部 4 个 Found；裸 IP 无内容枚举事实。
         let facts: Vec<EvidenceFact> = techs
             .iter()
             .map(|t| fact("a.com", t, EvidenceOutcome::Found, 1))
@@ -1934,6 +1953,7 @@ mod tests {
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
             source_queries: None,
+            web_capable_assets: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -1949,6 +1969,57 @@ mod tests {
         assert!(
             eval_with_context(&d, &spec_on, &[evidence_derive_rule(None)], &ctx)[0].is_pass(),
             "host-aware on: bare IP dropped from content enumeration → PASS"
+        );
+    }
+
+    #[test]
+    fn host_aware_enumeration_requires_web_capable_ip_content_axes() {
+        let techs = [
+            "GOLISH-ENUM-JS",
+            "GOLISH-ENUM-DIR",
+            "GOLISH-ENUM-PARAM",
+            "GOLISH-ENUM-JSAPI",
+        ];
+        let domain_facts: Vec<EvidenceFact> = techs
+            .iter()
+            .map(|t| fact("a.com", t, EvidenceOutcome::Found, 1))
+            .collect();
+        let web_capable_assets = std::collections::HashSet::from(["1.2.3.4".to_string()]);
+        let missing_ip_ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string(), "1.2.3.4".to_string()]),
+            asset_types: None,
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: Some(domain_facts.clone()),
+            source_queries: None,
+            web_capable_assets: Some(web_capable_assets.clone()),
+        };
+        let d = deliverable_with_coverage(vec![]);
+        let spec_on = host_aware_spec("enumeration", "enumeration", true);
+        match &eval_with_context(&d, &spec_on, &[evidence_derive_rule(None)], &missing_ip_ctx)[0] {
+            GateCheckOutcome::Block { reasons, .. } => {
+                assert!(reasons[0].contains("(1.2.3.4 × GOLISH-ENUM-JS)"));
+            }
+            GateCheckOutcome::Pass => panic!("web-capable IP must require enumeration coverage"),
+        }
+
+        let mut all_facts = domain_facts;
+        all_facts.extend(
+            techs
+                .iter()
+                .map(|t| fact("1.2.3.4", t, EvidenceOutcome::Found, 1)),
+        );
+        let covered_ip_ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string(), "1.2.3.4".to_string()]),
+            asset_types: None,
+            expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
+            evidence_facts: Some(all_facts),
+            source_queries: None,
+            web_capable_assets: Some(web_capable_assets),
+        };
+        assert!(
+            eval_with_context(&d, &spec_on, &[evidence_derive_rule(None)], &covered_ip_ctx)[0]
+                .is_pass(),
+            "web-capable IP passes after all four enum facts are present"
         );
     }
 
@@ -1982,6 +2053,7 @@ mod tests {
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
             source_queries: None,
+            web_capable_assets: None,
         };
         let d = deliverable_with_coverage(vec![]);
         // host-aware ON：权威类型=域名 ⇒ 核全 6，缺 3 → BLOCK（若只按 from_value 会判 IP 而 PASS）。
@@ -3254,6 +3326,7 @@ mod tests {
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
             source_queries: None,
+            web_capable_assets: None,
         };
         let d = deliverable_with_coverage(vec![]);
         assert!(
@@ -3285,6 +3358,7 @@ mod tests {
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
             source_queries: None,
+            web_capable_assets: None,
         };
         let d = deliverable_with_coverage(vec![]);
         assert!(
@@ -3314,6 +3388,7 @@ mod tests {
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: None,
             source_queries: None,
+            web_capable_assets: None,
         };
         let d = deliverable_with_coverage(vec![]);
         match &eval_with_context(
@@ -3351,6 +3426,7 @@ mod tests {
             expected_techniques: Some(techs.iter().map(|s| s.to_string()).collect()),
             evidence_facts: Some(facts),
             source_queries: None,
+            web_capable_assets: None,
         };
         let d = deliverable_with_coverage(vec![]);
         let spec = host_aware_spec("external_attack_surface", "external_attack_surface", false);
@@ -3377,6 +3453,7 @@ mod tests {
                 1,
             )]),
             source_queries: None,
+            web_capable_assets: None,
         };
         assert!(
             !eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &host_only_ctx)[0]
@@ -3395,6 +3472,7 @@ mod tests {
                 1,
             )]),
             source_queries: None,
+            web_capable_assets: None,
         };
         assert!(
             eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &endpoint_ctx)[0].is_pass(),

@@ -105,6 +105,8 @@ fn add_read_only_target_query_tools_for_stage(
         "list_attack_surface_seeds",
         "query_target_data",
         "check_stage_asset_coverage",
+        "stage_worklist_status",
+        "stage_worklist_next",
     ];
     let any_missing = READ_ONLY_QUERY_TOOLS
         .iter()
@@ -423,6 +425,14 @@ mod tests {
             names.contains(&"check_stage_asset_coverage"),
             "stage orchestrator must get the DB-truth coverage preflight: {names:?}"
         );
+        assert!(
+            names.contains(&"stage_worklist_status"),
+            "stage orchestrator must get compact stage worklist status: {names:?}"
+        );
+        assert!(
+            names.contains(&"stage_worklist_next"),
+            "stage orchestrator must get the next DB-truth work batch: {names:?}"
+        );
 
         // Idempotent: a second pass (or a tool already present) adds no dupes.
         let before = tools.len();
@@ -562,6 +572,8 @@ mod tests {
             "list_in_scope_targets",
             "list_attack_surface_seeds",
             "check_stage_asset_coverage",
+            "stage_worklist_status",
+            "stage_worklist_next",
             "ingest_cve",
             "save_poc",
             "search_exploits",

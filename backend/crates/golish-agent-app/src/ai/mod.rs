@@ -12,6 +12,7 @@ pub mod embedder_bridge;
 pub mod graph_bridge;
 pub mod harness_submit_tool;
 pub mod harness_trace_tool;
+pub mod llm_one_shot;
 pub mod session_bridge;
 pub mod sidecar_bridge;
 pub mod start_operation_tool;

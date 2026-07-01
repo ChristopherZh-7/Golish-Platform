@@ -182,6 +182,8 @@ pub async fn create_default_sub_agents_from_registry(
             tmpl_or_fallback!("enumerator", build_enumerator_prompt()),
         )
         .with_tools(vec![
+            "stage_worklist_status".into(),
+            "stage_worklist_next".into(),
             "list_enumeration_web_roots".into(),
             "query_target_data".into(),
             "pentest_list_tools".into(),

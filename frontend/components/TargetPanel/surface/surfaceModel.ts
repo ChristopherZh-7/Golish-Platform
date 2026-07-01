@@ -1,3 +1,4 @@
+import type { DirectoryEntry } from "@/lib/pentest/api";
 import type { PortInfo } from "@/lib/pentest/types";
 import type { ApiEndpoint, JsAnalysisResult, PassiveScanLog } from "@/lib/security-analysis";
 import { formatClockTime as formatTime } from "@/lib/time";
@@ -13,13 +14,61 @@ function isDeterministicJsEndpointSource(source: string): boolean {
   return normalized === "crawler" || normalized === "js_analysis" || normalized.includes("js");
 }
 
-export function buildSitemapItems(endpoints: ApiEndpoint[] = []): SitemapItem[] {
+// `js_analysis_results.url` is stored as the bare target origin (identical for
+// every JS file of a host); the real nested path lives in `filename` (the
+// capture path relative to `captures/{host}/{port}/js/`). Reconstruct the true
+// per-file URL (origin + root-relative filename) so the Burp-style tree layers
+// scripts by directory instead of collapsing every script onto one origin node
+// (and so the per-url dedupe below stops dropping all-but-one script per host).
+function scriptSitemapUrl(rawUrl: string, filename: string): string {
+  const file = (filename ?? "").trim();
+  const base = (rawUrl ?? "").trim();
+  if (/^https?:\/\//i.test(file)) return file;
+  if (base) {
+    try {
+      const origin = new URL(base).origin;
+      const relative = file.replace(/^\/+/, "");
+      return relative ? `${origin}/${relative}` : base;
+    } catch {
+      // base not a parseable absolute URL — fall through to filename/base.
+    }
+  }
+  return file || base;
+}
+
+export function scriptCapturePath(
+  rawUrl: string,
+  filename: string,
+  filePath?: string | null
+): string | null {
+  const storedPath = (filePath ?? "").trim();
+  if (storedPath) return storedPath;
+
+  const file = (filename ?? "").trim().replace(/^\/+/, "");
+  if (!file || file.includes("..")) return null;
+
+  try {
+    const parsed = new URL((rawUrl ?? "").trim());
+    const port = parsed.port || (parsed.protocol === "http:" ? "80" : "443");
+    return `.golish/captures/${parsed.hostname}/${port}/js/${file}`;
+  } catch {
+    return null;
+  }
+}
+
+// Burp-style site map: API endpoints AND the `.js` files themselves are merged
+// into one host→path tree, tagged by `kind` so the UI can label/filter them.
+export function buildSitemapItems(
+  endpoints: ApiEndpoint[] = [],
+  jsResults: JsAnalysisResult[] = [],
+  directoryEntries: DirectoryEntry[] = []
+): SitemapItem[] {
   const seen = new Set<string>();
   const out: SitemapItem[] = [];
   for (const endpoint of endpoints) {
     const url = endpoint.url || endpoint.path;
     if (!url || !isDeterministicJsEndpointSource(endpoint.source)) continue;
-    const key = `${endpoint.method}:${url}`;
+    const key = `endpoint:${endpoint.method}:${url}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({
@@ -28,12 +77,61 @@ export function buildSitemapItems(endpoints: ApiEndpoint[] = []): SitemapItem[] 
       method: endpoint.method || "GET",
       path: endpoint.path || url,
       source: endpoint.source || "api_endpoint",
+      kind: "endpoint",
+      sizeBytes: null,
       params: endpoint.params,
       headers: endpoint.headers,
       statusCode: endpoint.statusCode,
       contentType: endpoint.responseType ?? String(endpoint.headers["content-type"] ?? ""),
       capturePath: endpoint.capturePath,
       discoveredAt: endpoint.discoveredAt,
+    });
+  }
+  for (const js of jsResults) {
+    const url = scriptSitemapUrl(js.url, js.filename);
+    if (!url) continue;
+    const key = `script:${url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      id: js.id,
+      url,
+      method: "GET",
+      path: url,
+      source: "js_file",
+      kind: "script",
+      sizeBytes: js.sizeBytes ?? null,
+      params: [],
+      headers: {},
+      statusCode: null,
+      contentType: "application/javascript",
+      capturePath: scriptCapturePath(js.url, js.filename, js.filePath),
+      discoveredAt: js.analyzedAt,
+    });
+  }
+  for (const entry of directoryEntries) {
+    const url = (entry.url ?? "").trim();
+    if (!url) continue;
+    const key = `directory:${entry.tool}:${url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      id: entry.id,
+      url,
+      method: "GET",
+      path: url,
+      source: entry.tool || "directory_entry",
+      kind: "directory",
+      sizeBytes: entry.content_length ?? null,
+      params: [],
+      headers: {},
+      statusCode: entry.status_code,
+      contentType: entry.content_type ?? "",
+      capturePath: null,
+      discoveredAt:
+        typeof entry.created_at === "number"
+          ? new Date(entry.created_at).toISOString()
+          : String(entry.created_at ?? ""),
     });
   }
   return out;

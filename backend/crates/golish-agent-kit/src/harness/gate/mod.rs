@@ -151,6 +151,8 @@ pub fn validate_stage_gate_with_context(
         in_scope_assets: ctx.in_scope_assets.clone(),
         // Host-aware coverage 2c：权威资产类型原样透传给规则求值（None = 按值推断）。
         asset_types: ctx.asset_types.clone(),
+        // Enumeration IP-web：EAS/httpx-proven IP/CIDR web roots 原样透传。
+        web_capable_assets: ctx.web_capable_assets.clone(),
         expected_techniques: ctx.expected_techniques.clone().or_else(|| {
             skeleton
                 .map(|s| s.expected_techniques.clone())

@@ -94,12 +94,36 @@ pub enum RuleMatchKind {
     Route,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleMatchSeverity {
+    High,
+    Medium,
+    Low,
+    #[default]
+    Info,
+}
+
+fn default_rule_color() -> String {
+    "gray".to_string()
+}
+
+fn default_rule_scope() -> String {
+    "response body".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RuleMatchCandidate {
     pub rule_name: String,
     pub group: String,
     pub source_rule: Option<String>,
     pub kind: RuleMatchKind,
+    #[serde(default = "default_rule_color")]
+    pub color: String,
+    #[serde(default = "default_rule_scope")]
+    pub scope: String,
+    #[serde(default)]
+    pub severity: RuleMatchSeverity,
     pub source_file: String,
     pub line: usize,
     pub match_preview: String,
@@ -250,6 +274,12 @@ struct SignalRuleDefinition {
     group: String,
     source_rule: Option<String>,
     kind: RuleMatchKind,
+    #[serde(default)]
+    color: String,
+    #[serde(default)]
+    scope: String,
+    #[serde(default)]
+    severity: Option<RuleMatchSeverity>,
     regex: String,
     #[serde(default = "default_true")]
     case_sensitive: bool,
@@ -295,12 +325,19 @@ fn extract_rule_matches(source_file: &str, source: &str) -> Vec<RuleMatchCandida
             if !seen.insert(dedupe_key) {
                 continue;
             }
+            let color = rule_color(&rule);
+            let severity = rule
+                .severity
+                .unwrap_or_else(|| rule_severity(&color, rule.kind, rule.confidence));
 
             out.push(RuleMatchCandidate {
                 rule_name: rule.name.clone(),
                 group: rule.group.clone(),
                 source_rule: rule.source_rule.clone(),
                 kind: rule.kind,
+                color,
+                scope: rule_scope(&rule),
+                severity,
                 source_file: source_file.to_string(),
                 line,
                 match_preview: rule_match_preview(rule.kind, value),
@@ -313,6 +350,44 @@ fn extract_rule_matches(source_file: &str, source: &str) -> Vec<RuleMatchCandida
     }
 
     out
+}
+
+fn rule_color(rule: &SignalRuleDefinition) -> String {
+    if !rule.color.trim().is_empty() {
+        return rule.color.clone();
+    }
+    match rule.kind {
+        RuleMatchKind::Secret => "yellow",
+        RuleMatchKind::Pii => "orange",
+        RuleMatchKind::Framework => "green",
+        RuleMatchKind::Config => "cyan",
+        RuleMatchKind::Interesting => "yellow",
+        RuleMatchKind::Route => "gray",
+    }
+    .to_string()
+}
+
+fn rule_scope(rule: &SignalRuleDefinition) -> String {
+    if rule.scope.trim().is_empty() {
+        "response body".to_string()
+    } else {
+        rule.scope.clone()
+    }
+}
+
+fn rule_severity(color: &str, kind: RuleMatchKind, confidence: f32) -> RuleMatchSeverity {
+    match color {
+        "red" => RuleMatchSeverity::High,
+        "orange" | "yellow" if matches!(kind, RuleMatchKind::Secret | RuleMatchKind::Pii) => {
+            RuleMatchSeverity::Medium
+        }
+        "orange" => RuleMatchSeverity::Medium,
+        "yellow" if confidence >= 0.75 => RuleMatchSeverity::Medium,
+        _ if matches!(kind, RuleMatchKind::Secret) && confidence >= 0.85 => {
+            RuleMatchSeverity::Medium
+        }
+        _ => RuleMatchSeverity::Low,
+    }
 }
 
 fn extract_secrets(source_file: &str, source: &str) -> Vec<SecretCandidate> {
@@ -921,7 +996,7 @@ mod tests {
     #[test]
     fn embedded_signal_rules_parse_and_compile() {
         let rules = signal_rules();
-        assert!(rules.len() >= 10);
+        assert!(rules.len() >= 35);
 
         for rule in rules {
             RegexBuilder::new(&rule.regex)
@@ -960,6 +1035,67 @@ mod tests {
             .rule_matches
             .iter()
             .any(|c| c.rule_name == "Internal IP Address" && c.kind == RuleMatchKind::Config));
+    }
+
+    #[test]
+    fn hae_style_rules_emit_classification_metadata() {
+        let source = r#"
+            const shiroCookie = "rememberMe=abc";
+            const druidTitle = "Druid Stat Index";
+            const idcard = "110105199001011234";
+            const mac = "aa:bb:cc:dd:ee:ff";
+            const winPath = "C:\Windows\win.ini";
+            router.$router.push('/admin');
+            const redirect = "Location: /login";
+            const oskey = "<Key>abcdef</Key>";
+        "#;
+
+        let report = analyze_signals_from_source("hae.js", source);
+
+        let shiro = report
+            .rule_matches
+            .iter()
+            .find(|hit| hit.rule_name == "Shiro RememberMe")
+            .expect("Shiro fingerprint");
+        assert_eq!(shiro.group, "Fingerprint");
+        assert_eq!(shiro.color, "green");
+        assert_eq!(shiro.scope, "any header");
+        assert_eq!(shiro.severity, RuleMatchSeverity::Low);
+
+        let druid = report
+            .rule_matches
+            .iter()
+            .find(|hit| hit.rule_name == "Druid")
+            .expect("Druid fingerprint");
+        assert_eq!(druid.severity, RuleMatchSeverity::Medium);
+        assert_eq!(druid.color, "orange");
+
+        assert!(report.rule_matches.iter().any(|hit| {
+            hit.rule_name == "Chinese IDCard"
+                && hit.kind == RuleMatchKind::Pii
+                && hit.severity == RuleMatchSeverity::Medium
+        }));
+        assert!(report
+            .rule_matches
+            .iter()
+            .any(|hit| hit.rule_name == "MAC Address" && hit.color == "green"));
+        assert!(report
+            .rule_matches
+            .iter()
+            .any(|hit| hit.rule_name == "Windows File Or Dir Path"));
+        assert!(report.rule_matches.iter().any(|hit| {
+            hit.rule_name == "Router Push"
+                && hit.kind == RuleMatchKind::Route
+                && hit.color == "magenta"
+        }));
+        assert!(report
+            .rule_matches
+            .iter()
+            .any(|hit| hit.rule_name == "302 Location" && hit.scope == "response header"));
+        assert!(report
+            .rule_matches
+            .iter()
+            .any(|hit| hit.rule_name == "OSKeys" && hit.severity == RuleMatchSeverity::Info));
     }
 
     #[test]

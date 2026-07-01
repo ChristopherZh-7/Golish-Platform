@@ -221,6 +221,17 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Enumeration IP-web coverage (design 2026-07-01): in-scope IP/CIDR assets
+    /// whose `targets.http_status` proves an HTTP service. Default empty keeps
+    /// bare IPs out of enumeration for test doubles and non-app implementations.
+    async fn enumeration_web_capable_assets(
+        &self,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<String>> {
+        let _ = org_id;
+        Ok(Vec::new())
+    }
+
     /// In-scope recon targets as JSON rows (`target_id` / `value` / `type`) so an
     /// agent tool can enumerate the recon-collected assets, then drill into each
     /// via [`Self::query_target_data`]. Default empty (test doubles); the app

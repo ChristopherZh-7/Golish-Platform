@@ -474,8 +474,7 @@ mod tests {
         let orphan = seed("m.moresec.cn", "domain", "203.0.113.9", None);
         let no_ip = seed("bare.example.com", "domain", "", None);
 
-        let delegated =
-            eas_port_delegated_domain_values(&[ip, alias, www_alias, orphan, no_ip]);
+        let delegated = eas_port_delegated_domain_values(&[ip, alias, www_alias, orphan, no_ip]);
 
         // Domains resolving to the in-scope IP delegate PORT/SERVICE to it …
         assert!(delegated.contains("moresec.cn"));

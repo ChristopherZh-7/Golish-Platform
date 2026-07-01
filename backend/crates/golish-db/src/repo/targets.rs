@@ -5,6 +5,9 @@ use uuid::Uuid;
 
 use crate::models::{ScopeType, Target, TargetType};
 
+const REAL_IP_TARGET_TYPE_GUARD_SQL: &str =
+    "target_type::text NOT IN ('ip', 'ipv4', 'ip_address', 'cidr')";
+
 pub async fn create(
     pool: &PgPool,
     name: &str,
@@ -539,9 +542,9 @@ pub async fn update_recon_extended_by_id(
     content_type: &str,
     ports: &serde_json::Value,
 ) -> Result<()> {
-    sqlx::query(
+    let sql = format!(
         r#"UPDATE targets SET
-            real_ip       = CASE WHEN $1 != '' THEN $1 ELSE real_ip END,
+            real_ip       = CASE WHEN $1 != '' AND {real_ip_guard} THEN $1 ELSE real_ip END,
             cdn_waf       = CASE WHEN $2 != '' THEN $2 ELSE cdn_waf END,
             http_title    = CASE WHEN $3 != '' THEN $3 ELSE http_title END,
             http_status   = COALESCE($4, http_status),
@@ -580,21 +583,23 @@ pub async fn update_recon_extended_by_id(
             -- http_status) was provided — so a call carrying neither does not
             -- falsely mark the dim collected this run.
             ports_scanned_at    = CASE WHEN $8::jsonb = '[]'::jsonb THEN ports_scanned_at ELSE NOW() END,
-            liveness_checked_at = CASE WHEN ($1 != '' OR $4 IS NOT NULL) THEN NOW() ELSE liveness_checked_at END,
+            liveness_checked_at = CASE WHEN (($1 != '' AND {real_ip_guard}) OR $4 IS NOT NULL) THEN NOW() ELSE liveness_checked_at END,
             updated_at    = NOW()
            WHERE id = $9"#,
-    )
-    .bind(real_ip)
-    .bind(cdn_waf)
-    .bind(http_title)
-    .bind(http_status)
-    .bind(webserver)
-    .bind(os_info)
-    .bind(content_type)
-    .bind(ports)
-    .bind(id)
-    .execute(pool)
-    .await?;
+        real_ip_guard = REAL_IP_TARGET_TYPE_GUARD_SQL,
+    );
+    sqlx::query(&sql)
+        .bind(real_ip)
+        .bind(cdn_waf)
+        .bind(http_title)
+        .bind(http_status)
+        .bind(webserver)
+        .bind(os_info)
+        .bind(content_type)
+        .bind(ports)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -610,8 +615,15 @@ fn build_backfill_real_ip_sql() -> String {
                FROM dns_records WHERE record_type = 'A' \
                ORDER BY target_id, created_at) sub \
       WHERE t.id = sub.target_id AND t.real_ip = '' \
+        AND t.target_type::text NOT IN ('ip', 'ipv4', 'ip_address', 'cidr') \
         AND ($1 IS NULL OR t.project_path = $1)"
         .to_string()
+}
+
+fn build_set_real_ip_by_id_sql() -> &'static str {
+    "UPDATE targets \
+        SET real_ip = $1, liveness_checked_at = NOW(), updated_at = NOW() \
+      WHERE id = $2 AND target_type::text NOT IN ('ip', 'ipv4', 'ip_address', 'cidr')"
 }
 
 /// Set a target's primary resolved IP (`real_ip`) by id. No project scope — the
@@ -621,9 +633,7 @@ fn build_backfill_real_ip_sql() -> String {
 pub async fn set_real_ip_by_id(pool: &PgPool, id: Uuid, real_ip: &str) -> Result<()> {
     // Phase D (design 2026-06-22 §3.3): active recon DNS-landing collection site —
     // setting real_ip is a liveness signal, so stamp `liveness_checked_at = NOW()`.
-    sqlx::query(
-        "UPDATE targets SET real_ip = $1, liveness_checked_at = NOW(), updated_at = NOW() WHERE id = $2",
-    )
+    sqlx::query(build_set_real_ip_by_id_sql())
         .bind(real_ip)
         .bind(id)
         .execute(pool)
@@ -792,11 +802,20 @@ mod tests {
         assert!(sql.contains("record_type = 'A'"));
         assert!(sql.contains("ORDER BY target_id, created_at"));
         assert!(sql.contains("t.real_ip = ''"));
+        assert!(sql.contains("t.target_type::text NOT IN ('ip', 'ipv4', 'ip_address', 'cidr')"));
         assert!(sql.contains("($1 IS NULL OR t.project_path = $1)"));
         // Phase D: passive derive carries the source A record's created_at as
         // liveness_checked_at (NOT NOW()), so stale-derived liveness isn't fresh.
         assert!(sql.contains("liveness_checked_at = sub.created_at"));
         assert!(sql.contains("value AS ip, created_at"));
+    }
+
+    #[test]
+    fn set_real_ip_by_id_sql_does_not_write_ip_targets() {
+        let sql = build_set_real_ip_by_id_sql();
+        assert!(sql.contains("SET real_ip = $1"));
+        assert!(sql.contains("WHERE id = $2"));
+        assert!(sql.contains("target_type::text NOT IN ('ip', 'ipv4', 'ip_address', 'cidr')"));
     }
 
     #[test]

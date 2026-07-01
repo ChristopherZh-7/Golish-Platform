@@ -248,6 +248,8 @@ fn is_security_analysis_direct_tool(tool_name: &str) -> bool {
             | "query_target_data"
             | "list_in_scope_targets"
             | "list_attack_surface_seeds"
+            | "stage_worklist_status"
+            | "stage_worklist_next"
             | "check_stage_asset_coverage"
     )
 }
@@ -875,6 +877,16 @@ mod direct_tool_routing_tests {
         assert!(
             is_security_analysis_direct_tool("check_stage_asset_coverage"),
             "stage coverage preflight is exposed to active stages and must route through \
+             the security-analysis executor"
+        );
+        assert!(
+            is_security_analysis_direct_tool("stage_worklist_next"),
+            "stage worklist tools are exposed to active stages and must route through \
+             the security-analysis executor"
+        );
+        assert!(
+            is_security_analysis_direct_tool("stage_worklist_status"),
+            "stage worklist status is exposed to active stages and must route through \
              the security-analysis executor"
         );
     }

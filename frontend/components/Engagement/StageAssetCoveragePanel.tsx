@@ -274,7 +274,8 @@ function techniqueKeyFromCell(cell: CoverageCell): string {
   if (text.includes("PORT")) return "PORT";
   if (text.includes("DIR")) return "DIR";
   if (text.includes("PARAM")) return "PARAM";
-  if (text.includes("JSAPI") || text.includes("JS")) return "JSAPI";
+  if (text.includes("JSAPI")) return "JSAPI";
+  if (text.includes("JS")) return "JS";
   if (text.includes("DNS")) return "DNS";
   if (text.includes("WHOIS")) return "WHOIS";
   if (text.includes("ASN")) return "ASN";
@@ -841,6 +842,8 @@ function techniqueShortLabel(label: string) {
   if (normalized.includes("service")) return "SVC";
   if (normalized.includes("directory")) return "DIR";
   if (normalized.includes("parameter")) return "PARAM";
+  if (normalized === "js") return "JS";
+  if (normalized === "api" || normalized.includes("jsapi")) return "API";
   if (normalized.includes("dns")) return "DNS";
   if (normalized.includes("whois")) return "WHOIS";
   if (normalized.includes("asn")) return "ASN";

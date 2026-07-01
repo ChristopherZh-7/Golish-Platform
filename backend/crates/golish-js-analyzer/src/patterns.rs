@@ -10,7 +10,7 @@
 use regex::Captures;
 use serde::{Deserialize, Serialize};
 
-use crate::{AuthHint, Endpoint, UrlKind};
+use crate::{AuthHint, Endpoint, EndpointSource, UrlKind};
 
 /// Family of HTTP-call call-site this endpoint was extracted from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -95,6 +95,7 @@ pub(crate) fn endpoint_from_fetch(
         url_kind: UrlKind::Literal,
         has_path_params,
         id_param_position,
+        source: EndpointSource::Regex,
     })
 }
 
@@ -118,6 +119,7 @@ pub(crate) fn endpoint_from_axios_verb(
         url_kind: UrlKind::Literal,
         has_path_params,
         id_param_position,
+        source: EndpointSource::Regex,
     })
 }
 
@@ -147,6 +149,7 @@ pub(crate) fn endpoint_from_http_client_verb(
         url_kind: UrlKind::Literal,
         has_path_params,
         id_param_position,
+        source: EndpointSource::Regex,
     })
 }
 
@@ -172,6 +175,7 @@ pub(crate) fn endpoint_from_axios_config(
         url_kind: UrlKind::Literal,
         has_path_params,
         id_param_position,
+        source: EndpointSource::Regex,
     })
 }
 
@@ -197,6 +201,7 @@ pub(crate) fn endpoint_from_jquery(
         url_kind: UrlKind::Literal,
         has_path_params,
         id_param_position,
+        source: EndpointSource::Regex,
     })
 }
 
@@ -221,6 +226,7 @@ pub(crate) fn endpoint_from_new_request(
         url_kind: UrlKind::Literal,
         has_path_params,
         id_param_position,
+        source: EndpointSource::Regex,
     })
 }
 
@@ -260,6 +266,7 @@ pub(crate) fn endpoint_from_fetch_concat(
         url_kind: UrlKind::Concatenated,
         has_path_params: true, // concat necessarily has a runtime variable
         id_param_position: Some(seg_count),
+        source: EndpointSource::Regex,
     })
 }
 
@@ -288,6 +295,7 @@ pub(crate) fn endpoint_from_fetch_template(
         url_kind: UrlKind::TemplateLiteral,
         has_path_params: true,
         id_param_position: id_pos,
+        source: EndpointSource::Regex,
     })
 }
 

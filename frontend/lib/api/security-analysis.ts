@@ -74,6 +74,7 @@ export interface JsAnalysisResult {
   projectPath: string | null;
   url: string;
   filename: string;
+  filePath: string | null;
   sizeBytes: number | null;
   hashSha256: string | null;
   frameworks: unknown[];
@@ -110,6 +111,34 @@ export interface SecurityOverview {
   endpointsTotal: number;
   endpointsTested: number;
   scanStats: Record<string, number>;
+}
+
+/**
+ * A single collected request/response capture, read from disk by the
+ * `pentest_read_capture` IPC for the Burp-style Inspector. Payload v2 adds the
+ * request `headers`/`body`; v1 captures (response-only) degrade to empty
+ * request headers and a `null` body.
+ */
+export interface CaptureRequest {
+  method: string;
+  url: string;
+  resourceType: string;
+  headers: Record<string, string>;
+  body: string | null;
+}
+export interface CaptureResponse {
+  status: number | null;
+  headers: Record<string, string>;
+  contentType: string;
+  bodyLen: number | null;
+  bodyTextSample: string;
+  bodyBase64: string | null;
+}
+export interface CapturePayload {
+  version: number;
+  capturedAt: string;
+  request: CaptureRequest;
+  response: CaptureResponse;
 }
 
 /**
@@ -291,6 +320,7 @@ function normalizeJsAnalysisResult(value: unknown): JsAnalysisResult {
     projectPath: nullableStringField(row, "projectPath", "project_path"),
     url: stringField(row, "url"),
     filename: stringField(row, "filename"),
+    filePath: nullableStringField(row, "filePath", "file_path"),
     sizeBytes: nullableNumberField(row, "sizeBytes", "size_bytes"),
     hashSha256: nullableStringField(row, "hashSha256", "hash_sha256"),
     frameworks: arrayField(row, "frameworks"),
@@ -339,6 +369,38 @@ function normalizeTimelineEntry(value: unknown): TimelineEntry {
     status: stringField(row, "status"),
     detail: recordField(row, "detail"),
     createdAt: stringField(row, "createdAt", "created_at"),
+  };
+}
+
+/** Coerce an arbitrary object into a `Record<string, string>` header map. */
+function strMap(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(asRecord(value))) out[key] = String(raw);
+  return out;
+}
+
+export function normalizeCapturePayload(value: unknown): CapturePayload {
+  const row = asRecord(value);
+  const req = asRecord(get(row, "request"));
+  const res = asRecord(get(row, "response"));
+  return {
+    version: nullableNumberField(row, "version") ?? 1,
+    capturedAt: stringField(row, "capturedAt", "captured_at"),
+    request: {
+      method: (stringField(req, "method") || "GET").toUpperCase(),
+      url: stringField(req, "url"),
+      resourceType: stringField(req, "resourceType", "resource_type"),
+      headers: strMap(get(req, "headers")),
+      body: typeof req.body === "string" ? req.body : null,
+    },
+    response: {
+      status: nullableNumberField(res, "status"),
+      headers: strMap(get(res, "headers")),
+      contentType: stringField(res, "contentType", "content_type"),
+      bodyLen: nullableNumberField(res, "bodyLen", "body_len"),
+      bodyTextSample: stringField(res, "bodyTextSample", "body_text_sample"),
+      bodyBase64: nullableStringField(res, "bodyBase64", "body_base64"),
+    },
   };
 }
 
@@ -425,4 +487,24 @@ export async function targetSecurityOverview(targetId: string): Promise<Security
  */
 export async function targetTimeline(targetId: string, limit?: number): Promise<TimelineEntry[]> {
   return listOf(await invoke("target_timeline", { targetId, limit }), normalizeTimelineEntry);
+}
+
+// ─── Capture Inspector (Burp-style Req/Resp viewer) ────────────────────
+
+/**
+ * Read one collected request/response capture JSON for the Inspector. The
+ * backend guards `capturePath` to stay under `<projectPath>/.golish/captures`
+ * (read-only, rejects `..` traversal).
+ */
+export async function readCapture(
+  projectPath: string,
+  capturePath: string
+): Promise<CapturePayload> {
+  return normalizeCapturePayload(
+    await invoke("pentest_read_capture", { projectPath, capturePath })
+  );
+}
+
+export async function readCaptureText(projectPath: string, capturePath: string): Promise<string> {
+  return invoke("pentest_read_capture_text", { projectPath, capturePath });
 }

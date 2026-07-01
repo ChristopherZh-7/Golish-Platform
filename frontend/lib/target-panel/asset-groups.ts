@@ -32,6 +32,10 @@ function ipHostFromValue(value: string | null | undefined): string | null {
   }
 }
 
+export function isIpLiteralTargetValue(target: Target): boolean {
+  return ipHostFromValue(target.value) != null;
+}
+
 function hostKeyForTarget(target: Target): string | null {
   if (target.type === "ip") return normalizeHost(target.value);
   const realIp = normalizeHost(target.real_ip);
@@ -117,7 +121,7 @@ export function groupTargetsByHost(targets: Target[], unresolvedLabel: string): 
   const result = [...groups.values()].map((group) => {
     const sorted = [...group.targets].sort(sortTargets);
     const linkedTargets = dedupeDisplayLinkedTargets(
-      sorted.filter((target) => target.id !== group.ipTarget?.id)
+      sorted.filter((target) => target.id !== group.ipTarget?.id && !isIpLiteralTargetValue(target))
     );
     return { ...group, targets: sorted, linkedTargets };
   });

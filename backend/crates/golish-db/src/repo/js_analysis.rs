@@ -4,6 +4,18 @@ use uuid::Uuid;
 
 use crate::models::JsAnalysisResult;
 
+fn is_browser_collect_placeholder(raw: &serde_json::Value) -> bool {
+    raw.get("collected_by").and_then(|v| v.as_str()) == Some("browser_collect_js_api")
+        && raw
+            .get("analysis_pending")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+}
+
+fn is_static_js_extract(raw: &serde_json::Value) -> bool {
+    raw.get("extracted_by").and_then(|v| v.as_str()) == Some("js_extract_apis")
+}
+
 pub async fn insert(
     pool: &PgPool,
     target_id: Uuid,
@@ -21,6 +33,55 @@ pub async fn insert(
     risk_summary: &str,
     raw_analysis: &serde_json::Value,
 ) -> Result<JsAnalysisResult> {
+    if let Some(existing) = sqlx::query_as::<_, JsAnalysisResult>(
+        "SELECT * FROM js_analysis_results WHERE target_id = $1 AND filename = $2 ORDER BY analyzed_at DESC LIMIT 1",
+    )
+    .bind(target_id)
+    .bind(filename)
+    .fetch_optional(pool)
+    .await?
+    {
+        if is_browser_collect_placeholder(raw_analysis) && is_static_js_extract(&existing.raw_analysis)
+        {
+            return Ok(existing);
+        }
+
+        let row = sqlx::query_as::<_, JsAnalysisResult>(
+            r#"UPDATE js_analysis_results
+               SET project_path = COALESCE($2, project_path),
+                   url = $3,
+                   size_bytes = COALESCE($4, size_bytes),
+                   hash_sha256 = COALESCE($5, hash_sha256),
+                   frameworks = $6,
+                   libraries = $7,
+                   endpoints_found = $8,
+                   secrets_found = $9,
+                   comments = $10,
+                   source_maps = $11,
+                   risk_summary = $12,
+                   raw_analysis = $13,
+                   analyzed_at = NOW()
+               WHERE id = $1
+               RETURNING *"#,
+        )
+        .bind(existing.id)
+        .bind(project_path)
+        .bind(url)
+        .bind(size_bytes)
+        .bind(hash_sha256)
+        .bind(frameworks)
+        .bind(libraries)
+        .bind(endpoints_found)
+        .bind(secrets_found)
+        .bind(comments)
+        .bind(source_maps)
+        .bind(risk_summary)
+        .bind(raw_analysis)
+        .fetch_one(pool)
+        .await?;
+        return Ok(row);
+    }
+
     let row = sqlx::query_as::<_, JsAnalysisResult>(
         r#"INSERT INTO js_analysis_results
                (target_id, project_path, url, filename, size_bytes, hash_sha256,
@@ -77,7 +138,14 @@ pub async fn update_file_path_by_url(
 
 pub async fn list_by_target(pool: &PgPool, target_id: Uuid) -> Result<Vec<JsAnalysisResult>> {
     let rows = sqlx::query_as::<_, JsAnalysisResult>(
-        "SELECT * FROM js_analysis_results WHERE target_id = $1 ORDER BY analyzed_at DESC",
+        r#"SELECT *
+           FROM (
+             SELECT DISTINCT ON (filename) *
+             FROM js_analysis_results
+             WHERE target_id = $1
+             ORDER BY filename, analyzed_at DESC
+           ) latest
+           ORDER BY analyzed_at DESC"#,
     )
     .bind(target_id)
     .fetch_all(pool)

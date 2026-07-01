@@ -5,12 +5,6 @@ import type { Fingerprint } from "@/lib/security-analysis";
 import { cn } from "@/lib/utils";
 import { EmptyInline, Metric, Section } from "../SurfaceParts";
 
-function portChip(port: PortInfo): string {
-  const proto = port.protocol ? `/${port.protocol}` : "";
-  const service = port.service ?? (port.http_status != null ? "http" : "");
-  return service ? `${port.port}${proto} ${service}` : `${port.port}${proto}`;
-}
-
 export function SurfaceTabView({
   target,
   httpPorts,
@@ -29,8 +23,8 @@ export function SurfaceTabView({
   jsCount: number;
   fingerprints: Fingerprint[];
   loading: boolean;
-  // When the subject is an IP/host, the domains that resolve to it. Rendered as
-  // a clickable block (IP → domain → ports) beneath the host's own surface.
+  // When the subject is an IP/host, the domains that resolve to it. The rows are
+  // only clickable when the parent passes an explicit drill-in handler.
   relatedDomains?: Target[];
   onSelectDomain?: (id: string) => void;
 }) {
@@ -174,44 +168,54 @@ export function SurfaceTabView({
             <EmptyInline loading={false} label={t("targets.surfaceDomainsEmpty")} />
           ) : (
             <div className="space-y-1">
-              {relatedDomains.map((domain) => (
-                <button
-                  key={domain.id}
-                  type="button"
-                  onClick={() => onSelectDomain?.(domain.id)}
-                  className="group flex w-full flex-col gap-1 rounded border border-border/20 bg-background/30 px-2 py-1.5 text-left transition-colors hover:border-accent/40 hover:bg-muted/15"
-                >
-                  <div className="flex items-center gap-2">
-                    <Globe className="h-3.5 w-3.5 flex-shrink-0 text-blue-400/70" />
-                    <span className="min-w-0 flex-1 truncate text-[12px] text-foreground group-hover:text-accent">
-                      {domain.value}
-                    </span>
-                    <span
-                      className={cn(
-                        "flex-shrink-0 rounded px-1 py-0.5 text-[9px] font-semibold uppercase leading-none",
-                        domain.scope === "in"
-                          ? "bg-green-500/10 text-green-300"
-                          : "bg-red-500/10 text-red-300"
+              {relatedDomains.map((domain) => {
+                const content = (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <Globe className="h-3.5 w-3.5 flex-shrink-0 text-blue-400/70" />
+                      <span
+                        className={cn(
+                          "min-w-0 flex-1 truncate text-[12px] text-foreground",
+                          onSelectDomain && "group-hover:text-accent"
+                        )}
+                      >
+                        {domain.value}
+                      </span>
+                      <span
+                        className={cn(
+                          "flex-shrink-0 rounded px-1 py-0.5 text-[9px] font-semibold uppercase leading-none",
+                          domain.scope === "in"
+                            ? "bg-green-500/10 text-green-300"
+                            : "bg-red-500/10 text-red-300"
+                        )}
+                      >
+                        {domain.scope}
+                      </span>
+                      {onSelectDomain && (
+                        <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground/40 group-hover:text-muted-foreground" />
                       )}
-                    >
-                      {domain.scope}
-                    </span>
-                    <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground/40 group-hover:text-muted-foreground" />
-                  </div>
-                  {domain.ports.length > 0 && (
-                    <div className="flex flex-wrap gap-1 pl-5">
-                      {domain.ports.map((port) => (
-                        <span
-                          key={`${domain.id}:${port.port}:${port.protocol ?? ""}`}
-                          className="rounded bg-muted/30 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
-                        >
-                          {portChip(port)}
-                        </span>
-                      ))}
                     </div>
-                  )}
-                </button>
-              ))}
+                  </>
+                );
+
+                return onSelectDomain ? (
+                  <button
+                    key={domain.id}
+                    type="button"
+                    onClick={() => onSelectDomain(domain.id)}
+                    className="group flex w-full flex-col gap-1 rounded border border-border/20 bg-background/30 px-2 py-1.5 text-left transition-colors hover:border-accent/40 hover:bg-muted/15"
+                  >
+                    {content}
+                  </button>
+                ) : (
+                  <div
+                    key={domain.id}
+                    className="flex w-full flex-col gap-1 rounded border border-border/20 bg-background/30 px-2 py-1.5 text-left"
+                  >
+                    {content}
+                  </div>
+                );
+              })}
             </div>
           )}
         </Section>

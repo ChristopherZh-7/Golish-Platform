@@ -198,9 +198,11 @@ fn static_tool_allowed_by_selection(tool_name: &str, groups: &StaticGroupSelecti
         "search_memories" | "store_memory" | "list_memories" => groups.memory,
         "search_guide" | "save_guide" | "search_code" | "save_code" | "execute_code"
         | "apply_patch" => groups.core,
-        "list_in_scope_targets" | "list_attack_surface_seeds" | "check_stage_asset_coverage" => {
-            groups.security_analysis
-        }
+        "list_in_scope_targets"
+        | "list_attack_surface_seeds"
+        | "check_stage_asset_coverage"
+        | "stage_worklist_status"
+        | "stage_worklist_next" => groups.security_analysis,
         _ => false,
     }
 }

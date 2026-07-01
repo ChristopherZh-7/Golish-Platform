@@ -25,6 +25,8 @@ pub async fn execute_security_analysis_tool(
             | "list_in_scope_targets"
             | "list_attack_surface_seeds"
             | "list_enumeration_web_roots"
+            | "stage_worklist_next"
+            | "stage_worklist_status"
             | "check_stage_asset_coverage"
     );
     if !is_sec_tool {
@@ -479,6 +481,73 @@ pub async fn execute_security_analysis_tool(
             ))
         }
 
+        "stage_worklist_next" | "stage_worklist_status" => {
+            let stage = extract_string_param(args, &["stage"])
+                .or_else(|| harness_stage.map(|stage| stage.as_str().to_string()));
+            let Some(stage) = stage.filter(|stage| !stage.trim().is_empty()) else {
+                return Some(error_result(
+                    "stage worklist requires a 'stage' parameter when no harness stage is active",
+                ));
+            };
+            let org_id = extract_string_param(args, &["organization_id"])
+                .and_then(|s| uuid::Uuid::parse_str(&s).ok())
+                .or(harness_org_id);
+            let Some(org_id) = org_id else {
+                return Some(error_result(
+                    "stage worklist requires an organization_id when no active harness organization is bound",
+                ));
+            };
+            let stage_started_at = match harness_operation_id {
+                Some(operation_id) => match repo.operation_state_get(operation_id).await {
+                    Ok(Some(state)) if state.current_stage == stage => Some(state.stage_started_at),
+                    Ok(_) => None,
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "harness::stage_worklist",
+                            error = %err,
+                            "failed to read operation_state; stage worklist falls back to presence-only freshness"
+                        );
+                        None
+                    }
+                },
+                None => None,
+            };
+            let snapshot = match repo
+                .stage_asset_coverage(org_id, &stage, session_id, stage_started_at)
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    return Some(error_result(format!(
+                        "Failed to read stage worklist: {err}"
+                    )))
+                }
+            };
+            if tool_name == "stage_worklist_status" {
+                return Some((stage_worklist_status(snapshot), true));
+            }
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|n| n.clamp(1, 200) as usize)
+                .unwrap_or(25);
+            let preferred_states = args
+                .get("prefer")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .filter(|states| !states.is_empty())
+                .unwrap_or_else(|| vec!["pending".to_string(), "error".to_string()]);
+            Some((
+                stage_worklist_next(snapshot, limit, &preferred_states),
+                true,
+            ))
+        }
+
         "check_stage_asset_coverage" => {
             let stage = extract_string_param(args, &["stage"])
                 .or_else(|| harness_stage.map(|stage| stage.as_str().to_string()));
@@ -614,11 +683,11 @@ fn enumeration_web_roots_worklist(snapshot: Value, limit: usize, include_coverag
         "execution_order": [
             "browser_collect_js_api",
             "js_extract_apis",
-            "route_probe_paths with observed prefixes and the small local wordlist",
+            "route_probe_paths once after JS/API landing, using DB seeds and the full local/built-in wordlist",
             "parameter extraction from observed requests, query strings, forms, and targeted param_hints",
             "check_stage_asset_coverage before submit_stage_deliverable"
         ],
-        "tool_boundary": "Call browser_collect_js_api/js_collect/js_extract_apis/route_probe_paths directly. Directory discovery must use route_probe_paths plus observed JS/API prefixes and a small local wordlist; do not use external directory tools such as ffuf/gobuster/feroxbuster in enumeration. Bounded crawler CLIs such as katana must be called through pentest_run(tool_name=...) and used only as URL sources. Do not call manage_targets in enumeration.",
+        "tool_boundary": "Call browser_collect_js_api/js_collect/js_extract_apis/route_probe_paths directly. Directory discovery must use route_probe_paths after JS/API landing; pass target_id + base_url so it reads DB seeds and runs the full local/built-in recursive wordlist queue. Do not use external directory tools such as ffuf/gobuster/feroxbuster in enumeration. Bounded crawler CLIs such as katana must be called through pentest_run(tool_name=...) and used only as URL sources. Do not call manage_targets in enumeration.",
     })
 }
 
@@ -637,7 +706,7 @@ fn enumeration_web_root_next_steps(coverage: &[Value]) -> Vec<&'static str> {
                 steps.push("run browser_collect_js_api first, then js_extract_apis on saved JS")
             }
             "GOLISH-ENUM-DIR" => steps.push(
-                "run route_probe_paths over observed JS/API prefixes with the small local wordlist",
+                "run route_probe_paths after JS/API landing with target_id + base_url so it reads DB seeds and completes the recursive wordlist queue",
             ),
             "GOLISH-ENUM-PARAM" => {
                 steps.push(
@@ -651,6 +720,120 @@ fn enumeration_web_root_next_steps(coverage: &[Value]) -> Vec<&'static str> {
     steps.sort();
     steps.dedup();
     steps
+}
+
+fn stage_worklist_status(snapshot: Value) -> Value {
+    let mut out = compact_stage_asset_coverage(snapshot, 10, false);
+    out["tool"] = json!("stage_worklist_status");
+    out["worklist_contract"] = json!(
+        "Status is DB/gate truth. pending/error cells are unfinished work; checked_empty/found/blocked/not_applicable are terminal when backed by evidence or a concrete note."
+    );
+    out["next_tool"] = if out
+        .get("ready_to_submit")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        json!("submit_stage_deliverable")
+    } else {
+        json!("stage_worklist_next")
+    };
+    out
+}
+
+fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String]) -> Value {
+    let stage = snapshot.get("stage").and_then(Value::as_str).unwrap_or("");
+    let is_enumeration = stage == "enumeration";
+    let assets = snapshot
+        .get("assets")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut items = Vec::new();
+    let mut total_cells = 0usize;
+    let mut pending_cells = 0usize;
+    let mut error_cells = 0usize;
+    let mut terminal_cells = 0usize;
+    let mut matching_cells = 0usize;
+
+    for asset in &assets {
+        let asset_value = asset.get("value").and_then(Value::as_str).unwrap_or("");
+        let target_id = asset.get("target_id").and_then(Value::as_str).unwrap_or("");
+        let target_type = asset
+            .get("target_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        for cell in asset
+            .get("coverage")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            total_cells += 1;
+            let state = cell
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("pending");
+            match state {
+                "pending" => pending_cells += 1,
+                "error" => error_cells += 1,
+                _ => terminal_cells += 1,
+            }
+            if !preferred_states.iter().any(|s| s == state) {
+                continue;
+            }
+            matching_cells += 1;
+            if items.len() >= limit {
+                continue;
+            }
+            let technique = cell.get("technique").and_then(Value::as_str).unwrap_or("");
+            let mut item = json!({
+                "work_item_id": format!("{target_id}:{technique}"),
+                "target_id": target_id,
+                "asset": asset_value,
+                "target_type": target_type,
+                "technique": cell.get("technique").cloned().unwrap_or(Value::Null),
+                "label": cell.get("label").cloned().unwrap_or(Value::Null),
+                "state": state,
+                "source": cell.get("source").cloned().unwrap_or(Value::Null),
+                "evidence_refs": cell.get("evidence_refs").cloned().unwrap_or_else(|| json!([])),
+                "note": cell.get("note").cloned().unwrap_or(Value::Null),
+                "suggested_tools": cell.get("suggested_tools").cloned().unwrap_or_else(|| json!([])),
+            });
+            if is_enumeration {
+                item["worklist_source"] = json!("EAS-confirmed live web root");
+                item["enumeration_focus"] = json!(enumeration_gap_focus(technique));
+            }
+            items.push(item);
+        }
+    }
+
+    let ready_to_submit = pending_cells == 0 && error_cells == 0;
+    let omitted_item_count = matching_cells.saturating_sub(items.len());
+    json!({
+        "tool": "stage_worklist_next",
+        "stage": snapshot.get("stage").cloned().unwrap_or(Value::Null),
+        "organization_id": snapshot.get("organization_id").cloned().unwrap_or(Value::Null),
+        "session_id": snapshot.get("session_id").cloned().unwrap_or(Value::Null),
+        "limit": limit,
+        "prefer": preferred_states,
+        "ready_to_submit": ready_to_submit,
+        "summary": snapshot.get("summary").cloned().unwrap_or_else(|| json!({})),
+        "cell_summary": {
+            "total_cells": total_cells,
+            "pending_cells": pending_cells,
+            "error_cells": error_cells,
+            "terminal_cells": terminal_cells,
+            "matching_cells": matching_cells,
+        },
+        "items": items,
+        "omitted_item_count": omitted_item_count,
+        "worklist_contract": "Items are derived from DB/gate truth. Run the suggested tool(s), then call stage_worklist_next/status again; do not mark work complete by natural-language assertion.",
+        "next_action": if ready_to_submit {
+            "No pending/error work items remain. Build a slim StageDeliverable with real evidence refs and submit."
+        } else {
+            "Close the returned items in order, refresh this worklist, and submit only after ready_to_submit=true."
+        }
+    })
 }
 
 fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets: bool) -> Value {
@@ -732,7 +915,7 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
             "Coverage has no pending/error/blocked cells in this preflight. Build the final StageDeliverable with real evidence ids and submit_stage_deliverable."
         }
     } else if is_enumeration {
-        "Do not submit yet. Treat gap_examples as the exact EAS-confirmed live web-root worklist for this org: close JSAPI with browser_collect_js_api/js_extract_apis, DIR with route_probe_paths over observed JS/API prefixes plus the small local wordlist, and PARAM from observed browser requests, query strings, forms, and targeted js_extract_apis param_hints. Do not re-port-scan, default to external directory tools, or hand-write found cells."
+        "Do not submit yet. Treat gap_examples as the exact EAS-confirmed live web-root worklist for this org: close JSAPI with browser_collect_js_api/js_extract_apis, DIR with one route_probe_paths call after JS/API landing using target_id + base_url so it reads DB seeds and completes the recursive wordlist queue, and PARAM from observed browser requests, query strings, forms, and targeted js_extract_apis param_hints. Do not re-port-scan, default to external directory tools, or hand-write found cells."
     } else {
         "Do not submit yet. Close the pending/error cells first: run the suggested tools, wait for background jobs to land evidence, or mark truly blocked/not_applicable cells with concrete notes."
     };
@@ -779,7 +962,7 @@ fn enumeration_gap_focus(technique: &str) -> &'static str {
             "Collect browser-observed JS/API first, then run js_extract_apis on saved JS."
         }
         "GOLISH-ENUM-DIR" => {
-            "Probe observed JS/API route prefixes with the small local wordlist; avoid external directory tools by default."
+            "Run route_probe_paths after JS/API landing with target_id + base_url; let it read DB seeds and complete its recursive local/built-in wordlist queue."
         }
         "GOLISH-ENUM-PARAM" => {
             "Derive parameters from observed requests, query strings, forms, and targeted js_extract_apis param_hints."
@@ -790,7 +973,10 @@ fn enumeration_gap_focus(technique: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{compact_stage_asset_coverage, enumeration_web_roots_worklist};
+    use super::{
+        compact_stage_asset_coverage, enumeration_web_roots_worklist, stage_worklist_next,
+        stage_worklist_status,
+    };
     use serde_json::json;
 
     #[test]
@@ -991,5 +1177,64 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("pentest_run(tool_name=...)"));
+    }
+
+    #[test]
+    fn stage_worklist_next_returns_only_preferred_gap_cells() {
+        let worklist = stage_worklist_next(
+            json!({
+                "stage": "enumeration",
+                "organization_id": "org-1",
+                "session_id": "sess",
+                "summary": {"total_assets": 1},
+                "assets": [{
+                    "target_id": "target-1",
+                    "value": "https://app.example.com",
+                    "target_type": "url",
+                    "coverage": [
+                        {"technique": "GOLISH-ENUM-JSAPI", "label": "API", "state": "pending", "suggested_tools": ["browser_collect_js_api"]},
+                        {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "error", "suggested_tools": ["route_probe_paths"]},
+                        {"technique": "GOLISH-ENUM-PARAM", "label": "Parameters", "state": "found", "suggested_tools": []}
+                    ]
+                }]
+            }),
+            1,
+            &["pending".to_string(), "error".to_string()],
+        );
+
+        assert_eq!(worklist["ready_to_submit"], false);
+        assert_eq!(worklist["cell_summary"]["matching_cells"], 2);
+        assert_eq!(worklist["items"].as_array().unwrap().len(), 1);
+        assert_eq!(worklist["omitted_item_count"], 1);
+        assert_eq!(worklist["items"][0]["technique"], "GOLISH-ENUM-JSAPI");
+        assert!(worklist["items"][0]["enumeration_focus"]
+            .as_str()
+            .unwrap()
+            .contains("browser-observed JS/API"));
+    }
+
+    #[test]
+    fn stage_worklist_status_points_to_submit_when_ready() {
+        let status = stage_worklist_status(json!({
+            "stage": "external_attack_surface",
+            "organization_id": "org-1",
+            "session_id": "sess",
+            "summary": {"total_assets": 1},
+            "assets": [{
+                "target_id": "target-1",
+                "value": "example.com",
+                "target_type": "domain",
+                "coverage": [
+                    {"technique": "GOLISH-EAS-LIVENESS", "label": "Liveness", "state": "found", "evidence_refs": [1], "suggested_tools": []}
+                ]
+            }]
+        }));
+
+        assert_eq!(status["ready_to_submit"], true);
+        assert_eq!(status["next_tool"], "submit_stage_deliverable");
+        assert!(status["worklist_contract"]
+            .as_str()
+            .unwrap()
+            .contains("DB/gate truth"));
     }
 }

@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@/lib/api/client";
-import { apiEndpointsList, jsAnalysisList, targetAssetsList } from "./security-analysis";
+import {
+  apiEndpointsList,
+  jsAnalysisList,
+  normalizeCapturePayload,
+  targetAssetsList,
+} from "./security-analysis";
 
 vi.mock("@/lib/api/client", () => ({
   invoke: vi.fn(),
@@ -65,6 +70,7 @@ describe("security-analysis api normalization", () => {
           target_id: "target-1",
           url: "https://example.com/app.js",
           filename: "app.js",
+          file_path: ".golish/captures/example.com/443/js/app.js",
           size_bytes: 42,
           hash_sha256: "abc",
           endpoints_found: ["/api"],
@@ -90,6 +96,7 @@ describe("security-analysis api normalization", () => {
         targetId: "target-1",
         sizeBytes: 42,
         hashSha256: "abc",
+        filePath: ".golish/captures/example.com/443/js/app.js",
         endpointsFound: ["/api"],
         secretsFound: ["token"],
         sourceMaps: true,
@@ -97,5 +104,46 @@ describe("security-analysis api normalization", () => {
         analyzedAt: "2026-06-30T00:00:02Z",
       }),
     ]);
+  });
+});
+
+describe("normalizeCapturePayload", () => {
+  it("normalizes a v2 capture (request headers/body present)", () => {
+    const c = normalizeCapturePayload({
+      version: 2,
+      captured_at: "2026-06-30T00:00:00Z",
+      request: {
+        method: "post",
+        url: "https://h/api/x",
+        resource_type: "fetch",
+        headers: { "content-type": "application/json" },
+        body: '{"a":1}',
+      },
+      response: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        content_type: "application/json",
+        body_text_sample: "{}",
+        body_len: 2,
+      },
+    });
+    expect(c.version).toBe(2);
+    expect(c.request.method).toBe("POST");
+    expect(c.request.headers["content-type"]).toBe("application/json");
+    expect(c.request.body).toBe('{"a":1}');
+    expect(c.response.status).toBe(200);
+    expect(c.response.bodyTextSample).toBe("{}");
+  });
+
+  it("degrades a v1 capture (no request headers/body)", () => {
+    const c = normalizeCapturePayload({
+      version: 1,
+      request: { method: "GET", url: "https://h/api/y" },
+      response: { status: 204, headers: {}, body_text_sample: "" },
+    });
+    expect(c.version).toBe(1);
+    expect(c.request.headers).toEqual({});
+    expect(c.request.body).toBeNull();
+    expect(c.response.status).toBe(204);
   });
 });

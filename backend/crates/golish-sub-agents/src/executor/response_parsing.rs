@@ -242,6 +242,290 @@ fn missing_min_invocation_tools(reasons: &[String]) -> Vec<String> {
     out
 }
 
+fn model_visible_tool_result(tool_name: &str, value: &serde_json::Value) -> serde_json::Value {
+    match tool_name {
+        "route_probe_paths" => compact_route_probe_result(value),
+        "list_enumeration_web_roots" => compact_enumeration_web_roots_result(value),
+        "browser_collect_js_api" => compact_browser_collect_result(value),
+        "js_extract_apis" => compact_js_extract_result(value),
+        _ => compact_large_json_result(value),
+    }
+}
+
+fn compact_route_probe_result(value: &serde_json::Value) -> serde_json::Value {
+    let matches = value
+        .get("matches")
+        .and_then(|v| v.as_array())
+        .map(Vec::len)
+        .unwrap_or_default();
+    let rejected = value
+        .get("rejected_candidates")
+        .and_then(|v| v.as_array())
+        .map(Vec::len)
+        .unwrap_or_default();
+    let errors = value
+        .get("errors")
+        .and_then(|v| v.as_array())
+        .map(Vec::len)
+        .unwrap_or_default();
+    let prefixes = value
+        .get("prefixes_tested")
+        .and_then(|v| v.as_array())
+        .map(Vec::len)
+        .unwrap_or_default();
+    let outcome = value
+        .get("outcome")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let queue_completed = value
+        .get("queue_completed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let next_action = if outcome == "error" {
+        "Refresh stage_worklist/check_stage_asset_coverage, then retry only this failed root or mark blocked with the concrete error evidence."
+    } else if queue_completed {
+        "Refresh stage_worklist/check_stage_asset_coverage; do not rerun this root unless coverage still reports DIR pending/error."
+    } else {
+        "Queue did not complete; refresh coverage, then continue this root only if DIR remains pending/error."
+    };
+
+    serde_json::json!({
+        "success": value.get("success").cloned().unwrap_or(serde_json::Value::Null),
+        "base_url": value.get("base_url").cloned().unwrap_or(serde_json::Value::Null),
+        "requested_base_url": value.get("requested_base_url").cloned().unwrap_or(serde_json::Value::Null),
+        "outcome": outcome,
+        "outcome_persisted": value.get("outcome_persisted").cloned().unwrap_or(serde_json::Value::Null),
+        "status": value.get("status").cloned().unwrap_or(serde_json::Value::Null),
+        "timed_out": value.get("timed_out").cloned().unwrap_or(serde_json::Value::Null),
+        "queue_completed": queue_completed,
+        "queue_remaining": value.get("queue_remaining").cloned().unwrap_or(serde_json::Value::Null),
+        "requests_sent": value.get("requests_sent").cloned().unwrap_or(serde_json::Value::Null),
+        "candidate_requests_sent": value.get("candidate_requests_sent").cloned().unwrap_or(serde_json::Value::Null),
+        "baseline_requests_sent": value.get("baseline_requests_sent").cloned().unwrap_or(serde_json::Value::Null),
+        "persisted_directory_entries": value.get("persisted_directory_entries").cloned().unwrap_or(serde_json::Value::Null),
+        "matches_count": matches,
+        "matches_sample": sample_array(value.get("matches"), 5),
+        "rejected_candidates_count": rejected,
+        "rejected_candidates_sample": sample_array(value.get("rejected_candidates"), 3),
+        "errors_count": errors,
+        "errors_top": error_counts(value.get("errors"), 5),
+        "errors_sample": sample_array(value.get("errors"), 5),
+        "prefixes_tested_count": prefixes,
+        "prefixes_tested_sample": sample_array(value.get("prefixes_tested"), 10),
+        "wordlist": value.get("wordlist").cloned().unwrap_or(serde_json::Value::Null),
+        "seed_paths": value.get("seed_paths").cloned().unwrap_or(serde_json::Value::Null),
+        "run_id": value.get("run_id").cloned().unwrap_or(serde_json::Value::Null),
+        "dry_run": value.get("dry_run").cloned().unwrap_or(serde_json::Value::Null),
+        "next_action": next_action,
+        "model_visible_compacted": true,
+        "raw_result_retained_in_transcript": true,
+        "omitted_large_fields": ["matches", "rejected_candidates", "errors", "prefixes_tested"],
+    })
+}
+
+fn compact_enumeration_web_roots_result(value: &serde_json::Value) -> serde_json::Value {
+    let roots = value
+        .get("web_roots")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut pending_roots = Vec::new();
+    let mut terminal_roots = Vec::new();
+    for root in &roots {
+        let pending = root
+            .get("pending_techniques")
+            .and_then(|v| v.as_array())
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false);
+        let summary = serde_json::json!({
+            "target_id": root.get("target_id").cloned().unwrap_or(serde_json::Value::Null),
+            "root_url": root.get("root_url").cloned().unwrap_or(serde_json::Value::Null),
+            "target_type": root.get("target_type").cloned().unwrap_or(serde_json::Value::Null),
+            "pending_techniques": root.get("pending_techniques").cloned().unwrap_or_else(|| serde_json::json!([])),
+            "terminal_techniques": root.get("terminal_techniques").cloned().unwrap_or_else(|| serde_json::json!([])),
+            "suggested_tools": root.get("suggested_tools").cloned().unwrap_or_else(|| serde_json::json!([])),
+            "next_steps": root.get("next_steps").cloned().unwrap_or_else(|| serde_json::json!([])),
+        });
+        if pending && pending_roots.len() < 20 {
+            pending_roots.push(summary);
+        } else if !pending && terminal_roots.len() < 5 {
+            terminal_roots.push(summary);
+        }
+    }
+
+    serde_json::json!({
+        "stage": value.get("stage").cloned().unwrap_or(serde_json::Value::Null),
+        "organization_id": value.get("organization_id").cloned().unwrap_or(serde_json::Value::Null),
+        "session_id": value.get("session_id").cloned().unwrap_or(serde_json::Value::Null),
+        "count": value.get("count").cloned().unwrap_or(serde_json::Value::Null),
+        "total": value.get("total").cloned().unwrap_or(serde_json::Value::Null),
+        "truncated": value.get("truncated").cloned().unwrap_or(serde_json::Value::Null),
+        "pending_roots_sample": pending_roots,
+        "terminal_roots_sample": terminal_roots,
+        "omitted_root_count": roots.len().saturating_sub(25),
+        "worklist_semantics": value.get("worklist_semantics").cloned().unwrap_or(serde_json::Value::Null),
+        "execution_order": value.get("execution_order").cloned().unwrap_or(serde_json::Value::Null),
+        "tool_boundary": value.get("tool_boundary").cloned().unwrap_or(serde_json::Value::Null),
+        "next_action": "Process pending_roots_sample in batches, then call stage_worklist_next or check_stage_asset_coverage before submit.",
+        "model_visible_compacted": true,
+        "raw_result_retained_in_transcript": true,
+        "omitted_large_fields": ["web_roots.coverage"],
+    })
+}
+
+fn compact_browser_collect_result(value: &serde_json::Value) -> serde_json::Value {
+    let api_requests = value
+        .get("api_requests")
+        .or_else(|| value.get("requests"))
+        .or_else(|| value.get("endpoints"));
+    let scripts = value.get("scripts").or_else(|| value.get("script_urls"));
+    serde_json::json!({
+        "success": value.get("success").cloned().unwrap_or(serde_json::Value::Null),
+        "target_id": value.get("target_id").cloned().unwrap_or(serde_json::Value::Null),
+        "url": value.get("url").or_else(|| value.get("target_url")).cloned().unwrap_or(serde_json::Value::Null),
+        "summary": value.get("summary").cloned().unwrap_or(serde_json::Value::Null),
+        "api_requests_count": api_requests.and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default(),
+        "api_requests_sample": sample_array(api_requests, 10),
+        "scripts_count": scripts.and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default(),
+        "scripts_sample": sample_array(scripts, 10),
+        "persisted": value.get("persisted").cloned().unwrap_or(serde_json::Value::Null),
+        "skipped": value.get("skipped").cloned().unwrap_or(serde_json::Value::Null),
+        "ai_recipe_rounds": value.get("ai_recipe_rounds").cloned().unwrap_or(serde_json::Value::Null),
+        "ai_recipe_rationale": value.get("ai_recipe_rationale").cloned().unwrap_or(serde_json::Value::Null),
+        "next_action": "Run js_extract_apis on collected JS if JS/API coverage remains pending, then refresh stage_worklist/check_stage_asset_coverage.",
+        "model_visible_compacted": true,
+        "raw_result_retained_in_transcript": true,
+    })
+}
+
+fn compact_js_extract_result(value: &serde_json::Value) -> serde_json::Value {
+    let endpoints = value
+        .get("endpoints")
+        .or_else(|| value.get("endpoints_found"))
+        .or_else(|| value.pointer("/summary/endpoints"));
+    let params = value.get("params").or_else(|| value.get("param_hints"));
+    serde_json::json!({
+        "success": value.get("success").cloned().unwrap_or(serde_json::Value::Null),
+        "target_id": value.get("target_id").cloned().unwrap_or(serde_json::Value::Null),
+        "url": value.get("url").or_else(|| value.get("target_url")).cloned().unwrap_or(serde_json::Value::Null),
+        "summary": value.get("summary").cloned().unwrap_or(serde_json::Value::Null),
+        "endpoints_count": endpoints.and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default(),
+        "endpoints_sample": sample_array(endpoints, 12),
+        "params_count": params.and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default(),
+        "params_sample": sample_array(params, 12),
+        "persisted_api_endpoints": value.get("persisted_api_endpoints").cloned().unwrap_or(serde_json::Value::Null),
+        "ai_used": value.pointer("/summary/ai_used").or_else(|| value.get("ai_used")).cloned().unwrap_or(serde_json::Value::Null),
+        "ai_endpoints_added": value.pointer("/summary/ai_endpoints_added").or_else(|| value.get("ai_endpoints_added")).cloned().unwrap_or(serde_json::Value::Null),
+        "next_action": "Refresh stage_worklist/check_stage_asset_coverage; only retry this root if JS/API/PARAM remains pending or errored.",
+        "model_visible_compacted": true,
+        "raw_result_retained_in_transcript": true,
+    })
+}
+
+fn compact_large_json_result(value: &serde_json::Value) -> serde_json::Value {
+    let raw = serde_json::to_string(value).unwrap_or_default();
+    if raw.chars().count() <= 24_000 {
+        return value.clone();
+    }
+    let mut compacted = summarize_json_for_model(value, 3);
+    if let Some(obj) = compacted.as_object_mut() {
+        obj.insert(
+            "model_visible_compacted".to_string(),
+            serde_json::json!(true),
+        );
+        obj.insert(
+            "raw_result_retained_in_transcript".to_string(),
+            serde_json::json!(true),
+        );
+    }
+    compacted
+}
+
+fn summarize_json_for_model(value: &serde_json::Value, depth: usize) -> serde_json::Value {
+    if depth == 0 {
+        return match value {
+            serde_json::Value::Array(arr) => serde_json::json!({
+                "omitted_array_items": arr.len()
+            }),
+            serde_json::Value::Object(obj) => serde_json::json!({
+                "omitted_object_keys": obj.len()
+            }),
+            serde_json::Value::String(s) if s.chars().count() > 500 => {
+                serde_json::json!(truncate_str(s, 500))
+            }
+            _ => value.clone(),
+        };
+    }
+
+    match value {
+        serde_json::Value::Array(arr) => {
+            let sample: Vec<_> = arr
+                .iter()
+                .take(5)
+                .map(|item| summarize_json_for_model(item, depth - 1))
+                .collect();
+            serde_json::json!({
+                "count": arr.len(),
+                "sample": sample,
+                "omitted_count": arr.len().saturating_sub(5),
+            })
+        }
+        serde_json::Value::Object(obj) => {
+            let mut out = serde_json::Map::new();
+            for (key, item) in obj.iter().take(16) {
+                out.insert(key.clone(), summarize_json_for_model(item, depth - 1));
+            }
+            if obj.len() > 16 {
+                out.insert(
+                    "omitted_object_keys".to_string(),
+                    serde_json::json!(obj.len() - 16),
+                );
+            }
+            serde_json::Value::Object(out)
+        }
+        serde_json::Value::String(s) if s.chars().count() > 500 => {
+            serde_json::json!(truncate_str(s, 500))
+        }
+        _ => value.clone(),
+    }
+}
+
+fn sample_array(value: Option<&serde_json::Value>, limit: usize) -> serde_json::Value {
+    let Some(arr) = value.and_then(|v| v.as_array()) else {
+        return serde_json::json!([]);
+    };
+    serde_json::Value::Array(
+        arr.iter()
+            .take(limit)
+            .map(|item| summarize_json_for_model(item, 2))
+            .collect(),
+    )
+}
+
+fn error_counts(value: Option<&serde_json::Value>, limit: usize) -> serde_json::Value {
+    let Some(arr) = value.and_then(|v| v.as_array()) else {
+        return serde_json::json!([]);
+    };
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for item in arr {
+        let key = item
+            .get("error")
+            .and_then(|v| v.as_str())
+            .map(|s| truncate_str(s, 180).to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        *counts.entry(key).or_default() += 1;
+    }
+    let mut entries: Vec<_> = counts.into_iter().collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    serde_json::Value::Array(
+        entries
+            .into_iter()
+            .take(limit)
+            .map(|(error, count)| serde_json::json!({ "error": error, "count": count }))
+            .collect(),
+    )
+}
+
 fn needs_fix_evidence_ref_problem(reasons: &[String]) -> bool {
     let reason_lc = reasons.join(" | ").to_ascii_lowercase();
     reason_lc.contains("evidence_ref")
@@ -897,6 +1181,7 @@ where
         let _tool_guard = tool_span.enter();
 
         let tool_timeout = idle_timeout.unwrap_or(tool_fallback_timeout);
+        let use_outer_tool_timeout = use_sub_agent_outer_tool_timeout(tool_name);
         let tool_result = tokio::select! {
             _ = wait_for_cancelled(ctx.cancelled) => {
                 tracing::info!(
@@ -913,7 +1198,8 @@ where
                     cancelled: true,
                 };
             }
-            result = tokio::time::timeout(tool_timeout, async {
+            result = async {
+                let tool_fut = async {
             if let Some(blocked) = submit_repair_mode
                 .and_then(|mode| mode.block_result_with_args(tool_name, &tool_args))
             {
@@ -1083,7 +1369,13 @@ where
                 )
                 .await
             }
-            }) => result,
+                };
+                if use_outer_tool_timeout {
+                    tokio::time::timeout(tool_timeout, tool_fut).await
+                } else {
+                    Ok(tool_fut.await)
+                }
+            } => result,
         };
 
         let (mut result_value, mut success) = match tool_result {
@@ -1229,7 +1521,8 @@ where
             }
         }
 
-        let mut result_text = serde_json::to_string(&result_value).unwrap_or_default();
+        let model_visible_result = model_visible_tool_result(tool_name, &result_value);
+        let mut result_text = serde_json::to_string(&model_visible_result).unwrap_or_default();
         let hard_supervisor_injected = model_visible_notes
             .iter()
             .any(|note| note.contains(HARD_SUPERVISOR_MARKER));
@@ -1259,6 +1552,18 @@ where
 fn registry_tool_outcome(value: serde_json::Value) -> (serde_json::Value, bool) {
     let success = is_tool_result_success(&value);
     (value, success)
+}
+
+fn use_sub_agent_outer_tool_timeout(tool_name: &str) -> bool {
+    !matches!(
+        tool_name,
+        // These are Rust direct bridge tools that emit their own progress chunks
+        // and can legitimately run past a sub-agent's LLM idle timeout on large
+        // targets. Applying `tokio::time::timeout` here drops the future, so the
+        // tool is killed before it can persist its final DB truth. Shell/pentest
+        // commands already have a separate soft-timeout -> background-job path.
+        "browser_collect_js_api" | "js_extract_apis" | "route_probe_paths"
+    )
 }
 
 async fn execute_registry_tool_with_active_org(
@@ -1325,9 +1630,10 @@ fn inject_harness_org_id_arg(
 mod tests {
     use super::{
         annotate_list_tools_with_guard, background_failure_runtime_correction,
-        execute_registry_tool_with_active_org, registry_tool_outcome,
+        execute_registry_tool_with_active_org, model_visible_tool_result, registry_tool_outcome,
         structured_storage_hook_payload, submit_coverage_gap_repair_mode_from_reasons,
-        submit_needs_fix_runtime_correction, submit_repair_update, SubmitRepairModeUpdate,
+        submit_needs_fix_runtime_correction, submit_repair_update,
+        use_sub_agent_outer_tool_timeout, SubmitRepairModeUpdate,
     };
     use crate::SubmitRepairKind;
     use golish_core::Tool;
@@ -1533,6 +1839,71 @@ mod tests {
             !success,
             "sub-agent registry fallback must not turn WhatWeb stderr ERROR into a green check"
         );
+    }
+
+    #[test]
+    fn route_probe_model_visible_result_keeps_counts_and_samples() {
+        let result = serde_json::json!({
+            "success": true,
+            "base_url": "https://example.test/",
+            "requested_base_url": "https://example.test/",
+            "outcome": "found",
+            "outcome_persisted": true,
+            "status": "ok",
+            "timed_out": false,
+            "queue_completed": true,
+            "queue_remaining": 0,
+            "requests_sent": 42,
+            "candidate_requests_sent": 40,
+            "baseline_requests_sent": 2,
+            "persisted_directory_entries": 1,
+            "matches": [
+                {"url": "https://example.test/admin", "status": 403, "verification": {"verdict": "auth_wall"}}
+            ],
+            "rejected_candidates": [
+                {"url": "https://example.test/nope", "status": 200, "verification": {"verdict": "soft_404"}}
+            ],
+            "errors": [
+                {"url": "https://example.test/a", "error": "request timed out"},
+                {"url": "https://example.test/b", "error": "request timed out"},
+                {"url": "https://example.test/c", "error": "connection reset"}
+            ],
+            "prefixes_tested": ["/", "/admin"],
+            "wordlist": {"entries_loaded": 100},
+            "seed_paths": {"api_endpoints": 2},
+            "run_id": "run-1",
+            "dry_run": false
+        });
+
+        let compact = model_visible_tool_result("route_probe_paths", &result);
+
+        assert_eq!(compact["model_visible_compacted"], true);
+        assert_eq!(compact["raw_result_retained_in_transcript"], true);
+        assert_eq!(compact["matches_count"], 1);
+        assert_eq!(compact["rejected_candidates_count"], 1);
+        assert_eq!(compact["errors_count"], 3);
+        assert_eq!(compact["errors_top"][0]["error"], "request timed out");
+        assert_eq!(compact["errors_top"][0]["count"], 2);
+        assert!(compact.get("matches").is_none());
+        assert!(compact.get("rejected_candidates").is_none());
+        assert!(compact.get("errors").is_none());
+        assert_eq!(
+            compact["next_action"],
+            "Refresh stage_worklist/check_stage_asset_coverage; do not rerun this root unless coverage still reports DIR pending/error."
+        );
+    }
+
+    #[test]
+    fn small_generic_tool_result_is_left_untouched() {
+        let result = serde_json::json!({
+            "success": true,
+            "message": "ok",
+            "items": [1, 2, 3]
+        });
+
+        let compact = model_visible_tool_result("some_small_tool", &result);
+
+        assert_eq!(compact, result);
     }
 
     #[test]
@@ -2070,6 +2441,23 @@ mod tests {
             true,
         )
         .is_none());
+    }
+
+    #[test]
+    fn long_direct_bridge_tools_bypass_sub_agent_outer_timeout() {
+        for tool_name in [
+            "browser_collect_js_api",
+            "js_extract_apis",
+            "route_probe_paths",
+        ] {
+            assert!(
+                !use_sub_agent_outer_tool_timeout(tool_name),
+                "{tool_name} should keep running instead of being dropped by the sub-agent outer timeout"
+            );
+        }
+
+        assert!(use_sub_agent_outer_tool_timeout("query_target_data"));
+        assert!(use_sub_agent_outer_tool_timeout("pentest_run"));
     }
 
     // ── stage-stall circuit breaker (2026-06-16) ────────────────────────────

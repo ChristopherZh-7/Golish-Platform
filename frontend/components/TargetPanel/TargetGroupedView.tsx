@@ -43,6 +43,7 @@ import { notify } from "@/lib/notify";
 import type { Target } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
+import { isIpLiteralTargetValue, type TargetAssetGroup } from "@/lib/target-panel/asset-groups";
 import {
   applyStreamEvent,
   getNextWorkspaceTabAfterAssetIntelRun,
@@ -381,6 +382,7 @@ export function TargetGroupedView({
       .filter(
         (target) =>
           target.id !== selectedTarget.id &&
+          !isIpLiteralTargetValue(target) &&
           target.organization_id === selectedTarget.organization_id &&
           (target.real_ip ?? "").trim() === ip
       )
@@ -419,7 +421,7 @@ export function TargetGroupedView({
     () =>
       selectedHost
         ? selectedHost.targets
-            .filter((target) => target.id !== hostIpTarget?.id)
+            .filter((target) => target.id !== hostIpTarget?.id && !isIpLiteralTargetValue(target))
             .sort((a, b) => a.value.localeCompare(b.value))
         : [],
     [selectedHost, hostIpTarget]
@@ -465,6 +467,49 @@ export function TargetGroupedView({
       setSelectedTargetId(null);
     }
   }, [selectedOrg, selectedTarget, selectedHostId]);
+
+  const openHostGroup = useCallback(
+    (group: TargetAssetGroup) => {
+      if (!group.host) {
+        const firstTarget = group.targets[0];
+        if (firstTarget) {
+          setSelectedHostId(null);
+          setSelectedTargetId(firstTarget.id);
+        }
+        return;
+      }
+
+      const groupTargetIds = new Set(group.targets.map((target) => target.id));
+      let bestHost: OrgTreeNode | null = null;
+      let bestOverlap = 0;
+      for (const hostNode of hostNodeById.values()) {
+        if (hostNode.kind !== "host" || hostNode.name !== group.host) continue;
+        const overlap = hostNode.targets.reduce(
+          (count, target) => count + (groupTargetIds.has(target.id) ? 1 : 0),
+          0
+        );
+        if (overlap > bestOverlap) {
+          bestHost = hostNode;
+          bestOverlap = overlap;
+        }
+      }
+
+      if (bestHost) {
+        setSelectedTargetId(null);
+        setSelectedHostId(bestHost.id);
+        return;
+      }
+
+      const ipTarget =
+        group.ipTarget ??
+        group.targets.find((target) => target.type === "ip" && target.value.trim() === group.host);
+      if (ipTarget) {
+        setSelectedHostId(null);
+        setSelectedTargetId(ipTarget.id);
+      }
+    },
+    [hostNodeById]
+  );
 
   const toggleCollapse = useCallback(
     (id: string) => {
@@ -1000,7 +1045,6 @@ export function TargetGroupedView({
                 target={selectedTarget}
                 onUpdateNotes={onUpdateNotes}
                 relatedDomains={selectedTargetRelatedDomains}
-                onSelectDomain={(id) => setSelectedTargetId(id)}
                 onBack={() => setSelectedTargetId(null)}
                 backLabel={
                   selectedHost
@@ -1013,7 +1057,6 @@ export function TargetGroupedView({
                 target={hostWorkbenchTarget}
                 onUpdateNotes={hostIpTarget ? onUpdateNotes : () => {}}
                 relatedDomains={hostDomains}
-                onSelectDomain={(id) => setSelectedTargetId(id)}
               />
             ) : (
               <OrgWorkspacePanel
@@ -1039,6 +1082,7 @@ export function TargetGroupedView({
                 setExpandedCandidateIds={setExpandedCandidateIds}
                 setEditingTargetId={setEditingTargetId}
                 setSelectedTargetId={setSelectedTargetId}
+                openHostGroup={openHostGroup}
                 handleRunAssetIntel={handleRunAssetIntel}
                 handleRunOrganizationRecon={handleRunOrganizationRecon}
                 handleExportOrganizationReconAssets={handleExportOrganizationReconAssets}

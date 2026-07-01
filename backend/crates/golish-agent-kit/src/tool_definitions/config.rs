@@ -75,6 +75,8 @@ impl ToolSelectionConfig {
                 "list_attack_surface_seeds".to_string(),
                 "list_enumeration_web_roots".to_string(),
                 "check_stage_asset_coverage".to_string(),
+                "stage_worklist_status".to_string(),
+                "stage_worklist_next".to_string(),
             ],
             // Hide run_pty_cmd — we expose it as run_command instead.
             disabled: vec!["run_pty_cmd".to_string()],

@@ -135,6 +135,7 @@ katana_response/
 # scripts/download_wordlists.sh from danielmiessler/SecLists).
 # Keep README.md and .gitkeep tracked so the directory survives.
 resources/wordlists/*
+!resources/wordlists/route_probe_1.txt
 !resources/wordlists/README.md
 !resources/wordlists/.gitkeep
 

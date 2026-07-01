@@ -8,6 +8,7 @@
 //! `docs/design/2026-05-30-s1-2-port-horizontal-coupling.md`.
 
 pub mod agent;
+pub mod llm;
 pub mod pentest;
 pub mod platform;
 pub mod recon;

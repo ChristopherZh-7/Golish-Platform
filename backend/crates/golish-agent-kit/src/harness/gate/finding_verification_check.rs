@@ -103,6 +103,7 @@ mod tests {
             freshness_window: false,
             asset_wave_barrier: false,
             host_aware_coverage: false,
+            enum_ip_web_coverage: false,
             coverage_anchor_only: false,
             findings_allowed: true,
         }

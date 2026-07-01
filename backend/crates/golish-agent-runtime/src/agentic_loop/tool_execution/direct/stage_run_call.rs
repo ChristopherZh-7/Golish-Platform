@@ -237,10 +237,14 @@ fn build_org_objective(
         ));
         obj.push_str(&format!(
             " PRE-SUBMIT SELF-CHECK (mandatory): before calling submit_stage_deliverable, call \
-             check_stage_asset_coverage with stage=\"{}\" and organization_id=\"{}\". If \
-             ready_to_submit=false, do NOT submit yet; use gap_examples, cell_summary, and \
-             next_action to close missing cells, wait for attributed background jobs, or record \
-             honest blocked/not_applicable terminal coverage. Only call submit_stage_deliverable \
+             stage_worklist_status with stage=\"{}\" and organization_id=\"{}\". If \
+             ready_to_submit=false, do NOT submit yet; call stage_worklist_next with the same \
+             stage/organization and prefer=[\"pending\",\"error\"]. Treat its items as the \
+             authoritative stage-local plan: each item is one asset x technique cell with a \
+             work_item_id and suggested_tools. Work only those named cells, then re-query \
+             stage_worklist_status/stage_worklist_next after tools land DB truth. Do not mark a \
+             work item done in prose. Use check_stage_asset_coverage as the final compact sanity \
+             check for gap_examples/cell_summary/next_action. Only call submit_stage_deliverable \
              after ready_to_submit=true. next_wave_pending is visible expansion backlog for a \
              later global delta pass and does not block the current batch.",
             stage.as_str(),
@@ -2019,6 +2023,10 @@ mod tests {
         assert!(obj.contains("GOLISH-INTEL-WHOIS"));
         assert!(obj.contains("FAILS the gate"));
         assert!(obj.contains("PRE-SUBMIT SELF-CHECK"));
+        assert!(obj.contains("stage_worklist_status"));
+        assert!(obj.contains("stage_worklist_next"));
+        assert!(obj.contains("work_item_id"));
+        assert!(obj.contains("authoritative stage-local plan"));
         assert!(obj.contains("check_stage_asset_coverage"));
         assert!(obj.contains("stage=\"target_intel\""));
         assert!(obj.contains("organization_id=\"abc\""));

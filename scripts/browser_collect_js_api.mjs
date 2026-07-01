@@ -605,13 +605,17 @@ async function saveApiResponseCapture(
   const fullPath = path.join(dir, outputFilenameForApiCapture(entry.method, entry.url));
   const contentType = headers["content-type"] ?? "";
   const bodyBuffer = Buffer.isBuffer(body) ? body : null;
+  const requestBody = typeof entry.request_body === "string" ? entry.request_body : null;
   const payload = {
-    version: 1,
+    version: 2,
     captured_at: new Date().toISOString(),
     request: {
       method: entry.method,
       url: entry.url,
       resource_type: entry.resource_type,
+      headers: entry.request_headers ?? {},
+      body: requestBody && requestBody.length <= 64_000 ? requestBody : null,
+      body_truncated: Boolean(requestBody && requestBody.length > 64_000),
     },
     response: {
       status: entry.status,
@@ -1376,6 +1380,9 @@ async function main() {
       entry.status = response.status();
       entry.headers = headers;
       entry.content_type = headers["content-type"] ?? "";
+      // capture v2: persist the request side so the Inspector can show it.
+      entry.request_headers = request.headers();
+      entry.request_body = request.postData() ?? null;
       const contentLength = Number.parseInt(headers["content-length"] ?? "0", 10);
       const task = (async () => {
         try {

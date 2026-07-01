@@ -263,6 +263,9 @@ impl TaskOrchestrator {
                     let in_scope_assets =
                         self.fetch_in_scope_assets_for_gate(planned, task_id).await;
                     let asset_types = self.fetch_in_scope_typed_assets_for_gate(planned).await;
+                    let web_capable_assets = self
+                        .fetch_enumeration_web_capable_assets_for_gate(planned)
+                        .await;
                     let in_scope_target_types =
                         self.fetch_in_scope_target_types_for_gate(planned).await;
                     let evidence_facts = self
@@ -288,6 +291,7 @@ impl TaskOrchestrator {
                             agent_result.content,
                             in_scope_assets,
                             asset_types,
+                            web_capable_assets,
                             in_scope_target_types,
                             evidence_facts,
                             source_queries,
@@ -460,6 +464,9 @@ impl TaskOrchestrator {
         // retry possible) and drive the transition on whatever it decides.
         let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned, task_id).await;
         let asset_types = self.fetch_in_scope_typed_assets_for_gate(planned).await;
+        let web_capable_assets = self
+            .fetch_enumeration_web_capable_assets_for_gate(planned)
+            .await;
         let in_scope_target_types = self.fetch_in_scope_target_types_for_gate(planned).await;
         let evidence_facts = self
             .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref(), task_id)
@@ -481,6 +488,7 @@ impl TaskOrchestrator {
                 fallback,
                 in_scope_assets,
                 asset_types,
+                web_capable_assets,
                 in_scope_target_types,
                 evidence_facts,
                 source_queries,
@@ -1452,6 +1460,39 @@ impl TaskOrchestrator {
         }
     }
 
+    /// Enumeration IP-web seam (design 2026-07-01): fetch IP/CIDR assets that
+    /// EAS/httpx has proven are HTTP services. Empty/failed lookup keeps the old
+    /// bare-IP exclusion behavior.
+    async fn fetch_enumeration_web_capable_assets_for_gate(
+        &self,
+        planned: &PlannedSubtask,
+    ) -> Option<Vec<String>> {
+        let stage = planned.harness_stage.as_ref()?.stage_kind;
+        if stage != crate::harness::StageKind::Enumeration {
+            return None;
+        }
+        let spec = crate::harness::load_embedded_stage_spec(stage).ok()?;
+        if !spec.enum_ip_web_coverage {
+            return None;
+        }
+        match self
+            .repo
+            .enumeration_web_capable_assets(self.harness_org_id)
+            .await
+        {
+            Ok(v) if !v.is_empty() => Some(v),
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!(
+                    target: "harness::hook",
+                    error = %e,
+                    "web-capable IP lookup failed; enumeration gate keeps bare-IP exclusion"
+                );
+                None
+            }
+        }
+    }
+
     /// P3 ③ seam: fetch the distinct `targets.type` values of the in-scope assets
     /// so the coverage gate can derive **dynamic** expected techniques. Returns an
     /// empty vec when the subtask carries no stage, the DB has none, or the lookup
@@ -2312,6 +2353,7 @@ fn apply_harness_gate_hook(
     content: String,
     in_scope_assets: Option<Vec<String>>,
     asset_types: Option<std::collections::HashMap<String, String>>,
+    web_capable_assets: Option<Vec<String>>,
     in_scope_target_types: Vec<String>,
     evidence_facts: Option<Vec<crate::harness::gate::rule_engine::EvidenceFact>>,
     source_queries: Option<Vec<crate::harness::SourceQueryFact>>,
@@ -2479,6 +2521,7 @@ fn apply_harness_gate_hook(
     let gate_ctx = crate::harness::GateContextBuilder::new()
         .in_scope_assets(in_scope_assets.unwrap_or_default())
         .asset_types_map(asset_types.unwrap_or_default())
+        .web_capable_assets(web_capable_assets.unwrap_or_default())
         .extend_evidence_facts(evidence_facts.unwrap_or_default())
         .extend_source_queries(source_queries.unwrap_or_default())
         .expected_techniques(expected_techniques)
@@ -3407,6 +3450,7 @@ mod harness_gate_hook_tests {
                 content.clone(),
                 None,
                 None,
+                None,
                 vec![],
                 None,
                 None,
@@ -3427,6 +3471,7 @@ mod harness_gate_hook_tests {
                 &p,
                 &ctx,
                 content.clone(),
+                None,
                 None,
                 None,
                 vec![],
@@ -3878,6 +3923,7 @@ mod missing_deliverable_fail_closed_tests {
                 "prose".to_string(),
                 None,
                 None,
+                None,
                 vec![],
                 Some(facts),
                 None,
@@ -3909,6 +3955,7 @@ mod missing_deliverable_fail_closed_tests {
             &p,
             &ctx,
             "prose".to_string(),
+            None,
             None,
             None,
             vec![],

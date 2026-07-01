@@ -256,6 +256,8 @@ fn test_enumerator_has_content_enum_tools() {
     assert!(has_tool(enumerator, "js_collect"));
     assert!(has_tool(enumerator, "js_extract_apis"));
     assert!(has_tool(enumerator, "route_probe_paths"));
+    assert!(has_tool(enumerator, "stage_worklist_status"));
+    assert!(has_tool(enumerator, "stage_worklist_next"));
     assert!(has_tool(enumerator, "list_enumeration_web_roots"));
     assert!(!has_tool(enumerator, "manage_targets"));
     assert!(!has_tool(enumerator, "list_in_scope_targets"));
@@ -291,8 +293,11 @@ fn test_enumerator_prompt_is_content_enum() {
     assert!(prompt.contains("recipe"));
     assert!(prompt.contains("js_extract_apis"));
     assert!(prompt.contains("route_probe_paths"));
-    assert!(prompt.contains("observed JS/API path prefixes"));
-    assert!(prompt.contains("small local wordlist"));
+    assert!(prompt.contains("stage_worklist_status"));
+    assert!(prompt.contains("stage_worklist_next"));
+    assert!(prompt.contains("ready_to_submit=true"));
+    assert!(prompt.contains("work_item_id"));
+    assert!(prompt.contains("full de-duplicated local/built-in wordlist"));
     assert!(prompt.contains("Do not call external directory tools"));
     assert!(prompt.contains("list_enumeration_web_roots"));
     assert!(prompt.contains("pentest_run(tool_name=..., args=...)"));

@@ -303,5 +303,55 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
                 "additionalProperties": false
             }),
         },
+        FunctionDeclaration {
+            name: "stage_worklist_status".to_string(),
+            description: "Read a compact DB-truth status view for the current stage-local worklist. Use this to see whether the active organization/stage still has pending/error asset×technique cells before choosing more tools or submitting. This is read-only and does not mark anything complete.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "stage": {
+                        "type": "string",
+                        "enum": ["scoping", "target_intel", "external_attack_surface", "enumeration", "vuln_triage", "verification", "access_validation", "internal_discovery", "objective_pathing", "objective_simulation", "reporting", "cleanup"],
+                        "description": "Stage to inspect. Omit to use the active harness stage."
+                    },
+                    "organization_id": {
+                        "type": "string",
+                        "description": "Organization UUID to inspect. Omit to use the active per-org/root organization."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        FunctionDeclaration {
+            name: "stage_worklist_next".to_string(),
+            description: "Return the next batch of unfinished DB-truth work items for the active stage. Each item is one asset×technique cell with state, suggested tools, evidence refs, and stage-specific focus. Use it instead of free-form planning: run the suggested tool(s), then call stage_worklist_next/status again. This is read-only and never marks cells complete.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "stage": {
+                        "type": "string",
+                        "enum": ["scoping", "target_intel", "external_attack_surface", "enumeration", "vuln_triage", "verification", "access_validation", "internal_discovery", "objective_pathing", "objective_simulation", "reporting", "cleanup"],
+                        "description": "Stage to inspect. Omit to use the active harness stage."
+                    },
+                    "organization_id": {
+                        "type": "string",
+                        "description": "Organization UUID to inspect. Omit to use the active per-org/root organization."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum work items to return. Defaults to 25, max 200."
+                    },
+                    "prefer": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["pending", "error", "blocked", "next_wave_pending"]
+                        },
+                        "description": "Cell states to include. Defaults to pending+error."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
     ]
 }

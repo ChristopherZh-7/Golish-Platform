@@ -149,6 +149,14 @@ const STATIC_SECURITY_ANALYSIS: &[ToolRow] = &[
         name: "check_stage_asset_coverage",
         purpose: "Preflight DB-truth stage coverage and see pending asset-technique gaps before submit.",
     },
+    ToolRow {
+        name: "stage_worklist_status",
+        purpose: "Read compact DB-truth status for the active stage worklist.",
+    },
+    ToolRow {
+        name: "stage_worklist_next",
+        purpose: "Return the next batch of pending/error asset-technique work items for the active stage.",
+    },
 ];
 
 const STATIC_GRAPH: &[ToolRow] = &[

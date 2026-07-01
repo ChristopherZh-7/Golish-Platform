@@ -24,10 +24,10 @@
 |---|---|
 | `extract_endpoints(...)` | 抽取端点 |
 | `analyze_signals_from_files(...)` / `analyze_signals_from_source(...)` | 抽取脱敏后的 secret/config/framework/library 候选与 rule-based signal 命中 |
-| `Endpoint` | `{method, path, params, auth, ...}` |
-| `AuthHint` / `CallSiteKind` / `UrlKind` | 端点元信息 |
+| `Endpoint` | `{method, path, auth, source_file, line, confidence, kind, url_kind, has_path_params, id_param_position, source}` |
+| `AuthHint` / `CallSiteKind` / `UrlKind` / `EndpointSource` | 端点元信息（`EndpointSource` = `regex`/`ai`，标记该端点来自确定性 regex 还是 AI 补抽） |
 | `SecretCandidate` / `ConfigCandidate` / `FrameworkCandidate` / `LibraryCandidate` | JS 分析候选，带 source_file/line/confidence |
-| `RuleMatchCandidate` / `RuleMatchKind` | 第一层规则候选，带 rule_name/source_rule/group/kind/preview/hash/line/ai_review |
+| `RuleMatchCandidate` / `RuleMatchKind` / `RuleMatchSeverity` | HAE-style 第一层规则候选，带 rule_name/source_rule/group/kind/color/scope/severity/preview/hash/line/ai_review |
 
 ## 依赖
 
@@ -44,11 +44,12 @@
 ## 注意事项 / 坑
 
 - 端点抽取仍不覆盖所有变量 URL / 无 HTTP 动词的 opaque wrapper（这些回退给 AI 局部复核）；`client.<verb>` 属于低一档置信度的确定性规则；P1 计划上 swc AST extractor（同 `extract_endpoints` 签名）。
-- `signals` 输出必须保持脱敏：完整 secret 不进入 tool result / prompt；`rule_matches.context` 也要脱敏同一行的邻近 Authorization/token/password/API key，不能只脱敏当前 regex 命中的片段。需要人工或模型确认时用 source_file + line 通过文件工具局部查看。`rule_matches` 只是第一层候选，不等于真实漏洞或真实 secret。
+- `signals` 输出必须保持脱敏：完整 secret 不进入 tool result / prompt；`rule_matches.context` 也要脱敏同一行的邻近 Authorization/token/password/API key，不能只脱敏当前 regex 命中的片段。需要人工或模型确认时用 source_file + line 通过文件工具局部查看。`rule_matches` 只是 HAE-style 第一层候选（group/kind/color/scope/severity 供分流），不等于真实漏洞或真实 secret。
 - `js_api_extract` CLI 默认 `--max-file-bytes 1500000`，超大 bundle 会返回 `status="partial"` 和 `skipped_js_files`，不要为了一个 3MB+ webpack/umi bundle 把本地静态分析卡死；需要深挖时改成局部文件/片段复核。
 - `scripts/js_api_pipeline_test.mjs --ai-filter true` 的 DeepSeek/AI 复核是抽样 triage：payload 带 `sampling`，结果带 `input_sampling`。AI 分类只能解释已包含的 sample，不能覆盖 deterministic `endpoints_total` / `secret_candidates_total` 全量统计。
 - `#![forbid(unsafe_code)]` + `#![deny(warnings)]`：改动不能引入 warning。
 - 低置信度行由 `Endpoint::confidence` 标记，别当成确定端点。
+- `Endpoint.source`（`EndpointSource{Regex,Ai}`，`#[serde(default)]=Regex`）：regex 抽取一律标 `Regex`；AI 补抽（在 `golish-pentest-app::js_extract_apis` 的 AI-B pass 内构造，设计 2026-06-30-jsapi-ai-tools）标 `Ai`。旧的 `js_analysis_results` JSON 没有该键 → 反序列化回退 `Regex`，向后兼容；新增字段不得破坏旧行解析。
 
 ## 测试入口
 

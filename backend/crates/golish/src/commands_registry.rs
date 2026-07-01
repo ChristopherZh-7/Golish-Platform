@@ -196,7 +196,7 @@ fn install_handlers(
         plan_create, plan_get, plan_list, plan_list_active, plan_update_steps, plan_update_status, plan_update_context, plan_delete,
         oplog_list, oplog_list_by_target, oplog_list_by_type, oplog_search, oplog_count,
         target_assets_list, api_endpoints_list, api_endpoints_untested,
-        fingerprints_list, js_analysis_list,
+        fingerprints_list, js_analysis_list, pentest_read_capture, pentest_read_capture_text,
         passive_scans_list, passive_scans_by_url, passive_scans_vulnerable, passive_scans_stats, target_security_overview,
         scan_whatweb, match_pocs_for_target, scan_nuclei_targeted, nuclei_cancel, scan_feroxbuster,
         sensitive_scan_start, sensitive_scan_stop, sensitive_scan_status, sensitive_scan_results,

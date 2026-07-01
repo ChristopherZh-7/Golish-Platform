@@ -3,6 +3,7 @@
 // dozen of optional request fields straight from the frontend; refactoring each
 // into a dedicated DTO struct adds boilerplate without any safety win.
 #![allow(clippy::too_many_arguments)]
+#![recursion_limit = "256"]
 
 //! Golish desktop application crate.
 //!

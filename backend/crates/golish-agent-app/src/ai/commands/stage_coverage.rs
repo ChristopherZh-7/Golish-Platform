@@ -189,9 +189,14 @@ pub(crate) async fn stage_asset_coverage_snapshot(
 ) -> anyhow::Result<StageAssetCoverageSnapshot> {
     let mut assets = list_stage_targets(pool, org_id, stage_kind).await?;
     let wave_cutoff = asset_wave_cutoff(stage_kind, run_start);
-    if stage_kind == StageKind::Enumeration {
-        assets = filter_enumeration_assets_by_eas_worklist(pool, org_id, assets).await?;
-    }
+    let web_capable_assets = if stage_kind == StageKind::Enumeration {
+        let (filtered, web_capable) =
+            filter_enumeration_assets_by_eas_worklist(pool, org_id, assets).await?;
+        assets = filtered;
+        web_capable
+    } else {
+        BTreeSet::new()
+    };
     let eas_ip_targets = eas_direct_ip_target_keys(&assets);
     let current_assets: Vec<&TargetCoverageRow> = assets
         .iter()
@@ -256,7 +261,12 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         };
         let counts_as_asset = counts_as_coverage_asset(stage_kind, &asset, &eas_ip_targets);
         let coverage = if next_wave {
-            next_wave_coverage_cells_with_eas_parent_ips(stage_kind, &asset, &eas_ip_targets)
+            next_wave_coverage_cells_with_eas_parent_ips(
+                stage_kind,
+                &asset,
+                &eas_ip_targets,
+                &web_capable_assets,
+            )
         } else {
             coverage_cells_with_eas_parent_ips(
                 stage_kind,
@@ -264,6 +274,7 @@ pub(crate) async fn stage_asset_coverage_snapshot(
                 &found,
                 &outcomes,
                 &eas_ip_targets,
+                &web_capable_assets,
             )
         };
 
@@ -345,9 +356,9 @@ async fn filter_enumeration_assets_by_eas_worklist(
     pool: &sqlx::PgPool,
     org_id: Uuid,
     assets: Vec<TargetCoverageRow>,
-) -> anyhow::Result<Vec<TargetCoverageRow>> {
+) -> anyhow::Result<(Vec<TargetCoverageRow>, BTreeSet<String>)> {
     if assets.is_empty() {
-        return Ok(assets);
+        return Ok((assets, BTreeSet::new()));
     }
     let asset_values: Vec<String> = assets.iter().map(|a| a.value.clone()).collect();
     let asset_types: Vec<String> = assets.iter().map(|a| a.target_type.clone()).collect();
@@ -368,18 +379,26 @@ async fn filter_enumeration_assets_by_eas_worklist(
             )
         })
         .collect();
-    Ok(filter_enumeration_assets_by_eas_found(assets, &found))
+    let web_capable_assets: BTreeSet<String> =
+        golish_db::repo::coverage_truth::web_capable_ip_assets(pool, Some(org_id))
+            .await?
+            .into_iter()
+            .collect();
+    let filtered = filter_enumeration_assets_by_eas_found(assets, &found, &web_capable_assets);
+    Ok((filtered, web_capable_assets))
 }
 
 fn filter_enumeration_assets_by_eas_found(
     assets: Vec<TargetCoverageRow>,
     found: &BTreeSet<(String, String)>,
+    web_capable_assets: &BTreeSet<String>,
 ) -> Vec<TargetCoverageRow> {
     let worklist_ids: BTreeSet<Uuid> = assets
         .iter()
         .filter(|asset| {
-            matches!(
-                coverage_asset_class(asset),
+            let class = coverage_asset_class(asset);
+            (matches!(
+                class,
                 golish_agent_kit::harness::technique_resolver::AssetClass::Domain
                     | golish_agent_kit::harness::technique_resolver::AssetClass::Url
             ) && found.contains(&(
@@ -388,7 +407,11 @@ fn filter_enumeration_assets_by_eas_found(
                     golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
                 ),
                 golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string(),
-            ))
+            ))) || (matches!(
+                class,
+                golish_agent_kit::harness::technique_resolver::AssetClass::Ip
+                    | golish_agent_kit::harness::technique_resolver::AssetClass::Cidr
+            ) && web_capable_assets.contains(&asset.value))
         })
         .map(|asset| asset.id)
         .collect();
@@ -780,7 +803,14 @@ fn coverage_cells(
     found: &BTreeSet<(String, String)>,
     outcomes: &BTreeMap<(String, String), OutcomeProjection>,
 ) -> Vec<StageAssetCoverageCell> {
-    coverage_cells_with_eas_parent_ips(stage, asset, found, outcomes, &BTreeSet::new())
+    coverage_cells_with_eas_parent_ips(
+        stage,
+        asset,
+        found,
+        outcomes,
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+    )
 }
 
 fn coverage_cells_with_eas_parent_ips(
@@ -789,6 +819,7 @@ fn coverage_cells_with_eas_parent_ips(
     found: &BTreeSet<(String, String)>,
     outcomes: &BTreeMap<(String, String), OutcomeProjection>,
     eas_ip_targets: &BTreeSet<String>,
+    web_capable_assets: &BTreeSet<String>,
 ) -> Vec<StageAssetCoverageCell> {
     if let Some(parent_ip) = eas_alias_parent_ip_key(stage, asset, eas_ip_targets) {
         return eas_alias_coverage_cells(&parent_ip);
@@ -808,11 +839,12 @@ fn coverage_cells_with_eas_parent_ips(
                     Some("organization context row; this technique applies to concrete domain/IP/URL assets".to_string()),
                 );
             }
-            if !golish_agent_kit::harness::technique_resolver::technique_applies_to_value(
+            if !golish_agent_kit::harness::technique_resolver::technique_applies_web_aware(
                 stage,
                 class,
                 &asset.value,
                 technique,
+                web_capable_assets.contains(&asset.value),
             ) {
                 return cell(
                     technique,
@@ -878,13 +910,14 @@ fn next_wave_coverage_cells(
     stage: StageKind,
     asset: &TargetCoverageRow,
 ) -> Vec<StageAssetCoverageCell> {
-    next_wave_coverage_cells_with_eas_parent_ips(stage, asset, &BTreeSet::new())
+    next_wave_coverage_cells_with_eas_parent_ips(stage, asset, &BTreeSet::new(), &BTreeSet::new())
 }
 
 fn next_wave_coverage_cells_with_eas_parent_ips(
     stage: StageKind,
     asset: &TargetCoverageRow,
     eas_ip_targets: &BTreeSet<String>,
+    web_capable_assets: &BTreeSet<String>,
 ) -> Vec<StageAssetCoverageCell> {
     if let Some(parent_ip) = eas_alias_parent_ip_key(stage, asset, eas_ip_targets) {
         return eas_alias_coverage_cells(&parent_ip);
@@ -904,11 +937,12 @@ fn next_wave_coverage_cells_with_eas_parent_ips(
                     Some("organization context row; this technique applies to concrete domain/IP/URL assets".to_string()),
                 );
             }
-            if !golish_agent_kit::harness::technique_resolver::technique_applies_to_value(
+            if !golish_agent_kit::harness::technique_resolver::technique_applies_web_aware(
                 stage,
                 class,
                 &asset.value,
                 technique,
+                web_capable_assets.contains(&asset.value),
             ) {
                 return cell(
                     technique,
@@ -954,6 +988,7 @@ fn techniques_for_stage(stage: StageKind) -> Vec<&'static str> {
             golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP,
         ],
         StageKind::Enumeration => vec![
+            golish_db::repo::coverage_truth::TECH_ENUM_JS,
             golish_db::repo::coverage_truth::TECH_ENUM_DIR,
             golish_db::repo::coverage_truth::TECH_ENUM_PARAM,
             golish_db::repo::coverage_truth::TECH_ENUM_JSAPI,
@@ -1077,9 +1112,10 @@ fn technique_label(technique: &str) -> &'static str {
         golish_db::repo::coverage_truth::TECH_EAS_LIVENESS => "Liveness",
         golish_db::repo::coverage_truth::TECH_EAS_PORT => "Port",
         golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP => "Service",
+        golish_db::repo::coverage_truth::TECH_ENUM_JS => "JS",
         golish_db::repo::coverage_truth::TECH_ENUM_DIR => "Directory",
         golish_db::repo::coverage_truth::TECH_ENUM_PARAM => "Parameter",
-        golish_db::repo::coverage_truth::TECH_ENUM_JSAPI => "JS/API",
+        golish_db::repo::coverage_truth::TECH_ENUM_JSAPI => "API",
         _ => "Coverage",
     }
 }
@@ -1103,6 +1139,9 @@ fn suggested_tools(technique: &str) -> Vec<String> {
         golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP => {
             vec!["nmap -sV".to_string(), "whatweb".to_string()]
         }
+        golish_db::repo::coverage_truth::TECH_ENUM_JS => {
+            vec!["browser_collect_js_api".to_string()]
+        }
         golish_db::repo::coverage_truth::TECH_ENUM_DIR => {
             vec!["route_probe_paths".to_string()]
         }
@@ -1113,10 +1152,7 @@ fn suggested_tools(technique: &str) -> Vec<String> {
             ]
         }
         golish_db::repo::coverage_truth::TECH_ENUM_JSAPI => {
-            vec![
-                "browser_collect_js_api".to_string(),
-                "js_extract_apis".to_string(),
-            ]
+            vec!["js_extract_apis".to_string()]
         }
         _ => Vec::new(),
     }
@@ -1163,6 +1199,39 @@ mod tests {
     }
 
     #[test]
+    fn enumeration_exposes_four_axes_js_first() {
+        // design 2026-07-01 §4：JS 收集独立成轴，顺序 JS → DIR → PARAM → JSAPI。
+        let t = techniques_for_stage(StageKind::Enumeration);
+        assert_eq!(
+            t,
+            vec![
+                golish_db::repo::coverage_truth::TECH_ENUM_JS,
+                golish_db::repo::coverage_truth::TECH_ENUM_DIR,
+                golish_db::repo::coverage_truth::TECH_ENUM_PARAM,
+                golish_db::repo::coverage_truth::TECH_ENUM_JSAPI,
+            ]
+        );
+        // label：JS 独立、JSAPI 收窄为 API（避免与 JS 轴混淆）。
+        assert_eq!(
+            technique_label(golish_db::repo::coverage_truth::TECH_ENUM_JS),
+            "JS"
+        );
+        assert_eq!(
+            technique_label(golish_db::repo::coverage_truth::TECH_ENUM_JSAPI),
+            "API"
+        );
+        // suggested_tools：JS 用 browser 收集、JSAPI 用 js_extract 抽取。
+        assert_eq!(
+            suggested_tools(golish_db::repo::coverage_truth::TECH_ENUM_JS),
+            vec!["browser_collect_js_api".to_string()]
+        );
+        assert_eq!(
+            suggested_tools(golish_db::repo::coverage_truth::TECH_ENUM_JSAPI),
+            vec!["js_extract_apis".to_string()]
+        );
+    }
+
+    #[test]
     fn enumeration_worklist_read_model_keeps_eas_live_web_roots() {
         let live_domain = target("app.example.com", "domain");
         let live_url = target("https://portal.example.com/login", "url");
@@ -1195,6 +1264,7 @@ mod tests {
         let filtered = filter_enumeration_assets_by_eas_found(
             vec![live_domain.clone(), live_url.clone(), dead_domain, live_ip],
             &found,
+            &BTreeSet::new(),
         );
 
         assert_eq!(
@@ -1213,9 +1283,78 @@ mod tests {
             target("203.0.113.10", "ip"),
         ];
 
-        let filtered = filter_enumeration_assets_by_eas_found(assets.clone(), &BTreeSet::new());
+        let filtered = filter_enumeration_assets_by_eas_found(
+            assets.clone(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
 
         assert_eq!(filtered.len(), assets.len());
+    }
+
+    #[test]
+    fn enumeration_worklist_read_model_keeps_http_proven_ip_web_assets() {
+        let live_domain = target("app.example.com", "domain");
+        let web_ip = target("203.0.113.10", "ip");
+        let non_web_ip = target("203.0.113.11", "ip");
+        let found = BTreeSet::from([(
+            coverage_lookup_asset(
+                &live_domain.value,
+                golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+            ),
+            golish_db::repo::coverage_truth::TECH_EAS_LIVENESS.to_string(),
+        )]);
+        let web_capable = BTreeSet::from([web_ip.value.clone()]);
+
+        let filtered = filter_enumeration_assets_by_eas_found(
+            vec![live_domain.clone(), web_ip.clone(), non_web_ip],
+            &found,
+            &web_capable,
+        );
+
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|asset| asset.value.as_str())
+                .collect::<Vec<_>>(),
+            vec![live_domain.value.as_str(), web_ip.value.as_str()]
+        );
+    }
+
+    #[test]
+    fn enumeration_web_capable_ip_gets_four_pending_cells() {
+        let asset = target("203.0.113.10", "ip");
+
+        let non_web_cells = coverage_cells(
+            StageKind::Enumeration,
+            &asset,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+        );
+        assert!(non_web_cells
+            .iter()
+            .all(|cell| cell.state == "not_applicable"));
+
+        let web_cells = coverage_cells_with_eas_parent_ips(
+            StageKind::Enumeration,
+            &asset,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeSet::from([asset.value.clone()]),
+        );
+        assert_eq!(
+            web_cells
+                .iter()
+                .map(|cell| (cell.label.as_str(), cell.state.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("JS", "pending"),
+                ("Directory", "pending"),
+                ("Parameter", "pending"),
+                ("API", "pending")
+            ]
+        );
     }
 
     #[test]
@@ -1231,14 +1370,11 @@ mod tests {
 
         assert_eq!(
             cells[0].suggested_tools,
-            vec!["route_probe_paths".to_string()]
+            vec!["browser_collect_js_api".to_string()]
         );
         assert_eq!(
             cells[1].suggested_tools,
-            vec![
-                "browser_collect_js_api".to_string(),
-                "js_extract_apis".to_string()
-            ]
+            vec!["route_probe_paths".to_string()]
         );
         assert_eq!(
             cells[2].suggested_tools,
@@ -1246,6 +1382,10 @@ mod tests {
                 "browser_collect_js_api".to_string(),
                 "js_extract_apis".to_string()
             ]
+        );
+        assert_eq!(
+            cells[3].suggested_tools,
+            vec!["js_extract_apis".to_string()]
         );
         assert!(cells
             .iter()
@@ -1334,6 +1474,7 @@ mod tests {
             &BTreeSet::new(),
             &BTreeMap::new(),
             &parent_ips,
+            &BTreeSet::new(),
         );
 
         assert!(cells.iter().all(|cell| cell.state == "not_applicable"));
@@ -1363,6 +1504,7 @@ mod tests {
             &BTreeSet::new(),
             &BTreeMap::new(),
             &parent_ips,
+            &BTreeSet::new(),
         );
 
         assert_eq!(

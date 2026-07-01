@@ -35,7 +35,7 @@ owns 全部表的结构化访问。每个表一个子模块（如 `findings.rs` 
 | `mod.rs` | 仅 `pub mod` 声明（40+ 表模块 + `audit`） |
 | `scoped.rs` | scope/所有权校验基座（IDOR） |
 | `audit/` | 审计相关 repo（嵌套子目录） |
-| `coverage_truth.rs` | stage gate 的只读 DB 真值投影；EAS 会从 `targets.ports` / `fingerprints` / `real_ip` 关联 IP target 推导 found coverage |
+| `coverage_truth.rs` | stage gate 的只读 DB 真值投影；EAS 会从 `targets.ports` / `fingerprints` / `real_ip` 关联 IP target 推导 found coverage；Enumeration 投影 JS/DIR/PARAM/JSAPI，并暴露 `web_capable_ip_assets` 给 IP-web 分母 |
 | `targets.rs` | recon target CRUD + harness in-scope asset axis；`list_in_scope_values_created_before` 用 `created_at <= cutoff` 支持 no-schema stage wave denominator freeze |
 | `stage_asset_waves.rs` | durable per-operation/org/stage asset batch repo：创建/读取 running batch、完成 batch；未分配 in-scope targets 可被后续 expansion pass 读取为待扩展 backlog |
 | `<table>.rs` | 各表 scoped CRUD（一个表一个文件） |
@@ -50,8 +50,11 @@ owns 全部表的结构化访问。每个表一个子模块（如 `findings.rs` 
 - **raw SQL allowlist**：极少数裸 sqlx 调用在 `check_repo_ownership.py` ALLOWLIST 登记；新增裸 SQL 要么走 repo，要么显式登记。
 - **不变量 I9**：repo 方法别在事务里调外部 HTTP/MQ/长耗。
 - app crate **不直接写 SQL**：纵向走 `repo::*`，横向跨服务走 `golish-app-core/ports`。
+- `audit_log.project_path` 是 NOT NULL；`repo::audit` 对 `project_path=None` 统一写空字符串，工具/ledger 调用方不要绕过 repo 直接插 NULL。
 - `source_query_log` 的幂等键必须包含 `organization_id`：`(organization_id, run_id, source, query, target)`。多 org `stage_run` 扇出时，root/子公司同源 provider 查询不能互相覆盖；`list_for_run` 供 gate/reviewer 只读 `(org, run)` 的 source/provider terminal rows，证明 source 尝试，不可当作 found truth。
-- `coverage_truth.rs` 是 Found-only 投影：只能把业务表里确实存在的事实注入 gate，不从缺失数据推断 checked_empty；EAS 的 PORT/SERVICE/LIVENESS 必须保留 freshness window 约束。
+- `coverage_truth.rs` 是 Found-only 投影：只能把业务表里确实存在的事实注入 gate，不从缺失数据推断 checked_empty；EAS 的 PORT/SERVICE/LIVENESS 必须保留 freshness window 约束。Enumeration 的 `GOLISH-ENUM-JS` 只从 `js_analysis_results` 行投影，`web_capable_ip_assets` 只返回 in-scope 且 `targets.http_status IS NOT NULL` 的 IP/CIDR 资产，用于“只有 IP 但确认为 Web 服务”时进入 JS/DIR/PARAM/JSAPI 分母。
+- `targets.real_ip` 只属于可解析主体（domain/url/host），不能写到 `target_type in ('ip','ipv4','ip_address','cidr')` 的行上；`set_real_ip_by_id`、DNS backfill、`update_recon_extended_by_id` 都必须保留这个 SQL guard，避免 IP target 被错误挂到另一个 IP 聚合下。
+- `js_analysis::insert` 按 `(target_id, filename)` 幂等更新最新行：`browser_collect_js_api` 的 placeholder 可先落库，`js_extract_apis` 后续原地升级为完整分析；已存在完整静态分析时，新的 collector placeholder 不能把它降级覆盖。`js_analysis::list_by_target` 返回每个 filename 的最新行，避免历史重复行把前端 JS 数量和 ENUM-JS 口径放大。
 - `stage_asset_waves` 是 additive schema：wave items 固定 `target_id/value/type/source` 成员关系，gate 仍从业务表/ledger 读事实；新发现 target 不会进入当前 batch denominator，也不会在单个 org PASS 后被自动重跑，后续由 global delta expansion pass 统一消费。兼容旧 org-level pass ledger 时，没有历史 wave 的 org 只把 `org_stage_completions.passed_at` 之后新增的 target 作为 delta；若已存在 running wave 但全部 item 早于该 pass，runtime 会补 complete 并跳过 worker。
 
 ## 测试入口

@@ -173,6 +173,8 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             build_enumerator_prompt(),
         )
         .with_tools(vec![
+            "stage_worklist_status".to_string(),
+            "stage_worklist_next".to_string(),
             "list_enumeration_web_roots".to_string(),
             "query_target_data".to_string(),
             // Active content enumeration. DIR uses the direct internal

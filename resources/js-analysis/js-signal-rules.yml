@@ -23,6 +23,18 @@ rules:
     confidence: 0.90
     ai_review: true
 
+  - name: Shiro RememberMe
+    group: Fingerprint
+    source_rule: Shiro
+    kind: framework
+    color: green
+    scope: any header
+    severity: low
+    regex: '=deleteMe|rememberMe='
+    case_sensitive: true
+    confidence: 0.72
+    ai_review: true
+
   - name: Swagger UI
     group: Fingerprint
     source_rule: Swagger UI
@@ -30,6 +42,42 @@ rules:
     regex: 'swagger-ui\.html|"swagger"\s*:|Swagger UI|swaggerUi|swaggerVersion'
     case_sensitive: false
     confidence: 0.84
+    ai_review: false
+
+  - name: Ueditor
+    group: Fingerprint
+    source_rule: Ueditor
+    kind: framework
+    color: green
+    scope: response body
+    severity: low
+    regex: 'ueditor\.(?:config|all)\.js'
+    case_sensitive: false
+    confidence: 0.78
+    ai_review: false
+
+  - name: Druid
+    group: Fingerprint
+    source_rule: Druid
+    kind: framework
+    color: orange
+    scope: response body
+    severity: medium
+    regex: 'Druid Stat Index'
+    case_sensitive: false
+    confidence: 0.84
+    ai_review: true
+
+  - name: PDF.js Viewer
+    group: Fingerprint
+    source_rule: PDF.js Viewer
+    kind: framework
+    color: green
+    scope: response body
+    severity: low
+    regex: 'pdf\.worker'
+    case_sensitive: false
+    confidence: 0.74
     ai_review: false
 
   - name: Vite DevMode
@@ -95,6 +143,18 @@ rules:
     confidence: 0.96
     ai_review: true
 
+  - name: Win.ini File Content
+    group: Maybe Vulnerability
+    source_rule: Win.ini File
+    kind: interesting
+    color: red
+    scope: response body
+    severity: high
+    regex: 'for 16-bit app'
+    case_sensitive: false
+    confidence: 0.92
+    ai_review: true
+
   - name: Email
     group: Basic Information
     source_rule: Email
@@ -113,6 +173,18 @@ rules:
     confidence: 0.66
     ai_review: true
 
+  - name: Chinese IDCard
+    group: Basic Information
+    source_rule: Chinese IDCard
+    kind: pii
+    color: orange
+    scope: response body
+    severity: medium
+    regex: '[^0-9](\d{6}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:[0-2]\d|30|31)\d{3}[\dXx])[^0-9]'
+    case_sensitive: true
+    confidence: 0.76
+    ai_review: true
+
   - name: Internal IP Address
     group: Basic Information
     source_rule: Internal IP Address
@@ -122,6 +194,18 @@ rules:
     confidence: 0.72
     ai_review: true
 
+  - name: MAC Address
+    group: Basic Information
+    source_rule: MAC Address
+    kind: config
+    color: green
+    scope: response
+    severity: low
+    regex: '(?:^|[^A-Za-z0-9])([A-Fa-f0-9]{2}(?::[A-Fa-f0-9]{2}){5})'
+    case_sensitive: true
+    confidence: 0.58
+    ai_review: true
+
   - name: Cloud Key
     group: Sensitive Information
     source_rule: Cloud Key
@@ -129,6 +213,18 @@ rules:
     regex: '\b(?:access[-_]?key[-_]?(?:id|secret)|LTAI[a-z0-9]{12,20}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16})\b'
     case_sensitive: false
     confidence: 0.88
+    ai_review: true
+
+  - name: Windows File Or Dir Path
+    group: Sensitive Information
+    source_rule: Windows File/Dir Path
+    kind: config
+    color: green
+    scope: response
+    severity: low
+    regex: '(?:^|[^\w])([A-Za-z]:\\(?:[^<>:"/\\|?*\r\n]+\\?)+)'
+    case_sensitive: true
+    confidence: 0.62
     ai_review: true
 
   - name: Password Field
@@ -185,6 +281,30 @@ rules:
     confidence: 0.70
     ai_review: true
 
+  - name: Mobile Number Field
+    group: Sensitive Information
+    source_rule: Mobile Number Field
+    kind: pii
+    color: green
+    scope: response body
+    severity: low
+    regex: '["'']?[\.\w]{0,32}(?:mobile|phone|sjh|shoujihao|concat)[\.\w]{0,32}["'']?\s*(?::|={1,3}|!={1,2})\s*["'']([^"'']{4,120})["'']'
+    case_sensitive: false
+    confidence: 0.58
+    ai_review: true
+
+  - name: Userinfo In Link
+    group: Sensitive Information
+    source_rule: Userinfo In Link
+    kind: pii
+    color: green
+    scope: response body
+    severity: low
+    regex: '["''`]([^"''`]*(?:pass|pwd|passwd|password|user|name|username|account|creator)=[^"''`\s&]{1,64}[^"''`]*)["''`]'
+    case_sensitive: false
+    confidence: 0.64
+    ai_review: true
+
   - name: User Identity Storage
     group: Sensitive Information
     source_rule: User Identity
@@ -203,6 +323,18 @@ rules:
     confidence: 0.50
     ai_review: false
 
+  - name: All URL
+    group: Other
+    source_rule: All URL
+    kind: route
+    color: gray
+    scope: response body
+    severity: info
+    regex: 'https?://[-A-Za-z0-9+&@#/%?=~_|!:,.;\p{Han}]+[-A-Za-z0-9+&@#/%=~_|]'
+    case_sensitive: true
+    confidence: 0.48
+    ai_review: false
+
   - name: Source Map
     group: Other
     source_rule: Source Map
@@ -212,6 +344,18 @@ rules:
     confidence: 0.62
     ai_review: true
 
+  - name: Create Script
+    group: Other
+    source_rule: Create Script
+    kind: route
+    color: green
+    scope: response body
+    severity: low
+    regex: '\{[^{}]*\}\s*\[[^\s\]]+\]\s*\+\s*["''][^"'']*\.js'
+    case_sensitive: false
+    confidence: 0.58
+    ai_review: true
+
   - name: URL Schemes
     group: Other
     source_rule: URL Schemes
@@ -219,4 +363,40 @@ rules:
     regex: '\b[A-Za-z][A-Za-z0-9+.-]{1,20}://[-\w+&@#/%?=~_|!:,.;]*[-\w+&@#/%=~_|]'
     case_sensitive: false
     confidence: 0.54
+    ai_review: true
+
+  - name: Router Push
+    group: Other
+    source_rule: Router Push
+    kind: route
+    color: magenta
+    scope: response body
+    severity: low
+    regex: '\$router\.push'
+    case_sensitive: true
+    confidence: 0.54
+    ai_review: true
+
+  - name: 302 Location
+    group: Other
+    source_rule: 302 Location
+    kind: route
+    color: gray
+    scope: response header
+    severity: info
+    regex: 'Location:\s*([^\r\n]+)'
+    case_sensitive: false
+    confidence: 0.52
+    ai_review: false
+
+  - name: OSKeys
+    group: Other
+    source_rule: OSKeys
+    kind: interesting
+    color: gray
+    scope: response body
+    severity: info
+    regex: '<Key>([^<]{4,})</Key>'
+    case_sensitive: true
+    confidence: 0.56
     ai_review: true

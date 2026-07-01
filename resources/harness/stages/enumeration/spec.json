@@ -17,8 +17,9 @@
   "$comment_findings_allowed": "Content-enumeration stage: the deliverable is js/api/dir/param coverage (testable units feeding vuln_triage), NOT vulnerabilities. submit_stage_deliverable drops any findings submitted here and tells the model to put discoveries in claims. Design 2026-06-15-recon-stage-findings-suppression.",
   "findings_allowed": false,
 
-  "$comment_host_aware": "Host-aware coverage 2b (design 2026-06-15-host-aware-coverage \u00a73.3): content enumeration (DIR/PARAM/JSAPI) is web-level \u2014 only a web-capable asset (domain/URL) is a content-enumeration target; a bare IP/CIDR drops all three (per-asset form of the existing scope-level no-web PARAM drop); unknown class keeps all 3 (fail-safe). The per-asset technique_applies matrix landed inert (commit e12a7638); this flips the stage flag on so coverage_complete filters each in-scope asset via technique_applies_to_value. Default false = byte-for-byte unchanged.",
+  "$comment_host_aware": "Host-aware coverage 2b + 2026-07-01 IP-web: content enumeration (JS/DIR/PARAM/JSAPI) is web-level. Domain/URL assets are always content-enumeration targets; bare IP/CIDR targets are included only when EAS/httpx proved HTTP service via targets.http_status (enum_ip_web_coverage). Unknown class keeps all 4 (fail-safe).",
   "host_aware_coverage": true,
+  "enum_ip_web_coverage": true,
 
   "$comment_freshness_window": "Phase E activation (design 2026-06-22 Phase D): gray-switch ON. The ENUM DB-truth back-fill (GOLISH-ENUM-DIR/PARAM/JSAPI) only counts content discovered this stage-run (directory_entries.created_at + api_endpoints.discovered_at >= stage start). enumeration coverage_complete is derive_from_evidence (NOT authoritative), so this makes the DB auto-fill fresh-only; self-reported cells still fall back. Default false = presence-only.",
   "freshness_window": true,
@@ -44,7 +45,7 @@
       "on_fail": {
         "reason": "content enumeration incomplete: some alive in-scope services were not fully enumerated (js/api / dir / param)",
         "hints": [
-          "for EVERY EAS-confirmed live web root, take GOLISH-ENUM-JSAPI (browser_collect_js_api -> js_extract_apis), GOLISH-ENUM-DIR (lightweight route probe -> bounded directory/path scan), and GOLISH-ENUM-PARAM (observed request/query/form parameters plus targeted js_extract_apis param_hints) to a terminal state",
+          "for EVERY EAS-confirmed live web root, take GOLISH-ENUM-JSAPI (browser_collect_js_api -> js_extract_apis), GOLISH-ENUM-DIR (route_probe_paths once after JS/API landing with target_id + base_url, DB seeds, and its recursive local/built-in wordlist queue), and GOLISH-ENUM-PARAM (observed request/query/form parameters plus targeted js_extract_apis param_hints) to a terminal state",
           "do NOT hand-write found cells already backed by DB truth; found is projected from directory_entries/api_endpoints after real tools land rows with target_id. Use submitted coverage only for checked_empty+evidence, blocked+note, or not_applicable+note states the DB cannot derive yet"
         ]
       }
@@ -53,12 +54,12 @@
 
   "$comment_expected_techniques": "\u679a\u4e3e\u9636\u6bb5\u5185\u5bb9\u6280\u672f\uff08GOLISH-ENUM-*\uff0c\u767b\u8bb0\u4e8e technique_taxonomy.json\uff09\u3002\u9636\u6bb5\u91cd\u6392 2026-06-09\uff1a\u7aef\u53e3/\u670d\u52a1\u5df2\u5728 EAS \u505a\uff0c\u672c\u9636\u6bb5\u53ea\u6316\u5185\u5bb9\u3002coverage_complete \u5bf9\u6bcf\u4e2a\u5b58\u6d3b\u670d\u52a1\u9010\u7c7b\u6838\u7ec8\u6001\uff1b\u4ea7\u51fa\u53ef\u6d4b\u5355\u5143\u662f vuln_triage total_units \u5206\u6bcd\u6765\u6e90\u3002",
   "expected_techniques": [
-    "GOLISH-ENUM-DIR", "GOLISH-ENUM-PARAM", "GOLISH-ENUM-JSAPI"
+    "GOLISH-ENUM-JS", "GOLISH-ENUM-DIR", "GOLISH-ENUM-PARAM", "GOLISH-ENUM-JSAPI"
   ],
 
-  "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout \u00a73.2): specialist = the per-org sub-agent stage_run fans out (enumeration \u2192 enumerator, the ACTIVE content-enumeration specialist split from Pentester, mirroring prober for EAS); coverage_axis = the human-readable technique columns StageRunView renders per org row (one per expected technique: dir / param / js-api).",
+  "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout \u00a73.2): specialist = the per-org sub-agent stage_run fans out (enumeration \u2192 enumerator, the ACTIVE content-enumeration specialist split from Pentester, mirroring prober for EAS); coverage_axis = the human-readable technique columns StageRunView renders per org row (one per expected technique: js / dir / param / jsapi).",
   "specialist": "enumerator",
-  "coverage_axis": ["DIR", "PARAM", "JSAPI"],
+  "coverage_axis": ["JS", "DIR", "PARAM", "JSAPI"],
 
   "$comment_min_invocations": "2026-06-26 enumeration deliverables/flow: no hard tool floor. HTTP probing and service fingerprinting belong to external_attack_surface; enumeration completeness is DIR/PARAM/JSAPI DB truth plus explicit non-found terminal coverage.",
   "min_invocations": {},

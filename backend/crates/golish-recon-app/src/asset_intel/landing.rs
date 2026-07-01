@@ -89,6 +89,14 @@ fn normalize_landing_host(host: &str) -> String {
     host.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
+fn is_ip_literal(value: &str) -> bool {
+    normalize_landing_host(value).parse::<IpAddr>().is_ok()
+}
+
+fn target_accepts_real_ip(target_type: &str, value: &str) -> bool {
+    !matches!(target_type, "ip" | "ipv4" | "ip_address" | "cidr") && !is_ip_literal(value)
+}
+
 fn landing_alias_host_key(host: &str) -> String {
     let normalized = normalize_landing_host(host);
     normalized
@@ -162,12 +170,23 @@ pub(crate) fn plan_promotable_assets(
     profile_ips: &[String],
 ) -> (Vec<(String, Option<String>)>, Vec<String>) {
     let mut domains: Vec<(String, Option<String>)> = Vec::new();
+    let mut ips: Vec<String> = Vec::new();
     let mut seen_hosts = HashSet::new();
+    let mut seen_ips = HashSet::new();
     let mut index_by_alias_and_ip: HashMap<String, usize> = HashMap::new();
     for pair in pairs {
         let host = normalize_landing_host(&pair.host);
         let ip = pair.ip.trim().to_string();
+        if ip.parse::<IpAddr>().is_err() {
+            continue;
+        }
         if !value_belongs_to_organization(org, &host) {
+            continue;
+        }
+        if is_ip_literal(&host) {
+            if seen_ips.insert(host.clone()) {
+                ips.push(host);
+            }
             continue;
         }
         if !seen_hosts.insert(host.clone()) {
@@ -183,13 +202,12 @@ pub(crate) fn plan_promotable_assets(
         index_by_alias_and_ip.insert(alias_key, domains.len());
         domains.push((host, Some(ip)));
     }
-    let mut seen_ips = HashSet::new();
-    let ips = profile_ips
-        .iter()
-        .filter(|ip| ip.parse::<IpAddr>().is_ok())
-        .filter(|ip| seen_ips.insert((*ip).clone()))
-        .cloned()
-        .collect();
+    for raw in profile_ips {
+        let ip = raw.trim();
+        if ip.parse::<IpAddr>().is_ok() && seen_ips.insert(ip.to_string()) {
+            ips.push(ip.to_string());
+        }
+    }
     (domains, ips)
 }
 
@@ -293,8 +311,8 @@ async fn upsert_target(
     target_type: &str,
     real_ip: Option<&str>,
 ) -> Result<Uuid, GolishError> {
-    let existing: Option<Uuid> = sqlx::query_scalar(
-        r#"SELECT id FROM targets
+    let existing: Option<(Uuid, String)> = sqlx::query_as(
+        r#"SELECT id, target_type::text FROM targets
            WHERE value = $1
              AND project_path IS NOT DISTINCT FROM $2
            LIMIT 1"#,
@@ -304,7 +322,7 @@ async fn upsert_target(
     .fetch_optional(pool)
     .await?;
 
-    if let Some(id) = existing {
+    if let Some((id, existing_target_type)) = existing {
         sqlx::query(
             r#"UPDATE targets
                SET organization_id = COALESCE(organization_id, $2),
@@ -315,12 +333,19 @@ async fn upsert_target(
         .bind(org.id)
         .execute(pool)
         .await?;
-        if let Some(ip) = real_ip.map(str::trim).filter(|ip| !ip.is_empty()) {
-            golish_db::repo::targets::set_real_ip_by_id(pool, id, ip).await?;
+        if target_accepts_real_ip(&existing_target_type, value) {
+            if let Some(ip) = real_ip.map(str::trim).filter(|ip| !ip.is_empty()) {
+                golish_db::repo::targets::set_real_ip_by_id(pool, id, ip).await?;
+            }
         }
         return Ok(id);
     }
 
+    let landed_real_ip = if target_accepts_real_ip(target_type, value) {
+        real_ip.unwrap_or("").trim()
+    } else {
+        ""
+    };
     let new_id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO targets
               (name, target_type, value, tags, notes, scope, grp, owner,
@@ -335,7 +360,7 @@ async fn upsert_target(
     .bind(value)
     .bind(org.id)
     .bind(&org.project_path)
-    .bind(real_ip.unwrap_or("").trim())
+    .bind(landed_real_ip)
     .fetch_one(pool)
     .await?;
     Ok(new_id)
@@ -348,7 +373,7 @@ async fn upsert_target(
 fn provider_dns_record(host: &str, ip: &str) -> Option<(&'static str, String, String)> {
     let host = host.trim();
     let ip = ip.trim();
-    if host.is_empty() {
+    if host.is_empty() || is_ip_literal(host) {
         return None;
     }
     let parsed: IpAddr = ip.parse().ok()?;
@@ -653,6 +678,7 @@ mod tests {
         // junk IP / empty host never lands.
         assert_eq!(provider_dns_record("x.com", "not-an-ip"), None);
         assert_eq!(provider_dns_record("", "1.2.3.4"), None);
+        assert_eq!(provider_dns_record("116.62.45.225", "1.94.38.88"), None);
         // trims whitespace.
         assert_eq!(
             provider_dns_record("  a.com  ", " 9.9.9.9 "),
@@ -673,6 +699,16 @@ mod tests {
                 host: "194.1.broad.ha.dynamic.163data.com.cn".into(),
                 ip: "61.241.22.62".into(),
             },
+            // IP literals are IP assets, not domains resolving to another IP.
+            HostIpPair {
+                host: "116.62.45.225".into(),
+                ip: "1.94.38.88".into(),
+            },
+            // Invalid pair IP is ignored instead of poisoning target.real_ip.
+            HostIpPair {
+                host: "api.pingan.com".into(),
+                ip: "not-an-ip".into(),
+            },
         ];
         let profile_ips = vec!["1.2.3.4".to_string(), "not-an-ip".to_string()];
         let (domains, ips) = plan_promotable_assets(&org, &pairs, &profile_ips);
@@ -683,7 +719,10 @@ mod tests {
                 Some("221.11.190.218".to_string())
             )]
         );
-        assert_eq!(ips, vec!["1.2.3.4".to_string()]);
+        assert_eq!(
+            ips,
+            vec!["116.62.45.225".to_string(), "1.2.3.4".to_string()]
+        );
     }
 
     #[test]

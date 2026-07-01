@@ -248,6 +248,40 @@ function targetIntelOrgOnlySnapshot() {
   };
 }
 
+function enumerationFourAxisSnapshot() {
+  return {
+    stage: "enumeration",
+    organization_id: "org-1",
+    session_id: "session-1",
+    summary: {
+      total_assets: 1,
+      seed_assets: 1,
+      new_assets: 0,
+      done_assets: 0,
+      pending_assets: 1,
+      blocked_assets: 0,
+    },
+    assets: [
+      {
+        target_id: "target-enum-1",
+        value: "203.0.113.10",
+        target_type: "ip",
+        real_ip: "",
+        source: "seed",
+        discovered_phase: "seed",
+        created_at: "2026-07-01T10:00:00.000Z",
+        parent_id: null,
+        coverage: [
+          coverageCell("GOLISH-ENUM-JS", "JS"),
+          coverageCell("GOLISH-ENUM-DIR", "Directory"),
+          coverageCell("GOLISH-ENUM-PARAM", "Parameter"),
+          coverageCell("GOLISH-ENUM-JSAPI", "API"),
+        ],
+      },
+    ],
+  };
+}
+
 describe("StageAssetCoveragePanel", () => {
   beforeEach(() => {
     mockedGetStageAssetCoverage.mockReset();
@@ -400,6 +434,34 @@ describe("StageAssetCoveragePanel", () => {
     for (const label of ["DNS", "WHOIS", "ASN", "CT证书", "子域", "OSINT"]) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
+  });
+
+  it("renders enumeration JS and API as separate coverage columns", () => {
+    render(
+      <StageAssetCoveragePanel
+        snapshot={enumerationFourAxisSnapshot()}
+        loading={false}
+        error={null}
+        workItems={[
+          {
+            id: "tool-js",
+            displayToolName: "browser_collect_js_api",
+            rawToolName: "browser_collect_js_api",
+            subject: "203.0.113.10",
+            subjects: ["203.0.113.10"],
+            primary: "Collecting JavaScript",
+            techniques: ["JS"],
+            status: "running",
+            startedAt: "2026-07-01T10:00:01.000Z",
+          },
+        ]}
+      />
+    );
+
+    for (const label of ["JS", "DIR", "PARAM", "API"]) {
+      expect(screen.getAllByText(label).length).toBeGreaterThan(0);
+    }
+    expect(screen.getByText("正在补 JS · browser_collect_js_api")).toBeInTheDocument();
   });
 
   it("shows a compact return action in coverage panel mode", async () => {

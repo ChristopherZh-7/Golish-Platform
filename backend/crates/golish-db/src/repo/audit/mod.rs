@@ -62,6 +62,10 @@ pub(crate) fn reclaim_cutoff(threshold: Duration) -> DateTime<Utc> {
     Utc::now() - threshold
 }
 
+pub(crate) fn audit_project_path(project_path: Option<&str>) -> &str {
+    project_path.unwrap_or("")
+}
+
 pub async fn log(
     pool: &PgPool,
     action: &str,
@@ -81,7 +85,7 @@ pub async fn log(
     .bind(details)
     .bind(entity_type)
     .bind(entity_id)
-    .bind(project_path)
+    .bind(audit_project_path(project_path))
     .bind(source)
     .execute(pool)
     .await?;
@@ -149,7 +153,7 @@ pub async fn log_operation_with_lineage(
     .bind(action)
     .bind(category)
     .bind(details)
-    .bind(project_path)
+    .bind(audit_project_path(project_path))
     .bind(source)
     .bind(target_id)
     .bind(session_id)
@@ -202,7 +206,7 @@ pub async fn log_evidence(
     .bind(action)
     .bind(category)
     .bind(details)
-    .bind(project_path)
+    .bind(audit_project_path(project_path))
     .bind(source)
     .bind(target_id)
     .bind(session_id)

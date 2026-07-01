@@ -261,14 +261,25 @@ pub async fn evaluate_org_stage_gate(
             in_scope_assets.iter().map(String::as_str).collect();
         typed_assets.retain(|(asset, _)| current_wave.contains(asset.as_str()));
     }
+    let web_capable_assets: Vec<String> =
+        if stage == StageKind::Enumeration && spec.enum_ip_web_coverage {
+            repo.enumeration_web_capable_assets(org_id)
+                .await
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
     if stage == StageKind::Enumeration && !in_scope_assets.is_empty() {
         let inherited_truth = repo
             .db_truth_facts(org_id, &in_scope_assets, None)
             .await
             .unwrap_or_default();
-        if let Some(worklist) =
-            enumeration_eas_live_web_worklist(&in_scope_assets, &typed_assets, &inherited_truth)
-        {
+        if let Some(worklist) = enumeration_eas_live_web_worklist(
+            &in_scope_assets,
+            &typed_assets,
+            &inherited_truth,
+            &web_capable_assets,
+        ) {
             in_scope_assets.retain(|asset| worklist.contains(asset));
             typed_assets.retain(|(asset, _)| worklist.contains(asset));
         }
@@ -349,6 +360,7 @@ pub async fn evaluate_org_stage_gate(
     let ctx = GateContextBuilder::new()
         .in_scope_assets(in_scope_assets)
         .typed_assets(typed_assets)
+        .web_capable_assets(web_capable_assets)
         .extend_evidence_facts(facts)
         .extend_source_queries(source_queries)
         .expected_techniques(None)
@@ -361,13 +373,16 @@ fn enumeration_eas_live_web_worklist(
     assets: &[String],
     typed_assets: &[(String, String)],
     truth_rows: &[(String, String)],
+    web_capable_assets: &[String],
 ) -> Option<BTreeSet<String>> {
     let live_liveness_keys: BTreeSet<String> = truth_rows
         .iter()
         .filter(|(_, technique)| technique == TECH_EAS_LIVENESS)
         .map(|(asset, _)| eas_liveness_lookup_key(asset))
         .collect();
-    if live_liveness_keys.is_empty() {
+    let web_capable_assets: BTreeSet<&str> =
+        web_capable_assets.iter().map(String::as_str).collect();
+    if live_liveness_keys.is_empty() && web_capable_assets.is_empty() {
         return None;
     }
 
@@ -379,8 +394,10 @@ fn enumeration_eas_live_web_worklist(
         .iter()
         .filter(|asset| {
             let class = AssetClass::classify(type_by_asset.get(asset.as_str()).copied(), asset);
-            matches!(class, AssetClass::Domain | AssetClass::Url)
-                && live_liveness_keys.contains(&eas_liveness_lookup_key(asset))
+            (matches!(class, AssetClass::Domain | AssetClass::Url)
+                && live_liveness_keys.contains(&eas_liveness_lookup_key(asset)))
+                || (matches!(class, AssetClass::Ip | AssetClass::Cidr)
+                    && web_capable_assets.contains(asset.as_str()))
         })
         .cloned()
         .collect();
@@ -488,7 +505,7 @@ mod tests {
             ("203.0.113.10".to_string(), TECH_EAS_LIVENESS.to_string()),
         ];
 
-        let worklist = enumeration_eas_live_web_worklist(&assets, &typed_assets, &truth)
+        let worklist = enumeration_eas_live_web_worklist(&assets, &typed_assets, &truth, &[])
             .expect("live web roots narrow enumeration");
 
         assert_eq!(
@@ -509,8 +526,33 @@ mod tests {
         ];
 
         assert!(
-            enumeration_eas_live_web_worklist(&assets, &typed_assets, &[]).is_none(),
+            enumeration_eas_live_web_worklist(&assets, &typed_assets, &[], &[]).is_none(),
             "no inherited EAS liveness truth must not collapse the gate denominator to empty"
+        );
+    }
+
+    #[test]
+    fn enumeration_worklist_includes_http_proven_ip_web_assets() {
+        let assets = vec![
+            "app.example.com".to_string(),
+            "203.0.113.10".to_string(),
+            "203.0.113.11".to_string(),
+        ];
+        let typed_assets = vec![
+            ("app.example.com".to_string(), "domain".to_string()),
+            ("203.0.113.10".to_string(), "ip".to_string()),
+            ("203.0.113.11".to_string(), "ip".to_string()),
+        ];
+        let truth = vec![("app.example.com".to_string(), TECH_EAS_LIVENESS.to_string())];
+        let web_capable = vec!["203.0.113.10".to_string()];
+
+        let worklist =
+            enumeration_eas_live_web_worklist(&assets, &typed_assets, &truth, &web_capable)
+                .expect("domain liveness + IP-web roots narrow enumeration");
+
+        assert_eq!(
+            worklist,
+            BTreeSet::from(["app.example.com".to_string(), "203.0.113.10".to_string()])
         );
     }
 

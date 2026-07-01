@@ -1339,11 +1339,20 @@ async fn register_pentest_tools(
     }
 
     {
+        // One-shot LLM handle for the JS collect/extract tools' AI-assisted
+        // recipe/extraction passes (设计 2026-06-30-jsapi-ai-tools). Fixed to
+        // DeepSeek via app settings; tools degrade to deterministic when the key
+        // is absent.
+        let llm_one_shot: Option<std::sync::Arc<dyn golish_app_core::ports::llm::LlmOneShot>> =
+            Some(std::sync::Arc::new(
+                crate::ai::llm_one_shot::SettingsLlmOneShot::new(state.settings_manager.clone()),
+            ));
         let bridge_tools = state.pentest_tool_factory.create_bridge_tools(
             state.db_pool.clone(),
             state.pentest_config_manager.clone(),
             app_handle,
             bridge.harness_active_org_id_handle(),
+            llm_one_shot,
         );
         let mut registry = bridge.tool_registry().write().await;
         for tool in bridge_tools {

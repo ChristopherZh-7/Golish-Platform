@@ -1,25 +1,82 @@
 import { Activity, CheckCircle2, Database } from "lucide-react";
 import type { Target } from "@/lib/pentest/types";
-import type { TimelineEntry } from "@/lib/security-analysis";
+import type { AuditRow, TimelineEntry } from "@/lib/security-analysis";
 import { EmptyInline, Section } from "../SurfaceParts";
+import { parseWebOrigin, type SurfaceHierarchyVM, type WebOriginVM } from "../surfaceHierarchy";
 import { formatTime } from "../surfaceModel";
+
+function stringDetail(detail: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = detail[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function originFromCapturePath(
+  capturePath: string | null | undefined,
+  origins: WebOriginVM[]
+): WebOriginVM | null {
+  const match = (capturePath ?? "").match(/(?:^|\/)captures\/([^/]+)\/(\d+)\//);
+  if (!match) return null;
+  const host = match[1].toLowerCase();
+  const port = Number(match[2]);
+  const matches = origins.filter((origin) => origin.host === host && origin.port === port);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function evidenceOrigin(
+  detail: Record<string, unknown>,
+  hierarchy?: SurfaceHierarchyVM
+): { origin: WebOriginVM; confidence: "confirmed" | "inferred" } | null {
+  if (!hierarchy) return null;
+  const url = stringDetail(detail, ["url", "endpoint", "origin", "request_url", "requestUrl"]);
+  const parsed = parseWebOrigin(url);
+  if (parsed) {
+    const origin = hierarchy.webOrigins.find((candidate) => candidate.id === parsed.id);
+    if (origin) return { origin, confidence: "confirmed" };
+  }
+  const capturePath = stringDetail(detail, [
+    "capturePath",
+    "capture_path",
+    "filePath",
+    "file_path",
+  ]);
+  const captured = originFromCapturePath(capturePath, hierarchy.webOrigins);
+  return captured ? { origin: captured, confidence: "inferred" } : null;
+}
+
+function OriginRelationBadge({
+  relation,
+}: {
+  relation: { origin: WebOriginVM; confidence: "confirmed" | "inferred" } | null;
+}) {
+  if (!relation) {
+    return (
+      <span className="rounded bg-muted/20 px-1.5 py-0.5 text-[9px] text-muted-foreground">
+        Target-level
+      </span>
+    );
+  }
+  return (
+    <span className="max-w-[220px] truncate rounded bg-accent/10 px-1.5 py-0.5 font-mono text-[9px] text-accent">
+      {relation.origin.origin} · {relation.confidence}
+    </span>
+  );
+}
 
 export function EvidenceTab({
   target,
   timeline,
   logs,
   loading,
+  hierarchy,
 }: {
   target: Target;
   timeline: TimelineEntry[];
-  logs: Array<{
-    id: number;
-    action: string;
-    status: string;
-    toolName: string | null;
-    createdAt: number;
-  }>;
+  logs: AuditRow[];
   loading: boolean;
+  hierarchy?: SurfaceHierarchyVM;
 }) {
   return (
     <div className="space-y-2.5">
@@ -55,6 +112,7 @@ export function EvidenceTab({
                       {entry.toolName}
                     </span>
                   )}
+                  <OriginRelationBadge relation={evidenceOrigin(entry.detail, hierarchy)} />
                   <span className="text-[9px] text-muted-foreground">
                     {formatTime(entry.createdAt)}
                   </span>
@@ -75,6 +133,7 @@ export function EvidenceTab({
                         {log.toolName}
                       </span>
                     )}
+                    <OriginRelationBadge relation={evidenceOrigin(log.detail, hierarchy)} />
                     <span className="text-[9px] text-muted-foreground">
                       {new Date(log.createdAt).toLocaleTimeString()}
                     </span>

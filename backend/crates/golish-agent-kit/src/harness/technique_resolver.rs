@@ -25,7 +25,12 @@ fn stage_baseline(stage: StageKind) -> Vec<&'static str> {
             "GOLISH-EAS-PORT",
             "GOLISH-EAS-SERVICE-FINGERPRINT",
         ],
-        StageKind::Enumeration => vec!["GOLISH-ENUM-DIR", "GOLISH-ENUM-PARAM", "GOLISH-ENUM-JSAPI"],
+        StageKind::Enumeration => vec![
+            "GOLISH-ENUM-JS",
+            "GOLISH-ENUM-DIR",
+            "GOLISH-ENUM-PARAM",
+            "GOLISH-ENUM-JSAPI",
+        ],
         // vuln_triage 的 15 类 WSTG 与具体服务强相关，Phase A 不裁剪（保持静态全集，
         // 走 spec 回退）；本 resolver 对它返回空 = 用 spec 静态值。
         _ => vec![],
@@ -132,6 +137,27 @@ pub fn technique_applies_to_value(
         return false;
     }
     true
+}
+
+/// Evidence-aware extension of [`technique_applies_to_value`]. Only
+/// `Enumeration + Ip/Cidr` changes: if EAS/httpx has proven the IP target is a
+/// web service, it participates in the full content-enumeration axis.
+pub fn technique_applies_web_aware(
+    stage: StageKind,
+    class: AssetClass,
+    value: &str,
+    tech: &str,
+    web_capable: bool,
+) -> bool {
+    if matches!(stage, StageKind::Enumeration) && matches!(class, AssetClass::Ip | AssetClass::Cidr)
+    {
+        return web_capable
+            && matches!(
+                tech,
+                "GOLISH-ENUM-JS" | "GOLISH-ENUM-DIR" | "GOLISH-ENUM-PARAM" | "GOLISH-ENUM-JSAPI"
+            );
+    }
+    technique_applies_to_value(stage, class, value, tech)
 }
 
 /// True when `value`'s host is its own registrable apex (`niuza.com`,
@@ -432,13 +458,45 @@ mod tests {
     #[test]
     fn enumeration_is_web_only_per_asset() {
         use StageKind::Enumeration as Enum;
-        // Content enumeration (DIR/PARAM/JSAPI) is web-level: domain + URL get
-        // the full set; a bare IP/CIDR is not a content-enumeration target.
-        assert_eq!(techniques_for(Enum, AssetClass::Domain).len(), 3);
-        assert_eq!(techniques_for(Enum, AssetClass::Url).len(), 3);
+        // Content enumeration (JS/DIR/PARAM/JSAPI, design 2026-07-01 §4) is web-level:
+        // domain + URL get the full four; a bare IP/CIDR is not a content-enumeration
+        // target here (PR-2 web-aware relaxation is a separate seam).
+        assert_eq!(techniques_for(Enum, AssetClass::Domain).len(), 4);
+        assert_eq!(techniques_for(Enum, AssetClass::Url).len(), 4);
         assert!(techniques_for(Enum, AssetClass::Ip).is_empty());
         assert!(techniques_for(Enum, AssetClass::Cidr).is_empty());
         // fail-safe: unknown keeps the full set (never under-checked).
-        assert_eq!(techniques_for(Enum, AssetClass::Other).len(), 3);
+        assert_eq!(techniques_for(Enum, AssetClass::Other).len(), 4);
+    }
+
+    #[test]
+    fn enumeration_ip_web_capable_gets_all_four() {
+        use StageKind::Enumeration as Enum;
+        for tech in [
+            "GOLISH-ENUM-JS",
+            "GOLISH-ENUM-DIR",
+            "GOLISH-ENUM-PARAM",
+            "GOLISH-ENUM-JSAPI",
+        ] {
+            assert!(
+                technique_applies_web_aware(Enum, AssetClass::Ip, "1.2.3.4", tech, true),
+                "web-capable IP should require {tech}"
+            );
+            assert!(
+                !technique_applies_web_aware(Enum, AssetClass::Ip, "1.2.3.4", tech, false),
+                "non-web IP should not require {tech}"
+            );
+            assert!(
+                technique_applies_web_aware(Enum, AssetClass::Domain, "a.com", tech, false),
+                "domain parity should not depend on web_capable"
+            );
+        }
+        assert!(technique_applies_web_aware(
+            StageKind::TargetIntel,
+            AssetClass::Domain,
+            "a.com",
+            "GOLISH-INTEL-WHOIS",
+            true
+        ));
     }
 }

@@ -641,27 +641,29 @@ mod tests {
     use golish_agent_kit::harness::operation_flow::StageFlowOutcome;
 
     fn state_with_flow() -> Value {
-        let mut flow = OperationFlowState::default();
-        flow.visited = vec![
-            StageKind::Scoping,
-            StageKind::TargetIntel,
-            StageKind::ExternalAttackSurface,
-            StageKind::Enumeration,
-            StageKind::Reporting,
-        ];
-        flow.applied = HashMap::from([
-            (StageKind::Scoping, StageFlowOutcome::pass_with_progress()),
-            (
+        let flow = OperationFlowState {
+            visited: vec![
+                StageKind::Scoping,
                 StageKind::TargetIntel,
-                StageFlowOutcome::pass_with_progress(),
-            ),
-            (
                 StageKind::ExternalAttackSurface,
-                StageFlowOutcome::pass_with_progress(),
-            ),
-            (StageKind::Enumeration, StageFlowOutcome::blocked()),
-            (StageKind::Reporting, StageFlowOutcome::pass_with_progress()),
-        ]);
+                StageKind::Enumeration,
+                StageKind::Reporting,
+            ],
+            applied: HashMap::from([
+                (StageKind::Scoping, StageFlowOutcome::pass_with_progress()),
+                (
+                    StageKind::TargetIntel,
+                    StageFlowOutcome::pass_with_progress(),
+                ),
+                (
+                    StageKind::ExternalAttackSurface,
+                    StageFlowOutcome::pass_with_progress(),
+                ),
+                (StageKind::Enumeration, StageFlowOutcome::blocked()),
+                (StageKind::Reporting, StageFlowOutcome::pass_with_progress()),
+            ]),
+            ..Default::default()
+        };
         json!({
             "graph_flow": {
                 "state": flow,

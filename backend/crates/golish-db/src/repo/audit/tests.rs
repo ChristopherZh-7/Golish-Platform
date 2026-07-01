@@ -6,7 +6,7 @@
 use chrono::{Duration, Utc};
 
 use super::queries::{build_clear_by_project_exact_sql, build_list_by_project_exact_sql};
-use super::{reclaim_cutoff, DEFAULT_RECLAIM_THRESHOLD_HOURS};
+use super::{audit_project_path, reclaim_cutoff, DEFAULT_RECLAIM_THRESHOLD_HOURS};
 
 #[test]
 fn audit_command_sql_matches_command_layer() {
@@ -23,6 +23,12 @@ fn audit_command_sql_matches_command_layer() {
 #[test]
 fn default_reclaim_threshold_is_one_hour() {
     assert_eq!(DEFAULT_RECLAIM_THRESHOLD_HOURS, 1);
+}
+
+#[test]
+fn audit_project_path_defaults_to_empty_string() {
+    assert_eq!(audit_project_path(None), "");
+    assert_eq!(audit_project_path(Some("/tmp/project")), "/tmp/project");
 }
 
 #[test]
