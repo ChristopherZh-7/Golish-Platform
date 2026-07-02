@@ -495,11 +495,13 @@ fn coverage_gap_action(asset: &str, technique: &str) -> CoverageGapAction {
 
 fn suggested_tools_for_gap(technique: &str) -> Vec<String> {
     match technique {
-        "GOLISH-EAS-LIVENESS" => vec!["httpx".to_string(), "nmap -sn".to_string()],
-        "GOLISH-EAS-PORT" => vec!["naabu".to_string(), "nmap".to_string()],
-        "GOLISH-EAS-SERVICE-FINGERPRINT" => {
-            vec!["nmap -sV".to_string(), "whatweb".to_string()]
-        }
+        "GOLISH-EAS-LIVENESS" => vec!["httpx".to_string(), "naabu".to_string()],
+        "GOLISH-EAS-PORT" => vec![
+            "naabu".to_string(),
+            "masscan".to_string(),
+            "nmap".to_string(),
+        ],
+        "GOLISH-EAS-SERVICE-FINGERPRINT" => vec!["nmap".to_string()],
         _ => Vec::new(),
     }
 }
@@ -1677,6 +1679,14 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn eas_service_gap_suggests_nmap_only() {
+        assert_eq!(
+            suggested_tools_for_gap("GOLISH-EAS-SERVICE-FINGERPRINT"),
+            vec!["nmap".to_string()]
+        );
     }
 
     #[test]

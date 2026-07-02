@@ -29,6 +29,28 @@
 
 > 历史会话已归档：`docs/archive/agent-progress-archive-2026-06-28.md`。主文件只保留最近 20 条会话，避免旧日志干扰新判断；需要追溯旧验证证据时去 archive grep。
 
+### 2026-07-02 · EAS 工具分流与 SERVICE gap 修复指令
+
+- **本轮目标**：回应用户对最新 EAS run 的追问，确认 naabu/nmap/WhatWeb/httpx 的职责边界，并修正 gate/refiner/worklist 给 AI 的错误工具建议。
+- **根因确认**：最新 `/Users/christopherzheng/golish-platform/Test1` run 中 `submit_stage_deliverable` 同时报 evidence 引用缺口和 13 个 `GOLISH-EAS-SERVICE-FINGERPRINT` gap；旧 `coverage_gap_actions.suggested_tools` 对 SERVICE 给 `["nmap -sV","whatweb"]`，且 `stage_refiner` 优先 evidence_refs，导致 repair 指令容易从真实 coverage gap 转去证据改写或把 WhatWeb 当通用 SERVICE 工具。
+- **已完成**：
+  - `rule_engine` / `stage_coverage` 的 EAS suggested tools 改为 canonical 分工：LIVENESS=`httpx`/`naabu`，PORT=`naabu`/`masscan`/`nmap`，SERVICE=`nmap`。
+  - `stage_refiner` 在 submit 同时报 coverage gap 和 evidence_ref 时优先 `CoverageGap`；旧 gap 若仍带 `nmap -sV` 会归一成 `tool_name=nmap`；SERVICE command hint 明确 `nmap -Pn -sV` 只跑 confirmed open ports，WhatWeb 只用于 confirmed HTTP(S) endpoint。
+  - `stage_worklist_status` / `stage_worklist_next` 给 EAS gap 增加 `eas_focus`、`worklist_semantics`、tool-boundary next_action，避免 agent 把 gap_examples 自由解释成“所有工具都跑一遍”。
+  - 同步 `external_attack_surface/methodology.md` 与相关模块卡。
+- **已记录证据 / 验证**：
+  - `rustfmt --edition 2021 backend/crates/golish-agent-kit/src/harness/gate/rule_engine.rs backend/crates/golish-agent-kit/src/task_orchestrator/stage_refiner.rs backend/crates/golish-agent-kit/src/tool_executors/security.rs backend/crates/golish-agent-kit/src/task_orchestrator/prompts/mod.rs backend/crates/golish-agent-app/src/ai/commands/stage_coverage.rs` → exit 0。
+  - `cd backend && cargo test -p golish-agent-kit eas_service_gap_suggests_nmap_only -- --nocapture` → 1 passed / exit 0。
+  - `cd backend && cargo test -p golish-agent-kit submit_needs_fix_prioritizes_eas_coverage_gap_over_evidence_rewrite -- --nocapture` → 1 passed / exit 0。
+  - `cd backend && cargo test -p golish-agent-kit stage_worklist_next_surfaces_eas_tool_boundary -- --nocapture` → 1 passed / exit 0。
+  - `cd backend && cargo test -p golish-agent-app eas_port_found_keeps_service_pending_without_service_outcome -- --nocapture` → 1 passed / exit 0。
+  - `cd backend && cargo test -p golish-agent-kit external_attack_surface_charter_surfaces_liveness_technique -- --nocapture` → 1 passed / exit 0。
+  - `cd backend && cargo test -p golish-agent-kit eas_coverage_gap_instruction_is_batch_first -- --nocapture` → 1 passed / exit 0。
+  - `cd backend && cargo test -p golish-agent-kit coverage_preflight_blocks_submit_when_cells_are_pending -- --nocapture` → 1 passed / exit 0。
+  - `git diff --check -- <本轮触及文件>` → exit 0。
+- **未跑全量**：未跑 `just precommit`；当前工作树已有大量与本轮无关的未提交改动，本轮只做 EAS 工具契约窄修复。
+- **下一步建议**：重新触发/继续 EAS 时先看 `stage_worklist_status`，确认 SERVICE gap 只建议 `nmap` 且 `eas_focus` 出现；若旧 run 仍停在 needs_fix，可让 prober 用 confirmed open ports 重跑 `nmap -Pn -sV` 后再 submit。
+
 ### 2026-07-01 · Enumerator 最新 run route canonicalization 修复
 
 - **本轮目标**：回应用户“再看看最新一次，确认问题就改”，复核当前仍在跑的 `pentest-chat-1782791610659-1` Enumerator transcript / DB truth，并修复确认的 route/browser/js URL canonicalization 问题。

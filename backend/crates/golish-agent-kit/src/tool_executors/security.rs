@@ -743,6 +743,7 @@ fn stage_worklist_status(snapshot: Value) -> Value {
 fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String]) -> Value {
     let stage = snapshot.get("stage").and_then(Value::as_str).unwrap_or("");
     let is_enumeration = stage == "enumeration";
+    let is_eas = stage == "external_attack_surface";
     let assets = snapshot
         .get("assets")
         .and_then(Value::as_array)
@@ -802,6 +803,8 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
             if is_enumeration {
                 item["worklist_source"] = json!("EAS-confirmed live web root");
                 item["enumeration_focus"] = json!(enumeration_gap_focus(technique));
+            } else if is_eas {
+                item["eas_focus"] = json!(eas_gap_focus(technique));
             }
             items.push(item);
         }
@@ -827,9 +830,15 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
         },
         "items": items,
         "omitted_item_count": omitted_item_count,
-        "worklist_contract": "Items are derived from DB/gate truth. Run the suggested tool(s), then call stage_worklist_next/status again; do not mark work complete by natural-language assertion.",
+        "worklist_contract": if is_eas {
+            "Items are derived from DB/gate truth. EAS tool split: httpx for domain/URL liveness, naabu/masscan for fast port discovery, nmap -sV for confirmed open ports, and whatweb only for confirmed HTTP(S) endpoints. Refresh this worklist after tools land DB evidence; do not mark work complete by natural-language assertion."
+        } else {
+            "Items are derived from DB/gate truth. Run the suggested tool(s), then call stage_worklist_next/status again; do not mark work complete by natural-language assertion."
+        },
         "next_action": if ready_to_submit {
             "No pending/error work items remain. Build a slim StageDeliverable with real evidence refs and submit."
+        } else if is_eas {
+            "Close the returned EAS cells by technique: LIVENESS with httpx, PORT with naabu/masscan, SERVICE with nmap -sV only after open ports are known; run whatweb only for confirmed HTTP(S) endpoints."
         } else {
             "Close the returned items in order, refresh this worklist, and submit only after ready_to_submit=true."
         }
@@ -839,6 +848,7 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
 fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets: bool) -> Value {
     let stage = snapshot.get("stage").and_then(Value::as_str).unwrap_or("");
     let is_enumeration = stage == "enumeration";
+    let is_eas = stage == "external_attack_surface";
     let assets = snapshot
         .get("assets")
         .and_then(Value::as_array)
@@ -897,6 +907,8 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
                 if is_enumeration {
                     gap["worklist_source"] = json!("EAS-confirmed live web root");
                     gap["enumeration_focus"] = json!(enumeration_gap_focus(technique));
+                } else if is_eas {
+                    gap["eas_focus"] = json!(eas_gap_focus(technique));
                 }
                 gaps.push(gap);
             }
@@ -916,6 +928,8 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
         }
     } else if is_enumeration {
         "Do not submit yet. Treat gap_examples as the exact EAS-confirmed live web-root worklist for this org: close JSAPI with browser_collect_js_api/js_extract_apis, DIR with one route_probe_paths call after JS/API landing using target_id + base_url so it reads DB seeds and completes the recursive wordlist queue, and PARAM from observed browser requests, query strings, forms, and targeted js_extract_apis param_hints. Do not re-port-scan, default to external directory tools, or hand-write found cells."
+    } else if is_eas {
+        "Do not submit yet. Close EAS gap_examples by the tool boundary: domain/URL LIVENESS uses httpx; concrete IP/CIDR PORT uses naabu/masscan first; SERVICE uses nmap -sV only for confirmed open host:port sets. WhatWeb is HTTP(S)-only technology fingerprinting, not a generic service-fingerprint fallback."
     } else {
         "Do not submit yet. Close the pending/error cells first: run the suggested tools, wait for background jobs to land evidence, or mark truly blocked/not_applicable cells with concrete notes."
     };
@@ -940,6 +954,9 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
     if is_enumeration {
         out["worklist_semantics"] = json!("Enumeration assets are narrowed to EAS-confirmed live web roots when that DB truth exists; no EAS live truth keeps the denominator fail-safe instead of passing empty.");
         out["deliverable_contract"] = json!("Submit no findings. DB-derived found cells come from directory_entries/api_endpoints; coverage should only contain checked_empty, blocked, or not_applicable terminal cells the DB cannot derive.");
+    } else if is_eas {
+        out["worklist_semantics"] = json!("EAS cells are split by asset and technique: domain/URL assets need HTTP liveness; concrete IP/CIDR assets need port discovery and service fingerprinting. Port discovery should be batch-first with naabu/masscan; service fingerprinting is nmap -sV on confirmed open ports.");
+        out["deliverable_contract"] = json!("Submit only slim terminal coverage the DB cannot derive. DB-derived found cells come from httpx/naabu/masscan/nmap/whatweb output-store writes; HTTP liveness alone is never PORT or SERVICE-FINGERPRINT.");
     }
     if include_assets {
         let asset_count = snapshot
@@ -968,6 +985,21 @@ fn enumeration_gap_focus(technique: &str) -> &'static str {
             "Derive parameters from observed requests, query strings, forms, and targeted js_extract_apis param_hints."
         }
         _ => "Close this enumeration cell with a real run or an honest terminal note.",
+    }
+}
+
+fn eas_gap_focus(technique: &str) -> &'static str {
+    match technique {
+        "GOLISH-EAS-LIVENESS" => {
+            "Use httpx for domain/URL web liveness; a concrete IP can also become live when port discovery proves an open service."
+        }
+        "GOLISH-EAS-PORT" => {
+            "Use naabu or masscan first for fast concrete IP/CIDR port discovery; nmap is fallback/verification."
+        }
+        "GOLISH-EAS-SERVICE-FINGERPRINT" => {
+            "Inspect confirmed open ports first, then run nmap -sV grouped by shared port set. Use WhatWeb only for confirmed HTTP(S) endpoints, never for DNS/MySQL/SSH/non-HTTP service gaps."
+        }
+        _ => "Close this EAS cell with the matching probe and real evidence, or an honest terminal note.",
     }
 }
 
@@ -1004,6 +1036,18 @@ mod tests {
         assert_eq!(compact["ready_to_submit"], false);
         assert_eq!(compact["cell_summary"]["pending_cells"], 1);
         assert_eq!(compact["gap_examples"][0]["asset"], "example.com");
+        assert!(compact["gap_examples"][0]["eas_focus"]
+            .as_str()
+            .unwrap()
+            .contains("naabu"));
+        assert!(compact["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("WhatWeb is HTTP(S)-only"));
+        assert!(compact["worklist_semantics"]
+            .as_str()
+            .unwrap()
+            .contains("nmap -sV on confirmed open ports"));
         assert!(compact.get("assets").is_none());
     }
 
@@ -1211,6 +1255,42 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("browser-observed JS/API"));
+    }
+
+    #[test]
+    fn stage_worklist_next_surfaces_eas_tool_boundary() {
+        let worklist = stage_worklist_next(
+            json!({
+                "stage": "external_attack_surface",
+                "organization_id": "org-1",
+                "session_id": "sess",
+                "summary": {"total_assets": 1},
+                "assets": [{
+                    "target_id": "target-1",
+                    "value": "118.31.21.136",
+                    "target_type": "ip",
+                    "coverage": [
+                        {"technique": "GOLISH-EAS-SERVICE-FINGERPRINT", "label": "Service", "state": "pending", "suggested_tools": ["nmap"]}
+                    ]
+                }]
+            }),
+            10,
+            &["pending".to_string()],
+        );
+
+        assert_eq!(worklist["items"][0]["suggested_tools"][0], "nmap");
+        assert!(worklist["items"][0]["eas_focus"]
+            .as_str()
+            .unwrap()
+            .contains("WhatWeb only for confirmed HTTP(S)"));
+        assert!(worklist["worklist_contract"]
+            .as_str()
+            .unwrap()
+            .contains("naabu/masscan"));
+        assert!(worklist["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("SERVICE with nmap -sV"));
     }
 
     #[test]

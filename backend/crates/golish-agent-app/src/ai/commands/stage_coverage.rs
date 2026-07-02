@@ -1131,13 +1131,17 @@ fn suggested_tools(technique: &str) -> Vec<String> {
             vec!["recon_lookup_whois".to_string()]
         }
         golish_db::repo::coverage_truth::TECH_EAS_LIVENESS => {
-            vec!["httpx".to_string(), "nmap -sn".to_string()]
+            vec!["httpx".to_string(), "naabu".to_string()]
         }
         golish_db::repo::coverage_truth::TECH_EAS_PORT => {
-            vec!["naabu".to_string(), "nmap".to_string()]
+            vec![
+                "naabu".to_string(),
+                "masscan".to_string(),
+                "nmap".to_string(),
+            ]
         }
         golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP => {
-            vec!["nmap -sV".to_string(), "whatweb".to_string()]
+            vec!["nmap".to_string()]
         }
         golish_db::repo::coverage_truth::TECH_ENUM_JS => {
             vec!["browser_collect_js_api".to_string()]
@@ -1603,10 +1607,7 @@ mod tests {
 
         assert_eq!(cells[1].state, "found");
         assert_eq!(cells[2].state, "pending");
-        assert_eq!(
-            cells[2].suggested_tools,
-            vec!["nmap -sV".to_string(), "whatweb".to_string()]
-        );
+        assert_eq!(cells[2].suggested_tools, vec!["nmap".to_string()]);
     }
 
     #[test]

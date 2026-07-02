@@ -36,24 +36,26 @@ approval.
    call per host. DNS was already done in `target_intel`; reuse inherited DNS
    instead of re-running `dig`.
    If a liveness probe is terminal-empty, mark only LIVENESS checked_empty with
-   evidence; do not automatically claim PORT/SERVICE is complete unless you have
-   run or intentionally closed those applicable cells.
-5. Port discovery — batch concrete host/IP/CIDR targets with `naabu` / `masscan`
-   / `nmap` where the tool accepts list input. With `pentest_run`, put
+   evidence; do not claim domain PORT/SERVICE work because those cells belong to
+   concrete IP/CIDR hosts.
+5. Port discovery — default to `naabu` for fast concrete IP/CIDR port
+   discovery; use `masscan` for larger ranges when appropriate and `nmap` as
+   fallback/verification. Batch targets where the tool accepts list input. With
+   `pentest_run`, put
    `{{input_file}}` in `args` and pass the actual targets via `input_lines`:
    `naabu -list {{input_file}} ...`, `masscan -iL {{input_file}} ...`, or
-   `nmap -iL {{input_file}} ...`. Every IP or host must have a fresh port-scan
-   terminal result. Do not feed URL strings such as `https://1.2.3.4/path` to
-   `nmap -iL`; normalize to concrete host/IP targets or close URL-only
-   PORT/SERVICE cells as not_applicable with a note.
+   `nmap -iL {{input_file}} ...`. Every IP/CIDR-discovered host must have a
+   fresh port-scan terminal result. Do not feed domains or URL strings such as
+   `https://1.2.3.4/path` to `nmap -iL`; normalize to concrete IP targets first.
 6. Service/version fingerprint — prefer `nmap -sV` only for confirmed open
    ports. Group hosts that share the same confirmed port set with
    `-iL {{input_file}}` + `-p <confirmed-open-ports>` instead of launching one
-   foreground command per host/port. Do not run `nmap -sV -iL` over the raw
-   in-scope domain/IP list, unresolved hosts, or assets that have no open-port
-   evidence; close those SERVICE cells as `not_applicable` / `blocked` with a
-   concrete note. Use `whatweb --input-file={{input_file}}` only for HTTP(S)
-   services when its Ruby runtime is ready.
+   foreground command per host/port. Do not run `nmap -sV -iL` over raw
+   domains, unresolved hosts, or assets that have no open-port evidence; close
+   blocked concrete-host SERVICE cells with a concrete note. Use
+   `whatweb --input-file={{input_file}}` only for confirmed HTTP(S)
+   services when its Ruby runtime is ready; never use WhatWeb for DNS, MySQL,
+   SSH, or other non-HTTP service gaps.
    If `whatweb` returns a runtime/SSL/opening error, record the failed attempt,
    do not retry it on the same host, and continue with `nmap -sV` / `httpx`
    evidence. NEVER assume a service from the port number alone (8080 is not

@@ -215,7 +215,9 @@ impl RepairDirective {
             out.push_str(&format!(
                 "\n- SERVICE/nmap: group hosts that share the same open-port set \
                  and run one pentest_run tool_name=nmap with args like \
-                 `-sV -iL {{{{input_file}}}} -p <confirmed-open-ports> -T3 --open` per group. \
+                 `-Pn -sV -iL {{{{input_file}}}} -p <confirmed-open-ports> -T3 --open` per group. \
+                 Use whatweb only for confirmed HTTP(S) endpoints after httpx/port data says the \
+                 service is web; never use whatweb for DNS/MySQL/SSH/non-HTTP service gaps. \
                  Do not include unresolved hosts or assets with no confirmed open ports; close \
                  those cells as not_applicable/blocked with a concrete note instead. Sample targets:\n{}",
                 sample_assets(&services)
@@ -245,14 +247,7 @@ impl RepairDirective {
                         asset: action.asset.clone()?,
                         technique: action.technique.clone()?,
                         reason: action.reason.clone(),
-                        suggested_tools: action
-                            .tool
-                            .iter()
-                            .cloned()
-                            .chain(action.command_hint.iter().filter_map(|hint| {
-                                hint.split_whitespace().next().map(str::to_string)
-                            }))
-                            .collect(),
+                        suggested_tools: normalized_action_tools(action),
                     })
                 })
                 .collect(),
@@ -270,13 +265,13 @@ pub fn refine_submit_needs_fix(ctx: RefinerContext) -> RepairDirective {
             &["background job", "wait_for_background_jobs"],
         ) {
         RepairKind::BackgroundJobs
+    } else if !ctx.coverage_gap_actions.is_empty() || reasons_look_like_coverage(&ctx.reasons) {
+        RepairKind::CoverageGap
     } else if reasons_contain(
         &ctx.reasons,
         &["evidence_ref", "evidence id", "fabricated", "real evidence"],
     ) {
         RepairKind::EvidenceRefs
-    } else if !ctx.coverage_gap_actions.is_empty() || reasons_look_like_coverage(&ctx.reasons) {
-        RepairKind::CoverageGap
     } else {
         RepairKind::Generic
     };
@@ -402,7 +397,7 @@ fn repair_actions_for(ctx: &RefinerContext, repair_kind: RepairKind) -> Vec<Repa
                     let tool = gap
                         .suggested_tools
                         .first()
-                        .cloned()
+                        .and_then(|tool| normalized_tool_hint(tool))
                         .or_else(|| suggested_tool_for(ctx.stage, &gap.technique));
                     RepairAction {
                         asset: Some(gap.asset.clone()),
@@ -581,11 +576,11 @@ fn command_hint_for(stage: StageKind, tool: &str, asset: &str, technique: &str) 
         ),
         (StageKind::ExternalAttackSurface, "nmap", _) => {
             format!(
-                "nmap batch: fingerprint {asset} only if it has confirmed open ports; group sibling SERVICE gaps by shared port set and use args `-sV -iL {{{{input_file}}}} -p <confirmed-open-ports> -T3 --open` plus pentest_run.input_lines. Do not include unresolved/no-open-port assets in the nmap batch."
+                "nmap batch: fingerprint {asset} only if it has confirmed open ports; group sibling SERVICE gaps by shared port set and use args `-Pn -sV -iL {{{{input_file}}}} -p <confirmed-open-ports> -T3 --open` plus pentest_run.input_lines. Use whatweb only for confirmed HTTP(S) endpoints, not generic service gaps. Do not include unresolved/no-open-port assets in the nmap batch."
             )
         }
         (StageKind::ExternalAttackSurface, "whatweb", _) => format!(
-            "whatweb batch: include {asset} with sibling HTTP(S) services when Ruby is ready; otherwise prefer nmap -sV/httpx evidence"
+            "whatweb batch: include {asset} only when the open service is already confirmed HTTP(S) and Ruby is ready; otherwise use nmap -sV/httpx evidence"
         ),
         (StageKind::Enumeration, "browser_collect_js_api", _) => format!(
             "browser_collect_js_api direct call: target_url={asset}, crawl_mode=\"standard\", ai_assist=true; use a bounded recipe only for one same-mode JS closure follow-up"
@@ -634,6 +629,32 @@ fn note_for(stage: StageKind, technique: &str) -> Option<String> {
         ),
         _ => None,
     }
+}
+
+fn normalized_tool_hint(tool: &str) -> Option<String> {
+    let token = tool.split_whitespace().next()?.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
+}
+
+fn normalized_action_tools(action: &RepairAction) -> Vec<String> {
+    let mut tools: Vec<String> = action
+        .tool
+        .iter()
+        .filter_map(|tool| normalized_tool_hint(tool))
+        .chain(
+            action
+                .command_hint
+                .iter()
+                .filter_map(|hint| normalized_tool_hint(hint)),
+        )
+        .collect();
+    tools.sort();
+    tools.dedup();
+    tools
 }
 
 fn sample_assets(assets: &[String]) -> String {
@@ -703,6 +724,35 @@ mod tests {
         assert_eq!(mode.kind, golish_sub_agents::SubmitRepairKind::CoverageGap);
         assert_eq!(mode.coverage_gap_actions.len(), 1);
         assert!(mode.model_instruction().contains("STAGE REFINER DIRECTIVE"));
+    }
+
+    #[test]
+    fn submit_needs_fix_prioritizes_eas_coverage_gap_over_evidence_rewrite() {
+        let d = refine_submit_needs_fix(RefinerContext {
+            stage: StageKind::ExternalAttackSurface,
+            org_id: None,
+            agent_path: "main>stage_run:external_attack_surface>org:o>prober".to_string(),
+            reasons: vec![
+                "every claim must cite a real evidence id".to_string(),
+                "external attack surface incomplete: GOLISH-EAS-SERVICE-FINGERPRINT never attempted".to_string(),
+            ],
+            coverage_gap_actions: vec![CoverageGapAction {
+                asset: "118.31.21.136".to_string(),
+                technique: "GOLISH-EAS-SERVICE-FINGERPRINT".to_string(),
+                reason: "missing_terminal_coverage".to_string(),
+                suggested_tools: vec!["nmap -sV".to_string(), "whatweb".to_string()],
+            }],
+            available_evidence_ids: vec![14091],
+            running_background_jobs: Vec::new(),
+        });
+
+        assert_eq!(d.repair_kind, RepairKind::CoverageGap);
+        assert_eq!(d.actions[0].tool.as_deref(), Some("nmap"));
+        let hint = d.actions[0].command_hint.as_deref().unwrap();
+        assert!(hint.contains("-Pn -sV"));
+        assert!(hint.contains("Use whatweb only for confirmed HTTP(S) endpoints"));
+        let mode = d.to_submit_repair_mode().unwrap();
+        assert_eq!(mode.coverage_gap_actions[0].suggested_tools, vec!["nmap"]);
     }
 
     #[test]

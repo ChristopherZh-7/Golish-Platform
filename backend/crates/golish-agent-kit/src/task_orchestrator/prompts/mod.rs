@@ -85,7 +85,9 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
         let db_truth_action = if spec.kind == StageKind::ExternalAttackSurface {
             "Run the EAS active mapping tools so their data LANDS in the database \
              (stage_run -> prober -> list_attack_surface_seeds/list_in_scope_targets -> \
-             batch-first pentest_run httpx/naabu/nmap/whatweb as appropriate -> \
+             batch-first pentest_run: httpx for domain/URL liveness, naabu/masscan for fast \
+             port discovery, nmap -sV for confirmed open ports, and whatweb only for confirmed \
+             HTTP(S) endpoints -> \
              manage_targets/targets.ports/fingerprints/technique_outcomes)."
         } else {
             "Run the target_intel registry tools so their data LANDS in the database \
@@ -516,12 +518,12 @@ When the task involves testing a target, follow this standard methodology:
 - Provider-backed target intelligence (asset/subdomain/DNS-adjacent facts,
   ASN/CT/OSINT, WHOIS) — ONLY for applicable targets
 - For IP targets, skip domain-only subdomain/CT expectations entirely
-- Port scanning (naabu/nmap) to identify open services
-- **CRITICAL**: Always verify what service is actually running on each port using service fingerprinting (httpx, nmap -sV). NEVER assume a service based on port number alone (e.g., port 8080 is NOT necessarily Tomcat).
+- Port discovery (naabu first, masscan for larger ranges, nmap fallback/verification) to identify open services
+- **CRITICAL**: Always verify what service is actually running on each confirmed open port using nmap -sV. Use httpx for HTTP liveness/metadata and whatweb only after the endpoint is confirmed HTTP(S). NEVER assume a service based on port number alone (e.g., port 8080 is NOT necessarily Tomcat).
 
 ### Phase 2: Service Enumeration
 - HTTP service probing (httpx) for web services
-- Technology fingerprinting (whatweb, wappalyzer) to identify frameworks, CMS, WAF
+- HTTP technology fingerprinting (whatweb, wappalyzer) only for confirmed HTTP(S) services
 - Web crawling (katana) for content discovery
 - JavaScript collection and analysis for SPAs
 
@@ -999,7 +1001,8 @@ mod tests {
             "EAS charter must surface the liveness technique to the agent"
         );
         assert!(charter.contains("auto-adjudicated from the DATABASE"));
-        assert!(charter.contains("pentest_run httpx/naabu/nmap/whatweb"));
+        assert!(charter.contains("naabu/masscan"));
+        assert!(charter.contains("whatweb only for confirmed HTTP(S) endpoints"));
         assert!(charter.contains("SERVICE-FINGERPRINT not_applicable"));
         assert!(charter.contains("HTTP liveness alone"));
         assert!(!charter.contains("Coverage (per in-scope asset)"));
