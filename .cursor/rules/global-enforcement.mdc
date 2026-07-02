@@ -86,7 +86,7 @@ alwaysApply: true
 - **分发**（分发开关开启 / 多 agent）：主控按用户原话触发词在本地 manifest 中匹配专家角色后派发；每个被派 agent 的 `wait_message` 自动附带角色技能全文，角色约束生效，鼓励聚焦本职。
 
 ## 10. 触发词 → 远端分类软映射（17 分组 / 144 skill 对齐）
-> 仅作快速召回提示；最终命中以 §1 Glob 实际结果 + §2 召回流程为准，**不得绕过 §4 五条件直接 must**。本地分组与远端 manifest `category` 字段对齐，新增 / 重命名以 Glob 与 `skills-cache/manifest.json` 实际为准。
+> 仅作快速召回提示；最终命中以 §1 Glob 实际结果 + §2 召回流程为准，**不得绕过 §4 五条件直接 must**。本地分组与远端 manifest `category` 字段对齐，新增 / 重命名以 Glob 与 `skills-cache/manifest.json` 实际为准。其中 `reverse-engineering`（本地 · Web/JS 逆向工作流 bundle）为**本地独有分组**（11 个 slug，仅存在于 `role-skills/reverse-engineering/`，不在 144 远端 skill 内），召回仍按 §1 Glob 实际结果为准。
 
 | 远端 category | 触发词样例 | 候选 slug 提示（非穷举） |
 |---|---|---|
@@ -105,6 +105,7 @@ alwaysApply: true
 | `quality-delivery` | 代码审计 / Git 工作流 / 测试验证 / 性能工程 / 浏览器自动化 / 可观测性 / HarmonyOS Build | `code-audit` · `git-workflow` · `test-engineering` · `perf-engineering` · `browser-automation` · `observability` · `harmonyos-build-quality` |
 | `security-engineering` | DevSecOps / Web 安全 / 移动安全 / 协议分析 | `devsecops` · `web-security` · `mobile-security` · `protocol-analysis` |
 | `reverse-engineering` | 二进制·汇编·ABI 逆向 / 固件·硬件·IoT·工控·macOS·Linux 逆向 / 恶意样本·加密·协议·SDK·脚本·壳·容器·崩溃·调试·内存·Fuzz·VM·Web·Windows 逆向 / 自动化逆向·报告·实验室 | `reverse-engineering` · `binrev` · `asmrev` · `abirev` · `fmtrev` · `fwrev` · `hwrev` · `iotrev` · `icsrev` · `macrev` · `linuxrev` · `mobile-reverse-engineering` · `gamerev` · `malrev` · `cryptrev` · `protrev` · `sdkrev` · `packrev` · `scriptrev` · `cloudrev` · `containerrev` · `crashrev` · `debugrev` · `memrev` · `fuzzrev` · `vmrev` · `webrev` · `winrev` · `diffrev` · `irrev` · `docrev` · `autorev` · `revauto` · `rev-report` · `revlab` |
+| `reverse-engineering`（本地 · Web/JS 逆向工作流 bundle，无对应远端 skill，仅本地 `role-skills/reverse-engineering/`） | 逆向工作流 / 分阶段分析 / 反混淆·解混淆·_0x / 验证码·滑块·点选 / 补环境·browser env / 加密参数·签名·H5ST·a_bogus·mtgsig / 抓包定位 / 样本复现·parity / 证据链排错 | `web-reverse-workflow` · `web-reverse-brainstorming` · `web-reverse-writing-plans` · `web-reverse-executing-plans` · `web-reverse-test-driven-development` · `web-reverse-systematic-debugging` · `web-reverse-master` · `ast-deobfuscation` · `captcha-solver` · `env-patcher` · `param-encryptor` |
 | `programming-languages` | Go / Python / Java / Kotlin / Rust / C++ / .NET·C# / TS·JS / PHP / Ruby / Scala / Elixir / Lua / R / Shell·Bash | `go-development` · `python-development` · `java-jvm-development` · `kotlin-development` · `rust-development` · `cpp-development` · `dotnet-development` · `javascript-typescript-development` · `typescript-development` · `php-development` · `ruby-development` · `scala-development` · `elixir-erlang-development` · `lua-openresty-development` · `r-development` · `shell-scripting` |
 | `coordination` | 主控调度 / 群组协调（项目自定义，无对应远端 skill 时用 controller.md 本地 skill） | `controller`（本地） |
 
@@ -122,5 +123,6 @@ alwaysApply: true
 | 地图开发 | `map-gis-core` → 具体地图 slug（如 `amap-gaode`） → `test-engineering` |
 | 移动端 | 具体平台 slug（如 `android-development`） → `mobile-security` → `test-engineering` |
 | 逆向分析 | `reverse-engineering` → 具体逆向 slug（如 `binrev` / `cryptrev`） → `rev-report` |
+| Web/JS 逆向 | `web-reverse-workflow` → 阶段 slug（`web-reverse-brainstorming` / `-writing-plans` / `-executing-plans` / `-test-driven-development`） → 专项 slug（`ast-deobfuscation` / `captcha-solver` / `param-encryptor` / `env-patcher`） → `web-reverse-systematic-debugging`（排错按需） |
 
 > 组合顺序仅作经验性建议，仍须各环节按 §4 五条件单独判定 must。

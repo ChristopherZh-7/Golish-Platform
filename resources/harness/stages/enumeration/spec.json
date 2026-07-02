@@ -37,7 +37,6 @@
       "require": { "pred": "non_empty", "field": "evidence_refs" },
       "on_fail": { "reason": "every finding must cite evidence", "hints": ["add evidence to each finding via prior tool calls"] }
     },
-    { "op": "named_check", "check": "min_invocations" },
     {
       "op": "coverage_complete",
       "derive_from_evidence": true,

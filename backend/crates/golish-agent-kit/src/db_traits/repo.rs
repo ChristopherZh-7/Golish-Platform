@@ -211,11 +211,12 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// EAS host-aware port/service delegation (design 2026-06-30-eas-domain-port-
+    /// EAS host-aware alias exclusion (design 2026-06-30-eas-domain-port-
     /// delegation): in-scope asset values whose resolved IP is already an
-    /// in-scope IP target, so the EAS gate delegates their PORT /
-    /// SERVICE-FINGERPRINT coverage to that IP and only requires LIVENESS.
-    /// Default empty ⇒ no delegation (every asset keeps its class's full set).
+    /// in-scope IP target, so the EAS gate can treat them as explanatory aliases
+    /// of the direct IP row. Domains without such an IP remain liveness-only;
+    /// PORT/SERVICE applies only to IP/CIDR via `technique_resolver`.
+    /// Default empty ⇒ no alias exclusion.
     async fn eas_port_delegated_assets(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {
         let _ = org_id;
         Ok(Vec::new())
@@ -474,6 +475,20 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(())
     }
 
+    /// Target-intel DNS empty-marker hook: after a passive provider run has real
+    /// evidence, the app layer may refresh unresolved in-scope domain targets and
+    /// persist `(asset, GOLISH-INTEL-DNS, empty)` rows for domains that were actually
+    /// resolved and returned no DNS answers. Default no-op keeps tests/doubles small.
+    async fn mark_target_intel_dns_empty_outcomes(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<usize> {
+        let _ = (organization_id, run_id, evidence_ids);
+        Ok(0)
+    }
+
     /// #5（设计 2026-06-23-source-query-log）：把一条被动情报「源查询」upsert 进
     /// `source_query_log`（命令路径 / enrich 落库点调用）——比 `upsert_technique_outcome`
     /// 更细：每 `(run × source × query × target)` 一行，多源各一行。`target` 由 app 层过
@@ -558,6 +573,24 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> Vec<(String, String, String, i64)> {
         let _ = (organization_id, run_id);
         Vec::new()
+    }
+
+    /// 护栏 4（设计 2026-07-02-gate-capability-ledger Phase 1）：与
+    /// [`Self::technique_outcome_facts`] 相同的投影，但套 stage-run freshness cutoff。
+    /// `since = None` → presence-only（等价旧方法）；`since = Some(cutoff)` → 只投影
+    /// `collected_at >= cutoff` 的行，避免同 session 旧 stage-run 的 technique_outcomes
+    /// 泄漏进本 stage-run 的 coverage gate。
+    ///
+    /// 默认忽略 `since`、委托回 presence-only 方法，让既有 impl / test double 零改动；
+    /// app 层覆写以走 `list_for_run_fresh`。
+    async fn technique_outcome_facts_fresh(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<(String, String, String, i64)> {
+        let _ = since;
+        self.technique_outcome_facts(organization_id, run_id).await
     }
 
     /// #5（source_query_log gate-read）：从 `source_query_log` 读某 `(org, run)` 的
@@ -664,6 +697,24 @@ pub trait DbRepoProvider: Send + Sync {
     ///
     /// Default empty so test doubles need no ledger; the app layer overrides it.
     async fn recent_evidence_ids(&self, session_id: &str, limit: i64) -> anyhow::Result<Vec<i64>> {
+        let _ = (session_id, limit);
+        Ok(Vec::new())
+    }
+
+    /// Recent **real** evidence rows for a chat session, newest first, each carrying
+    /// the context needed to cite it: `evidence_id`, `tool`, `subject`, `technique`,
+    /// `asset`, `outcome`, `kind`, `age_seconds`. Backs the read-only
+    /// `list_recent_evidence` tool so an active-stage worker can map a real ledger id
+    /// to the claim it evidences BEFORE calling `submit_stage_deliverable`, instead of
+    /// dead-looping on "every claim must cite evidence" with no id source (design
+    /// 2026-07-02-eas-worker-evidence). Returns compact JSON objects (mirrors the
+    /// `Vec<Value>` shape of [`Self::in_scope_targets`]). Default empty so test doubles
+    /// need no ledger; the app layer overrides it with a real query.
+    async fn recent_evidence_detailed(
+        &self,
+        session_id: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
         let _ = (session_id, limit);
         Ok(Vec::new())
     }

@@ -200,6 +200,9 @@ fn test_prober_has_active_surface_tools() {
     assert!(has_tool(prober, "list_attack_surface_seeds"));
     // Repair mode relies on this read helper to inspect existing target/evidence detail.
     assert!(has_tool(prober, "query_target_data"));
+    // A (design 2026-07-02-eas-worker-evidence): the real-evidence-id lister so the
+    // prober can cite ids for `every claim must cite evidence` instead of dead-looping.
+    assert!(has_tool(prober, "list_recent_evidence"));
     assert!(has_tool(prober, "submit_stage_deliverable"));
     assert!(has_tool(prober, "search_knowledge_base"));
     assert!(has_tool(prober, "read_knowledge"));

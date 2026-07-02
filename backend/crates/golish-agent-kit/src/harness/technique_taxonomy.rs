@@ -64,12 +64,13 @@ mod tests {
     use crate::harness::resources::load_embedded_stage_spec;
     use crate::harness::types::StageKind;
 
-    const ALL_KINDS: [StageKind; 12] = [
+    const ALL_KINDS: [StageKind; 13] = [
         StageKind::Scoping,
         StageKind::TargetIntel,
         StageKind::ExternalAttackSurface,
         StageKind::Enumeration,
         StageKind::VulnTriage,
+        StageKind::AttackCandidate,
         StageKind::Verification,
         StageKind::AccessValidation,
         StageKind::InternalDiscovery,
@@ -122,14 +123,34 @@ mod tests {
         }
     }
 
+    // Attack-stage split (design 2026-07-02 §3.9): vuln_triage was narrowed from
+    // the original 15 WSTG classes to the 10 FORMULAIC ones (tool+dictionary
+    // batchable, relatively objective verdict). The 5 reasoning-heavy classes
+    // (SSTI/SSRF/LFI/auth-bypass logic/business logic) moved to attack_candidate.
     #[test]
-    fn vuln_triage_15_techniques_all_recognized() {
+    fn vuln_triage_formulaic_techniques_all_recognized() {
         let spec = load_embedded_stage_spec(StageKind::VulnTriage).unwrap();
-        assert_eq!(spec.expected_techniques.len(), 15);
+        assert_eq!(spec.expected_techniques.len(), 10);
         for tech in &spec.expected_techniques {
             assert!(
                 is_recognized(tech),
                 "{tech} must be registered in technique_taxonomy.json"
+            );
+        }
+        // The formulaic n-day class stays; reasoning-heavy classes are gone.
+        assert!(spec
+            .expected_techniques
+            .contains(&"GOLISH-NDAY".to_string()));
+        for moved in [
+            "WSTG-INPV-18", // SSTI
+            "WSTG-INPV-19", // SSRF
+            "WSTG-ATHZ-01", // path traversal / LFI
+            "WSTG-ATHN-04", // auth-bypass logic
+            "WSTG-BUSL",    // business logic
+        ] {
+            assert!(
+                !spec.expected_techniques.contains(&moved.to_string()),
+                "{moved} must move out of vuln_triage to attack_candidate"
             );
         }
     }

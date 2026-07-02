@@ -100,6 +100,17 @@ pub struct TaskOrchestrator {
     /// request consumes this flag; if that stage is a DB-root-bound specialist
     /// stage, its first primary-agent turn is locked to `stage_run`.
     pub(super) force_stage_run_on_resume_once: bool,
+    /// Wave loop (设计 2026-07-02-attack-stage §3.5): current chain-wave counter
+    /// for this run. Advanced by `consume_gate_outcome` when a `verification` PASS
+    /// opens a new attack_candidate wave; fed to `decide_chain_wave` as the fuel/
+    /// depth cap baseline. Starts at 0 (a fresh run has run no waves).
+    pub(super) chain_wave: u32,
+    /// Wave loop · dedupe keys ([`crate::harness::chain_wave::candidate_dedup_key`])
+    /// of every attack hypothesis already tested this run. `decide_chain_wave`
+    /// treats a candidate whose key is already here as "not new", so an
+    /// a↔b oscillation cannot reopen waves forever (only genuine a→b→c progress
+    /// does). Rebuilt fresh per run (resume re-derives via DB dedupe on upsert).
+    pub(super) chain_wave_seen: std::collections::HashSet<String>,
 }
 
 impl TaskOrchestrator {
@@ -125,6 +136,8 @@ impl TaskOrchestrator {
             stage_allowlist: None,
             continuity_adoption: None,
             force_stage_run_on_resume_once: false,
+            chain_wave: 0,
+            chain_wave_seen: std::collections::HashSet::new(),
         }
     }
 

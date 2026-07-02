@@ -190,12 +190,15 @@ mod tests {
     fn enter_post_exploit_has_no_phase_entry_approval() {
         let map = load_embedded_phase_map().unwrap();
         // vuln 全过 → 跨入 post_exploit；post_exploit 无 entry_approval.
+        // vuln phase = [vuln_triage, attack_candidate, verification]（设计 2026-07-02），
+        // 三个成员全 PASS 才算大阶段跑完。
         let gp = passed(&[
             StageKind::Scoping,
             StageKind::TargetIntel,
             StageKind::ExternalAttackSurface,
             StageKind::Enumeration,
             StageKind::VulnTriage,
+            StageKind::AttackCandidate,
             StageKind::Verification,
         ]);
         let step = decide_phase_step(&map, StageKind::Verification, &gp);

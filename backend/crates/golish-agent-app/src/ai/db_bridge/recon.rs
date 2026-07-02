@@ -710,13 +710,14 @@ impl GolishDbRepoProvider {
             .collect())
     }
 
-    /// EAS host-aware port/service delegation (设计 2026-06-30-eas-domain-port-
+    /// EAS host-aware alias exclusion (设计 2026-06-30-eas-domain-port-
     /// delegation): in-scope asset values whose resolved IP is already an
     /// in-scope IP target. Reuses the recon targets port (mirrors
     /// [`Self::in_scope_typed_assets_impl`]; no new SQL). org_id narrowing is
     /// deferred (chat sessions carry no org binding) — a superset is harmless:
-    /// the gate only drops PORT/SERVICE for assets that are ALSO on its
-    /// org-narrowed asset axis.
+    /// the gate only excludes aliases that are ALSO on its org-narrowed asset
+    /// axis. Domains without such an IP remain liveness-only; PORT/SERVICE
+    /// applies only to concrete IP/CIDR hosts.
     pub(super) async fn eas_port_delegated_assets_impl(
         &self,
         _org_id: Option<Uuid>,

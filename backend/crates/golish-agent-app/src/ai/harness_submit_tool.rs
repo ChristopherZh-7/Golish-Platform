@@ -26,8 +26,8 @@ use uuid::Uuid;
 
 use golish_agent_kit::harness::org_gate::extract_pass_token;
 use golish_agent_kit::harness::{
-    load_embedded_stage_spec, validate_stage_gate_with_context, EvidenceFact, EvidenceOutcome,
-    GateContext, GateContextBuilder, SourceQueryFact, StageDeliverable, StageKind,
+    load_embedded_stage_spec, validate_stage_gate_with_context, AttackCandidate, EvidenceFact,
+    EvidenceOutcome, GateContext, GateContextBuilder, SourceQueryFact, StageDeliverable, StageKind,
 };
 use golish_core::Tool;
 
@@ -47,6 +47,24 @@ pub trait EvidenceLedgerQuery: Send + Sync {
     async fn recent_evidence_ids(&self, session_id: &str, limit: i64) -> Result<Vec<i64>> {
         let _ = (session_id, limit);
         Ok(Vec::new())
+    }
+
+    /// P5.1 (设计 2026-07-02-attack-stage §3.7 · candidate persistence): upsert the
+    /// deliverable's attack hypotheses into `attack_candidates` so the chain-wave
+    /// controller can dedupe across waves and follow a→b→c lineage
+    /// (`parent_finding_id`). This is a **deterministic handler write** (the tool
+    /// captured a structured `candidates[]`, not a model prose claim), org-isolated
+    /// (I2), idempotent by `(operation_id, target, hypothesis_hash)`. Returns the
+    /// number persisted. Default no-op (test doubles / no-DB); a write failure is
+    /// non-fatal — the impl logs a warn and returns what it managed to persist.
+    async fn persist_attack_candidates(
+        &self,
+        operation_id: &str,
+        organization_id: Option<Uuid>,
+        candidates: &[AttackCandidate],
+    ) -> usize {
+        let _ = (operation_id, organization_id, candidates);
+        0
     }
 
     /// Map real evidence ids to their ledger kind (`detail->>'kind'`). The submit
@@ -133,11 +151,23 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         Vec::new()
     }
 
-    /// EAS host-aware alias delegation (设计 2026-06-30-eas-domain-port-delegation):
+    /// EAS host-aware alias exclusion (设计 2026-06-30-eas-domain-port-delegation):
     /// in-scope asset values whose resolved IP is already an in-scope IP target,
-    /// so the submit preview drops their EAS coverage to match the stage-close
-    /// gate (org_gate) and the read-only precheck. Default empty ⇒ no delegation.
+    /// so the submit preview treats them as explanatory aliases of the IP row.
+    /// Domains without a concrete IP remain liveness-only; PORT/SERVICE applies
+    /// only to IP/CIDR via `technique_resolver`. Default empty ⇒ no exclusion.
     async fn eas_port_delegated_assets(&self, org_id: Option<Uuid>) -> Vec<String> {
+        let _ = org_id;
+        Vec::new()
+    }
+
+    /// Enumeration IP-web coverage (设计 2026-07-01 §5.3): in-scope IP/CIDR targets
+    /// EAS/httpx proved are HTTP services (`targets.http_status` non-null). Feeds the
+    /// submit preview's `web_capable_assets` so the preview matches the stage-close
+    /// gate (org_gate) for enumeration IP-web roots — otherwise a web-capable IP
+    /// passes the preview (dropped as not_applicable) but blocks at close. Default
+    /// empty ⇒ preview keeps bare-IP exclusion (prior behaviour).
+    async fn enumeration_web_capable_assets(&self, org_id: Option<Uuid>) -> Vec<String> {
         let _ = org_id;
         Vec::new()
     }
@@ -262,6 +292,47 @@ fn backfill_required_checks_done_from_kinds(
         }
     }
     added
+}
+
+fn canonicalize_model_submit_args(mut args: Value) -> Value {
+    let Some(obj) = args.as_object_mut() else {
+        return args;
+    };
+
+    for key in [
+        "evidence_refs",
+        "findings",
+        "coverage",
+        "skipped_checks",
+        "required_checks_done",
+    ] {
+        if obj.get(key).is_some_and(Value::is_null) {
+            obj.remove(key);
+        }
+    }
+
+    if let Some(claims) = obj.get_mut("claims").and_then(Value::as_array_mut) {
+        for claim in claims {
+            let Some(claim_obj) = claim.as_object_mut() else {
+                continue;
+            };
+            for key in ["evidence_ids", "technique"] {
+                if claim_obj.get(key).is_some_and(Value::is_null) {
+                    claim_obj.remove(key);
+                }
+            }
+        }
+    }
+
+    // Scoping is a scope-decision stage, not a skipped-tool stage. Older prompts
+    // taught models to encode "subsidiaries excluded" as `skipped_checks`, which
+    // leaks the internal SkipReason enum and causes parse-time retry loops. The
+    // canonical scoping deliverable carries that fact in the scope claim summary.
+    if obj.get("stage_id").and_then(Value::as_str) == Some(StageKind::Scoping.as_str()) {
+        obj.remove("skipped_checks");
+    }
+
+    args
 }
 
 /// Tool that captures a structured [`StageDeliverable`] into the bridge
@@ -446,6 +517,45 @@ impl SubmitStageDeliverableTool {
         repo.recent_evidence_ids(sid, 25).await.unwrap_or_default()
     }
 
+    /// P5.1 · persist the deliverable's attack candidates (if any) to the DB via
+    /// the evidence-repo seam. Requires a bound operation id (the persistence key)
+    /// + the repo handle; otherwise a no-op. Non-fatal — persistence failure only
+    /// logs (the deliverable itself is still captured by the gate path).
+    async fn persist_candidates_if_any(&self, deliverable: &StageDeliverable) {
+        if deliverable.candidates.is_empty() {
+            return;
+        }
+        let Some(repo) = self.evidence_repo.as_ref() else {
+            return;
+        };
+        let operation_id = match &self.operation_id_source {
+            Some(src) => (*src.read().await).map(|id| id.to_string()),
+            None => None,
+        };
+        let Some(operation_id) = operation_id else {
+            tracing::debug!(
+                target: "harness::submit_tool",
+                candidates = deliverable.candidates.len(),
+                "attack candidates not persisted: no bound operation id"
+            );
+            return;
+        };
+        let org_id = match &self.org_id_source {
+            Some(src) => *src.read().await,
+            None => None,
+        };
+        let stored = repo
+            .persist_attack_candidates(&operation_id, org_id, &deliverable.candidates)
+            .await;
+        tracing::info!(
+            target: "harness::submit_tool",
+            operation_id = %operation_id,
+            submitted = deliverable.candidates.len(),
+            stored,
+            "attack candidates persisted"
+        );
+    }
+
     /// Cross-check the deliverable's `evidence_refs` against the real ledger.
     /// Returns the cited ids that do NOT exist (fabricated), in cited order.
     /// An infra error is treated as "can't prove fabrication" → empty (the
@@ -581,6 +691,7 @@ impl SubmitStageDeliverableTool {
         let mut typed_assets: Vec<(String, String)> = Vec::new();
         let mut expected_techniques: Option<Vec<String>> = None;
         let mut source_queries: Vec<SourceQueryFact> = Vec::new();
+        let mut web_capable_assets: Vec<String> = Vec::new();
         if let Some(org_id) = org_id {
             let assets = match wave_cutoff {
                 Some(cutoff) => {
@@ -647,10 +758,24 @@ impl SubmitStageDeliverableTool {
                 facts.extend(projected);
                 source_queries = repo.source_query_facts(org_id, sid).await;
             }
+            // (5) Enumeration IP-web coverage (设计 2026-07-01 §5.3): mirror the
+            //     stage-close gate (org_gate) — when the enumeration spec opts into
+            //     enum_ip_web_coverage, feed EAS/httpx-proven IP web roots so the
+            //     preview holds a web-capable IP to the four content axes instead
+            //     of dropping it as not_applicable (which would preview-PASS then
+            //     close-BLOCK). Non-enumeration / flag off ⇒ stays empty = None.
+            if stage == StageKind::Enumeration
+                && load_embedded_stage_spec(stage)
+                    .map(|s| s.enum_ip_web_coverage)
+                    .unwrap_or(false)
+            {
+                web_capable_assets = repo.enumeration_web_capable_assets(Some(org_id)).await;
+            }
             // 方案 A (设计 2026-06-30-eas-domain-port-delegation): EAS host-aware
-            // alias delegation — drop assets whose resolved IP is already an
+            // alias exclusion — drop assets whose resolved IP is already an
             // in-scope IP target so the submit preview matches the stage-close
-            // gate (org_gate) and the read-only precheck.
+            // gate (org_gate) and the read-only precheck. Orphan domains stay in
+            // the axis but only LIVENESS applies.
             if stage == StageKind::ExternalAttackSurface && !in_scope_assets.is_empty() {
                 let delegated: std::collections::HashSet<String> = repo
                     .eas_port_delegated_assets(Some(org_id))
@@ -667,6 +792,7 @@ impl SubmitStageDeliverableTool {
         GateContextBuilder::new()
             .in_scope_assets(in_scope_assets)
             .typed_assets(typed_assets)
+            .web_capable_assets(web_capable_assets)
             .extend_evidence_facts(facts)
             .extend_source_queries(source_queries)
             .expected_techniques(expected_techniques)
@@ -684,8 +810,10 @@ impl Tool for SubmitStageDeliverableTool {
         "Submit the structured StageDeliverable for the CURRENT operation stage. \
          Call this once the stage's required tools have actually run. Pass the real \
          structured data as arguments (NOT a          prose description, NOT a JSON string in \
-         text) — stage_id, claims, evidence_refs, and \
-         findings (stage_run_id is assigned by the server, do not pass it). The \
+         text) — stage_id and claims. Omit empty optional fields; the server \
+         canonicalizes evidence_refs, findings, coverage, skipped_checks, and \
+         required_checks_done to empty arrays when absent. stage_run_id is assigned \
+         by the server, do not pass it. The \
          deterministic gate validates it against the evidence ledger to \
          advance the stage. This is the ONLY way to complete a stage. Do NOT hunt for \
          evidence ids in raw tool output — if your evidence_ids are missing or wrong, \
@@ -708,27 +836,27 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "claims": {
                     "type": "array",
-                    "description": "Observations. EVERY claim must cite real evidence_ids (also include them in top-level evidence_refs). When a claim evidences one of the stage's expected techniques, set `technique` to that REGISTERED id (e.g. GOLISH-INTEL-DNS, WSTG-INPV-05) and use the SAME `subject` string as the matching coverage cell's `asset` — technique-tagged claims corroborate 'found' coverage cells. Unregistered technique ids are rejected. Enumeration claim kinds should summarize content mapping, e.g. web_root_enumerated, directories_discovered, api_endpoints_discovered, params_discovered, js_candidates_reviewed.",
+                    "description": "Observations. Include evidence_ids only when the claim is backed by real evidence-ledger ids; omit evidence_ids for evidence-free stages such as scoping. When a claim evidences one of the stage's expected techniques, set `technique` to that REGISTERED id (e.g. GOLISH-INTEL-DNS, WSTG-INPV-05) and use the SAME `subject` string as the matching coverage cell's `asset` — technique-tagged claims corroborate 'found' coverage cells. Unregistered technique ids are rejected. Enumeration claim kinds should summarize content mapping, e.g. web_root_enumerated, directories_discovered, api_endpoints_discovered, params_discovered, js_candidates_reviewed.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "kind": { "type": "string", "description": "Observation kind, e.g. \"dns_a_record\", \"subdomain\", \"discovery\"." },
                             "subject": { "type": "string", "description": "What the claim is about (host / URL / asset). Match the coverage cell's `asset` when technique-tagged." },
                             "summary": { "type": "string", "description": "One-line human-readable summary." },
-                            "evidence_ids": { "type": "array", "items": { "type": "integer" }, "description": "Real evidence-ledger ids backing this claim. Never use placeholder ids like 1,2,3." },
+                            "evidence_ids": { "type": "array", "items": { "type": "integer" }, "description": "Optional real evidence-ledger ids backing this claim. Omit for evidence-free claims (for example scoping scope_confirmed). Never use placeholder ids like 1,2,3." },
                             "technique": { "type": "string", "description": "Optional REGISTERED technique id this claim evidences (omit when none applies)." }
                         },
-                        "required": ["kind", "subject", "summary", "evidence_ids"]
+                        "required": ["kind", "subject", "summary"]
                     }
                 },
                 "evidence_refs": {
                     "type": "array",
-                    "description": "All evidence-ledger ids cited by claims/findings/coverage (>= the sum of minimum tool invocations). Use the REAL ids returned by your tool calls — never placeholders.",
+                    "description": "Optional top-level list of all evidence-ledger ids cited by claims/findings/coverage. Omit when nothing cites evidence (for example scoping); the server defaults this to []. Use REAL ids only — never placeholders.",
                     "items": { "type": "integer" }
                 },
                 "findings": {
                     "type": "array",
-                    "description": "Security findings (vulnerabilities). ONLY for vulnerability stages (vuln_triage / verification). Recon / discovery stages (scoping, target_intel, external_attack_surface, enumeration) take NO findings: submit [] and record discoveries (hosts / services / exposures) as claims + coverage cells instead — any findings sent in those stages are DROPPED. Every finding must cite evidence_refs.",
+                    "description": "Optional security findings (vulnerabilities). ONLY for vulnerability stages (vuln_triage / verification). Recon / discovery stages (scoping, target_intel, external_attack_surface, enumeration) take NO findings: omit findings or submit [] and record discoveries (hosts / services / exposures) as claims + coverage cells instead — any findings sent in those stages are DROPPED. Every vulnerability finding must cite evidence_refs.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -763,7 +891,7 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "skipped_checks": {
                     "type": "array",
-                    "description": "Deliberately skipped checks. \"checked-empty\" is NOT \"unchecked\". As an agent you normally use reason.kind = \"other\" with an explanation AND an evidence_ref pointing to the real audit-log error line; the other reason kinds are auto-filled by tooling.",
+                    "description": "Optional deliberately skipped required checks. Omit unless a required check actually could not run. Scope decisions such as excluding subsidiaries in scoping belong in the scope claim summary, not skipped_checks. \"checked-empty\" is NOT \"unchecked\". As an agent, avoid kind=\"other\" unless you have a real evidence_ref pointing to an audit-log error line.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -789,15 +917,16 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "required_checks_done": {
                     "type": "array",
-                    "description": "Names of the required tools you actually ran (e.g. dns_resolve, http_probe).",
+                    "description": "Optional names of required tools you actually ran (e.g. dns_resolve, http_probe). Omit when the active stage declares no required tool invocations; the server defaults this to [].",
                     "items": { "type": "string" }
                 }
             },
-            "required": ["stage_id", "claims", "evidence_refs", "findings"]
+            "required": ["stage_id", "claims"]
         })
     }
 
     async fn execute(&self, args: Value, _workspace: &Path) -> Result<Value> {
+        let args = canonicalize_model_submit_args(args);
         // Force structured emission: parse the args into the canonical type. A
         // prose / malformed submission is rejected with actionable feedback so
         // the model retries with real fields (immediate-feedback = option 甲).
@@ -808,7 +937,8 @@ impl Tool for SubmitStageDeliverableTool {
                     "status": "rejected",
                     "reason": format!(
                         "could not parse StageDeliverable: {e}. Pass the structured fields \
-                         (stage_id, claims[], evidence_refs[], findings[]) as tool \
+                         (stage_id, claims[], plus optional evidence_refs[], findings[], \
+                         coverage[], skipped_checks[], required_checks_done[]) as tool \
                          arguments — do not describe the JSON in prose."
                     ),
                 }));
@@ -824,6 +954,14 @@ impl Tool for SubmitStageDeliverableTool {
         // gate logs). The authoritative per-stage-run id used for evidence isolation /
         // persistence is the harness's own, sourced separately.
         deliverable.stage_run_id = uuid::Uuid::new_v4();
+
+        // P5.1 · persist attack hypotheses (attack_candidate / verification stages)
+        // to `attack_candidates` so the chain-wave controller can dedupe across
+        // waves + follow a→b→c lineage. Deterministic handler write (the tool
+        // captured structured candidates, not model prose), idempotent by hash,
+        // org-isolated. No-op unless the deliverable actually carries candidates
+        // and an operation id is bound (⇒ zero change for the recon stages).
+        self.persist_candidates_if_any(&deliverable).await;
 
         let active = *self.active_stage.read().await;
         if let Some(kind) = active {
@@ -1053,6 +1191,129 @@ mod tests {
         assert!(params.contains("api_endpoints"));
     }
 
+    #[test]
+    fn parameters_make_empty_default_fields_optional() {
+        let (stage, sink) = handles();
+        let tool = SubmitStageDeliverableTool::new(stage, sink);
+        let p = tool.parameters();
+
+        assert_eq!(
+            p["required"],
+            json!(["stage_id", "claims"]),
+            "submit schema should only require business-bearing fields"
+        );
+        assert_eq!(
+            p["properties"]["claims"]["items"]["required"],
+            json!(["kind", "subject", "summary"]),
+            "claim evidence_ids is optional for evidence-free stages such as scoping"
+        );
+        let skipped_desc = p["properties"]["skipped_checks"]["description"]
+            .as_str()
+            .expect("skipped_checks description");
+        assert!(
+            skipped_desc.contains("Scope decisions"),
+            "schema should discourage using skipped_checks for normal scope exclusions: {skipped_desc}"
+        );
+    }
+
+    /// P5.1 · a submitted deliverable carrying attack candidates persists them
+    /// through the evidence-repo seam (with a bound operation id). Recon stages
+    /// (no candidates) never touch the store.
+    #[tokio::test]
+    async fn submit_persists_attack_candidates_when_present() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CandidateStoreMock {
+            persisted: Arc<AtomicUsize>,
+        }
+        #[async_trait::async_trait]
+        impl EvidenceLedgerQuery for CandidateStoreMock {
+            async fn existing_evidence_ids(&self, _ids: &[i64]) -> Result<HashSet<i64>> {
+                Ok(HashSet::new())
+            }
+            async fn persist_attack_candidates(
+                &self,
+                _operation_id: &str,
+                _organization_id: Option<Uuid>,
+                candidates: &[AttackCandidate],
+            ) -> usize {
+                self.persisted.fetch_add(candidates.len(), Ordering::SeqCst);
+                candidates.len()
+            }
+        }
+
+        let (stage, sink) = handles();
+        let persisted = Arc::new(AtomicUsize::new(0));
+        let op_src: Arc<RwLock<Option<Uuid>>> = Arc::new(RwLock::new(Some(Uuid::new_v4())));
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(CandidateStoreMock {
+                persisted: Arc::clone(&persisted),
+            }))
+            .with_operation_id_source(op_src);
+
+        let args = json!({
+            "stage_id": "attack_candidate",
+            "stage_run_id": "3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
+            "claims": [],
+            "evidence_refs": [],
+            "findings": [],
+            "candidates": [{
+                "candidate_id": "3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
+                "target": "api.example.com",
+                "hypothesis": "IDOR on /orders/{id}",
+                "rationale": "sequential ids observed"
+            }]
+        });
+        let _ = tool.execute(args, Path::new(".")).await;
+        assert_eq!(
+            persisted.load(Ordering::SeqCst),
+            1,
+            "one candidate must be persisted through the store seam"
+        );
+    }
+
+    /// A deliverable with no candidates (e.g. a recon stage) must not invoke the
+    /// candidate store at all — zero churn for the four info-gathering stages.
+    #[tokio::test]
+    async fn submit_without_candidates_skips_the_store() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingStore {
+            calls: Arc<AtomicUsize>,
+        }
+        #[async_trait::async_trait]
+        impl EvidenceLedgerQuery for CountingStore {
+            async fn existing_evidence_ids(&self, _ids: &[i64]) -> Result<HashSet<i64>> {
+                Ok(HashSet::new())
+            }
+            async fn persist_attack_candidates(
+                &self,
+                _operation_id: &str,
+                _organization_id: Option<Uuid>,
+                _candidates: &[AttackCandidate],
+            ) -> usize {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                0
+            }
+        }
+
+        let (stage, sink) = handles();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let op_src: Arc<RwLock<Option<Uuid>>> = Arc::new(RwLock::new(Some(Uuid::new_v4())));
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(CountingStore {
+                calls: Arc::clone(&calls),
+            }))
+            .with_operation_id_source(op_src);
+
+        let _ = tool.execute(valid_scoping_args(), Path::new(".")).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "no candidates ⇒ the candidate store is never called"
+        );
+    }
+
     // §8.1 — prose / malformed args cannot be "described": they fail to parse
     // into StageDeliverable and are rejected with actionable feedback. This is
     // the core property the tool exists to enforce.
@@ -1110,6 +1371,101 @@ mod tests {
 
         let captured = sink.read().await.clone().expect("deliverable captured");
         assert!(captured.contains("\"stage_id\":\"scoping\""));
+    }
+
+    #[tokio::test]
+    async fn accepts_minimal_evidence_free_scoping_deliverable() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Scoping);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
+
+        let out = tool
+            .execute(
+                json!({
+                    "stage_id": "scoping",
+                    "claims": [
+                        {
+                            "kind": "scope_confirmed",
+                            "subject": "1f91fbe0-fcc8-4e3b-848a-0c18cd3fa8de",
+                            "summary": "Engagement scope confirmed: 杭州默安科技有限公司 only; subsidiaries are out of scope."
+                        },
+                        {
+                            "kind": "scope_human_approved",
+                            "subject": "1f91fbe0-fcc8-4e3b-848a-0c18cd3fa8de",
+                            "summary": "Human approved the single-root scope."
+                        }
+                    ]
+                }),
+                Path::new("/tmp"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["status"].as_str(), Some("accepted"), "{out:?}");
+        let captured = sink.read().await.clone().expect("deliverable captured");
+        let parsed: StageDeliverable = serde_json::from_str(&captured).expect("parse stashed");
+        assert_eq!(parsed.claims.len(), 2);
+        assert!(parsed
+            .claims
+            .iter()
+            .all(|claim| claim.evidence_ids.is_empty()));
+        assert!(parsed.evidence_refs.is_empty());
+        assert!(parsed.findings.is_empty());
+        assert!(parsed.coverage.is_empty());
+        assert!(parsed.skipped_checks.is_empty());
+        assert!(parsed.required_checks_done.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scoping_canonicalizes_legacy_malformed_empty_fields() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Scoping);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
+
+        let out = tool
+            .execute(
+                json!({
+                    "stage_id": "scoping",
+                    "claims": [
+                        {
+                            "kind": "scope_confirmed",
+                            "subject": "1f91fbe0-fcc8-4e3b-848a-0c18cd3fa8de",
+                            "summary": "Engagement scope confirmed: 杭州默安科技有限公司 only; subsidiaries are out of scope.",
+                            "evidence_ids": null,
+                            "technique": null
+                        },
+                        {
+                            "kind": "scope_human_approved",
+                            "subject": "1f91fbe0-fcc8-4e3b-848a-0c18cd3fa8de",
+                            "summary": "Human approved the single-root scope.",
+                            "evidence_ids": null,
+                            "technique": null
+                        }
+                    ],
+                    "evidence_refs": null,
+                    "findings": null,
+                    "coverage": null,
+                    "required_checks_done": null,
+                    "skipped_checks": [{
+                        "check": "recon_discover_subsidiaries",
+                        "reason": {
+                            "kind": "user_requested",
+                            "explanation": "User excluded subsidiaries",
+                            "user_msg_id": null
+                        }
+                    }]
+                }),
+                Path::new("/tmp"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["status"].as_str(), Some("accepted"), "{out:?}");
+        let captured = sink.read().await.clone().expect("deliverable captured");
+        let parsed: StageDeliverable = serde_json::from_str(&captured).expect("parse stashed");
+        assert!(parsed.skipped_checks.is_empty());
+        assert!(parsed.evidence_refs.is_empty());
+        assert!(parsed.claims.iter().all(|claim| claim.technique.is_none()));
     }
 
     #[tokio::test]
@@ -1345,6 +1701,7 @@ mod tests {
             findings: vec![],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         };
         let added = backfill_required_checks_done_from_kinds(
             &mut deliverable,
@@ -1386,6 +1743,7 @@ mod tests {
             findings: vec![],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         };
         let added = backfill_required_checks_done_from_kinds(
             &mut deliverable,
@@ -1841,6 +2199,55 @@ mod tests {
         assert!(
             on.expected_techniques.is_some(),
             "dynamic expected_techniques fed when flag on"
+        );
+    }
+
+    // 设计 2026-07-01 §5.3 · the submit preview must feed EAS/httpx-proven IP web
+    // roots into `web_capable_assets` for enumeration (spec opts into
+    // enum_ip_web_coverage), so a web-capable IP is held to the four content axes
+    // by the preview instead of previewing PASS then blocking at stage-close.
+    struct WebCapableMock {
+        web_capable: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl EvidenceLedgerQuery for WebCapableMock {
+        async fn existing_evidence_ids(&self, ids: &[i64]) -> Result<HashSet<i64>> {
+            Ok(ids.iter().copied().collect())
+        }
+        async fn in_scope_assets(&self, _org: Option<uuid::Uuid>) -> Vec<String> {
+            vec!["1.2.3.4".to_string()]
+        }
+        async fn enumeration_web_capable_assets(&self, _org: Option<uuid::Uuid>) -> Vec<String> {
+            self.web_capable.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_preview_feeds_enumeration_web_capable_ip_roots() {
+        let (stage, sink) = handles();
+        let repo = WebCapableMock {
+            web_capable: vec!["1.2.3.4".to_string()],
+        };
+        let org_src = Arc::new(RwLock::new(Some(uuid::Uuid::new_v4())));
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(repo))
+            .with_session_id("pentest-chat-1")
+            .with_org_id_source(org_src);
+
+        // Enumeration spec opts into enum_ip_web_coverage ⇒ the proven IP web root
+        // is fed into web_capable_assets (matches org_gate / stage-close口径).
+        let en = tool.gate_context(StageKind::Enumeration, true).await;
+        let web = en
+            .web_capable_assets
+            .expect("web_capable_assets fed for enumeration");
+        assert!(web.contains("1.2.3.4"));
+
+        // Non-enumeration stage ⇒ never injected (stays None = prior behaviour).
+        let ti = tool.gate_context(StageKind::TargetIntel, true).await;
+        assert!(
+            ti.web_capable_assets.is_none(),
+            "web_capable only injected for enumeration"
         );
     }
 

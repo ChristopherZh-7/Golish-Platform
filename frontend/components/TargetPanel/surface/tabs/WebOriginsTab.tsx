@@ -2,10 +2,21 @@ import { Braces, Code2, FileCode2, Globe, Link2, ShieldCheck } from "lucide-reac
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { EmptyInline, Metric, Section } from "../SurfaceParts";
-import type { NetworkEndpointVM, WebOriginVM } from "../surfaceHierarchy";
+import type { NetworkEndpointVM, WebOriginContentRef, WebOriginVM } from "../surfaceHierarchy";
+import { FingerprintList } from "./FingerprintList";
 import { SitemapTab } from "./SitemapTab";
 
-type OriginDetailTab = "overview" | "sitemap" | "apis" | "js" | "params" | "evidence";
+type OriginDetailTab =
+  | "overview"
+  | "sitemap"
+  | "apis"
+  | "js"
+  | "params"
+  | "fingerprints"
+  | "evidence";
+
+const INFERRED_CONFIDENCE_TITLE =
+  "Inferred from URL / target metadata. Backend does not yet provide web_origin_id.";
 
 const DETAIL_TABS: Array<{ id: OriginDetailTab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -13,8 +24,109 @@ const DETAIL_TABS: Array<{ id: OriginDetailTab; label: string }> = [
   { id: "apis", label: "APIs" },
   { id: "js", label: "JS" },
   { id: "params", label: "Params" },
+  { id: "fingerprints", label: "Fingerprints" },
   { id: "evidence", label: "Evidence" },
 ];
+
+const CONTENT_COUNT_SOURCE_LABEL: Record<WebOriginVM["contentCountSource"], string> = {
+  backend_content_counts: "backend_content_counts",
+  frontend_content_inferred: "frontend_content_inferred",
+};
+
+const IDENTITY_SOURCE_LABEL: Record<WebOriginVM["source"], string> = {
+  backend_identity: "backend_identity",
+  frontend_inferred: "frontend_inferred",
+};
+
+const BACKEND_CONTENT_NOT_LOADED_HINT =
+  "Backend reports legacy content for this origin, but row-level content is not loaded in this view yet.";
+const BACKEND_CONTENT_MORE_THAN_ROWS_HINT =
+  "Backend reports legacy content for this origin, but row-level content is still loaded from the legacy frontend data sources.";
+const BACKEND_REFS_LABEL =
+  "From backend content index (lightweight refs — full request/response rows are not loaded in this view).";
+
+function refsOfKind(origin: WebOriginVM, kinds: string[]): WebOriginContentRef[] {
+  return origin.contentRefs.filter((ref) => kinds.includes(ref.kind));
+}
+
+function frontendRowTotal(origin: WebOriginVM): number {
+  return (
+    origin.urls.length +
+    origin.apiEndpoints.length +
+    origin.jsResources.length +
+    origin.params.length +
+    origin.directoryEntries.length +
+    origin.evidence.length
+  );
+}
+
+function backendContentTotal(origin: WebOriginVM): number {
+  const { counts } = origin;
+  return (
+    counts.urls +
+    counts.apis +
+    counts.js +
+    counts.params +
+    counts.directoryEntries +
+    counts.evidence
+  );
+}
+
+/**
+ * Which "backend reports more than we render" hint (if any) applies to a
+ * backend-counted origin. Returns `null` for frontend-counted origins or when
+ * the loaded rows already match the backend counts.
+ */
+function originContentHint(origin: WebOriginVM): string | null {
+  if (origin.contentCountSource !== "backend_content_counts") return null;
+  if (backendContentTotal(origin) <= 0) return null;
+  if (frontendRowTotal(origin) === 0) {
+    // When we have lightweight refs we render them instead of a dead-end hint.
+    return origin.contentRefs.length > 0 ? null : BACKEND_CONTENT_NOT_LOADED_HINT;
+  }
+  if (backendContentTotal(origin) > frontendRowTotal(origin)) {
+    return BACKEND_CONTENT_MORE_THAN_ROWS_HINT;
+  }
+  return null;
+}
+
+function BackendRefList({ refs, title }: { refs: WebOriginContentRef[]; title: string }) {
+  return (
+    <Section title={title} subtitle={`${refs.length} ref(s)`}>
+      <p className="mb-1.5 text-[10px] text-muted-foreground">{BACKEND_REFS_LABEL}</p>
+      <div className="overflow-hidden rounded border border-border/25">
+        <table className="w-full text-[11px]">
+          <thead className="border-b border-border/25 bg-muted/10 text-muted-foreground">
+            <tr>
+              <th className="px-2 py-1.5 text-left font-medium">Kind</th>
+              <th className="px-2 py-1.5 text-left font-medium">Method</th>
+              <th className="px-2 py-1.5 text-left font-medium">Status</th>
+              <th className="px-2 py-1.5 text-left font-medium">URL</th>
+              <th className="px-2 py-1.5 text-left font-medium">Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            {refs.map((ref) => (
+              <tr key={`${ref.kind}:${ref.id}`} className="border-b border-border/15 last:border-0">
+                <td className="px-2 py-2 font-mono text-accent/80">{ref.kind}</td>
+                <td className="px-2 py-2 font-mono text-blue-300">{ref.method ?? "-"}</td>
+                <td className="px-2 py-2 font-mono text-muted-foreground">
+                  {ref.statusCode ?? "-"}
+                </td>
+                <td className="min-w-0 px-2 py-2">
+                  <span className="block truncate font-mono text-foreground/80" title={ref.url}>
+                    {ref.url}
+                  </span>
+                </td>
+                <td className="px-2 py-2 text-muted-foreground">{ref.source ?? "-"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Section>
+  );
+}
 
 function endpointLabel(endpoint: NetworkEndpointVM): string {
   return `${endpoint.ip || "unknown"}:${endpoint.port}/${endpoint.transport}`;
@@ -24,8 +136,12 @@ function isNetworkEndpoint(value: NetworkEndpointVM | undefined): value is Netwo
   return Boolean(value);
 }
 
-function CountCell({ value }: { value: number }) {
-  return <span className="font-mono text-[10px] tabular-nums text-foreground/75">{value}</span>;
+function CountCell({ value, title }: { value: number; title?: string }) {
+  return (
+    <span className="font-mono text-[10px] tabular-nums text-foreground/75" title={title}>
+      {value}
+    </span>
+  );
 }
 
 function ConfidenceBadge({ value }: { value: "confirmed" | "inferred" }) {
@@ -37,6 +153,7 @@ function ConfidenceBadge({ value }: { value: "confirmed" | "inferred" }) {
           ? "bg-green-500/10 text-green-300"
           : "bg-yellow-500/10 text-yellow-300"
       )}
+      title={value === "inferred" ? INFERRED_CONFIDENCE_TITLE : undefined}
     >
       {value}
     </span>
@@ -75,6 +192,30 @@ function OriginOverview({
             value={origin.counts.params}
           />
         </div>
+        <dl className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
+          <div className="flex items-center gap-1">
+            <dt className="text-muted-foreground/70">Identity source:</dt>
+            <dd className="font-mono text-foreground/80">{IDENTITY_SOURCE_LABEL[origin.source]}</dd>
+          </div>
+          <div className="flex items-center gap-1">
+            <dt className="text-muted-foreground/70">Content count source:</dt>
+            <dd className="font-mono text-foreground/80">
+              {CONTENT_COUNT_SOURCE_LABEL[origin.contentCountSource]}
+            </dd>
+          </div>
+          {origin.counts.directoryEntries > 0 && (
+            <div className="flex items-center gap-1">
+              <dt className="text-muted-foreground/70">Directory entries:</dt>
+              <dd className="font-mono text-foreground/80">{origin.counts.directoryEntries}</dd>
+            </div>
+          )}
+          {origin.counts.passiveLogs > 0 && (
+            <div className="flex items-center gap-1">
+              <dt className="text-muted-foreground/70">Passive logs:</dt>
+              <dd className="font-mono text-foreground/80">{origin.counts.passiveLogs}</dd>
+            </div>
+          )}
+        </dl>
       </Section>
       <Section title="Observed Endpoint" subtitle={`${origin.endpointIds.length} linked`}>
         {endpoints.length === 0 ? (
@@ -98,6 +239,10 @@ function OriginOverview({
 }
 
 function ApiList({ origin }: { origin: WebOriginVM }) {
+  const apiRefs = origin.apiEndpoints.length === 0 ? refsOfKind(origin, ["api"]) : [];
+  if (origin.apiEndpoints.length === 0 && apiRefs.length > 0) {
+    return <BackendRefList refs={apiRefs} title="APIs" />;
+  }
   return (
     <Section title="APIs" subtitle={`${origin.apiEndpoints.length} endpoint(s)`}>
       {origin.apiEndpoints.length === 0 ? (
@@ -141,6 +286,10 @@ function ApiList({ origin }: { origin: WebOriginVM }) {
 }
 
 function JsList({ origin }: { origin: WebOriginVM }) {
+  const jsRefs = origin.jsResources.length === 0 ? refsOfKind(origin, ["js"]) : [];
+  if (origin.jsResources.length === 0 && jsRefs.length > 0) {
+    return <BackendRefList refs={jsRefs} title="JavaScript" />;
+  }
   return (
     <Section title="JavaScript" subtitle={`${origin.jsResources.length} resource(s)`}>
       {origin.jsResources.length === 0 ? (
@@ -235,6 +384,9 @@ function OriginDetail({
   projectPath: string | null;
 }) {
   const [activeDetailTab, setActiveDetailTab] = useState<OriginDetailTab>("overview");
+  const contentHint = originContentHint(origin);
+  const sitemapRefs =
+    origin.urls.length === 0 ? refsOfKind(origin, ["api", "js", "directory"]) : [];
 
   useEffect(() => {
     setActiveDetailTab("overview");
@@ -248,7 +400,7 @@ function OriginDetail({
             {origin.origin}
           </h4>
           <p className="mt-0.5 text-[9px] text-muted-foreground">
-            {origin.scheme} · {origin.hostType} · port {origin.port}
+            {origin.scheme} · {origin.hostType} · port {origin.port} · {origin.source}
           </p>
         </div>
         <ConfidenceBadge value={origin.confidence} />
@@ -272,22 +424,39 @@ function OriginDetail({
           ))}
         </div>
       </div>
+      {contentHint ? (
+        <div className="border-b border-yellow-500/20 bg-yellow-500/5 px-2.5 py-1.5 text-[10px] text-yellow-100/85">
+          {contentHint}
+        </div>
+      ) : (
+        origin.backendIdentityOnly && (
+          <div className="border-b border-yellow-500/20 bg-yellow-500/5 px-2.5 py-1.5 text-[10px] text-yellow-100/85">
+            Backend identity exists, but legacy web content has not been linked to this origin yet.
+          </div>
+        )
+      )}
       <div className="p-2.5">
         {activeDetailTab === "overview" && <OriginOverview origin={origin} endpoints={endpoints} />}
-        {activeDetailTab === "sitemap" && (
-          <div className="h-[460px] min-h-[360px]">
-            <SitemapTab
-              items={origin.urls}
-              jsResults={origin.jsResources}
-              loading={loading}
-              projectPath={projectPath}
-              originLabel={origin.origin}
-            />
-          </div>
-        )}
+        {activeDetailTab === "sitemap" &&
+          (origin.urls.length === 0 && sitemapRefs.length > 0 ? (
+            <BackendRefList refs={sitemapRefs} title="Sitemap" />
+          ) : (
+            <div className="h-[460px] min-h-[360px]">
+              <SitemapTab
+                items={origin.urls}
+                jsResults={origin.jsResources}
+                loading={loading}
+                projectPath={projectPath}
+                originLabel={origin.origin}
+              />
+            </div>
+          ))}
         {activeDetailTab === "apis" && <ApiList origin={origin} />}
         {activeDetailTab === "js" && <JsList origin={origin} />}
         {activeDetailTab === "params" && <ParamList origin={origin} />}
+        {activeDetailTab === "fingerprints" && (
+          <FingerprintList fingerprints={origin.fingerprints} loading={loading} />
+        )}
         {activeDetailTab === "evidence" && <EvidenceList origin={origin} />}
       </div>
     </section>
@@ -335,21 +504,24 @@ export function WebOriginsTab({
             label="No Web Origin can be inferred from complete URLs yet."
           />
         ) : (
-          <div className="overflow-hidden rounded border border-border/25">
-            <table className="w-full text-[11px]">
+          <div className="overflow-x-auto rounded border border-border/25">
+            <table className="min-w-[1090px] w-full text-[11px]">
               <thead className="border-b border-border/25 bg-muted/10 text-muted-foreground">
                 <tr>
                   <th className="px-2 py-1.5 text-left font-medium">Origin</th>
                   <th className="px-2 py-1.5 text-left font-medium">Scheme</th>
                   <th className="px-2 py-1.5 text-left font-medium">Host</th>
+                  <th className="px-2 py-1.5 text-left font-medium">Host Type</th>
                   <th className="px-2 py-1.5 text-left font-medium">Port</th>
-                  <th className="px-2 py-1.5 text-left font-medium">Observed Endpoint</th>
+                  <th className="px-2 py-1.5 text-left font-medium">Endpoints</th>
                   <th className="px-2 py-1.5 text-left font-medium">URL</th>
                   <th className="px-2 py-1.5 text-left font-medium">API</th>
                   <th className="px-2 py-1.5 text-left font-medium">JS</th>
                   <th className="px-2 py-1.5 text-left font-medium">Params</th>
+                  <th className="px-2 py-1.5 text-left font-medium">FP</th>
                   <th className="px-2 py-1.5 text-left font-medium">Evidence</th>
                   <th className="px-2 py-1.5 text-left font-medium">Confidence</th>
+                  <th className="px-2 py-1.5 text-left font-medium">Source</th>
                 </tr>
               </thead>
               <tbody>
@@ -382,14 +554,21 @@ export function WebOriginsTab({
                           {origin.host}
                         </span>
                       </td>
+                      <td className="px-2 py-2 text-muted-foreground">{origin.hostType}</td>
                       <td className="px-2 py-2 font-mono text-muted-foreground">{origin.port}</td>
-                      <td className="max-w-[180px] px-2 py-2">
-                        <span className="block truncate font-mono text-muted-foreground">
-                          {observed.join(", ") || "unassigned"}
+                      <td className="px-2 py-2">
+                        <span
+                          className="block font-mono text-[10px] tabular-nums text-foreground/75"
+                          title={observed.join(", ")}
+                        >
+                          {observed.length}
                         </span>
                       </td>
                       <td className="px-2 py-2">
-                        <CountCell value={origin.counts.urls} />
+                        <CountCell
+                          value={origin.counts.urls}
+                          title={`Directory entries: ${origin.counts.directoryEntries}`}
+                        />
                       </td>
                       <td className="px-2 py-2">
                         <CountCell value={origin.counts.apis} />
@@ -401,10 +580,25 @@ export function WebOriginsTab({
                         <CountCell value={origin.counts.params} />
                       </td>
                       <td className="px-2 py-2">
-                        <CountCell value={origin.counts.evidence} />
+                        <CountCell
+                          value={origin.fingerprints.length}
+                          title="Service/version fingerprints on this origin"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <CountCell
+                          value={origin.counts.evidence}
+                          title={`Passive logs: ${origin.counts.passiveLogs}`}
+                        />
                       </td>
                       <td className="px-2 py-2">
                         <ConfidenceBadge value={origin.confidence} />
+                      </td>
+                      <td
+                        className="px-2 py-2 text-muted-foreground"
+                        title={`Identity: ${IDENTITY_SOURCE_LABEL[origin.source]} · Counts: ${CONTENT_COUNT_SOURCE_LABEL[origin.contentCountSource]}`}
+                      >
+                        {origin.source}
                       </td>
                     </tr>
                   );

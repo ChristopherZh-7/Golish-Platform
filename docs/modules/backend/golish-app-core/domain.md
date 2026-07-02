@@ -22,7 +22,7 @@
 | 符号 | 说明 |
 |---|---|
 | `targets`（`Target` / `Scope` / `ReconUpdate` / `DirectoryEntry` / …） | 跨服务 target 面 DTO（ts-rs 导出） |
-| `targets::rank_attack_surface_seeds` | EAS handoff seed 排序/限流；已有 direct IP target 时折叠解析到该 IP 的 domain/url/端口 URL 别名，避免 Prober 主扫 worklist 被别名和端口端点撑大 |
+| `targets::rank_attack_surface_seeds` | EAS handoff seed 排序/限流；已有 direct IP target 时折叠解析到该 IP 的 domain/url/端口 URL 别名，避免 Prober 主扫 worklist 被别名和端口端点撑大；未折叠的 domain/url 只承载 LIVENESS，PORT/SERVICE 属于 IP/CIDR host |
 
 ## 关键文件
 

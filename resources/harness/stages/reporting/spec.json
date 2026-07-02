@@ -35,6 +35,14 @@
     {
       "stage_kind": "enumeration",
       "evidence_kinds": ["open_port", "dir_entry"]
+    },
+    {
+      "stage_kind": "vuln_triage",
+      "evidence_kinds": ["vuln_finding"]
+    },
+    {
+      "stage_kind": "verification",
+      "evidence_kinds": ["poc", "exploit_verified", "attack_path"]
     }
   ]
 }

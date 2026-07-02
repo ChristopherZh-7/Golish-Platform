@@ -87,78 +87,94 @@ async fn test_openai_reasoning_emits_reasoning_event() {
 /// Verify that a tool-call-only response (no text) still produces a Completed event
 /// with token usage, and that the loop correctly handles the no-text case.
 /// GPT-5.2/Codex commonly return tool calls without any accompanying text.
-#[tokio::test]
-async fn test_openai_tool_call_only_response_completes() {
-    let test_ctx = TestContextBuilder::new()
-        .agent_mode(golish_agent_kit::agent_mode::AgentMode::AutoApprove)
-        .build()
-        .await;
+#[test]
+fn test_openai_tool_call_only_response_completes() {
+    let handle = std::thread::Builder::new()
+        .name("openai_tool_call_only_response_completes".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime should build");
+            runtime.block_on(async {
+                let test_ctx = TestContextBuilder::new()
+                    .agent_mode(golish_agent_kit::agent_mode::AgentMode::AutoApprove)
+                    .build()
+                    .await;
 
-    // Create a file the tool can actually read
-    let ws = test_ctx.workspace_path().await;
-    std::fs::write(ws.join("test.txt"), "hello world").unwrap();
+                // Create a file the tool can actually read
+                let ws = test_ctx.workspace_path().await;
+                std::fs::write(ws.join("test.txt"), "hello world").unwrap();
 
-    // First response: tool call only (no text) — simulates gpt-5.2 behaviour
-    // Second response: text summary
-    let model = MockCompletionModel::new(vec![
-        MockResponse::tool_call("read_file", serde_json::json!({"path": "test.txt"})),
-        MockResponse::text("I read the file and it contains 'hello world'."),
-    ]);
+                // First response: tool call only (no text) — simulates gpt-5.2 behaviour
+                // Second response: text summary
+                let model = MockCompletionModel::new(vec![
+                    MockResponse::tool_call("read_file", serde_json::json!({"path": "test.txt"})),
+                    MockResponse::text("I read the file and it contains 'hello world'."),
+                ]);
 
-    let client = Arc::new(RwLock::new(LlmClient::Mock));
-    let mut ctx = test_ctx.as_agentic_context_with_client(&client);
-    ctx.llm.provider_name = "openai_reasoning";
-    ctx.llm.model_name = "gpt-5.2";
+                let client = Arc::new(RwLock::new(LlmClient::Mock));
+                let mut ctx = test_ctx.as_agentic_context_with_client(&client);
+                ctx.llm.provider_name = "openai_reasoning";
+                ctx.llm.model_name = "gpt-5.2";
 
-    let initial_history = vec![rig::completion::Message::User {
-        content: rig::one_or_many::OneOrMany::one(rig::message::UserContent::Text(
-            rig::message::Text {
-                text: "Read test.txt".to_string(),
-            },
-        )),
-    }];
+                let initial_history = vec![rig::completion::Message::User {
+                    content: rig::one_or_many::OneOrMany::one(rig::message::UserContent::Text(
+                        rig::message::Text {
+                            text: "Read test.txt".to_string(),
+                        },
+                    )),
+                }];
 
-    let result = run_agentic_loop_generic(
-        &model,
-        "You are a helpful assistant.",
-        initial_history,
-        openai_reasoning_sub_context(),
-        &ctx,
-    )
-    .await;
+                let result = run_agentic_loop_generic(
+                    &model,
+                    "You are a helpful assistant.",
+                    initial_history,
+                    openai_reasoning_sub_context(),
+                    &ctx,
+                )
+                .await;
 
-    assert!(
-        result.is_ok(),
-        "Loop should succeed even with tool-call-only first response: {:?}",
-        result.err()
-    );
-    let (response, _reasoning, _history, _usage) = result.unwrap();
-    assert!(
-        response.contains("hello world"),
-        "Final response should include file content reference, got: {:?}",
-        response
-    );
+                assert!(
+                    result.is_ok(),
+                    "Loop should succeed even with tool-call-only first response: {:?}",
+                    result.err()
+                );
+                let (response, _reasoning, _history, _usage) = result.unwrap();
+                assert!(
+                    response.contains("hello world"),
+                    "Final response should include file content reference, got: {:?}",
+                    response
+                );
 
-    // Verify the loop produced a final text response (loop emits TextDelta events)
-    // Note: AiEvent::Completed is emitted by agent_bridge.rs, not run_agentic_loop_generic directly.
-    let mut test_ctx = test_ctx;
-    let events = test_ctx.collect_events();
-    let text_deltas: Vec<_> = events
-        .iter()
-        .filter(|e| matches!(e, AiEvent::TextDelta { .. }))
-        .collect();
-    assert!(
-        !text_deltas.is_empty(),
-        "TextDelta events must be emitted for the text response after the tool call"
-    );
-    // Also verify a tool was auto-approved (auto-approve mode was set)
-    let auto_approved = events
-        .iter()
-        .any(|e| matches!(e, AiEvent::ToolAutoApproved { .. }));
-    assert!(
-        auto_approved,
-        "Tool should have been auto-approved in AutoApprove mode"
-    );
+                // Verify the loop produced a final text response (loop emits TextDelta events)
+                // Note: AiEvent::Completed is emitted by agent_bridge.rs, not run_agentic_loop_generic directly.
+                let mut test_ctx = test_ctx;
+                let events = test_ctx.collect_events();
+                let text_deltas: Vec<_> = events
+                    .iter()
+                    .filter(|e| matches!(e, AiEvent::TextDelta { .. }))
+                    .collect();
+                assert!(
+                    !text_deltas.is_empty(),
+                    "TextDelta events must be emitted for the text response after the tool call"
+                );
+                // Also verify a tool was auto-approved (auto-approve mode was set)
+                let auto_approved = events
+                    .iter()
+                    .any(|e| matches!(e, AiEvent::ToolAutoApproved { .. }));
+                assert!(
+                    auto_approved,
+                    "Tool should have been auto-approved in AutoApprove mode"
+                );
+            });
+        })
+        .expect("tool-call-only test thread should spawn");
+
+    if let Err(panic) = handle.join() {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 /// Verify that reasoning/thinking content from the model is returned in the

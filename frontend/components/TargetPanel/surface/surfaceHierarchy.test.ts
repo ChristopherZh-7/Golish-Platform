@@ -179,6 +179,41 @@ describe("buildSurfaceHierarchy", () => {
     expect(vm.relatedDomains[0].webOriginIds).toEqual(["https://a.com:443"]);
   });
 
+  it("infers Web Origins from related URL targets without adding IP-literal URLs to Related Domains", () => {
+    const vm = buildSurfaceHierarchy({
+      rootTarget: target({ value: "1.1.1.1" }),
+      relatedDomains: [],
+      relatedWebTargets: [
+        target({ id: "url-ip", type: "url", value: "https://1.1.1.1/login", real_ip: "" }),
+        target({
+          id: "url-domain",
+          type: "url",
+          value: "https://a.example.com/login",
+          real_ip: "1.1.1.1",
+        }),
+        target({
+          id: "url-domain-8443",
+          type: "url",
+          value: "https://a.example.com:8443/login",
+          real_ip: "1.1.1.1",
+        }),
+      ],
+    });
+
+    expect(vm.relatedDomains).toEqual([]);
+    expect(vm.webOrigins.map((item) => item.id)).toEqual([
+      "https://1.1.1.1:443",
+      "https://a.example.com:443",
+      "https://a.example.com:8443",
+    ]);
+    expect(vm.webOrigins.find((item) => item.id === "https://1.1.1.1:443")?.confidence).toBe(
+      "inferred"
+    );
+    expect(vm.webOrigins.find((item) => item.id === "https://1.1.1.1:443")?.endpointIds).toContain(
+      "1.1.1.1:443:tcp"
+    );
+  });
+
   it("keeps relative or incomplete web data unassigned", () => {
     const vm = buildSurfaceHierarchy({
       rootTarget: target({ ports: [port({ port: 443, protocol: "tcp", service: "https" })] }),

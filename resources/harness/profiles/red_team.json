@@ -12,6 +12,7 @@
     "external_attack_surface",
     "enumeration",
     "vuln_triage",
+    "attack_candidate",
     "verification",
     "access_validation",
     "internal_discovery",

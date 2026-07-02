@@ -279,11 +279,14 @@ mod tests {
     #[test]
     fn external_attack_surface_gate_rules_count() {
         // EAS 过关标准 = claim/finding evidence + coverage found/checked_empty evidence
-        // + named_check:surface_coverage + named_check:min_invocations
+        // + named_check:surface_coverage
         // + coverage_complete(per-asset liveness/port/service with notes for other)
-        // + coverage_denominator(full explicit coverage) = 8 条 gate_rules。
+        // + coverage_denominator(full explicit coverage) = 7 条 gate_rules。
+        // 2026-07-02 gate capability ledger Phase 0: dropped the vacuous
+        // named_check:min_invocations rule (spec.min_invocations is {} → always
+        // Pass), so the count fell from 8 to 7.
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
-        assert_eq!(s.gate_rules.len(), 8);
+        assert_eq!(s.gate_rules.len(), 7);
     }
 
     // 2026-06-09 verify-first + 阶段重排：EAS = 定义攻击面，必须对每个 in-scope 资产
@@ -665,6 +668,98 @@ mod tests {
             .expect("load enumeration spec");
         assert_eq!(s.specialist.as_deref(), Some("enumerator"));
         assert_eq!(s.coverage_axis, vec!["JS", "DIR", "PARAM", "JSAPI"]);
+    }
+
+    // Attack-stage split (design 2026-07-02 §3.2, P3 Task3.1): vuln_triage becomes
+    // the formulaic-scan stage — declare its per-org specialist (`vuln_scanner`),
+    // a display coverage axis, and opt into the DB-truth matrix paradigm
+    // (facts_from_db_truth + freshness_window) so a slim scan deliverable is not
+    // treated as vacuous.
+    #[test]
+    fn vuln_triage_declares_specialist_and_axis() {
+        let s = crate::harness::resources::load_embedded_stage_spec(StageKind::VulnTriage)
+            .expect("load vuln_triage spec");
+        assert_eq!(s.specialist.as_deref(), Some("vuln_scanner"));
+        assert!(!s.coverage_axis.is_empty());
+        assert!(s.facts_from_db_truth);
+        assert!(s.freshness_window);
+    }
+
+    // Attack-stage split (design 2026-07-02 §3.9, P3 Task3.2): vuln_triage is
+    // narrowed to the 10 formulaic technique classes and its coverage_complete
+    // opts into derive_from_evidence (DB-truth fact projection can close a cell).
+    // The 5 reasoning-heavy classes (SSTI/SSRF/LFI/auth-bypass/business-logic)
+    // move to attack_candidate. authoritative_found stays OFF until the
+    // nuclei/dir/weakpw/tls write-path lands technique_outcomes facts (design §11
+    // open-question 3 / plan deviation), so a self-reported cell still satisfies
+    // the gate and the live gate does not permanently block.
+    #[test]
+    fn vuln_triage_narrowed_to_formulaic_and_derives_from_evidence() {
+        use crate::harness::gate::rule_engine::GateRule;
+        let s = crate::harness::resources::load_embedded_stage_spec(StageKind::VulnTriage)
+            .expect("load vuln_triage spec");
+        assert_eq!(s.expected_techniques.len(), 10);
+        assert!(s.expected_techniques.contains(&"GOLISH-NDAY".to_string()));
+        for moved in ["WSTG-BUSL", "WSTG-INPV-19", "WSTG-INPV-18"] {
+            assert!(
+                !s.expected_techniques.contains(&moved.to_string()),
+                "{moved} must move out of vuln_triage"
+            );
+        }
+        assert!(
+            s.gate_rules.iter().any(|r| matches!(
+                r,
+                GateRule::CoverageComplete {
+                    derive_from_evidence: true,
+                    ..
+                }
+            )),
+            "vuln_triage coverage_complete must enable derive_from_evidence"
+        );
+    }
+
+    // Phase 4 (gate-capability-ledger, incremental): once the deterministic
+    // nuclei handler upserts technique_outcomes per covered WSTG class, the 4
+    // most objective formulaic classes go authoritative — a self-reported
+    // `found` no longer counts without a DB fact. The other 6 classes stay
+    // legacy self-report so the live gate never permanently blocks (the escape
+    // hatch is blocked/not_applicable+note, terminal for any class).
+    #[test]
+    fn vuln_triage_authoritative_scoped_to_objective_formulaic_classes() {
+        use crate::harness::gate::rule_engine::GateRule;
+        let s = crate::harness::resources::load_embedded_stage_spec(StageKind::VulnTriage)
+            .expect("load vuln_triage spec");
+        let scoped = s.gate_rules.iter().find_map(|r| match r {
+            GateRule::CoverageComplete {
+                authoritative_found: true,
+                authoritative_techniques: Some(t),
+                ..
+            } => Some(t.clone()),
+            _ => None,
+        });
+        let techs = scoped.expect(
+            "vuln_triage coverage_complete must be authoritative for a scoped technique list",
+        );
+        let mut sorted = techs.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            vec![
+                "GOLISH-NDAY".to_string(),
+                "WSTG-ATHN-02".to_string(),
+                "WSTG-CONF-05".to_string(),
+                "WSTG-CRYP-03".to_string(),
+            ],
+            "authoritative scope must stay the 4 objective classes the handler upserts \
+             (widen only as more scanner write-paths land — guardrail 2)"
+        );
+        // The reasoning/tool-sweep classes must NOT be authoritative yet.
+        for legacy in ["WSTG-INPV-05", "WSTG-INPV-01", "WSTG-ATHZ-04", "WSTG-INFO"] {
+            assert!(
+                !techs.contains(&legacy.to_string()),
+                "{legacy} has no complete write-path yet; must stay legacy self-report"
+            );
+        }
     }
 
     #[test]

@@ -6,6 +6,7 @@ import {
   type ApiEndpoint,
   type AuditRow,
   apiEndpointsList,
+  type BackendSurfaceHierarchyDto,
   type Fingerprint,
   fingerprintsList,
   type JsAnalysisResult,
@@ -16,6 +17,7 @@ import {
   type TargetAsset,
   type TimelineEntry,
   targetAssetsList,
+  targetSurfaceHierarchyGet,
   targetTimeline,
 } from "@/lib/security-analysis";
 
@@ -30,6 +32,19 @@ export interface TargetSurfaceData {
   logs: AuditRow[];
 }
 
+export type BackendHierarchyStatus = "idle" | "loading" | "success" | "fallback" | "error";
+
+export interface BackendHierarchyLoadResult {
+  hierarchy: BackendSurfaceHierarchyDto | null;
+  status: BackendHierarchyStatus;
+  error: string | null;
+}
+
+export interface UseTargetSurfaceDataOptions {
+  loadBackendHierarchy?: boolean;
+  includeRelatedBackend?: boolean;
+}
+
 const EMPTY_SURFACE_DATA: TargetSurfaceData = {
   assets: [],
   endpoints: [],
@@ -39,6 +54,11 @@ const EMPTY_SURFACE_DATA: TargetSurfaceData = {
   timeline: [],
   directoryEntries: [],
   logs: [],
+};
+const EMPTY_BACKEND_RESULT: BackendHierarchyLoadResult = {
+  hierarchy: null,
+  status: "idle",
+  error: null,
 };
 const NO_RELATED_TARGET_IDS: string[] = [];
 const SURFACE_WRITE_TOOLS = new Set([
@@ -133,37 +153,91 @@ async function loadTargetSurfaceData(targetIds: string[]): Promise<TargetSurface
   return mergeSurfaceData(await Promise.all(targetIds.map(loadSingleTargetSurfaceData)));
 }
 
+function backendHierarchyStatusFor(
+  hierarchy: BackendSurfaceHierarchyDto | null
+): BackendHierarchyStatus {
+  if (!hierarchy) return "idle";
+  if (hierarchy.mode !== "ip") return "fallback";
+  if (hierarchy.dataSource !== "backend_identity") return "fallback";
+  if (hierarchy.endpoints.length === 0 && hierarchy.webOrigins.length === 0) return "fallback";
+  return "success";
+}
+
+async function loadBackendHierarchy(
+  targetId: string | null | undefined,
+  enabled: boolean,
+  includeRelated: boolean
+): Promise<BackendHierarchyLoadResult> {
+  if (!enabled || !targetId) return EMPTY_BACKEND_RESULT;
+  try {
+    const hierarchy = await targetSurfaceHierarchyGet(targetId, includeRelated);
+    return {
+      hierarchy,
+      status: backendHierarchyStatusFor(hierarchy),
+      error: null,
+    };
+  } catch (err) {
+    return {
+      hierarchy: null,
+      status: "error",
+      error: String(err),
+    };
+  }
+}
+
 export function useTargetSurfaceData(
   targetId: string | null | undefined,
-  relatedTargetIds: string[] = NO_RELATED_TARGET_IDS
+  relatedTargetIds: string[] = NO_RELATED_TARGET_IDS,
+  options: UseTargetSurfaceDataOptions = {}
 ) {
   const targetIds = useMemo(
     () => uniqueIds([targetId, ...relatedTargetIds]),
     [targetId, relatedTargetIds]
   );
+  const backendLoadEnabled = Boolean(options.loadBackendHierarchy && targetId);
+  const includeRelatedBackend = options.includeRelatedBackend ?? true;
   const [data, setData] = useState<TargetSurfaceData>(EMPTY_SURFACE_DATA);
   const [loading, setLoading] = useState(targetIds.length > 0);
   const [error, setError] = useState<string | null>(null);
+  const [backendHierarchy, setBackendHierarchy] = useState<BackendSurfaceHierarchyDto | null>(null);
+  const [backendHierarchyStatus, setBackendHierarchyStatus] =
+    useState<BackendHierarchyStatus>("idle");
+  const [backendHierarchyError, setBackendHierarchyError] = useState<string | null>(null);
+
+  const applyBackendResult = useCallback((result: BackendHierarchyLoadResult) => {
+    setBackendHierarchy(result.hierarchy);
+    setBackendHierarchyStatus(result.status);
+    setBackendHierarchyError(result.error);
+  }, []);
 
   const reload = useCallback(async () => {
     if (targetIds.length === 0) {
       setData(EMPTY_SURFACE_DATA);
       setLoading(false);
       setError(null);
+      applyBackendResult(EMPTY_BACKEND_RESULT);
       return;
     }
 
     setLoading(true);
     setError(null);
+    setBackendHierarchyStatus(backendLoadEnabled ? "loading" : "idle");
+    setBackendHierarchyError(null);
     try {
-      setData(await loadTargetSurfaceData(targetIds));
+      const [surfaceData, backendResult] = await Promise.all([
+        loadTargetSurfaceData(targetIds),
+        loadBackendHierarchy(targetId, backendLoadEnabled, includeRelatedBackend),
+      ]);
+      setData(surfaceData);
+      applyBackendResult(backendResult);
     } catch (err) {
       setError(String(err));
       setData(EMPTY_SURFACE_DATA);
+      applyBackendResult(EMPTY_BACKEND_RESULT);
     } finally {
       setLoading(false);
     }
-  }, [targetIds]);
+  }, [applyBackendResult, backendLoadEnabled, includeRelatedBackend, targetId, targetIds]);
 
   useEffect(() => {
     if (targetIds.length === 0) return undefined;
@@ -192,20 +266,28 @@ export function useTargetSurfaceData(
       setData(EMPTY_SURFACE_DATA);
       setLoading(false);
       setError(null);
+      applyBackendResult(EMPTY_BACKEND_RESULT);
       return;
     }
 
     setLoading(true);
     setError(null);
-    loadTargetSurfaceData(targetIds)
-      .then((surfaceData) => {
+    setBackendHierarchyStatus(backendLoadEnabled ? "loading" : "idle");
+    setBackendHierarchyError(null);
+    Promise.all([
+      loadTargetSurfaceData(targetIds),
+      loadBackendHierarchy(targetId, backendLoadEnabled, includeRelatedBackend),
+    ])
+      .then(([surfaceData, backendResult]) => {
         if (cancelled) return;
         setData(surfaceData);
+        applyBackendResult(backendResult);
       })
       .catch((err) => {
         if (cancelled) return;
         setError(String(err));
         setData(EMPTY_SURFACE_DATA);
+        applyBackendResult(EMPTY_BACKEND_RESULT);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -214,7 +296,15 @@ export function useTargetSurfaceData(
     return () => {
       cancelled = true;
     };
-  }, [targetIds]);
+  }, [applyBackendResult, backendLoadEnabled, includeRelatedBackend, targetId, targetIds]);
 
-  return { data, loading, error, reload };
+  return {
+    data,
+    loading,
+    error,
+    reload,
+    backendHierarchy,
+    backendHierarchyStatus,
+    backendHierarchyError,
+  };
 }

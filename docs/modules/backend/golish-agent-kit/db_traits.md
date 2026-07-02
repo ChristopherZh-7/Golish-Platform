@@ -42,7 +42,7 @@
 
 - **依赖倒置核心**：本 crate 定义 trait，golish-agent-app 注入实现——别在此引 golish-db/sqlx（会破坏 agent 栈的可测/解耦）。
 - 本地 DTO 与 golish-db 的 row 类型是两套，由 bridge 转换。
-- harness gate 相关读写也走 `DbRepoProvider` seam：`technique_outcome_facts` 投影 coverage truth，`source_query_facts` 投影 `source_query_log` 的 source/provider terminal rows；后者只证明 source 尝试，不证明 found。
+- harness gate 相关读写也走 `DbRepoProvider` seam：`technique_outcome_facts` 投影 coverage truth，`source_query_facts` 投影 `source_query_log` 的 source/provider terminal rows；后者只证明 source 尝试，不证明 found。`mark_target_intel_dns_empty_outcomes` 是 target_intel DNS negative fact 的 app-side hook：runtime 拿到真实 evidence id 后调用，trait 默认 no-op，生产实现写 `technique_outcomes(GOLISH-INTEL-DNS, empty)`。
 - wave-aware stage 的 durable batch 也走 `DbRepoProvider` seam：`stage_asset_wave_current_or_create_initial` / `stage_asset_wave_create_next` / `stage_asset_wave_complete` 默认 no-op/None，app bridge 才接到 `golish-db::repo::stage_asset_waves`。
 
 ## 测试入口

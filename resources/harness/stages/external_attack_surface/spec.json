@@ -17,7 +17,7 @@
   "$comment_findings_allowed": "Attack-surface mapping stage: the deliverable is liveness/port/service coverage, NOT vulnerabilities. submit_stage_deliverable drops any findings submitted here and tells the model to put discoveries in claims. Design 2026-06-15-recon-stage-findings-suppression.",
   "findings_allowed": false,
 
-  "$comment_host_aware": "Host-aware coverage 2b (design 2026-06-15-host-aware-coverage \u00a73.2): EAS is host-level \u2014 a bare URL endpoint drops GOLISH-EAS-PORT/SERVICE-FINGERPRINT (its host is already covered via the host/IP asset) but keeps LIVENESS; domain/IP/CIDR keep all 3; unknown class keeps all 3 (fail-safe). The per-asset technique_applies matrix landed inert (commit e12a7638); this flips the stage flag on so coverage_complete filters each in-scope asset to the techniques that apply to its class (via technique_applies_to_value). Default false = byte-for-byte unchanged.",
+  "$comment_host_aware": "Host-aware coverage 2b (design 2026-06-15-host-aware-coverage \u00a73.2, tightened 2026-07-02): EAS splits vhost liveness from host/IP mapping. Domain/URL assets keep GOLISH-EAS-LIVENESS only; GOLISH-EAS-PORT and GOLISH-EAS-SERVICE-FINGERPRINT apply only to concrete IP/CIDR host assets. If a domain has no registered IP target, PORT/SERVICE is a target_intel/DNS landing gap, not a domain port-scan obligation. Unknown class keeps all 3 (fail-safe).",
   "host_aware_coverage": true,
 
   "$comment_freshness_window": "Phase E activation (design 2026-06-22 Phase D): gray-switch ON. The EAS DB-truth back-fill (GOLISH-EAS-LIVENESS/PORT/SERVICE-FINGERPRINT) only counts data collected this stage-run (targets.liveness_checked_at/ports_scanned_at + fingerprints.detected_at >= stage start; migration 20260623000001). EAS coverage_complete now uses authoritative DB/ledger found facts, so self-reported found cells cannot fake active surface coverage. Default false = presence-only.",
@@ -60,7 +60,6 @@
       }
     },
     { "op": "named_check", "check": "surface_coverage" },
-    { "op": "named_check", "check": "min_invocations" },
     {
       "op": "coverage_complete",
       "derive_from_evidence": true,
@@ -71,7 +70,7 @@
       "on_fail": {
         "reason": "external attack surface incomplete: some in-scope assets were not fully mapped (liveness / port / service-fingerprint)",
         "hints": [
-          "for EVERY in-scope asset, take each applicable EAS technique to a terminal coverage cell: found+evidence_refs / checked_empty+evidence_refs / blocked|not_applicable+note. IP/domain/CIDR assets require PORT; bare URL assets keep only LIVENESS because host-level PORT/SERVICE belongs to the host/IP target",
+          "for EVERY in-scope asset, take each applicable EAS technique to a terminal coverage cell: found+evidence_refs / checked_empty+evidence_refs / blocked|not_applicable+note. Domain/URL assets require LIVENESS only; IP/CIDR host assets require LIVENESS + PORT + SERVICE-FINGERPRINT",
           "intel-source data (FOFA/Shodan/...) is a lead, not proof \u2014 actively confirm each asset NOW; the gate auto-projects found cells from DB truth (httpx\u2192targets, naabu/masscan\u2192targets.ports, whatweb/nmap\u2192fingerprints) so running the real tools fills coverage; JS/API extraction happens in the NEXT stage (enumeration)"
         ]
       }

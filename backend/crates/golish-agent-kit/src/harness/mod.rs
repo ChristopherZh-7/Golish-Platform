@@ -34,6 +34,7 @@
 //! Phase 1c.3 + 1c.4 + 1c.5 在此基础上填实 IntentClassifier 词库 / SprintContract /
 //! gate check.
 
+pub mod chain_wave;
 pub mod eval;
 pub mod evidence_facts;
 pub mod feature_flags;
@@ -64,6 +65,7 @@ pub mod technique_resolver;
 pub mod technique_taxonomy;
 pub mod tool_taxonomy;
 pub mod types;
+pub mod wstg_mapping;
 
 #[cfg(test)]
 mod e2e_tests;
@@ -125,10 +127,10 @@ pub use tool_taxonomy::{
     stage_allows, tool_category, underlying_tool_name,
 };
 pub use types::{
-    AgentContinuity, CoverageCell, CoverageGapAction, CoverageStatus,
-    ExternalAttackSurfaceDeliverable, FindingSeverity, HarnessFinding, HarnessRecoveryActions,
-    HarnessStageHint, IntentAxis, RiskLevel, SkippedCheckRecord, StageClaim, StageDeliverable,
-    StageKind,
+    AgentContinuity, AttackCandidate, CandidateDisposition, CandidatePriority, CoverageCell,
+    CoverageGapAction, CoverageStatus, ExternalAttackSurfaceDeliverable, FindingSeverity,
+    HarnessFinding, HarnessRecoveryActions, HarnessStageHint, IntentAxis, RiskLevel,
+    SkippedCheckRecord, StageClaim, StageDeliverable, StageKind,
 };
 
 /// Operation profile selection for stage_mode (Phase C).

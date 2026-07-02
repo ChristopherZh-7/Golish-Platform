@@ -268,6 +268,57 @@ pub async fn recent_evidence_ids_for_session(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+/// 一条「最近证据」明细行 (设计 2026-07-02-eas-worker-evidence): 给 `list_recent_evidence`
+/// 工具用. 比 [`recent_evidence_ids_for_session`] 的裸 id 多带上下文
+/// (tool / subject / technique / asset / outcome / kind / age), 让 worker 能把
+/// **哪个真实 id** 对上 **哪条 claim**, 从而合法引用证据而不是瞎猜或拿 submit 当探针.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct RecentEvidenceRow {
+    pub id: i64,
+    pub tool_name: Option<String>,
+    pub subject: Option<String>,
+    pub technique: Option<String>,
+    pub asset: Option<String>,
+    pub outcome: Option<String>,
+    pub kind: Option<String>,
+    pub age_seconds: Option<f64>,
+}
+
+/// 取某 chat session 下最近 `limit` 条**真实** evidence 行 (`audit_role='evidence'`),
+/// 带 tool/subject/technique/asset/outcome/kind/age 上下文, 按 id 倒序 (最新优先).
+///
+/// 用途: `list_recent_evidence` 工具——EAS/enumeration/pentester worker 在
+/// `submit_stage_deliverable` 前调它拿本 run 的真实可引用 id + 每个 id 的来源
+/// (工具/资产/技术), 照填 claim 的 `evidence_ids`. `limit <= 0` 直接返回空.
+pub async fn recent_evidence_detailed_for_session(
+    pool: &PgPool,
+    session_id: &str,
+    limit: i64,
+) -> Result<Vec<RecentEvidenceRow>> {
+    if limit <= 0 {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query_as::<_, RecentEvidenceRow>(
+        r#"SELECT id,
+                  tool_name,
+                  NULLIF(details, '')            AS subject,
+                  evidence_technique             AS technique,
+                  evidence_asset                 AS asset,
+                  evidence_outcome               AS outcome,
+                  detail->>'kind'                AS kind,
+                  EXTRACT(EPOCH FROM (NOW() - created_at))::double precision AS age_seconds
+           FROM audit_log
+           WHERE audit_role = 'evidence' AND session_id = $1
+           ORDER BY id DESC
+           LIMIT $2"#,
+    )
+    .bind(session_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// PR2 任务 2.5 (设计 2026-06-11 coverage 投影) · 按会话取证据事实四元组
 /// `(asset, technique, outcome, id)` — coverage_complete 的 `derive_from_evidence`
 /// (PR3) 的唯一数据源. 只返回三列齐全的行 (解析不出的行 NULL, 设计 §4 约束 3:

@@ -49,13 +49,14 @@ pub enum PhaseMapError {
     UnassignedStage(StageKind),
 }
 
-/// 全部 12 个 StageKind（校验「不漏不重」用）.
-const ALL_STAGES: [StageKind; 12] = [
+/// 全部 13 个 StageKind（校验「不漏不重」用）.
+const ALL_STAGES: [StageKind; 13] = [
     StageKind::Scoping,
     StageKind::TargetIntel,
     StageKind::ExternalAttackSurface,
     StageKind::Enumeration,
     StageKind::VulnTriage,
+    StageKind::AttackCandidate,
     StageKind::Verification,
     StageKind::AccessValidation,
     StageKind::InternalDiscovery,
@@ -142,10 +143,16 @@ mod tests {
     }
 
     #[test]
-    fn phases_cover_all_12_stages_exactly_once() {
+    fn phases_cover_all_13_stages_exactly_once() {
         let m = map();
         assert_eq!(m.phases.len(), 5);
         m.validate().expect("every stage assigned exactly once");
+    }
+
+    #[test]
+    fn attack_candidate_belongs_to_vuln_phase() {
+        let m = map();
+        assert_eq!(m.phase_of(StageKind::AttackCandidate).unwrap().id, "vuln");
     }
 
     #[test]
@@ -211,7 +218,7 @@ mod tests {
     fn validate_rejects_unassigned_stage() {
         // 缺 cleanup → UnassignedStage.
         let raw = r#"{"phases":[
-            {"id":"a","stages":["scoping","target_intel","external_attack_surface","enumeration","vuln_triage","verification","access_validation","internal_discovery","objective_pathing","objective_simulation","reporting"]}
+            {"id":"a","stages":["scoping","target_intel","external_attack_surface","enumeration","vuln_triage","attack_candidate","verification","access_validation","internal_discovery","objective_pathing","objective_simulation","reporting"]}
         ]}"#;
         assert!(matches!(
             load_phase_map_from_json(raw),

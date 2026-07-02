@@ -109,6 +109,53 @@ impl GolishDbRepoProvider {
         golish_db::repo::technique_outcomes::upsert(&self.pool, &write).await
     }
 
+    /// Target-intel DNS empty marker: refresh per-asset DNS landing, then persist
+    /// domains that were really resolved and returned no DNS answers as
+    /// `GOLISH-INTEL-DNS = empty`. This turns "checked and empty" into DB truth
+    /// instead of leaving it indistinguishable from "never checked".
+    pub(crate) async fn mark_target_intel_dns_empty_outcomes_impl(
+        &self,
+        organization_id: uuid::Uuid,
+        run_id: &str,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<usize> {
+        if evidence_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let summary = golish_recon_app::organization_recon::refresh_per_asset_landing_summary(
+            &self.pool,
+            organization_id,
+        )
+        .await;
+        let mut stored = 0usize;
+        for host in summary.dns_empty_hosts {
+            match self
+                .upsert_technique_outcome_impl(
+                    organization_id,
+                    run_id,
+                    &host,
+                    golish_db::repo::coverage_truth::TECH_DNS,
+                    "empty",
+                    Some("resolver"),
+                    Some(&host),
+                    evidence_ids,
+                )
+                .await
+            {
+                Ok(()) => stored += 1,
+                Err(e) => tracing::warn!(
+                    target: "harness::evidence",
+                    organization_id = %organization_id,
+                    asset = %host,
+                    error = %e,
+                    "target_intel DNS empty outcome upsert failed (continuing)"
+                ),
+            }
+        }
+        Ok(stored)
+    }
+
     /// #5（设计 2026-06-23-source-query-log）：upsert 一条被动情报「源查询」进
     /// `source_query_log`（逐源查询日志，比 `technique_outcomes` 更细）。非空 `target` 在此
     /// 过 `canonical_asset_key` 归一（E1）；org 级查询（空串 target）原样保留。`finished_at`
@@ -187,8 +234,28 @@ impl GolishDbRepoProvider {
         organization_id: uuid::Uuid,
         run_id: &str,
     ) -> Vec<(String, String, String, i64)> {
-        match golish_db::repo::technique_outcomes::list_for_run(&self.pool, organization_id, run_id)
+        self.technique_outcome_facts_fresh_impl(organization_id, run_id, None)
             .await
+    }
+
+    /// 护栏 4（设计 2026-07-02-gate-capability-ledger Phase 1）：同
+    /// [`Self::technique_outcome_facts_impl`]，但套 stage-run freshness cutoff——
+    /// `since = None` → presence-only；`since = Some(cutoff)` → 只投影
+    /// `collected_at >= cutoff` 的行，避免同 session 旧 stage-run 的行泄漏进 gate。
+    /// fail-safe：读失败 → 空 + warn（gate 退回 coverage_truth/ledger）。
+    pub(crate) async fn technique_outcome_facts_fresh_impl(
+        &self,
+        organization_id: uuid::Uuid,
+        run_id: &str,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<(String, String, String, i64)> {
+        match golish_db::repo::technique_outcomes::list_for_run_fresh(
+            &self.pool,
+            organization_id,
+            run_id,
+            since,
+        )
+        .await
         {
             Ok(rows) => rows
                 .into_iter()
@@ -258,6 +325,51 @@ impl GolishDbRepoProvider {
             golish_db::repo::audit::recent_evidence_ids_for_session(&self.pool, session_id, limit)
                 .await?;
         Ok(rows)
+    }
+
+    /// `list_recent_evidence` backing read (设计 2026-07-02-eas-worker-evidence): the
+    /// session's recent real evidence rows as compact JSON, each with the context a
+    /// worker needs to cite the right id (tool / subject / technique / asset /
+    /// outcome / kind / age_seconds). Null fields are dropped so the agent sees only
+    /// present context.
+    pub(crate) async fn recent_evidence_detailed_impl(
+        &self,
+        session_id: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let rows = golish_db::repo::audit::recent_evidence_detailed_for_session(
+            &self.pool, session_id, limit,
+        )
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let mut obj = serde_json::Map::new();
+                obj.insert("evidence_id".to_string(), serde_json::json!(r.id));
+                if let Some(tool) = r.tool_name.filter(|s| !s.is_empty()) {
+                    obj.insert("tool".to_string(), serde_json::json!(tool));
+                }
+                if let Some(subject) = r.subject.filter(|s| !s.is_empty()) {
+                    obj.insert("subject".to_string(), serde_json::json!(subject));
+                }
+                if let Some(technique) = r.technique.filter(|s| !s.is_empty()) {
+                    obj.insert("technique".to_string(), serde_json::json!(technique));
+                }
+                if let Some(asset) = r.asset.filter(|s| !s.is_empty()) {
+                    obj.insert("asset".to_string(), serde_json::json!(asset));
+                }
+                if let Some(outcome) = r.outcome.filter(|s| !s.is_empty()) {
+                    obj.insert("outcome".to_string(), serde_json::json!(outcome));
+                }
+                if let Some(kind) = r.kind.filter(|s| !s.is_empty()) {
+                    obj.insert("kind".to_string(), serde_json::json!(kind));
+                }
+                if let Some(age) = r.age_seconds.filter(|s| *s >= 0.0) {
+                    obj.insert("age_seconds".to_string(), serde_json::json!(age.round() as i64));
+                }
+                serde_json::Value::Object(obj)
+            })
+            .collect())
     }
 
     pub(crate) async fn evidence_kinds_for_impl(
@@ -408,9 +520,17 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
     }
 
     async fn eas_port_delegated_assets(&self, org_id: Option<uuid::Uuid>) -> Vec<String> {
-        // 方案 A (设计 2026-06-30-eas-domain-port-delegation): EAS alias delegation
+        // 方案 A (设计 2026-06-30-eas-domain-port-delegation): EAS alias exclusion
         // for the submit preview (same source as the stage-close gate).
         self.eas_port_delegated_assets_impl(org_id)
+            .await
+            .unwrap_or_default()
+    }
+
+    async fn enumeration_web_capable_assets(&self, org_id: Option<uuid::Uuid>) -> Vec<String> {
+        // 设计 2026-07-01 §5.3: EAS/httpx-proven IP web roots for the submit
+        // preview (same source as the stage-close gate / org_gate).
+        self.enumeration_web_capable_assets_impl(org_id)
             .await
             .unwrap_or_default()
     }
@@ -445,5 +565,61 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
         let state = self.operation_state_get_impl(operation_id).await.ok()??;
         let stage = golish_agent_kit::harness::StageKind::try_parse(&state.current_stage)?;
         Some((stage, state.stage_started_at))
+    }
+
+    /// P5.1 (设计 2026-07-02-attack-stage §3.7): upsert the deliverable's attack
+    /// hypotheses into `attack_candidates`. Maps the harness [`AttackCandidate`]
+    /// DTO → `golish-db` write row (priority/disposition enums → their snake_case
+    /// db strings, `wave` u32→i32), then `upsert_by_hash` (idempotent dedupe on
+    /// `(operation_id, target, hypothesis_hash)`, org-isolated). A per-row failure
+    /// is non-fatal (warn + skip) so a DB blip never wedges the submit path.
+    async fn persist_attack_candidates(
+        &self,
+        operation_id: &str,
+        organization_id: Option<uuid::Uuid>,
+        candidates: &[golish_agent_kit::harness::AttackCandidate],
+    ) -> usize {
+        use golish_agent_kit::harness::{CandidateDisposition, CandidatePriority};
+        let priority_str = |p: &CandidatePriority| match p {
+            CandidatePriority::High => "high",
+            CandidatePriority::Medium => "medium",
+            CandidatePriority::Low => "low",
+        };
+        let disposition_str = |d: &CandidateDisposition| match d {
+            CandidateDisposition::Proposed => "proposed",
+            CandidateDisposition::Approved => "approved",
+            CandidateDisposition::Rejected => "rejected",
+            CandidateDisposition::Verified => "verified",
+            CandidateDisposition::Refuted => "refuted",
+            CandidateDisposition::Blocked => "blocked",
+        };
+        let mut stored = 0usize;
+        for c in candidates {
+            let write = golish_db::repo::attack_candidates::AttackCandidateWrite {
+                candidate_id: c.candidate_id,
+                operation_id: operation_id.to_string(),
+                organization_id,
+                target: c.target.clone(),
+                hypothesis: c.hypothesis.clone(),
+                technique: c.technique.clone(),
+                rationale: c.rationale.clone(),
+                prior_refs: c.prior_refs.clone(),
+                suggested_approach: c.suggested_approach.clone(),
+                priority: priority_str(&c.priority).to_string(),
+                wave: c.wave as i32,
+                parent_finding_id: c.parent_finding_id,
+                disposition: disposition_str(&c.disposition).to_string(),
+            };
+            match golish_db::repo::attack_candidates::upsert_by_hash(&self.pool, &write).await {
+                Ok(_) => stored += 1,
+                Err(e) => tracing::warn!(
+                    target: "harness::submit_tool",
+                    operation_id = %operation_id,
+                    error = %e,
+                    "attack_candidate upsert failed"
+                ),
+            }
+        }
+        stored
     }
 }

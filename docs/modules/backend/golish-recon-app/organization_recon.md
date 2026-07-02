@@ -42,7 +42,7 @@
 
 - 归一记录/artifact 契约要与 asset-intel adapter 共用——改契约会影响两边 evidence 格式一致性。
 - 分阶段 runner 长耗 + 可取消；进度经 `ORGANIZATION_RECON_EVENT` 发前端。
-- `persistence.rs::land_dns_records` 落 `dns_records`：A/AAAA 走系统 stub resolver（`tokio::net::lookup_host`），**CNAME/MX/TXT 走 hickory-resolver**（`tokio::net::lookup_host` 只回 A/AAAA）。因为没有任何 stage 主动跑 dig（target_intel 禁 scan-tool fallback、EAS 复用继承 DNS），这里是 CNAME/MX/TXT **唯一**的采集点；DNS 查询打解析器不碰目标主机，仍属 zero-touch。每次查询独立 bounded（3s timeout）+ 非致命；resolver 构造失败时仍落 A/AAAA。
+- `persistence.rs::land_dns_records` 落 `dns_records`：A/AAAA 走系统 stub resolver（`tokio::net::lookup_host`），**CNAME/MX/TXT 走 hickory-resolver**（`tokio::net::lookup_host` 只回 A/AAAA）。因为没有任何 stage 主动跑 dig（target_intel 禁 scan-tool fallback、EAS 复用继承 DNS），这里是 CNAME/MX/TXT **唯一**的采集点；DNS 查询打解析器不碰目标主机，仍属 zero-touch。每次查询独立 bounded（3s timeout）+ 非致命；resolver 构造失败时仍落 A/AAAA。`refresh_per_asset_landing_summary` 还会返回确实尝试解析但无 A/AAAA/CNAME/MX/TXT 的 `dns_empty_hosts`，由有 evidence id 的 app bridge 写成 `technique_outcomes(GOLISH-INTEL-DNS, empty)`，避免“已查为空”和“未查”混淆。
 - `real_ip` 只认地址记录：首个 A、否则首个 AAAA（**绝不**用 CNAME/MX/TXT 的 value，否则会污染 `targets.real_ip`）。设计 2026-06-15 Phase 0；存量数据用 `recon_backfill_real_ip` 命令一次性回填（不重新解析）。
 
 ## 测试入口

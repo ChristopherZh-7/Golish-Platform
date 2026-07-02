@@ -51,6 +51,7 @@ pub use golish_pentest_app::execution_plans::*;
 pub use golish_pentest_app::methodology::*;
 pub use golish_pentest_app::output_parser::*;
 pub use golish_pentest_app::security_analysis::*;
+pub use golish_pentest_app::target_surface_hierarchy::*;
 pub use golish_platform_app::audit::*;
 pub use golish_platform_app::notes::*;
 pub use golish_platform_app::recordings::*;

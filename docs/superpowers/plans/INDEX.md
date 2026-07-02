@@ -43,6 +43,10 @@
 | 2026-06-06 | [scoping-per-mode-gate-hitl-p0](2026-06-06-scoping-per-mode-gate-hitl-p0.md) | ✅ |
 | 2026-06-25 | [stage-aware-db-refiner](2026-06-25-stage-aware-db-refiner.md) | ✅ |
 | 2026-06-25 | [runtime-supervisor](2026-06-25-runtime-supervisor.md) | ✅ |
+| 2026-07-02 | [gate-capability-ledger](2026-07-02-gate-capability-ledger.md) | ✅ |
+| 2026-07-02 | [dead-asset-liveness-state](2026-07-02-dead-asset-liveness-state.md) | ✅ |
+| 2026-07-02 | [asset-discovery-stage-and-delta-wave](2026-07-02-asset-discovery-stage-and-delta-wave.md) | ✅ |
+| 2026-07-02 | [eas-worker-evidence-and-service-fingerprint](2026-07-02-eas-worker-evidence-and-service-fingerprint.md) | ✅ |
 
 ## 2. Crate-per-service / Servitization / 架构健康 / P0 契约
 
@@ -82,6 +86,7 @@
 | 2026-05-28 | [target-surface-workbench](2026-05-28-target-surface-workbench.md) | ✅ |
 | 2026-05-28 | [target-topology-redesign](2026-05-28-target-topology-redesign.md) | ✅ |
 | 2026-06-02 | [organization-recon-closed-loop](2026-06-02-organization-recon-closed-loop.md) | ✅ |
+| 2026-07-02 | [frontend-fingerprint-display](2026-07-02-frontend-fingerprint-display.md) | ✅ |
 
 ## 4. 平台 / 跨平台 / Provider / LLM
 
@@ -104,4 +109,4 @@
 
 ---
 
-共 **67** 篇（62 日期前缀 + 5 legacy）。对应设计决策见 [`../../design/INDEX.md`](../../design/INDEX.md)；落地状态以 `feature_list.json` 为准。
+共 **71** 篇（66 日期前缀 + 5 legacy）。对应设计决策见 [`../../design/INDEX.md`](../../design/INDEX.md)；落地状态以 `feature_list.json` 为准。

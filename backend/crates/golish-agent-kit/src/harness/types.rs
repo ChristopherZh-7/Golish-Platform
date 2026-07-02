@@ -35,6 +35,9 @@ pub enum StageKind {
     ExternalAttackSurface,
     Enumeration,
     VulnTriage,
+    /// 候选合成阶段（设计 2026-07-02）：基于信息收集上下文 + vuln_triage found +
+    /// RAG 先验推理，产出结构化攻击假设 [`AttackCandidate`] 清单。真打验证前的桥。
+    AttackCandidate,
     Verification,
     AccessValidation,
     InternalDiscovery,
@@ -53,6 +56,7 @@ impl StageKind {
             Self::ExternalAttackSurface => "external_attack_surface",
             Self::Enumeration => "enumeration",
             Self::VulnTriage => "vuln_triage",
+            Self::AttackCandidate => "attack_candidate",
             Self::Verification => "verification",
             Self::AccessValidation => "access_validation",
             Self::InternalDiscovery => "internal_discovery",
@@ -72,6 +76,7 @@ impl StageKind {
             "external_attack_surface" => Self::ExternalAttackSurface,
             "enumeration" => Self::Enumeration,
             "vuln_triage" => Self::VulnTriage,
+            "attack_candidate" => Self::AttackCandidate,
             "verification" => Self::Verification,
             "access_validation" => Self::AccessValidation,
             "internal_discovery" => Self::InternalDiscovery,
@@ -147,6 +152,7 @@ pub struct StageClaim {
     pub kind: String,
     pub subject: String,
     pub summary: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub evidence_ids: Vec<EvidenceAuditId>,
     /// P5（2026-06-11）：该 claim 佐证的技术类 id（technique_taxonomy.json 登记，
     /// 如 GOLISH-INTEL-DNS / WSTG-INPV-05）。None = 未标注（旧数据 / 与 coverage
@@ -170,10 +176,68 @@ pub struct HarnessFinding {
     pub kind: String,
     pub subject: String,
     pub severity: FindingSeverity,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub evidence_refs: Vec<EvidenceAuditId>,
     /// P5（2026-06-11）：同 [`StageClaim::technique`]。
     #[serde(default)]
     pub technique: Option<String>,
+}
+
+/// AttackCandidate 优先级（设计 2026-07-02 §3.7）。`Default` = `Medium`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidatePriority {
+    High,
+    #[default]
+    Medium,
+    Low,
+}
+
+/// AttackCandidate 处置状态机（设计 2026-07-02 §3.7）。`Default` = `Proposed`。
+///
+/// B 阶段产出 `Proposed`；`exploit_validation` 人审后 → `Approved` / `Rejected`；
+/// C 真打后达终态 `Verified`（升 finding）/ `Refuted`（假阳性，须带证据 I8）/
+/// `Blocked`（WAF/权限/授权，须 note）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateDisposition {
+    #[default]
+    Proposed,
+    Approved,
+    Rejected,
+    Verified,
+    Refuted,
+    Blocked,
+}
+
+/// 结构化攻击假设（设计 2026-07-02 §3.3 / §3.7）。attack_candidate 阶段产物，挂
+/// [`StageDeliverable::candidates`]；`candidate_grounded` gate 校验每条有
+/// `rationale` + 非空 `evidence_refs`（堵凭空假设）。`parent_finding_id` 建立
+/// a→b→c 攻击链血缘；`wave` 标记第几波（chain-wave 循环去重/收敛用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttackCandidate {
+    pub candidate_id: Uuid,
+    pub target: String,
+    pub hypothesis: String,
+    /// WSTG / ATT&CK id（可选）。
+    #[serde(default)]
+    pub technique: Option<String>,
+    pub rationale: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub evidence_refs: Vec<EvidenceAuditId>,
+    /// wiki writeup / CVE id 等先验引用。
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub prior_refs: Vec<String>,
+    #[serde(default)]
+    pub suggested_approach: String,
+    #[serde(default)]
+    pub priority: CandidatePriority,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub wave: u32,
+    #[serde(default)]
+    pub parent_finding_id: Option<Uuid>,
+    #[serde(default)]
+    pub disposition: CandidateDisposition,
 }
 
 /// Coverage matrix 单元格状态（设计 `docs/design/2026-06-05-coverage-matrix.md`）。
@@ -263,10 +327,13 @@ pub struct StageDeliverable {
     /// `schema_check` still blocks (the nil guard is preserved as a safety net).
     #[serde(default)]
     pub stage_run_id: Uuid,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub claims: Vec<StageClaim>,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub evidence_refs: Vec<EvidenceAuditId>,
     #[serde(default, deserialize_with = "null_as_default")]
     pub skipped_checks: Vec<SkippedCheckRecord>,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub findings: Vec<HarnessFinding>,
     /// **app-level hint**; gate 以 spec 侧字段为准（min_invocations 等经 gate_rules
     /// 的 named_check 强制），不信此 agent 可清空的字段。min_invocations_check 读它做
@@ -277,6 +344,12 @@ pub struct StageDeliverable {
     /// 缺省空 = 不声明覆盖（向后兼容）。`coverage_complete` gate op 据此核完整性。
     #[serde(default, deserialize_with = "null_as_default")]
     pub coverage: Vec<CoverageCell>,
+    /// 攻击假设清单（设计 2026-07-02）：`attack_candidate` 阶段产物；`verification`
+    /// 阶段回填每条 candidate 的终态处置。缺省空 = 向后兼容（旧交付物 / 非
+    /// candidate 相关阶段），保证旧 JSON 与旧 `StageDeliverable {..}` 字面量以外的
+    /// 解析路径不破（I10）。
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub candidates: Vec<AttackCandidate>,
 }
 
 /// 向后兼容别名 (Phase B 泛化前的名字). 新代码用 `StageDeliverable`.
@@ -361,6 +434,65 @@ mod tests {
     }
 
     #[test]
+    fn attack_candidate_stage_kind_roundtrip() {
+        let k = StageKind::AttackCandidate;
+        assert_eq!(k.as_str(), "attack_candidate");
+        assert_eq!(StageKind::try_parse("attack_candidate"), Some(k));
+        let s = serde_json::to_string(&k).unwrap();
+        assert_eq!(s, "\"attack_candidate\"");
+    }
+
+    #[test]
+    fn attack_candidate_serde_defaults_and_roundtrip() {
+        // 最小 JSON（只给必填字段）应解析，可选字段走 default。
+        let c: AttackCandidate = serde_json::from_str(
+            r#"{"candidate_id":"3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
+                "target":"api.example.com","hypothesis":"IDOR on /orders/{id}",
+                "rationale":"sequential ids observed"}"#,
+        )
+        .expect("minimal candidate parses");
+        assert_eq!(c.priority, CandidatePriority::Medium);
+        assert_eq!(c.disposition, CandidateDisposition::Proposed);
+        assert_eq!(c.wave, 0);
+        assert!(c.evidence_refs.is_empty());
+        assert!(c.parent_finding_id.is_none());
+
+        // 显式 null 的可选集合字段不报错（弱模型习惯发 null）。
+        let c2: AttackCandidate = serde_json::from_str(
+            r#"{"candidate_id":"3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
+                "target":"a","hypothesis":"h","rationale":"r",
+                "evidence_refs":null,"prior_refs":null}"#,
+        )
+        .expect("null optional collections collapse to default");
+        assert!(c2.evidence_refs.is_empty());
+        assert!(c2.prior_refs.is_empty());
+    }
+
+    #[test]
+    fn candidate_enums_serde_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&CandidatePriority::High).unwrap(),
+            "\"high\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CandidateDisposition::Verified).unwrap(),
+            "\"verified\""
+        );
+    }
+
+    #[test]
+    fn stage_deliverable_candidates_default_and_roundtrip() {
+        // 旧交付物（无 candidates 键）解析为空（向后兼容 I10）。
+        let d: StageDeliverable = serde_json::from_str(
+            r#"{"stage_id":"attack_candidate",
+                "stage_run_id":"3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
+                "claims":[],"evidence_refs":[],"findings":[]}"#,
+        )
+        .expect("old deliverable without candidates parses");
+        assert!(d.candidates.is_empty());
+    }
+
+    #[test]
     fn risk_level_serde() {
         let r = serde_json::to_string(&RiskLevel::Medium).unwrap();
         assert_eq!(r, "\"medium\"");
@@ -404,6 +536,7 @@ mod tests {
             findings: vec![],
             required_checks_done: vec!["scope_status_present".to_string()],
             coverage: vec![],
+            candidates: vec![],
         };
         let s = serde_json::to_string(&d).unwrap();
         let back: ExternalAttackSurfaceDeliverable = serde_json::from_str(&s).unwrap();

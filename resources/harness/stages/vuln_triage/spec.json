@@ -7,9 +7,15 @@
   "risk_level": "high",
 
   "requires_stages": ["enumeration"],
-  "allowed_next_stages": ["verification", "reporting"],
+  "allowed_next_stages": ["attack_candidate", "reporting"],
 
   "allowed_tool_types": ["web/scanner", "web/cms", "exploit/edb"],
+
+  "$comment_formulaic": "Attack-stage split (design 2026-07-02): vuln_triage is redefined as the FORMULAIC SCAN stage — batch-run tool+dictionary/template techniques whose verdict is relatively objective (n-day PoC, sensitive dirs, weak creds, TLS, info leak, shallow IDOR/SQLi/XSS/cmd-injection tool sweeps). Reasoning-heavy classes (SSRF/SSTI/LFI/auth-bypass logic/business logic) move to the attack_candidate stage. specialist=vuln_scanner lets stage_run fan out per org; facts_from_db_truth + freshness_window mirror the info-gathering matrix paradigm.",
+  "specialist": "vuln_scanner",
+  "coverage_axis": ["UNAUTH", "IDOR", "NDAY", "DIR", "WEAKPW", "TLS", "INFO"],
+  "facts_from_db_truth": true,
+  "freshness_window": true,
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
@@ -43,6 +49,10 @@
     },
     {
       "op": "coverage_complete",
+      "derive_from_evidence": true,
+      "authoritative_found": true,
+      "authoritative_techniques": ["GOLISH-NDAY", "WSTG-CONF-05", "WSTG-ATHN-02", "WSTG-CRYP-03"],
+      "$comment_authoritative": "Phase 4 (gate-capability-ledger, incremental per design 2026-07-02 §11 open-Q3 + attack-stage plan P3 Task3.2): scope authoritative_found to the 4 most objective formulaic classes — n-day PoC (GOLISH-NDAY), sensitive exposure/config (WSTG-CONF-05), default/weak creds (WSTG-ATHN-02), TLS (WSTG-CRYP-03). For these, a hand-written 'found' no longer counts without a technique_outcomes DB fact; the deterministic nuclei handler (bridge_config.rs maybe_store_background_vuln_outcomes) upserts found/empty per covered WSTG class from -tags + JSON hits, so real scans close these cells and self-report cannot inflate them. The other 6 classes (INPV-05/01/12, ATHZ-04, SESS-02, INFO) keep legacy self-report until their scan write-paths land, so the live gate never permanently blocks (escape hatch: blocked/not_applicable+note still terminal for any class). Widen authoritative_techniques as more scanners upsert (design guardrail 2).",
       "on_fail": {
         "reason": "coverage incomplete: some (asset \u00d7 expected technique) cells were never attempted",
         "hints": ["for every in-scope asset, give each expected technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note"]
@@ -61,11 +71,11 @@
     }
   ],
 
-  "$comment_expected_techniques": "外网 web 记分层 15 技术类（设计 2026-06-05-vuln-triage-technique-matrix §3，对标 OWASP WSTG id；n-day 用 GOLISH-NDAY 自定义命名空间）。SQLi=INPV-05, XSS=INPV-01, 命令注入=INPV-12, SSTI=INPV-18, SSRF=INPV-19, IDOR=ATHZ-04, 路径穿越/LFI=ATHZ-01, 认证绕过=ATHN-04, 弱口令/爆破=ATHN-02, 会话/CSRF=SESS-02, 敏感暴露/配置=CONF-05, 传输/TLS=CRYP-03, 业务逻辑=BUSL, 信息泄露=INFO, n-day=GOLISH-NDAY。coverage_complete 据此核每个自报资产是否每类技术都有终态；coverage_denominator 再核每格是否对着 enumeration 分母测全（D6 默认全覆盖，抽样需 sampling_rationale）。",
+  "$comment_expected_techniques": "公式化扫描技术类（设计 2026-07-02 §3.9：只留工具+字典/模板能机械批量跑、判定相对客观的类，10 类）。SQLi=INPV-05, XSS=INPV-01, 命令注入=INPV-12（工具扫低垂果实层），IDOR=ATHZ-04（浅层替换批量），弱口令/爆破=ATHN-02, 会话/CSRF=SESS-02, 敏感暴露/配置=CONF-05, 传输/TLS=CRYP-03, 信息泄露=INFO, n-day=GOLISH-NDAY。需推理构造的类（SSTI=INPV-18, SSRF=INPV-19, 路径穿越/LFI=ATHZ-01, 认证绕过逻辑=ATHN-04, 业务逻辑=BUSL）移交 attack_candidate 阶段。coverage_complete 据此核每个自报资产是否每类技术都有终态（derive_from_evidence 补格：technique_outcomes 落库的真值也可关闭缺口）；coverage_denominator 再核每格是否对着 enumeration 分母测全（D6 默认全覆盖，抽样需 sampling_rationale）。",
   "expected_techniques": [
-    "WSTG-INPV-05", "WSTG-INPV-01", "WSTG-INPV-12", "WSTG-INPV-18", "WSTG-INPV-19",
-    "WSTG-ATHZ-04", "WSTG-ATHZ-01", "WSTG-ATHN-04", "WSTG-ATHN-02", "WSTG-SESS-02",
-    "WSTG-CONF-05", "WSTG-CRYP-03", "WSTG-BUSL", "WSTG-INFO", "GOLISH-NDAY"
+    "WSTG-INPV-05", "WSTG-INPV-01", "WSTG-INPV-12",
+    "WSTG-ATHZ-04", "WSTG-ATHN-02", "WSTG-SESS-02",
+    "WSTG-CONF-05", "WSTG-CRYP-03", "WSTG-INFO", "GOLISH-NDAY"
   ],
 
   "min_invocations": {},

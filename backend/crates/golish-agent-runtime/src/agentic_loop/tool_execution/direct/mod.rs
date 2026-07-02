@@ -224,6 +224,29 @@ async fn record_recon_passive_evidence(
                 }
             }
 
+            if tool_name == "recon_map_assets" {
+                if let (Some(org_id), Some(rid)) = (harness_org_id, session_id) {
+                    match repo
+                        .mark_target_intel_dns_empty_outcomes(org_id, rid, &[id])
+                        .await
+                    {
+                        Ok(count) if count > 0 => tracing::info!(
+                            target: "harness::evidence",
+                            tool = %tool_name,
+                            organization_id = %org_id,
+                            marked = count,
+                            "target_intel unresolved DNS assets marked checked_empty"
+                        ),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(
+                            target: "harness::evidence",
+                            error = %e,
+                            "target_intel DNS empty marker failed (continuing)"
+                        ),
+                    }
+                }
+            }
+
             Some(id)
         }
         Err(e) => {
@@ -251,6 +274,7 @@ fn is_security_analysis_direct_tool(tool_name: &str) -> bool {
             | "stage_worklist_status"
             | "stage_worklist_next"
             | "check_stage_asset_coverage"
+            | "list_recent_evidence"
     )
 }
 
@@ -888,6 +912,11 @@ mod direct_tool_routing_tests {
             is_security_analysis_direct_tool("stage_worklist_status"),
             "stage worklist status is exposed to active stages and must route through \
              the security-analysis executor"
+        );
+        assert!(
+            is_security_analysis_direct_tool("list_recent_evidence"),
+            "list_recent_evidence is exposed to active stages so workers can cite real \
+             evidence ids and must route through the security-analysis executor"
         );
     }
 }

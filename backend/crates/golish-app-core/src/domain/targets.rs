@@ -299,14 +299,14 @@ pub fn rank_attack_surface_seeds(targets: Vec<Target>, cap: Option<usize>) -> Ve
     targets
 }
 
-/// EAS host-aware port/service delegation (design 2026-06-30-eas-domain-port-
-/// delegation): the set of non-IP in-scope asset values whose resolved IP is
-/// already an in-scope IP target. Their `GOLISH-EAS-PORT` /
-/// `GOLISH-EAS-SERVICE-FINGERPRINT` coverage is delegated to that IP target, so
-/// the EAS gate drops those two techniques for these assets (LIVENESS stays
-/// required). Mirrors [`collapse_attack_surface_seed_aliases`]'s alias rule but
-/// keeps the domain in the coverage denominator for liveness. Empty when there
-/// are no in-scope IP targets to receive the delegated coverage.
+/// EAS host-aware alias exclusion (design 2026-06-30-eas-domain-port-
+/// delegation, tightened 2026-07-02): the set of non-IP in-scope asset values
+/// whose resolved IP is already an in-scope IP target. These rows are explanatory
+/// aliases for the concrete IP host; the EAS gate/read model can drop them from
+/// the direct denominator instead of scanning the same host once per domain or
+/// URL alias. Domains without a matching IP are not returned here; they remain
+/// liveness/vhost-only assets, and PORT/SERVICE still belongs to a concrete
+/// IP/CIDR target via `technique_resolver`.
 pub fn eas_port_delegated_domain_values(targets: &[Target]) -> BTreeSet<String> {
     let direct_ips: BTreeSet<String> = targets.iter().filter_map(direct_ip_seed_key).collect();
     if direct_ips.is_empty() {
@@ -466,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn eas_port_delegated_domain_values_delegates_alias_keeps_orphan_domain() {
+    fn eas_port_delegated_domain_values_delegates_alias_keeps_orphan_domain_liveness() {
         let ip = seed("115.28.135.55", "ip", "", None);
         let alias = seed("moresec.cn", "domain", "115.28.135.55", Some(200));
         let www_alias = seed("www.moresec.cn", "domain", "115.28.135.55", None);
@@ -479,7 +479,8 @@ mod tests {
         // Domains resolving to the in-scope IP delegate PORT/SERVICE to it …
         assert!(delegated.contains("moresec.cn"));
         assert!(delegated.contains("www.moresec.cn"));
-        // … a domain whose real_ip is NOT an in-scope IP keeps its own PORT/SERVICE.
+        // … a domain whose real_ip is NOT an in-scope IP is not an alias of that
+        // IP. It may still carry LIVENESS, but not PORT/SERVICE.
         assert!(!delegated.contains("m.moresec.cn"));
         assert!(!delegated.contains("bare.example.com"));
         // The IP target itself is never delegated (it carries the coverage).

@@ -10,11 +10,13 @@ import {
   RefreshCw,
   Server,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PortInfo, Target } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
+import { surfaceIdentityBackfill } from "@/lib/security-analysis";
 import { cn } from "@/lib/utils";
 import { useTargetSurfaceData } from "./hooks/useTargetSurfaceData";
+import { composeBackendSurfaceHierarchy } from "./surface/backendSurfaceHierarchy";
 import { countEndpointParams } from "./surface/endpointParams";
 import { EmptyInline, Metric, Section } from "./surface/SurfaceParts";
 import { buildSurfaceHierarchy, type SurfaceHierarchyVM } from "./surface/surfaceHierarchy";
@@ -37,7 +39,7 @@ import { SURFACE_TABS, type SurfaceTab } from "./surface/types";
 type IpSurfaceTab = "overview" | "endpoints" | "origins" | "domains" | "sensitive" | "evidence";
 type WorkbenchTab = SurfaceTab | IpSurfaceTab;
 
-const IP_SURFACE_TABS: Array<{ id: IpSurfaceTab; label: string }> = [
+export const IP_SURFACE_TABS: Array<{ id: IpSurfaceTab; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "endpoints", label: "Network Endpoints" },
   { id: "origins", label: "Web Origins" },
@@ -68,6 +70,11 @@ function IpOverviewTab({
   onSelectOrigin: (id: string) => void;
 }) {
   const unassignedCount = unassignedWebDataCount(hierarchy);
+  const backendContentCounts = hierarchy.summary.contentCountSource === "backend_content_counts";
+  const backendUnassignedCount = hierarchy.summary.contentUnassignedCount ?? 0;
+  const backendUnmatchedCount = hierarchy.summary.contentUnmatchedOriginCount ?? 0;
+  const showBackendAggregation =
+    backendContentCounts && (backendUnassignedCount > 0 || backendUnmatchedCount > 0);
   return (
     <div className="space-y-2.5">
       <Section title="IP Surface Overview" subtitle={hierarchy.rootTarget.value}>
@@ -114,6 +121,15 @@ function IpOverviewTab({
           />
         </div>
       </Section>
+
+      {showBackendAggregation && (
+        <Section title="Backend content aggregation" subtitle="counts only, no synthesized origins">
+          <div className="rounded border border-blue-500/25 bg-blue-500/5 px-2 py-1.5 text-[10px] text-blue-100/85">
+            Backend content aggregation found {backendUnassignedCount} unassigned items and{" "}
+            {backendUnmatchedCount} unmatched-origin items.
+          </div>
+        </Section>
+      )}
 
       <Section title="Web Origins" subtitle={`${hierarchy.webOrigins.length} inferred root(s)`}>
         {hierarchy.webOrigins.length === 0 ? (
@@ -202,6 +218,7 @@ export function TargetSurfaceWorkbench({
   onBack,
   backLabel,
   relatedDomains,
+  relatedWebTargets,
   onSelectDomain,
 }: {
   target: Target;
@@ -213,10 +230,15 @@ export function TargetSurfaceWorkbench({
   // When the subject is an IP/host, the parent passes the domains that resolve
   // to it; the Surface tab renders them as a clickable "domains" block.
   relatedDomains?: Target[];
+  // URL targets used only for WebOrigin inference. This may include IP-literal
+  // URL targets, which must not be displayed as Related Domains.
+  relatedWebTargets?: Target[];
   onSelectDomain?: (id: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<WorkbenchTab>("surface");
   const [selectedOriginId, setSelectedOriginId] = useState<string | null>(null);
+  const [backfillRunning, setBackfillRunning] = useState(false);
+  const [backfillResult, setBackfillResult] = useState<string | null>(null);
   const safeTarget = useMemo(
     () => ({
       ...target,
@@ -232,12 +254,33 @@ export function TargetSurfaceWorkbench({
       })),
     [relatedDomains]
   );
-  const relatedTargetIds = useMemo(
-    () => safeRelatedDomains?.map((domain) => domain.id).filter(Boolean) ?? [],
-    [safeRelatedDomains]
+  const safeRelatedWebTargets = useMemo(
+    () =>
+      relatedWebTargets?.map((webTarget) => ({
+        ...webTarget,
+        ports: Array.isArray(webTarget.ports) ? webTarget.ports : [],
+      })),
+    [relatedWebTargets]
   );
+  const relatedTargetIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of safeRelatedDomains ?? []) if (item.id) ids.add(item.id);
+    for (const item of safeRelatedWebTargets ?? []) if (item.id) ids.add(item.id);
+    return [...ids];
+  }, [safeRelatedDomains, safeRelatedWebTargets]);
   const projectPath = getProjectPath();
-  const { data, loading, error, reload } = useTargetSurfaceData(safeTarget.id, relatedTargetIds);
+  const {
+    data,
+    loading,
+    error,
+    reload,
+    backendHierarchy,
+    backendHierarchyStatus,
+    backendHierarchyError,
+  } = useTargetSurfaceData(safeTarget.id, relatedTargetIds, {
+    loadBackendHierarchy: safeTarget.type === "ip",
+    includeRelatedBackend: true,
+  });
   const servicePorts = useMemo(
     () => mergePortsForHost(safeTarget, safeRelatedDomains),
     [safeTarget, safeRelatedDomains]
@@ -260,12 +303,13 @@ export function TargetSurfaceWorkbench({
     () => buildSitemapItems(apiEndpoints, jsResults, data.directoryEntries),
     [apiEndpoints, data.directoryEntries, jsResults]
   );
-  const hierarchy = useMemo(
+  const frontendHierarchy = useMemo(
     () =>
       buildSurfaceHierarchy({
         rootTarget: safeTarget,
         servicePorts,
         relatedDomains: safeRelatedDomains,
+        relatedWebTargets: safeRelatedWebTargets,
         assets: data.assets,
         apiEndpoints,
         jsResults,
@@ -275,8 +319,21 @@ export function TargetSurfaceWorkbench({
         timeline: data.timeline,
         logs: data.logs,
       }),
-    [apiEndpoints, data, jsResults, safeRelatedDomains, safeTarget, servicePorts]
+    [
+      apiEndpoints,
+      data,
+      jsResults,
+      safeRelatedDomains,
+      safeRelatedWebTargets,
+      safeTarget,
+      servicePorts,
+    ]
   );
+  const hierarchyMerge = useMemo(
+    () => composeBackendSurfaceHierarchy(frontendHierarchy, backendHierarchy),
+    [backendHierarchy, frontendHierarchy]
+  );
+  const hierarchy = hierarchyMerge.hierarchy;
   const isIpSurface = hierarchy.mode === "ip";
   const endpointParamCount = useMemo(() => countEndpointParams(apiEndpoints), [apiEndpoints]);
   const sensitiveFindings = useMemo(
@@ -319,6 +376,22 @@ export function TargetSurfaceWorkbench({
       setSelectedOriginId(null);
     }
   }, [hierarchy.webOrigins, selectedOriginId]);
+
+  const runIdentityBackfill = useCallback(async () => {
+    setBackfillRunning(true);
+    setBackfillResult(null);
+    try {
+      const summary = await surfaceIdentityBackfill(projectPath, safeTarget.organization_id);
+      setBackfillResult(
+        `Identity backfill complete: ${summary.createdOrUpdatedNetworkEndpoints} endpoint(s), ${summary.createdOrUpdatedWebOrigins} origin(s), ${summary.createdOrUpdatedObservations} observation(s).`
+      );
+      await reload();
+    } catch (err) {
+      setBackfillResult(`Identity backfill failed: ${String(err)}`);
+    } finally {
+      setBackfillRunning(false);
+    }
+  }, [projectPath, reload, safeTarget.organization_id]);
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-background/20">
@@ -417,6 +490,37 @@ export function TargetSurfaceWorkbench({
           </button>
         ))}
       </nav>
+
+      {isIpSurface && (
+        <div className="flex items-start justify-between gap-2 border-b border-border/20 px-3 py-1.5 text-[10px] text-muted-foreground">
+          <div className="min-w-0">
+            {backendHierarchyStatus === "loading"
+              ? "Loading backend identity hierarchy. Web content is still matched by Web Origin."
+              : hierarchyMerge.message}
+            {backendHierarchyError && (
+              <span className="ml-2 text-red-300/85">{backendHierarchyError}</span>
+            )}
+            {!backendHierarchyError && hierarchyMerge.fallbackReason && (
+              <span className="ml-2">{hierarchyMerge.fallbackReason}</span>
+            )}
+            {backfillResult && <span className="ml-2 text-accent/85">{backfillResult}</span>}
+          </div>
+          <button
+            type="button"
+            onClick={() => void runIdentityBackfill()}
+            disabled={backfillRunning}
+            title="Build backend NetworkEndpoint / WebOrigin / observation rows from existing legacy data (additive, idempotent)."
+            className="inline-flex h-5 flex-shrink-0 items-center gap-1 rounded border border-border/30 bg-background/20 px-1.5 text-[10px] text-muted-foreground hover:bg-muted/25 hover:text-foreground disabled:opacity-50"
+          >
+            {backfillRunning ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Network className="h-3 w-3" />
+            )}
+            {backfillRunning ? "Building identity…" : "Build identity from data"}
+          </button>
+        </div>
+      )}
 
       <div
         className={cn(

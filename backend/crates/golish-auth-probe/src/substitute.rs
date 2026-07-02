@@ -110,7 +110,7 @@ fn substitute_template(endpoint: &Endpoint, kind: SubstituteKind<'_>) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use golish_js_analyzer::{AuthHint, CallSiteKind, Endpoint, UrlKind};
+    use golish_js_analyzer::{AuthHint, CallSiteKind, Endpoint, EndpointSource, UrlKind};
 
     fn ep(path: &str, kind: UrlKind, id_pos: Option<usize>, has_params: bool) -> Endpoint {
         Endpoint {
@@ -124,6 +124,7 @@ mod tests {
             url_kind: kind,
             has_path_params: has_params,
             id_param_position: id_pos,
+            source: EndpointSource::Regex,
         }
     }
 

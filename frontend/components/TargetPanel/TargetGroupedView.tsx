@@ -388,6 +388,25 @@ export function TargetGroupedView({
       )
       .sort((a, b) => a.value.localeCompare(b.value, "zh"));
   }, [selectedTarget, visibleTargets]);
+  const selectedTargetRelatedWebTargets = useMemo(() => {
+    if (!selectedTarget || selectedTarget.type !== "ip") return selectedTargetRelatedDomains;
+    const ip = selectedTarget.value.trim();
+    if (!ip) return selectedTargetRelatedDomains;
+    return visibleTargets
+      .filter((target) => {
+        if (
+          target.id === selectedTarget.id ||
+          target.organization_id !== selectedTarget.organization_id
+        ) {
+          return false;
+        }
+        if (selectedTargetRelatedDomains.some((related) => related.id === target.id)) return true;
+        if (target.type !== "url") return false;
+        if ((target.real_ip ?? "").trim() === ip) return true;
+        return isIpLiteralTargetValue(target);
+      })
+      .sort((a, b) => a.value.localeCompare(b.value, "zh"));
+  }, [selectedTarget, selectedTargetRelatedDomains, visibleTargets]);
 
   // Flatten the synthetic host/bucket nodes for O(1) lookup of the selected one,
   // so the right-hand workbench can show its IP + the domains resolving to it.
@@ -425,6 +444,20 @@ export function TargetGroupedView({
             .sort((a, b) => a.value.localeCompare(b.value))
         : [],
     [selectedHost, hostIpTarget]
+  );
+  const hostWebTargets = useMemo(
+    () =>
+      selectedHost
+        ? selectedHost.targets
+            .filter(
+              (target) =>
+                target.id !== hostIpTarget?.id &&
+                (hostDomains.some((domain) => domain.id === target.id) ||
+                  (target.type === "url" && isIpLiteralTargetValue(target)))
+            )
+            .sort((a, b) => a.value.localeCompare(b.value))
+        : [],
+    [selectedHost, hostIpTarget, hostDomains]
   );
   const hostWorkbenchTarget = useMemo<Target | null>(() => {
     if (!selectedHost) return null;
@@ -1045,6 +1078,7 @@ export function TargetGroupedView({
                 target={selectedTarget}
                 onUpdateNotes={onUpdateNotes}
                 relatedDomains={selectedTargetRelatedDomains}
+                relatedWebTargets={selectedTargetRelatedWebTargets}
                 onBack={() => setSelectedTargetId(null)}
                 backLabel={
                   selectedHost
@@ -1057,6 +1091,7 @@ export function TargetGroupedView({
                 target={hostWorkbenchTarget}
                 onUpdateNotes={hostIpTarget ? onUpdateNotes : () => {}}
                 relatedDomains={hostDomains}
+                relatedWebTargets={hostWebTargets}
               />
             ) : (
               <OrgWorkspacePanel

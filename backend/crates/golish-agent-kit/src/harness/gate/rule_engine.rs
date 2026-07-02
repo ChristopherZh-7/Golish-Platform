@@ -3,15 +3,15 @@
 //! stage JSON 用固定积木 op 声明过关标准；本模块是纯函数、DB-free、确定性解释器，
 //! 输出复用 `GateCheckOutcome` / `HarnessRecoveryActions`，由 `gate/mod.rs` 并进聚合。
 //! fail-closed：op / pred / over / field 全是 serde enum，写错的名字在 `StageSpec`
-//! 反序列化期即报错（被 `resources` 的 `all_twelve_stage_specs_load` 单测抓住）；
+//! 反序列化期即报错（被 `resources` 的 `all_thirteen_stage_specs_load` 单测抓住）；
 //! 字段与集合不匹配（如对 claims 取 severity）在求值期返回 config-error Block。
 
 use serde::{Deserialize, Serialize};
 
 use super::super::stage_spec::StageSpec;
 use super::super::types::{
-    CoverageCell, CoverageGapAction, CoverageStatus, FindingSeverity, HarnessFinding,
-    HarnessRecoveryActions, StageClaim, StageDeliverable,
+    CandidateDisposition, CoverageCell, CoverageGapAction, CoverageStatus, FindingSeverity,
+    HarnessFinding, HarnessRecoveryActions, StageClaim, StageDeliverable,
 };
 use super::{min_invocations_check, scope_check, surface_coverage_check, GateCheckOutcome};
 
@@ -121,6 +121,24 @@ pub enum GateRule {
         authoritative_techniques: Option<Vec<String>>,
         on_fail: OnFail,
     },
+    /// B 阶段（设计 2026-07-02 §3.8）：`attack_candidate` 交付物里每个
+    /// [`AttackCandidate`](super::super::types::AttackCandidate) 必须有非空
+    /// `rationale`，且 `require_evidence=true` 时非空 `evidence_refs`（堵凭空假设）。
+    /// 空 `candidates` = no-op Pass（完整性由 chain-wave 控制器保证，非本 op）。
+    CandidateGrounded {
+        #[serde(default)]
+        require_evidence: bool,
+        on_fail: OnFail,
+    },
+    /// C 阶段（设计 2026-07-02 §3.8）：每个 `disposition=approved` 的 candidate 必须
+    /// 达终态之一 verified/refuted/blocked；`require_evidence_for_verified=true` 时
+    /// verified 的须有非空 `evidence_refs`（ledger 强证据仍由 finding_verification
+    /// 把关）。无 approved candidate = no-op Pass。
+    CandidateDispositionComplete {
+        #[serde(default)]
+        require_evidence_for_verified: bool,
+        on_fail: OnFail,
+    },
 }
 
 /// `named_check` 逃生舱可调的内建 check（闭合枚举 → 写错名 serde 报错 fail-closed）。
@@ -151,7 +169,9 @@ impl GateRule {
             | GateRule::CoverageComplete { on_fail, .. }
             | GateRule::CoverageCorroborated { on_fail, .. }
             | GateRule::CoverageDenominator { on_fail, .. }
-            | GateRule::SourceCoverage { on_fail, .. } => on_fail.reason.clone(),
+            | GateRule::SourceCoverage { on_fail, .. }
+            | GateRule::CandidateGrounded { on_fail, .. }
+            | GateRule::CandidateDispositionComplete { on_fail, .. } => on_fail.reason.clone(),
             GateRule::NamedCheck { check, on_fail } => on_fail
                 .as_ref()
                 .map(|o| o.reason.clone())
@@ -170,6 +190,8 @@ impl GateRule {
             GateRule::CoverageCorroborated { .. } => "coverage_corroborated",
             GateRule::CoverageDenominator { .. } => "coverage_denominator",
             GateRule::SourceCoverage { .. } => "source_coverage",
+            GateRule::CandidateGrounded { .. } => "candidate_grounded",
+            GateRule::CandidateDispositionComplete { .. } => "candidate_disposition_complete",
         }
     }
 }
@@ -398,6 +420,14 @@ fn eval_one(
             authoritative_techniques,
             on_fail,
         } => source_coverage(d, spec, ctx, authoritative_techniques.as_deref(), on_fail),
+        GateRule::CandidateGrounded {
+            require_evidence,
+            on_fail,
+        } => candidate_grounded(d, *require_evidence, on_fail),
+        GateRule::CandidateDispositionComplete {
+            require_evidence_for_verified,
+            on_fail,
+        } => candidate_disposition_complete(d, *require_evidence_for_verified, on_fail),
     };
 
     // Observability (2026-06-16): the semantic gate rules were the ONLY gate layer
@@ -1284,6 +1314,55 @@ fn status_to_str(s: CoverageStatus) -> &'static str {
     }
 }
 
+/// `candidate_grounded` 求值（B 阶段，设计 2026-07-02 §3.8）。遍历
+/// `deliverable.candidates`：任一条 `rationale` 为空（trim 后），或
+/// `require_evidence && evidence_refs` 为空 → Block（reason/hints 取 on_fail）；
+/// 否则（含空 candidates）Pass。纯函数、DB-free。完整性（每个高价值资产是否都被推理
+/// 覆盖）由 chain-wave 控制器保证，不在本 op。
+fn candidate_grounded(
+    d: &StageDeliverable,
+    require_evidence: bool,
+    on_fail: &OnFail,
+) -> GateCheckOutcome {
+    let ungrounded = d
+        .candidates
+        .iter()
+        .any(|c| c.rationale.trim().is_empty() || (require_evidence && c.evidence_refs.is_empty()));
+    if ungrounded {
+        block_from(on_fail)
+    } else {
+        GateCheckOutcome::Pass
+    }
+}
+
+/// `candidate_disposition_complete` 求值（C 阶段，设计 2026-07-02 §3.8）。对
+/// `deliverable.candidates` 中 `disposition == Approved` 的每条：仍是 `Approved`
+/// （未达终态）→ Block；已 `Verified` 且 `require_evidence_for_verified` 但
+/// `evidence_refs` 为空 → Block。`Refuted` / `Blocked` / 带证据的 `Verified` /
+/// 无 approved candidate → Pass。注意 `Proposed`/`Rejected` 不在 C 的判定范围
+/// （前者未过审、后者人审否决），只对「被批准要真打」的 candidate 求终态。
+fn candidate_disposition_complete(
+    d: &StageDeliverable,
+    require_evidence_for_verified: bool,
+    on_fail: &OnFail,
+) -> GateCheckOutcome {
+    let unresolved = d.candidates.iter().any(|c| match c.disposition {
+        CandidateDisposition::Approved => true,
+        CandidateDisposition::Verified => {
+            require_evidence_for_verified && c.evidence_refs.is_empty()
+        }
+        CandidateDisposition::Proposed
+        | CandidateDisposition::Rejected
+        | CandidateDisposition::Refuted
+        | CandidateDisposition::Blocked => false,
+    });
+    if unresolved {
+        block_from(on_fail)
+    } else {
+        GateCheckOutcome::Pass
+    }
+}
+
 fn block_from(on_fail: &OnFail) -> GateCheckOutcome {
     GateCheckOutcome::Block {
         reasons: vec![on_fail.reason.clone()],
@@ -1371,6 +1450,7 @@ mod tests {
             findings,
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         }
     }
 
@@ -3251,6 +3331,7 @@ mod tests {
             findings: vec![],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         };
         assert!(eval(&d, &test_spec(), std::slice::from_ref(&rule))[0].is_pass());
 
@@ -3287,6 +3368,7 @@ mod tests {
             }],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         };
         assert!(eval(&d, &test_spec(), &[rule])[0].is_pass());
     }
@@ -3701,5 +3783,193 @@ mod tests {
             outcomes[1].is_pass(),
             "coverage_corroborated only inspects self-reported cells; the projected cell is not in d.coverage, so it isn't (and needn't be) corroborated"
         );
+    }
+
+    // ── attack_candidate / verification 专用 gate op（设计 2026-07-02 §3.8） ──────
+
+    fn deliverable_with_candidates(
+        stage_id: &str,
+        candidates: Vec<crate::harness::types::AttackCandidate>,
+    ) -> StageDeliverable {
+        let mut d = deliverable(vec![], vec![]);
+        d.stage_id = stage_id.to_string();
+        d.candidates = candidates;
+        d
+    }
+
+    fn candidate_with(
+        rationale: &str,
+        evidence: Vec<i64>,
+    ) -> crate::harness::types::AttackCandidate {
+        crate::harness::types::AttackCandidate {
+            candidate_id: Uuid::new_v4(),
+            target: "api.example.com".to_string(),
+            hypothesis: "IDOR on /orders/{id}".to_string(),
+            technique: None,
+            rationale: rationale.to_string(),
+            evidence_refs: evidence.into_iter().map(EvidenceAuditId::new).collect(),
+            prior_refs: vec![],
+            suggested_approach: String::new(),
+            priority: crate::harness::types::CandidatePriority::Medium,
+            wave: 0,
+            parent_finding_id: None,
+            disposition: CandidateDisposition::Proposed,
+        }
+    }
+
+    fn candidate_disposition(
+        disposition: CandidateDisposition,
+        evidence: Vec<i64>,
+    ) -> crate::harness::types::AttackCandidate {
+        let mut c = candidate_with("seq ids", evidence);
+        c.disposition = disposition;
+        c
+    }
+
+    #[test]
+    fn candidate_grounded_blocks_when_missing_rationale_or_evidence() {
+        // 无 evidence_refs（require_evidence=true）→ Block。
+        let rule = parse(
+            r#"{"op":"candidate_grounded","require_evidence":true,
+                "on_fail":{"reason":"candidate needs grounding"}}"#,
+        );
+        let d = deliverable_with_candidates(
+            "attack_candidate",
+            vec![candidate_with("seq ids", vec![])],
+        );
+        assert!(matches!(
+            eval_one(&d, &test_spec(), &GateContext::default(), &rule),
+            GateCheckOutcome::Block { .. }
+        ));
+
+        // 空 rationale → Block（即便有证据）。
+        let rule2 = parse(
+            r#"{"op":"candidate_grounded","on_fail":{"reason":"candidate needs grounding"}}"#,
+        );
+        let d2 =
+            deliverable_with_candidates("attack_candidate", vec![candidate_with("  ", vec![1])]);
+        assert!(matches!(
+            eval_one(&d2, &test_spec(), &GateContext::default(), &rule2),
+            GateCheckOutcome::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn candidate_grounded_passes_with_rationale_and_evidence() {
+        let rule = parse(
+            r#"{"op":"candidate_grounded","require_evidence":true,"on_fail":{"reason":"x"}}"#,
+        );
+        let d = deliverable_with_candidates(
+            "attack_candidate",
+            vec![candidate_with("seq ids", vec![1])],
+        );
+        assert!(matches!(
+            eval_one(&d, &test_spec(), &GateContext::default(), &rule),
+            GateCheckOutcome::Pass
+        ));
+    }
+
+    #[test]
+    fn candidate_grounded_empty_candidates_is_pass() {
+        // 无 candidate（bail 收敛）→ no-op Pass（完整性由控制器管，非本 op）。
+        let rule = parse(r#"{"op":"candidate_grounded","on_fail":{"reason":"x"}}"#);
+        let d = deliverable_with_candidates("attack_candidate", vec![]);
+        assert!(matches!(
+            eval_one(&d, &test_spec(), &GateContext::default(), &rule),
+            GateCheckOutcome::Pass
+        ));
+    }
+
+    #[test]
+    fn disposition_complete_blocks_approved_without_terminal() {
+        let rule = parse(
+            r#"{"op":"candidate_disposition_complete",
+                "require_evidence_for_verified":true,"on_fail":{"reason":"resolve every approved candidate"}}"#,
+        );
+        let d = deliverable_with_candidates(
+            "verification",
+            vec![candidate_disposition(
+                CandidateDisposition::Approved,
+                vec![],
+            )],
+        );
+        assert!(matches!(
+            eval_one(&d, &test_spec(), &GateContext::default(), &rule),
+            GateCheckOutcome::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn disposition_complete_verified_needs_evidence() {
+        let rule = parse(
+            r#"{"op":"candidate_disposition_complete",
+                "require_evidence_for_verified":true,"on_fail":{"reason":"x"}}"#,
+        );
+        // verified 无证据 → Block。
+        let d = deliverable_with_candidates(
+            "verification",
+            vec![candidate_disposition(
+                CandidateDisposition::Verified,
+                vec![],
+            )],
+        );
+        assert!(matches!(
+            eval_one(&d, &test_spec(), &GateContext::default(), &rule),
+            GateCheckOutcome::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn disposition_complete_passes_all_terminal_with_evidence() {
+        let rule = parse(
+            r#"{"op":"candidate_disposition_complete",
+                "require_evidence_for_verified":true,"on_fail":{"reason":"x"}}"#,
+        );
+        let d = deliverable_with_candidates(
+            "verification",
+            vec![
+                candidate_disposition(CandidateDisposition::Verified, vec![1]),
+                candidate_disposition(CandidateDisposition::Refuted, vec![2]),
+                candidate_disposition(CandidateDisposition::Blocked, vec![]),
+            ],
+        );
+        assert!(matches!(
+            eval_one(&d, &test_spec(), &GateContext::default(), &rule),
+            GateCheckOutcome::Pass
+        ));
+    }
+
+    #[test]
+    fn disposition_complete_no_approved_is_pass() {
+        // 全 proposed/rejected（无 approved，也无 verified 待证）→ no-op Pass。
+        let rule = parse(r#"{"op":"candidate_disposition_complete","on_fail":{"reason":"x"}}"#);
+        let d = deliverable_with_candidates(
+            "verification",
+            vec![
+                candidate_disposition(CandidateDisposition::Proposed, vec![]),
+                candidate_disposition(CandidateDisposition::Rejected, vec![]),
+            ],
+        );
+        assert!(matches!(
+            eval_one(&d, &test_spec(), &GateContext::default(), &rule),
+            GateCheckOutcome::Pass
+        ));
+    }
+
+    #[test]
+    fn candidate_ops_parse_and_fail_closed_on_typo() {
+        // typed-enum：正确 op 名解析成对应变体；写错名 serde fail-closed。
+        assert!(matches!(
+            parse(r#"{"op":"candidate_grounded","on_fail":{"reason":"x"}}"#),
+            GateRule::CandidateGrounded { .. }
+        ));
+        assert!(matches!(
+            parse(r#"{"op":"candidate_disposition_complete","on_fail":{"reason":"x"}}"#),
+            GateRule::CandidateDispositionComplete { .. }
+        ));
+        assert!(serde_json::from_str::<GateRule>(
+            r#"{"op":"candidate_bogus","on_fail":{"reason":"x"}}"#
+        )
+        .is_err());
     }
 }

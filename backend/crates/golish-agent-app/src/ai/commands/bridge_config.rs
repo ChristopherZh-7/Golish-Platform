@@ -1,7 +1,7 @@
 //! Agent-bridge wiring: assembles shared services (sidecar, db, graph,
 //! memory, sub-agents, pentest/MCP tools) onto a per-session [`AgentBridge`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use super::super::agent_bridge::AgentBridge;
@@ -204,6 +204,14 @@ fn spawn_background_completion_listener(
                         evidence_id,
                     )
                     .await;
+                    maybe_store_background_vuln_outcomes(
+                        &db_pool,
+                        &session_id,
+                        project_path.as_deref(),
+                        &jc,
+                        evidence_id,
+                    )
+                    .await;
 
                     // Observability (design 2026-06-05): surface background-job
                     // evidence as a first-class HarnessTrace so it appears in the
@@ -358,6 +366,23 @@ async fn maybe_store_background_batch_liveness_outcomes(
         .map(|snapshot| snapshot.stdout)
         .unwrap_or_else(|| jc.stdout_tail.clone());
     let source = background_evidence_tool_name(&jc.command);
+    if tool == "httpx" {
+        if let Some(allowed_host_assets) =
+            scoped_eas_outcome_asset_keys(db_pool, organization_id, EasOutcomeKeyMode::Host).await
+        {
+            let hits = httpx_probe_hits(&retained_stdout);
+            persist_eas_web_probe_hits(
+                db_pool,
+                organization_id,
+                project_path,
+                &source,
+                evidence_id,
+                &allowed_host_assets,
+                &hits,
+            )
+            .await;
+        }
+    }
 
     let mut stored = 0usize;
     let mut skipped = 0usize;
@@ -470,7 +495,18 @@ async fn maybe_store_background_batch_port_outcomes(
         .map(|snapshot| snapshot.stdout)
         .unwrap_or_else(|| jc.stdout_tail.clone());
     let open_counts = open_port_counts(tool.as_str(), &retained_stdout);
+    let open_hits = open_port_hits(tool.as_str(), &retained_stdout);
     let source = background_evidence_tool_name(&jc.command);
+    persist_eas_open_port_hits(
+        db_pool,
+        organization_id,
+        project_path,
+        &source,
+        evidence_id,
+        &allowed_assets,
+        &open_hits,
+    )
+    .await;
 
     let mut stored = 0usize;
     let mut skipped = 0usize;
@@ -589,6 +625,34 @@ async fn maybe_store_background_batch_service_outcomes(
         .map(|snapshot| snapshot.stdout)
         .unwrap_or_else(|| jc.stdout_tail.clone());
     let source = background_evidence_tool_name(&jc.command);
+    let web_hits = match tool.as_str() {
+        "whatweb" => whatweb_probe_hits(&retained_stdout),
+        _ => Vec::new(),
+    };
+    persist_eas_web_probe_hits(
+        db_pool,
+        organization_id,
+        project_path,
+        &source,
+        evidence_id,
+        &allowed_assets,
+        &web_hits,
+    )
+    .await;
+    let service_hits = match tool.as_str() {
+        "nmap" => nmap_service_hits(&retained_stdout),
+        _ => Vec::new(),
+    };
+    persist_eas_service_hits(
+        db_pool,
+        organization_id,
+        project_path,
+        &source,
+        evidence_id,
+        &allowed_assets,
+        &service_hits,
+    )
+    .await;
 
     let mut stored = 0usize;
     let mut skipped = 0usize;
@@ -647,6 +711,384 @@ async fn maybe_store_background_batch_service_outcomes(
     }
 }
 
+/// vuln_triage 公式化扫描（nuclei）的 `technique_outcomes` 落库
+/// （gate-capability-ledger Phase 2 / Task 2.2）。
+///
+/// crediting 从「动作」转「状态」：nuclei 命中一行 JSON = 某 `(host, WSTG 类)` `found`；
+/// 命令 `-tags`/`-tag` 指定的类是「本次真跑过」的覆盖集，跑了没命中 = `empty`（I8）；
+/// 既没被 `-tags` 覆盖、也没命中的类不 upsert（保持 `not_attempted`，fail-closed）。
+/// 覆盖集 / 命中类由 [`wstg_mapping::wstg_technique_for_tag`] 确定性推导，绝不模型
+/// 自报（护栏 1）。`asset` 过 `canonical_asset_key` 归一（护栏 3）。
+async fn maybe_store_background_vuln_outcomes(
+    db_pool: &sqlx::PgPool,
+    session_id: &str,
+    project_path: Option<&str>,
+    jc: &golish_app_core::background_jobs::JobCompletion,
+    evidence_id: Option<i64>,
+) {
+    use golish_app_core::background_jobs::JobStatus;
+
+    if jc.status != JobStatus::Done {
+        return;
+    }
+    let Some(organization_id) = jc.organization_id else {
+        return;
+    };
+    let Some(evidence_id) = evidence_id else {
+        return;
+    };
+    let Some(tool) = background_command_tool_name(&jc.command) else {
+        return;
+    };
+    // vuln_triage 的公式化扫描器：nuclei（模板+tag）、sqlmap（专测 SQLi）、wpscan
+    // （WordPress n-day JSON）。每个都由确定性 handler 从真实输出推导覆盖集/命中类
+    // （护栏 1，绝不模型自报）。nikto 暂不接：其输出是自由文本，tag→WSTG 归一有歧义，
+    // 强接会伪造覆盖（违反 fail-closed），待稳定契约后再扩展。
+    if !matches!(tool.as_str(), "nuclei" | "sqlmap" | "wpscan") {
+        return;
+    }
+
+    let mut targets = vuln_scan_command_targets(&tool, &jc.command);
+    if let Some(input) =
+        batch_input_text_from_command(&jc.command, project_path, &tool, &jc.job_id, "vuln").await
+    {
+        targets.extend(batch_input_targets(&input));
+    }
+    if targets.is_empty() {
+        return;
+    }
+
+    let Some(allowed_assets) =
+        scoped_eas_outcome_asset_keys(db_pool, organization_id, EasOutcomeKeyMode::Host).await
+    else {
+        return;
+    };
+    if allowed_assets.is_empty() {
+        tracing::info!(
+            target: "harness::evidence",
+            job_id = %jc.job_id,
+            org_id = %organization_id,
+            "background vuln outcomes skipped: org has no in-scope assets"
+        );
+        return;
+    }
+
+    let retained_stdout = golish_app_core::background_jobs::manager()
+        .snapshot(&jc.job_id)
+        .map(|snapshot| snapshot.stdout)
+        .unwrap_or_else(|| jc.stdout_tail.clone());
+    let source = background_evidence_tool_name(&jc.command);
+
+    // 覆盖集（本次真跑的 WSTG 类）+ 逐资产命中计数（按扫描器确定性推导，护栏 1）。
+    let covered = vuln_scan_covered_techniques(&tool, &jc.command);
+    let hits = vuln_scan_wstg_hits(&tool, &targets, &retained_stdout);
+
+    let mut stored = 0usize;
+    let mut skipped = 0usize;
+    for target in &targets {
+        let Some(asset) = golish_pentest_domain::canonical_asset_key(target).map(|key| key.key)
+        else {
+            skipped += 1;
+            continue;
+        };
+        if !allowed_assets.contains(&asset) {
+            skipped += 1;
+            continue;
+        }
+        let asset_hits = hits.get(&asset);
+        // 本资产要落的技术 = 覆盖集 ∪ 命中集（命中但未在 -tags 里的真命中也算 found）。
+        let mut techniques: std::collections::BTreeSet<&'static str> =
+            covered.iter().copied().collect();
+        if let Some(asset_hits) = asset_hits {
+            techniques.extend(asset_hits.keys().copied());
+        }
+        for technique in techniques {
+            let count = asset_hits
+                .and_then(|h| h.get(technique))
+                .copied()
+                .unwrap_or(0);
+            let outcome = if count > 0 { "found" } else { "empty" };
+            let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
+                organization_id,
+                run_id: session_id.to_string(),
+                asset: asset.clone(),
+                technique: technique.to_string(),
+                outcome: outcome.to_string(),
+                source: Some(source.clone()),
+                query: Some(jc.command.clone()),
+                result_count: Some(count.min(i32::MAX as usize) as i32),
+                confidence: None,
+                evidence_ids: vec![evidence_id],
+                collected_at: Some(chrono::Utc::now()),
+            };
+            match golish_db::repo::technique_outcomes::upsert(db_pool, &write).await {
+                Ok(()) => stored += 1,
+                Err(err) => {
+                    tracing::warn!(
+                        target: "harness::evidence",
+                        job_id = %jc.job_id,
+                        error = %err,
+                        "background vuln technique_outcome upsert failed"
+                    );
+                }
+            }
+        }
+    }
+
+    if stored > 0 || skipped > 0 {
+        tracing::info!(
+            target: "harness::evidence",
+            job_id = %jc.job_id,
+            org_id = %organization_id,
+            source = %source,
+            stored,
+            skipped,
+            "background vuln outcomes stored"
+        );
+    }
+}
+
+/// vuln_triage 公式化扫描器的命令行目标（逗号分隔可多个）。批量 `-l`/`--url-file`
+/// 目标由 [`batch_input_text_from_command`] 另行读入。
+fn vuln_scan_command_targets(tool: &str, command: &str) -> Vec<String> {
+    match tool {
+        "nuclei" => nuclei_command_targets(command),
+        // sqlmap / wpscan 用 `-u`/`--url` 指定目标。
+        "sqlmap" | "wpscan" => {
+            let mut targets = Vec::new();
+            if let Some(value) = command_flag_value(command, &["-u", "--url"]) {
+                for part in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    targets.push(part.to_string());
+                }
+            }
+            targets
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// 「本次真跑过」的 WSTG 覆盖集（确定性，护栏 1：由工具身份 + 命令推导，绝不模型自报）。
+///
+/// - nuclei：`-tags` 归一（见 [`nuclei_covered_techniques`]）。
+/// - sqlmap：专测 SQLi 的工具，跑了就等于「尝试过 WSTG-INPV-05」。
+/// - wpscan：专找 WordPress 已知漏洞，跑了就等于「尝试过 GOLISH-NDAY」。
+fn vuln_scan_covered_techniques(
+    tool: &str,
+    command: &str,
+) -> std::collections::BTreeSet<&'static str> {
+    use golish_agent_kit::harness::wstg_mapping::{GOLISH_NDAY, WSTG_SQLI};
+    match tool {
+        "nuclei" => nuclei_covered_techniques(command),
+        "sqlmap" => std::collections::BTreeSet::from([WSTG_SQLI]),
+        "wpscan" => std::collections::BTreeSet::from([GOLISH_NDAY]),
+        _ => std::collections::BTreeSet::new(),
+    }
+}
+
+/// 解析扫描器输出 → 每个 host 资产命中的 WSTG 类及次数（确定性）。
+///
+/// nuclei 的命中天然带 host（`matched-at`）故逐行聚合；sqlmap/wpscan 是单技术工具，
+/// 命中是「全局布尔」（此 run 是否证到 SQLi / n-day），故把全局命中归到命令行的
+/// 每个目标资产上（这些工具通常单目标 `-u`）。
+fn vuln_scan_wstg_hits(
+    tool: &str,
+    targets: &[String],
+    stdout: &str,
+) -> HashMap<String, HashMap<&'static str, usize>> {
+    use golish_agent_kit::harness::wstg_mapping::{GOLISH_NDAY, WSTG_SQLI};
+    match tool {
+        "nuclei" => nuclei_wstg_hits(stdout),
+        "sqlmap" => {
+            let hit = if sqlmap_injection_confirmed(stdout) {
+                vec![WSTG_SQLI]
+            } else {
+                vec![]
+            };
+            single_technique_hits(targets, &hit)
+        }
+        "wpscan" => {
+            let hit = if wpscan_vulnerability_found(stdout) {
+                vec![GOLISH_NDAY]
+            } else {
+                vec![]
+            };
+            single_technique_hits(targets, &hit)
+        }
+        _ => HashMap::new(),
+    }
+}
+
+/// 把单技术工具的「全局命中类」归到命令行每个目标资产上（过 `canonical_asset_key`
+/// 归一，护栏 3）。命中集为空 → 返回空 map（覆盖集仍会让 handler 记 `empty`，I8）。
+fn single_technique_hits(
+    targets: &[String],
+    hit_techniques: &[&'static str],
+) -> HashMap<String, HashMap<&'static str, usize>> {
+    let mut hits: HashMap<String, HashMap<&'static str, usize>> = HashMap::new();
+    if hit_techniques.is_empty() {
+        return hits;
+    }
+    for target in targets {
+        let Some(asset) = golish_pentest_domain::canonical_asset_key(target).map(|k| k.key) else {
+            continue;
+        };
+        let entry = hits.entry(asset).or_default();
+        for tech in hit_techniques {
+            *entry.entry(*tech).or_insert(0) += 1;
+        }
+    }
+    hits
+}
+
+/// sqlmap 是否确定性证到注入点。只认无歧义的成功标记（fail-closed）。
+fn sqlmap_injection_confirmed(stdout: &str) -> bool {
+    let lower = stdout.to_ascii_lowercase();
+    lower.contains("sqlmap identified the following injection point")
+        || lower.contains("the following injection point(s)")
+        || (lower.contains("parameter") && lower.contains("is vulnerable"))
+}
+
+/// wpscan（`--format json` 或文本）是否报出至少一个漏洞。
+///
+/// 优先解析 JSON：任一 `vulnerabilities` 数组非空 → 命中；能解析但全空 → 未命中。
+/// 非 JSON（未加 `--format json`）→ 不猜（fail-closed，返回 false，记为 checked_empty）。
+fn wpscan_vulnerability_found(stdout: &str) -> bool {
+    let trimmed = stdout.trim_start();
+    let start = trimmed.find('{');
+    let Some(start) = start else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&trimmed[start..]) else {
+        return false;
+    };
+    json_has_non_empty_vulnerabilities(&value)
+}
+
+/// 递归查 wpscan JSON 里是否存在非空 `vulnerabilities` 数组。
+fn json_has_non_empty_vulnerabilities(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Array(items)) = map.get("vulnerabilities") {
+                if !items.is_empty() {
+                    return true;
+                }
+            }
+            map.values().any(json_has_non_empty_vulnerabilities)
+        }
+        serde_json::Value::Array(items) => items.iter().any(json_has_non_empty_vulnerabilities),
+        _ => false,
+    }
+}
+
+/// nuclei 命令行里 `-u`/`-target`/`-host` 直接指定的目标（逗号分隔可多个）。
+/// `-l`/`-list` 文件目标由 [`batch_input_text_from_command`] 另行读入。
+fn nuclei_command_targets(command: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    if let Some(value) = command_flag_value(command, &["-u", "-target", "-host"]) {
+        for part in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            targets.push(part.to_string());
+        }
+    }
+    targets
+}
+
+/// 从 `-tags`/`-tag` 推导「本次真跑过」的 WSTG 覆盖集（确定性，护栏 1）。
+/// 无 `-tags` ⇒ 空集 ⇒ 只对真命中记 `found`，不臆造 `empty`（I8 fail-closed）。
+fn nuclei_covered_techniques(command: &str) -> std::collections::BTreeSet<&'static str> {
+    let mut covered = std::collections::BTreeSet::new();
+    if let Some(value) = command_flag_value(command, &["-tags", "-tag", "--tags"]) {
+        for tag in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(tech) = golish_agent_kit::harness::wstg_mapping::wstg_technique_for_tag(tag)
+            {
+                covered.insert(tech);
+            }
+        }
+    }
+    covered
+}
+
+/// 解析 nuclei JSON-lines stdout，聚合每个 host 资产命中的 WSTG 类及次数。
+/// host 取自 `matched-at` / `host` / `ip`，过 `canonical_asset_key` 归一；类取自
+/// `info.tags`（数组或逗号串）经 [`wstg_mapping::wstg_technique_for_tag`] 归一。
+fn nuclei_wstg_hits(stdout: &str) -> HashMap<String, HashMap<&'static str, usize>> {
+    let mut hits: HashMap<String, HashMap<&'static str, usize>> = HashMap::new();
+    for line in stdout.lines().map(str::trim).filter(|l| l.starts_with('{')) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let host_raw = value
+            .get("matched-at")
+            .or_else(|| value.get("matched_at"))
+            .or_else(|| value.get("host"))
+            .or_else(|| value.get("ip"))
+            .and_then(|v| v.as_str());
+        let Some(host_raw) = host_raw else {
+            continue;
+        };
+        let Some(asset) = golish_pentest_domain::canonical_asset_key(host_raw).map(|k| k.key)
+        else {
+            continue;
+        };
+        let techniques = nuclei_line_techniques(&value);
+        if techniques.is_empty() {
+            continue;
+        }
+        let entry = hits.entry(asset).or_default();
+        for tech in techniques {
+            *entry.entry(tech).or_insert(0) += 1;
+        }
+    }
+    hits
+}
+
+/// 从一行 nuclei JSON 的 `info.tags`（数组或逗号串）归一出命中的 WSTG 类。
+fn nuclei_line_techniques(value: &serde_json::Value) -> std::collections::BTreeSet<&'static str> {
+    let mut techniques = std::collections::BTreeSet::new();
+    let tags = value.get("info").and_then(|info| info.get("tags"));
+    let mut push_tag = |tag: &str| {
+        if let Some(tech) = golish_agent_kit::harness::wstg_mapping::wstg_technique_for_tag(tag) {
+            techniques.insert(tech);
+        }
+    };
+    match tags {
+        Some(serde_json::Value::Array(items)) => {
+            for item in items {
+                if let Some(tag) = item.as_str() {
+                    push_tag(tag);
+                }
+            }
+        }
+        Some(serde_json::Value::String(s)) => {
+            for tag in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+                push_tag(tag);
+            }
+        }
+        _ => {}
+    }
+    techniques
+}
+
+/// 取命令行某个 flag 的值，支持 `-flag value` 与 `-flag=value` 两种形式。
+/// 返回第一个命中的 flag 的值。
+fn command_flag_value(command: &str, flags: &[&str]) -> Option<String> {
+    let tokens = command_tokens(command);
+    let mut iter = tokens.iter().peekable();
+    while let Some(token) = iter.next() {
+        for flag in flags {
+            if let Some(rest) = token.strip_prefix(flag) {
+                if rest.is_empty() {
+                    if let Some(next) = iter.peek() {
+                        return Some(next.to_string());
+                    }
+                } else if let Some(value) = rest.strip_prefix('=') {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn batch_input_targets(input: &str) -> Vec<String> {
     input
         .lines()
@@ -688,6 +1130,758 @@ enum EasOutcomeKeyMode {
     Liveness,
     /// Port/service coverage is host-level.
     Host,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenPortHit {
+    host: String,
+    asset: String,
+    port: i32,
+    transport: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServiceHit {
+    host: String,
+    asset: String,
+    port: i32,
+    transport: String,
+    service_name: Option<String>,
+    service_product: Option<String>,
+    service_version: Option<String>,
+    banner: Option<String>,
+    raw_line: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WebProbeHit {
+    url: String,
+    host: String,
+    asset: String,
+    scheme: String,
+    port: i32,
+    status_code: Option<i32>,
+    title: Option<String>,
+    webserver: Option<String>,
+    content_type: Option<String>,
+    technologies: Vec<String>,
+    ip: Option<String>,
+    raw_line: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct EasLandingTargetRow {
+    id: uuid::Uuid,
+    value: String,
+    target_type: String,
+    real_ip: String,
+    project_path: Option<String>,
+}
+
+async fn persist_eas_open_port_hits(
+    db_pool: &sqlx::PgPool,
+    organization_id: uuid::Uuid,
+    project_path: Option<&str>,
+    source: &str,
+    evidence_id: i64,
+    allowed_assets: &BTreeSet<String>,
+    hits: &[OpenPortHit],
+) {
+    let mut stored_targets = 0usize;
+    let mut stored_endpoints = 0usize;
+    let mut skipped = 0usize;
+
+    for hit in hits {
+        if !allowed_assets.contains(&hit.asset) {
+            skipped += 1;
+            continue;
+        }
+        let rows = match load_eas_landing_targets_for_asset(
+            db_pool,
+            organization_id,
+            project_path,
+            &hit.asset,
+        )
+        .await
+        {
+            Ok(rows) => prefer_exact_landing_targets(rows, &hit.asset),
+            Err(err) => {
+                tracing::warn!(
+                    target: "harness::evidence",
+                    org_id = %organization_id,
+                    asset = %hit.asset,
+                    error = %err,
+                    "failed to load target rows for EAS port landing"
+                );
+                skipped += 1;
+                continue;
+            }
+        };
+        if rows.is_empty() {
+            skipped += 1;
+            continue;
+        }
+
+        let port_entry = serde_json::json!({
+            "port": hit.port,
+            "proto": hit.transport,
+            "service": "",
+            "state": "open",
+            "source": source,
+            "evidence_id": evidence_id,
+        });
+        let ports = serde_json::json!([port_entry]);
+        for row in &rows {
+            match golish_db::repo::targets::update_recon_extended_by_id(
+                db_pool, row.id, "", "", "", None, "", "", "", &ports,
+            )
+            .await
+            {
+                Ok(()) => stored_targets += 1,
+                Err(err) => tracing::warn!(
+                    target: "harness::evidence",
+                    target_id = %row.id,
+                    asset = %hit.asset,
+                    error = %err,
+                    "failed to persist EAS open port into targets.ports"
+                ),
+            }
+        }
+
+        if let Some(endpoint_ip) = endpoint_ip_for_hit(&hit.host, None, &rows) {
+            if let Some(identity) = golish_db::repo::surface_identity::normalize_network_endpoint(
+                &endpoint_ip,
+                hit.port,
+                &hit.transport,
+            ) {
+                match golish_db::repo::network_endpoints::upsert_by_identity(
+                    db_pool,
+                    Some(organization_id),
+                    project_path,
+                    &identity,
+                    Some("open"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(hit.port == 443),
+                    Some(source),
+                    Some(0.9),
+                    true,
+                )
+                .await
+                {
+                    Ok(_) => stored_endpoints += 1,
+                    Err(err) => tracing::warn!(
+                        target: "harness::evidence",
+                        asset = %hit.asset,
+                        port = hit.port,
+                        error = %err,
+                        "failed to persist EAS open port into network_endpoints"
+                    ),
+                }
+            }
+        }
+    }
+
+    if stored_targets > 0 || stored_endpoints > 0 || skipped > 0 {
+        tracing::info!(
+            target: "harness::evidence",
+            org_id = %organization_id,
+            source,
+            stored_targets,
+            stored_endpoints,
+            skipped,
+            "background EAS open ports landed into target surface tables"
+        );
+    }
+}
+
+async fn persist_eas_service_hits(
+    db_pool: &sqlx::PgPool,
+    organization_id: uuid::Uuid,
+    project_path: Option<&str>,
+    source: &str,
+    evidence_id: i64,
+    allowed_assets: &BTreeSet<String>,
+    hits: &[ServiceHit],
+) {
+    let mut stored_targets = 0usize;
+    let mut stored_endpoints = 0usize;
+    let mut stored_fingerprints = 0usize;
+    let mut skipped = 0usize;
+
+    for hit in hits {
+        if !allowed_assets.contains(&hit.asset) {
+            skipped += 1;
+            continue;
+        }
+        let rows = match load_eas_landing_targets_for_asset(
+            db_pool,
+            organization_id,
+            project_path,
+            &hit.asset,
+        )
+        .await
+        {
+            Ok(rows) => prefer_exact_landing_targets(rows, &hit.asset),
+            Err(err) => {
+                tracing::warn!(
+                    target: "harness::evidence",
+                    org_id = %organization_id,
+                    asset = %hit.asset,
+                    error = %err,
+                    "failed to load target rows for EAS service landing"
+                );
+                skipped += 1;
+                continue;
+            }
+        };
+        if rows.is_empty() {
+            skipped += 1;
+            continue;
+        }
+
+        let port_entry = serde_json::json!({
+            "port": hit.port,
+            "proto": hit.transport,
+            "service": hit.service_name.clone().unwrap_or_default(),
+            "product": hit.service_product.clone().unwrap_or_default(),
+            "version": hit.service_version.clone().unwrap_or_default(),
+            "banner": hit.banner.clone().unwrap_or_default(),
+            "state": "open",
+            "source": source,
+            "evidence_id": evidence_id,
+        });
+        let ports = serde_json::json!([port_entry]);
+        for row in &rows {
+            match golish_db::repo::targets::update_recon_extended_by_id(
+                db_pool, row.id, "", "", "", None, "", "", "", &ports,
+            )
+            .await
+            {
+                Ok(()) => stored_targets += 1,
+                Err(err) => tracing::warn!(
+                    target: "harness::evidence",
+                    target_id = %row.id,
+                    asset = %hit.asset,
+                    error = %err,
+                    "failed to persist EAS service into targets.ports"
+                ),
+            }
+
+            if let Some(name) = hit
+                .service_product
+                .as_deref()
+                .or(hit.service_name.as_deref())
+                .filter(|value| !value.trim().is_empty())
+            {
+                let evidence = serde_json::json!({
+                    "source": source,
+                    "evidence_id": evidence_id,
+                    "raw": hit.raw_line,
+                    "port": hit.port,
+                    "transport": hit.transport,
+                });
+                match golish_db::repo::fingerprints::upsert(
+                    db_pool,
+                    row.id,
+                    row.project_path.as_deref().or(project_path),
+                    "service",
+                    name,
+                    hit.service_version.as_deref(),
+                    0.85,
+                    &evidence,
+                    None,
+                    source,
+                )
+                .await
+                {
+                    Ok(_) => stored_fingerprints += 1,
+                    Err(err) => tracing::warn!(
+                        target: "harness::evidence",
+                        target_id = %row.id,
+                        asset = %hit.asset,
+                        error = %err,
+                        "failed to persist EAS service fingerprint"
+                    ),
+                }
+            }
+        }
+
+        if let Some(endpoint_ip) = endpoint_ip_for_hit(&hit.host, None, &rows) {
+            if let Some(identity) = golish_db::repo::surface_identity::normalize_network_endpoint(
+                &endpoint_ip,
+                hit.port,
+                &hit.transport,
+            ) {
+                match golish_db::repo::network_endpoints::upsert_by_identity(
+                    db_pool,
+                    Some(organization_id),
+                    project_path,
+                    &identity,
+                    Some("open"),
+                    hit.service_name.as_deref(),
+                    hit.service_product.as_deref(),
+                    hit.service_version.as_deref(),
+                    hit.banner.as_deref(),
+                    Some(service_name_implies_tls(
+                        hit.service_name.as_deref().unwrap_or_default(),
+                    )),
+                    Some(source),
+                    Some(0.85),
+                    true,
+                )
+                .await
+                {
+                    Ok(_) => stored_endpoints += 1,
+                    Err(err) => tracing::warn!(
+                        target: "harness::evidence",
+                        asset = %hit.asset,
+                        port = hit.port,
+                        error = %err,
+                        "failed to persist EAS service into network_endpoints"
+                    ),
+                }
+            }
+        }
+    }
+
+    if stored_targets > 0 || stored_endpoints > 0 || stored_fingerprints > 0 || skipped > 0 {
+        tracing::info!(
+            target: "harness::evidence",
+            org_id = %organization_id,
+            source,
+            stored_targets,
+            stored_endpoints,
+            stored_fingerprints,
+            skipped,
+            "background EAS services landed into target surface tables"
+        );
+    }
+}
+
+async fn persist_eas_web_probe_hits(
+    db_pool: &sqlx::PgPool,
+    organization_id: uuid::Uuid,
+    project_path: Option<&str>,
+    source: &str,
+    evidence_id: i64,
+    allowed_assets: &BTreeSet<String>,
+    hits: &[WebProbeHit],
+) {
+    let mut stored_targets = 0usize;
+    let mut stored_endpoints = 0usize;
+    let mut stored_origins = 0usize;
+    let mut stored_fingerprints = 0usize;
+    let mut skipped = 0usize;
+
+    for hit in hits {
+        if !allowed_assets.contains(&hit.asset) {
+            skipped += 1;
+            continue;
+        }
+        let rows = match load_eas_landing_targets_for_asset(
+            db_pool,
+            organization_id,
+            project_path,
+            &hit.asset,
+        )
+        .await
+        {
+            Ok(rows) => prefer_exact_landing_targets(rows, &hit.asset),
+            Err(err) => {
+                tracing::warn!(
+                    target: "harness::evidence",
+                    org_id = %organization_id,
+                    asset = %hit.asset,
+                    error = %err,
+                    "failed to load target rows for EAS web probe landing"
+                );
+                skipped += 1;
+                continue;
+            }
+        };
+        if rows.is_empty() {
+            skipped += 1;
+            continue;
+        }
+
+        let (service_product, service_version) = hit
+            .webserver
+            .as_deref()
+            .map(golish_pentest::output_store::parse_server_version)
+            .unwrap_or_else(|| (String::new(), None));
+        let service_product = (!service_product.is_empty()).then_some(service_product);
+        let port_entry = serde_json::json!({
+            "port": hit.port,
+            "proto": "tcp",
+            "service": hit.scheme,
+            "product": service_product.clone().unwrap_or_default(),
+            "version": service_version.clone().unwrap_or_default(),
+            "state": "open",
+            "tls_detected": hit.scheme == "https",
+            "url": hit.url,
+            "http_title": hit.title.clone().unwrap_or_default(),
+            "http_status": hit.status_code,
+            "webserver": hit.webserver.clone().unwrap_or_default(),
+            "content_type": hit.content_type.clone().unwrap_or_default(),
+            "technologies": hit.technologies.clone(),
+            "source": source,
+            "evidence_id": evidence_id,
+        });
+        let ports = serde_json::json!([port_entry]);
+
+        for row in &rows {
+            let real_ip = if is_ip_target_type_label(&row.target_type) {
+                ""
+            } else {
+                hit.ip.as_deref().unwrap_or("")
+            };
+            match golish_db::repo::targets::update_recon_extended_by_id(
+                db_pool,
+                row.id,
+                real_ip,
+                "",
+                hit.title.as_deref().unwrap_or(""),
+                hit.status_code,
+                hit.webserver.as_deref().unwrap_or(""),
+                "",
+                hit.content_type.as_deref().unwrap_or(""),
+                &ports,
+            )
+            .await
+            {
+                Ok(()) => stored_targets += 1,
+                Err(err) => tracing::warn!(
+                    target: "harness::evidence",
+                    target_id = %row.id,
+                    asset = %hit.asset,
+                    error = %err,
+                    "failed to persist EAS web probe into targets"
+                ),
+            }
+
+            stored_fingerprints += persist_web_fingerprints(
+                db_pool,
+                row,
+                project_path,
+                source,
+                evidence_id,
+                hit,
+                service_product.as_deref(),
+                service_version.as_deref(),
+            )
+            .await;
+        }
+
+        let endpoint =
+            if let Some(endpoint_ip) = endpoint_ip_for_hit(&hit.host, hit.ip.as_deref(), &rows) {
+                golish_db::repo::surface_identity::normalize_network_endpoint(
+                    &endpoint_ip,
+                    hit.port,
+                    "tcp",
+                )
+            } else {
+                None
+            };
+        let mut endpoint_id = None;
+        if let Some(identity) = endpoint {
+            match golish_db::repo::network_endpoints::upsert_by_identity(
+                db_pool,
+                Some(organization_id),
+                project_path,
+                &identity,
+                Some("open"),
+                Some(hit.scheme.as_str()),
+                service_product.as_deref(),
+                service_version.as_deref(),
+                hit.webserver.as_deref(),
+                Some(hit.scheme == "https"),
+                Some(source),
+                Some(0.9),
+                true,
+            )
+            .await
+            {
+                Ok(endpoint) => {
+                    endpoint_id = Some(endpoint.id);
+                    stored_endpoints += 1;
+                }
+                Err(err) => tracing::warn!(
+                    target: "harness::evidence",
+                    asset = %hit.asset,
+                    url = %hit.url,
+                    error = %err,
+                    "failed to persist EAS web probe into network_endpoints"
+                ),
+            }
+        }
+
+        if let Some(origin_identity) =
+            golish_db::repo::surface_identity::normalize_web_origin(&hit.url)
+        {
+            match golish_db::repo::web_origins::upsert_by_identity(
+                db_pool,
+                Some(organization_id),
+                project_path,
+                &origin_identity,
+                Some(source),
+                Some(0.9),
+                true,
+            )
+            .await
+            {
+                Ok(origin) => {
+                    stored_origins += 1;
+                    let raw = serde_json::json!({
+                        "source": source,
+                        "evidence_id": evidence_id,
+                        "raw": hit.raw_line,
+                        "technologies": hit.technologies.clone(),
+                    });
+                    let capture_path = format!("background:eas:{source}:{}", hit.url);
+                    let observed_ip = endpoint_ip_for_hit(&hit.host, hit.ip.as_deref(), &rows);
+                    let input = golish_db::repo::web_origin_observations::NewWebOriginObservation {
+                        organization_id: Some(organization_id),
+                        project_path,
+                        web_origin_id: origin.id,
+                        network_endpoint_id: endpoint_id,
+                        target_id: rows.first().map(|row| row.id),
+                        observed_ip: observed_ip.as_deref(),
+                        sni: (origin_identity.host_type == "domain")
+                            .then_some(origin_identity.host.as_str()),
+                        host_header: Some(origin_identity.host.as_str()),
+                        status_code: hit.status_code,
+                        title: hit.title.as_deref(),
+                        final_url: Some(hit.url.as_str()),
+                        redirect_chain: None,
+                        body_hash: None,
+                        favicon_hash: None,
+                        screenshot_path: None,
+                        capture_path: Some(capture_path.as_str()),
+                        confidence: Some(0.9),
+                        source: Some(source),
+                        raw: Some(&raw),
+                    };
+                    if let Err(err) =
+                        golish_db::repo::web_origin_observations::upsert_observation_dedupe(
+                            db_pool, &input,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            target: "harness::evidence",
+                            asset = %hit.asset,
+                            url = %hit.url,
+                            error = %err,
+                            "failed to persist EAS web origin observation"
+                        );
+                    }
+                }
+                Err(err) => tracing::warn!(
+                    target: "harness::evidence",
+                    asset = %hit.asset,
+                    url = %hit.url,
+                    error = %err,
+                    "failed to persist EAS web origin"
+                ),
+            }
+        }
+    }
+
+    if stored_targets > 0
+        || stored_endpoints > 0
+        || stored_origins > 0
+        || stored_fingerprints > 0
+        || skipped > 0
+    {
+        tracing::info!(
+            target: "harness::evidence",
+            org_id = %organization_id,
+            source,
+            stored_targets,
+            stored_endpoints,
+            stored_origins,
+            stored_fingerprints,
+            skipped,
+            "background EAS web probes landed into target surface tables"
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn persist_web_fingerprints(
+    db_pool: &sqlx::PgPool,
+    row: &EasLandingTargetRow,
+    project_path: Option<&str>,
+    source: &str,
+    evidence_id: i64,
+    hit: &WebProbeHit,
+    service_product: Option<&str>,
+    service_version: Option<&str>,
+) -> usize {
+    let mut stored = 0usize;
+    let evidence = serde_json::json!({
+        "source": source,
+        "evidence_id": evidence_id,
+        "url": hit.url,
+        "status_code": hit.status_code,
+        "raw": hit.raw_line,
+    });
+    if let Some(name) = service_product.filter(|name| !name.trim().is_empty()) {
+        match golish_db::repo::fingerprints::upsert(
+            db_pool,
+            row.id,
+            row.project_path.as_deref().or(project_path),
+            "web_server",
+            name,
+            service_version,
+            0.9,
+            &evidence,
+            None,
+            source,
+        )
+        .await
+        {
+            Ok(_) => stored += 1,
+            Err(err) => tracing::warn!(
+                target: "harness::evidence",
+                target_id = %row.id,
+                url = %hit.url,
+                error = %err,
+                "failed to persist EAS web server fingerprint"
+            ),
+        }
+    }
+    for tech in &hit.technologies {
+        let tech = tech.trim();
+        if tech.is_empty() || service_product.is_some_and(|name| name.eq_ignore_ascii_case(tech)) {
+            continue;
+        }
+        let (name, version) = golish_pentest::output_store::parse_server_version(tech);
+        if name.is_empty() {
+            continue;
+        }
+        match golish_db::repo::fingerprints::upsert(
+            db_pool,
+            row.id,
+            row.project_path.as_deref().or(project_path),
+            "technology",
+            &name,
+            version.as_deref(),
+            0.75,
+            &evidence,
+            None,
+            source,
+        )
+        .await
+        {
+            Ok(_) => stored += 1,
+            Err(err) => tracing::warn!(
+                target: "harness::evidence",
+                target_id = %row.id,
+                url = %hit.url,
+                technology = %name,
+                error = %err,
+                "failed to persist EAS technology fingerprint"
+            ),
+        }
+    }
+    stored
+}
+
+async fn load_eas_landing_targets_for_asset(
+    db_pool: &sqlx::PgPool,
+    organization_id: uuid::Uuid,
+    project_path: Option<&str>,
+    asset: &str,
+) -> Result<Vec<EasLandingTargetRow>, sqlx::Error> {
+    sqlx::query_as::<_, EasLandingTargetRow>(
+        r#"
+        SELECT id, value, target_type::text AS target_type, real_ip, project_path
+        FROM targets
+        WHERE scope::text = 'in'
+          AND organization_id = $1
+          AND ($2::text IS NULL OR project_path = $2 OR project_path = '')
+          AND (
+            lower(value) = lower($3)
+            OR EXISTS (
+                SELECT 1
+                FROM regexp_split_to_table(coalesce(real_ip, ''), '[,;[:space:]]+') AS ip
+                WHERE lower(ip) = lower($3)
+            )
+          )
+        ORDER BY
+          CASE WHEN lower(value) = lower($3) THEN 0 ELSE 1 END,
+          CASE WHEN target_type::text = 'ip' THEN 0 ELSE 1 END,
+          updated_at DESC
+        "#,
+    )
+    .bind(organization_id)
+    .bind(project_path)
+    .bind(asset)
+    .fetch_all(db_pool)
+    .await
+}
+
+fn prefer_exact_landing_targets(
+    rows: Vec<EasLandingTargetRow>,
+    asset: &str,
+) -> Vec<EasLandingTargetRow> {
+    let exact: Vec<EasLandingTargetRow> = rows
+        .iter()
+        .filter(|row| landing_row_value_matches_asset(row, asset))
+        .cloned()
+        .collect();
+    if exact.is_empty() {
+        rows
+    } else {
+        exact
+    }
+}
+
+fn landing_row_value_matches_asset(row: &EasLandingTargetRow, asset: &str) -> bool {
+    row.value.eq_ignore_ascii_case(asset)
+        || golish_pentest_domain::canonical_asset_key(&row.value)
+            .map(|key| key.key.eq_ignore_ascii_case(asset))
+            .unwrap_or(false)
+}
+
+fn endpoint_ip_for_hit(
+    host: &str,
+    explicit_ip: Option<&str>,
+    rows: &[EasLandingTargetRow],
+) -> Option<String> {
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Some(host.to_string());
+    }
+    if let Some(ip) = explicit_ip
+        .map(str::trim)
+        .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
+    {
+        return Some(ip.to_string());
+    }
+    rows.iter()
+        .flat_map(|row| split_real_ip_values(&row.real_ip))
+        .find(|ip| ip.parse::<std::net::IpAddr>().is_ok())
+}
+
+fn split_real_ip_values(value: &str) -> impl Iterator<Item = String> + '_ {
+    value
+        .split([',', ';', '\n', '\r', '\t', ' '])
+        .map(str::trim)
+        .filter(|ip| !ip.is_empty())
+        .map(str::to_string)
+}
+
+fn is_ip_target_type_label(target_type: &str) -> bool {
+    matches!(target_type, "ip" | "ipv4" | "ip_address" | "cidr")
+}
+
+fn service_name_implies_tls(service_name: &str) -> bool {
+    let service = service_name.to_ascii_lowercase();
+    service.contains("https") || service.contains("ssl") || service.contains("tls")
 }
 
 async fn scoped_eas_outcome_asset_keys(
@@ -793,38 +1987,349 @@ fn command_has_any_flag(command: &str, flags: &[&str]) -> bool {
     })
 }
 
-fn open_port_counts(tool: &str, stdout: &str) -> std::collections::HashMap<String, usize> {
-    let mut counts = std::collections::HashMap::new();
+fn open_port_counts(tool: &str, stdout: &str) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for hit in open_port_hits(tool, stdout) {
+        *counts.entry(hit.asset).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn open_port_hits(tool: &str, stdout: &str) -> Vec<OpenPortHit> {
+    let mut hits = Vec::new();
     for line in stdout
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
     {
-        let host = match tool {
-            "naabu" => host_from_naabu_line(line),
-            "masscan" => host_from_masscan_line(line),
+        let hit = match tool {
+            "naabu" => host_port_from_naabu_line(line),
+            "masscan" => host_port_from_masscan_line(line),
             _ => None,
         };
-        let Some(host) = host else {
+        let Some((host, port, transport)) = hit else {
             continue;
         };
         if let Some(asset) = golish_pentest_domain::canonical_asset_key(host).map(|key| key.key) {
-            *counts.entry(asset).or_insert(0) += 1;
+            hits.push(OpenPortHit {
+                host: host.to_string(),
+                asset,
+                port,
+                transport: transport.to_string(),
+            });
         }
     }
-    counts
+    hits
 }
 
-fn host_from_naabu_line(line: &str) -> Option<&str> {
+fn host_port_from_naabu_line(line: &str) -> Option<(&str, i32, &'static str)> {
     let (host, port) = line.rsplit_once(':')?;
-    port.chars().all(|c| c.is_ascii_digit()).then_some(host)
+    let port = port.parse::<i32>().ok()?;
+    (1..=65535).contains(&port).then_some((host, port, "tcp"))
 }
 
-fn host_from_masscan_line(line: &str) -> Option<&str> {
+fn host_port_from_masscan_line(line: &str) -> Option<(&str, i32, &str)> {
     line.strip_prefix("Discovered open port ")
         .and_then(|rest| rest.split_once(" on "))
-        .map(|(_, host)| host.trim())
-        .filter(|host| !host.is_empty())
+        .and_then(|(port_part, host)| {
+            let (port, transport) = port_part.split_once('/')?;
+            let port = port.trim().parse::<i32>().ok()?;
+            let transport = transport.trim();
+            ((1..=65535).contains(&port)
+                && matches!(transport, "tcp" | "udp")
+                && !host.trim().is_empty())
+            .then_some((host.trim(), port, transport))
+        })
+}
+
+fn httpx_probe_hits(stdout: &str) -> Vec<WebProbeHit> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            if line.starts_with('{') {
+                serde_json::from_str::<serde_json::Value>(line)
+                    .ok()
+                    .and_then(|value| httpx_probe_hit_from_json(&value, line))
+            } else if line.starts_with("http://") || line.starts_with("https://") {
+                web_probe_hit_from_url(line, None, None, None, None, Vec::new(), None, line)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn httpx_probe_hit_from_json(value: &serde_json::Value, raw_line: &str) -> Option<WebProbeHit> {
+    let url = value.get("url")?.as_str()?;
+    let status_code = value
+        .get("status_code")
+        .and_then(|value| value.as_i64())
+        .and_then(|value| i32::try_from(value).ok());
+    let title = json_string_field(value, "title");
+    let webserver = json_string_field(value, "webserver");
+    let content_type = json_string_field(value, "content_type");
+    let technologies = value
+        .get("tech")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let ip = json_string_field(value, "host_ip")
+        .or_else(|| json_string_field(value, "ip"))
+        .or_else(|| {
+            value
+                .get("a")
+                .and_then(|value| value.as_array())
+                .and_then(|items| items.iter().find_map(|item| item.as_str()))
+                .map(str::to_string)
+        });
+
+    web_probe_hit_from_url(
+        url,
+        status_code,
+        title,
+        webserver,
+        content_type,
+        technologies,
+        ip,
+        raw_line,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn web_probe_hit_from_url(
+    url: &str,
+    status_code: Option<i32>,
+    title: Option<String>,
+    webserver: Option<String>,
+    content_type: Option<String>,
+    technologies: Vec<String>,
+    ip: Option<String>,
+    raw_line: &str,
+) -> Option<WebProbeHit> {
+    let origin = golish_db::repo::surface_identity::normalize_web_origin(url)?;
+    let asset = golish_pentest_domain::canonical_asset_key(&origin.host).map(|key| key.key)?;
+    Some(WebProbeHit {
+        url: url.to_string(),
+        host: origin.host,
+        asset,
+        scheme: origin.scheme,
+        port: origin.port,
+        status_code,
+        title,
+        webserver,
+        content_type,
+        technologies: dedupe_strings(technologies),
+        ip,
+        raw_line: raw_line.to_string(),
+    })
+}
+
+fn whatweb_probe_hits(stdout: &str) -> Vec<WebProbeHit> {
+    stdout
+        .lines()
+        .filter_map(whatweb_probe_hit_from_line)
+        .collect()
+}
+
+fn whatweb_probe_hit_from_line(line: &str) -> Option<WebProbeHit> {
+    let clean = strip_ansi_codes(line);
+    let url_start = clean.find("http://").or_else(|| clean.find("https://"))?;
+    let after_url_start = &clean[url_start..];
+    let url_end = after_url_start
+        .find(char::is_whitespace)
+        .unwrap_or(after_url_start.len());
+    let url = &after_url_start[..url_end];
+    let rest = after_url_start[url_end..].trim_start();
+    let status_code = bracketed_status_code(rest);
+    let after_status = rest
+        .find(']')
+        .map(|idx| rest[idx + 1..].trim_start())
+        .unwrap_or(rest);
+    let parsed = parse_whatweb_plugins(after_status);
+    web_probe_hit_from_url(
+        url,
+        status_code,
+        parsed.title,
+        parsed.webserver,
+        None,
+        parsed.technologies,
+        None,
+        clean.trim(),
+    )
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct WhatWebPlugins {
+    webserver: Option<String>,
+    title: Option<String>,
+    technologies: Vec<String>,
+}
+
+fn parse_whatweb_plugins(input: &str) -> WhatWebPlugins {
+    let mut parsed = WhatWebPlugins::default();
+    let mut technologies = Vec::new();
+    for segment in input
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        let (name, value) = bracket_plugin(segment);
+        match name.to_ascii_lowercase().as_str() {
+            "httpserver" => {
+                if let Some(value) = value.as_deref().filter(|value| !value.is_empty()) {
+                    parsed.webserver = Some(value.to_string());
+                    technologies.push(value.to_string());
+                }
+            }
+            "poweredby" => {
+                if let Some(value) = value.as_deref().filter(|value| !value.is_empty()) {
+                    technologies.push(value.to_string());
+                }
+            }
+            "title" => {
+                parsed.title = value.filter(|value| !value.is_empty());
+            }
+            "ip" | "country" | "content-language" | "uncommonheaders" => {}
+            _ => {
+                technologies.push(value.unwrap_or(name));
+            }
+        }
+    }
+    parsed.technologies = dedupe_strings(technologies);
+    parsed
+}
+
+fn bracket_plugin(segment: &str) -> (String, Option<String>) {
+    let Some(start) = segment.find('[') else {
+        return (segment.trim().to_string(), None);
+    };
+    let name = segment[..start].trim().to_string();
+    let value = segment[start + 1..]
+        .find(']')
+        .map(|end| segment[start + 1..start + 1 + end].trim().to_string());
+    (name, value)
+}
+
+fn bracketed_status_code(input: &str) -> Option<i32> {
+    let open = input.find('[')?;
+    let inner = &input[open + 1..];
+    let code: String = inner.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+    if code.len() == 3 {
+        code.parse().ok()
+    } else {
+        None
+    }
+}
+
+fn nmap_service_hits(stdout: &str) -> Vec<ServiceHit> {
+    let mut hits = Vec::new();
+    let mut current_host: Option<String> = None;
+    for line in stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if let Some(host) = nmap_scan_report_host(line) {
+            current_host = Some(host);
+            continue;
+        }
+        let Some(host) = current_host.as_deref() else {
+            continue;
+        };
+        let Some(hit) = nmap_service_hit_from_line(host, line) else {
+            continue;
+        };
+        hits.push(hit);
+    }
+    hits
+}
+
+fn nmap_scan_report_host(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("Nmap scan report for ")?;
+    if let Some(open) = rest.rfind('(') {
+        if rest.ends_with(')') {
+            return Some(rest[open + 1..rest.len() - 1].trim().to_string());
+        }
+    }
+    rest.split_whitespace().next().map(str::to_string)
+}
+
+fn nmap_service_hit_from_line(host: &str, line: &str) -> Option<ServiceHit> {
+    let mut parts = line.split_whitespace();
+    let port_proto = parts.next()?;
+    let state = parts.next()?;
+    if state != "open" {
+        return None;
+    }
+    let service = parts.next()?.to_string();
+    let (port, transport) = port_proto.split_once('/')?;
+    let port = port.parse::<i32>().ok()?;
+    if !(1..=65535).contains(&port) || !matches!(transport, "tcp" | "udp") {
+        return None;
+    }
+    let banner = parts.collect::<Vec<_>>().join(" ");
+    let (product, version) = if banner.is_empty() {
+        (None, None)
+    } else {
+        let (name, version) = golish_pentest::output_store::parse_server_version(&banner);
+        (Some(name), version)
+    };
+    let asset = golish_pentest_domain::canonical_asset_key(host).map(|key| key.key)?;
+    Some(ServiceHit {
+        host: host.to_string(),
+        asset,
+        port,
+        transport: transport.to_string(),
+        service_name: Some(service),
+        service_product: product,
+        service_version: version,
+        banner: (!banner.is_empty()).then_some(banner),
+        raw_line: line.to_string(),
+    })
+}
+
+fn strip_ansi_codes(input: &str) -> String {
+    regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]")
+        .expect("valid ansi escape regex")
+        .replace_all(input, "")
+        .into_owned()
+}
+
+fn json_string_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn dedupe_strings(items: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for item in items {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let key = item.to_ascii_lowercase();
+        if seen.insert(key) {
+            out.push(item.to_string());
+        }
+    }
+    out
 }
 
 fn batch_input_file_from_command(
@@ -1787,6 +3292,210 @@ mod tests {
         let counts = open_port_counts("naabu", "Example.COM:443\n1.2.3.4:80\nnoise\n");
         assert_eq!(counts.get("example.com"), Some(&1));
         assert_eq!(counts.get("1.2.3.4"), Some(&1));
+    }
+
+    #[test]
+    fn open_port_hits_preserve_batch_ports() {
+        let hits = open_port_hits("naabu", "59.82.14.249:80\n59.82.14.249:443\nnoise\n");
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].asset, "59.82.14.249");
+        assert_eq!(hits[0].port, 80);
+        assert_eq!(hits[1].port, 443);
+        assert_eq!(hits[1].transport, "tcp");
+    }
+
+    #[test]
+    fn masscan_open_port_hits_keep_transport() {
+        let hits = open_port_hits(
+            "masscan",
+            "Discovered open port 53/udp on 1.2.3.4\nDiscovered open port 443/tcp on 1.2.3.4\n",
+        );
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].port, 53);
+        assert_eq!(hits[0].transport, "udp");
+        assert_eq!(hits[1].port, 443);
+        assert_eq!(hits[1].transport, "tcp");
+    }
+
+    #[test]
+    fn whatweb_probe_hits_strip_ansi_and_extract_web_facts() {
+        let stdout = "\u{1b}[1m\u{1b}[34mhttp://59.82.14.249\u{1b}[0m [404 Not Found] \u{1b}[1mHTTPServer\u{1b}[0m[\u{1b}[36mTengine\u{1b}[0m], \u{1b}[1mPoweredBy\u{1b}[0m[Tengine/2], \u{1b}[1mTitle\u{1b}[0m[\u{1b}[33m404 Not Found\u{1b}[0m]";
+        let hits = whatweb_probe_hits(stdout);
+
+        assert_eq!(hits.len(), 1);
+        let hit = &hits[0];
+        assert_eq!(hit.asset, "59.82.14.249");
+        assert_eq!(hit.scheme, "http");
+        assert_eq!(hit.port, 80);
+        assert_eq!(hit.status_code, Some(404));
+        assert_eq!(hit.webserver.as_deref(), Some("Tengine"));
+        assert!(hit.technologies.iter().any(|tech| tech == "Tengine/2"));
+    }
+
+    #[test]
+    fn httpx_probe_hits_parse_jsonl_metadata() {
+        let stdout = r#"{"url":"https://example.com","host":"example.com","host_ip":"1.2.3.4","port":"443","title":"hello","scheme":"https","webserver":"nginx/1.24","content_type":"text/html","status_code":200,"tech":["Nginx","React"]}"#;
+        let hits = httpx_probe_hits(stdout);
+
+        assert_eq!(hits.len(), 1);
+        let hit = &hits[0];
+        assert_eq!(hit.asset, "example.com");
+        assert_eq!(hit.ip.as_deref(), Some("1.2.3.4"));
+        assert_eq!(hit.port, 443);
+        assert_eq!(hit.status_code, Some(200));
+        assert_eq!(hit.webserver.as_deref(), Some("nginx/1.24"));
+        assert_eq!(hit.technologies, vec!["Nginx", "React"]);
+    }
+
+    #[test]
+    fn nmap_service_hits_parse_open_service_rows() {
+        let stdout = "Nmap scan report for scanme.example.com (45.33.32.156)\nPORT    STATE SERVICE VERSION\n80/tcp  open  http    Apache httpd 2.4.7\n443/tcp closed https\n";
+        let hits = nmap_service_hits(stdout);
+
+        assert_eq!(hits.len(), 1);
+        let hit = &hits[0];
+        assert_eq!(hit.asset, "45.33.32.156");
+        assert_eq!(hit.port, 80);
+        assert_eq!(hit.service_name.as_deref(), Some("http"));
+        assert_eq!(hit.service_product.as_deref(), Some("Apache httpd"));
+        assert_eq!(hit.service_version.as_deref(), Some("2.4.7"));
+    }
+
+    #[test]
+    fn nuclei_covered_techniques_from_tags_flag() {
+        use golish_agent_kit::harness::wstg_mapping::{WSTG_SQLI, WSTG_XSS};
+        let covered = nuclei_covered_techniques("nuclei -tags sqli,xss,unknown -u https://a.com");
+        assert!(covered.contains(WSTG_SQLI));
+        assert!(covered.contains(WSTG_XSS));
+        // unknown tag fail-closed: not counted as covered.
+        assert_eq!(covered.len(), 2);
+        // equals form.
+        let eq = nuclei_covered_techniques("nuclei -tags=cve -l hosts.txt");
+        assert!(eq.contains(golish_agent_kit::harness::wstg_mapping::GOLISH_NDAY));
+        // no -tags => empty covered set (only real hits credit found).
+        assert!(nuclei_command_targets("nuclei -u https://a.com")
+            .first()
+            .is_some());
+        assert!(nuclei_covered_techniques("nuclei -u https://a.com").is_empty());
+    }
+
+    #[test]
+    fn nuclei_command_targets_split_and_flags() {
+        let t = nuclei_command_targets("nuclei -u https://a.com,https://b.com -tags sqli");
+        assert_eq!(
+            t,
+            vec!["https://a.com".to_string(), "https://b.com".to_string()]
+        );
+        assert!(nuclei_command_targets("nuclei -l hosts.txt").is_empty());
+    }
+
+    #[test]
+    fn nuclei_wstg_hits_aggregate_per_asset_from_tags() {
+        use golish_agent_kit::harness::wstg_mapping::{GOLISH_NDAY, WSTG_EXPOSURE_CONFIG};
+        let stdout = concat!(
+            r#"{"template-id":"git-config","matched-at":"https://example.com/.git/config","info":{"name":"Git Config","tags":["exposure","config"]}}"#,
+            "\n",
+            r#"{"template-id":"CVE-2021-1","matched-at":"https://example.com/x","info":{"tags":"cve"}}"#,
+            "\n",
+            "noise line that is not json\n",
+        );
+        let hits = nuclei_wstg_hits(stdout);
+        let asset = hits.get("example.com").expect("example.com has hits");
+        // exposure+config both map to CONF-05 → counted twice on one line.
+        assert_eq!(asset.get(WSTG_EXPOSURE_CONFIG).copied(), Some(1));
+        assert_eq!(asset.get(GOLISH_NDAY).copied(), Some(1));
+    }
+
+    #[test]
+    fn nuclei_wstg_hits_skip_untagged_or_unmapped() {
+        // matched-at present but tags empty/unmapped → no credit (fail-closed).
+        let stdout = r#"{"matched-at":"https://a.com/p","info":{"tags":["network","tech"]}}"#;
+        assert!(nuclei_wstg_hits(stdout).is_empty());
+    }
+
+    #[test]
+    fn vuln_scan_covered_techniques_dispatches_per_tool() {
+        use golish_agent_kit::harness::wstg_mapping::{GOLISH_NDAY, WSTG_SQLI};
+        // sqlmap = SQLi tool → always attempts WSTG-INPV-05.
+        let sqlmap = vuln_scan_covered_techniques("sqlmap", "sqlmap -u https://a.com/?id=1 --batch");
+        assert_eq!(sqlmap.iter().copied().collect::<Vec<_>>(), vec![WSTG_SQLI]);
+        // wpscan = WordPress n-day tool → always attempts GOLISH-NDAY.
+        let wpscan = vuln_scan_covered_techniques("wpscan", "wpscan --url https://a.com --format json");
+        assert_eq!(wpscan.iter().copied().collect::<Vec<_>>(), vec![GOLISH_NDAY]);
+        // nuclei defers to tag parsing.
+        assert!(vuln_scan_covered_techniques("nuclei", "nuclei -u https://a.com").is_empty());
+        // unknown tool → empty (fail-closed).
+        assert!(vuln_scan_covered_techniques("nikto", "nikto -h https://a.com").is_empty());
+    }
+
+    #[test]
+    fn vuln_scan_command_targets_reads_url_flags() {
+        let sqlmap = vuln_scan_command_targets("sqlmap", "sqlmap -u https://a.com/?id=1 --batch");
+        assert_eq!(sqlmap, vec!["https://a.com/?id=1".to_string()]);
+        let wpscan = vuln_scan_command_targets("wpscan", "wpscan --url https://a.com,https://b.com");
+        assert_eq!(
+            wpscan,
+            vec!["https://a.com".to_string(), "https://b.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn sqlmap_confirmed_injection_credits_sqli_found() {
+        use golish_agent_kit::harness::wstg_mapping::WSTG_SQLI;
+        let stdout = "[INFO] testing connection\nsqlmap identified the following injection point(s) with a total of 42 HTTP(s) requests:\n---\nParameter: id (GET)";
+        let targets = vec!["https://a.com/?id=1".to_string()];
+        let hits = vuln_scan_wstg_hits("sqlmap", &targets, stdout);
+        // canonical_asset_key normalizes the URL target to its host key.
+        assert_eq!(
+            hits.get("a.com").and_then(|h| h.get(WSTG_SQLI)).copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn sqlmap_no_injection_is_empty_hits() {
+        let stdout = "[INFO] testing connection\n[WARNING] all tested parameters do not appear to be injectable";
+        let targets = vec!["https://a.com/?id=1".to_string()];
+        assert!(vuln_scan_wstg_hits("sqlmap", &targets, stdout).is_empty());
+    }
+
+    #[test]
+    fn wpscan_json_vulnerabilities_credit_nday_found() {
+        use golish_agent_kit::harness::wstg_mapping::GOLISH_NDAY;
+        let stdout = r#"{"version":{"number":"5.0","vulnerabilities":[{"title":"WP < 5.1 CSRF","references":{"cve":["2019-0000"]}}]},"plugins":{}}"#;
+        let targets = vec!["https://a.com".to_string()];
+        let hits = vuln_scan_wstg_hits("wpscan", &targets, stdout);
+        assert_eq!(hits.get("a.com").and_then(|h| h.get(GOLISH_NDAY)).copied(), Some(1));
+    }
+
+    #[test]
+    fn wpscan_json_no_vulnerabilities_is_empty_hits() {
+        let stdout = r#"{"version":{"number":"6.4","vulnerabilities":[]},"plugins":{"akismet":{"vulnerabilities":[]}}}"#;
+        let targets = vec!["https://a.com".to_string()];
+        assert!(vuln_scan_wstg_hits("wpscan", &targets, stdout).is_empty());
+    }
+
+    #[test]
+    fn wpscan_non_json_output_is_fail_closed_empty() {
+        // No --format json → free text → do not guess (fail-closed).
+        let stdout = "[+] URL: https://a.com/\n[i] Plugin(s) Identified:\n [+] akismet";
+        let targets = vec!["https://a.com".to_string()];
+        assert!(vuln_scan_wstg_hits("wpscan", &targets, stdout).is_empty());
+    }
+
+    #[test]
+    fn command_flag_value_space_and_equals_forms() {
+        assert_eq!(
+            command_flag_value("nuclei -tags sqli,xss -u x", &["-tags", "-tag"]).as_deref(),
+            Some("sqli,xss")
+        );
+        assert_eq!(
+            command_flag_value("nuclei -tags=cve -u x", &["-tags"]).as_deref(),
+            Some("cve")
+        );
+        assert_eq!(command_flag_value("nuclei -u x", &["-tags"]), None);
     }
 
     #[test]

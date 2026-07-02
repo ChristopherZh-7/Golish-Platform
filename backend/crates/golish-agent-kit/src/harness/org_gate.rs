@@ -286,11 +286,9 @@ pub async fn evaluate_org_stage_gate(
     }
 
     // 方案 A (设计 2026-06-30-eas-domain-port-delegation): EAS host-aware alias
-    // delegation — drop in-scope assets whose resolved IP is already an in-scope
-    // IP target from the coverage denominator. Their LIVENESS/PORT/SERVICE
-    // coverage is delegated to that IP target (mirrors the read-only precheck's
-    // `eas_alias_coverage_cells`), so removing them from the asset axis stops the
-    // authoritative gate from holding them to any EAS technique.
+    // exclusion — drop in-scope assets whose resolved IP is already an in-scope
+    // IP target from the coverage denominator. Orphan domains stay in the axis
+    // but only LIVENESS applies; PORT/SERVICE is IP/CIDR-only.
     if stage == StageKind::ExternalAttackSurface && !in_scope_assets.is_empty() {
         let delegated: std::collections::HashSet<String> = repo
             .eas_port_delegated_assets(org_id)
@@ -648,6 +646,7 @@ mod tests {
             findings: vec![],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         };
         assert_eq!(extract_pass_token(&d).as_deref(), Some("deadbeef"));
     }
@@ -664,6 +663,7 @@ mod tests {
             findings: vec![],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         };
         assert_eq!(extract_pass_token(&d), None);
         d.claims.push(StageClaim {

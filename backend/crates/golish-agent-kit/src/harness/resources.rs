@@ -33,7 +33,7 @@ macro_rules! stage_methodology_raw {
 
 /// 按 stage kind 取嵌入的 stage spec JSON 原文.
 ///
-/// 12 个 StageKind 全覆盖 (与 `resources/harness/stages/<stage>/spec.json` 一一对应).
+/// 13 个 StageKind 全覆盖 (与 `resources/harness/stages/<stage>/spec.json` 一一对应).
 pub fn stage_spec_json(kind: StageKind) -> &'static str {
     match kind {
         StageKind::Scoping => stage_json!("scoping/spec.json"),
@@ -41,6 +41,7 @@ pub fn stage_spec_json(kind: StageKind) -> &'static str {
         StageKind::ExternalAttackSurface => stage_json!("external_attack_surface/spec.json"),
         StageKind::Enumeration => stage_json!("enumeration/spec.json"),
         StageKind::VulnTriage => stage_json!("vuln_triage/spec.json"),
+        StageKind::AttackCandidate => stage_json!("attack_candidate/spec.json"),
         StageKind::Verification => stage_json!("verification/spec.json"),
         StageKind::AccessValidation => stage_json!("access_validation/spec.json"),
         StageKind::InternalDiscovery => stage_json!("internal_discovery/spec.json"),
@@ -99,6 +100,14 @@ pub fn stage_methodology_md(kind: StageKind) -> Option<&'static str> {
             stage_methodology_raw!("external_attack_surface/methodology.md")
         }
         StageKind::Enumeration => stage_methodology_raw!("enumeration/methodology.md"),
+        // Attack-stage split (design 2026-07-02): the formulaic-scan playbook, the
+        // candidate-synthesis playbook, and the real-exploit playbook. vuln_triage
+        // is the mechanical sweep; attack_candidate is a reasoning stage (no scan
+        // tools); verification really attacks the approved candidates to a terminal
+        // disposition.
+        StageKind::VulnTriage => stage_methodology_raw!("vuln_triage/methodology.md"),
+        StageKind::AttackCandidate => stage_methodology_raw!("attack_candidate/methodology.md"),
+        StageKind::Verification => stage_methodology_raw!("verification/methodology.md"),
         _ => return None,
     })
 }
@@ -146,13 +155,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_twelve_stage_specs_load_and_kind_matches() {
+    fn all_thirteen_stage_specs_load_and_kind_matches() {
         for kind in [
             StageKind::Scoping,
             StageKind::TargetIntel,
             StageKind::ExternalAttackSurface,
             StageKind::Enumeration,
             StageKind::VulnTriage,
+            StageKind::AttackCandidate,
             StageKind::Verification,
             StageKind::AccessValidation,
             StageKind::InternalDiscovery,
@@ -234,5 +244,25 @@ mod tests {
         // Stages without a playbook return None (charter appends nothing).
         assert!(stage_methodology_md(StageKind::Cleanup).is_none());
         assert!(stage_methodology_md(StageKind::Reporting).is_none());
+    }
+
+    // Attack-stage split (design 2026-07-02, P3 Task3.3): the two new attack-stage
+    // playbooks ship and carry their defining keywords. vuln_triage is the
+    // formulaic sweep (nuclei/dictionary batchable); attack_candidate is the
+    // reasoning stage that produces grounded hypotheses.
+    #[test]
+    fn attack_stage_playbooks_present_with_keywords() {
+        let vt = stage_methodology_md(StageKind::VulnTriage).expect("vuln_triage playbook");
+        assert!(vt.to_lowercase().contains("formulaic"));
+        assert!(vt.to_lowercase().contains("nuclei"));
+
+        let ac =
+            stage_methodology_md(StageKind::AttackCandidate).expect("attack_candidate playbook");
+        assert!(ac.to_lowercase().contains("hypothes"));
+        assert!(ac.to_lowercase().contains("rationale"));
+
+        let vf = stage_methodology_md(StageKind::Verification).expect("verification playbook");
+        assert!(vf.to_lowercase().contains("disposition"));
+        assert!(vf.to_lowercase().contains("verified"));
     }
 }

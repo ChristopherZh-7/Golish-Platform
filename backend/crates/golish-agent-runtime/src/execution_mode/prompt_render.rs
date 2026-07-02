@@ -157,6 +157,10 @@ const STATIC_SECURITY_ANALYSIS: &[ToolRow] = &[
         name: "stage_worklist_next",
         purpose: "Return the next batch of pending/error asset-technique work items for the active stage.",
     },
+    ToolRow {
+        name: "list_recent_evidence",
+        purpose: "List this run's REAL evidence-ledger ids with their tool/asset/technique so you can cite them in claim evidence_ids before submit.",
+    },
 ];
 
 const STATIC_GRAPH: &[ToolRow] = &[

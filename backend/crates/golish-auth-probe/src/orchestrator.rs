@@ -232,7 +232,7 @@ fn join_url(base: &str, path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use golish_js_analyzer::{AuthHint, CallSiteKind, UrlKind};
+    use golish_js_analyzer::{AuthHint, CallSiteKind, EndpointSource, UrlKind};
 
     fn ep(method: &str, path: &str) -> Endpoint {
         Endpoint {
@@ -246,6 +246,7 @@ mod tests {
             url_kind: UrlKind::Literal,
             has_path_params: false,
             id_param_position: None,
+            source: EndpointSource::Regex,
         }
     }
 

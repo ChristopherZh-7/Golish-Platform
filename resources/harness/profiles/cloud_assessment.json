@@ -16,6 +16,7 @@
   ],
 
   "forbidden_stage_kinds": [
+    "attack_candidate",
     "verification",
     "access_validation",
     "internal_discovery",

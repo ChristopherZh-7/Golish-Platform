@@ -5,7 +5,7 @@
   "phases": [
     { "id": "prep",         "stages": ["scoping", "target_intel"] },
     { "id": "active_recon", "stages": ["external_attack_surface", "enumeration"], "entry_approval": "active_scan" },
-    { "id": "vuln",         "stages": ["vuln_triage", "verification"], "entry_approval": "exploit_validation" },
+    { "id": "vuln",         "stages": ["vuln_triage", "attack_candidate", "verification"], "entry_approval": "exploit_validation" },
     { "id": "post_exploit", "stages": ["access_validation", "internal_discovery", "objective_pathing", "objective_simulation"] },
     { "id": "closeout",     "stages": ["reporting", "cleanup"] }
   ]

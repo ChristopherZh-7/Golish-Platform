@@ -308,6 +308,7 @@ mod tests {
             findings: vec![],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         };
 
         // Baseline (skeleton = None) passes.
@@ -363,6 +364,7 @@ mod tests {
             findings: vec![],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         };
         assert!(
             !validate_stage_gate(&d, &spec, None).allowed,
@@ -428,6 +430,7 @@ mod tests {
             }],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         };
         let base = validate_stage_gate(&deliverable, &spec, None);
         assert!(base.allowed, "baseline should pass: {:?}", base.reasons);
@@ -473,6 +476,7 @@ mod tests {
             findings: vec![],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         };
         let result = validate_stage_gate(&d, &spec, None);
         assert!(!result.allowed);
@@ -494,8 +498,10 @@ mod tests {
 
         let spec = load_embedded_stage_spec(StageKind::Enumeration).unwrap();
         // Enumeration no longer declares a stale `http_probe` hard floor. The
-        // named_check remains in the rule list for compatibility, but an empty
-        // `spec.min_invocations` is a no-op.
+        // vacuous named_check:min_invocations rule was dropped from the spec
+        // (2026-07-02 gate capability ledger Phase 0); completeness is enforced
+        // by the DIR/PARAM/JSAPI coverage matrix, so the gate must never block
+        // on a min_invocations reason here.
         let d = StageDeliverable {
             stage_id: "enumeration".to_string(),
             stage_run_id: Uuid::new_v4(),
@@ -512,6 +518,7 @@ mod tests {
             }],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         };
         let result = validate_stage_gate(&d, &spec, None);
         assert!(
@@ -526,13 +533,15 @@ mod tests {
 
     // ── coverage matrix / technique-matrix 样例接入 ───────────────────────────
     // coverage-matrix Task 6 + #4 + vuln-triage-technique-matrix T6：用迁移后的
-    // vuln_triage embedded spec（15 expected_techniques + coverage_complete +
-    // found/checked_empty 证据规则 + coverage_denominator）：完整覆盖 → Pass；删一格
+    // vuln_triage embedded spec（10 formulaic expected_techniques + coverage_complete
+    // + found/checked_empty 证据规则 + coverage_denominator）：完整覆盖 → Pass；删一格
     // 期望技术 → coverage_complete Block；checked_empty 清空证据 → 证据规则 Block；
     // 某格 tested<total 无 rationale → coverage_denominator Block。
 
-    /// 覆盖全部 15 类期望技术的 coverage（found/checked_empty 挂证据 + tested==total
-    /// 满足分母全覆盖；not_applicable 免分母免证据）。供下面两个集成测试复用。
+    /// 覆盖全部 10 类公式化期望技术的 coverage（found/checked_empty 挂证据 +
+    /// tested==total 满足分母全覆盖；not_applicable 免分母免证据）。供下面两个集成
+    /// 测试复用。Attack-stage split（设计 2026-07-02 §3.9）：SSTI/SSRF/LFI/认证绕过
+    /// 逻辑/业务逻辑 5 类已移交 attack_candidate，此处不再列。
     fn full_vuln_triage_coverage(
         asset: &str,
         eid: golish_pentest::evidence_ledger::EvidenceAuditId,
@@ -563,32 +572,40 @@ mod tests {
             },
             ce("WSTG-INPV-01"),
             ce("WSTG-INPV-12"),
-            ce("WSTG-INPV-18"),
-            CoverageCell {
-                asset: asset.into(),
-                technique: "WSTG-INPV-19".into(),
-                status: CoverageStatus::NotApplicable,
-                evidence_refs: vec![],
-                note: Some("no outbound fetch surface".into()),
-                reason_kind: None,
-                tested_units: 0,
-                total_units: 0,
-                sampling_rationale: None,
-            },
             ce("WSTG-ATHZ-04"),
-            ce("WSTG-ATHZ-01"),
-            ce("WSTG-ATHN-04"),
             ce("WSTG-ATHN-02"),
             ce("WSTG-SESS-02"),
             ce("WSTG-CONF-05"),
             ce("WSTG-CRYP-03"),
-            ce("WSTG-BUSL"),
             ce("WSTG-INFO"),
             ce("GOLISH-NDAY"),
         ]
     }
 
-    /// vuln_triage 的「全过关」deliverable（1 claim + 1 finding 挂证据 + 15 格全覆盖）。
+    /// GateContext carrying the DB Empty facts the 4 authoritative vuln_triage
+    /// classes now require (Phase 4 scoped authoritative flip): GOLISH-NDAY /
+    /// WSTG-CONF-05 / WSTG-ATHN-02 / WSTG-CRYP-03 are `checked_empty` in the
+    /// fixture, so in authoritative mode their cells only close with a real
+    /// technique_outcomes Empty fact (what the nuclei handler upserts on a
+    /// covered-but-no-hit scan). The other 6 classes stay legacy self-report.
+    fn vuln_triage_authoritative_ctx(asset: &str) -> super::rule_engine::GateContext {
+        use super::rule_engine::{EvidenceFact, EvidenceOutcome, GateContext};
+        let facts = ["GOLISH-NDAY", "WSTG-CONF-05", "WSTG-ATHN-02", "WSTG-CRYP-03"]
+            .into_iter()
+            .map(|t| EvidenceFact {
+                asset: asset.to_string(),
+                technique: t.to_string(),
+                outcome: EvidenceOutcome::Empty,
+                evidence_id: 1,
+            })
+            .collect();
+        GateContext {
+            evidence_facts: Some(facts),
+            ..Default::default()
+        }
+    }
+
+    /// vuln_triage 的「全过关」deliverable（1 claim + 1 finding 挂证据 + 10 格全覆盖）。
     fn vuln_triage_pass_deliverable(
         asset: &str,
         eid: golish_pentest::evidence_ledger::EvidenceAuditId,
@@ -616,6 +633,7 @@ mod tests {
             }],
             required_checks_done: vec![],
             coverage: full_vuln_triage_coverage(asset, eid),
+            candidates: vec![],
         }
     }
 
@@ -626,29 +644,32 @@ mod tests {
         use golish_pentest::evidence_ledger::EvidenceAuditId;
 
         let spec = load_embedded_stage_spec(StageKind::VulnTriage).unwrap();
-        // sanity：样例声明 15 类期望技术（技术矩阵 §3）。
-        assert_eq!(spec.expected_techniques.len(), 15);
+        // sanity：样例声明 10 类公式化期望技术（设计 2026-07-02 §3.9 收窄后）。
+        assert_eq!(spec.expected_techniques.len(), 10);
 
         let eid = EvidenceAuditId::new(1);
         let asset = "api.example.com";
+        let ctx = vuln_triage_authoritative_ctx(asset);
         let pass_deliverable = vuln_triage_pass_deliverable(asset, eid);
-        let pass = validate_stage_gate(&pass_deliverable, &spec, None);
+        let pass = validate_stage_gate_with_context(&pass_deliverable, &spec, None, None, &ctx);
         assert!(
             pass.allowed,
-            "full coverage should pass: {:?}",
+            "full coverage (with authoritative DB facts) should pass: {:?}",
             pass.reasons
         );
 
-        // 删掉 GOLISH-NDAY 那格 → coverage_complete 应 Block 且 reason 含缺口。
+        // 删掉 WSTG-INFO 那格（legacy 自报类，ctx 无其 DB 事实）→ 既无自报 cell 也无
+        // 账本事实 → coverage_complete 应 Block 且 reason 含该缺口。（不删 4 个 authoritative
+        // 类：它们即使删了 cell 也会被 ctx 的 Empty 事实经 derive_from_evidence 补齐，不构成缺口。）
         let mut incomplete = pass_deliverable.clone();
-        incomplete.coverage.retain(|c| c.technique != "GOLISH-NDAY");
-        let blocked = validate_stage_gate(&incomplete, &spec, None);
+        incomplete.coverage.retain(|c| c.technique != "WSTG-INFO");
+        let blocked = validate_stage_gate_with_context(&incomplete, &spec, None, None, &ctx);
         assert!(!blocked.allowed);
         assert!(
             blocked
                 .reasons
                 .iter()
-                .any(|r| r.contains("coverage incomplete") && r.contains("GOLISH-NDAY")),
+                .any(|r| r.contains("coverage incomplete") && r.contains("WSTG-INFO")),
             "coverage_complete should fire naming the gap: {:?}",
             blocked.reasons
         );
@@ -689,11 +710,15 @@ mod tests {
         let spec = load_embedded_stage_spec(StageKind::VulnTriage).unwrap();
         let eid = EvidenceAuditId::new(1);
         let asset = "api.example.com";
+        // The 4 authoritative classes now need DB Empty facts to close (Phase 4);
+        // the cell we mutate below (first checked_empty = a legacy self-report
+        // class) exercises the denominator gate independently.
+        let ctx = vuln_triage_authoritative_ctx(asset);
 
         // 基线全覆盖（每格 tested==total）→ Pass。
         let base = vuln_triage_pass_deliverable(asset, eid);
         assert!(
-            validate_stage_gate(&base, &spec, None).allowed,
+            validate_stage_gate_with_context(&base, &spec, None, None, &ctx).allowed,
             "full-denominator coverage should pass"
         );
 
@@ -709,7 +734,7 @@ mod tests {
             c.total_units = 5000;
             c.sampling_rationale = None;
         }
-        let blocked = validate_stage_gate(&partial, &spec, None);
+        let blocked = validate_stage_gate_with_context(&partial, &spec, None, None, &ctx);
         assert!(!blocked.allowed);
         assert!(
             blocked.reasons.iter().any(|r| r.contains("3/5000")),
@@ -727,7 +752,7 @@ mod tests {
             c.tested_units = 5000;
         }
         assert!(
-            validate_stage_gate(&fixed, &spec, None).allowed,
+            validate_stage_gate_with_context(&fixed, &spec, None, None, &ctx).allowed,
             "tested==total should clear the denominator gate"
         );
     }
@@ -780,6 +805,7 @@ mod tests {
                 total_units: 1,
                 sampling_rationale: None,
             }],
+            candidates: vec![],
         };
 
         // 无 skeleton：spec.expected_techniques 空 → coverage_complete no-op → allowed。

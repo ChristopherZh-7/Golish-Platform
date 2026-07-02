@@ -18,7 +18,25 @@ export type OriginScheme = "http" | "https" | "unknown";
 export type HostType = "domain" | "ip";
 export type SurfaceConfidence = "confirmed" | "inferred";
 export type EndpointTransport = "tcp" | "udp" | "unknown";
-export type EndpointSource = "target_ports" | "target_assets" | "url_inferred" | "unknown";
+export type IdentitySource = "backend_identity" | "frontend_inferred";
+/**
+ * Where a WebOrigin's *display counts* come from. Independent of `IdentitySource`:
+ * a `backend_identity` origin can still fall back to `frontend_content_inferred`
+ * counts when the backend payload omitted `contentCounts`.
+ */
+export type ContentCountSource = "backend_content_counts" | "frontend_content_inferred";
+export type EndpointSource =
+  | "target_ports"
+  | "target_assets"
+  | "url_inferred"
+  | "backend_identity"
+  | "frontend_inferred"
+  | "unknown";
+export type SurfaceHierarchyDataSource =
+  | "frontend_inferred"
+  | "backend_identity"
+  | "legacy_fallback"
+  | "backend_unavailable";
 
 export interface WebOriginKey {
   id: string;
@@ -63,21 +81,61 @@ export type NetworkEndpointVM = {
   ip?: string;
   port: number;
   transport: EndpointTransport;
+  state?: string;
   service?: string;
+  serviceName?: string;
+  serviceProduct?: string;
+  serviceVersion?: string;
   tls?: boolean;
   source: EndpointSource;
   webOriginIds: string[];
+  observationIds?: string[];
   confidence: SurfaceConfidence;
+};
+
+/**
+ * Lightweight backend content ref (Phase 2.5C). Mirrors
+ * `BackendWebOriginContentRefDto`; used only to render a compact list in the
+ * WebOrigin detail when the full frontend legacy rows are not loaded. Never
+ * promoted into full `ApiEndpoint` / `JsAnalysisResult` rows.
+ */
+export type WebOriginContentRef = {
+  kind: string;
+  id: string;
+  url: string;
+  method: string | null;
+  statusCode: number | null;
+  capturePath: string | null;
+  source: string | null;
+};
+
+export type WebOriginObservationVM = {
+  id: string;
+  webOriginId: string;
+  networkEndpointId: string | null;
+  targetId: string | null;
+  observedIp: string | null;
+  sni: string | null;
+  hostHeader: string | null;
+  statusCode: number | null;
+  title: string | null;
+  finalUrl: string | null;
+  capturePath: string | null;
+  observedAt: number;
+  confidence: SurfaceConfidence;
+  source: string;
 };
 
 export type WebOriginVM = {
   id: string;
+  backendId?: string;
   origin: string;
   scheme: OriginScheme;
   host: string;
   port: number;
   hostType: HostType;
   endpointIds: string[];
+  observationIds: string[];
 
   urls: SitemapItem[];
   apiEndpoints: ApiEndpoint[];
@@ -95,17 +153,37 @@ export type WebOriginVM = {
     directoryEntries: number;
     findings: number;
     evidence: number;
+    /**
+     * Passive scan log count for this origin. Only populated from backend
+     * `contentCounts.passiveLogCount`; the frontend inferred layer has no
+     * separate passive-log count and leaves it at 0.
+     */
+    passiveLogs: number;
   };
 
   confidence: SurfaceConfidence;
+  source: IdentitySource;
+  /** Source of the display `counts` above (backend aggregation vs frontend rows). */
+  contentCountSource: ContentCountSource;
+  backendIdentityOnly?: boolean;
+  /**
+   * Bounded lightweight backend content refs (Phase 2.5C). Empty for
+   * frontend-inferred origins and pre-2.5C backend payloads. The detail view
+   * renders these when the full frontend rows (`apiEndpoints`/`jsResources`/…)
+   * are not loaded, so a backend-only origin is not a dead end.
+   */
+  contentRefs: WebOriginContentRef[];
 };
 
 export type SurfaceHierarchyVM = {
   rootTarget: Target;
   mode: SurfaceMode;
+  dataSource: SurfaceHierarchyDataSource;
+  fallbackReason?: string | null;
 
   endpoints: NetworkEndpointVM[];
   webOrigins: WebOriginVM[];
+  observations: WebOriginObservationVM[];
   relatedDomains: RelatedDomainVM[];
 
   unassignedWebData: {
@@ -126,6 +204,14 @@ export type SurfaceHierarchyVM = {
     paramCount: number;
     findingCount: number;
     evidenceCount: number;
+    // Phase 2.5B content aggregation extras. Present when backend content
+    // summary counts drove the merge; `undefined` when only frontend inferred
+    // counts were available.
+    directoryEntryCount?: number;
+    passiveLogCount?: number;
+    contentUnassignedCount?: number;
+    contentUnmatchedOriginCount?: number;
+    contentCountSource?: ContentCountSource;
   };
 };
 
@@ -133,6 +219,7 @@ export interface BuildSurfaceHierarchyInput {
   rootTarget: Target;
   servicePorts?: PortInfo[];
   relatedDomains?: Target[];
+  relatedWebTargets?: Target[];
   assets?: TargetAsset[];
   apiEndpoints?: ApiEndpoint[];
   jsResults?: JsAnalysisResult[];
@@ -143,12 +230,14 @@ export interface BuildSurfaceHierarchyInput {
   logs?: AuditRow[];
 }
 
-const UNASSIGNED_REASON = "这些数据缺少完整 URL / host / port，无法可靠归属到某个 Web Origin。";
+const UNASSIGNED_REASON = "这些数据缺少完整 URL、host 或 port，无法可靠归属到某个 Web Origin。";
 const SOURCE_PRIORITY: Record<EndpointSource, number> = {
   unknown: 0,
   url_inferred: 1,
+  frontend_inferred: 1,
   target_assets: 2,
   target_ports: 3,
+  backend_identity: 4,
 };
 
 function defaultPortForScheme(scheme: OriginScheme): number {
@@ -271,6 +360,10 @@ function targetIp(target: Target): string | undefined {
   return undefined;
 }
 
+function targetResolvesToRootIp(target: Target, rootIp: string | undefined): boolean {
+  return Boolean(rootIp && target.real_ip.trim() && normalizeHost(target.real_ip) === rootIp);
+}
+
 function portTls(port: PortInfo): boolean {
   const service = `${port.service ?? ""} ${port.webserver ?? ""} ${port.url ?? ""}`.toLowerCase();
   return service.includes("https") || service.includes("ssl") || service.includes("tls");
@@ -286,6 +379,7 @@ function createOrigin(key: WebOriginKey): WebOriginVM {
   return {
     ...key,
     endpointIds: [],
+    observationIds: [],
     urls: [],
     apiEndpoints: [],
     jsResources: [],
@@ -301,8 +395,12 @@ function createOrigin(key: WebOriginKey): WebOriginVM {
       directoryEntries: 0,
       findings: 0,
       evidence: 0,
+      passiveLogs: 0,
     },
     confidence: "inferred",
+    source: "frontend_inferred",
+    contentCountSource: "frontend_content_inferred",
+    contentRefs: [],
   };
 }
 
@@ -340,10 +438,12 @@ function addEndpoint(
     ip: input.ip,
     port: input.port,
     transport: normalizeTransport(input.transport),
+    state: "unknown",
     service: input.service || undefined,
     tls: input.tls,
     source: input.source,
     webOriginIds: [],
+    observationIds: [],
     confidence: input.confidence,
   };
   endpointsById.set(id, endpoint);
@@ -557,6 +657,7 @@ function finalizeOriginCounts(origin: WebOriginVM): void {
     directoryEntries: origin.directoryEntries.length,
     findings: origin.counts.findings,
     evidence: origin.evidence.length,
+    passiveLogs: origin.counts.passiveLogs,
   };
   origin.endpointIds.sort();
 }
@@ -620,6 +721,17 @@ export function buildSurfaceHierarchy(input: BuildSurfaceHierarchyInput): Surfac
       source: "target_assets",
       confidence: "confirmed",
     });
+  }
+
+  if (mode === "ip") {
+    for (const relatedTarget of input.relatedWebTargets ?? input.relatedDomains ?? []) {
+      if (relatedTarget.type !== "url") continue;
+      const parsed = parseWebOrigin(relatedTarget.value);
+      if (!parsed) continue;
+      const hostMatchesRootIp = Boolean(rootIp && parsed.host === rootIp);
+      if (!hostMatchesRootIp && !targetResolvesToRootIp(relatedTarget, rootIp)) continue;
+      ensureOrigin(parsed);
+    }
   }
 
   for (const endpoint of apiEndpoints) {
@@ -774,10 +886,13 @@ export function buildSurfaceHierarchy(input: BuildSurfaceHierarchyInput): Surfac
   return {
     rootTarget,
     mode,
+    dataSource: "frontend_inferred",
+    fallbackReason: null,
     endpoints: [...endpointsById.values()].sort(
       (a, b) => a.port - b.port || a.id.localeCompare(b.id)
     ),
     webOrigins,
+    observations: [],
     relatedDomains,
     unassignedWebData,
     summary: {
@@ -790,6 +905,7 @@ export function buildSurfaceHierarchy(input: BuildSurfaceHierarchyInput): Surfac
       paramCount: countEndpointParams(apiEndpoints),
       findingCount,
       evidenceCount,
+      contentCountSource: "frontend_content_inferred",
     },
   };
 }

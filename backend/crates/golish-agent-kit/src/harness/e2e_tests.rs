@@ -72,6 +72,7 @@ fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
             "evidence_non_empty".to_string(),
         ],
         coverage: vec![],
+        candidates: vec![],
     };
     // 1 subdomain + 1 http_service (覆盖 sprint_skeleton 的两类 expected_findings)
     d.findings.push(HarnessFinding {
@@ -207,6 +208,7 @@ fn e2e_vacuous_deliverable_is_blocked_with_recovery() {
         findings: vec![],
         required_checks_done: vec![],
         coverage: vec![],
+        candidates: vec![],
     };
     let decision = harness.validate_gate(&d, None);
     assert!(!decision.allowed);
@@ -348,7 +350,8 @@ fn e2e_skipped_check_other_with_evidence_ref_under_threshold_passes() {
             evidence_ref: EvidenceAuditId::new(1),
         },
     });
-    let decision = harness.validate_gate(&d, None);
+    let ctx = eas_db_truth_context();
+    let decision = harness.validate_gate_with_context(&d, None, &ctx);
     assert!(
         decision.allowed,
         "single Other-skip below threshold should not block: reasons={:?}",
@@ -379,7 +382,8 @@ async fn e2e_sprint_contract_default_generator_pipeline() {
     assert_eq!(contract.status, "active");
 
     let d = happy_deliverable(stage_run_id);
-    let decision = harness.validate_gate(&d, Some(&contract));
+    let ctx = eas_db_truth_context();
+    let decision = harness.validate_gate_with_context(&d, Some(&contract), &ctx);
     assert!(
         decision.allowed,
         "happy deliverable with active contract should pass: reasons={:?}",

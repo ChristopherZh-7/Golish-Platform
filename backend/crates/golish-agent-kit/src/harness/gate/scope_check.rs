@@ -87,6 +87,7 @@ mod tests {
             findings: vec![],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         }
     }
 

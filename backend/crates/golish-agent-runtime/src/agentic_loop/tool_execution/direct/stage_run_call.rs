@@ -258,7 +258,7 @@ fn build_org_objective(
              and query_target_data, then choose the smallest useful batch that closes real gaps. \
              Use httpx early when liveness/HTTP evidence is missing, but do not treat it as \
              a mechanical prerequisite for every later action when fresh DB truth already exists. \
-             Do not run broad `nmap -sV -iL` against every raw in-scope domain/IP. Confirm open \
+             Do not run broad `nmap -sV -iL` against raw domains; PORT/SERVICE batches are IP/CIDR-host only. Confirm open \
              ports with naabu/masscan/nmap port-scan output or existing target port data, then \
              run service fingerprinting only on confirmed open host:port groups. Normalize URL \
              assets before nmap; never feed `https://...` URL strings to nmap target lists. If an \

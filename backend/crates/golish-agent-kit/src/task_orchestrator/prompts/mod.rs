@@ -120,9 +120,9 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
         format!(
             "\n- **Coverage (per in-scope asset)** — EAS asset/port contract: give EACH applicable \
              technique a terminal status for EVERY asset via the `coverage` field: {}. \
-             domain/ip/CIDR-discovered IP assets require LIVENESS + PORT + SERVICE-FINGERPRINT; \
-             bare URL assets keep URL LIVENESS only because host-level PORT/SERVICE belongs to the \
-             host/IP target. Per cell: found+evidence_refs / checked_empty+evidence_refs / \
+             domain/URL assets require LIVENESS only; IP/CIDR-discovered IP assets require \
+             LIVENESS + PORT + SERVICE-FINGERPRINT. Host-level PORT/SERVICE belongs to the \
+             concrete IP target, never to an unresolved domain string. Per cell: found+evidence_refs / checked_empty+evidence_refs / \
              blocked|not_applicable+note. A missing (asset × technique) = not_attempted = gate \
              BLOCK (\"checked-empty\" is NOT \"unchecked\").\n\
              - **EAS denominator** — if you explicitly submit found/checked_empty coverage, set \
@@ -192,7 +192,7 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
         let mut s = String::from(
             "\n### SCOPING — authorization confirmation ONLY\n\
 - This stage CONFIRMS the target is authorized; it does NOT probe. The runtime enforces the stage's tool boundary, so reconnaissance attempts are blocked here — that work belongs to the next stage.\n\
-- You do NOT need tool evidence here: confirm the authorized scope from the task context (target, exclusions, black-box vs credentialed, objective) and submit. Leave `evidence_refs` empty and use empty `evidence_ids` — the gate does NOT require ledger evidence for scoping.\n\
+- You do NOT need tool evidence here: confirm the authorized scope from the task context (target, exclusions, black-box vs credentialed, objective) and submit. Omit `evidence_refs`, claim `evidence_ids`, `findings`, `coverage`, `skipped_checks`, and `required_checks_done` unless this run actually produced those records — the submit tool canonicalizes omitted empty fields.\n\
 - Emit ONE claim with kind \"scope_confirmed\" summarizing the authorized scope. If you created or confirmed an engagement organization via manage_organizations, set this claim's `subject` to that organization_id (the UUID) so the whole engagement binds to it (downstream stages then scope to that org's subtree only); otherwise use the engagement subject name. Then CALL `submit_stage_deliverable`.\n",
         );
         // scoping 人工确认硬门禁 (设计 2026-06-06 §3.4): policy 要求时, gate 额外要求一条
@@ -230,7 +230,6 @@ You are operating inside the **{stage}** stage of an authorized operation. Stay 
 ```json
 {{
   "stage_id": "{stage}",
-  "stage_run_id": "<random uuid v4>",
   "claims": [
     {{"kind": "http_service_observed", "subject": "<host>", "summary": "<what was observed>", "evidence_ids": [<int_id_from_a_real_tool_result>], "technique": "<registered technique id backing this claim — omit if none applies>"}}
   ],
@@ -243,14 +242,16 @@ You are operating inside the **{stage}** stage of an authorized operation. Stay 
 }}
 ```
 
-IMPORTANT — every `<int_id_from_a_real_tool_result>` above is a PLACEHOLDER for shape only; NEVER emit it literally and NEVER substitute a small guessed integer (1, 2, 3, …). Each evidence id MUST be an actual integer the evidence ledger recorded for a real tool run in THIS operation. Do NOT hunt for ids in raw tool output — scans are recorded to the ledger automatically. The reliable way to get them: after running the required tools, call `submit_stage_deliverable`; if your evidence_ids are missing or wrong it returns this operation's real ids in `available_evidence_ids` — resubmit citing those. (`query_target_data` also shows recorded data.) If you have not run any tool yet you have NO evidence ids: run the required tools first. Citing guessed/placeholder ids FAILS the gate.
+The submit tool assigns `stage_run_id`; do not pass it. Empty arrays are optional: omit `evidence_refs`, `findings`, `coverage`, `skipped_checks`, and `required_checks_done` when the stage has none.
+
+IMPORTANT — every `<int_id_from_a_real_tool_result>` above is a PLACEHOLDER for shape only; NEVER emit it literally and NEVER substitute a small guessed integer (1, 2, 3, …). Each evidence id MUST be an actual integer the evidence ledger recorded for a real tool run in THIS operation. Do NOT hunt for ids in raw tool output — scans are recorded to the ledger automatically. The reliable way to get them: after running the required tools, call `submit_stage_deliverable`; if your evidence_ids are missing or wrong it returns this operation's real ids in `available_evidence_ids` — resubmit citing those. (`query_target_data` also shows recorded data.) If you have not run any tool yet you have NO evidence ids: omit evidence fields instead of inventing ids. Citing guessed/placeholder ids FAILS the gate.
 
 Gate rules your deliverable MUST satisfy (otherwise it is rejected and you redo the stage):
 - `stage_id` MUST equal "{stage}"; `stage_run_id` MUST be a valid, non-nil UUID v4.
-- Every claim `evidence_ids` and every finding `evidence_refs` MUST be non-empty, and every id used there MUST also appear in the top-level `evidence_refs`.
-- The top-level `evidence_refs` must have at least one id per real tool run (total count ≥ the sum of the minimum invocations above).
+- Evidence-backed claims/findings/coverage cells MUST cite real ids, and every id used there MUST also appear in top-level `evidence_refs`. Evidence-free scoping/reporting claims may omit `evidence_ids`.
+- The top-level `evidence_refs` must include every cited evidence id and must have at least one id per required real tool run (total count ≥ the sum of the minimum invocations above). If the stage has no required evidence-producing tool run, omit it or submit [].
 - `required_checks_done` MUST name every tool you were required to run: {min_inv}.
-- If you deliberately skip a required check, record it in `skipped_checks` with a reason — "checked-empty" is NOT the same as "unchecked".
+- If you deliberately skip a required check, record it in `skipped_checks` with a reason — "checked-empty" is NOT the same as "unchecked". Do not use `skipped_checks` for normal scope exclusions; record those in the scope claim summary.
 
 "#,
         stage = spec.id,
@@ -554,9 +555,10 @@ with the ONE harness stage it belongs to (the full operation DAG is supported).
 - `target_intel` — passive intel (zero-touch, no target contact): provider-backed asset/subdomain/DNS-adjacent/ASN/CT/OSINT survey via recon_map_assets, plus RDAP WHOIS via recon_lookup_whois; no scan-tool fallback. (情报收集)
 - `external_attack_surface` — active recon that DEFINES the attack surface of approved hosts: DNS resolution, port scanning, service/version fingerprinting, HTTP probing, screenshots (host x port x service x live-web). Subdomains inherited from `target_intel` (do not re-enumerate). (资产测绘 / 攻击面 / 端口扫描)
 - `enumeration` — content enumeration on the services mapped by EAS: JS collection + API endpoint extraction, directory/path discovery, parameter discovery. Do NOT re-port-scan (already done in EAS). (目录扫描 / JS-API / 参数发现)
-- `vuln_triage` — non-destructive vulnerability identification (nuclei, vuln matching). (漏洞扫描 / 漏洞识别)
-- `verification` — controlled exploit validation / PoC confirmation, approval-gated. (漏洞验证)
-- `reporting` — synthesize the final report from collected evidence. (报告生成 / 修复建议)
+- `vuln_triage` — FORMULAIC vulnerability scan: batch-run tool+dictionary/template techniques with an objective verdict (n-day PoC, sensitive dirs, weak creds, TLS, info leak, shallow IDOR + SQLi/XSS/cmd-injection tool sweeps). Confirmed hits go straight to findings. (公式化漏洞扫描)
+- `attack_candidate` — synthesize structured attack HYPOTHESES (AttackCandidate) from the gathered context + vuln_triage found + RAG prior; reasoning stage, runs no scan tools. Handles the reasoning-heavy classes (SSRF/SSTI/LFI/auth-bypass/business-logic) vuln_triage left. (攻击候选合成)
+- `verification` — controlled exploit validation / PoC confirmation of APPROVED candidates, approval-gated; each approved candidate reaches a terminal disposition (verified/refuted/blocked). (真打验证)
+- `reporting` — synthesize the final report + attack/kill chain from collected evidence. (报告生成 / 修复建议)
 
 (Red-team stages access_validation / internal_discovery / objective_pathing / objective_simulation / cleanup also exist; tag only when explicitly in scope.)
 

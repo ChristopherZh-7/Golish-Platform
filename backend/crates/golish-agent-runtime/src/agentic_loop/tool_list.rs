@@ -107,6 +107,7 @@ fn add_read_only_target_query_tools_for_stage(
         "check_stage_asset_coverage",
         "stage_worklist_status",
         "stage_worklist_next",
+        "list_recent_evidence",
     ];
     let any_missing = READ_ONLY_QUERY_TOOLS
         .iter()
@@ -433,6 +434,10 @@ mod tests {
             names.contains(&"stage_worklist_next"),
             "stage orchestrator must get the next DB-truth work batch: {names:?}"
         );
+        assert!(
+            names.contains(&"list_recent_evidence"),
+            "stage orchestrator must get the real-evidence-id lister so it can cite ids: {names:?}"
+        );
 
         // Idempotent: a second pass (or a tool already present) adds no dupes.
         let before = tools.len();
@@ -574,6 +579,7 @@ mod tests {
             "check_stage_asset_coverage",
             "stage_worklist_status",
             "stage_worklist_next",
+            "list_recent_evidence",
             "ingest_cve",
             "save_poc",
             "search_exploits",

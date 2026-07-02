@@ -28,6 +28,7 @@ pub async fn execute_security_analysis_tool(
             | "stage_worklist_next"
             | "stage_worklist_status"
             | "check_stage_asset_coverage"
+            | "list_recent_evidence"
     );
     if !is_sec_tool {
         return None;
@@ -607,6 +608,36 @@ pub async fn execute_security_analysis_tool(
             };
             Some((
                 compact_stage_asset_coverage(snapshot, max_gaps, include_assets_requested),
+                true,
+            ))
+        }
+
+        "list_recent_evidence" => {
+            let Some(session_id) = session_id.filter(|s| !s.trim().is_empty()) else {
+                return Some(error_result(
+                    "list_recent_evidence requires an active session; no evidence context is available",
+                ));
+            };
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|n| n.clamp(1, 200) as i64)
+                .unwrap_or(25);
+            let rows = match repo.recent_evidence_detailed(session_id, limit).await {
+                Ok(rows) => rows,
+                Err(e) => {
+                    return Some(error_result(format!(
+                        "Failed to list recent evidence: {e}"
+                    )))
+                }
+            };
+            let count = rows.len();
+            Some((
+                json!({
+                    "recent_evidence": rows,
+                    "count": count,
+                    "contract": "These are this run's REAL evidence-ledger ids (newest first). Put the evidence_id values whose tool/asset/technique backs each claim into that claim's evidence_ids and the top-level evidence_refs. Never invent ids, copy placeholders (1,2,3), or use submit_stage_deliverable to discover missing ids.",
+                }),
                 true,
             ))
         }

@@ -58,6 +58,11 @@
       "where": { "pred": "severity_at_least", "min": "high" },
       "require": { "pred": "non_empty", "field": "evidence_refs" },
       "on_fail": { "reason": "verification: every high/critical finding must carry evidence" }
+    },
+    {
+      "op": "candidate_disposition_complete",
+      "require_evidence_for_verified": true,
+      "on_fail": { "reason": "every approved candidate must reach a terminal disposition (verified/refuted/blocked); verified needs evidence", "hints": ["verified \u2192 attach poc/exploit_verified evidence", "refuted \u2192 cite what proved it a false positive (I8)", "blocked \u2192 note the WAF/authz reason"] }
     }
   ]
 }

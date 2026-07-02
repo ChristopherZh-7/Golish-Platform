@@ -29,6 +29,26 @@
 
 > 历史会话已归档：`docs/archive/agent-progress-archive-2026-06-28.md`。主文件只保留最近 20 条会话，避免旧日志干扰新判断；需要追溯旧验证证据时去 archive grep。
 
+### 2026-07-02 · EAS prober 重试死循环根因修复（A/C2/E 落地，B/C1/D staged）
+
+- **本轮身份**：BajieAsk `agent-1-pppoysuf`（主控中心），分发开关 OFF → 用户选自执行；接手 MCP-3 转移的上下文（对最后一次 EAS run 的根因分析）。
+- **背景**：最后一次 run（`~/golish-platform/Test1`，session `pentest-chat-1783002737901-1`，2026-07-02 22:35）EAS prober 重试 3/3 耗尽未过。用 `run_tree.py --db` 定位到 3 个叠加缺陷。
+- **根因（已核对真实代码落点）**：
+  - **A（真正 dealbreaker）**：EAS spec `every claim must cite evidence`（`external_attack_surface/spec.json:30`）要求每条 claim 带非空 `evidence_ids`，但 worker **没有工具能查本 run 真实 evidence id + 上下文**——`recent_evidence_ids`（`repo/audit/mod.rs:250`）只返裸 id 且仅 submit 工具内部用。
+  - **B**：预检 vs 权威 gate 的**时序**竞态——扫描落库经 `tokio::spawn` fire-and-forget hook（`direct/mod.rs:500`），gate 可在 `-sV` 落库前评分。
+  - **C**：`tcpwrapped` 满足 SERVICE-FINGERPRINT（`coverage_truth.rs:171` 计任意非空 `p->>'service'`），而真实 nmap `-sV` service/version **从不写入 `fingerprints`**（`output_store/targets.rs:264` 只读 webserver/technologies/cdn/os）。
+  - **D**：只开 53 埠的 subdomain `real_ip`（共享 DNS/CDN 基絎）被强制过 SERVICE-FINGERPRINT。
+  - **E**：`MAX_REFLECTOR_RETRIES=3` 太紧，吃不下异步落库 + evidence 引用磨合。
+- **已完成（Phase 1 · 加性/安全 · 不收紧 gate）**：
+  - **A · `list_recent_evidence` 只读工具全链路**：repo 查询 `recent_evidence_detailed_for_session` + `RecentEvidenceRow`（`golish-db/src/repo/audit/mod.rs`）→ trait `DbRepoProvider::recent_evidence_detailed`（默认空，`db_traits/repo.rs`）→ app impl（`db_bridge/{mod,evidence}.rs`）→ 工具定义（`security_tools.rs`，declarations 46→47）→ dispatch（`direct/mod.rs` is_security_analysis_direct_tool + `security.rs` is_sec_tool + handler arm）→ 暴露（registry.rs & builder/mod.rs 的 prober/enumerator/pentester、tool_list.rs READ_ONLY_QUERY_TOOLS、config.rs 安全组、selection_apply.rs 分组、prompt_render.rs ToolRow、list_tools.rs note、frontend/lib/tools.ts）→ prompt（execution_planning.rs prober 方法论）。同步更新相关单测断言（definitions/mod.rs 计数+名、tool_list.rs 成员/禁用、tests.rs prober has_tool、direct/mod.rs 路由）。
+  - **C2 · nmap -sV service/version 落 fingerprints**：新 `is_informative_service`（`output_store/helpers.rs`，排除 tcpwrapped/unknown/open/filtered/closed/空）+ `store_fingerprints` 加写 `category="service"` 指纹（仅当 `-sV` 真解析出 version 时；`targets.rs`）。加单测。
+  - **E · retry 预算**：`MAX_REFLECTOR_RETRIES` 3→5（`task_orchestrator/types.rs`，附 EAS 异步落库理由）。
+- **已 staged（Phase 2 · 收紧/重定时权威 gate · 未写代码，精确定位在设计+计划）**：B（异步落库屏障，`direct/mod.rs`）、C1（`coverage_truth.rs` tcpwrapped 排除，收紧 gate，与 D 耦合否则死锁 53 埠 IP）、D（`stage_coverage.rs` + `rule_engine.rs` 端口无 informative service 时 SERVICE not_applicable 派生）。这三条触 I7/I8 权威 gate，**须 compile+test 循环后才可信**，本轮不盲推。
+- **已跑证据**：`ReadLints` 对全部改动的 backend + frontend 文件 **无错**。**未跑** `just precommit` / cargo build / nextest（用户明确「中途不要跑 precommit 不要跑任何大的测试」）。
+- **验证状态**：**编译未验证**（遵用户指令）。下一步 = `cargo check`/`just check` + 目标 crate nextest + EAS 活体 smoke（见 feature `eas-worker-evidence-and-service-fingerprint-2026-07-02` 的 verification）。
+- **文档**：`docs/design/2026-07-02-eas-worker-evidence-and-service-fingerprint.md`（含风险分级 + Phase 1/2 拆分）、`docs/superpowers/plans/2026-07-02-eas-worker-evidence-and-service-fingerprint.md`；INDEX.md + feature_list.json（新条目 in_progress）已更新。
+- **未提交**：以上全部改动 **未 commit、未 push**。
+
 ### 2026-07-02 · EAS 工具分流与 SERVICE gap 修复指令
 
 - **本轮目标**：回应用户对最新 EAS run 的追问，确认 naabu/nmap/WhatWeb/httpx 的职责边界，并修正 gate/refiner/worklist 给 AI 的错误工具建议。
@@ -50,6 +70,192 @@
   - `git diff --check -- <本轮触及文件>` → exit 0。
 - **未跑全量**：未跑 `just precommit`；当前工作树已有大量与本轮无关的未提交改动，本轮只做 EAS 工具契约窄修复。
 - **下一步建议**：重新触发/继续 EAS 时先看 `stage_worklist_status`，确认 SERVICE gap 只建议 `nmap` 且 `eas_focus` 出现；若旧 run 仍停在 needs_fix，可让 prober 用 confirmed open ports 重跑 `nmap -Pn -sV` 后再 submit。
+
+### 2026-07-02 · submit_stage_deliverable 空字段 canonicalization
+
+- **本轮目标**：回应用户对最新 scoping submit 反复 rejected 的追问，把 submit 契约改得更优雅：模型只填业务事实，空集合/内部默认字段由后端 canonicalize。
+- **根因确认**：最新 run `pentest-chat-1782999688847-1` 的 scoping 最终已 accepted；前几次 rejected 是 `skipped_checks[].reason` 直接暴露内部 `SkipReason` tagged enum 后，模型误填 `user_requested` 缺 `user_msg_id`、`other` 缺/空 `evidence_ref`。这属于结构解析失败，不是 scoping gate 语义失败。
+- **已完成**：
+  - `StageClaim.evidence_ids`、`StageDeliverable.{claims,evidence_refs,findings}`、`HarnessFinding.evidence_refs` 支持省略或显式 `null`，统一归一为空集合。
+  - `submit_stage_deliverable` tool schema 改为只要求 `stage_id` + `claims`；`evidence_refs`、claim `evidence_ids`、`findings`、`coverage`、`skipped_checks`、`required_checks_done` 均为空时可省略。
+  - submit handler 新增模型输入 canonicalization：空集合字段为 `null` 时视为省略；scoping 里的 legacy/malformed `skipped_checks` 会被移除，普通 scope exclusion 只保留在 claim summary。
+  - schema / prompt / scoping methodology 明确：scoping evidence-free claim 不填 evidence；普通 scope exclusion（如不纳入子公司）写进 `scope_confirmed` summary，不再诱导模型硬填 `skipped_checks` / 内部 `SkipReason`。
+  - 新增回归：`parameters_make_empty_default_fields_optional`、`accepts_minimal_evidence_free_scoping_deliverable`、`scoping_canonicalizes_legacy_malformed_empty_fields`。
+  - 同步模块卡：`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-agent-kit/task_orchestrator.md`。
+- **运行过的验证（实跑）**：
+  - `rustfmt --edition 2021 --check backend/crates/golish-agent-app/src/ai/harness_submit_tool.rs backend/crates/golish-agent-kit/src/harness/types.rs backend/crates/golish-agent-kit/src/task_orchestrator/prompts/mod.rs` → exit 0。
+  - `cargo test -p golish-agent-app parameters_make_empty_default_fields_optional -- --nocapture` → 1 passed。
+  - `cargo test -p golish-agent-app accepts_minimal_evidence_free_scoping_deliverable -- --nocapture` → 1 passed。
+  - `cargo test -p golish-agent-app harness_submit_tool -- --nocapture` → 36 passed。
+  - `cargo check -p golish-agent-kit -p golish-agent-app` → exit 0。
+- **未完成 / 未跑**：
+  - `cargo fmt -p golish-agent-kit -p golish-agent-app --check` 因当前工作树里已有其他未格式化改动失败（如 `bridge_config.rs`、`operation_flow.rs`、`execute_harness_loop_tests.rs`），本轮未格式化这些非本 slice 文件。
+  - 未跑 `just precommit`，当前工作树本来已有大量其他未提交/未收口改动。
+- **提交记录**：未 commit，未 push。
+
+### 2026-07-02 · EAS batch 端口/指纹业务表落地
+
+- **本轮目标**：回应用户发现的 EAS 扫出端口/指纹但 Target Surface 为空的问题。根因已由当前 DB 证实：`59.82.14.249` 的 `technique_outcomes` / `audit_log` 有 naabu 80/443 与 whatweb Tengine evidence，但 `targets.ports` / `fingerprints` / `network_endpoints` / `web_origins` 均为空。
+- **已完成**：
+  - `backend/crates/golish-agent-app/src/ai/commands/bridge_config.rs`：EAS background completion 在原有 `technique_outcomes` upsert 之外，新增业务事实落地：
+    - `httpx` retained stdout(JSONL/URL) → `targets` http facts + `targets.ports` + `fingerprints` + `network_endpoints` + `web_origins` / `web_origin_observations`。
+    - `naabu -list` / `masscan -iL` → 保留具体 open port，不再只有 count；写 `targets.ports` 与 `network_endpoints`。
+    - `whatweb --input-file` → strip ANSI 后抽 `HTTPServer` / `PoweredBy` / `Title` / status；写 `targets`、`fingerprints`、`network_endpoints`、`web_origins` / observations。
+    - `nmap -sV -iL` → 解析 `PORT STATE SERVICE VERSION` open rows；写 `targets.ports`、`fingerprints`、`network_endpoints`。
+  - 所有业务表写入沿用当前 `organization_id` 的 in-scope `targets.value` / `targets.real_ip` allowlist，避免把 batch stdout 里的无关 host/IP 落到该 org。
+  - 新增纯函数回归测试覆盖 naabu 端口保留、masscan transport、WhatWeb ANSI 指纹抽取、httpx JSONL、nmap `-sV`。
+  - 同步模块卡 `docs/modules/backend/golish-agent-app/ai.md`，更新 `feature_list.json` 的 `intel-to-eas-handoff-2026-06-24` notes/verification。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → 用户随后要求“别跑init”，已 SIGINT；停止在 `check-fe`，命令 exit 130，不计为完成验证。
+  - `cargo fmt -p golish-agent-app --check`（cwd `backend`）→ exit 0。
+  - `cargo check -p golish-agent-app`（cwd `backend`）→ exit 0。
+  - `cargo test -p golish-agent-app bridge_config -- --nocapture`（cwd `backend`）→ 24 passed / 113 filtered out，exit 0。
+  - `cargo clippy -p golish-agent-app --all-targets -- -D warnings`（cwd `backend`）→ exit 0。
+  - `jq empty feature_list.json` → exit 0。
+- **未跑 / 未完成**：按用户明确要求未继续跑 `init` / `just precommit`；未重启 app 活体验证，也未对已有历史 run 做一次性 DB repair/backfill。当前修复对后续 EAS background completion 生效；已存在的旧 evidence 若要立刻显示，需要 rerun EAS 或另做 evidence→business-table repair。
+- **提交记录**：未 commit，未 push。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-agent-app/src/ai/commands/bridge_config.rs`、`docs/modules/backend/golish-agent-app/ai.md`、`feature_list.json`、`agent-progress.md`。
+- **下一步建议**：重启 app 后 rerun/repair EAS，确认 `59.82.14.249` 的 Target Surface 出现 Network Endpoints 80/443、Web Origins 与 Tengine fingerprint；若要恢复已有 run，不要靠前端推断，单独加一个 evidence/audit_log repair path。
+
+### 2026-07-02 · 攻击阶段三阶段重构 P2.4–P5（接前 session 半成品，BajieAsk agent-4）
+
+- **本轮目标**：接手上一 session 的 `attack-stage-formulaic-candidate-exploit-2026-07-02` 半成品，按 `docs/superpowers/plans/2026-07-02-attack-stage-formulaic-candidate-exploit.md` 继续实现。用户明确要求**全程不跑 init/precommit**，做完再审。
+- **接手勘验（先读真实代码）**：P1 骨架（StageKind::AttackCandidate + AttackCandidate 结构 + phase.rs ALL_STAGES 13 + resources.rs 13 臂 + operation_graph.json 13 节点/17 边 + phases.json vuln 段 + 6 profiles + technique_taxonomy/phase_flow/harness_dev.rs 穷尽 match）+ P2 gate op（rule_engine.rs 的 `CandidateGrounded`/`CandidateDispositionComplete` enum + eval + op_name/summary + 单测）已由前 session 写入。缺口：P2.4 未接线、P3/P4/P5 未做。
+- **本轮完成（全部 targeted 测试实跑通过）**：
+  - **P2.4**：`attack_candidate/spec.json` 加 `candidate_grounded`、`verification/spec.json` 加 `candidate_disposition_complete`。
+  - **P3 A 公式化**：`vuln_triage/spec.json` 加 `specialist:vuln_scanner` + `coverage_axis` + `facts_from_db_truth` + `freshness_window` + `coverage_complete.derive_from_evidence`；`expected_techniques` 15→10（移出 SSTI/SSRF/LFI/认证绕过/业务逻辑到 attack_candidate）；`allowed_next_stages`→[attack_candidate,reporting]；新增 `vuln_triage/methodology.md` + `attack_candidate/methodology.md` + `verification/methodology.md`（3 份 playbook），接进 `resources.rs::stage_methodology_md`；同步更新耦合测试（technique_taxonomy 15→10、gate/mod.rs full_vuln_triage_coverage 10 格）+ 加守卫测试（stage_spec.rs 2 个、resources.rs 1 个）。
+  - **P4.1/4.2 DB**：新迁移 `20260702000002_attack_candidates.sql`（加性、org FK CASCADE、UNIQUE(operation_id,target,hypothesis_hash)、CHECK priority/disposition）；新 `repo/attack_candidates.rs`（upsert_by_hash/create/list_by_operation/list_by_wave/update_disposition，全 IDOR org 隔离；`hypothesis_hash`=sha256(normalize(target|technique|hypothesis)) 十六进制），注册 repo/mod.rs，Cargo.toml 加 `sha2.workspace`。
+  - **P4.3 chain-wave**：新 `harness/chain_wave.rs` 纯决策函数 `decide_chain_wave`（去重+燃料+链深三重收敛，DEFAULT_MAX_WAVES=5/DEFAULT_MAX_CHAIN_DEPTH=3）+ `candidate_dedup_key`，7 单测。
+  - **P4.4 rag_prior**：核实 `execute.rs:167` 已对所有阶段（含 attack_candidate）通用注入 wiki prior（`rag_prior_renders_wiki_writeups_for_stage_prompt` 绿），attack_candidate charter 自动获得 PRIOR KNOWLEDGE 段——设计 §3.3 的落点已被既有通用接线覆盖。
+  - **P5.2 reporting**：`reporting/spec.json` `inherits_evidence_from` 增补 vuln_triage(vuln_finding) + verification(poc/exploit_verified/attack_path)。
+  - **P5.1 agent 面**：verification methodology 操作化「approved candidate→真打→disposition→finding 升格 + parent_finding_id 血缘」（gate 侧 candidate_disposition_complete 已由 P2.4 就位）。
+  - **planner/router**：prompts/mod.rs planner stage 清单加 attack_candidate + 重写 vuln_triage/verification 描述；harness_backfill.rs `OTHER_STAGE_KEYWORDS` 加 AttackCandidate 关键词组 + vuln_triage 加「formulaic/公式化扫描」。
+- **已记录证据（targeted，未跑 init/precommit——按用户指令）**：
+  - `cargo nextest -p golish-agent-kit -E 'test(chain_wave)|test(candidate)|test(disposition)|test(vuln_triage)|test(attack_stage_playbooks)|test(phases_cover_all_13)|test(base_graph_has_13)|test(all_thirteen)'` → **33 passed**（run 451bf321）。
+  - `cargo nextest -p golish-agent-kit -E 'test(harness::)|test(task_orchestrator::)'` → **589 passed / 0 failed**。
+  - `cargo nextest -p golish-agent-kit -E 'test(resources::)|test(stage_spec::)|test(technique_taxonomy::)|test(gate::tests::)'` → **68 passed**。
+  - `cargo nextest -p golish-db -E 'test(attack_candidates)'` → **6 passed**。
+  - `cargo build -p golish-agent-app -p golish-db` → **exit 0**（Finished）。ReadLints 4 新/改文件无错。
+- **未提交的半成品（本 scope，全未 commit）**：`resources/harness/stages/{attack_candidate,vuln_triage,verification}/*` + `reporting/spec.json`；`golish-agent-kit/src/harness/{chain_wave.rs(new),resources.rs,technique_taxonomy.rs,mod.rs,gate/mod.rs}` + `task_orchestrator/{prompts/mod.rs,harness_backfill.rs,stage_spec.rs test}`；`golish-db/{Cargo.toml, migrations/20260702000002_*.sql(new), src/repo/attack_candidates.rs(new), repo/mod.rs}`。
+- **仍待完成（需运行中 app / 前端 / 控制流手术，本轮未做，明确留给后续）**：
+  1. **P4.3 活体接线**：把 `decide_chain_wave` 的 `OpenNextWave` 接进 `execute.rs` graph-flow（metalcraft 引擎节点转移处覆写游标回 attack_candidate）——纯函数已就位+单测，但引擎级游标覆写有打断 harness loop 的风险，需能跑 app 观察循环才敢动。
+  2. **P5.1 运行时落库**：`submit_stage_deliverable` 路径把 `StageDeliverable.candidates` 写进 `attack_candidates` 表 + verified→`HarnessFinding` 升格 + `parent_finding_id` 血缘（gate 侧已就位，缺 submit 路径的 repo 写接线）。
+  3. **P5.3 ts-rs + 前端攻击链图**（AttackCandidate/Disposition 跨 IPC + 攻击链可视化组件）。
+  4. **P5.4 端到端**（mock 资产集 --stage-run 跑三阶段 + 波次回流 trace）。
+- **偏差（记入 plan/feature_list）**：P3 `authoritative_found` **未开**（只开 derive_from_evidence）——nuclei/dir/weakpw/tls 的 technique_outcomes 写路径尚未覆盖（evidence_facts.rs 无对应映射），此时开 authoritative_found 会让那几格永远无真值→活体 gate 永久 BLOCK；对齐设计 §11 开放问题 3 + plan 偏差 #2「写路径 deferred」，故本轮只做安全加性子集。
+- **风险 / 下一步**：① 上述 4 项活体/前端/e2e 工作；② 本轮改动未跑 `just precommit`（用户指令），commit 前需用户点头并补跑全量门禁；③ feature 维持 `in_progress`（P5 未闭环、precommit 未跑，按 AGENTS.md §3 DoD 不得转 passing）。
+
+### 2026-07-02 · Target Surface Phase 2.5C 轻量 legacy refs + in-app backfill 命令
+
+- **本轮目标**：用户要求一次性把「资产详情重构（IP → NetworkEndpoint → WebOrigin → 内容层）」剩余逻辑补完。先扫描确认 Phase 2.1–2.5B 已实现（migration 三表、identity/queries/backfill/content_queries repo、`target_surface_hierarchy_get` 返回 identity+contentCounts、前端 adapter+fallback、IP 页无全局 Sitemap、Sitemap/API/JS/Params 只在 WebOrigin detail、IP-literal 不进 Related Domains、显式端口分开、相对 URL→unassigned、unmatched 不物化）。定位到两处缺口并补齐。
+- **补的逻辑**：
+  - **缺口 1（lightweight legacy refs）**：`target_surface_hierarchy_get` 原本只返回 contentCounts、不返回 refs（Phase 2.5A 明确 defer）。`surface_content_queries.rs` 新增 `SurfaceContentRef { kind,id,url,method?,status_code?,capture_path?,source? }`，扩展 `LIST_SURFACE_LEGACY_CONTENT_ROWS_SQL` 选出 method/status_code/capture_path/source（api=method+status+capture+source，js=file_path+source_tool，directory=status+tool，passive=tool_used），聚合出 `refs_by_origin` + `unassigned_refs`，各 capped `MAX_REFS_PER_BUCKET=200` 并按 legacy row id dedup；counts 仍是总数事实源，refs 只是指针，绝不伪造成完整 row。`target_surface_hierarchy.rs` 加 `WebOriginContentRefDto` + `WebOriginHierarchyDto.refs` + `UnassignedWebDataDto.refs`。
+  - **缺口 2（backfill 无法在 app 触发）**：`backfill_surface_identity` 只是库函数、无任何 caller，导致真 app 里 identity 三表永远为空→backend hierarchy 恒回退 frontend。新增 `#[tauri::command] target_surface_identity_backfill(project_path?, organization_id?)`（golish-pentest-app），调用只读 backfill（additive/idempotent、只写 identity 三表、从不改 legacy）；facade 已 glob，registry 注册。
+  - **前端消费**：`security-analysis.ts` 加 `BackendWebOriginContentRefDto` + origin/unassigned 的 `refs` + `surfaceIdentityBackfill` wrapper + `SurfaceIdentityBackfillSummary`；`surfaceHierarchy.ts` 加 `WebOriginContentRef` 类型 + `WebOriginVM.contentRefs`（createOrigin 默认 []）；`backendSurfaceHierarchy.ts` 把 backend refs 映射进 `contentRefs`（frontend-inferred/fallback origin 恒空）；`WebOriginsTab.tsx` 的 OriginDetail 在 frontend full rows 缺席时用新 `BackendRefList` 在 APIs/JS/Sitemap tab 渲染轻量 refs（标注「From backend content index」，不提升成完整 row），并把「backend 有 count 但 rows 未加载」提示改为「有 refs 就展示 refs、无 refs 才提示」；`TargetSurfaceWorkbench.tsx` IP header 加「Build identity from data」按钮触发 backfill 后 reload。
+- **运行过的验证（实跑）**：
+  - `cargo test -p golish-db surface_content_queries -- --nocapture`（cwd backend）→ 14 passed（含 3 新 refs 用例）。
+  - `cargo test -p golish-pentest-app target_surface_hierarchy -- --nocapture`（cwd backend）→ 15 passed（含 refs flow-through 2 用例）。
+  - `cargo test -p golish-db -p golish-pentest-app`（cwd backend）→ golish-db 181 passed（doc-test 1 ignored）+ golish-pentest-app 151 passed / 3 ignored。
+  - `cargo check -p golish`（cwd backend）→ exit 0。
+  - `cargo fmt -p golish-db -p golish-pentest-app -p golish --check`（cwd backend）→ exit 0。
+  - `cargo clippy -p golish-db -p golish-pentest-app --all-targets -- -D warnings`（cwd backend）→ exit 0。
+  - `cargo clippy -p golish --lib -- -D warnings`（cwd backend）→ exit 0。
+  - `vitest run backendSurfaceHierarchy.test.ts surfaceHierarchy.test.ts` → 2 files / 25 passed（backendSurfaceHierarchy 20，含 Phase 2.5C 2 新用例）。
+  - `npm run typecheck` → exit 0；`npm run check` → 793 files no fixes；`npm test -- --run` → 147 files / 1545 passed / 12 skipped。
+  - `just check-fe` → exit 0；`just test-fe` → exit 0。
+  - `jq empty feature_list.json` → exit 0。
+- **提交记录**：未 commit，未 push。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-db/src/repo/surface_content_queries.rs`、`backend/crates/golish-pentest-app/src/target_surface_hierarchy.rs`、`backend/crates/golish/src/commands_registry.rs`、`frontend/lib/api/security-analysis.ts`、`frontend/lib/security-analysis.ts`、`frontend/components/TargetPanel/surface/surfaceHierarchy.ts`、`frontend/components/TargetPanel/surface/backendSurfaceHierarchy.ts`、`frontend/components/TargetPanel/surface/backendSurfaceHierarchy.test.ts`、`frontend/components/TargetPanel/surface/tabs/WebOriginsTab.tsx`、`frontend/components/TargetPanel/TargetSurfaceWorkbench.tsx`、`docs/modules/backend/golish-db/repo.md`、`docs/modules/backend/golish-pentest-app.md`、`docs/modules/frontend/{components,lib}.md`、`feature_list.json`、`agent-progress.md`。
+- **未完成 / 待补验证**：按用户明确要求**未跑** `just precommit` 与 `./init.sh`（工作树仍有前序 harness 等大量未提交改动，precommit 全量绿门禁未在本轮验证）。真实 Tauri app 里点「Build identity from data」→ 观察 IP 页 backend hierarchy 从 fallback 变真实、WebOrigin detail 出现 backend refs 的视觉 QA 未做（需用户本地跑 app）。
+- **明确 TODO**：① collector 写入时同步 identity/observation provenance（消灭对手动 backfill 的依赖）；② 若要 refs 更完整可加分页/按 kind 下钻；③ 用户放开后跑全量 `just precommit`（前序 `surface_identity_backfill.rs` clippy 已在更早轮修复，本轮 clippy -D 全绿）。
+- **追加（同会话）· 写入对账 + backfill gap A/B 修复**：应用户「对一下 scoping/intel/EAS 写入 ↔ 现有表/展示」要求逐阶段核写入路径（scoping→targets/organizations；target_intel→dns_records+real_ip、target_assets(service `value="port/proto"` 挂域名 · `asset_intel/landing.rs:564`)、target_assets(subdomain · `persistence.rs:287`)、organizations.*；EAS→targets.ports(JSON, `output_store/targets.rs:50`+`helpers.rs:18`)+real_ip/http_status/…、fingerprints)。结论：**展示层全对得上**；identity 层两处回不去：A) 被动 service target_asset（`value="443/tcp"` 无 IP）、B) 写在域名 target 上的 EAS `targets.ports`，都因缺 IP 进不了 `network_endpoints`。用户「可以修」→ 改 `surface_identity_backfill.rs`（纯 additive）：`LIST_TARGET_ASSET_ROWS_SQL` 增选 `t.real_ip`；新增 `target_port_endpoint_ip`（域名/URL target ports 用 real_ip 键）+ `ip_for_target_asset`（service asset 无显式 IP 时用 real_ip）；real_ip 补出的端点标 inferred（`backfill:*.real_ip`、confidence 0.6、last_confirmed=false），real_ip 空则跳过。验证：`cargo test -p golish-db surface_identity_backfill` → 16 passed（+5 新）；`cargo test -p golish-db` → 195 passed；fmt --check + clippy -D → exit 0。**未改 harness gate**（覆盖门消费 identity = 单独设计轮）。方法学评估（回用户提问）：IP 扫网络面(端口/服务每 IP 一次)、域名扫 vhost Web 面(每个都要)、多域名同 IP=1 endpoint←N origin(已支持)、真别名站靠 observation body_hash/favicon_hash 去重(enumeration 后续增强,未实现)。
+
+### 2026-07-02 · Target Surface Phase 2.5B 前端消费 backend contentCounts
+
+- **本轮目标**：按用户贴的 Phase 2.5B 约束（不改后端 / DB / schema / migration / 采集器 / Tauri command / 旧接口返回结构，不删 surfaceHierarchy.ts 与 backendSurfaceHierarchy.ts fallback，不恢复 IP 全局 Sitemap，不要求跑 just precommit），让前端开始消费 backend `contentCounts`，同时保留现有 frontend legacy content fallback。
+- **已完成**：
+  - **第一步 DTO**：`frontend/lib/api/security-analysis.ts` 新增 `BackendWebOriginContentCountsDto`、`BackendUnassignedWebDataCountsDto`；`BackendWebOriginDto.contentCounts`（`| null`）、`BackendUnassignedWebDataDto.counts`（`| null`）、`BackendSurfaceSummaryDto` 加 `urlCount/apiCount/jsCount/paramCount/directoryEntryCount/passiveLogCount/evidenceCount/contentUnassignedCount/contentUnmatchedOriginCount`（均 `number | null`）。新增 `presentNumberField` 区分「字段缺失（null → 前端回退）」与「存在为 0」；整块 `contentCounts`/`counts` 缺失归一为 `null`。`frontend/lib/security-analysis.ts` 补 re-export。未手改 `frontend/lib/generated/`。
+  - **第二步 adapter**：`backendSurfaceHierarchy.ts` 新增 `WebOriginVM.contentCountSource`（`backend_content_counts` / `frontend_content_inferred`）与 `counts.passiveLogs`；`mapBackendOrigin` 计数优先级 = backend contentCounts（存在时）> frontend origin 计数 > 0，`findings` 恒取 frontend（backend 不聚合）；detail rows 仍取 frontend arrays，绝不因 backend count 存在伪造 rows，也不 double count。
+  - **第三步 summary**：新增 `mergeSummary`，IP Overview/summary 的 content counts 优先 backend summary，逐字段缺失回退 frontend；透出 `directoryEntryCount/passiveLogCount/contentUnassignedCount/contentUnmatchedOriginCount` 与 `contentCountSource`；`findingCount` 保持 frontend。
+  - **第四步 WebOriginsTab**：URL/API/JS/Params/Evidence 列直接消费 `origin.counts`（已按优先级来自 backend）；URL 列 tooltip 显示 directory entries，Evidence 列 tooltip 显示 passive logs，Source 列 tooltip 标注 identity + content-count source。
+  - **第五步 Origin detail**：Overview 显式列出 Identity source / Content count source（含 directory/passive 补充）；backend count > 已加载 frontend rows → 提示「still loaded from the legacy frontend data sources」，backend 有 count 但无 frontend rows → 提示「not loaded in this view yet」；Sitemap/APIs/JS/Params 仍只展示 frontend rows。
+  - **第六步 unassigned/unmatched**：`TargetSurfaceWorkbench` IP Overview 在 backend 内容计数驱动且有 unassigned/unmatched 时显示「Backend content aggregation found X unassigned items and Y unmatched-origin items.」；unmatched-origin 不物化为 WebOrigin。
+  - **第七步 测试**：`backendSurfaceHierarchy.test.ts` 更新 helper（`backendSummary`、`contentCounts`、`backendOrigin` 支持 contentCounts、`backendHierarchy` merge summary/unassigned），新增 Phase 2.5B A–J 用例。
+  - 同步模块卡 `docs/modules/frontend/{components,lib}.md`、`feature_list.json`（target-surface-workbench notes 追加 2.5B）、本 progress。
+- **运行过的验证（实跑）**：
+  - `./node_modules/.bin/vitest run frontend/components/TargetPanel/surface/backendSurfaceHierarchy.test.ts frontend/components/TargetPanel/surface/surfaceHierarchy.test.ts` → 2 files / 23 passed（其中 backendSurfaceHierarchy 18）。
+  - `./node_modules/.bin/biome check --write <本轮 7 个前端文件>` → exit 0，Fixed 2 files。
+  - `npm run typecheck`（`tsc --noEmit`）→ exit 0。
+  - `npm run check`（`biome check ./frontend`）→ exit 0，Checked 793 files，No fixes。
+  - `npm test -- --run` → exit 0，147 test files passed，1543 passed / 12 skipped（较 2.5A 的 1534 +9）。
+  - `just check-fe` → exit 0；`just test-fe` → exit 0。
+  - `jq empty feature_list.json` → exit 0。
+- **提交记录**：未 commit，未 push。
+- **本轮修改但未提交（本 scope）**：`frontend/lib/api/security-analysis.ts`、`frontend/lib/security-analysis.ts`、`frontend/components/TargetPanel/surface/surfaceHierarchy.ts`、`frontend/components/TargetPanel/surface/backendSurfaceHierarchy.ts`、`frontend/components/TargetPanel/surface/backendSurfaceHierarchy.test.ts`、`frontend/components/TargetPanel/surface/tabs/WebOriginsTab.tsx`、`frontend/components/TargetPanel/TargetSurfaceWorkbench.tsx`、`docs/modules/frontend/{components,lib}.md`、`feature_list.json`、`agent-progress.md`。
+- **未完成 / 待补验证**：按用户要求未跑 `just precommit`（且工作树仍有前序后端 `surface_identity_backfill.rs` clippy warning 阻塞全量绿门禁，属本 slice 之外）；真实 Tauri app 中 IP 页面的 contentCounts/hint/aggregation 尚未做视觉 QA/截图。
+- **Phase 2.5C 建议**：把 legacy content 的行级数据也按 origin 归属（写入时带 origin/observation provenance 或新增只读 refs），让 detail rows 与 backend counts 对齐、消除「backend 有 count 但 rows 未加载」提示；再考虑把 unmatched-origin 明细做成可下钻列表（仍不物化为 WebOrigin）。
+
+### 2026-07-02 · Target Surface Phase 2.5A backend legacy content aggregation
+
+- **本轮目标**：按用户贴的 Phase 2.5A 约束，在不改前端 / 不改 DB schema / 不改 migration / 不改采集器 / 不回写旧表的前提下，让 `target_surface_hierarchy_get` 返回 backend identity hierarchy 时附带 legacy web content 的按 WebOrigin counts 聚合。
+- **已完成**：
+  - 新增 `backend/crates/golish-db/src/repo/surface_content_queries.rs`：只读查询 legacy `api_endpoints` / `js_analysis_results` / `directory_entries` / `passive_scan_logs`，输入为 `SurfaceContentQuery { organization_id, project_path, root_target_id, root_ip, origin_keys, include_related }`。
+  - candidate target ids 限定为 root IP target、同 org/project 且 `real_ip == root_ip` 的 domain/url/wildcard target、host 是 root IP 的 IP-literal URL target；`include_related=false` 时只用 root target；legacy content query 只按 candidate `target_id = ANY($3)` 读取，不扫整个 org/project。
+  - URL 归属统一复用 Phase 2.1 `normalize_web_origin`：相对 URL / 缺失 URL / unsupported scheme / malformed URL 只进入 unassigned counts；解析出的 origin 不在 backend `webOrigins` 中时只进入 unmatched counts，不创建 WebOrigin。
+  - `target_surface_hierarchy_get` DTO 扩展：`WebOriginHierarchyDto.contentCounts`；`SurfaceHierarchySummaryDto` 增加 `url/api/js/param/directoryEntry/passiveLog/evidence/contentUnassigned/contentUnmatchedOrigin` counts；`UnassignedWebDataDto.counts` 增加 relative/malformed/unsupported/missing/unmatched 明细。refs 暂不返回，避免本阶段把旧表行细节变成前端新契约。
+  - 计数语义：`apiCount/jsCount/directoryEntryCount/passiveLogCount` 按对应表 `id` 去重；`paramCount` 对 `api_endpoints.params` 的 JSON array 计元素、object 计 key；`urlCount` 只统计 matched origin 下 api/js/directory 的 unique URL 字符串；`evidenceCount` 本阶段等于 matched `passiveLogCount`。
+  - 顺手修复前序 `surface_identity_backfill.rs` 测试代码的两个 clippy lint（type alias + `slice::from_ref`），不改 backfill 行为。
+  - 同步模块卡：`docs/modules/backend/golish-db/repo.md`、`docs/modules/backend/golish-pentest-app.md`；`feature_list.json` 的 `target-surface-workbench` notes 追加 Phase 2.5A 记录，未标 passing。
+- **运行过的验证（实跑）**：
+  - `./init.sh` 曾按 AGENTS 开始执行，用户随即要求“不要跑init”，已 SIGINT 停止；不作为本轮完成验证。
+  - `cargo fmt -p golish-db -p golish-pentest-app --check`（cwd `backend`）→ exit 0。
+  - `cargo test -p golish-db surface_content_queries -- --nocapture`（cwd `backend`）→ 11 passed。
+  - `cargo test -p golish-db surface_identity_queries -- --nocapture`（cwd `backend`）→ 11 passed。
+  - `cargo test -p golish-db surface_identity_backfill -- --nocapture`（cwd `backend`）→ 11 passed。
+  - `cargo test -p golish-db -- --nocapture`（cwd `backend`）→ 181 passed，doc-test 1 ignored。
+  - `cargo test -p golish-pentest-app target_surface_hierarchy -- --nocapture`（cwd `backend`）→ 13 passed。
+  - `cargo test -p golish-pentest-app -- --nocapture`（cwd `backend`）→ 149 passed / 3 ignored。
+  - `cargo check -p golish`（cwd `backend`）→ exit 0。
+  - `cargo clippy -p golish-db -p golish-pentest-app --all-targets -- -D warnings`（cwd `backend`）→ exit 0。
+  - `npm run typecheck` → exit 0。
+  - `npm run check` → exit 0，Biome checked 793 files。
+  - `npm test -- --run` → exit 0，147 test files passed，1534 passed / 12 skipped。
+  - `just precommit` → 用户要求“just precommit也别跑 太慢了”，已 SIGINT 停止；停止前已看到 `fmt` passed、`check-fe` passed，`test-fe` 已开始但未完成，本命令不计作绿门禁。
+- **提交记录**：未 commit，未 push。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-db/src/repo/surface_content_queries.rs`、`backend/crates/golish-db/src/repo/mod.rs`、`backend/crates/golish-db/src/repo/surface_identity_backfill.rs`、`backend/crates/golish-pentest-app/src/target_surface_hierarchy.rs`、`docs/modules/backend/golish-db/repo.md`、`docs/modules/backend/golish-pentest-app.md`、`feature_list.json`、`agent-progress.md`。
+- **未完成 / 待补验证**：`just precommit` 按用户要求中断，未完成绿门禁；真实 Tauri app 中 IP TargetSurfaceWorkbench 尚未做视觉 QA。工作树里仍有多轮前序 Target Surface / harness 未提交改动，未回滚。
+- **Phase 2.5B 建议**：在不破坏只读 Phase 2.5A 的前提下，下一步可以补 lightweight refs / capture refs，并考虑 collector 写入时同步 observation provenance；如果要把旧表行真正绑定到 WebOrigin，应走 schema/写入路径设计，而不是在 command 里临时伪造。
+
+### 2026-07-02 · Target Surface Phase 2.4 前端接入 backend identity hierarchy
+
+- **本轮目标**：按用户贴的 Phase 2.4 约束，在不改后端/DB/schema/migration/采集器/旧接口的前提下，让 IP TargetSurfaceWorkbench 调用 `target_surface_hierarchy_get`，并把 backend identity layer 与现有 frontend inferred legacy content layer 双层合成。
+- **已完成**：
+  - `frontend/lib/api/security-analysis.ts` 新增本地 DTO 与 `targetSurfaceHierarchyGet(targetId, includeRelated)` wrapper；`frontend/lib/security-analysis.ts` 同步 re-export。未手改 `frontend/lib/generated/`。
+  - `useTargetSurfaceData` 对 IP target 额外加载 backend hierarchy，返回 `backendHierarchy` / `backendHierarchyStatus` / `backendHierarchyError`；backend command 报错或 fallback 不会让旧表数据加载失败。
+  - 新增 `frontend/components/TargetPanel/surface/backendSurfaceHierarchy.ts` adapter：backend endpoints/webOrigins/observations 作为 identity layer，frontend `buildSurfaceHierarchy` 继续提供 Sitemap/APIs/JS/Params/Evidence content；按精确 `origin` (`scheme://host:port`) union，显式端口不合并。
+  - `TargetSurfaceWorkbench` 对 IP 页面显示 backend/fallback 数据来源提示；domain/url target 仍走旧 `Identity / Surface / Sitemap / Sensitive / Evidence`。
+  - `NetworkEndpointsTab` 支持 backend identity 列：IP / Port / Transport / State / Service / TLS / Web Origin count / Confidence / Source。
+  - `WebOriginsTab` 支持合成 origin 列：Origin / Scheme / Host / Host Type / Port / Observed endpoint count / URL/API/JS/Params/Evidence counts / Confidence / Source；backend-only origin detail 常驻提示 `Backend identity exists, but legacy web content has not been linked to this origin yet.`
+  - 新增 adapter 回归 `backendSurfaceHierarchy.test.ts`，覆盖 backend success、backend-only origin、frontend-only origin、backend unavailable fallback、legacy/domain fallback、IP-literal origin、不重复合并、显式端口不合并、IP 无全局 Sitemap tab。
+  - 同步模块卡：`docs/modules/frontend/{components,lib}.md`；`feature_list.json` 的 `target-surface-workbench` notes 追加 Phase 2.4 记录，未标 passing。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → exit 1；依赖安装、fmt、check-fe、test-fe 均通过，随后 `lint-rust` 在既有后端文件 `backend/crates/golish-db/src/repo/surface_identity_backfill.rs:579` 报 clippy `unnecessary_lazy_evaluations`（建议 `.or(Some(port == 443))`），本轮按“前端-only”约束未改后端。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+  - `./node_modules/.bin/biome check --write <本轮前端文件>` → exit 0，Fixed 4 files；随后 `./node_modules/.bin/biome check <本轮前端文件>` → exit 0。
+  - `./node_modules/.bin/vitest run frontend/components/TargetPanel/surface/backendSurfaceHierarchy.test.ts frontend/components/TargetPanel/surface/surfaceHierarchy.test.ts frontend/components/TargetPanel/TargetDetail.test.tsx` → 3 files / 15 tests passed，exit 0。
+  - `npm run typecheck` → exit 0。
+  - `npm run check` → exit 0，Biome checked 793 files。
+  - `npm test -- --run` → exit 0，147 test files passed，1534 passed / 12 skipped。
+  - `just check-fe` → exit 0。
+  - `just test-fe` → exit 0。
+  - `just precommit` → exit 101；fmt/check-fe/test-fe 通过，`lint-rust` 在同一个 `surface_identity_backfill.rs:579` clippy warning 失败。
+  - `jq empty feature_list.json` → exit 0。
+  - `git diff --check -- <本轮相关文件 + docs/feature/progress>` → exit 0。
+- **提交记录**：未 commit，未 push。
+- **本轮修改但未提交（本 scope）**：`frontend/lib/api/security-analysis.ts`、`frontend/lib/security-analysis.ts`、`frontend/components/TargetPanel/hooks/useTargetSurfaceData.ts`、`frontend/components/TargetPanel/TargetSurfaceWorkbench.tsx`、`frontend/components/TargetPanel/surface/surfaceHierarchy.ts`、`frontend/components/TargetPanel/surface/backendSurfaceHierarchy.ts`、`frontend/components/TargetPanel/surface/backendSurfaceHierarchy.test.ts`、`frontend/components/TargetPanel/surface/tabs/NetworkEndpointsTab.tsx`、`frontend/components/TargetPanel/surface/tabs/WebOriginsTab.tsx`、`docs/modules/frontend/components.md`、`docs/modules/frontend/lib.md`、`feature_list.json`、`agent-progress.md`。
+- **工作树里已有但本轮未改/未收口的未提交项**：Phase 2.1-2.3 后端 identity/backfill/query/command 文件仍未提交；`frontend/components/TargetPanel/{TargetGroupedView.tsx,surface/surfaceHierarchy.test.ts}`、`frontend/lib/target-panel/asset-groups.test.ts` 等前序 TargetPanel 改动仍在工作树中。未回滚。
+- **已知风险 / 未解决问题**：全量 `just precommit` 仍不能绿，阻塞点是前序后端 `surface_identity_backfill.rs` clippy warning；若要严格按仓库门禁 passing，需要用户允许修该后端 lint 或由前序后端 slice owner 处理。尚未在真实 Tauri app 里点 IP 页面做视觉 QA/截图。
+- **下一步最佳动作**：Phase 2.5 建议做 backend/content link：让 legacy web content（`api_endpoints` / `js_analysis_results` / `directory_entries` / params/capture）在写入时带可追溯 origin identity 或 observation 关联，并补一个只读 query 聚合 content counts；在此之前前端 adapter 继续作为兼容层保留。
 
 ### 2026-07-01 · Enumerator 最新 run route canonicalization 修复
 
@@ -2459,3 +2665,24 @@
 - **提交记录**：未 commit。
 - **本轮修改但未提交（本 scope）**：`backend/crates/golish-pentest-app/src/pentest_bridge/browser_collect_js_api.rs`、`backend/crates/golish-db/src/repo/js_analysis.rs`、`backend/crates/golish-db/src/repo/coverage_truth.rs`、`backend/crates/golish-js-analyzer/src/signals.rs`、`backend/crates/golish-pentest-app/src/pentest_bridge/route_probe_paths.rs`、`docs/modules/backend/golish-pentest-app/pentest_bridge.md`、`docs/modules/backend/golish-db/repo.md`、`agent-progress.md`。
 - **下一步建议**：重启 app/backend 后重新跑/续跑 enumeration；新的 `browser_collect_js_api` 结果应该在 collector 完成后立刻让 Target Surface/JS 资产计数看到 collected-but-pending-analysis 脚本行，再由 `js_extract_apis` 原地升级为完整静态分析。
+
+#### 追加修正 · target_intel DNS 空结果落 checked_empty
+
+- **本轮目标**：回应用户“没查出来就标记”，修最新 target_intel run 里 `route.moresec.cn × GOLISH-INTEL-DNS` 已经尝试但仍被 UI/precheck 画成 pending 的问题。
+- **已完成**：
+  - `organization_recon::refresh_per_asset_landing_summary` 返回 `dns_empty_hosts`：只包含真实发起 DNS 解析、但没有 A/AAAA/CNAME/MX/TXT answer 的 in-scope domain。
+  - `DbRepoProvider::mark_target_intel_dns_empty_outcomes` 新增 app-side hook；生产实现用真实 evidence id upsert `technique_outcomes(GOLISH-INTEL-DNS, empty)`，不在 agent-kit 引入 golish-db/sqlx。
+  - `record_recon_passive_evidence` 在 `recon_map_assets` evidence append 成功后调用该 hook，把未解析出的 domain 标为 checked_empty DB fact。
+  - 对当前最新 run `pentest-chat-1782997699389-1` 做了一次窄 DB backfill：`route.moresec.cn / GOLISH-INTEL-DNS / empty`，`source=resolver`，`evidence_ids=[13923,13921]`。
+  - 同步模块卡：`golish-recon-app/organization_recon`、`golish-agent-app/ai`、`golish-agent-kit/db_traits`、`golish-agent-runtime/agentic_loop`。
+- **运行过的验证（实跑）**：
+  - `cargo check -p golish-recon-app -p golish-agent-app -p golish-agent-runtime`（cwd `backend`）→ exit 0。
+  - `cargo test -p golish-recon-app organization_recon::persistence -- --nocapture`（cwd `backend`）→ 14 passed / 200 filtered out，exit 0。
+  - `cargo fmt --check --package golish-recon-app --package golish-agent-app --package golish-agent-runtime --package golish-agent-kit`（cwd `backend`）→ exit 1；失败项均为当前工作区已有未格式化改动（`bridge_config.rs`、`harness/gate/mod.rs`、`operation_flow.rs`、`execute_harness_loop_tests.rs`），本轮新增文件不再出现在 diff 中。
+  - DB verification（cwd repo）：查询 `technique_outcomes` 确认 `pentest-chat-1782997699389-1 / route.moresec.cn / GOLISH-INTEL-DNS` 已为 `empty`，`evidence_ids=[13923,13921]`。
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1782997699389-1 --db | tail -n 80` → exit 0；DB 自诊断可见 `GOLISH-INTEL-DNS empty` 计数已包含该类 negative fact。
+- **未跑**：`just precommit` / `./init.sh`（当前工作树已有大量非本轮未提交改动；本轮按 target_intel DNS negative fact 做 scoped Rust 验证）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-recon-app/src/organization_recon/{persistence.rs,mod.rs}`、`backend/crates/golish-agent-kit/src/db_traits/repo.rs`、`backend/crates/golish-agent-app/src/ai/db_bridge/{evidence.rs,mod.rs}`、`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/mod.rs`、`docs/modules/backend/golish-recon-app/organization_recon.md`、`docs/modules/backend/golish-agent-app/ai.md`、`docs/modules/backend/golish-agent-kit/db_traits.md`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`agent-progress.md`。
+- **本地 DB 变更**：embedded Postgres `golish` 已 backfill 当前 run 的 `technique_outcomes` 一行（`route.moresec.cn / GOLISH-INTEL-DNS / empty`）。
+- **下一步建议**：重启 app/backend 后重新跑/续跑 target_intel；新的 `recon_map_assets` evidence 写入后，类似 `route.moresec.cn` 这种解析为空的 domain 应在 `technique_outcomes` 中出现 `GOLISH-INTEL-DNS=empty`，`check_stage_asset_coverage` 不应再把它当作 never-attempted。

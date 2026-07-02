@@ -2,6 +2,37 @@ use super::*;
 use rig::completion::CompletionModel;
 use rig::streaming::StreamedAssistantContent;
 
+fn run_large_stack_async_test<F, Fut>(name: &'static str, f: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime should build");
+            runtime.block_on(f());
+        })
+        .expect("large-stack test thread should spawn");
+
+    if let Err(panic) = handle.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+macro_rules! large_stack_async_test {
+    ($name:ident, $body:block) => {
+        #[test]
+        fn $name() {
+            run_large_stack_async_test(stringify!($name), || async $body);
+        }
+    };
+}
+
 #[test]
 fn test_mock_response_text() {
     let response = MockResponse::text("Hello");
@@ -1266,8 +1297,7 @@ async fn test_agentic_loop_simple_text_response() {
     assert_eq!(model.call_count(), 1);
 }
 
-#[tokio::test]
-async fn test_agentic_loop_single_tool_call() {
+large_stack_async_test!(test_agentic_loop_single_tool_call, {
     // Test: Model returns one tool call, executes it, then returns text
     let test_ctx = TestContextBuilder::new()
         .agent_mode(AgentMode::AutoApprove)
@@ -1310,10 +1340,9 @@ async fn test_agentic_loop_single_tool_call() {
 
     // Verify history grew (user + assistant with tool + user with result + assistant final)
     assert!(final_history.len() >= 3);
-}
+});
 
-#[tokio::test]
-async fn test_agentic_loop_multiple_tool_calls() {
+large_stack_async_test!(test_agentic_loop_multiple_tool_calls, {
     // Test: Model returns multiple tool calls in sequence (one per iteration)
     let test_ctx = TestContextBuilder::new()
         .agent_mode(AgentMode::AutoApprove)
@@ -1355,10 +1384,9 @@ async fn test_agentic_loop_multiple_tool_calls() {
 
     // Verify model was called three times
     assert_eq!(model.call_count(), 3);
-}
+});
 
-#[tokio::test]
-async fn test_agentic_loop_tool_then_text() {
+large_stack_async_test!(test_agentic_loop_tool_then_text, {
     // Test: Model calls tool, receives result, then returns text incorporating the result
     let test_ctx = TestContextBuilder::new()
         .agent_mode(AgentMode::AutoApprove)
@@ -1395,10 +1423,9 @@ async fn test_agentic_loop_tool_then_text() {
 
     // Verify the response incorporates the expected content
     assert!(response.contains("value123") || response.contains("JSON"));
-}
+});
 
-#[tokio::test]
-async fn test_agentic_loop_max_iterations_reached() {
+large_stack_async_test!(test_agentic_loop_max_iterations_reached, {
     // Test: Loop stops when max iterations are hit (MAX_TOOL_ITERATIONS = 100)
     let test_ctx = TestContextBuilder::new()
         .agent_mode(AgentMode::AutoApprove)
@@ -1450,7 +1477,7 @@ async fn test_agentic_loop_max_iterations_reached() {
         has_max_iterations_error,
         "Should emit max_iterations error event"
     );
-}
+});
 
 #[tokio::test]
 async fn test_agentic_loop_context_events_emitted() {
@@ -1497,8 +1524,7 @@ async fn test_agentic_loop_context_events_emitted() {
     }
 }
 
-#[tokio::test]
-async fn test_agentic_loop_tool_error_handling() {
+large_stack_async_test!(test_agentic_loop_tool_error_handling, {
     // Test: Tool returns error, loop handles it gracefully and continues
     let test_ctx = TestContextBuilder::new()
         .agent_mode(AgentMode::AutoApprove)
@@ -1545,7 +1571,7 @@ async fn test_agentic_loop_tool_error_handling() {
         !tool_results.is_empty(),
         "Should have a failed tool result event"
     );
-}
+});
 
 #[tokio::test]
 async fn test_agentic_loop_with_thinking() {
@@ -1665,58 +1691,63 @@ async fn test_agentic_loop_cancellation_via_timeout() {
     assert!(inner_result.is_ok(), "Loop result should be successful");
 }
 
-#[tokio::test]
-async fn test_agentic_loop_multiple_tool_calls_in_single_response() {
-    // Test: Model returns multiple tool calls in a single response (parallel tool calling)
-    let test_ctx = TestContextBuilder::new()
-        .agent_mode(AgentMode::AutoApprove)
-        .build()
-        .await;
+#[test]
+fn test_agentic_loop_multiple_tool_calls_in_single_response() {
+    run_large_stack_async_test(
+        "test_agentic_loop_multiple_tool_calls_in_single_response",
+        || async {
+            // Test: Model returns multiple tool calls in a single response (parallel tool calling)
+            let test_ctx = TestContextBuilder::new()
+                .agent_mode(AgentMode::AutoApprove)
+                .build()
+                .await;
 
-    // Create test files
-    let ws = test_ctx.workspace_path().await;
-    std::fs::write(ws.join("a.txt"), "Content A").unwrap();
-    std::fs::write(ws.join("b.txt"), "Content B").unwrap();
+            // Create test files
+            let ws = test_ctx.workspace_path().await;
+            std::fs::write(ws.join("a.txt"), "Content A").unwrap();
+            std::fs::write(ws.join("b.txt"), "Content B").unwrap();
 
-    let client = test_llm_client();
-    let ctx = test_ctx.as_agentic_context_with_client(&client);
+            let client = test_llm_client();
+            let ctx = test_ctx.as_agentic_context_with_client(&client);
 
-    // Model returns multiple tool calls at once
-    let model = MockCompletionModel::new(vec![
-        MockResponse::tool_calls(vec![
-            MockToolCall::new("read_file", serde_json::json!({"path": "a.txt"})),
-            MockToolCall::new("read_file", serde_json::json!({"path": "b.txt"})),
-        ]),
-        MockResponse::text("I read both files: A and B."),
-    ]);
+            // Model returns multiple tool calls at once
+            let model = MockCompletionModel::new(vec![
+                MockResponse::tool_calls(vec![
+                    MockToolCall::new("read_file", serde_json::json!({"path": "a.txt"})),
+                    MockToolCall::new("read_file", serde_json::json!({"path": "b.txt"})),
+                ]),
+                MockResponse::text("I read both files: A and B."),
+            ]);
 
-    let sub_ctx = test_sub_agent_context();
-    let history = initial_history_phase04("Read a.txt and b.txt simultaneously");
+            let sub_ctx = test_sub_agent_context();
+            let history = initial_history_phase04("Read a.txt and b.txt simultaneously");
 
-    let result = run_agentic_loop_generic(
-        &model,
-        "You are a helpful assistant.",
-        history,
-        sub_ctx,
-        &ctx,
-    )
-    .await;
+            let result = run_agentic_loop_generic(
+                &model,
+                "You are a helpful assistant.",
+                history,
+                sub_ctx,
+                &ctx,
+            )
+            .await;
 
-    assert!(result.is_ok());
-    let (response, _reasoning, _final_history, _usage) = result.unwrap();
-    assert!(response.contains("both files") || response.contains("A and B"));
+            assert!(result.is_ok());
+            let (response, _reasoning, _final_history, _usage) = result.unwrap();
+            assert!(response.contains("both files") || response.contains("A and B"));
 
-    // Verify model was called twice (multi-tool + final)
-    assert_eq!(model.call_count(), 2);
+            // Verify model was called twice (multi-tool + final)
+            assert_eq!(model.call_count(), 2);
 
-    // Verify we got two tool result events
-    let mut test_ctx = test_ctx;
-    let events = test_ctx.collect_events();
-    let tool_results: Vec<_> = events
-        .iter()
-        .filter(|e| matches!(e, AiEvent::ToolResult { .. }))
-        .collect();
-    assert_eq!(tool_results.len(), 2, "Should have two tool result events");
+            // Verify we got two tool result events
+            let mut test_ctx = test_ctx;
+            let events = test_ctx.collect_events();
+            let tool_results: Vec<_> = events
+                .iter()
+                .filter(|e| matches!(e, AiEvent::ToolResult { .. }))
+                .collect();
+            assert_eq!(tool_results.len(), 2, "Should have two tool result events");
+        },
+    );
 }
 
 // ========================================================================
@@ -1806,8 +1837,7 @@ async fn test_behavioral_equivalence_text_response() {
     );
 }
 
-#[tokio::test]
-async fn test_behavioral_equivalence_tool_execution() {
+large_stack_async_test!(test_behavioral_equivalence_tool_execution, {
     // Verify that tool routing and execution works identically in the
     // generic loop compared to the specialized version.
     //
@@ -1904,10 +1934,9 @@ async fn test_behavioral_equivalence_tool_execution() {
         has_tool_result_event,
         "Should emit successful ToolResult event"
     );
-}
+});
 
-#[tokio::test]
-async fn test_behavioral_equivalence_event_sequence() {
+large_stack_async_test!(test_behavioral_equivalence_event_sequence, {
     // Verify that the sequence of events emitted by the generic loop
     // matches the expected behavior pattern.
     //
@@ -1984,10 +2013,9 @@ async fn test_behavioral_equivalence_event_sequence() {
         approved_idx < result_idx,
         "ToolAutoApproved should come before ToolResult"
     );
-}
+});
 
-#[tokio::test]
-async fn test_behavioral_equivalence_error_handling() {
+large_stack_async_test!(test_behavioral_equivalence_error_handling, {
     // Verify that error handling in the generic loop matches expected behavior.
     //
     // Tests:
@@ -2124,10 +2152,9 @@ async fn test_behavioral_equivalence_error_handling() {
             "Should emit ToolDenied event for constraint violation"
         );
     }
-}
+});
 
-#[tokio::test]
-async fn test_behavioral_equivalence_context_management() {
+large_stack_async_test!(test_behavioral_equivalence_context_management, {
     // Verify that context window management works correctly in the generic loop.
     //
     // Tests:
@@ -2217,7 +2244,7 @@ async fn test_behavioral_equivalence_context_management() {
             );
         }
     }
-}
+});
 
 // ========================================================================
 // Sub-Agent Executor Tests (Phase 0.5)

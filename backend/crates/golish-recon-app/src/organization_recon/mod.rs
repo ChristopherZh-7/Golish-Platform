@@ -27,7 +27,7 @@ pub(crate) use persistence::value_belongs_to_organization;
 // Per-asset landing refresh (fix 2026-06-17 enrich-timing): callable from the
 // submit-gate read path to close the "enrich lands before targets are registered"
 // ordering gap (DNS/SUBDOMAIN never reached the gate-read tables).
-pub use persistence::refresh_per_asset_landing;
+pub use persistence::{refresh_per_asset_landing, refresh_per_asset_landing_summary};
 
 pub use commands::*;
 pub use runner::ORGANIZATION_RECON_EVENT;

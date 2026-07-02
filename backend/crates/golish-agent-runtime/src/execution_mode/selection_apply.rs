@@ -202,7 +202,8 @@ fn static_tool_allowed_by_selection(tool_name: &str, groups: &StaticGroupSelecti
         | "list_attack_surface_seeds"
         | "check_stage_asset_coverage"
         | "stage_worklist_status"
-        | "stage_worklist_next" => groups.security_analysis,
+        | "stage_worklist_next"
+        | "list_recent_evidence" => groups.security_analysis,
         _ => false,
     }
 }

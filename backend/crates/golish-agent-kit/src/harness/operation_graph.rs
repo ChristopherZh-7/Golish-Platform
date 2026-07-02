@@ -341,19 +341,21 @@ mod tests {
     }
 
     #[test]
-    fn base_graph_has_12_nodes_15_edges() {
+    fn base_graph_has_13_nodes_17_edges() {
         let g = base();
-        assert_eq!(g.nodes.len(), 12);
-        // 11 linear stage-flow edges + 4 bail-to-reporting shortcuts
-        // (external_attack_surface / enumeration / vuln_triage / verification).
-        assert_eq!(g.edges.len(), 15);
+        assert_eq!(g.nodes.len(), 13);
+        // 12 linear stage-flow edges + 5 bail-to-reporting shortcuts
+        // (external_attack_surface / enumeration / vuln_triage / attack_candidate
+        // / verification). attack_candidate splits the old vuln_triage->verification
+        // edge into vuln_triage->attack_candidate->verification (+1 linear, +1 bail).
+        assert_eq!(g.edges.len(), 17);
     }
 
     #[test]
     fn base_graph_loads_via_include() {
         // 内置加载与显式 from_json 等价.
         let g = base_operation_graph().expect("built-in base graph");
-        assert_eq!(g.nodes.len(), 12);
+        assert_eq!(g.nodes.len(), 13);
     }
 
     #[test]

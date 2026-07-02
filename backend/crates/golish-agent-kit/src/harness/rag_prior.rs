@@ -335,6 +335,7 @@ mod tests {
             ],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         };
         let n = feed_findings_to_graph(&g, &d, None).await;
         assert_eq!(n, 2);

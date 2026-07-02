@@ -3,6 +3,9 @@ import { cn } from "@/lib/utils";
 import { EmptyInline, Section } from "../SurfaceParts";
 import type { NetworkEndpointVM, WebOriginVM } from "../surfaceHierarchy";
 
+const INFERRED_CONFIDENCE_TITLE =
+  "Inferred from URL / target metadata. Backend does not yet provide web_origin_id.";
+
 export function NetworkEndpointsTab({
   endpoints,
   webOrigins,
@@ -27,15 +30,19 @@ export function NetworkEndpointsTab({
         {endpoints.length === 0 ? (
           <EmptyInline loading={loading} label="No endpoint evidence yet" />
         ) : (
-          <div className="overflow-hidden rounded border border-border/25">
-            <table className="w-full text-[11px]">
+          <div className="overflow-x-auto rounded border border-border/25">
+            <table className="min-w-[920px] w-full text-[11px]">
               <thead className="border-b border-border/25 bg-muted/10 text-muted-foreground">
                 <tr>
-                  <th className="px-2 py-1.5 text-left font-medium">Endpoint</th>
+                  <th className="px-2 py-1.5 text-left font-medium">IP</th>
+                  <th className="px-2 py-1.5 text-left font-medium">Port</th>
+                  <th className="px-2 py-1.5 text-left font-medium">Transport</th>
+                  <th className="px-2 py-1.5 text-left font-medium">State</th>
                   <th className="px-2 py-1.5 text-left font-medium">Service</th>
+                  <th className="px-2 py-1.5 text-left font-medium">TLS</th>
                   <th className="px-2 py-1.5 text-left font-medium">Web Origins</th>
-                  <th className="px-2 py-1.5 text-left font-medium">Source</th>
                   <th className="px-2 py-1.5 text-left font-medium">Confidence</th>
+                  <th className="px-2 py-1.5 text-left font-medium">Source</th>
                 </tr>
               </thead>
               <tbody>
@@ -44,22 +51,34 @@ export function NetworkEndpointsTab({
                     <td className="px-2 py-2">
                       <div className="flex items-center gap-1.5">
                         <Network className="h-3.5 w-3.5 text-accent/75" />
-                        <span className="font-mono text-accent">
-                          {endpoint.ip || "unknown"}:{endpoint.port}/{endpoint.transport}
-                        </span>
-                        {endpoint.tls && (
-                          <ShieldCheck className="h-3 w-3 text-green-300" aria-label="TLS" />
-                        )}
+                        <span className="font-mono text-accent">{endpoint.ip || "unknown"}</span>
                       </div>
+                    </td>
+                    <td className="px-2 py-2 font-mono text-muted-foreground">{endpoint.port}</td>
+                    <td className="px-2 py-2 font-mono text-muted-foreground">
+                      {endpoint.transport}
+                    </td>
+                    <td className="px-2 py-2 text-muted-foreground">
+                      {endpoint.state || "unknown"}
                     </td>
                     <td className="px-2 py-2 text-foreground/75">
                       {endpoint.service || "unknown"}
                     </td>
                     <td className="px-2 py-2">
+                      {endpoint.tls ? (
+                        <ShieldCheck className="h-3.5 w-3.5 text-green-300" aria-label="TLS" />
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </td>
+                    <td className="px-2 py-2">
                       {endpoint.webOriginIds.length === 0 ? (
                         <span className="text-muted-foreground">No reliable origin link</span>
                       ) : (
-                        <div className="flex flex-wrap gap-1">
+                        <div className="flex flex-wrap items-center gap-1">
+                          <span className="rounded bg-muted/25 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground">
+                            {endpoint.webOriginIds.length}
+                          </span>
                           {endpoint.webOriginIds.map((originId) => {
                             const origin = originsById.get(originId);
                             if (!origin) return null;
@@ -82,7 +101,6 @@ export function NetworkEndpointsTab({
                         </div>
                       )}
                     </td>
-                    <td className="px-2 py-2 text-muted-foreground">{endpoint.source}</td>
                     <td className="px-2 py-2">
                       <span
                         className={cn(
@@ -91,10 +109,14 @@ export function NetworkEndpointsTab({
                             ? "bg-green-500/10 text-green-300"
                             : "bg-yellow-500/10 text-yellow-300"
                         )}
+                        title={
+                          endpoint.confidence === "inferred" ? INFERRED_CONFIDENCE_TITLE : undefined
+                        }
                       >
                         {endpoint.confidence}
                       </span>
                     </td>
+                    <td className="px-2 py-2 text-muted-foreground">{endpoint.source}</td>
                   </tr>
                 ))}
               </tbody>

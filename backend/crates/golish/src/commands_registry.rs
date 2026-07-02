@@ -198,6 +198,7 @@ fn install_handlers(
         target_assets_list, api_endpoints_list, api_endpoints_untested,
         fingerprints_list, js_analysis_list, pentest_read_capture, pentest_read_capture_text,
         passive_scans_list, passive_scans_by_url, passive_scans_vulnerable, passive_scans_stats, target_security_overview,
+        target_surface_hierarchy_get, target_surface_identity_backfill,
         scan_whatweb, match_pocs_for_target, scan_nuclei_targeted, nuclei_cancel, scan_feroxbuster,
         sensitive_scan_start, sensitive_scan_stop, sensitive_scan_status, sensitive_scan_results,
         sensitive_scan_clear, sensitive_scan_confirm, sensitive_scan_default_paths, sensitive_scan_apply_verdicts,

@@ -117,6 +117,7 @@ mod tests {
             findings,
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         }
     }
 

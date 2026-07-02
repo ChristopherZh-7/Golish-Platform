@@ -4,6 +4,7 @@ import type { PortInfo, Target } from "@/lib/pentest/types";
 import type { Fingerprint } from "@/lib/security-analysis";
 import { cn } from "@/lib/utils";
 import { EmptyInline, Metric, Section } from "../SurfaceParts";
+import { FingerprintList } from "./FingerprintList";
 
 export function SurfaceTabView({
   target,
@@ -122,40 +123,12 @@ export function SurfaceTabView({
               />
             </div>
           </Section>
-          <Section title="Fingerprints" subtitle={`${fingerprints.length} detected`}>
-            {fingerprints.length === 0 ? (
-              <EmptyInline
-                loading={loading}
-                label="Fingerprint details appear after baseline recon"
-              />
-            ) : (
-              <div className="space-y-1.5">
-                {fingerprints.slice(0, 10).map((fingerprint) => (
-                  <div
-                    key={fingerprint.id}
-                    className="rounded border border-border/20 bg-muted/5 px-2 py-1.5"
-                  >
-                    <div className="flex items-center gap-2 text-[11px]">
-                      <span className="rounded bg-purple-500/10 px-1.5 py-0.5 text-[9px] text-purple-300">
-                        {fingerprint.category}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate text-foreground/85">
-                        {fingerprint.name}
-                      </span>
-                      {fingerprint.version && (
-                        <span className="font-mono text-[10px] text-muted-foreground">
-                          {fingerprint.version}
-                        </span>
-                      )}
-                      <span className="text-[9px] text-muted-foreground">
-                        {Math.round(fingerprint.confidence)}%
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Section>
+          <FingerprintList
+            fingerprints={fingerprints}
+            loading={loading}
+            limit={10}
+            emptyLabel="Fingerprint details appear after baseline recon"
+          />
         </div>
       </div>
 

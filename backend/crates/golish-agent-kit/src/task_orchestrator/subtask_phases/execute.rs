@@ -609,14 +609,55 @@ impl TaskOrchestrator {
                 message: outcome.gated_stage.as_str().to_string(),
             });
         }
+        // Wave loop (设计 2026-07-02-attack-stage §3.5): after a `verification`
+        // PASS, ask `decide_chain_wave` whether the candidates this wave surfaced
+        // warrant another attack_candidate wave — bounded by the fuel/depth caps
+        // AND deduped against every hypothesis already tested this run (so an
+        // a→b→c chain advances but a↔b oscillation cannot). This servicer owns
+        // the dedupe set + wave counter (it holds the deliverable candidates +
+        // DB); the graph node re-applies the hard cap as defense-in-depth. Only
+        // `verification` can open a wave; every other stage reports `false`.
+        let reopen_wave = if outcome.gate_allowed
+            && outcome.gated_stage == crate::harness::StageKind::Verification
+        {
+            match crate::harness::chain_wave::decide_chain_wave(
+                &outcome.spawned_candidates,
+                &self.chain_wave_seen,
+                self.chain_wave,
+                crate::harness::chain_wave::DEFAULT_MAX_WAVES,
+                crate::harness::chain_wave::DEFAULT_MAX_CHAIN_DEPTH,
+            ) {
+                crate::harness::chain_wave::WaveDecision::OpenNextWave { next_wave } => {
+                    for c in &outcome.spawned_candidates {
+                        self.chain_wave_seen
+                            .insert(crate::harness::chain_wave::candidate_dedup_key(c));
+                    }
+                    self.chain_wave = next_wave;
+                    tracing::info!(
+                        target: "harness::hook",
+                        task_id = %task_id,
+                        wave = next_wave,
+                        new_candidates = outcome.spawned_candidates.len(),
+                        "chain-wave: verification opened next attack_candidate wave"
+                    );
+                    true
+                }
+                crate::harness::chain_wave::WaveDecision::Advance => false,
+            }
+        } else {
+            false
+        };
+
         let flow = crate::harness::operation_flow::StageFlowOutcome {
             gate_allowed: outcome.gate_allowed,
             made_progress: gate_outcome_made_progress(&outcome),
+            reopen_wave,
         };
         self.stage_outcome_acc = Some(match self.stage_outcome_acc.take() {
             Some(prev) => crate::harness::operation_flow::StageFlowOutcome {
                 gate_allowed: prev.gate_allowed && flow.gate_allowed,
                 made_progress: prev.made_progress || flow.made_progress,
+                reopen_wave: prev.reopen_wave || flow.reopen_wave,
             },
             None => flow,
         });
@@ -1785,10 +1826,15 @@ impl TaskOrchestrator {
         // 与现有 ledger + coverage_truth 并存；additive + fail-safe 到空，无灰度开关）。
         // run_id = chat session；org 绑定才读（表 org NOT NULL）。outcome `blocked`→Error
         // （与 error 同终态语义；gate 的 EvidenceOutcome 无 Blocked 变体）。
+        //
+        // 护栏 4 (2026-07-02-gate-capability-ledger Phase 1)：套 `run_start` freshness
+        // cutoff（与上面 db_truth_facts 同源），避免同 session 旧 stage-run 采集的
+        // technique_outcomes 行泄漏进本 stage-run 的 coverage 判定。spec 未开
+        // freshness_window 时 run_start=None → presence-only（零回归）。
         if let Some(org_id) = self.harness_org_id {
             let projected: Vec<EvidenceFact> = self
                 .repo
-                .technique_outcome_facts(org_id, sid)
+                .technique_outcome_facts_fresh(org_id, sid, run_start)
                 .await
                 .into_iter()
                 .filter_map(|(asset, technique, outcome, evidence_id)| {
@@ -2204,6 +2250,12 @@ struct HarnessGateOutcome {
     /// so downstream stages confine to that org's subtree. `None` = not scoping /
     /// no org id in the claim (fail-open).
     engagement_org_id: Option<uuid::Uuid>,
+    /// Wave loop (设计 2026-07-02-attack-stage §3.5): the attack candidates this
+    /// stage's deliverable carried. On a `verification` PASS, `consume_gate_outcome`
+    /// feeds these to `decide_chain_wave` (with the run's cross-wave dedupe set +
+    /// wave counter) to decide whether to overwrite the cursor back to
+    /// attack_candidate for another wave. Empty for stages that carry no candidates.
+    spawned_candidates: Vec<crate::harness::AttackCandidate>,
 }
 
 impl HarnessGateOutcome {
@@ -2608,6 +2660,7 @@ fn apply_harness_gate_hook(
             red_team_flow_correction: None,
             confirm_only_stage: confirm_only,
             evidence_kind_labels: std::collections::HashMap::new(),
+            spawned_candidates: deliverable.candidates.clone(),
         }),
     )
 }
@@ -2656,6 +2709,7 @@ fn render_specialist_gate(
             red_team_flow_correction: None,
             confirm_only_stage: false,
             evidence_kind_labels: std::collections::HashMap::new(),
+            spawned_candidates: deliverable.candidates.clone(),
         }),
     )
 }
@@ -2822,6 +2876,7 @@ fn missing_deliverable_gate_outcome(
         red_team_flow_correction: None,
         confirm_only_stage: confirm_only,
         evidence_kind_labels: std::collections::HashMap::new(),
+        spawned_candidates: Vec::new(),
     })
 }
 
@@ -3697,6 +3752,7 @@ mod harness_gate_hook_tests {
             }],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         };
         let s = summarize_deliverable(&d);
         assert!(s.contains("http_service_observed"));
@@ -3764,6 +3820,7 @@ mod harness_gate_hook_tests {
             red_team_flow_correction: None,
             confirm_only_stage: false,
             evidence_kind_labels: std::collections::HashMap::new(),
+            spawned_candidates: Vec::new(),
         }
     }
 

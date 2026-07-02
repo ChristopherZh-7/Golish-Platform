@@ -76,6 +76,10 @@ become the coverage denominator for `vuln_triage`.
   with the browser-run evidence (a run that found 0 JS is checked-empty, not
   unchecked — I8). GOLISH-ENUM-JSAPI is now narrower: API endpoints extracted
   from JS/crawler via `js_extract_apis`.
+- An IP/CIDR target that EAS/httpx proved serves HTTP (`targets.http_status` is
+  set) is a web root even with no domain: enumerate it for all four content axes
+  (JS/DIR/PARAM/JSAPI) exactly like a domain/URL. A bare IP with no HTTP evidence
+  stays `not_applicable` for content enumeration — do NOT fuzz it.
 - For found/checked_empty cells, set `tested_units` and `total_units` (M = the
   enumerated endpoints/params for that asset×technique). Full coverage needs
   `tested_units == total_units`; to sample a huge surface you MUST set

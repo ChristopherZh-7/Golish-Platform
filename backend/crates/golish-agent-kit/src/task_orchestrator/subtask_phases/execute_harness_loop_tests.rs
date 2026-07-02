@@ -450,6 +450,7 @@ fn pass(stage: StageKind) -> HarnessGateOutcome {
         red_team_flow_correction: None,
         confirm_only_stage: false,
         evidence_kind_labels: std::collections::HashMap::new(),
+        spawned_candidates: Vec::new(),
     }
 }
 
@@ -473,6 +474,7 @@ fn block(stage: StageKind) -> HarnessGateOutcome {
         red_team_flow_correction: None,
         confirm_only_stage: false,
         evidence_kind_labels: std::collections::HashMap::new(),
+        spawned_candidates: Vec::new(),
     }
 }
 
@@ -484,6 +486,16 @@ fn pass_without_findings(stage: StageKind, evidence_refs: Vec<i64>) -> HarnessGa
         "- claims: stage_run_pass_token (external_attack_surface)\n- evidence refs: 25".to_string(),
     );
     outcome
+}
+
+/// A minimal attack candidate (serde defaults for the optional fields) for the
+/// chain-wave decision tests.
+fn candidate_for_test(hypothesis: &str) -> crate::harness::AttackCandidate {
+    serde_json::from_str(&format!(
+        r#"{{"candidate_id":"3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
+            "target":"api.example.com","hypothesis":"{hypothesis}","rationale":"r"}}"#
+    ))
+    .expect("candidate parses")
 }
 
 fn drain(rx: &mut mpsc::UnboundedReceiver<AiEvent>) -> Vec<AiEvent> {
@@ -600,6 +612,72 @@ async fn block_emits_no_stage_passed() {
             .any(|e| matches!(e, AiEvent::TaskProgress { status, .. } if status == "stage_passed")),
         "gate BLOCK must not emit stage_passed"
     );
+}
+
+/// Wave loop (设计 2026-07-02-attack-stage §3.5): a verification PASS carrying a
+/// fresh (unseen) candidate opens the next attack_candidate wave — the servicer
+/// advances its wave counter, records the hypothesis, and sets the flow's
+/// `reopen_wave` signal the graph node routes on.
+#[tokio::test]
+async fn verification_pass_with_new_candidate_opens_wave() {
+    let op = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "pentest", "verification");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
+
+    let mut outcome = pass(StageKind::Verification);
+    outcome.spawned_candidates = vec![candidate_for_test("IDOR on /orders/{id}")];
+    orch.consume_gate_outcome(op, outcome).await;
+
+    assert_eq!(orch.chain_wave, 1, "a new hypothesis opens wave 1");
+    assert!(
+        orch.stage_outcome_acc.expect("acc set").reopen_wave,
+        "verification must signal reopen_wave when a new candidate surfaced"
+    );
+}
+
+/// Re-testing the SAME hypothesis (already recorded this run) must NOT reopen
+/// another wave — the cross-wave dedupe stops a↔b oscillation.
+#[tokio::test]
+async fn verification_pass_with_seen_candidate_does_not_reopen() {
+    let op = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "pentest", "verification");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
+
+    let c = candidate_for_test("IDOR on /orders/{id}");
+    let mut first = pass(StageKind::Verification);
+    first.spawned_candidates = vec![c.clone()];
+    orch.consume_gate_outcome(op, first).await;
+    assert_eq!(orch.chain_wave, 1);
+    orch.stage_outcome_acc = None; // fresh accumulator for the next stage run
+
+    let mut second = pass(StageKind::Verification);
+    second.spawned_candidates = vec![c];
+    orch.consume_gate_outcome(op, second).await;
+
+    assert_eq!(orch.chain_wave, 1, "same hypothesis must not open another wave");
+    assert!(
+        !orch.stage_outcome_acc.expect("acc set").reopen_wave,
+        "an already-seen hypothesis must not signal reopen"
+    );
+}
+
+/// A non-verification PASS never opens a wave, even if a deliverable somehow
+/// carried candidates.
+#[tokio::test]
+async fn non_verification_pass_never_opens_wave() {
+    let op = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "pentest", "vuln_triage");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), Uuid::new_v4(), tx);
+
+    let mut outcome = pass(StageKind::VulnTriage);
+    outcome.spawned_candidates = vec![candidate_for_test("h")];
+    orch.consume_gate_outcome(op, outcome).await;
+
+    assert_eq!(orch.chain_wave, 0, "only verification opens waves");
+    assert!(!orch.stage_outcome_acc.expect("acc set").reopen_wave);
 }
 
 #[test]
@@ -902,6 +980,7 @@ fn scoping_deliverable_with_claim(kind: &str, subject: &str) -> crate::harness::
         findings: vec![],
         required_checks_done: vec![],
         coverage: vec![],
+        candidates: vec![],
     }
 }
 

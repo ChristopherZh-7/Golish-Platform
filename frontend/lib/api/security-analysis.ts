@@ -173,6 +173,223 @@ export interface TimelineEntry {
   createdAt: string;
 }
 
+export interface BackendSurfaceTargetDto {
+  id: string;
+  name: string;
+  targetType: string;
+  value: string;
+  tags: unknown;
+  notes: string;
+  scope: string;
+  group: string;
+  projectPath: string | null;
+  organizationId: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface BackendNetworkEndpointDto {
+  id: string;
+  ip: string;
+  port: number;
+  transport: string;
+  state: string;
+  serviceName: string | null;
+  serviceProduct: string | null;
+  serviceVersion: string | null;
+  banner: string | null;
+  tlsDetected: boolean;
+  source: string;
+  confidence: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  lastConfirmedAt: number | null;
+  webOriginIds: string[];
+  observationIds: string[];
+}
+
+export interface BackendWebOriginCountsDto {
+  endpointCount: number;
+  observationCount: number;
+}
+
+/**
+ * Phase 2.5A backend legacy content aggregation for a single WebOrigin.
+ * These are display counts derived from legacy tables (`api_endpoints`,
+ * `js_analysis_results`, `directory_entries`, `passive_scan_logs`); they are
+ * NOT row payloads. `null` on the parent origin means the backend did not emit
+ * `contentCounts` (older payloads), and the frontend should fall back to its
+ * own inferred counts.
+ */
+export interface BackendWebOriginContentCountsDto {
+  urlCount: number;
+  apiCount: number;
+  jsCount: number;
+  paramCount: number;
+  directoryEntryCount: number;
+  passiveLogCount: number;
+  evidenceCount: number;
+}
+
+/**
+ * Phase 2.5C lightweight pointer to a single legacy content row. This is NOT a
+ * full `api_endpoints` / `js_analysis_results` row — only enough metadata for a
+ * compact list + deep link. Totals still come from `contentCounts`; refs are a
+ * bounded (max ~200 per bucket) best-effort enumeration.
+ */
+export interface BackendWebOriginContentRefDto {
+  kind: string;
+  id: string;
+  url: string;
+  method: string | null;
+  statusCode: number | null;
+  capturePath: string | null;
+  source: string | null;
+}
+
+export interface BackendWebOriginDto {
+  id: string;
+  scheme: string;
+  host: string;
+  hostType: string;
+  port: number;
+  origin: string;
+  source: string;
+  confidence: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  lastConfirmedAt: number | null;
+  endpointIds: string[];
+  observationIds: string[];
+  counts: BackendWebOriginCountsDto;
+  /** `null` when the backend payload omitted `contentCounts` (pre-2.5A). */
+  contentCounts: BackendWebOriginContentCountsDto | null;
+  /** Bounded lightweight refs for this origin (empty on pre-2.5C payloads). */
+  refs: BackendWebOriginContentRefDto[];
+}
+
+export interface BackendWebOriginObservationDto {
+  id: string;
+  webOriginId: string;
+  networkEndpointId: string | null;
+  targetId: string | null;
+  observedIp: string | null;
+  sni: string | null;
+  hostHeader: string | null;
+  statusCode: number | null;
+  title: string | null;
+  finalUrl: string | null;
+  redirectChain: unknown;
+  bodyHash: string | null;
+  faviconHash: string | null;
+  screenshotPath: string | null;
+  capturePath: string | null;
+  observedAt: number;
+  confidence: number;
+  source: string;
+}
+
+export interface BackendRelatedDomainDto {
+  targetId: string | null;
+  host: string;
+  source: string;
+  relation: string;
+}
+
+/**
+ * Phase 2.5A backend content aggregation buckets for data that could not be
+ * attributed to a backend WebOrigin. `unmatchedOriginCount` counts URLs that
+ * parsed to an origin absent from backend identity; the rest are relative /
+ * malformed / unsupported-scheme / missing-URL items. These are counts only —
+ * the backend never synthesizes identity rows for them.
+ */
+export interface BackendUnassignedWebDataCountsDto {
+  urlCount: number;
+  apiCount: number;
+  jsCount: number;
+  paramCount: number;
+  directoryEntryCount: number;
+  passiveLogCount: number;
+  evidenceCount: number;
+  relativeUrlCount: number;
+  malformedUrlCount: number;
+  unsupportedSchemeCount: number;
+  missingOriginCount: number;
+  unmatchedOriginCount: number;
+  unmatchedOriginItemCount: number;
+}
+
+export interface BackendUnassignedWebDataDto {
+  urls: unknown[];
+  apis: unknown[];
+  js: unknown[];
+  params: unknown[];
+  reason: string;
+  /** `null` when the backend payload omitted aggregation counts (pre-2.5A). */
+  counts: BackendUnassignedWebDataCountsDto | null;
+  /** Bounded lightweight refs for unmatched/unassigned content (pre-2.5C: empty). */
+  refs: BackendWebOriginContentRefDto[];
+}
+
+/**
+ * Phase 2.5C in-app backfill summary (`target_surface_identity_backfill`). All
+ * counters describe rows scanned / identity rows upserted; the backfill is
+ * additive and idempotent and never mutates legacy tables.
+ */
+export interface SurfaceIdentityBackfillSummary {
+  scannedTargets: number;
+  scannedTargetAssets: number;
+  scannedApiEndpoints: number;
+  scannedJsResults: number;
+  scannedDirectoryEntries: number;
+  scannedPassiveLogs: number;
+  createdOrUpdatedNetworkEndpoints: number;
+  createdOrUpdatedWebOrigins: number;
+  createdOrUpdatedObservations: number;
+  skippedRelativeUrls: number;
+  skippedMalformedUrls: number;
+  skippedMissingEndpoint: number;
+  skippedUnsupportedScheme: number;
+  inferredObservations: number;
+  confirmedObservations: number;
+}
+
+export interface BackendSurfaceSummaryDto {
+  endpointCount: number;
+  webOriginCount: number;
+  observationCount: number;
+  inferredObservationCount: number;
+  confirmedObservationCount: number;
+  relatedDomainCount: number;
+  unassignedCount: number;
+  // Phase 2.5A content aggregation totals (matched origins only). `null` when
+  // the backend payload omitted them, signalling the frontend to keep its own
+  // inferred summary counts instead.
+  urlCount: number | null;
+  apiCount: number | null;
+  jsCount: number | null;
+  paramCount: number | null;
+  directoryEntryCount: number | null;
+  passiveLogCount: number | null;
+  evidenceCount: number | null;
+  contentUnassignedCount: number | null;
+  contentUnmatchedOriginCount: number | null;
+}
+
+export interface BackendSurfaceHierarchyDto {
+  rootTarget: BackendSurfaceTargetDto;
+  mode: string;
+  dataSource: string;
+  generatedAt: number;
+  endpoints: BackendNetworkEndpointDto[];
+  webOrigins: BackendWebOriginDto[];
+  observations: BackendWebOriginObservationDto[];
+  relatedDomains: BackendRelatedDomainDto[];
+  unassignedWebData: BackendUnassignedWebDataDto;
+  summary: BackendSurfaceSummaryDto;
+  fallbackReason: string | null;
+}
+
 type ApiRecord = Record<string, unknown>;
 
 function asRecord(value: unknown): ApiRecord {
@@ -207,6 +424,18 @@ function nullableNumberField(row: ApiRecord, ...keys: string[]): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+/**
+ * Like {@link nullableNumberField} but distinguishes "field absent" (returns
+ * `null`) from "field present as 0" (returns `0`). Used for optional Phase 2.5A
+ * content-count fields so the frontend can fall back to its own inferred counts
+ * only when the backend genuinely did not emit them.
+ */
+function presentNumberField(row: ApiRecord, ...keys: string[]): number | null {
+  const value = get(row, ...keys);
+  if (value === undefined || value === null) return null;
+  return nullableNumberField(row, ...keys);
 }
 
 function booleanField(row: ApiRecord, ...keys: string[]): boolean {
@@ -404,6 +633,271 @@ export function normalizeCapturePayload(value: unknown): CapturePayload {
   };
 }
 
+function normalizeBackendSurfaceTarget(value: unknown): BackendSurfaceTargetDto {
+  const row = asRecord(value);
+  return {
+    id: stringField(row, "id"),
+    name: stringField(row, "name"),
+    targetType: stringField(row, "targetType", "target_type"),
+    value: stringField(row, "value"),
+    tags: get(row, "tags") ?? [],
+    notes: stringField(row, "notes"),
+    scope: stringField(row, "scope"),
+    group: stringField(row, "group"),
+    projectPath: nullableStringField(row, "projectPath", "project_path"),
+    organizationId: nullableStringField(row, "organizationId", "organization_id"),
+    createdAt: nullableNumberField(row, "createdAt", "created_at") ?? 0,
+    updatedAt: nullableNumberField(row, "updatedAt", "updated_at") ?? 0,
+  };
+}
+
+function normalizeBackendNetworkEndpoint(value: unknown): BackendNetworkEndpointDto {
+  const row = asRecord(value);
+  return {
+    id: stringField(row, "id"),
+    ip: stringField(row, "ip"),
+    port: nullableNumberField(row, "port") ?? 0,
+    transport: stringField(row, "transport"),
+    state: stringField(row, "state"),
+    serviceName: nullableStringField(row, "serviceName", "service_name"),
+    serviceProduct: nullableStringField(row, "serviceProduct", "service_product"),
+    serviceVersion: nullableStringField(row, "serviceVersion", "service_version"),
+    banner: nullableStringField(row, "banner"),
+    tlsDetected: booleanField(row, "tlsDetected", "tls_detected"),
+    source: stringField(row, "source"),
+    confidence: nullableNumberField(row, "confidence") ?? 0,
+    firstSeenAt: nullableNumberField(row, "firstSeenAt", "first_seen_at") ?? 0,
+    lastSeenAt: nullableNumberField(row, "lastSeenAt", "last_seen_at") ?? 0,
+    lastConfirmedAt: nullableNumberField(row, "lastConfirmedAt", "last_confirmed_at"),
+    webOriginIds: arrayField(row, "webOriginIds", "web_origin_ids").map(String),
+    observationIds: arrayField(row, "observationIds", "observation_ids").map(String),
+  };
+}
+
+function normalizeBackendWebOriginCounts(value: unknown): BackendWebOriginCountsDto {
+  const row = asRecord(value);
+  return {
+    endpointCount: nullableNumberField(row, "endpointCount", "endpoint_count") ?? 0,
+    observationCount: nullableNumberField(row, "observationCount", "observation_count") ?? 0,
+  };
+}
+
+function normalizeBackendWebOriginContentCounts(value: unknown): BackendWebOriginContentCountsDto {
+  const row = asRecord(value);
+  return {
+    urlCount: nullableNumberField(row, "urlCount", "url_count") ?? 0,
+    apiCount: nullableNumberField(row, "apiCount", "api_count") ?? 0,
+    jsCount: nullableNumberField(row, "jsCount", "js_count") ?? 0,
+    paramCount: nullableNumberField(row, "paramCount", "param_count") ?? 0,
+    directoryEntryCount:
+      nullableNumberField(row, "directoryEntryCount", "directory_entry_count") ?? 0,
+    passiveLogCount: nullableNumberField(row, "passiveLogCount", "passive_log_count") ?? 0,
+    evidenceCount: nullableNumberField(row, "evidenceCount", "evidence_count") ?? 0,
+  };
+}
+
+function normalizeBackendWebOriginContentRef(value: unknown): BackendWebOriginContentRefDto {
+  const row = asRecord(value);
+  return {
+    kind: stringField(row, "kind"),
+    id: stringField(row, "id"),
+    url: stringField(row, "url"),
+    method: nullableStringField(row, "method"),
+    statusCode: nullableNumberField(row, "statusCode", "status_code"),
+    capturePath: nullableStringField(row, "capturePath", "capture_path"),
+    source: nullableStringField(row, "source"),
+  };
+}
+
+function normalizeBackendWebOrigin(value: unknown): BackendWebOriginDto {
+  const row = asRecord(value);
+  const contentCountsRaw = get(row, "contentCounts", "content_counts");
+  return {
+    id: stringField(row, "id"),
+    scheme: stringField(row, "scheme"),
+    host: stringField(row, "host"),
+    hostType: stringField(row, "hostType", "host_type"),
+    port: nullableNumberField(row, "port") ?? 0,
+    origin: stringField(row, "origin"),
+    source: stringField(row, "source"),
+    confidence: nullableNumberField(row, "confidence") ?? 0,
+    firstSeenAt: nullableNumberField(row, "firstSeenAt", "first_seen_at") ?? 0,
+    lastSeenAt: nullableNumberField(row, "lastSeenAt", "last_seen_at") ?? 0,
+    lastConfirmedAt: nullableNumberField(row, "lastConfirmedAt", "last_confirmed_at"),
+    endpointIds: arrayField(row, "endpointIds", "endpoint_ids").map(String),
+    observationIds: arrayField(row, "observationIds", "observation_ids").map(String),
+    counts: normalizeBackendWebOriginCounts(get(row, "counts")),
+    contentCounts:
+      contentCountsRaw == null ? null : normalizeBackendWebOriginContentCounts(contentCountsRaw),
+    refs: listOf(get(row, "refs"), normalizeBackendWebOriginContentRef),
+  };
+}
+
+function normalizeBackendWebOriginObservation(value: unknown): BackendWebOriginObservationDto {
+  const row = asRecord(value);
+  return {
+    id: stringField(row, "id"),
+    webOriginId: stringField(row, "webOriginId", "web_origin_id"),
+    networkEndpointId: nullableStringField(row, "networkEndpointId", "network_endpoint_id"),
+    targetId: nullableStringField(row, "targetId", "target_id"),
+    observedIp: nullableStringField(row, "observedIp", "observed_ip"),
+    sni: nullableStringField(row, "sni"),
+    hostHeader: nullableStringField(row, "hostHeader", "host_header"),
+    statusCode: nullableNumberField(row, "statusCode", "status_code"),
+    title: nullableStringField(row, "title"),
+    finalUrl: nullableStringField(row, "finalUrl", "final_url"),
+    redirectChain: get(row, "redirectChain", "redirect_chain") ?? [],
+    bodyHash: nullableStringField(row, "bodyHash", "body_hash"),
+    faviconHash: nullableStringField(row, "faviconHash", "favicon_hash"),
+    screenshotPath: nullableStringField(row, "screenshotPath", "screenshot_path"),
+    capturePath: nullableStringField(row, "capturePath", "capture_path"),
+    observedAt: nullableNumberField(row, "observedAt", "observed_at") ?? 0,
+    confidence: nullableNumberField(row, "confidence") ?? 0,
+    source: stringField(row, "source"),
+  };
+}
+
+function normalizeBackendRelatedDomain(value: unknown): BackendRelatedDomainDto {
+  const row = asRecord(value);
+  return {
+    targetId: nullableStringField(row, "targetId", "target_id"),
+    host: stringField(row, "host"),
+    source: stringField(row, "source"),
+    relation: stringField(row, "relation"),
+  };
+}
+
+function normalizeBackendUnassignedWebDataCounts(
+  value: unknown
+): BackendUnassignedWebDataCountsDto {
+  const row = asRecord(value);
+  return {
+    urlCount: nullableNumberField(row, "urlCount", "url_count") ?? 0,
+    apiCount: nullableNumberField(row, "apiCount", "api_count") ?? 0,
+    jsCount: nullableNumberField(row, "jsCount", "js_count") ?? 0,
+    paramCount: nullableNumberField(row, "paramCount", "param_count") ?? 0,
+    directoryEntryCount:
+      nullableNumberField(row, "directoryEntryCount", "directory_entry_count") ?? 0,
+    passiveLogCount: nullableNumberField(row, "passiveLogCount", "passive_log_count") ?? 0,
+    evidenceCount: nullableNumberField(row, "evidenceCount", "evidence_count") ?? 0,
+    relativeUrlCount: nullableNumberField(row, "relativeUrlCount", "relative_url_count") ?? 0,
+    malformedUrlCount: nullableNumberField(row, "malformedUrlCount", "malformed_url_count") ?? 0,
+    unsupportedSchemeCount:
+      nullableNumberField(row, "unsupportedSchemeCount", "unsupported_scheme_count") ?? 0,
+    missingOriginCount: nullableNumberField(row, "missingOriginCount", "missing_origin_count") ?? 0,
+    unmatchedOriginCount:
+      nullableNumberField(row, "unmatchedOriginCount", "unmatched_origin_count") ?? 0,
+    unmatchedOriginItemCount:
+      nullableNumberField(row, "unmatchedOriginItemCount", "unmatched_origin_item_count") ?? 0,
+  };
+}
+
+function normalizeBackendUnassignedWebData(value: unknown): BackendUnassignedWebDataDto {
+  const row = asRecord(value);
+  const countsRaw = get(row, "counts");
+  return {
+    urls: arrayField(row, "urls"),
+    apis: arrayField(row, "apis"),
+    js: arrayField(row, "js"),
+    params: arrayField(row, "params"),
+    reason: stringField(row, "reason"),
+    counts: countsRaw == null ? null : normalizeBackendUnassignedWebDataCounts(countsRaw),
+    refs: listOf(get(row, "refs"), normalizeBackendWebOriginContentRef),
+  };
+}
+
+function normalizeSurfaceIdentityBackfillSummary(value: unknown): SurfaceIdentityBackfillSummary {
+  const row = asRecord(value);
+  return {
+    scannedTargets: nullableNumberField(row, "scannedTargets", "scanned_targets") ?? 0,
+    scannedTargetAssets:
+      nullableNumberField(row, "scannedTargetAssets", "scanned_target_assets") ?? 0,
+    scannedApiEndpoints:
+      nullableNumberField(row, "scannedApiEndpoints", "scanned_api_endpoints") ?? 0,
+    scannedJsResults: nullableNumberField(row, "scannedJsResults", "scanned_js_results") ?? 0,
+    scannedDirectoryEntries:
+      nullableNumberField(row, "scannedDirectoryEntries", "scanned_directory_entries") ?? 0,
+    scannedPassiveLogs: nullableNumberField(row, "scannedPassiveLogs", "scanned_passive_logs") ?? 0,
+    createdOrUpdatedNetworkEndpoints:
+      nullableNumberField(
+        row,
+        "createdOrUpdatedNetworkEndpoints",
+        "created_or_updated_network_endpoints"
+      ) ?? 0,
+    createdOrUpdatedWebOrigins:
+      nullableNumberField(row, "createdOrUpdatedWebOrigins", "created_or_updated_web_origins") ?? 0,
+    createdOrUpdatedObservations:
+      nullableNumberField(row, "createdOrUpdatedObservations", "created_or_updated_observations") ??
+      0,
+    skippedRelativeUrls:
+      nullableNumberField(row, "skippedRelativeUrls", "skipped_relative_urls") ?? 0,
+    skippedMalformedUrls:
+      nullableNumberField(row, "skippedMalformedUrls", "skipped_malformed_urls") ?? 0,
+    skippedMissingEndpoint:
+      nullableNumberField(row, "skippedMissingEndpoint", "skipped_missing_endpoint") ?? 0,
+    skippedUnsupportedScheme:
+      nullableNumberField(row, "skippedUnsupportedScheme", "skipped_unsupported_scheme") ?? 0,
+    inferredObservations:
+      nullableNumberField(row, "inferredObservations", "inferred_observations") ?? 0,
+    confirmedObservations:
+      nullableNumberField(row, "confirmedObservations", "confirmed_observations") ?? 0,
+  };
+}
+
+function normalizeBackendSurfaceSummary(value: unknown): BackendSurfaceSummaryDto {
+  const row = asRecord(value);
+  return {
+    endpointCount: nullableNumberField(row, "endpointCount", "endpoint_count") ?? 0,
+    webOriginCount: nullableNumberField(row, "webOriginCount", "web_origin_count") ?? 0,
+    observationCount: nullableNumberField(row, "observationCount", "observation_count") ?? 0,
+    inferredObservationCount:
+      nullableNumberField(row, "inferredObservationCount", "inferred_observation_count") ?? 0,
+    confirmedObservationCount:
+      nullableNumberField(row, "confirmedObservationCount", "confirmed_observation_count") ?? 0,
+    relatedDomainCount: nullableNumberField(row, "relatedDomainCount", "related_domain_count") ?? 0,
+    unassignedCount: nullableNumberField(row, "unassignedCount", "unassigned_count") ?? 0,
+    urlCount: presentNumberField(row, "urlCount", "url_count"),
+    apiCount: presentNumberField(row, "apiCount", "api_count"),
+    jsCount: presentNumberField(row, "jsCount", "js_count"),
+    paramCount: presentNumberField(row, "paramCount", "param_count"),
+    directoryEntryCount: presentNumberField(row, "directoryEntryCount", "directory_entry_count"),
+    passiveLogCount: presentNumberField(row, "passiveLogCount", "passive_log_count"),
+    evidenceCount: presentNumberField(row, "evidenceCount", "evidence_count"),
+    contentUnassignedCount: presentNumberField(
+      row,
+      "contentUnassignedCount",
+      "content_unassigned_count"
+    ),
+    contentUnmatchedOriginCount: presentNumberField(
+      row,
+      "contentUnmatchedOriginCount",
+      "content_unmatched_origin_count"
+    ),
+  };
+}
+
+export function normalizeBackendSurfaceHierarchy(value: unknown): BackendSurfaceHierarchyDto {
+  const row = asRecord(value);
+  return {
+    rootTarget: normalizeBackendSurfaceTarget(get(row, "rootTarget", "root_target")),
+    mode: stringField(row, "mode"),
+    dataSource: stringField(row, "dataSource", "data_source"),
+    generatedAt: nullableNumberField(row, "generatedAt", "generated_at") ?? 0,
+    endpoints: listOf(get(row, "endpoints"), normalizeBackendNetworkEndpoint),
+    webOrigins: listOf(get(row, "webOrigins", "web_origins"), normalizeBackendWebOrigin),
+    observations: listOf(get(row, "observations"), normalizeBackendWebOriginObservation),
+    relatedDomains: listOf(
+      get(row, "relatedDomains", "related_domains"),
+      normalizeBackendRelatedDomain
+    ),
+    unassignedWebData: normalizeBackendUnassignedWebData(
+      get(row, "unassignedWebData", "unassigned_web_data")
+    ),
+    summary: normalizeBackendSurfaceSummary(get(row, "summary")),
+    fallbackReason: nullableStringField(row, "fallbackReason", "fallback_reason"),
+  };
+}
+
 // ─── Operation / Audit Log ─────────────────────────────────────────────
 
 export async function oplogList(projectPath: string, limit?: number): Promise<AuditRow[]> {
@@ -476,6 +970,32 @@ export async function passiveScansStats(targetId: string): Promise<Record<string
 
 export async function targetSecurityOverview(targetId: string): Promise<SecurityOverview> {
   return invoke("target_security_overview", { targetId });
+}
+
+export async function targetSurfaceHierarchyGet(
+  targetId: string,
+  includeRelated = true
+): Promise<BackendSurfaceHierarchyDto> {
+  return normalizeBackendSurfaceHierarchy(
+    await invoke("target_surface_hierarchy_get", { targetId, includeRelated })
+  );
+}
+
+/**
+ * Build backend surface identity rows from existing legacy data. Additive and
+ * idempotent (never mutates legacy tables). Pass the current project path and,
+ * when known, the target's organization id to scope the backfill.
+ */
+export async function surfaceIdentityBackfill(
+  projectPath?: string | null,
+  organizationId?: string | null
+): Promise<SurfaceIdentityBackfillSummary> {
+  return normalizeSurfaceIdentityBackfillSummary(
+    await invoke("target_surface_identity_backfill", {
+      projectPath: projectPath ?? null,
+      organizationId: organizationId ?? null,
+    })
+  );
 }
 
 // ─── Target Activity Timeline ──────────────────────────────────────────

@@ -1,8 +1,8 @@
-**Goal:** actively map the attack surface of the APPROVED hosts — for every
-in-scope asset establish (1) liveness, (2) open ports, (3) service/version
-fingerprint. Subdomains are INHERITED from `target_intel`; do NOT re-enumerate
-them. This is the first stage that touches the target, gated by `active_scan`
-approval.
+**Goal:** actively map the attack surface of the APPROVED hosts — establish
+liveness for inherited domain/URL/vhost assets, and establish open ports plus
+service/version fingerprints only for concrete IP/CIDR host assets. Subdomains
+are INHERITED from `target_intel`; do NOT re-enumerate them. This is the first
+stage that touches the target, gated by `active_scan` approval.
 
 **Coverage-driven strategy (not a rigid pipeline):**
 
@@ -16,11 +16,11 @@ approval.
    that state; do not submit just to learn what is missing.
 3. Classify each seed:
    - `ip`: scan ports and establish liveness.
-   - `domain`: establish liveness. If the domain resolves to an in-scope IP
-     target, its PORT/SERVICE coverage is delegated to that IP — scan the IP
-     once instead of the domain (the gate drops the domain's PORT/SERVICE for
-     such aliases). Only port-scan a domain whose resolved IP is NOT an in-scope
-     IP target. This needs `targets.real_ip` populated (from `target_intel` DNS).
+   - `domain`: establish liveness only. Do not port-scan a domain string. If
+     `target_intel` has a concrete `real_ip` / IP target, scan that IP once for
+     PORT/SERVICE. If there is no concrete IP to scan, treat PORT/SERVICE as not
+     applicable to the domain and surface the missing IP as a target_intel/DNS
+     landing gap rather than making EAS invent a host.
    - `url`: probe URL liveness; do not assign PORT/SERVICE to the path URL.
    - `cidr`: treat as a range. Get approval when required, sweep it, register
      discovered live IPs as concrete targets, then scan each IP.
@@ -67,7 +67,8 @@ approval.
 **If a tool is missing or errors:**
 
 - Record it in `skipped_checks` with the reason and use a fallback (e.g. if `httpx`
-  is unavailable, use `nmap -sV` / `nmap -Pn -p- --open` for liveness+service).
+  is unavailable, use IP-level `nmap -sV` / `nmap -Pn -p- --open` for concrete
+  hosts, not unresolved domains).
 - Do NOT install tools, spawn extra sub-agents, or retry a blocked/missing tool in
   a loop. Note it and move on — "checked_empty" is NOT "unchecked".
 - If only one target in a batch fails, do not downgrade the whole batch. Re-run or

@@ -9,8 +9,13 @@ use serde::{Deserialize, Serialize};
 
 use anyhow::Result;
 
-/// Maximum reflector attempts before giving up (matches PentAGI's maxReflectorCallsPerChain).
-pub(super) const MAX_REFLECTOR_RETRIES: usize = 3;
+/// Maximum reflector attempts before giving up (originally 3, matching PentAGI's
+/// maxReflectorCallsPerChain). Raised to 5 (design 2026-07-02-eas-worker-evidence):
+/// active stages (EAS/enumeration) burn turns on async scan landing + evidence-id
+/// reconciliation, so 3 was too tight to reach a legitimate PASS before
+/// `paused_needs_user`. This stays the single source of the repair budget (design
+/// 2026-05-26 O3) — do not add a second constant.
+pub(super) const MAX_REFLECTOR_RETRIES: usize = 5;
 
 /// A planned subtask from the Generator.
 #[derive(Debug, Clone, Serialize, Deserialize)]

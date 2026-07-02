@@ -153,6 +153,7 @@ const TOOL_ACTION_LABELS: Record<string, string> = {
   stage_run: "Running specialist agents",
   submit_stage_deliverable: "Submitting stage deliverable",
   check_stage_asset_coverage: "Checking asset coverage",
+  list_recent_evidence: "Reading recent evidence",
   list_in_scope_targets: "Reading in-scope targets",
   list_attack_surface_seeds: "Reading attack surface seeds",
   query_target_data: "Reading target data",

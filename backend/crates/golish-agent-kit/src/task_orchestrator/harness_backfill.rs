@@ -157,6 +157,21 @@ const OTHER_STAGE_KEYWORDS: &[(StageKind, &[&str])] = &[
             "利用验证",
         ],
     ),
+    // Attack-stage split (design 2026-07-02): candidate synthesis sits between the
+    // formulaic scan and verification. Keep its keywords ahead of the broad
+    // vuln_triage terms so a "attack candidate" subtask is not swallowed by them.
+    (
+        StageKind::AttackCandidate,
+        &[
+            "attack candidate",
+            "candidate synthesis",
+            "attack hypothesis",
+            "attack hypotheses",
+            "候选合成",
+            "攻击候选",
+            "攻击假设",
+        ],
+    ),
     (
         StageKind::VulnTriage,
         &[
@@ -164,10 +179,12 @@ const OTHER_STAGE_KEYWORDS: &[(StageKind, &[&str])] = &[
             "vuln scan",
             "vulnerability assessment",
             "vuln triage",
+            "formulaic scan",
             "nuclei",
             "漏洞扫描",
             "漏洞识别",
             "漏洞评估",
+            "公式化扫描",
         ],
     ),
     (

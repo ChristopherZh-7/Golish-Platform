@@ -193,6 +193,14 @@ pub(crate) async fn land_target_intel_coverage(
     CoverageLandingSummary { subdomains }
 }
 
+/// What a per-asset coverage refresh observed/wrote for target-intel.
+#[derive(Debug, Default, Clone)]
+pub struct PerAssetLandingSummary {
+    pub subdomains: usize,
+    pub dns_records: usize,
+    pub dns_empty_hosts: Vec<String>,
+}
+
 /// Re-run ONLY the per-asset coverage landing (subdomains + DNS) for an org whose
 /// in-scope targets are now registered. Closes the enrich-time ordering gap: the
 /// agent calls `recon_map_assets` (which lands) BEFORE `manage_targets add`, so
@@ -204,14 +212,29 @@ pub(crate) async fn land_target_intel_coverage(
 /// Idempotent (NOT EXISTS / upsert skip already-landed) and fully non-fatal.
 /// Returns (subdomains, dns_records) landed this pass.
 pub async fn refresh_per_asset_landing(pool: &sqlx::PgPool, org_id: Uuid) -> (usize, usize) {
+    let summary = refresh_per_asset_landing_summary(pool, org_id).await;
+    (summary.subdomains, summary.dns_records)
+}
+
+/// Same refresh as [`refresh_per_asset_landing`], plus the concrete domains whose
+/// DNS lookup was actually attempted and returned no A/AAAA/CNAME/MX/TXT answers.
+/// Callers with a real evidence id can persist those as `checked_empty` outcomes.
+pub async fn refresh_per_asset_landing_summary(
+    pool: &sqlx::PgPool,
+    org_id: Uuid,
+) -> PerAssetLandingSummary {
     let Ok(Some(org)) = golish_db::repo::organizations::get_one(pool, org_id).await else {
-        return (0, 0);
+        return PerAssetLandingSummary::default();
     };
     let subdomains = land_subdomain_assets(pool, &org, "gate-refresh", &[])
         .await
         .unwrap_or(0);
-    let dns_records = land_dns_records(pool, &org).await.unwrap_or(0);
-    (subdomains, dns_records)
+    let dns = land_dns_records(pool, &org).await.unwrap_or_default();
+    PerAssetLandingSummary {
+        subdomains,
+        dns_records: dns.records,
+        dns_empty_hosts: dns.empty_hosts,
+    }
 }
 
 /// Pair each candidate **host** with the org-owned **root** domain it belongs to
@@ -418,10 +441,23 @@ async fn land_subdomain_assets(
 /// landing is the only place those record types can be collected. DNS queries
 /// hit the resolver, not the target's own hosts, so it stays zero-touch.
 /// failures/timeouts are skipped, never fatal.
+#[derive(Debug, Default)]
+struct DnsLandingSummary {
+    records: usize,
+    empty_hosts: Vec<String>,
+}
+
+#[derive(Debug)]
+struct DnsResolveOutcome {
+    target_id: Uuid,
+    host: String,
+    records: Vec<(&'static str, String, String)>,
+}
+
 async fn land_dns_records(
     pool: &sqlx::PgPool,
     organization: &golish_db::models::Organization,
-) -> Result<usize, GolishError> {
+) -> Result<DnsLandingSummary, GolishError> {
     const MAX_RESOLVE: i64 = 128;
     let targets: Vec<(Uuid, String)> = sqlx::query_as(
         r#"SELECT t.id, t.value FROM targets t
@@ -437,7 +473,7 @@ async fn land_dns_records(
     .fetch_all(pool)
     .await?;
     if targets.is_empty() {
-        return Ok(0);
+        return Ok(DnsLandingSummary::default());
     }
     // Built once from the system resolver config and cloned into each task (the
     // resolver is cheap to clone — Arc inside). If construction fails we still
@@ -450,7 +486,7 @@ async fn land_dns_records(
         let resolver = dns_resolver.clone();
         set.spawn(async move {
             let host = normalized_host(&value)?;
-            let mut records: Vec<(Uuid, &'static str, String, String)> = Vec::new();
+            let mut records: Vec<(&'static str, String, String)> = Vec::new();
             // A/AAAA via the system stub resolver (unchanged real_ip semantics).
             if let Ok(Ok(addrs)) = tokio::time::timeout(
                 std::time::Duration::from_secs(3),
@@ -461,7 +497,7 @@ async fn land_dns_records(
                 for addr in addrs {
                     let ip = addr.ip();
                     let record_type = if ip.is_ipv4() { "A" } else { "AAAA" };
-                    records.push((target_id, record_type, host.clone(), ip.to_string()));
+                    records.push((record_type, host.clone(), ip.to_string()));
                 }
             }
             // CNAME / MX / TXT via hickory (additive, each query independently
@@ -480,40 +516,46 @@ async fn land_dns_records(
                     };
                     for record in lookup.answers() {
                         if let Some((rt, value)) = rdata_to_dns_record(&record.data) {
-                            records.push((target_id, rt, host.clone(), value));
+                            records.push((rt, host.clone(), value));
                         }
                     }
                 }
             }
-            if records.is_empty() {
-                None
-            } else {
-                Some(records)
-            }
+            Some(DnsResolveOutcome {
+                target_id,
+                host,
+                records,
+            })
         });
     }
-    let mut landed = 0usize;
+    let mut summary = DnsLandingSummary::default();
     while let Some(joined) = set.join_next().await {
-        let Ok(Some(records)) = joined else {
+        let Ok(Some(outcome)) = joined else {
             continue;
         };
+        if outcome.records.is_empty() {
+            summary.empty_hosts.push(outcome.host);
+            continue;
+        }
         // Primary IP for the host tree (design 2026-06-15 Phase 0): first A
         // answer, else first AAAA. Only address records may set real_ip — a
         // CNAME/MX/TXT value would corrupt it. Captured before the consuming
         // upsert loop below moves `records`.
-        let primary_ip: Option<(Uuid, String)> = records
+        let primary_ip: Option<String> = outcome
+            .records
             .iter()
-            .find(|(_, record_type, _, _)| *record_type == "A")
+            .find(|(record_type, _, _)| *record_type == "A")
             .or_else(|| {
-                records
+                outcome
+                    .records
                     .iter()
-                    .find(|(_, record_type, _, _)| *record_type == "AAAA")
+                    .find(|(record_type, _, _)| *record_type == "AAAA")
             })
-            .map(|(target_id, _, _, ip)| (*target_id, ip.clone()));
-        for (target_id, record_type, name, value) in records {
+            .map(|(_, _, ip)| ip.clone());
+        for (record_type, name, value) in outcome.records {
             if golish_db::repo::dns_records::upsert(
                 pool,
-                target_id,
+                outcome.target_id,
                 organization.project_path.as_str(),
                 record_type,
                 &name,
@@ -523,14 +565,16 @@ async fn land_dns_records(
             .await
             .is_ok()
             {
-                landed += 1;
+                summary.records += 1;
             }
         }
-        if let Some((target_id, ip)) = primary_ip {
-            let _ = golish_db::repo::targets::set_real_ip_by_id(pool, target_id, &ip).await;
+        if let Some(ip) = primary_ip {
+            let _ = golish_db::repo::targets::set_real_ip_by_id(pool, outcome.target_id, &ip).await;
         }
     }
-    Ok(landed)
+    summary.empty_hosts.sort();
+    summary.empty_hosts.dedup();
+    Ok(summary)
 }
 
 /// Map a hickory `RData` answer to a `(record_type, value)` tuple for

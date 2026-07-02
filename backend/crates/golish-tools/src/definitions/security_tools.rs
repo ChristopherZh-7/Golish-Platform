@@ -353,5 +353,19 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
                 "additionalProperties": false
             }),
         },
+        FunctionDeclaration {
+            name: "list_recent_evidence".to_string(),
+            description: "List this run's recent REAL evidence-ledger ids with the context needed to cite them — each row has evidence_id plus (when known) tool, subject, technique, asset, outcome, kind, age_seconds. Call this BEFORE submit_stage_deliverable to discover the real ids your tool runs produced, then put the ids whose output backs each claim into that claim's evidence_ids and the top-level evidence_refs. This is the reliable id source: do NOT invent ids, copy placeholders (1,2,3), or use submit_stage_deliverable as a way to discover missing ids. Read-only; scoped to the current chat session.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum evidence rows to return, newest first. Defaults to 25, max 200."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
     ]
 }

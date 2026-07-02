@@ -86,6 +86,7 @@ fn fact_domain(stage: StageKind) -> Option<FactDomain> {
         StageKind::ExternalAttackSurface => FactDomain::Eas,
         StageKind::Enumeration => FactDomain::Enumeration,
         StageKind::VulnTriage
+        | StageKind::AttackCandidate
         | StageKind::Verification
         | StageKind::AccessValidation
         | StageKind::InternalDiscovery

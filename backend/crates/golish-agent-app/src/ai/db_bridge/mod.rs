@@ -706,6 +706,16 @@ impl DbRepoProvider for GolishDbRepoProvider {
         .await
     }
 
+    async fn mark_target_intel_dns_empty_outcomes(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<usize> {
+        self.mark_target_intel_dns_empty_outcomes_impl(organization_id, run_id, evidence_ids)
+            .await
+    }
+
     async fn upsert_source_query(
         &self,
         organization_id: Uuid,
@@ -768,6 +778,19 @@ impl DbRepoProvider for GolishDbRepoProvider {
             .await
     }
 
+    async fn technique_outcome_facts_fresh(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<(String, String, String, i64)> {
+        // 护栏 4 (2026-07-02-gate-capability-ledger Phase 1)：stage 关闭 gate 投影套
+        // freshness cutoff（execute.rs 传入 run_start），避免同 session 旧 stage-run
+        // 的 technique_outcomes 泄漏进本 stage-run 的 coverage 判定。
+        self.technique_outcome_facts_fresh_impl(organization_id, run_id, since)
+            .await
+    }
+
     async fn source_query_facts(
         &self,
         organization_id: Uuid,
@@ -785,6 +808,14 @@ impl DbRepoProvider for GolishDbRepoProvider {
 
     async fn recent_evidence_ids(&self, session_id: &str, limit: i64) -> anyhow::Result<Vec<i64>> {
         self.recent_evidence_ids_impl(session_id, limit).await
+    }
+
+    async fn recent_evidence_detailed(
+        &self,
+        session_id: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.recent_evidence_detailed_impl(session_id, limit).await
     }
 
     async fn evidence_kinds_for(

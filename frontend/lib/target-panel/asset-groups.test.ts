@@ -17,12 +17,16 @@ function target(id: string, patch: Partial<Target>): Target {
 }
 
 describe("groupTargetsByHost", () => {
-  it("groups an IP target with domains and URLs that resolve to it", () => {
+  it("groups an IP target with domains and URL targets that resolve to it", () => {
     const groups = groupTargetsByHost(
       [
         target("ip", { type: "ip", value: "1.1.1.1" }),
         target("domain", { value: "a.example.com", real_ip: "1.1.1.1" }),
-        target("url", { type: "url", value: "https://1.1.1.1/login" }),
+        target("url", {
+          type: "url",
+          value: "https://a.example.com/login",
+          real_ip: "1.1.1.1",
+        }),
       ],
       "Unresolved"
     );
@@ -50,6 +54,20 @@ describe("groupTargetsByHost", () => {
     expect(groups.map((group) => group.label)).toEqual(["115.223.9.114", "124.71.187.144"]);
     expect(groups[0].targets.map((item) => item.id)).toEqual(["ip-child"]);
     expect(groups[1].targets.map((item) => item.id).sort()).toEqual(["domain", "ip-parent"]);
+  });
+
+  it("keeps IP-literal URL targets out of the linked domain display", () => {
+    const groups = groupTargetsByHost(
+      [
+        target("ip", { type: "ip", value: "1.1.1.1" }),
+        target("url-ip", { type: "url", value: "https://1.1.1.1/login" }),
+      ],
+      "Unresolved"
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].targets.map((item) => item.id).sort()).toEqual(["ip", "url-ip"]);
+    expect(groups[0].linkedTargets.map((item) => item.id)).toEqual([]);
   });
 
   it("keeps unresolved domains in a final catch-all group", () => {

@@ -142,6 +142,7 @@ mod tests {
             findings: vec![],
             required_checks_done: vec![],
             coverage: vec![],
+            candidates: vec![],
         }
     }
 
@@ -227,7 +228,8 @@ mod tests {
 
     #[test]
     fn fake_pattern_evidence_refs_below_min_invocations_blocks() {
-        let spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
+        let mut spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
+        spec.min_invocations.insert("http_probe".to_string(), 1);
         let mut d = empty_deliverable();
         // 加 finding 让 deliverable 非 vacuous
         d.findings.push(HarnessFinding {
@@ -238,7 +240,8 @@ mod tests {
             evidence_refs: vec![EvidenceAuditId::new(1)],
             technique: None,
         });
-        // 去上阶段工具（2026-06-10）后 EAS min_invocations sum=1 (http_probe)。
+        // EAS production spec no longer has hard min_invocations; inject one here
+        // to keep this unit focused on the FakePattern branch.
         // 0 个顶层 evidence_refs < sum → FakePattern（有 finding 却无顶层证据 = 疑似编造）。
         d.evidence_refs = vec![];
         match run(&d, &spec, None) {

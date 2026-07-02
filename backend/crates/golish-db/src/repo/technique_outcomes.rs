@@ -73,6 +73,18 @@ FROM technique_outcomes \
 WHERE organization_id = $1 AND run_id = $2 \
 ORDER BY seq";
 
+/// 同 `LIST_FOR_RUN_SQL`，但套 freshness cutoff（护栏 4，设计
+/// `docs/superpowers/plans/2026-07-02-gate-capability-ledger.md` Phase 1）：
+/// `$3 IS NULL` → 旧的 presence-only 行为；`$3 = Some(cutoff)` → 只算本 stage-run
+/// 采集的行（`collected_at >= cutoff`）。`collected_at` 为 NULL 的行在 `$3=Some`
+/// 时被排除（保守，对齐 `db_truth_facts` 的 `>= cutoff` NULL→false 语义）。
+const LIST_FOR_RUN_FRESH_SQL: &str = "\
+SELECT asset, technique, outcome, source, evidence_ids, collected_at \
+FROM technique_outcomes \
+WHERE organization_id = $1 AND run_id = $2 \
+  AND ($3::timestamptz IS NULL OR collected_at >= $3) \
+ORDER BY seq";
+
 /// upsert 一条 technique_outcome（PR-C step2 写路径）。
 pub async fn upsert(pool: &PgPool, w: &TechniqueOutcomeWrite) -> Result<()> {
     sqlx::query(UPSERT_SQL)
@@ -101,6 +113,24 @@ pub async fn list_for_run(
     let rows = sqlx::query_as::<_, TechniqueOutcomeRow>(LIST_FOR_RUN_SQL)
         .bind(organization_id)
         .bind(run_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}
+
+/// 读某 `(org, run)` 的 technique_outcome 行，可选 freshness cutoff（护栏 4）。
+/// `since = None` 等价 [`list_for_run`]（presence-only）；`since = Some(cutoff)`
+/// 只返回 `collected_at >= cutoff` 的行，`collected_at IS NULL` 的行被排除。
+pub async fn list_for_run_fresh(
+    pool: &PgPool,
+    organization_id: Uuid,
+    run_id: &str,
+    since: Option<DateTime<Utc>>,
+) -> Result<Vec<TechniqueOutcomeRow>> {
+    let rows = sqlx::query_as::<_, TechniqueOutcomeRow>(LIST_FOR_RUN_FRESH_SQL)
+        .bind(organization_id)
+        .bind(run_id)
+        .bind(since)
         .fetch_all(pool)
         .await?;
     Ok(rows)
@@ -152,5 +182,16 @@ mod tests {
         // I2：org 过滤；按 seq 稳定排序。
         assert!(LIST_FOR_RUN_SQL.contains("WHERE organization_id = $1 AND run_id = $2"));
         assert!(LIST_FOR_RUN_SQL.contains("ORDER BY seq"));
+    }
+
+    #[test]
+    fn list_for_run_fresh_sql_applies_cutoff_and_stays_org_isolated() {
+        // 护栏 4：org 过滤保持；$3 NULL → presence-only，否则 collected_at >= $3。
+        assert!(LIST_FOR_RUN_FRESH_SQL.contains("WHERE organization_id = $1 AND run_id = $2"));
+        assert!(
+            LIST_FOR_RUN_FRESH_SQL.contains("$3::timestamptz IS NULL OR collected_at >= $3"),
+            "fresh query must gate on collected_at cutoff with a NULL passthrough"
+        );
+        assert!(LIST_FOR_RUN_FRESH_SQL.contains("ORDER BY seq"));
     }
 }

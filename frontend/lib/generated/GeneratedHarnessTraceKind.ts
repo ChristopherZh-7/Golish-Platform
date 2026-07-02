@@ -47,7 +47,28 @@ injected: boolean,
  * Short preview for transcript/run-tree rendering. Full advice remains
  * in tracing/tool response depending on mode.
  */
-advice_preview: string, } | { "kind": "stage_run_org_progress", 
+advice_preview: string, } | { "kind": "runtime_supervisor_decision", 
+/**
+ * `"shadow"` | `"soft"` | `"hard"`.
+ */
+mode: string, 
+/**
+ * Monitor reason, e.g. `"execution_monitor"`.
+ */
+trigger: string, 
+/**
+ * Tool name that dominated the recent call pattern.
+ */
+tool: string, repeat_count: number, 
+/**
+ * Whether this directive was injected into the model-visible tool
+ * response.
+ */
+injected: boolean, 
+/**
+ * `"strategy_pivot"` / `"wait_for_background"` / etc.
+ */
+strategy_kind: string, root_cause: string, action_count: number, directive_hash: string, } | { "kind": "stage_refiner_decision", repair_kind: string, root_cause: string, action_count: number, gap_count: number, llm_escalated: boolean, directive_hash: string, } | { "kind": "stage_run_org_progress", 
 /**
  * The organization this progress row is for.
  */

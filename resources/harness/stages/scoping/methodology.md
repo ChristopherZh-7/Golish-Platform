@@ -36,8 +36,9 @@ across sessions and never duplicates an org that is already in the database.
    (`input_type="choice"`, options like ["不纳入子公司", "纳入：≥51% 控股", "纳入：≥100% 全资", "纳入：自定义比例"])
    whether subsidiaries/holdings are in scope and at what ownership threshold
    (and whether branch offices 分公司 are included). Do NOT pick a threshold yourself.
-   - **Not in scope →** skip discovery; record subsidiaries as checked-empty +
-     evidence (NOT unchecked). Do NOT fabricate a tree.
+   - **Not in scope →** do not call discovery; record the exclusion in the
+     `scope_confirmed` summary. Do NOT add `skipped_checks` for this normal scope
+     decision, and do NOT fabricate a tree.
    - **In scope →** call `recon_discover_subsidiaries` with `min_ownership_percent`
      set to the human's threshold (and `include_branches: true` if they asked for
      branches). Discovery does NOT auto-create anything — it returns a
@@ -68,7 +69,11 @@ across sessions and never duplicates an org that is already in the database.
    and do NOT call `ask_human(input_type="scope_review")`: there is NO second
    review box after the subsidiary `unit_review` in step 3. Then emit a
    `scope_confirmed` claim (plus `scope_human_approved` when approval was
-   required) and CALL `submit_stage_deliverable` immediately.
+   required) and CALL `submit_stage_deliverable` immediately. In the normal
+   evidence-free scoping path, submit only the claim fields (`kind`, `subject`,
+   `summary`) and omit empty `evidence_refs`, `findings`, `coverage`,
+   `skipped_checks`, and `required_checks_done`; the submit tool canonicalizes
+   omitted empty fields.
 
 **B. Scope given as concrete hosts / IPs / URLs (the user handed you an explicit
 target list):** the engagement subject is already concrete. Create the owning

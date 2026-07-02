@@ -1530,11 +1530,39 @@ mod tests {
             &domain,
             &BTreeSet::new()
         ));
+
+        let cells = coverage_cells(
+            StageKind::ExternalAttackSurface,
+            &domain,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(
+            cells
+                .iter()
+                .map(|cell| (cell.technique.as_str(), cell.state.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+                    "pending"
+                ),
+                (
+                    golish_db::repo::coverage_truth::TECH_EAS_PORT,
+                    "not_applicable"
+                ),
+                (
+                    golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP,
+                    "not_applicable"
+                )
+            ]
+        );
     }
 
     #[test]
     fn empty_outcome_is_checked_empty() {
-        let asset = target("app.example.com", "domain");
+        let asset = target("203.0.113.10", "ip");
         let outcomes = BTreeMap::from([(
             (
                 asset.value.clone(),
@@ -1653,7 +1681,7 @@ mod tests {
 
     #[test]
     fn not_applicable_outcome_stays_terminal_in_read_model() {
-        let asset = target("internal.example.com", "domain");
+        let asset = target("203.0.113.10", "ip");
         let outcomes = BTreeMap::from([(
             (
                 asset.value.clone(),
@@ -1679,7 +1707,7 @@ mod tests {
 
     #[test]
     fn error_outcome_is_distinct_from_blocked() {
-        let asset = target("app.example.com", "domain");
+        let asset = target("203.0.113.10", "ip");
         let outcomes = BTreeMap::from([(
             (
                 asset.value.clone(),
@@ -1820,10 +1848,7 @@ mod tests {
 
     #[test]
     fn unresolvable_eas_port_error_is_displayed_as_checked_empty() {
-        let asset = target(
-            "www.google.com.box.promo-bentley.nts-app-xt-stg5.stock.pinganjrkj.com",
-            "domain",
-        );
+        let asset = target("203.0.113.10", "ip");
         let asset_values = vec![asset.value.clone()];
         let stage_techniques =
             BTreeSet::from([golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string()]);

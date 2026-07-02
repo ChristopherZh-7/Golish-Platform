@@ -80,13 +80,15 @@ pub fn technique_applies(stage: StageKind, class: AssetClass, tech: &str) -> boo
             // WHOIS / ASN / OSINT apply to every class (org/netblock-wide).
             _ => true,
         },
-        // Host-aware coverage 2b (design 2026-06-15 §3.2): EAS is host-level.
-        // LIVENESS applies to anything with a host; PORT / SERVICE-FINGERPRINT
-        // are host-level too, but a single URL endpoint is not itself a
-        // port-scan / service-fingerprint target (its host is covered by the
-        // host/IP asset). Domain/IP/CIDR keep all three.
+        // Host-aware coverage 2b (design 2026-06-15 §3.2): EAS splits vhost
+        // liveness from host/IP mapping. Domain/URL assets can prove LIVENESS,
+        // but PORT / SERVICE-FINGERPRINT only apply to concrete IP/CIDR host
+        // assets. If target_intel has not registered a concrete IP, EAS must not
+        // turn the domain string into a port-scan target.
         StageKind::ExternalAttackSurface => match tech {
-            "GOLISH-EAS-PORT" | "GOLISH-EAS-SERVICE-FINGERPRINT" => !matches!(class, Url),
+            "GOLISH-EAS-PORT" | "GOLISH-EAS-SERVICE-FINGERPRINT" => {
+                matches!(class, Ip | Cidr)
+            }
             _ => true,
         },
         // Host-aware coverage 2b (design 2026-06-15 §3.3): content enumeration
@@ -427,19 +429,19 @@ mod tests {
     }
 
     #[test]
-    fn eas_does_not_differentiate_ip_from_domain() {
-        // EAS is host-level: IP and domain both keep the full host set (only a
-        // bare URL endpoint drops PORT / SERVICE-FINGERPRINT — see the 2b test).
-        assert_eq!(
-            techniques_for(StageKind::ExternalAttackSurface, AssetClass::Ip).len(),
-            techniques_for(StageKind::ExternalAttackSurface, AssetClass::Domain).len()
-        );
+    fn eas_port_and_service_apply_only_to_ip_or_cidr_hosts() {
+        let domain = techniques_for(StageKind::ExternalAttackSurface, AssetClass::Domain);
+        assert_eq!(domain, vec!["GOLISH-EAS-LIVENESS".to_string()]);
+
+        let ip = techniques_for(StageKind::ExternalAttackSurface, AssetClass::Ip);
+        assert!(ip.contains(&"GOLISH-EAS-PORT".to_string()));
+        assert!(ip.contains(&"GOLISH-EAS-SERVICE-FINGERPRINT".to_string()));
     }
 
     // ── Host-aware coverage 2b: EAS + enumeration matrices (design §3.2/§3.3) ──
 
     #[test]
-    fn eas_drops_port_and_service_fp_for_url_only() {
+    fn eas_drops_port_and_service_fp_for_non_ip_hosts() {
         use StageKind::ExternalAttackSurface as Eas;
         // A bare URL endpoint is not itself a port-scan / service-fingerprint
         // target (its host is covered via the host/IP asset); it keeps LIVENESS.
@@ -447,8 +449,11 @@ mod tests {
         assert!(url.contains(&"GOLISH-EAS-LIVENESS".to_string()));
         assert!(!url.contains(&"GOLISH-EAS-PORT".to_string()));
         assert!(!url.contains(&"GOLISH-EAS-SERVICE-FINGERPRINT".to_string()));
-        // domain / ip / cidr are host-level → keep all 3.
-        assert_eq!(techniques_for(Eas, AssetClass::Domain).len(), 3);
+        // Domains are vhost/liveness only; host-level PORT/SERVICE belongs to a
+        // concrete IP/CIDR target registered by target_intel.
+        let domain = techniques_for(Eas, AssetClass::Domain);
+        assert_eq!(domain, vec!["GOLISH-EAS-LIVENESS".to_string()]);
+        // ip / cidr are host-level → keep all 3.
         assert_eq!(techniques_for(Eas, AssetClass::Ip).len(), 3);
         assert_eq!(techniques_for(Eas, AssetClass::Cidr).len(), 3);
         // fail-safe: unknown keeps the full set.
