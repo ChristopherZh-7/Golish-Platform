@@ -498,9 +498,13 @@ where
                     drop(ws);
                     let hook = Arc::clone(hook);
                     let org_id = ctx.harness_org_id;
-                    tokio::spawn(async move {
+                    if ctx.harness_stage.is_some() {
                         hook(payload.command, payload.stdout, Some(pp), org_id).await;
-                    });
+                    } else {
+                        tokio::spawn(async move {
+                            hook(payload.command, payload.stdout, Some(pp), org_id).await;
+                        });
+                    }
                 }
             }
 

@@ -65,7 +65,7 @@ agentic loop 的公开表面 + 子模块实现。`turn/` 是 phase 调度本体�
 - `sub_agent_call.rs`、reflector、`stage_run_call.rs` 间接启动的 worker 必须把 `AgenticLoopContext.cancelled` 传入 `SubAgentExecutorContext`；ChatPanel Stop 置位后，main agent、stage_run per-org worker、nested sub-agent 都应共享同一个停止信号。
 - `single_tool_call.rs` / `sub_agent_call.rs` 用 `ExecutionMonitor` 触发 RuntimeSupervisor：重复/停滞工具命中后调用一次 LLM，解析 JSON 为 `StrategyDirective`，再由 stage/tool policy 裁剪；`shadow` 只 trace，`soft/hard` 会把 RuntimeSupervisor directive 追加到 tool result，hard 模式会让 sub-agent executor 跳过同一批剩余工具调用。
 - `HarnessTraceKind::StageRefinerDecision` 在 submit needs_fix / stage_run per-org BLOCK 时发出；`HarnessTraceKind::RuntimeSupervisorDecision` 在运行中策略监督触发时发出。`run_tree.py` 会显示二者的 kind/action/hash/root cause。
-- `tool_execution/direct/mod.rs` 对 `pentest_run` registry 结果也会触发 `PostShellHook`（使用结果里的 `command/stdout`），让 EAS active probes 复用 `golish-pentest::output_store::maybe_detect_and_store_via` 自动写 `targets` / fingerprints；不要只把 structured-storage hook 挂在 `run_pty_cmd`。
+- `tool_execution/direct/mod.rs` 对 `pentest_run` registry 结果也会触发 `PostShellHook`（使用结果里的 `command/stdout`），让 EAS active probes 复用 `golish-pentest::output_store::maybe_detect_and_store_via` 自动写 `targets` / fingerprints；不要只把 structured-storage hook 挂在 `run_pty_cmd`。在 `ctx.harness_stage.is_some()` 的 stage worker 内，这个 hook 必须 await，确保 submit preview / gate 评分前 `targets.ports` / `fingerprints` 已落 DB；非 harness path 仍可 fire-and-forget。
 - `PostShellHook` 参数为 `(command, stdout, project_path, organization_id)`：主 agent 用 `AgenticLoopContext.harness_org_id`，sub-agent 用 `active_org_id_override`。这个 org context 是 EAS/Enumeration 主动落库的资产归属来源，不能丢；丢了新资产会变成 `organization_id=NULL`，从 per-org gate denominator 和 stage_run 资产矩阵里消失。
 
 ## 测试入口

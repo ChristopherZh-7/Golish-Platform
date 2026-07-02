@@ -2,9 +2,9 @@
 
 > Design: `docs/design/2026-07-02-eas-worker-evidence-and-service-fingerprint.md`
 > Scope: fix the `external_attack_surface` prober retry loop (A/B/C/D/E).
-> Split: **Phase 1 (A + C2 + E)** lands now (additive/safe). **Phase 2 (B + C1 + D)**
-> is staged — it tightens/re-times the authoritative gate and needs a compile+test
-> cycle before it is trustworthy.
+> Split: **Phase 1 (A + C2 + E)** landed first (additive/safe). **Phase 2 (B + C1 + D)**
+> is now implemented as well, but the whole feature remains `in_progress` until a
+> compile+targeted-test+EAS-smoke cycle is allowed and recorded.
 
 ## Phase 1 — additive, safe (landing now)
 
@@ -90,14 +90,13 @@ File: `backend/crates/golish-agent-kit/src/task_orchestrator/types.rs`
   `list_recent_evidence` and cites real ids, and `nmap -sV` service rows appear in
   `fingerprints`.
 
-## Phase 2 — staged (tightens/re-times the authoritative gate; DO NOT ship blind)
+## Phase 2 — implemented, verification pending
 
 ### Task B · make scan output-store landing observable to the submit barrier
 File: `backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/mod.rs`
-- B1 (preferred): inside a harness stage, `await` the structured-storage hook for
-  `pentest_run` instead of `tokio::spawn`, so `fingerprints`/`ports` land before the
-  tool result returns. OR B2: register the spawned hook as a tracked bg job so
-  `reconcile_background_jobs` waits for it.
+- Implemented B1: inside a harness stage, `await` the structured-storage hook for
+  registry tool output instead of `tokio::spawn`, so `fingerprints`/`ports` land
+  before the tool result returns. Non-harness execution keeps the old spawned path.
 - Verify: `golish-agent-runtime` tests + EAS smoke that submit no longer grades before
   `-sV` lands.
 
@@ -105,24 +104,31 @@ File: `backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direc
 File: `backend/crates/golish-db/src/repo/coverage_truth.rs`
 - In `ports_have_service_hint_sql`, require the service be informative:
   `NULLIF(lower(p->>'service'),'') IS NOT NULL AND lower(p->>'service') NOT IN
-   ('tcpwrapped','unknown','open')` (plus the version/webserver/technologies branches
-  unchanged). Add unit tests mirroring the existing `coverage_truth` test style.
-- COUPLED with D: on its own this deadlocks port-53-only IPs.
+   ('tcpwrapped','unknown','open','filtered','closed')`, and do not let a bare
+  `service=domain` on `port=53` satisfy SERVICE-FINGERPRINT without version/webserver/
+  technology truth. Add unit tests mirroring the existing `coverage_truth` test style.
+- Coupled with D so port-53-only IPs get a deterministic terminal path.
 
 ### Task D · terminal SERVICE cell for port-found-but-no-service IPs
 Files: `backend/crates/golish-agent-app/src/ai/commands/stage_coverage.rs`
 (`apply_eas_service_dependency`) + `backend/crates/golish-agent-kit/src/harness/gate/rule_engine.rs`
 (`coverage_complete`).
-- Read model: thread the asset's port services into `StageAssetCoverageRow` (add a
-  `ports`/`service_surface` signal) and mark SERVICE `not_applicable` when PORT is
-  found but no informative service exists.
-- Gate: mirror the derivation (or supply a DB-truth `service_fp_not_applicable` set the
-  gate consumes) so preflight and gate agree. Preserve I8 (not_applicable = "technique
-  doesn't apply", not "checked empty without a scan").
+- Implemented via shared DB truth, not frontend-only inference:
+  - `coverage_truth::eas_service_not_applicable_assets` returns current-wave IP/CIDR
+    assets whose only observed port is DNS/53 and which have no fingerprint row or
+    strong service surface.
+  - `stage_coverage.rs` threads that set into `apply_eas_service_dependency` and marks
+    SERVICE `not_applicable` with a DNS/53 note.
+  - `GateContext.not_applicable_coverage` carries the same `(asset, technique)` set
+    through submit preview and per-org close gate; `coverage_complete` accepts it only
+    when `NotApplicable` is an allowed terminal state.
+- Preserve I8: this is "technique does not apply to this infra IP", not "checked empty
+  without a scan".
 - Verify: new `rule_engine` + `stage_coverage` unit tests; EAS smoke on the 13-IP case.
 
 ## Notes
-- Phase 1 is additive and does not change any gate verdict formula, so it is safe to
-  land without the full build. Compilation is still unverified in this pass (user asked
-  not to run precommit / big tests); running `just check` is the first follow-up.
-- Phase 2 must not be flipped to `passing` without evidence per AGENTS.md §3.
+- Compilation is still unverified in this pass (user asked not to run precommit / tests).
+  Running the targeted Rust checks and then `just check` is the first follow-up when
+  validation is allowed.
+- This feature must not be flipped to `passing` without fresh verification evidence per
+  AGENTS.md §3.

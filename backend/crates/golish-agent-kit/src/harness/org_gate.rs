@@ -19,6 +19,7 @@ use super::{load_embedded_stage_spec, StageKind};
 use crate::db_traits::DbRepoProvider;
 
 const TECH_EAS_LIVENESS: &str = "GOLISH-EAS-LIVENESS";
+const TECH_EAS_SERVICE_FP: &str = "GOLISH-EAS-SERVICE-FINGERPRINT";
 
 /// 一个 org 在某 stage 的裁决。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,6 +270,17 @@ pub async fn evaluate_org_stage_gate(
         } else {
             Vec::new()
         };
+    let not_applicable_coverage: Vec<(String, String)> =
+        if stage == StageKind::ExternalAttackSurface {
+            repo.eas_service_not_applicable_assets(org_id, effective_wave_cutoff)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|asset| (asset, TECH_EAS_SERVICE_FP.to_string()))
+                .collect()
+        } else {
+            Vec::new()
+        };
     if stage == StageKind::Enumeration && !in_scope_assets.is_empty() {
         let inherited_truth = repo
             .db_truth_facts(org_id, &in_scope_assets, None)
@@ -359,6 +371,7 @@ pub async fn evaluate_org_stage_gate(
         .in_scope_assets(in_scope_assets)
         .typed_assets(typed_assets)
         .web_capable_assets(web_capable_assets)
+        .not_applicable_coverage(not_applicable_coverage)
         .extend_evidence_facts(facts)
         .extend_source_queries(source_queries)
         .expected_techniques(None)

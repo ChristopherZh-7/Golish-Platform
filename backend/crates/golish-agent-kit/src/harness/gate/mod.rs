@@ -153,6 +153,8 @@ pub fn validate_stage_gate_with_context(
         asset_types: ctx.asset_types.clone(),
         // Enumeration IP-web：EAS/httpx-proven IP/CIDR web roots 原样透传。
         web_capable_assets: ctx.web_capable_assets.clone(),
+        // DB-derived terminal not_applicable coverage cells 原样透传。
+        not_applicable_coverage: ctx.not_applicable_coverage.clone(),
         expected_techniques: ctx.expected_techniques.clone().or_else(|| {
             skeleton
                 .map(|s| s.expected_techniques.clone())

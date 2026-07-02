@@ -29,6 +29,21 @@
 
 > 历史会话已归档：`docs/archive/agent-progress-archive-2026-06-28.md`。主文件只保留最近 20 条会话，避免旧日志干扰新判断；需要追溯旧验证证据时去 archive grep。
 
+### 2026-07-03 · EAS prober B/C1/D 接力实现（按用户要求不跑测试）
+
+- **本轮身份**：Codex，接手用户贴出的另一 agent 未完成尾段。用户明确要求：先 commit 当前东西，然后继续写 B/C1/D，**不要跑测试 / 不要跑 precommit**。
+- **checkpoint**：先将上一位 agent 已写的 A/C2/E + 设计/计划 + 其它当前工作树内容做保护性 checkpoint commit：`e3890d04 checkpoint: save working tree before EAS follow-up`（使用 `git commit --no-verify`，未跑测试）。
+- **已完成 B（异步落库屏障）**：`golish-agent-runtime/src/agentic_loop/tool_execution/direct/mod.rs` 在 `ctx.harness_stage.is_some()` 时 await structured-storage `PostShellHook`，让 harness stage 内的 scan output-store 落库（targets.ports/fingerprints 等）在工具结果返回前完成；非 harness path 保留原 `tokio::spawn`。
+- **已完成 C1（SERVICE truth 收紧）**：`golish-db/src/repo/coverage_truth.rs` 的 SERVICE-FINGERPRINT truth 排除 `tcpwrapped/unknown/open/filtered/closed` 等伪服务；bare `service=domain` + `port=53` 不再单独算 SERVICE found，必须有 version/webserver/technologies 或 fingerprint 行才算强服务面。
+- **已完成 D（DNS/53-only not_applicable 同源）**：
+  - `coverage_truth::eas_service_not_applicable_assets` 以 DB truth 返回当前 wave 中只开 DNS/53 且无强服务面的 IP/CIDR 资产。
+  - `stage_coverage.rs` 将该集合用于 `ai_get_stage_asset_coverage` / `check_stage_asset_coverage`，把 SERVICE-FINGERPRINT pending 派生为 `not_applicable` 并写 DNS/53 note。
+  - `GateContext.not_applicable_coverage` + `GateContextBuilder` + `rule_engine::coverage_complete` 让 submit preview / per-org close gate 消费同一 `(asset, technique)` 终态集合。
+  - `harness_submit_tool.rs` 与 `org_gate.rs` 均从 app/db trait 查询同一个 not_applicable 集合，避免前台 preflight 和权威 gate 分叉。
+- **同步文档/状态**：更新 `docs/design/2026-07-02-eas-worker-evidence-and-service-fingerprint.md`、同名 plan、`feature_list.json`、相关模块卡，明确 A/B/C/D/E 代码已写但 feature 仍 `in_progress`，因为验证尚未允许执行。
+- **验证状态**：遵用户要求，本轮**未跑** `just precommit`、`just check`、cargo build/check/nextest/clippy，也未跑 `git diff --check`。只做了只读 `rg`/`sed`/`git diff --stat` 级别核对。编译/测试/活体 EAS smoke 仍是下一步验证债。
+- **风险**：B/C1/D 改的是 I7/I8 gate/DB truth 口径，必须在后续允许时跑目标 Rust 验证和活体 EAS smoke；当前不能标 `passing`。
+
 ### 2026-07-02 · EAS prober 重试死循环根因修复（A/C2/E 落地，B/C1/D staged）
 
 - **本轮身份**：BajieAsk `agent-1-pppoysuf`（主控中心），分发开关 OFF → 用户选自执行；接手 MCP-3 转移的上下文（对最后一次 EAS run 的根因分析）。

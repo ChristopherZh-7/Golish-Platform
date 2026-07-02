@@ -23,6 +23,7 @@ pub struct GateContextBuilder {
     in_scope_assets: Vec<String>,
     asset_types: HashMap<String, String>,
     web_capable_assets: HashSet<String>,
+    not_applicable_coverage: HashSet<(String, String)>,
     evidence_facts: Vec<EvidenceFact>,
     source_queries: Vec<SourceQueryFact>,
     expected_techniques: Option<Vec<String>>,
@@ -63,6 +64,16 @@ impl GateContextBuilder {
         self
     }
 
+    /// DB-derived terminal not_applicable cells, keyed by `(asset, technique)`.
+    /// Empty ⇒ `None`.
+    pub fn not_applicable_coverage<I>(mut self, pairs: I) -> Self
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        self.not_applicable_coverage = pairs.into_iter().collect();
+        self
+    }
+
     /// 追加 evidence facts（ledger 投影 / DB 真值 / subsidiary 投影 …）。可多次
     /// 调用合并多个来源；顺序对 gate 无影响。
     pub fn extend_evidence_facts<I>(mut self, facts: I) -> Self
@@ -97,6 +108,8 @@ impl GateContextBuilder {
             asset_types: (!self.asset_types.is_empty()).then_some(self.asset_types),
             web_capable_assets: (!self.web_capable_assets.is_empty())
                 .then_some(self.web_capable_assets),
+            not_applicable_coverage: (!self.not_applicable_coverage.is_empty())
+                .then_some(self.not_applicable_coverage),
             expected_techniques: self.expected_techniques,
             evidence_facts: (!self.evidence_facts.is_empty()).then_some(self.evidence_facts),
             source_queries: (!self.source_queries.is_empty()).then_some(self.source_queries),
@@ -125,6 +138,7 @@ mod tests {
         assert_eq!(ctx.in_scope_assets, def.in_scope_assets);
         assert_eq!(ctx.asset_types, def.asset_types);
         assert_eq!(ctx.web_capable_assets, def.web_capable_assets);
+        assert_eq!(ctx.not_applicable_coverage, def.not_applicable_coverage);
         assert_eq!(ctx.expected_techniques, def.expected_techniques);
         assert!(ctx.evidence_facts.is_none() && def.evidence_facts.is_none());
         assert!(ctx.source_queries.is_none() && def.source_queries.is_none());
@@ -137,12 +151,14 @@ mod tests {
             .in_scope_assets(vec![])
             .typed_assets(vec![])
             .web_capable_assets(Vec::new())
+            .not_applicable_coverage(Vec::new())
             .extend_evidence_facts(std::iter::empty::<EvidenceFact>())
             .extend_source_queries(std::iter::empty::<SourceQueryFact>())
             .build();
         assert!(ctx.in_scope_assets.is_none());
         assert!(ctx.asset_types.is_none());
         assert!(ctx.web_capable_assets.is_none());
+        assert!(ctx.not_applicable_coverage.is_none());
         assert!(ctx.evidence_facts.is_none());
         assert!(ctx.source_queries.is_none());
     }
@@ -274,6 +290,7 @@ mod tests {
             in_scope_assets: Some(assets),
             asset_types: Some(types),
             web_capable_assets: None,
+            not_applicable_coverage: None,
             expected_techniques: Some(vec!["GOLISH-INTEL-DNS".to_string()]),
             evidence_facts: Some(facts),
             source_queries: None,
@@ -282,6 +299,10 @@ mod tests {
         assert_eq!(built.in_scope_assets, manual.in_scope_assets);
         assert_eq!(built.asset_types, manual.asset_types);
         assert_eq!(built.web_capable_assets, manual.web_capable_assets);
+        assert_eq!(
+            built.not_applicable_coverage,
+            manual.not_applicable_coverage
+        );
         assert_eq!(built.expected_techniques, manual.expected_techniques);
         assert_eq!(built.evidence_facts, manual.evidence_facts);
     }

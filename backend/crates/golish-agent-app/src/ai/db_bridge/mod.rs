@@ -349,6 +349,15 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.enumeration_web_capable_assets_impl(org_id).await
     }
 
+    async fn eas_service_not_applicable_assets(
+        &self,
+        org_id: Option<Uuid>,
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<Vec<String>> {
+        self.eas_service_not_applicable_assets_impl(org_id, run_start)
+            .await
+    }
+
     async fn db_truth_facts(
         &self,
         org_id: Option<Uuid>,

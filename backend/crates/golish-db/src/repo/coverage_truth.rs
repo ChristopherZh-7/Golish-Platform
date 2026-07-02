@@ -168,20 +168,41 @@ fn ports_non_empty_sql(alias: &str) -> String {
     format!("jsonb_typeof({alias}.ports) = 'array' AND {alias}.ports <> '[]'::jsonb")
 }
 
+fn ports_array_expr(alias: &str) -> String {
+    format!(
+        "CASE WHEN jsonb_typeof({alias}.ports) = 'array' THEN {alias}.ports ELSE '[]'::jsonb END"
+    )
+}
+
+fn port_has_technologies_sql(port_alias: &str) -> String {
+    format!(
+        "({port_alias} ? 'technologies' AND {port_alias}->'technologies' <> 'null'::jsonb
+                                 AND {port_alias}->'technologies' <> '[]'::jsonb
+                                 AND {port_alias}->'technologies' <> '{{}}'::jsonb)"
+    )
+}
+
+fn informative_service_sql(port_alias: &str) -> String {
+    format!(
+        "NULLIF(trim({port_alias}->>'service'), '') IS NOT NULL
+            AND lower(split_part(trim({port_alias}->>'service'), ' ', 1))
+                NOT IN ('tcpwrapped', 'unknown', 'open', 'filtered', 'closed')
+            AND {port_alias}->>'port' <> '53'"
+    )
+}
+
 fn ports_have_service_hint_sql(alias: &str) -> String {
+    let ports = ports_array_expr(alias);
+    let technologies = port_has_technologies_sql("p");
+    let service = informative_service_sql("p");
     format!(
         "EXISTS (
         SELECT 1
-          FROM jsonb_array_elements(
-                 CASE WHEN jsonb_typeof({alias}.ports) = 'array'
-                      THEN {alias}.ports ELSE '[]'::jsonb END
-               ) p
-         WHERE NULLIF(p->>'service', '') IS NOT NULL
+          FROM jsonb_array_elements({ports}) p
+         WHERE ({service})
             OR NULLIF(p->>'version', '') IS NOT NULL
             OR NULLIF(p->>'webserver', '') IS NOT NULL
-            OR (p ? 'technologies' AND p->'technologies' <> 'null'::jsonb
-                                 AND p->'technologies' <> '[]'::jsonb
-                                 AND p->'technologies' <> '{{}}'::jsonb)
+            OR {technologies}
     )"
     )
 }
@@ -246,6 +267,33 @@ fn real_ip_service_exists_sql(apply_window: bool) -> String {
     )
 }
 
+fn only_dns_port_without_service_surface_sql(alias: &str, apply_window: bool) -> String {
+    let ports = ports_array_expr(alias);
+    let fresh_ports = fresh_ports_sql(alias, apply_window);
+    let fp_exists = fingerprint_exists_sql(alias, apply_window);
+    let technologies = port_has_technologies_sql("p");
+    format!(
+        "({fresh_ports}
+            AND NOT {fp_exists}
+            AND EXISTS (
+                SELECT 1 FROM jsonb_array_elements({ports}) p
+                 WHERE p->>'port' = '53'
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements({ports}) p
+                 WHERE COALESCE(NULLIF(p->>'port', ''), '') <> '53'
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements({ports}) p
+                 WHERE NULLIF(p->>'version', '') IS NOT NULL
+                    OR NULLIF(p->>'webserver', '') IS NOT NULL
+                    OR NULLIF(p->>'product', '') IS NOT NULL
+                    OR NULLIF(p->>'banner', '') IS NOT NULL
+                    OR {technologies}
+            ))"
+    )
+}
+
 /// EAS-LIVENESS：httpx 探活/解析 IP（`http_status` 非空或 `real_ip` 非空）；
 /// 端口扫描得到新鲜端口也证明 host 存活。Phase D：`apply_window` ⇒ 只数本次
 /// stage-run 探的活性（`t.liveness_checked_at` / `t.ports_scanned_at >= $2`）。
@@ -301,6 +349,15 @@ fn build_service_fp_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql(
         "",
         &format!("AND ({fp_exists} OR {ports_clause} OR {real_ip_service})"),
+        None,
+    )
+}
+
+fn build_eas_service_not_applicable_values_sql(apply_window: bool) -> String {
+    let dns_only_no_service = only_dns_port_without_service_surface_sql("t", apply_window);
+    build_in_scope_values_sql(
+        "",
+        &format!("AND t.target_type::text IN {IP_TYPE_IN_LIST} AND {dns_only_no_service}"),
         None,
     )
 }
@@ -588,6 +645,26 @@ pub async fn web_capable_ip_assets(pool: &PgPool, org_id: Option<Uuid>) -> Resul
     fetch_values(pool, &build_web_capable_ip_values_sql(), org_id, None).await
 }
 
+/// EAS IP/CIDR assets whose SERVICE-FINGERPRINT technique is deterministically
+/// not applicable: the only open port observed in this wave is DNS/53, and no
+/// strong service/version surface (fingerprint row, version, product, banner,
+/// webserver, technologies) exists. This keeps shared DNS/CDN real_ip rows from
+/// wedging the SERVICE gate after pseudo-services such as tcpwrapped are excluded.
+pub async fn eas_service_not_applicable_assets(
+    pool: &PgPool,
+    org_id: Option<Uuid>,
+    run_start: Option<DateTime<Utc>>,
+) -> Result<HashSet<String>> {
+    let aw = run_start.is_some();
+    fetch_values(
+        pool,
+        &build_eas_service_not_applicable_values_sql(aw),
+        org_id,
+        run_start,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -869,6 +946,8 @@ mod tests {
         assert!(service.contains("EXISTS (SELECT 1 FROM fingerprints f WHERE f.target_id = t.id)"));
         assert!(service.contains("jsonb_array_elements("));
         assert!(service.contains("p->>'service'"));
+        assert!(service.contains("NOT IN ('tcpwrapped', 'unknown', 'open', 'filtered', 'closed')"));
+        assert!(service.contains("p->>'port' <> '53'"));
         assert!(service.contains("p->>'version'"));
         assert!(build_dir_values_sql(false)
             .contains("JOIN directory_entries de ON de.target_id = t.id"));
@@ -905,6 +984,22 @@ mod tests {
             !sql.contains("$2"),
             "web-capable IP lookup is presence-only: {sql}"
         );
+    }
+
+    #[test]
+    fn eas_service_not_applicable_sql_is_dns_only_and_ip_scoped() {
+        let sql = build_eas_service_not_applicable_values_sql(false);
+        assert!(sql.contains("t.target_type::text IN"));
+        assert!(sql.contains("p->>'port' = '53'"));
+        assert!(sql.contains("<> '53'"));
+        assert!(sql.contains("NOT EXISTS (SELECT 1 FROM fingerprints"));
+        assert!(sql.contains("p->>'version'"));
+        assert!(sql.contains("p->>'product'"));
+        assert!(!sql.contains("$2"), "presence-only mode must not bind cutoff: {sql}");
+
+        let fresh = build_eas_service_not_applicable_values_sql(true);
+        assert!(fresh.contains("t.ports_scanned_at >= $2"));
+        assert!(fresh.contains("f.detected_at >= $2"));
     }
 
     #[test]

@@ -233,6 +233,19 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// EAS SERVICE-FINGERPRINT deterministic not-applicable assets: IP/CIDR rows
+    /// whose only open port in the current freshness window is DNS/53 and whose DB
+    /// truth has no strong service/version surface. Default empty ⇒ no derived
+    /// not_applicable cells.
+    async fn eas_service_not_applicable_assets(
+        &self,
+        org_id: Option<Uuid>,
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<Vec<String>> {
+        let _ = (org_id, run_start);
+        Ok(Vec::new())
+    }
+
     /// In-scope recon targets as JSON rows (`target_id` / `value` / `type`) so an
     /// agent tool can enumerate the recon-collected assets, then drill into each
     /// via [`Self::query_target_data`]. Default empty (test doubles); the app

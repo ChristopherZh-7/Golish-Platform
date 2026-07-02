@@ -232,6 +232,25 @@ pub(crate) async fn stage_asset_coverage_snapshot(
             )
         })
         .collect();
+    let service_not_applicable_assets: BTreeSet<String> =
+        if stage_kind == StageKind::ExternalAttackSurface {
+            golish_db::repo::coverage_truth::eas_service_not_applicable_assets(
+                pool,
+                Some(org_id),
+                run_start,
+            )
+            .await?
+            .into_iter()
+            .map(|asset| {
+                coverage_lookup_asset(
+                    &asset,
+                    golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP,
+                )
+            })
+            .collect()
+        } else {
+            BTreeSet::new()
+        };
 
     let outcomes = stage_outcomes(
         pool,
@@ -275,6 +294,7 @@ pub(crate) async fn stage_asset_coverage_snapshot(
                 &outcomes,
                 &eas_ip_targets,
                 &web_capable_assets,
+                &service_not_applicable_assets,
             )
         };
 
@@ -810,6 +830,7 @@ fn coverage_cells(
         outcomes,
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeSet::new(),
     )
 }
 
@@ -820,6 +841,7 @@ fn coverage_cells_with_eas_parent_ips(
     outcomes: &BTreeMap<(String, String), OutcomeProjection>,
     eas_ip_targets: &BTreeSet<String>,
     web_capable_assets: &BTreeSet<String>,
+    service_not_applicable_assets: &BTreeSet<String>,
 ) -> Vec<StageAssetCoverageCell> {
     if let Some(parent_ip) = eas_alias_parent_ip_key(stage, asset, eas_ip_targets) {
         return eas_alias_coverage_cells(&parent_ip);
@@ -870,14 +892,24 @@ fn coverage_cells_with_eas_parent_ips(
             cell(technique, "pending", None, Vec::new(), None)
         })
         .collect();
-    apply_eas_service_dependency(stage, &mut cells);
+    apply_eas_service_dependency(stage, asset, &mut cells, service_not_applicable_assets);
     cells
 }
 
-fn apply_eas_service_dependency(stage: StageKind, cells: &mut [StageAssetCoverageCell]) {
+fn apply_eas_service_dependency(
+    stage: StageKind,
+    asset: &TargetCoverageRow,
+    cells: &mut [StageAssetCoverageCell],
+    service_not_applicable_assets: &BTreeSet<String>,
+) {
     if stage != StageKind::ExternalAttackSurface {
         return;
     }
+    let service_key = coverage_lookup_asset(
+        &asset.value,
+        golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP,
+    );
+    let dns_only_without_service_surface = service_not_applicable_assets.contains(&service_key);
     let port_has_no_service_surface = cells.iter().any(|coverage_cell| {
         coverage_cell.technique == golish_db::repo::coverage_truth::TECH_EAS_PORT
             && matches!(
@@ -885,7 +917,7 @@ fn apply_eas_service_dependency(stage: StageKind, cells: &mut [StageAssetCoverag
                 "checked_empty" | "not_applicable"
             )
     });
-    if !port_has_no_service_surface {
+    if !port_has_no_service_surface && !dns_only_without_service_surface {
         return;
     }
     let Some(service_cell) = cells.iter_mut().find(|coverage_cell| {
@@ -896,12 +928,17 @@ fn apply_eas_service_dependency(stage: StageKind, cells: &mut [StageAssetCoverag
     if service_cell.state != "pending" {
         return;
     }
+    let note = if dns_only_without_service_surface {
+        "only DNS/53 is open and no informative service/version surface was observed, so service fingerprinting is not applicable to this real_ip".to_string()
+    } else {
+        "no open ports were found, so service fingerprinting is not applicable".to_string()
+    };
     *service_cell = cell(
         golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP,
         "not_applicable",
         None,
         Vec::new(),
-        Some("no open ports were found, so service fingerprinting is not applicable".to_string()),
+        Some(note),
     );
 }
 
@@ -1346,6 +1383,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeSet::new(),
             &BTreeSet::from([asset.value.clone()]),
+            &BTreeSet::new(),
         );
         assert_eq!(
             web_cells
@@ -1479,6 +1517,7 @@ mod tests {
             &BTreeMap::new(),
             &parent_ips,
             &BTreeSet::new(),
+            &BTreeSet::new(),
         );
 
         assert!(cells.iter().all(|cell| cell.state == "not_applicable"));
@@ -1508,6 +1547,7 @@ mod tests {
             &BTreeSet::new(),
             &BTreeMap::new(),
             &parent_ips,
+            &BTreeSet::new(),
             &BTreeSet::new(),
         );
 
@@ -1636,6 +1676,34 @@ mod tests {
         assert_eq!(cells[1].state, "found");
         assert_eq!(cells[2].state, "pending");
         assert_eq!(cells[2].suggested_tools, vec!["nmap".to_string()]);
+    }
+
+    #[test]
+    fn eas_dns_only_ip_makes_service_not_applicable() {
+        let asset = target("122.114.60.53", "ip");
+        let found = BTreeSet::from([(
+            asset.value.clone(),
+            golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string(),
+        )]);
+        let service_not_applicable = BTreeSet::from([asset.value.clone()]);
+
+        let cells = coverage_cells_with_eas_parent_ips(
+            golish_agent_kit::harness::StageKind::ExternalAttackSurface,
+            &asset,
+            &found,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &service_not_applicable,
+        );
+
+        assert_eq!(cells[1].state, "found");
+        assert_eq!(cells[2].state, "not_applicable");
+        assert!(cells[2]
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("only DNS/53 is open")));
+        assert!(cells[2].suggested_tools.is_empty());
     }
 
     #[test]

@@ -535,6 +535,16 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
             .unwrap_or_default()
     }
 
+    async fn eas_service_not_applicable_assets(
+        &self,
+        org_id: Option<uuid::Uuid>,
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<String> {
+        self.eas_service_not_applicable_assets_impl(org_id, run_start)
+            .await
+            .unwrap_or_default()
+    }
+
     async fn in_scope_target_types(&self, org_id: Option<uuid::Uuid>) -> Vec<String> {
         // T3: distinct targets.type for the preview's dynamic expected_techniques.
         self.in_scope_target_types_impl(org_id)

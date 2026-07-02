@@ -28,11 +28,11 @@ Plus two follow-ons:
 5. **E:** the 3-retry budget (`MAX_REFLECTOR_RETRIES`) is too tight to absorb async
    landing + evidence-id reconciliation.
 
-This document specifies fixes for all five. **A, C2, E are landed in this change**
-(additive, do not tighten the gate). **B, C1, D tighten or re-time the authoritative
-gate and are specified here + in the plan but staged for a change that includes a
-compile + targeted-test cycle** (they can silently wedge the gate if wrong; the
-harness gate is invariant I7/I8 territory).
+This document specifies fixes for all five. **A, B, C1, C2, D, E are implemented in
+this change**, but the feature must remain `in_progress` until a later pass runs the
+compile / targeted-test / EAS smoke cycle. B/C1/D re-time or tighten I7/I8 gate truth,
+so this document records the intended semantics and the verification debt instead of
+claiming `passing` without fresh evidence.
 
 ## 1. Evidence (timeline of the failing run)
 
@@ -129,20 +129,16 @@ explicitly-backgrounded jobs (`bg_jobs.running_for_session`), not the spawned
 output-store hook. So a foreground `nmap -sV` can return, the gate can grade, and the
 `fingerprints`/`ports` write can land 3 minutes later.
 
-### Fix B (specified, staged — needs compile+test)
+### Fix B (implemented — verification pending)
 
-Make the scan output-store landing observable to the submit barrier so the gate never
-grades a stage whose scan writes are still in flight. Two candidate implementations:
+Inside a harness stage, the structured-storage hook for registry tool results is
+awaited instead of `tokio::spawn`-ed. That makes `targets.ports` / `fingerprints`
+landing observable before the scan tool result returns, so submit preview and the
+authoritative gate grade after the same DB writes. Non-harness tool execution keeps the
+old fire-and-forget path.
 
-- **B1 (preferred):** inside a harness stage, `await` the structured-storage hook for
-  scan tools (`pentest_run`) instead of `tokio::spawn`-ing it, so `fingerprints`/
-  `ports` are landed before the tool result (and thus the id) is returned. Localised
-  to `direct/mod.rs`; trade-off is added foreground latency on scan tools.
-- **B2:** register the spawned hook as a tracked background job so
-  `reconcile_background_jobs` waits for it at submit.
-
-Risk: changes tool-execution timing / the submit barrier; must be verified against
-`golish-agent-runtime` tests + a live EAS smoke. Staged, not shipped blind.
+Risk: changes scan tool foreground latency and submit timing; must be verified against
+`golish-agent-runtime` tests + a live EAS smoke before marking the feature `passing`.
 
 ## 4. Root cause C — tcpwrapped counts; real -sV service is lost
 
@@ -175,15 +171,17 @@ product, version = version when parsed). "Informative" excludes `tcpwrapped`,
 
 Purely additive (writes more rows); does not tighten any gate.
 
-### Fix C1 (specified, staged — TIGHTENS the gate)
+### Fix C1 (implemented — TIGHTENS the gate)
 
-Exclude non-informative pseudo-services (`tcpwrapped`, `unknown`, `open`, empty) from
-`ports_have_service_hint_sql` so a bare `tcpwrapped` port no longer satisfies
-SERVICE-FINGERPRINT. This is consumed by **both** the read model and the authoritative
-gate (single shared truth), so they stay consistent — **but** it makes the gate
-STRICTER: a port-53-only tcpwrapped IP flips SERVICE from found → pending and will
-BLOCK unless it has a terminal path (see D). **C1 must ship together with D** and with
-a test cycle, because on its own it deadlocks those IPs.
+Exclude non-informative pseudo-services (`tcpwrapped`, `unknown`, `open`, `filtered`,
+`closed`, empty) from `ports_have_service_hint_sql` so a bare pseudo-service port no
+longer satisfies SERVICE-FINGERPRINT. Bare `service=domain` on port 53 is also not
+enough by itself; a DNS service still counts as found if the row carries version,
+webserver, or technologies. This truth is consumed by both the read model and the
+authoritative gate through `coverage_truth.rs`, so they stay consistent.
+
+Risk: stricter gate semantics; relies on D's terminal path for DNS-only infra IPs and
+must be covered by targeted tests before marking the feature `passing`.
 
 ## 5. Root cause D — port-53-only real_ips forced through SERVICE-FINGERPRINT
 
@@ -195,21 +193,25 @@ but a port-53-open IP has PORT = found, so SERVICE stays pending. The authoritat
 gate (`rule_engine.rs`) has **no** such service-dependency derivation at all — it
 requires each applicable technique cell to reach a terminal state independently.
 
-### Fix D (specified, staged — TIGHTENS/RESHAPES the gate)
+### Fix D (implemented — TIGHTENS/RESHAPES the gate)
 
-Give a port-found-but-no-informative-service IP a deterministic terminal SERVICE cell
-in **both** the read model and the authoritative gate, so C1 does not deadlock them:
+Give DNS-only IP/CIDR rows a deterministic terminal SERVICE cell in both the read model
+and the authoritative gate:
 
-- Read model: extend `apply_eas_service_dependency` to also mark SERVICE
-  `not_applicable` when PORT is found but the asset has no informative service surface
-  (requires threading the asset's port services into the coverage row).
-- Gate: mirror the same derivation in `rule_engine.rs` `coverage_complete` (or supply
-  a DB-truth `service_fp_not_applicable` set the gate consumes), so preflight and gate
-  agree.
+- DB truth: `coverage_truth::eas_service_not_applicable_assets` returns in-scope IP/CIDR
+  assets whose current-wave ports are exactly DNS/53 and which have no fingerprint row
+  or strong service surface (`version`, `product`, `banner`, `webserver`,
+  `technologies`).
+- Read model: `ai_get_stage_asset_coverage` / `check_stage_asset_coverage` inject that
+  asset set into `apply_eas_service_dependency`, which marks the pending
+  SERVICE-FINGERPRINT cell `not_applicable` with an explicit DNS/53 note.
+- Gate: `GateContext.not_applicable_coverage` carries the same `(asset, technique)` set
+  through `GateContextBuilder`; `coverage_complete` accepts it only when the terminal
+  set includes `NotApplicable`.
 
-Risk: touches the authoritative rule engine (`rule_engine.rs`) which is I7/I8-critical;
-must be covered by new unit tests matching the existing `rule_engine`/`stage_coverage`
-test suites before shipping.
+Risk: touches the authoritative rule engine (`rule_engine.rs`) and DB truth; must be
+covered by `coverage_truth`, `rule_engine`, `stage_coverage`, submit-preview, and live
+EAS smoke checks before shipping as `passing`.
 
 ## 6. Root cause E — retry budget too tight
 
@@ -225,21 +227,20 @@ change, not a new constant. Strictly more headroom before `paused_needs_user`.
 "Don't count a retry that made progress" is the more surgical variant and is left as a
 follow-up (it needs a progress signal from the gate delta).
 
-## 7. What lands in this change vs staged
+## 7. What lands in this change
 
 | Fix | Lands now | Why |
 | --- | --- | --- |
 | A `list_recent_evidence` | yes | additive read-only tool; the explicit dealbreaker |
+| B async-landing barrier | yes | harness-stage scan output-store hook is awaited |
+| C1 tcpwrapped exclusion | yes | shared SERVICE truth excludes pseudo-services and bare DNS/53 service names |
 | C2 land `-sV` service fingerprint | yes | additive write; materialises real service data |
+| D port-53 terminal derivation | yes | shared DB-derived not_applicable set for read model and gate |
 | E retry budget 3→5 | yes | one-constant knob; strictly more headroom |
-| B async-landing barrier | staged | re-times tool execution / submit barrier |
-| C1 tcpwrapped exclusion | staged | tightens the authoritative gate; coupled to D |
-| D port-53 terminal derivation | staged | touches the I7/I8 rule engine |
 
-Staged fixes are fully located above and in
-`docs/superpowers/plans/2026-07-02-eas-worker-evidence-and-service-fingerprint.md`.
-They must go through `just check` + targeted `golish-agent-kit` / `golish-db` /
-`golish-agent-runtime` tests + a live EAS smoke before flipping to `passing`.
+Verification was intentionally deferred per user instruction for this pass. Before
+flipping to `passing`, run `just check` + targeted `golish-agent-kit` / `golish-db` /
+`golish-agent-runtime` / `golish-agent-app` tests + a live EAS smoke.
 
 ## 8. Invariants touched
 

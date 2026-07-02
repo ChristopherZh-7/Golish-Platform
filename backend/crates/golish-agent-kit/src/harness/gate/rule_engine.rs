@@ -268,6 +268,10 @@ pub struct GateContext {
     /// EAS/httpx to be HTTP-capable IP/CIDR targets. `None` preserves the old
     /// class-only host-aware behavior.
     pub web_capable_assets: Option<std::collections::HashSet<String>>,
+    /// DB-derived coverage cells that are terminal as `not_applicable` without
+    /// needing the model to hand-copy a coverage row. Used for narrow EAS cases
+    /// such as DNS-only real_ip rows where SERVICE-FINGERPRINT does not apply.
+    pub not_applicable_coverage: Option<std::collections::HashSet<(String, String)>>,
     pub expected_techniques: Option<Vec<String>>,
     /// PR3 (设计 2026-06-11-coverage-auto-derive §5.2) · 证据账本投影事实：
     /// 从 `audit_log` 三列 (`evidence_asset/technique/outcome`) 注入的只读三元组。
@@ -805,7 +809,19 @@ fn coverage_complete(
                     })
                 });
 
-            if !found_ok && !empty_ok && !other_ok && !error_ok && !source_terminal_ok {
+            let context_not_applicable_ok = terminal.contains(&CoverageStatus::NotApplicable)
+                && ctx.not_applicable_coverage.as_ref().is_some_and(|pairs| {
+                    pairs.contains(&(asset_key.clone(), tech.to_string()))
+                        || pairs.contains(&((*asset).to_string(), tech.to_string()))
+                });
+
+            if !found_ok
+                && !empty_ok
+                && !other_ok
+                && !error_ok
+                && !source_terminal_ok
+                && !context_not_applicable_ok
+            {
                 gaps.push(coverage_gap_action(asset, tech));
             }
         }
@@ -1809,6 +1825,7 @@ mod tests {
             evidence_facts: facts,
             source_queries: None,
             web_capable_assets: None,
+            not_applicable_coverage: None,
         }
     }
 
@@ -1864,6 +1881,7 @@ mod tests {
             evidence_facts: None,
             source_queries: None,
             web_capable_assets: None,
+            not_applicable_coverage: None,
         };
         let rule = coverage_complete_rule();
 
@@ -1895,6 +1913,7 @@ mod tests {
             evidence_facts: None,
             source_queries: None,
             web_capable_assets: None,
+            not_applicable_coverage: None,
         };
         // 只覆盖了 a，没覆盖 b → 两个都在轴里时必 BLOCK（证明 b 没被剔除）。
         let d = deliverable_with_coverage(vec![cov_cell(
@@ -1942,6 +1961,7 @@ mod tests {
             evidence_facts: Some(facts),
             source_queries: None,
             web_capable_assets: None,
+            not_applicable_coverage: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -2004,6 +2024,7 @@ mod tests {
             evidence_facts: Some(facts),
             source_queries: None,
             web_capable_assets: None,
+            not_applicable_coverage: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -2044,6 +2065,7 @@ mod tests {
             evidence_facts: Some(facts),
             source_queries: None,
             web_capable_assets: None,
+            not_applicable_coverage: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -2082,6 +2104,7 @@ mod tests {
             evidence_facts: Some(domain_facts.clone()),
             source_queries: None,
             web_capable_assets: Some(web_capable_assets.clone()),
+            not_applicable_coverage: None,
         };
         let d = deliverable_with_coverage(vec![]);
         let spec_on = host_aware_spec("enumeration", "enumeration", true);
@@ -2105,6 +2128,7 @@ mod tests {
             evidence_facts: Some(all_facts),
             source_queries: None,
             web_capable_assets: Some(web_capable_assets),
+            not_applicable_coverage: None,
         };
         assert!(
             eval_with_context(&d, &spec_on, &[evidence_derive_rule(None)], &covered_ip_ctx)[0]
@@ -2144,6 +2168,7 @@ mod tests {
             evidence_facts: Some(facts),
             source_queries: None,
             web_capable_assets: None,
+            not_applicable_coverage: None,
         };
         let d = deliverable_with_coverage(vec![]);
         // host-aware ON：权威类型=域名 ⇒ 核全 6，缺 3 → BLOCK（若只按 from_value 会判 IP 而 PASS）。
@@ -2518,6 +2543,39 @@ mod tests {
             cov_cell("a", "xss", CoverageStatus::CheckedEmpty, vec![1]),
         ]);
         assert!(eval(&d, &spec, &[rule])[0].is_pass());
+    }
+
+    #[test]
+    fn coverage_complete_accepts_db_not_applicable_context_cell() {
+        let rule = coverage_complete_rule();
+        let tech = "GOLISH-EAS-SERVICE-FINGERPRINT";
+        let spec = spec_with_expected(&[tech]);
+        let d = deliverable_with_coverage(vec![]);
+        let asset = "203.0.113.53".to_string();
+
+        let missing_ctx = GateContext {
+            in_scope_assets: Some(vec![asset.clone()]),
+            expected_techniques: Some(vec![tech.to_string()]),
+            ..GateContext::default()
+        };
+        assert!(
+            !eval_with_context(&d, &spec, std::slice::from_ref(&rule), &missing_ctx)[0].is_pass(),
+            "without DB-derived not_applicable, the SERVICE cell is still a gap"
+        );
+
+        let terminal_ctx = GateContext {
+            in_scope_assets: Some(vec![asset.clone()]),
+            expected_techniques: Some(vec![tech.to_string()]),
+            not_applicable_coverage: Some(std::collections::HashSet::from([(
+                asset,
+                tech.to_string(),
+            )])),
+            ..GateContext::default()
+        };
+        assert!(
+            eval_with_context(&d, &spec, &[rule], &terminal_ctx)[0].is_pass(),
+            "DB-derived not_applicable should terminalize the SERVICE cell"
+        );
     }
 
     #[test]
@@ -3419,6 +3477,7 @@ mod tests {
             evidence_facts: Some(facts),
             source_queries: None,
             web_capable_assets: None,
+            not_applicable_coverage: None,
         };
         let d = deliverable_with_coverage(vec![]);
         assert!(
@@ -3451,6 +3510,7 @@ mod tests {
             evidence_facts: Some(facts),
             source_queries: None,
             web_capable_assets: None,
+            not_applicable_coverage: None,
         };
         let d = deliverable_with_coverage(vec![]);
         assert!(
@@ -3481,6 +3541,7 @@ mod tests {
             evidence_facts: None,
             source_queries: None,
             web_capable_assets: None,
+            not_applicable_coverage: None,
         };
         let d = deliverable_with_coverage(vec![]);
         match &eval_with_context(
@@ -3519,6 +3580,7 @@ mod tests {
             evidence_facts: Some(facts),
             source_queries: None,
             web_capable_assets: None,
+            not_applicable_coverage: None,
         };
         let d = deliverable_with_coverage(vec![]);
         let spec = host_aware_spec("external_attack_surface", "external_attack_surface", false);
@@ -3546,6 +3608,7 @@ mod tests {
             )]),
             source_queries: None,
             web_capable_assets: None,
+            not_applicable_coverage: None,
         };
         assert!(
             !eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &host_only_ctx)[0]
@@ -3565,6 +3628,7 @@ mod tests {
             )]),
             source_queries: None,
             web_capable_assets: None,
+            not_applicable_coverage: None,
         };
         assert!(
             eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &endpoint_ctx)[0].is_pass(),

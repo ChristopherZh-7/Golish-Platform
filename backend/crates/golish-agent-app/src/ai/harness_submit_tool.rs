@@ -172,6 +172,17 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         Vec::new()
     }
 
+    /// EAS SERVICE-FINGERPRINT not_applicable assets from DB truth: IP/CIDR rows
+    /// where only DNS/53 is open and no strong service/version surface exists.
+    async fn eas_service_not_applicable_assets(
+        &self,
+        org_id: Option<Uuid>,
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<String> {
+        let _ = (org_id, run_start);
+        Vec::new()
+    }
+
     /// #4/E3 (设计 2026-06-23-technique-outcomes-provenance): project
     /// `(asset, technique, outcome, evidence_id)` from the `technique_outcomes`
     /// table for the submit preview's dual-read (always on, no gray-switch).
@@ -692,6 +703,7 @@ impl SubmitStageDeliverableTool {
         let mut expected_techniques: Option<Vec<String>> = None;
         let mut source_queries: Vec<SourceQueryFact> = Vec::new();
         let mut web_capable_assets: Vec<String> = Vec::new();
+        let mut not_applicable_coverage: Vec<(String, String)> = Vec::new();
         if let Some(org_id) = org_id {
             let assets = match wave_cutoff {
                 Some(cutoff) => {
@@ -771,6 +783,19 @@ impl SubmitStageDeliverableTool {
             {
                 web_capable_assets = repo.enumeration_web_capable_assets(Some(org_id)).await;
             }
+            if stage == StageKind::ExternalAttackSurface {
+                not_applicable_coverage = repo
+                    .eas_service_not_applicable_assets(Some(org_id), wave_cutoff)
+                    .await
+                    .into_iter()
+                    .map(|asset| {
+                        (
+                            asset,
+                            golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP.to_string(),
+                        )
+                    })
+                    .collect();
+            }
             // 方案 A (设计 2026-06-30-eas-domain-port-delegation): EAS host-aware
             // alias exclusion — drop assets whose resolved IP is already an
             // in-scope IP target so the submit preview matches the stage-close
@@ -793,6 +818,7 @@ impl SubmitStageDeliverableTool {
             .in_scope_assets(in_scope_assets)
             .typed_assets(typed_assets)
             .web_capable_assets(web_capable_assets)
+            .not_applicable_coverage(not_applicable_coverage)
             .extend_evidence_facts(facts)
             .extend_source_queries(source_queries)
             .expected_techniques(expected_techniques)
