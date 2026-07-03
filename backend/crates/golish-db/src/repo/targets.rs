@@ -95,7 +95,7 @@ pub async fn list_groups(pool: &PgPool, project_path: Option<&str>) -> Result<Ve
 /// Column projection casting enum columns to `text`, matching the command-layer
 /// `TargetRow` decode shape. Trusted compile-time literal — never interpolates
 /// caller input.
-const TARGET_ROW_COLS: &str = "id, name, target_type::text, value, tags, notes, scope::text, status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports, real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type, created_at, updated_at";
+const TARGET_ROW_COLS: &str = "id, name, target_type::text, value, tags, notes, scope::text, status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports, real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type, liveness_state, liveness_reason, created_at, updated_at";
 
 fn build_get_id_scoped_legacy_sql() -> String {
     "SELECT id FROM targets WHERE id = $1 AND ($2 IS NULL OR project_path = $2 OR project_path = '')"
@@ -526,23 +526,26 @@ pub async fn update_ports_by_id(pool: &PgPool, id: Uuid, ports: &serde_json::Val
     Ok(())
 }
 
-/// Apply an extended recon update (httpx/nmap-derived fields) by id: only
-/// non-empty scalar fields overwrite, and `ports` are merged by `(port, proto)`.
-/// Mirrors legacy `db_target_update_recon_extended` (SQL verbatim).
-#[allow(clippy::too_many_arguments)]
-pub async fn update_recon_extended_by_id(
-    pool: &PgPool,
-    id: Uuid,
-    real_ip: &str,
-    cdn_waf: &str,
-    http_title: &str,
-    http_status: Option<i32>,
-    webserver: &str,
-    os_info: &str,
-    content_type: &str,
-    ports: &serde_json::Value,
-) -> Result<()> {
-    let sql = format!(
+/// EAS-hit alive predicate (design 2026-07-02-dead-asset-liveness-state §1.2):
+/// a resolved `real_ip` on a non-IP target, an HTTP answer (`http_status`), or a
+/// merged-in open port. Mirrors `coverage_truth::build_liveness_values_sql`'s
+/// alive form so the stamped `liveness_state` and the coverage-gate truth never
+/// drift. `$1`=real_ip, `$4`=http_status, `$8`=incoming ports (pre-merge). Only
+/// stamps `alive`; a signal-less call keeps the prior `liveness_state` (never
+/// downgrades to dead — confirmed-dead marking is a separate probed-but-empty
+/// sweep, not this per-hit landing write). See the caller for `$` bindings.
+fn eas_hit_alive_predicate_sql() -> String {
+    format!(
+        "(($1 != '' AND {real_ip_guard}) OR $4 IS NOT NULL \
+          OR ($8::jsonb <> '[]'::jsonb AND EXISTS ( \
+               SELECT 1 FROM jsonb_array_elements($8::jsonb) p \
+               WHERE COALESCE(p->>'state','open') = 'open')))",
+        real_ip_guard = REAL_IP_TARGET_TYPE_GUARD_SQL,
+    )
+}
+
+fn build_update_recon_extended_sql() -> String {
+    format!(
         r#"UPDATE targets SET
             real_ip       = CASE WHEN $1 != '' AND {real_ip_guard} THEN $1 ELSE real_ip END,
             cdn_waf       = CASE WHEN $2 != '' THEN $2 ELSE cdn_waf END,
@@ -584,10 +587,37 @@ pub async fn update_recon_extended_by_id(
             -- falsely mark the dim collected this run.
             ports_scanned_at    = CASE WHEN $8::jsonb = '[]'::jsonb THEN ports_scanned_at ELSE NOW() END,
             liveness_checked_at = CASE WHEN (($1 != '' AND {real_ip_guard}) OR $4 IS NOT NULL) THEN NOW() ELSE liveness_checked_at END,
+            -- Dead-asset marking P2 (design 2026-07-02-dead-asset-liveness-state
+            -- §4.1): stamp liveness_state='alive' when this hit proves the asset
+            -- is up. Only ever sets 'alive' + clears reason — a signal-less call
+            -- keeps the prior state so a landing write never mislabels an asset
+            -- dead (I8: confirmed-dead is a separate probed-but-empty sweep).
+            liveness_state  = CASE WHEN {alive} THEN 'alive' ELSE liveness_state END,
+            liveness_reason = CASE WHEN {alive} THEN NULL ELSE liveness_reason END,
             updated_at    = NOW()
            WHERE id = $9"#,
         real_ip_guard = REAL_IP_TARGET_TYPE_GUARD_SQL,
-    );
+        alive = eas_hit_alive_predicate_sql(),
+    )
+}
+
+/// Apply an extended recon update (httpx/nmap-derived fields) by id: only
+/// non-empty scalar fields overwrite, and `ports` are merged by `(port, proto)`.
+/// Mirrors legacy `db_target_update_recon_extended` (SQL verbatim).
+#[allow(clippy::too_many_arguments)]
+pub async fn update_recon_extended_by_id(
+    pool: &PgPool,
+    id: Uuid,
+    real_ip: &str,
+    cdn_waf: &str,
+    http_title: &str,
+    http_status: Option<i32>,
+    webserver: &str,
+    os_info: &str,
+    content_type: &str,
+    ports: &serde_json::Value,
+) -> Result<()> {
+    let sql = build_update_recon_extended_sql();
     sqlx::query(&sql)
         .bind(real_ip)
         .bind(cdn_waf)
@@ -621,8 +651,12 @@ fn build_backfill_real_ip_sql() -> String {
 }
 
 fn build_set_real_ip_by_id_sql() -> &'static str {
+    // Dead-asset marking P2 (design 2026-07-02-dead-asset-liveness-state §4.2):
+    // resolving a real_ip on a non-IP target is a strong liveness signal, so
+    // stamp liveness_state='alive' (and clear any stale reason) alongside real_ip.
     "UPDATE targets \
-        SET real_ip = $1, liveness_checked_at = NOW(), updated_at = NOW() \
+        SET real_ip = $1, liveness_checked_at = NOW(), \
+            liveness_state = 'alive', liveness_reason = NULL, updated_at = NOW() \
       WHERE id = $2 AND target_type::text NOT IN ('ip', 'ipv4', 'ip_address', 'cidr')"
 }
 
@@ -650,6 +684,65 @@ pub async fn backfill_real_ip_from_dns(pool: &PgPool, project_path: Option<&str>
         .bind(project_path)
         .execute(pool)
         .await?;
+    Ok(res.rows_affected())
+}
+
+// Shared "still has no alive signal" guard for the ongoing dead/unreachable
+// marking (design 2026-07-02-dead-asset-liveness-state §4). Keeps the two setters
+// byte-identical on the guard: only stamp a non-alive verdict while the row is
+// not already 'alive' and carries no http_status / real_ip / open port. Makes the
+// write idempotent + order-independent w.r.t. the P2 alive stamps (a host naabu
+// proves has open ports stays/gets 'alive'; a later hit re-stamps 'alive',
+// self-correcting). Trusted compile-time literal — no caller input interpolated.
+const NO_ALIVE_SIGNAL_GUARD_SQL: &str = "liveness_state IS DISTINCT FROM 'alive' \
+        AND http_status IS NULL \
+        AND (real_ip = '' OR real_ip IS NULL) \
+        AND NOT EXISTS ( \
+            SELECT 1 FROM jsonb_array_elements(ports) p \
+            WHERE COALESCE(p->>'state','open') = 'open')";
+
+fn build_mark_no_signal_liveness_by_id_sql(state: &str, reason: &str) -> String {
+    // `state`/`reason` are fixed caller-chosen literals (never user input), so the
+    // interpolation is injection-safe; kept as params only to share one builder
+    // between the dead + unreachable setters.
+    format!(
+        "UPDATE targets SET \
+            liveness_state = '{state}', \
+            liveness_reason = '{reason}', \
+            liveness_checked_at = NOW(), \
+            updated_at = NOW() \
+          WHERE id = $1 AND {NO_ALIVE_SIGNAL_GUARD_SQL}"
+    )
+}
+
+/// EAS ongoing dead-marking (design 2026-07-02-dead-asset-liveness-state §4): the
+/// counterpart to the P2 alive stamps. When an EAS liveness probe covered an
+/// asset but found no signal (checked-empty), mark the matching target
+/// `liveness_state='dead'`, **guarded** ([`NO_ALIVE_SIGNAL_GUARD_SQL`]) so it
+/// only fires while the row genuinely has no alive signal and is not already
+/// `alive`. Caller owns the id. Returns rows updated (0 when the guard held).
+pub async fn mark_dead_if_no_signal_by_id(pool: &PgPool, id: Uuid) -> Result<u64> {
+    let res = sqlx::query(&build_mark_no_signal_liveness_by_id_sql("dead", "no_service"))
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// EAS ongoing unreachable-marking (design 2026-07-02-dead-asset-liveness-state
+/// §4): like [`mark_dead_if_no_signal_by_id`] but for an asset the probe could
+/// not reach (DNS resolution failure / connection refused), stamped
+/// `liveness_state='unreachable'` (P3 does NOT exclude unreachable, since it may
+/// be a transient network / WAF condition). Same no-alive-signal guard. Caller
+/// owns the id. Returns rows updated (0 when the guard held).
+pub async fn mark_unreachable_if_no_signal_by_id(pool: &PgPool, id: Uuid) -> Result<u64> {
+    let res = sqlx::query(&build_mark_no_signal_liveness_by_id_sql(
+        "unreachable",
+        "probe_error",
+    ))
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(res.rows_affected())
 }
 
@@ -715,7 +808,7 @@ mod tests {
 
     #[test]
     fn legacy_list_and_lookup_sql_preserve_projection_and_predicate() {
-        let cols = "id, name, target_type::text, value, tags, notes, scope::text, status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports, real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type, created_at, updated_at";
+        let cols = "id, name, target_type::text, value, tags, notes, scope::text, status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports, real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type, liveness_state, liveness_reason, created_at, updated_at";
         assert_eq!(
             build_list_rows_legacy_sql(),
             format!("SELECT {cols} FROM targets WHERE ($1 IS NULL OR project_path = $1 OR project_path = '') ORDER BY created_at")
@@ -819,6 +912,50 @@ mod tests {
     }
 
     #[test]
+    fn set_real_ip_by_id_sql_stamps_alive_liveness() {
+        // Dead-asset P2: resolving a real_ip proves the host is up.
+        let sql = build_set_real_ip_by_id_sql();
+        assert!(sql.contains("liveness_state = 'alive'"));
+        assert!(sql.contains("liveness_reason = NULL"));
+    }
+
+    #[test]
+    fn update_recon_extended_sql_stamps_alive_only_on_signal() {
+        // Dead-asset P2: an EAS hit landing stamps liveness_state='alive' when it
+        // carries real_ip / http_status / an open port, and never downgrades to
+        // dead here (ELSE keeps the prior state).
+        let sql = build_update_recon_extended_sql();
+        assert!(sql.contains("liveness_state  = CASE WHEN"));
+        assert!(sql.contains("THEN 'alive' ELSE liveness_state END"));
+        assert!(sql.contains("liveness_reason = CASE WHEN"));
+        assert!(sql.contains("ELSE liveness_reason END"));
+        // Must not stamp dead/unreachable from this per-hit landing write.
+        assert!(!sql.contains("'dead'"));
+        assert!(!sql.contains("'unreachable'"));
+    }
+
+    #[test]
+    fn mark_no_signal_liveness_sql_is_guarded_for_both_verdicts() {
+        // Dead-asset ongoing marking: only stamps a non-alive verdict when the row
+        // still has no alive signal and is not already 'alive' (idempotent,
+        // order-independent w.r.t. P2 alive stamps). dead vs unreachable share the
+        // exact guard, differing only in the stamped state/reason.
+        let dead = build_mark_no_signal_liveness_by_id_sql("dead", "no_service");
+        assert!(dead.contains("liveness_state = 'dead'"));
+        assert!(dead.contains("liveness_reason = 'no_service'"));
+        let unreachable = build_mark_no_signal_liveness_by_id_sql("unreachable", "probe_error");
+        assert!(unreachable.contains("liveness_state = 'unreachable'"));
+        assert!(unreachable.contains("liveness_reason = 'probe_error'"));
+        for sql in [&dead, &unreachable] {
+            assert!(sql.contains("liveness_state IS DISTINCT FROM 'alive'"));
+            assert!(sql.contains("http_status IS NULL"));
+            assert!(sql.contains("real_ip = '' OR real_ip IS NULL"));
+            assert!(sql.contains("COALESCE(p->>'state','open') = 'open'"));
+            assert!(sql.contains("WHERE id = $1"));
+        }
+    }
+
+    #[test]
     fn set_ip_whois_sql_targets_ip_whois_column_by_id() {
         // Host-aware coverage 2c-3: per-IP RIR WHOIS setter writes the ip_whois
         // JSONB column, keyed by target id (caller owns the id).
@@ -831,7 +968,7 @@ mod tests {
 
     #[test]
     fn insert_full_sql_projects_full_row() {
-        let cols = "id, name, target_type::text, value, tags, notes, scope::text, status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports, real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type, created_at, updated_at";
+        let cols = "id, name, target_type::text, value, tags, notes, scope::text, status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports, real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type, liveness_state, liveness_reason, created_at, updated_at";
         let sql = build_insert_full_sql();
         assert!(sql.starts_with("INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, owner, time_window_start, time_window_end, organization_id, project_path, source, parent_id)"));
         assert!(sql.contains("'[]', '', 'in'::scope_type"));

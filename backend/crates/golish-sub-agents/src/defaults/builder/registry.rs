@@ -132,7 +132,10 @@ pub async fn create_default_sub_agents_from_registry(
             "recon",
             "Recon",
             "Passive target-intelligence collector for the target_intel stage. Enriches one organization's footprint via providers (0.zone/quake/ENScan) plus passive subdomain + URL history, and registers discovered assets as in-scope targets. ZERO-TOUCH: no live probing or exploitation — that stays with the Pentester. The stage_run tool fans one Recon out per org.",
-            tmpl_or_fallback!("recon", build_recon_prompt()),
+            // No `recon.tera` in the registry (its prompt is static and its body
+            // carries literal braces); use the hardcoded prompt directly instead
+            // of rendering a missing template that only warns and falls back.
+            build_recon_prompt(),
         )
         .with_tools(vec![
             "recon_list_providers".into(),
@@ -155,7 +158,10 @@ pub async fn create_default_sub_agents_from_registry(
             "prober",
             "Prober",
             "Active external-attack-surface mapper for the external_attack_surface stage. Turns one organization's passively-discovered footprint (inherited from target_intel) into a confirmed attack surface — liveness (httpx), open ports (naabu/masscan), and service/version fingerprints — by actively but lightly probing the target. NON-EXPLOIT: no exploitation or vulnerability scanning — that stays with the Pentester. The stage_run tool fans one Prober out per org.",
-            tmpl_or_fallback!("prober", build_prober_prompt()),
+            // No `prober.tera` in the registry; its prompt body has literal
+            // `{{input_file}}` / `{target_id, base_url}` braces that Tera would
+            // treat as template vars. Use the hardcoded prompt directly.
+            build_prober_prompt(),
         )
         .with_tools(vec![
             "list_in_scope_targets".into(),
@@ -181,7 +187,10 @@ pub async fn create_default_sub_agents_from_registry(
             "enumerator",
             "Enumerator",
             "Active content-enumeration mapper for the enumeration stage. Turns the live web services external_attack_surface mapped (host + ports + service) into concrete testable units by enumerating directories/paths, request parameters, and JS/API endpoints — actively but without exploitation. NON-EXPLOIT: no vulnerability scanning or exploitation — that stays with the Pentester. The stage_run tool fans one Enumerator out per org.",
-            tmpl_or_fallback!("enumerator", build_enumerator_prompt()),
+            // No `enumerator.tera` in the registry; its prompt body has literal
+            // `target_urls=[...]` / `{target_id, base_url}` braces that Tera
+            // would treat as template vars. Use the hardcoded prompt directly.
+            build_enumerator_prompt(),
         )
         .with_tools(vec![
             "stage_worklist_status".into(),

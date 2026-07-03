@@ -376,12 +376,13 @@ pub fn build_runner_graph(
                         )));
                     }
                     // Hard graph-layer cap: the next wave (`state.wave + 1`) must
-                    // stay within BOTH the fuel and depth budgets (mirrors
+                    // stay inside the tighter of the fuel/depth budgets (mirrors
                     // `decide_chain_wave`). Independent of the servicer's signal so
                     // the loop is provably bounded even if the signal misbehaves.
                     let next_wave = state.wave.saturating_add(1);
-                    let within_caps = next_wave <= super::chain_wave::DEFAULT_MAX_WAVES
-                        && next_wave <= super::chain_wave::DEFAULT_MAX_CHAIN_DEPTH;
+                    let wave_cap = super::chain_wave::DEFAULT_MAX_WAVES
+                        .min(super::chain_wave::DEFAULT_MAX_CHAIN_DEPTH);
+                    let within_caps = next_wave <= wave_cap;
                     let update = if outcome.reopen_wave && within_caps {
                         FlowUpdate::OpenNextWave(s, outcome)
                     } else {
@@ -500,11 +501,11 @@ mod tests {
                 StageKind::ExternalAttackSurface,
                 StageFlowOutcome::pass_with_progress(),
             ),
+            (StageKind::Enumeration, StageFlowOutcome::pass_no_progress()),
             (
-                StageKind::Enumeration,
-                StageFlowOutcome::pass_no_progress(),
+                StageKind::VulnTriage,
+                StageFlowOutcome::pass_with_progress(),
             ),
-            (StageKind::VulnTriage, StageFlowOutcome::pass_with_progress()),
             (
                 StageKind::AttackCandidate,
                 StageFlowOutcome::pass_with_progress(),
@@ -840,7 +841,10 @@ mod tests {
     /// bounds the loop even though the mock signals reopen every time.
     fn attack_path_outcomes_reopening() -> HashMap<StageKind, StageFlowOutcome> {
         let mut m = attack_path_outcomes();
-        m.insert(StageKind::Verification, StageFlowOutcome::pass_reopen_wave());
+        m.insert(
+            StageKind::Verification,
+            StageFlowOutcome::pass_reopen_wave(),
+        );
         m
     }
 

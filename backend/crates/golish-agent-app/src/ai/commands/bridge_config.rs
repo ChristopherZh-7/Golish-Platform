@@ -402,6 +402,16 @@ async fn maybe_store_background_batch_liveness_outcomes(
             continue;
         }
         let found = batch_output_mentions_target(&retained_stdout, &asset);
+        // Dead-asset ongoing marking (design 2026-07-02-dead-asset-liveness-state
+        // §4): an EAS liveness probe covered this asset and httpx did not report it
+        // alive → stamp the matching target(s) 'dead'. The DB write is guarded
+        // (only fires while the row still has no alive signal + is not already
+        // 'alive'), so a host that naabu proves has open ports stays/gets 'alive'
+        // regardless of landing order. Found assets are stamped 'alive' by the
+        // web-probe landing above; nothing to do here for them.
+        if !found {
+            mark_eas_liveness_dead_asset(db_pool, organization_id, project_path, &asset).await;
+        }
         let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
             organization_id,
             run_id: session_id.to_string(),
@@ -1789,6 +1799,57 @@ async fn persist_web_fingerprints(
         }
     }
     stored
+}
+
+/// Dead-asset ongoing marking (design 2026-07-02-dead-asset-liveness-state §4):
+/// an EAS liveness probe covered `asset` and found it not alive → stamp the
+/// matching in-scope target(s) `liveness_state='dead'`. Reuses the same landing
+/// resolver as the alive stamps so the two agree on which target row an asset
+/// maps to; the DB write is guarded (`mark_dead_if_no_signal_by_id`) so it only
+/// fires while the row genuinely has no alive signal — a host naabu proved has
+/// open ports (stamped 'alive') is left untouched regardless of landing order.
+async fn mark_eas_liveness_dead_asset(
+    db_pool: &sqlx::PgPool,
+    organization_id: uuid::Uuid,
+    project_path: Option<&str>,
+    asset: &str,
+) {
+    let rows =
+        match load_eas_landing_targets_for_asset(db_pool, organization_id, project_path, asset)
+            .await
+        {
+            Ok(rows) => prefer_exact_landing_targets(rows, asset),
+            Err(err) => {
+                tracing::warn!(
+                    target: "harness::evidence",
+                    org_id = %organization_id,
+                    asset = %asset,
+                    error = %err,
+                    "failed to load target rows for EAS dead-asset marking"
+                );
+                return;
+            }
+        };
+    for row in &rows {
+        match golish_db::repo::targets::mark_dead_if_no_signal_by_id(db_pool, row.id).await {
+            Ok(marked) if marked > 0 => tracing::info!(
+                target: "harness::evidence",
+                org_id = %organization_id,
+                asset = %asset,
+                target_id = %row.id,
+                "marked EAS-probed asset dead (no liveness signal)"
+            ),
+            Ok(_) => {}
+            Err(err) => tracing::warn!(
+                target: "harness::evidence",
+                org_id = %organization_id,
+                asset = %asset,
+                target_id = %row.id,
+                error = %err,
+                "failed to mark EAS-probed asset dead"
+            ),
+        }
+    }
 }
 
 async fn load_eas_landing_targets_for_asset(
@@ -3419,11 +3480,16 @@ mod tests {
     fn vuln_scan_covered_techniques_dispatches_per_tool() {
         use golish_agent_kit::harness::wstg_mapping::{GOLISH_NDAY, WSTG_SQLI};
         // sqlmap = SQLi tool → always attempts WSTG-INPV-05.
-        let sqlmap = vuln_scan_covered_techniques("sqlmap", "sqlmap -u https://a.com/?id=1 --batch");
+        let sqlmap =
+            vuln_scan_covered_techniques("sqlmap", "sqlmap -u https://a.com/?id=1 --batch");
         assert_eq!(sqlmap.iter().copied().collect::<Vec<_>>(), vec![WSTG_SQLI]);
         // wpscan = WordPress n-day tool → always attempts GOLISH-NDAY.
-        let wpscan = vuln_scan_covered_techniques("wpscan", "wpscan --url https://a.com --format json");
-        assert_eq!(wpscan.iter().copied().collect::<Vec<_>>(), vec![GOLISH_NDAY]);
+        let wpscan =
+            vuln_scan_covered_techniques("wpscan", "wpscan --url https://a.com --format json");
+        assert_eq!(
+            wpscan.iter().copied().collect::<Vec<_>>(),
+            vec![GOLISH_NDAY]
+        );
         // nuclei defers to tag parsing.
         assert!(vuln_scan_covered_techniques("nuclei", "nuclei -u https://a.com").is_empty());
         // unknown tool → empty (fail-closed).
@@ -3434,7 +3500,8 @@ mod tests {
     fn vuln_scan_command_targets_reads_url_flags() {
         let sqlmap = vuln_scan_command_targets("sqlmap", "sqlmap -u https://a.com/?id=1 --batch");
         assert_eq!(sqlmap, vec!["https://a.com/?id=1".to_string()]);
-        let wpscan = vuln_scan_command_targets("wpscan", "wpscan --url https://a.com,https://b.com");
+        let wpscan =
+            vuln_scan_command_targets("wpscan", "wpscan --url https://a.com,https://b.com");
         assert_eq!(
             wpscan,
             vec!["https://a.com".to_string(), "https://b.com".to_string()]
@@ -3467,7 +3534,10 @@ mod tests {
         let stdout = r#"{"version":{"number":"5.0","vulnerabilities":[{"title":"WP < 5.1 CSRF","references":{"cve":["2019-0000"]}}]},"plugins":{}}"#;
         let targets = vec!["https://a.com".to_string()];
         let hits = vuln_scan_wstg_hits("wpscan", &targets, stdout);
-        assert_eq!(hits.get("a.com").and_then(|h| h.get(GOLISH_NDAY)).copied(), Some(1));
+        assert_eq!(
+            hits.get("a.com").and_then(|h| h.get(GOLISH_NDAY)).copied(),
+            Some(1)
+        );
     }
 
     #[test]

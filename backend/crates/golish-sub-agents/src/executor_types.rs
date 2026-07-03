@@ -280,6 +280,7 @@ impl SubmitRepairMode {
         match self.kind {
             SubmitRepairKind::EvidenceRefs => &[
                 "submit_stage_deliverable",
+                "list_recent_evidence",
                 "check_stage_asset_coverage",
                 "query_target_data",
                 "wait_for_background_jobs",
@@ -292,6 +293,7 @@ impl SubmitRepairMode {
                 "submit_stage_deliverable",
             ],
             SubmitRepairKind::CoverageGap if self.coverage_gap_actions.is_empty() => &[
+                "list_recent_evidence",
                 "check_stage_asset_coverage",
                 "query_target_data",
                 "wait_for_background_jobs",
@@ -302,6 +304,7 @@ impl SubmitRepairMode {
             SubmitRepairKind::CoverageGap => &[
                 "pentest_list_tools",
                 "pentest_run",
+                "list_recent_evidence",
                 "check_stage_asset_coverage",
                 "query_target_data",
                 "wait_for_background_jobs",
@@ -321,8 +324,11 @@ impl SubmitRepairMode {
         } else {
             self.allowed_tools_override.clone()
         };
-        if self.kind == SubmitRepairKind::CoverageGap && !self.coverage_gap_actions.is_empty() {
-            append_direct_enumeration_repair_tools(&mut tools, &self.coverage_gap_actions);
+        if self.kind == SubmitRepairKind::CoverageGap {
+            append_coverage_gap_worklist_tools(&mut tools);
+            if !self.coverage_gap_actions.is_empty() {
+                append_direct_enumeration_repair_tools(&mut tools, &self.coverage_gap_actions);
+            }
         }
         tools
     }
@@ -370,16 +376,18 @@ impl SubmitRepairMode {
                         "submit_stage_deliverable returned needs_fix for coverage, but the gate \
                      did not name any concrete coverage_gap_actions. Repair-only mode is active. \
                      Do NOT launch discovery, guessed-domain probes, pentest_run, CIDR/range \
-                     sweeps, or broad rediscovery. Call check_stage_asset_coverage/query_target_data \
-                     to reconcile DB truth; if there are no in-scope assets or no named gaps, \
-                     resubmit the no-asset/terminal deliverable instead of inventing targets."
+                     sweeps, or broad rediscovery. Call stage_worklist_status/stage_worklist_next, \
+                     check_stage_asset_coverage, or query_target_data to reconcile DB truth; if \
+                     there are no in-scope assets or no named gaps, resubmit the \
+                     no-asset/terminal deliverable instead of inventing targets."
                             .to_string()
                     } else {
                         "submit_stage_deliverable returned needs_fix because the stage coverage matrix \
                      still has missing or non-terminal cells. Targeted gap-closure mode is active: \
-                     use the gate feedback and query_target_data instead of re-listing the entire \
-                     attack surface. Run only stage-allowed probes for the exact asset/technique \
-                     pairs named in the gate feedback. Batch sibling gap assets with \
+                     use the gate feedback plus read-only stage_worklist_status/stage_worklist_next, \
+                     check_stage_asset_coverage, or query_target_data instead of re-listing the \
+                     entire attack surface. Run only stage-allowed probes for the exact \
+                     asset/technique pairs named in the gate feedback. Batch sibling gap assets with \
                      input_lines/list-file mode when every target is present in coverage_gap_actions. \
                      Do NOT call list_in_scope_targets, list_attack_surface_seeds, \
                      CIDR/range sweeps, targets outside coverage_gap_actions, or broad rediscovery. \
@@ -515,6 +523,11 @@ fn append_direct_enumeration_repair_tools(tools: &mut Vec<String>, actions: &[Co
     }
 }
 
+fn append_coverage_gap_worklist_tools(tools: &mut Vec<String>) {
+    push_unique_tool(tools, "stage_worklist_status");
+    push_unique_tool(tools, "stage_worklist_next");
+}
+
 fn push_unique_tool(tools: &mut Vec<String>, tool: &str) {
     if !tool.is_empty() && !tools.iter().any(|existing| existing == tool) {
         tools.push(tool.to_string());
@@ -560,19 +573,37 @@ fn coverage_gap_direct_tool_target_block_reason(
     if actions.is_empty() {
         return None;
     }
-    let target_key = match tool_name {
-        "route_probe_paths" => "base_url",
-        "browser_collect_js_api" | "js_collect" | "js_extract_apis" => "target_url",
+    // Single + batch inputs (design 2026-07-03): route_probe_paths uses
+    // base_url / targets[].base_url; the JS tools use target_url / target_urls[].
+    let (single_key, batch_key) = match tool_name {
+        "route_probe_paths" => ("base_url", "targets"),
+        "browser_collect_js_api" | "js_collect" | "js_extract_apis" => {
+            ("target_url", "target_urls")
+        }
         _ => return None,
     };
-    let target = tool_args
-        .get(target_key)
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .trim();
-    if target.is_empty() {
+    let mut targets: Vec<String> = Vec::new();
+    if let Some(single) = tool_args.get(single_key).and_then(|v| v.as_str()) {
+        let single = single.trim();
+        if !single.is_empty() {
+            targets.push(single.to_string());
+        }
+    }
+    if let Some(batch) = tool_args.get(batch_key).and_then(|v| v.as_array()) {
+        for item in batch {
+            // route_probe_paths batch entries are objects with a base_url; the
+            // JS tools' batch entries are bare URL strings.
+            let candidate = item
+                .as_str()
+                .or_else(|| item.get("base_url").and_then(|v| v.as_str()));
+            if let Some(candidate) = candidate.map(str::trim).filter(|s| !s.is_empty()) {
+                targets.push(candidate.to_string());
+            }
+        }
+    }
+    if targets.is_empty() {
         return Some(format!(
-            "coverage-gap repair requires {tool_name}.{target_key} so the target can be checked against coverage_gap_actions"
+            "coverage-gap repair requires {tool_name} target(s) ({single_key} or {batch_key}) so they can be checked against coverage_gap_actions"
         ));
     }
     let allowed = actions
@@ -580,9 +611,11 @@ fn coverage_gap_direct_tool_target_block_reason(
         .map(|action| normalize_probe_target(&action.asset))
         .filter(|asset| !asset.is_empty())
         .collect::<HashSet<_>>();
-    if allowed.contains(&normalize_probe_target(target)) {
-        return None;
-    }
+    // Any single target outside the named gaps blocks the whole call — a batch
+    // must not smuggle an un-named target past the coverage-gap fence.
+    let blocked = targets
+        .iter()
+        .find(|target| !allowed.contains(&normalize_probe_target(target)))?;
     let mut preview = actions
         .iter()
         .take(20)
@@ -592,7 +625,7 @@ fn coverage_gap_direct_tool_target_block_reason(
         preview.push(format!("... +{} more", actions.len() - preview.len()));
     }
     Some(format!(
-        "coverage-gap repair blocks {tool_name} target '{target}' because it is not in coverage_gap_actions; only probe [{}]",
+        "coverage-gap repair blocks {tool_name} target '{blocked}' because it is not in coverage_gap_actions; only probe [{}]",
         preview.join(", ")
     ))
 }

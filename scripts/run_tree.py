@@ -249,6 +249,21 @@ def parse_subagent_dirname(name: str) -> tuple[str, str, str | None]:
     return agent_id, parent_req, org_id
 
 
+def session_org_ids(session_dir: Path) -> list[str]:
+    """Infer organization ids from sub-agent directory names for DB joins."""
+    subs_root = session_dir / "subagents"
+    if not subs_root.is_dir():
+        return []
+    orgs: set[str] = set()
+    for d in subs_root.iterdir():
+        if not d.is_dir():
+            continue
+        _agent, _parent_req, org_id = parse_subagent_dirname(d.name)
+        if org_id:
+            orgs.add(org_id)
+    return sorted(orgs)
+
+
 def collect_subagent_calls(events: list[dict], trunc: int) -> list[dict]:
     """Pair sub_agent_tool_request/result by request_id, in order (footer/nesting)."""
     results = {
@@ -329,6 +344,39 @@ def coverage_gaps_from_runlog(session_dir: Path, trunc: int) -> list[str]:
         for (op, reason), cnt in collections.Counter(blocks).items():
             rep = f" (x{cnt})" if cnt > 1 else ""
             out.append(f"  [{op}] block{rep}: {reason if trunc >= 10_000 else _short(reason, 240)}")
+    return out
+
+
+def runlog_anomalies(session_dir: Path, trunc: int) -> list[str]:
+    """Summarize runtime anomalies that otherwise hide in the full run.log."""
+    rl = session_dir / "run.log"
+    if not rl.exists():
+        return []
+    import collections
+
+    repair_blocks: collections.Counter[tuple[str, str]] = collections.Counter()
+    cancelled_tools: collections.Counter[tuple[str, str]] = collections.Counter()
+    try:
+        for line in rl.open():
+            if "sub-agent tool call BLOCKED by submit repair mode" in line:
+                repair_blocks[(_logfield(line, "agent_id="), _logfield(line, "tool="))] += 1
+            elif "cancelled while waiting for tool" in line:
+                agent = "?"
+                if "[sub-agent:" in line:
+                    agent = line.split("[sub-agent:", 1)[1].split("]", 1)[0]
+                tool = "?"
+                if "tool '" in line:
+                    tool = line.split("tool '", 1)[1].split("'", 1)[0]
+                cancelled_tools[(agent, tool)] += 1
+    except OSError:
+        return []
+    if not repair_blocks and not cancelled_tools:
+        return []
+    out = ["", "== runtime anomalies (from run.log) =="]
+    for (agent, tool), cnt in repair_blocks.most_common():
+        out.append(f"  submit_repair blocked {agent}.{tool}: x{cnt}")
+    for (agent, tool), cnt in cancelled_tools.most_common():
+        out.append(f"  cancelled while waiting for {agent}.{tool}: x{cnt}")
     return out
 
 
@@ -468,17 +516,23 @@ def main() -> int:
     if gap_lines:
         print("\n".join(gap_lines))
 
+    anomaly_lines = runlog_anomalies(session_dir, trunc)
+    if anomaly_lines:
+        print("\n".join(anomaly_lines))
+
     if want_db:
-        print("\n".join(run_db_diagnosis(session_dir.name, db_url, trunc)))
+        print("\n".join(run_db_diagnosis(session_dir, db_url, trunc)))
     return 0
 
 
-def run_db_diagnosis(session_id: str, db_url: str | None, trunc: int) -> list[str]:
+def run_db_diagnosis(session_dir: Path, db_url: str | None, trunc: int) -> list[str]:
     """Deterministic DB checks for root causes transcripts can't show.
 
     Each query degrades independently: a missing table/column or a closed DB
     never aborts the report, it just prints what it could read.
     """
+    session_id = session_dir.name
+    org_ids = session_org_ids(session_dir)
     url = db_url or os.environ.get("GOLISH_DB_URL") or DEFAULT_DB_URL
     out: list[str] = ["", "== DB self-diagnosis =="]
     try:
@@ -504,6 +558,17 @@ def run_db_diagnosis(session_id: str, db_url: str | None, trunc: int) -> list[st
             return [("ERR", _short(str(exc), 70))]
 
     out.append(f"  db={url.rsplit('@', 1)[-1]}  session={session_id}")
+    if org_ids:
+        out.append(f"  org_ids: {', '.join(org_ids)}")
+
+    session_start = None
+    rows = q(
+        "SELECT min(created_at), max(created_at), count(*) FROM audit_log WHERE session_id=%s",
+        (session_id,),
+    )
+    if rows and rows[0][0] != "ERR":
+        session_start, session_end, row_count = rows[0]
+        out.append(f"  audit_log session window: {session_start} .. {session_end} ({row_count} rows)")
 
     # 1) targets + the organization_id=NULL root cause (gate skips per-org truth).
     rows = q("SELECT count(*), count(*) FILTER (WHERE organization_id IS NULL) FROM targets")
@@ -534,6 +599,25 @@ def run_db_diagnosis(session_id: str, db_url: str | None, trunc: int) -> list[st
         by = q("SELECT record_type, count(*) FROM dns_records GROUP BY 1 ORDER BY 2 DESC")
         bystr = ", ".join(f"{t}={n}" for t, n in by) if by and by[0][0] != "ERR" else ""
         out.append(f"  dns_records: {rows[0][0]}" + (f" ({bystr})" if bystr else ""))
+
+    ledger_rows = q(
+        "SELECT tool_name, evidence_technique, evidence_outcome, count(*), "
+        "(array_agg(id ORDER BY id DESC))[1:8] "
+        "FROM audit_log WHERE audit_role='evidence' AND session_id=%s "
+        "GROUP BY 1,2,3 ORDER BY 1,2,3",
+        (session_id,),
+    )
+    if ledger_rows and ledger_rows[0][0] == "ERR":
+        out.append(f"  evidence ledger rows: {ledger_rows[0][1]}")
+    else:
+        out.append("  evidence ledger rows (this session):")
+        if not ledger_rows:
+            out.append("    (none) ⚠ session has no audit_role=evidence rows")
+        for tool, tech, outcome, count, ids in ledger_rows:
+            label = tool or "?"
+            if tech or outcome:
+                label += f" [{tech or '?'} {outcome or '?'}]"
+            out.append(f"    {label}: {count} ids={ids}")
 
     # 5) audit_log evidence facts for THIS session (the gate's coverage truth).
     facts = q(
@@ -570,6 +654,107 @@ def run_db_diagnosis(session_id: str, db_url: str | None, trunc: int) -> list[st
             f"  \u26a0 {found_subdomain} SUBDOMAIN 'found' evidence rows but target_assets=0 "
             "\u2192 landing gap (evidence booked, not projected into assets)"
         )
+
+    stage_outcomes = q(
+        "SELECT technique, outcome, source, count(*), "
+        "(array_agg(asset ORDER BY asset))[1:8], "
+        "(array_agg(evidence_ids ORDER BY updated_at DESC))[1:5] "
+        "FROM technique_outcomes WHERE run_id=%s "
+        "GROUP BY 1,2,3 ORDER BY 1,2,3",
+        (session_id,),
+    )
+    enum_outcome_count = 0
+    if stage_outcomes and stage_outcomes[0][0] == "ERR":
+        out.append(f"  technique_outcomes (this run): {stage_outcomes[0][1]}")
+    else:
+        out.append("  technique_outcomes (this run):")
+        if not stage_outcomes:
+            out.append("    (none)")
+        for tech, outcome, source, count, assets, evidence_ids in stage_outcomes:
+            out.append(
+                f"    {tech} {outcome} via {source}: {count} "
+                f"assets={assets} evidence_ids={evidence_ids}"
+            )
+            if isinstance(tech, str) and tech.startswith("GOLISH-ENUM-"):
+                enum_outcome_count += int(count)
+
+    enum_ledger_rows = q(
+        "SELECT count(*) FROM audit_log WHERE audit_role='evidence' AND session_id=%s "
+        "AND (evidence_technique LIKE 'GOLISH-ENUM-%%' "
+        "OR tool_name IN ('browser_collect_js_api','js_extract_apis','route_probe_paths'))",
+        (session_id,),
+    )
+    if (
+        enum_outcome_count
+        and enum_ledger_rows
+        and enum_ledger_rows[0][0] != "ERR"
+        and int(enum_ledger_rows[0][0]) == 0
+    ):
+        out.append(
+            "  \u26a0 ENUM outcomes exist but this session has no ENUM evidence ledger rows "
+            "\u2192 gate/repair may list stale evidence ids only"
+        )
+
+    if org_ids and session_start is not None:
+        out.append("  fresh content rows since session evidence started:")
+        content_queries = [
+            (
+                "directory_entries",
+                "SELECT count(*), min(d.created_at), max(d.created_at) "
+                "FROM directory_entries d JOIN targets t ON t.id=d.target_id "
+                "WHERE t.organization_id = ANY(%s::uuid[]) AND d.created_at >= %s",
+            ),
+            (
+                "api_endpoints",
+                "SELECT count(*), min(a.discovered_at), max(a.discovered_at) "
+                "FROM api_endpoints a JOIN targets t ON t.id=a.target_id "
+                "WHERE t.organization_id = ANY(%s::uuid[]) AND a.discovered_at >= %s",
+            ),
+            (
+                "js_analysis_results",
+                "SELECT count(*), min(j.analyzed_at), max(j.analyzed_at) "
+                "FROM js_analysis_results j JOIN targets t ON t.id=j.target_id "
+                "WHERE t.organization_id = ANY(%s::uuid[]) AND j.analyzed_at >= %s",
+            ),
+        ]
+        for name, sql in content_queries:
+            rows = q(sql, (org_ids, session_start))
+            if rows and rows[0][0] == "ERR":
+                out.append(f"    {name}: {rows[0][1]}")
+            elif rows:
+                count, first_seen, last_seen = rows[0]
+                out.append(f"    {name}: {count} rows ({first_seen} .. {last_seen})")
+
+        top_dirs = q(
+            "SELECT t.value, count(*), "
+            "count(*) FILTER (WHERE d.status_code BETWEEN 200 AND 399), "
+            "count(*) FILTER (WHERE d.status_code >= 400) "
+            "FROM directory_entries d JOIN targets t ON t.id=d.target_id "
+            "WHERE t.organization_id = ANY(%s::uuid[]) AND d.created_at >= %s "
+            "GROUP BY t.value ORDER BY count(*) DESC LIMIT 8",
+            (org_ids, session_start),
+        )
+        if top_dirs and top_dirs[0][0] != "ERR":
+            out.append("  directory_entries top targets:")
+            for value, total, ok, err in top_dirs:
+                out.append(f"    {value}: {total} rows, ok={ok}, >=400={err}")
+
+        top_js = q(
+            "SELECT t.value, count(*), "
+            "count(*) FILTER (WHERE coalesce(jsonb_array_length(j.endpoints_found),0)>0), "
+            "sum(j.size_bytes) "
+            "FROM js_analysis_results j JOIN targets t ON t.id=j.target_id "
+            "WHERE t.organization_id = ANY(%s::uuid[]) AND j.analyzed_at >= %s "
+            "GROUP BY t.value ORDER BY count(*) DESC LIMIT 8",
+            (org_ids, session_start),
+        )
+        if top_js and top_js[0][0] != "ERR":
+            out.append("  js_analysis_results top targets:")
+            for value, total, with_endpoints, bytes_total in top_js:
+                out.append(
+                    f"    {value}: {total} files, "
+                    f"with_endpoints={with_endpoints}, bytes={bytes_total}"
+                )
 
     # 7) source_query_log (#5): per-source passive-intel query log for THIS run.
     #    Proves which data sources were queried (CT / WHOIS / OSINT / code platforms)

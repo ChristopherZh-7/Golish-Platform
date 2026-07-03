@@ -500,6 +500,8 @@ fn allowed_tools_for(stage: StageKind, repair_kind: RepairKind) -> Vec<String> {
             ],
             StageKind::Enumeration => vec![
                 "list_enumeration_web_roots",
+                "stage_worklist_status",
+                "stage_worklist_next",
                 "pentest_list_tools",
                 "pentest_run",
                 "browser_collect_js_api",
@@ -774,6 +776,46 @@ mod tests {
 
         assert!(d.allowed_tools.contains(&"recon_lookup_whois".to_string()));
         assert!(d.forbidden_tools.contains(&"pentest_run".to_string()));
+    }
+
+    #[test]
+    fn enumeration_coverage_gap_directive_preserves_worklist_refresh_tools() {
+        let d = refine_submit_needs_fix(RefinerContext {
+            stage: StageKind::Enumeration,
+            org_id: None,
+            agent_path: "main>stage_run:enumeration>org:o>enumerator".to_string(),
+            reasons: vec!["enumeration incomplete: never attempted".to_string()],
+            coverage_gap_actions: vec![CoverageGapAction {
+                asset: "https://app.example.com".to_string(),
+                technique: "GOLISH-ENUM-JSAPI".to_string(),
+                reason: "missing_terminal_coverage".to_string(),
+                suggested_tools: vec!["browser_collect_js_api".to_string()],
+            }],
+            available_evidence_ids: Vec::new(),
+            running_background_jobs: Vec::new(),
+        });
+
+        assert!(d
+            .allowed_tools
+            .contains(&"stage_worklist_status".to_string()));
+        assert!(d.allowed_tools.contains(&"stage_worklist_next".to_string()));
+        let instruction = d.model_instruction();
+        assert!(instruction.contains("stage_worklist_status"));
+        assert!(instruction.contains("stage_worklist_next"));
+
+        let mode = d.to_submit_repair_mode().unwrap();
+        assert!(mode.block_result("stage_worklist_status").is_none());
+        assert!(mode.block_result("stage_worklist_next").is_none());
+        let blocked = mode
+            .block_result_with_args(
+                "browser_collect_js_api",
+                &serde_json::json!({"target_url": "https://package.moresec.cn"}),
+            )
+            .expect("off-action direct enumeration target remains blocked");
+        assert!(blocked["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("not in coverage_gap_actions"));
     }
 
     #[test]

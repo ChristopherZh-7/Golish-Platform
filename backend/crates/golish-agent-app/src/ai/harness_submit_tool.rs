@@ -517,9 +517,9 @@ impl SubmitStageDeliverableTool {
         }))
     }
 
-    /// The operation's REAL evidence ids (newest first) to suggest when the
-    /// model cited fabricated refs. Empty when no repo / no session / infra
-    /// error (the caller degrades to a generic "run the tools first" message).
+    /// The operation's real evidence ids (newest first), exposed only as debug
+    /// context when the model cited fabricated refs. Empty when no repo / no
+    /// session / infra error.
     async fn available_real_ids(&self) -> Vec<i64> {
         let (Some(repo), Some(sid)) = (self.evidence_repo.as_ref(), self.session_id.as_deref())
         else {
@@ -567,7 +567,7 @@ impl SubmitStageDeliverableTool {
         );
     }
 
-    /// Cross-check the deliverable's `evidence_refs` against the real ledger.
+    /// Cross-check any model-supplied evidence ids against the real ledger.
     /// Returns the cited ids that do NOT exist (fabricated), in cited order.
     /// An infra error is treated as "can't prove fabrication" → empty (the
     /// authoritative stage-close gate still runs), mirroring the orchestrator's
@@ -576,11 +576,7 @@ impl SubmitStageDeliverableTool {
         let Some(repo) = self.evidence_repo.as_ref() else {
             return Vec::new();
         };
-        let cited: Vec<i64> = deliverable
-            .evidence_refs
-            .iter()
-            .map(|e| e.as_i64())
-            .collect();
+        let cited = collect_cited_evidence_ids(deliverable);
         if cited.is_empty() {
             return Vec::new();
         }
@@ -796,6 +792,28 @@ impl SubmitStageDeliverableTool {
                     })
                     .collect();
             }
+            // Enumeration content not_applicable (design 2026-07-03): mirror the
+            // stage-close gate (org_gate) — a DNS/53-only IP with no web surface
+            // is not a content-enumeration root, so mark all four ENUM axes
+            // not_applicable in the submit preview too (preview must match
+            // close, else preview-PASS then close-BLOCK).
+            if stage == StageKind::Enumeration {
+                not_applicable_coverage = repo
+                    .eas_service_not_applicable_assets(Some(org_id), wave_cutoff)
+                    .await
+                    .into_iter()
+                    .flat_map(|asset| {
+                        [
+                            golish_db::repo::coverage_truth::TECH_ENUM_JS,
+                            golish_db::repo::coverage_truth::TECH_ENUM_DIR,
+                            golish_db::repo::coverage_truth::TECH_ENUM_PARAM,
+                            golish_db::repo::coverage_truth::TECH_ENUM_JSAPI,
+                        ]
+                        .into_iter()
+                        .map(move |tech| (asset.clone(), tech.to_string()))
+                    })
+                    .collect();
+            }
             // 方案 A (设计 2026-06-30-eas-domain-port-delegation): EAS host-aware
             // alias exclusion — drop assets whose resolved IP is already an
             // in-scope IP target so the submit preview matches the stage-close
@@ -835,16 +853,15 @@ impl Tool for SubmitStageDeliverableTool {
     fn description(&self) -> &'static str {
         "Submit the structured StageDeliverable for the CURRENT operation stage. \
          Call this once the stage's required tools have actually run. Pass the real \
-         structured data as arguments (NOT a          prose description, NOT a JSON string in \
+         structured data as arguments (NOT a prose description, NOT a JSON string in \
          text) — stage_id and claims. Omit empty optional fields; the server \
          canonicalizes evidence_refs, findings, coverage, skipped_checks, and \
          required_checks_done to empty arrays when absent. stage_run_id is assigned \
          by the server, do not pass it. The \
-         deterministic gate validates it against the evidence ledger to \
-         advance the stage. This is the ONLY way to complete a stage. Do NOT hunt for \
-         evidence ids in raw tool output — if your evidence_ids are missing or wrong, \
-         this tool returns the operation's real evidence ids (`available_evidence_ids`) \
-         so you can resubmit citing them."
+         deterministic gate validates the stage against DB/ledger truth to \
+         advance the stage. This is the ONLY way to complete a stage. Evidence ids \
+         are optional internal ledger references: do NOT hunt for them or invent \
+         them. If you cite ids anyway, they must be real."
     }
 
     fn parameters(&self) -> Value {
@@ -862,14 +879,14 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "claims": {
                     "type": "array",
-                    "description": "Observations. Include evidence_ids only when the claim is backed by real evidence-ledger ids; omit evidence_ids for evidence-free stages such as scoping. When a claim evidences one of the stage's expected techniques, set `technique` to that REGISTERED id (e.g. GOLISH-INTEL-DNS, WSTG-INPV-05) and use the SAME `subject` string as the matching coverage cell's `asset` — technique-tagged claims corroborate 'found' coverage cells. Unregistered technique ids are rejected. Enumeration claim kinds should summarize content mapping, e.g. web_root_enumerated, directories_discovered, api_endpoints_discovered, params_discovered, js_candidates_reviewed.",
+                    "description": "Business observations. Do not look up or invent evidence_ids; omit them unless a previous tool/result explicitly gave you a real ledger id. When a claim evidences one of the stage's expected techniques, set `technique` to that REGISTERED id (e.g. GOLISH-INTEL-DNS, WSTG-INPV-05) and use the SAME `subject` string as the matching coverage cell's `asset`. Unregistered technique ids are rejected. Enumeration claim kinds should summarize content mapping, e.g. web_root_enumerated, directories_discovered, api_endpoints_discovered, params_discovered, js_candidates_reviewed.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "kind": { "type": "string", "description": "Observation kind, e.g. \"dns_a_record\", \"subdomain\", \"discovery\"." },
                             "subject": { "type": "string", "description": "What the claim is about (host / URL / asset). Match the coverage cell's `asset` when technique-tagged." },
                             "summary": { "type": "string", "description": "One-line human-readable summary." },
-                            "evidence_ids": { "type": "array", "items": { "type": "integer" }, "description": "Optional real evidence-ledger ids backing this claim. Omit for evidence-free claims (for example scoping scope_confirmed). Never use placeholder ids like 1,2,3." },
+                            "evidence_ids": { "type": "array", "items": { "type": "integer" }, "description": "Optional internal ledger ids. Usually omit; never invent placeholders like 1,2,3." },
                             "technique": { "type": "string", "description": "Optional REGISTERED technique id this claim evidences (omit when none applies)." }
                         },
                         "required": ["kind", "subject", "summary"]
@@ -877,12 +894,12 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "evidence_refs": {
                     "type": "array",
-                    "description": "Optional top-level list of all evidence-ledger ids cited by claims/findings/coverage. Omit when nothing cites evidence (for example scoping); the server defaults this to []. Use REAL ids only — never placeholders.",
+                    "description": "Optional internal ledger ids. Usually omit; the server resolves DB/ledger truth. If you include ids, use REAL ids only — never placeholders.",
                     "items": { "type": "integer" }
                 },
                 "findings": {
                     "type": "array",
-                    "description": "Optional security findings (vulnerabilities). ONLY for vulnerability stages (vuln_triage / verification). Recon / discovery stages (scoping, target_intel, external_attack_surface, enumeration) take NO findings: omit findings or submit [] and record discoveries (hosts / services / exposures) as claims + coverage cells instead — any findings sent in those stages are DROPPED. Every vulnerability finding must cite evidence_refs.",
+                    "description": "Optional security findings (vulnerabilities). ONLY for vulnerability stages (vuln_triage / verification). Recon / discovery stages (scoping, target_intel, external_attack_surface, enumeration) take NO findings: omit findings or submit [] and record discoveries (hosts / services / exposures) as claims + coverage cells instead — any findings sent in those stages are DROPPED. Evidence ids are optional; DB/ledger truth is resolved by the backend.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -890,22 +907,22 @@ impl Tool for SubmitStageDeliverableTool {
                             "kind": { "type": "string", "description": "Finding kind, e.g. \"open_port\", \"exposed_admin\"." },
                             "subject": { "type": "string", "description": "Affected asset (host / URL)." },
                             "severity": { "type": "string", "enum": ["info", "low", "medium", "high", "critical"], "description": "Finding severity." },
-                            "evidence_refs": { "type": "array", "items": { "type": "integer" }, "description": "Real evidence-ledger ids proving this finding." },
+                            "evidence_refs": { "type": "array", "items": { "type": "integer" }, "description": "Optional internal ledger ids. Usually omit unless a real id is explicitly available." },
                             "technique": { "type": "string", "description": "Optional REGISTERED technique id this finding evidences." }
                         },
-                        "required": ["finding_id", "kind", "subject", "severity", "evidence_refs"]
+                        "required": ["finding_id", "kind", "subject", "severity"]
                     }
                 },
                 "coverage": {
                     "type": "array",
-                    "description": "Coverage matrix: ONE cell per (asset × technique) you took to a terminal state. If the stage charter says coverage is auto-adjudicated from the DATABASE (for example target_intel, external_attack_surface, or enumeration found cells), submit [] for DB-derived found cells and include only terminal cells the DB cannot derive yet. In enumeration, DB-derived found cells come from directory_entries and api_endpoints; submit only checked_empty/blocked/not_applicable exceptions after check_stage_asset_coverage says the EAS-confirmed web-root worklist is closed. STAGES THAT RUN NO TOOLS (e.g. scoping, reporting) produce no evidence — submit an EMPTY array [] and do NOT invent cells (a 'found'/'checked_empty' cell ALWAYS needs real evidence_refs, so an evidence-less cell here just fails the gate). For non-DB-truth tool stages: for EACH in-scope asset, give EVERY expected technique a cell — a MISSING (asset × technique) means not_attempted and FAILS the gate. A 'found' or 'checked_empty' cell MUST cite evidence_refs (PoC for found; the scan/probe evidence proving you tested it for checked_empty); 'blocked'/'not_applicable' MUST give a `note`. \"checked-empty\" is NOT \"unchecked\". For found/checked_empty cells with an enumerated denominator ALSO set tested_units/total_units; the gate requires full coverage (tested_units==total_units) unless you set sampling_rationale. EAS example: SERVICE-FINGERPRINT tested_units = open ports fingerprinted, total_units = open ports discovered; if no ports are open, submit not_applicable+note rather than checked_empty total_units=0. Omit optional fields you don't use — never pass null.",
+                    "description": "Coverage matrix: ONE cell per (asset × technique) you took to a terminal state when the DB cannot derive that terminal state. If the stage charter says coverage is auto-adjudicated from the DATABASE (for example target_intel, external_attack_surface, or enumeration found cells), submit [] for DB-derived found cells and include only terminal cells the DB cannot derive yet. In enumeration, DB-derived found cells come from directory_entries and api_endpoints; submit only checked_empty/blocked/not_applicable exceptions after check_stage_asset_coverage says the EAS-confirmed web-root worklist is closed. STAGES THAT RUN NO TOOLS (e.g. scoping, reporting) produce no coverage matrix — submit [] and do NOT invent cells. For non-DB-truth tool stages: for EACH in-scope asset, give EVERY expected technique a cell — a MISSING (asset × technique) means not_attempted and FAILS the gate. Evidence ids are optional internal ledger refs; do not hunt for them. 'blocked'/'not_applicable' MUST give a `note`. \"checked-empty\" is NOT \"unchecked\". For found/checked_empty cells with an enumerated denominator ALSO set tested_units/total_units; the gate requires full coverage (tested_units==total_units) unless you set sampling_rationale. EAS example: SERVICE-FINGERPRINT tested_units = open ports fingerprinted, total_units = open ports discovered; if no ports are open, submit not_applicable+note rather than checked_empty total_units=0. Omit optional fields you don't use — never pass null.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "asset": { "type": "string", "description": "Asset identifier (host / URL). Match a claim's `subject`." },
                             "technique": { "type": "string", "description": "REGISTERED technique id (e.g. GOLISH-INTEL-DNS, WSTG-INPV-05)." },
                             "status": { "type": "string", "enum": ["found", "checked_empty", "blocked", "not_applicable"], "description": "Terminal state for this (asset × technique)." },
-                            "evidence_refs": { "type": "array", "items": { "type": "integer" }, "description": "Required for found/checked_empty: real evidence ids proving the work." },
+                            "evidence_refs": { "type": "array", "items": { "type": "integer" }, "description": "Optional internal ledger ids. Usually omit unless real ids are explicitly available." },
                             "note": { "type": "string", "description": "Required for blocked/not_applicable: why." },
                             "reason_kind": { "type": "string", "enum": ["provider_missing", "credential_missing", "rate_limited", "tool_missing", "out_of_scope", "not_applicable"], "description": "Optional structured reason category for blocked/not_applicable (complements `note`)." },
                             "tested_units": { "type": "integer", "description": "How many enumerated units you actually tested for this asset×technique. For EAS service fingerprinting, this is the number of open ports fingerprinted." },
@@ -917,14 +934,14 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "skipped_checks": {
                     "type": "array",
-                    "description": "Optional deliberately skipped required checks. Omit unless a required check actually could not run. Scope decisions such as excluding subsidiaries in scoping belong in the scope claim summary, not skipped_checks. \"checked-empty\" is NOT \"unchecked\". As an agent, avoid kind=\"other\" unless you have a real evidence_ref pointing to an audit-log error line.",
+                    "description": "Optional deliberately skipped required checks. Omit unless a required check actually could not run. Scope decisions such as excluding subsidiaries in scoping belong in the scope claim summary, not skipped_checks. \"checked-empty\" is NOT \"unchecked\".",
                     "items": {
                         "type": "object",
                         "properties": {
                             "check": { "type": "string", "description": "Name of the check you skipped." },
                             "reason": {
                                 "type": "object",
-                                "description": "A SkipReason, internally tagged by `kind`. As an agent use kind=\"other\": { \"kind\": \"other\", \"explanation\": \"...\", \"evidence_ref\": <real evidence id> }.",
+                                "description": "A SkipReason, internally tagged by `kind`.",
                                 "properties": {
                                     "kind": { "type": "string", "enum": ["other", "rate_limited", "scope_restriction", "env_unavailable", "user_requested"], "description": "Which SkipReason variant." },
                                     "explanation": { "type": "string", "description": "kind=other: free-text reason." },
@@ -1052,8 +1069,9 @@ impl Tool for SubmitStageDeliverableTool {
                         "status": "needs_fix",
                         "reasons": [format!(
                             "cited evidence ids {fabricated:?} do not exist in the evidence ledger. \
-                             The stage_run pass_token claim itself does not need evidence ids, but any \
-                             additional evidence refs you cite must be real. Available ids: {available:?}."
+                             The stage_run pass_token claim itself does not need evidence ids. Remove \
+                             the fabricated ids, or only keep ids you know are real. Available ids \
+                             for debugging: {available:?}."
                         )],
                         "fabricated_evidence_refs": fabricated,
                         "available_evidence_ids": available,
@@ -1068,6 +1086,19 @@ impl Tool for SubmitStageDeliverableTool {
                     *self.last_deliverable.write().await = Some(json_str);
                 }
                 if result.allowed {
+                    if spec.expected_techniques.is_empty() && !deliverable.coverage.is_empty() {
+                        let available = self.available_real_ids().await;
+                        return Ok(json!({
+                            "status": "needs_fix",
+                            "reasons": [
+                                "This stage declares NO expected techniques and runs no tools, so it has \
+                                 no coverage matrix. Resubmit with coverage: [] (remove the invented \
+                                 cells)."
+                            ],
+                            "available_evidence_ids": available,
+                            "note": "fix these and call submit_stage_deliverable again."
+                        }));
+                    }
                     // P2 · validate-on-submit: structure passing is necessary but
                     // NOT sufficient. Cross-check evidence_refs against the real
                     // ledger NOW so a deliverable citing fabricated ids gets an
@@ -1077,7 +1108,7 @@ impl Tool for SubmitStageDeliverableTool {
                     let fabricated = self.fabricated_refs(&deliverable).await;
                     if fabricated.is_empty() {
                         let mut note = "structure OK and all cited evidence exists in the ledger; \
-                                        the final evidence gate runs at stage close."
+                                        DB/ledger truth is resolved at stage close."
                             .to_string();
                         if dropped_findings > 0 {
                             note.push_str(&format!(
@@ -1089,25 +1120,24 @@ impl Tool for SubmitStageDeliverableTool {
                         }
                         return Ok(json!({ "status": "accepted", "note": note }));
                     }
-                    // 乙 · don't just scold — name the REAL evidence ids this
-                    // operation already has so the model fills them in instead of
-                    // re-copying placeholders (the recurring weak-model failure).
+                    // 乙 · fabricated ids are still rejected, but ids are not
+                    // model-required fields. Prefer omission over another
+                    // id-filling retry loop.
                     let available = self.available_real_ids().await;
                     let reason = if available.is_empty() {
                         format!(
                             "cited evidence ids {fabricated:?} do not exist in the evidence ledger. \
-                             No real evidence ids are recorded for this operation yet — run this \
-                             stage's required tools first, then call submit_stage_deliverable again; \
-                             this tool reports the operation's real evidence ids for you to cite. \
+                             Evidence ids are optional: remove these id fields and resubmit, or run \
+                             the stage's required tools if the underlying DB truth is still missing. \
                              Never invent or copy placeholder ids like 1, 2, 3."
                         )
                     } else {
                         format!(
                             "cited evidence ids {fabricated:?} do not exist in the evidence ledger. \
-                             Cite ONLY from the REAL evidence ids already recorded for this \
-                             operation (newest first): {available:?}. Pick the ones whose tool \
-                             output backs each claim and put them in BOTH the claim's evidence_ids \
-                             and the top-level evidence_refs. Never invent or copy placeholder ids."
+                             Evidence ids are optional: remove these id fields and let the backend \
+                             resolve DB/ledger truth, or cite ONLY ids you know are real. Real ids \
+                             recorded for this operation (debug hint, newest first): {available:?}. \
+                             Never invent or copy placeholder ids."
                         )
                     };
                     return Ok(json!({
@@ -1118,13 +1148,9 @@ impl Tool for SubmitStageDeliverableTool {
                         "note": "fix these and call submit_stage_deliverable again."
                     }));
                 }
-                // F1 · a structural/vacuous block is most often the agent
-                // submitting empty/insufficient `evidence_ids` because it could
-                // not locate them. Surface the operation's REAL ledger ids here
-                // too (not only on the fabricated-ref branch above) so the single
-                // reliable id source is always handed back at the point of
-                // failure — instead of the agent hunting for an id field that the
-                // sub-agent tool path never carries.
+                // Keep real ids available as debug context, but do not turn a
+                // structural block into an id-fill exercise. Missing coverage is
+                // repaired by running/closing the named DB-truth gaps.
                 let available = self.available_real_ids().await;
                 let coverage_gap_actions = result
                     .recovery_actions
@@ -1135,22 +1161,15 @@ impl Tool for SubmitStageDeliverableTool {
                 // No-tool stage trap: a stage with no expected techniques (e.g.
                 // scoping / reporting) has NO coverage matrix — but weak models
                 // still invent evidence-less coverage cells, which then fail the
-                // "found/checked_empty needs evidence" rule forever. Point them
-                // straight at the fix instead of letting them flail.
+                // no-tool stage coverage forever. Point them straight at the
+                // fix instead of letting them flail.
                 if spec.expected_techniques.is_empty() && !deliverable.coverage.is_empty() {
                     reasons.push(
                         "This stage declares NO expected techniques and runs no tools, so it has \
                          no coverage matrix. Resubmit with coverage: [] (remove the invented \
-                         cells) — a 'found'/'checked_empty' cell ALWAYS requires real evidence."
+                         cells)."
                             .to_string(),
                     );
-                }
-                if !available.is_empty() {
-                    reasons.push(format!(
-                        "This operation's REAL evidence ids (newest first) are {available:?}. \
-                         Put the ones whose tool output backs each claim into BOTH that claim's \
-                         evidence_ids and the top-level evidence_refs, then resubmit. Never invent ids."
-                    ));
                 }
                 let mut response = json!({
                     "status": "needs_fix",
@@ -1526,12 +1545,10 @@ mod tests {
         assert!(captured.contains("stage_run_pass_token"));
     }
 
-    // Coverage-matrix cells are an additive, optional part of the submission: a
-    // deliverable carrying a `coverage` array parses into StageDeliverable and is
-    // accepted (scoping declares no expected_techniques, so coverage_complete is a
-    // no-op here) — and the captured side-channel JSON includes the coverage.
+    // Coverage-matrix cells still parse as StageDeliverable fields, but no-tool
+    // stages such as scoping must not invent a matrix.
     #[tokio::test]
-    async fn accepts_deliverable_with_coverage_cells() {
+    async fn no_tool_stage_rejects_deliverable_with_coverage_cells() {
         let (stage, sink) = handles();
         *stage.write().await = Some(StageKind::Scoping);
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
@@ -1544,15 +1561,19 @@ mod tests {
               "status": "checked_empty", "evidence_refs": [1], "note": "no injection observed" }
         ]);
         let out = tool.execute(args, Path::new("/tmp")).await.unwrap();
-        assert_eq!(out["status"].as_str(), Some("accepted"));
-
-        let captured = sink.read().await.clone().expect("deliverable captured");
-        assert!(captured.contains("\"coverage\""));
-        assert!(captured.contains("WSTG-ATHZ-04"));
+        assert_eq!(out["status"].as_str(), Some("needs_fix"));
+        let reasons = out["reasons"].as_array().expect("reasons array");
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.as_str().unwrap_or("").contains("coverage: []")),
+            "must hint to resubmit with empty coverage: {reasons:?}"
+        );
+        assert!(sink.read().await.is_some());
     }
 
     #[tokio::test]
-    async fn eas_needs_fix_surfaces_structured_coverage_gap_actions() {
+    async fn eas_accepts_surface_claim_without_model_evidence_ids() {
         let (stage, sink) = handles();
         *stage.write().await = Some(StageKind::ExternalAttackSurface);
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
@@ -1560,12 +1581,10 @@ mod tests {
         let args = json!({
             "stage_id": "external_attack_surface",
             "claims": [{
-                "kind": "host_observed",
+                "kind": "http_service",
                 "subject": "api.example.com",
-                "summary": "host is in the inherited active-mapping worklist",
-                "evidence_ids": [1]
+                "summary": "HTTP service observed on the active-mapping worklist"
             }],
-            "evidence_refs": [1],
             "findings": [],
             "coverage": [{
                 "asset": "api.example.com",
@@ -1576,27 +1595,11 @@ mod tests {
         });
 
         let out = tool.execute(args, Path::new("/tmp")).await.unwrap();
-        assert_eq!(out["status"].as_str(), Some("needs_fix"));
-        let actions = out["coverage_gap_actions"]
-            .as_array()
-            .expect("structured gap actions should be surfaced");
-        assert!(
-            actions.iter().any(|action| {
-                action["asset"] == "api.example.com"
-                    && action["technique"] == "GOLISH-EAS-PORT"
-                    && action["suggested_tools"]
-                        .as_array()
-                        .is_some_and(|tools| tools.iter().any(|tool| tool == "naabu"))
-            }),
-            "PORT gap action should name the asset, technique, and suggested tools: {out:?}"
-        );
-        assert!(
-            actions.iter().any(|action| {
-                action["asset"] == "api.example.com"
-                    && action["technique"] == "GOLISH-EAS-SERVICE-FINGERPRINT"
-            }),
-            "SERVICE-FINGERPRINT gap action should be present: {out:?}"
-        );
+        assert_eq!(out["status"].as_str(), Some("accepted"));
+        assert!(out["note"]
+            .as_str()
+            .unwrap_or("")
+            .contains("DB/ledger truth is resolved at stage close"));
         assert!(sink.read().await.is_some());
     }
 
@@ -1873,7 +1876,7 @@ mod tests {
     }
 
     // 乙 · without a session_id the suggestion degrades gracefully (empty list +
-    // "run the tools first" wording), still rejecting the fabricated ref.
+    // optional-id wording), still rejecting the fabricated ref.
     #[tokio::test]
     async fn fabricated_needs_fix_without_session_degrades() {
         let (stage, sink) = handles();
@@ -1900,8 +1903,10 @@ mod tests {
             .is_empty());
         let reason = out["reasons"][0].as_str().unwrap();
         assert!(
-            reason.contains("No real evidence ids are recorded"),
-            "degraded reason instructs running tools first: {reason}"
+            reason.contains("Evidence ids are optional")
+                && reason.contains("remove these id fields")
+                && reason.contains("Never invent"),
+            "degraded reason tells the model to omit fabricated ids: {reason}"
         );
     }
 
@@ -1939,14 +1944,15 @@ mod tests {
             .as_array()
             .expect("available_evidence_ids present on a structural block");
         assert_eq!(available, &vec![json!(644), json!(646)]);
-        // A real-id hint reason is appended naming the ids.
+        // Real ids stay available as debug context, not as a reason that tells
+        // the model to copy them into the deliverable.
         let reasons = out["reasons"].as_array().expect("reasons array");
         assert!(
-            reasons.iter().any(|r| {
+            !reasons.iter().any(|r| {
                 let s = r.as_str().unwrap_or("");
                 s.contains("644") && s.contains("646")
             }),
-            "a reason names the real ids: {reasons:?}"
+            "structural reasons should not tell the model to copy ids: {reasons:?}"
         );
         assert!(sink.read().await.is_some());
     }
@@ -2365,9 +2371,8 @@ mod tests {
     }
 
     // Fix7 (2026-06-14): a no-tool stage (scoping has empty expected_techniques)
-    // that receives an invented evidence-less coverage cell must be told to
-    // resubmit with coverage: [] — instead of looping forever on the generic
-    // "every 'found' cell must cite evidence" reject (the observed scoping loop).
+    // that receives an invented coverage cell must be told to resubmit with
+    // coverage: [] instead of looping on no-tool-stage coverage.
     #[tokio::test]
     async fn no_tool_stage_invented_coverage_gets_empty_coverage_hint() {
         let (stage, sink) = handles();

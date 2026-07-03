@@ -1,4 +1,5 @@
 import type { ActiveSubAgent, SubAgentEntry, TaskPlan, UnifiedBlock } from "../../store-types";
+import { appendLiveToolOutput } from "../live-output";
 import type { ImmerSet } from "../types";
 import type { WorkflowStoreDraft } from "./types";
 
@@ -424,7 +425,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         for (const agent of agents) {
           const tool = agent.toolCalls.find((t) => t.id === toolId);
           if (tool) {
-            tool.streamingOutput = (tool.streamingOutput ?? "") + chunk;
+            tool.streamingOutput = appendLiveToolOutput(tool.streamingOutput, chunk);
             const timeline = state.timelines[sessionId];
             if (timeline) {
               syncSubAgentToTimeline(timeline, agent.parentRequestId, agent);

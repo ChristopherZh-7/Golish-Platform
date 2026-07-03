@@ -112,6 +112,16 @@ export function TargetDetailView({
     { label: "CDN/WAF", value: target.cdn_waf },
     { label: "OS", value: target.os_info },
     { label: "Content-Type", value: target.content_type },
+    // Dead-asset liveness (design 2026-07-02): surface the EAS verdict + reason so
+    // the detail view explains why a `dead` asset is skipped downstream.
+    {
+      label: "Liveness",
+      value: target.liveness_state
+        ? target.liveness_reason
+          ? `${target.liveness_state} (${target.liveness_reason})`
+          : target.liveness_state
+        : "",
+    },
   ].filter((fact) => fact.value);
 
   return (

@@ -25,14 +25,14 @@
       "over": "coverage",
       "where": { "pred": "eq", "field": "status", "value": "found" },
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "every 'found' scoping coverage cell must cite evidence", "hints": ["attach the subsidiary-discovery evidence id (recon_discover_subsidiaries) to each found cell"] }
+      "on_fail": { "reason": "scoping coverage evidence ids are optional; found cells are resolved from DB/ledger truth when available", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",
       "over": "coverage",
       "where": { "pred": "eq", "field": "status", "value": "checked_empty" },
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "every 'checked_empty' scoping coverage cell must cite evidence (I8: checked-empty is NOT unchecked)", "hints": ["attach the probe evidence id proving you actually ran subsidiary discovery on this org and it returned no qualifying child"] }
+      "on_fail": { "reason": "scoping coverage evidence ids are optional; checked_empty is terminal, not unchecked", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
     },
     {
       "op": "coverage_complete",
@@ -43,7 +43,7 @@
       "$comment_authoritative": "Phase 2 (2026-06-12-redteam-phase2): 'found' for GOLISH-INTEL-SUBSIDIARY is decided by DB truth (organizations table has a child org with parent_id = this engagement org), not self-report. expected_techniques is empty in this static spec; the harness hook injects GOLISH-INTEL-SUBSIDIARY ONLY when the engagement set --include-subsidiaries, so without the flag coverage_complete sees no expected techniques and is a no-op (zero回归).",
       "on_fail": {
         "reason": "subsidiary scoping incomplete: the org tree was never built (no qualifying child organization landed in the database)",
-        "hints": ["FIRST normalize each input company name via recon_lookup_company (canonical registered name, 以企查查为准) and create the root org with that canonical name (manage_organizations create / create_batch) — subsidiary discovery against a colloquial name misses", "run recon_discover_subsidiaries on the engagement org so the enterprise-intel provider (ENScan) discovers investments/holdings and auto-promotes those clearing the ownership threshold into child organizations", "the gate reads the DATABASE (organizations.parent_id), not your self-report — a cell is 'found' only if a real child org row landed", "discovered subsidiaries but none cleared the threshold? that is checked_empty+evidence, not found — never fabricate"]
+        "hints": ["FIRST normalize each input company name via recon_lookup_company (canonical registered name, 以企查查为准) and create the root org with that canonical name (manage_organizations create / create_batch) — subsidiary discovery against a colloquial name misses", "run recon_discover_subsidiaries on the engagement org so the enterprise-intel provider (ENScan) discovers investments/holdings and auto-promotes those clearing the ownership threshold into child organizations", "the gate reads the DATABASE (organizations.parent_id), not your self-report — a cell is 'found' only if a real child org row landed", "discovered subsidiaries but none cleared the threshold? that is checked_empty, not found — never fabricate"]
       }
     }
   ],

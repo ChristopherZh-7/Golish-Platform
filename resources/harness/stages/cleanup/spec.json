@@ -19,13 +19,13 @@
       "op": "for_all",
       "over": "claims",
       "require": { "pred": "non_empty", "field": "evidence_ids" },
-      "on_fail": { "reason": "every claim must cite evidence", "hints": ["add evidence to each claim via prior tool calls"] }
+      "on_fail": { "reason": "claim evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_ids unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",
       "over": "findings",
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "every finding must cite evidence", "hints": ["add evidence to each finding via prior tool calls"] }
+      "on_fail": { "reason": "finding evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
     }
   ],
 

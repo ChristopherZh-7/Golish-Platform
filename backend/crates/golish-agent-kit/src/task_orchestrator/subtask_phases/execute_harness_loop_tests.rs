@@ -656,7 +656,10 @@ async fn verification_pass_with_seen_candidate_does_not_reopen() {
     second.spawned_candidates = vec![c];
     orch.consume_gate_outcome(op, second).await;
 
-    assert_eq!(orch.chain_wave, 1, "same hypothesis must not open another wave");
+    assert_eq!(
+        orch.chain_wave, 1,
+        "same hypothesis must not open another wave"
+    );
     assert!(
         !orch.stage_outcome_acc.expect("acc set").reopen_wave,
         "an already-seen hypothesis must not signal reopen"

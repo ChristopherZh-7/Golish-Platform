@@ -487,7 +487,7 @@ where
             // we can surface it to the agent below — letting it cite a REAL id in
             // its StageDeliverable instead of fabricating one (which the gate
             // would then BLOCK).
-            let mut appended_evidence_id: Option<i64> = None;
+            let mut appended_evidence_ids: Vec<i64> = Vec::new();
 
             if let Some(payload) =
                 structured_storage_hook_payload(effective_tool_name, tool_args, v, is_success)
@@ -553,7 +553,7 @@ where
                                 .await
                             {
                                 Ok(id) => {
-                                    appended_evidence_id = Some(id);
+                                    appended_evidence_ids.push(id);
                                     tracing::info!(
                                         target: "harness::evidence",
                                         tool = %effective_tool_name,
@@ -681,7 +681,7 @@ where
                                 .await
                             {
                                 Ok(id) => {
-                                    appended_evidence_id = Some(id);
+                                    appended_evidence_ids.push(id);
                                     tracing::info!(
                                         target: "harness::evidence",
                                         tool = %pt_tool,
@@ -771,16 +771,24 @@ where
             )
             .await
             {
-                appended_evidence_id = Some(id);
+                appended_evidence_ids.push(id);
             }
+
+            // NOTE (design 2026-07-03): enumeration four-axis evidence
+            // (GOLISH-ENUM-JS/DIR/PARAM/JSAPI) is now booked by the
+            // `golish-pentest-app` bridge tools themselves (they run on both the
+            // primary-agent direct path AND the enumerator sub-agent path), so
+            // the old primary-only `record_enumeration_bridge_evidence` hook was
+            // removed to avoid double-booking JS.
 
             // P1 · surface the appended evidence id so the agent cites a REAL
             // ledger id in its StageDeliverable. Additive `_evidence_id` field;
             // absent when nothing was appended (non-shell tool / no stage).
             let mut value = v.clone();
-            if let Some(id) = appended_evidence_id {
+            if let Some(id) = appended_evidence_ids.last().copied() {
                 if let Some(obj) = value.as_object_mut() {
                     obj.insert("_evidence_id".to_string(), json!(id));
+                    obj.insert("_evidence_ids".to_string(), json!(appended_evidence_ids));
                 }
             }
 

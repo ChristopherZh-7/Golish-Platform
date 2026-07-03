@@ -2171,6 +2171,8 @@ mod tests {
             webserver: String::new(),
             os_info: String::new(),
             content_type: String::new(),
+            liveness_state: None,
+            liveness_reason: None,
             created_at: 0,
             updated_at: 0,
         }

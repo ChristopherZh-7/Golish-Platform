@@ -96,7 +96,7 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
         };
         let terminal_hint = if spec.kind == StageKind::ExternalAttackSurface {
             "ONLY add a `coverage` cell when the DB cannot derive the terminal state: \
-             for active negatives use checked_empty+evidence when a scan/probe really ran and found nothing, \
+             for active negatives use checked_empty when a scan/probe really ran and found nothing, \
              or blocked/not_applicable+note when the technique cannot apply or was blocked. \
              If no ports are open, mark SERVICE-FINGERPRINT not_applicable with a note; do NOT invent \
              a found service from HTTP liveness alone."
@@ -122,7 +122,7 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
              technique a terminal status for EVERY asset via the `coverage` field: {}. \
              domain/URL assets require LIVENESS only; IP/CIDR-discovered IP assets require \
              LIVENESS + PORT + SERVICE-FINGERPRINT. Host-level PORT/SERVICE belongs to the \
-             concrete IP target, never to an unresolved domain string. Per cell: found+evidence_refs / checked_empty+evidence_refs / \
+             concrete IP target, never to an unresolved domain string. Per cell: found / checked_empty / \
              blocked|not_applicable+note. A missing (asset × technique) = not_attempted = gate \
              BLOCK (\"checked-empty\" is NOT \"unchecked\").\n\
              - **EAS denominator** — if you explicitly submit found/checked_empty coverage, set \
@@ -138,8 +138,8 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
     } else {
         format!(
             "\n- **Coverage (per in-scope asset)** — give EACH of these techniques a terminal status \
-             for EVERY asset via the `coverage` field: {}. Per cell: found+evidence_refs / \
-             checked_empty+evidence_refs / blocked|not_applicable+note. A missing (asset × technique) \
+             for EVERY asset via the `coverage` field: {}. Per cell: found / \
+             checked_empty / blocked|not_applicable+note. A missing (asset × technique) \
              = not_attempted = gate BLOCK (\"checked-empty\" is NOT \"unchecked\").\n\
              - **Coverage is measured against a DENOMINATOR** — for each found/checked_empty cell set \
              `tested_units` and `total_units` (M = the enumerated endpoints/params/services for that \
@@ -231,12 +231,10 @@ You are operating inside the **{stage}** stage of an authorized operation. Stay 
 {{
   "stage_id": "{stage}",
   "claims": [
-    {{"kind": "http_service_observed", "subject": "<host>", "summary": "<what was observed>", "evidence_ids": [<int_id_from_a_real_tool_result>], "technique": "<registered technique id backing this claim — omit if none applies>"}}
+    {{"kind": "http_service_observed", "subject": "<host>", "summary": "<what was observed>", "technique": "<registered technique id backing this claim — omit if none applies>"}}
   ],
-  "evidence_refs": [<int_id_from_a_real_tool_result>, <int_id_from_another_real_tool_result>],
-  "findings": [
-    {{"finding_id": "<random uuid v4>", "kind": "subdomain", "subject": "<host>", "severity": "info", "evidence_refs": [<int_id_from_a_real_tool_result>], "technique": "<registered technique id — omit if none applies>"}}
-  ],
+  "evidence_refs": [],
+  "findings": [],
   "skipped_checks": [],
   "required_checks_done": {min_inv_keys_json}
 }}
@@ -244,12 +242,12 @@ You are operating inside the **{stage}** stage of an authorized operation. Stay 
 
 The submit tool assigns `stage_run_id`; do not pass it. Empty arrays are optional: omit `evidence_refs`, `findings`, `coverage`, `skipped_checks`, and `required_checks_done` when the stage has none.
 
-IMPORTANT — every `<int_id_from_a_real_tool_result>` above is a PLACEHOLDER for shape only; NEVER emit it literally and NEVER substitute a small guessed integer (1, 2, 3, …). Each evidence id MUST be an actual integer the evidence ledger recorded for a real tool run in THIS operation. Do NOT hunt for ids in raw tool output — scans are recorded to the ledger automatically. The reliable way to get them: after running the required tools, call `submit_stage_deliverable`; if your evidence_ids are missing or wrong it returns this operation's real ids in `available_evidence_ids` — resubmit citing those. (`query_target_data` also shows recorded data.) If you have not run any tool yet you have NO evidence ids: omit evidence fields instead of inventing ids. Citing guessed/placeholder ids FAILS the gate.
+IMPORTANT — evidence ids are internal ledger references, not fields you must fill. Do NOT hunt for ids in raw tool output and NEVER invent small guessed integers (1, 2, 3, …). Scans are recorded to the ledger automatically and the deterministic gate resolves DB/ledger truth. If you already have a real ledger id you may include it, but omission is preferred over guessing; fabricated ids FAIL.
 
 Gate rules your deliverable MUST satisfy (otherwise it is rejected and you redo the stage):
 - `stage_id` MUST equal "{stage}"; `stage_run_id` MUST be a valid, non-nil UUID v4.
-- Evidence-backed claims/findings/coverage cells MUST cite real ids, and every id used there MUST also appear in top-level `evidence_refs`. Evidence-free scoping/reporting claims may omit `evidence_ids`.
-- The top-level `evidence_refs` must include every cited evidence id and must have at least one id per required real tool run (total count ≥ the sum of the minimum invocations above). If the stage has no required evidence-producing tool run, omit it or submit [].
+- Do not write evidence ids unless they are real ledger ids explicitly known to you; the backend resolves evidence from DB/ledger truth.
+- `evidence_refs` is optional. If present, every id must exist in the ledger.
 - `required_checks_done` MUST name every tool you were required to run: {min_inv}.
 - If you deliberately skip a required check, record it in `skipped_checks` with a reason — "checked-empty" is NOT the same as "unchecked". Do not use `skipped_checks` for normal scope exclusions; record those in the scope claim summary.
 
@@ -289,7 +287,7 @@ pub fn stage_discipline_reminder() -> String {
 - If a required tool is unavailable, errors, or returns nothing on two attempts: STOP and record it in `skipped_checks` with the reason ("checked-empty" is NOT the same as "unchecked"). Do NOT install tools, spawn additional sub-agents, or retry the same tool to work around an unavailable capability.
 - The runtime advances stages for you once the deterministic gate passes — do not jump ahead to a later stage."#;
     // C2c · the deliverable-submission directive: always CALL the submit tool.
-    let submit = "\n\n### Submit the StageDeliverable by CALLING `submit_stage_deliverable`\nThe stage completes ONLY when you call the `submit_stage_deliverable` tool with the structured fields (stage_id, stage_run_id, claims, evidence_refs, findings). Do NOT just print or describe the JSON, and do NOT only delegate \"write the JSON\" to a sub-agent — if you delegated to a reporter, take its result and call `submit_stage_deliverable` yourself. A prose-only ending leaves the gate with nothing to validate and forces you to redo this entire stage.";
+    let submit = "\n\n### Submit the StageDeliverable by CALLING `submit_stage_deliverable`\nThe stage completes ONLY when you call the `submit_stage_deliverable` tool with structured fields (`stage_id`, `claims`, plus optional `coverage`/`findings`/notes). Do NOT just print or describe the JSON, and do NOT only delegate \"write the JSON\" to a sub-agent — if you delegated to a reporter, take its result and call `submit_stage_deliverable` yourself. A prose-only ending leaves the gate with nothing to validate and forces you to redo this entire stage.";
     format!("{boundary}{submit}")
 }
 

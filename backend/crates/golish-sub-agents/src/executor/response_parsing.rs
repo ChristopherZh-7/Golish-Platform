@@ -2014,6 +2014,7 @@ mod tests {
         };
 
         assert!(mode.block_result("query_target_data").is_none());
+        assert!(mode.block_result("list_recent_evidence").is_none());
         assert!(mode.block_result("submit_stage_deliverable").is_none());
         let blocked = mode
             .block_result("pentest_run")
@@ -2088,6 +2089,9 @@ mod tests {
         assert!(mode.model_instruction().contains("www.example.com"));
         assert!(mode.block_result("query_target_data").is_none());
         assert!(mode.block_result("check_stage_asset_coverage").is_none());
+        assert!(mode.block_result("stage_worklist_status").is_none());
+        assert!(mode.block_result("stage_worklist_next").is_none());
+        assert!(mode.block_result("list_recent_evidence").is_none());
         assert!(mode.block_result("pentest_run").is_none());
         assert!(mode.block_result("submit_stage_deliverable").is_none());
         let blocked = mode
@@ -2175,6 +2179,8 @@ mod tests {
             panic!("expected Set repair mode");
         };
 
+        assert!(mode.block_result("stage_worklist_status").is_none());
+        assert!(mode.block_result("stage_worklist_next").is_none());
         assert!(mode.allows("browser_collect_js_api"));
         assert!(mode.allows("js_collect"));
         assert!(mode.allows("js_extract_apis"));
@@ -2279,6 +2285,8 @@ mod tests {
             .unwrap()
             .iter()
             .all(|tool| tool.as_str() != Some("pentest_run")));
+        assert!(mode.block_result("stage_worklist_status").is_none());
+        assert!(mode.block_result("stage_worklist_next").is_none());
     }
 
     #[test]
@@ -2385,6 +2393,84 @@ mod tests {
             )
             .expect("multi-target probes should be blocked during coverage repair");
 
+        assert_eq!(blocked["repair_kind"], "coverage_gap");
+        assert!(blocked["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("not in coverage_gap_actions"));
+    }
+
+    #[test]
+    fn coverage_gap_repair_batch_blocks_when_any_target_unlisted() {
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["content enumeration incomplete: never attempted"],
+            "coverage_gap_actions": [{
+                "asset": "dayu.moresec.cn",
+                "technique": "GOLISH-ENUM-JSAPI",
+                "reason": "missing_terminal_coverage",
+                "suggested_tools": ["browser_collect_js_api"]
+            }]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("coverage gaps should activate repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
+
+        // A batch that stays entirely inside the named gaps is allowed.
+        assert!(mode
+            .block_result_with_args(
+                "browser_collect_js_api",
+                &serde_json::json!({ "target_urls": ["https://dayu.moresec.cn/"] }),
+            )
+            .is_none());
+
+        // A batch that smuggles an un-named target is blocked as a whole.
+        let blocked = mode
+            .block_result_with_args(
+                "browser_collect_js_api",
+                &serde_json::json!({
+                    "target_urls": ["https://dayu.moresec.cn/", "https://package.moresec.cn/"]
+                }),
+            )
+            .expect("unlisted batch target should be blocked");
+        assert_eq!(blocked["repair_kind"], "coverage_gap");
+        assert!(blocked["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("not in coverage_gap_actions"));
+    }
+
+    #[test]
+    fn coverage_gap_repair_batch_route_probe_checks_each_base_url() {
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["content enumeration incomplete: never attempted"],
+            "coverage_gap_actions": [{
+                "asset": "dayu.moresec.cn",
+                "technique": "GOLISH-ENUM-DIR",
+                "reason": "missing_terminal_coverage",
+                "suggested_tools": ["route_probe_paths"]
+            }]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("coverage gaps should activate repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
+
+        let blocked = mode
+            .block_result_with_args(
+                "route_probe_paths",
+                &serde_json::json!({
+                    "targets": [
+                        {"target_id": "11111111-1111-1111-1111-111111111111", "base_url": "https://dayu.moresec.cn/"},
+                        {"target_id": "22222222-2222-2222-2222-222222222222", "base_url": "https://package.moresec.cn/"}
+                    ]
+                }),
+            )
+            .expect("unlisted batch base_url should be blocked");
         assert_eq!(blocked["repair_kind"], "coverage_gap");
         assert!(blocked["blocked_reason"]
             .as_str()

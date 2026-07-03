@@ -1,7 +1,9 @@
 //! Doc 3 §8.2 freshness_check · evidence as_of_timestamp + max_age 比较.
 //!
 //! Phase 1c.5 完整版:
-//!   1. Sanity: claim/finding 引用的 evidence_id 必须在 deliverable.evidence_refs
+//!   1. Sanity: model-authored evidence ids are optional; if present, freshness
+//!      checks consider ids wherever they appear instead of requiring a top-level
+//!      mirror in `deliverable.evidence_refs`.
 //!   2. Freshness: 调用方可传 `evidence_ages` 映射 (eid → age via Utc::now -
 //!      as_of_timestamp); freshness_check 用 `EvidenceKindRegistry` 配 `evidence_kinds`
 //!      Doc 1 §6.1 默认 + 7 days fallback 比较.
@@ -21,8 +23,9 @@ use super::super::types::{ExternalAttackSurfaceDeliverable, HarnessRecoveryActio
 use super::GateCheckOutcome;
 
 pub fn run(deliverable: &ExternalAttackSurfaceDeliverable, _spec: &StageSpec) -> GateCheckOutcome {
-    // Phase 1c.2 skeleton: 不做真 freshness 查 (需要 EvidenceLedger). 只做
-    // sanity: evidence_refs 数量 vs claims/findings 引用 evidence_ids 一致性.
+    // Model-authored evidence ids are optional and no longer need to be mirrored
+    // into top-level evidence_refs. Fabricated ids are rejected by the runtime
+    // ledger-existence hook when supplied; absence of ids is not a gate failure.
     let referenced_eids: std::collections::HashSet<_> = deliverable
         .claims
         .iter()
@@ -35,47 +38,16 @@ pub fn run(deliverable: &ExternalAttackSurfaceDeliverable, _spec: &StageSpec) ->
         )
         .collect();
 
-    let registered_eids: std::collections::HashSet<_> =
-        deliverable.evidence_refs.iter().copied().collect();
-
-    let mut reasons = Vec::new();
-    for eid in &referenced_eids {
-        if !registered_eids.contains(eid) {
-            reasons.push(format!(
-                "evidence_audit_id={} referenced by claim/finding but not declared in deliverable.evidence_refs",
-                eid.as_i64()
-            ));
-        }
-    }
-
-    if reasons.is_empty() {
-        tracing::info!(
-            target: "harness::gate::freshness_check",
-            stage_id = %deliverable.stage_id,
-            stage_run_id = %deliverable.stage_run_id,
-            referenced_eids = referenced_eids.len(),
-            registered_eids = registered_eids.len(),
-            outcome = "pass",
-            "freshness_check sanity pass"
-        );
-        GateCheckOutcome::Pass
-    } else {
-        tracing::info!(
-            target: "harness::gate::freshness_check",
-            stage_id = %deliverable.stage_id,
-            stage_run_id = %deliverable.stage_run_id,
-            outcome = "block",
-            reasons_count = reasons.len(),
-            first_reason = %reasons[0],
-            "freshness_check sanity block"
-        );
-        let mut recovery = HarnessRecoveryActions::default();
-        recovery.hints.push(
-            "add all claim/finding-referenced evidence ids to deliverable.evidence_refs"
-                .to_string(),
-        );
-        GateCheckOutcome::Block { reasons, recovery }
-    }
+    tracing::info!(
+        target: "harness::gate::freshness_check",
+        stage_id = %deliverable.stage_id,
+        stage_run_id = %deliverable.stage_run_id,
+        referenced_eids = referenced_eids.len(),
+        top_level_eids = deliverable.evidence_refs.len(),
+        outcome = "pass",
+        "freshness_check sanity pass (top-level evidence_refs mirror optional)"
+    );
+    GateCheckOutcome::Pass
 }
 
 /// 完整版本: 额外接受 `evidence_kinds + evidence_ages` 启用 max_age 比较.
@@ -109,8 +81,36 @@ pub fn run_with_freshness(
             .extend(rec.missing_evidence_kinds);
     }
 
-    // 2. 对 deliverable.evidence_refs 中每条 eid 做 freshness 检查
+    // 2. 对模型提供的所有 evidence id 做 freshness 检查；id 可出现在
+    // top-level/claim/finding/coverage 任一处。
+    let mut all_ids: Vec<EvidenceAuditId> = Vec::new();
     for eid in &deliverable.evidence_refs {
+        if !all_ids.contains(eid) {
+            all_ids.push(*eid);
+        }
+    }
+    for claim in &deliverable.claims {
+        for eid in &claim.evidence_ids {
+            if !all_ids.contains(eid) {
+                all_ids.push(*eid);
+            }
+        }
+    }
+    for finding in &deliverable.findings {
+        for eid in &finding.evidence_refs {
+            if !all_ids.contains(eid) {
+                all_ids.push(*eid);
+            }
+        }
+    }
+    for cell in &deliverable.coverage {
+        for eid in &cell.evidence_refs {
+            if !all_ids.contains(eid) {
+                all_ids.push(*eid);
+            }
+        }
+    }
+    for eid in &all_ids {
         let kind = match evidence_kinds.get(eid) {
             Some(k) => k.as_str(),
             None => continue, // 未提供 kind 信息 → 跳过 (gate 仍能放过)
@@ -274,10 +274,10 @@ mod tests {
     }
 
     #[test]
-    fn finding_evidence_not_in_deliverable_blocks() {
+    fn finding_evidence_not_in_top_level_refs_passes() {
         let spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
         let mut d = empty_deliverable();
-        // 故意不把 eid=42 加到 deliverable.evidence_refs
+        // Model-authored ids no longer need a top-level evidence_refs mirror.
         d.evidence_refs = vec![];
         d.findings.push(HarnessFinding {
             finding_id: Uuid::new_v4(),
@@ -287,16 +287,11 @@ mod tests {
             evidence_refs: vec![EvidenceAuditId::new(42)],
             technique: None,
         });
-        match run(&d, &spec) {
-            GateCheckOutcome::Block { reasons, .. } => {
-                assert!(reasons[0].contains("evidence_audit_id=42"));
-            }
-            _ => panic!("expected Block"),
-        }
+        assert!(matches!(run(&d, &spec), GateCheckOutcome::Pass));
     }
 
     #[test]
-    fn claim_evidence_not_in_deliverable_blocks() {
+    fn claim_evidence_not_in_top_level_refs_passes() {
         let spec = load_stage_spec_from_json(STAGE_JSON).unwrap();
         let mut d = empty_deliverable();
         d.evidence_refs = vec![];
@@ -307,12 +302,7 @@ mod tests {
             evidence_ids: vec![EvidenceAuditId::new(99)],
             technique: None,
         });
-        match run(&d, &spec) {
-            GateCheckOutcome::Block { reasons, .. } => {
-                assert!(reasons[0].contains("evidence_audit_id=99"));
-            }
-            _ => panic!("expected Block"),
-        }
+        assert!(matches!(run(&d, &spec), GateCheckOutcome::Pass));
     }
 
     #[test]

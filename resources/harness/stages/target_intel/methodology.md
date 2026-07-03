@@ -26,7 +26,7 @@ targets bound to this `organization_id`.
    lands `organizations.whois` (the `GOLISH-INTEL-WHOIS` cell). Fast and zero-touch.
 3. If a provider/source cannot land a required technique, stop at a terminal
    status: `blocked+note` for missing credentials/unavailable source,
-   `checked_empty+evidence` for a provider that ran and returned nothing, or
+   `checked_empty` for a provider that ran and returned nothing, or
    `not_applicable+note` when the asset class cannot support the technique.
    Do NOT switch to a scan-tool fallback, do NOT install tools mid-stage, and do
    NOT retry the same source with different flags.

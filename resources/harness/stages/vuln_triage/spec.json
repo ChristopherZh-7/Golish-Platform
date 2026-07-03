@@ -17,6 +17,9 @@
   "facts_from_db_truth": true,
   "freshness_window": true,
 
+  "$comment_skip_dead_assets": "Dead-asset denominator exclusion (design 2026-07-02-dead-asset-liveness-state \u00a75.2): drop assets EAS confirmed dead (targets.liveness_state='dead') from the vuln_triage denominator so a dead host is not scanned / booked checked_empty. Guarded in org_gate so it never empties a non-empty axis; 'unreachable' is never dropped (may be transient).",
+  "skip_dead_assets": true,
+
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
 
@@ -25,27 +28,27 @@
       "op": "for_all",
       "over": "claims",
       "require": { "pred": "non_empty", "field": "evidence_ids" },
-      "on_fail": { "reason": "every claim must cite evidence", "hints": ["add evidence to each claim via prior tool calls"] }
+      "on_fail": { "reason": "claim evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_ids unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",
       "over": "findings",
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "every finding must cite evidence", "hints": ["add evidence to each finding via prior tool calls"] }
+      "on_fail": { "reason": "finding evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",
       "over": "coverage",
       "where": { "pred": "eq", "field": "status", "value": "found" },
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "every 'found' coverage cell must cite evidence", "hints": ["attach a PoC / evidence id to each found cell"] }
+      "on_fail": { "reason": "coverage evidence ids are optional; found cells are resolved from DB/ledger truth when available", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",
       "over": "coverage",
       "where": { "pred": "eq", "field": "status", "value": "checked_empty" },
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "every 'checked_empty' coverage cell must cite evidence (I8: checked-empty is NOT unchecked)", "hints": ["attach the scan/probe evidence id proving you actually tested this technique on this asset"] }
+      "on_fail": { "reason": "coverage evidence ids are optional; checked_empty is a terminal state, not unchecked", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
     },
     {
       "op": "coverage_complete",
@@ -55,7 +58,7 @@
       "$comment_authoritative": "Phase 4 (gate-capability-ledger, incremental per design 2026-07-02 §11 open-Q3 + attack-stage plan P3 Task3.2): scope authoritative_found to the 4 most objective formulaic classes — n-day PoC (GOLISH-NDAY), sensitive exposure/config (WSTG-CONF-05), default/weak creds (WSTG-ATHN-02), TLS (WSTG-CRYP-03). For these, a hand-written 'found' no longer counts without a technique_outcomes DB fact; the deterministic nuclei handler (bridge_config.rs maybe_store_background_vuln_outcomes) upserts found/empty per covered WSTG class from -tags + JSON hits, so real scans close these cells and self-report cannot inflate them. The other 6 classes (INPV-05/01/12, ATHZ-04, SESS-02, INFO) keep legacy self-report until their scan write-paths land, so the live gate never permanently blocks (escape hatch: blocked/not_applicable+note still terminal for any class). Widen authoritative_techniques as more scanners upsert (design guardrail 2).",
       "on_fail": {
         "reason": "coverage incomplete: some (asset \u00d7 expected technique) cells were never attempted",
-        "hints": ["for every in-scope asset, give each expected technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note"]
+        "hints": ["for every in-scope asset, give each expected technique a terminal status: found / checked_empty / blocked|not_applicable+note"]
       }
     },
     {

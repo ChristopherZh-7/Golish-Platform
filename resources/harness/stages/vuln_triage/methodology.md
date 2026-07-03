@@ -52,7 +52,7 @@ goes straight into `findings`.
 **Coverage + stop condition (denominator matters):**
 
 - Per in-scope asset, give each of the 10 formulaic techniques a terminal status
-  in `coverage`: found+evidence / checked_empty+evidence / blocked|not_applicable
+  in `coverage`: found / checked_empty / blocked|not_applicable
   +note. A MISSING (asset × technique) cell counts as not_attempted and FAILS the
   gate — "omitted" is not "checked-empty" (I8).
 - For found/checked_empty cells set `tested_units`/`total_units` (M = enumerated

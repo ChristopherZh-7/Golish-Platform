@@ -20,6 +20,14 @@ use crate::db_traits::DbRepoProvider;
 
 const TECH_EAS_LIVENESS: &str = "GOLISH-EAS-LIVENESS";
 const TECH_EAS_SERVICE_FP: &str = "GOLISH-EAS-SERVICE-FINGERPRINT";
+/// Content-enumeration axes (design 2026-07-03): an IP proven DNS/53-only with
+/// no web surface is not_applicable for all four.
+const ENUM_CONTENT_TECHNIQUES: [&str; 4] = [
+    "GOLISH-ENUM-JS",
+    "GOLISH-ENUM-DIR",
+    "GOLISH-ENUM-PARAM",
+    "GOLISH-ENUM-JSAPI",
+];
 
 /// 一个 org 在某 stage 的裁决。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,6 +270,40 @@ pub async fn evaluate_org_stage_gate(
             in_scope_assets.iter().map(String::as_str).collect();
         typed_assets.retain(|(asset, _)| current_wave.contains(asset.as_str()));
     }
+    // Dead-asset denominator exclusion (design 2026-07-02-dead-asset-liveness-
+    // state §5.2): a stage that opts in (`skip_dead_assets`, enumeration onward —
+    // never EAS) drops assets EAS confirmed dead so a dead host no longer forces a
+    // probe / `checked_empty`. Guarded so it never empties a non-empty axis (all
+    // assets dead ⇒ keep them, else `coverage_complete`'s "empty matrix but
+    // techniques expected → BLOCK" would spuriously fire); only `'dead'` is
+    // dropped (`'unreachable'` may be transient — see `dead_asset_values`).
+    if spec.skip_dead_assets && !in_scope_assets.is_empty() {
+        let dead: std::collections::HashSet<String> =
+            repo.dead_asset_values(org_id).await.unwrap_or_default().into_iter().collect();
+        if !dead.is_empty() {
+            let survivors: Vec<String> = in_scope_assets
+                .iter()
+                .filter(|asset| !dead.contains(*asset))
+                .cloned()
+                .collect();
+            if !survivors.is_empty() {
+                let removed = in_scope_assets.len() - survivors.len();
+                if removed > 0 {
+                    tracing::info!(
+                        target: "harness::hook",
+                        stage = stage.as_str(),
+                        org_id = ?org_id,
+                        removed,
+                        "excluded confirmed-dead assets from coverage denominator"
+                    );
+                }
+                in_scope_assets = survivors;
+                let alive: std::collections::HashSet<&str> =
+                    in_scope_assets.iter().map(String::as_str).collect();
+                typed_assets.retain(|(asset, _)| alive.contains(asset.as_str()));
+            }
+        }
+    }
     let web_capable_assets: Vec<String> =
         if stage == StageKind::Enumeration && spec.enum_ip_web_coverage {
             repo.enumeration_web_capable_assets(org_id)
@@ -270,17 +312,35 @@ pub async fn evaluate_org_stage_gate(
         } else {
             Vec::new()
         };
-    let not_applicable_coverage: Vec<(String, String)> =
-        if stage == StageKind::ExternalAttackSurface {
-            repo.eas_service_not_applicable_assets(org_id, effective_wave_cutoff)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|asset| (asset, TECH_EAS_SERVICE_FP.to_string()))
-                .collect()
-        } else {
-            Vec::new()
-        };
+    let not_applicable_coverage: Vec<(String, String)> = match stage {
+        StageKind::ExternalAttackSurface => repo
+            .eas_service_not_applicable_assets(org_id, effective_wave_cutoff)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|asset| (asset, TECH_EAS_SERVICE_FP.to_string()))
+            .collect(),
+        // Enumeration content not_applicable (design 2026-07-03): an in-scope
+        // IP/CIDR that port truth proves is DNS/53-only with no web service
+        // surface is not a content-enumeration root. Reuse the same
+        // deterministic only-DNS判定 as EAS SERVICE and mark all four ENUM axes
+        // not_applicable, so a shared-DNS/CDN IP that slipped into the
+        // web-capable denominator (e.g. stale http_status) reaches a terminal
+        // state instead of wedging the gate. No-op for IPs that never entered
+        // the denominator.
+        StageKind::Enumeration => repo
+            .eas_service_not_applicable_assets(org_id, effective_wave_cutoff)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|asset| {
+                ENUM_CONTENT_TECHNIQUES
+                    .iter()
+                    .map(move |tech| (asset.clone(), (*tech).to_string()))
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
     if stage == StageKind::Enumeration && !in_scope_assets.is_empty() {
         let inherited_truth = repo
             .db_truth_facts(org_id, &in_scope_assets, None)

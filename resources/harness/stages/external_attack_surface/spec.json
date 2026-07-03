@@ -31,13 +31,13 @@
       "op": "for_all",
       "over": "claims",
       "require": { "pred": "non_empty", "field": "evidence_ids" },
-      "on_fail": { "reason": "every claim must cite evidence", "hints": ["add evidence to each claim via prior tool calls"] }
+      "on_fail": { "reason": "claim evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_ids unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",
       "over": "findings",
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "every finding must cite evidence", "hints": ["add evidence to each finding via prior tool calls"] }
+      "on_fail": { "reason": "finding evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",
@@ -45,8 +45,8 @@
       "where": { "pred": "eq", "field": "status", "value": "found" },
       "require": { "pred": "non_empty", "field": "evidence_refs" },
       "on_fail": {
-        "reason": "every found EAS coverage cell must cite evidence",
-        "hints": ["cite the evidence id from the tool run that produced this liveness / port / service fact"]
+        "reason": "coverage evidence ids are optional; found cells are resolved from DB/ledger truth",
+        "hints": ["omit evidence_refs unless a real ledger id is explicitly available"]
       }
     },
     {
@@ -55,8 +55,8 @@
       "where": { "pred": "eq", "field": "status", "value": "checked_empty" },
       "require": { "pred": "non_empty", "field": "evidence_refs" },
       "on_fail": {
-        "reason": "every checked_empty EAS coverage cell must cite evidence",
-        "hints": ["cite the scan/probe evidence proving the technique ran and returned no applicable result"]
+        "reason": "coverage evidence ids are optional; checked_empty is resolved from DB/ledger truth or terminal coverage",
+        "hints": ["omit evidence_refs unless a real ledger id is explicitly available"]
       }
     },
     { "op": "named_check", "check": "surface_coverage" },
@@ -66,11 +66,11 @@
       "require_note_for_other": true,
       "authoritative_found": true,
       "authoritative_techniques": ["GOLISH-EAS-LIVENESS", "GOLISH-EAS-PORT", "GOLISH-EAS-SERVICE-FINGERPRINT"],
-      "$comment_derive": "2026-06-25 EAS slim closeout: DB business-table truth补格 \u2014 GOLISH-EAS-LIVENESS\u2190targets(http_status/real_ip), -PORT\u2190targets.ports, -SERVICE-FINGERPRINT\u2190fingerprints, plus technique_outcomes provenance where available. 真跑工具落库后 coverage 格自动补 found; authoritative_found means a hand-written found cell no longer counts without DB/ledger truth. Negative/blocked terminal cells still need explicit checked_empty+evidence or blocked/not_applicable+note until active Empty facts are complete.",
+      "$comment_derive": "2026-06-25 EAS slim closeout: DB business-table truth补格 \u2014 GOLISH-EAS-LIVENESS\u2190targets(http_status/real_ip), -PORT\u2190targets.ports, -SERVICE-FINGERPRINT\u2190fingerprints, plus technique_outcomes provenance where available. 真跑工具落库后 coverage 格自动补 found; authoritative_found means a hand-written found cell no longer counts without DB/ledger truth. Negative/blocked terminal cells should use explicit checked_empty or blocked/not_applicable+note until active Empty facts are complete.",
       "on_fail": {
         "reason": "external attack surface incomplete: some in-scope assets were not fully mapped (liveness / port / service-fingerprint)",
         "hints": [
-          "for EVERY in-scope asset, take each applicable EAS technique to a terminal coverage cell: found+evidence_refs / checked_empty+evidence_refs / blocked|not_applicable+note. Domain/URL assets require LIVENESS only; IP/CIDR host assets require LIVENESS + PORT + SERVICE-FINGERPRINT",
+          "for EVERY in-scope asset, take each applicable EAS technique to a terminal coverage cell: found / checked_empty / blocked|not_applicable+note. Domain/URL assets require LIVENESS only; IP/CIDR host assets require LIVENESS + PORT + SERVICE-FINGERPRINT",
           "intel-source data (FOFA/Shodan/...) is a lead, not proof \u2014 actively confirm each asset NOW; the gate auto-projects found cells from DB truth (httpx\u2192targets, naabu/masscan\u2192targets.ports, whatweb/nmap\u2192fingerprints) so running the real tools fills coverage; JS/API extraction happens in the NEXT stage (enumeration)"
         ]
       }

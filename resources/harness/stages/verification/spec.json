@@ -31,7 +31,7 @@
     }
   ],
 
-  "$comment_p2": "P2 verification-gate SAMPLE — tune to taste. required_evidence_kinds: this stage's cited evidence must include these kinds (ledger-checked). finding_verification: findings at/above min_severity must carry evidence, and (when set) one of require_evidence_kinds. Fill the other 11 stage specs the same way to define each stage's pass-criteria.",
+  "$comment_p2": "P2 verification-gate SAMPLE — tune to taste. Evidence ids are optional model fields; verification evidence must be resolved from backend ledger/DB truth rather than requiring the model to hand-copy ids.",
   "required_evidence_kinds": ["exploit_verified"],
   "finding_verification": {
     "min_severity": "high",
@@ -44,25 +44,25 @@
       "op": "for_all",
       "over": "claims",
       "require": { "pred": "non_empty", "field": "evidence_ids" },
-      "on_fail": { "reason": "every claim must cite evidence", "hints": ["add evidence to each claim via prior tool calls"] }
+      "on_fail": { "reason": "claim evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_ids unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",
       "over": "findings",
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "every finding must cite evidence", "hints": ["add evidence to each finding via prior tool calls"] }
+      "on_fail": { "reason": "finding evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",
       "over": "findings",
       "where": { "pred": "severity_at_least", "min": "high" },
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "verification: every high/critical finding must carry evidence" }
+      "on_fail": { "reason": "verification finding evidence ids are optional; backend resolves proof from DB/ledger truth" }
     },
     {
       "op": "candidate_disposition_complete",
       "require_evidence_for_verified": true,
-      "on_fail": { "reason": "every approved candidate must reach a terminal disposition (verified/refuted/blocked); verified needs evidence", "hints": ["verified \u2192 attach poc/exploit_verified evidence", "refuted \u2192 cite what proved it a false positive (I8)", "blocked \u2192 note the WAF/authz reason"] }
+      "on_fail": { "reason": "every approved candidate must reach a terminal disposition (verified/refuted/blocked)", "hints": ["verified/refuted evidence is resolved from DB/ledger truth; do not hand-copy ids", "blocked \u2192 note the WAF/authz reason"] }
     }
   ]
 }

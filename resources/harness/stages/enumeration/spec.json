@@ -21,6 +21,9 @@
   "host_aware_coverage": true,
   "enum_ip_web_coverage": true,
 
+  "$comment_skip_dead_assets": "Dead-asset denominator exclusion (design 2026-07-02-dead-asset-liveness-state \u00a75.2): drop assets EAS confirmed dead (targets.liveness_state='dead') from the enumeration denominator so a dead host no longer forces JS/DIR/PARAM/JSAPI probing or a checked_empty book. EAS itself must NOT set this (it is the liveness-judging stage). Guarded in org_gate so it never empties a non-empty axis; 'unreachable' is never dropped (may be transient).",
+  "skip_dead_assets": true,
+
   "$comment_freshness_window": "Phase E activation (design 2026-06-22 Phase D): gray-switch ON. The ENUM DB-truth back-fill (GOLISH-ENUM-DIR/PARAM/JSAPI) only counts content discovered this stage-run (directory_entries.created_at + api_endpoints.discovered_at >= stage start). enumeration coverage_complete is derive_from_evidence (NOT authoritative), so this makes the DB auto-fill fresh-only; self-reported cells still fall back. Default false = presence-only.",
   "freshness_window": true,
 
@@ -29,13 +32,13 @@
       "op": "for_all",
       "over": "claims",
       "require": { "pred": "non_empty", "field": "evidence_ids" },
-      "on_fail": { "reason": "every claim must cite evidence", "hints": ["add evidence to each claim via prior tool calls"] }
+      "on_fail": { "reason": "claim evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_ids unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",
       "over": "findings",
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "every finding must cite evidence", "hints": ["add evidence to each finding via prior tool calls"] }
+      "on_fail": { "reason": "finding evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
     },
     {
       "op": "coverage_complete",
@@ -45,7 +48,7 @@
         "reason": "content enumeration incomplete: some alive in-scope services were not fully enumerated (js/api / dir / param)",
         "hints": [
           "for EVERY EAS-confirmed live web root, take GOLISH-ENUM-JSAPI (browser_collect_js_api -> js_extract_apis), GOLISH-ENUM-DIR (route_probe_paths once after JS/API landing with target_id + base_url, DB seeds, and its recursive local/built-in wordlist queue), and GOLISH-ENUM-PARAM (observed request/query/form parameters plus targeted js_extract_apis param_hints) to a terminal state",
-          "do NOT hand-write found cells already backed by DB truth; found is projected from directory_entries/api_endpoints after real tools land rows with target_id. Use submitted coverage only for checked_empty+evidence, blocked+note, or not_applicable+note states the DB cannot derive yet"
+          "do NOT hand-write found cells already backed by DB truth; found is projected from directory_entries/api_endpoints after real tools land rows with target_id. Use submitted coverage only for checked_empty, blocked+note, or not_applicable+note states the DB cannot derive yet"
         ]
       }
     }

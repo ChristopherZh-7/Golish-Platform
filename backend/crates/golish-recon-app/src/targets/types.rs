@@ -40,6 +40,8 @@ pub(super) struct TargetRow {
     webserver: String,
     os_info: String,
     content_type: String,
+    liveness_state: Option<String>,
+    liveness_reason: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -70,6 +72,8 @@ impl From<TargetRow> for Target {
             webserver: r.webserver,
             os_info: r.os_info,
             content_type: r.content_type,
+            liveness_state: r.liveness_state,
+            liveness_reason: r.liveness_reason,
             created_at: ts_from_dt(r.created_at),
             updated_at: ts_from_dt(r.updated_at),
         }

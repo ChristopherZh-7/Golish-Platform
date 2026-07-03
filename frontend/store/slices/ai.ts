@@ -19,6 +19,7 @@ import type {
   ToolCallSource,
   UnifiedBlock,
 } from "../store-types";
+import { appendLiveToolOutput } from "./live-output";
 import type { SliceCreator } from "./types";
 
 /**
@@ -602,7 +603,7 @@ export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => 
         (b) => b.type === "ai_tool_execution" && b.data.requestId === requestId
       );
       if (block && block.type === "ai_tool_execution") {
-        block.data.streamingOutput = (block.data.streamingOutput || "") + chunk;
+        block.data.streamingOutput = appendLiveToolOutput(block.data.streamingOutput, chunk);
       }
     }),
 

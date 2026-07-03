@@ -1,8 +1,8 @@
 //! Phase 1d Task 1d.1 · external_attack_surface demo e2e 单测.
 //!
 //! 模拟 assessment profile + L2 active_recon + 1 个 stage 完整跑通:
-//!   1. mock 3 evidence (dns_a / http_probe / ct_log)
-//!   2. mock deliverable 含 claims + findings + evidence_refs
+//!   1. mock DB-truth evidence facts (LIVENESS / PORT / SERVICE-FINGERPRINT)
+//!   2. mock deliverable 含 claims + findings; model-authored ids are optional
 //!   3. validate_external_attack_surface_gate (含 contract_check.run_with_skeleton
 //!      + freshness_check.run_with_freshness 完整路径)
 //!   4. 断言 allowed=true / blocked + recovery_actions
@@ -46,7 +46,7 @@ fn build_harness() -> StageHarness {
     StageHarness::for_stage(StageKind::ExternalAttackSurface, profile, spec).expect("harness")
 }
 
-/// 构造 3 evidence + 2 finding + 1 claim 的 "happy path" deliverable.
+/// 构造 surface claim/findings 的 "happy path" deliverable.
 fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
     let dns_eid = EvidenceAuditId::new(1);
     let http_eid = EvidenceAuditId::new(2);
@@ -143,7 +143,7 @@ fn e2e_happy_path_external_attack_surface_passes_gate() {
 }
 
 #[test]
-fn e2e_external_attack_surface_blocks_found_coverage_without_evidence() {
+fn e2e_external_attack_surface_allows_found_coverage_without_model_ids() {
     let harness = build_harness();
     let mut d = happy_deliverable(Uuid::new_v4());
     d.coverage.push(CoverageCell {
@@ -160,13 +160,9 @@ fn e2e_external_attack_surface_blocks_found_coverage_without_evidence() {
 
     let ctx = eas_db_truth_context();
     let decision = harness.validate_gate_with_context(&d, None, &ctx);
-    assert!(!decision.allowed);
     assert!(
-        decision
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("every found EAS coverage cell must cite evidence")),
-        "found coverage without evidence should block: {:?}",
+        decision.allowed,
+        "found coverage model evidence_refs are optional; DB truth decides: {:?}",
         decision.reasons
     );
 }
@@ -222,26 +218,27 @@ fn e2e_vacuous_deliverable_is_blocked_with_recovery() {
 }
 
 #[test]
-fn e2e_finding_missing_evidence_refs_blocks_via_scope_and_freshness() {
+fn e2e_finding_missing_evidence_refs_still_passes_with_db_truth() {
     let harness = build_harness();
     let mut d = happy_deliverable(Uuid::new_v4());
-    // 故意把第 0 个 finding 的 evidence_refs 清空 → 迁移后的 scope×2 数据规则拦
-    // (gate-rules-migration 2026-06-05: 决策不变 = 仍 Block；reason 文案由旧 scope_check
-    //  的 "...has empty evidence_refs" 改为声明式规则的 "every finding must cite evidence")。
+    // 故意把第 0 个 finding 的 evidence_refs 清空。模型侧 ids 不再是 gate 条件；
+    // DB truth / fabricated-id checks 才是证据真实性来源。
     d.findings[0].evidence_refs.clear();
-    let decision = harness.validate_gate(&d, None);
-    assert!(!decision.allowed);
-    assert!(decision
-        .reasons
-        .iter()
-        .any(|r| r.contains("must cite evidence")));
+    let ctx = eas_db_truth_context();
+    let decision = harness.validate_gate_with_context(&d, None, &ctx);
+    assert!(
+        decision.allowed,
+        "missing model evidence_refs should not block: {:?}",
+        decision.reasons
+    );
 }
 
 #[test]
-fn e2e_finding_references_unknown_evidence_blocks_via_freshness_sanity() {
+fn e2e_finding_references_are_optional_in_pure_stage_gate() {
     let harness = build_harness();
     let mut d = happy_deliverable(Uuid::new_v4());
-    // 加一个 finding 引用 deliverable.evidence_refs 之外的 eid → freshness_check sanity 拦
+    // 加一个 finding 引用 deliverable.evidence_refs 之外的 eid。纯 StageHarness
+    // 没有 ledger repo，不在这里判 fabricated；submit tool/runtime 会查真实 ledger。
     d.findings.push(HarnessFinding {
         finding_id: Uuid::new_v4(),
         kind: "subdomain".to_string(),
@@ -250,18 +247,19 @@ fn e2e_finding_references_unknown_evidence_blocks_via_freshness_sanity() {
         evidence_refs: vec![EvidenceAuditId::new(9999)],
         technique: None,
     });
-    let decision = harness.validate_gate(&d, None);
-    assert!(!decision.allowed);
-    assert!(decision
-        .reasons
-        .iter()
-        .any(|r| r.contains("evidence_audit_id=9999")));
+    let ctx = eas_db_truth_context();
+    let decision = harness.validate_gate_with_context(&d, None, &ctx);
+    assert!(
+        decision.allowed,
+        "pure gate should not require top-level id mirroring: {:?}",
+        decision.reasons
+    );
 }
 
 #[test]
 fn e2e_contract_check_with_skeleton_passes_in_range() {
-    // happy deliverable 含 1 subdomain (in [1,200]) + 1 http_service (in [0,50])
-    // + 3 evidence_refs (= min_invocations sum) → 通过 contract_check.run_with_skeleton
+    // happy deliverable 含 1 subdomain (in [1,200]) + 1 http_service (in [0,50]).
+    // min_invocations is no longer inferred from model evidence_refs.
     let skeleton_full = SprintSkeleton::from_json(ASSESSMENT_SKELETON_JSON).expect("skeleton");
     let stage_sk = skeleton_full
         .for_stage(StageKind::ExternalAttackSurface)

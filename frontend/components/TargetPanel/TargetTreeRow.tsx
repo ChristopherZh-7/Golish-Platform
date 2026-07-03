@@ -10,6 +10,7 @@ import { Globe, Shield, ShieldOff, Trash2, Wifi } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import type { Target, TargetStatus } from "@/lib/pentest/types";
 import { cn } from "@/lib/utils";
+import { LivenessBadge } from "./LivenessBadge";
 import { TargetDetailView } from "./TargetDetail";
 import { TYPE_ICONS } from "./targetTypeIcons";
 
@@ -99,6 +100,7 @@ export function TargetTreeRow({
         >
           {target.value}
         </span>
+        <LivenessBadge state={target.liveness_state} />
         {cfg && target.status !== "new" && (
           <span className={cn("rounded px-1.5 py-0.5 text-[9px] font-medium", cfg.color, cfg.bg)}>
             {cfg.label}

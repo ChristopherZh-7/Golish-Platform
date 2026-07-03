@@ -242,11 +242,27 @@ pub(crate) async fn stage_asset_coverage_snapshot(
             .await?
             .into_iter()
             .map(|asset| {
-                coverage_lookup_asset(
-                    &asset,
-                    golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP,
-                )
+                coverage_lookup_asset(&asset, golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP)
             })
+            .collect()
+        } else {
+            BTreeSet::new()
+        };
+    // Enumeration content not_applicable (design 2026-07-03): DNS/53-only IPs
+    // with no web surface are not content-enumeration roots. Keep the UI /
+    // worklist read model in lockstep with the gate (org_gate / submit preview)
+    // so the worklist does not list these IPs as pending after the gate has
+    // terminalised them. Key = raw target value (ENUM coverage_lookup_asset is
+    // identity).
+    let enum_content_not_applicable_assets: BTreeSet<String> =
+        if stage_kind == StageKind::Enumeration {
+            golish_db::repo::coverage_truth::eas_service_not_applicable_assets(
+                pool,
+                Some(org_id),
+                run_start,
+            )
+            .await?
+            .into_iter()
             .collect()
         } else {
             BTreeSet::new()
@@ -279,7 +295,7 @@ pub(crate) async fn stage_asset_coverage_snapshot(
             discovered_phase(&asset, run_start)
         };
         let counts_as_asset = counts_as_coverage_asset(stage_kind, &asset, &eas_ip_targets);
-        let coverage = if next_wave {
+        let mut coverage = if next_wave {
             next_wave_coverage_cells_with_eas_parent_ips(
                 stage_kind,
                 &asset,
@@ -297,6 +313,12 @@ pub(crate) async fn stage_asset_coverage_snapshot(
                 &service_not_applicable_assets,
             )
         };
+        apply_enum_content_not_applicable(
+            stage_kind,
+            &asset,
+            &mut coverage,
+            &enum_content_not_applicable_assets,
+        );
 
         if next_wave && counts_as_asset {
             new_assets += 1;
@@ -896,6 +918,57 @@ fn coverage_cells_with_eas_parent_ips(
     cells
 }
 
+/// Enumeration content not_applicable (design 2026-07-03): keep the UI /
+/// worklist read model in lockstep with the gate — a DNS/53-only IP with no web
+/// surface is not a content-enumeration root, so terminalise its still-pending
+/// ENUM axes as not_applicable instead of leaving them as pending work items.
+fn apply_enum_content_not_applicable(
+    stage: StageKind,
+    asset: &TargetCoverageRow,
+    cells: &mut [StageAssetCoverageCell],
+    enum_content_not_applicable_assets: &BTreeSet<String>,
+) {
+    if stage != StageKind::Enumeration || !enum_content_not_applicable_assets.contains(&asset.value)
+    {
+        return;
+    }
+    for coverage_cell in cells.iter_mut() {
+        if coverage_cell.state == "pending" {
+            *coverage_cell = cell(
+                cell_technique_static(&coverage_cell.technique),
+                "not_applicable",
+                None,
+                Vec::new(),
+                Some(
+                    "only DNS/53 is open and no web service surface was observed, so content enumeration is not applicable to this IP"
+                        .to_string(),
+                ),
+            );
+        }
+    }
+}
+
+/// Map a runtime technique string back to the interned `&'static str` the `cell`
+/// helper needs. Enumeration only has the four ENUM axes; anything else falls
+/// through unchanged (defensive — this helper is only called for ENUM rows).
+fn cell_technique_static(technique: &str) -> &'static str {
+    match technique {
+        golish_db::repo::coverage_truth::TECH_ENUM_JS => {
+            golish_db::repo::coverage_truth::TECH_ENUM_JS
+        }
+        golish_db::repo::coverage_truth::TECH_ENUM_DIR => {
+            golish_db::repo::coverage_truth::TECH_ENUM_DIR
+        }
+        golish_db::repo::coverage_truth::TECH_ENUM_PARAM => {
+            golish_db::repo::coverage_truth::TECH_ENUM_PARAM
+        }
+        golish_db::repo::coverage_truth::TECH_ENUM_JSAPI => {
+            golish_db::repo::coverage_truth::TECH_ENUM_JSAPI
+        }
+        _ => golish_db::repo::coverage_truth::TECH_ENUM_JS,
+    }
+}
+
 fn apply_eas_service_dependency(
     stage: StageKind,
     asset: &TargetCoverageRow,
@@ -1397,6 +1470,54 @@ mod tests {
                 ("API", "pending")
             ]
         );
+    }
+
+    #[test]
+    fn enum_content_not_applicable_terminalises_pending_web_ip_axes() {
+        // design 2026-07-03: a web-capable IP that port truth proves is
+        // DNS/53-only gets its four pending ENUM axes terminalised as
+        // not_applicable so it does not wedge the gate / clutter the worklist.
+        let asset = target("203.0.113.10", "ip");
+        let mut cells = coverage_cells_with_eas_parent_ips(
+            StageKind::Enumeration,
+            &asset,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeSet::from([asset.value.clone()]),
+            &BTreeSet::new(),
+        );
+        assert!(cells.iter().all(|c| c.state == "pending"));
+
+        apply_enum_content_not_applicable(
+            StageKind::Enumeration,
+            &asset,
+            &mut cells,
+            &BTreeSet::from([asset.value.clone()]),
+        );
+        assert!(cells.iter().all(|c| c.state == "not_applicable"));
+        assert!(cells[0]
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("only DNS/53")));
+
+        // An IP not in the not_applicable set keeps its pending axes.
+        let mut kept = coverage_cells_with_eas_parent_ips(
+            StageKind::Enumeration,
+            &asset,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeSet::from([asset.value.clone()]),
+            &BTreeSet::new(),
+        );
+        apply_enum_content_not_applicable(
+            StageKind::Enumeration,
+            &asset,
+            &mut kept,
+            &BTreeSet::new(),
+        );
+        assert!(kept.iter().all(|c| c.state == "pending"));
     }
 
     #[test]

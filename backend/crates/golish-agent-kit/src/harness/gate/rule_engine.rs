@@ -123,17 +123,16 @@ pub enum GateRule {
     },
     /// B 阶段（设计 2026-07-02 §3.8）：`attack_candidate` 交付物里每个
     /// [`AttackCandidate`](super::super::types::AttackCandidate) 必须有非空
-    /// `rationale`，且 `require_evidence=true` 时非空 `evidence_refs`（堵凭空假设）。
-    /// 空 `candidates` = no-op Pass（完整性由 chain-wave 控制器保证，非本 op）。
+    /// `rationale`。`require_evidence` 保留为兼容字段，但不再要求模型填写
+    /// `evidence_refs`。空 `candidates` = no-op Pass（完整性由 chain-wave 控制器保证，非本 op）。
     CandidateGrounded {
         #[serde(default)]
         require_evidence: bool,
         on_fail: OnFail,
     },
     /// C 阶段（设计 2026-07-02 §3.8）：每个 `disposition=approved` 的 candidate 必须
-    /// 达终态之一 verified/refuted/blocked；`require_evidence_for_verified=true` 时
-    /// verified 的须有非空 `evidence_refs`（ledger 强证据仍由 finding_verification
-    /// 把关）。无 approved candidate = no-op Pass。
+    /// 达终态之一 verified/refuted/blocked。`require_evidence_for_verified` 保留为
+    /// 兼容字段，但不再要求模型填写 `evidence_refs`。无 approved candidate = no-op Pass。
     CandidateDispositionComplete {
         #[serde(default)]
         require_evidence_for_verified: bool,
@@ -164,6 +163,9 @@ impl GateRule {
     /// agent 面向的 stage charter 用的简短描述（替代旧 `required_checks` 名字列表）。
     pub fn summary(&self) -> String {
         match self {
+            GateRule::ForAll { require, .. } if is_model_evidence_id_presence_rule(require) => {
+                "evidence ids are optional; cited ids, if any, must be real ledger ids".to_string()
+            }
             GateRule::CountAtLeast { on_fail, .. }
             | GateRule::ForAll { on_fail, .. }
             | GateRule::CoverageComplete { on_fail, .. }
@@ -366,11 +368,17 @@ fn eval_one(
             filter,
             require,
             on_fail,
-        } => match for_all_matching(d, *over, filter.as_ref(), require) {
-            Ok(true) => GateCheckOutcome::Pass,
-            Ok(false) => block_from(on_fail),
-            Err(e) => block_config_err(e),
-        },
+        } => {
+            if is_model_evidence_id_presence_rule(require) {
+                GateCheckOutcome::Pass
+            } else {
+                match for_all_matching(d, *over, filter.as_ref(), require) {
+                    Ok(true) => GateCheckOutcome::Pass,
+                    Ok(false) => block_from(on_fail),
+                    Err(e) => block_config_err(e),
+                }
+            }
+        }
         GateRule::NamedCheck { check, on_fail } => {
             let base = match check {
                 NamedCheckKind::Scope => scope_check::run(d),
@@ -453,6 +461,15 @@ fn eval_one(
         );
     }
     outcome
+}
+
+fn is_model_evidence_id_presence_rule(require: &Pred) -> bool {
+    matches!(
+        require,
+        Pred::NonEmpty {
+            field: ItemField::EvidenceIds | ItemField::EvidenceRefs
+        }
+    )
 }
 
 fn db_truth_backed(spec: &StageSpec, ctx: &GateContext) -> bool {
@@ -1331,19 +1348,17 @@ fn status_to_str(s: CoverageStatus) -> &'static str {
 }
 
 /// `candidate_grounded` 求值（B 阶段，设计 2026-07-02 §3.8）。遍历
-/// `deliverable.candidates`：任一条 `rationale` 为空（trim 后），或
-/// `require_evidence && evidence_refs` 为空 → Block（reason/hints 取 on_fail）；
-/// 否则（含空 candidates）Pass。纯函数、DB-free。完整性（每个高价值资产是否都被推理
-/// 覆盖）由 chain-wave 控制器保证，不在本 op。
+/// `deliverable.candidates`：任一条 `rationale` 为空（trim 后）→ Block
+/// （reason/hints 取 on_fail）；模型填写的 `evidence_refs` 不再是通过条件。
+/// 纯函数、DB-free。完整性（每个高价值资产是否都被推理覆盖）由 chain-wave
+/// 控制器保证，不在本 op。
 fn candidate_grounded(
     d: &StageDeliverable,
     require_evidence: bool,
     on_fail: &OnFail,
 ) -> GateCheckOutcome {
-    let ungrounded = d
-        .candidates
-        .iter()
-        .any(|c| c.rationale.trim().is_empty() || (require_evidence && c.evidence_refs.is_empty()));
+    let _ = require_evidence;
+    let ungrounded = d.candidates.iter().any(|c| c.rationale.trim().is_empty());
     if ungrounded {
         block_from(on_fail)
     } else {
@@ -1353,20 +1368,18 @@ fn candidate_grounded(
 
 /// `candidate_disposition_complete` 求值（C 阶段，设计 2026-07-02 §3.8）。对
 /// `deliverable.candidates` 中 `disposition == Approved` 的每条：仍是 `Approved`
-/// （未达终态）→ Block；已 `Verified` 且 `require_evidence_for_verified` 但
-/// `evidence_refs` 为空 → Block。`Refuted` / `Blocked` / 带证据的 `Verified` /
-/// 无 approved candidate → Pass。注意 `Proposed`/`Rejected` 不在 C 的判定范围
-/// （前者未过审、后者人审否决），只对「被批准要真打」的 candidate 求终态。
+/// （未达终态）→ Block。模型填写的 `evidence_refs` 不再是通过条件；Verified
+/// 的证据归因由后端 ledger/DB truth 处理。注意 `Proposed`/`Rejected` 不在 C
+/// 的判定范围（前者未过审、后者人审否决），只对「被批准要真打」的 candidate 求终态。
 fn candidate_disposition_complete(
     d: &StageDeliverable,
     require_evidence_for_verified: bool,
     on_fail: &OnFail,
 ) -> GateCheckOutcome {
+    let _ = require_evidence_for_verified;
     let unresolved = d.candidates.iter().any(|c| match c.disposition {
         CandidateDisposition::Approved => true,
-        CandidateDisposition::Verified => {
-            require_evidence_for_verified && c.evidence_refs.is_empty()
-        }
+        CandidateDisposition::Verified => false,
         CandidateDisposition::Proposed
         | CandidateDisposition::Rejected
         | CandidateDisposition::Refuted
@@ -1424,7 +1437,7 @@ mod tests {
             "over": "findings",
             "where": { "pred": "severity_at_least", "min": "high" },
             "require": { "pred": "non_empty", "field": "evidence_refs" },
-            "on_fail": { "reason": "high+ finding needs evidence" }
+            "on_fail": { "reason": "high+ finding requires backend evidence truth" }
         }"#;
         let rule: GateRule = serde_json::from_str(json).expect("parse");
         assert!(matches!(rule, GateRule::ForAll { .. }));
@@ -1516,24 +1529,19 @@ mod tests {
     }
 
     #[test]
-    fn for_all_high_findings_need_evidence() {
+    fn for_all_high_findings_allow_missing_model_evidence_ids() {
         let rule = parse(
             r#"{ "op":"for_all","over":"findings",
                  "where":{"pred":"severity_at_least","min":"high"},
                  "require":{"pred":"non_empty","field":"evidence_refs"},
-                 "on_fail":{"reason":"high+ needs evidence","missing_evidence_kinds":["poc"]} }"#,
+                 "on_fail":{"reason":"high+ requires backend evidence truth","missing_evidence_kinds":["poc"]} }"#,
         );
-        // critical without evidence -> Block; low without evidence -> ignored.
-        let blocked = deliverable(
+        // High-severity findings no longer need model-authored evidence ids.
+        let high_without_ids = deliverable(
             vec![finding("rce", FindingSeverity::Critical, vec![])],
             vec![],
         );
-        match &eval(&blocked, &test_spec(), std::slice::from_ref(&rule))[0] {
-            GateCheckOutcome::Block { recovery, .. } => {
-                assert!(recovery.missing_evidence_kinds.contains(&"poc".to_string()))
-            }
-            GateCheckOutcome::Pass => panic!("expected Block"),
-        }
+        assert!(eval(&high_without_ids, &test_spec(), std::slice::from_ref(&rule))[0].is_pass());
         let ok = deliverable(vec![finding("info", FindingSeverity::Low, vec![])], vec![]);
         assert!(eval(&ok, &test_spec(), &[rule])[0].is_pass());
     }
@@ -1596,8 +1604,8 @@ mod tests {
     }
 
     #[test]
-    fn named_check_scope_blocks_on_claim_without_evidence() {
-        // 经 named_check 转发到 scope_check：claim 缺 evidence_ids → Block。
+    fn named_check_scope_allows_claim_without_model_evidence_ids() {
+        // 经 named_check 转发到 scope_check：model-authored evidence_ids are optional.
         let rule = parse(r#"{ "op":"named_check","check":"scope" }"#);
         let d = deliverable(
             vec![],
@@ -1609,7 +1617,7 @@ mod tests {
                 technique: None,
             }],
         );
-        assert!(!eval(&d, &test_spec(), &[rule])[0].is_pass());
+        assert!(eval(&d, &test_spec(), &[rule])[0].is_pass());
     }
 
     #[test]
@@ -1701,22 +1709,24 @@ mod tests {
     }
 
     #[test]
-    fn coverage_found_cell_must_cite_evidence() {
-        // #4：for_all over coverage where status==found require non_empty evidence_refs。
+    fn coverage_evidence_ref_presence_rule_is_compat_noop() {
+        // Evidence refs are optional model fields; this legacy DSL rule stays
+        // loadable but no longer blocks solely on missing ids.
         let rule = parse(
             r#"{ "op":"for_all","over":"coverage",
                  "where":{"pred":"eq","field":"status","value":"found"},
                  "require":{"pred":"non_empty","field":"evidence_refs"},
-                 "on_fail":{"reason":"found cell needs evidence"} }"#,
+                 "on_fail":{"reason":"found cell requires backend evidence truth"} }"#,
         );
-        // found 缺证据 → Block。
+        // found 缺 evidence_refs → Pass; coverage truth is checked by
+        // coverage_complete/DB projection, not this id-presence rule.
         let bad = deliverable_with_coverage(vec![cov_cell(
             "api.ex.com",
             "idor",
             CoverageStatus::Found,
             vec![],
         )]);
-        assert!(!eval(&bad, &test_spec(), std::slice::from_ref(&rule))[0].is_pass());
+        assert!(eval(&bad, &test_spec(), std::slice::from_ref(&rule))[0].is_pass());
         // found 有证据 + checked_empty 缺证据（被 where 过滤掉）→ Pass。
         let ok = deliverable_with_coverage(vec![
             cov_cell("api.ex.com", "idor", CoverageStatus::Found, vec![1]),
@@ -3891,8 +3901,9 @@ mod tests {
     }
 
     #[test]
-    fn candidate_grounded_blocks_when_missing_rationale_or_evidence() {
-        // 无 evidence_refs（require_evidence=true）→ Block。
+    fn candidate_grounded_allows_missing_model_evidence_ids_but_blocks_empty_rationale() {
+        // 无 evidence_refs（require_evidence=true 兼容字段）→ Pass；后端 DB/ledger
+        // truth 负责证据归因，不要求模型手填 ids。
         let rule = parse(
             r#"{"op":"candidate_grounded","require_evidence":true,
                 "on_fail":{"reason":"candidate needs grounding"}}"#,
@@ -3903,7 +3914,7 @@ mod tests {
         );
         assert!(matches!(
             eval_one(&d, &test_spec(), &GateContext::default(), &rule),
-            GateCheckOutcome::Block { .. }
+            GateCheckOutcome::Pass
         ));
 
         // 空 rationale → Block（即便有证据）。
@@ -3964,12 +3975,12 @@ mod tests {
     }
 
     #[test]
-    fn disposition_complete_verified_needs_evidence() {
+    fn disposition_complete_verified_allows_missing_model_evidence_ids() {
         let rule = parse(
             r#"{"op":"candidate_disposition_complete",
                 "require_evidence_for_verified":true,"on_fail":{"reason":"x"}}"#,
         );
-        // verified 无证据 → Block。
+        // verified is terminal; evidence ids are optional model fields.
         let d = deliverable_with_candidates(
             "verification",
             vec![candidate_disposition(
@@ -3979,7 +3990,7 @@ mod tests {
         );
         assert!(matches!(
             eval_one(&d, &test_spec(), &GateContext::default(), &rule),
-            GateCheckOutcome::Block { .. }
+            GateCheckOutcome::Pass
         ));
     }
 

@@ -17,41 +17,44 @@ become the coverage denominator for `vuln_triage`.
    details. Keep the `target_id`, resolved root URL, and org boundary attached to
    every downstream action. Do not enumerate passive candidates that EAS did not
    prove live.
-3. Browser baseline + JS/API — run `browser_collect_js_api` first on each live
-   web root with the unified standard strategy, then one bounded recipe pass only
-   when closure is partial and the recipe has real work. After JS
-   files are saved, run `js_extract_apis`; it persists deterministic endpoints
-   and returns redacted secret/config/framework candidates plus rule-based
-   `rule_matches` and `ai_analysis` line ranges for targeted model review.
-   Treat rule matches as candidates only; do not invent endpoints from AI
-   inference.
-4. Seed normalization — merge browser requests, JS endpoints, crawler URLs, HTML
-   links/forms, and well-known docs paths into scoped same-origin path seeds.
-   Normalize host/scheme/port, route templates, query parameter names, trailing
-   slashes, and static asset noise before probing.
-5. Recursive route probe — after JS/API rows have landed, run
-   `route_probe_paths` once per live web root. Pass `target_id` + `base_url`;
-   observed paths are optional because the tool reads target-bound
-   `api_endpoints` and existing `directory_entries` from DB by default. It
-   uses `wordlist_path`, workspace `1.txt`, or the built-in fallback wordlist
-   and loads the full de-duplicated list.
-   The tool probes parent prefixes, recursively expands verified wordlist
-   directory hits, verifies positive status responses against a per-prefix
-   random baseline, and rejects soft-404 / uniform error pages into
-   `rejected_candidates`; do not promote rejected candidates by hand. Store
-   verified positives as absolute `directory_entries` with `target_id`; store
-   empty/blocked/error states as explicit evidence-backed terminal coverage when
-   DB truth cannot derive them. `queue_completed=true` means the generated and
-   recursive queue drained.
-6. Do not use external directory tools (`ffuf`, `gobuster`, `feroxbuster`,
-   `dirb`, `dirsearch`) in enumeration. If DIR coverage is incomplete, inspect
-   `seed_paths`, `wordlist`, `rejected_candidates`, errors, and
-   `queue_completed`; rerun only when the previous run errored, did not complete
-   its queue, or received materially new DB seeds.
+3. Batch JS/API collection — run `browser_collect_js_api` in BATCH: pass
+   `target_urls=[...]` with the whole EAS-confirmed live web-root set (up to 50)
+   in ONE call, `crawl_mode="standard"`, `ai_assist=true`. It opens each page,
+   triggers runtime chunks, saves loaded JS, and persists observed XHR/fetch.
+   Each root lands its own GOLISH-ENUM-JS (JS assets) and GOLISH-ENUM-JSAPI
+   (observed API) terminal coverage — a root that truly serves no JS lands
+   `checked_empty`, not unchecked (I8). Only re-run a single root with a bounded
+   recipe when it returned `closure_partial` / `timeout_partial` /
+   `ai_assist.recommended=true`. Do NOT loop one URL at a time.
+4. katana supplement (recommended) — run
+   `pentest_run(tool_name="katana", args="-list <urls-file> -jc -silent ...")`
+   ONCE over the same web-root list to harvest extra URLs/endpoints. katana
+   output lands in `api_endpoints(source='crawler')` and MERGES/dedupes with
+   browser + js_extract rows automatically (unique on `target_id`+`url`+`method`).
+   katana is a SUPPLEMENT — it does not replace the browser closure crawl.
+5. Batch API/param extraction — after JS is saved, run `js_extract_apis` in
+   BATCH (`target_urls=[...]`) over the same set. It persists deterministic
+   endpoints, folds observed params, and returns redacted
+   secret/config/framework candidates plus rule-based `rule_matches` and
+   `ai_analysis` line ranges for targeted model review. Treat rule matches as
+   candidates only; do not invent endpoints from AI inference. Each root lands
+   GOLISH-ENUM-JSAPI / GOLISH-ENUM-PARAM terminal coverage.
+6. Batch route probe — run `route_probe_paths` in BATCH
+   (`targets=[{target_id, base_url}, ...]`) over the same set. Each entry reads
+   target-bound `api_endpoints`/`directory_entries` DB seeds, runs the full
+   de-duplicated local/built-in wordlist and recursive queue, verifies positives
+   against a per-prefix random baseline, rejects soft-404/uniform pages into
+   `rejected_candidates` (do not promote by hand), and lands verified positives
+   as absolute `directory_entries` + GOLISH-ENUM-DIR terminal coverage per root.
+   `queue_completed=true` means the queue drained. Do NOT use external directory
+   tools (`ffuf`, `gobuster`, `feroxbuster`, `dirb`, `dirsearch`); rerun a single
+   root only when it errored, did not complete its queue, or got materially new
+   DB seeds.
 7. Parameter discovery — derive parameters from observed browser requests,
-   crawler URLs with query strings, HTML forms, and targeted `js_extract_apis`
-   `param_hints` after reviewing saved JS. Persist parameter names into
-   `api_endpoints.params`; do not default to active hidden-parameter brute-force.
+   crawler (browser + katana) URLs with query strings, HTML forms, and targeted
+   `js_extract_apis` `param_hints` after reviewing saved JS. Persist parameter
+   names into `api_endpoints.params`; do not default to active hidden-parameter
+   brute-force.
 8. Slim submit — call `stage_worklist_status` and `check_stage_asset_coverage`.
    If either says `ready_to_submit=false`, call `stage_worklist_next` again and
    close only the named cells. Wait for background jobs, sanity-check the
@@ -60,10 +63,16 @@ become the coverage denominator for `vuln_triage`.
 
 **Efficiency red lines:**
 
+- BATCH, don't loop: pass the whole web-root set via `target_urls` / `targets`
+  in ONE call per tool. Do NOT fire one `browser_collect_js_api` /
+  `js_extract_apis` / `route_probe_paths` per URL — that is the slow, token-
+  burning pattern that used to stall the stage.
 - Do NOT re-scan ports or re-fingerprint services — reuse EAS's evidence.
 - Enumerate only the live services EAS confirmed; don't fuzz dead hosts.
 - Route probe once per service after JS/API landing; let it read DB seeds and
   run the full local/built-in wordlist and recursive queue.
+- katana is a supplement (extra URL corpus), run once over the list; it does not
+  replace the browser closure crawl.
 - Do not call external directory tools in enumeration, and don't loop swapping
   wordlists endlessly.
 

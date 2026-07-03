@@ -365,7 +365,10 @@ impl GolishDbRepoProvider {
                     obj.insert("kind".to_string(), serde_json::json!(kind));
                 }
                 if let Some(age) = r.age_seconds.filter(|s| *s >= 0.0) {
-                    obj.insert("age_seconds".to_string(), serde_json::json!(age.round() as i64));
+                    obj.insert(
+                        "age_seconds".to_string(),
+                        serde_json::json!(age.round() as i64),
+                    );
                 }
                 serde_json::Value::Object(obj)
             })

@@ -602,6 +602,10 @@ impl GolishDbRepoProvider {
                     "organization_id": t.organization_id,
                     "http_status": t.http_status,
                     "cdn_waf": t.cdn_waf,
+                    // Dead-asset P3 (design 2026-07-02-dead-asset-liveness-state
+                    // §5.3): surface liveness so the EAS/enumeration specialist can
+                    // see + deprioritise confirmed-dead assets. Read-only context.
+                    "liveness_state": t.liveness_state,
                 })
             })
             .collect())
@@ -645,6 +649,10 @@ impl GolishDbRepoProvider {
                     "http_status": t.http_status,
                     "cdn_waf": t.cdn_waf,
                     "priority": priority,
+                    // Dead-asset P3 (design 2026-07-02-dead-asset-liveness-state
+                    // §5.3): carry liveness so the EAS specialist can deprioritise
+                    // confirmed-dead seeds. Read-only context.
+                    "liveness_state": t.liveness_state,
                 })
             })
             .collect())
@@ -744,6 +752,21 @@ impl GolishDbRepoProvider {
         )
     }
 
+    /// Dead-asset P3 (design 2026-07-02-dead-asset-liveness-state §5.1): in-scope
+    /// assets EAS confirmed dead (`liveness_state = 'dead'`), for a downstream
+    /// stage gate that opts into `skip_dead_assets` to drop from its denominator.
+    pub(super) async fn dead_asset_values_impl(
+        &self,
+        org_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok(
+            golish_db::repo::coverage_truth::dead_asset_values(&self.pool, org_id)
+                .await?
+                .into_iter()
+                .collect(),
+        )
+    }
+
     pub(super) async fn eas_service_not_applicable_assets_impl(
         &self,
         org_id: Option<Uuid>,
@@ -751,9 +774,7 @@ impl GolishDbRepoProvider {
     ) -> anyhow::Result<Vec<String>> {
         Ok(
             golish_db::repo::coverage_truth::eas_service_not_applicable_assets(
-                &self.pool,
-                org_id,
-                run_start,
+                &self.pool, org_id, run_start,
             )
             .await?
             .into_iter()
@@ -842,6 +863,8 @@ mod tests {
             webserver: String::new(),
             os_info: String::new(),
             content_type: String::new(),
+            liveness_state: None,
+            liveness_reason: None,
             created_at: 0,
             updated_at: 0,
         }

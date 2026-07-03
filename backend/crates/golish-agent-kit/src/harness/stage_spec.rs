@@ -167,6 +167,17 @@ pub struct StageSpec {
     #[serde(default)]
     pub enum_ip_web_coverage: bool,
 
+    /// Dead-asset denominator exclusion (design 2026-07-02-dead-asset-liveness-
+    /// state §5.2): when true, the coverage gate drops assets EAS confirmed dead
+    /// (`targets.liveness_state = 'dead'`) from this stage's denominator, so a
+    /// confirmed-dead host no longer forces the model to probe it or book
+    /// `checked_empty`. Only downstream stages (enumeration onward) enable it —
+    /// EAS itself must NOT (it is the stage that judges liveness, so filtering its
+    /// own denominator would leave it nothing to probe). `'unreachable'` is never
+    /// dropped (may be transient). Default false = byte-for-byte unchanged.
+    #[serde(default)]
+    pub skip_dead_assets: bool,
+
     /// Anchor-only coverage denominator (design 2026-06-16-coverage-anchor-axis):
     /// when true, `coverage_complete` first drops any in-scope asset that is a
     /// strict subdomain of ANOTHER in-scope asset in the same set, so subdomains
@@ -655,6 +666,31 @@ mod tests {
             !target_intel.asset_wave_barrier,
             "passive intel keeps its anchor-only denominator, not the active wave barrier"
         );
+    }
+
+    #[test]
+    fn skip_dead_assets_only_on_downstream_of_eas() {
+        // Dead-asset P3 (design 2026-07-02-dead-asset-liveness-state §5.2):
+        // enumeration + vuln_triage drop confirmed-dead assets from the coverage
+        // denominator; EAS must NOT (it is the stage that judges liveness — it
+        // needs its full denominator to probe).
+        let eas =
+            crate::harness::resources::load_embedded_stage_spec(StageKind::ExternalAttackSurface)
+                .expect("load external_attack_surface spec");
+        assert!(
+            !eas.skip_dead_assets,
+            "EAS must keep dead-candidate assets in its denominator (it judges liveness)"
+        );
+
+        for kind in [StageKind::Enumeration, StageKind::VulnTriage] {
+            let s = crate::harness::resources::load_embedded_stage_spec(kind)
+                .unwrap_or_else(|e| panic!("load {} spec: {e}", kind.as_str()));
+            assert!(
+                s.skip_dead_assets,
+                "{} must exclude confirmed-dead assets from its denominator",
+                kind.as_str()
+            );
+        }
     }
 
     // stage_run fan-out (2026-06-13-stage-run-fanout §3.2 · enumeration rollout): enumeration

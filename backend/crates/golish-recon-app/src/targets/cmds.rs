@@ -71,7 +71,7 @@ pub async fn target_add(
            VALUES ($1, $2::target_type, $3, $4, $5, $6::scope_type, $7, $8, $9, $10, $11, $12, $13, $14)
            RETURNING id, name, target_type::text, value, tags, notes, scope::text,
                      status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
-                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
+                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type, liveness_state, liveness_reason,
                      created_at, updated_at"#,
     )
     .bind(&n)
@@ -142,7 +142,7 @@ pub async fn target_batch_add(
                VALUES ($1, $2::target_type, $3, '[]', 'in'::scope_type, $4, $5, $6, $7)
                RETURNING id, name, target_type::text, value, tags, notes, scope::text,
                          status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
-                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
+                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type, liveness_state, liveness_reason,
                      created_at, updated_at"#,
         )
         .bind(v)
@@ -279,7 +279,7 @@ pub async fn target_update(
     let row = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
                   status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
-                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
+                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type, liveness_state, liveness_reason,
                      created_at, updated_at
            FROM targets WHERE id=$1"#,
     )
@@ -336,7 +336,7 @@ pub async fn target_update_status(
     let row = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
                   status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
-                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
+                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type, liveness_state, liveness_reason,
                      created_at, updated_at
            FROM targets WHERE id=$1"#,
     )

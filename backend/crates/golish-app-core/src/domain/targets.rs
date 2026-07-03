@@ -63,6 +63,18 @@ pub struct Target {
     pub os_info: String,
     #[serde(default)]
     pub content_type: String,
+    /// Persistent liveness verdict stamped by EAS probing: `alive` / `dead` /
+    /// `unreachable`; `None` = not probed yet (design 2026-07-02-dead-asset-
+    /// liveness-state). Downstream stages exclude confirmed-dead assets from the
+    /// coverage denominator.
+    #[serde(default)]
+    #[ts(optional)]
+    pub liveness_state: Option<String>,
+    /// Failure detail behind a non-alive `liveness_state`
+    /// (`dns_fail` / `timeout` / `conn_refused` / `no_service` / `probe_error`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub liveness_reason: Option<String>,
     #[ts(type = "number")]
     pub created_at: u64,
     #[ts(type = "number")]
@@ -205,6 +217,30 @@ pub fn attack_surface_priority(t: &Target) -> i32 {
         score += 10;
     }
     score
+}
+
+/// Derive a target's persistent liveness verdict from its EAS probe outcome
+/// (design 2026-07-02-dead-asset-liveness-state §1.2 / §4). The `alive`
+/// predicate mirrors `coverage_truth::build_liveness_values_sql` exactly so the
+/// stamped state and the coverage-gate truth never drift: a target is `alive`
+/// when it resolved (`real_ip`), answered HTTP (`http_status`), or exposed at
+/// least one open port. A probe that actively errored (DNS failure, refused
+/// connection, timeout — ledger outcome `error`) → `unreachable`; a probe that
+/// completed but found nothing → `dead` (I8: "checked-empty" ≠ "unchecked", so
+/// this is only called after a real probe). Returns `(state, reason)`.
+pub fn compute_liveness_state(
+    http_status: Option<i32>,
+    real_ip: &str,
+    open_ports: usize,
+    probe_errored: bool,
+) -> (&'static str, Option<&'static str>) {
+    if http_status.is_some() || !real_ip.trim().is_empty() || open_ports > 0 {
+        ("alive", None)
+    } else if probe_errored {
+        ("unreachable", Some("probe_error"))
+    } else {
+        ("dead", Some("no_service"))
+    }
 }
 
 fn normalized_ip(value: &str) -> Option<String> {
@@ -501,6 +537,53 @@ mod tests {
         let endpoint = seed("http://115.28.135.55:8080/login", "url", "", Some(200));
         let delegated = eas_port_delegated_domain_values(&[ip, endpoint]);
         assert!(delegated.contains("http://115.28.135.55:8080/login"));
+    }
+
+    #[test]
+    fn compute_liveness_state_alive_on_any_signal() {
+        // Any one of http_status / real_ip / open_ports proves the host is alive.
+        assert_eq!(compute_liveness_state(Some(200), "", 0, false), ("alive", None));
+        assert_eq!(compute_liveness_state(None, "1.2.3.4", 0, false), ("alive", None));
+        assert_eq!(compute_liveness_state(None, "", 3, false), ("alive", None));
+        // Alive signal wins even when the probe also reported an error.
+        assert_eq!(compute_liveness_state(Some(200), "", 0, true), ("alive", None));
+        // Whitespace-only real_ip is not a signal.
+        assert_eq!(
+            compute_liveness_state(None, "  ", 0, false),
+            ("dead", Some("no_service"))
+        );
+    }
+
+    #[test]
+    fn compute_liveness_state_unreachable_on_probe_error() {
+        // Probe actively errored (DNS fail / refused) and found no signal.
+        assert_eq!(
+            compute_liveness_state(None, "", 0, true),
+            ("unreachable", Some("probe_error"))
+        );
+    }
+
+    #[test]
+    fn compute_liveness_state_dead_when_probed_empty() {
+        // Probe completed, no signal, no error → confirmed dead (checked-empty).
+        assert_eq!(
+            compute_liveness_state(None, "", 0, false),
+            ("dead", Some("no_service"))
+        );
+    }
+
+    #[test]
+    fn compute_liveness_state_matches_check_constraint_domain() {
+        // Every state this returns must be a value the migration's CHECK allows.
+        let allowed = ["alive", "dead", "unreachable"];
+        for (hs, ip, ports, err) in [
+            (Some(200), "", 0, false),
+            (None, "", 0, true),
+            (None, "", 0, false),
+        ] {
+            let (state, _) = compute_liveness_state(hs, ip, ports, err);
+            assert!(allowed.contains(&state), "state {state} not in CHECK domain");
+        }
     }
 
     #[test]

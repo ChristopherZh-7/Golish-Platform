@@ -645,6 +645,20 @@ pub async fn web_capable_ip_assets(pool: &PgPool, org_id: Option<Uuid>) -> Resul
     fetch_values(pool, &build_web_capable_ip_values_sql(), org_id, None).await
 }
 
+fn build_dead_asset_values_sql() -> String {
+    build_in_scope_values_sql("", "AND t.liveness_state = 'dead'", None)
+}
+
+/// In-scope assets EAS has confirmed dead (`targets.liveness_state = 'dead'`),
+/// for the downstream coverage gate to drop from its denominator (design
+/// 2026-07-02-dead-asset-liveness-state §5.1). Only `'dead'` is returned, never
+/// `'unreachable'` — an unreachable verdict may be a transient network / WAF
+/// condition, so it stays in scope (conservative). `org_id = None` = whole-DB
+/// in-scope set (asset-axis isolation off).
+pub async fn dead_asset_values(pool: &PgPool, org_id: Option<Uuid>) -> Result<HashSet<String>> {
+    fetch_values(pool, &build_dead_asset_values_sql(), org_id, None).await
+}
+
 /// EAS IP/CIDR assets whose SERVICE-FINGERPRINT technique is deterministically
 /// not applicable: the only open port observed in this wave is DNS/53, and no
 /// strong service/version surface (fingerprint row, version, product, banner,
@@ -995,7 +1009,10 @@ mod tests {
         assert!(sql.contains("NOT EXISTS (SELECT 1 FROM fingerprints"));
         assert!(sql.contains("p->>'version'"));
         assert!(sql.contains("p->>'product'"));
-        assert!(!sql.contains("$2"), "presence-only mode must not bind cutoff: {sql}");
+        assert!(
+            !sql.contains("$2"),
+            "presence-only mode must not bind cutoff: {sql}"
+        );
 
         let fresh = build_eas_service_not_applicable_values_sql(true);
         assert!(fresh.contains("t.ports_scanned_at >= $2"));
@@ -1043,6 +1060,19 @@ mod tests {
             assert!(!sql.contains("$2"), "off must bind only $1: {sql}");
             assert!(!sql.contains(">= $2"), "off must not window: {sql}");
         }
+    }
+
+    #[test]
+    fn dead_asset_values_sql_filters_scope_and_dead_only() {
+        // Dead-asset P3: denominator-exclusion query selects only in-scope,
+        // liveness_state='dead' rows (never 'unreachable'), org-narrowable via $1.
+        let sql = build_dead_asset_values_sql();
+        assert!(sql.contains("t.scope::text = 'in'"));
+        assert!(sql.contains("t.liveness_state = 'dead'"));
+        assert!(!sql.contains("unreachable"));
+        assert!(sql.contains("($1 IS NULL OR t.organization_id = $1)"));
+        // presence-only: no freshness window binds $2
+        assert!(!sql.contains("$2"));
     }
 
     #[test]

@@ -626,9 +626,7 @@ pub async fn execute_security_analysis_tool(
             let rows = match repo.recent_evidence_detailed(session_id, limit).await {
                 Ok(rows) => rows,
                 Err(e) => {
-                    return Some(error_result(format!(
-                        "Failed to list recent evidence: {e}"
-                    )))
+                    return Some(error_result(format!("Failed to list recent evidence: {e}")))
                 }
             };
             let count = rows.len();

@@ -4,6 +4,7 @@
  */
 
 import type { ToolCallSource } from "../store-types";
+import { appendLiveToolOutput } from "./live-output";
 import type { SessionStoreDraft } from "./session-draft-types";
 import type { ImmerSet, StateGet } from "./types";
 
@@ -110,7 +111,7 @@ export function createSessionStreamingActions(
           if (toolIndex !== -1) {
             tools[toolIndex] = {
               ...tools[toolIndex],
-              streamingOutput: (tools[toolIndex].streamingOutput ?? "") + chunk,
+              streamingOutput: appendLiveToolOutput(tools[toolIndex].streamingOutput, chunk),
             };
           }
         }
@@ -123,7 +124,7 @@ export function createSessionStreamingActions(
                 ...block,
                 toolCall: {
                   ...block.toolCall,
-                  streamingOutput: (block.toolCall.streamingOutput ?? "") + chunk,
+                  streamingOutput: appendLiveToolOutput(block.toolCall.streamingOutput, chunk),
                 },
               };
               break;

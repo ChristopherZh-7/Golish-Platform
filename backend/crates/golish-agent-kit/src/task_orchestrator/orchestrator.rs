@@ -74,9 +74,9 @@ pub struct TaskOrchestrator {
     /// Chat-session string (e.g. `pentest-chat-…`) used to scope evidence-ledger
     /// lookups. Both evidence write paths (sync runtime hook + background-job
     /// listener) stamp this string on `audit_log.session_id`, so it is the join
-    /// key the gate uses to fetch this operation's REAL evidence ids and feed
-    /// them back into a fabricated-ref repair correction. `None` ⇒ no real-id
-    /// suggestion (the gate still BLOCKs fabricated refs, just without a hint).
+    /// key used for ledger lookups/debug hints and fabricated-ref repair
+    /// correction. Model-authored evidence ids are optional; if a model cites one,
+    /// submit/runtime can use this session scope to reject fabricated refs.
     pub(super) chat_session_id: Option<String>,
     /// C5 · HITL approval channel (the **same coordinator** the `ask_human` tool
     /// uses). When wired, the two-level phase-boundary approval gate requests a

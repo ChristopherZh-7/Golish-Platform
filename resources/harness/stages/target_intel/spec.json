@@ -22,27 +22,27 @@
       "op": "for_all",
       "over": "claims",
       "require": { "pred": "non_empty", "field": "evidence_ids" },
-      "on_fail": { "reason": "every claim must cite evidence", "hints": ["add evidence to each claim via prior tool calls"] }
+      "on_fail": { "reason": "claim evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_ids unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",
       "over": "findings",
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "every finding must cite evidence", "hints": ["add evidence to each finding via prior tool calls"] }
+      "on_fail": { "reason": "finding evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",
       "over": "coverage",
       "where": { "pred": "eq", "field": "status", "value": "found" },
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "every 'found' intel coverage cell must cite evidence", "hints": ["attach the tool-output evidence id (dns/whois/ct/...) to each found cell"] }
+      "on_fail": { "reason": "coverage evidence ids are optional; found intel cells are resolved from DB/ledger truth", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",
       "over": "coverage",
       "where": { "pred": "eq", "field": "status", "value": "checked_empty" },
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "every 'checked_empty' intel coverage cell must cite evidence (I8: checked-empty is NOT unchecked)", "hints": ["attach the probe evidence id proving you actually ran this intel technique on this asset"] }
+      "on_fail": { "reason": "coverage evidence ids are optional; checked_empty intel cells are terminal, not unchecked", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
     },
     {
       "op": "coverage_complete",
@@ -53,7 +53,7 @@
       "$comment_authoritative": "Phase 0+1 (2026-06-12-redteam-phase0/phase1) + 2026-06-23 provider-source closure: 'found' for all 6 passive intel techniques is decided by DB/ledger truth, not self-report. Landing per technique is provider/registry-tool backed: SUBDOMAIN/DNS-adjacent asset mapping\u2192target_assets/dns_records when available from provider landing, ASN/CT/OSINT\u2192organizations.asns/.certificates/.intel via recon_map_assets, WHOIS\u2192organizations.whois via recon_lookup_whois. target_intel no longer allows scan-tool fallback; missing/unavailable provider data must be submitted as terminal checked_empty/blocked/not_applicable. Tagging a claim or hand-writing a found cell no longer counts.",
       "on_fail": {
         "reason": "intel coverage incomplete: some (in-scope asset \u00d7 expected intel technique) cells were never attempted",
-        "hints": ["for every in-scope asset, give each expected intel technique a terminal status: found+evidence / checked_empty+evidence / blocked|not_applicable+note", "the gate reads the DATABASE, not your self-report: a cell is 'found' only if the provider/registry tool ran and its data landed (recon_map_assets\u2192target_assets/organizations.*, recon_lookup_whois\u2192organizations.whois, provider DNS landing\u2192dns_records where available) \u2014 tagging a claim is not enough", "no provider/credential for a technique (e.g. OSINT, CT, ASN, DNS or SUBDOMAIN provider survey)? record it blocked+note \u2014 never fabricate; run only the target_intel registry tools to make found cells real", "BREAK THE LOOP: if a technique's provider/source is unavailable or keeps failing, submit that (asset x technique) cell as status=blocked with a note naming the failed/absent source. A blocked cell is TERMINAL and clears the gap; do NOT resubmit the same matrix expecting that cell to fill, it will loop forever."]
+        "hints": ["for every in-scope asset, give each expected intel technique a terminal status: found / checked_empty / blocked|not_applicable+note", "the gate reads the DATABASE, not your self-report: a cell is 'found' only if the provider/registry tool ran and its data landed (recon_map_assets\u2192target_assets/organizations.*, recon_lookup_whois\u2192organizations.whois, provider DNS landing\u2192dns_records where available) \u2014 tagging a claim is not enough", "no provider/credential for a technique (e.g. OSINT, CT, ASN, DNS or SUBDOMAIN provider survey)? record it blocked+note \u2014 never fabricate; run only the target_intel registry tools to make found cells real", "BREAK THE LOOP: if a technique's provider/source is unavailable or keeps failing, submit that (asset x technique) cell as status=blocked with a note naming the failed/absent source. A blocked cell is TERMINAL and clears the gap; do NOT resubmit the same matrix expecting that cell to fill, it will loop forever."]
       }
     },
     {

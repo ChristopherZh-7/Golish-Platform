@@ -1438,6 +1438,7 @@ impl TaskOrchestrator {
         };
         match result {
             Ok(v) if !v.is_empty() => {
+                let v = self.exclude_dead_assets_if_opted_in(planned, v).await;
                 tracing::info!(
                     target: "harness::hook",
                     asset_count = v.len(),
@@ -1457,6 +1458,55 @@ impl TaskOrchestrator {
                 None
             }
         }
+    }
+
+    /// Dead-asset denominator exclusion (design 2026-07-02-dead-asset-liveness-
+    /// state §5.2), subtask-gate path (mirrors `org_gate`). When the subtask's
+    /// stage spec opts in via `skip_dead_assets` (enumeration onward — never EAS),
+    /// drop assets EAS confirmed dead so a dead host no longer forces a probe /
+    /// `checked_empty`. Guarded so it never empties a non-empty set (all dead ⇒
+    /// keep them, else the gate would see an empty axis and fall back to
+    /// self-reported). Only `'dead'` is dropped (`'unreachable'` may be transient).
+    async fn exclude_dead_assets_if_opted_in(
+        &self,
+        planned: &PlannedSubtask,
+        assets: Vec<String>,
+    ) -> Vec<String> {
+        let Some(stage) = planned.harness_stage.as_ref().map(|s| s.stage_kind) else {
+            return assets;
+        };
+        let opted_in = crate::harness::load_embedded_stage_spec(stage)
+            .map(|spec| spec.skip_dead_assets)
+            .unwrap_or(false);
+        if !opted_in {
+            return assets;
+        }
+        let dead: std::collections::HashSet<String> = self
+            .repo
+            .dead_asset_values(self.harness_org_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        if dead.is_empty() {
+            return assets;
+        }
+        let survivors: Vec<String> = assets
+            .iter()
+            .filter(|a| !dead.contains(*a))
+            .cloned()
+            .collect();
+        if survivors.is_empty() || survivors.len() == assets.len() {
+            return assets;
+        }
+        tracing::info!(
+            target: "harness::hook",
+            stage = stage.as_str(),
+            org_id = ?self.harness_org_id,
+            removed = assets.len() - survivors.len(),
+            "excluded confirmed-dead assets from coverage denominator"
+        );
+        survivors
     }
 
     async fn asset_wave_cutoff_for_gate(
@@ -2062,6 +2112,15 @@ impl TaskOrchestrator {
         if outcome.required_evidence_kinds.is_empty() {
             return;
         }
+        if outcome.evidence_refs.is_empty() {
+            tracing::debug!(
+                target: "harness::hook",
+                stage = %outcome.gated_stage.as_str(),
+                required = ?outcome.required_evidence_kinds,
+                "evidence kind check skipped: model-authored evidence ids are optional"
+            );
+            return;
+        }
         let present: std::collections::HashSet<String> =
             match self.repo.evidence_kinds_for(&outcome.evidence_refs).await {
                 Ok(map) => map.into_values().collect(),
@@ -2158,6 +2217,37 @@ fn fabricated_evidence_ids(cited: &[i64], existing: &std::collections::HashSet<i
         .copied()
         .filter(|id| !existing.contains(id))
         .collect()
+}
+
+fn collect_deliverable_evidence_ids(
+    deliverable: &crate::harness::types::StageDeliverable,
+) -> Vec<i64> {
+    let mut seen = std::collections::HashSet::new();
+    let mut ids = Vec::new();
+    let mut push = |id: i64| {
+        if seen.insert(id) {
+            ids.push(id);
+        }
+    };
+    for id in &deliverable.evidence_refs {
+        push(id.as_i64());
+    }
+    for claim in &deliverable.claims {
+        for id in &claim.evidence_ids {
+            push(id.as_i64());
+        }
+    }
+    for finding in &deliverable.findings {
+        for id in &finding.evidence_refs {
+            push(id.as_i64());
+        }
+    }
+    for cell in &deliverable.coverage {
+        for id in &cell.evidence_refs {
+            push(id.as_i64());
+        }
+    }
+    ids
 }
 
 /// Pure: flip a gate outcome to BLOCK on fabricated evidence refs, recording
@@ -2639,11 +2729,7 @@ fn apply_harness_gate_hook(
             ),
             repair_correction: None,
             evidence_summary: Some(summarize_deliverable(&deliverable)),
-            evidence_refs: deliverable
-                .evidence_refs
-                .iter()
-                .map(|e| e.as_i64())
-                .collect(),
+            evidence_refs: collect_deliverable_evidence_ids(&deliverable),
             required_evidence_kinds: crate::harness::load_embedded_stage_spec(
                 stage_hint.stage_kind,
             )
@@ -3842,19 +3928,20 @@ mod harness_gate_hook_tests {
             "correction names the fabricated id"
         );
         assert!(d.correction.contains("do NOT exist"));
-        // No real ids known → tell the agent to run the tools first.
+        // No real ids known → tell the agent to remove fabricated ids or run
+        // tools if DB truth is still missing.
         assert!(
-            d.correction.contains("No real evidence ids exist"),
-            "empty real-id set must instruct running tools first: {}",
+            d.correction.contains("Evidence ids are optional"),
+            "empty real-id set must not force id-filling: {}",
             d.correction
         );
     }
 
     #[test]
     fn block_outcome_for_fabricated_names_real_ids_when_available() {
-        // 甲 (root-cause fix): when the operation already has real evidence ids,
-        // the correction must NAME them so the retry cites real ids instead of
-        // re-copying the template placeholders.
+        // When the operation already has real evidence ids, the correction may
+        // name them as debug context but must not require the model to copy ids
+        // into the deliverable.
         let mut o = outcome_for_test(StageKind::TargetIntel, vec![1, 2, 3]);
         block_outcome_for_fabricated(&mut o, &[1, 2, 3], &[86, 88, 90]);
         assert!(!o.gate_allowed);
@@ -3872,8 +3959,8 @@ mod harness_gate_hook_tests {
             d.correction
         );
         assert!(
-            d.correction.contains("REAL evidence ids"),
-            "labels them as the real set: {}",
+            d.correction.contains("Evidence ids are optional"),
+            "does not force id-filling: {}",
             d.correction
         );
         assert!(

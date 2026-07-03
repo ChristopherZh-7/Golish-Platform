@@ -48,15 +48,15 @@ list at the `verification` entry (`exploit_validation`).
 - Do NOT run scanners or exploit tools in this stage — that is `vuln_triage`
   (formulaic) and `verification` (real exploitation). This stage only reasons.
 - Do NOT invent hypotheses with no observational basis; every candidate must be
-  grounded (rationale + evidence), or the gate blocks it.
+  grounded by a concrete rationale. Evidence ids are optional model fields; the
+  backend resolves proof from ledger/DB truth.
 - Prefer a few high-quality, well-grounded candidates over a long list of
   speculative ones — each approved candidate costs real exploitation budget in
   `verification`.
 
 **Coverage + stop condition:**
 
-- Every candidate must pass `candidate_grounded`: non-empty `rationale` and
-  (require_evidence) non-empty `evidence_refs`.
+- Every candidate must pass `candidate_grounded`: non-empty `rationale`.
 - If there is genuinely nothing worth attacking, produce zero candidates — the
   `attack_candidate → reporting` bail edge lets the operation converge instead of
   manufacturing junk hypotheses.

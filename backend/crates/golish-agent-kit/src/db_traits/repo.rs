@@ -246,6 +246,17 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Dead-asset P3 (design 2026-07-02-dead-asset-liveness-state §5): in-scope
+    /// asset values EAS has confirmed dead (`targets.liveness_state = 'dead'`),
+    /// for a downstream stage gate to drop from its coverage denominator when its
+    /// spec opts in via `skip_dead_assets`. Only `'dead'` (never `'unreachable'`,
+    /// which may be transient). Default empty keeps test doubles / non-app impls
+    /// and every stage without the flag on their prior denominator.
+    async fn dead_asset_values(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {
+        let _ = org_id;
+        Ok(Vec::new())
+    }
+
     /// In-scope recon targets as JSON rows (`target_id` / `value` / `type`) so an
     /// agent tool can enumerate the recon-collected assets, then drill into each
     /// via [`Self::query_target_data`]. Default empty (test doubles); the app
@@ -715,14 +726,13 @@ pub trait DbRepoProvider: Send + Sync {
     }
 
     /// Recent **real** evidence rows for a chat session, newest first, each carrying
-    /// the context needed to cite it: `evidence_id`, `tool`, `subject`, `technique`,
-    /// `asset`, `outcome`, `kind`, `age_seconds`. Backs the read-only
-    /// `list_recent_evidence` tool so an active-stage worker can map a real ledger id
-    /// to the claim it evidences BEFORE calling `submit_stage_deliverable`, instead of
-    /// dead-looping on "every claim must cite evidence" with no id source (design
-    /// 2026-07-02-eas-worker-evidence). Returns compact JSON objects (mirrors the
-    /// `Vec<Value>` shape of [`Self::in_scope_targets`]). Default empty so test doubles
-    /// need no ledger; the app layer overrides it with a real query.
+    /// debug context: `evidence_id`, `tool`, `subject`, `technique`, `asset`,
+    /// `outcome`, `kind`, `age_seconds`. Backs the read-only `list_recent_evidence`
+    /// tool. Model-authored evidence ids are optional now, but when a worker chooses
+    /// to cite a ledger id this endpoint lets it cite a real one instead of a
+    /// placeholder. Returns compact JSON objects (mirrors the `Vec<Value>` shape of
+    /// [`Self::in_scope_targets`]). Default empty so test doubles need no ledger; the
+    /// app layer overrides it with a real query.
     async fn recent_evidence_detailed(
         &self,
         session_id: &str,

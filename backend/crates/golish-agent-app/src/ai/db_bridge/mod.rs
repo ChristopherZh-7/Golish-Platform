@@ -358,6 +358,10 @@ impl DbRepoProvider for GolishDbRepoProvider {
             .await
     }
 
+    async fn dead_asset_values(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {
+        self.dead_asset_values_impl(org_id).await
+    }
+
     async fn db_truth_facts(
         &self,
         org_id: Option<Uuid>,

@@ -3,9 +3,9 @@
 //! Phase 1c.5 完整版:
 //!   - contract.status='active' 强制
 //!   - 已知 SprintSkeleton 时按 expected_count_range 校验 finding kind 数量
-//!   - 已知 min_tool_invocations 时按 deliverable evidence_refs 推断 + 比较
-//!     (Phase 1 用 deliverable evidence_refs 长度 ≥ min 的简化路径; Phase 2
-//!     接 EvidenceLedger 真 tool_call_counts)
+//!   - `min_tool_invocations` 不再从模型填写的 `evidence_refs` 推断；tool
+//!     execution/facts are resolved from the ledger/DB outside this DB-free
+//!     shape check.
 //!
 //! 调用方 (StageHarness) 可显式传 `skeleton` 以启用范围检查; 不传 → 仅做
 //! contract status 校验.
@@ -77,20 +77,9 @@ pub fn run_with_skeleton(
             }
         }
 
-        // 3. min_tool_invocations 校验 · Phase 1 MVP 用 deliverable.evidence_refs
-        //    数量做下限 (真 tool_call_count 推 Phase 2 接 EvidenceLedger).
-        let total_evidence = deliverable.evidence_refs.len() as u32;
-        let required_total: u32 = sk.min_tool_invocations.values().sum();
-        if total_evidence < required_total {
-            reasons.push(format!(
-                "total evidence ({}) below sum of min_tool_invocations ({})",
-                total_evidence, required_total
-            ));
-            recovery.hints.push(
-                "ensure each min_tool_invocation is satisfied (one evidence per invocation expected)"
-                    .to_string(),
-            );
-        }
+        // `min_tool_invocations` is intentionally not checked against
+        // deliverable.evidence_refs. Evidence ids are internal ledger keys and
+        // the model may omit them; the execution layer resolves real tool facts.
     }
 
     if reasons.is_empty() {
@@ -274,7 +263,8 @@ mod tests {
     #[test]
     fn with_skeleton_finding_count_in_range_passes() {
         let sk = skeleton();
-        // 1 subdomain + 1 http_service + 至少 3 evidence (满足 min_tool_invocations=3)
+        // 1 subdomain + 1 http_service in range. Tool floors are resolved from
+        // runtime/ledger state, not model evidence_refs.
         let d = deliverable_with_findings(1, 1, 5);
         assert!(matches!(
             run_with_skeleton(&d, None, Some(&sk)),
@@ -283,16 +273,15 @@ mod tests {
     }
 
     #[test]
-    fn with_skeleton_min_tool_invocations_below_blocks() {
+    fn with_skeleton_min_tool_invocations_is_not_inferred_from_model_ids() {
         let sk = skeleton();
-        // dns_resolve+http_probe+subdomain_enum_passive 至少 3; 给 1 个 evidence → block.
+        // dns_resolve+http_probe+subdomain_enum_passive 曾经通过 evidence_refs
+        // 数量估算；现在不再要求模型手写 ids，所以这里不 Block。
         let d = deliverable_with_findings(1, 1, 1);
-        match run_with_skeleton(&d, None, Some(&sk)) {
-            GateCheckOutcome::Block { reasons, .. } => {
-                assert!(reasons.iter().any(|r| r.contains("min_tool_invocations")));
-            }
-            _ => panic!("expected Block"),
-        }
+        assert!(matches!(
+            run_with_skeleton(&d, None, Some(&sk)),
+            GateCheckOutcome::Pass
+        ));
     }
 
     #[test]

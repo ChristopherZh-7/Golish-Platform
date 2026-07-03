@@ -173,14 +173,13 @@ fn secondary_note(input: &RefineInput<'_>, class: RefineClass) -> Option<String>
 fn render_fabricated(input: &RefineInput<'_>) -> String {
     let fabricated = input.fabricated_ids;
     let real_ids_hint = if input.available_real_ids.is_empty() {
-        "No real evidence ids exist for this operation yet: run this stage's required tools \
-         (e.g. via the pentester) and cite the ids their results return."
+        "Evidence ids are optional. Remove these fabricated id fields and resubmit, or \
+         run the stage's required tools if the underlying DB truth is still missing."
             .to_string()
     } else {
         format!(
-            "The REAL evidence ids already recorded for THIS operation (newest first) are {:?}. \
-             Cite ONLY from this set — pick the ones whose tool output backs each claim and put them \
-             in both the claim's evidence_ids and the top-level evidence_refs.",
+            "Real evidence ids already recorded for THIS operation (debug hint, newest first): {:?}. \
+             Evidence ids are optional; remove fabricated ids unless you are certain a real id applies.",
             input.available_real_ids
         )
     };
@@ -188,7 +187,8 @@ fn render_fabricated(input: &RefineInput<'_>) -> String {
         "Your StageDeliverable cites evidence ids {fabricated:?} that do NOT exist in the \
          evidence ledger. Never substitute small guessed integers (1, 2, 3, …) for real ids. \
          {real_ids_hint} Do NOT guess, increment, or reuse placeholder ids. \
-         Then resubmit a StageDeliverable whose evidence_refs are all real ledger ids."
+         Then resubmit a StageDeliverable with business facts; omit evidence id fields unless \
+         they are real ledger ids."
     )
 }
 
@@ -200,8 +200,7 @@ fn render_submit_only(input: &RefineInput<'_>) -> String {
             "The '{stage}' stage is confirm-only: it runs NO scan tools, so there is no \
              evidence to collect and nothing to re-do. Your ONLY remaining action is to call \
              the `submit_stage_deliverable` tool ONCE with a StageDeliverable containing a \
-             single confirmation claim for this stage (evidence_ids may be empty for a \
-             confirm-only stage). Do NOT run tools, do NOT narrate — just submit.",
+             single confirmation claim for this stage. Do NOT run tools, do NOT narrate — just submit.",
             stage = input.stage.as_str(),
         );
     }
@@ -218,9 +217,8 @@ fn render_submit_only(input: &RefineInput<'_>) -> String {
         "Your '{stage}' stage run ALREADY did the scan work — its results are recorded in the \
          evidence ledger as: {id_list} (newest first). Do NOT re-run any tools and do NOT redo \
          the stage. Your ONLY remaining action is to call the `submit_stage_deliverable` tool \
-         ONCE, with a StageDeliverable whose claims/coverage cite these REAL evidence ids — put \
-         the relevant ids in each claim's evidence_ids and all cited ids in the top-level \
-         evidence_refs. Pick only the ids whose tool output actually backs each claim; do NOT \
+         ONCE, with a StageDeliverable summarizing the business facts/coverage. You do NOT need \
+         to copy these ids into the deliverable; the backend resolves ledger/DB truth. Do NOT \
          guess, increment, or invent ids.",
         stage = input.stage.as_str(),
     )
@@ -232,8 +230,8 @@ fn render_redo_stage(input: &RefineInput<'_>) -> String {
         "Your output for the '{}' stage did not include a parseable StageDeliverable, \
          so the deterministic harness gate could not run. You MUST submit a StageDeliverable \
          — either by calling the submit_stage_deliverable tool, or by ending your next message \
-         with a ```json fenced block containing a StageDeliverable (stage_id, stage_run_id, \
-         claims, findings, evidence_refs). Re-do the stage work as needed and resubmit.",
+         with a ```json fenced block containing a StageDeliverable (stage_id, claims, plus \
+         optional findings/coverage). Re-do the stage work as needed and resubmit.",
         input.stage.as_str()
     )
 }
@@ -541,14 +539,15 @@ mod tests {
     }
 
     #[test]
-    fn confirm_only_template_says_submit_with_empty_evidence() {
+    fn confirm_only_template_says_submit_without_evidence_ids() {
         let kinds = HashMap::new();
         let mut i = base_input(&[], &kinds);
         i.missing_deliverable = true;
         i.confirm_only_stage = true;
         let d = refine(&i);
         assert!(d.correction.contains("confirm-only"));
-        assert!(d.correction.contains("evidence_ids may be empty"));
+        assert!(d.correction.contains("single confirmation claim"));
+        assert!(!d.correction.contains("evidence_ids may be empty"));
     }
 
     #[test]
@@ -595,12 +594,13 @@ mod tests {
     }
 
     #[test]
-    fn fabricated_template_without_real_ids_demands_tool_runs() {
+    fn fabricated_template_without_real_ids_prefers_omission() {
         let kinds = HashMap::new();
         let mut i = base_input(&[], &kinds);
         i.fabricated_ids = &[7];
         let d = refine(&i);
-        assert!(d.correction.contains("No real evidence ids exist"));
+        assert!(d.correction.contains("Evidence ids are optional"));
+        assert!(d.correction.contains("Remove these fabricated id fields"));
     }
 
     #[test]

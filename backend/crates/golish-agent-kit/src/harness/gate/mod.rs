@@ -388,13 +388,14 @@ mod tests {
     }
 
     #[test]
-    fn gate_rules_block_propagates_through_aggregate() {
+    fn gate_rules_ignore_legacy_model_evidence_id_presence() {
         use super::super::stage_spec::load_stage_spec_from_json;
         use super::super::types::{FindingSeverity, HarnessFinding, StageClaim};
         use golish_pentest::evidence_ledger::EvidenceAuditId;
 
-        // spec：一条 gate_rule 要求每个 high+ finding 挂证据；无 required_checks
-        // (隔离 gate_rule 行为：scope_check 不会跑)，其余字段走 serde default。
+        // spec：一条旧 gate_rule 要求每个 high+ finding 挂 evidence_refs；无
+        // required_checks (隔离 gate_rule 行为：scope_check 不会跑)，其余字段走
+        // serde default。该规则现在是兼容 no-op：模型不再需要手写 ids。
         let spec_json = r#"{
             "id":"verification","kind":"verification","risk_level":"critical",
             "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
@@ -402,7 +403,7 @@ mod tests {
               { "op":"for_all","over":"findings",
                 "where":{"pred":"severity_at_least","min":"high"},
                 "require":{"pred":"non_empty","field":"evidence_refs"},
-                "on_fail":{"reason":"GATE_RULE: high+ finding needs evidence"} }
+                "on_fail":{"reason":"GATE_RULE: high+ finding requires evidence refs"} }
             ]
         }"#;
         let spec = load_stage_spec_from_json(spec_json).unwrap();
@@ -437,9 +438,10 @@ mod tests {
         let base = validate_stage_gate(&deliverable, &spec, None);
         assert!(base.allowed, "baseline should pass: {:?}", base.reasons);
 
-        // 追加一个不挂证据的 critical finding → gate_rule 触发 → 整体 Block。
-        let mut bad = deliverable.clone();
-        bad.findings.push(HarnessFinding {
+        // 追加一个不挂证据 id 的 critical finding → 旧 id-presence gate_rule
+        // 不再 Block。
+        let mut without_ids = deliverable.clone();
+        without_ids.findings.push(HarnessFinding {
             finding_id: Uuid::new_v4(),
             kind: "rce".to_string(),
             subject: "db.example.com".to_string(),
@@ -447,9 +449,12 @@ mod tests {
             evidence_refs: vec![],
             technique: None,
         });
-        let blocked = validate_stage_gate(&bad, &spec, None);
-        assert!(!blocked.allowed);
-        assert!(blocked.reasons.iter().any(|r| r.contains("GATE_RULE")));
+        let allowed = validate_stage_gate(&without_ids, &spec, None);
+        assert!(
+            allowed.allowed,
+            "legacy evidence-id rule should be a no-op: {:?}",
+            allowed.reasons
+        );
     }
 
     // ── gate-rules-migration (2026-06-05) 等价性回归 ──────────────────────────
@@ -457,12 +462,12 @@ mod tests {
     // min_invocations 语义（行为零变更，设计 §7）。
 
     #[test]
-    fn migrated_eas_scope_rule_blocks_claim_without_evidence() {
+    fn migrated_eas_scope_rule_allows_claim_without_model_evidence_ids() {
         use super::super::resources::load_embedded_stage_spec;
-        use super::super::types::{StageClaim, StageKind};
+        use super::super::types::{CoverageCell, CoverageStatus, StageClaim, StageKind};
 
         let spec = load_embedded_stage_spec(StageKind::ExternalAttackSurface).unwrap();
-        // 一个缺 evidence_ids 的 claim → 迁移后的 scope×2 数据规则应 Block。
+        // 一个缺 evidence_ids 的 claim → 迁移后的 scope×2 数据规则不再 Block。
         let d = StageDeliverable {
             stage_id: "external_attack_surface".to_string(),
             stage_run_id: Uuid::new_v4(),
@@ -477,17 +482,49 @@ mod tests {
             skipped_checks: vec![],
             findings: vec![],
             required_checks_done: vec![],
-            coverage: vec![],
+            coverage: vec![
+                CoverageCell {
+                    asset: "api.example.com".to_string(),
+                    technique: "GOLISH-EAS-LIVENESS".to_string(),
+                    status: CoverageStatus::Blocked,
+                    evidence_refs: vec![],
+                    note: Some("test fixture closes liveness without model ids".to_string()),
+                    reason_kind: None,
+                    tested_units: 0,
+                    total_units: 0,
+                    sampling_rationale: None,
+                },
+                CoverageCell {
+                    asset: "api.example.com".to_string(),
+                    technique: "GOLISH-EAS-PORT".to_string(),
+                    status: CoverageStatus::Blocked,
+                    evidence_refs: vec![],
+                    note: Some("test fixture closes port scan without model ids".to_string()),
+                    reason_kind: None,
+                    tested_units: 0,
+                    total_units: 0,
+                    sampling_rationale: None,
+                },
+                CoverageCell {
+                    asset: "api.example.com".to_string(),
+                    technique: "GOLISH-EAS-SERVICE-FINGERPRINT".to_string(),
+                    status: CoverageStatus::Blocked,
+                    evidence_refs: vec![],
+                    note: Some(
+                        "test fixture closes service fingerprint without model ids".to_string(),
+                    ),
+                    reason_kind: None,
+                    tested_units: 0,
+                    total_units: 0,
+                    sampling_rationale: None,
+                },
+            ],
             candidates: vec![],
         };
         let result = validate_stage_gate(&d, &spec, None);
-        assert!(!result.allowed);
         assert!(
-            result
-                .reasons
-                .iter()
-                .any(|r| r.contains("must cite evidence")),
-            "scope×2 gate_rule should fire: {:?}",
+            result.allowed,
+            "model-authored evidence ids are optional: {:?}",
             result.reasons
         );
     }
@@ -592,15 +629,20 @@ mod tests {
     /// covered-but-no-hit scan). The other 6 classes stay legacy self-report.
     fn vuln_triage_authoritative_ctx(asset: &str) -> super::rule_engine::GateContext {
         use super::rule_engine::{EvidenceFact, EvidenceOutcome, GateContext};
-        let facts = ["GOLISH-NDAY", "WSTG-CONF-05", "WSTG-ATHN-02", "WSTG-CRYP-03"]
-            .into_iter()
-            .map(|t| EvidenceFact {
-                asset: asset.to_string(),
-                technique: t.to_string(),
-                outcome: EvidenceOutcome::Empty,
-                evidence_id: 1,
-            })
-            .collect();
+        let facts = [
+            "GOLISH-NDAY",
+            "WSTG-CONF-05",
+            "WSTG-ATHN-02",
+            "WSTG-CRYP-03",
+        ]
+        .into_iter()
+        .map(|t| EvidenceFact {
+            asset: asset.to_string(),
+            technique: t.to_string(),
+            outcome: EvidenceOutcome::Empty,
+            evidence_id: 1,
+        })
+        .collect();
         GateContext {
             evidence_facts: Some(facts),
             ..Default::default()
@@ -676,8 +718,8 @@ mod tests {
             blocked.reasons
         );
 
-        // #4（用户拍板「checked_empty 也要证据」）：把一个 checked_empty 格的证据清空 →
-        // vuln_triage 的 checked_empty 证据规则应 Block（I8：已检查为空 ≠ 未检查）。
+        // #4（新合同）：把一个 checked_empty 格的模型 evidence_refs 清空 →
+        // 不再 Block；检查事实应由 DB/ledger truth 裁决，而非要求模型手写 ids。
         let mut empty_ce = pass_deliverable.clone();
         let cleared = empty_ce
             .coverage
@@ -688,18 +730,12 @@ mod tests {
             cleared.is_some(),
             "fixture must contain a checked_empty cell"
         );
-        let blocked_ce = validate_stage_gate(&empty_ce, &spec, None);
+        let checked_empty_without_ids =
+            validate_stage_gate_with_context(&empty_ce, &spec, None, None, &ctx);
         assert!(
-            !blocked_ce.allowed,
-            "checked_empty without evidence must block"
-        );
-        assert!(
-            blocked_ce
-                .reasons
-                .iter()
-                .any(|r| r.contains("checked_empty") && r.contains("must cite evidence")),
-            "checked_empty evidence rule should fire: {:?}",
-            blocked_ce.reasons
+            checked_empty_without_ids.allowed,
+            "checked_empty model evidence_refs are optional: {:?}",
+            checked_empty_without_ids.reasons
         );
     }
 

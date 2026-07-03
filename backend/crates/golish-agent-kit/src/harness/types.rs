@@ -243,13 +243,14 @@ pub struct AttackCandidate {
 /// Coverage matrix 单元格状态（设计 `docs/design/2026-06-05-coverage-matrix.md`）。
 ///
 /// 缺失（不在矩阵里）≡ `not_attempted` ≡ 不过关——这是 AGENTS.md I8
-/// 「已检查为空 ≠ 未检查」的落地：`CheckedEmpty` 是**显式终态**且须有证据/理由。
+/// 「已检查为空 ≠ 未检查」的落地：`CheckedEmpty` 是**显式终态**；运行事实由
+/// backend ledger/DB truth 裁决，模型侧 evidence id 字段只是可选调试引用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageStatus {
-    /// 测了且有发现 → 必须挂 evidence_refs。
+    /// 测了且有发现。
     Found,
-    /// 测了、无发现 → 必须挂 evidence_refs / note（≠ 未测）。
+    /// 测了、无发现（≠ 未测）。
     CheckedEmpty,
     /// 被阻断（WAF / 权限 / 越界）→ note 说明。
     Blocked,
