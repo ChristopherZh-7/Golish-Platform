@@ -52,6 +52,7 @@
 | 2026-06-25 | [runtime-supervisor](2026-06-25-runtime-supervisor.md) | ✅ |
 | 2026-06-25 | [enumeration-js-api-collection](2026-06-25-enumeration-js-api-collection.md) | ✅ |
 | 2026-06-26 | [enumeration-deliverables-and-flow](2026-06-26-enumeration-deliverables-and-flow.md) | ✅ |
+| 2026-07-05 | [stage-capability-tools](2026-07-05-stage-capability-tools.md) | ✅ |
 
 ## 2. Asset Intel / Recon / Targets / Integrations
 

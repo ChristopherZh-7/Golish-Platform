@@ -47,6 +47,7 @@
 | 2026-07-02 | [dead-asset-liveness-state](2026-07-02-dead-asset-liveness-state.md) | ✅ |
 | 2026-07-02 | [asset-discovery-stage-and-delta-wave](2026-07-02-asset-discovery-stage-and-delta-wave.md) | ✅ |
 | 2026-07-02 | [eas-worker-evidence-and-service-fingerprint](2026-07-02-eas-worker-evidence-and-service-fingerprint.md) | ✅ |
+| 2026-07-05 | [stage-capability-tools](2026-07-05-stage-capability-tools.md) | ✅ |
 
 ## 2. Crate-per-service / Servitization / 架构健康 / P0 契约
 

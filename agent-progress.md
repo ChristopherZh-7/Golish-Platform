@@ -29,6 +29,17 @@
 
 > 历史会话已归档：`docs/archive/agent-progress-archive-2026-06-28.md`。主文件只保留最近 20 条会话，避免旧日志干扰新判断；需要追溯旧验证证据时去 archive grep。
 
+### 2026-07-05 · stage capability tools 设计文档
+
+- **本轮目标**：按用户“能力包装成工具，先写文档”的要求，先设计 capability-first harness contract，不写实现代码。
+- **已完成**：
+  - 新增 `docs/design/2026-07-05-stage-capability-tools.md`：定义 stage capability registry、`suggested_capabilities`、EAS/Enumeration/Vuln/Attack/Verification 分阶段能力、wrapper runner 方向、安全约束与迁移顺序。
+  - 新增 `docs/superpowers/plans/2026-07-05-stage-capability-tools.md`：按 Phase 0-8 拆实现计划，先 metadata-only，再 worklist/refiner/UI，最后 EAS wrapper runner。
+  - `feature_list.json` 新增 `stage-capability-tools-2026-07-05` 为 `not_started`，未切 `in_progress`，避免扰动当前已有 in-progress 工作。
+- **验证**：文档/feature tracking 变更；未跑代码验证或 `just precommit`。
+- **风险 / 下一步**：若开始实现，第一步新增 `golish-agent-kit/src/harness/stage_capability.rs` 纯 registry + 单测；先保留 `suggested_tools` 兼容字段，再引入 `suggested_capabilities`。
+- **未提交**：本轮新增 docs/feature/progress 文件未提交；工作树还有大量既有未提交改动，未触碰 unrelated code。
+
 ### 2026-07-03 · EAS 阶段报错根治 P0 + 死资产 liveness P1/P2/P3/P4 全链（专注执行，未跑 commit/precommit）
 
 - **本轮目标**：接 MCP-5 转交的上下文，按 `docs/superpowers/plans/2026-07-03-eas-stage-optimization.md` 把 EAS 阶段「一直报错」根治（P0）+ 落死资产标记 Phase 1 inert 部分（P1）。**用户明确指令高于 rule：只落地、不跑 commit、不跑任何耗时验证（precommit/nextest 一律不跑），没修完也不主动发消息，靠 plan 文档做断点续传。**

@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
   "version": "0.1.10",
-  "last_updated": "2026-07-02",
+  "last_updated": "2026-07-05",
   "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -28,6 +28,28 @@
       ],
       "evidence": "IN_PROGRESS. 2026-07-02 BajieAsk agent-1 implemented A/C2/E and wrote the design/plan without running precommit/big tests per user instruction. 2026-07-03 Codex first committed that checkpoint (e3890d04), then implemented B/C1/D per user instruction to continue without tests/precommit: harness-stage structured-storage hook is awaited; coverage_truth excludes pseudo-services and bare DNS/53 service names; DB-derived DNS/53-only SERVICE not_applicable is threaded into stage_coverage, submit preview, and org gate. 2026-07-03 later Codex changed the cross-stage submit/gate contract so model-authored evidence ids are optional everywhere while fabricated ids still block; scoped validation passed: cargo check -p golish-agent-kit -p golish-agent-app exit 0; nextest -p golish-agent-kit harness -> 536 passed; nextest -p golish-agent-kit gate -> 226 passed; nextest -p golish-agent-kit scope_check freshness_check finding_verification_check rule_engine refiner fabricated_evidence -> 149 passed; nextest -p golish-agent-app harness_submit_tool -> 36 passed. Full init/precommit and live EAS/enumeration rerun were NOT run.",
       "notes": "Root cause of the last EAS run (pentest-chat-1783002737901-1): 3 stacked defects — (A) legacy submit/gate contract required model-written evidence ids and caused an id-copy retry loop; this has now been removed cross-stage, with fabricated-id rejection kept as the guardrail; (B) preflight vs gate timing race from the fire-and-forget output-store hook; (C) tcpwrapped counts as SERVICE while real -sV service is never written to fingerprints. Follow-ons: (D) DNS/53-only real_ip rows need terminal not_applicable semantics instead of forced service fingerprinting; (E) retry 3 was too tight. Code for A/B/C/D/E plus the optional-evidence-id contract is now written, but this stays in_progress until live EAS/enumeration verification and allowed full precommit can be run and recorded."
+    },
+    {
+      "id": "stage-capability-tools-2026-07-05",
+      "priority": 0,
+      "area": "backend: golish-agent-kit/src/harness/stage_capability.rs(new) + harness/types.rs + harness/gate/rule_engine.rs + tool_executors/security.rs + task_orchestrator/stage_refiner.rs; golish-agent-app/src/ai/commands/stage_coverage.rs; golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs; golish-sub-agents/src/executor_types.rs + defaults/prompts; frontend/components/Engagement/StageAssetCoveragePanel.tsx; resources/harness/stages/*/methodology.md",
+      "title": "Stage Capability Tools: expose stage-local capabilities (for example eas.fingerprint_services) as the planning/execution contract so AI selects capabilities while backend owns tool recipes, input filtering, DB landing, and evidence.",
+      "user_visible_behavior": "Coverage/worklist/repair surfaces show human-level capabilities such as Probe liveness, Discover ports, Fingerprint services, Collect browser surface, Extract JS APIs, and Probe routes instead of pushing raw tool names as the main plan. Later EAS wrapper tools let the agent call a capability for named worklist cells without hand-writing nmap/httpx/naabu command lines.",
+      "status": "not_started",
+      "design": "docs/design/2026-07-05-stage-capability-tools.md",
+      "plan": "docs/superpowers/plans/2026-07-05-stage-capability-tools.md",
+      "verification": [
+        "cd backend && cargo nextest run -p golish-agent-kit stage_capability tool_taxonomy --status-level fail",
+        "cd backend && cargo nextest run -p golish-agent-app stage_coverage --status-level fail",
+        "cd backend && cargo nextest run -p golish-agent-kit stage_refiner coverage_gap worklist --status-level fail",
+        "cd backend && cargo nextest run -p golish-agent-runtime stage_run_call --status-level fail",
+        "cd backend && cargo nextest run -p golish-sub-agents coverage_gap submit_repair defaults --status-level fail",
+        "pnpm exec vitest run frontend/components/Engagement/StageAssetCoveragePanel.test.tsx",
+        "pnpm exec tsc --noEmit --pretty false",
+        "live EAS smoke on /Users/christopherzheng/golish-platform/Test1: worklist returns suggested_capabilities and EAS gaps close via capability wrapper without raw broad nmap/httpx command authoring"
+      ],
+      "evidence": "NOT_STARTED. 2026-07-05 documentation-only pass added design and implementation plan. No code implementation or validation has been run.",
+      "notes": "This is the capability wrapper direction requested after the fixed-tools vs AI-autonomy discussion. First implementation should be metadata-only and backward compatible: add suggested_capabilities while preserving suggested_tools; EAS runner wrappers come after the registry/refiner/worklist/UI contract is stable."
     },
     {
       "id": "attack-stage-formulaic-candidate-exploit-2026-07-02",
