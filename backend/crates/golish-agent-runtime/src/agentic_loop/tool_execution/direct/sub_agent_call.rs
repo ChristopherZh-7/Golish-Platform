@@ -1108,6 +1108,7 @@ mod tests {
                 asset: "example.com".to_string(),
                 technique: "GOLISH-EAS-LIVENESS".to_string(),
                 reason: "missing_terminal_coverage".to_string(),
+                suggested_capabilities: Vec::new(),
                 suggested_tools: vec!["httpx".to_string()],
             }],
             allowed_tools_override: Vec::new(),

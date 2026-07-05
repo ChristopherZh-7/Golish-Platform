@@ -6,7 +6,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use golish_agent_kit::db_traits::OrgScopeUnit;
-use golish_app_core::domain::targets::{Target, TargetType};
+use golish_app_core::domain::targets::{web_root_url, Target, TargetType};
 
 use super::GolishDbRepoProvider;
 
@@ -52,26 +52,6 @@ fn is_web_like_port(port: Option<u16>, service: &str) -> bool {
                     | 9443
             )
         )
-}
-
-fn root_url_for(host: &str, port: Option<u16>, service: &str) -> (String, String, Option<u16>) {
-    let scheme = if service.contains("https")
-        || service.contains("ssl")
-        || matches!(port, Some(443 | 8443 | 9443))
-    {
-        "https"
-    } else {
-        "http"
-    };
-    let port_suffix = match (scheme, port) {
-        ("http", Some(80)) | ("https", Some(443)) | (_, None) => String::new(),
-        (_, Some(port)) => format!(":{port}"),
-    };
-    (
-        format!("{scheme}://{host}{port_suffix}/"),
-        scheme.to_string(),
-        port,
-    )
 }
 
 fn derive_enumeration_web_roots(target: &Target) -> Vec<serde_json::Value> {
@@ -122,7 +102,7 @@ fn derive_enumeration_web_roots(target: &Target) -> Vec<serde_json::Value> {
         if !is_web_like_port(port, &service) {
             continue;
         }
-        let (root_url, scheme, port) = root_url_for(value, port, &service);
+        let (root_url, scheme, port) = web_root_url(value, port, &service);
         roots.push(json!({
             "web_root_id": format!("derived:{}:{}:{}", target.id, scheme, port.unwrap_or_default()),
             "target_id": target.id,
@@ -141,7 +121,7 @@ fn derive_enumeration_web_roots(target: &Target) -> Vec<serde_json::Value> {
     }
 
     if roots.is_empty() && has_web_metadata {
-        let (root_url, scheme, port) = root_url_for(value, None, "");
+        let (root_url, scheme, port) = web_root_url(value, None, "");
         roots.push(json!({
             "web_root_id": format!("derived:{}:{}:default", target.id, scheme),
             "target_id": target.id,

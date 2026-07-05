@@ -111,6 +111,24 @@ struct StructuredStorageHookPayload {
     stdout: String,
 }
 
+fn pentest_underlying_invocation(
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+    result: &serde_json::Value,
+) -> Option<(String, String)> {
+    if tool_name == "pentest_run" {
+        let tool = tool_args.get("tool_name").and_then(|v| v.as_str())?;
+        let args = tool_args.get("args").and_then(|v| v.as_str()).unwrap_or("");
+        return Some((tool.to_string(), args.to_string()));
+    }
+    let tool = result.get("wrapped_tool_name").and_then(|v| v.as_str())?;
+    let args = result
+        .get("wrapped_args")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    Some((tool.to_string(), args.to_string()))
+}
+
 fn structured_storage_hook_payload(
     tool_name: &str,
     tool_args: &serde_json::Value,
@@ -138,16 +156,12 @@ fn structured_storage_hook_payload(
                     .map(str::to_string)
             })
             .unwrap_or_default()
-    } else if tool_name == "pentest_run" {
+    } else if let Some((tool, args)) = pentest_underlying_invocation(tool_name, tool_args, result) {
         result
             .get("command")
             .and_then(|c| c.as_str())
             .map(str::to_string)
-            .or_else(|| {
-                let tool = tool_args.get("tool_name").and_then(|v| v.as_str())?;
-                let args = tool_args.get("args").and_then(|v| v.as_str()).unwrap_or("");
-                Some(format!("{tool} {args}").trim().to_string())
-            })
+            .or_else(|| Some(format!("{tool} {args}").trim().to_string()))
             .unwrap_or_default()
     } else {
         String::new()
@@ -253,6 +267,61 @@ fn model_visible_tool_result(tool_name: &str, value: &serde_json::Value) -> serd
 }
 
 fn compact_route_probe_result(value: &serde_json::Value) -> serde_json::Value {
+    if value.get("batch").and_then(|v| v.as_bool()) == Some(true) {
+        return compact_route_probe_batch_result(value);
+    }
+    compact_route_probe_single_result(value)
+}
+
+fn compact_route_probe_batch_result(value: &serde_json::Value) -> serde_json::Value {
+    let results_sample = value
+        .get("results")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .take(10)
+                .map(|item| {
+                    serde_json::json!({
+                        "base_url": item.get("base_url").cloned().unwrap_or(serde_json::Value::Null),
+                        "result": item
+                            .get("result")
+                            .map(compact_route_probe_single_result)
+                            .unwrap_or(serde_json::Value::Null),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let result_count = value
+        .get("results")
+        .and_then(|v| v.as_array())
+        .map(Vec::len)
+        .unwrap_or_default();
+
+    serde_json::json!({
+        "batch": true,
+        "status": value.get("status").cloned().unwrap_or(serde_json::Value::Null),
+        "timed_out": value.get("timed_out").cloned().unwrap_or(serde_json::Value::Null),
+        "count": value.get("count").cloned().unwrap_or(serde_json::Value::Null),
+        "succeeded": value.get("succeeded").cloned().unwrap_or(serde_json::Value::Null),
+        "failed": value.get("failed").cloned().unwrap_or(serde_json::Value::Null),
+        "dir_found_targets": value.get("dir_found_targets").cloned().unwrap_or(serde_json::Value::Null),
+        "elapsed_ms": value.get("elapsed_ms").cloned().unwrap_or(serde_json::Value::Null),
+        "max_runtime_ms": value.get("max_runtime_ms").cloned().unwrap_or(serde_json::Value::Null),
+        "results_count": result_count,
+        "results_sample": results_sample,
+        "skipped": sample_array(value.get("skipped"), 10),
+        "errors_count": value.get("errors").and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default(),
+        "errors_sample": sample_array(value.get("errors"), 5),
+        "next_action": "Refresh stage_worklist/check_stage_asset_coverage. For each nested result, only rerun roots whose DIR cell remains pending/error.",
+        "model_visible_compacted": true,
+        "raw_result_retained_in_transcript": true,
+        "omitted_large_fields": ["results.result.matches", "results.result.rejected_candidates", "results.result.errors", "results.result.prefixes_tested"],
+    })
+}
+
+fn compact_route_probe_single_result(value: &serde_json::Value) -> serde_json::Value {
     let matches = value
         .get("matches")
         .and_then(|v| v.as_array())
@@ -297,8 +366,11 @@ fn compact_route_probe_result(value: &serde_json::Value) -> serde_json::Value {
         "outcome_persisted": value.get("outcome_persisted").cloned().unwrap_or(serde_json::Value::Null),
         "status": value.get("status").cloned().unwrap_or(serde_json::Value::Null),
         "timed_out": value.get("timed_out").cloned().unwrap_or(serde_json::Value::Null),
+        "request_limited": value.get("request_limited").cloned().unwrap_or(serde_json::Value::Null),
+        "candidate_generation_limited": value.get("candidate_generation_limited").cloned().unwrap_or(serde_json::Value::Null),
         "queue_completed": queue_completed,
         "queue_remaining": value.get("queue_remaining").cloned().unwrap_or(serde_json::Value::Null),
+        "max_requests": value.get("max_requests").cloned().unwrap_or(serde_json::Value::Null),
         "requests_sent": value.get("requests_sent").cloned().unwrap_or(serde_json::Value::Null),
         "candidate_requests_sent": value.get("candidate_requests_sent").cloned().unwrap_or(serde_json::Value::Null),
         "baseline_requests_sent": value.get("baseline_requests_sent").cloned().unwrap_or(serde_json::Value::Null),
@@ -776,17 +848,29 @@ fn format_coverage_gap_actions_for_runtime(actions: &[CoverageGapAction]) -> Str
         .take(40)
         .enumerate()
         .map(|(idx, action)| {
+            let capabilities = if action.suggested_capabilities.is_empty() {
+                String::new()
+            } else {
+                let ids = action
+                    .suggested_capabilities
+                    .iter()
+                    .map(|capability| capability.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("; suggested_capabilities={ids}")
+            };
             let tools = if action.suggested_tools.is_empty() {
                 String::new()
             } else {
                 format!("; suggested_tools={}", action.suggested_tools.join(", "))
             };
             format!(
-                "{}. asset={} technique={} reason={}{}",
+                "{}. asset={} technique={} reason={}{}{}",
                 idx + 1,
                 action.asset,
                 action.technique,
                 action.reason,
+                capabilities,
                 tools
             )
         })
@@ -1894,6 +1978,62 @@ mod tests {
     }
 
     #[test]
+    fn route_probe_batch_model_visible_result_keeps_nested_counts() {
+        let result = serde_json::json!({
+            "batch": true,
+            "status": "ok",
+            "timed_out": false,
+            "count": 1,
+            "succeeded": 1,
+            "failed": 0,
+            "dir_found_targets": 1,
+            "elapsed_ms": 39_557,
+            "max_runtime_ms": 60_000,
+            "results": [{
+                "base_url": "https://example.test/",
+                "result": {
+                    "success": true,
+                    "base_url": "https://example.test/",
+                    "outcome": "found",
+                    "outcome_persisted": true,
+                    "status": "request_limited_partial",
+                    "timed_out": false,
+                    "request_limited": true,
+                    "candidate_generation_limited": false,
+                    "queue_completed": false,
+                    "queue_remaining": 13,
+                    "max_requests": 2000,
+                    "requests_sent": 2000,
+                    "candidate_requests_sent": 1999,
+                    "baseline_requests_sent": 1,
+                    "persisted_directory_entries": 1,
+                    "matches": [{"url": "https://example.test/api", "status": 200}],
+                    "rejected_candidates": [],
+                    "errors": [],
+                    "prefixes_tested": ["/"],
+                    "wordlist": {"entries_loaded": 1882},
+                    "seed_paths": {"total_after_dedupe": 5},
+                    "run_id": "run-1",
+                    "dry_run": false
+                }
+            }],
+            "errors": [],
+            "skipped": []
+        });
+
+        let compact = model_visible_tool_result("route_probe_paths", &result);
+        let nested = &compact["results_sample"][0]["result"];
+
+        assert_eq!(compact["batch"], true);
+        assert_eq!(compact["results_count"], 1);
+        assert_eq!(nested["matches_count"], 1);
+        assert_eq!(nested["request_limited"], true);
+        assert_eq!(nested["max_requests"], 2000);
+        assert_eq!(nested["queue_completed"], false);
+        assert!(nested.get("matches").is_none());
+    }
+
+    #[test]
     fn small_generic_tool_result_is_left_untouched() {
         let result = serde_json::json!({
             "success": true,
@@ -1923,6 +2063,54 @@ mod tests {
 
         assert_eq!(payload.command, "httpx -u https://example.com -sc");
         assert_eq!(payload.stdout, "https://example.com [200]");
+    }
+
+    #[test]
+    fn eas_wrapper_result_feeds_structured_storage_hook() {
+        let payload = structured_storage_hook_payload(
+            "eas_discover_ports",
+            &serde_json::json!({"targets": ["192.0.2.10"]}),
+            &serde_json::json!({
+                "wrapped_tool_name": "naabu",
+                "wrapped_args": "-list {input_file} -top-ports 1000 -s c -silent",
+                "command": "naabu -list /tmp/targets -top-ports 1000 -s c -silent",
+                "stdout": "192.0.2.10:80",
+                "stderr": "",
+                "exit_code": 0
+            }),
+            true,
+        )
+        .expect("EAS wrapper should produce structured-storage payload");
+
+        assert_eq!(
+            payload.command,
+            "naabu -list /tmp/targets -top-ports 1000 -s c -silent"
+        );
+        assert_eq!(payload.stdout, "192.0.2.10:80");
+    }
+
+    #[test]
+    fn enum_wrapper_result_feeds_structured_storage_hook() {
+        let payload = structured_storage_hook_payload(
+            "enum_crawl_same_origin_urls",
+            &serde_json::json!({"target_urls": ["https://app.example.com/"]}),
+            &serde_json::json!({
+                "wrapped_tool_name": "katana",
+                "wrapped_args": "-list {input_file} -jc -silent -d 2",
+                "command": "katana -list /tmp/roots.txt -jc -silent -d 2",
+                "stdout": "https://app.example.com/api/v1/users",
+                "stderr": "",
+                "exit_code": 0
+            }),
+            true,
+        )
+        .expect("Enumeration wrapper should produce structured-storage payload");
+
+        assert_eq!(
+            payload.command,
+            "katana -list /tmp/roots.txt -jc -silent -d 2"
+        );
+        assert_eq!(payload.stdout, "https://app.example.com/api/v1/users");
     }
 
     #[test]
@@ -2061,13 +2249,13 @@ mod tests {
                     "asset": "101.69.134.6",
                     "technique": "GOLISH-EAS-LIVENESS",
                     "reason": "missing_terminal_coverage",
-                    "suggested_tools": ["httpx", "nmap -sn"]
+                    "suggested_tools": ["eas_probe_http_liveness"]
                 },
                 {
-                    "asset": "www.example.com",
+                    "asset": "101.69.134.7",
                     "technique": "GOLISH-EAS-SERVICE-FINGERPRINT",
                     "reason": "missing_terminal_coverage",
-                    "suggested_tools": ["nmap -sV", "whatweb"]
+                    "suggested_tools": ["eas_fingerprint_services"]
                 }
             ],
             "reasons": [
@@ -2086,13 +2274,27 @@ mod tests {
         assert!(mode
             .model_instruction()
             .contains("Exact coverage_gap_actions"));
-        assert!(mode.model_instruction().contains("www.example.com"));
+        assert!(mode.model_instruction().contains("101.69.134.7"));
         assert!(mode.block_result("query_target_data").is_none());
         assert!(mode.block_result("check_stage_asset_coverage").is_none());
         assert!(mode.block_result("stage_worklist_status").is_none());
         assert!(mode.block_result("stage_worklist_next").is_none());
         assert!(mode.block_result("list_recent_evidence").is_none());
-        assert!(mode.block_result("pentest_run").is_none());
+        assert!(mode.allows("eas_probe_http_liveness"));
+        assert!(mode.allows("eas_fingerprint_services"));
+        assert!(mode
+            .block_result_with_args(
+                "eas_probe_http_liveness",
+                &serde_json::json!({"targets": ["101.69.134.6"]})
+            )
+            .is_none());
+        let raw_blocked = mode
+            .block_result("pentest_run")
+            .expect("EAS repair should use backend wrappers, not raw pentest_run");
+        assert!(raw_blocked["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("EAS coverage-gap repair"));
         assert!(mode.block_result("submit_stage_deliverable").is_none());
         let blocked = mode
             .block_result("list_in_scope_targets")
@@ -2116,7 +2318,7 @@ mod tests {
     }
 
     #[test]
-    fn coverage_gap_repair_allows_batch_input_lines_for_listed_gap_targets() {
+    fn coverage_gap_repair_allows_eas_wrapper_batch_targets() {
         let v = serde_json::json!({
             "status": "needs_fix",
             "reasons": ["external attack surface incomplete: never attempted"],
@@ -2125,13 +2327,13 @@ mod tests {
                     "asset": "112.65.238.93",
                     "technique": "GOLISH-EAS-LIVENESS",
                     "reason": "missing_terminal_coverage",
-                    "suggested_tools": ["httpx"]
+                    "suggested_tools": ["eas_probe_http_liveness"]
                 },
                 {
                     "asset": "113.105.78.22",
                     "technique": "GOLISH-EAS-LIVENESS",
                     "reason": "missing_terminal_coverage",
-                    "suggested_tools": ["httpx"]
+                    "suggested_tools": ["eas_probe_http_liveness"]
                 }
             ]
         });
@@ -2143,6 +2345,14 @@ mod tests {
 
         assert!(mode
             .block_result_with_args(
+                "eas_probe_http_liveness",
+                &serde_json::json!({
+                    "targets": ["112.65.238.93", "113.105.78.22"]
+                }),
+            )
+            .is_none());
+        let blocked = mode
+            .block_result_with_args(
                 "pentest_run",
                 &serde_json::json!({
                     "tool_name": "httpx",
@@ -2150,7 +2360,11 @@ mod tests {
                     "input_lines": ["112.65.238.93", "113.105.78.22"]
                 }),
             )
-            .is_none());
+            .expect("EAS gap repair must not use raw pentest_run");
+        assert!(blocked["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("EAS coverage-gap repair"));
     }
 
     #[test]
@@ -2181,6 +2395,8 @@ mod tests {
 
         assert!(mode.block_result("stage_worklist_status").is_none());
         assert!(mode.block_result("stage_worklist_next").is_none());
+        assert!(mode.block_result("list_enumeration_web_roots").is_none());
+        assert!(mode.block_result("list_recent_evidence").is_none());
         assert!(mode.allows("browser_collect_js_api"));
         assert!(mode.allows("js_collect"));
         assert!(mode.allows("js_extract_apis"));
@@ -2189,6 +2405,17 @@ mod tests {
             .block_result_with_args(
                 "browser_collect_js_api",
                 &serde_json::json!({"target_url": "https://app.example.com"})
+            )
+            .is_none());
+        assert!(mode
+            .block_result_with_args(
+                "js_extract_apis",
+                &serde_json::json!({
+                    "target_urls": [{
+                        "target_id": "11111111-1111-1111-1111-111111111111",
+                        "target_url": "https://app.example.com/"
+                    }]
+                })
             )
             .is_none());
         assert!(mode
@@ -2225,15 +2452,15 @@ mod tests {
     }
 
     #[test]
-    fn coverage_gap_repair_blocks_list_file_without_visible_targets() {
+    fn coverage_gap_repair_uses_enum_crawler_wrapper_not_raw_pentest_run() {
         let v = serde_json::json!({
             "status": "needs_fix",
-            "reasons": ["external attack surface incomplete: never attempted"],
+            "reasons": ["content enumeration incomplete: never attempted"],
             "coverage_gap_actions": [{
-                "asset": "112.65.238.93",
-                "technique": "GOLISH-EAS-LIVENESS",
+                "asset": "https://app.example.com",
+                "technique": "GOLISH-ENUM-JSAPI",
                 "reason": "missing_terminal_coverage",
-                "suggested_tools": ["httpx"]
+                "suggested_tools": ["katana"]
             }]
         });
         let update = submit_repair_update("submit_stage_deliverable", &v)
@@ -2242,22 +2469,122 @@ mod tests {
             panic!("expected Set repair mode");
         };
 
+        assert!(mode.allows("enum_crawl_same_origin_urls"));
+        assert!(mode
+            .block_result_with_args(
+                "enum_crawl_same_origin_urls",
+                &serde_json::json!({"target_urls": ["https://app.example.com"]}),
+            )
+            .is_none());
+
         let blocked = mode
             .block_result_with_args(
                 "pentest_run",
                 &serde_json::json!({
-                    "tool_name": "httpx",
-                    "args": "-l /tmp/all-targets.txt -silent"
+                    "tool_name": "katana",
+                    "args": "-list /tmp/all-targets.txt -jc -silent"
                 }),
             )
-            .expect("hidden list-file probes should be blocked");
+            .expect("raw crawler CLI should be blocked");
 
         assert_eq!(blocked["blocked_by_submit_repair"], true);
         assert_eq!(blocked["repair_kind"], "coverage_gap");
         assert!(blocked["blocked_reason"]
             .as_str()
             .unwrap()
-            .contains("input_lines"));
+            .contains("Enumeration coverage-gap repair"));
+    }
+
+    #[test]
+    fn coverage_gap_repair_uses_vuln_wrapper_not_raw_pentest_run() {
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["vuln_triage incomplete: never attempted"],
+            "coverage_gap_actions": [
+                {
+                    "asset": "https://app.example.com",
+                    "technique": "WSTG-INPV-05",
+                    "reason": "missing_terminal_coverage",
+                    "suggested_tools": ["vuln_run_formulaic_sweep"]
+                },
+                {
+                    "asset": "https://other.example.com",
+                    "technique": "WSTG-INPV-01",
+                    "reason": "missing_terminal_coverage",
+                    "suggested_tools": ["vuln_run_formulaic_sweep"]
+                }
+            ]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("coverage gaps should activate repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
+
+        assert!(mode.allows("vuln_run_formulaic_sweep"));
+        assert!(!mode.allows("pentest_run"));
+        assert!(mode
+            .block_result_with_args(
+                "vuln_run_formulaic_sweep",
+                &serde_json::json!({
+                    "targets": ["https://app.example.com"],
+                    "techniques": ["WSTG-INPV-05"]
+                }),
+            )
+            .is_none());
+
+        let raw = mode
+            .block_result_with_args(
+                "pentest_run",
+                &serde_json::json!({
+                    "tool_name": "sqlmap",
+                    "args": "-u https://app.example.com --batch"
+                }),
+            )
+            .expect("raw vuln CLI should be blocked");
+        assert!(raw["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("vuln_run_formulaic_sweep"));
+
+        let broad = mode
+            .block_result_with_args(
+                "vuln_run_formulaic_sweep",
+                &serde_json::json!({
+                    "targets": ["https://app.example.com", "https://other.example.com"],
+                    "techniques": ["WSTG-INPV-05"]
+                }),
+            )
+            .expect("unlisted vuln target should be blocked");
+        assert!(broad["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("target/technique pair"));
+
+        let default_all = mode
+            .block_result_with_args(
+                "vuln_run_formulaic_sweep",
+                &serde_json::json!({"targets": ["https://app.example.com"]}),
+            )
+            .expect("gap repair must name techniques explicitly");
+        assert!(default_all["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("techniques[]"));
+
+        let wrong_pair = mode
+            .block_result_with_args(
+                "vuln_run_formulaic_sweep",
+                &serde_json::json!({
+                    "targets": ["https://app.example.com"],
+                    "techniques": ["WSTG-INPV-01"]
+                }),
+            )
+            .expect("unlisted target/technique pair should be blocked");
+        assert!(wrong_pair["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("target/technique pair"));
     }
 
     #[test]
@@ -2290,7 +2617,7 @@ mod tests {
     }
 
     #[test]
-    fn coverage_gap_repair_blocks_single_target_outside_action_list() {
+    fn coverage_gap_repair_blocks_single_eas_wrapper_target_outside_action_list() {
         let v = serde_json::json!({
             "status": "needs_fix",
             "reasons": ["external attack surface incomplete: never attempted"],
@@ -2298,7 +2625,7 @@ mod tests {
                 "asset": "112.65.238.93",
                 "technique": "GOLISH-EAS-LIVENESS",
                 "reason": "missing_terminal_coverage",
-                "suggested_tools": ["httpx"]
+                "suggested_tools": ["eas_probe_http_liveness"]
             }]
         });
         let update = submit_repair_update("submit_stage_deliverable", &v)
@@ -2309,20 +2636,18 @@ mod tests {
 
         assert!(mode
             .block_result_with_args(
-                "pentest_run",
+                "eas_probe_http_liveness",
                 &serde_json::json!({
-                    "tool_name": "httpx",
-                    "args": "-u https://112.65.238.93 -silent -json"
+                    "targets": ["https://112.65.238.93"]
                 }),
             )
             .is_none());
 
         let blocked = mode
             .block_result_with_args(
-                "pentest_run",
+                "eas_probe_http_liveness",
                 &serde_json::json!({
-                    "tool_name": "httpx",
-                    "args": "-u https://203.0.113.10 -silent"
+                    "targets": ["https://203.0.113.10"]
                 }),
             )
             .expect("unlisted target should be blocked");
@@ -2330,11 +2655,11 @@ mod tests {
         assert!(blocked["blocked_reason"]
             .as_str()
             .unwrap()
-            .contains("not in coverage_gap_actions"));
+            .contains("not in the EAS coverage_gap_actions"));
     }
 
     #[test]
-    fn coverage_gap_repair_blocks_cidr_pentest_run() {
+    fn coverage_gap_repair_blocks_raw_pentest_run_for_eas_actions() {
         let v = serde_json::json!({
             "status": "needs_fix",
             "reasons": ["external attack surface incomplete: never attempted"],
@@ -2342,7 +2667,7 @@ mod tests {
                 "asset": "124.196.9.134",
                 "technique": "GOLISH-EAS-LIVENESS",
                 "reason": "missing_terminal_coverage",
-                "suggested_tools": ["httpx"]
+                "suggested_tools": ["eas_probe_http_liveness"]
             }]
         });
         let update = submit_repair_update("submit_stage_deliverable", &v)
@@ -2362,11 +2687,14 @@ mod tests {
             .expect("CIDR sweeps should be blocked during coverage repair");
 
         assert_eq!(blocked["repair_kind"], "coverage_gap");
-        assert!(blocked["blocked_reason"].as_str().unwrap().contains("CIDR"));
+        assert!(blocked["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("EAS coverage-gap repair"));
     }
 
     #[test]
-    fn coverage_gap_repair_blocks_multi_target_pentest_run() {
+    fn coverage_gap_repair_blocks_multi_target_eas_wrapper_when_any_target_unlisted() {
         let v = serde_json::json!({
             "status": "needs_fix",
             "reasons": ["external attack surface incomplete: never attempted"],
@@ -2374,7 +2702,7 @@ mod tests {
                 "asset": "124.196.9.134",
                 "technique": "GOLISH-EAS-LIVENESS",
                 "reason": "missing_terminal_coverage",
-                "suggested_tools": ["httpx"]
+                "suggested_tools": ["eas_probe_http_liveness"]
             }]
         });
         let update = submit_repair_update("submit_stage_deliverable", &v)
@@ -2385,10 +2713,9 @@ mod tests {
 
         let blocked = mode
             .block_result_with_args(
-                "pentest_run",
+                "eas_probe_http_liveness",
                 &serde_json::json!({
-                    "tool_name": "nmap",
-                    "args": "-Pn -p 80,443,8080,8443,22,3389 -T4 124.196.9.134 124.196.9.146"
+                    "targets": ["124.196.9.134", "124.196.9.146"]
                 }),
             )
             .expect("multi-target probes should be blocked during coverage repair");
@@ -2397,7 +2724,7 @@ mod tests {
         assert!(blocked["blocked_reason"]
             .as_str()
             .unwrap()
-            .contains("not in coverage_gap_actions"));
+            .contains("not in the EAS coverage_gap_actions"));
     }
 
     #[test]
@@ -2423,6 +2750,17 @@ mod tests {
             .block_result_with_args(
                 "browser_collect_js_api",
                 &serde_json::json!({ "target_urls": ["https://dayu.moresec.cn/"] }),
+            )
+            .is_none());
+        assert!(mode
+            .block_result_with_args(
+                "browser_collect_js_api",
+                &serde_json::json!({
+                    "target_urls": [{
+                        "target_id": "11111111-1111-1111-1111-111111111111",
+                        "target_url": "https://dayu.moresec.cn/"
+                    }]
+                }),
             )
             .is_none());
 

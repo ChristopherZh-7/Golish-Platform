@@ -27,6 +27,7 @@
 | `IntentClassifier` / `NlSlice` | 确定性意图分类 / 终态 4 字段 |
 | `gate`（schema/scope/contract/vacuous/freshness 6 check） | 确定性证据门 |
 | `SprintContract` + Generator / `pre_action_authorizer` | 契约 / 前置 authz |
+| `StageCapabilitySpec` / `StageCapabilitySuggestion` | stage-local capability registry；coverage/worklist/refiner 的能力级建议，旧 `suggested_tools` 只作兼容提示 |
 
 ## 关键文件
 
@@ -38,6 +39,7 @@
 | `gate/` | 6 个确定性 check + `rule_engine` gate op（含 `candidate_grounded` / `candidate_disposition_complete`，设计 2026-07-02） |
 | `chain_wave.rs` | attack_candidate⇄verification 波次循环的纯决策函数 `decide_chain_wave`（去重+燃料+链深收敛），DB-free、可单测；活体游标覆写接线在 graph-flow 层（待做） |
 | `evidence_facts.rs` | 从工具命令/输出派生 coverage facts（passive intel + EAS） |
+| `stage_capability.rs` | stage capability registry：把 coverage technique 映射到人类能力 id、runner kind、允许工具、风险与批量 hint |
 | `intent_classifier.rs` / `nl_slice.rs` / `sprint_contract.rs` / `pre_action_authorizer.rs` | 分类 / 终态 / 契约 / authz |
 
 ## 依赖
@@ -51,7 +53,8 @@
 - `target_intel` 的 SUBDOMAIN 是 registrable-apex 维度；被动发现出的叶子子域名、`www.*` 主机、URL 形态资产都不再要求继续做 SUBDOMAIN 枚举，避免越发现越把 coverage 分母撑大。
 - `source_coverage` 规则读取 `GateContext.source_queries`（来自 `source_query_log`）来证明 provider/source 已终态尝试；它不投影 found，found 仍由 DB/ledger truth 决定。
 - `coverage_complete` 在 `derive_from_evidence=true` 时也可消费 `source_query_log` 的终态 source row 来关闭**非 found** gap：精确 technique（如 RDAP/WHOIS）按空/阻断终态处理，`recon_map_assets` provider survey 只覆盖 provider-backed intel 技术；自报 `found` 仍必须有 DB/ledger truth，不能靠 source row 过门。
-- `coverage_complete` BLOCK 时会在 `HarnessRecoveryActions.coverage_gap_actions` 输出结构化缺口清单（`asset` / `technique` / `reason` / `suggested_tools`），供 `submit_stage_deliverable` 和 sub-agent repair mode 直接告诉模型“只补这些目标/技术”，不要只靠自然语言 reason 猜。
+- `coverage_complete` BLOCK 时会在 `HarnessRecoveryActions.coverage_gap_actions` 输出结构化缺口清单（`asset` / `technique` / `reason` / `suggested_capabilities` / 兼容 `suggested_tools`），供 `submit_stage_deliverable` 和 sub-agent repair mode 直接告诉模型“只补这些目标/技术/能力”，不要只靠自然语言 reason 猜。
+- `operation_graph.json` 的分支边顺序是运行时语义：`made_progress=true` 走第一条（主路），`false` 走最后一条（bail）。攻击能力 profile 下 `enumeration` 主路必须是 `vuln_triage`，`reporting` 只能作为无内容/无可测面时的 bail 边；否则 Red Team/Pentest 会在内容枚举 PASS 后直接跳报告。
 - `external_attack_surface` 现在走 DB-truth 瘦交付：`facts_from_db_truth=true`，`coverage_complete.authoritative_found=true` 只认 targets/ports/fingerprints/technique_outcomes 投影的 found LIVENESS/PORT/SERVICE-FINGERPRINT；`coverage_denominator.authoritative=true` 不再要求手抄 denominator。主动 negative 终态仍需显式 `checked_empty` 或 `blocked/not_applicable+note`，但不要求模型手写 evidence id。
 - `GateContext.not_applicable_coverage` 是 DB/调用方注入的确定性终态集合（例如 EAS DNS/53-only IP/CIDR 的 `GOLISH-EAS-SERVICE-FINGERPRINT`），由 `GateContextBuilder` 归一后供 `coverage_complete` 消费；只有规则 terminal set 包含 `NotApplicable` 时才可关闭 cell，不能用它让模型自报的 found 通过。design 2026-07-03：`org_gate` / `harness_submit_tool` 的 enumeration 分支复用同一个 `eas_service_not_applicable_assets`（只开 53 无 web 面的 IP）把这些 IP × `GOLISH-ENUM-JS/DIR/PARAM/JSAPI` 四轴也注入 not_applicable_coverage——即「只开 DNS 的 IP 不是内容枚举根」，避免陈旧 http_status 让共享 DNS/CDN IP 楔住 enumeration gate；对从未进 web-capable 分母的 IP 是安全 no-op。
 - `external_attack_surface` 的 PORT/SERVICE-FINGERPRINT 只适用于 IP/CIDR host 资产；domain/url 只承载 LIVENESS/vhost。没有可委托/已注册 IP 的域名不能在 EAS 里被当成 PORT/SERVICE 扫描主体，缺 IP 是 target_intel/DNS 落库缺口。
@@ -64,7 +67,8 @@
 - fan-out 阶段的 pass-token closeout 必须按 scoping 绑定的 engagement root org subtree 核 `org_stage_completions`；只有没有 root 绑定时才允许 legacy 全库 org 口径。若 `operation_state.current_stage` 仍是该 fan-out stage，closeout 还必须要求 completion 晚于本次 `operation_state.stage_started_at`，防止旧 run 的 passed ledger 生成当前 stage 的 pass token。否则同一 embedded DB 里的 sibling/test org 或旧 completion 会把当前 operation 卡死。
 - `operation_continuity` 只做纯决策：输入 profile-projected DAG + `ContinuitySnapshot`，输出已 adopt 阶段、第一未满足 stage、remaining-stage allowlist。是否允许复用、是否询问用户、DB snapshot 怎么构建都在上层；不要把 DB 查询塞进 harness 纯模块。上层 continuity preflight 必须有 engagement root 才能把 scoping 标为 reusable。
 - stage tool whitelist 只约束真实扫描调用；`check_job` / `kill_job` / `list_jobs` / `wait_for_background_jobs` 是后台 job 控制面，必须 exempt，否则 submit barrier 报“后台任务仍在跑”后 worker 无法等待输出或检查明显卡死的 job。
-- `tool_taxonomy.rs` 把 Golish direct enumeration tools（`browser_collect_js_api` / `js_collect` / `js_extract_apis` / `route_probe_paths`）也视为 scan taxonomy 成员，分别归到 `recon/crawler` 与 `web/route-probe`；外部目录工具归 `web/dir-fuzzer`，不在 enumeration allow-list。`whatweb` 仍归 `recon/http`，因此 EAS 可用、enumeration 不可用。
+- `tool_taxonomy.rs` 把 Golish direct enumeration tools（`browser_collect_js_api` / `js_collect` / `js_extract_apis` / `route_probe_paths` / `enum_crawl_same_origin_urls`）也视为 scan taxonomy 成员，分别归到 `recon/crawler` 与 `web/route-probe`；EAS wrapper tools（`eas_probe_http_liveness` / `eas_discover_ports` / `eas_fingerprint_services`）分别归到 `recon/http` / `recon/port-scan`，让 stage whitelist 能允许 wrapper 本身而不是把 raw CLI 重新暴露给模型。外部目录工具归 `web/dir-fuzzer`，不在 enumeration allow-list。`whatweb` 仍归 `recon/http`，但 Prober/Enumerator 默认不再拿 raw `pentest_run`。
+- `stage_capability.rs` 是“AI 选能力，后端控配方”的元数据层：`target_intel` 只给 provider/read-only 能力，不暴露 scan CLI；EAS 把 LIVE/PORT/SERVICE 分成 `BackendWrapper` 能力并建议 `eas_probe_http_liveness` / `eas_discover_ports` / `eas_fingerprint_services`，而不是让模型拼 httpx/naabu/masscan/nmap 参数；Enumeration 的 crawler supplement 也走 `BackendWrapper` 并建议 `enum_crawl_same_origin_urls`，其他内容枚举能力仍是 browser/js_extract/route_probe。`vuln_triage` 的 `vuln.run_formulaic_sweep` 也是 `BackendWrapper` 能力，只建议 `vuln_run_formulaic_sweep`；stage spec 的 `allowed_tool_types` 必须只允许这个 wrapper 名，底层 `nuclei` / `sqlmap` / `wpscan` recipe 由后端工具封装，不暴露给模型。不要把 ffuf/arjun、raw katana/pentest_run、raw nuclei/sqlmap 重新塞回阶段。新增能力必须同时满足 stage tool whitelist，并保留 `suggested_tools` 作为旧字段兼容。
 - **攻击段三阶段（设计 2026-07-02）**：`StageKind` 现有 13 变体，vuln 段 = `vuln_triage`（**公式化扫描**：specialist=vuln_scanner，10 类可机械批量跑技术，`found`→finding）→ `attack_candidate`（**新 StageKind**：推理合成 `AttackCandidate` 假设，无扫描工具，`candidate_grounded` gate 要求每条有 rationale，证据真实性由 backend ledger/DB truth 解决）→ `verification`（**真打**：`candidate_disposition_complete` gate 要求每个 approved candidate 达终态 verified/refuted/blocked）。DAG **保持无环**（无 `verification→attack_candidate` 回边）；a→b→c 波次回流由 `chain_wave` 在 graph-flow 层游标覆写实现（活体接线待做）。SSTI/SSRF/LFI/认证绕过/业务逻辑从 vuln_triage 移交 attack_candidate。`authoritative_found` 暂未对 vuln_triage 开启（nuclei/dir/weakpw/tls 的 technique_outcomes 写路径未覆盖，开了会永久 BLOCK；只开 `derive_from_evidence`）。
 - 设计见 `docs/design/2026-05-26-*` 与 `docs/design/2026-07-02-attack-stage-formulaic-candidate-exploit.md`；内层 harness 当前 deferred（见 AGENTS.md §6）。
 

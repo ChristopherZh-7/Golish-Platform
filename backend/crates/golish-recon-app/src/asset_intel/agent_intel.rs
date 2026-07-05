@@ -8,13 +8,15 @@
 //! providers against one organization, and returns a small serializable summary
 //! the agent tool can hand back (and the runtime can book to the evidence ledger).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use serde::Serialize;
+use serde_json::Value;
 use uuid::Uuid;
 
 use golish_app_core::GolishError;
+use golish_pentest_domain::{canonical_asset_key, registrable_apex, AssetClass};
 
 use crate::organizations::OrganizationCandidates;
 
@@ -24,6 +26,10 @@ use super::{
     select_subsidiary_providers, AssetIntelHydrateConfig, AssetIntelProviderRunStatus,
     ToolsConfigState,
 };
+
+/// Keep automatic apex expansion bounded: it is passive/zero-touch, but each
+/// root can fan out to several provider requests.
+const AUTO_DOMAIN_EXPANSION_LIMIT: usize = 5;
 
 /// Which passive provider phase to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +61,20 @@ pub struct SubsidiaryCandidate {
     pub meets_threshold: bool,
 }
 
+/// One automatic domain-keyed expansion spawned by a normal `recon_map_assets`
+/// org/company survey.
+#[derive(Debug, Clone, Serialize)]
+pub struct DomainExpansionSummary {
+    pub domain: String,
+    pub run_id: String,
+    pub status: String,
+    pub targets: usize,
+    pub providers: Vec<String>,
+    /// Nested provider status for `source_query_log` with `target=<domain>`.
+    #[serde(default, rename = "providerStatus")]
+    pub provider_status: Vec<AssetIntelProviderRunStatus>,
+}
+
 /// Serializable result of one passive-intel run, returned by the agent tool and
 /// booked to the evidence ledger.
 #[derive(Debug, Clone, Serialize)]
@@ -80,6 +100,14 @@ pub struct PassiveIntelSummary {
     /// Empty for enrich or when candidates were auto-promoted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subsidiaries: Vec<SubsidiaryCandidate>,
+    /// Enrich phase only: roots automatically expanded in domain-keyed mode
+    /// after the broad org/company survey discovered owned domains.
+    #[serde(
+        default,
+        rename = "domainExpansions",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub domain_expansions: Vec<DomainExpansionSummary>,
 }
 
 /// Run one passive-intel phase (subsidiary discovery or field enrichment)
@@ -88,6 +116,82 @@ pub struct PassiveIntelSummary {
 /// Candidates + master-record profile fields are written back to the org by the
 /// engine (`run_providers_for_org`); this returns only a summary.
 pub async fn run_passive_intel(
+    pool: Arc<sqlx::PgPool>,
+    tools: ToolsConfigState,
+    organization_id: Uuid,
+    phase: PassiveIntelPhase,
+    config: AssetIntelHydrateConfig,
+) -> Result<PassiveIntelSummary, GolishError> {
+    let should_auto_expand_domains = phase == PassiveIntelPhase::Enrich
+        && config
+            .domain
+            .as_deref()
+            .map(str::trim)
+            .map_or(true, str::is_empty);
+
+    let mut summary = run_passive_intel_once(
+        Arc::clone(&pool),
+        tools.clone(),
+        organization_id,
+        phase,
+        config.clone(),
+    )
+    .await?;
+
+    if should_auto_expand_domains {
+        let roots =
+            match golish_db::repo::organizations::get_one(pool.as_ref(), organization_id).await {
+                Ok(Some(fresh)) => domain_expansion_roots(&fresh, AUTO_DOMAIN_EXPANSION_LIMIT),
+                Ok(None) => Vec::new(),
+                Err(error) => {
+                    tracing::warn!(%error, "reload org for passive-intel domain expansion failed");
+                    Vec::new()
+                }
+            };
+
+        for domain in roots {
+            let mut expansion_config = config.clone();
+            expansion_config.domain = Some(domain.clone());
+            match run_passive_intel_once(
+                Arc::clone(&pool),
+                tools.clone(),
+                organization_id,
+                phase,
+                expansion_config,
+            )
+            .await
+            {
+                Ok(expansion) => {
+                    tracing::info!(
+                        domain = %domain,
+                        run_id = %expansion.run_id,
+                        targets = expansion.targets,
+                        "passive-intel automatic domain expansion complete"
+                    );
+                    summary.domain_expansions.push(DomainExpansionSummary {
+                        domain,
+                        run_id: expansion.run_id,
+                        status: expansion.status,
+                        targets: expansion.targets,
+                        providers: expansion.providers,
+                        provider_status: expansion.provider_status,
+                    });
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        domain = %domain,
+                        %error,
+                        "passive-intel automatic domain expansion failed"
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(summary)
+}
+
+async fn run_passive_intel_once(
     pool: Arc<sqlx::PgPool>,
     tools: ToolsConfigState,
     organization_id: Uuid,
@@ -328,7 +432,110 @@ pub async fn run_passive_intel(
         provider_status: run.provider_status,
         promoted_children,
         subsidiaries,
+        domain_expansions: vec![],
     })
+}
+
+fn domain_expansion_roots(
+    organization: &golish_db::models::Organization,
+    limit: usize,
+) -> Vec<String> {
+    let mut roots = BTreeSet::new();
+    collect_domain_roots_from_json(&organization.domains, &mut roots);
+    if let Some(intel) = organization.intel.as_object() {
+        if let Some(app_domains) = intel.get("app_domains") {
+            collect_domain_roots_from_json(app_domains, &mut roots);
+        }
+    }
+    roots.into_iter().take(limit).collect()
+}
+
+fn collect_domain_roots_from_json(value: &Value, roots: &mut BTreeSet<String>) {
+    match value {
+        Value::Null => {}
+        Value::String(text) => push_domain_root(text, roots),
+        Value::Array(items) => {
+            for item in items {
+                collect_domain_roots_from_json(item, roots);
+            }
+        }
+        Value::Object(map) => {
+            let mut matched = false;
+            for key in ["domain", "host", "hostname", "url", "value", "name"] {
+                if let Some(text) = map.get(key).and_then(Value::as_str) {
+                    push_domain_root(text, roots);
+                    matched = true;
+                }
+            }
+            if !matched {
+                for item in map.values() {
+                    collect_domain_roots_from_json(item, roots);
+                }
+            }
+        }
+        other => push_domain_root(&other.to_string(), roots),
+    }
+}
+
+fn push_domain_root(value: &str, roots: &mut BTreeSet<String>) {
+    let value = value
+        .trim()
+        .trim_start_matches("*.")
+        .trim_start_matches('.')
+        .trim_end_matches('.');
+    let Some(asset) = canonical_asset_key(value) else {
+        return;
+    };
+    if asset.class != AssetClass::Domain {
+        return;
+    }
+    let host = asset
+        .key
+        .trim_start_matches("*.")
+        .trim_start_matches("www.")
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if !looks_like_domain(&host) || is_known_public_non_asset_host(&host) {
+        return;
+    }
+    let apex = registrable_apex(&host)
+        .trim_start_matches("www.")
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if looks_like_domain(&apex) && !is_known_public_non_asset_host(&apex) {
+        roots.insert(apex);
+    }
+}
+
+fn looks_like_domain(value: &str) -> bool {
+    let value = value.trim().trim_end_matches('.');
+    if value.contains(char::is_whitespace) || !value.contains('.') {
+        return false;
+    }
+    value.split('.').all(|part| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    })
+}
+
+fn is_known_public_non_asset_host(host: &str) -> bool {
+    const PUBLIC_HOSTS: &[&str] = &[
+        "github.com",
+        "gitlab.com",
+        "bitbucket.org",
+        "gitee.com",
+        "126.com",
+        "163.com",
+        "gmail.com",
+        "hotmail.com",
+        "outlook.com",
+        "qq.com",
+    ];
+    PUBLIC_HOSTS
+        .iter()
+        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
 }
 
 #[cfg(test)]
@@ -354,6 +561,7 @@ mod tests {
             provider_status: vec![],
             promoted_children: 0,
             subsidiaries: vec![],
+            domain_expansions: vec![],
         };
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["company"], "Acme");
@@ -363,6 +571,7 @@ mod tests {
         assert!(v["providerStatus"].as_array().unwrap().is_empty());
         // Empty subsidiaries is skipped from the JSON so enrich stays clean.
         assert!(v.get("subsidiaries").is_none());
+        assert!(v.get("domainExpansions").is_none());
     }
 
     #[test]
@@ -378,5 +587,76 @@ mod tests {
         assert_eq!(v["ownership_percent"], "58%");
         assert_eq!(v["status"], "在营");
         assert_eq!(v["meets_threshold"], true);
+    }
+
+    #[test]
+    fn domain_expansion_roots_extracts_apexes_and_skips_noise() {
+        let org = org_with_domains(
+            serde_json::json!([
+                "www.moresec.cn",
+                {"domain": "mail.moresec.cn"},
+                {"url": "https://api.moresec.com.cn:443/path"},
+                "*.portal.moresec.cn.",
+                "1.2.3.4",
+                "github.com",
+                "not a domain"
+            ]),
+            serde_json::json!({
+                "app_domains": [
+                    {"host": "console.moresec.com"},
+                    {"host": "foo.github.com"}
+                ]
+            }),
+        );
+
+        assert_eq!(
+            domain_expansion_roots(&org, 10),
+            vec![
+                "moresec.cn".to_string(),
+                "moresec.com".to_string(),
+                "moresec.com.cn".to_string(),
+            ]
+        );
+        assert_eq!(
+            domain_expansion_roots(&org, 1),
+            vec!["moresec.cn".to_string()]
+        );
+    }
+
+    fn org_with_domains(
+        domains: serde_json::Value,
+        intel: serde_json::Value,
+    ) -> golish_db::models::Organization {
+        let now = chrono::Utc::now();
+        golish_db::models::Organization {
+            id: Uuid::new_v4(),
+            project_path: ".".into(),
+            name: "Acme".into(),
+            parent_id: None,
+            description: String::new(),
+            owner: String::new(),
+            sort_order: 0,
+            aliases: vec![],
+            industry: String::new(),
+            tier: String::new(),
+            credit_code: String::new(),
+            domains,
+            ip_ranges: serde_json::json!([]),
+            asns: serde_json::json!([]),
+            email_domains: serde_json::json!([]),
+            scope_rules: serde_json::json!({}),
+            intel,
+            notes: String::new(),
+            certificates: serde_json::json!([]),
+            subsidiaries: serde_json::json!([]),
+            business_systems: serde_json::json!([]),
+            cloud_assets: serde_json::json!([]),
+            github_orgs: serde_json::json!([]),
+            social_accounts: serde_json::json!([]),
+            historical_vulns: serde_json::json!([]),
+            contacts: serde_json::json!([]),
+            created_at: now,
+            updated_at: now,
+        }
     }
 }

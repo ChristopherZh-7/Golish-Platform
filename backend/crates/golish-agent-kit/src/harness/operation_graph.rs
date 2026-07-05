@@ -330,6 +330,8 @@ mod tests {
         include_str!("../../../../../resources/harness/graph/operation_graph.json");
     const ASSESSMENT_JSON: &str =
         include_str!("../../../../../resources/harness/profiles/assessment.json");
+    const PENTEST_JSON: &str =
+        include_str!("../../../../../resources/harness/profiles/pentest.json");
 
     fn base() -> OperationGraph {
         load_operation_graph_from_json(BASE_GRAPH_JSON).expect("base graph parses + validates")
@@ -337,6 +339,11 @@ mod tests {
 
     fn assessment_dag() -> AllowedDag {
         let p = load_profile_from_json(ASSESSMENT_JSON).expect("assessment profile");
+        base().project(&p.allowed_stage_set())
+    }
+
+    fn pentest_dag() -> AllowedDag {
+        let p = load_profile_from_json(PENTEST_JSON).expect("pentest profile");
         base().project(&p.allowed_stage_set())
     }
 
@@ -430,6 +437,18 @@ mod tests {
         assert_eq!(
             dag.next_stages(StageKind::ExternalAttackSurface),
             vec![StageKind::Enumeration, StageKind::Reporting]
+        );
+    }
+
+    #[test]
+    fn next_stages_enumeration_branches_to_vuln_triage_before_reporting() {
+        let dag = pentest_dag();
+        // Branch order is runtime semantics: progress -> first/main edge, no
+        // progress -> last/bail edge. Attack-capable profiles must continue from
+        // enumeration into vuln_triage when enumeration produced a testable surface.
+        assert_eq!(
+            dag.next_stages(StageKind::Enumeration),
+            vec![StageKind::VulnTriage, StageKind::Reporting]
         );
     }
 

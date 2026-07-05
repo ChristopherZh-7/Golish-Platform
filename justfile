@@ -37,6 +37,13 @@ replay session:
 stage profile to objective:
     cd backend && cargo run -q -p golish --bin golish -- --stage-run --profile {{ profile }} --to {{ to }} --auto-approve -e "{{ objective }}"
 
+# Real stage smoke test with an isolated temporary embedded DB and a local HTTP
+# fixture target. Prints db_smoke_summary before the runner shuts Postgres down.
+# Usage: just stage-smoke <profile> <to-stage> "<objective>"
+# Example: just stage-smoke assessment target_intel "smoke target_intel"
+stage-smoke profile to objective:
+    python3 scripts/stage_smoke.py --fixture-web --profile {{ profile }} --to {{ to }} --objective "{{ objective }}"
+
 # ============================================
 # Testing
 # ============================================

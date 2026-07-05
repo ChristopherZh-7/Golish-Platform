@@ -722,10 +722,13 @@ fn build_mark_no_signal_liveness_by_id_sql(state: &str, reason: &str) -> String 
 /// only fires while the row genuinely has no alive signal and is not already
 /// `alive`. Caller owns the id. Returns rows updated (0 when the guard held).
 pub async fn mark_dead_if_no_signal_by_id(pool: &PgPool, id: Uuid) -> Result<u64> {
-    let res = sqlx::query(&build_mark_no_signal_liveness_by_id_sql("dead", "no_service"))
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let res = sqlx::query(&build_mark_no_signal_liveness_by_id_sql(
+        "dead",
+        "no_service",
+    ))
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(res.rows_affected())
 }
 

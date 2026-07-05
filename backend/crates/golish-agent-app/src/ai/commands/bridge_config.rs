@@ -2403,6 +2403,8 @@ fn batch_input_file_from_command(
         "httpx" => &["-l", "-list", "--list", "-input"],
         "masscan" | "nmap" => &["-iL"],
         "whatweb" => &["--input-file"],
+        "nuclei" => &["-l", "-list"],
+        "sqlmap" => &["-m", "--bulk-file"],
         _ => return None,
     };
     let tokens = command_tokens(command);
@@ -3280,6 +3282,28 @@ mod tests {
     }
 
     #[test]
+    fn batch_vuln_input_file_is_recovered_from_nuclei_l_flag() {
+        let cmd = r#"nuclei -json -silent -tags sqli,xss -l .golish/tool-inputs/vuln-targets.txt"#;
+        assert_eq!(
+            batch_input_file_from_command(cmd, Some("/tmp/ws"), "nuclei")
+                .unwrap()
+                .to_string_lossy(),
+            "/tmp/ws/.golish/tool-inputs/vuln-targets.txt"
+        );
+    }
+
+    #[test]
+    fn batch_vuln_input_file_is_recovered_from_sqlmap_m_flag() {
+        let cmd = r#"sqlmap -m .golish/tool-inputs/sqlmap-targets.txt --batch --level 1"#;
+        assert_eq!(
+            batch_input_file_from_command(cmd, Some("/tmp/ws"), "sqlmap")
+                .unwrap()
+                .to_string_lossy(),
+            "/tmp/ws/.golish/tool-inputs/sqlmap-targets.txt"
+        );
+    }
+
+    #[test]
     fn batch_liveness_input_is_recovered_from_httpx_quoted_heredoc() {
         let cmd = "\"/Users/me/Application Support/golish-platform/tools/httpx/httpx\" -json -sc -silent <<'GOLISH_STDIN'\nhttp://39.99.254.48\nqs.stock.pingan.com\nGOLISH_STDIN";
         assert_eq!(
@@ -3436,9 +3460,7 @@ mod tests {
         let eq = nuclei_covered_techniques("nuclei -tags=cve -l hosts.txt");
         assert!(eq.contains(golish_agent_kit::harness::wstg_mapping::GOLISH_NDAY));
         // no -tags => empty covered set (only real hits credit found).
-        assert!(nuclei_command_targets("nuclei -u https://a.com")
-            .first()
-            .is_some());
+        assert!(!nuclei_command_targets("nuclei -u https://a.com").is_empty());
         assert!(nuclei_covered_techniques("nuclei -u https://a.com").is_empty());
     }
 

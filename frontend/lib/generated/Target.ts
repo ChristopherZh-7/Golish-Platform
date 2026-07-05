@@ -3,4 +3,16 @@ import type { Scope } from "./Scope";
 import type { TargetStatus } from "./TargetStatus";
 import type { TargetType } from "./TargetType";
 
-export type Target = { id: string, name: string, type: TargetType, value: string, tags: Array<string>, notes: string, scope: Scope, status: TargetStatus, grp: string, owner: string, time_window_start: number | null, time_window_end: number | null, organization_id: string | null, source: string, parent_id: string | null, real_ip: string, cdn_waf: string, http_title: string, http_status: number | null, webserver: string, os_info: string, content_type: string, created_at: number, updated_at: number, };
+export type Target = { id: string, name: string, type: TargetType, value: string, tags: Array<string>, notes: string, scope: Scope, status: TargetStatus, grp: string, owner: string, time_window_start: number | null, time_window_end: number | null, organization_id: string | null, source: string, parent_id: string | null, real_ip: string, cdn_waf: string, http_title: string, http_status: number | null, webserver: string, os_info: string, content_type: string, 
+/**
+ * Persistent liveness verdict stamped by EAS probing: `alive` / `dead` /
+ * `unreachable`; `None` = not probed yet (design 2026-07-02-dead-asset-
+ * liveness-state). Downstream stages exclude confirmed-dead assets from the
+ * coverage denominator.
+ */
+liveness_state?: string, 
+/**
+ * Failure detail behind a non-alive `liveness_state`
+ * (`dns_fail` / `timeout` / `conn_refused` / `no_service` / `probe_error`).
+ */
+liveness_reason?: string, created_at: number, updated_at: number, };

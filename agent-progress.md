@@ -29,6 +29,174 @@
 
 > 历史会话已归档：`docs/archive/agent-progress-archive-2026-06-28.md`。主文件只保留最近 20 条会话，避免旧日志干扰新判断；需要追溯旧验证证据时去 archive grep。
 
+### 2026-07-05 · vuln_triage stage_run 扫描路由与 coverage worklist 修复
+
+- **本轮目标**：回应用户“这个阶段应该是先扫描 / stage_run 怎么会 block / 你要改”，修复 Enumeration 通过后 `vuln_triage` 无法真正进入公式化扫描 worker、preflight 误报可提交的问题。
+- **诊断结论**：
+  - `vuln_triage` spec 的 `specialist` 是 `vuln_scanner`，但默认 sub-agent 集没有 `sub_agent_vuln_scanner`；`stage_run` 之前直接拼 `sub_agent_{specialist}`，导致该阶段扇不出真实 worker。
+  - Orchestrator/planner prompt 的通用规则仍写着安全任务优先直接 `sub_agent_pentester`；在 active specialist stage 里该直接调用会被 tool guard 正确拦住，应该走 `stage_run`。
+  - `ai_get_stage_asset_coverage` 的 read-model 没有给 `StageKind::VulnTriage` 生成 10 个公式化扫描 technique cell，导致 worklist/status 可能拿到空矩阵并返回 `ready_to_submit=true`，而 gate 仍按 spec 看见大量 `(asset × technique)` 缺口。
+- **已完成**：
+  - `stage_run_call.rs` 新增 `vuln_scanner -> sub_agent_pentester` runtime 映射：保留 `vuln_scanner` 的 stage/UI label、agent_path/checkpoint key，但用现有 Pentester worker 工具面执行扫描。
+  - `stage_coverage.rs` 给 `vuln_triage` 生成 10 个公式化扫描轴（WSTG-INPV-05/01/12、ATHZ-04、ATHN-02、SESS-02、CONF-05、CRYP-03、INFO、GOLISH-NDAY），pending/error cell 带 capability/tools hint。
+  - `stage_worklist_status` / `stage_worklist_next` / `check_stage_asset_coverage` 对 `vuln_triage` 空 denominator 返回 `ready_to_submit=false` + `coverage_denominator_missing=true`，不再把空矩阵当作可提交。
+  - `vuln.run_formulaic_sweep` capability 与 `vuln_triage/spec.json` 允许 `sqlmap` 所需的 `web/injection`，保持 methodology / deterministic outcome hook / stage whitelist 一致。
+  - Orchestrator/planner prompt 增加 active stage-specialist override：处在 harness stage 时，主 agent 不直接调用 `sub_agent_pentester` 补洞，而是调用 `stage_run`。
+  - 同步模块卡：`golish-agent-runtime/agentic_loop.md`、`golish-sub-agents/defaults.md`、`golish-agent-kit/{tool_executors,harness}.md`。
+- **运行过的验证（实跑）**：
+  - `rustfmt --edition 2021 <本轮触及 Rust 文件>` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-runtime stage_label_and_role_label_title_case --status-level fail` → 1 passed / 291 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app vuln_triage_exposes_formulaic_scan_axes --status-level fail` → 1 passed / 157 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit vuln --status-level fail` → 21 passed / 809 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents stage_run_override --status-level fail` → 1 passed / 119 skipped。
+  - `python3 -m json.tool resources/harness/stages/vuln_triage/spec.json >/dev/null` → exit 0。
+  - `git diff --check -- <本轮触及路径>` → exit 0。
+- **未跑 / 风险**：
+  - 按用户要求未再跑 `./init.sh` / full `just precommit`。本轮最初的 `./init.sh` 已在用户叫停前结束，失败点是既有 `golish-recon-app/src/asset_intel/agent_intel.rs:126` clippy `map_or` 可简化，不属于本次 vuln stage 修复证据。
+  - 未重启 dev app、未对 Test1 做 live rerun；当前修复是 contract/read-model/routing 层，需重启后端后重跑 `vuln_triage` 才能看到 worker 真正执行 nuclei/sqlmap/wpscan/searchsploit 等公式化扫描。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`、`backend/crates/golish-agent-app/src/ai/commands/stage_coverage.rs`、`backend/crates/golish-agent-kit/src/{tool_executors/security.rs,harness/stage_capability.rs,harness/stage_spec.rs}`、`backend/crates/golish-sub-agents/src/defaults/{prompts/orchestration.rs,prompts/execution_planning.rs,tests.rs}`、`resources/harness/stages/vuln_triage/spec.json`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/backend/golish-sub-agents/defaults.md`、`docs/modules/backend/golish-agent-kit/{tool_executors.md,harness.md}`、`agent-progress.md`。
+
+### 2026-07-05 · red_team Enumeration 后误进 Reporting 的 DAG 修复
+
+- **本轮目标**：回应用户“我用的 red team，不是全阶段吗？为什么刚刚进 Reporting”，用最新 Test1 run + DB truth 判断是 profile 问题还是 stage graph 问题，并修复。
+- **诊断结论**：
+  - 最新 Test1 session `pentest-chat-1783230370145-1` 的 `operation_state.profile` 实际是 `red_team`，不是 assessment；`red_team.json` 也确实允许全阶段。
+  - DB `operation_state.state_blob.graph_flow` 显示 `enumeration` 已 PASS 且 `made_progress=true`，但 `next_node=reporting`。
+  - 根因是 `resources/harness/graph/operation_graph.json` 中 `enumeration` 分支边顺序写成了 `reporting` 在前、`vuln_triage` 在后；graph-flow 规则是 `made_progress=true` 走第一条主路，因此 Red Team/Pentest 在 Enumeration 有内容枚举进展时反而直接进了 Reporting。
+- **已完成**：
+  - 调整基础 DAG：`enumeration -> vuln_triage` 作为 progress/main branch，`enumeration -> reporting` 作为 no-progress bail branch。
+  - 补 `operation_graph` 单测锁住 attack-capable profile 下 `Enumeration` 后继顺序为 `[VulnTriage, Reporting]`。
+  - 更新 `operation_flow` mock：Enumeration 的 DB/ledger-backed 内容枚举结果算 progress，progress 应进入 vuln_triage。
+  - 更新 `docs/modules/backend/golish-agent-kit/harness.md`，记录 operation graph 分支边顺序是运行时语义。
+  - 更新 `feature_list.json` 的 `attack-stage-formulaic-candidate-exploit-2026-07-02` 验证项与 evidence。
+- **运行过的验证（实跑）**：
+  - `python3 -m json.tool resources/harness/graph/operation_graph.json >/dev/null` → exit 0。
+  - `cd backend && cargo fmt -p golish-agent-kit --check` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-kit operation_graph operation_flow --status-level fail` → 40 passed / 788 skipped。
+  - `git diff --check -- resources/harness/graph/operation_graph.json backend/crates/golish-agent-kit/src/harness/operation_graph.rs backend/crates/golish-agent-kit/src/harness/operation_flow.rs docs/modules/backend/golish-agent-kit/harness.md` → exit 0。
+- **未跑 / 风险**：未跑 full `just precommit`；未重启 app 重新跑 live red_team。已存在的 Test1 operation checkpoint 仍停在 `reporting`，这次代码修复不会自动改写已持久化的 `next_node`；要从当前 run 继续进 `vuln_triage` 需要显式 reset/checkpoint 迁移或开新 run。
+- **本轮修改但未提交（本 scope）**：`resources/harness/graph/operation_graph.json`、`backend/crates/golish-agent-kit/src/harness/{operation_graph.rs,operation_flow.rs}`、`docs/modules/backend/golish-agent-kit/harness.md`、`feature_list.json`、`agent-progress.md`。
+
+### 2026-07-05 · target_intel recon_map_assets 自动 apex 扩展
+
+- **本轮目标**：回应用户“资产为什么少了 / 再改”，把 `recon_map_assets(domain=...)` 从模型可选补跑改成普通 `recon_map_assets(organization_id=...)` 内置的确定性 bounded owned-apex expansion，减少 DeepSeek Flash 因未主动补 domain survey 导致的资产数波动。
+- **已完成**：
+  - `asset_intel::run_passive_intel` 拆成外层编排 + 单次 provider run；普通 enrich/org-company survey 完成后，从新写入的 `organizations.domains` / `intel.app_domains` 提取注册 apex，去除 IP/噪声/公共非资产域，最多自动补 5 个 domain-keyed provider runs。显式 `config.domain` 仍只跑定点 domain-keyed templates，且不会递归扩展。
+  - `PassiveIntelSummary` 新增 `domainExpansions[]`，每个 expansion 带 `domain/run_id/status/targets/providers/providerStatus`。
+  - runtime `recon_source_query_rows` 解析 nested `domainExpansions[*].providerStatus`，写成 `source_query_log(query=map_assets,target=<apex>)`，避免覆盖主 org survey 的 provider row；duplicate guard 对 `recon_map_assets(domain=...)` 改为只按对应 target 去重。
+  - 更新 `recon_map_assets` 工具描述/schema、target_intel methodology、prompt/refiner 简短提示，以及 `golish-recon-app` 的 `asset_intel` / `agent_tools` 模块卡。
+- **运行过的验证（实跑）**：
+  - `cargo fmt --manifest-path backend/Cargo.toml --package golish-recon-app --package golish-agent-runtime --package golish-agent-kit` → exit 0。
+  - `cargo test --manifest-path backend/Cargo.toml -p golish-recon-app domain_expansion_roots_extracts_apexes_and_skips_noise` → 1 passed / 214 filtered。
+  - `cargo test --manifest-path backend/Cargo.toml -p golish-recon-app map_assets_schema_has_optional_domain` → 1 passed / 214 filtered。
+  - `cargo test --manifest-path backend/Cargo.toml -p golish-agent-runtime domain_expansion_provider_status_rows_keep_domain_target` → 1 passed / 291 filtered；该次也重新编译了 `golish-agent-kit`。
+- **未跑 / 风险**：未跑 full `just precommit`；未重启 dev app 跑新的 DeepSeek Flash/Test1 live target_intel。当前验证覆盖了 Rust 编译、apex 提取去噪/限流、schema、source_query_log row shape；真实 provider 数量回升需重启后端后再跑一次小企业/MoreSec live 才能确认。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-recon-app/src/asset_intel/agent_intel.rs`、`backend/crates/golish-recon-app/src/agent_tools/mod.rs`、`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/mod.rs`、`backend/crates/golish-agent-runtime/src/execution_mode/prompt_render.rs`、`backend/crates/golish-agent-kit/src/task_orchestrator/refiner.rs`、`resources/harness/stages/target_intel/methodology.md`、`docs/modules/backend/golish-recon-app/{asset_intel,agent_tools}.md`、`agent-progress.md`。
+
+### 2026-07-05 · enumeration route_probe 前台预算 + batch compaction 优化
+
+- **本轮目标**：继续优化 DeepSeek Flash live smoke 暴露的 enumeration 卡在 `route_probe_paths` 后无清晰收束的问题，并用本地 fixture 复跑验证能否落库 + 过 gate。
+- **已完成**：
+  - `route_probe_paths` 新增 `max_requests` 与环境默认 `GOLISH_ROUTE_PROBE_DEFAULT_MAX_RUNTIME_MS` / `GOLISH_ROUTE_PROBE_DEFAULT_MAX_REQUESTS`；命中请求预算时返回 `status="request_limited_partial"`、`request_limited=true`、`queue_completed=false`，并把 `max_requests` / `candidate_generation_limited` 写进结果、audit detail、live complete 与 evidence summary。
+  - `scripts/stage_smoke.py` 新增 `--route-probe-max-runtime-ms` / `--route-probe-max-requests` / `--full-route-probe`，enumeration smoke 默认给 `route_probe_paths` 注入前台预算，避免本地验证无限等。
+  - Enumerator prompt 与 enumeration methodology 改为批量调用 `route_probe_paths` 时显式带前台预算，并说明 `timeout_partial` / `request_limited_partial` 只代表队列未跑空，不代表已有 DIR 发现无效；提交前应刷新 coverage/worklist。
+  - `golish-sub-agents` 的 model-visible route_probe compaction 改成 batch-aware：顶层 batch 不再被压成 `matches_count=0`，而是保留每个 nested target 的 `matches_count`、`outcome_persisted`、`request_limited` 与 `max_requests`。
+  - 同步模块卡：`docs/modules/backend/golish-pentest-app/pentest_bridge.md`、`docs/modules/backend/golish-sub-agents/{defaults,executor}.md`、`docs/modules/backend/golish/stage_run.md`。
+- **活体结果（实跑 DeepSeek Flash enumeration）**：
+  - 命令：`python3 scripts/stage_smoke.py --provider deepseek --model deepseek-v4-flash --profile assessment --only enumeration --fixture-web --org 'Golish Local Fixture Enum Optimized' --route-probe-max-runtime-ms 20000 --route-probe-max-requests 400 --objective 'Run only the enumeration smoke stage against the local fixture. Use the stage worklist, run real browser/js/route tools, keep route_probe_paths bounded with max_runtime_ms=20000 and max_requests=400, refresh DB-backed coverage after partial route probe, then submit only when ready.' --run-tree` → exit 0。
+  - Workspace：`/private/var/folders/3m/qkq1qzkn2lsgffy1nvdc8k880000gn/T/golish-stage-workspace-isdcmck2`；session：`stage-run-bb2e5f56-7510-4f65-8028-932d156f9a10`；fixture：`http://127.0.0.1:49501`。
+  - Final report：`GATE PASS findings=0`、`submits=1 needs_fix=0`。DB/tool evidence：`browser_collect_js_api` 写 JSAPI/PARAM/JS evidence ids 3/4/5；`katana` 写 crawler evidence id 7；`js_extract_apis` 写 JSAPI/PARAM evidence ids 11/12；`route_probe_paths` 写 DIR evidence id 14。
+  - `route_probe_paths` 实际调用为 batch + `max_runtime_ms=60000` / `max_requests=2000`（prompt 显式预算优先于 smoke objective 文案）；nested target 返回 `status="request_limited_partial"`、`request_limited=true`、`requests_sent=2000`、`queue_remaining=13`，但已验证 `/api`、`outcome="found"`、`outcome_persisted=true`、`persisted_directory_entries=1`，所以 gate 能依据 DB truth 通过。
+  - 仍观察到本地 fixture 的 claim 文本含 `127.0.0.1` 时会先触发 SSRF guardrail BLOCK，模型删 raw URL 后可 PASS；这是 smoke/claim polish 问题，不应放宽生产 SSRF 规则。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-pentest-app -p golish-sub-agents --check` → exit 0。
+  - `python3 -m py_compile scripts/stage_smoke.py` → exit 0。
+  - `cd backend && cargo nextest run -p golish-pentest-app route_probe --status-level fail` → 14 passed / 153 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents defaults response_parsing --status-level fail` → 50 passed / 66 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents route_probe_model_visible response_parsing defaults --status-level fail` → 51 passed / 66 skipped。
+  - `cd backend && cargo check -p golish-pentest-app -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo clippy -p golish-pentest-app -p golish-sub-agents --all-targets -- -D warnings` → exit 0。
+  - `git diff --check -- backend/crates/golish-pentest-app/src/pentest_bridge/route_probe_paths.rs backend/crates/golish-sub-agents/src/executor/response_parsing.rs backend/crates/golish-sub-agents/src/defaults/prompts/execution_planning.rs backend/crates/golish-sub-agents/src/defaults/tests.rs resources/harness/stages/enumeration/methodology.md scripts/stage_smoke.py docs/modules/backend/golish-pentest-app/pentest_bridge.md docs/modules/backend/golish-sub-agents/defaults.md docs/modules/backend/golish-sub-agents/executor.md docs/modules/backend/golish/stage_run.md` → exit 0。
+- **未跑 / 风险**：未跑 full `just precommit`；本次证明本地 fixture enumeration 已能经真实 DeepSeek Flash + 临时 DB + DB evidence 过 gate，但 Test1/真实复杂目标上的非 fixture rerun 还没跑。EAS wrapper runner 仍 pending；本地 fixture 的 localhost claim/SSRF guardrail 需要单独 polish。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-pentest-app/src/pentest_bridge/route_probe_paths.rs`、`backend/crates/golish-sub-agents/src/{executor/response_parsing.rs,defaults/prompts/execution_planning.rs,defaults/tests.rs}`、`resources/harness/stages/enumeration/methodology.md`、`scripts/stage_smoke.py`、`docs/modules/backend/golish-pentest-app/pentest_bridge.md`、`docs/modules/backend/golish-sub-agents/{defaults,executor}.md`、`docs/modules/backend/golish/stage_run.md`、`feature_list.json`、`agent-progress.md`。
+
+### 2026-07-05 · DeepSeek Flash stage-smoke 活体矩阵
+
+- **本轮目标**：按用户“试一下 deepseek flash / 找一个很小的企业跑一下，看每个阶段是不是改成这个样式”，用真实 `golish --stage-run` + 临时 DB + DeepSeek Flash 跑阶段 smoke。安全边界：不随机挑真实企业做未授权测试；外部目标只用公开授权的 `scanme.nmap.org`，目录/API 枚举改用本地 fixture。
+- **代码修复 / 调整**：
+  - `golish --stage-run` 入口改为在专用 32MiB 大栈线程里创建 Tokio runtime，解决 DeepSeek Flash 活体工具调用在主线程栈上溢出的问题。复测前失败点：`manage_organizations` / `list_in_scope_targets` 第一次工具调用触发 `thread 'main' has overflowed its stack`。
+  - 撤掉临时 `list_in_scope_targets` 绕路，只保留 `execute_security_analysis_tool` / registry future 的 `Box::pin` 降低 future 尺寸；行为仍走统一工具 executor。
+  - `scripts/stage_smoke.py` 增加 `--provider` / `--model`，可复用 `--provider deepseek --model deepseek-v4-flash` 跑隔离 DB smoke。
+- **活体结果（实跑 DeepSeek Flash）**：
+  - `target_intel` on `scanme.nmap.org`（授权公开测试目标）→ **PASS**。工具：`manage_organizations`、`list_in_scope_targets`、`stage_run`、`check_stage_asset_coverage`、`list_recent_evidence`、`submit_stage_deliverable`。DB summary：`targets=1`、`dns_records=2`、`source_query_log=7`、`audit_log=4`、`evidence_audit_log=2`、`tool_calls=7`、`org_stage_completions=1`。
+  - `external_attack_surface` on `scanme.nmap.org` → **PASS after one repair**。真实工具/落库：`httpx` 写 `stored_targets=1 stored_endpoints=1 stored_origins=1 stored_fingerprints=3`；`naabu -top-ports 1000` 写 `stored_targets=4 stored_endpoints=4`；`nmap -sV` evidence id 15；`whatweb` 写 `stored_fingerprints=5`。DB summary：`targets=2`、`audit_log=22`、`evidence_audit_log=4`、`technique_outcomes=3`、`tool_calls=10`。第一次 submit 空 coverage 被 `coverage_complete` BLOCK，repair 后提交显式 coverage PASS；这是后续可优化点（EAS DB-derived found 与 submit contract 仍有摩擦）。
+  - `scoping` on 本地 fixture → **PASS**。`ask_human(scope_review)` 被 headless auto-approve；第一次 submit 因 claim 文本含 `127.0.0.1` 被 SSRF guardrail 拦截，模型删掉 raw URL 后 PASS。DB summary：`organizations=1`、`targets=1`、`tool_calls=6`、`audit_log=1`。
+  - `enumeration` on 本地 fixture → **未完成，人工中断(exit 130)**。已验证部分：主 agent 直接尝试 `run_pty_cmd` / `sub_agent_pentester` 被阶段 tool boundary 拦住；随后转 `stage_run` 扇出 `enumerator`。DB/工具 evidence 已出现：`katana` 三轮分别写 endpoint records `2/2`、`7/7`、`6/6`；`js_collect` 找到 `app.js`；`browser_collect_js_api` 观察到 `GET /api/users?limit=10` 和 `POST /api/orders`；`js_extract_apis` 提取 2 个 API。卡点：`route_probe_paths` 后长时间无日志进展，最终 Ctrl-C；未拿到 final gate/report/db_smoke_summary。
+- **运行过的验证（实跑）**:
+  - `cd backend && cargo fmt -p golish -p golish-agent-runtime` → exit 0。
+  - `cd backend && cargo check -p golish -p golish-agent-runtime` → exit 0。
+  - `cd backend && cargo nextest run -p golish stage_run --status-level fail` → 25 passed / 203 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-runtime single_tool_call tool_execution --status-level fail` → 49 passed / 240 skipped。
+  - `python3 -m py_compile scripts/stage_smoke.py` → exit 0。
+  - 清理了本轮中断/早前崩溃留下的临时 `golish-stage-run-db-*` embedded PG 进程；默认 app DB 未动。
+- **未跑 / 风险**：未跑 full `just precommit`；`enumeration` live smoke 暴露出前台长跑/无进度问题仍需修（尤其 `route_probe_paths` timeout/background handoff + final gate）。EAS 虽 PASS，但仍要把 DB truth 与 submit coverage 合同再收紧，减少空 coverage 的 repair 循环。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish/src/main.rs`、`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/mod.rs`、`scripts/stage_smoke.py`、`docs/modules/backend/golish/stage_run.md`、`feature_list.json`、`agent-progress.md`。
+
+### 2026-07-05 · stage-run 临时 DB smoke harness
+
+- **本轮目标**：回应用户“有没有真的跑的测试方式，可以一个阶段一个阶段测试，能不能真的过、能不能落数据库；可新建测试数据库”的要求，在现有真 `golish --stage-run` 上补隔离 DB + DB truth 摘要 + 脚本化入口，不造 mock runner。
+- **已完成**：
+  - `golish --stage-run` 新增 `--ephemeral-db` / `--keep-ephemeral-db` / `--db-smoke-summary`：测试时使用临时 pgdata + 随机本地端口，不污染默认 app DB；`db_smoke_summary` 在 embedded PG 停止前查询 sessions/tasks/tool_calls/audit_log/organizations/targets/target_assets/api_endpoints/technique_outcomes/source_query_log/org_stage_completions 等关键表，并按 run/project/org 维度输出计数。
+  - `app/bootstrap` 增加可注入 `DbConfig` 的 lazy pool / embedded PG owned handle seam；GUI 默认行为不变，普通 `just stage` 仍使用默认 DB。
+  - 新增 `scripts/stage_smoke.py`：薄包装真实 `cargo run -p golish -- --stage-run --ephemeral-db --db-smoke-summary`，可创建临时 workspace、可起本地 HTTP fixture 并 seed 为 target、可选 `--run-tree`。
+  - 新增 `just stage-smoke <profile> <to-stage> "<objective>"`，默认带本地 HTTP fixture。
+  - 同步 `docs/modules/backend/golish/stage_run.md` 与 `docs/modules/INDEX.md`；`feature_list.json` 的 `headless-single-stage-runner-2026-06-06` 追加 P2 smoke harness 证据，状态仍 `in_progress`（未跑真实 LLM 活体）。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish` → exit 0。
+  - `python3 -m py_compile scripts/stage_smoke.py` → exit 0。
+  - `cd backend && cargo nextest run -p golish stage_run --status-level fail` → 25 passed / 203 skipped。
+  - `cd backend && cargo check -p golish` → exit 0。
+  - `just --dry-run stage-smoke assessment target_intel "smoke target_intel"` → exit 0，展开为 `python3 scripts/stage_smoke.py --fixture-web --profile assessment --to target_intel --objective "smoke target_intel"`。
+  - `cd backend && cargo clippy -p golish --all-targets -- -D warnings` → exit 0。
+  - `git diff --check -- <本轮触及文件>` → exit 0。
+  - `jq empty feature_list.json` → 待本轮最后复跑。
+- **未跑 / 风险**：
+  - 未跑真实 `scripts/stage_smoke.py` 活体阶段，因为会调用真实 LLM provider / 可能调用外部情报源或主机工具，需要用户明确授权目标与 API 成本。
+  - 未跑 `just precommit` 全量；全仓 `git diff --check` 目前会被既有 `frontend/lib/generated/Target.ts` trailing whitespace 阻断，本轮 scope 的定向检查已通过。
+- **下一步**：
+  - 用户授权后可跑：`python3 scripts/stage_smoke.py --fixture-web --profile assessment --to target_intel --objective "smoke target_intel"`，观察终端 report + `db_smoke_summary` + workspace `.golish/transcripts/<session>/`。
+  - 如果要做真正回归矩阵，可按阶段依次跑 `--to scoping`、`--to target_intel`、`--to external_attack_surface`、`--to enumeration`，每次都用 `--ephemeral-db --db-smoke-summary` 隔离验证。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish/{Cargo.toml,src/app/bootstrap.rs,src/cli/args.rs,src/stage_run/mod.rs}`、`scripts/stage_smoke.py`、`justfile`、`docs/modules/backend/golish/stage_run.md`、`docs/modules/INDEX.md`、`feature_list.json`、`agent-progress.md`。
+
+### 2026-07-05 · stage capability tools metadata implementation
+
+- **本轮目标**：按用户“现在帮我实现吧”，先落 capability-first 的 metadata/read-model/repair/UI 合同，不做 EAS runner wrapper 和 live 扫描。
+- **已完成**：
+  - 新增 `golish-agent-kit/src/harness/stage_capability.rs`：定义 `StageCapabilitySpec` / `StageCapabilitySuggestion`，覆盖 scoping、target_intel、EAS、enumeration、vuln_triage、attack_candidate、verification；target_intel 不暴露 scan CLI，enumeration 不暴露 ffuf/arjun 等外部目录/隐藏参数爆破。
+  - `CoverageGapAction` 新增 `suggested_capabilities`，gate recovery、`ai_get_stage_asset_coverage`、`stage_worklist_next/status`、compact coverage、StageRefiner、sub-agent `SubmitRepairMode`、`stage_run` worker objective 全部改为 capability-first，同时保留 legacy `suggested_tools`。
+  - 前端 `StageAssetCoveragePanel` 以运行时扩展类型读取 `suggested_capabilities`，只在 cell title/tooltip 展示 `capability: ...`，不改 `frontend/lib/generated` 类型链。
+  - 同步模块卡：`golish-agent-kit/harness`、`task_orchestrator`、`golish-agent-app/ai`、`golish-agent-runtime/agentic_loop`、`golish-sub-agents`、`golish-sub-agents/executor`、`frontend/components`。
+  - `feature_list.json` 更新 `stage-capability-tools-2026-07-05` 的实现证据并保持 `in_progress`；历史上已有多个旧 `in_progress` 条目，本轮未擅自重写其它 feature 状态。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo nextest run -p golish-agent-kit stage_capability tool_taxonomy --status-level fail` → 25 passed / 801 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app stage_coverage --status-level fail` → 40 passed / 117 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit stage_refiner coverage_gap worklist --status-level fail` → 14 passed / 812 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-runtime stage_run_call --status-level fail` → 29 passed / 260 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents coverage_gap submit_repair --status-level fail` → 11 passed / 105 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents defaults --status-level fail` → 22 passed / 94 skipped。
+  - `pnpm exec vitest run frontend/components/Engagement/StageAssetCoveragePanel.test.tsx` → 23 passed。
+  - `pnpm exec tsc --noEmit --pretty false` → exit 0。
+  - `cd backend && cargo check -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents --all-targets -- -D warnings` → exit 0；期间修了一个既有等价 lint：`bridge_config.rs` 测试断言 `first().is_some()` → `!is_empty()`。
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents` → exit 0。
+  - `pnpm exec biome check frontend/components/Engagement/StageAssetCoveragePanel.tsx frontend/components/Engagement/StageAssetCoveragePanel.test.tsx` → exit 0。
+  - `jq empty feature_list.json` → exit 0。
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents --check` → exit 0。
+  - `git diff --check -- <本轮 tracked scope>` → exit 0；`git diff --no-index --check /dev/null backend/crates/golish-agent-kit/src/harness/stage_capability.rs` 包装检查 → exit 0。
+- **未跑 / 风险**：未跑 `just precommit`；未启动 dev app 做 Test1 live EAS smoke；EAS wrapper runner 尚未实现，所以当前只是“能力建议 + worklist/refiner/UI 合同”，还不是“模型调用一个 capability wrapper 由后端拼命令”的最终形态。
+- **下一步**：在 Test1 上重启后端后跑一次 EAS/repair smoke，确认 `stage_worklist_next` 返回 `suggested_capabilities`，worker objective 实际按能力闭环；随后实现最小 EAS wrapper runner（先 LIVE/PORT/SERVICE 三个 wrapper），让模型不再手写 broad `nmap/httpx/naabu` 命令。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-agent-kit/src/harness/{stage_capability.rs,mod.rs,types.rs,gate/rule_engine.rs,org_gate.rs}`、`backend/crates/golish-agent-kit/src/{task_orchestrator/stage_refiner.rs,tool_executors/security.rs}`、`backend/crates/golish-agent-app/src/ai/commands/{stage_coverage.rs,bridge_config.rs}`、`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/{stage_run_call.rs,sub_agent_call.rs}`、`backend/crates/golish-sub-agents/src/{executor_types.rs,executor/response_parsing.rs,lib.rs}`、`frontend/components/Engagement/StageAssetCoveragePanel.{tsx,test.tsx}`、相关模块卡、`feature_list.json`、`agent-progress.md`。
+
 ### 2026-07-05 · stage capability tools 设计文档
 
 - **本轮目标**：按用户“能力包装成工具，先写文档”的要求，先设计 capability-first harness contract，不写实现代码。
@@ -39,6 +207,70 @@
 - **验证**：文档/feature tracking 变更；未跑代码验证或 `just precommit`。
 - **风险 / 下一步**：若开始实现，第一步新增 `golish-agent-kit/src/harness/stage_capability.rs` 纯 registry + 单测；先保留 `suggested_tools` 兼容字段，再引入 `suggested_capabilities`。
 - **未提交**：本轮新增 docs/feature/progress 文件未提交；工作树还有大量既有未提交改动，未触碰 unrelated code。
+
+### 2026-07-04 · enumeration DIR/PARAM terminal outcome fix
+
+- **本轮目标**：接用户“最后一次日志，枚举阶段总是过不了”的诊断，修复两个会让 enumeration worklist 长期降不完的运行阻塞：`route_probe_paths` 坏证书/长批次/DIR timeout 误判，以及 PARAM 跑过但无参不落 `checked_empty`。
+- **根因确认**：
+  - 最新 run：`/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1783070503216-1`；`scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1783070503216-1 --full --db` 显示 EAS PASS，但 enumeration worklist 为 93 web roots × 4 axes = 372 cells，最后状态 `done=80,error=16,pending=276,total=372,ready=false`。
+  - enumerator transcript 最后卡在一个 18 target `route_probe_paths` batch；`run.log` 尾部持续刷 `invalid peer certificate ... "api-sentry.moresec.cn" certificate is using a broken key size`。
+  - DB truth 显示 `GOLISH-ENUM-DIR` 有 18 个 `error`，`GOLISH-ENUM-PARAM` 只有 4 个 `found`、没有 clean no-param 的 `empty` outcome，导致大量已执行过的根仍被 gate 当作 pending。
+- **已完成**：
+  - `route_probe_paths`：reqwest client 接受无效/弱证书；batch `max_runtime_ms` 改为整批共享总预算，预算耗尽返回 `timeout_partial` 并把未启动目标放入 `skipped`；DIR outcome 改为有 match→`found`、候选请求全传输失败→`error`、timeout/无 match 但已有成功采样→`empty`。
+  - `js_extract_apis`：完成一次 JS extraction 后总是写 PARAM outcome（`found`/`empty`/`error`），不再只有传 `param_hints` 才能落 `GOLISH-ENUM-PARAM`；`param_hints` 只作为 body/form 参数增强。
+  - `browser_collect_js_api`：browser-observed 带参 API 会写 PARAM `found`；跑完无带参 API 写 PARAM `empty`；响应和 audit detail 新增 `param_outcome` / `param_outcome_persisted` / `param_bearing_api_requests`。
+  - 已同步 `docs/modules/backend/golish-pentest-app/pentest_bridge.md` 的 bridge 工具合同。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-pentest-app` → exit 0。
+  - `cd backend && cargo nextest run -p golish-pentest-app route_probe_outcome --status-level fail` → 3 passed / 161 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest-app param_outcome --status-level fail` → 7 passed / 157 skipped。
+  - `cd backend && cargo fmt -p golish-pentest-app --check` → exit 0。
+  - `cd backend && cargo check -p golish-pentest-app` → exit 0。
+  - `cd backend && cargo clippy -p golish-pentest-app --all-targets -- -D warnings` → exit 0。
+  - `git diff --check -- backend/crates/golish-pentest-app/src/pentest_bridge/route_probe_paths.rs backend/crates/golish-pentest-app/src/pentest_bridge/js_extract_apis.rs backend/crates/golish-pentest-app/src/pentest_bridge/browser_collect_js_api.rs docs/modules/backend/golish-pentest-app/pentest_bridge.md agent-progress.md` → exit 0。
+- **未跑 / 风险**：未跑 `just precommit`；未重启 dev app 做 live enumeration rerun。`route_probe_paths` 的 batch 仍是逐 target 调 `execute_single`，本轮只保证共享总预算/不无限占 foreground，尚未做真正后台 continuation。
+- **下一步**：重启后端后继续/重跑 Test1 enumeration，重点看 `stage_worklist_status` 的 `pending` 是否下降，`GOLISH-ENUM-PARAM` 是否开始出现 no-param web root 的 `empty` outcome，DIR 的 broken-key 站点是否不再批量落 `error`。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-pentest-app/src/pentest_bridge/{route_probe_paths.rs,js_extract_apis.rs,browser_collect_js_api.rs}`、`docs/modules/backend/golish-pentest-app/pentest_bridge.md`、`agent-progress.md`。
+
+### 2026-07-04 · enumeration crawler 外链不再自动 promotion 为 target
+
+- **本轮目标**：回应用户对“未解析域名/第三方外链为什么进入目标树”的确认，修复 `katana -list ... -jc -silent` / crawler endpoint 输出把第三方绝对 URL host 自动建成当前 org `active_discovered` target 的边界问题。
+- **根因确认**：`endpoint_add` 落库旧逻辑在缺少 `__command_base_host` 时 `unwrap_or(true)` 放行；`katana -list` 批量命令没有 `-u/--url`，因此没有 base host，导致 `github.com`、`lodash.com`、`momentjs.com` 等第三方 URL 被 `find_or_create_target_scoped` 创建成当前 org target，前端因 `real_ip=''` 显示在“未解析域名”。
+- **已完成**：
+  - `golish-pentest/src/output_store/mod.rs`：为 `endpoint_add` 从命令提取 canonical origins；支持单 `-u/--url` 和 `-list/--list/-l` roots 文件，写入内部 `__command_base_urls`，并保留单 origin 的 `__command_base_host` 兼容字段。
+  - `golish-pentest/src/output_store/endpoints.rs`：scoped stage 下不再盲目创建 endpoint host target；有 command origins 时只允许 exact origin 命中；没有 origins 时只承接当前 org 已存在 target。第三方 crawler URL 会跳过，不会 promotion 为 `targets(source=active_discovered, scope=in)`。
+  - 同步 enumerator prompt、enumeration methodology、`golish-pentest/output_store` 与 `golish-sub-agents/defaults` 模块卡，明确 katana 只补 same-origin/current-org target 的 crawler endpoints，第三方外链是 crawler context 不是新 target。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo check -p golish-pentest -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo nextest run -p golish-pentest endpoint_ --status-level fail` → 10 passed / 155 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents defaults --status-level fail` → 22 passed / 94 skipped。
+  - `cd backend && cargo clippy -p golish-pentest -p golish-sub-agents --all-targets -- -D warnings` → exit 0。
+  - `cd backend && cargo nextest run -p golish-pentest output_store --status-level fail` → 31 passed / 134 skipped。
+  - `git diff --check -- <本轮触及文件>` → exit 0。
+- **未跑 / 未完成**：未跑 `./init.sh` / `just precommit` / 活体 enumeration rerun；没有清理当前 Test1 DB 里已污染的第三方 target（这是 DB mutation，需用户明确确认后再做）。
+- **风险 / 下一步**：新 run/retry 需要重启后端后验证：`katana -list` 输出中的第三方外链不再新增 target，且 same-origin endpoints 仍进入对应已存在 web root 的 API/Param/JSAPI DB truth。若要在 UI 中保留第三方外链可见性，后续应加“外部引用/爬取上下文”模型或字段，而不是塞进 in-scope target。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-pentest/src/output_store/{mod.rs,endpoints.rs}`、`backend/crates/golish-sub-agents/src/defaults/prompts/execution_planning.rs`、`resources/harness/stages/enumeration/methodology.md`、`docs/modules/backend/golish-pentest/output_store.md`、`docs/modules/backend/golish-sub-agents/defaults.md`、`agent-progress.md`。
+
+### 2026-07-04 · 枚举吞吐计划/commit 审阅 + 未提交 PR-A/C 收口
+
+- **本轮目标**：审阅用户贴出的另一 session 结果（commit `6cfdeaa2` + `ac6f73b7` + `docs/superpowers/plans/2026-07-03-enumeration-throughput-optimization.md`），核对当前工作树真实状态；不跑 precommit、不 push。
+- **核对结论**：
+  - `ac6f73b7` 确为 HEAD；但 HEAD 后工作树已有未提交 PR-A/C 改动（coverage snapshot 携带 web 元数据、`list_enumeration_web_roots` 生成完整 `root_url`、alive-first worklist 排序、enumerator prompt/methodology 更新）。
+  - 当前计划已勘误：`browser_collect_js_api` / `js_extract_apis` / `route_probe_paths` 不走 sub-agent 外层 timeout，PR-B 不应直接后台化；吞吐主线应先看 PR-A + batch-katana + PR-C。
+- **本轮小修**：
+  - `backend/crates/golish-agent-kit/src/tool_executors/security.rs`：补测试模块 import，使新增 `web_root_url_from_meta` 测试能编译。
+  - `backend/crates/golish-sub-agents/src/defaults/tests.rs`：把 enumerator prompt 断言从旧文案改为新合同（batch `target_urls`、完整 `root_url`、禁止逐个 `query_target_data` 拼 URL）。
+  - `backend/crates/golish-app-core/src/domain/targets.rs`：新增共享 `web_root_url` helper + 单测，并保留 `rank_enumeration_web_roots` 为 alive-first 排序/cap 预备；不折叠同 IP vhost。
+  - `backend/crates/golish-agent-app/src/ai/db_bridge/recon.rs`：删除私有 `root_url_for`，改用 `app-core::domain::targets::web_root_url`。
+  - `docs/superpowers/plans/2026-07-03-enumeration-throughput-optimization.md` + `docs/modules/backend/golish-app-core/domain.md`：对齐依赖边界和真实 PR-C 语义（agent-kit 不依赖 app-core，只本地镜像 adapter；gate 分母 cap/折叠延后）。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo check -p golish-agent-kit -p golish-agent-app -p golish-app-core -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-kit enumeration_web_roots --status-level fail` → 1 passed。
+  - `cd backend && cargo nextest run -p golish-app-core web_root_url rank_enumeration_web_roots --status-level fail` → 2 passed。
+  - `cd backend && cargo nextest run -p golish-agent-app web_roots stage_coverage --status-level fail` → 40 passed。
+  - `cd backend && cargo nextest run -p golish-sub-agents enumerator --status-level fail` → 2 passed。
+  - `git diff --check` → exit 0。
+- **未跑 / 风险**：未跑 `just precommit`；未做 live enumeration rerun；`feature_list.json` 仍有大量历史 `in_progress`，本轮未改状态避免扩大范围。当前 PR-C 只做 worklist 排序和 cap helper，不改 gate 分母；同 IP vhost 折叠/真实 denominator cap 需另配 wave/backlog 设计与 gate parity 测试。
 
 ### 2026-07-03 · EAS 阶段报错根治 P0 + 死资产 liveness P1/P2/P3/P4 全链（专注执行，未跑 commit/precommit）
 
@@ -2868,3 +3100,144 @@
 - **提交记录**：未 commit。
 - **本轮修改但未提交（P3 scope）**：`backend/crates/golish-agent-kit/src/harness/org_gate.rs`、`backend/crates/golish-agent-app/src/ai/{harness_submit_tool.rs,commands/stage_coverage.rs}`、`docs/design/2026-07-03-enumeration-batch-and-terminal-coverage.md`、`docs/modules/backend/golish-agent-kit/harness.md`、`agent-progress.md`、`feature_list.json`。
 - **下一步建议**：与上条批次改动一起在重启后实跑验证；`run_tree.py --db` 观察只开 53 的 web IP 是否落 not_applicable、不再作为 pending gap。
+
+#### 2026-07-04 · crawler URL 来源归属（crawl_observations + Web Origin Crawl tab）
+
+- **本轮目标**：回应用户要求“爬出来的数据也记录，但归属到哪个 IP/domain/Web Origin，不要直接加进 target”。把 katana/gau/wayback 这类 `endpoint_add` 输出拆成两条语义：same-origin 可继续进入 `api_endpoints(source='crawler')` 作为 ENUM gate truth；外链/三方 URL 只作为来源 origin 的 crawl observation 展示。
+- **已完成**：
+  - 新增 additive migration `20260704000001_crawl_observations.sql` + `golish_db::repo::crawl_observations` + `CrawlObservation` model。唯一键 `(origin_target_id, observed_url, source_tool, kind)`，只 upsert/list，不写 `targets` / `api_endpoints`。
+  - `golish-pentest/output_store/endpoints.rs`：`endpoint_add` 先按 command base URL 写 `crawl_observations`；same-origin/current-org 目标才继续写 `api_endpoints`。单根 crawl 的外链归属到该 root；多根 `-list` 的外链若无法从输出行判断来源 root，不复制到所有 root，避免新污染。
+  - `target_surface_hierarchy_get` 读取 candidate origin targets 的 `crawl_observations`，按 `origin_key == web_origins.origin` 挂到每个 `WebOriginHierarchyDto.crawlObservations`。
+  - 前端 `security-analysis` normalizer、`backendSurfaceHierarchy` adapter、`WebOriginVM` 与 `WebOriginsTab` 已接新字段；Web Origin detail 新增 `Crawl` tab，总表新增 Crawl 计数列。
+  - 同步设计/计划与模块卡：`docs/design/2026-07-04-crawl-observations-origin-ownership.md`、`docs/superpowers/plans/2026-07-04-crawl-observations-origin-ownership.md`、`docs/modules/backend/golish-db/repo.md`、`docs/modules/backend/golish-pentest/output_store.md`、`docs/modules/backend/golish-pentest-app.md`、`docs/modules/frontend/lib.md`、`docs/modules/frontend/components.md`。
+- **运行过的验证（实跑）**：
+  - `jq empty feature_list.json` → exit 0。
+  - `cd backend && cargo fmt -p golish-db -p golish-pentest -p golish-pentest-app` → exit 0。
+  - `cd backend && cargo check -p golish-db -p golish-pentest -p golish-pentest-app` → exit 0。
+  - `cd backend && cargo nextest run -p golish-db crawl_observations --status-level fail` → 2 passed / 201 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest endpoint_ --status-level fail` → 10 passed / 158 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest-app target_surface_hierarchy --status-level fail` → 16 passed / 149 skipped。
+  - `pnpm exec vitest run frontend/lib/api/security-analysis.test.ts frontend/components/TargetPanel/surface/backendSurfaceHierarchy.test.ts frontend/components/TargetPanel/surface/surfaceHierarchy.test.ts` → 31 passed。
+  - `./node_modules/.bin/tsc --noEmit --pretty false` → exit 0。
+  - `pnpm exec biome check ...selected files...` → exit 0（先用 `biome check --write` 机械格式化了 2 个文件）。
+  - `cd backend && cargo clippy -p golish-db -p golish-pentest -p golish-pentest-app --all-targets -- -D warnings` → exit 0。
+  - `git diff --check -- <本功能相关非 generated 文件>` → exit 0。
+- **未跑 / 已知阻塞**：
+  - 未跑 `just precommit`。
+  - 全局 `git diff --check` 目前因 `frontend/lib/generated/Target.ts` 的 ts-rs 生成漂移尾随空格失败（`liveness_state` / `liveness_reason` 字段注释生成导致），该文件不是本功能手写范围；未手改 generated。
+  - 未做旧污染数据清理：已有被错误加入的第三方 targets / api_endpoints 需要单独 DB cleanup/backfill 策略。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（本 scope）**：`feature_list.json`、`agent-progress.md`、`backend/crates/golish-db/migrations/20260704000001_crawl_observations.sql`、`backend/crates/golish-db/src/{models/pentest.rs,repo/mod.rs,repo/crawl_observations.rs}`、`backend/crates/golish-pentest/src/output_store/endpoints.rs`、`backend/crates/golish-pentest-app/src/target_surface_hierarchy.rs`、`frontend/lib/{api/security-analysis.ts,api/security-analysis.test.ts,security-analysis.ts}`、`frontend/components/TargetPanel/surface/{surfaceHierarchy.ts,backendSurfaceHierarchy.ts,backendSurfaceHierarchy.test.ts,tabs/WebOriginsTab.tsx}`、设计/计划/模块卡文件。
+- **下一步建议**：重启 app/backend 让 migration apply 后跑一轮 enumeration；检查 Web Origin 的 `Crawl` tab 是否显示从该 origin 爬出的外链，同时 `api_endpoints` / coverage 不再新增 github/lodash/ted/wiki 等三方域。若要清掉旧污染，另起一次只读统计 + 确认后删除/降级。
+
+#### 2026-07-05 · EAS 能力 wrapper runner（Prober 不再手写 nmap/httpx）
+
+- **本轮目标**：回应用户确认的“把能力包装成工具”方向，把 EAS 的 liveness / port discovery / service fingerprint 从模型手写 `pentest_run(tool_name,args)` 改成 backend-owned wrapper 工具：模型只选业务动作和目标，底层 recipe / target guard / evidence DB 落地由后端控制。
+- **已完成**：
+  - 新增 `backend/crates/golish-pentest-app/src/pentest_bridge/eas_capabilities.rs`：`eas_probe_http_liveness` 包装固定 `httpx -json -sc -title -td -server -silent`；`eas_discover_ports` 包装 `naabu` / `nmap` / `masscan` list-file recipe，且只接受 IP/CIDR；`eas_fingerprint_services` 包装 `nmap -sV -Pn -iL ... -p ... -T3`，且只接受 concrete IP + ports。
+  - `PentestRunTool::from_config_manager` 让 wrapper 复用现有 `pentest_run` 执行、后台任务、audit、output-store 路径；wrapper result 追加 `wrapper_tool` / `capability` / `wrapped_tool_name` / `wrapped_args` / `targets_count`。
+  - `create_pentest_bridge_tools` 注册三个 EAS wrapper；`tool_taxonomy` 把 wrapper 归入 `recon/http` / `recon/port-scan`；`stage_capability` 的 EAS 三个能力改为 `BackendWrapper` 并建议 `eas_*` 工具。
+  - Prober 默认工具集去掉 `pentest_run` / `pentest_list_tools`，加入 `eas_probe_http_liveness` / `eas_discover_ports` / `eas_fingerprint_services`；Prober prompt 和 EAS methodology 改为禁止 raw `httpx` / `nmap` / `pentest_run`。
+  - `golish-agent-runtime` 与 `golish-sub-agents` 的 structured-storage hook 识别 EAS wrapper，并从 result 的 `wrapped_tool_name` / `wrapped_args` 还原底层命令，确保 wrapper stdout 仍走原有 output-store / evidence / technique_outcomes 落库链路。
+  - Coverage-gap repair 对 `GOLISH-EAS-*` 缺口允许 `eas_*` wrapper，且要求 `targets[]` 都出现在 `coverage_gap_actions`；raw `pentest_run` 在 EAS repair 中被直接挡掉。Enumeration/katana 这类仍需 `pentest_run` 的路径保持原 guard。
+  - 同步模块卡：`golish-pentest-app.md`、`golish-pentest-app/pentest_bridge.md`、`golish-agent-kit/harness.md`、`golish-agent-runtime/agentic_loop.md`、`golish-sub-agents/defaults.md`。
+- **运行过的验证（实跑）**：
+  - `cargo fmt -p golish-pentest-app -p golish-agent-kit -p golish-agent-runtime -p golish-sub-agents`（cwd `backend`）→ exit 0。
+  - `cargo check -p golish-pentest-app -p golish-agent-kit -p golish-agent-runtime -p golish-sub-agents`（cwd `backend`）→ exit 0。
+  - `cargo nextest run -p golish-pentest-app eas_capabilities --status-level fail`（cwd `backend`）→ 2 passed / 167 skipped。
+  - `cargo nextest run -p golish-agent-kit stage_capability tool_taxonomy --status-level fail`（cwd `backend`）→ 25 passed / 801 skipped。
+  - `cargo nextest run -p golish-sub-agents defaults coverage_gap eas_wrapper --status-level fail`（cwd `backend`）→ 34 passed / 84 skipped。
+  - `cargo nextest run -p golish-agent-runtime eas_wrapper pentest_run_result_feeds_structured_storage_hook --status-level fail`（cwd `backend`）→ 2 passed / 288 skipped。
+- **未跑**：`just precommit` / `./init.sh` / live DeepSeek Flash wrapper smoke（本轮只做 scoped Rust verification；当前工作树已有大量非本轮未提交改动，且 live 扫描需单独选择授权目标）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-pentest-app/src/pentest_ai/run.rs`、`backend/crates/golish-pentest-app/src/pentest_bridge/{mod.rs,eas_capabilities.rs}`、`backend/crates/golish-agent-kit/src/harness/{stage_capability.rs,tool_taxonomy.rs}`、`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/mod.rs`、`backend/crates/golish-sub-agents/src/{executor_types.rs,executor/response_parsing.rs,defaults/builder/mod.rs,defaults/builder/registry.rs,defaults/prompts/execution_planning.rs,defaults/tests.rs}`、`resources/harness/stages/external_attack_surface/methodology.md`、相关模块卡、`feature_list.json`、`agent-progress.md`。
+- **下一步建议**：重启 app/backend 后跑一个授权的小目标 EAS smoke，检查 transcript 中 Prober 是否真实调用 `eas_probe_http_liveness` / `eas_discover_ports` / `eas_fingerprint_services`，并用 `scripts/run_tree.py --db` 验证 liveness/ports/fingerprints/evidence/technique_outcomes 都由 wrapper run 落库；再跑允许范围内的 full `just precommit`。
+
+#### 2026-07-05 · Enumeration 能力 wrapper runner（Enumerator 不再手写 katana/pentest_run）
+
+- **本轮目标**：回应用户“先改 enumeration”，把 Enumeration 的 katana crawler supplement 从模型手写 `pentest_run(tool_name="katana", args="-list ...")` 改成 backend-owned wrapper 工具。模型只传 web-root URL 和 depth；底层 katana recipe、URL guard、output-store/evidence/DB 落地由后端控制。
+- **已完成**：
+  - 新增 `backend/crates/golish-pentest-app/src/pentest_bridge/enumeration_capabilities.rs`：`enum_crawl_same_origin_urls(target_urls, depth, timeout_secs?, background?)` 包装固定 `katana -list {{input_file}} -jc -silent -d N`；只接受 http(s) URL，去重、去 fragment、拒绝 credentials，最多 50 个目标，depth 默认 2、最多 5。
+  - `create_pentest_bridge_tools` 注册 `EnumCrawlSameOriginUrlsTool`；wrapper result 追加 `wrapper_tool` / `capability` / `wrapped_tool_name` / `wrapped_args` / `targets_count`，继续复用原 `pentest_run` 执行、后台任务、audit、output-store 路径。
+  - `stage_capability` 的 `enum.crawl_same_origin_urls` 改为 `BackendWrapper` 并建议 `enum_crawl_same_origin_urls`；`tool_taxonomy` 把 wrapper 纳入 `recon/crawler` 和 canonical tool set。
+  - Enumerator 默认工具集去掉 `pentest_run` / `pentest_list_tools`，加入 `enum_crawl_same_origin_urls`；Enumerator prompt 与 enumeration methodology 改成禁止 raw katana / raw `pentest_run`。
+  - Coverage-gap repair 对 `GOLISH-ENUM-*` 缺口会把旧 `katana` hint 映射到 `enum_crawl_same_origin_urls`，允许 wrapper 批量 `target_urls` 逐项校验，且挡掉 raw katana/pentest_run。
+  - `golish-agent-runtime` 与 `golish-sub-agents` 的 structured-storage hook 从 EAS-only 改为通用 wrapper 识别：只要 result 带 `wrapped_tool_name` / `wrapped_args`，就按底层 pentest 输出触发 output-store/evidence 落库。
+  - 前端 `frontend/lib/tools.ts` 对新 wrapper 显示 `Crawling same-origin URLs`，折叠摘要显示 `target_urls` 批量数量/首尾目标和 depth，不暴露 snake_case 内部名。
+  - 同步模块卡：`golish-pentest-app(.md/pentest_bridge.md)`、`golish-agent-kit/harness.md`、`golish-agent-runtime/agentic_loop.md`、`golish-sub-agents(.md/defaults.md/executor.md)`、`frontend/lib.md`。
+- **运行过的验证（实跑）**：
+  - `cargo fmt -p golish-pentest-app -p golish-agent-kit -p golish-agent-runtime -p golish-sub-agents`（cwd `backend`）→ exit 0。
+  - `cargo check -p golish-pentest-app -p golish-agent-kit -p golish-agent-runtime -p golish-sub-agents`（cwd `backend`）→ exit 0。
+  - `cargo nextest run -p golish-pentest-app enumeration_capabilities --status-level fail`（cwd `backend`）→ 3 passed / 169 skipped。
+  - `cargo nextest run -p golish-agent-kit stage_capability tool_taxonomy --status-level fail`（cwd `backend`）→ 26 passed / 801 skipped。
+  - `cargo nextest run -p golish-sub-agents defaults coverage_gap enum_wrapper --status-level fail`（cwd `backend`）→ 34 passed / 85 skipped。
+  - `cargo nextest run -p golish-agent-runtime enum_wrapper eas_wrapper pentest_run_result_feeds_structured_storage_hook --status-level fail`（cwd `backend`）→ 3 passed / 288 skipped。
+  - `pnpm exec vitest run frontend/lib/tools.test.ts` → 19 passed。
+  - `pnpm exec biome check frontend/lib/tools.ts frontend/lib/tools.test.ts` → exit 0。
+- **未跑**：`just precommit` / `./init.sh` / live DeepSeek Flash enumeration wrapper smoke（本轮做 scoped verification；当前工作树已有大量非本轮未提交改动，live 扫描需重启 app/backend 后选择授权目标）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-pentest-app/src/pentest_bridge/{mod.rs,enumeration_capabilities.rs}`、`backend/crates/golish-agent-kit/src/harness/{stage_capability.rs,tool_taxonomy.rs}`、`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/mod.rs`、`backend/crates/golish-sub-agents/src/{executor_types.rs,executor/response_parsing.rs,defaults/builder/mod.rs,defaults/builder/registry.rs,defaults/prompts/execution_planning.rs,defaults/tests.rs}`、`resources/harness/stages/enumeration/methodology.md`、`frontend/lib/{tools.ts,tools.test.ts}`、相关模块卡、`feature_list.json`、`agent-progress.md`。
+- **下一步建议**：重启 app/backend 后跑一个授权的小 enumeration smoke，检查 transcript 中 Enumerator 是否真实调用 `enum_crawl_same_origin_urls`，并用 `scripts/run_tree.py --db` 验证 katana crawler output 经 wrapper 落到 `api_endpoints(source='crawler')` / evidence / technique outcomes；再跑允许范围内的 full `just precommit`。
+
+#### 2026-07-05 · Test1 latest enumeration block 诊断 + target_id batch repair
+
+- **本轮目标**：回应用户“这次为什么一直 block、跑不完、太慢”，重新读取 `/Users/christopherzheng/golish-platform/Test1` 最新 run，定位 enumeration gate block 根因，并做最小 contract 修复。
+- **诊断结论**：
+  - 最新 run 是 `pentest-chat-1783239100928-1`，当前 profile 为 `red_team`，已完成 `scoping` / `target_intel` / `external_attack_surface`，当前卡在 `enumeration`，不是此前 `enumeration -> reporting` DAG 顺序问题。
+  - gate block 原因是 `coverage_complete`：第一次 39 个 ENUM coverage cell 未终态，第二次降到 35 个；主要是 `ecs-123-60-169-120.compute.hwclouds-dns.com`、`hebei.22.121.IN-ADDR.ARPA` 和多个 `zta-*.moresec.com.cn` 的 `GOLISH-ENUM-JS/DIR/PARAM/JSAPI`。
+  - DB 证明工具其实跑了很多：`directory_entries=414`、`api_endpoints=2474`、`js_analysis_results=374`，但 run.log 大量出现 `[browser_collect_js_api] no target_id, skipping API DB persistence`，导致结果没有稳定绑定到 gate 正在检查的 target_id，coverage truth 仍看成 never-attempted。
+  - submit-repair lock 还挡过正确修复工具：`list_enumeration_web_roots`、`list_recent_evidence`、`enum_crawl_same_origin_urls`、`browser_collect_js_api`、`js_extract_apis`、`route_probe_paths`；之后模型退化为逐个 URL 猜测和单点 `js_collect`，单次 JS collection 可跑数分钟，所以整体显得“慢且一直 block”。
+- **已完成**：
+  - `browser_collect_js_api` / `js_extract_apis` 的 batch `target_urls` 除字符串外，现在接受 worklist 对象 `{target_id, target_url|root_url|base_url|url}`，并在 batch loop 中保留 `target_id` 传给 single-target 执行路径，避免 URL 自动匹配失败导致 no-target-id 落库缺口。
+  - `SubmitRepairMode` coverage-gap repair 保留 `list_recent_evidence`；遇到 ENUM gap 时保留 `list_enumeration_web_roots`；direct tool fence 支持对象型 `target_urls` 并逐项校验目标仍在 `coverage_gap_actions` 内。
+  - `StageRefiner` Enumeration repair allowlist 补 `list_recent_evidence` 和 `enum_crawl_same_origin_urls`，与 executor guard 保持一致。
+  - Enumerator prompt 改为推荐 `target_urls=[{target_id, target_url}, ...]`，让 DeepSeek Flash 从 worklist/root context 直接带 DB 主键跑 batch，不再只传裸 URL 字符串。
+  - 同步模块卡：`golish-pentest-app/pentest_bridge.md`、`golish-sub-agents.md`、`golish-agent-kit/task_orchestrator.md`。
+- **运行过的验证（实跑）**：
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db` → exit 0；确认最新 run `pentest-chat-1783239100928-1` 的 enumeration block 为 39/35 个 coverage cell，DB 有大量内容行但日志有 `no target_id`。
+  - `tail -n 220 /Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1783239100928-1/run.log` / `rg ... run.log` → exit 0；确认 repair block 工具和 `no target_id` 行。
+  - `cd backend && cargo nextest run -p golish-pentest-app batch_target_urls --status-level fail` → 1 passed。
+  - `cd backend && cargo nextest run -p golish-sub-agents coverage_gap_repair --status-level fail` → 9 passed。
+  - `cd backend && cargo nextest run -p golish-agent-kit enumeration_coverage_gap_directive_preserves_worklist_refresh_tools --status-level fail` → 1 passed。
+  - `cd backend && cargo nextest run -p golish-sub-agents test_enumerator_prompt_is_content_enum --status-level fail` → 1 passed。
+  - `cd backend && cargo nextest run -p golish-pentest-app browser_collect_js_api js_extract_apis --status-level fail` → 42 passed。
+  - `cd backend && cargo fmt -p golish-pentest-app -p golish-sub-agents -p golish-agent-kit --check` → exit 0。
+  - `git diff --check -- <本轮相关文件>` → exit 0。
+- **未跑**：`just precommit` / `./init.sh` / live rerun（当前工作区已有大量非本轮未提交改动；本轮做 scoped log/DB diagnosis + targeted Rust validation。新契约需要重启 app/backend 后重新跑/续跑 enumeration 才会生效）。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-pentest-app/src/pentest_bridge/{browser_collect_js_api.rs,js_extract_apis.rs}`、`backend/crates/golish-sub-agents/src/{executor_types.rs,executor/response_parsing.rs,defaults/prompts/execution_planning.rs,defaults/tests.rs}`、`backend/crates/golish-agent-kit/src/task_orchestrator/stage_refiner.rs`、`docs/modules/backend/{golish-pentest-app/pentest_bridge.md,golish-sub-agents.md,golish-agent-kit/task_orchestrator.md}`、`feature_list.json`、`agent-progress.md`。
+- **下一步建议**：重启 app/backend 后重新跑或续跑 Test1 的 enumeration；预期 repair path 会先用 worklist/root context 拿 `{target_id,target_url}`，批量调用 browser/js_extract/route_probe/crawler wrapper，`run_tree.py --db` 不应再出现成片 `no target_id, skipping API DB persistence`，剩余 gap 应快速收敛。
+
+#### 2026-07-05 · Vuln-triage wrapper runner（Vuln Scanner 不再手写 nuclei/sqlmap）
+
+- **本轮目标**：回应用户指出“这个阶段也应该像之前阶段一样把功能参数包装起来，而不是让 AI 自己输命令”。把 `vuln_triage` 从临时借 `sub_agent_pentester` + raw `pentest_run` 改成专门的 `vuln_scanner` + backend-owned formulaic sweep wrapper。
+- **已完成**：
+  - 新增 `vuln_run_formulaic_sweep(targets, techniques, timeout_secs?)`，后端固定封装 `nuclei` / `sqlmap` / `wpscan` recipe，并强制走 background job，让现有 background outcome listener 写 `technique_outcomes`。
+  - `vuln_triage` spec / stage capability / taxonomy 改为只建议并允许 wrapper 工具；raw `nuclei` / `sqlmap` / `wpscan` 不再作为 stage 允许工具暴露给模型。
+  - 新增真正的 `sub_agent_vuln_scanner` 默认 worker：工具集只包含 worklist、target data、wrapper、background wait/check、evidence、coverage、submit/record finding 等，移除 `pentest_run` / `pentest_list_tools`。
+  - `stage_run` 不再把 `vuln_scanner` 临时映射到 `sub_agent_pentester`；stage_run objective 也改成“优先直接调用 backend wrapper/direct tool”，不再默认要求经 `pentest_run`。
+  - Coverage-gap repair 对 vuln 缺口允许 `vuln_run_formulaic_sweep`，挡掉 raw `pentest_run`，并要求 wrapper 参数显式带 `targets[]` + `techniques[]`；每个 target x technique 必须都来自当前 gap action，避免 wrapper 扫描越权扩大范围。
+  - `bridge_config` 支持从 `nuclei -l/-list` 与 `sqlmap -m/--bulk-file` 识别批量 input file，保证 wrapper 底层输出仍可回到原 output-store / evidence / DB 落库链路。
+  - 前端工具标签/摘要新增 `vuln_run_formulaic_sweep`，显示 targets 与 techniques，而不是暴露底层命令细节。
+  - 同步模块卡：`golish-agent-kit/harness.md`、`golish-agent-kit/tool_executors.md`、`golish-pentest-app/pentest_bridge.md`、`golish-sub-agents/defaults.md`、`golish-agent-runtime/agentic_loop.md`。
+- **运行过的验证（实跑）**：
+  - `rustfmt --edition 2021 <本轮 touched Rust files>` → exit 0。
+  - `pnpm exec biome format --write frontend/lib/tools.ts frontend/lib/tools.test.ts` → exit 0。
+  - `cd backend && cargo nextest run -p golish-pentest-app vuln_capabilities --status-level fail` → 3 passed / 173 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit vuln --status-level fail` → 22 passed / 809 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit tool_taxonomy --status-level fail` → 20 passed / 811 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit stage_capability --status-level fail` → 7 passed / 824 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit stage_refiner --status-level fail` → 6 passed / 825 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents defaults --status-level fail` → 25 passed / 98 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents coverage_gap_repair_uses_vuln --status-level fail` → 1 passed / 122 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-runtime stage_label_and_role_label_title_case --status-level fail` → 1 passed / 291 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app batch_vuln --status-level fail` → 2 passed / 158 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app vuln_triage_exposes_formulaic_scan_axes --status-level fail` → 1 passed / 159 skipped。
+  - `pnpm vitest run frontend/lib/tools.test.ts` → 21 passed。
+  - `cd backend && cargo nextest run -p golish-sub-agents discovery --status-level fail` → 5 passed / 118 skipped。
+  - `python3 -m json.tool resources/harness/stages/vuln_triage/spec.json` / `python3 -m json.tool feature_list.json` → exit 0。
+  - `git diff --check -- <本轮 touched files>` → exit 0。
+- **未跑**：`./init.sh`（用户明确不要跑）/ `just precommit` / 全量测试 / live Test1 vuln_triage rerun。当前只是代码契约和 scoped tests 通过，真实阶段还需要重启 app/backend 后继续或重跑。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-pentest-app/src/pentest_bridge/{mod.rs,vuln_capabilities.rs}`、`backend/crates/golish-agent-app/src/ai/commands/{bridge_config.rs,stage_coverage.rs}`、`backend/crates/golish-agent-kit/src/harness/{stage_capability.rs,stage_spec.rs,tool_taxonomy.rs}`、`backend/crates/golish-agent-kit/src/task_orchestrator/stage_refiner.rs`、`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`、`backend/crates/golish-sub-agents/src/{defaults/builder/mod.rs,defaults/builder/registry.rs,defaults/prompts/execution_planning.rs,defaults/prompts/mod.rs,defaults/tests.rs,executor_types.rs,executor/response_parsing.rs}`、`resources/harness/stages/vuln_triage/spec.json`、`frontend/lib/{tools.ts,tools.test.ts}`、相关模块卡、`feature_list.json`、`agent-progress.md`。
+- **下一步建议**：重启 app/backend 后在 Test1 继续或重跑 `vuln_triage`；期望 transcript 中出现 `sub_agent_vuln_scanner` 调 `vuln_run_formulaic_sweep`，不再出现 vuln repair raw `pentest_run`/手写 nuclei/sqlmap；随后用 `scripts/run_tree.py --db` 验证 `technique_outcomes` 覆盖 WSTG/GOLISH cells，再跑允许范围内的 full `just precommit`。

@@ -1,7 +1,8 @@
 use super::builder::create_default_sub_agents;
 use super::prompts::{
-    build_browser_prompt, build_coder_prompt, build_enumerator_prompt, build_pentester_prompt,
-    build_planner_prompt, build_prober_prompt, build_recon_prompt, build_researcher_prompt,
+    build_browser_prompt, build_coder_prompt, build_enumerator_prompt, build_orchestrator_prompt,
+    build_pentester_prompt, build_planner_prompt, build_prober_prompt, build_recon_prompt,
+    build_researcher_prompt, build_vuln_scanner_prompt,
 };
 
 fn has_tool(agent: &crate::SubAgentDefinition, tool: &str) -> bool {
@@ -12,9 +13,10 @@ fn has_tool(agent: &crate::SubAgentDefinition, tool: &str) -> bool {
 fn test_create_default_sub_agents_count() {
     let agents = create_default_sub_agents();
     // 13 base + recon (target_intel passive collector) + prober (external_attack_surface
-    // active surface-mapper) + enumerator (enumeration active content-mapper) — the three
+    // active surface-mapper) + enumerator (enumeration active content-mapper)
+    // + vuln_scanner (formulaic vuln-triage worker) — the stage_run per-org
     // stage_run per-org specialists (2026-06-13-stage-run-fanout).
-    assert_eq!(agents.len(), 16);
+    assert_eq!(agents.len(), 17);
 }
 
 #[test]
@@ -31,6 +33,7 @@ fn test_create_default_sub_agents_ids() {
     assert!(ids.contains(&"recon"));
     assert!(ids.contains(&"prober"));
     assert!(ids.contains(&"enumerator"));
+    assert!(ids.contains(&"vuln_scanner"));
     assert!(ids.contains(&"memorist"));
     assert!(ids.contains(&"planner"));
     assert!(ids.contains(&"reflector"));
@@ -184,15 +187,18 @@ fn test_prober_has_active_surface_tools() {
     // stage_run fan-out (2026-06-13-stage-run-fanout · EAS rollout): Prober is the
     // active external-attack-surface mapper split out of the Pentester (mirroring
     // how Recon was split for target_intel). It must carry the active probe tools
-    // (pentest_run) + target state + the stage submit tool, and must NOT carry the
+    // (eas_* backend wrappers) + target state + the stage submit tool, and must NOT carry the
     // passive provider recon_* tools (those are Recon's) nor the Pentester's
     // offensive surface (exploits, graph writes, vault).
     let agents = create_default_sub_agents();
     let prober = agents.iter().find(|a| a.id == "prober").unwrap();
 
     // Active surface mapping + stage submission tools present.
-    assert!(has_tool(prober, "pentest_run"));
-    assert!(has_tool(prober, "pentest_list_tools"));
+    assert!(has_tool(prober, "eas_probe_http_liveness"));
+    assert!(has_tool(prober, "eas_discover_ports"));
+    assert!(has_tool(prober, "eas_fingerprint_services"));
+    assert!(!has_tool(prober, "pentest_run"));
+    assert!(!has_tool(prober, "pentest_list_tools"));
     assert!(has_tool(prober, "wait_for_background_jobs"));
     assert!(has_tool(prober, "manage_targets"));
     assert!(has_tool(prober, "list_in_scope_targets"));
@@ -222,18 +228,18 @@ fn test_prober_prompt_is_active_surface() {
     let prompt = build_prober_prompt();
     assert!(prompt.contains("attack surface"));
     assert!(prompt.contains("submit_stage_deliverable"));
-    // Active surface mapping: liveness (httpx) / open ports / service fingerprint.
-    assert!(prompt.contains("httpx"));
+    // Active surface mapping: liveness / open ports / service fingerprint via wrappers.
+    assert!(prompt.contains("eas_probe_http_liveness"));
+    assert!(prompt.contains("eas_discover_ports"));
+    assert!(prompt.contains("eas_fingerprint_services"));
     assert!(prompt.contains("port"));
     assert!(prompt.contains("list_attack_surface_seeds"));
     assert!(prompt.contains("wait_for_background_jobs"));
     assert!(prompt.contains("found cells are credited from the database"));
     assert!(prompt.contains("Do NOT hand-copy found coverage cells"));
     assert!(prompt.contains("HTTP liveness alone"));
-    assert!(prompt.contains("-list {{input_file}}"));
-    assert!(prompt.contains("-iL {{input_file}}"));
-    assert!(prompt.contains("--input-file={{input_file}}"));
-    assert!(prompt.contains("file -f {{input_file}}"));
+    assert!(prompt.contains("do NOT call httpx or pentest_run directly"));
+    assert!(prompt.contains("do NOT call nmap/naabu/masscan or pentest_run directly"));
     // Prober is the ACTIVE counterpart of the ZERO-TOUCH Recon — it must NOT
     // describe itself as zero-touch.
     assert!(!prompt.contains("ZERO-TOUCH"));
@@ -244,16 +250,17 @@ fn test_enumerator_has_content_enum_tools() {
     // stage_run fan-out (2026-06-13-stage-run-fanout · enumeration rollout): Enumerator is
     // the active content-enumeration mapper split out of the Pentester (mirroring how Prober
     // was split for external_attack_surface). It must carry the content-probe tools
-    // (route_probe_paths for DIR, pentest_run for bounded crawler URL sources,
-    // and js_collect/js_extract_apis for JS-API/PARAM extraction)
+    // (route_probe_paths for DIR, enum_crawl_same_origin_urls for bounded crawler
+    // URL sources, and js_collect/js_extract_apis for JS-API/PARAM extraction)
     // + target state + the stage submit tool, and must NOT carry the passive provider recon_*
     // tools (Recon's) nor the Pentester's offensive surface (exploits, graph writes, vault).
     let agents = create_default_sub_agents();
     let enumerator = agents.iter().find(|a| a.id == "enumerator").unwrap();
 
     // Active content enumeration + stage submission tools present.
-    assert!(has_tool(enumerator, "pentest_run"));
-    assert!(has_tool(enumerator, "pentest_list_tools"));
+    assert!(has_tool(enumerator, "enum_crawl_same_origin_urls"));
+    assert!(!has_tool(enumerator, "pentest_run"));
+    assert!(!has_tool(enumerator, "pentest_list_tools"));
     assert!(has_tool(enumerator, "wait_for_background_jobs"));
     assert!(has_tool(enumerator, "browser_collect_js_api"));
     assert!(has_tool(enumerator, "js_collect"));
@@ -290,8 +297,11 @@ fn test_enumerator_prompt_is_content_enum() {
     assert!(prompt.contains("director"));
     assert!(prompt.contains("param"));
     assert!(prompt.contains("browser_collect_js_api"));
-    assert!(prompt.contains("run browser_collect_js_api first"));
-    assert!(prompt.contains("not as a substitute"));
+    assert!(prompt.contains("browser_collect_js_api(target_urls=[{target_id, target_url}"));
+    assert!(prompt.contains("DB coverage lands against the exact target_id"));
+    assert!(prompt.contains("full root_url"));
+    assert!(prompt.contains("do NOT call query_target_data per target"));
+    assert!(prompt.contains("not a substitute"));
     assert!(prompt.contains("ai_assist"));
     assert!(prompt.contains("recipe"));
     assert!(prompt.contains("js_extract_apis"));
@@ -300,10 +310,13 @@ fn test_enumerator_prompt_is_content_enum() {
     assert!(prompt.contains("stage_worklist_next"));
     assert!(prompt.contains("ready_to_submit=true"));
     assert!(prompt.contains("work_item_id"));
-    assert!(prompt.contains("full de-duplicated local/built-in wordlist"));
+    assert!(prompt.contains("max_runtime_ms=60000"));
+    assert!(prompt.contains("max_requests=2000"));
+    assert!(prompt.contains("request_limited_partial"));
     assert!(prompt.contains("Do not call external directory tools"));
     assert!(prompt.contains("list_enumeration_web_roots"));
-    assert!(prompt.contains("pentest_run(tool_name=..., args=...)"));
+    assert!(prompt.contains("enum_crawl_same_origin_urls"));
+    assert!(prompt.contains("do NOT call katana or pentest_run directly"));
     assert!(prompt.contains("DB cannot derive"));
     assert!(prompt.contains("check_stage_asset_coverage"));
     assert!(prompt.contains("web_root_enumerated"));
@@ -317,6 +330,52 @@ fn test_enumerator_prompt_is_content_enum() {
     assert!(!prompt.contains("ZERO-TOUCH"));
     assert!(!prompt.contains("list_in_scope_targets first"));
     assert!(!prompt.contains("Confirm/annotate targets via manage_targets"));
+}
+
+#[test]
+fn test_vuln_scanner_has_formulaic_wrapper_only() {
+    let agents = create_default_sub_agents();
+    let vuln_scanner = agents.iter().find(|a| a.id == "vuln_scanner").unwrap();
+
+    assert!(has_tool(vuln_scanner, "stage_worklist_status"));
+    assert!(has_tool(vuln_scanner, "stage_worklist_next"));
+    assert!(has_tool(vuln_scanner, "vuln_run_formulaic_sweep"));
+    assert!(has_tool(vuln_scanner, "wait_for_background_jobs"));
+    assert!(has_tool(vuln_scanner, "check_job"));
+    assert!(has_tool(vuln_scanner, "kill_job"));
+    assert!(has_tool(vuln_scanner, "list_recent_evidence"));
+    assert!(has_tool(vuln_scanner, "check_stage_asset_coverage"));
+    assert!(has_tool(vuln_scanner, "query_target_data"));
+    assert!(has_tool(vuln_scanner, "submit_stage_deliverable"));
+    assert!(has_tool(vuln_scanner, "record_finding"));
+    assert!(has_tool(vuln_scanner, "search_knowledge_base"));
+    assert!(has_tool(vuln_scanner, "read_knowledge"));
+
+    assert!(!has_tool(vuln_scanner, "pentest_run"));
+    assert!(!has_tool(vuln_scanner, "pentest_list_tools"));
+    assert!(!has_tool(vuln_scanner, "list_in_scope_targets"));
+    assert!(!has_tool(vuln_scanner, "list_attack_surface_seeds"));
+    assert!(!has_tool(vuln_scanner, "manage_targets"));
+    assert!(!has_tool(vuln_scanner, "run_pty_cmd"));
+    assert!(!has_tool(vuln_scanner, "run_command"));
+}
+
+#[test]
+fn test_vuln_scanner_prompt_is_wrapper_based() {
+    let prompt = build_vuln_scanner_prompt();
+    assert!(prompt.contains("vuln_triage"));
+    assert!(prompt.contains("stage_worklist_status"));
+    assert!(prompt.contains("stage_worklist_next"));
+    assert!(prompt.contains("vuln_run_formulaic_sweep(targets=[...]"));
+    assert!(prompt.contains("wait_for_background_jobs"));
+    assert!(prompt.contains("check_stage_asset_coverage"));
+    assert!(prompt.contains("ready_to_submit=true"));
+    assert!(prompt.contains("Do NOT call pentest_run"));
+    assert!(prompt.contains("nuclei"));
+    assert!(prompt.contains("sqlmap"));
+    assert!(prompt.contains("wpscan"));
+    assert!(prompt.contains("The gate reads the DATABASE"));
+    assert!(!prompt.contains("list_in_scope_targets first"));
 }
 
 #[test]
@@ -414,4 +473,13 @@ fn test_planner_prompt_has_json_format() {
     assert!(prompt.contains("subtasks"));
     assert!(prompt.contains("depends_on"));
     assert!(prompt.contains("success_criteria"));
+}
+
+#[test]
+fn test_orchestrator_prompt_respects_stage_run_override() {
+    let prompt = build_orchestrator_prompt();
+    assert!(prompt.contains("Stage-specialist override"));
+    assert!(prompt.contains("stage_run"));
+    assert!(prompt.contains("Do not call `sub_agent_pentester`"));
+    assert!(prompt.contains("outside active stage-specialist delegation"));
 }

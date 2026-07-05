@@ -531,7 +531,7 @@ impl SubmitStageDeliverableTool {
     /// P5.1 · persist the deliverable's attack candidates (if any) to the DB via
     /// the evidence-repo seam. Requires a bound operation id (the persistence key)
     /// + the repo handle; otherwise a no-op. Non-fatal — persistence failure only
-    /// logs (the deliverable itself is still captured by the gate path).
+    ///   logs (the deliverable itself is still captured by the gate path).
     async fn persist_candidates_if_any(&self, deliverable: &StageDeliverable) {
         if deliverable.candidates.is_empty() {
             return;

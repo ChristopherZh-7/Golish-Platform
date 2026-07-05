@@ -17,8 +17,9 @@ pub(crate) mod fleet;
 /// even though the CLI subsidiary fan-out currently drives only the checklist path.
 pub mod scheduler;
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{BTreeMap, HashSet};
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -71,6 +72,59 @@ fn resolve_from_to(args: &Args) -> Result<(Option<StageKind>, StageKind)> {
     Ok((from, to))
 }
 
+struct StageRunDbConfig {
+    config: golish_db::DbConfig,
+    temp_dir: Option<tempfile::TempDir>,
+}
+
+impl StageRunDbConfig {
+    fn keep_temp_dir(&mut self) -> Option<PathBuf> {
+        self.temp_dir.take().map(tempfile::TempDir::keep)
+    }
+}
+
+fn prepare_stage_run_db(args: &Args) -> Result<StageRunDbConfig> {
+    let mut config = golish_db::DbConfig::default();
+    if !args.ephemeral_db {
+        return Ok(StageRunDbConfig {
+            config,
+            temp_dir: None,
+        });
+    }
+
+    let temp_dir = tempfile::Builder::new()
+        .prefix("golish-stage-run-db-")
+        .tempdir()
+        .context("create ephemeral stage-run database directory")?;
+    config.pg_data_dir = temp_dir.path().join("pgdata");
+    config.port = allocate_local_port().context("allocate ephemeral PostgreSQL port")?;
+
+    Ok(StageRunDbConfig {
+        config,
+        temp_dir: Some(temp_dir),
+    })
+}
+
+fn allocate_local_port() -> Result<u16> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).context("bind local ephemeral port")?;
+    Ok(listener
+        .local_addr()
+        .context("read local ephemeral port")?
+        .port())
+}
+
+fn maybe_keep_ephemeral_db(stage_db: &mut StageRunDbConfig, keep: bool) {
+    if !keep {
+        return;
+    }
+    if let Some(path) = stage_db.keep_temp_dir() {
+        eprintln!(
+            "[stage-run] kept ephemeral database directory: {}",
+            path.display()
+        );
+    }
+}
+
 /// Headless entry point for `golish --stage-run`.
 pub async fn run(args: Args) -> Result<()> {
     // 1) Resolve profile + stage slice up front (cheap, fails fast on bad input).
@@ -104,13 +158,28 @@ pub async fn run(args: Args) -> Result<()> {
 
     // 3) Boot embedded Postgres (lazy pool + ready gate, mirroring the GUI) and
     //    build a headless AppState — AppState::new takes no Tauri AppHandle.
-    let (db_pool, db_ready) = crate::app::bootstrap::create_lazy_db_pool();
+    let mut stage_db = prepare_stage_run_db(&args)?;
+    if args.ephemeral_db {
+        eprintln!(
+            "[stage-run] using ephemeral database: pgdata={} port={} keep={}",
+            stage_db.config.pg_data_dir.display(),
+            stage_db.config.port,
+            args.keep_ephemeral_db
+        );
+    }
+
+    let (db_pool, db_ready) =
+        crate::app::bootstrap::create_lazy_db_pool_with_config(&stage_db.config);
     // Own the PG handle (don't leak it like the GUI) so we can stop the server
     // on exit — otherwise each run orphans a postgres holding port 15432 and
     // blocks the next --stage-run.
-    let pg_handle_rx = crate::app::bootstrap::spawn_embedded_pg_owned(db_ready.clone());
+    let pg_handle_rx = crate::app::bootstrap::spawn_embedded_pg_owned_with_config(
+        db_ready.clone(),
+        stage_db.config.clone(),
+    );
     eprintln!("[stage-run] waiting for embedded Postgres (first run may download pg-embed)...");
     if !wait_for_db(&db_ready).await {
+        maybe_keep_ephemeral_db(&mut stage_db, args.keep_ephemeral_db);
         return Err(anyhow!("embedded Postgres did not become ready in time"));
     }
     eprintln!("[stage-run] database ready.");
@@ -171,6 +240,7 @@ pub async fn run(args: Args) -> Result<()> {
         Err(e) => {
             // Don't orphan the embedded PG we just started.
             stop_embedded_pg(pg_handle_rx).await;
+            maybe_keep_ephemeral_db(&mut stage_db, args.keep_ephemeral_db);
             return Err(e);
         }
     };
@@ -353,6 +423,19 @@ pub async fn run(args: Args) -> Result<()> {
     // 7) Report. Also write the replay artifacts so the timeline is on disk.
     let _ = golish_events::op_trace::write_trace_artifacts(&transcripts_dir, &session_id);
     let events = collected.lock().map(|v| v.clone()).unwrap_or_default();
+    let db_smoke_summary = if args.db_smoke_summary {
+        Some(
+            collect_db_smoke_summary(
+                &db_pool,
+                &session_id,
+                seed.as_ref().and_then(|s| s.org_id),
+                &workspace_str,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
     let report = format_report(
         &events,
         &result,
@@ -368,8 +451,19 @@ pub async fn run(args: Args) -> Result<()> {
                 println!("{s}");
             }
         }
+        if let Some(summary) = &db_smoke_summary {
+            if let Ok(s) = serde_json::to_string(&serde_json::json!({
+                "type": "db_smoke_summary",
+                "summary": summary,
+            })) {
+                println!("{s}");
+            }
+        }
     } else {
         println!("{report}");
+        if let Some(summary) = &db_smoke_summary {
+            println!("{}", format_db_smoke_summary(summary));
+        }
         // 子公司 engagement 聚合（无 --include-subsidiaries 时为 None）。
         if let Some(fr) = &fleet_report {
             if !fr.outcomes.is_empty() {
@@ -385,6 +479,7 @@ pub async fn run(args: Args) -> Result<()> {
     // Stop the embedded PG we started so we don't orphan it (headless cleanup;
     // the GUI keeps PG alive on purpose via the leaking `spawn_embedded_pg`).
     stop_embedded_pg(pg_handle_rx).await;
+    maybe_keep_ephemeral_db(&mut stage_db, args.keep_ephemeral_db);
 
     // Phase 3 engagement aggregation: the parent result decides first; any
     // failed subsidiary then flips the whole engagement to FAILED ("an org
@@ -412,7 +507,7 @@ pub async fn run(args: Args) -> Result<()> {
 /// Best-effort: stop the embedded PostgreSQL server started for this run.
 ///
 /// The handle arrives via the oneshot from
-/// [`spawn_embedded_pg_owned`](crate::app::bootstrap::spawn_embedded_pg_owned).
+/// [`spawn_embedded_pg_owned_with_config`](crate::app::bootstrap::spawn_embedded_pg_owned_with_config).
 /// If startup failed (sender dropped) there is nothing to stop.
 async fn stop_embedded_pg(rx: tokio::sync::oneshot::Receiver<golish_db::GolishDb>) {
     match rx.await {
@@ -764,6 +859,275 @@ fn init_tracing_best_effort(settings: &golish_settings::GolishSettings, verbose:
     let _ = crate::telemetry::init_tracing(langfuse, log_level, &directives);
 }
 
+#[derive(Debug, serde::Serialize)]
+struct DbSmokeSummary {
+    session_id: String,
+    organization_id: Option<String>,
+    project_path: String,
+    totals: BTreeMap<String, serde_json::Value>,
+    run_scoped: BTreeMap<String, serde_json::Value>,
+    project_scoped: BTreeMap<String, serde_json::Value>,
+    org_scoped: BTreeMap<String, serde_json::Value>,
+}
+
+async fn collect_db_smoke_summary(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    org_id: Option<uuid::Uuid>,
+    project_path: &str,
+) -> DbSmokeSummary {
+    let totals = collect_unbound_counts(
+        pool,
+        &[
+            ("sessions", "SELECT COUNT(*) FROM sessions"),
+            ("tasks", "SELECT COUNT(*) FROM tasks"),
+            ("tool_calls", "SELECT COUNT(*) FROM tool_calls"),
+            ("audit_log", "SELECT COUNT(*) FROM audit_log"),
+            (
+                "evidence_audit_log",
+                "SELECT COUNT(*) FROM audit_log WHERE audit_role = 'evidence'",
+            ),
+            ("organizations", "SELECT COUNT(*) FROM organizations"),
+            ("targets", "SELECT COUNT(*) FROM targets"),
+            ("target_assets", "SELECT COUNT(*) FROM target_assets"),
+            ("dns_records", "SELECT COUNT(*) FROM dns_records"),
+            ("api_endpoints", "SELECT COUNT(*) FROM api_endpoints"),
+            (
+                "technique_outcomes",
+                "SELECT COUNT(*) FROM technique_outcomes",
+            ),
+            ("source_query_log", "SELECT COUNT(*) FROM source_query_log"),
+            (
+                "org_stage_completions",
+                "SELECT COUNT(*) FROM org_stage_completions",
+            ),
+        ],
+    )
+    .await;
+
+    let run_scoped = collect_text_counts(
+        pool,
+        session_id,
+        &[
+            (
+                "sessions_by_chat_key",
+                "SELECT COUNT(*) FROM sessions WHERE chat_session_key = $1",
+            ),
+            (
+                "tasks_by_chat_key",
+                "SELECT COUNT(*) FROM tasks t \
+                 JOIN sessions s ON t.session_id = s.id \
+                 WHERE s.chat_session_key = $1",
+            ),
+            (
+                "tool_calls_by_chat_key",
+                "SELECT COUNT(*) FROM tool_calls tc \
+                 JOIN sessions s ON tc.session_id = s.id \
+                 WHERE s.chat_session_key = $1",
+            ),
+            (
+                "technique_outcomes_by_run",
+                "SELECT COUNT(*) FROM technique_outcomes WHERE run_id = $1",
+            ),
+            (
+                "source_query_log_by_run",
+                "SELECT COUNT(*) FROM source_query_log WHERE run_id = $1",
+            ),
+            (
+                "org_stage_completions_by_run",
+                "SELECT COUNT(*) FROM org_stage_completions WHERE stage_run_id = $1",
+            ),
+        ],
+    )
+    .await;
+
+    let project_scoped = collect_text_counts(
+        pool,
+        project_path,
+        &[
+            (
+                "organizations_in_workspace",
+                "SELECT COUNT(*) FROM organizations WHERE project_path = $1",
+            ),
+            (
+                "targets_in_workspace",
+                "SELECT COUNT(*) FROM targets WHERE project_path = $1",
+            ),
+            (
+                "audit_log_in_workspace",
+                "SELECT COUNT(*) FROM audit_log WHERE project_path = $1",
+            ),
+            (
+                "evidence_audit_log_in_workspace",
+                "SELECT COUNT(*) FROM audit_log \
+                 WHERE project_path = $1 AND audit_role = 'evidence'",
+            ),
+            (
+                "target_assets_in_workspace",
+                "SELECT COUNT(*) FROM target_assets WHERE project_path = $1",
+            ),
+            (
+                "api_endpoints_in_workspace",
+                "SELECT COUNT(*) FROM api_endpoints WHERE project_path = $1",
+            ),
+        ],
+    )
+    .await;
+
+    let org_scoped = match org_id {
+        Some(org_id) => {
+            collect_uuid_counts(
+                pool,
+                org_id,
+                &[
+                    (
+                        "targets_by_org",
+                        "SELECT COUNT(*) FROM targets WHERE organization_id = $1",
+                    ),
+                    (
+                        "target_assets_by_org",
+                        "SELECT COUNT(*) FROM target_assets ta \
+                         JOIN targets t ON ta.target_id = t.id \
+                         WHERE t.organization_id = $1",
+                    ),
+                    (
+                        "api_endpoints_by_org",
+                        "SELECT COUNT(*) FROM api_endpoints ae \
+                         JOIN targets t ON ae.target_id = t.id \
+                         WHERE t.organization_id = $1",
+                    ),
+                    (
+                        "technique_outcomes_by_org",
+                        "SELECT COUNT(*) FROM technique_outcomes WHERE organization_id = $1",
+                    ),
+                    (
+                        "source_query_log_by_org",
+                        "SELECT COUNT(*) FROM source_query_log WHERE organization_id = $1",
+                    ),
+                    (
+                        "org_stage_completions_by_org",
+                        "SELECT COUNT(*) FROM org_stage_completions WHERE organization_id = $1",
+                    ),
+                ],
+            )
+            .await
+        }
+        None => BTreeMap::new(),
+    };
+
+    DbSmokeSummary {
+        session_id: session_id.to_string(),
+        organization_id: org_id.map(|id| id.to_string()),
+        project_path: project_path.to_string(),
+        totals,
+        run_scoped,
+        project_scoped,
+        org_scoped,
+    }
+}
+
+async fn collect_unbound_counts(
+    pool: &sqlx::PgPool,
+    queries: &[(&'static str, &'static str)],
+) -> BTreeMap<String, serde_json::Value> {
+    let mut out = BTreeMap::new();
+    for (label, sql) in queries {
+        out.insert((*label).to_string(), count_unbound(pool, sql).await);
+    }
+    out
+}
+
+async fn collect_text_counts(
+    pool: &sqlx::PgPool,
+    value: &str,
+    queries: &[(&'static str, &'static str)],
+) -> BTreeMap<String, serde_json::Value> {
+    let mut out = BTreeMap::new();
+    for (label, sql) in queries {
+        out.insert((*label).to_string(), count_text(pool, sql, value).await);
+    }
+    out
+}
+
+async fn collect_uuid_counts(
+    pool: &sqlx::PgPool,
+    value: uuid::Uuid,
+    queries: &[(&'static str, &'static str)],
+) -> BTreeMap<String, serde_json::Value> {
+    let mut out = BTreeMap::new();
+    for (label, sql) in queries {
+        out.insert((*label).to_string(), count_uuid(pool, sql, value).await);
+    }
+    out
+}
+
+async fn count_unbound(pool: &sqlx::PgPool, sql: &str) -> serde_json::Value {
+    match sqlx::query_scalar::<_, i64>(sql).fetch_one(pool).await {
+        Ok(count) => serde_json::json!(count),
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    }
+}
+
+async fn count_text(pool: &sqlx::PgPool, sql: &str, value: &str) -> serde_json::Value {
+    match sqlx::query_scalar::<_, i64>(sql)
+        .bind(value)
+        .fetch_one(pool)
+        .await
+    {
+        Ok(count) => serde_json::json!(count),
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    }
+}
+
+async fn count_uuid(pool: &sqlx::PgPool, sql: &str, value: uuid::Uuid) -> serde_json::Value {
+    match sqlx::query_scalar::<_, i64>(sql)
+        .bind(value)
+        .fetch_one(pool)
+        .await
+    {
+        Ok(count) => serde_json::json!(count),
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    }
+}
+
+fn format_db_smoke_summary(summary: &DbSmokeSummary) -> String {
+    let mut out = String::new();
+    out.push_str("\n-- db smoke summary --\n");
+    out.push_str(&format!("  session_id = {}\n", summary.session_id));
+    out.push_str(&format!("  project_path = {}\n", summary.project_path));
+    if let Some(org_id) = &summary.organization_id {
+        out.push_str(&format!("  organization_id = {org_id}\n"));
+    }
+    push_db_summary_section(&mut out, "totals", &summary.totals);
+    push_db_summary_section(&mut out, "run scoped", &summary.run_scoped);
+    push_db_summary_section(&mut out, "project scoped", &summary.project_scoped);
+    if !summary.org_scoped.is_empty() {
+        push_db_summary_section(&mut out, "org scoped", &summary.org_scoped);
+    }
+    out
+}
+
+fn push_db_summary_section(
+    out: &mut String,
+    title: &str,
+    values: &BTreeMap<String, serde_json::Value>,
+) {
+    out.push_str(&format!("  {title}:\n"));
+    for (label, value) in values {
+        out.push_str(&format!(
+            "    {label}: {}\n",
+            format_db_summary_value(value)
+        ));
+    }
+}
+
+fn format_db_summary_value(value: &serde_json::Value) -> String {
+    if let Some(count) = value.as_i64() {
+        return count.to_string();
+    }
+    serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+}
+
 /// Render the human-readable post-run report from collected events.
 fn format_report(
     events: &[AiEvent],
@@ -933,6 +1297,71 @@ mod tests {
     fn resolve_from_to_requires_to_or_only() {
         let args = Args::parse_from(["golish", "--stage-run"]);
         assert!(resolve_from_to(&args).is_err());
+    }
+
+    #[test]
+    fn stage_run_db_defaults_to_app_database() {
+        let args = Args::parse_from(["golish", "--stage-run", "--to", "scoping"]);
+        let stage_db = prepare_stage_run_db(&args).expect("default db config");
+        let default_config = golish_db::DbConfig::default();
+
+        assert!(stage_db.temp_dir.is_none());
+        assert_eq!(stage_db.config.pg_data_dir, default_config.pg_data_dir);
+        assert_eq!(stage_db.config.port, default_config.port);
+    }
+
+    #[test]
+    fn stage_run_db_ephemeral_uses_temp_pgdata() {
+        let args = Args::parse_from([
+            "golish",
+            "--stage-run",
+            "--ephemeral-db",
+            "--keep-ephemeral-db",
+            "--db-smoke-summary",
+            "--to",
+            "scoping",
+        ]);
+        assert!(args.ephemeral_db);
+        assert!(args.keep_ephemeral_db);
+        assert!(args.db_smoke_summary);
+
+        let stage_db = prepare_stage_run_db(&args).expect("ephemeral db config");
+        let default_config = golish_db::DbConfig::default();
+        let temp_root = stage_db
+            .temp_dir
+            .as_ref()
+            .expect("temp dir")
+            .path()
+            .to_path_buf();
+
+        assert_eq!(stage_db.config.pg_data_dir, temp_root.join("pgdata"));
+        assert_eq!(
+            stage_db.config.pg_bin_cache_dir,
+            default_config.pg_bin_cache_dir
+        );
+        assert!(stage_db.config.port > 0);
+    }
+
+    #[test]
+    fn format_db_smoke_summary_lists_sections() {
+        let mut totals = BTreeMap::new();
+        totals.insert("targets".to_string(), serde_json::json!(2));
+        let mut run_scoped = BTreeMap::new();
+        run_scoped.insert("tool_calls_by_chat_key".to_string(), serde_json::json!(3));
+        let summary = DbSmokeSummary {
+            session_id: "stage-run-test".into(),
+            organization_id: Some("org-1".into()),
+            project_path: "/tmp/golish-smoke".into(),
+            totals,
+            run_scoped,
+            project_scoped: BTreeMap::new(),
+            org_scoped: BTreeMap::new(),
+        };
+
+        let rendered = format_db_smoke_summary(&summary);
+        assert!(rendered.contains("-- db smoke summary --"));
+        assert!(rendered.contains("targets: 2"));
+        assert!(rendered.contains("tool_calls_by_chat_key: 3"));
     }
 
     #[test]

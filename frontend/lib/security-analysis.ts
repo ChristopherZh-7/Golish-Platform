@@ -9,6 +9,7 @@ export {
   type ApiEndpoint,
   type AuditRow,
   apiEndpointsList,
+  type BackendCrawlObservationDto,
   type BackendNetworkEndpointDto,
   type BackendRelatedDomainDto,
   type BackendSurfaceHierarchyDto,

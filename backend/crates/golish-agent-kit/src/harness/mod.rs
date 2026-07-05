@@ -56,6 +56,7 @@ pub mod rag_prior;
 pub mod resources;
 pub mod slice;
 pub mod sprint_contract;
+pub mod stage_capability;
 pub mod stage_fanout;
 pub mod stage_harness;
 pub mod stage_spec;
@@ -105,6 +106,12 @@ pub use slice::resolve_slice;
 pub use sprint_contract::{
     expected_techniques_for_target_types, DefaultSprintContractGenerator, ExpectedFinding,
     SprintContract, SprintContractGenerator, SprintSkeleton, StageSkeleton,
+};
+pub use stage_capability::{
+    capabilities_for_stage, capabilities_for_technique, capability_by_id, stage_for_technique,
+    suggested_capabilities_for_any_technique, suggested_capabilities_for_technique,
+    suggested_tools_for_any_technique, suggested_tools_for_technique, tools_from_suggestions,
+    CapabilityRisk, CapabilityRunnerKind, StageCapabilitySpec, StageCapabilitySuggestion,
 };
 pub use stage_harness::StageHarness;
 pub use stage_spec::{

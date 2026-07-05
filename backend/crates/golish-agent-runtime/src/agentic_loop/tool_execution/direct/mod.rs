@@ -34,6 +34,24 @@ struct StructuredStorageHookPayload {
     stdout: String,
 }
 
+fn pentest_underlying_invocation(
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+    result: &serde_json::Value,
+) -> Option<(String, String)> {
+    if tool_name == "pentest_run" {
+        let tool = tool_args.get("tool_name").and_then(|v| v.as_str())?;
+        let args = tool_args.get("args").and_then(|v| v.as_str()).unwrap_or("");
+        return Some((tool.to_string(), args.to_string()));
+    }
+    let tool = result.get("wrapped_tool_name").and_then(|v| v.as_str())?;
+    let args = result
+        .get("wrapped_args")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    Some((tool.to_string(), args.to_string()))
+}
+
 fn structured_storage_hook_payload(
     tool_name: &str,
     tool_args: &serde_json::Value,
@@ -55,16 +73,12 @@ fn structured_storage_hook_payload(
             .and_then(|c| c.as_str())
             .unwrap_or("")
             .to_string()
-    } else if tool_name == "pentest_run" {
+    } else if let Some((tool, args)) = pentest_underlying_invocation(tool_name, tool_args, result) {
         result
             .get("command")
             .and_then(|c| c.as_str())
             .map(str::to_string)
-            .or_else(|| {
-                let tool = tool_args.get("tool_name").and_then(|v| v.as_str())?;
-                let args = tool_args.get("args").and_then(|v| v.as_str()).unwrap_or("");
-                Some(format!("{tool} {args}").trim().to_string())
-            })
+            .or_else(|| Some(format!("{tool} {args}").trim().to_string()))
             .unwrap_or_default()
     } else {
         String::new()
@@ -379,7 +393,7 @@ where
         let ws_path = ctx.workspace.read().await;
         let project_path_str = ws_path.to_string_lossy().to_string();
         drop(ws_path);
-        if let Some((value, success)) =
+        if let Some((value, success)) = Box::pin(
             golish_agent_kit::tool_executors::execute_security_analysis_tool(
                 tool_name,
                 tool_args,
@@ -389,8 +403,9 @@ where
                 ctx.harness_org_id,
                 ctx.harness_stage,
                 ctx.harness_operation_id,
-            )
-            .await
+            ),
+        )
+        .await
         {
             return Ok(ToolExecutionResult { value, success });
         }
@@ -471,14 +486,12 @@ where
         });
     }
 
-    if let Some(result) = duplicate_source_query_guard(effective_tool_name, ctx).await {
+    if let Some(result) = duplicate_source_query_guard(effective_tool_name, tool_args, ctx).await {
         return Ok(result);
     }
 
     let registry = ctx.tool_registry.read().await;
-    let result = registry
-        .execute_tool(effective_tool_name, tool_args.clone())
-        .await;
+    let result = Box::pin(registry.execute_tool(effective_tool_name, tool_args.clone())).await;
 
     match &result {
         Ok(v) => {
@@ -619,19 +632,23 @@ where
             // still book a terminal fact — otherwise the cell stays not_attempted
             // and the deterministic gate loops forever on a service it can never
             // reach.
-            if effective_tool_name == "pentest_run" && ctx.harness_stage.is_some() {
+            if (effective_tool_name == "pentest_run"
+                || v.get("wrapped_tool_name")
+                    .and_then(|s| s.as_str())
+                    .is_some())
+                && ctx.harness_stage.is_some()
+            {
                 if let Some(tracker) = ctx.events.db_tracker {
                     if let Some(repo) = tracker.repo() {
                         let op_id = tracker.task_id().unwrap_or_else(|| tracker.session_uuid());
                         let ev_output = combined_stdout_stderr(v);
-                        let pt_tool = tool_args
-                            .get("tool_name")
-                            .and_then(|s| s.as_str())
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or("pentest_run");
-                        let pt_args = tool_args.get("args").and_then(|s| s.as_str()).unwrap_or("");
+                        let (pt_tool, pt_args) =
+                            pentest_underlying_invocation(effective_tool_name, tool_args, v)
+                                .unwrap_or_else(|| {
+                                    (effective_tool_name.to_string(), String::new())
+                                });
                         let ev_subject = if pt_args.is_empty() {
-                            pt_tool.to_string()
+                            pt_tool.clone()
                         } else {
                             format!("{pt_tool} {pt_args}")
                         };
@@ -672,8 +689,8 @@ where
                                     None,
                                     ctx.events.session_id,
                                     tracker.project_path(),
-                                    pt_tool,
-                                    pt_tool,
+                                    pt_tool.as_str(),
+                                    pt_tool.as_str(),
                                     &ev_subject,
                                     &ev_body,
                                     facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
@@ -705,7 +722,7 @@ where
                                                 asset,
                                                 tech,
                                                 outcome,
-                                                Some(pt_tool),
+                                                Some(pt_tool.as_str()),
                                                 Some(ev_subject.as_str()),
                                                 &[id],
                                             )
@@ -732,7 +749,7 @@ where
                                             .upsert_source_query(
                                                 org_id,
                                                 rid,
-                                                pt_tool,
+                                                pt_tool.as_str(),
                                                 ev_subject.as_str(),
                                                 asset,
                                                 Some(tech),
@@ -841,29 +858,11 @@ fn recon_source_query_rows(
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or(tool_name)
                 .to_string();
-            result
-                .get("providerStatus")
-                .or_else(|| result.get("provider_status"))
-                .and_then(|v| v.as_array())
-                .into_iter()
-                .flatten()
-                .filter_map(|item| {
-                    let source = item
-                        .get("providerId")
-                        .or_else(|| item.get("provider_id"))
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())?;
-                    let raw_status = item.get("status").and_then(|v| v.as_str()).unwrap_or("");
-                    Some(ReconSourceQueryRow {
-                        source: source.to_string(),
-                        query: query.clone(),
-                        target: String::new(),
-                        technique: None,
-                        status: provider_status_for_source_query(raw_status),
-                    })
-                })
-                .collect()
+            let mut rows = provider_status_rows(result, &query, "");
+            if tool_name == "recon_map_assets" {
+                rows.extend(domain_expansion_source_query_rows(result, &query));
+            }
+            rows
         }
         "recon_lookup_whois" => {
             let query = result
@@ -887,6 +886,65 @@ fn recon_source_query_rows(
         }
         _ => Vec::new(),
     }
+}
+
+fn domain_expansion_source_query_rows(
+    result: &serde_json::Value,
+    query: &str,
+) -> Vec<ReconSourceQueryRow> {
+    result
+        .get("domainExpansions")
+        .or_else(|| result.get("domain_expansions"))
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(|expansion| {
+            let target = expansion
+                .get("domain")
+                .and_then(|value| value.as_str())
+                .map(normalize_source_query_target)
+                .unwrap_or_default();
+            provider_status_rows(expansion, query, &target)
+        })
+        .collect()
+}
+
+fn provider_status_rows(
+    result: &serde_json::Value,
+    query: &str,
+    target: &str,
+) -> Vec<ReconSourceQueryRow> {
+    result
+        .get("providerStatus")
+        .or_else(|| result.get("provider_status"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let source = item
+                .get("providerId")
+                .or_else(|| item.get("provider_id"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())?;
+            let raw_status = item.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            Some(ReconSourceQueryRow {
+                source: source.to_string(),
+                query: query.to_string(),
+                target: target.to_string(),
+                technique: None,
+                status: provider_status_for_source_query(raw_status),
+            })
+        })
+        .collect()
+}
+
+fn normalize_source_query_target(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches("*.")
+        .trim_end_matches('.')
+        .to_ascii_lowercase()
 }
 
 fn provider_status_for_source_query(status: &str) -> &'static str {
@@ -935,9 +993,11 @@ mod direct_tool_routing_tests {
 
 async fn duplicate_source_query_guard(
     tool_name: &str,
+    tool_args: &serde_json::Value,
     ctx: &AgenticLoopContext<'_>,
 ) -> Option<ToolExecutionResult> {
     let query = duplicate_guard_query(tool_name)?;
+    let target = duplicate_guard_target(tool_name, tool_args);
     if ctx.harness_stage != Some(golish_agent_kit::harness::StageKind::TargetIntel) {
         return None;
     }
@@ -947,7 +1007,13 @@ async fn duplicate_source_query_guard(
     let rows = repo.source_query_facts(org_id, run_id).await;
     let matching: Vec<_> = rows
         .iter()
-        .filter(|row| row.query == query && is_terminal_source_query_status(&row.status))
+        .filter(|row| {
+            row.query == query
+                && target
+                    .as_deref()
+                    .map_or(true, |target| row.target == target)
+                && is_terminal_source_query_status(&row.status)
+        })
         .collect();
     if matching.is_empty() {
         return None;
@@ -984,6 +1050,17 @@ fn duplicate_guard_query(tool_name: &str) -> Option<&'static str> {
         "recon_discover_subsidiaries" => Some("discover_subsidiaries"),
         _ => None,
     }
+}
+
+fn duplicate_guard_target(tool_name: &str, tool_args: &serde_json::Value) -> Option<String> {
+    if tool_name != "recon_map_assets" {
+        return None;
+    }
+    tool_args
+        .get("domain")
+        .and_then(|value| value.as_str())
+        .map(normalize_source_query_target)
+        .filter(|target| !target.is_empty())
 }
 
 fn is_terminal_source_query_status(status: &str) -> bool {
@@ -1108,6 +1185,37 @@ mod tests {
     }
 
     #[test]
+    fn domain_expansion_provider_status_rows_keep_domain_target() {
+        let rows = recon_source_query_rows(
+            "recon_map_assets",
+            &json!({
+                "action": "map_assets",
+                "providerStatus": [
+                    {"providerId": "quake", "status": "completed", "message": "org survey"}
+                ],
+                "domainExpansions": [
+                    {
+                        "domain": "MoreSec.CN.",
+                        "providerStatus": [
+                            {"providerId": "0.zone", "status": "completed", "message": "domain survey"},
+                            {"providerId": "fofa", "status": "unavailable", "message": "no key"}
+                        ]
+                    }
+                ]
+            }),
+        );
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].source, "quake");
+        assert_eq!(rows[0].target, "");
+        assert_eq!(rows[1].source, "0.zone");
+        assert_eq!(rows[1].target, "moresec.cn");
+        assert_eq!(rows[1].status, "found");
+        assert_eq!(rows[2].target, "moresec.cn");
+        assert_eq!(rows[2].status, "blocked");
+    }
+
+    #[test]
     fn whois_result_maps_to_rdap_source_query() {
         let rows = recon_source_query_rows(
             "recon_lookup_whois",
@@ -1140,5 +1248,50 @@ mod tests {
 
         assert_eq!(payload.command, "httpx -u https://example.com -sc -title");
         assert_eq!(payload.stdout, "https://example.com [200] [Example Domain]");
+    }
+
+    #[test]
+    fn eas_wrapper_result_feeds_structured_storage_hook() {
+        let payload = structured_storage_hook_payload(
+            "eas_fingerprint_services",
+            &json!({"targets": ["192.0.2.10"], "ports": [80]}),
+            &json!({
+                "wrapped_tool_name": "nmap",
+                "wrapped_args": "-sV -Pn -iL {input_file} -p 80 -T3",
+                "command": "nmap -sV -Pn -iL /tmp/targets -p 80 -T3",
+                "stdout": "80/tcp open http nginx",
+                "stderr": "",
+                "exit_code": 0
+            }),
+            true,
+        )
+        .expect("EAS wrapper should produce structured-storage payload");
+
+        assert_eq!(payload.command, "nmap -sV -Pn -iL /tmp/targets -p 80 -T3");
+        assert_eq!(payload.stdout, "80/tcp open http nginx");
+    }
+
+    #[test]
+    fn enum_wrapper_result_feeds_structured_storage_hook() {
+        let payload = structured_storage_hook_payload(
+            "enum_crawl_same_origin_urls",
+            &json!({"target_urls": ["https://app.example.com/"]}),
+            &json!({
+                "wrapped_tool_name": "katana",
+                "wrapped_args": "-list {input_file} -jc -silent -d 2",
+                "command": "katana -list /tmp/roots.txt -jc -silent -d 2",
+                "stdout": "https://app.example.com/api/v1/users",
+                "stderr": "",
+                "exit_code": 0
+            }),
+            true,
+        )
+        .expect("Enumeration wrapper should produce structured-storage payload");
+
+        assert_eq!(
+            payload.command,
+            "katana -list /tmp/roots.txt -jc -silent -d 2"
+        );
+        assert_eq!(payload.stdout, "https://app.example.com/api/v1/users");
     }
 }

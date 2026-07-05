@@ -333,13 +333,15 @@ pub(crate) fn passive_intel_command_hint(technique: &str) -> Option<&'static str
     match technique {
         "GOLISH-INTEL-DNS" => Some(
             "run recon_map_assets(organization_id=<org>) and rely on provider DNS/host-IP landing; \
-             if no configured provider can land DNS evidence for this asset, submit blocked or \
-             checked_empty with evidence/note instead of running a scan-tool fallback",
+             the normal call auto-expands bounded owned apex domains; if no configured provider \
+             can land DNS evidence for this asset, submit blocked or checked_empty with \
+             evidence/note instead of running a scan-tool fallback",
         ),
         "GOLISH-INTEL-SUBDOMAIN" => Some(
             "recon_map_assets(organization_id=<org>) lands provider-backed subdomains to \
-             target_assets; if no provider can supply this cell, record blocked/checked_empty \
-             instead of running CLI subdomain enumeration in target_intel",
+             target_assets and auto-expands bounded owned apex domains; if no provider can supply \
+             this cell, record blocked/checked_empty instead of running CLI subdomain enumeration \
+             in target_intel",
         ),
         "GOLISH-INTEL-WHOIS" => Some("run recon_lookup_whois(organization_id=<org>) once per org"),
         "GOLISH-INTEL-ASN" => Some(

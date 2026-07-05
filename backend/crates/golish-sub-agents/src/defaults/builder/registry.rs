@@ -8,7 +8,7 @@ use super::super::prompts::{
     build_enumerator_prompt, build_installer_prompt, build_memorist_prompt,
     build_orchestrator_prompt, build_pentester_prompt, build_planner_prompt, build_prober_prompt,
     build_recon_prompt, build_refiner_prompt, build_reflector_prompt, build_reporter_prompt,
-    build_researcher_prompt_fallback,
+    build_researcher_prompt_fallback, build_vuln_scanner_prompt,
 };
 
 /// Create default sub-agents with prompts loaded from the template registry.
@@ -168,8 +168,9 @@ pub async fn create_default_sub_agents_from_registry(
             "list_attack_surface_seeds".into(),
             "query_target_data".into(),
             "manage_targets".into(),
-            "pentest_list_tools".into(),
-            "pentest_run".into(),
+            "eas_probe_http_liveness".into(),
+            "eas_discover_ports".into(),
+            "eas_fingerprint_services".into(),
             "wait_for_background_jobs".into(),
             "list_recent_evidence".into(),
             "submit_stage_deliverable".into(),
@@ -197,8 +198,7 @@ pub async fn create_default_sub_agents_from_registry(
             "stage_worklist_next".into(),
             "list_enumeration_web_roots".into(),
             "query_target_data".into(),
-            "pentest_list_tools".into(),
-            "pentest_run".into(),
+            "enum_crawl_same_origin_urls".into(),
             "wait_for_background_jobs".into(),
             "browser_collect_js_api".into(),
             "js_collect".into(),
@@ -206,6 +206,35 @@ pub async fn create_default_sub_agents_from_registry(
             "route_probe_paths".into(),
             "list_recent_evidence".into(),
             "submit_stage_deliverable".into(),
+            "search_knowledge_base".into(),
+            "read_knowledge".into(),
+        ])
+        .with_max_iterations(40)
+        .with_idle_timeout(300)
+        .with_delegatable_agents(vec!["enricher".into(), "memorist".into()]),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "vuln_scanner",
+            "Vuln Scanner",
+            "Formulaic vulnerability-triage specialist for the vuln_triage stage. Closes WSTG/GOLISH scan cells through backend-owned wrappers rather than raw CLI commands. The stage_run tool fans one Vuln Scanner out per org.",
+            // No `vuln_scanner.tera` in the registry; the prompt has literal
+            // JSON-ish examples and should remain a hardcoded stage contract.
+            build_vuln_scanner_prompt(),
+        )
+        .with_tools(vec![
+            "stage_worklist_status".into(),
+            "stage_worklist_next".into(),
+            "query_target_data".into(),
+            "vuln_run_formulaic_sweep".into(),
+            "wait_for_background_jobs".into(),
+            "check_job".into(),
+            "kill_job".into(),
+            "list_recent_evidence".into(),
+            "check_stage_asset_coverage".into(),
+            "submit_stage_deliverable".into(),
+            "record_finding".into(),
             "search_knowledge_base".into(),
             "read_knowledge".into(),
         ])

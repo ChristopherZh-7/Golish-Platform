@@ -14,6 +14,7 @@ use super::super::types::{
     HarnessFinding, HarnessRecoveryActions, StageClaim, StageDeliverable,
 };
 use super::{min_invocations_check, scope_check, surface_coverage_check, GateCheckOutcome};
+use crate::harness::{suggested_capabilities_for_any_technique, suggested_tools_for_any_technique};
 
 /// 一条规则 = 一个顶层积木 op；求值产出一个 `GateCheckOutcome`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -536,25 +537,20 @@ fn log_coverage_gap_matrix(stage_id: &str, op: &str, gaps: &[String]) {
 }
 
 fn coverage_gap_action(asset: &str, technique: &str) -> CoverageGapAction {
+    let suggested_capabilities = suggested_capabilities_for_any_technique(technique);
+    let suggested_tools = suggested_tools_for_any_technique(technique);
     CoverageGapAction {
         asset: asset.to_string(),
         technique: technique.to_string(),
         reason: "missing_terminal_coverage".to_string(),
-        suggested_tools: suggested_tools_for_gap(technique),
+        suggested_capabilities,
+        suggested_tools,
     }
 }
 
+#[cfg(test)]
 fn suggested_tools_for_gap(technique: &str) -> Vec<String> {
-    match technique {
-        "GOLISH-EAS-LIVENESS" => vec!["httpx".to_string(), "naabu".to_string()],
-        "GOLISH-EAS-PORT" => vec![
-            "naabu".to_string(),
-            "masscan".to_string(),
-            "nmap".to_string(),
-        ],
-        "GOLISH-EAS-SERVICE-FINGERPRINT" => vec!["nmap".to_string()],
-        _ => Vec::new(),
-    }
+    suggested_tools_for_any_technique(technique)
 }
 
 /// E1 PR-B（设计 2026-06-18-canonical-asset-identity-and-coverage-join-key）：把资产串

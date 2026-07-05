@@ -247,6 +247,24 @@ export interface BackendWebOriginContentRefDto {
   source: string | null;
 }
 
+export interface BackendCrawlObservationDto {
+  id: string;
+  originTargetId: string;
+  originUrl: string;
+  originKey: string;
+  observedUrl: string;
+  observedHost: string | null;
+  observedPath: string | null;
+  kind: string;
+  sameOrigin: boolean;
+  sourceTool: string;
+  sourceRecordId: string | null;
+  evidenceId: number | null;
+  metadata: Record<string, unknown>;
+  discoveredAt: number;
+  updatedAt: number;
+}
+
 export interface BackendWebOriginDto {
   id: string;
   scheme: string;
@@ -266,6 +284,8 @@ export interface BackendWebOriginDto {
   contentCounts: BackendWebOriginContentCountsDto | null;
   /** Bounded lightweight refs for this origin (empty on pre-2.5C payloads). */
   refs: BackendWebOriginContentRefDto[];
+  /** Crawler output owned by this origin; not gate-driving api_endpoints data. */
+  crawlObservations: BackendCrawlObservationDto[];
 }
 
 export interface BackendWebOriginObservationDto {
@@ -709,6 +729,27 @@ function normalizeBackendWebOriginContentRef(value: unknown): BackendWebOriginCo
   };
 }
 
+function normalizeBackendCrawlObservation(value: unknown): BackendCrawlObservationDto {
+  const row = asRecord(value);
+  return {
+    id: stringField(row, "id"),
+    originTargetId: stringField(row, "originTargetId", "origin_target_id"),
+    originUrl: stringField(row, "originUrl", "origin_url"),
+    originKey: stringField(row, "originKey", "origin_key"),
+    observedUrl: stringField(row, "observedUrl", "observed_url"),
+    observedHost: nullableStringField(row, "observedHost", "observed_host"),
+    observedPath: nullableStringField(row, "observedPath", "observed_path"),
+    kind: stringField(row, "kind") || "url",
+    sameOrigin: booleanField(row, "sameOrigin", "same_origin"),
+    sourceTool: stringField(row, "sourceTool", "source_tool") || "crawler",
+    sourceRecordId: nullableStringField(row, "sourceRecordId", "source_record_id"),
+    evidenceId: nullableNumberField(row, "evidenceId", "evidence_id"),
+    metadata: recordField(row, "metadata"),
+    discoveredAt: nullableNumberField(row, "discoveredAt", "discovered_at") ?? 0,
+    updatedAt: nullableNumberField(row, "updatedAt", "updated_at") ?? 0,
+  };
+}
+
 function normalizeBackendWebOrigin(value: unknown): BackendWebOriginDto {
   const row = asRecord(value);
   const contentCountsRaw = get(row, "contentCounts", "content_counts");
@@ -730,6 +771,10 @@ function normalizeBackendWebOrigin(value: unknown): BackendWebOriginDto {
     contentCounts:
       contentCountsRaw == null ? null : normalizeBackendWebOriginContentCounts(contentCountsRaw),
     refs: listOf(get(row, "refs"), normalizeBackendWebOriginContentRef),
+    crawlObservations: listOf(
+      get(row, "crawlObservations", "crawl_observations"),
+      normalizeBackendCrawlObservation
+    ),
   };
 }
 

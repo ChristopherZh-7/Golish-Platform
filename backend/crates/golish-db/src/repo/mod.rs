@@ -4,6 +4,7 @@ pub mod attack_candidates;
 pub mod audit;
 pub mod conversation_store;
 pub mod coverage_truth;
+pub mod crawl_observations;
 pub mod custom_rules;
 pub mod directory_entries;
 pub mod dns_records;

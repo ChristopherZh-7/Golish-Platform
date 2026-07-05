@@ -117,6 +117,18 @@ const ROW_STATUS_SUMMARY_LABEL: Partial<Record<TechniqueState, string>> = {
 };
 
 type CoverageCell = StageAssetCoverageSnapshot["assets"][number]["coverage"][number];
+type CoverageCapabilitySuggestion = {
+  id: string;
+  label?: string;
+  tools?: string[];
+  risk?: string;
+  batchable?: boolean;
+  max_batch?: number;
+  reason?: string;
+};
+type CoverageCellWithCapabilities = CoverageCell & {
+  suggested_capabilities?: CoverageCapabilitySuggestion[];
+};
 type CoverageRow = StageAssetCoverageSnapshot["assets"][number];
 type CoverageSummary = {
   blocked_assets: number;
@@ -173,6 +185,14 @@ function coverageCellTitle(cell: CoverageCell, state: TechniqueState) {
   if (cell.source) parts.push(`source: ${cell.source}`);
   if (cell.evidence_refs.length > 0) parts.push(`evidence: ${cell.evidence_refs.join(", ")}`);
   if (cell.note) parts.push(cell.note);
+  const capabilities = (cell as CoverageCellWithCapabilities).suggested_capabilities ?? [];
+  if (capabilities.length > 0) {
+    parts.push(
+      `capability: ${capabilities
+        .map((capability) => capability.label || capability.id)
+        .join(", ")}`
+    );
+  }
   if (cell.suggested_tools.length > 0) {
     parts.push(`suggested: ${cell.suggested_tools.join(", ")}`);
   }

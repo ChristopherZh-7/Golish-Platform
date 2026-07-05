@@ -3,6 +3,7 @@ import { invoke } from "@/lib/api/client";
 import {
   apiEndpointsList,
   jsAnalysisList,
+  normalizeBackendSurfaceHierarchy,
   normalizeCapturePayload,
   targetAssetsList,
 } from "./security-analysis";
@@ -102,6 +103,58 @@ describe("security-analysis api normalization", () => {
         sourceMaps: true,
         riskSummary: "review",
         analyzedAt: "2026-06-30T00:00:02Z",
+      }),
+    ]);
+  });
+
+  it("normalizes crawl observations on backend Web Origins", () => {
+    const hierarchy = normalizeBackendSurfaceHierarchy({
+      root_target: {
+        id: "target-ip",
+        target_type: "ip",
+      },
+      mode: "ip",
+      data_source: "backend_identity",
+      web_origins: [
+        {
+          id: "wo-a",
+          scheme: "https",
+          host: "a.example.com",
+          host_type: "domain",
+          port: 443,
+          origin: "https://a.example.com:443",
+          counts: {},
+          content_counts: {},
+          refs: [],
+          crawl_observations: [
+            {
+              id: "crawl-1",
+              origin_target_id: "target-domain",
+              origin_url: "https://a.example.com:443",
+              origin_key: "https://a.example.com:443",
+              observed_url: "https://cdn.example.net/lib.js",
+              observed_host: "cdn.example.net",
+              observed_path: "/lib.js",
+              source_tool: "katana",
+              discovered_at: 10,
+              updated_at: 11,
+            },
+          ],
+        },
+      ],
+      summary: {},
+      unassigned_web_data: {},
+    });
+
+    expect(hierarchy.webOrigins[0].crawlObservations).toEqual([
+      expect.objectContaining({
+        id: "crawl-1",
+        originTargetId: "target-domain",
+        observedUrl: "https://cdn.example.net/lib.js",
+        observedHost: "cdn.example.net",
+        kind: "url",
+        sourceTool: "katana",
+        discoveredAt: 10,
       }),
     ]);
   });

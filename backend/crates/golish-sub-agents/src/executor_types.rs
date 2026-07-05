@@ -247,10 +247,24 @@ pub enum SubmitRepairKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StageCapabilitySuggestion {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub tools: Vec<String>,
+    pub risk: String,
+    pub batchable: bool,
+    pub max_batch: usize,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoverageGapAction {
     pub asset: String,
     pub technique: String,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_capabilities: Vec<StageCapabilitySuggestion>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggested_tools: Vec<String>,
 }
@@ -304,6 +318,10 @@ impl SubmitRepairMode {
             SubmitRepairKind::CoverageGap => &[
                 "pentest_list_tools",
                 "pentest_run",
+                "eas_probe_http_liveness",
+                "eas_discover_ports",
+                "eas_fingerprint_services",
+                "vuln_run_formulaic_sweep",
                 "list_recent_evidence",
                 "check_stage_asset_coverage",
                 "query_target_data",
@@ -325,9 +343,14 @@ impl SubmitRepairMode {
             self.allowed_tools_override.clone()
         };
         if self.kind == SubmitRepairKind::CoverageGap {
-            append_coverage_gap_worklist_tools(&mut tools);
+            append_coverage_gap_worklist_tools(&mut tools, &self.coverage_gap_actions);
             if !self.coverage_gap_actions.is_empty() {
                 append_direct_enumeration_repair_tools(&mut tools, &self.coverage_gap_actions);
+                append_direct_eas_repair_tools(&mut tools, &self.coverage_gap_actions);
+                append_direct_vuln_repair_tools(&mut tools, &self.coverage_gap_actions);
+                if has_vuln_gap_actions(&self.coverage_gap_actions) {
+                    tools.retain(|tool| tool != "pentest_run" && tool != "pentest_list_tools");
+                }
             }
         }
         tools
@@ -389,6 +412,8 @@ impl SubmitRepairMode {
                      entire attack surface. Run only stage-allowed probes for the exact \
                      asset/technique pairs named in the gate feedback. Batch sibling gap assets with \
                      input_lines/list-file mode when every target is present in coverage_gap_actions. \
+                     Vuln-triage gaps must use vuln_run_formulaic_sweep with explicit targets[] and \
+                     techniques[] from the gap list. \
                      Do NOT call list_in_scope_targets, list_attack_surface_seeds, \
                      CIDR/range sweeps, targets outside coverage_gap_actions, or broad rediscovery. \
                      When each named gap has a terminal coverage cell, resubmit."
@@ -418,8 +443,47 @@ impl SubmitRepairMode {
         tool_name: &str,
         tool_args: &serde_json::Value,
     ) -> Option<serde_json::Value> {
+        if self.kind == SubmitRepairKind::CoverageGap
+            && tool_name == "pentest_run"
+            && has_vuln_gap_actions(&self.coverage_gap_actions)
+        {
+            return Some(self.block_payload(
+                tool_name,
+                Some(
+                    "Vuln-triage coverage-gap repair must use vuln_run_formulaic_sweep, not raw pentest_run"
+                        .to_string(),
+                ),
+            ));
+        }
         if self.allows(tool_name) {
             if self.kind == SubmitRepairKind::CoverageGap && tool_name == "pentest_run" {
+                if has_eas_gap_actions(&self.coverage_gap_actions) {
+                    return Some(self.block_payload(
+                        tool_name,
+                        Some(
+                            "EAS coverage-gap repair must use the eas_* backend wrapper tools, not raw pentest_run"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                if has_enumeration_gap_actions(&self.coverage_gap_actions) {
+                    return Some(self.block_payload(
+                        tool_name,
+                        Some(
+                            "Enumeration coverage-gap repair must use direct enumeration tools, including enum_crawl_same_origin_urls for crawler supplements, not raw pentest_run"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                if has_vuln_gap_actions(&self.coverage_gap_actions) {
+                    return Some(self.block_payload(
+                        tool_name,
+                        Some(
+                            "Vuln-triage coverage-gap repair must use vuln_run_formulaic_sweep, not raw pentest_run"
+                                .to_string(),
+                        ),
+                    ));
+                }
                 if let Some(reason) = coverage_gap_pentest_run_block_reason(tool_args) {
                     return Some(self.block_payload(tool_name, Some(reason)));
                 }
@@ -437,6 +501,22 @@ impl SubmitRepairMode {
                     tool_args,
                     &self.coverage_gap_actions,
                 ) {
+                    return Some(self.block_payload(tool_name, Some(reason)));
+                }
+            }
+            if self.kind == SubmitRepairKind::CoverageGap && is_direct_eas_repair_tool(tool_name) {
+                if let Some(reason) = coverage_gap_eas_wrapper_target_block_reason(
+                    tool_name,
+                    tool_args,
+                    &self.coverage_gap_actions,
+                ) {
+                    return Some(self.block_payload(tool_name, Some(reason)));
+                }
+            }
+            if self.kind == SubmitRepairKind::CoverageGap && is_direct_vuln_repair_tool(tool_name) {
+                if let Some(reason) =
+                    coverage_gap_vuln_wrapper_block_reason(tool_args, &self.coverage_gap_actions)
+                {
                     return Some(self.block_payload(tool_name, Some(reason)));
                 }
             }
@@ -472,25 +552,40 @@ impl SubmitRepairMode {
 fn coverage_gap_action_instruction(actions: &[CoverageGapAction]) -> String {
     let mut lines = vec![format!(
         " Exact coverage_gap_actions from the gate: run ONLY these {} target/technique pairs. \
-         Do not run a target or technique that is absent from this list. Direct enumeration tools \
-         (browser_collect_js_api/js_collect/js_extract_apis/route_probe_paths) may be called by \
+         Do not run a target or technique that is absent from this list. EAS gaps must use \
+         eas_probe_http_liveness / eas_discover_ports / eas_fingerprint_services instead of raw \
+         pentest_run. Vuln-triage gaps must use vuln_run_formulaic_sweep with explicit targets[] \
+         and techniques[] from this list, not raw pentest_run. Direct enumeration tools \
+         (browser_collect_js_api/js_collect/js_extract_apis/route_probe_paths/enum_crawl_same_origin_urls) may be called by \
          name when suggested here; directory discovery must use route_probe_paths, not external \
-         ffuf/gobuster/feroxbuster. Bounded crawler CLIs such as katana must be run through \
-         pentest_run(tool_name=...) and used only as URL sources.",
+         ffuf/gobuster/feroxbuster. Bounded crawler URL supplements must use \
+         enum_crawl_same_origin_urls, not raw katana or pentest_run.",
         actions.len()
     )];
     for (idx, action) in actions.iter().enumerate() {
+        let capabilities = if action.suggested_capabilities.is_empty() {
+            String::new()
+        } else {
+            let ids = action
+                .suggested_capabilities
+                .iter()
+                .map(|capability| capability.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("; suggested_capabilities={ids}")
+        };
         let tools = if action.suggested_tools.is_empty() {
             String::new()
         } else {
             format!("; suggested_tools={}", action.suggested_tools.join(", "))
         };
         lines.push(format!(
-            "{}. asset={} technique={} reason={}{}",
+            "{}. asset={} technique={} reason={}{}{}",
             idx + 1,
             action.asset,
             action.technique,
             action.reason,
+            capabilities,
             tools
         ));
     }
@@ -509,23 +604,63 @@ fn append_direct_enumeration_repair_tools(tools: &mut Vec<String>, actions: &[Co
             if is_direct_enumeration_repair_tool(&suggested) {
                 push_unique_tool(tools, &suggested);
             }
+            if suggested == "katana" {
+                push_unique_tool(tools, "enum_crawl_same_origin_urls");
+            }
         }
         match action.technique.as_str() {
             "GOLISH-ENUM-JSAPI" => {
                 push_unique_tool(tools, "browser_collect_js_api");
                 push_unique_tool(tools, "js_collect");
                 push_unique_tool(tools, "js_extract_apis");
+                push_unique_tool(tools, "enum_crawl_same_origin_urls");
             }
             "GOLISH-ENUM-DIR" => push_unique_tool(tools, "route_probe_paths"),
-            "GOLISH-ENUM-PARAM" => push_unique_tool(tools, "js_extract_apis"),
+            "GOLISH-ENUM-PARAM" => {
+                push_unique_tool(tools, "js_extract_apis");
+                push_unique_tool(tools, "enum_crawl_same_origin_urls");
+            }
+            "GOLISH-ENUM-JS" => push_unique_tool(tools, "browser_collect_js_api"),
             _ => {}
         }
     }
 }
 
-fn append_coverage_gap_worklist_tools(tools: &mut Vec<String>) {
+fn append_direct_eas_repair_tools(tools: &mut Vec<String>, actions: &[CoverageGapAction]) {
+    for action in actions {
+        for suggested in &action.suggested_tools {
+            let suggested = suggested
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            if is_direct_eas_repair_tool(&suggested) {
+                push_unique_tool(tools, &suggested);
+            }
+        }
+        match action.technique.as_str() {
+            "GOLISH-EAS-LIVENESS" => push_unique_tool(tools, "eas_probe_http_liveness"),
+            "GOLISH-EAS-PORT" => push_unique_tool(tools, "eas_discover_ports"),
+            "GOLISH-EAS-SERVICE-FINGERPRINT" => push_unique_tool(tools, "eas_fingerprint_services"),
+            _ => {}
+        }
+    }
+}
+
+fn append_direct_vuln_repair_tools(tools: &mut Vec<String>, actions: &[CoverageGapAction]) {
+    if has_vuln_gap_actions(actions) {
+        push_unique_tool(tools, "vuln_run_formulaic_sweep");
+    }
+}
+
+fn append_coverage_gap_worklist_tools(tools: &mut Vec<String>, actions: &[CoverageGapAction]) {
     push_unique_tool(tools, "stage_worklist_status");
     push_unique_tool(tools, "stage_worklist_next");
+    push_unique_tool(tools, "list_recent_evidence");
+    if has_enumeration_gap_actions(actions) {
+        push_unique_tool(tools, "list_enumeration_web_roots");
+    }
 }
 
 fn push_unique_tool(tools: &mut Vec<String>, tool: &str) {
@@ -537,8 +672,163 @@ fn push_unique_tool(tools: &mut Vec<String>, tool: &str) {
 fn is_direct_enumeration_repair_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "browser_collect_js_api" | "js_collect" | "js_extract_apis" | "route_probe_paths"
+        "browser_collect_js_api"
+            | "js_collect"
+            | "js_extract_apis"
+            | "route_probe_paths"
+            | "enum_crawl_same_origin_urls"
     )
+}
+
+fn is_direct_eas_repair_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "eas_probe_http_liveness" | "eas_discover_ports" | "eas_fingerprint_services"
+    )
+}
+
+fn is_direct_vuln_repair_tool(tool_name: &str) -> bool {
+    tool_name == "vuln_run_formulaic_sweep"
+}
+
+fn has_eas_gap_actions(actions: &[CoverageGapAction]) -> bool {
+    actions
+        .iter()
+        .any(|action| action.technique.starts_with("GOLISH-EAS-"))
+}
+
+fn has_enumeration_gap_actions(actions: &[CoverageGapAction]) -> bool {
+    actions
+        .iter()
+        .any(|action| action.technique.starts_with("GOLISH-ENUM-"))
+}
+
+fn has_vuln_gap_actions(actions: &[CoverageGapAction]) -> bool {
+    actions
+        .iter()
+        .any(|action| action.technique.starts_with("WSTG-") || action.technique == "GOLISH-NDAY")
+}
+
+fn coverage_gap_eas_wrapper_target_block_reason(
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+    actions: &[CoverageGapAction],
+) -> Option<String> {
+    if actions.is_empty() {
+        return None;
+    }
+    let mut targets = Vec::new();
+    if let Some(batch) = tool_args.get("targets").and_then(|v| v.as_array()) {
+        for item in batch {
+            if let Some(candidate) = item.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                targets.push(candidate.to_string());
+            }
+        }
+    }
+    if targets.is_empty() {
+        return Some(format!(
+            "coverage-gap repair requires {tool_name} targets[] so they can be checked against coverage_gap_actions"
+        ));
+    }
+    let allowed = actions
+        .iter()
+        .filter(|action| action.technique.starts_with("GOLISH-EAS-"))
+        .map(|action| normalize_probe_target(&action.asset))
+        .filter(|asset| !asset.is_empty())
+        .collect::<HashSet<_>>();
+    if allowed.is_empty() {
+        return Some(format!(
+            "coverage-gap repair blocks {tool_name} because no EAS coverage_gap_actions are active"
+        ));
+    }
+    let blocked = targets
+        .iter()
+        .find(|target| !allowed.contains(&normalize_probe_target(target)))?;
+    Some(format!(
+        "coverage-gap repair blocks {tool_name} target '{blocked}' because it is not in the EAS coverage_gap_actions"
+    ))
+}
+
+fn coverage_gap_vuln_wrapper_block_reason(
+    tool_args: &serde_json::Value,
+    actions: &[CoverageGapAction],
+) -> Option<String> {
+    if actions.is_empty() {
+        return None;
+    }
+    let allowed_actions = actions
+        .iter()
+        .filter(|action| action.technique.starts_with("WSTG-") || action.technique == "GOLISH-NDAY")
+        .collect::<Vec<_>>();
+    if allowed_actions.is_empty() {
+        return Some(
+            "coverage-gap repair blocks vuln_run_formulaic_sweep because no vuln_triage coverage_gap_actions are active"
+                .to_string(),
+        );
+    }
+
+    let targets = string_array_arg(tool_args, "targets");
+    if targets.is_empty() {
+        return Some(
+            "coverage-gap repair requires vuln_run_formulaic_sweep targets[] so they can be checked against coverage_gap_actions"
+                .to_string(),
+        );
+    }
+    let techniques = string_array_arg(tool_args, "techniques");
+    if techniques.is_empty() {
+        return Some(
+            "coverage-gap repair requires vuln_run_formulaic_sweep techniques[]; default-all is too broad for targeted gap repair"
+                .to_string(),
+        );
+    }
+
+    let allowed_targets = allowed_actions
+        .iter()
+        .map(|action| normalize_probe_target(&action.asset))
+        .filter(|asset| !asset.is_empty())
+        .collect::<HashSet<_>>();
+    let allowed_techniques = allowed_actions
+        .iter()
+        .map(|action| action.technique.as_str())
+        .collect::<HashSet<_>>();
+    let allowed_pairs = allowed_actions
+        .iter()
+        .map(|action| {
+            (
+                normalize_probe_target(&action.asset),
+                action.technique.as_str(),
+            )
+        })
+        .collect::<HashSet<_>>();
+
+    if let Some(blocked) = targets
+        .iter()
+        .find(|target| !allowed_targets.contains(&normalize_probe_target(target)))
+    {
+        return Some(format!(
+            "coverage-gap repair blocks vuln_run_formulaic_sweep target '{blocked}' because it is not in vuln_triage coverage_gap_actions"
+        ));
+    }
+    if let Some(blocked) = techniques
+        .iter()
+        .find(|technique| !allowed_techniques.contains(technique.as_str()))
+    {
+        return Some(format!(
+            "coverage-gap repair blocks vuln_run_formulaic_sweep technique '{blocked}' because it is not in vuln_triage coverage_gap_actions"
+        ));
+    }
+    for target in &targets {
+        let normalized_target = normalize_probe_target(target);
+        for technique in &techniques {
+            if !allowed_pairs.contains(&(normalized_target.clone(), technique.as_str())) {
+                return Some(format!(
+                    "coverage-gap repair blocks vuln_run_formulaic_sweep pair '{} × {}' because that target/technique pair is not in vuln_triage coverage_gap_actions",
+                    target, technique
+                ));
+            }
+        }
+    }
+    None
 }
 
 fn coverage_gap_pentest_run_block_reason(tool_args: &serde_json::Value) -> Option<String> {
@@ -580,6 +870,7 @@ fn coverage_gap_direct_tool_target_block_reason(
         "browser_collect_js_api" | "js_collect" | "js_extract_apis" => {
             ("target_url", "target_urls")
         }
+        "enum_crawl_same_origin_urls" => ("target_url", "target_urls"),
         _ => return None,
     };
     let mut targets: Vec<String> = Vec::new();
@@ -591,11 +882,15 @@ fn coverage_gap_direct_tool_target_block_reason(
     }
     if let Some(batch) = tool_args.get(batch_key).and_then(|v| v.as_array()) {
         for item in batch {
-            // route_probe_paths batch entries are objects with a base_url; the
-            // JS tools' batch entries are bare URL strings.
+            // route_probe_paths batch entries are objects with a base_url; JS
+            // batch entries may be bare strings or worklist objects carrying
+            // target_id + target_url/root_url/base_url/url.
             let candidate = item
                 .as_str()
-                .or_else(|| item.get("base_url").and_then(|v| v.as_str()));
+                .or_else(|| item.get("target_url").and_then(|v| v.as_str()))
+                .or_else(|| item.get("root_url").and_then(|v| v.as_str()))
+                .or_else(|| item.get("base_url").and_then(|v| v.as_str()))
+                .or_else(|| item.get("url").and_then(|v| v.as_str()));
             if let Some(candidate) = candidate.map(str::trim).filter(|s| !s.is_empty()) {
                 targets.push(candidate.to_string());
             }
@@ -706,6 +1001,21 @@ fn input_line_targets(tool_args: &serde_json::Value) -> Vec<String> {
         }
     }
     targets
+}
+
+fn string_array_arg(tool_args: &serde_json::Value, key: &str) -> Vec<String> {
+    tool_args
+        .get(key)
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::trim))
+                .filter(|item| !item.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn uses_hidden_target_file(args: &str) -> bool {

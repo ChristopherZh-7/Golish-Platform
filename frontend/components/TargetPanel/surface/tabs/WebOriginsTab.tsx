@@ -2,13 +2,19 @@ import { Braces, Code2, FileCode2, Globe, Link2, ShieldCheck } from "lucide-reac
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { EmptyInline, Metric, Section } from "../SurfaceParts";
-import type { NetworkEndpointVM, WebOriginContentRef, WebOriginVM } from "../surfaceHierarchy";
+import type {
+  CrawlObservationVM,
+  NetworkEndpointVM,
+  WebOriginContentRef,
+  WebOriginVM,
+} from "../surfaceHierarchy";
 import { FingerprintList } from "./FingerprintList";
 import { SitemapTab } from "./SitemapTab";
 
 type OriginDetailTab =
   | "overview"
   | "sitemap"
+  | "crawl"
   | "apis"
   | "js"
   | "params"
@@ -21,6 +27,7 @@ const INFERRED_CONFIDENCE_TITLE =
 const DETAIL_TABS: Array<{ id: OriginDetailTab; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "sitemap", label: "Sitemap" },
+  { id: "crawl", label: "Crawl" },
   { id: "apis", label: "APIs" },
   { id: "js", label: "JS" },
   { id: "params", label: "Params" },
@@ -342,6 +349,78 @@ function ParamList({ origin }: { origin: WebOriginVM }) {
   );
 }
 
+function formatTimestamp(value: number): string {
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString();
+}
+
+function crawlObservationHost(observation: CrawlObservationVM): string {
+  if (observation.observedHost) return observation.observedHost;
+  try {
+    return new URL(observation.observedUrl).hostname;
+  } catch {
+    return "-";
+  }
+}
+
+function CrawlObservationList({ origin }: { origin: WebOriginVM }) {
+  return (
+    <Section title="Crawl URLs" subtitle={`${origin.crawlObservations.length} observed URL(s)`}>
+      {origin.crawlObservations.length === 0 ? (
+        <EmptyInline loading={false} label="No crawler URLs recorded for this origin." />
+      ) : (
+        <div className="overflow-x-auto rounded border border-border/25">
+          <table className="min-w-[760px] w-full text-[11px]">
+            <thead className="border-b border-border/25 bg-muted/10 text-muted-foreground">
+              <tr>
+                <th className="px-2 py-1.5 text-left font-medium">Host</th>
+                <th className="px-2 py-1.5 text-left font-medium">Path</th>
+                <th className="px-2 py-1.5 text-left font-medium">Kind</th>
+                <th className="px-2 py-1.5 text-left font-medium">Source</th>
+                <th className="px-2 py-1.5 text-left font-medium">Seen</th>
+                <th className="px-2 py-1.5 text-left font-medium">URL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {origin.crawlObservations.map((observation) => (
+                <tr key={observation.id} className="border-b border-border/15 last:border-0">
+                  <td className="max-w-[160px] px-2 py-2">
+                    <span className="block truncate font-mono text-foreground/80">
+                      {crawlObservationHost(observation)}
+                    </span>
+                  </td>
+                  <td className="max-w-[180px] px-2 py-2">
+                    <span
+                      className="block truncate font-mono text-muted-foreground"
+                      title={observation.observedPath ?? observation.observedUrl}
+                    >
+                      {observation.observedPath ?? "-"}
+                    </span>
+                  </td>
+                  <td className="px-2 py-2 font-mono text-accent/80">{observation.kind}</td>
+                  <td className="px-2 py-2 text-muted-foreground">{observation.sourceTool}</td>
+                  <td className="whitespace-nowrap px-2 py-2 font-mono text-[10px] text-muted-foreground">
+                    {formatTimestamp(observation.discoveredAt)}
+                  </td>
+                  <td className="min-w-0 px-2 py-2">
+                    <span
+                      className="block truncate font-mono text-foreground/80"
+                      title={observation.observedUrl}
+                    >
+                      {observation.observedUrl}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Section>
+  );
+}
+
 function EvidenceList({ origin }: { origin: WebOriginVM }) {
   return (
     <Section title="Evidence" subtitle={`${origin.evidence.length} linked item(s)`}>
@@ -451,6 +530,7 @@ function OriginDetail({
               />
             </div>
           ))}
+        {activeDetailTab === "crawl" && <CrawlObservationList origin={origin} />}
         {activeDetailTab === "apis" && <ApiList origin={origin} />}
         {activeDetailTab === "js" && <JsList origin={origin} />}
         {activeDetailTab === "params" && <ParamList origin={origin} />}
@@ -505,7 +585,7 @@ export function WebOriginsTab({
           />
         ) : (
           <div className="overflow-x-auto rounded border border-border/25">
-            <table className="min-w-[1090px] w-full text-[11px]">
+            <table className="min-w-[1160px] w-full text-[11px]">
               <thead className="border-b border-border/25 bg-muted/10 text-muted-foreground">
                 <tr>
                   <th className="px-2 py-1.5 text-left font-medium">Origin</th>
@@ -515,6 +595,7 @@ export function WebOriginsTab({
                   <th className="px-2 py-1.5 text-left font-medium">Port</th>
                   <th className="px-2 py-1.5 text-left font-medium">Endpoints</th>
                   <th className="px-2 py-1.5 text-left font-medium">URL</th>
+                  <th className="px-2 py-1.5 text-left font-medium">Crawl</th>
                   <th className="px-2 py-1.5 text-left font-medium">API</th>
                   <th className="px-2 py-1.5 text-left font-medium">JS</th>
                   <th className="px-2 py-1.5 text-left font-medium">Params</th>
@@ -568,6 +649,12 @@ export function WebOriginsTab({
                         <CountCell
                           value={origin.counts.urls}
                           title={`Directory entries: ${origin.counts.directoryEntries}`}
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <CountCell
+                          value={origin.crawlObservations.length}
+                          title="Crawler URLs owned by this origin"
                         />
                       </td>
                       <td className="px-2 py-2">

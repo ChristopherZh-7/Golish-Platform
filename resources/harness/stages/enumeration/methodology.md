@@ -12,11 +12,15 @@ become the coverage denominator for `vuln_triage`.
    `technique`, `state`, and `suggested_tools`. Work only the named cells, then
    re-query the worklist after tools land DB truth; do not choose from a full
    target list when the worklist already named gaps.
-2. Load EAS-confirmed web-root context only when needed — use
-   `list_enumeration_web_roots(include_coverage=true)` or `query_target_data` for
-   details. Keep the `target_id`, resolved root URL, and org boundary attached to
-   every downstream action. Do not enumerate passive candidates that EAS did not
-   prove live.
+2. Load EAS-confirmed web-root context — use
+   `list_enumeration_web_roots(include_coverage=true)`. Each returned root already
+   carries the full `root_url` (`scheme://host:port/`, plus `scheme`/`port`), so
+   feed those URLs straight to the content tools. Do NOT call `query_target_data`
+   per target just to reconstruct a scheme/port to build the URL — the worklist
+   already did that. Only drill into `query_target_data` for genuinely extra
+   detail (e.g. a specific discovered API path). Keep the `target_id`, `root_url`,
+   and org boundary attached to every downstream action. Do not enumerate passive
+   candidates that EAS did not prove live.
 3. Batch JS/API collection — run `browser_collect_js_api` in BATCH: pass
    `target_urls=[...]` with the whole EAS-confirmed live web-root set (up to 50)
    in ONE call, `crawl_mode="standard"`, `ai_assist=true`. It opens each page,
@@ -26,12 +30,15 @@ become the coverage denominator for `vuln_triage`.
    `checked_empty`, not unchecked (I8). Only re-run a single root with a bounded
    recipe when it returned `closure_partial` / `timeout_partial` /
    `ai_assist.recommended=true`. Do NOT loop one URL at a time.
-4. katana supplement (recommended) — run
-   `pentest_run(tool_name="katana", args="-list <urls-file> -jc -silent ...")`
-   ONCE over the same web-root list to harvest extra URLs/endpoints. katana
-   output lands in `api_endpoints(source='crawler')` and MERGES/dedupes with
-   browser + js_extract rows automatically (unique on `target_id`+`url`+`method`).
-   katana is a SUPPLEMENT — it does not replace the browser closure crawl.
+4. URL crawler supplement (recommended) — run
+   `enum_crawl_same_origin_urls(target_urls=[...])` ONCE over the same web-root
+   list to harvest extra URLs/endpoints. The wrapper owns the bounded katana
+   list-file recipe (`-list ... -jc -silent -d N`); do NOT call `katana` or
+   `pentest_run` directly. Crawler output lands only for same-origin/current-org targets in
+   `api_endpoints(source='crawler')` and MERGES/dedupes with browser +
+   js_extract rows automatically (unique on `target_id`+`url`+`method`).
+   Third-party links are crawler context, not new targets.
+   This crawler supplement does not replace the browser closure crawl.
 5. Batch API/param extraction — after JS is saved, run `js_extract_apis` in
    BATCH (`target_urls=[...]`) over the same set. It persists deterministic
    endpoints, folds observed params, and returns redacted
@@ -40,18 +47,23 @@ become the coverage denominator for `vuln_triage`.
    candidates only; do not invent endpoints from AI inference. Each root lands
    GOLISH-ENUM-JSAPI / GOLISH-ENUM-PARAM terminal coverage.
 6. Batch route probe — run `route_probe_paths` in BATCH
-   (`targets=[{target_id, base_url}, ...]`) over the same set. Each entry reads
+   (`targets=[{target_id, base_url}, ...]`) over the same set, with an explicit
+   foreground budget such as `max_runtime_ms=60000` and `max_requests=2000`
+   unless the worklist is tiny. Each entry reads
    target-bound `api_endpoints`/`directory_entries` DB seeds, runs the full
    de-duplicated local/built-in wordlist and recursive queue, verifies positives
    against a per-prefix random baseline, rejects soft-404/uniform pages into
    `rejected_candidates` (do not promote by hand), and lands verified positives
    as absolute `directory_entries` + GOLISH-ENUM-DIR terminal coverage per root.
-   `queue_completed=true` means the queue drained. Do NOT use external directory
+   `queue_completed=true` means the queue drained; `timeout_partial` /
+   `request_limited_partial` means the tool still persisted the sampled DIR
+   terminal outcome, so refresh coverage before deciding whether the same root
+   genuinely needs another pass. Do NOT use external directory
    tools (`ffuf`, `gobuster`, `feroxbuster`, `dirb`, `dirsearch`); rerun a single
    root only when it errored, did not complete its queue, or got materially new
    DB seeds.
 7. Parameter discovery — derive parameters from observed browser requests,
-   crawler (browser + katana) URLs with query strings, HTML forms, and targeted
+   crawler (browser + enum_crawl_same_origin_urls) URLs with query strings, HTML forms, and targeted
    `js_extract_apis` `param_hints` after reviewing saved JS. Persist parameter
    names into `api_endpoints.params`; do not default to active hidden-parameter
    brute-force.
@@ -70,9 +82,10 @@ become the coverage denominator for `vuln_triage`.
 - Do NOT re-scan ports or re-fingerprint services — reuse EAS's evidence.
 - Enumerate only the live services EAS confirmed; don't fuzz dead hosts.
 - Route probe once per service after JS/API landing; let it read DB seeds and
-  run the full local/built-in wordlist and recursive queue.
-- katana is a supplement (extra URL corpus), run once over the list; it does not
-  replace the browser closure crawl.
+  run the local/built-in wordlist and recursive queue inside the explicit
+  foreground `max_runtime_ms` / `max_requests` budget.
+- `enum_crawl_same_origin_urls` is a supplement (extra URL corpus), run once
+  over the list; it does not replace the browser closure crawl.
 - Do not call external directory tools in enumeration, and don't loop swapping
   wordlists endlessly.
 

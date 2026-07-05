@@ -25,6 +25,18 @@ describe("getToolActionLabel", () => {
     expect(getToolActionLabel("pentest_run", { tool_name: "naabu" })).toBe("Scanning ports");
   });
 
+  it("renders enumeration crawler wrapper as a readable action", () => {
+    expect(getToolActionLabel("enum_crawl_same_origin_urls")).toBe(
+      "Crawling same-origin URLs"
+    );
+  });
+
+  it("renders vuln formulaic wrapper as a readable action", () => {
+    expect(getToolActionLabel("vuln_run_formulaic_sweep")).toBe(
+      "Running formulaic vuln sweep"
+    );
+  });
+
   it("falls back without exposing snake_case underscores", () => {
     expect(getToolActionLabel("custom_internal_tool")).toBe("Using Custom Internal Tool");
   });
@@ -97,6 +109,28 @@ describe("getToolPrimaryArg", () => {
 
   it("returns null for pentest_run without a tool_name", () => {
     expect(getToolPrimaryArg("pentest_run", {})).toBeNull();
+  });
+
+  it("summarizes enumeration crawler wrapper targets", () => {
+    expect(
+      getToolPrimaryArg("enum_crawl_same_origin_urls", {
+        target_urls: [
+          "https://a.example.com/",
+          "https://b.example.com/",
+          "https://c.example.com/",
+        ],
+        depth: 2,
+      })
+    ).toBe("batch 3 targets (https://a.example.com/ ... https://c.example.com/) · depth 2");
+  });
+
+  it("summarizes vuln formulaic wrapper targets and techniques", () => {
+    expect(
+      getToolPrimaryArg("vuln_run_formulaic_sweep", {
+        targets: ["https://a.example.com/", "https://b.example.com/"],
+        techniques: ["WSTG-INPV-05", "WSTG-INPV-01"],
+      })
+    ).toBe("batch 2 targets (https://a.example.com/ ... https://b.example.com/) · 2 techniques");
   });
 
   it("shows the command for shell tools", () => {

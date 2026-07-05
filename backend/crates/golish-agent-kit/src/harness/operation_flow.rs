@@ -492,16 +492,19 @@ mod tests {
 
     /// MockRunner outcomes that steer the pentest DAG's branch edges onto the
     /// attack path (eas→enumeration→vuln_triage→attack_candidate→verification).
-    /// enumeration is `findings_allowed=false` so its healthy state is
-    /// no-progress → the bail-ordered edge routes it to vuln_triage (last), not
-    /// reporting (first). See `branch_target` + operation_graph edge order.
+    /// Enumeration is `findings_allowed=false`, but DB/ledger-backed content
+    /// enumeration still counts as progress; progress routes to the main edge
+    /// (`vuln_triage`), while no progress bails to reporting.
     fn attack_path_outcomes() -> HashMap<StageKind, StageFlowOutcome> {
         seed(&[
             (
                 StageKind::ExternalAttackSurface,
                 StageFlowOutcome::pass_with_progress(),
             ),
-            (StageKind::Enumeration, StageFlowOutcome::pass_no_progress()),
+            (
+                StageKind::Enumeration,
+                StageFlowOutcome::pass_with_progress(),
+            ),
             (
                 StageKind::VulnTriage,
                 StageFlowOutcome::pass_with_progress(),

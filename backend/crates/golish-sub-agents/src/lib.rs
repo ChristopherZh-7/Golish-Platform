@@ -73,9 +73,9 @@ pub use executor::{
     submit_repair_mode_from_submit_result, SubAgentExecutorContext, ToolProvider,
 };
 pub use executor_types::{
-    CoverageGapAction, PostShellHook, StageToolGuard, StageToolHider, SubAgentChainPersistence,
-    SubAgentToolObservation, SubAgentToolObserver, SubAgentToolResultHook, SubAgentToolRouter,
-    SubmitRepairKind, SubmitRepairMode,
+    CoverageGapAction, PostShellHook, StageCapabilitySuggestion, StageToolGuard, StageToolHider,
+    SubAgentChainPersistence, SubAgentToolObservation, SubAgentToolObserver,
+    SubAgentToolResultHook, SubAgentToolRouter, SubmitRepairKind, SubmitRepairMode,
 };
 
 // Re-export prompt registry

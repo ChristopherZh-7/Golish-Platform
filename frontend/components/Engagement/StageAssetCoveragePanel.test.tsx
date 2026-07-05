@@ -14,6 +14,16 @@ vi.mock("@/lib/api/stage-coverage", () => ({
 
 const mockedGetStageAssetCoverage = vi.mocked(getStageAssetCoverage);
 
+type TestCapabilitySuggestion = {
+  id: string;
+  label?: string;
+  tools?: string[];
+  risk?: string;
+  batchable?: boolean;
+  max_batch?: number;
+  reason?: string;
+};
+
 function testRect({
   height = 0,
   top = 0,
@@ -44,6 +54,7 @@ function coverageCell(technique: string, label: string) {
     source: null,
     evidence_refs: [],
     note: null,
+    suggested_capabilities: [] as TestCapabilitySuggestion[],
     suggested_tools: [],
   };
 }
@@ -384,6 +395,25 @@ describe("StageAssetCoveragePanel", () => {
     expect(screen.getByText("app.example.com")).toBeInTheDocument();
     expect(screen.getAllByText(/未查 LIVE\/PORT\/SVC/).length).toBeGreaterThan(0);
     expect(screen.queryByRole("separator", { name: "调整资产覆盖高度" })).not.toBeInTheDocument();
+  });
+
+  it("surfaces capability suggestions in coverage cell title", () => {
+    const snap = snapshot();
+    snap.assets[0].coverage[0].suggested_capabilities = [
+      {
+        id: "eas.probe_http_liveness",
+        label: "Probe HTTP liveness",
+        tools: ["httpx"],
+        risk: "active",
+        batchable: true,
+        max_batch: 100,
+        reason: "closes GOLISH-EAS-LIVENESS",
+      },
+    ];
+
+    render(<StageAssetCoveragePanel snapshot={snap} loading={false} error={null} workItems={[]} />);
+
+    expect(screen.getByTitle(/capability: Probe HTTP liveness/)).toBeInTheDocument();
   });
 
   it("shows next-wave assets without counting them in the current denominator", () => {

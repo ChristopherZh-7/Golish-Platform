@@ -76,6 +76,22 @@ pub struct Args {
     #[arg(long)]
     pub stage_run: bool,
 
+    /// `--stage-run` test mode: use an isolated temporary embedded Postgres data
+    /// directory and a random local port. The normal app DB is not touched.
+    #[arg(long)]
+    pub ephemeral_db: bool,
+
+    /// Keep the temporary Postgres data directory after `--ephemeral-db` exits.
+    /// Useful when a failed smoke run needs manual database inspection.
+    #[arg(long, requires = "ephemeral_db")]
+    pub keep_ephemeral_db: bool,
+
+    /// Print a database truth summary before `--stage-run` shuts down embedded
+    /// Postgres. This is intended for real smoke tests that must prove rows
+    /// landed, not just that the agent wrote a natural-language answer.
+    #[arg(long)]
+    pub db_smoke_summary: bool,
+
     /// Harness profile id for `--stage-run` (e.g. assessment / pentest /
     /// red_team / bug_bounty / cloud_assessment / smoke). Defaults to the
     /// `GOLISH_HARNESS_PROFILE` env default when omitted.

@@ -33,8 +33,8 @@ use golish_agent_kit::harness::org_gate::{
     stage_pass_token, STAGE_COMPLETION_TTL_SECS, STAGE_RUN_PASS_TOKEN_KIND,
 };
 use golish_agent_kit::harness::{
-    allowed_tool_names, evaluate_org_stage_gate, load_embedded_stage_spec, stage_methodology_md,
-    HarnessRecoveryActions, OrgVerdict, StageDeliverable, StageKind,
+    allowed_tool_names, capabilities_for_stage, evaluate_org_stage_gate, load_embedded_stage_spec,
+    stage_methodology_md, HarnessRecoveryActions, OrgVerdict, StageDeliverable, StageKind,
 };
 use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
     agent_run_from_state_blob, state_blob_with_agent_run, state_blob_without_agent_run,
@@ -172,6 +172,11 @@ fn role_label_for(specialist: &str) -> String {
     }
 }
 
+/// Runtime sub-agent tool for a stage specialist.
+fn sub_agent_tool_for_specialist(specialist: &str) -> String {
+    format!("sub_agent_{}", specialist.trim())
+}
+
 /// Build the per-org objective for the specialist (pins the org id + scope to
 /// THIS org only, so the specialist registers assets against the right org).
 ///
@@ -208,9 +213,10 @@ fn build_org_objective(
         let tool_names = allowed_tool_names(allowed_tool_types);
         if !tool_names.is_empty() {
             obj.push_str(&format!(
-                " Concretely, the only tools you may run here are: [{}] — invoke them via \
-                 pentest_run (or run_pty_cmd). Any tool NOT in that list is out-of-stage and will \
-                 be BLOCKED; do not call it.",
+                " Concretely, the only scan/capability tools you may run here are: [{}]. Invoke \
+                 backend wrapper/direct tool names directly when they are available; only legacy \
+                 CLI selectors go through pentest_run. Any tool NOT in that list is out-of-stage \
+                 and will be BLOCKED; do not call it.",
                 tool_names.join(", "),
             ));
         }
@@ -222,6 +228,14 @@ fn build_org_objective(
              running, wait for their completion notes and resubmit. Only inspect/kill a \
              background job if it is clearly hung.",
         );
+    }
+    let capabilities = stage_capability_summary(stage);
+    if !capabilities.is_empty() {
+        obj.push_str(&format!(
+            " STAGE CAPABILITIES: choose these capability ids as the plan-level actions, then use \
+             the listed tools only as implementation details: [{}].",
+            capabilities.join("; ")
+        ));
     }
     if !expected_techniques.is_empty() {
         obj.push_str(&format!(
@@ -241,7 +255,7 @@ fn build_org_objective(
              ready_to_submit=false, do NOT submit yet; call stage_worklist_next with the same \
              stage/organization and prefer=[\"pending\",\"error\"]. Treat its items as the \
              authoritative stage-local plan: each item is one asset x technique cell with a \
-             work_item_id and suggested_tools. Work only those named cells, then re-query \
+             work_item_id, suggested_capabilities, and legacy suggested_tools. Work only those named cells, then re-query \
              stage_worklist_status/stage_worklist_next after tools land DB truth. Do not mark a \
              work item done in prose. Use check_stage_asset_coverage as the final compact sanity \
              check for gap_examples/cell_summary/next_action. Only call submit_stage_deliverable \
@@ -288,6 +302,20 @@ fn build_org_objective(
         ));
     }
     obj
+}
+
+fn stage_capability_summary(stage: StageKind) -> Vec<String> {
+    capabilities_for_stage(stage)
+        .into_iter()
+        .map(|capability| {
+            let tools = if capability.tool_names.is_empty() {
+                "no direct tool".to_string()
+            } else {
+                capability.tool_names.join(",")
+            };
+            format!("{} ({}, tools: {})", capability.id, capability.label, tools)
+        })
+        .collect()
 }
 
 /// Emit a [`HarnessTraceKind::StageRunOrgProgress`] for one org row.
@@ -1002,6 +1030,21 @@ fn harness_recovery_actions_from_submit_repair_mode(
                 asset: action.asset.clone(),
                 technique: action.technique.clone(),
                 reason: action.reason.clone(),
+                suggested_capabilities: action
+                    .suggested_capabilities
+                    .iter()
+                    .map(
+                        |capability| golish_agent_kit::harness::StageCapabilitySuggestion {
+                            id: capability.id.clone(),
+                            label: capability.label.clone(),
+                            tools: capability.tools.clone(),
+                            risk: capability.risk.clone(),
+                            batchable: capability.batchable,
+                            max_batch: capability.max_batch,
+                            reason: capability.reason.clone(),
+                        },
+                    )
+                    .collect(),
                 suggested_tools: action.suggested_tools.clone(),
             })
             .collect(),
@@ -1232,7 +1275,7 @@ where
     // 3. Serial fan-out: dispatch the specialist sub-agent once per org. Serial
     //    (not parallel) because sibling runs share this bridge's harness side-
     //    channels + conversation history; K-concurrency is a safe follow-up.
-    let sub_agent_tool = format!("sub_agent_{specialist}");
+    let sub_agent_tool = sub_agent_tool_for_specialist(&specialist);
     let mut gaps: Vec<Value> = Vec::new();
     let mut passed_count = 0usize;
     let resume_skip_not_before = active_stage_skip_floor(ctx, stage).await;
@@ -1965,6 +2008,11 @@ mod tests {
     fn stage_label_and_role_label_title_case() {
         assert_eq!(stage_label_for(StageKind::TargetIntel), "Target Intel");
         assert_eq!(role_label_for("recon"), "Recon");
+        assert_eq!(sub_agent_tool_for_specialist("recon"), "sub_agent_recon");
+        assert_eq!(
+            sub_agent_tool_for_specialist("vuln_scanner"),
+            "sub_agent_vuln_scanner"
+        );
     }
 
     #[test]
@@ -2387,6 +2435,7 @@ mod tests {
                 asset: "https://dayu.moresec.cn".to_string(),
                 technique: "GOLISH-ENUM-JSAPI".to_string(),
                 reason: "JS/API cell never reached a terminal state".to_string(),
+                suggested_capabilities: Vec::new(),
                 suggested_tools: vec!["js_extract_apis".to_string()],
             }],
             allowed_tools_override: Vec::new(),
@@ -2427,6 +2476,7 @@ mod tests {
                 asset: "https://dayu.moresec.cn".to_string(),
                 technique: "GOLISH-ENUM-DIR".to_string(),
                 reason: "directory cell never reached a terminal state".to_string(),
+                suggested_capabilities: Vec::new(),
                 suggested_tools: vec!["route_probe_paths".to_string()],
             }],
             allowed_tools_override: Vec::new(),
@@ -2547,6 +2597,7 @@ mod tests {
                 asset: "pinganstock.com".to_string(),
                 technique: "GOLISH-EAS-LIVENESS".to_string(),
                 reason: "liveness cell never reached a terminal state".to_string(),
+                suggested_capabilities: Vec::new(),
                 suggested_tools: vec!["httpx".to_string()],
             }],
             ..Default::default()

@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::harness::{load_embedded_stage_spec, CoverageGapAction, StageKind};
+use crate::harness::{
+    load_embedded_stage_spec, suggested_capabilities_for_technique, CoverageGapAction, StageKind,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,6 +67,8 @@ pub struct RepairAction {
     pub asset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub technique: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -146,6 +150,9 @@ impl RepairDirective {
                 }
                 if let Some(technique) = action.technique.as_deref() {
                     line.push_str(&format!(" technique={technique}"));
+                }
+                if let Some(capability_id) = action.capability_id.as_deref() {
+                    line.push_str(&format!(" capability={capability_id}"));
                 }
                 if let Some(tool) = action.tool.as_deref() {
                     line.push_str(&format!(" tool={tool}"));
@@ -247,6 +254,7 @@ impl RepairDirective {
                         asset: action.asset.clone()?,
                         technique: action.technique.clone()?,
                         reason: action.reason.clone(),
+                        suggested_capabilities: action_capability_suggestions(action),
                         suggested_tools: normalized_action_tools(action),
                     })
                 })
@@ -354,6 +362,7 @@ fn repair_actions_for(ctx: &RefinerContext, repair_kind: RepairKind) -> Vec<Repa
             .map(|job| RepairAction {
                 asset: None,
                 technique: None,
+                capability_id: None,
                 tool: Some("wait_for_background_jobs".to_string()),
                 command_hint: Some(format!("wait_for_background_jobs for job {job}")),
                 expected_status: Some("resubmit_after_jobs_complete".to_string()),
@@ -365,6 +374,7 @@ fn repair_actions_for(ctx: &RefinerContext, repair_kind: RepairKind) -> Vec<Repa
         RepairKind::EvidenceRefs => vec![RepairAction {
             asset: None,
             technique: None,
+            capability_id: None,
             tool: Some("query_target_data".to_string()),
             command_hint: None,
             expected_status: Some("resubmit_with_real_evidence_refs".to_string()),
@@ -382,6 +392,7 @@ fn repair_actions_for(ctx: &RefinerContext, repair_kind: RepairKind) -> Vec<Repa
                     .map(|reason| RepairAction {
                         asset: None,
                         technique: None,
+                        capability_id: None,
                         tool: Some("query_target_data".to_string()),
                         command_hint: None,
                         expected_status: Some("terminal_coverage_or_claim".to_string()),
@@ -394,14 +405,29 @@ fn repair_actions_for(ctx: &RefinerContext, repair_kind: RepairKind) -> Vec<Repa
             ctx.coverage_gap_actions
                 .iter()
                 .map(|gap| {
+                    let suggested_capabilities = if gap.suggested_capabilities.is_empty() {
+                        suggested_capabilities_for_technique(ctx.stage, &gap.technique)
+                    } else {
+                        gap.suggested_capabilities.clone()
+                    };
+                    let capability_id = suggested_capabilities
+                        .first()
+                        .map(|capability| capability.id.clone());
                     let tool = gap
                         .suggested_tools
                         .first()
                         .and_then(|tool| normalized_tool_hint(tool))
+                        .or_else(|| {
+                            suggested_capabilities
+                                .iter()
+                                .flat_map(|capability| capability.tools.iter())
+                                .find_map(|tool| normalized_tool_hint(tool))
+                        })
                         .or_else(|| suggested_tool_for(ctx.stage, &gap.technique));
                     RepairAction {
                         asset: Some(gap.asset.clone()),
                         technique: Some(gap.technique.clone()),
+                        capability_id,
                         command_hint: tool.as_deref().map(|tool| {
                             command_hint_for(ctx.stage, tool, &gap.asset, &gap.technique)
                         }),
@@ -421,6 +447,7 @@ fn repair_actions_for(ctx: &RefinerContext, repair_kind: RepairKind) -> Vec<Repa
             .map(|reason| RepairAction {
                 asset: None,
                 technique: None,
+                capability_id: None,
                 tool: Some("submit_stage_deliverable".to_string()),
                 command_hint: None,
                 expected_status: Some("needs_fix_resolved".to_string()),
@@ -502,12 +529,26 @@ fn allowed_tools_for(stage: StageKind, repair_kind: RepairKind) -> Vec<String> {
                 "list_enumeration_web_roots",
                 "stage_worklist_status",
                 "stage_worklist_next",
+                "list_recent_evidence",
                 "pentest_list_tools",
                 "pentest_run",
+                "enum_crawl_same_origin_urls",
                 "browser_collect_js_api",
                 "js_collect",
                 "js_extract_apis",
                 "route_probe_paths",
+                "query_target_data",
+                "check_stage_asset_coverage",
+                "wait_for_background_jobs",
+                "check_job",
+                "kill_job",
+                "submit_stage_deliverable",
+            ],
+            StageKind::VulnTriage => vec![
+                "stage_worklist_status",
+                "stage_worklist_next",
+                "list_recent_evidence",
+                "vuln_run_formulaic_sweep",
                 "query_target_data",
                 "check_stage_asset_coverage",
                 "wait_for_background_jobs",
@@ -564,6 +605,11 @@ fn suggested_tool_for(stage: StageKind, technique: &str) -> Option<String> {
         (StageKind::Enumeration, "GOLISH-ENUM-PARAM") => Some("js_extract_apis".to_string()),
         (StageKind::TargetIntel, "GOLISH-INTEL-WHOIS") => Some("recon_lookup_whois".to_string()),
         (StageKind::TargetIntel, _) => Some("recon_map_assets".to_string()),
+        (StageKind::VulnTriage, technique)
+            if technique.starts_with("WSTG-") || technique == "GOLISH-NDAY" =>
+        {
+            Some("vuln_run_formulaic_sweep".to_string())
+        }
         _ => None,
     }
 }
@@ -592,6 +638,9 @@ fn command_hint_for(stage: StageKind, tool: &str, asset: &str, technique: &str) 
         ),
         (StageKind::Enumeration, "js_extract_apis", _) => format!(
             "js_extract_apis direct call: use saved JS/browser observations for {asset}; merge observed query keys, form field names, and targeted param_hints into api_endpoints.params"
+        ),
+        (StageKind::VulnTriage, "vuln_run_formulaic_sweep", _) => format!(
+            "vuln_run_formulaic_sweep direct call: include {asset} in targets[] and {technique} in techniques[]; the backend owns nuclei/sqlmap/wpscan recipes and writes technique_outcomes from background job output"
         ),
         (StageKind::TargetIntel, "recon_lookup_whois", _) => {
             "recon_lookup_whois(organization_id=<current org>)".to_string()
@@ -659,6 +708,36 @@ fn normalized_action_tools(action: &RepairAction) -> Vec<String> {
     tools
 }
 
+fn action_capability_suggestions(
+    action: &RepairAction,
+) -> Vec<golish_sub_agents::StageCapabilitySuggestion> {
+    let Some(technique) = action.technique.as_deref() else {
+        return Vec::new();
+    };
+    let Some(stage) = crate::harness::stage_for_technique(technique) else {
+        return Vec::new();
+    };
+    suggested_capabilities_for_technique(stage, technique)
+        .into_iter()
+        .filter(|suggestion| {
+            action
+                .capability_id
+                .as_deref()
+                .map(|id| id == suggestion.id)
+                .unwrap_or(true)
+        })
+        .map(|suggestion| golish_sub_agents::StageCapabilitySuggestion {
+            id: suggestion.id,
+            label: suggestion.label,
+            tools: suggestion.tools,
+            risk: suggestion.risk,
+            batchable: suggestion.batchable,
+            max_batch: suggestion.max_batch,
+            reason: suggestion.reason,
+        })
+        .collect()
+}
+
 fn sample_assets(assets: &[String]) -> String {
     let mut sample: Vec<String> = assets.iter().take(5).cloned().collect();
     if assets.len() > sample.len() {
@@ -709,6 +788,7 @@ mod tests {
                 asset: "example.com".to_string(),
                 technique: "GOLISH-EAS-SERVICE-FINGERPRINT".to_string(),
                 reason: "missing_terminal_coverage".to_string(),
+                suggested_capabilities: Vec::new(),
                 suggested_tools: vec!["nmap".to_string()],
             }],
             available_evidence_ids: vec![42],
@@ -742,6 +822,7 @@ mod tests {
                 asset: "118.31.21.136".to_string(),
                 technique: "GOLISH-EAS-SERVICE-FINGERPRINT".to_string(),
                 reason: "missing_terminal_coverage".to_string(),
+                suggested_capabilities: Vec::new(),
                 suggested_tools: vec!["nmap -sV".to_string(), "whatweb".to_string()],
             }],
             available_evidence_ids: vec![14091],
@@ -768,6 +849,7 @@ mod tests {
                 asset: "example.com".to_string(),
                 technique: "GOLISH-INTEL-WHOIS".to_string(),
                 reason: "missing_terminal_coverage".to_string(),
+                suggested_capabilities: Vec::new(),
                 suggested_tools: Vec::new(),
             }],
             available_evidence_ids: Vec::new(),
@@ -789,6 +871,7 @@ mod tests {
                 asset: "https://app.example.com".to_string(),
                 technique: "GOLISH-ENUM-JSAPI".to_string(),
                 reason: "missing_terminal_coverage".to_string(),
+                suggested_capabilities: Vec::new(),
                 suggested_tools: vec!["browser_collect_js_api".to_string()],
             }],
             available_evidence_ids: Vec::new(),
@@ -799,6 +882,15 @@ mod tests {
             .allowed_tools
             .contains(&"stage_worklist_status".to_string()));
         assert!(d.allowed_tools.contains(&"stage_worklist_next".to_string()));
+        assert!(d
+            .allowed_tools
+            .contains(&"list_enumeration_web_roots".to_string()));
+        assert!(d
+            .allowed_tools
+            .contains(&"list_recent_evidence".to_string()));
+        assert!(d
+            .allowed_tools
+            .contains(&"enum_crawl_same_origin_urls".to_string()));
         let instruction = d.model_instruction();
         assert!(instruction.contains("stage_worklist_status"));
         assert!(instruction.contains("stage_worklist_next"));
@@ -806,6 +898,14 @@ mod tests {
         let mode = d.to_submit_repair_mode().unwrap();
         assert!(mode.block_result("stage_worklist_status").is_none());
         assert!(mode.block_result("stage_worklist_next").is_none());
+        assert!(mode.block_result("list_enumeration_web_roots").is_none());
+        assert!(mode.block_result("list_recent_evidence").is_none());
+        assert!(mode
+            .block_result_with_args(
+                "enum_crawl_same_origin_urls",
+                &serde_json::json!({"target_urls": ["https://app.example.com"]})
+            )
+            .is_none());
         let blocked = mode
             .block_result_with_args(
                 "browser_collect_js_api",
@@ -816,6 +916,38 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("not in coverage_gap_actions"));
+    }
+
+    #[test]
+    fn vuln_coverage_gap_directive_uses_formulaic_wrapper() {
+        let d = refine_submit_needs_fix(RefinerContext {
+            stage: StageKind::VulnTriage,
+            org_id: None,
+            agent_path: "main>stage_run:vuln_triage>org:o>vuln_scanner".to_string(),
+            reasons: vec!["vuln_triage incomplete: never attempted".to_string()],
+            coverage_gap_actions: vec![CoverageGapAction {
+                asset: "https://app.example.com".to_string(),
+                technique: "WSTG-INPV-05".to_string(),
+                reason: "missing_terminal_coverage".to_string(),
+                suggested_capabilities: Vec::new(),
+                suggested_tools: Vec::new(),
+            }],
+            available_evidence_ids: Vec::new(),
+            running_background_jobs: Vec::new(),
+        });
+
+        assert_eq!(d.repair_kind, RepairKind::CoverageGap);
+        assert!(d
+            .allowed_tools
+            .contains(&"vuln_run_formulaic_sweep".to_string()));
+        assert!(!d.allowed_tools.contains(&"pentest_run".to_string()));
+        let mode = d.to_submit_repair_mode().unwrap();
+        assert!(mode.allows("vuln_run_formulaic_sweep"));
+        assert!(!mode.allows("pentest_run"));
+        assert_eq!(
+            mode.coverage_gap_actions[0].suggested_tools,
+            vec!["vuln_run_formulaic_sweep".to_string()]
+        );
     }
 
     #[test]
@@ -830,24 +962,28 @@ mod tests {
                     asset: "a.example.com".to_string(),
                     technique: "GOLISH-EAS-LIVENESS".to_string(),
                     reason: "missing_terminal_coverage".to_string(),
+                    suggested_capabilities: Vec::new(),
                     suggested_tools: vec!["httpx".to_string()],
                 },
                 CoverageGapAction {
                     asset: "b.example.com".to_string(),
                     technique: "GOLISH-EAS-LIVENESS".to_string(),
                     reason: "missing_terminal_coverage".to_string(),
+                    suggested_capabilities: Vec::new(),
                     suggested_tools: vec!["httpx".to_string()],
                 },
                 CoverageGapAction {
                     asset: "c.example.com".to_string(),
                     technique: "GOLISH-EAS-PORT".to_string(),
                     reason: "missing_terminal_coverage".to_string(),
+                    suggested_capabilities: Vec::new(),
                     suggested_tools: vec!["naabu".to_string()],
                 },
                 CoverageGapAction {
                     asset: "d.example.com".to_string(),
                     technique: "GOLISH-EAS-SERVICE-FINGERPRINT".to_string(),
                     reason: "missing_terminal_coverage".to_string(),
+                    suggested_capabilities: Vec::new(),
                     suggested_tools: vec!["nmap".to_string()],
                 },
             ],

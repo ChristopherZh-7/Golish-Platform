@@ -15,7 +15,10 @@ use uuid::Uuid;
 
 use crate::error::GolishError;
 use crate::state::AgentState;
-use golish_agent_kit::harness::StageKind;
+use golish_agent_kit::harness::{
+    suggested_capabilities_for_any_technique, tools_from_suggestions, StageCapabilitySuggestion,
+    StageKind,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../../frontend/lib/generated/")]
@@ -56,6 +59,20 @@ pub struct StageAssetCoverageRow {
     pub created_at: String,
     pub parent_id: Option<String>,
     pub coverage: Vec<StageAssetCoverageCell>,
+    // EAS web metadata carried through so the enumeration web-root worklist can
+    // build a full `scheme://host:port/` root_url without a per-target
+    // query_target_data round-trip (design 2026-07-03-enumeration-throughput-
+    // optimization PR-A). `#[ts(skip)]` = worklist-internal JSON only, kept off
+    // the frontend binding to avoid churn.
+    #[serde(default)]
+    #[ts(skip)]
+    pub http_status: Option<i32>,
+    #[serde(default)]
+    #[ts(skip)]
+    pub ports: serde_json::Value,
+    #[serde(default)]
+    #[ts(skip)]
+    pub webserver: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -68,6 +85,9 @@ pub struct StageAssetCoverageCell {
     #[ts(type = "Array<number>")]
     pub evidence_refs: Vec<i64>,
     pub note: Option<String>,
+    #[serde(default)]
+    #[ts(skip)]
+    pub suggested_capabilities: Vec<StageCapabilitySuggestion>,
     pub suggested_tools: Vec<String>,
 }
 
@@ -80,6 +100,13 @@ struct TargetCoverageRow {
     source: Option<String>,
     parent_id: Option<Uuid>,
     created_at: DateTime<Utc>,
+    // EAS web metadata for the enumeration worklist's full-URL derivation (PR-A).
+    #[sqlx(default)]
+    http_status: Option<i32>,
+    #[sqlx(default)]
+    ports: serde_json::Value,
+    #[sqlx(default)]
+    webserver: String,
 }
 
 #[derive(Debug, Clone)]
@@ -351,6 +378,9 @@ pub(crate) async fn stage_asset_coverage_snapshot(
             created_at: asset.created_at.to_rfc3339(),
             parent_id: asset.parent_id.map(|id| id.to_string()),
             coverage,
+            http_status: asset.http_status,
+            ports: asset.ports,
+            webserver: asset.webserver,
         });
     }
 
@@ -478,7 +508,10 @@ async fn get_organization_row(
                   ''::text AS real_ip,
                   'engagement_org'::text AS source,
                   parent_id,
-                  created_at
+                  created_at,
+                  NULL::int AS http_status,
+                  '[]'::jsonb AS ports,
+                  ''::text AS webserver
            FROM organizations
            WHERE id = $1"#,
     )
@@ -492,7 +525,8 @@ async fn list_org_targets(
     organization_id: Uuid,
 ) -> anyhow::Result<Vec<TargetCoverageRow>> {
     Ok(sqlx::query_as::<_, TargetCoverageRow>(
-        r#"SELECT id, value, target_type::text AS target_type, real_ip, source, parent_id, created_at
+        r#"SELECT id, value, target_type::text AS target_type, real_ip, source, parent_id, created_at,
+                  http_status, ports, webserver
            FROM targets
            WHERE scope::text = 'in' AND organization_id = $1
            ORDER BY created_at ASC, value ASC"#,
@@ -1103,6 +1137,18 @@ fn techniques_for_stage(stage: StageKind) -> Vec<&'static str> {
             golish_db::repo::coverage_truth::TECH_ENUM_PARAM,
             golish_db::repo::coverage_truth::TECH_ENUM_JSAPI,
         ],
+        StageKind::VulnTriage => vec![
+            "WSTG-INPV-05",
+            "WSTG-INPV-01",
+            "WSTG-INPV-12",
+            "WSTG-ATHZ-04",
+            "WSTG-ATHN-02",
+            "WSTG-SESS-02",
+            "WSTG-CONF-05",
+            "WSTG-CRYP-03",
+            "WSTG-INFO",
+            "GOLISH-NDAY",
+        ],
         _ => Vec::new(),
     }
 }
@@ -1114,6 +1160,12 @@ fn cell(
     evidence_refs: Vec<i64>,
     note: Option<String>,
 ) -> StageAssetCoverageCell {
+    let suggested_capabilities = if matches!(state, "pending" | "error") {
+        suggested_capabilities_for_any_technique(technique)
+    } else {
+        Vec::new()
+    };
+    let suggested_tools = tools_from_suggestions(&suggested_capabilities);
     StageAssetCoverageCell {
         technique: technique.to_string(),
         label: technique_label(technique).to_string(),
@@ -1121,11 +1173,8 @@ fn cell(
         source,
         evidence_refs,
         note,
-        suggested_tools: if state == "pending" {
-            suggested_tools(technique)
-        } else {
-            Vec::new()
-        },
+        suggested_capabilities,
+        suggested_tools,
     }
 }
 
@@ -1226,50 +1275,23 @@ fn technique_label(technique: &str) -> &'static str {
         golish_db::repo::coverage_truth::TECH_ENUM_DIR => "Directory",
         golish_db::repo::coverage_truth::TECH_ENUM_PARAM => "Parameter",
         golish_db::repo::coverage_truth::TECH_ENUM_JSAPI => "API",
+        "WSTG-INPV-05" => "SQL Injection",
+        "WSTG-INPV-01" => "XSS",
+        "WSTG-INPV-12" => "Command Injection",
+        "WSTG-ATHZ-04" => "IDOR",
+        "WSTG-ATHN-02" => "Weak Credentials",
+        "WSTG-SESS-02" => "Session/CSRF",
+        "WSTG-CONF-05" => "Sensitive Config",
+        "WSTG-CRYP-03" => "TLS/Crypto",
+        "WSTG-INFO" => "Information Leak",
+        "GOLISH-NDAY" => "N-day",
         _ => "Coverage",
     }
 }
 
+#[cfg(test)]
 fn suggested_tools(technique: &str) -> Vec<String> {
-    match technique {
-        golish_db::repo::coverage_truth::TECH_DNS
-        | golish_db::repo::coverage_truth::TECH_ASN
-        | golish_db::repo::coverage_truth::TECH_CT
-        | golish_db::repo::coverage_truth::TECH_SUBDOMAIN
-        | golish_db::repo::coverage_truth::TECH_OSINT => vec!["recon_map_assets".to_string()],
-        golish_db::repo::coverage_truth::TECH_WHOIS => {
-            vec!["recon_lookup_whois".to_string()]
-        }
-        golish_db::repo::coverage_truth::TECH_EAS_LIVENESS => {
-            vec!["httpx".to_string(), "naabu".to_string()]
-        }
-        golish_db::repo::coverage_truth::TECH_EAS_PORT => {
-            vec![
-                "naabu".to_string(),
-                "masscan".to_string(),
-                "nmap".to_string(),
-            ]
-        }
-        golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP => {
-            vec!["nmap".to_string()]
-        }
-        golish_db::repo::coverage_truth::TECH_ENUM_JS => {
-            vec!["browser_collect_js_api".to_string()]
-        }
-        golish_db::repo::coverage_truth::TECH_ENUM_DIR => {
-            vec!["route_probe_paths".to_string()]
-        }
-        golish_db::repo::coverage_truth::TECH_ENUM_PARAM => {
-            vec![
-                "browser_collect_js_api".to_string(),
-                "js_extract_apis".to_string(),
-            ]
-        }
-        golish_db::repo::coverage_truth::TECH_ENUM_JSAPI => {
-            vec!["js_extract_apis".to_string()]
-        }
-        _ => Vec::new(),
-    }
+    golish_agent_kit::harness::suggested_tools_for_any_technique(technique)
 }
 
 fn discovered_phase(asset: &TargetCoverageRow, run_start: Option<DateTime<Utc>>) -> String {
@@ -1309,6 +1331,9 @@ mod tests {
             source: Some("asset_intel".to_string()),
             parent_id: None,
             created_at: Utc::now(),
+            http_status: None,
+            ports: serde_json::json!([]),
+            webserver: String::new(),
         }
     }
 
@@ -1343,6 +1368,30 @@ mod tests {
             suggested_tools(golish_db::repo::coverage_truth::TECH_ENUM_JSAPI),
             vec!["js_extract_apis".to_string()]
         );
+    }
+
+    #[test]
+    fn vuln_triage_exposes_formulaic_scan_axes() {
+        let t = techniques_for_stage(StageKind::VulnTriage);
+        assert_eq!(t.len(), 10);
+        assert!(t.contains(&"WSTG-INPV-05"));
+        assert!(t.contains(&"WSTG-CONF-05"));
+        assert!(t.contains(&"GOLISH-NDAY"));
+
+        let asset = target("https://app.example.com", "url");
+        let cells = coverage_cells(
+            StageKind::VulnTriage,
+            &asset,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(cells.len(), 10);
+        assert!(cells.iter().all(|cell| cell.state == "pending"));
+        assert!(cells.iter().all(|cell| cell
+            .suggested_tools
+            .iter()
+            .any(|tool| tool == "vuln_run_formulaic_sweep")));
     }
 
     #[test]

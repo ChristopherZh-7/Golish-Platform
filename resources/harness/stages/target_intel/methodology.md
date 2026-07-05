@@ -17,7 +17,11 @@ targets bound to this `organization_id`.
    scope-filters it, and lands it as an in-scope target carrying that `real_ip` —
    discovery becomes landing without a second tool. It writes the data the gate
    reads: subdomains → `target_assets`, ASN → `organizations.asns`, certificates →
-   `organizations.certificates`, OSINT → `organizations.intel`. This is the
+   `organizations.certificates`, OSINT → `organizations.intel`. A normal
+   org/company survey also auto-expands bounded owned apex domains it discovers
+   using provider domain-keyed templates (for example 0.zone `root_domain==...`);
+   the optional `domain` argument is for targeted repair/manual supplement, not
+   part of the default loop. This is the
    cheapest, richest source; run it before submitting the stage. **OSINT is a REQUIRED
    coverage technique** (`GOLISH-INTEL-OSINT`) — confirm the survey produced OSINT
    data for this org; if a technique genuinely has no data (no provider/credential),
@@ -38,7 +42,10 @@ targets bound to this `organization_id`.
   in-scope target already at `passive` or later (this stage already ran for it), do
   NOT re-collect — reuse the prior evidence. Re-run only the assets/techniques that
   still lack a terminal coverage status.
-- Run each passive source ONCE per org/root, then move on. Do NOT run CLI
+- Run each passive source ONCE per org/root, then move on. The normal
+  `recon_map_assets(organization_id=...)` call already performs bounded owned
+  apex expansion; do NOT repeatedly call `recon_map_assets(domain=...)` unless
+  preflight identifies a specific missing apex/source row. Do NOT run CLI
   fallback tools in `target_intel` with different flags hunting for more.
 - Do NOT resolve every discovered subdomain one-by-one. Per-host A-record
   resolution and liveness is EAS's job. Resolving hundreds of hosts here is

@@ -19,7 +19,7 @@ pub(super) use code_research::{build_coder_prompt, build_researcher_prompt};
 pub(super) use execution_planning::{
     build_adviser_prompt, build_enumerator_prompt, build_installer_prompt, build_memorist_prompt,
     build_pentester_prompt, build_planner_prompt, build_prober_prompt, build_recon_prompt,
-    build_reflector_prompt,
+    build_reflector_prompt, build_vuln_scanner_prompt,
 };
 pub(super) use orchestration::{
     build_browser_prompt, build_enricher_prompt, build_orchestrator_prompt,

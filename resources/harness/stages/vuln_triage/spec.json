@@ -9,7 +9,7 @@
   "requires_stages": ["enumeration"],
   "allowed_next_stages": ["attack_candidate", "reporting"],
 
-  "allowed_tool_types": ["web/scanner", "web/cms", "exploit/edb"],
+  "allowed_tool_types": ["vuln_run_formulaic_sweep"],
 
   "$comment_formulaic": "Attack-stage split (design 2026-07-02): vuln_triage is redefined as the FORMULAIC SCAN stage — batch-run tool+dictionary/template techniques whose verdict is relatively objective (n-day PoC, sensitive dirs, weak creds, TLS, info leak, shallow IDOR/SQLi/XSS/cmd-injection tool sweeps). Reasoning-heavy classes (SSRF/SSTI/LFI/auth-bypass logic/business logic) move to the attack_candidate stage. specialist=vuln_scanner lets stage_run fan out per org; facts_from_db_truth + freshness_window mirror the info-gathering matrix paradigm.",
   "specialist": "vuln_scanner",

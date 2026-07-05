@@ -3,6 +3,7 @@ import type { DirectoryEntry } from "@/lib/pentest/api";
 import type { PortInfo, Target } from "@/lib/pentest/types";
 import type {
   ApiEndpoint,
+  BackendCrawlObservationDto,
   BackendSurfaceHierarchyDto,
   BackendWebOriginContentCountsDto,
   BackendWebOriginContentRefDto,
@@ -226,6 +227,7 @@ function backendOrigin(
     counts: { endpointCount: 1, observationCount: 1 },
     contentCounts: content,
     refs,
+    crawlObservations: [],
   };
 }
 
@@ -262,6 +264,27 @@ function backendObservation() {
     source: "httpx",
   };
 }
+
+const crawlObservation = (
+  p: Partial<BackendCrawlObservationDto> = {}
+): BackendCrawlObservationDto => ({
+  id: "crawl-1",
+  originTargetId: "target-domain",
+  originUrl: "https://a.example.com:443",
+  originKey: "https://a.example.com:443",
+  observedUrl: "https://cdn.example.net/lib.js",
+  observedHost: "cdn.example.net",
+  observedPath: "/lib.js",
+  kind: "url",
+  sameOrigin: false,
+  sourceTool: "katana",
+  sourceRecordId: null,
+  evidenceId: null,
+  metadata: {},
+  discoveredAt: 4,
+  updatedAt: 5,
+  ...p,
+});
 
 describe("composeBackendSurfaceHierarchy", () => {
   it("merges backend identity with frontend content on the same origin key", () => {
@@ -326,6 +349,32 @@ describe("composeBackendSurfaceHierarchy", () => {
     ]);
     expect(result.hierarchy.webOrigins[0].backendIdentityOnly).toBe(true);
     expect(result.hierarchy.webOrigins[0].counts).toMatchObject({ urls: 0, apis: 0, js: 0 });
+  });
+
+  it("attaches backend crawl observations to the matching origin", () => {
+    const frontend = buildSurfaceHierarchy({ rootTarget: target() });
+    const result = composeBackendSurfaceHierarchy(
+      frontend,
+      backendHierarchy({
+        endpoints: [backendEndpoint()],
+        webOrigins: [
+          {
+            ...backendOrigin(),
+            crawlObservations: [crawlObservation()],
+          },
+        ],
+      })
+    );
+
+    const origin = result.hierarchy.webOrigins[0];
+    expect(origin.origin).toBe("https://a.example.com:443");
+    expect(origin.crawlObservations).toHaveLength(1);
+    expect(origin.crawlObservations[0]).toMatchObject({
+      observedUrl: "https://cdn.example.net/lib.js",
+      observedHost: "cdn.example.net",
+      sourceTool: "katana",
+      sameOrigin: false,
+    });
   });
 
   it("preserves a frontend-only origin as frontend_inferred", () => {

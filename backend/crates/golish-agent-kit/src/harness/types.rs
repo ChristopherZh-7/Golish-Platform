@@ -8,6 +8,8 @@ use uuid::Uuid;
 
 use golish_pentest::evidence_ledger::EvidenceAuditId;
 
+use super::stage_capability::StageCapabilitySuggestion;
+
 /// serde helper: accept an explicit JSON `null` as the type's `Default` value.
 ///
 /// Weak models routinely emit `null` for an "N/A" optional field (e.g.
@@ -377,6 +379,8 @@ pub struct CoverageGapAction {
     pub asset: String,
     pub technique: String,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_capabilities: Vec<StageCapabilitySuggestion>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggested_tools: Vec<String>,
 }

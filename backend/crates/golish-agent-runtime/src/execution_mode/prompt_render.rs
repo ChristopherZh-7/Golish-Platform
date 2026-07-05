@@ -209,7 +209,7 @@ const BRIDGE_ROWS: &[ToolRow] = &[
     ToolRow { name: "manage_targets", purpose: "Add / list / update pentest targets (scope in/out, link to organization)." },
     ToolRow { name: "manage_organizations", purpose: "List / create target organizations and propose candidate units for human review during scoping." },
     ToolRow { name: "recon_discover_subsidiaries", purpose: "Passively discover subsidiary/affiliate orgs of the subject via enterprise intel (ENScan) during target_intel." },
-    ToolRow { name: "recon_map_assets", purpose: "Passively survey an org's domains/IPs/ASN/subdomains/certs/ICP/apps/emails via cyberspace intel providers (0.zone/quake/fofa/…) during target_intel." },
+    ToolRow { name: "recon_map_assets", purpose: "Passively survey an org's domains/IPs/ASN/subdomains/certs/ICP/apps/emails via cyberspace intel providers (0.zone/quake/fofa/…) during target_intel; normal calls auto-expand bounded owned apex domains." },
     ToolRow { name: "recon_lookup_whois", purpose: "Look up domain registration (WHOIS via RDAP) for an org, once per org, during target_intel." },
     ToolRow { name: "recon_lookup_company", purpose: "Scoping step 1: resolve a raw company name to canonical registered names (以企查查为准) via enterprise-intel lookup BEFORE creating organizations." },
     ToolRow { name: "recon_list_providers", purpose: "List passive intel providers and whether each has a configured credential; call FIRST in target_intel so you only invoke usable providers and mark the rest blocked." },

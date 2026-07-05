@@ -41,12 +41,20 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
     let pair = match n.as_str() {
         // ── recon ────────────────────────────────────────────────────────────
         "dig" | "nslookup" | "host" | "dnsx" | "dnsrecon" => ("recon", "dns"),
-        "nmap" | "masscan" | "rustscan" | "naabu" => ("recon", "port-scan"),
-        "httpx" | "whatweb" | "curl" | "wget" | "http" => ("recon", "http"),
+        "nmap"
+        | "masscan"
+        | "rustscan"
+        | "naabu"
+        | "eas_discover_ports"
+        | "eas_fingerprint_services" => ("recon", "port-scan"),
+        "httpx" | "whatweb" | "curl" | "wget" | "http" | "eas_probe_http_liveness" => {
+            ("recon", "http")
+        }
         "amass" | "subfinder" | "assetfinder" | "sublist3r" | "findomain" => ("recon", "subdomain"),
         "katana"
         | "hakrawler"
         | "gospider"
+        | "enum_crawl_same_origin_urls"
         | "browser_collect_js_api"
         | "js_collect"
         | "js_extract_apis" => ("recon", "crawler"),
@@ -79,7 +87,7 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
         "ffuf" | "gobuster" | "dirb" | "dirsearch" | "feroxbuster" => ("web", "dir-fuzzer"),
         "route_probe_paths" => ("web", "route-probe"),
         "paramspider" | "x8" => ("web", "param"),
-        "nikto" | "nuclei" | "dalfox" => ("web", "scanner"),
+        "nikto" | "nuclei" | "dalfox" | "vuln_run_formulaic_sweep" => ("web", "scanner"),
         "wpscan" => ("web", "cms"),
         "sqlmap" => ("web", "injection"),
         // ── network ──────────────────────────────────────────────────────────
@@ -116,11 +124,15 @@ const CANONICAL_TOOLS: &[&str] = &[
     "dig",
     "nmap",
     "naabu",
+    "eas_discover_ports",
+    "eas_fingerprint_services",
     "httpx",
+    "eas_probe_http_liveness",
     "whatweb",
     "subfinder",
     "amass",
     "katana",
+    "enum_crawl_same_origin_urls",
     "browser_collect_js_api",
     "js_collect",
     "js_extract_apis",
@@ -135,6 +147,7 @@ const CANONICAL_TOOLS: &[&str] = &[
     "ffuf",
     "route_probe_paths",
     "nuclei",
+    "vuln_run_formulaic_sweep",
     "wpscan",
     "sqlmap",
     // network
@@ -265,7 +278,10 @@ pub fn is_scan_tool_name(tool_name: &str) -> bool {
 /// non-offensive helpers (`sub_agent_reporter` / `_researcher` / `_memorist` /
 /// …) stay available so e.g. reporting can still delegate write-ups.
 pub fn is_offensive_sub_agent(tool_name: &str) -> bool {
-    matches!(tool_name, "sub_agent_pentester" | "sub_agent_browser")
+    matches!(
+        tool_name,
+        "sub_agent_pentester" | "sub_agent_browser" | "sub_agent_vuln_scanner"
+    )
 }
 
 /// Whether the (resolved) tool call is permitted by a stage's `allowed_tool_types`
@@ -331,6 +347,10 @@ mod tests {
         assert_eq!(tool_category("subfinder"), Some(("recon", "subdomain")));
         assert_eq!(tool_category("sqlmap"), Some(("web", "injection")));
         assert_eq!(tool_category("nuclei"), Some(("web", "scanner")));
+        assert_eq!(
+            tool_category("vuln_run_formulaic_sweep"),
+            Some(("web", "scanner"))
+        );
         assert_eq!(tool_category("arjun"), None);
         assert_eq!(
             tool_category("browser_collect_js_api"),
@@ -574,6 +594,7 @@ mod tests {
             "run_command",
             "nmap",
             "nuclei",
+            "vuln_run_formulaic_sweep",
             "sqlmap",
             "subfinder",
             "browser_collect_js_api",
@@ -596,7 +617,11 @@ mod tests {
     #[test]
     fn offensive_sub_agents_are_flagged_for_confirm_only_stages() {
         // Active/offensive dispatchers a zero-scan stage (scoping/reporting) hides.
-        for off in ["sub_agent_pentester", "sub_agent_browser"] {
+        for off in [
+            "sub_agent_pentester",
+            "sub_agent_browser",
+            "sub_agent_vuln_scanner",
+        ] {
             assert!(is_offensive_sub_agent(off), "{off} must be offensive");
         }
         // Non-offensive helpers + meta tools must stay available.

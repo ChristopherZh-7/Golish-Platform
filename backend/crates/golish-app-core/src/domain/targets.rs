@@ -219,6 +219,30 @@ pub fn attack_surface_priority(t: &Target) -> i32 {
     score
 }
 
+/// Build a canonical web root URL from a host, optional port, and service hint.
+/// Default ports are omitted from the suffix; TLS-looking services and common
+/// TLS web ports choose `https`.
+pub fn web_root_url(host: &str, port: Option<u16>, service: &str) -> (String, String, Option<u16>) {
+    let service = service.to_ascii_lowercase();
+    let scheme = if service.contains("https")
+        || service.contains("ssl")
+        || matches!(port, Some(443 | 8443 | 9443))
+    {
+        "https"
+    } else {
+        "http"
+    };
+    let port_suffix = match (scheme, port) {
+        ("http", Some(80)) | ("https", Some(443)) | (_, None) => String::new(),
+        (_, Some(port)) => format!(":{port}"),
+    };
+    (
+        format!("{scheme}://{host}{port_suffix}/"),
+        scheme.to_string(),
+        port,
+    )
+}
+
 /// Derive a target's persistent liveness verdict from its EAS probe outcome
 /// (design 2026-07-02-dead-asset-liveness-state §1.2 / §4). The `alive`
 /// predicate mirrors `coverage_truth::build_liveness_values_sql` exactly so the
@@ -333,6 +357,29 @@ pub fn rank_attack_surface_seeds(targets: Vec<Target>, cap: Option<usize>) -> Ve
         targets.truncate(n);
     }
     targets
+}
+
+/// Rank enumeration web roots so a cut-short enumeration pass spends its budget
+/// on the highest-value roots first (design 2026-07-03-enumeration-throughput-
+/// optimization PR-C). Alive roots (confirmed `http_status`) rank above unproven
+/// ones, then by [`attack_surface_priority`], stable tiebreak on `value`. Unlike
+/// `rank_attack_surface_seeds` this does **not** collapse same-IP aliases — two
+/// vhosts on one IP can serve different apps, so both remain enumeration targets.
+/// `cap = Some(n)` truncates to the top-n (the tail is a caller-side next-wave
+/// backlog, never silently dropped); `None` = full set, order only.
+pub fn rank_enumeration_web_roots(mut roots: Vec<Target>, cap: Option<usize>) -> Vec<Target> {
+    roots.sort_by(|a, b| {
+        let a_alive = a.http_status.is_some();
+        let b_alive = b.http_status.is_some();
+        b_alive
+            .cmp(&a_alive)
+            .then_with(|| attack_surface_priority(b).cmp(&attack_surface_priority(a)))
+            .then_with(|| a.value.cmp(&b.value))
+    });
+    if let Some(n) = cap {
+        roots.truncate(n);
+    }
+    roots
 }
 
 /// EAS host-aware alias exclusion (design 2026-06-30-eas-domain-port-
@@ -472,6 +519,34 @@ mod tests {
     }
 
     #[test]
+    fn web_root_url_derives_scheme_and_default_port_suffix() {
+        assert_eq!(
+            web_root_url("app.example.com", Some(443), "https"),
+            (
+                "https://app.example.com/".to_string(),
+                "https".to_string(),
+                Some(443)
+            )
+        );
+        assert_eq!(
+            web_root_url("app.example.com", Some(8443), "http/ssl"),
+            (
+                "https://app.example.com:8443/".to_string(),
+                "https".to_string(),
+                Some(8443)
+            )
+        );
+        assert_eq!(
+            web_root_url("plain.example.com", Some(80), "http"),
+            (
+                "http://plain.example.com/".to_string(),
+                "http".to_string(),
+                Some(80)
+            )
+        );
+    }
+
+    #[test]
     fn rank_attack_surface_seeds_collapses_domain_aliases_to_existing_ip_targets() {
         let ip = seed("115.28.135.55", "ip", "", None);
         let alias = seed("moresec.cn", "domain", "115.28.135.55", Some(200));
@@ -540,13 +615,58 @@ mod tests {
     }
 
     #[test]
+    fn rank_enumeration_web_roots_orders_alive_then_priority_and_caps() {
+        // PR-C: alive (http_status) roots first, then priority, stable on value;
+        // same-IP vhosts are NOT collapsed (both remain enumeration targets).
+        let alive_low = seed("z-alive.example.com", "domain", "", Some(200));
+        let alive_high = seed("a-alive.example.com", "domain", "1.2.3.4", Some(200));
+        let dead_domain = seed("bare.example.com", "domain", "", None);
+        let same_ip_a = seed("app1.example.com", "domain", "9.9.9.9", Some(200));
+        let same_ip_b = seed("app2.example.com", "domain", "9.9.9.9", Some(200));
+
+        let ranked = rank_enumeration_web_roots(
+            vec![
+                dead_domain,
+                alive_low,
+                alive_high.clone(),
+                same_ip_a.clone(),
+                same_ip_b.clone(),
+            ],
+            None,
+        );
+        // Unproven (no http_status) sinks to the bottom.
+        assert_eq!(ranked.last().unwrap().value, "bare.example.com");
+        // Same-IP vhosts both survive (no alias collapse).
+        assert!(ranked.iter().any(|t| t.value == "app1.example.com"));
+        assert!(ranked.iter().any(|t| t.value == "app2.example.com"));
+        assert_eq!(ranked.len(), 5);
+
+        // Cap keeps the top-N alive/high-priority roots.
+        let capped = rank_enumeration_web_roots(
+            vec![seed("bare.example.com", "domain", "", None), alive_high],
+            Some(1),
+        );
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].value, "a-alive.example.com");
+    }
+
+    #[test]
     fn compute_liveness_state_alive_on_any_signal() {
         // Any one of http_status / real_ip / open_ports proves the host is alive.
-        assert_eq!(compute_liveness_state(Some(200), "", 0, false), ("alive", None));
-        assert_eq!(compute_liveness_state(None, "1.2.3.4", 0, false), ("alive", None));
+        assert_eq!(
+            compute_liveness_state(Some(200), "", 0, false),
+            ("alive", None)
+        );
+        assert_eq!(
+            compute_liveness_state(None, "1.2.3.4", 0, false),
+            ("alive", None)
+        );
         assert_eq!(compute_liveness_state(None, "", 3, false), ("alive", None));
         // Alive signal wins even when the probe also reported an error.
-        assert_eq!(compute_liveness_state(Some(200), "", 0, true), ("alive", None));
+        assert_eq!(
+            compute_liveness_state(Some(200), "", 0, true),
+            ("alive", None)
+        );
         // Whitespace-only real_ip is not a signal.
         assert_eq!(
             compute_liveness_state(None, "  ", 0, false),
@@ -582,7 +702,10 @@ mod tests {
             (None, "", 0, false),
         ] {
             let (state, _) = compute_liveness_state(hs, ip, ports, err);
-            assert!(allowed.contains(&state), "state {state} not in CHECK domain");
+            assert!(
+                allowed.contains(&state),
+                "state {state} not in CHECK domain"
+            );
         }
     }
 

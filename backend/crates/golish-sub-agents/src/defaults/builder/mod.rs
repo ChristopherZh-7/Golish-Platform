@@ -18,7 +18,7 @@ use super::prompts::{
     build_enumerator_prompt, build_installer_prompt, build_memorist_prompt,
     build_orchestrator_prompt, build_pentester_prompt, build_planner_prompt, build_prober_prompt,
     build_recon_prompt, build_refiner_prompt, build_reflector_prompt, build_reporter_prompt,
-    build_researcher_prompt,
+    build_researcher_prompt, build_vuln_scanner_prompt,
 };
 
 /// Create default sub-agents for common tasks.
@@ -153,11 +153,11 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "list_attack_surface_seeds".to_string(),
             "query_target_data".to_string(),
             "manage_targets".to_string(),
-            // Active probing (httpx / naabu / masscan / whatweb / nmap / gowitness)
-            // via pentest_run; the stage tool-type allowlist (recon/port-scan,
-            // recon/http, recon/visual) keeps it to surface mapping, not exploitation.
-            "pentest_list_tools".to_string(),
-            "pentest_run".to_string(),
+            // Active EAS probing is exposed as backend-owned capability wrappers
+            // so the model chooses business actions, not raw CLI flags.
+            "eas_probe_http_liveness".to_string(),
+            "eas_discover_ports".to_string(),
+            "eas_fingerprint_services".to_string(),
             "wait_for_background_jobs".to_string(),
             "list_recent_evidence".to_string(),
             "submit_stage_deliverable".to_string(),
@@ -179,12 +179,9 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "stage_worklist_next".to_string(),
             "list_enumeration_web_roots".to_string(),
             "query_target_data".to_string(),
-            // Active content enumeration. DIR uses the direct internal
-            // route_probe_paths tool; pentest_run remains for bounded crawler
-            // URL sources such as katana. The stage tool-type allowlist keeps it
-            // to content mapping, not EAS probing/fingerprinting or exploitation.
-            "pentest_list_tools".to_string(),
-            "pentest_run".to_string(),
+            // Active content enumeration. Katana is exposed through a backend
+            // wrapper so the model chooses URL-crawl supplement, not raw CLI flags.
+            "enum_crawl_same_origin_urls".to_string(),
             "wait_for_background_jobs".to_string(),
             // JS/API extraction (GOLISH-ENUM-JSAPI): collect a host's JS, then pull
             // endpoints/paths out of it.
@@ -194,6 +191,30 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "route_probe_paths".to_string(),
             "list_recent_evidence".to_string(),
             "submit_stage_deliverable".to_string(),
+            "search_knowledge_base".to_string(),
+            "read_knowledge".to_string(),
+        ])
+        .with_max_iterations(40)
+        .with_idle_timeout(300)
+        .with_delegatable_agents(vec!["enricher".to_string(), "memorist".to_string()]),
+        SubAgentDefinition::new(
+            "vuln_scanner",
+            "Vuln Scanner",
+            "Formulaic vulnerability-triage specialist for the vuln_triage stage. Closes WSTG/GOLISH scan cells through backend-owned wrappers rather than raw CLI commands. The stage_run tool fans one Vuln Scanner out per org.",
+            build_vuln_scanner_prompt(),
+        )
+        .with_tools(vec![
+            "stage_worklist_status".to_string(),
+            "stage_worklist_next".to_string(),
+            "query_target_data".to_string(),
+            "vuln_run_formulaic_sweep".to_string(),
+            "wait_for_background_jobs".to_string(),
+            "check_job".to_string(),
+            "kill_job".to_string(),
+            "list_recent_evidence".to_string(),
+            "check_stage_asset_coverage".to_string(),
+            "submit_stage_deliverable".to_string(),
+            "record_finding".to_string(),
             "search_knowledge_base".to_string(),
             "read_knowledge".to_string(),
         ])

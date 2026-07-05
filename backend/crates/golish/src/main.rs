@@ -32,16 +32,17 @@ use clap::Parser;
 
 use golish_lib::cli::Args;
 
+const LARGE_STACK_BYTES: usize = 32 * 1024 * 1024;
+
 fn main() {
     // The agent runs a deep, non-recursive async future tree (orchestrator →
     // subtask → agentic loop → memory gatekeeper → LLM provider). In debug builds
-    // those frames overflow tokio's default 2 MiB worker stack — confirmed via
-    // lldb: EXC_BAD_ACCESS on a `tokio-rt-worker` at `one_shot_completion`'s
-    // prologue. tokio worker/blocking threads inherit std's default stack size,
-    // which honors `RUST_MIN_STACK`, and nothing here sets `thread_stack_size`, so
-    // raising this floor before any runtime/thread starts fixes both GUI and CLI.
+    // those frames can overflow tokio's default worker stack. Tokio worker and
+    // blocking threads inherit std's default stack size, which honors
+    // `RUST_MIN_STACK`; the current OS thread does not, so `run_stage_run` also
+    // starts its runtime on a dedicated large-stack thread.
     if std::env::var_os("RUST_MIN_STACK").is_none() {
-        std::env::set_var("RUST_MIN_STACK", "33554432"); // 32 MiB
+        std::env::set_var("RUST_MIN_STACK", LARGE_STACK_BYTES.to_string());
     }
 
     // Install the default rustls CryptoProvider before any TLS usage.
@@ -115,13 +116,23 @@ fn run_cli(args: Args) {
 
 /// Run the headless single/range stage runner (`--stage-run`, design 2026-06-06).
 fn run_stage_run(args: Args) {
-    let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    runtime.block_on(async move {
-        if let Err(e) = golish_lib::stage_run::run(args).await {
+    let handle = std::thread::Builder::new()
+        .name("golish-stage-run".to_string())
+        .stack_size(LARGE_STACK_BYTES)
+        .spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            runtime.block_on(golish_lib::stage_run::run(args))
+        })
+        .expect("Failed to spawn stage-run thread");
+
+    match handle.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
             eprintln!("Error: {:#}", e);
             std::process::exit(1);
         }
-    });
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 async fn run_cli_async(args: Args) -> anyhow::Result<()> {

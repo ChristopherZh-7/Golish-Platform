@@ -1,4 +1,5 @@
 import type {
+  BackendCrawlObservationDto,
   BackendNetworkEndpointDto,
   BackendSurfaceHierarchyDto,
   BackendWebOriginContentCountsDto,
@@ -8,6 +9,7 @@ import type {
 } from "@/lib/security-analysis";
 import type {
   ContentCountSource,
+  CrawlObservationVM,
   HostType,
   NetworkEndpointVM,
   OriginScheme,
@@ -114,6 +116,26 @@ function mapContentRef(ref: BackendWebOriginContentRefDto): WebOriginContentRef 
   };
 }
 
+function mapCrawlObservation(observation: BackendCrawlObservationDto): CrawlObservationVM {
+  return {
+    id: observation.id,
+    originTargetId: observation.originTargetId,
+    originUrl: observation.originUrl,
+    originKey: observation.originKey,
+    observedUrl: observation.observedUrl,
+    observedHost: observation.observedHost,
+    observedPath: observation.observedPath,
+    kind: observation.kind || "url",
+    sameOrigin: observation.sameOrigin,
+    sourceTool: observation.sourceTool || "crawler",
+    sourceRecordId: observation.sourceRecordId,
+    evidenceId: observation.evidenceId,
+    metadata: observation.metadata,
+    discoveredAt: observation.discoveredAt,
+    updatedAt: observation.updatedAt,
+  };
+}
+
 function frontendFallbackHierarchy(
   frontend: SurfaceHierarchyVM,
   fallbackReason: string | null
@@ -135,6 +157,7 @@ function frontendFallbackHierarchy(
       contentCountSource: "frontend_content_inferred",
       backendIdentityOnly: false,
       contentRefs: [],
+      crawlObservations: [],
     })),
     observations: [],
   };
@@ -241,6 +264,7 @@ function mapBackendOrigin(
     contentCountSource,
     backendIdentityOnly: !legacyLinked,
     contentRefs: backendOrigin.refs.map(mapContentRef),
+    crawlObservations: backendOrigin.crawlObservations.map(mapCrawlObservation),
   };
 }
 
@@ -253,6 +277,7 @@ function frontendOnlyOrigin(origin: WebOriginVM, validEndpointIds: Set<string>):
     contentCountSource: "frontend_content_inferred",
     backendIdentityOnly: false,
     contentRefs: [],
+    crawlObservations: [],
   };
 }
 

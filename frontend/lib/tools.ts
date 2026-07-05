@@ -40,6 +40,8 @@ const TOOL_COLORS: Record<string, string> = {
   recon_map_assets: "var(--ansi-magenta)",
   recon_lookup_whois: "var(--ansi-magenta)",
   recon_discover_subsidiaries: "var(--ansi-magenta)",
+  enum_crawl_same_origin_urls: "var(--ansi-magenta)",
+  vuln_run_formulaic_sweep: "#f59e0b",
 };
 
 const TOOL_ICONS: Record<string, LucideIcon> = {
@@ -60,6 +62,8 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
   recon_map_assets: Radar,
   recon_lookup_whois: Globe,
   recon_discover_subsidiaries: Radar,
+  enum_crawl_same_origin_urls: Globe,
+  vuln_run_formulaic_sweep: Radar,
 };
 
 export function getToolColor(name: string): string {
@@ -113,6 +117,8 @@ const TOOL_LABELS_SHORT: Record<string, string> = {
   recon_map_assets: "Survey",
   recon_lookup_whois: "WHOIS",
   recon_discover_subsidiaries: "Subsidiaries",
+  enum_crawl_same_origin_urls: "Crawl URLs",
+  vuln_run_formulaic_sweep: "Vuln Sweep",
 };
 
 const TOOL_LABELS_STANDARD: Record<string, string> = {
@@ -135,6 +141,8 @@ const TOOL_LABELS_STANDARD: Record<string, string> = {
   recon_map_assets: "Map Assets",
   recon_lookup_whois: "Lookup WHOIS",
   recon_discover_subsidiaries: "Discover Subsidiaries",
+  enum_crawl_same_origin_urls: "Crawl Same-Origin URLs",
+  vuln_run_formulaic_sweep: "Formulaic Vuln Sweep",
 };
 
 export function getToolLabel(name: string, variant: "short" | "standard" = "standard"): string {
@@ -165,6 +173,8 @@ const TOOL_ACTION_LABELS: Record<string, string> = {
   recon_lookup_whois: "Looking up WHOIS",
   recon_discover_subsidiaries: "Discovering subsidiaries",
   recon_enrich_assets: "Enriching assets",
+  enum_crawl_same_origin_urls: "Crawling same-origin URLs",
+  vuln_run_formulaic_sweep: "Running formulaic vuln sweep",
   read_file: "Reading file",
   write_file: "Writing file",
   edit_file: "Editing file",
@@ -229,6 +239,8 @@ function formatPentestRunActionLabel(args?: Record<string, unknown>): string {
       return "Fingerprinting web services";
     case "gowitness":
       return "Capturing screenshots";
+    case "katana":
+      return "Crawling same-origin URLs";
     case "nuclei":
       return "Checking vulnerabilities";
     case "ffuf":
@@ -253,6 +265,12 @@ export function getToolPrimaryArg(name: string, args: Record<string, unknown>): 
   }
   if ((name === "run_command" || name === "run_pty_cmd") && args.command)
     return formatCommandForDisplay(String(args.command));
+  if (name === "enum_crawl_same_origin_urls") {
+    return formatEnumCrawlSameOriginUrlsSummary(args);
+  }
+  if (name === "vuln_run_formulaic_sweep") {
+    return formatVulnRunFormulaicSweepSummary(args);
+  }
   // pentest_run wraps the real tool in `tool_name` + `args`; the card title now
   // carries the action ("Probing services"), so the secondary line stays compact
   // and avoids repeating the raw command prefix.
@@ -372,6 +390,47 @@ function escapeRegExp(value: string): string {
 
 function formatPentestInputSummary(args: Record<string, unknown>): string | null {
   const inputLines = getPentestRunInputLines(args);
+  return formatTargetListSummary(inputLines);
+}
+
+function formatEnumCrawlSameOriginUrlsSummary(args: Record<string, unknown>): string | null {
+  const targetSummary = Array.isArray(args.target_urls)
+    ? formatTargetListSummary(
+        args.target_urls
+          .map((line) => normalizeInputLine(line))
+          .filter((line): line is string => line != null)
+      )
+    : null;
+  const depth =
+    typeof args.depth === "number" && Number.isFinite(args.depth)
+      ? `depth ${Math.max(1, Math.trunc(args.depth))}`
+      : null;
+  return [targetSummary, depth].filter(Boolean).join(" · ") || null;
+}
+
+function formatVulnRunFormulaicSweepSummary(args: Record<string, unknown>): string | null {
+  const targetSummary = Array.isArray(args.targets)
+    ? formatTargetListSummary(
+        args.targets
+          .map((line) => normalizeInputLine(line))
+          .filter((line): line is string => line != null)
+      )
+    : null;
+  const techniques = Array.isArray(args.techniques)
+    ? args.techniques
+        .map((technique) => normalizeInputLine(technique))
+        .filter((technique): technique is string => technique != null)
+    : [];
+  const techniqueSummary =
+    techniques.length === 0
+      ? null
+      : techniques.length === 1
+        ? techniques[0]
+        : `${techniques.length} techniques`;
+  return [targetSummary, techniqueSummary].filter(Boolean).join(" · ") || null;
+}
+
+function formatTargetListSummary(inputLines: string[]): string | null {
   if (inputLines.length === 0) return null;
 
   const noun = inputLines.length === 1 ? "target" : "targets";

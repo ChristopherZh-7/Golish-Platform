@@ -126,6 +126,24 @@ export type WebOriginObservationVM = {
   source: string;
 };
 
+export type CrawlObservationVM = {
+  id: string;
+  originTargetId: string;
+  originUrl: string;
+  originKey: string;
+  observedUrl: string;
+  observedHost: string | null;
+  observedPath: string | null;
+  kind: string;
+  sameOrigin: boolean;
+  sourceTool: string;
+  sourceRecordId: string | null;
+  evidenceId: number | null;
+  metadata: Record<string, unknown>;
+  discoveredAt: number;
+  updatedAt: number;
+};
+
 export type WebOriginVM = {
   id: string;
   backendId?: string;
@@ -173,6 +191,7 @@ export type WebOriginVM = {
    * are not loaded, so a backend-only origin is not a dead end.
    */
   contentRefs: WebOriginContentRef[];
+  crawlObservations: CrawlObservationVM[];
 };
 
 export type SurfaceHierarchyVM = {
@@ -401,6 +420,7 @@ function createOrigin(key: WebOriginKey): WebOriginVM {
     source: "frontend_inferred",
     contentCountSource: "frontend_content_inferred",
     contentRefs: [],
+    crawlObservations: [],
   };
 }
 

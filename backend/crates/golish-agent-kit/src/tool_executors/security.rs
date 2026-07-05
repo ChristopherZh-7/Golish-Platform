@@ -644,13 +644,113 @@ pub async fn execute_security_analysis_tool(
     }
 }
 
+/// Derive a full `scheme://host:port/` web root URL from an in-scope asset's EAS
+/// metadata (design 2026-07-03-enumeration-throughput-optimization PR-A). The
+/// final scheme/port suffix rule mirrors `golish_app_core::domain::targets::web_root_url`;
+/// this local adapter stays in `agent-kit` because the crate does not depend on
+/// `app-core` (avoid a new cross-crate edge). Both sides are pinned by tests.
+fn web_root_url_from_meta(
+    host: &str,
+    http_status: Option<i64>,
+    ports: &Value,
+    webserver: &str,
+) -> (String, String, Option<u16>) {
+    // If the asset value already carries a scheme, normalise it as-is.
+    if host.starts_with("http://") || host.starts_with("https://") {
+        let scheme = if host.starts_with("https://") {
+            "https"
+        } else {
+            "http"
+        };
+        let normalized = host.trim_end_matches('/').to_string();
+        return (format!("{normalized}/"), scheme.to_string(), None);
+    }
+
+    // Pick the most web-like port from the ports array (prefer an explicit https
+    // hint, else the first web-ish port); fall back to scheme inference from
+    // http_status/webserver.
+    let mut chosen_port: Option<u16> = None;
+    let mut chosen_https = false;
+    if let Some(arr) = ports.as_array() {
+        for p in arr {
+            let port = p
+                .get("port")
+                .and_then(|v| {
+                    v.as_u64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                })
+                .map(|n| n as u16);
+            let service = p
+                .get("service")
+                .or_else(|| p.get("name"))
+                .or_else(|| p.get("proto"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let is_https = service.contains("https")
+                || service.contains("ssl")
+                || matches!(port, Some(443 | 8443 | 9443));
+            let is_web = is_https
+                || service.contains("http")
+                || matches!(port, Some(80 | 8080 | 8000 | 8888 | 3000 | 5000));
+            if is_web && (chosen_port.is_none() || (is_https && !chosen_https)) {
+                chosen_port = port;
+                chosen_https = is_https;
+            }
+        }
+    }
+
+    let scheme = if chosen_https
+        || webserver.to_ascii_lowercase().contains("https")
+        || matches!(chosen_port, Some(443 | 8443 | 9443))
+    {
+        "https"
+    } else {
+        "http"
+    };
+    let _ = http_status;
+    let port_suffix = match (scheme, chosen_port) {
+        ("http", Some(80)) | ("https", Some(443)) | (_, None) => String::new(),
+        (_, Some(port)) => format!(":{port}"),
+    };
+    (
+        format!("{scheme}://{host}{port_suffix}/"),
+        scheme.to_string(),
+        chosen_port,
+    )
+}
+
+/// Web-root priority for a coverage-snapshot asset (design 2026-07-03-enumeration-
+/// throughput-optimization PR-C, mirrors `domain::targets::rank_enumeration_web_
+/// roots`): EAS-proven-alive (has `http_status`) first, then those with open
+/// ports, so when the worklist is truncated to `limit` the high-value live roots
+/// survive and a cut-short pass spends its budget on them first. Higher = sooner.
+fn enum_worklist_asset_priority(asset: &Value) -> i32 {
+    let mut score = 0;
+    if asset.get("http_status").and_then(Value::as_i64).is_some() {
+        score += 100;
+    }
+    if asset
+        .get("ports")
+        .and_then(Value::as_array)
+        .map(|a| !a.is_empty())
+        .unwrap_or(false)
+    {
+        score += 10;
+    }
+    score
+}
+
 fn enumeration_web_roots_worklist(snapshot: Value, limit: usize, include_coverage: bool) -> Value {
-    let assets = snapshot
+    let mut assets = snapshot
         .get("assets")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
     let total = assets.len();
+    // PR-C: alive/high-value roots first (stable) so the `limit` truncation keeps
+    // the roots worth enumerating; ties keep the snapshot's created_at order.
+    assets.sort_by_key(|asset| std::cmp::Reverse(enum_worklist_asset_priority(asset)));
     let mut roots = Vec::new();
     for asset in assets.into_iter().take(limit) {
         let coverage = asset
@@ -660,6 +760,7 @@ fn enumeration_web_roots_worklist(snapshot: Value, limit: usize, include_coverag
             .unwrap_or_default();
         let mut pending_techniques = Vec::new();
         let mut terminal_techniques = Vec::new();
+        let mut suggested_capabilities = Vec::new();
         let mut suggested_tools = Vec::new();
         for cell in &coverage {
             let technique = cell.get("technique").and_then(Value::as_str).unwrap_or("");
@@ -669,6 +770,7 @@ fn enumeration_web_roots_worklist(snapshot: Value, limit: usize, include_coverag
                 .unwrap_or("pending");
             if matches!(state, "pending" | "error") {
                 pending_techniques.push(technique.to_string());
+                extend_unique_capabilities(&mut suggested_capabilities, cell);
                 if let Some(tools) = cell.get("suggested_tools").and_then(Value::as_array) {
                     suggested_tools
                         .extend(tools.iter().filter_map(Value::as_str).map(str::to_string));
@@ -680,15 +782,36 @@ fn enumeration_web_roots_worklist(snapshot: Value, limit: usize, include_coverag
         suggested_tools.sort();
         suggested_tools.dedup();
 
+        // PR-A: build the full scheme://host:port/ root_url from EAS metadata so
+        // the enumerator can feed URLs straight to the content tools instead of
+        // querying each target just to reconstruct the scheme/port.
+        let host = asset
+            .get("value")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let http_status = asset.get("http_status").and_then(Value::as_i64);
+        let ports = asset.get("ports").cloned().unwrap_or(Value::Null);
+        let webserver = asset.get("webserver").and_then(Value::as_str).unwrap_or("");
+        let (root_url, scheme, port) =
+            web_root_url_from_meta(&host, http_status, &ports, webserver);
+        let needs_probe = http_status.is_none()
+            && ports.as_array().map(|a| a.is_empty()).unwrap_or(true)
+            && webserver.is_empty();
+
         let mut root = json!({
             "target_id": asset.get("target_id").cloned().unwrap_or(Value::Null),
-            "root_url": asset.get("value").cloned().unwrap_or(Value::Null),
+            "root_url": root_url,
+            "scheme": scheme,
+            "port": port,
+            "needs_probe": needs_probe,
             "asset": asset.get("value").cloned().unwrap_or(Value::Null),
             "target_type": asset.get("target_type").cloned().unwrap_or(Value::Null),
             "organization_id": asset.get("organization_id").cloned().unwrap_or(Value::Null),
             "discovered_phase": asset.get("discovered_phase").cloned().unwrap_or(Value::Null),
             "pending_techniques": pending_techniques,
             "terminal_techniques": terminal_techniques,
+            "suggested_capabilities": suggested_capabilities,
             "suggested_tools": suggested_tools,
             "next_steps": enumeration_web_root_next_steps(&coverage),
         });
@@ -749,6 +872,24 @@ fn enumeration_web_root_next_steps(coverage: &[Value]) -> Vec<&'static str> {
     steps.sort();
     steps.dedup();
     steps
+}
+
+fn extend_unique_capabilities(out: &mut Vec<Value>, cell: &Value) {
+    let Some(capabilities) = cell.get("suggested_capabilities").and_then(Value::as_array) else {
+        return;
+    };
+    for capability in capabilities {
+        let id = capability.get("id").and_then(Value::as_str).unwrap_or("");
+        if id.is_empty() {
+            continue;
+        }
+        let already_present = out
+            .iter()
+            .any(|existing| existing.get("id").and_then(Value::as_str) == Some(id));
+        if !already_present {
+            out.push(capability.clone());
+        }
+    }
 }
 
 fn stage_worklist_status(snapshot: Value) -> Value {
@@ -827,6 +968,7 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
                 "source": cell.get("source").cloned().unwrap_or(Value::Null),
                 "evidence_refs": cell.get("evidence_refs").cloned().unwrap_or_else(|| json!([])),
                 "note": cell.get("note").cloned().unwrap_or(Value::Null),
+                "suggested_capabilities": cell.get("suggested_capabilities").cloned().unwrap_or_else(|| json!([])),
                 "suggested_tools": cell.get("suggested_tools").cloned().unwrap_or_else(|| json!([])),
             });
             if is_enumeration {
@@ -839,7 +981,9 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
         }
     }
 
-    let ready_to_submit = pending_cells == 0 && error_cells == 0;
+    let missing_vuln_triage_denominator = stage == "vuln_triage" && total_cells == 0;
+    let ready_to_submit =
+        !missing_vuln_triage_denominator && pending_cells == 0 && error_cells == 0;
     let omitted_item_count = matching_cells.saturating_sub(items.len());
     json!({
         "tool": "stage_worklist_next",
@@ -849,6 +993,7 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
         "limit": limit,
         "prefer": preferred_states,
         "ready_to_submit": ready_to_submit,
+        "coverage_denominator_missing": missing_vuln_triage_denominator,
         "summary": snapshot.get("summary").cloned().unwrap_or_else(|| json!({})),
         "cell_summary": {
             "total_cells": total_cells,
@@ -860,11 +1005,13 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
         "items": items,
         "omitted_item_count": omitted_item_count,
         "worklist_contract": if is_eas {
-            "Items are derived from DB/gate truth. EAS tool split: httpx for domain/URL liveness, naabu/masscan for fast port discovery, nmap -sV for confirmed open ports, and whatweb only for confirmed HTTP(S) endpoints. Refresh this worklist after tools land DB evidence; do not mark work complete by natural-language assertion."
+            "Items are derived from DB/gate truth. Close each suggested_capabilities item for the named asset x technique cell; suggested_tools are implementation hints. EAS tool split: httpx for domain/URL liveness, naabu/masscan for fast port discovery, nmap -sV for confirmed open ports, and whatweb only for confirmed HTTP(S) endpoints. Refresh this worklist after tools land DB evidence; do not mark work complete by natural-language assertion."
         } else {
-            "Items are derived from DB/gate truth. Run the suggested tool(s), then call stage_worklist_next/status again; do not mark work complete by natural-language assertion."
+            "Items are derived from DB/gate truth. Close the suggested_capabilities for each asset x technique cell; suggested_tools are implementation hints. Then call stage_worklist_next/status again; do not mark work complete by natural-language assertion."
         },
-        "next_action": if ready_to_submit {
+        "next_action": if missing_vuln_triage_denominator {
+            "Do not submit: vuln_triage returned an empty asset x technique denominator. Refresh the stage coverage snapshot/worklist before submitting; the gate requires formulaic scan cells for each in-scope asset."
+        } else if ready_to_submit {
             "No pending/error work items remain. Build a slim StageDeliverable with real evidence refs and submit."
         } else if is_eas {
             "Close the returned EAS cells by technique: LIVENESS with httpx, PORT with naabu/masscan, SERVICE with nmap -sV only after open ports are known; run whatweb only for confirmed HTTP(S) endpoints."
@@ -931,6 +1078,7 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
                     "source": cell.get("source").cloned().unwrap_or(Value::Null),
                     "evidence_refs": cell.get("evidence_refs").cloned().unwrap_or_else(|| json!([])),
                     "note": cell.get("note").cloned().unwrap_or(Value::Null),
+                    "suggested_capabilities": cell.get("suggested_capabilities").cloned().unwrap_or_else(|| json!([])),
                     "suggested_tools": cell.get("suggested_tools").cloned().unwrap_or_else(|| json!([])),
                 });
                 if is_enumeration {
@@ -946,8 +1094,12 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
 
     let omitted_gap_count = pending_cells + error_cells;
     let omitted_gap_count = omitted_gap_count.saturating_sub(gaps.len());
-    let ready_to_submit = pending_cells == 0 && error_cells == 0;
-    let next_action = if ready_to_submit {
+    let missing_vuln_triage_denominator = stage == "vuln_triage" && total_cells == 0;
+    let ready_to_submit =
+        !missing_vuln_triage_denominator && pending_cells == 0 && error_cells == 0;
+    let next_action = if missing_vuln_triage_denominator {
+        "Do not submit: vuln_triage returned an empty asset x technique denominator. Refresh the stage coverage snapshot/worklist before submitting; the gate requires formulaic scan cells for each in-scope asset."
+    } else if ready_to_submit {
         if next_wave_cells > 0 {
             "Current wave has no pending/error cells. Submit this wave's StageDeliverable with real evidence ids; next_wave_pending assets are newly discovered and should be handled by the next stage_run wave after this wave passes."
         } else if is_enumeration {
@@ -964,6 +1116,7 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
     };
     let mut out = json!({
         "ready_to_submit": ready_to_submit,
+        "coverage_denominator_missing": missing_vuln_triage_denominator,
         "stage": snapshot.get("stage").cloned().unwrap_or(Value::Null),
         "organization_id": snapshot.get("organization_id").cloned().unwrap_or(Value::Null),
         "session_id": snapshot.get("session_id").cloned().unwrap_or(Value::Null),
@@ -1036,9 +1189,9 @@ fn eas_gap_focus(technique: &str) -> &'static str {
 mod tests {
     use super::{
         compact_stage_asset_coverage, enumeration_web_roots_worklist, stage_worklist_next,
-        stage_worklist_status,
+        stage_worklist_status, web_root_url_from_meta,
     };
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     #[test]
     fn coverage_preflight_blocks_submit_when_cells_are_pending() {
@@ -1102,6 +1255,44 @@ mod tests {
         assert!(compact.get("assets").is_none());
         assert_eq!(compact["assets_omitted"], true);
         assert_eq!(compact["assets_omitted_count"], 1);
+    }
+
+    #[test]
+    fn vuln_triage_preflight_does_not_pass_empty_denominator() {
+        let compact = compact_stage_asset_coverage(
+            json!({
+                "stage": "vuln_triage",
+                "organization_id": "org-1",
+                "session_id": "sess",
+                "summary": {"total_assets": 0},
+                "assets": []
+            }),
+            10,
+            false,
+        );
+
+        assert_eq!(compact["ready_to_submit"], false);
+        assert_eq!(compact["coverage_denominator_missing"], true);
+        assert!(compact["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("empty asset x technique denominator"));
+
+        let worklist = stage_worklist_next(
+            json!({
+                "stage": "vuln_triage",
+                "organization_id": "org-1",
+                "session_id": "sess",
+                "summary": {"total_assets": 0},
+                "assets": []
+            }),
+            10,
+            &["pending".to_string(), "error".to_string()],
+        );
+
+        assert_eq!(worklist["ready_to_submit"], false);
+        assert_eq!(worklist["coverage_denominator_missing"], true);
+        assert_eq!(worklist["next_action"], compact["next_action"]);
     }
 
     #[test]
@@ -1209,6 +1400,63 @@ mod tests {
     }
 
     #[test]
+    fn enumeration_worklist_orders_alive_roots_first_within_limit() {
+        // PR-C: with a tight limit, EAS-proven-alive roots must survive over
+        // unproven ones (order by http_status/ports before truncation).
+        let worklist = enumeration_web_roots_worklist(
+            json!({
+                "stage": "enumeration",
+                "organization_id": "org-1",
+                "assets": [
+                    {"target_id": "t-dead", "value": "dead.example.com", "target_type": "domain", "coverage": []},
+                    {"target_id": "t-alive", "value": "alive.example.com", "target_type": "domain", "http_status": 200, "coverage": []}
+                ]
+            }),
+            1,
+            false,
+        );
+        assert_eq!(worklist["count"], 1);
+        assert_eq!(worklist["web_roots"][0]["asset"], "alive.example.com");
+        assert_eq!(worklist["truncated"], true);
+    }
+
+    #[test]
+    fn web_root_url_from_meta_derives_scheme_and_port() {
+        // PR-A: full URL derivation from EAS metadata (kills per-target probe).
+        // https port → https, non-default port kept in suffix.
+        let (url, scheme, port) = web_root_url_from_meta(
+            "app.example.com",
+            Some(200),
+            &json!([{"port": 8443, "service": "https"}]),
+            "",
+        );
+        assert_eq!(url, "https://app.example.com:8443/");
+        assert_eq!(scheme, "https");
+        assert_eq!(port, Some(8443));
+
+        // Plain http on default 80 → no port suffix.
+        let (url, scheme, _) = web_root_url_from_meta(
+            "plain.example.com",
+            Some(200),
+            &json!([{"port": 80, "service": "http"}]),
+            "",
+        );
+        assert_eq!(url, "http://plain.example.com/");
+        assert_eq!(scheme, "http");
+
+        // Value already carrying a scheme is normalised as-is.
+        let (url, scheme, _) =
+            web_root_url_from_meta("https://api.example.com", None, &Value::Null, "");
+        assert_eq!(url, "https://api.example.com/");
+        assert_eq!(scheme, "https");
+
+        // No metadata → http fallback, no port.
+        let (url, _, port) = web_root_url_from_meta("bare.example.com", None, &json!([]), "");
+        assert_eq!(url, "http://bare.example.com/");
+        assert_eq!(port, None);
+    }
+
+    #[test]
     fn enumeration_web_roots_worklist_returns_live_root_contract() {
         let worklist = enumeration_web_roots_worklist(
             json!({
@@ -1235,8 +1483,9 @@ mod tests {
         assert_eq!(worklist["count"], 1);
         assert_eq!(
             worklist["web_roots"][0]["root_url"],
-            "https://app.example.com"
+            "https://app.example.com/"
         );
+        assert_eq!(worklist["web_roots"][0]["scheme"], "https");
         assert_eq!(
             worklist["web_roots"][0]["pending_techniques"][0],
             "GOLISH-ENUM-JSAPI"

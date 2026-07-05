@@ -1,6 +1,7 @@
 {
   "$schema": "../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#3.1",
   "$comment": "Base Operation DAG. Doc 3 §3.1. profile.allowed_stage_kinds 投影后即 Profile 可达 stage 子图.",
+  "$comment_edge_order": "Edge order is semantic for branch stages: first edge = progress/main path, last edge = no-progress bail path.",
 
   "nodes": [
     "scoping",
@@ -23,8 +24,8 @@
     { "from": "target_intel", "to": "external_attack_surface" },
     { "from": "external_attack_surface", "to": "enumeration" },
     { "from": "external_attack_surface", "to": "reporting" },
-    { "from": "enumeration", "to": "reporting" },
     { "from": "enumeration", "to": "vuln_triage" },
+    { "from": "enumeration", "to": "reporting" },
     { "from": "vuln_triage", "to": "attack_candidate" },
     { "from": "vuln_triage", "to": "reporting" },
     { "from": "attack_candidate", "to": "verification" },

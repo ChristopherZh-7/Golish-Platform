@@ -43,10 +43,10 @@ fn passive_intel_parameters(subject_hint: &str) -> Value {
 }
 
 /// JSON schema for `recon_map_assets`. Same `organization_id` as the shared
-/// passive schema, plus the optional b1 `domain` knob (design 2026-06-24): when
-/// set, the survey runs domain-keyed — only providers/queries that reference
-/// `{{domain}}` fire (e.g. FOFA `domain="x"`) — to expand a newly-discovered
-/// apex's subdomain tree without re-surveying the parent org.
+/// passive schema, plus the optional b1 `domain` repair knob (design 2026-06-24):
+/// when set, the survey runs domain-keyed — only providers/queries that reference
+/// `{{domain}}` fire (e.g. FOFA `domain="x"`) — for a specific apex. The normal
+/// org/company survey auto-expands bounded owned apexes after discovery.
 fn map_assets_parameters() -> Value {
     json!({
         "type": "object",
@@ -57,7 +57,7 @@ fn map_assets_parameters() -> Value {
             },
             "domain": {
                 "type": "string",
-                "description": "Optional apex domain (e.g. \"example.com\"). When provided, runs a DOMAIN-keyed provider survey (FOFA domain=\"…\" etc.) to expand that domain's subdomain tree instead of the company-name survey. Use it to deepen a newly-discovered apex found during attack-surface mapping. Omit for the normal company-name survey."
+                "description": "Optional apex domain (e.g. \"example.com\") for a targeted repair/manual supplement. When provided, runs only DOMAIN-keyed provider templates (FOFA domain=\"…\", 0.zone root_domain==…, etc.) for that apex. Omit for the normal org/company survey; the normal call already auto-expands bounded owned apexes it discovers."
             }
         },
         "required": ["organization_id"]
@@ -124,8 +124,9 @@ async fn run_phase(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let include_branches = args.get("include_branches").and_then(|v| v.as_bool());
-    // b1 (design 2026-06-24): optional domain-keyed survey (recon_map_assets only;
-    // other phases omit it → None → legacy company-name survey, unchanged).
+    // b1 (design 2026-06-24): optional targeted domain-keyed repair
+    // (recon_map_assets only). None = normal company-name survey; the asset-intel
+    // facade may auto-expand discovered owned apexes after that first run.
     let domain = args
         .get("domain")
         .and_then(|v| v.as_str())
@@ -214,7 +215,7 @@ impl Tool for ReconMapAssetsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Survey an organization's external footprint via cyberspace/intel providers (0.zone / quake / fofa / hunter / shodan / ENScan): domains, IP ranges, ASN, subdomains, certificates, ICP records, apps/mini-programs, exposed emails, and OSINT — landed to the org profile + target_assets (host↔IP pairs carry the surveyed real_ip). Zero-touch. Use during target_intel after the engagement subject is confirmed. WHOIS is a separate tool (recon_lookup_whois). Optional `domain` arg runs a DOMAIN-keyed survey (FOFA domain=\"…\") to expand a newly-discovered apex's subdomain tree. Returns a summary with counts and provider ids."
+        "Survey an organization's external footprint via cyberspace/intel providers (0.zone / quake / fofa / hunter / shodan / ENScan): domains, IP ranges, ASN, subdomains, certificates, ICP records, apps/mini-programs, exposed emails, and OSINT — landed to the org profile + target_assets (host↔IP pairs carry the surveyed real_ip). Zero-touch. Use during target_intel after the engagement subject is confirmed. The normal org/company survey automatically expands bounded owned apex domains it discovers using DOMAIN-keyed provider templates; optional `domain` is only for targeted repair/manual supplement. WHOIS is a separate tool (recon_lookup_whois). Returns a summary with counts, provider ids, and domainExpansions when apex expansion ran."
     }
 
     fn parameters(&self) -> Value {

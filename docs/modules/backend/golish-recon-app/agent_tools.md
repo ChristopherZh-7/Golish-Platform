@@ -39,6 +39,7 @@
 - **不变量 I2**：取 `organization_id` + project-scoped——工具绝不能碰别 project 的 org。
 - **不变量 I7**：结果必须 book 进 evidence ledger（阶段 coverage 要引真实 evidence id）。
 - `run_passive_intel` 的 JSON summary 带 `providerStatus`，runtime 用它写 `source_query_log`；这证明 provider/source terminal，不等于全网完整性。
+- `recon_map_assets(organization_id=...)` 的普通 org/company survey 会由 `asset_intel::run_passive_intel` 自动扩展 bounded owned apex domains；summary 可能带 `domainExpansions[]`，runtime 会把其中 nested `providerStatus` 写成 `source_query_log(target=<apex>)`。工具 schema 里的 `domain` 参数保留给 targeted repair/manual supplement，不是默认流程。
 - 与 GUI 路径（`integrations`/`organization_recon`）共用底层 `asset_intel`，行为应一致。
 
 ## 测试入口

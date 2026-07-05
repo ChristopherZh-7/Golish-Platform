@@ -719,6 +719,7 @@ mod tests {
         assert!(!s.coverage_axis.is_empty());
         assert!(s.facts_from_db_truth);
         assert!(s.freshness_window);
+        assert_eq!(s.allowed_tool_types, vec!["vuln_run_formulaic_sweep"]);
     }
 
     // Attack-stage split (design 2026-07-02 §3.9, P3 Task3.2): vuln_triage is

@@ -17,7 +17,7 @@ use crate::history::{HistoryConfig, HistoryManager};
 use crate::settings::SettingsManager;
 use crate::state::AppState;
 use crate::telemetry::{self, TelemetryGuard, TelemetryStats};
-use golish_db::DbReadyGate;
+use golish_db::{DbConfig, DbReadyGate};
 
 /// Parse the optional `[path]` positional CLI argument and, if provided,
 /// store it as `QBIT_WORKSPACE` so the rest of the bootstrap picks it up
@@ -113,11 +113,15 @@ pub(crate) fn init_telemetry(
 /// path share one source of truth. No TCP connection is opened here — the
 /// pool auto-connects on the first query after the background
 /// `spawn_embedded_pg` task flips the gate.
-pub(crate) fn create_lazy_db_pool() -> (Arc<PgPool>, DbReadyGate) {
-    let db_config = golish_db::DbConfig::default();
+pub(crate) fn create_lazy_db_pool_with_config(db_config: &DbConfig) -> (Arc<PgPool>, DbReadyGate) {
     let pool = golish_db::create_lazy_pool(&db_config.connection_string())
         .expect("Failed to create lazy PG pool");
     (pool, DbReadyGate::new())
+}
+
+pub(crate) fn create_lazy_db_pool() -> (Arc<PgPool>, DbReadyGate) {
+    let db_config = DbConfig::default();
+    create_lazy_db_pool_with_config(&db_config)
 }
 
 /// Compose the bootstrap phases that must run on the Tauri async runtime
@@ -166,9 +170,13 @@ pub(crate) fn init_telemetry_and_app_state() -> (Option<TelemetryGuard>, AppStat
 /// ready-gate is flipped and a dummy `GolishDb` handle is leaked to keep the
 /// backing process alive for the lifetime of the app.
 pub(crate) fn spawn_embedded_pg(db_ready: golish_db::DbReadyGate) {
+    spawn_embedded_pg_with_config(db_ready, DbConfig::default());
+}
+
+pub(crate) fn spawn_embedded_pg_with_config(db_ready: golish_db::DbReadyGate, db_config: DbConfig) {
     async_runtime::spawn(async move {
         tracing::info!("Starting embedded PostgreSQL database (background)...");
-        match golish_db::GolishDb::start(golish_db::DbConfig::default()).await {
+        match golish_db::GolishDb::start(db_config).await {
             Ok(_db) => {
                 tracing::info!(
                     has_pgvector = _db.has_pgvector,
@@ -186,21 +194,23 @@ pub(crate) fn spawn_embedded_pg(db_ready: golish_db::DbReadyGate) {
     });
 }
 
-/// Like [`spawn_embedded_pg`] but hands the started [`golish_db::GolishDb`]
-/// handle back to the caller via a oneshot instead of leaking it with
-/// `std::mem::forget`.
+/// Spawn embedded PostgreSQL and hand the started [`golish_db::GolishDb`] handle
+/// back to the caller via a oneshot instead of leaking it with
+/// `std::mem::forget`. Accepts an explicit DB config so short-lived headless
+/// tests can run against an isolated pgdata directory and port.
 ///
 /// The GUI deliberately leaks the handle so the embedded server lives for the
 /// whole app lifetime. The headless `--stage-run` path is short-lived, so it
 /// uses this variant and stops the server on exit — otherwise every run orphans
 /// a `postgres` process holding the data dir + port 15432, blocking the next run.
-pub(crate) fn spawn_embedded_pg_owned(
+pub(crate) fn spawn_embedded_pg_owned_with_config(
     db_ready: golish_db::DbReadyGate,
+    db_config: DbConfig,
 ) -> tokio::sync::oneshot::Receiver<golish_db::GolishDb> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     async_runtime::spawn(async move {
         tracing::info!("Starting embedded PostgreSQL database (background, owned handle)...");
-        match golish_db::GolishDb::start(golish_db::DbConfig::default()).await {
+        match golish_db::GolishDb::start(db_config).await {
             Ok(db) => {
                 tracing::info!(
                     has_pgvector = db.has_pgvector,

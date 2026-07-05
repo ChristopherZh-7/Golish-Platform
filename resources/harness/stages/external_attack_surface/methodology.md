@@ -25,50 +25,36 @@ stage that touches the target, gated by `active_scan` approval.
    - `cidr`: treat as a range. Get approval when required, sweep it, register
      discovered live IPs as concrete targets, then scan each IP.
    - wildcard: do not brute-force here; concrete inherited hosts carry the work.
-4. Liveness + HTTP fingerprint — batch host/url targets through `httpx` early
+4. Liveness + HTTP fingerprint — batch host/url targets through
+   `eas_probe_http_liveness` early
    when it will reduce uncertainty or give you HTTP evidence. This is normally the
    cheapest way to separate live web assets from dead leads, but it is not a hard
    ordering rule: if the DB already has fresh liveness or a targeted port batch is
    clearly the right next gap, use judgment.
-   Prefer one JSONL run per org/worklist chunk: call `pentest_run` with
-   `tool_name="httpx"`, `args="-json -sc -title -td -server -silent"`, and
-   newline-separated targets in `input_lines` / `stdin` instead of one `httpx -u`
-   call per host. DNS was already done in `target_intel`; reuse inherited DNS
-   instead of re-running `dig`.
+   The wrapper owns the fixed `httpx` recipe and batching; call it with
+   `targets=[...]` instead of building raw `httpx` / `pentest_run` args. DNS was
+   already done in `target_intel`; reuse inherited DNS instead of re-running
+   `dig`.
    If a liveness probe is terminal-empty, mark only LIVENESS checked_empty with
    evidence; do not claim domain PORT/SERVICE work because those cells belong to
    concrete IP/CIDR hosts.
-5. Port discovery — default to `naabu` for fast concrete IP/CIDR port
-   discovery; use `masscan` for larger ranges when appropriate and `nmap` as
-   fallback/verification. Batch targets where the tool accepts list input. With
-   `pentest_run`, put
-   `{{input_file}}` in `args` and pass the actual targets via `input_lines`:
-   `naabu -list {{input_file}} ...`, `masscan -iL {{input_file}} ...`, or
-   `nmap -iL {{input_file}} ...`. Every IP/CIDR-discovered host must have a
-   fresh port-scan terminal result. Do not feed domains or URL strings such as
-   `https://1.2.3.4/path` to `nmap -iL`; normalize to concrete IP targets first.
-6. Service/version fingerprint — prefer `nmap -sV` only for confirmed open
-   ports. Group hosts that share the same confirmed port set with
-   `-iL {{input_file}}` + `-p <confirmed-open-ports>` instead of launching one
-   foreground command per host/port. Do not run `nmap -sV -iL` over raw
-   domains, unresolved hosts, or assets that have no open-port evidence; close
-   blocked concrete-host SERVICE cells with a concrete note. Use
-   `whatweb --input-file={{input_file}}` only for confirmed HTTP(S)
-   services when its Ruby runtime is ready; never use WhatWeb for DNS, MySQL,
-   SSH, or other non-HTTP service gaps.
-   If `whatweb` returns a runtime/SSL/opening error, record the failed attempt,
-   do not retry it on the same host, and continue with `nmap -sV` / `httpx`
-   evidence. NEVER assume a service from the port number alone (8080 is not
-   proof of Tomcat), and never treat HTTP liveness alone as PORT/SERVICE
-   coverage.
-7. (Optional) `gowitness file -f {{input_file}}` screenshots of live web
-   services for the record.
+5. Port discovery — call `eas_discover_ports` for concrete IP/CIDR targets.
+   Default to `scanner="naabu"`; use `scanner="masscan"` for larger approved
+   ranges when appropriate and `scanner="nmap"` as fallback/verification. The
+   wrapper owns the list-file recipe and rejects domains/URLs. Every
+   IP/CIDR-discovered host must have a fresh port-scan terminal result.
+6. Service/version fingerprint — call `eas_fingerprint_services` only for
+   concrete IP targets with confirmed open ports. The wrapper owns the
+   `nmap -sV -Pn -iL ... -p ... -T3` recipe and rejects raw domains, URL strings,
+   and CIDR ranges. Close blocked concrete-host SERVICE cells with a concrete
+   note. NEVER assume a service from the port number alone (8080 is not proof of
+   Tomcat), and never treat HTTP liveness alone as PORT/SERVICE coverage.
 
 **If a tool is missing or errors:**
 
-- Record it in `skipped_checks` with the reason and use a fallback (e.g. if `httpx`
-  is unavailable, use IP-level `nmap -sV` / `nmap -Pn -p- --open` for concrete
-  hosts, not unresolved domains).
+- Record it in `skipped_checks` with the reason and use another EAS wrapper
+  fallback where possible (for example, `eas_discover_ports(scanner="nmap")` for
+  concrete IPs when `naabu` is unavailable), not unresolved domains.
 - Do NOT install tools, spawn extra sub-agents, or retry a blocked/missing tool in
   a loop. Note it and move on — "checked_empty" is NOT "unchecked".
 - If only one target in a batch fails, do not downgrade the whole batch. Re-run or
@@ -82,8 +68,9 @@ stage that touches the target, gated by `active_scan` approval.
 **Coverage + stop condition:**
 
 - The gate reads database truth for found GOLISH-EAS-LIVENESS /
-  GOLISH-EAS-PORT / GOLISH-EAS-SERVICE-FINGERPRINT cells. When `httpx`,
-  `naabu`/`masscan`/`nmap`, `whatweb`, or `nmap -sV` data lands in
+  GOLISH-EAS-PORT / GOLISH-EAS-SERVICE-FINGERPRINT cells. When
+  `eas_probe_http_liveness`, `eas_discover_ports`, or
+  `eas_fingerprint_services` data lands in
   `targets`, `targets.ports`, `fingerprints`, or `technique_outcomes`, the
   corresponding found coverage is credited automatically.
 - Do NOT hand-write found coverage cells just to mirror the database. Add
@@ -96,10 +83,7 @@ stage that touches the target, gated by `active_scan` approval.
 - Before submitting, call `check_stage_asset_coverage`. If
   `ready_to_submit=false`, use its `gap_examples` to close the missing
   asset-technique cells by grouping gaps with the same technique/tool into batch
-  probes where possible. For list-file tools use `{{input_file}}` in
-  `pentest_run.args` and provide targets through `input_lines`.
-  `pentest_list_tools.params` is the parameter catalog; skills are examples, not
-  fixed call signatures. Use honest
+  wrapper calls where possible. Use honest
   checked_empty/blocked/not_applicable coverage when a tool cannot run. Submit
   only when the preflight says
   `ready_to_submit=true`. This is a required self-check before submit, not a

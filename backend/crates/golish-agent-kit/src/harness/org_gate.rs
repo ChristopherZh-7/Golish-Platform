@@ -278,8 +278,12 @@ pub async fn evaluate_org_stage_gate(
     // techniques expected → BLOCK" would spuriously fire); only `'dead'` is
     // dropped (`'unreachable'` may be transient — see `dead_asset_values`).
     if spec.skip_dead_assets && !in_scope_assets.is_empty() {
-        let dead: std::collections::HashSet<String> =
-            repo.dead_asset_values(org_id).await.unwrap_or_default().into_iter().collect();
+        let dead: std::collections::HashSet<String> = repo
+            .dead_asset_values(org_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         if !dead.is_empty() {
             let survivors: Vec<String> = in_scope_assets
                 .iter()
@@ -512,6 +516,7 @@ mod tests {
                 asset: "a.com".to_string(),
                 technique: "GOLISH-EAS-LIVENESS".to_string(),
                 reason: "missing liveness".to_string(),
+                suggested_capabilities: Vec::new(),
                 suggested_tools: vec!["httpx".to_string()],
             }],
             ..Default::default()
